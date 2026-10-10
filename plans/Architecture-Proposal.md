@@ -4,7 +4,7 @@
 
 This document captures the initial architecture direction for a Rust rewrite of Moqui Framework. It is the starting proposal for the new repository.
 
-**STATUS NOTE**: This is a very early proposal. Templating and XML Action handling are specified below: MiniJinja expands XML Actions and screen/form XML into JavaScript, and Liquid renders user-authored text. The proposal is expected to be refined as the first components are built.
+**STATUS NOTE**: This is a very early proposal. Templating and XML Action handling are specified below: MiniJinja expands XML Actions and screen/form XML into JavaScript, and Liquid renders user-authored text. Screen render modes (what stays, what is dropped, and the html and qvt library plans) are specified in Screen Render Modes. The proposal is expected to be refined as the first components are built.
 
 ## Repository
 
@@ -169,7 +169,7 @@ For Postgres-backed search, search-specific tables will use the embedded PGLite 
 | Area | Direction |
 |---|---|
 | HTTP server | `axum` + `tower`. WebSocket via `tokio-tungstenite` / axum. HTTP client via `reqwest`. No servlet container, no JNDI. |
-| Screens and XML Actions | MiniJinja macros expand XML to JavaScript. Screen and form XML can also emit server HTML. No FreeMarker, and no native widget-tree renderer as the primary path. See Templating. |
+| Screens and XML Actions | MiniJinja macros expand XML to JavaScript. Screen and form XML can also emit server HTML. No FreeMarker, and no native widget-tree renderer as the primary path. See Templating and Screen Render Modes. |
 | User-authored templates | Liquid (`liquid` crate) for email, notifications, and custom text/HTML. Sandboxed by design. |
 | Security | Do not port Shiro. Reimplement UserFacade on Rust primitives (`argon2` / `password-hash`, sessions, signed cookies). Artifact authorization stays Moqui’s own model and tables. |
 | Cache | `moka` for local cache. Distributed invalidation is a replaceable hook (Redis or similar), not a framework dependency on Hazelcast. |
@@ -180,6 +180,73 @@ For Postgres-backed search, search-specific tables will use the embedded PGLite 
 
 JDBC drivers, H2, Bitronix, Shiro, FreeMarker, Groovy, and the servlet stack do not carry forward. FreeMarker’s two jobs move to MiniJinja (code generation) and Liquid (user-authored text).
 
+## Screen Render Modes
+
+A screen is requested with a render-mode extension (`.html`, `.qvt`, `.text`, `.csv`, `.xml`, `.xsl-fo`). MiniJinja replaces the FreeMarker macro set for every mode. The modes themselves change as follows. `/qapps` stays the default UI. `/apps` stays the server-rendered HTML UI. `/vapps` goes away.
+
+### Modes that stay
+
+`text`, `csv`, `xml`, and `xsl-fo` stay server-rendered output formats with the same output shape. They load no browser libraries. Scheduled jobs, exports, and print already depend on that output.
+
+### vuet
+
+`vuet` (`/vapps`), and the `.js` and `.vue` companion modes that exist to feed it, are dropped. That UI loads the HTML-mode jQuery stack and then Vue 2 on top of it. qvt is the client-rendered UI.
+
+### html
+
+`html` stays because the document can be small and the feature set is the basic one: forms, form-lists, drop-downs, dates, a tree that navigates on click, background submit into a dynamic container. The current page works against that. Every screen loads `CombinedBase.min.js` (about 205 KB gzip): jQuery, Bootstrap 3, Moment with every locale, Select2, Selectivity, Typeahead, Inputmask, jQuery Validate, the Bootstrap datetimepicker, jsTree, and a set of plugins that are no longer maintained. The macros then append an inline `<script>` for most widgets, and Bootstrap class names (`form-control`, `col-sm-*`, `btn btn-primary`) on every field.
+
+The html macros emit semantic elements and a few data attributes. One shared script binds those attributes, so a form-list of dates does not emit a script per field. The always-loaded client is a Moqui-owned stylesheet and `moqui-html.js`, on the order of 15 KB and 8 KB gzip, plus Font Awesome 4.
+
+| Widget need | html approach |
+|---|---|
+| Layout, forms, tables, nav, dialogs | Element selectors in the Moqui stylesheet. Font Awesome 4 stays. Screen XML icons are `fa fa-*`, and Font Awesome 5+ changes that class. |
+| Background submit, dynamic container | `fetch`. The server already returns HTML fragments. |
+| Validation | Constraint validation (`required`, `pattern`, `type`). The server still validates. |
+| Date, time, date-find, date-period | `<input type="date">`, `type="time"`, `type="datetime-local">`. Default formats are already `yyyy-MM-dd` and `yyyy-MM-dd HH:mm`. The `T` separator from `datetime-local` is normalized to the space-separated timestamp. |
+| Static drop-down | `<select>`. |
+| Remote drop-down, combo-box, order-by multi-select, text autocomplete | Tom Select, loaded only on a page that has one of these. No jQuery. |
+| Tree | A short renderer in `moqui-html.js`: fetch JSON, draw a nested list, navigate on click. |
+| Click-to-edit, notification toast, WebSocket client | The same shared script. |
+| Input mask | `placeholder`, `inputmode`, and `pattern`. A live mask is a qvt behavior. |
+| `text-area` with `editor-type` `html` or `md` | A textarea. Rich editing stays in qvt. |
+| Form-list column picker | SortableJS, loaded only with that dialog. |
+| QZ Tray's RSVP dependency in the base bundle | Not loaded. Current QZ Tray uses native promises. See qvt. |
+
+Bootstrap 5, htmx, and Alpine were set aside. Each one puts utility or behavior attributes on the elements, which is the size this mode exists to avoid.
+
+### qvt
+
+`qvt` stays the primary UI, on Vue 3.5 and Quasar 2.35. Delivery stays script tags: `vue.global.prod.js` (the build that includes the template compiler) and `quasar.umd.prod.js`. A tree-shaken bundle does not fit a renderer where the screen XML decides which Quasar components appear. Quasar 2 is a component and prop break from 1.22 (`modelValue` instead of `value` / `input`, and the matching changes in the `m-*` wrappers). It is the same pass as the library removals below.
+
+jQuery and Moment are removed. The widgets are already Quasar: `QSelect` for drop-downs (including remote search), `QInput` with `QDate` and `QTime` for dates, `QInput` `mask` for masks, `QForm` rules for validation, `$q.notify` for toasts, and custom `m-tree-*` components for trees. `text-line[@ac-transition]` is already unsupported in qvt. Authors use a drop-down with server search.
+
+What jQuery still does is helper work, and each call has a direct replacement:
+
+- `$.ajax` becomes `fetch`. Form submit already uses `XMLHttpRequest` for file downloads.
+- `$.extend`, `$.each`, and the `$.is*` checks become `Object.assign`, ordinary loops, and the `moqui.is*` helpers.
+- The `#conf*` hidden inputs that the root app scrapes with `$().val()` become one JSON config object in the root template (session token, paths, user, locale, dark mode, plugin URLs).
+- Focus uses a template ref. The submit button comes from `SubmitEvent.submitter`.
+- `m-editable` never actually calls Jeditable. Click-to-edit is `QPopupEdit`.
+
+Moment is loaded (67 KB gzip, with every locale) and assigned to `Vue.prototype.moment`. The only `moment()` calls are inside the commented-out datetimepicker in `m-date-time`. Quasar's date utils use the same tokens the macros already emit (`YYYY-MM-DD`, `HH:mm`). The locale map that renames `zh` to `zh-cn` exists for Moment's locale files. Quasar language packs cover `QDate` and `QTime`.
+
+`http-vue-loader` goes away with Vue 2. It splits a fetched `.qvt` into template, script, and style. MiniJinja emits a component object, and the compiler in `vue.global` compiles the template string. Vue 3 filters (`decodeHtml`, `format`) become functions.
+
+`MoquiLib` stays as the utility set and `NotificationClient`. The Select2, jQuery Validate, and Bootstrap Notify setup at the bottom of that file is part of the html stack and is deleted. qvt already overrides `notifyGrowl` with `$q.notify`.
+
+The other qvt libraries:
+
+| Library | Plan |
+|---|---|
+| Font Awesome 4 and Material Icons | Both stay. Screen XML uses `fa fa-*`. The runtime components use Material icon names (`event`, `menu`). |
+| CKEditor 4 (`editor-type="html"`) | Replaced by `QEditor`. CKEditor 4 is end of life. 4.22.1 is the last release under the open MPL, LGPL, or GPL license. Later 4.x releases are commercial. CKEditor 5 is GPL-2.0-or-later, which does not sit beside CC0 the way the MPL option did. `QEditor` simplifies HTML it does not understand. Wiki pages and product or category content HTML are the screens that store that markup. |
+| SimpleMDE (`editor-type="md"`) | Replaced by a textarea and a preview rendered with Marked. SimpleMDE is unmaintained. |
+| Chart.js 2.9 | Updated to 4.x (`chart.umd.min.js`), still lazy. Quasar has no chart component. The 2.x config does not carry forward. |
+| Mermaid 9.3 | Updated off `mermaid.init` (removed in Mermaid 10), still lazy. Quasar has no diagram component. Pin a build that still loads from a script tag. |
+| Marked, DOMPurify, highlight.js | Stay for the Assist panel, at current patch versions. highlight.js loads the languages Assist highlights, rather than the full build. |
+| QZ Tray 2.0.7 | Updated to 2.3 when printing is enabled. 2.3 uses native promises, so RSVP and the standalone SHA-256 script go away. `MoquiQzComponent` is rewritten onto `QDialog` and `QBtn`. The current component is Bootstrap markup inside the Quasar shell. |
+
 ## Sim Mode
 
 An ExecutionContext can be placed in sim mode so that nothing permanent is written. Settings on the context control this. The overlay database is an in-memory PGLite instance (`open_temp`). Writes go to the overlay. Reads see the overlay first, then the underlying database. This is the evolution of the TransactionCache / TransactionCacheDb idea. Using a real Postgres for the overlay means view-entities, JSON operators, and constraints behave the same as they do against the primary database, which is the main simplification over a pure List/Map simulation.
@@ -188,7 +255,7 @@ An ExecutionContext can be placed in sim mode so that nothing permanent is writt
 
 - `mantle-udm`: entity XML and seed/install data. Expected to load as-is once the entity loader and data loader exist. Expression defaults or function expressions, if any, go through the JavaScript evaluator.
 - `mantle-usl`: service XML stays. Groovy expressions and scripts are migrated to JavaScript (AI-assisted). XML Actions stay as XML and are expanded to JavaScript by MiniJinja macros.
-- Screens: XML screen and form definitions stay. MiniJinja macros expand them to server-side HTML and/or client-renderable JavaScript. Expressions are JavaScript, so the same screen can be evaluated on the server or on the client. FreeMarker templates for notifications, email, and print move to Liquid.
+- Screens: XML screen and form definitions stay. MiniJinja macros expand them to server-side HTML and/or client-renderable JavaScript. Expressions are JavaScript, so the same screen can be evaluated on the server or on the client. Render modes are in Screen Render Modes. FreeMarker templates for notifications, email, and print move to Liquid.
 - Applications built on Mantle follow the same pattern.
 
 ## Summary of Decisions
@@ -208,6 +275,7 @@ An ExecutionContext can be placed in sim mode so that nothing permanent is writt
 | HTTP | axum |
 | XML Actions | MiniJinja macros emit JavaScript. In-memory interpretation is not the primary path. |
 | Screens | MiniJinja macros emit server HTML and/or client-renderable JavaScript |
+| Render modes | `qvt` is the primary UI (Vue 3.5, Quasar 2.35, no jQuery or Moment). `html` stays as terse server HTML with a small shared script. `text`, `csv`, `xml`, and `xsl-fo` stay as they are. `vuet` is dropped. |
 | User-authored templates | Liquid (`liquid` crate), sandboxed by design |
 | Security | Moqui artifact authz on Rust primitives. No Shiro. |
 
