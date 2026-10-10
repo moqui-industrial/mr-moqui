@@ -18,3 +18,10 @@ This project is an AI-assisted rebuild of the manually written Moqui Framework i
 LLMs are considered tools used by people. The person using the tool is just as responsible as with a text editor and keyboard. LLMs are the functional and moral equivalent of a hammer: they do not shake themselves, and are not a substitute or replacement for a responsible party.
 
 Don't trust, verify. Use AI to help verify, but remember who is responsible, and who is a who.
+
+## Significant redesigns
+
+Most of MR-Moqui is a port of the Java framework as it exists when the port begins. These are the places that change on purpose.
+
+1. **SearchFacade replaces ElasticFacade.** Postgres full-text and JSON are the default backend. OpenSearch is optional. Plan: [`plans/SearchFacade.md`](plans/SearchFacade.md).
+2. **qvt becomes server-static.** Plan pending. The server renders the screen XML to static text once (HTML or the other render-mode text). All data merge happens in the client. JavaScript as the inline expression language is what makes those expressions run there. The XML Screen schema and existing screens may need to change to fit that.

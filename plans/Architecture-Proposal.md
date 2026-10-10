@@ -40,6 +40,14 @@ XML Actions (`entity-find`, `service-call`, `if`, `iterate`, `set`, and the rest
 
 Components remain directories with a `component.xml` descriptor, discovered and loaded at startup. Resource locations keep a scheme-based model (`component://`, and equivalents).
 
+The framework is synchronous and multi-threaded, as Moqui is today. An `ExecutionContext` belongs to one thread. An HTTP request, an async service call, a scheduled job, and the other background workers each run on a thread with their own context. A call that waits (a database query, outbound HTTP, mail) blocks that thread and returns a value. The framework does not use `Future`, and it does not depend on Tokio.
+
+Worker threads that belong to the framework are ordinary threads started by the factory. The HTTP server lives in the host crate. It accepts connections on Tokio and hands each request to a worker thread that calls the framework and waits for the response. Transaction attributes (`ignore`, `force-new`, timeout) run on the calling thread: begin, commit, rollback, a savepoint, or a second connection. Details of the crate cut are in `plans/Crate-Layout.md`.
+
+`service-call` with `async="true"` starts another thread and another `ExecutionContext`, as it does now. `async="distribute"` (run on any node in a cluster) is dropped. It is rarely used, and there is no cluster transport for it. The service-facade `distributed-factory` goes with it. Distributed cache invalidation stays a later hook.
+
+QuickJS is one runtime per `ExecutionContext`, used only on that context's thread. A function the script calls returns a value before the script continues.
+
 ## Scripting Language: JavaScript via rquickjs
 
 JavaScript is the scripting language. The engine is QuickJS-NG embedded through the `rquickjs` crate.
@@ -52,7 +60,7 @@ JavaScript is the scripting language. The engine is QuickJS-NG embedded through 
 
 ### Why rquickjs / QuickJS-NG
 
-- Small, embeddable, fast startup, and a clean Rust integration (promises ↔ futures, easy registration of host functions, module loaders).
+- Small, embeddable, fast startup, and a clean Rust integration. Host functions are synchronous: the script calls, the call blocks, and it returns a value. Module loaders stay available.
 - Supports modern ECMAScript (modules, async, proxies, BigInt, and a large fraction of current language features). It is not required to track the absolute latest spec the week it ships. QuickJS-NG is adequate. TypeScript remains an optional authoring layer (transpiled by SWC or oxc) if longer scripts later want types. It is not required for expressions.
 - Heavier options (V8 via `rusty_v8`) were considered and set aside. Binary size, build complexity, and the fact that most script work is business logic rather than tight loops made the lighter engine the better fit. Pure-Rust engines (Boa and others) are not yet the right primary runtime for a large body of existing service code.
 
@@ -78,7 +86,9 @@ Two semantic differences to watch during migration:
 - Elvis (`?:`) treats any falsy value as missing. Nullish coalescing (`??`) only substitutes for `null` / `undefined`. Prefer `??`. Use `||` only where the old falsy behavior was intentional.
 - Empty arrays are truthy in JavaScript. Conditions that mean “has rows” should test length.
 
-Host types (`EntityValue`, `EntityList`, decimals, timestamps) are exposed into the QuickJS context as objects with the methods scripts actually call. JDK types (`BigDecimal`, `TreeSet`, etc.) are replaced by small host helpers rather than emulated.
+The QuickJS context mimics the Groovy and FreeMarker context, so expression and script migration stays small. A script starts with the same injected objects the Java runtime puts there: `ec`, `context`, a service `result` where the current actions provide one, and the other objects that entry point injects by default. A screen template sees what the FreeMarker macros see today. The static helpers those scripts and generated actions call are there too, including `ObjectUtilities`, `CollectionUtilities`, and `StringUtilities`.
+
+Host values (`EntityValue`, `EntityList`, decimals, timestamps) expose the methods those scripts call. JDK types such as `BigDecimal` and `TreeSet` are small host helpers with the same call shape. A tighter sandbox on which framework calls a script may make is a later effort.
 
 ### Migration approach
 
@@ -144,13 +154,15 @@ Both crates are pure Rust and small. Liquid does not need to be a complete Shopi
 
 PGLite (`pglite-rs`) is an in-process Postgres fork. It links into the binary, needs no separate server install, and exposes both a direct Rust API and (on Unix) a socket that ordinary Postgres clients can use. It is the closest equivalent to H2’s “just start” experience while speaking real Postgres.
 
-For sim mode, `PGlite::open_temp()` creates a true in-memory database. Data is not written to disk and disappears when the instance is dropped. Measured footprint is on the order of 23 MB RSS. This replaces the in-memory H2 overlay and can simplify or replace the List/Map-based `TransactionCache` / `TransactionCacheDb` approach when the overlay needs real SQL (views, constraints, JSON). A lighter List/Map cache can still exist for cases that only intercept entity operations.
+For sim mode, `PGlite::open_temp()` creates a true in-memory database. Data is not written to disk and disappears when the instance is dropped. Measured footprint is on the order of 23 MB RSS. PGLite replaces H2 as the engine under the transaction cache and the sim-mode overlay. The behavior of both is a port of the Java framework as it stands when the port begins. The `llm-client` branch is expected to keep changing until then, so this proposal does not freeze those rules.
 
 The side-process alternative (`postgresql_embedded`) was considered. It runs a real postmaster and is operationally similar to the existing OpenSearch sidecar. It does not offer a true in-memory mode (only an ephemeral data directory). Given that sim mode wants an in-memory overlay, and that a single engine for both the default embedded database and the overlay is simpler, PGLite is the choice. External Postgres remains the production path when configured.
 
 ### Platform notes
 
-Deployments are overwhelmingly Linux. macOS and Windows matter primarily for development, but builds should work on all three. A future WASM compilation of a subset of the framework is more realistic with an in-process engine than with a spawned postmaster. PGLite’s lineage (the original is a WASM build) fits that direction better than a side-process Postgres.
+Deployments are overwhelmingly Linux. macOS and Windows matter primarily for development, and builds should work on all three. There is no WASM target. A `wasm32` build would have required the framework to give up threads, and Moqui uses threads for requests, async services, scheduled jobs, and other background work. That model carries forward. PGLite is the in-process engine for the embedded database and the in-memory sim overlay.
+
+Shared embedded databases (the default entity database, and the default search database when it is also embedded) use PGLite's multi-process mode so each thread has its own connection. A sim overlay is a separate in-memory instance. Windows, where that multi-process mode is not available, is covered in `plans/PgliteConcurrency.md`. External Postgres remains the production database when one is configured.
 
 ### Transactions
 
@@ -170,10 +182,10 @@ The interface, the feature set taken from current callers, and the two backends 
 
 | Area | Direction |
 |---|---|
-| HTTP server | `axum` + `tower`. WebSocket via `tokio-tungstenite` / axum. HTTP client via `reqwest`. No servlet container, no JNDI. |
+| HTTP server | `axum` + `tower` in the host. The framework sees an owned request and blocks until the response is ready. WebSocket via `tokio-tungstenite` / axum. HTTP client via blocking `reqwest`. No servlet container, no JNDI. |
 | Screens and XML Actions | MiniJinja macros expand XML to JavaScript. Screen and form XML can also emit server HTML. No FreeMarker, and no native widget-tree renderer as the primary path. See Templating and Screen Render Modes. |
 | User-authored templates | Liquid (`liquid` crate) for email, notifications, and custom text/HTML. Sandboxed by design. |
-| Security | Do not port Shiro. Reimplement UserFacade on Rust primitives (`argon2` / `password-hash`, sessions, signed cookies). Artifact authorization stays Moqui’s own model and tables. |
+| Security | Do not port Shiro. Reimplement UserFacade on Rust primitives (`argon2` / `password-hash`). The framework owns the session. Artifact authorization stays Moqui’s own model and tables. See Sessions and login. |
 | Cache | `moka` for local cache. Distributed invalidation is a replaceable hook (Redis or similar), not a framework dependency on Hazelcast. |
 | Logging | `tracing`. |
 | JSON / YAML / XML | `serde_json`, `serde_yaml`, `quick-xml`. |
@@ -181,6 +193,16 @@ The interface, the feature set taken from current callers, and the two backends 
 | Content repository (JCR) | Dropped. ResourceFacade plus blob storage (filesystem or S3). |
 
 JDBC drivers, H2, Bitronix, Shiro, FreeMarker, Groovy, and the servlet stack do not carry forward. FreeMarker’s two jobs move to MiniJinja (code generation) and Liquid (user-authored text).
+
+## Sessions and login
+
+The servlet session and Shiro do not carry forward. The framework keeps a server-side session of its own. A signed cookie carries the session id. The session holds what the Java session holds: the authenticated user, visit and visitor ids, locale and time zone, the CSRF session token (`moqui.session.token`), flash messages and errors, saved and error parameters, and screen history. The notification WebSocket uses the same session.
+
+Login, logout, and the check that the user has logged out elsewhere live on this session. A successful login replaces the session id. A second factor in progress (email or TOTP) stays on the session until authentication completes. An API key or a login key on the request can authenticate without a password in the session. The long-lived visitor cookie stays separate from the session cookie. Artifact authorization is unchanged and reads the user from this session.
+
+## Tool components and print
+
+`xsl-fo` stays a server render mode. Turning that output into PDF, and the tool components that live outside the framework today, are a later effort. That set includes `moqui-fop`, `moqui-poi`, `moqui-image`, `moqui-cups`, and `moqui-sso`. Some of them may move into the framework. The size of the base `moqui.war` was a reason they stayed outside Moqui Java, and the size of the MR-Moqui binary is the same kind of limit. Until that effort, the host `pdf` module is an empty placeholder and `PdfRenderer` is the trait an engine will implement.
 
 ## Screen Render Modes
 
@@ -221,6 +243,8 @@ Bootstrap 5, htmx, and Alpine were set aside. Each one puts utility or behavior 
 
 `qvt` stays the primary UI, on Vue 3.5 and Quasar 2.35. Delivery stays script tags: `vue.global.prod.js` (the build that includes the template compiler) and `quasar.umd.prod.js`. A tree-shaken bundle does not fit a renderer where the screen XML decides which Quasar components appear. Quasar 2 is a component and prop break from 1.22 (`modelValue` instead of `value` / `input`, and the matching changes in the `m-*` wrappers). It is the same pass as the library removals below.
 
+Moving `qvt` to server-static output, with all data merge done in the client, is a separate redesign. The plan for it is pending. See Significant redesigns in the repository README. The library choices in the rest of this section stand either way.
+
 jQuery and Moment are removed. The widgets are already Quasar: `QSelect` for drop-downs (including remote search), `QInput` with `QDate` and `QTime` for dates, `QInput` `mask` for masks, `QForm` rules for validation, `$q.notify` for toasts, and custom `m-tree-*` components for trees. `text-line[@ac-transition]` is already unsupported in qvt. Authors use a drop-down with server search.
 
 What jQuery still does is helper work, and each call has a direct replacement:
@@ -251,13 +275,13 @@ The other qvt libraries:
 
 ## Sim Mode
 
-An ExecutionContext can be placed in sim mode so that nothing permanent is written. Settings on the context control this. The overlay database is an in-memory PGLite instance (`open_temp`). Writes go to the overlay. Reads see the overlay first, then the underlying database. This is the evolution of the TransactionCache / TransactionCacheDb idea. Using a real Postgres for the overlay means view-entities, JSON operators, and constraints behave the same as they do against the primary database, which is the main simplification over a pure List/Map simulation.
+An ExecutionContext can be placed in sim mode so that nothing permanent is written. Settings on the context control this, as they do in the Java framework. The overlay database is an in-memory PGLite instance (`open_temp`) in place of the in-memory H2 overlay. Transaction-cache and sim-mode behavior, including `enter_sim` and the other `llm-client` work, are ported from the Java code at the time the port begins. How the PGLite engine is shared across threads is `plans/PgliteConcurrency.md`.
 
 ## Component and Application Migration
 
 - `mantle-udm`: entity XML and seed/install data. Expected to load as-is once the entity loader and data loader exist. Expression defaults or function expressions, if any, go through the JavaScript evaluator.
 - `mantle-usl`: service XML stays. Groovy expressions and scripts are migrated to JavaScript (AI-assisted). XML Actions stay as XML and are expanded to JavaScript by MiniJinja macros.
-- Screens: XML screen and form definitions stay. MiniJinja macros expand them to server-side HTML and/or client-renderable JavaScript. Expressions are JavaScript, so the same screen can be evaluated on the server or on the client. Render modes are in Screen Render Modes. FreeMarker templates for notifications, email, and print move to Liquid.
+- Screens: XML screen and form definitions stay. MiniJinja macros expand them. Render modes are in Screen Render Modes. Moving `qvt` to server-static text, with data merge in the client, is a pending redesign (see the README). Expressions are JavaScript, which is what makes that client merge possible. FreeMarker templates for notifications, email, and print move to Liquid.
 - Applications built on Mantle follow the same pattern.
 
 ## Summary of Decisions
@@ -271,10 +295,15 @@ An ExecutionContext can be placed in sim mode so that nothing permanent is writt
 | Groovy migration | AI-assisted. No long-lived compatibility layer. |
 | Embedded database | PGLite (`pglite-rs`) as default configuration |
 | Production database | External Postgres, MySQL, etc when configured |
-| Sim overlay | In-memory PGLite (`open_temp`) |
+| Sim overlay | In-memory PGLite (`open_temp`) in place of H2. Behavior is a port of the Java framework at the time of the port. |
 | Search | Postgres FTS + JSON as a first-class, OpenSearch-free path. Interface designed day one, not required to match ElasticFacade. |
 | Transactions | Local only. No XA. |
-| HTTP | axum |
+| HTTP | axum in the host. Framework calls are synchronous. |
+| Threads | One `ExecutionContext` per thread. Framework workers are real threads. No `Future` in the framework. |
+| Async services | Local thread. `async="distribute"` is dropped. |
+| Sessions | Server-side session. A signed cookie carries the id. Same session for HTTP and the notification WebSocket. |
+| Print and tool components | Later. `xsl-fo` stays. PDF and the tool components stay outside until binary size is weighed. |
+| WASM | Not a target. |
 | XML Actions | MiniJinja macros emit JavaScript. In-memory interpretation is not the primary path. |
 | Screens | MiniJinja macros emit server HTML and/or client-renderable JavaScript |
 | Render modes | `qvt` is the primary UI (Vue 3.5, Quasar 2.35, no jQuery or Moment). `html` stays as terse server HTML with a small shared script. `text`, `csv`, `xml`, and `xsl-fo` stay as they are. `vuet` is dropped. |

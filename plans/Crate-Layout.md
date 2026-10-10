@@ -13,8 +13,8 @@ mr-moqui/
   Cargo.toml                 # workspace
   crates/
     moqui-lib/               # no ExecutionContext; usable on its own
-    moqui-core/              # the framework; WASM-compatible
-    moqui-host/              # depends on moqui-core; native-only
+    moqui-core/              # the framework; synchronous, multi-threaded
+    moqui-host/              # process edge: HTTP server, drivers, process spawn
     moqui/                   # binary: CLI and process entry
   framework/                 # framework component: XML, XSD, templates, default conf
   runtime/                   # instance directory: conf, webroot, tools, logs
@@ -46,17 +46,19 @@ Entity, service, and screen call each other through `ExecutionContext` (entity E
 The cuts that are real:
 
 1. Code with no framework type in its API or body can be used without starting Moqui. That is `moqui-lib`.
-2. Code that cannot be compiled for the WASM target has to live above the framework. That is `moqui-host`.
+2. The process edge stays above the framework. That is `moqui-host`: the HTTP server, database driver connections, and process spawn.
 
-Everything else stays in `moqui-core`, including the facades, XML Actions, screens, the entity engine, services, LLM and A2A logic, and the JavaScript engine.
+Everything else stays in `moqui-core`, including the facades, XML Actions, screens, the entity engine, services, LLM and A2A logic, the JavaScript engine, and the framework's own threads.
 
-## WASM target
+## Threads, and why the host is separate
 
-`moqui-lib` and `moqui-core` compile for `wasm32-wasip1`. That target has a filesystem and clocks, and it does not have a listen socket, a process spawn, or a multi-thread runtime. CI is `cargo check --target wasm32-wasip1 -p moqui-lib -p moqui-core` (lib with default features off; see HTTP below). Tests run on the native target.
+There is no WASM target. `wasm32-wasip1` and a browser build are out of scope. The constraints that target imposed (no threads, and waiting calls as futures) are not worth it. Moqui uses threads in many places: the request, async service calls, scheduled jobs, and other background workers. Those stay threads. The execution model in `plans/Architecture-Proposal.md` is the rule: one `ExecutionContext` per thread, blocking calls, no `Future` in the framework API.
 
-`wasm32-unknown-unknown` (the browser) is a later port. It needs a virtual filesystem in place of `std::fs`. Do not add crates for it now. Core may use `std::fs` and `std::time`.
+`moqui-core` uses `std::thread`. The factory starts the worker threads. "Which jobs are due" and the thread that sleeps and runs them both live in core. An async service call starts another thread and another context. Core may use `std::fs` and `std::time`.
 
-`moqui-core` does not depend on Tokio. Functions that wait return a `Future`. The host runtime polls them. Core does not call `tokio::spawn` or `tokio::time::sleep`. "What is due" for a cron job is a pure calculation in core. The thread that sleeps and fires is host.
+`moqui-core` does not depend on Tokio, axum, SQLx, or `pglite-rs`. Those crates are async. Calling them from a facade would turn entity finds, service calls, and screen renders into futures, and a QuickJS host callback cannot suspend. The host implements the blocking traits and blocks on the async clients inside the driver or the server.
+
+The axum handler accepts the connection on Tokio and calls the framework on a worker thread (`spawn_blocking`, or the same idea). It waits for the response. It does not await a framework future.
 
 ## moqui-lib
 
@@ -78,10 +80,10 @@ The one place the current code cheats is `RestClient.refuseIfSim()`, which calls
 | `topic` | `SimpleTopic` | In-process publish. |
 | `signer` | `SimpleSigner` | Signing helpers on ordinary crypto crates. |
 | `sgml` | `SimpleSgmlReader` | Small reader, depends only on string helpers. |
-| `http` | new | `HttpClient` trait. Always compiled, including for WASM. |
-| `rest` | `RestClient` | Concrete client. Feature `http` only. |
+| `http` | new | `HttpClient` trait. |
+| `rest` | `RestClient` | Blocking client. Feature `http`. |
 
-`RestClient` is the proof that lib is useful alone: URI building, headers, JSON, retry, timeout, streaming, multipart. On native builds the feature `http` turns on `reqwest` with rustls. That stack does not compile for `wasm32-wasip1` (no sockets), so the feature is native-only. `moqui-core` depends on `moqui-lib` without `http` and talks to the `HttpClient` trait. `moqui-host` enables `http` and passes a `RestClient` into the factory. Core tests use a fake client.
+`RestClient` is the proof that lib is useful alone: URI building, headers, JSON, retry, timeout, streaming, multipart. The `http` feature turns on `reqwest` with rustls, using the blocking client. A lib-only program can leave the feature off. `moqui-core` enables it and uses `RestClient` by default. A test, or a deployment with outbound HTTP disabled, passes another `HttpClient`. The sim-mode check stays at the framework caller, as a predicate, as described above.
 
 URL helpers, query-string handling, HMAC, and content-type sniffing from `WebUtilities` live in lib. The servlet containers, Jetty client, and session objects in that class are not ported.
 
@@ -102,18 +104,18 @@ A trait is used when conf selects an implementation, or when the implementation 
 
 | Trait | Why it is a trait |
 |---|---|
-| `DbDriver` | Replaces `EntityDatasourceFactory` and the JDBC half of `TransactionInternal`. PGLite, external Postgres, and MySQL implement it in `moqui-host`. Later databases use the same trait. |
-| `CacheStore` | Core ships a `Mutex` + map store so the crate runs alone. Host may substitute `moka`. |
-| `HttpClient` | Defined in lib. Core holds `Arc<dyn HttpClient>` injected at startup. Absent client: outbound HTTP returns a clear error. |
+| `DbDriver` | Replaces `EntityDatasourceFactory` and the JDBC half of `TransactionInternal`. PGLite, external Postgres, and MySQL implement it in `moqui-host`. The methods block and return rows. Later databases use the same trait. |
+| `HttpClient` | Defined in lib. Core uses the blocking `RestClient` unless a test or conf supplies another. Outbound HTTP with no client returns a clear error. |
 | `ScriptRunner` | Conf can name a runner. The built-in one is QuickJS-NG via `rquickjs`. |
 | `TemplateRenderer` | Conf can name a renderer. Built-ins are MiniJinja (code generation) and Liquid (user text). |
 | `ServiceRunner` | Entity-auto, script, and remote runners are built in. Remote runners call `HttpClient`. |
-| `Mailer` | Sending mail needs a socket. Host implements it. Message building stays here. |
 | `SearchBackend` | Postgres full-text SQL is in core. An OpenSearch mapping that only builds HTTP bodies can live here and use `HttpClient`. |
 | `LlmProtocol`, `LlmTool` | More than one protocol and many tools. |
-| `PdfRenderer` | Optional. XSL-FO output is produced here. A PDF engine, when one exists, is host. |
+| `PdfRenderer` | Optional, and later. XSL-FO output is produced here. A PDF engine is a future effort, with the tool components. See the architecture proposal. |
 
-`ExecutionContext` and `ExecutionContextFactory` are structs. The factory is built by the host and given the trait objects above. Facades are fields. There is no `Moqui.getExecutionContextFactory()` global inside lib or core. The binary may keep a process-wide factory for the CLI.
+The cache facade uses `moka` directly. Outbound mail uses `lettre` directly. Neither is a trait. Inbound SMTP is a listening server and stays a host feature.
+
+`ExecutionContext` and `ExecutionContextFactory` are structs. The host builds the factory and passes the trait objects implemented in the host (`DbDriver`, and `PdfRenderer` when a renderer exists). Facades are fields. There is no `Moqui.getExecutionContextFactory()` global inside lib or core. The binary may keep a process-wide factory for the CLI. The factory starts the framework's worker threads.
 
 `WebFacade` is a struct filled from an owned request value (method, path, query, headers, body) and it writes an owned response. It does not refer to axum or to a socket. `initWebFacade(HttpServletRequest, HttpServletResponse)` becomes `handle` on the request value. The host translates axum types at the edge.
 
@@ -125,7 +127,7 @@ A trait is used when conf selects an implementation, or when the implementation 
 
 `entity` holds definitions, values, the condition tree, find, SQL rendering, the dialect profiles, the `DbDriver` trait, ECAs, the data loader and writer, the entity cache, feeds, and dynamic views. SQL text is core. Opening a connection is host.
 
-`service` holds definitions, the call builders, runners, SECAs, email ECAs, REST API metadata, JSON-RPC dispatch, and job definitions including "which jobs are due".
+`service` holds definitions, the call builders, runners, SECAs, email ECAs, REST API metadata, JSON-RPC dispatch, and job definitions, including the thread that sleeps and runs due jobs.
 
 `screen` holds definitions, forms, trees, URL info, and the MiniJinja expansion to HTML and to client JavaScript.
 
@@ -146,14 +148,14 @@ Other current classes, placed by the same rule:
 | `MoquiShiroRealm`, `MoquiWebSecurityManager` | Not ported. User auth is the core user facade on `argon2`. |
 | `TransactionInternalBitronix` | Not ported. Transactions are the driver connection. |
 | `H2ServerToolFactory`, `JackrabbitRunToolFactory`, `JCSCacheToolFactory` | Not ported. |
-| `MCacheToolFactory` | Replaced by `CacheStore`. |
+| `MCacheToolFactory` | Replaced by the cache facade (`moka`). |
 | `SubEthaSmtpToolFactory` | Host, behind a feature, if inbound SMTP stays. |
 | Servlet and filter classes in `impl/webapp` | Host HTTP layer. The behavior they delegate (screen render, auth, REST, LLM, A2A, notifications) is core. |
-| `src/main/resources/org/moqui/impl/*.groovy` (send and poll email) | Core service logic plus the `Mailer` trait. The Groovy scripts are not kept as scripts. |
+| `src/main/resources/org/moqui/impl/*.groovy` (send and poll email) | Core service logic. Outbound mail uses `lettre` in core. The Groovy scripts are not kept as scripts. |
 
-`rquickjs` links QuickJS-NG, which is C. It belongs in core because XML Actions and expressions are the framework. If the WASI build of that crate fails, gate it with a default-on feature `js` and fix the build. Do not create a `moqui-js` crate to get past the failure.
+`rquickjs` links QuickJS-NG, which is C. It belongs in core because XML Actions and expressions are the framework. Each `ExecutionContext` owns the runtime for its thread. Functions called from JavaScript are synchronous and return values. Do not create a `moqui-js` crate.
 
-A WASM build has no database driver and no listen socket. It can still load components from the WASI filesystem, parse XML, expand actions and screens, run JavaScript, evaluate entity conditions, and render SQL text. The host supplies drivers when they exist.
+Core can load components, parse XML, expand actions and screens, run JavaScript, evaluate entity conditions, and render SQL with no database driver and no listen socket. Opening a connection, accepting a request, and spawning an external process are host. That is what keeps a core unit test free of those.
 
 ## Databases
 
@@ -169,7 +171,7 @@ Initial drivers, all in `moqui-host` and all enabled in the default binary:
 
 | Driver | Role | Dialect profile |
 |---|---|---|
-| PGLite (`pglite-rs`) | Default when no external database is configured, and the sim-mode overlay (`open_temp`) | `postgres` |
+| PGLite (`pglite-rs`) | Default when no external database is configured, and the sim-mode overlay (`open_temp`). Shared databases use multi-process mode. See `plans/PgliteConcurrency.md`. | `postgres` |
 | SQLx Postgres | External Postgres | `postgres` |
 | SQLx MySQL | External MySQL and MariaDB | `mysql8`, and the older `mysql` profile |
 
@@ -190,17 +192,15 @@ Cargo features may trim a driver out of a custom build. The default feature set 
 
 ## moqui-host
 
-Native-only. Depends on `moqui-core` and on `moqui-lib` with the `http` feature. This is the only crate that may use axum, Tokio, SQLx, `pglite-rs`, `lettre`, `moka`, and process spawn.
+The process edge. Depends on `moqui-core` and on `moqui-lib` with the `http` feature. This is the only crate that may use axum, Tokio, SQLx, `pglite-rs`, and process spawn. `moka` and `lettre` live in core.
 
 | Module | Role |
 |---|---|
-| `http` | axum routes and WebSocket upgrade. Builds the core request value, calls core, writes the response. Replaces `MoquiServlet`, the auth filter, the LLM and A2A servlets, FOP servlet entry, and the notification endpoint. |
-| `db` | `DbDriver` implementations: PGLite, SQLx Postgres, and SQLx MySQL. Later databases from the table above land here. |
-| `cache` | `moka` as a `CacheStore`. |
-| `schedule` | Tokio interval that calls the core "run due jobs" entry. |
-| `mail` | `lettre` implementation of `Mailer`. Inbound SMTP is a feature. |
+| `http` | axum routes and WebSocket upgrade. Builds the core request value, calls core on a worker thread, writes the response. Replaces `MoquiServlet`, the auth filter, the LLM and A2A servlets, FOP servlet entry, and the notification endpoint. |
+| `db` | `DbDriver` implementations: PGLite, SQLx Postgres, and SQLx MySQL. Each method blocks on the async client and returns rows. Later databases from the table above land here. PGLite concurrency is this module, as in `plans/PgliteConcurrency.md`. |
+| `mail` | Inbound SMTP, behind a feature, if it stays. Outbound mail is core. |
 | `search` | OpenSearch process supervisor. Query construction stays in core. |
-| `pdf` | Placeholder for an XSL-FO to PDF tool. Empty until a renderer is chosen. |
+| `pdf` | Empty placeholder. PDF rendering is a later effort, along with `moqui-fop` and the other tool components. |
 
 Features on this crate, not more crates: `opensearch`, `inbound-smtp`, `pdf`. Default features are PGLite, external Postgres, MySQL, and axum.
 
@@ -246,12 +246,11 @@ Unit tests live next to the code in the crate that owns it, so lib tests do not 
 
 Tests that start a factory, load `framework/`, and hit HTTP live under `crates/moqui/tests` (or `crates/moqui-host/tests` when they do not need the CLI). That replaces `src/test/groovy`.
 
-WASM CI checks that lib and core compile. It does not run the suite under WASI until a test harness is worth it.
-
 ## What this does not add
 
 - A `moqui-api` crate, or any other interface-only crate.
 - Per-facade crates (`moqui-entity`, `moqui-service`, `moqui-screen`).
 - A `start` or `execWar` source tree.
 - A port of the JSR-107 cache API, Shiro, Bitronix, Jackrabbit, H2, JCS, or the servlet types.
-- A browser-WASM crate, a `moqui-js` crate, a `moqui-db` crate, or a crate per database.
+- A WASM target, a `moqui-js` crate, a `moqui-db` crate, or a crate per database.
+- The tool components (`moqui-fop`, `moqui-poi`, `moqui-image`, `moqui-cups`, `moqui-sso`). Whether any of them move into this repository is a later decision, limited by binary size.
