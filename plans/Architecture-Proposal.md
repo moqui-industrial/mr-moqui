@@ -136,9 +136,9 @@ Both crates are pure Rust and small. Liquid does not need to be a complete Shopi
 
 ## Database
 
-- If an external Postgres is configured, use it.
-- If not, use PGLite (`pglite-rs`) as the embedded database.
-- In either case, use PGLite for the sim-mode overlay database.
+- If an external Postgres or other database is configured, use it (just as with Moqui now).
+- If not, use PGLite (`pglite-rs`) as the embedded database (just as Moqui does now with H2; ie this is the default config).
+- In either case, use PGLite for the sim-mode overlay database (TransactionCacheDb).
 
 ### Why PGLite
 
@@ -154,13 +154,15 @@ Deployments are overwhelmingly Linux. macOS and Windows matter primarily for dev
 
 ### Transactions
 
-There is no JTA, no XA, and no Bitronix equivalent. Transactions are local to the single transactional datasource (Postgres). The TransactionFacade preserves the useful service attributes (`ignore`, `force-new`, timeout) using ordinary begin / commit / rollback (and savepoints or a second connection where required). Cross-resource work uses an outbox or SECA rather than two-phase commit.
+There is no JTA, no XA, and no Bitronix equivalent. Transactions are local to the single transactional datasource. The TransactionFacade preserves the useful service attributes (`ignore`, `force-new`, timeout) using ordinary begin / commit / rollback (and savepoints or a second connection where required). Cross-resource work uses an outbox or SECA rather than two-phase commit.
 
 ## Search
 
 OpenSearch-free deployments are a day-one goal. Postgres full-text search and JSON operators cover the common cases that ElasticFacade is used for today (full-text and parameterized document-style queries).
 
 The search interface should be designed so that it is not locked to the current ElasticFacade shape. If a cleaner interface falls out of supporting both a Postgres implementation and an optional OpenSearch implementation, that interface is part of the MR-Moqui migration, not a later retrofit. OpenSearch remains available as an optional backend for deployments that want it. It is no longer required.
+
+For Postgres-backed search, search-specific tables will use the embedded PGLite database by default, and maybe configured to use an external Postgres instance (different config from EntityFacade datasource, may point to same or different pgsql instances).
 
 ## Other Infrastructure
 
@@ -198,8 +200,8 @@ An ExecutionContext can be placed in sim mode so that nothing permanent is writt
 | Spec language | XML (conf, entities, services, screens, SECAs, data) |
 | Scripting | JavaScript via `rquickjs` (QuickJS-NG) |
 | Groovy migration | AI-assisted. No long-lived compatibility layer. |
-| Embedded database | PGLite (`pglite-rs`) when no external DB is configured |
-| Production database | External Postgres when configured |
+| Embedded database | PGLite (`pglite-rs`) as default configuration |
+| Production database | External Postgres, MySQL, etc when configured |
 | Sim overlay | In-memory PGLite (`open_temp`) |
 | Search | Postgres FTS + JSON as a first-class, OpenSearch-free path. Interface designed day one, not required to match ElasticFacade. |
 | Transactions | Local only. No XA. |
