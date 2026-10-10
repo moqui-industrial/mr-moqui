@@ -4,7 +4,7 @@
 
 This document captures the initial architecture direction for a Rust rewrite of Moqui Framework. It is the starting proposal for the new repository.
 
-**STATUS NOTE**: This is a very early proposal, templating approach needs some work for both XML Screen rendering and for XML Action transformation which also needs consideration (interpret with in-memory objects, or transform the whole thing to JS like we do now with Groovy).
+**STATUS NOTE**: This is a very early proposal. Templating and XML Action handling are specified below: MiniJinja expands XML Actions and screen/form XML into JavaScript, and Liquid renders user-authored text. The proposal is expected to be refined as the first components are built.
 
 ## Repository
 
@@ -36,7 +36,7 @@ The runtime is organized around an `ExecutionContext` that owns the facades:
 - LoggerFacade
 - SearchFacade (see below)
 
-XML Actions (`entity-find`, `service-call`, `if`, `iterate`, `set`, and the rest) are interpreted natively. They are not compiled to a scripting language. Expressions inside attributes, and `<script>` bodies, are evaluated by the embedded JavaScript engine.
+XML Actions (`entity-find`, `service-call`, `if`, `iterate`, `set`, and the rest) and screen/form XML are expanded by MiniJinja macros into JavaScript and run by the embedded engine. An in-memory interpreter remains possible as a later optimization, but it is not the primary path. Expressions inside attributes, and `<script>` bodies, are JavaScript. Details are in Templating.
 
 Components remain directories with a `component.xml` descriptor, discovered and loaded at startup. Resource locations keep a scheme-based model (`component://`, and equivalents).
 
@@ -84,7 +84,55 @@ Host types (`EntityValue`, `EntityList`, decimals, timestamps) are exposed into 
 
 A general Groovy-to-JavaScript transpiler is not planned, and a long-lived compatibility shim for Groovy syntax is not desired. The preferred path is AI-assisted update of expressions and scripts. A temporary, narrowly scoped rewrite of the common attribute-expression idioms above may be used during the transition if it proves helpful, but it should not become something that ships and is relied on in production. The cost of manual migration is no longer a reason to keep risky compatibility layers.
 
-`mantle-udm` (entity definitions and seed data) should load with little or no change once the entity model and data loader exist. `mantle-usl` requires migration of Groovy expressions and `<script>` bodies to JavaScript. The bulk of each service file remains XML Actions and is unaffected.
+`mantle-udm` (entity definitions and seed data) should load with little or no change once the entity model and data loader exist. `mantle-usl` requires migration of Groovy expressions and `<script>` bodies to JavaScript. XML Action elements stay as XML. The macro library that expands them changes from FreeMarker (emitting Groovy) to MiniJinja (emitting JavaScript).
+
+## Templating
+
+FreeMarker currently serves two different purposes. MR-Moqui splits them across two engines.
+
+### Code generation with MiniJinja
+
+XML Actions and screen/form XML are expanded by a library of macros (one per element name) into executable code. Today the target is Groovy. In MR-Moqui the target is JavaScript, run on the embedded QuickJS-NG engine described above.
+
+MiniJinja is the engine for this library. It is a Jinja2-compatible template engine written in Rust, with macros, `{% import %}` / `{% from %}`, inheritance, and blocks. A file or a directory of macros, named to match the XML element names (`entity-find`, `service-call`, `form-single`, `field`, and so on), replaces the current FTL macro set. The generator loads the matching macro, passes the element attributes and already-rendered children, and emits JavaScript.
+
+This keeps the properties that matter:
+
+- The macros are ordinary text. They can be edited without rebuilding the framework.
+- The thing that runs is generated JavaScript, so behavior is visible and ordinary script tooling applies.
+- Location information from the original XML can be written into the generated script as comments or a source map, so stack traces and debugging point back at the service or screen file.
+- Composition works the same way it does with FreeMarker macros.
+
+An in-memory interpreter for XML Actions remains possible as a later optimization or for elements that are awkward to generate, but it is not the primary path. Generated JavaScript is preferred for lower execution overhead, well-known behavior, and easier debugging.
+
+The same MiniJinja library can target different outputs. Server-side HTML rendering and client-renderable screen JavaScript can be two macro sets, or one set with a target parameter.
+
+### Runtime text templates with Liquid
+
+Emails, notifications, custom HTML fragments, and other user- or admin-authored text are rendered with Liquid, via the `liquid` crate (liquid-rust).
+
+Liquid was designed so that untrusted or semi-trusted templates can be rendered safely. It is intentionally limited: output tags, a small set of logic tags, filters, and inclusion of other templates via `{% render %}`. There is no general scripting. liquid-rust aims at Shopify compatibility and lets the host register only the filters and tags it wants.
+
+Reusable pieces are snippets rather than FreeMarker-style macros. That is sufficient for this surface and safer. Custom filters provide Moqui-specific formatting, localization, and any limited context access that is explicitly allowed.
+
+Liquid has a broad ecosystem (highlighters, editors, documentation, examples) because it is widely used beyond Shopify. That tool support is the reason to accept a second engine rather than using MiniJinja for everything.
+
+### Sandboxing
+
+MiniJinja is used for framework-authored code generation, where the authors are the component or framework developers. It is not the sandbox boundary.
+
+Liquid is the sandbox boundary for templates that may be edited by admins or come from less-trusted sources. Its restriction is structural. MiniJinja’s fuel system and restricted environments are available if a MiniJinja template ever needs limits, but user-facing text defaults to Liquid.
+
+### Summary
+
+| Job | Engine | Notes |
+|---|---|---|
+| XML Actions → JavaScript | MiniJinja macros | Replaces FTL → Groovy. Emits debuggable JS. |
+| Screen/form XML → JavaScript or HTML | MiniJinja macros | Same library, possibly different target. |
+| Emails, notifications, custom text/HTML | Liquid (`liquid` crate) | Sandboxed by design. Custom filters for Moqui helpers. |
+| Internal framework templates | MiniJinja | No second engine required when authors are the framework. |
+
+Both crates are pure Rust and small. Liquid does not need to be a complete Shopify subset on day one. Start with the standard library plus a small set of Moqui filters, and add tags only when a real template requires them.
 
 ## Database
 
@@ -119,7 +167,8 @@ The search interface should be designed so that it is not locked to the current 
 | Area | Direction |
 |---|---|
 | HTTP server | `axum` + `tower`. WebSocket via `tokio-tungstenite` / axum. HTTP client via `reqwest`. No servlet container, no JNDI. |
-| Screens | XML widgets compile to a native widget tree and render through a trait (HTML, CSV, XML, text, …). No FreeMarker. Email and other templates can use a runtime engine such as MiniJinja where a template language is still wanted. |
+| Screens and XML Actions | MiniJinja macros expand XML to JavaScript. Screen and form XML can also emit server HTML. No FreeMarker, and no native widget-tree renderer as the primary path. See Templating. |
+| User-authored templates | Liquid (`liquid` crate) for email, notifications, and custom text/HTML. Sandboxed by design. |
 | Security | Do not port Shiro. Reimplement UserFacade on Rust primitives (`argon2` / `password-hash`, sessions, signed cookies). Artifact authorization stays Moqui’s own model and tables. |
 | Cache | `moka` for local cache. Distributed invalidation is a replaceable hook (Redis or similar), not a framework dependency on Hazelcast. |
 | Logging | `tracing`. |
@@ -127,7 +176,7 @@ The search interface should be designed so that it is not locked to the current 
 | CSV, mail, markdown, cron, TOTP | Ordinary crates (`csv`, `lettre`, `pulldown-cmark` / `comrak`, `cron`, `totp-rs`). |
 | Content repository (JCR) | Dropped. ResourceFacade plus blob storage (filesystem or S3). |
 
-JDBC drivers, H2, Bitronix, Shiro, FreeMarker, Groovy, and the servlet stack do not carry forward.
+JDBC drivers, H2, Bitronix, Shiro, FreeMarker, Groovy, and the servlet stack do not carry forward. FreeMarker’s two jobs move to MiniJinja (code generation) and Liquid (user-authored text).
 
 ## Sim Mode
 
@@ -136,8 +185,8 @@ An ExecutionContext can be placed in sim mode so that nothing permanent is writt
 ## Component and Application Migration
 
 - `mantle-udm`: entity XML and seed/install data. Expected to load as-is once the entity loader and data loader exist. Expression defaults or function expressions, if any, go through the JavaScript evaluator.
-- `mantle-usl`: service XML stays. Groovy expressions and scripts are migrated to JavaScript (AI-assisted). XML Actions are unchanged.
-- Screens: XML screen definitions stay. Expressions become JavaScript so the same screen can be evaluated on the server or sent to the client for client-side rendering. FreeMarker templates (notifications, print) are a separate, smaller migration.
+- `mantle-usl`: service XML stays. Groovy expressions and scripts are migrated to JavaScript (AI-assisted). XML Actions stay as XML and are expanded to JavaScript by MiniJinja macros.
+- Screens: XML screen and form definitions stay. MiniJinja macros expand them to server-side HTML and/or client-renderable JavaScript. Expressions are JavaScript, so the same screen can be evaluated on the server or on the client. FreeMarker templates for notifications, email, and print move to Liquid.
 - Applications built on Mantle follow the same pattern.
 
 ## Summary of Decisions
@@ -155,7 +204,9 @@ An ExecutionContext can be placed in sim mode so that nothing permanent is writt
 | Search | Postgres FTS + JSON as a first-class, OpenSearch-free path. Interface designed day one, not required to match ElasticFacade. |
 | Transactions | Local only. No XA. |
 | HTTP | axum |
-| Screens | Native widget rendering |
+| XML Actions | MiniJinja macros emit JavaScript. In-memory interpretation is not the primary path. |
+| Screens | MiniJinja macros emit server HTML and/or client-renderable JavaScript |
+| User-authored templates | Liquid (`liquid` crate), sandboxed by design |
 | Security | Moqui artifact authz on Rust primitives. No Shiro. |
 
 This is the initial proposal. It is expected to be refined as the first components (entity loader, JavaScript context bridge, PGLite-backed EntityFacade, and a minimal screen renderer) are built.
