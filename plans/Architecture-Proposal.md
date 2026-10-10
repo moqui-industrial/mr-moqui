@@ -164,6 +164,8 @@ The search interface should be designed so that it is not locked to the current 
 
 For Postgres-backed search, search-specific tables will use the embedded PGLite database by default, and maybe configured to use an external Postgres instance (different config from EntityFacade datasource, may point to same or different pgsql instances).
 
+The interface, the feature set taken from current callers, and the two backends are specified in `plans/SearchFacade.md`.
+
 ## Other Infrastructure
 
 | Area | Direction |
