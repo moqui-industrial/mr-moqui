@@ -44,7 +44,7 @@ The framework is synchronous and multi-threaded, as Moqui is today. An `Executio
 
 Worker threads that belong to the framework are ordinary threads started by the factory. The HTTP server lives in the host crate. It accepts connections on Tokio and hands each request to a thread from that pool, which calls the framework and waits for the response. The host does not use Tokio's `spawn_blocking` pool for this. That pool's cap is independent of the datasource pool. Transaction attributes (`ignore`, `force-new`, timeout) run on the calling thread: begin, commit, rollback, a savepoint, or a second connection. Details of the crate cut are in `plans/Crate-Layout.md`.
 
-`service-call` with `async="true"` starts another thread and another `ExecutionContext`, as it does now. `async="distribute"` (run on any node in a cluster) is dropped. It is rarely used, and there is no cluster transport for it. The service-facade `distributed-factory` goes with it. Distributed cache invalidation stays a later hook.
+`service-call` with `async="true"` starts another thread and another `ExecutionContext`, as it does now. `async="distribute"` (run on any node in a cluster) is dropped. It is rarely used, and there is no cluster transport for it. The service-facade `distributed-factory` goes with it. Distributed cache invalidation stays a later listener on the in-process topic. It is not a cache trait and not a Redis dependency.
 
 QuickJS is one runtime per `ExecutionContext`, used only on that context's thread. A function the script calls returns a value before the script continues.
 
@@ -149,8 +149,8 @@ Both crates are pure Rust and small. Liquid does not need to be a complete Shopi
 ## Database
 
 - If an external Postgres or other database is configured, use it (just as with Moqui now).
-- If not, use PGLite (`pglite-rs`) as the embedded database (just as Moqui does now with H2; ie this is the default config).
-- In either case, use PGLite for the sim-mode overlay database (TransactionCacheDb).
+- If not, use PGLite (`pglite-rs`) on Unix as the embedded database (just as Moqui does now with H2; ie this is the default config). On Windows, startup fails and the error says to configure an external Postgres for entities.
+- On Unix, use PGLite for the sim-mode overlay database (TransactionCacheDb), whether or not the entity database is external. On Windows, sim is unsupported. Entering sim fails because the overlay cluster cannot start.
 
 ### Why PGLite
 
@@ -158,13 +158,13 @@ PGLite (`pglite-rs`) links a Postgres fork into the binary and needs no separate
 
 `open_temp` writes a directory under the system temp dir and deletes it when the instance is dropped. The process can open that in-process engine only once. The sim overlay does not use `open_temp`. PGLite replaces H2 under `TransactionCacheDb`. The per-transaction `TransactionCache` stays an in-memory map, as in the Java framework. HOLD and FLUSH behavior are a port of the Java code at the time the port begins. The `llm-client` branch is expected to keep changing until then, so this proposal does not freeze those rules. How many engines start, and where an overlay lives, is `plans/PgliteConcurrency.md`.
 
-A separate embedded-server crate (`postgresql_embedded`) was considered. It is another child postmaster and another distribution to ship. PGLite already starts a postmaster from the binary that is linked in, and the same crate covers the Windows in-process fallback. External Postgres remains the production path when configured.
+A separate embedded-server crate (`postgresql_embedded`) was considered. It is another child postmaster and another distribution to ship. PGLite already starts a postmaster from the binary that is linked in. External Postgres remains the production path when configured.
 
 ### Platform notes
 
-Deployments are overwhelmingly Linux. macOS and Windows matter primarily for development, and builds should work on all three. There is no WASM target. A `wasm32` build would have required the framework to give up threads, and Moqui uses threads for requests, async services, scheduled jobs, and other background work. That model carries forward. The embedded database is PGLite: a multi-process cluster on Unix, and the one in-process engine on Windows.
+Deployments are overwhelmingly Linux. macOS matters for development, and builds should work on Linux and macOS. Windows is a lower priority, and PGLite does not run there. Startup fails when entities or search would need a PGLite postmaster. The error names that store. OpenSearch satisfies search without a Postgres. Sim is unsupported on Windows and fails when entered. There is no WASM target. A `wasm32` build would have required the framework to give up threads, and Moqui uses threads for requests, async services, scheduled jobs, and other background work. That model carries forward. The embedded database is a PGLite multi-process cluster on Unix.
 
-The default embedded database is one multi-process cluster, so each thread has its own connection. Embedded search is the `search` schema on that cluster. The sim overlay is a second cluster, one schema per `TransactionCacheDb`. Windows has no multi-process mode, so development there uses the single in-process engine for entity tables, the search schema, and overlay schemas. Details are in `plans/PgliteConcurrency.md`. External Postgres remains the production database when one is configured.
+The default embedded database is one multi-process cluster, so each thread has its own connection. Embedded search is the `search` schema on that cluster. The sim overlay is a second cluster, one schema per `TransactionCacheDb`. Details are in `plans/PgliteConcurrency.md`. External Postgres remains the production database when one is configured. External Postgres and MySQL traffic goes through synchronous drivers (`postgres::Client` pooled by `r2d2`, sync `mysql::Pool`). Each Postgres client drives its own runtime, as `plans/Crate-Layout.md` and `plans/PgliteConcurrency.md` describe. Pool sizes and timeouts start at the Java datasource values.
 
 ### Transactions
 
@@ -176,7 +176,7 @@ OpenSearch-free deployments are a day-one goal. Postgres full-text search and JS
 
 The search interface should be designed so that it is not locked to the current ElasticFacade shape. If a cleaner interface falls out of supporting both a Postgres implementation and an optional OpenSearch implementation, that interface is part of the MR-Moqui migration, not a later retrofit. OpenSearch remains available as an optional backend for deployments that want it. It is no longer required.
 
-For Postgres-backed search, the default is the `search` schema on the embedded PGLite cluster that holds entity data. Config may point the search store at an external Postgres, the same instance as the entities or another one. When the entity datasource is not Postgres, embedded search is its own PGLite cluster. See `plans/SearchFacade.md` and `plans/PgliteConcurrency.md`.
+For Postgres-backed search, the default is the `search` schema on the embedded PGLite cluster that holds entity data. Config may point the search store at an external Postgres, the same instance as the entities or another one. When the entity datasource is not Postgres, embedded search on Unix is its own PGLite cluster. On Windows that cluster does not start, and search needs an external Postgres or OpenSearch. A MySQL configuration is asked for an external Postgres only for the store that still needs one. See `plans/SearchFacade.md` and `plans/PgliteConcurrency.md`.
 
 The interface, the feature set taken from current callers, and the two backends are specified in `plans/SearchFacade.md`.
 
@@ -184,11 +184,11 @@ The interface, the feature set taken from current callers, and the two backends 
 
 | Area | Direction |
 |---|---|
-| HTTP server | `axum` + `tower` in the host. The framework sees an owned request and blocks until the response is ready. WebSocket via `tokio-tungstenite` / axum. HTTP client via blocking `reqwest`. No servlet container, no JNDI. |
+| HTTP server | `axum` + `tower` in the host. The framework sees an owned request and blocks until the response is ready. WebSocket via axum `extract::ws`. That extract already wraps `tokio-tungstenite`, so the host does not depend on it directly. HTTP client via blocking `reqwest`. No servlet container, no JNDI. |
 | Screens and XML Actions | MiniJinja macros expand XML to JavaScript. Screen and form XML can also emit server HTML. No FreeMarker, and no native widget-tree renderer as the primary path. See Templating and Screen Render Modes. |
 | User-authored templates | Liquid (`liquid` crate) for email, notifications, and custom text/HTML. Sandboxed by design. |
 | Security | Do not port Shiro. Reimplement UserFacade on Rust primitives (`argon2` / `password-hash`). The framework owns the session. Artifact authorization stays Moqui’s own model and tables. See Sessions and login. |
-| Cache | `moka` for local cache. Distributed invalidation is a replaceable hook (Redis or similar), not a framework dependency on Hazelcast. |
+| Cache | `moka` for local cache. Distributed invalidation, later, is a listener on the in-process topic in `moqui-lib`. It is not a cache trait and not a Redis dependency. Hazelcast does not carry forward. |
 | Logging | `tracing`. |
 | JSON / YAML / XML | `serde_json`, `serde_yaml`, `quick-xml`. |
 | CSV, mail, markdown, cron, TOTP | Ordinary crates (`csv`, `lettre`, `pulldown-cmark` / `comrak`, `cron`, `totp-rs`). |
@@ -204,7 +204,7 @@ Login, logout, and the check that the user has logged out elsewhere live on this
 
 ## Tool components and print
 
-`xsl-fo` stays a server render mode. Turning that output into PDF, and the tool components that live outside the framework today, are a later effort. That set includes `moqui-fop`, `moqui-poi`, `moqui-image`, `moqui-cups`, and `moqui-sso`. Some of them may move into the framework. The size of the base `moqui.war` was a reason they stayed outside Moqui Java, and the size of the MR-Moqui binary is the same kind of limit. Until that effort, the host `pdf` module is an empty placeholder and `PdfRenderer` is the trait an engine will implement.
+`xsl-fo` stays a server render mode. Turning that output into PDF, and the tool components that live outside the framework today, are a later effort. That set includes `moqui-fop`, `moqui-poi`, `moqui-image`, `moqui-cups`, and `moqui-sso`. Some of them may move into the framework. The size of the base `moqui.war` was a reason they stayed outside Moqui Java, and the size of the MR-Moqui binary is the same kind of limit. The default binary still includes PGLite, including for a deployment whose entity database is MySQL, because Unix search and sim use it. A custom build may omit `pglite-rs` only when search is an external Postgres or OpenSearch and sim is unused. Until the PDF effort, the host `pdf` module is an empty placeholder and `PdfRenderer` is the trait an engine will implement.
 
 ## Screen Render Modes
 
@@ -216,11 +216,11 @@ A screen is requested with a render-mode extension (`.html`, `.qvt`, `.text`, `.
 
 ### vuet
 
-`vuet` (`/vapps`), and the `.js` and `.vue` companion modes that exist to feed it, are dropped. That UI loads the HTML-mode jQuery stack and then Vue 2 on top of it. qvt is the client-rendered UI.
+`vuet` (`/vapps`), and the `.js` and `.vue` companion modes that exist to feed it, are dropped. That UI loads the HTML-mode jQuery stack and then Vue 2 on top of it. qvt is the client-rendered UI. Its companions stay: `qvt`, `qjs`, and `qvue` (`MoquiDefaultConf.xml`). `WebrootVue` maps `js` to `qjs`, `vue` to `qvue`, and `vuet` to `qvt`. Dropping `vuet` drops that last mapping. `qjs` and `qvue` stay.
 
 ### html
 
-`html` stays because the document can be small and the feature set is the basic one: forms, form-lists, drop-downs, dates, a tree that navigates on click, background submit into a dynamic container. The current page works against that. Every screen loads `CombinedBase.min.js` (about 205 KB gzip): jQuery, Bootstrap 3, Moment with every locale, Select2, Selectivity, Typeahead, Inputmask, jQuery Validate, the Bootstrap datetimepicker, jsTree, and a set of plugins that are no longer maintained. The macros then append an inline `<script>` for most widgets, and Bootstrap class names (`form-control`, `col-sm-*`, `btn btn-primary`) on every field.
+`html` stays because the document can be small and the feature set is the basic one: forms, form-lists, drop-downs, dates, a tree that navigates on click, background submit into a dynamic container. The current page works against that. Every screen loads `CombinedBase.min.js` (about 205 KB gzip). `webroot/build.gradle` builds that file from `baseJs`: rsvp, jQuery, Bootstrap 3, typeahead, inputmask, jQuery Validate and additional-methods, Moment with every locale, the Bootstrap datetimepicker, Select2, Selectivity, bootstrap-notify, jeditable, jquery-sortable-lists, and MoquiLib. jquery.form and jsTree are not in that file. The same Gradle file's `htmlJs` list, and `apps.xml`, load them as separate scripts. The new html client replaces those two with `fetch` and the tree renderer in `moqui-html.js`. The macros then append an inline `<script>` for most widgets, and Bootstrap class names (`form-control`, `col-sm-*`, `btn btn-primary`) on every field.
 
 The html macros emit semantic elements and a few data attributes. One shared script binds those attributes, so a form-list of dates does not emit a script per field. The always-loaded client is a Moqui-owned stylesheet and `moqui-html.js`, on the order of 15 KB and 8 KB gzip, plus Font Awesome 4.
 
@@ -237,7 +237,7 @@ The html macros emit semantic elements and a few data attributes. One shared scr
 | Input mask | `placeholder`, `inputmode`, and `pattern`. A live mask is a qvt behavior. |
 | `text-area` with `editor-type` `html` or `md` | A textarea. Rich editing stays in qvt. |
 | Form-list column picker | SortableJS, loaded only with that dialog. |
-| QZ Tray's RSVP dependency in the base bundle | Not loaded. Current QZ Tray uses native promises. See qvt. |
+| RSVP, the first file of `CombinedBase` | General use today, not a QZ Tray dependency. Not loaded. QZ's own scripts are sha-256, qz-tray, and MoquiQzComponent, and only when printing is enabled. See qvt. |
 
 Bootstrap 5, htmx, and Alpine were set aside. Each one puts utility or behavior attributes on the elements, which is the size this mode exists to avoid.
 
@@ -247,14 +247,14 @@ Bootstrap 5, htmx, and Alpine were set aside. Each one puts utility or behavior 
 
 When `server-static` includes `qvt`, that response is a data-free Vue template and the client merges the data. The attribute stays opt-in for this pass. The plan is [`plans/QvtServerStatic.md`](QvtServerStatic.md). The library choices in the rest of this section stand either way.
 
-jQuery and Moment are removed. The widgets are already Quasar: `QSelect` for drop-downs (including remote search), `QInput` with `QDate` and `QTime` for dates, `QInput` `mask` for masks, `QForm` rules for validation, `$q.notify` for toasts, and custom `m-tree-*` components for trees. `text-line[@ac-transition]` is already unsupported in qvt. Authors use a drop-down with server search.
+jQuery and Moment are removed. The qvt macros keep emitting the `m-*` wrappers defined in `WebrootVue.qvt.js`. `m-drop-down` wraps `q-select` and carries options-url, server-search, and depends-on. `m-date-time` wraps `q-input` with `q-date` and `q-time`. The macros do not emit a raw `QSelect` or `QInput`. Masks stay on that `q-input`. `QForm` rules cover validation, `$q.notify` covers toasts, and `m-tree-*` covers trees. `text-line[@ac-transition]` is already unsupported in qvt. Authors use a drop-down with server search.
 
 What jQuery still does is helper work, and each call has a direct replacement:
 
 - `$.ajax` becomes `fetch`. Form submit already uses `XMLHttpRequest` for file downloads.
 - `$.extend`, `$.each`, and the `$.is*` checks become `Object.assign`, ordinary loops, and the `moqui.is*` helpers.
 - The `#conf*` hidden inputs that the root app scrapes with `$().val()` become one JSON config object in the root template (session token, paths, user, locale, dark mode, plugin URLs).
-- Focus uses a template ref. The submit button comes from `SubmitEvent.submitter`.
+- Focus today is jQuery `.focus()` plus the `.default-focus` class. The port keeps that with a template ref. The submit control is `buttonClicked`, set on click, or `document.activeElement` when that is unset (`m-form` and `m-form-link`).
 - `m-editable` never actually calls Jeditable. Click-to-edit is `QPopupEdit`.
 
 Moment is loaded (67 KB gzip, with every locale) and assigned to `Vue.prototype.moment`. The only `moment()` calls are inside the commented-out datetimepicker in `m-date-time`. Quasar's date utils use the same tokens the macros already emit (`YYYY-MM-DD`, `HH:mm`). The locale map that renames `zh` to `zh-cn` exists for Moment's locale files. Quasar language packs cover `QDate` and `QTime`.
@@ -273,11 +273,11 @@ The other qvt libraries:
 | Chart.js 2.9 | Updated to 4.x (`chart.umd.min.js`), still lazy. Quasar has no chart component. The 2.x config does not carry forward. |
 | Mermaid 9.3 | Updated off `mermaid.init` (removed in Mermaid 10), still lazy. Quasar has no diagram component. Pin a build that still loads from a script tag. |
 | Marked, DOMPurify, highlight.js | Stay for the Assist panel, at current patch versions. highlight.js loads the languages Assist highlights, rather than the full build. |
-| QZ Tray 2.0.7 | Updated to 2.3 when printing is enabled. 2.3 uses native promises, so RSVP and the standalone SHA-256 script go away. `MoquiQzComponent` is rewritten onto `QDialog` and `QBtn`. The current component is Bootstrap markup inside the Quasar shell. |
+| QZ Tray 2.0.7 | Updated to 2.3 when printing is enabled. The current conditional scripts are sha-256, qz-tray 2.0.7, and MoquiQzComponent. 2.3 uses native promises, so the SHA-256 script goes away. RSVP was never part of that set. `MoquiQzComponent` is rewritten onto `QDialog` and `QBtn`. The current component is Bootstrap markup inside the Quasar shell. |
 
 ## Sim Mode
 
-An ExecutionContext can be placed in sim mode so that nothing permanent is written. Settings on the context control this, as they do in the Java framework. `TransactionCacheDb` is a PGLite schema created for that context and dropped on close, in place of the private in-memory H2 database. On Unix the schema is on the overlay cluster. On Windows it is on the single in-process engine. The per-transaction `TransactionCache` stays a map. HOLD, FLUSH, and `enter_sim` are ported from the Java code at the time the port begins. The database lifecycle is `plans/PgliteConcurrency.md`.
+An ExecutionContext can be placed in sim mode so that nothing permanent is written. Settings on the context control this, as they do in the Java framework. `TransactionCacheDb` is a PGLite schema created for that context and dropped on close, in place of the private in-memory H2 database. On Unix the schema is on the overlay cluster. On Windows sim is unsupported and entering it fails. The per-transaction `TransactionCache` stays a map. HOLD, FLUSH, and `enter_sim` are ported from the Java code at the time the port begins. The database lifecycle is `plans/PgliteConcurrency.md`.
 
 ## Component and Application Migration
 

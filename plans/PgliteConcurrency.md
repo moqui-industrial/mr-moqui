@@ -4,7 +4,7 @@ How the embedded database serves many `ExecutionContext` threads, and where a si
 
 This follows `plans/Architecture-Proposal.md` (Database, Platform notes) and `plans/Crate-Layout.md` (`DbDriver` in `moqui-host`). HOLD and FLUSH rules are a port of the Java framework at the time of the port. They are not specified here. The database lifecycle is.
 
-`pglite-rs` 0.2 is the crate. The API this plan uses is `open_multi_process`, `connection_uri`, and `MultiProcessOptions`. The in-process API is `open` and `open_temp`.
+`pglite-rs` 0.2 is the crate. The API this plan uses is `open_multi_process`, `connection_uri`, `socket_path`, and `MultiProcessOptions`. The in-process API is `open` and `open_temp`. Those two stay in the engine limits below. The driver does not call them.
 
 ## Engine limits
 
@@ -16,17 +16,21 @@ These are properties of `pglite-rs` 0.2.7, and the layout below is built around 
 - In-process calls take the crate's own per-call lock. A second lock around the same engine deadlocks if a call re-enters the database while the first lock is held.
 - The socket path for a child postmaster has to stay under 96 bytes. If the host process is killed with SIGKILL, the child is not signaled. The next open on that data directory depends on Postgres handling a stale `postmaster.pid`. A normal shutdown uses the crate's shutdown path: SIGINT, then a wait.
 
-`moqui-host`'s `db` module owns this. `DbDriver` stays a blocking trait. Core does not call `pglite-rs`.
+`moqui-host`'s `db` module owns this. `DbDriver` stays a blocking trait. Core does not call `pglite-rs`. `pglite-rs` is lifecycle only: `open_multi_process` at startup, `connection_uri` or `socket_path` once to build the sync pool, and `close` at shutdown. On a multi-process instance `unix_uri()` returns `connection_uri()` and does not start the in-process socket gateway. Per-query traffic never touches the `pglite-rs` async API.
 
 ## Shared database
 
-On Unix the default entity database is one cluster, opened with `PGlite::open_multi_process`. Each framework thread checks out its own connection, and Postgres provides the concurrency. `force-new` is a second connection on the calling thread, the same shape as the JDBC pool today.
+On Unix the default entity database is one cluster, opened with `PGlite::open_multi_process`. Each framework thread checks out its own connection, and Postgres provides the concurrency. `force-new` is a second connection on the calling thread, the same shape as the JDBC pool today. A savepoint cannot commit on its own, so `force-new` does not use one.
 
-The driver pools ordinary Postgres connections against `connection_uri` and blocks the calling thread for each `DbDriver` call. The future is driven with the host Tokio handle's `block_on` from that worker thread, the same way an external Postgres socket is driven. `futures::executor::block_on` does not drive those sockets. It is only appropriate for an in-process call, which completes when it is polled.
+After open, the driver reads `connection_uri()` or `socket_path()`. On `pglite-rs` 0.2.7 the multi-process URI is `postgresql://{user}@localhost/{db}?host={socket_dir}`. The authority host is `localhost`. The query `host` is the socket directory, and `socket_path()` is the file `.s.PGSQL.{port}` inside it. `postgres::Config`'s URL parser records the authority and then the query host, and tries them in that order, so a parsed URI connects to TCP 5432 before the child. The URI also omits the port. `MultiProcessOptions.port` defaults to 5432, and the client looks up `.s.PGSQL.{port}` in the directory it is given.
 
-Pool size follows the datasource pool settings. `MultiProcessOptions.max_connections` is the crate's own pool, and the API treats a value below 1 as 1. Postgres is started with `max_connections` equal to that pool size, plus 2, plus `extra_connections`. The host uses its own pool, so `max_connections` stays 1 and `extra_connections` is the host pool size. A checkout is then not rejected while the host pool still has a free slot.
+The driver builds `postgres::Config` from the username, the database, that port, and the socket directory (`host` of the directory, or `host_path` on `socket_path().parent()`), with `NoTls`. It does not parse the URI. Each pooled `postgres::Client` owns a `current_thread` runtime and drives it with `block_on` on connect, on every query, and on drop. The host does not pass in a Tokio handle and does not call `block_on`. Connect, query, and pool drop run on factory `std` threads. `Runtime` construction panics on a thread that is already inside a runtime, so the bridge that awaited `open_multi_process` has exited before `PostgresConnectionManager` connects, and `close` is not run on a thread that still holds the pool. Pool size is also a runtime count: one runtime per pooled connection, with memory and speed testing to follow.
 
-Embedded search uses the `search` schema on this same cluster. A second postmaster starts only when the search store is actually a different database: search config names another Postgres, or the entity datasource is MySQL (or another non-Postgres) and search stays embedded. A production configuration that names an external database for a store does not start a PGLite postmaster for that store.
+A transaction pins one checked-out client to the worker thread until commit or rollback. A call outside a transaction checks out and returns. `force-new` checks out a second client on that thread. A thread that already holds a client must not block in `r2d2::Pool::get()` for a connection another holder still has. Each pool's max size is at least the number of worker threads that can hold a connection from it, plus one spare, so one `force-new` does not wait on a holder. A second concurrent `force-new` on that same pool waits. The entity cluster and the overlay cluster are two pools, each with its own spare.
+
+Pool sizes and timeouts start at the Java datasource values, and the spare above is added when that value does not already cover it. `MultiProcessOptions.max_connections` is the crate's own pool, and the API treats a value below 1 as 1. Postgres is started with `max_connections` equal to that pool size, plus 2, plus `extra_connections`. The host uses `r2d2`, so the crate's `max_connections` stays 1 and `extra_connections` is the host pool size, spare included. A checkout is then not rejected while the host pool still has a free slot.
+
+Embedded search uses the `search` schema on this same cluster. A second postmaster starts only when the search store is actually a different database: search config names another Postgres, or the entity datasource is MySQL (or another non-Postgres) and search stays embedded. That second cluster is Unix only. On Windows the same configuration needs an external Postgres or OpenSearch for search. A production configuration that names an external database for a store does not start a PGLite postmaster for that store.
 
 ## Overlay
 
@@ -34,25 +38,23 @@ Embedded search uses the `search` schema on this same cluster. A second postmast
 
 `open_temp` cannot stand in for that. The process can open the in-process engine only once, and it cannot open it again after close.
 
-On Unix the overlay is a second multi-process cluster, started on the first `startTxCacheDb` and kept for the life of the process. Each overlay is a schema on that cluster. `close` drops the schema. Concurrent sims are concurrent schemas and concurrent connections. The data directory is a temp directory. One long-lived cluster avoids an initdb on every `enter_sim`. The overlay is not the entity cluster, so a sim schema is not stored in the entity data directory.
+On Unix the overlay is a second multi-process cluster, started on the first `startTxCacheDb` and kept for the life of the process. Each overlay is a schema on that cluster. `close` drops the schema. Concurrent sims are concurrent schemas and concurrent connections. The data directory is a temp directory. One long-lived cluster avoids an initdb on every `enter_sim`. The overlay is not the entity cluster, so a sim schema is not stored in the entity data directory. The schema starts empty. The driver does not copy entity tables into it. How a sim read sees entity rows stays with the Java HOLD/FLUSH port.
 
 ## Windows
 
-Windows development still has to start with no external database installed, and `open_multi_process` is not available there.
+PGLite is Unix only. `open_multi_process` is compiled for Unix, and the in-process engine is not a Windows stand-in. Windows is a lower priority platform. The `multiple-process` feature stays off on Windows builds.
 
-The Windows driver uses the one in-process engine for the whole embedded store: entity tables, the `search` schema, and overlay schemas. The crate's per-call lock serializes use. The host does not add a mutex, and it does not hold a lock across a transaction. Concurrent transactions on that database run one at a time. `force-new` is a savepoint on the single session, because a second connection cannot run beside the first.
+Startup fails when entities or search would need a PGLite postmaster. The error names that store and says to configure an external Postgres for it. OpenSearch satisfies search without a Postgres, so a Windows process with external Postgres or MySQL entities and an OpenSearch search store starts. A MySQL-only configuration is asked for an external Postgres only for the store that still needs one. Sim has no non-PGLite path. Entering sim on Windows fails, because the overlay cluster cannot start. Process startup does not fail only because sim exists in the product.
 
-A second in-process open does not succeed, so the Windows driver never tries to start a second engine. A workload that needs real concurrency, or a sim whose files are isolated from the entity data directory, uses an external Postgres. If a later `pglite-rs` supports multi-process on Windows, the Unix path becomes the Windows path.
+## Startup, shutdown, and tests
 
-## Blocking and tests
+`open_multi_process` and `close` are async. They are bridged once during factory startup and shutdown. That bridge's runtime has exited before the pool connects, and `close` runs where dropping the pool is safe. `connection_uri` and `socket_path` are sync reads. Per-query `DbDriver` methods are the checked-out `postgres::Client` driving its own runtime. The host does not call `open` or `open_temp`.
 
-Shared and overlay clusters are sockets, so their `DbDriver` methods use the Tokio handle. The in-process engine, used on Windows, is polled with `futures::executor::block_on` because the call completes when polled.
-
-A host test that needs more than one database uses multi-process clusters. The in-process engine opens once per process and cannot be reopened.
+A host test that needs more than one database uses multi-process clusters.
 
 ## What this does not change
 
 - HOLD, FLUSH, and `enter_sim` follow the Java framework at the time of the port. This plan is the lifecycle of the database under `TransactionCacheDb`.
 - The per-transaction `TransactionCache` stays an in-memory map.
-- External Postgres and MySQL drivers are SQLx pools. An external Postgres `DbDriver` blocks with the same Tokio handle as a PGLite cluster.
+- External Postgres uses the same sync `postgres::Client` pool as a PGLite cluster socket. External MySQL uses the sync `mysql::Pool`. There is no SQLx dependency.
 - Search still has its own logical store. On the default embedded cluster that store is the `search` schema. Config can place it on another Postgres.

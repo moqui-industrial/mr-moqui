@@ -28,7 +28,7 @@ The document model is already independent of the search engine. It stays.
 
 Definitions are in `framework/entity/EntityEntities.xml`. `EntityDataDocument` builds the maps. `EntityDataFeed` pushes them.
 
-- `DataDocument` names a primary entity, an `indexName` (a group name, today an alias), field paths, relationship aliases, conditions, links, and user groups. `manualDataServiceName` can add fields after the query. `manualMappingServiceName` has no callers and is dropped.
+- `DataDocument` names a primary entity, an `indexName` (a group name, today an alias), field paths, relationship aliases, conditions, links, and user groups. `manualDataServiceName` can add fields after the query. `manualMappingServiceName` stays. `ElasticFacadeImpl` calls it when the field is set and passes the generated mapping. Seed data does not set it.
 - A field path is `Rel:Rel:field`, or an expression with a required alias. Expressions run at index time. In MR-Moqui they are JavaScript, same as other expressions. `fieldType` overrides the dictionary type. `sortable=Y` on a text field keeps an unanalyzed copy for sort.
 - A relationship of type one is flattened into the parent object. A relationship of type many becomes an array of objects. MantleParty nests roles, identifications, contact mechs, user accounts, classifications, and notes. MantleSalesOrderItem nests issuances, and also stores header expressions (`itemSaleTotal`, `customerClassId`) computed from those children.
 - A `DataDocumentCondition` is either part of the entity query (`MantleSalesOrderItem` requires `vendorRoleTypeId = OrgInternal`) or a post-query check.
@@ -89,6 +89,8 @@ The aggregation tree is:
 - a `filter` aggregation (`term` or `terms`) wrapping those metrics. Product lines are `itemTypeEnumId = ItemProduct`. Discounts are a fixed list of item types. New customers are `isNewCustomer = Y`.
 - `sum` of a number on each element of a child array (`issuances.issuedSaleTotal`, `issuances.issuedCostTotal`). The mapping marks issuances `nested` and `include_in_root`, so the sum sees every child value. It is not a correlated nested aggregation.
 
+The histogram interval sent for a quarter is `1q`. The display count for a quarter is `intervalCount * 3`, and the search window is that display count plus the moving-average period count. A week with no explicit offset uses `firstDayOfWeek` against Monday, which is the Elastic default week start. The invoice histogram sets `min_doc_count: 1`. Postgres `date_bin`, or an equivalent bucket expression, has to reproduce the week offset, quarter buckets, and the empty buckets the histogram keeps. Newest-first order, the reverse for display, and the moving average stay in the service, as below.
+
 The four services are `get#SalesOrderSummary`, `get#SalesInvoiceSummary`, `get#SalesTopProduct`, and `get#InvoicesByCustomerClass`.
 
 `mantle.product.InventoryReportServices.get#InventoryProjectedInfo` does not run. The body imports `org.moqui.elasticsearch.ElasticSearchUtil`, and the block above it calls `search#CountBySource`, which `SearchServices.xml` records as removed. The inventory documents and the Mantle Inventory feed are real. The service is a rewrite onto `aggregate`: `terms` on `productId`, `sum` of the quantity fields, an optional `term` on `facilityId`, an optional range on a date. `ElasticSearchUtil` is not carried forward.
@@ -107,7 +109,7 @@ The `logging` datasource group uses `ElasticDatasourceFactory`. `ArtifactHit` is
 
 ### Client methods with no application caller
 
-`call`, `callFuture`, `makeRestClient`, `validateQuery`, multi-get, partial document update, and a separate alias-exists check have no application caller. Tools ViewDocument is `get` by index and id, then a pretty-print. That becomes get-by-id.
+`call`, `callFuture`, `makeRestClient`, multi-get, partial document update, and a separate alias-exists check have no application caller. `validateQuery` does: `search#DataDocuments` calls it and, on failure, adds the message "Invalid search" and returns before searching. The strict parser reports the bad clause, and that service still returns the danger message. Tools ViewDocument is `get` by index and id, then a pretty-print. That becomes get-by-id.
 
 ## API
 
@@ -257,7 +259,7 @@ get_document(document_id, id) -> body
 
 The feed itself stays. Entity create, update, and delete still register documents. The receive service calls `index_documents`. The delete service calls `delete_document`. Rebuild stays a batched read through `EntityDataDocument`.
 
-The feed writes on the same transaction as the entity change when the search store is that same database. That is the default embedded cluster, and it is an external Postgres that is also the entity database. Commit and rollback then cover the row and the document. When the search store is a different database (entity tables on MySQL, or a search URL that points at another Postgres), the feed runs after the entity transaction commits. There is no XA. A search failure after that commit leaves the document to be rebuilt.
+The feed writes on the same transaction as the entity change when the search store is that same database. That is the default embedded cluster, and it is an external Postgres that is also the entity database. Same database means one `DbDriver` and the transaction's pinned checkout, so the feed writes on that client. Commit and rollback then cover the row and the document. A second pool is a different database (entity tables on MySQL, or a search URL that points at another Postgres). The feed then runs after the entity transaction commits. There is no XA. A search failure after that commit is rebuilt by the existing `IndexDataFeedDocuments` job. OpenSearch is always this after-commit path.
 
 ## Postgres
 
@@ -294,7 +296,7 @@ Dates and timestamps in `body` are ISO-8601. Range comparisons in the API take t
 
 Text rank is `ts_rank` on the vectors the `Text` clause names. Filters are SQL `WHERE` and do not affect rank.
 
-The default is the `search` schema on the embedded entity cluster. When the entity datasource is MySQL or another non-Postgres, the default is a separate embedded PGLite cluster. Config may point the search store at an external Postgres, the same instance as the entities or another one. Placement and how many postmasters start are `plans/PgliteConcurrency.md`.
+The default is the `search` schema on the embedded entity cluster. When the entity datasource is MySQL or another non-Postgres, the Unix default is a separate embedded PGLite cluster. On Windows that cluster does not start, and search needs an external Postgres or OpenSearch. Config may point the search store at an external Postgres, the same instance as the entities or another one. Placement and how many postmasters start are `plans/PgliteConcurrency.md`. All Postgres traffic, including search SQL, goes through the synchronous drivers in `plans/Crate-Layout.md`. The default binary includes PGLite for the embedded search cluster. A custom build may omit it only when search is an external Postgres or OpenSearch.
 
 ## OpenSearch
 
@@ -364,4 +366,3 @@ DataDocument and DataFeed entity XML stay. Seed documents stay. Groovy expressio
 - A raw REST escape hatch on the facade. The OpenSearch compiler is the only place that builds HTTP paths.
 - Pipeline aggregations, percentiles, significant terms, composite aggregations, numeric histograms, and query-time scripts.
 - ElasticSearch version forks older than the shared 7+ / OpenSearch subset.
-- `manualMappingServiceName`. Nothing calls it.
