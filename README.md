@@ -25,3 +25,7 @@ Most of MR-Moqui is a port of the Java framework as it exists when the port begi
 
 1. **SearchFacade replaces ElasticFacade.** Postgres full-text and JSON are the default backend. OpenSearch is optional. Plan: [`plans/SearchFacade.md`](plans/SearchFacade.md).
 2. **qvt becomes server-static.** With `server-static` set for `qvt`, the server sends a data-free Vue template and the client merges data from `/actions` and from a separate form-list request. The attribute stays opt-in for this pass. Plan: [`plans/QvtServerStatic.md`](plans/QvtServerStatic.md).
+
+## Build order
+
+The port is bottom-up. The entity facade and the service facade are finished before the first gate, a data file load. Plan: [`plans/Implementation-Phases.md`](plans/Implementation-Phases.md).
