@@ -4,7 +4,7 @@
 
 This document captures the initial architecture direction for a Rust rewrite of Moqui Framework. It is the starting proposal for the new repository.
 
-**STATUS NOTE**: This is a very early proposal. Templating and XML Action handling are specified below: MiniJinja expands XML Actions and screen/form XML into JavaScript, and Liquid renders user-authored text. Screen render modes (what stays, what is dropped, and the html and qvt library plans) are specified in Screen Render Modes. The proposal is expected to be refined as the first components are built.
+**STATUS NOTE**: Templating, screen render modes, the crate cut, search, qvt server-static, PGLite concurrency, and context objects are specified. Templating is below: MiniJinja expands XML Actions and screen/form XML into JavaScript, and Liquid renders user-authored text. Screen render modes are in Screen Render Modes. The crate cut is `plans/Crate-Layout.md`. Search is `plans/SearchFacade.md`. Server-static qvt is `plans/QvtServerStatic.md`. Embedded-database concurrency and the sim overlay's database lifecycle are `plans/PgliteConcurrency.md`. What each environment can see, and which types are shared, is `plans/ContextObjects.md`. The method list on the server JavaScript host is a later plan. The proposal will still move as the first components are built.
 
 ## Repository
 
@@ -42,11 +42,13 @@ Components remain directories with a `component.xml` descriptor, discovered and 
 
 The framework is synchronous and multi-threaded, as Moqui is today. An `ExecutionContext` belongs to one thread. An HTTP request, an async service call, a scheduled job, and the other background workers each run on a thread with their own context. A call that waits (a database query, outbound HTTP, mail) blocks that thread and returns a value. The framework does not use `Future`, and it does not depend on Tokio.
 
-Worker threads that belong to the framework are ordinary threads started by the factory. The HTTP server lives in the host crate. It accepts connections on Tokio and hands each request to a worker thread that calls the framework and waits for the response. Transaction attributes (`ignore`, `force-new`, timeout) run on the calling thread: begin, commit, rollback, a savepoint, or a second connection. Details of the crate cut are in `plans/Crate-Layout.md`.
+Worker threads that belong to the framework are ordinary threads started by the factory. The HTTP server lives in the host crate. It accepts connections on Tokio and hands each request to a thread from that pool, which calls the framework and waits for the response. The host does not use Tokio's `spawn_blocking` pool for this. That pool's cap is independent of the datasource pool. Transaction attributes (`ignore`, `force-new`, timeout) run on the calling thread: begin, commit, rollback, a savepoint, or a second connection. Details of the crate cut are in `plans/Crate-Layout.md`.
 
 `service-call` with `async="true"` starts another thread and another `ExecutionContext`, as it does now. `async="distribute"` (run on any node in a cluster) is dropped. It is rarely used, and there is no cluster transport for it. The service-facade `distributed-factory` goes with it. Distributed cache invalidation stays a later hook.
 
 QuickJS is one runtime per `ExecutionContext`, used only on that context's thread. A function the script calls returns a value before the script continues.
+
+A WebSocket, an LLM stream, and an A2A stream stay in the host. The host owns the connection. A message, or a call that is not a stream, runs on a worker thread with its own `ExecutionContext`, outside the transaction, and returns a value. The connection does not keep a context for its whole life.
 
 ## Scripting Language: JavaScript via rquickjs
 
@@ -61,7 +63,7 @@ JavaScript is the scripting language. The engine is QuickJS-NG embedded through 
 ### Why rquickjs / QuickJS-NG
 
 - Small, embeddable, fast startup, and a clean Rust integration. Host functions are synchronous: the script calls, the call blocks, and it returns a value. Module loaders stay available.
-- Supports modern ECMAScript (modules, async, proxies, BigInt, and a large fraction of current language features). It is not required to track the absolute latest spec the week it ships. QuickJS-NG is adequate. TypeScript remains an optional authoring layer (transpiled by SWC or oxc) if longer scripts later want types. It is not required for expressions.
+- Supports modern ECMAScript (modules, proxies, BigInt, and a large fraction of current language features). Async functions exist in the language and are unused here. A host call returns before the script continues, and the framework has no event loop that would drain a promise. It is not required to track the absolute latest spec the week it ships. QuickJS-NG is adequate. TypeScript remains an optional authoring layer (transpiled by SWC or oxc) if longer scripts later want types. It is not required for expressions.
 - Heavier options (V8 via `rusty_v8`) were considered and set aside. Binary size, build complexity, and the fact that most script work is business logic rather than tight loops made the lighter engine the better fit. Pure-Rust engines (Boa and others) are not yet the right primary runtime for a large body of existing service code.
 
 ### What changes in expressions
@@ -88,7 +90,7 @@ Two semantic differences to watch during migration:
 
 The QuickJS context mimics the Groovy and FreeMarker context, so expression and script migration stays small. A script starts with the same injected objects the Java runtime puts there: `ec`, `context`, a service `result` where the current actions provide one, and the other objects that entry point injects by default. A screen template sees what the FreeMarker macros see today. The static helpers those scripts and generated actions call are there too, including `ObjectUtilities`, `CollectionUtilities`, and `StringUtilities`.
 
-Host values (`EntityValue`, `EntityList`, decimals, timestamps) expose the methods those scripts call. JDK types such as `BigDecimal` and `TreeSet` are small host helpers with the same call shape. A tighter sandbox on which framework calls a script may make is a later effort.
+Host values (`EntityValue`, `EntityList`, decimals, timestamps) expose the methods those scripts call. JDK types such as `BigDecimal` and `TreeSet` are small host helpers with the same call shape. Decimals stay host values and do not become JavaScript numbers. Groovy arithmetic on `BigDecimal` (`+`, comparison) is a migration hazard of the same kind as Elvis versus `??`. The server host those calls are aimed at is not specified yet. It is a later plan. A tighter sandbox on which framework calls a script may make is part of that same effort.
 
 ### Migration approach
 
@@ -98,7 +100,7 @@ A general Groovy-to-JavaScript transpiler is not planned, and a long-lived compa
 
 ## Templating
 
-FreeMarker currently serves two different purposes. MR-Moqui splits them across two engines.
+FreeMarker currently serves two different purposes. MR-Moqui splits them across two engines. What each engine is given, and what QuickJS and the browser see, is `plans/ContextObjects.md`.
 
 ### Code generation with MiniJinja
 
@@ -123,7 +125,7 @@ Emails, notifications, custom HTML fragments, and other user- or admin-authored 
 
 Liquid was designed so that untrusted or semi-trusted templates can be rendered safely. It is intentionally limited: output tags, a small set of logic tags, filters, and inclusion of other templates via `{% render %}`. There is no general scripting. liquid-rust aims at Shopify compatibility and lets the host register only the filters and tags it wants.
 
-Reusable pieces are snippets rather than FreeMarker-style macros. That is sufficient for this surface and safer. Custom filters provide Moqui-specific formatting, localization, and any limited context access that is explicitly allowed.
+Reusable pieces are snippets rather than FreeMarker-style macros. That is sufficient for this surface and safer. Custom filters provide Moqui-specific formatting, localization, and any limited context access that is explicitly allowed. That access is the snapshot in `plans/ContextObjects.md`.
 
 Liquid has a broad ecosystem (highlighters, editors, documentation, examples) because it is widely used beyond Shopify. That tool support is the reason to accept a second engine rather than using MiniJinja for everything.
 
@@ -152,17 +154,17 @@ Both crates are pure Rust and small. Liquid does not need to be a complete Shopi
 
 ### Why PGLite
 
-PGLite (`pglite-rs`) is an in-process Postgres fork. It links into the binary, needs no separate server install, and exposes both a direct Rust API and (on Unix) a socket that ordinary Postgres clients can use. It is the closest equivalent to H2’s “just start” experience while speaking real Postgres.
+PGLite (`pglite-rs`) links a Postgres fork into the binary and needs no separate server install. On Unix the shared database is a child postmaster started by `open_multi_process`, and ordinary Postgres clients use its socket. The in-process API (`open`, `open_temp`) is one backend, about 23 MB RSS for `open_temp`. It is the closest equivalent to H2’s “just start” experience while speaking real Postgres.
 
-For sim mode, `PGlite::open_temp()` creates a true in-memory database. Data is not written to disk and disappears when the instance is dropped. Measured footprint is on the order of 23 MB RSS. PGLite replaces H2 as the engine under the transaction cache and the sim-mode overlay. The behavior of both is a port of the Java framework as it stands when the port begins. The `llm-client` branch is expected to keep changing until then, so this proposal does not freeze those rules.
+`open_temp` writes a directory under the system temp dir and deletes it when the instance is dropped. The process can open that in-process engine only once. The sim overlay does not use `open_temp`. PGLite replaces H2 under `TransactionCacheDb`. The per-transaction `TransactionCache` stays an in-memory map, as in the Java framework. HOLD and FLUSH behavior are a port of the Java code at the time the port begins. The `llm-client` branch is expected to keep changing until then, so this proposal does not freeze those rules. How many engines start, and where an overlay lives, is `plans/PgliteConcurrency.md`.
 
-The side-process alternative (`postgresql_embedded`) was considered. It runs a real postmaster and is operationally similar to the existing OpenSearch sidecar. It does not offer a true in-memory mode (only an ephemeral data directory). Given that sim mode wants an in-memory overlay, and that a single engine for both the default embedded database and the overlay is simpler, PGLite is the choice. External Postgres remains the production path when configured.
+A separate embedded-server crate (`postgresql_embedded`) was considered. It is another child postmaster and another distribution to ship. PGLite already starts a postmaster from the binary that is linked in, and the same crate covers the Windows in-process fallback. External Postgres remains the production path when configured.
 
 ### Platform notes
 
-Deployments are overwhelmingly Linux. macOS and Windows matter primarily for development, and builds should work on all three. There is no WASM target. A `wasm32` build would have required the framework to give up threads, and Moqui uses threads for requests, async services, scheduled jobs, and other background work. That model carries forward. PGLite is the in-process engine for the embedded database and the in-memory sim overlay.
+Deployments are overwhelmingly Linux. macOS and Windows matter primarily for development, and builds should work on all three. There is no WASM target. A `wasm32` build would have required the framework to give up threads, and Moqui uses threads for requests, async services, scheduled jobs, and other background work. That model carries forward. The embedded database is PGLite: a multi-process cluster on Unix, and the one in-process engine on Windows.
 
-Shared embedded databases (the default entity database, and the default search database when it is also embedded) use PGLite's multi-process mode so each thread has its own connection. A sim overlay is a separate in-memory instance. Windows, where that multi-process mode is not available, is covered in `plans/PgliteConcurrency.md`. External Postgres remains the production database when one is configured.
+The default embedded database is one multi-process cluster, so each thread has its own connection. Embedded search is the `search` schema on that cluster. The sim overlay is a second cluster, one schema per `TransactionCacheDb`. Windows has no multi-process mode, so development there uses the single in-process engine for entity tables, the search schema, and overlay schemas. Details are in `plans/PgliteConcurrency.md`. External Postgres remains the production database when one is configured.
 
 ### Transactions
 
@@ -174,7 +176,7 @@ OpenSearch-free deployments are a day-one goal. Postgres full-text search and JS
 
 The search interface should be designed so that it is not locked to the current ElasticFacade shape. If a cleaner interface falls out of supporting both a Postgres implementation and an optional OpenSearch implementation, that interface is part of the MR-Moqui migration, not a later retrofit. OpenSearch remains available as an optional backend for deployments that want it. It is no longer required.
 
-For Postgres-backed search, search-specific tables will use the embedded PGLite database by default, and maybe configured to use an external Postgres instance (different config from EntityFacade datasource, may point to same or different pgsql instances).
+For Postgres-backed search, the default is the `search` schema on the embedded PGLite cluster that holds entity data. Config may point the search store at an external Postgres, the same instance as the entities or another one. When the entity datasource is not Postgres, embedded search is its own PGLite cluster. See `plans/SearchFacade.md` and `plans/PgliteConcurrency.md`.
 
 The interface, the feature set taken from current callers, and the two backends are specified in `plans/SearchFacade.md`.
 
@@ -275,7 +277,7 @@ The other qvt libraries:
 
 ## Sim Mode
 
-An ExecutionContext can be placed in sim mode so that nothing permanent is written. Settings on the context control this, as they do in the Java framework. The overlay database is an in-memory PGLite instance (`open_temp`) in place of the in-memory H2 overlay. Transaction-cache and sim-mode behavior, including `enter_sim` and the other `llm-client` work, are ported from the Java code at the time the port begins. How the PGLite engine is shared across threads is `plans/PgliteConcurrency.md`.
+An ExecutionContext can be placed in sim mode so that nothing permanent is written. Settings on the context control this, as they do in the Java framework. `TransactionCacheDb` is a PGLite schema created for that context and dropped on close, in place of the private in-memory H2 database. On Unix the schema is on the overlay cluster. On Windows it is on the single in-process engine. The per-transaction `TransactionCache` stays a map. HOLD, FLUSH, and `enter_sim` are ported from the Java code at the time the port begins. The database lifecycle is `plans/PgliteConcurrency.md`.
 
 ## Component and Application Migration
 
@@ -295,7 +297,7 @@ An ExecutionContext can be placed in sim mode so that nothing permanent is writt
 | Groovy migration | AI-assisted. No long-lived compatibility layer. |
 | Embedded database | PGLite (`pglite-rs`) as default configuration |
 | Production database | External Postgres, MySQL, etc when configured |
-| Sim overlay | In-memory PGLite (`open_temp`) in place of H2. Behavior is a port of the Java framework at the time of the port. |
+| Sim overlay | A PGLite schema per `TransactionCacheDb`, on its own cluster on Unix. Behavior is a port of the Java framework at the time of the port. |
 | Search | Postgres FTS + JSON as a first-class, OpenSearch-free path. Interface designed day one, not required to match ElasticFacade. |
 | Transactions | Local only. No XA. |
 | HTTP | axum in the host. Framework calls are synchronous. |
@@ -310,4 +312,4 @@ An ExecutionContext can be placed in sim mode so that nothing permanent is writt
 | User-authored templates | Liquid (`liquid` crate), sandboxed by design |
 | Security | Moqui artifact authz on Rust primitives. No Shiro. |
 
-This is the initial proposal. It is expected to be refined as the first components (entity loader, JavaScript context bridge, PGLite-backed EntityFacade, and a minimal screen renderer) are built.
+The server JavaScript host is the next specification. The first components to build are still the entity loader, the JavaScript context bridge, a PGLite-backed EntityFacade, and a minimal screen renderer.

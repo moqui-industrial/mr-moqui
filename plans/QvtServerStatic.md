@@ -8,9 +8,9 @@ The Java behavior this is built on lives in `../moqui`: `ScreenDefinition` (`ser
 
 ## Decision
 
-`server-static` remains a list of render modes, or `all`. A screen is server-static for `qvt` only when the attribute includes `qvt` or `all`, or when the screen is the existing automatic case (widgets are only `subscreens-panel`, `subscreens-menu`, and `subscreens-active`). Forms inherit the screen value and can override it. This pass does not make `qvt` static by default. If the compatibility reports are clean, a later pass can invert that so `qvt` is server-static unless the attribute says otherwise.
+`server-static` remains a list of render modes, or `all`. A screen is server-static for `qvt` only when the attribute includes `qvt` or `all`, or when the screen is the existing automatic case (widgets are only `subscreens-panel`, `subscreens-menu`, and `subscreens-active`). Forms inherit the screen value and can override it. This pass does not make `qvt` static by default. A later pass can invert that so `qvt` is server-static unless the attribute says otherwise. That waits on the compatibility reports, read with the limit in Compatibility check.
 
-When the active mode is in the set, the qvt macros emit a Vue template with no request data in it. The response uses the existing `screen-server-static` cache header (`max-age=86400, must-revalidate, public`). The client caches that component by screen path, as `loadComponent` already does when `Cache-Control` contains `max-age`. The cache entry is the template. It does not vary by user, locale, or parameters. Literal strings are localized in the browser.
+When the active mode is in the set, the qvt macros emit a Vue template with no request data in it. The response uses the existing `screen-server-static` cache header (`max-age=86400, must-revalidate, public`). The client caches that component by screen path, as `loadComponent` already does when `Cache-Control` contains `max-age`. The cache entry is the template. It does not vary by user, locale, or parameters. Literal strings are localized in the browser. `GET {screen}/actions` and `GET {screen}/actions/{formName}` are per user. Their responses are `Cache-Control: private, no-store`.
 
 When the active mode is outside the set, qvt stays a server merge, as the current macros do: values expanded into the template, form fields seeded from `fields-initial`. `html`, `text`, `csv`, `xml`, and `xsl-fo` stay server merges. Marking one of those modes server-static still sends the cache header, and it is only valid for output that does not vary. The automatic subscreens shell is that case. A content screen marked `server-static="html"` is a stale-cache bug, and the compatibility report calls it out.
 
@@ -21,7 +21,7 @@ The client loads two kinds of JSON after the template.
 
 The context object keeps the shape expressions already walk. The browser adds a separate `ec` host beside that tree. `ec.l10n` formatting, a small `ec.user` snapshot, and `ec.resource.expand` are implemented in the browser. Any other property of `ec`, and any use of `sri`, is absent and throws when an expression touches it.
 
-The schema does not grow a second template language and does not grow attributes that mark an expression as client-safe. Compatibility is a runtime check.
+The schema does not grow a second template language and does not grow attributes that mark an expression as client-safe. Compatibility is a static scan of each transcribed expression, plus a render that evaluates every widget expression against real actions. A clean report is necessary before a screen is marked `server-static="qvt"`. It is not sufficient to invert the default: the render only sees the rows that run produced.
 
 ## Screen package and form-list package
 
@@ -29,7 +29,7 @@ Both requests walk the screen path and run `always-actions` and `pre-actions` on
 
 `GET {screen}/actions` then runs the root section actions and the actions of named sections and of `section-iterate`. Section-iterate runs per entry on the server, and the list in the package is the list after those per-entry actions. The response body is that context, unwrapped the way `ContextJavaUtil.unwrapMap` unwraps it: entity values become plain maps, and `EntityFind`, the execution context, the screen renderer, and the context stack are dropped. Credential parameters are stripped with the same rules as the other JSON responses.
 
-Before the body is written, every form-list on the screen is removed from it. The removed keys are the form's `@list` name and the pagination keys the renderer would have set: `{list}Count`, `{list}PageIndex`, `{list}PageSize`, `{list}PageMaxIndex`, `{list}PageRangeLow`, `{list}PageRangeHigh`. A list that screen actions prepared for a form-list is still prepared, and then dropped from this response. A `section-iterate` whose list name is not a form-list `@list` stays in the package. Tree node JSON stays on `GET {screen}/actions/{treeName}`.
+Before the body is written, every form-list on the screen is removed from it. The removed keys are the form's `@list` name and the pagination keys the renderer would have set: `{list}Count`, `{list}PageIndex`, `{list}PageSize`, `{list}PageMaxIndex`, `{list}PageRangeLow`, `{list}PageRangeHigh`. A list that screen actions prepared for a form-list is still prepared, and then dropped from this response. A `section-iterate` whose list name is not a form-list `@list` stays in the package. A `section-iterate` whose list name is a form-list `@list` loses that list from the screen package, and the compatibility report records it, the same way it records a label outside the form-list that reads the list. Tree node JSON stays on `GET {screen}/actions/{treeName}`.
 
 `GET {screen}/actions/{formName}` builds that one list.
 
@@ -45,7 +45,7 @@ Widget lookups that the browser host cannot do are resolved while building the p
 - `entity-options` are resolved on the server. The option list is stored under a key the macro reserves for that field. `list-options` that name a list already in the context are left as that list. The template evaluates `@key` and `@text`.
 - `<set>` inside a field runs on the server during the request that owns the scope (the screen package for a form-single or a loose widget, the form package for a form-list row or header). The template receives the map after those sets.
 
-Running the screen actions for both requests means a screen whose actions fill a form-list pays for that work twice. This pass accepts that. A later pass can skip list-producing work on the screen request.
+Running the screen actions for both requests means a screen whose actions fill a form-list pays for that work twice. This pass accepts that cost. The same run executes side effects twice: a write, a send, or a message appended from `always-actions` or `pre-actions` happens on the screen request and again on the form request, and the form request does not require the screen request to have run first. A screen with those side effects is unsafe to mark `server-static="qvt"` until the form request stops repeating that work. The compatibility report records actions in those blocks that write, send, or append a message. A later pass can skip list-producing work on the screen request, and that is the pass that removes the double side effect.
 
 The form-list header, order-by, page size, and the CSV, text, and PDF links bind to the form package. A label outside the form-list that reads `{list}Count` or the list itself is reported by the compatibility check. Those keys exist on the form scope.
 
@@ -67,7 +67,7 @@ Formatting that the server applies inside `expand` and inside display widgets is
 
 Links are transcribed as a path plus the `<parameter>` elements, evaluated against the scope. The server still enforces artifact authz on navigation and on the transition. This pass does not bake `disableLink` into the template, and it does not add a permission map to the package. A link the user may not use is still rendered. The server rejects the request.
 
-`dynamic-container` stays a client fetch of a server-rendered fragment. The element in the static template is only the URL. `include-screen` of another static screen is a child component. That child loads its own template and its own `/actions`. `share-scope="true"` passes the parent package into the child scope.
+`dynamic-container` stays a client fetch. The element in the static template is the URL. The fragment's cache header is the signal. A server-static inner screen sends the `screen-server-static` header, and the client treats the body as a template and loads that screen's `/actions`. An inner screen that is not server-static omits that header, and the client compiles the body as a server-merged qvt fragment. `include-screen` of another static screen is a child component. That child loads its own template and its own `/actions`. `share-scope="true"` passes the parent package into the child scope. The child's own package is pushed on top: a child key hides a parent key of the same name, and parent keys the child does not set stay visible.
 
 `dynamic="true"`, and a form whose `extends`, service name, or entity name is an expression, rebuild the widget tree from request data. There is no single template to cache. The qvt response for that screen stays a server merge, the static cache header is withheld, and the compatibility report says why. DbForm and `screen-extend` are configuration. They are part of the resolved definition, and the cache identity includes that resolved definition so a form edited in the database is not served as the previous template.
 
@@ -84,13 +84,13 @@ The browser `ec` is a small object implemented in the qvt client runtime. It is 
 | `ec.l10n.formatCurrency` | Formats a currency amount, with the currency symbol. |
 | `ec.l10n.formatCurrencyNoSymbol` | Formats a currency amount, without the symbol. |
 | `ec.user.userId`, `username`, `locale`, `timeZone` | The logged-in session. |
-| `ec.user.userAccount` | Plain account fields the session already holds (`partyId`, `emailAddress`, `userFullName`, and the other plain columns). |
+| `ec.user.userAccount` | `partyId`, `emailAddress`, `userFullName`, plus the session locale and time zone. Credential columns (`currentPassword` and the other password fields) stay on the server. |
 | `ec.user.getPreference` | Reads a preference from the snapshot loaded with the session. |
-| `ec.resource.expand` | Localizes a string under the server's length rule, then evaluates its expressions against the current scope plus the extra map argument. |
+| `ec.resource.expand` | Localizes a string under the server's length rule, then evaluates its expressions against the current scope plus the extra map argument. Those expressions run under this same restricted host. A string that calls `ec.entity` or `sri` throws the way a widget expression does. |
 
 Anything else read from `ec` throws in the browser. That includes `ec.entity`, `ec.web`, `ec.context`, `ec.resource` methods other than `expand`, `ec.user` methods other than the reads above, and `sri`. An expression that calls `ec.entity.find`, `ec.web.getRequest`, or `sri.buildUrl` is a screen bug for server-static mode. The fix is to move that work into actions, or into the package prep above, so the template reads a value that is already on the context.
 
-`ec.resource.expand` expands strings. It does not load resources. `ec.resource.getLocationText` stays unsupported.
+`ec.resource.expand` expands strings under the restricted host. It does not load resources, and it does not call the server to evaluate an expression. `ec.resource.getLocationText` stays unsupported.
 
 ## Compatibility check
 
@@ -102,9 +102,9 @@ Two places use the wrapper.
 
 The qvt macros, while emitting a server-static template, inspect each expression they transcribe. A call they can see that is outside the host is recorded. This pass is static. It misses a method chosen at runtime.
 
-The full check renders the screen in a mode that walks the whole widget tree and evaluates every expression. `html`, or `qvt` with server-static forced off, both do that. The run is a screen-facade tool, not part of an ordinary user request. It uses real actions so lists, conditions, and rows actually execute, and the wrapper around widget evaluation. Each throw is caught, recorded, and the render continues. Macros also record server-only work they still perform on that path when the result would have to be baked into a static template and is not covered by package prep: `disableLink`, a `display-entity` or `entity-options` lookup that the package step does not handle, and a URL that can only be built by `sri` from request state. The tool logs one report per screen: location, mode, and each violation.
+The full check renders the screen in a mode that walks the whole widget tree and evaluates every expression. `html`, or `qvt` with server-static forced off, both do that. The run is a screen-facade tool, not part of an ordinary user request. It uses real actions so lists, conditions, and rows actually execute, and the wrapper around widget evaluation. Each throw is caught, recorded, and the render continues. Macros also record server-only work they still perform on that path when the result would have to be baked into a static template and is not covered by package prep: `disableLink`, a `display-entity` or `entity-options` lookup that the package step does not handle, a URL that can only be built by `sri` from request state, and a `section-iterate` whose list name is a form-list `@list`. The same tool reads `always-actions` and `pre-actions` for `service-call`, entity create, update, and delete, and message elements. Those are recorded as side effects. The wrapper stays off for them, because data prep is allowed to do that work. The record is what keeps that screen off server-static. The tool logs one report per screen: location, mode, and each violation.
 
-A clean report means the screen can be marked `server-static="qvt"` and the template will evaluate in the browser. The report is the input to the later decision to invert the default.
+A clean report means this run found no violation, so the screen can be marked `server-static="qvt"` for the data that was rendered. The render only executes rows the actions produced, and the static scan misses a method chosen at runtime, so a clean report is not a proof that every future row is safe. Inverting the default waits on reports for the screens we care about, read with that limit. The report also names screens whose `always-actions` or `pre-actions` write, send, or append a message. Those stay off server-static until the form request stops repeating that work.
 
 ## Current Java behavior the port keeps
 
@@ -120,4 +120,4 @@ Java today still merges data into a template it then marks cacheable if the attr
 
 ## Later
 
-Inverting the default, so `qvt` is server-static unless the attribute excludes it, waits on compatibility reports for the screens we care about. A greyed-out link for `disableLink` waits on the same reports. If they show that the visual state matters, the form or screen package gains an explicit permitted flag per link. It is not part of this pass.
+Inverting the default, so `qvt` is server-static unless the attribute excludes it, waits on compatibility reports for the screens we care about, read with the limit above. A greyed-out link for `disableLink` waits on the same reports. If they show that the visual state matters, the form or screen package gains an explicit permitted flag per link. It is not part of this pass. Skipping the repeated screen actions on the form request is the same kind of later pass.

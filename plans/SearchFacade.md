@@ -8,7 +8,7 @@ This follows `plans/Architecture-Proposal.md` (Search) and `plans/Crate-Layout.m
 
 `SearchFacade` is not a port of `ElasticFacade`. `ElasticFacade` takes ElasticSearch JSON maps and posts them. Mapping that JSON onto Postgres would freeze the Elastic query language into the framework. The facade sits one layer above that. Callers pass a query tree and an aggregation tree. Each backend compiles those trees.
 
-Postgres is the default backend. The search store is embedded PGLite, or an external Postgres named in search config. That store is independent of the entity datasource. Entities may live in MySQL. Search documents still live in Postgres. There is no MySQL search backend.
+Postgres is the default backend. When the entity database is the embedded PGLite cluster, search documents live in the `search` schema on that same cluster. Config may name an external Postgres instead, the same instance as the entities or another one. When the entity datasource is not Postgres (MySQL, for example), embedded search is its own PGLite cluster. There is no MySQL search backend. The store is independent of a non-Postgres entity datasource.
 
 OpenSearch is one optional HTTP backend. It speaks the shared `_search` and `_bulk` subset that current OpenSearch and ElasticSearch 7+ have in common. The runtime already ships OpenSearch and OpenSearch Dashboards 3.4. One client covers both products for this subset. The ElasticSearch 6 and pre-7 branches in `ElasticFacadeImpl` (`interval` versus `calendar_interval`, old point-in-time paths, document types) stop here.
 
@@ -205,7 +205,7 @@ unit = Day | Week | Month | Quarter | Year
 
 `DateHistogram` buckets have `key` (bucket start, as a timestamp) and `key_display` (the formatted label, today's `key_as_string`). `offset` is the week-start shift. Quarter is a three-month bucket, which is what the sales service already does by expanding quarter into months and using interval `1q` only when it really wants a quarter.
 
-`Terms` orders by bucket key or by a named metric. `CountDistinct` is an integer. Postgres uses `count(distinct …)`, which is exact, so the API has no precision threshold. The OpenSearch compiler may send `precision_threshold` on its own. Callers do not.
+`Terms` orders by bucket key or by a named metric. `CountDistinct` is an integer. Postgres uses `count(distinct …)`, which is exact, so the API has no precision threshold. The OpenSearch compiler may send `precision_threshold` on its own. Callers do not. OpenSearch cardinality is then approximate, and the integer the caller sees can differ between backends. The sales summaries are the callers that notice.
 
 A `Sum` or `CountDistinct` field may be a root field or a number on each element of a child array. The aggregate is over those numbers. `issuances.issuedSaleTotal` is a sum of child numbers. It is not a `Child` query and it is not a nested aggregation.
 
@@ -257,9 +257,11 @@ get_document(document_id, id) -> body
 
 The feed itself stays. Entity create, update, and delete still register documents. The receive service calls `index_documents`. The delete service calls `delete_document`. Rebuild stays a batched read through `EntityDataDocument`.
 
+The feed writes on the same transaction as the entity change when the search store is that same database. That is the default embedded cluster, and it is an external Postgres that is also the entity database. Commit and rollback then cover the row and the document. When the search store is a different database (entity tables on MySQL, or a search URL that points at another Postgres), the feed runs after the entity transaction commits. There is no XA. A search failure after that commit leaves the document to be rebuilt.
+
 ## Postgres
 
-Schema `search`, so the tables sit beside entity tables when they share an instance. One table per DataDocument. The table name is the physical document name (`mantle_party`).
+Schema `search`, so the tables sit beside entity tables on the default embedded cluster and whenever both stores are the same Postgres. One table per DataDocument. The table name is the physical document name (`mantle_party`). When search is its own cluster, the schema is still `search`.
 
 Each table has:
 
@@ -292,7 +294,7 @@ Dates and timestamps in `body` are ISO-8601. Range comparisons in the API take t
 
 Text rank is `ts_rank` on the vectors the `Text` clause names. Filters are SQL `WHERE` and do not affect rank.
 
-Default database is the embedded PGLite, including when the entity datasource is MySQL. Config may point the search store at an external Postgres, the same instance as the entities or another one.
+The default is the `search` schema on the embedded entity cluster. When the entity datasource is MySQL or another non-Postgres, the default is a separate embedded PGLite cluster. Config may point the search store at an external Postgres, the same instance as the entities or another one. Placement and how many postmasters start are `plans/PgliteConcurrency.md`.
 
 ## OpenSearch
 
@@ -324,7 +326,7 @@ Mappings follow `makeElasticSearchMapping`. Many-relationships stay `type: neste
 </search-facade>
 ```
 
-`backend` defaults to `postgres`. With no `postgres` element the store is embedded PGLite. With `backend="opensearch"` the cluster element is required and the Postgres search store is not opened.
+`backend` defaults to `postgres`. With no `postgres` element, tables live in the `search` schema of the embedded entity cluster, or on a dedicated embedded cluster when the entity datasource is not that Postgres. With `backend="opensearch"` the cluster element is required and the Postgres search store is not opened.
 
 Service parameters named `clusterName` go away. There is one backend. The `logger` cluster name goes away with the logging entity group.
 

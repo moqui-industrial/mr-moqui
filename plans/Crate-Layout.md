@@ -56,9 +56,9 @@ There is no WASM target. `wasm32-wasip1` and a browser build are out of scope. T
 
 `moqui-core` uses `std::thread`. The factory starts the worker threads. "Which jobs are due" and the thread that sleeps and runs them both live in core. An async service call starts another thread and another context. Core may use `std::fs` and `std::time`.
 
-`moqui-core` does not depend on Tokio, axum, SQLx, or `pglite-rs`. Those crates are async. Calling them from a facade would turn entity finds, service calls, and screen renders into futures, and a QuickJS host callback cannot suspend. The host implements the blocking traits and blocks on the async clients inside the driver or the server.
+`moqui-core` does not use Tokio, axum, SQLx, or `pglite-rs` in its API. Calling those from a facade would turn entity finds, service calls, and screen renders into futures, and a QuickJS host callback cannot suspend. The host implements the blocking traits and blocks on the async clients inside the driver or the server. The `http` feature on `moqui-lib` links blocking `reqwest`, which starts a runtime of its own. That runtime is not the axum runtime, and core does not call the axum handle for outbound HTTP.
 
-The axum handler accepts the connection on Tokio and calls the framework on a worker thread (`spawn_blocking`, or the same idea). It waits for the response. It does not await a framework future.
+The axum handler accepts the connection on Tokio and hands the request to a thread from the factory's worker pool. It waits for the response. It does not await a framework future, and it does not use Tokio's `spawn_blocking` pool. That pool's cap is independent of the datasource pool.
 
 ## moqui-lib
 
@@ -74,7 +74,7 @@ The one place the current code cheats is `RestClient.refuseIfSim()`, which calls
 | `object` | `ObjectUtilities` | Field coercion: decimals, timestamps, booleans, strings. `rust_decimal` and a date-time crate live here. |
 | `string` | `StringUtilities` | Encode, decode, pretty-print, masks. Groovy class-name cleanup is not ported. |
 | `collection` | `CollectionUtilities` | Map and list helpers the XML and entity code actually use. |
-| `context_stack` | `ContextStack` | Stack of maps for variable scope. |
+| `context_stack` | `ContextStack` | Stack of maps for variable scope. No engine trait. What each environment sees is `plans/ContextObjects.md`. |
 | `env` | `SystemBinding.getPropOrEnv` and `expand` | Property and environment lookup, and `${name}` expansion against those. This is string replacement, not a script engine. Context expansion (`ResourceFacade.expand`) stays in core. |
 | `etl` | `SimpleEtl`, `FlatXmlExtractor` | Extract, transform, load pipeline. The entity data loader in core uses it. |
 | `topic` | `SimpleTopic` | In-process publish. |
@@ -83,7 +83,7 @@ The one place the current code cheats is `RestClient.refuseIfSim()`, which calls
 | `http` | new | `HttpClient` trait. |
 | `rest` | `RestClient` | Blocking client. Feature `http`. |
 
-`RestClient` is the proof that lib is useful alone: URI building, headers, JSON, retry, timeout, streaming, multipart. The `http` feature turns on `reqwest` with rustls, using the blocking client. A lib-only program can leave the feature off. `moqui-core` enables it and uses `RestClient` by default. A test, or a deployment with outbound HTTP disabled, passes another `HttpClient`. The sim-mode check stays at the framework caller, as a predicate, as described above.
+`RestClient` is the proof that lib is useful alone: URI building, headers, JSON, retry, timeout, streaming, multipart. The `http` feature turns on `reqwest` with rustls, using the blocking client. That client runs on the runtime it starts itself. A call from a framework worker does not use the axum `Handle::block_on`. A lib-only program can leave the feature off. `moqui-core` enables it and uses `RestClient` by default. A test, or a deployment with outbound HTTP disabled, passes another `HttpClient`. The sim-mode check stays at the framework caller, as a predicate, as described above.
 
 URL helpers, query-string handling, HMAC, and content-type sniffing from `WebUtilities` live in lib. The servlet containers, Jetty client, and session objects in that class are not ported.
 
@@ -106,14 +106,14 @@ A trait is used when conf selects an implementation, or when the implementation 
 |---|---|
 | `DbDriver` | Replaces `EntityDatasourceFactory` and the JDBC half of `TransactionInternal`. PGLite, external Postgres, and MySQL implement it in `moqui-host`. The methods block and return rows. Later databases use the same trait. |
 | `HttpClient` | Defined in lib. Core uses the blocking `RestClient` unless a test or conf supplies another. Outbound HTTP with no client returns a clear error. |
-| `ScriptRunner` | Conf can name a runner. The built-in one is QuickJS-NG via `rquickjs`. |
-| `TemplateRenderer` | Conf can name a renderer. Built-ins are MiniJinja (code generation) and Liquid (user text). |
 | `ServiceRunner` | Entity-auto, script, and remote runners are built in. Remote runners call `HttpClient`. |
-| `SearchBackend` | Postgres full-text SQL is in core. An OpenSearch mapping that only builds HTTP bodies can live here and use `HttpClient`. |
+| `SearchBackend` | Postgres SQL for the query and aggregation trees is in core. An OpenSearch mapping that only builds HTTP bodies can live here and use `HttpClient`. |
 | `LlmProtocol`, `LlmTool` | More than one protocol and many tools. |
 | `PdfRenderer` | Optional, and later. XSL-FO output is produced here. A PDF engine is a future effort, with the tool components. See the architecture proposal. |
 
 The cache facade uses `moka` directly. Outbound mail uses `lettre` directly. Neither is a trait. Inbound SMTP is a listening server and stays a host feature.
+
+QuickJS-NG (`rquickjs`) is the script runner. There is one scripting language, so conf does not select a runner. MiniJinja expands framework XML into JavaScript or HTML. Liquid renders user-authored text and is the sandbox boundary. Those are two engines in `template`, not one trait an operator swaps. The templating split is `plans/Architecture-Proposal.md`. What each environment sees is `plans/ContextObjects.md`.
 
 `ExecutionContext` and `ExecutionContextFactory` are structs. The host builds the factory and passes the trait objects implemented in the host (`DbDriver`, and `PdfRenderer` when a renderer exists). Facades are fields. There is no `Moqui.getExecutionContextFactory()` global inside lib or core. The binary may keep a process-wide factory for the CLI. The factory starts the framework's worker threads.
 
@@ -123,7 +123,7 @@ The cache facade uses `moka` directly. Outbound mail uses `lettre` directly. Nei
 
 `context` holds the factory and the facades that are not large enough to be their own directory: artifact execution, cache, l10n, logger (over `tracing`), message, notification, resource (the `component://` scheme and the facade), transaction, user, web, conf loading, and component discovery.
 
-`script` is the QuickJS runner. `template` is MiniJinja and Liquid.
+`script` is the QuickJS runner. `template` is MiniJinja and Liquid. The values each one sees are `plans/ContextObjects.md`.
 
 `entity` holds definitions, values, the condition tree, find, SQL rendering, the dialect profiles, the `DbDriver` trait, ECAs, the data loader and writer, the entity cache, feeds, and dynamic views. SQL text is core. Opening a connection is host.
 
@@ -131,7 +131,7 @@ The cache facade uses `moka` directly. Outbound mail uses `lettre` directly. Nei
 
 `screen` holds definitions, forms, trees, URL info, and the MiniJinja expansion to HTML and to client JavaScript.
 
-`search` is the new facade from the architecture proposal, not a port of `ElasticFacade`. The API is `plans/SearchFacade.md`. Postgres query and aggregation SQL is in core. OpenSearch request bodies live here when they are just HTTP. Starting the OpenSearch process does not. Search tables stay on PGLite or an external Postgres, including when the entity datasource is MySQL.
+`search` is the new facade from the architecture proposal, not a port of `ElasticFacade`. The API is `plans/SearchFacade.md`. Postgres query and aggregation SQL is in core. OpenSearch request bodies live here when they are just HTTP. Starting the OpenSearch process does not. The default embedded search store is the `search` schema on the entity cluster. Search tables move to their own PGLite cluster, or to an external Postgres, when config places them somewhere else, including when the entity datasource is MySQL.
 
 `llm` holds the client, conversation, protocol encoding, tool loop, and `a2a`. Provider calls go through `HttpClient`.
 
@@ -165,13 +165,13 @@ The dialect profile is the `<database>` block Moqui already has in `MoquiDefault
 
 `DbDriver` is the execution boundary: connect, begin, commit, rollback, savepoint, execute, query. Rows come back as plain values. The driver does not know entity definitions. The datasource conf selects the driver at runtime.
 
-Search stays the path from the architecture proposal. Search tables use embedded PGLite by default, or an external Postgres when configured. That is independent of which database holds entity data.
+Search stays the path from the architecture proposal. By default, search tables are the `search` schema on the embedded entity cluster. They use their own PGLite cluster when the entity datasource is not that Postgres, and an external Postgres when search config names one. That store is independent of a non-Postgres entity datasource.
 
 Initial drivers, all in `moqui-host` and all enabled in the default binary:
 
 | Driver | Role | Dialect profile |
 |---|---|---|
-| PGLite (`pglite-rs`) | Default when no external database is configured, and the sim-mode overlay (`open_temp`). Shared databases use multi-process mode. See `plans/PgliteConcurrency.md`. | `postgres` |
+| PGLite (`pglite-rs`) | Default entity cluster when no external database is configured. Embedded search is the `search` schema on that cluster. The sim overlay is a second cluster, one schema per `TransactionCacheDb`. See `plans/PgliteConcurrency.md`. | `postgres` |
 | SQLx Postgres | External Postgres | `postgres` |
 | SQLx MySQL | External MySQL and MariaDB | `mysql8`, and the older `mysql` profile |
 
