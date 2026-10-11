@@ -1,0 +1,238 @@
+# License Review
+
+Reviewed 2026-10-11. The repository has no `Cargo.toml` yet, so this is a review of the planned dependency set in `plans/Architecture-Proposal.md`, `plans/Crate-Layout.md`, and `plans/EmbeddedPostgres.md`, resolved as a Linux `x86_64-unknown-linux-gnu` crate graph, plus the theseus Postgres 18.6.0 archive those plans pin. It reads the published license terms. It is not a legal opinion.
+
+The framework license stays what Moqui Java uses. `LICENSE.md` is CC0 1.0 plus a patent grant adapted from Apache-2.0. CC0 section 4(a) waives copyright and withholds patents, so the grant is part of the license, not a preface. That grant covers Moqui's own code. It does not relicense a dependency, and a dependency's license does not become CC0 because the binary is ours.
+
+## What "linked" means here
+
+GPL-style copyleft treats a static link as one combined work. Rust's default is a static link: every normal crate dependency is an rlib inside the `moqui` binary. A component written in Rust that depends on `moqui-lib`, `moqui-core`, or `moqui-host` is in that same binary. That is the case this review is for. A later GPL, AGPL, or SSPL crate anywhere in that graph would cover the customized binary, including the customer's Rust.
+
+Four other relationships are not that link.
+
+- A system library loaded dynamically by the `moqui` binary. On GNU Linux that is glibc (`LGPL-2.1`, the usual system-library case). On musl it is the MIT libc, often static. This is every Rust Linux binary, and it does not relicense the program.
+- A child process. The postmaster is started and spoken to over a socket. Chromium is started and spoken to over the DevTools Protocol. The Rust code does not link either one.
+- Bytes of that child stored inside the binary and extracted at startup. That is distribution of the child, plus aggregation in one file. It is not a static link of the Rust code. The license of each file in the archive still applies to that file.
+- A file the browser loads, and JavaScript, templates, and XML that QuickJS or the screen engine interprets. Those are separate works. Shipping them does not link them into the binary. Their license does not become the binary's license, and the binary's license does not become theirs.
+
+The rule that follows:
+
+| Where it lives | Accept | Keep out |
+|---|---|---|
+| Static graph of the `moqui` binary | MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD, Unlicense, Zlib, BSL-1.0, PostgreSQL, Unicode-3.0, CDLA-Permissive-2.0, CC0-1.0, MIT-0, and `AND` combinations of those. `Apache-2.0 WITH LLVM-exception` is an extra grant on top of Apache and is accepted by taking the Apache or MIT alternative. | GPL, AGPL, LGPL, SSPL, EUPL, OSL, MPL, EPL, CDDL, BUSL, Elastic License 2.0, CC-BY-SA, and a proprietary library. |
+| Payload we embed and exec | Same permissive set, file by file. | A GPL library inside the archive, even when only a tool we never run is linked to it. |
+| Browser file we serve | Permissive, as its own file. LGPL only when the file stays separate and replaceable and the LGPL notice ships with it. A dual license is taken on the permissive side. | GPL and AGPL. A strong-copyleft library bundled into `moqui-html.js` or a qvt bundle. |
+| Code we interpret | Whatever license that source file carries. Framework JavaScript we write is CC0. | Nothing about the engine changes. |
+
+Weak copyleft (MPL, EPL, LGPL) does not by itself force a customer's Rust files onto that license. It still does not belong in the default static graph. LGPL static linking wants a relink path that an rlib does not give. MPL and EPL want source of the covered files for as long as we ship them. `pdf-servo` is the one proposed MPL link, and it stays off.
+
+## Result
+
+The default graph is clean. Resolved on 2026-10-11 for Linux gnu, it is 325 crate names. None is GPL, LGPL, AGPL, MPL, EPL, CDDL, or SSPL. A customer can link Rust into a customized Moqui and keep that Rust proprietary or CC0. MIT, BSD, ISC, PostgreSQL, Zlib, Unicode, and CDLA-Permissive still require their notices to travel with the binary. Apache-2.0 still requires its license and any `NOTICE`. `LICENSE.md` remains the framework license. A `THIRD-PARTY-NOTICES` file is how the binary meets the rest.
+
+The one copyleft artifact in the default distribution is `bin/psql` inside the theseus Postgres 18.6.0 archive. It is the only file in that archive whose `NEEDED` entry is `libreadline.so.8` (GPL-3.0-or-later). The postmaster does not link readline. `libreadline` is not in the 18.6.0 archive; `psql` expects the host copy. Moqui never runs `psql`. Strip `psql` out of the archive before `postgresql_embedded` embeds it. Check the next theseus release the same way: the current Linux Dockerfiles pass `--with-readline`, and `scripts/bundle-runtime.sh` copies every non-libc `NEEDED` library into the install. A later archive can start shipping `libreadline.so` itself. The musl and Windows archives were not unpacked. Their build scripts pass the same `--with-readline`.
+
+`mysql` 28's `rustls-tls` feature statically links `ring` 0.17.14 beside aws-lc, through the deprecated `webpki` 0.22 crate. `ring` is Apache-2.0 AND ISC. `webpki`'s crates.io SPDX field is empty because the crate uses `license-file`. The file is an ISC grant, and `third-party/chromium/LICENSE` is BSD-3-Clause. Permissive, and worth a `cargo-deny` clarification so an empty SPDX field does not look like an unknown license. Dropping `ring` waits on a `mysql` release that uses `rustls-webpki`.
+
+`postgresql_embedded` 0.21 statically links `sqlx` 0.9 (MIT OR Apache-2.0). The entity engine still has no SQLx dependency and no `query!` macros. The lifecycle crate uses `sqlx` for its own setup statements. That is allowed.
+
+Compared with Moqui Java, the in-process copyleft goes away. H2 2.4.240 is MPL-2.0 OR EPL-1.0 and is not carried. The Jakarta APIs on the Java classpath are EPL and are not carried. `getMySqlJdbc` in the Java `build.gradle` downloads MySQL Connector/J into `runtime/lib`. Connector/J is GPL-2.0 with the Universal FOSS Exception. The Rust client is the `mysql` crate, MIT OR Apache-2.0, and it does not link `libmysqlclient` (GPL-2.0 with a FOSS exception) or MariaDB Connector/C (LGPL-2.1). A proprietary component deployed in-process is the case that exception was always awkward for. The Rust static link is stricter in the other direction: one GPL crate would cover the customer's Rust, which the Java classpath would also have done, and which `cargo-deny` is there to prevent.
+
+## Custom Rust, scripts, and templates
+
+A Rust component that calls Moqui is a static link. The licenses in the default graph allow it. The notices above still ship with the combined binary. The customer's own license can be proprietary or CC0. Moqui's patent grant covers Moqui's code. Apache dependencies carry their own patent grants, which end if the licensee brings patent litigation over that dependency. That is a termination clause, not a copyleft clause.
+
+A component that is JavaScript, a template, or XML is not linked. QuickJS-NG is MIT and is compiled into the binary. Running a script on it does not make the script MIT, and a GPL script a customer writes does not make the engine GPL. The same split holds for the browser: Vue and Quasar run in the page, and Moqui's server binary does not link them. This is the room the Java distribution does not have, where component classes are loaded into the same JVM as the framework and its drivers.
+
+Framework JavaScript we write (macro modules, `moqui-html.js`, `MoquiLib`) is CC0, with the patent grant. Third-party browser files keep the license in the browser table.
+
+## Manifest rules
+
+These are the feature flags the resolve used. The unsafe defaults are called out so the first `Cargo.toml` does not inherit them.
+
+| Crate | Set | Leave off |
+|---|---|---|
+| `postgresql_embedded` 0.21 | `default-features = false`, `blocking`, `theseus`, `tls-rustls-aws-lc-rs`. `POSTGRESQL_VERSION` pinned to 18.6.0. | Default features, which are `tls-native-tls` and `theseus`. `zonky`. `tls-rustls-ring`. |
+| `postgres` 0.19 | `with-jiff-0_2` | `with-chrono-0_4`, `with-time-0_3` |
+| `mysql` 28 | `default-features = false`, `minimal-rust`, `derive`, `buffer-pool`, `rustls-tls`, `rust_decimal` | `minimal` (system zlib through `flate2`). `native-tls`. `rustls-tls-ring`. `chrono`. `time`. |
+| `tokio-postgres-rustls` 0.14 | `aws-lc-rs`, `webpki-roots` | `ring`. Defaults are empty, so the crypto feature has to be named. |
+| `reqwest` 0.13 | `default-features = false`, `blocking`, `rustls`, `json`, `multipart`, `charset` | `native-tls`, `native-tls-vendored`. On 0.13, `default-tls` is already rustls with aws-lc. Name `rustls` anyway. A later reqwest that flips `default-tls` back to native-tls must not be taken on defaults. |
+| `lettre` 0.11 | `default-features = false`, `smtp-transport`, `builder`, `hostname`, `rustls`, `aws-lc-rs`, `webpki-roots` | Defaults, which include `native-tls`. The feature named `rustls-tls` enables `ring`, so that name stays off. `boring-tls`. |
+| `axum` 0.8 | `macros`, `ws` | |
+| `tower-http` 0.6 | `default-features = false`, `compression-gzip`, `fs`, `set-header` | |
+| `chromiumoxide` 0.9 | `default-features = false` | `fetcher`, `native-tls`, `rustls`. On 0.9.1 those three only switch on `chromiumoxide_fetcher`. There is no `tokio-runtime` feature. The plan text that names `tokio-runtime` and `rustls` on this crate does not match 0.9.1. The CDP client talks to a browser the host already started. |
+| `argon2` 0.6 | `password-hash` | |
+| `croner` 4 | `default-features = false`, `jiff` | The default `chrono` feature. |
+| `totp-rs` 6 | `default-features = false`, `std`, `otpauth`, `gen_secret` | `qr` |
+| `rquickjs` 0.14 | defaults | |
+| `pulldown-cmark` | the Rust crate | `comrak` is BSD-2-Clause and is an acceptable alternate. Re-check it if a C regex backend is turned on. |
+| `pdf-servo` | absent from the default graph | The `servo` crate 0.7.0 is MPL-2.0. See below. |
+
+`native-tls` and the `openssl` crate are not in the resolved graph. `openssl-probe` is. It only finds a certificate directory. It does not link libssl. `libz-sys` is not in the graph: `mysql` is on `minimal-rust`, and `flate2` 1.1 uses `zlib-rs`.
+
+## Servo, Chromium, OpenSearch
+
+`pdf-servo` stays off, and it is a license hold as well as a print-parity hold. Servo is MPL-2.0, file by file. MPL would not relicense the rest of the binary or the customer's Rust. It would require source of the MPL files for as long as that feature ships (a pointer at the upstream revision is enough while we do not patch them). Servo's own book says the bundled FreeType is dual-licensed and the embedder chooses the FreeType License or the GPL. The choice is the FreeType License. The GPL alternative is not available for this build. Turn the feature on only after `cargo-deny` on that feature shows no GPL or AGPL, and any LGPL library is a dynamic system library the user can replace. Until that report exists, the default binary links `chromiumoxide` and shells out to an external browser.
+
+Chromium is not vendored and not downloaded. `chromiumoxide_fetcher` stays out. The operator installs Chromium. The browser project is BSD-3-Clause and carries a large third-party notice of its own, which belongs to whoever ships that binary. Moqui does not. Google Chrome remains a developer substitute and is not the deployment binary. A packager who later vendors Chromium picks up Chromium's notices, including LGPL pieces such as some media libraries, for that separate process. Those terms do not flow back into the Rust link.
+
+OpenSearch is a separate process, Apache-2.0, and it is not a crate in this graph. Elasticsearch is not a substitute. Current Elasticsearch server licenses (Elastic License 2.0, and SSPL on older lines) are not accepted, including as a child process we would download or embed.
+
+## Later drivers and engines
+
+A sync `DbDriver` added for SQL Server, Oracle, DB2, Derby, or HSQLDB is reviewed before it is linked. unixODBC is LGPL-2.1. FreeTDS is LGPL. The Oracle client libraries are proprietary. `libmysqlclient` and MariaDB Connector/C stay out. SQLite's public-domain license would be acceptable. SQLite is not a target.
+
+V8, if it ever replaces QuickJS, is BSD-3-Clause for the engine. That swap gets its own pass over V8's third-party tree before it is linked. It is not in this graph.
+
+Bitronix is not linked. The Java fork `org.moqui:btm` is annotated Apache-2.0 in the framework `build.gradle`. Upstream Bitronix was LGPL. The transaction manager is a behavior reimplementation against `DbDriver`. It is not a translation of LGPL source.
+
+An inbound SMTP server, an SSH server, CUPS, and the old tool components (`moqui-poi`, image, SSO, SFTP) are not in this graph. Each one is reviewed when it is proposed. CUPS is Apache-2.0. That does not pre-approve a particular Rust binding.
+
+## Direct crates
+
+Versions are what `cargo` locked on 2026-10-11 for the feature set above. "Static" means compiled into the `moqui` binary.
+
+| Crate | Version | License | Role | Linkage | Verdict |
+|---|---|---|---|---|---|
+| `rquickjs` | 0.14.0 | MIT | Script and template engine | Static. The C engine is QuickJS-NG, also MIT, compiled in through `rquickjs-sys`. | OK. Retain the MIT notice. |
+| `postgresql_embedded` | 0.21.0 | (Apache-2.0 OR MIT) AND PostgreSQL | Start and stop the postmaster | Static for the crate. The server archive is a payload. | OK. Strip `psql` from the payload. Keep `COPYRIGHT`. |
+| `postgresql_archive`, `postgresql_commands` | 0.21.0 | (Apache-2.0 OR MIT) AND PostgreSQL | Download, bundle, and invoke the archive | Static | OK, same payload rule. |
+| `sqlx`, `sqlx-core`, `sqlx-postgres` | 0.9.0 | MIT OR Apache-2.0 | Used inside `postgresql_embedded` | Static | OK. Not the entity SQL path. |
+| `postgres`, `tokio-postgres`, `postgres-types`, `postgres-protocol` | 0.19.14 / 0.7.18 | MIT OR Apache-2.0 | Sync Postgres client. Pure Rust, no libpq. | Static | OK |
+| `tokio-postgres-rustls` | 0.14.0 | MIT | External Postgres TLS | Static | OK with `aws-lc-rs` |
+| `mysql`, `mysql_common` | 28.0.3 / 0.37.3 | MIT OR Apache-2.0 | MySQL and MariaDB client. Pure Rust, no libmysqlclient. | Static | OK. Pulls `ring` via `webpki`. Permissive. |
+| `axum`, `tower`, `tower-http` | 0.8.9 / 0.5.3 / 0.6.11 | MIT | HTTP server, WebSocket, compression, ETag | Static. `ws` pulls `tokio-tungstenite` 0.29 (MIT) and `tungstenite` (MIT OR Apache-2.0). | OK |
+| `tokio`, `hyper` | 1.x / 1.x | MIT | Runtimes inside the host, the blocking clients, and `chromiumoxide` | Static | OK. Core stays Tokio-free; the crates still land in the binary through host and the clients. |
+| `reqwest` | 0.13.5 | MIT OR Apache-2.0 | Blocking HTTP client | Static | OK on the `rustls` feature |
+| `lettre` | 0.11.23 | MIT | Outbound SMTP | Static | OK with the feature row above |
+| `chromiumoxide` | 0.9.1 | MIT OR Apache-2.0 | DevTools client for PDF | Static. Does not contain Chromium. | OK with the fetcher off |
+| `rustls` | 0.23.45 | Apache-2.0 OR ISC OR MIT | TLS | Static | OK |
+| `aws-lc-rs` | 1.18.1 | ISC AND (Apache-2.0 OR ISC) | TLS crypto | Static | OK |
+| `aws-lc-sys` | 0.45.0 | ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0) | aws-lc C sources | Static C, compiled at build | OK. The `AND` means every one of those notice obligations applies. None of them is copyleft. |
+| `ring` | 0.17.14 | Apache-2.0 AND ISC | Pulled only by `mysql` → `webpki` 0.22 | Static | OK. Not the chosen TLS provider. |
+| `webpki` | 0.22.4 | ISC, plus BSD-3-Clause for `third-party/chromium` | Old certificate verifier used by `mysql` | Static | OK. SPDX field is empty; clarify in `cargo-deny`. |
+| `webpki-roots` | 1.0.9 | CDLA-Permissive-2.0 | CA bundle data | Static data | OK. CDLA-Permissive is not the share-alike CDLA. |
+| `rustls-platform-verifier` | 0.7.1 | MIT OR Apache-2.0 | OS trust store, via reqwest | Static | OK |
+| `jiff` | 0.2.38 | Unlicense OR MIT | Timestamps and IANA zones | Static. The bundled tzdb is public domain. | OK |
+| `croner` | 4.0.1 | MIT | Quartz cron | Static | OK |
+| `rust_decimal` | 1.x | MIT | Decimals | Static | OK |
+| `argon2`, `password-hash` | 0.6.0 / 0.6.1 | MIT OR Apache-2.0 | Password hashes | Static | OK |
+| `hmac`, `sha1`, `sha2`, `blake2`, `digest` | RustCrypto | MIT OR Apache-2.0 | Signer and TOTP | Static | OK. Further signer crates stay in RustCrypto or aws-lc. |
+| `totp-rs` | 6.0.0 | MIT | TOTP | Static | OK with `qr` off |
+| `serde`, `serde_json` | 1.x | MIT OR Apache-2.0 | JSON | Static | OK |
+| `csv`, `csv-core` | 1.4.0 / 0.1.13 | Unlicense OR MIT | CSV | Static | OK |
+| `pulldown-cmark` | 0.13.4 | MIT | Markdown | Static | OK |
+| `tracing` | 0.1.44 | MIT | Log and metrics instrumentation | Static | OK |
+| `indexmap` | 2.x | Apache-2.0 OR MIT | Map used in place of `LiteStringMap` | Static | OK |
+| `regex` | 1.x | MIT OR Apache-2.0 | Transitive | Static | OK |
+| `flate2`, `zlib-rs` | 1.1.10 / 0.6.8 | MIT OR Apache-2.0 / Zlib | Compression. Pure Rust. | Static | OK |
+| `servo` | 0.7.0 | MPL-2.0 | In-process PDF alternate | Would be static | Hold. Off by default. |
+
+`cc`, `cmake`, `pkg-config`, and `find-msvc-tools` run at build to compile aws-lc and are not linked into the binary. Proc-macro crates (`serde_derive`, `sqlx-macros`, `tokio-macros`, and the rest) run at compile time and are not linked either. The code they expand is.
+
+## Other licenses in the static graph
+
+266 of the 325 crate names are MIT, Apache-2.0, or MIT OR Apache-2.0. The other 59 are below. All of them are permissive. Unicode-3.0 is the current Unicode license (attribution, no share-alike). The ICU data crates carry it, pulled in by URL and text handling. `idna` itself is MIT OR Apache-2.0.
+
+| License | Crates |
+|---|---|
+| Unicode-3.0 | `icu_collections`, `icu_locale_core`, `icu_normalizer`, `icu_normalizer_data`, `icu_properties`, `icu_properties_data`, `icu_provider`, `litemap`, `potential_utf`, `tinystr`, `writeable`, `yoke`, `yoke-derive`, `zerofrom`, `zerofrom-derive`, `zerotrie`, `zerovec`, `zerovec-derive` |
+| (MIT OR Apache-2.0) AND Unicode-3.0 | `unicode-ident` |
+| Unlicense OR MIT | `aho-corasick`, `byteorder`, `jiff`, `jiff-core`, `jiff-static`, `memchr`, `termcolor` |
+| Unlicense OR MIT (`csv` spelling) | `csv`, `csv-core` |
+| Apache-2.0 OR ISC OR MIT | `hyper-rustls`, `rustls`, `rustls-native-certs`, `rustls-pemfile` |
+| (Apache-2.0 OR MIT) AND PostgreSQL | `postgresql_embedded`, `postgresql_archive`, `postgresql_commands` |
+| Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | `linux-raw-sys`, `rustix`. Take Apache-2.0 or MIT. |
+| ISC | `rustls-webpki`, `untrusted` |
+| ISC AND (Apache-2.0 OR ISC) | `aws-lc-rs` |
+| ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0) | `aws-lc-sys` |
+| Apache-2.0 AND ISC | `ring` |
+| BSD-3-Clause | `subtle` |
+| MIT AND BSD-3-Clause | `matchit` |
+| (Apache-2.0 OR MIT) AND BSD-3-Clause | `encoding_rs` |
+| BSD-2-Clause OR Apache-2.0 OR MIT | `zerocopy` |
+| Zlib | `foldhash`, `zlib-rs` |
+| Zlib OR Apache-2.0 OR MIT | `tinyvec` |
+| MIT OR Zlib OR Apache-2.0 | `lru-slab`, `miniz_oxide` |
+| 0BSD | `quoted_printable` |
+| 0BSD OR MIT OR Apache-2.0 | `adler2` |
+| CC0-1.0 OR MIT-0 OR Apache-2.0 | `constant_time_eq`, `dunce` |
+| Apache-2.0 OR BSL-1.0 | `ryu` |
+| Apache-2.0 OR BSL-1.0 OR MIT | `whoami` |
+| CDLA-Permissive-2.0 | `webpki-roots` |
+| ISC plus BSD-3-Clause, SPDX empty | `webpki` 0.22.4 |
+
+## Embedded Postgres payload
+
+Archive inspected: `postgresql-18.6.0-x86_64-unknown-linux-gnu.tar.gz` from theseus-rs/postgresql-binaries, 12 MB compressed. `readelf -d` on every ELF under `bin/` and `lib/`. The archive contains `COPYRIGHT` (the PostgreSQL license) and theseus's own short permissive `LICENSE`. It does not contain `libreadline`, `libssl`, `libcrypto`, `libxml2`, `libxslt`, `libzstd`, `liblz4`, `libz`, or `libgssapi_krb5`. The postmaster's `RUNPATH` is `$ORIGIN/../lib`, then the system path.
+
+| File | Linked libraries | License of that code | What Moqui does |
+|---|---|---|---|
+| `bin/postgres` | `libzstd`, `liblz4`, `libxml2`, `libssl`, `libcrypto`, `libgssapi_krb5`, `libz`, `libm`, `libc` | Server: PostgreSQL license. zstd: BSD-3-Clause (upstream is BSD-3-Clause OR GPL-2.0; use BSD-3-Clause). lz4: BSD-2-Clause. libxml2: MIT. OpenSSL 3: Apache-2.0. MIT Kerberos: the MIT license. zlib: Zlib. glibc: LGPL-2.1 as the system libc. | Exec this. It does not link readline. |
+| `lib/pg_trgm.so`, `lib/plpgsql.so` | `libc` only | PostgreSQL license | Loaded. `pg_trgm` is the search extension. plpgsql is already in the server. |
+| `bin/psql` | `libpq`, `libreadline.so.8`, `libm`, `libc` | `psql` is PostgreSQL code combined with GPL-3.0-or-later readline | In the archive. Never run. Strip it before bundling. |
+| `lib/plpython3.so` and the three `*_plpython3.so` | `libpython3.11.so.1.0`, `libc`. `RUNPATH` is `/usr/lib/x86_64-linux-gnu`. | PostgreSQL license, dynamic dependency on CPython (PSF-2.0) when the extension is loaded | Present. Not loaded. Python is permissive. A slim archive can drop them. |
+| `lib/pgxml.so` | `libxslt`, `libxml2`, `libc` | PostgreSQL license. libxslt and libxml2 are MIT. | Loaded only if that extension is created. |
+| `lib/uuid-ossp.so` | `libossp-uuid` | PostgreSQL license plus the OSSP uuid BSD-style license | Loaded only if that extension is created. |
+| `lib/pgcrypto.so` | `libcrypto`, `libz`, `libc` | PostgreSQL license, OpenSSL Apache-2.0 when loaded | Not required by the framework. |
+
+The postmaster's dynamic libraries are the host's copies in this 18.6.0 archive. A theseus release that runs `bundle-runtime.sh` will copy those permissive libraries into the archive and will also copy `libreadline` while `psql` remains. The strip, or a theseus build with `--without-readline`, is what keeps the payload clean across that change. Notices for OpenSSL, ICU (the build enables ICU; the 18.6.0 gnu postmaster's `NEEDED` list did not include `libicu`), Kerberos, and zlib travel with the archive once those `.so` files are inside it. Theseus already has `collect-notices.sh` for that.
+
+Full-text dictionaries and `pg_trgm` ship as part of the PostgreSQL license. No extra license.
+
+## Browser files
+
+These are served as their own files from `runtime/base-component/webroot/`. They are not compiled into the binary. A dual license is taken on the permissive side, and the notices file says so.
+
+| File | License | How it is delivered | Verdict |
+|---|---|---|---|
+| Vue 3.5 (`vue.global.prod.js`) | MIT | Script tag | OK |
+| Quasar 2.35 (`quasar.umd.prod.js`), including `QEditor` | MIT | Script tag | OK. This is the replacement for CKEditor. |
+| Font Awesome 4.7 | Font: SIL OFL-1.1. CSS: MIT. Documentation: CC-BY-3.0. | The font and the CSS. Do not ship the docs. | OK. OFL is a font license, not a software copyleft. Stay on 4.7. Font Awesome 5+ changes the `fa fa-*` classes, and the SVG/JS icons are CC-BY-4.0. |
+| Material Icons (Google) | Apache-2.0 | Font and CSS | OK. Pictogrammers' Material Design Icons, if substituted, are Apache-2.0 for the icons and MIT for the code. |
+| Chart.js 4 | MIT | Lazy script | OK |
+| Mermaid, script-tag build | MIT for the package | Lazy script | OK for the MIT package. When the build is pinned, confirm it does not embed elkjs. elkjs is EPL-2.0. If a build needs it, that file stays separate and its source notice ships. It still does not enter the Rust link. |
+| Marked | MIT | Assist panel | OK |
+| DOMPurify | MPL-2.0 OR Apache-2.0 | Assist panel, its own file | OK under Apache-2.0. Record the election. |
+| highlight.js | BSD-3-Clause | Assist panel, language subset | OK |
+| Tom Select | Apache-2.0 | html mode, lazy | OK |
+| SortableJS | MIT | html column picker, lazy | OK |
+| Mustache.js | MIT | Candidate for the fancy template renderer, run inside QuickJS | OK if chosen. The dialect is still open. |
+| QZ Tray `qz-tray.js` 2.3 | LGPL-2.1-only | Separate script, only when printing is enabled | Acceptable on the browser rule. Do not concatenate it into `moqui-html.js` or a qvt bundle. Ship the LGPL text and a link to the source. |
+| QZ Tray desktop application | LGPL-2.1, and the qz.io builds add a premium signing certificate | Operator installs it | Do not vendor the desktop binary. Same shape as Chromium. |
+| `moqui-html.js`, `MoquiLib`, macro modules | CC0 plus the patent grant | Ours | OK |
+
+CKEditor 4 after 4.22.1 is commercial. CKEditor 4.22.1 was the last MPL OR LGPL OR GPL release. CKEditor 5 is GPL-2.0-or-later. Both stay out. The architecture proposal already replaced them with `QEditor`.
+
+jQuery, Moment, Bootstrap 3, Select2, and the rest of `CombinedBase` are removed. Nothing in that stack was a copyleft problem (they are MIT). Removing them does not change the license result.
+
+## Rejected or not carried
+
+| Item | License | Why it is absent |
+|---|---|---|
+| MySQL Connector/J, `libmysqlclient` | GPL-2.0 with the Universal FOSS Exception | Replaced by the `mysql` crate. |
+| MariaDB Connector/C | LGPL-2.1 | Not used. |
+| H2 | MPL-2.0 OR EPL-1.0 | Replaced by embedded Postgres. |
+| Jakarta servlet, transaction, and mail APIs | EPL | The servlet stack is not carried. |
+| GNU readline | GPL-3.0-or-later | Not linked by the postmaster or by Rust. `psql` is the file that references it, and `psql` is stripped from the payload. |
+| Elasticsearch server | Elastic License 2.0 or SSPL | OpenSearch is the HTTP backend, and it is not embedded. |
+| CKEditor 5 | GPL-2.0-or-later | Replaced by Quasar `QEditor`. |
+| `chromiumoxide_fetcher`, vendored Chromium, Google Chrome as a deployment binary | Chrome is proprietary. Chromium is BSD plus a large notice. | The operator installs Chromium. |
+| `servo` in the default binary | MPL-2.0, and FreeType's GPL alternative | Feature off until a separate deny report. FreeType, if ever linked, is taken under the FreeType License. |
+| Bitronix source | Upstream LGPL. The `org.moqui:btm` fork is annotated Apache-2.0. | Behavior is reimplemented. The source is not translated. |
+| Shiro, FreeMarker, Groovy, Jetty, SnakeYAML, Jackson | Apache-2.0 | Not linked. Permissive, and still not carried. |
+| `native-tls`, vendored OpenSSL inside the Rust binary | OpenSSL 3 is Apache-2.0 | Kept out so the binary has one TLS stack. Permissive either way. The postmaster may still load the host `libssl.so.3`. |
+| `comrak`'s C regex backend | `comrak` itself is BSD-2-Clause | Not in the graph. |
+
+## Enforcement once the workspace exists
+
+`cargo deny check` runs in CI against the workspace, on the default features and again with each optional feature that can see a different graph (`pdf-servo` in particular).
+
+- Allow the permissive set in the policy table at the top.
+- Deny GPL-2.0, GPL-3.0, AGPL, LGPL-2.0, LGPL-2.1, LGPL-3.0, MPL-2.0, EPL-1.0, EPL-2.0, CDDL, SSPL, EUPL, BUSL, and the Elastic License, including as an `OR` branch that is the only branch on offer. An `OR` with a permissive alternative is accepted by recording which side we take (DOMPurify's Apache-2.0).
+- Clarify `webpki` 0.22.4 as ISC AND BSD-3-Clause so the empty SPDX field is not a silent exception.
+- Private ignore rules are comments that name the crate, the license, and the reason. A blanket allow is not a policy.
+- On every bump of `POSTGRESQL_VERSION`, unpack that target's archive and fail if any ELF `NEEDED` entry is `libreadline` or if `libreadline` is a file in the archive. The same check covers a new `.so` whose package copyright is GPL or AGPL.
+- The binary build writes `THIRD-PARTY-NOTICES` from the crate graph plus the Postgres `COPYRIGHT` and, once theseus bundles host libraries, `dependency-notices`. `LICENSE.md` is not edited to claim those bytes are CC0.
+
+The resolve behind the tables is a throwaway package with the feature flags in the manifest section, `cargo metadata --filter-platform x86_64-unknown-linux-gnu`, crates.io license fields, the `webpki` 0.22.4 `LICENSE` file, and `readelf -d` on the theseus 18.6.0 gnu archive. Repeating that resolve is how a later lockfile is checked against this document.
