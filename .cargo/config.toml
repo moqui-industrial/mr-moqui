@@ -1,0 +1,7 @@
+# postgresql_embedded's bundled build reads POSTGRESQL_VERSION (default "*")
+# and embeds that theseus archive. "=18.6.0" is an exact VersionReq.
+# force keeps a shell variable from unpinning the archive reviewed in
+# plans/License-Review.md. bundled does not change the crate graph; it
+# downloads the archive into the build when the host is compiled.
+[env]
+POSTGRESQL_VERSION = { value = "=18.6.0", force = true }

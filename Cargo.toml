@@ -1,0 +1,117 @@
+# Candidate workspace. Crate cut: plans/Crate-Layout.md.
+# Feature rows: plans/License-Review.md (resolved 2026-10-11).
+# `cargo tree -p moqui` is the default binary. Cargo.lock is the exact resolve.
+#
+# license is CC0-1.0. The patent grant in LICENSE.md has no SPDX identifier.
+# postgresql_embedded 0.21 / sqlx 0.9 require Rust 1.94. mysql_common 0.37
+# pulls uuid 1.28, which requires Rust 1.89. This file does not set
+# rust-version, so `cargo metadata` and `cargo tree` still run on older cargo.
+# `cargo check -p moqui` needs Rust 1.94.
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/moqui-lib",
+    "crates/moqui-db",
+    "crates/moqui-core",
+    "crates/moqui-host",
+    "crates/moqui",
+]
+
+[workspace.package]
+edition = "2021"
+license = "CC0-1.0"
+publish = false
+version = "0.1.0"
+
+[workspace.dependencies]
+moqui-lib = { path = "crates/moqui-lib" }
+moqui-db = { path = "crates/moqui-db" }
+moqui-core = { path = "crates/moqui-core" }
+moqui-host = { path = "crates/moqui-host" }
+
+# --- moqui-lib ---
+jiff = "0.2"
+# serde is already in the crate's default set. Named so it stays if defaults change.
+rust_decimal = { version = "1", features = ["serde"] }
+indexmap = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Signer stand-ins. Stay in RustCrypto (or aws-lc). No OpenSSL.
+hmac = "0.12"
+sha2 = "0.10"
+sha1 = "0.10"
+base64 = "0.22"
+# Name rustls. On 0.13 that is aws-lc, but default-tls must not be inherited:
+# a later release could point default-tls back at native-tls.
+reqwest = { version = "0.13", default-features = false, features = [
+    "blocking",
+    "rustls",
+    "json",
+    "multipart",
+    "charset",
+] }
+
+# --- moqui-core (no direct tokio, axum, postgres, mysql, or postgresql_embedded) ---
+# Do not enable the feature named rustls-tls: on this crate it selects ring.
+# hostname is an optional dependency feature. tokio1 stays off, so SMTP is not async.
+lettre = { version = "0.11", default-features = false, features = [
+    "smtp-transport",
+    "builder",
+    "hostname",
+    "rustls",
+    "aws-lc-rs",
+    "webpki-roots",
+] }
+# Default feature is chrono. Quartz parsing uses jiff.
+croner = { version = "4", default-features = false, features = ["jiff"] }
+# No std feature on 0.6. Defaults are alloc, getrandom, and password-hash.
+argon2 = { version = "0.6", features = ["password-hash"] }
+csv = "1"
+pulldown-cmark = "0.13"
+totp-rs = { version = "6", default-features = false, features = [
+    "std",
+    "otpauth",
+    "gen_secret",
+] }
+tracing = "0.1"
+rquickjs = "0.14"
+
+# --- moqui-host ---
+# rt-multi-thread is for axum. postgres::Client builds its own current_thread runtime.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time"] }
+# Defaults are tls-native-tls and theseus. bundled embeds the archive; see .cargo/config.toml.
+postgresql_embedded = { version = "0.21", default-features = false, features = [
+    "bundled",
+    "blocking",
+    "theseus",
+    "tls-rustls-aws-lc-rs",
+] }
+postgres = { version = "0.19", default-features = false, features = ["with-jiff-0_2"] }
+# Defaults are empty. ring stays off.
+tokio-postgres-rustls = { version = "0.14", default-features = false, features = [
+    "aws-lc-rs",
+    "webpki-roots",
+] }
+# minimal (not minimal-rust) links system zlib. On this crate rustls-tls means aws-lc.
+# time and chrono stay off. rustls-tls still pulls webpki 0.22, which pulls ring.
+mysql = { version = "28", default-features = false, features = [
+    "minimal-rust",
+    "derive",
+    "buffer-pool",
+    "rustls-tls",
+    "rust_decimal",
+] }
+axum = { version = "0.8", features = ["macros", "ws"] }
+tower = "0.5"
+# Pin the 0.6 line so 0.7 is not selected.
+tower-http = { version = "0.6", default-features = false, features = [
+    "compression-gzip",
+    "fs",
+    "set-header",
+] }
+# fetcher, native-tls, and rustls on 0.9 only enable chromiumoxide_fetcher.
+# There is no tokio-runtime feature. Leave the fetcher off.
+chromiumoxide = { version = "0.9", default-features = false }
+# MPL-2.0 hold. Off unless moqui-host is built with pdf-servo.
+servo = "0.7"

@@ -1,0 +1,38 @@
+[package]
+name = "moqui-host"
+description = "Process edge: HTTP server, database drivers, and process spawn."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The only crate that may depend on Tokio, axum, the sync database clients,
+# postgresql_embedded, and process spawn.
+
+[features]
+default = ["embedded-postgres", "postgres", "mysql", "axum", "pdf"]
+embedded-postgres = ["dep:postgresql_embedded"]
+postgres = ["dep:postgres", "dep:tokio-postgres-rustls"]
+mysql = ["dep:mysql"]
+axum = ["dep:axum", "dep:tower", "dep:tower-http"]
+pdf = ["dep:chromiumoxide"]
+# MPL-2.0. Not in the default binary. `cargo tree -p moqui-host -F pdf-servo`.
+pdf-servo = ["dep:servo"]
+# No crate. OpenSearch is a separate process, reached through the core HTTP client.
+opensearch = []
+# No crate. Inbound SMTP is not chosen.
+inbound-smtp = []
+
+[dependencies]
+moqui-core = { workspace = true }
+moqui-lib = { workspace = true, features = ["http"] }
+tokio = { workspace = true }
+postgresql_embedded = { workspace = true, optional = true }
+postgres = { workspace = true, optional = true }
+tokio-postgres-rustls = { workspace = true, optional = true }
+mysql = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true }
+chromiumoxide = { workspace = true, optional = true }
+servo = { workspace = true, optional = true }

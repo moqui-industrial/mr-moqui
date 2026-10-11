@@ -1,0 +1,10 @@
+[package]
+name = "moqui-db"
+description = "Entity model, SQL text, and dialects. No ExecutionContext and no driver."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+moqui-lib = { workspace = true }
