@@ -12,7 +12,7 @@ Mantle and the other application components stay outside this repository. They a
 
 1. **Data file load.** The entity facade and the service facade are already complete. Startup creates tables, framework seed XML loads, and a data-file element that names a service runs that service.
 2. **REST API request.** The HTTP edge and a basic screen facade run `rest.xml`. Entity REST and service REST are the facade methods from gate 1, called through a transition.
-3. **Screen rendering.** One real screen renders in every kept mode: `text`, `csv`, `xml`, `xsl-fo`, `html`, `qvt`, plus the `qjs` and `qvue` companions. `vuet` is absent. Server-static `qvt` is the last slice of this gate.
+3. **Screen rendering.** One real screen renders in every kept mode: `text`, `csv`, `xml`, `html-print`, `html`, `qvt`, plus the `qjs` and `qvue` companions. The name `xsl-fo` selects `html-print`. `vuet` is absent. Server-static `qvt` is the last slice of this gate.
 4. **Tools and utilities.** The other facades and tool services: search, mail transport, notifications, LLM and A2A, ETL, and the tool components. This is not a second pass over entity or service.
 
 ## Decisions
@@ -34,7 +34,7 @@ Mantle and the other application components stay outside this repository. They a
 - Basic `ec.l10n` format and localize land with screen macros. Localization admin screens are ordinary screens.
 - Server-static `qvt` closes gate 3, after server-merged `qvt` renders. It follows `plans/QvtServerStatic.md` and stays opt-in.
 - Search is implemented under gate 4. The design is `plans/SearchFacade.md`.
-- PDF and the tool components (`moqui-fop`, `moqui-poi`, `moqui-image`, `moqui-cups`, `moqui-sso`) are the tail of gate 4. `xsl-fo` at gate 3 is the FO document. `/fop/*`, xsl-fo email attachments, scheduled screen PDF attachments, and print rendering report that PDF is not available until `PdfRenderer` is implemented. The host `pdf` module stays the empty hook until an engine is chosen against binary size.
+- PDF and the tool components (`moqui-poi`, `moqui-image`, `moqui-cups`, `moqui-sso`) are the tail of gate 4. Gate 3 `html-print` is the print document, and the name `xsl-fo` selects that mode. Email attachments, scheduled screen PDFs, and print rendering report that PDF is not available until phase 12. The engine is the long-lived Chromium in Tool components and print of `plans/Architecture-Proposal.md`. `moqui-fop` is not ported.
 - The Groovy shell endpoint is dropped. There is no Java service runner and no Groovy runner. Framework script services become JavaScript or Rust.
 
 ## Phase order
@@ -61,7 +61,7 @@ Mantle and the other application components stay outside this repository. They a
 
 Inside phase 4 the entity code is still ordered bottom-up: definitions and SQL, then metadata, then the write-path features (cache, sim, full-text, ECA matching, loader and writer). ECA actions and data-file service elements call the service facade, so they are turned on at the end of phase 6, still before gate 1. That is the one cycle between the two facades. Entity is built first, with those callbacks stored and not yet run. Service is built second. The gate runs only after both sides of the callback exist.
 
-Phase 9 depends on gate 1 and can run beside phases 7 and 8. Phase 10's mail depends on the service facade. The notification WebSocket also needs the phase 7 session cookie. Neither waits on gate 3. An email body that is a screen uses the phase 8 renderers. Phase 11 needs the HTTP client from phase 6, the screen facade, and SearchFacade where a tool calls search. Phase 12 needs `xsl-fo` from gate 3. Later database drivers in phase 12 need only the `DbDriver` trait from phase 3.
+Phase 9 depends on gate 1 and can run beside phases 7 and 8. Phase 10's mail depends on the service facade. The notification WebSocket also needs the phase 7 session cookie. Neither waits on gate 3. An email body that is a screen uses the phase 8 renderers. Phase 11 needs the HTTP client from phase 6, the screen facade, and SearchFacade where a tool calls search. Phase 12's PDF needs the `html-print` render from gate 3. Later database drivers in phase 12 need only the `DbDriver` trait from phase 3.
 
 ## Phase 0 — Workspace and XML trees
 
@@ -212,7 +212,7 @@ Depends on the screen URL and transition runner from phase 7, and on the action 
 | 1 | `text` | Plain text, server merge |
 | 2 | `csv` | CSV, server merge |
 | 3 | `xml` | XML, server merge |
-| 4 | `xsl-fo` | FO document, server merge. PDF callers stay unavailable until phase 12 |
+| 4 | `html-print` | Print HTML, server merge. `xsl-fo` selects this mode. PDF is phase 12 |
 | 5 | `html` | Terse server HTML, shared stylesheet, `moqui-html.js` |
 | 6 | `qvt` | Server-merged Vue component object |
 | 7 | `qjs`, `qvue` | Companions, kept |
@@ -228,13 +228,13 @@ Server-static `qvt` is last, and follows `plans/QvtServerStatic.md`. The attribu
 
 ### Gate 3 — screen rendering
 
-- One existing tools or framework screen that contains a form-single, a form-list, and a section is rendered through the server in `text`, `csv`, `xml`, `xsl-fo`, `html`, and `qvt`.
+- One existing tools or framework screen that contains a form-single, a form-list, and a section is rendered through the server in `text`, `csv`, `xml`, `html-print`, `html`, and `qvt`.
 - The screen's actions are entity finds and inline services. A screen whose actions call search, mail, or an LLM is the wrong screen for this gate.
 - The HTML response includes the shared stylesheet and `moqui-html.js`. A form post runs the transition and returns its response.
 - The `qvt` response is a component object the Vue 3 compiler can compile. With `server-static` set for `qvt`, the template contains no row data, and `/actions` returns the JSON package from `plans/QvtServerStatic.md`.
 - `qjs` and `qvue` return the companion bodies for that screen.
 - A `/vapps` path has no screen.
-- The `xsl-fo` body is well-formed XML.
+- The `html-print` body is HTML and does not include `moqui-html.js`. A request with extension `.xsl-fo` returns that same body.
 
 ## Phase 9 — SearchFacade
 
@@ -271,7 +271,7 @@ Depends on the HTTP client, the user facade, and the screen facade for screen-se
 - EDI handler in core.
 - `db://` stays. JCR is dropped. Resolving a `content://` location is an error that names the location. It is not remapped onto blob storage. Filesystem and S3 are their own resource implementations when a deployment asks for one.
 - Cache admin and the other tools services that wrap facades already built.
-- Print-job records. Turning the gate 3 FO document into PDF is phase 12. Until then a print or email path that asks for PDF reports that PDF is not available.
+- Print-job records. Producing the PDF is phase 12. Until then a print or email path that asks for PDF reports that PDF is not available.
 - User remainder: preferences, password reset, TOTP, email second factor, and the admin side of API keys and login keys. The `sendOtp` and `verifyOtp` transitions start working here.
 - The Groovy shell is not replaced with a script console, and there is no web eval endpoint even in development: the hardened shell is still too risky. An SSH server in the host (exec and file access, authenticated through the user facade and artifact authz) is the better shape for admin access and pairs with `moqui-sftp`. It is an idea for a later pass, not part of the port.
 - Definition type generation (`plans/TypeGeneration.md`): TypeScript declarations from entity, service, and screen definitions, emitted by a CLI subcommand after definitions load.
@@ -279,10 +279,11 @@ Depends on the HTTP client, the user facade, and the screen facade for screen-se
 
 ## Phase 12 — PDF, later drivers, and the tool components
 
-Depends on `xsl-fo` from gate 3, and on the `DbDriver` trait from phase 3.
+Depends on the `html-print` render from gate 3, and on the `DbDriver` trait from phase 3.
 
-- An implementation of `PdfRenderer`. The host `pdf` module is the placeholder until then.
-- `moqui-fop`, `moqui-poi`, `moqui-image`, `moqui-cups`, `moqui-sso`, and `moqui-sftp`, each weighed against binary size the way `moqui.war` size kept them out of the Java framework. A component that stays outside is listed as outside, with that reason.
+- `PdfRenderer` in the host, as Tool components and print in `plans/Architecture-Proposal.md` describes. One long-lived Chromium, `chromiumoxide` 0.9, the external-binary recipe, and `pdf-servo` left off.
+- Rewrite the SimpleScreens `*.xsl-fo.ftl` documents to `html-print` templates. Callers that store render mode `xsl-fo` to mean PDF render `html-print` and pass it to `PdfRenderer`. The data-prep services stay. The screen `<text type="xsl-fo">` elements that include those templates stay valid through the alias.
+- `moqui-fop` is not ported. `moqui-poi`, `moqui-image`, `moqui-cups`, `moqui-sso`, and `moqui-sftp` are each weighed against binary size the way `moqui.war` size kept them out of the Java framework. A component that stays outside is listed as outside, with that reason. `moqui-cups` consumes the PDF bytes.
 - Further sync drivers, each a dialect plus a `DbDriver`: SQL Server, Oracle, DB2, DB2 for i, Derby, HSQLDB. A missing driver is a configuration error that names the database. None of them block the other gate 4 work.
 
 ### Gate 4 — tools and utilities
@@ -293,7 +294,8 @@ The gate is a checklist. Each item is its own test. Entity and service behavior 
 - An email whose body is a screen renders in `text` and `html`, the subject is a `JsTemplateLiteral` expansion, and the send path accepts it. A test sink is enough. An email ECA that calls send uses that path.
 - A notification sent from a service arrives on the WebSocket for the same session the HTTP request used.
 - LLM and A2A cover the same cases as the current Java tests for those facades.
-- Every entry in the tool-component list is either implemented or recorded as staying outside.
+- When `pdf-chromium-path` names a Chromium binary, one `html-print` document comes back as PDF bytes and a print-job record can hold them. When the binary is absent, the same call reports that PDF is not available, and the gate still passes.
+- Every entry in the tool-component list is either implemented or recorded as staying outside. `moqui-fop` is recorded as not ported.
 - A later database driver, when one is included in the build under test, runs the same metadata and insert smoke test as MySQL. A build that omits them still passes the gate.
 - Type generation emits declarations for a sample of framework and tools services and screens, and the output passes `tsc --noEmit`.
 - `/health` reports ready and `/metrics` reports the pool gauges.

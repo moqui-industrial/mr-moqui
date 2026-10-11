@@ -10,7 +10,7 @@ There are four places a value is visible. The three server places are one QuickJ
 
 | Environment | When it runs | What it is given |
 |---|---|---|
-| QuickJS scripts, `JsTemplateLiteral`, and the trusted fancy renderer | Every server evaluation: XML actions, `<script>`, attribute expressions, `ec.resource.expand()`, a trusted fancy template, and a server screen render (html, text, csv, xml, xsl-fo, and qvt when it is not server-static). | The live context stack, `ec`, and during a screen render `sri`. Entity values and lists stay host objects. |
+| QuickJS scripts, `JsTemplateLiteral`, and the trusted fancy renderer | Every server evaluation: XML actions, `<script>`, attribute expressions, `ec.resource.expand()`, a trusted fancy template, and a server screen render (html, html-print, text, csv, xml, and qvt when it is not server-static; the name xsl-fo is html-print). | The live context stack, `ec`, and during a screen render `sri`. Entity values and lists stay host objects. |
 | XML action and screen macro modules | Once, when an action or screen definition is compiled. The generated text is cached. | The element being compiled: attribute strings, child element text, and the already-rendered output of its children (or a `visit` function). No `ExecutionContext`, no context stack, no entity value. |
 | Locked-down fancy renderer | When a template is rendered with the restricted renderer. | A plain snapshot of the map the caller passed. Format and localize functions. No `ec`, no `sri`, no live entity. |
 | Browser | A server-static qvt screen, after the template is cached. | The JSON package from `plans/QvtServerStatic.md`, plus the restricted browser `ec` that plan already lists. |
@@ -100,7 +100,7 @@ Generated screen JavaScript for a server render calls `sri` and writes to the re
 
 ## Server host methods
 
-Measured 2026-10-11 from `framework/template/XmlActions.groovy.ftl` and the kept screen macros in `runtime/template/screen-macro/` (`any`, `html`, `qvt`, `text`, `csv`, `xml`, `xsl-fo`, `plain`). `vuet` is excluded. These are the calls the generated JavaScript makes. The browser `ec` keeps `l10n` format and localize, `resource.expand`, and the user allowlist from `plans/QvtServerStatic.md`. It does not gain the rest of this list. `sri` stays off the browser.
+Measured 2026-10-11 from `framework/template/XmlActions.groovy.ftl` and the kept screen macros in `runtime/template/screen-macro/` (`any`, `html`, `qvt`, `text`, `csv`, `xml`, `xsl-fo`, `plain`). `vuet` is excluded. The `xsl-fo` file is the one that was counted; the mode that replaces it is `html-print`. These are the calls the generated JavaScript makes. The browser `ec` keeps `l10n` format and localize, `resource.expand`, and the user allowlist from `plans/QvtServerStatic.md`. It does not gain the rest of this list. `sri` stays off the browser.
 
 ### `sri`, during a server screen render
 
