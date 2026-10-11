@@ -243,7 +243,7 @@ Bootstrap 5, htmx, and Alpine were set aside. Each one puts utility or behavior 
 
 `qvt` stays the primary UI, on Vue 3.5 and Quasar 2.35. Delivery stays script tags: `vue.global.prod.js` (the build that includes the template compiler) and `quasar.umd.prod.js`. A tree-shaken bundle does not fit a renderer where the screen XML decides which Quasar components appear. Quasar 2 is a component and prop break from 1.22 (`modelValue` instead of `value` / `input`, and the matching changes in the `m-*` wrappers). It is the same pass as the library removals below.
 
-Moving `qvt` to server-static output, with all data merge done in the client, is a separate redesign. The plan for it is pending. See Significant redesigns in the repository README. The library choices in the rest of this section stand either way.
+When `server-static` includes `qvt`, that response is a data-free Vue template and the client merges the data. The attribute stays opt-in for this pass. The plan is [`plans/QvtServerStatic.md`](QvtServerStatic.md). The library choices in the rest of this section stand either way.
 
 jQuery and Moment are removed. The widgets are already Quasar: `QSelect` for drop-downs (including remote search), `QInput` with `QDate` and `QTime` for dates, `QInput` `mask` for masks, `QForm` rules for validation, `$q.notify` for toasts, and custom `m-tree-*` components for trees. `text-line[@ac-transition]` is already unsupported in qvt. Authors use a drop-down with server search.
 
@@ -281,7 +281,7 @@ An ExecutionContext can be placed in sim mode so that nothing permanent is writt
 
 - `mantle-udm`: entity XML and seed/install data. Expected to load as-is once the entity loader and data loader exist. Expression defaults or function expressions, if any, go through the JavaScript evaluator.
 - `mantle-usl`: service XML stays. Groovy expressions and scripts are migrated to JavaScript (AI-assisted). XML Actions stay as XML and are expanded to JavaScript by MiniJinja macros.
-- Screens: XML screen and form definitions stay. MiniJinja macros expand them. Render modes are in Screen Render Modes. Moving `qvt` to server-static text, with data merge in the client, is a pending redesign (see the README). Expressions are JavaScript, which is what makes that client merge possible. FreeMarker templates for notifications, email, and print move to Liquid.
+- Screens: XML screen and form definitions stay. MiniJinja macros expand them. Render modes are in Screen Render Modes. Server-static `qvt` is [`plans/QvtServerStatic.md`](QvtServerStatic.md): the attribute stays opt-in, and expressions are JavaScript so the client can evaluate them. FreeMarker templates for notifications, email, and print move to Liquid.
 - Applications built on Mantle follow the same pattern.
 
 ## Summary of Decisions
