@@ -2,7 +2,7 @@
 
 Bottom-up build order for the MR-Moqui port, and the four gates that mark it.
 
-This follows `plans/Architecture-Proposal.md` and `plans/Crate-Layout.md`. Search, server-static qvt, PGLite concurrency, and context objects stay in their own plans. This document says when each body of code lands. It does not restate them.
+This follows `plans/Architecture-Proposal.md` and `plans/Crate-Layout.md`. Search, server-static qvt, embedded Postgres, and context objects stay in their own plans. This document says when each body of code lands. It does not restate them.
 
 The entity facade and the service facade are whole parts. Both are finished before the first gate. That gate is the integration proof that they load a data file. It is not the line that cuts those facades down.
 
@@ -25,7 +25,7 @@ Mantle and the other application components stay outside this repository. They a
 - The script host at the end of the service facade exposes `ec.entity`, `ec.service`, `ec.message`, `ec.logger`, `ec.resource`, `ec.user`, and the static helpers from `plans/ContextObjects.md`. `ec.web` and `sri` grow with the web and screen phases. The method list on those objects is still the open plan in `ContextObjects.md`. This document says which facade must answer before which gate.
 - User login and artifact authorization are in place before the service facade is called complete, because entity operations and service calls consult them. The load path still disables authorization, as `ExecutionContextFactoryImpl.checkEmptyDb` does. The signed session cookie and HTTP basic auth are the web edge at gate 2. `UserFacade.loginUser` does not need a socket.
 - `HttpClient` and `RestClient` land in `moqui-lib` with the service facade, because the remote runners are part of that facade. The sim predicate default-denies. Sim itself is already implemented in the entity and transaction work. The LLM provider exception is wired when the LLM client lands.
-- MySQL is in the same driver phase as PGLite and external Postgres. Gate 1 is demonstrated on PGLite and repeated as a metadata, insert, and select smoke test on MySQL. Further databases (SQL Server, Oracle, DB2, Derby, HSQL) are new `DbDriver` implementations under gate 4. The facade is already written against the trait. H2 has no driver.
+- MySQL is in the same driver phase as embedded Postgres and external Postgres. Gate 1 is demonstrated on embedded Postgres and repeated as a metadata, insert, and select smoke test on MySQL. Further databases (SQL Server, Oracle, DB2, Derby, HSQL) are new `DbDriver` implementations under gate 4. The facade is already written against the trait. H2 has no driver.
 - `signer` lands in `moqui-lib` with the entity facade, because field encryption uses it. `etl` and `sgml` wait for the tools phase.
 - Security ECAs run during the load gate. `Security.eecas.xml` fires on `UserGroupMember` and `UserGroupPermission`, and framework seed writes `UserGroupPermission`. `UserSecurityChecks` are Rust functions on the script host.
 - Second factor, password reset, and API-key admin wait for the tools phase. Gate 2 uses HTTP basic auth and the login transition for a user with no second factor.
@@ -76,7 +76,7 @@ Mantle, SimpleScreens, and the other components stay outside the repo, as they d
 
 Depends on phase 0. No `ExecutionContext`.
 
-Modules: `error`, `node`, `object` (decimals, timestamps, booleans, strings), `string`, `collection`, `context_stack`, `env` (property lookup and `${name}` expansion against the environment), and the resource trait with file and memory implementations.
+Modules: `error`, `node` (the `MNode` port; parsing is filled in as real files fail to load; no XML crate), `cache` (`MCache` and `MCacheManager`), `object` (decimals, timestamps, booleans, strings), `string`, `collection`, `context_stack`, `env` (property lookup and `${name}` expansion against the environment), and the resource trait with file and memory implementations.
 
 `signer` is added at the start of phase 4, when field encryption needs it. `http` / `RestClient` is added at the start of phase 6, when the remote runners need it. `etl` and `sgml` wait for phase 11. `context_stack` lives here because actions and screens share it, and the stack must not know the framework.
 
@@ -87,7 +87,7 @@ Depends on phase 1.
 - `ExecutionContextFactory` and `ExecutionContext`. Facades are fields. A facade that does not exist yet is not called.
 - Conf XML, `component.xml` discovery, and component dependency order.
 - `ResourceFacade`: `component://` on the lib resource trait. The framework component is a directory. There is no classpath scheme.
-- Cache facade on `moka`. Entity-definition and service-location caches use it.
+- Cache facade on the `MCache` port from phase 1. Entity-definition and service-location caches use it. There is no second cache implementation.
 - Logger on `tracing`.
 - `MessageFacade` for errors and messages.
 - Artifact execution stack with push, pop, and `disableAuthz`. The authorization decision itself is phase 5. Until then the stack allows the call when authorization is disabled, which is the load path and the early entity tests.
@@ -96,9 +96,9 @@ Depends on phase 1.
 
 Depends on phase 2. `DbDriver` is a trait in core. Connections are host. SQL text is core, written in phase 4. There is no SQLx dependency.
 
-- `TransactionFacade`: begin, commit, rollback, savepoint, timeout, `ignore`, `force-new`. One pinned checkout per transaction. No JTA and no XA. The transaction-cache hooks used in phase 4 sit on these same calls.
+- `TransactionFacade` and the transaction manager, in core, calling `DbDriver`: begin-or-join, commit, rollback, savepoint, `setRollbackOnly`, timeout, `ignore`, `force-new`, and the synchronization list (transaction cache, `runOnCommit` / `runOnRollback`, service ECAs, data feed). One connection enlisted for the transaction. `suspend` returns it before the transaction is parked, and `force-new` is that suspend followed by begin. No JTA types and no XA two-phase commit. The transaction-cache hooks used in phase 4 sit on these same calls.
 - Dialect profiles from the `<database>` block. Postgres and MySQL in this phase.
-- Host `db`: PGLite `open_multi_process`, socket, sync `postgres` pool, `r2d2`, `NoTls` on that socket. External Postgres with rustls. MySQL sync pool with rustls. Pool size from datasource settings plus the force-new spare in `plans/PgliteConcurrency.md`. The in-process `open` and `open_temp` APIs stay unused.
+- Host `db`: embedded Postgres via `postgresql_embedded` (start, stop, Unix socket, `NoTls`), external Postgres with rustls, and the MySQL client with rustls. The pool is the core manager. Settings are `plans/EmbeddedPostgres.md`.
 - A test round-trips a raw statement through each driver.
 
 The facade is complete against this trait. Adding SQL Server, Oracle, DB2, Derby, or HSQL later is a new driver in phase 12.
@@ -114,7 +114,7 @@ Bottom-up inside the phase:
 3. SQL renderer for insert, update, delete, select, and count, including joins, offset, and view-entity select, for the postgres and mysql profiles.
 4. `EntityDbMeta`: check and create tables, columns, indexes, foreign keys, and sequences. Startup runs the check before any load. `text-fts` columns and their indexes are part of this metadata. The `matches` operator is part of the condition tree in this same phase.
 5. Field encryption on write and read. Audit-log rows when a field has `enable-audit-log`.
-6. Entity cache, cleared on write. Transaction cache as an in-memory map. Sim mode: on Unix, a schema per `TransactionCacheDb` on the overlay cluster from `plans/PgliteConcurrency.md`. On Windows, entering sim fails and the error names the store. HOLD, FLUSH, and `enter_sim` are a port of the Java code at the time the port begins. A distributed cache-invalidation listener is still later, on the lib topic, and is not a second cache.
+6. Entity cache, cleared on write. Transaction cache as an in-memory map. Sim mode: a schema per `TransactionCacheDb` on the overlay cluster from `plans/EmbeddedPostgres.md`. HOLD, FLUSH, and `enter_sim` are a port of the Java code at the time the port begins. A distributed cache-invalidation listener is still later, on the lib topic, and is not a second cache.
 7. Dynamic view. Entity sync. Data writer. `EntityFacade.rest` (find, create, store, update, delete, path primary keys, relationship steps, dependent levels, master name), tested by calling the facade, with no HTTP server yet.
 8. ECA rules loaded and matched on create, update, and delete. The action bodies run once phase 6 can run them.
 9. Data loader for entity elements: streaming XML, CSV, and JSON, including a zip of those. Roots `entity-facade-xml` and `seed-data`. Type filter, component filter, conf `load-data` locations, nested relationships, `onlyCreate`, `useTryInsert`, dummy foreign keys. Service-named elements are parsed and held until phase 6 runs them.
@@ -143,7 +143,7 @@ Depends on phases 4 and 5. This phase finishes the service facade.
 - Service XML, `service-include`, and `verb#noun` lookup. Implicit entity-auto: no path, verb one of `create`, `update`, `store`, `delete`, noun an entity name. A data element such as `create-moqui.security.UserAccount` resolves that way after `-` becomes `#`.
 - Sync call: parameters, the full validation set (required, matches, ranges, entity-backed validators), and the transaction attributes `use-transaction`, `ignore`, and `force-new`. The `authenticate` attribute is enforced with phase 5.
 - Entity-auto runner, including nested maps. The plain-map load path calls the same store function.
-- XML actions: MiniJinja macros named for the elements in `xml-actions-3.xsd`, emitting JavaScript, run by QuickJS. The walker is the one in `plans/ContextObjects.md`. MiniJinja sees the element, not the execution context. One QuickJS runtime per `ExecutionContext`, on that thread. Decimals stay host values.
+- XML actions: MiniJinja 3.0.0 macros named for the elements in `xml-actions-3.xsd`, emitting JavaScript, run by QuickJS. The walker is the one in `plans/ContextObjects.md`. MiniJinja sees the element, not the execution context. Macros emit bare names, and the server proxy in that plan resolves an unset name to null. One QuickJS runtime per `ExecutionContext`, on that thread. Decimals stay host values.
 - Script-type services whose body is JavaScript. The Groovy email scripts are converted in phase 10. There is no Java runner.
 - `UserSecurityChecks` for the two security ECAs, as Rust functions on the host. ECA actions from phase 4 run through this runner. SECA rules run through it too.
 - Email-ECA rules run through the same action runner and call a service. The transport behind send-mail is phase 10. Until then the send service reports that mail is not configured.
@@ -160,7 +160,7 @@ Phase 6 tests cover a sync call, an entity-auto store, an inline action with an 
 
 The facades are already complete. This gate proves them together.
 
-- Fresh PGLite directory.
+- Fresh embedded Postgres data directory.
 - Startup check creates the framework tables, including `text-fts` indexes.
 - Load of framework `seed` and `seed-initial` finishes, and an `Enumeration` count is greater than zero.
 - `UserGroupPermission` rows from that seed are stored, which means the security ECAs ran and `UserSecurityChecks` allowed the seed write under disabled authorization.
@@ -184,7 +184,7 @@ Depends on gate 1. `EntityFacade.rest` and `RestApi` already run. This phase is 
 
 ### Gate 2 — REST API request
 
-- Binary serving HTTP, PGLite, seed loaded.
+- Binary serving HTTP, embedded Postgres, seed loaded.
 - `GET /rest/s1/moqui/basic/enumTypes` with HTTP basic auth returns JSON of the seeded enumeration types. That resource is an `<entity>` list operation in `tools/service/moqui.rest.xml`.
 - `GET /rest/e1/...` for that same entity, by alias or full name, returns JSON.
 - `POST /rest/login` for the seed user returns the logged-in JSON and a session cookie. A following request with that cookie and no `Authorization` header succeeds.
@@ -236,7 +236,7 @@ Server-static `qvt` is last, and follows `plans/QvtServerStatic.md`. The attribu
 Depends on gate 1. Entity documents and the feed rules already assemble, and the service facade can call the receive service. The HTTP client already exists. The API is `plans/SearchFacade.md`.
 
 - Query tree, aggregation tree, and Postgres SQL in core. Documents live in the `search` schema on the entity cluster.
-- A separate PGLite cluster, or an external Postgres, when config places search somewhere else, including when the entity datasource is MySQL. MySQL is not a search backend.
+- A separate embedded Postgres cluster, or an external Postgres, when config places search somewhere else, including when the entity datasource is MySQL. MySQL is not a search backend. Embedded search starts on Windows too.
 - The feed joins the entity transaction when both stores are the same database, and runs after commit when they are not. This replaces the phase 4 record that search is not up.
 - The query-string parser for the subset existing screens emit.
 - One active backend. The OpenSearch backend builds HTTP bodies and sends them through `HttpClient`. The host `search` module starts the process. `/elastic` and `/kibana` proxies, and the log indexes, exist only when that backend is selected.
@@ -310,4 +310,4 @@ The Java Spock suite and the Python tests under `../moqui/framework/test` are po
 
 ## Scope
 
-This plan does not restate search, server-static `qvt`, PGLite concurrency, context objects, or the crate cut. It does not split the entity facade or the service facade across a gate. It does not migrate `mantle-usl` from Groovy to JavaScript. XML actions in that component stay XML. Expressions and `<script>` bodies there are application migration after the gates that load data and render screens.
+This plan does not restate search, server-static `qvt`, embedded Postgres, context objects, or the crate cut. It does not split the entity facade or the service facade across a gate. It does not migrate `mantle-usl` from Groovy to JavaScript. XML actions in that component stay XML. Expressions and `<script>` bodies there are application migration after the gates that load data and render screens.

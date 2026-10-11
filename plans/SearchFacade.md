@@ -8,7 +8,7 @@ This follows `plans/Architecture-Proposal.md` (Search) and `plans/Crate-Layout.m
 
 `SearchFacade` is not a port of `ElasticFacade`. `ElasticFacade` takes ElasticSearch JSON maps and posts them. Mapping that JSON onto Postgres would freeze the Elastic query language into the framework. The facade sits one layer above that. Callers pass a query tree and an aggregation tree. Each backend compiles those trees.
 
-Postgres is the default backend. When the entity database is the embedded PGLite cluster, search documents live in the `search` schema on that same cluster. Config may name an external Postgres instead, the same instance as the entities or another one. When the entity datasource is not Postgres (MySQL, for example), embedded search is its own PGLite cluster. There is no MySQL search backend. The store is independent of a non-Postgres entity datasource.
+Postgres is the default backend. When the entity database is the embedded Postgres cluster, search documents live in the `search` schema on that same cluster. Config may name an external Postgres instead, the same instance as the entities or another one. When the entity datasource is not Postgres (MySQL, for example), embedded search is its own cluster. There is no MySQL search backend. The store is independent of a non-Postgres entity datasource.
 
 OpenSearch is one optional HTTP backend. It speaks the shared `_search` and `_bulk` subset that current OpenSearch and ElasticSearch 7+ have in common. The runtime already ships OpenSearch and OpenSearch Dashboards 3.4. One client covers both products for this subset. The ElasticSearch 6 and pre-7 branches in `ElasticFacadeImpl` (`interval` versus `calendar_interval`, old point-in-time paths, document types) stop here.
 
@@ -296,7 +296,7 @@ Dates and timestamps in `body` are ISO-8601. Range comparisons in the API take t
 
 Text rank is `ts_rank` on the vectors the `Text` clause names. Filters are SQL `WHERE` and do not affect rank.
 
-The default is the `search` schema on the embedded entity cluster. When the entity datasource is MySQL or another non-Postgres, the Unix default is a separate embedded PGLite cluster. On Windows that cluster does not start, and search needs an external Postgres or OpenSearch. Config may point the search store at an external Postgres, the same instance as the entities or another one. Placement and how many postmasters start are `plans/PgliteConcurrency.md`. All Postgres traffic, including search SQL, goes through the synchronous drivers in `plans/Crate-Layout.md`. The default binary includes PGLite for the embedded search cluster. A custom build may omit it only when search is an external Postgres or OpenSearch.
+The default is the `search` schema on the embedded entity cluster. When the entity datasource is MySQL or another non-Postgres, the default is a separate embedded Postgres cluster, including on Windows. Config may point the search store at an external Postgres, the same instance as the entities or another one. Placement and how many postmasters start are `plans/EmbeddedPostgres.md`. All Postgres traffic, including search SQL, goes through the synchronous drivers in `plans/Crate-Layout.md`. The default binary includes embedded Postgres for the embedded search cluster. A custom build may omit it only when search is an external Postgres or OpenSearch.
 
 ## OpenSearch
 

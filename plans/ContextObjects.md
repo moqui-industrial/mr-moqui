@@ -28,7 +28,7 @@ The two FreeMarker jobs already have different data models:
 - `XmlActions.groovy.ftl` is compiled once. Its data model is one entry, `xmlActionsRoot`, the `MNode`. `<#visit>` walks the node. The names `ec`, `context`, and `result` appear in the generated Groovy. They are not in the FreeMarker data model. The generated script header says so.
 - Screen macros run on every render. `ScreenWidgetRenderFtl` passes the whole `ContextStack` as the data model, after putting `sri` and the widgets node on it. `ec` is already on the stack. Macros both walk `.node` and call `sri` and `ec` while they write output.
 
-MiniJinja has no `<#visit>` and no node type. Its `Object` trait also takes ownership: `Value::from_object` stores an `Arc`, and the object must be `Send + Sync`. The context stack is confined to one `ExecutionContext` thread, so it is the wrong type to hand to MiniJinja even before the orphan rule.
+MiniJinja 3.0.0 has no `<#visit>` and no node type. Its `Object` trait also takes ownership: `Value::from_object` stores an `Arc`, and the object must be `Send + Sync`. That is unchanged from 2.x. The context stack is confined to one `ExecutionContext` thread, so it is the wrong type to hand to MiniJinja even before the orphan rule. The `serde` feature stays off. Macros see attribute strings, child text, and already-rendered children.
 
 The Rust walker owns the visit. For each element it calls the macro named for that element and passes attributes, text, and rendered children. Child output is produced first, then the parent macro wraps it, including the case where the parent emits a loop and the child script sits inside the loop. Attribute strings are copied into that macro call. The copy happens once per definition, and the cached result is the generated script. That replaces the `MNode` wrapper cache. `Node` does not implement an engine trait.
 
@@ -37,6 +37,22 @@ The Rust walker owns the visit. For each element it calls the macro named for th
 `ContextStack` stays in `moqui-lib`. It is a stack of maps. It implements no MiniJinja, Liquid, or QuickJS trait. `moqui-lib` does not depend on those crates. A type in lib cannot implement their traits anyway: the orphan rule requires the crate to own the type or the trait.
 
 QuickJS is the live view. Bare names in an expression (`orderId`, `statusId`) resolve on the stack, the way the Groovy binding and the FreeMarker data model do. `context` is that stack. `ec` is the host object for the execution context and is also the `ec` entry on the stack. Assignments write the top map. A service `result` map is present when the current actions provide one, as today. The QuickJS runtime is the one already owned by that `ExecutionContext`. Values created for a call die with it. They are not stored on a process-wide runtime.
+
+### Codegen rule: bare names
+
+This is the contract for macros and for migrated scripts. It is decided before macros are written.
+
+Groovy returns null for an unset bare name. `ContextBinding.hasVariable` always returns true (`ContextBinding.java:41-45`), so the get falls through to `contextStack.getByString` and yields null instead of `MissingPropertyException`. `if (someUnsetParam)` is false. In JavaScript the same line throws `ReferenceError` at runtime. Identifier lookup calls `HasBinding` before `Get`, so a get-only trap never runs for an unset name.
+
+The server runtime installs a `Proxy` on `globalThis` for that `ExecutionContext`. It closes over that thread's `ContextStack`. It is not installed on the browser `window`. `with` is not used. Strict mode rejects it, and the proxy is the mechanism that works.
+
+- `has` returns true for a stack key, for a real global property, and for every other name. An unknown name still has a binding, so the read does not throw.
+- `get` returns the stack value when any map on the stack contains the key, including an explicit null. Otherwise it returns the real global (`Array`, `Math`, `ObjectUtilities`, and the rest). Otherwise it returns null.
+- `set` writes the top map, as `ContextBinding.setVariable` does. It does not create a real global.
+
+Macros emit bare names. They do not rewrite reads to `context.foo`. `context.foo` still works because `context` is on the stack. Server-static qvt expressions are Vue template expressions against the JSON package. A missing key renders empty there. A new client script that mentions an unset name can still throw. That is acceptable. The proxy is not how the browser works.
+
+Expression hazards that change what a macro emits, including Elvis versus `??`, empty collections, `==`, and Groovy ranges, are the table in `plans/Architecture-Proposal.md` (What changes in expressions). Macros follow that table. `??` is only for a null check. An empty string or a zero uses logical or. An empty list or map tests length. `==` stays `==`. A Groovy inclusive range becomes `slice` with an exclusive end.
 
 Liquid and the browser see a snapshot, not the stack. The snapshot is the same projection as `ContextJavaUtil.unwrapMap`:
 
@@ -55,7 +71,7 @@ These are the types a script can hold. Plain maps and lists that are already pla
 
 | Name | Visible as | Rust value |
 |---|---|---|
-| context keys | Bare names, and `context.name` | The `ContextStack` |
+| context keys | Bare names, and `context.name`. On the server an unset name is null, via the proxy above | The `ContextStack` |
 | `ec` | Host object | The `ExecutionContext` and its facades |
 | `sri` | Host object, only while a server screen render is on the stack | The screen renderer. Absent in actions that are not a render, and absent in the browser |
 | entity value | Host object, field get and set | The entity value. `unwrap` is what Liquid, JSON, and the browser receive instead |

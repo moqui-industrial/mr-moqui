@@ -4,7 +4,7 @@
 
 This document captures the initial architecture direction for a Rust rewrite of Moqui Framework. It is the starting proposal for the new repository.
 
-**STATUS NOTE**: Templating, screen render modes, the crate cut, search, qvt server-static, PGLite concurrency, and context objects are specified. Templating is below: MiniJinja expands XML Actions and screen/form XML into JavaScript, and Liquid renders user-authored text. Screen render modes are in Screen Render Modes. The crate cut is `plans/Crate-Layout.md`. Search is `plans/SearchFacade.md`. Server-static qvt is `plans/QvtServerStatic.md`. Embedded-database concurrency and the sim overlay's database lifecycle are `plans/PgliteConcurrency.md`. What each environment can see, and which types are shared, is `plans/ContextObjects.md`. The method list on the server JavaScript host is a later plan. The proposal will still move as the first components are built.
+**STATUS NOTE**: Templating, screen render modes, the crate cut, search, qvt server-static, embedded Postgres, and context objects are specified. Templating is below: MiniJinja 3 expands XML Actions and screen/form XML into JavaScript, and Liquid renders user-authored text. Screen render modes are in Screen Render Modes. The crate cut is `plans/Crate-Layout.md`. Search is `plans/SearchFacade.md`. Server-static qvt is `plans/QvtServerStatic.md`. Embedded-database concurrency, the transaction manager's checkout, and the sim overlay's database lifecycle are `plans/EmbeddedPostgres.md`. What each environment can see, and which types are shared, is `plans/ContextObjects.md`. The method list on the server JavaScript host is a later plan. The proposal will still move as the first components are built.
 
 ## Repository
 
@@ -17,7 +17,7 @@ This document captures the initial architecture direction for a Rust rewrite of 
 - Keep XML as the spec language for configuration, entities, services, screens, SECAs, and data files, with only the adaptations required by a Rust runtime.
 - Move the heavy lifting (entity facade, service facade, screen rendering, tooling, and performance-sensitive service implementations) into Rust.
 - Use one language for inline expressions on both server and client so that XML Screens can become client-renderable.
-- Default to an embedded Postgres (PGLite) when no external database is configured, and use an external Postgres when one is. The same engine backs the sim-mode overlay.
+- Default to an embedded Postgres (`postgresql_embedded`) when no external database is configured, and use an external Postgres when one is. The same engine backs the sim-mode overlay.
 - Make OpenSearch optional from day one by planning a search interface that can be satisfied by Postgres full-text search and JSON operators.
 - Preserve the ExecutionContext / facade shape that makes Moqui’s artifact model work.
 
@@ -42,7 +42,7 @@ Components remain directories with a `component.xml` descriptor, discovered and 
 
 The framework is synchronous and multi-threaded, as Moqui is today. An `ExecutionContext` belongs to one thread. An HTTP request, an async service call, a scheduled job, and the other background workers each run on a thread with their own context. A call that waits (a database query, outbound HTTP, mail) blocks that thread and returns a value. The framework does not use `Future`, and it does not depend on Tokio.
 
-Worker threads that belong to the framework are ordinary threads started by the factory. The HTTP server lives in the host crate. It accepts connections on Tokio and hands each request to a thread from that pool, which calls the framework and waits for the response. The host does not use Tokio's `spawn_blocking` pool for this. That pool's cap is independent of the datasource pool. Transaction attributes (`ignore`, `force-new`, timeout) run on the calling thread: begin, commit, rollback, a savepoint, or a second connection. Details of the crate cut are in `plans/Crate-Layout.md`.
+Worker threads that belong to the framework are ordinary threads started by the factory. The HTTP server lives in the host crate. It accepts connections on Tokio and hands each request to a thread from that pool, which calls the framework and waits for the response. The host does not use Tokio's `spawn_blocking` pool for this. That pool's cap is independent of the datasource pool. Transaction attributes (`ignore`, `force-new`, timeout) run on the calling thread: begin, commit, rollback, a savepoint, or, for `force-new`, suspend then begin. Details of the crate cut are in `plans/Crate-Layout.md`.
 
 `service-call` with `async="true"` starts another thread and another `ExecutionContext`, as it does now. `async="distribute"` (run on any node in a cluster) is dropped. It is rarely used, and there is no cluster transport for it. The service-facade `distributed-factory` goes with it. Distributed cache invalidation stays a later listener on the in-process topic. It is not a cache trait and not a Redis dependency.
 
@@ -75,18 +75,23 @@ Most expressions used in service and screen XML map mechanically:
 | `map.field` / `entityValue.field` | same (objects or a Proxy over EntityValue) |
 | `list[0]` | same |
 | `obj?.field` | same |
-| `a ?: b` | `a ?? b` (see note) |
+| `a ?: b` | `a ?? b` for a null check. Use logical or when an empty string or zero should fall through. See the note. |
 | `[orderId:orderId, statusId:'X']` | `{orderId, statusId:'X'}` |
 | `x in ['A','B']` | `['A','B'].includes(x)` |
 | `list*.field` | `list.map(x => x.field)` |
 | `"Hello ${name}"` | `` `Hello ${name}` `` |
 | ternary `? :` | same |
+| `fields[3..size-1]` | `fields.slice(3, size)` when `size` is the length |
 | `orderItem.'Child#mantle.order.OrderItem'` | `orderItem['Child#mantle.order.OrderItem']` |
+| unset bare name, as in `if (someUnsetParam)` | same text. On the server the name is null. See `plans/ContextObjects.md`. |
 
-Two semantic differences to watch during migration:
+Semantic differences to watch during migration. The server proxy that makes an unset name null is the codegen rule in `plans/ContextObjects.md`. It is decided before macros are written, and macros emit bare names.
 
-- Elvis (`?:`) treats any falsy value as missing. Nullish coalescing (`??`) only substitutes for `null` / `undefined`. Prefer `??`. Use `||` only where the old falsy behavior was intentional.
-- Empty arrays are truthy in JavaScript. Conditions that mean “has rows” should test length.
+- An unset bare name is null in Groovy. `ContextBinding.hasVariable` always returns true (`ContextBinding.java:41-45`), so the get falls through to the context stack instead of raising `MissingPropertyException`. `if (someUnsetParam)` is false. In JavaScript the same line throws `ReferenceError` at runtime unless the server runtime resolves the name. That is the common migration failure: it fails when the script runs, not when it is compiled. The review counted 687 `<script>` blocks and 4,063 `<entity-find>` elements in mantle-usl alone. mantle-usl is not in this checkout, so those counts are the review's and will be re-measured before the migration pass. The framework service XML has the same shape.
+- Elvis (`?:`) is a different operator from nullish coalescing. `''` and `0` are falsy in both Groovy and JavaScript, so `if ('')` and `if (0)` already match. `'' ?: 'x'` is `'x'` in Groovy, `'' ?? 'x'` is `''` in JavaScript, and `'' || 'x'` is `'x'`. Use `||` when the left side is a string or number that may be empty or zero. Use `??` only where the old expression was a null check. Do not mechanically rewrite `?:` to `??`.
+- An empty list or empty map is falsy in Groovy and truthy in JavaScript. Neither `??` nor `||` reproduces that (`[] || 'x'` is `[]`). Conditions that mean “has rows” or “has entries” test length.
+- Groovy `==` and JavaScript `==` both treat `'1' == 1` as true. The migration keeps `==`. The breaks are list and map equality (content in Groovy, reference in JavaScript) and a host decimal compared to a number (no coercion, and `+` is not overloaded either).
+- Groovy `fields[3..size-1]` is an inclusive range. `fields.slice(3, size)` is the JavaScript when `size` is the length, because `slice` excludes the end. Left as Groovy it is a syntax error, so it fails when the script is compiled. The review counted 23 in mantle-usl. The framework has one in `WikiServices.xml` (`extraPathNameList[1..size-1]`). `ScreenRenderImpl.groovy` has another and is a Rust port, not a script.
 
 The QuickJS context mimics the Groovy and FreeMarker context, so expression and script migration stays small. A script starts with the same injected objects the Java runtime puts there: `ec`, `context`, a service `result` where the current actions provide one, and the other objects that entry point injects by default. A screen template sees what the FreeMarker macros see today. The static helpers those scripts and generated actions call are there too, including `ObjectUtilities`, `CollectionUtilities`, and `StringUtilities`.
 
@@ -106,7 +111,9 @@ FreeMarker currently serves two different purposes. MR-Moqui splits them across 
 
 XML Actions and screen/form XML are expanded by a library of macros (one per element name) into executable code. Today the target is Groovy. In MR-Moqui the target is JavaScript, run on the embedded QuickJS-NG engine described above.
 
-MiniJinja is the engine for this library. It is a Jinja2-compatible template engine written in Rust, with macros, `{% import %}` / `{% from %}`, inheritance, and blocks. A file or a directory of macros, named to match the XML element names (`entity-find`, `service-call`, `form-single`, `field`, and so on), replaces the current FTL macro set. The generator loads the matching macro, passes the element attributes and already-rendered children, and emits JavaScript.
+MiniJinja is the engine for this library. Pin `minijinja` 3.0.0 (released 2026-10-08). It is a Jinja2-compatible template engine written in Rust, with macros, `{% import %}` / `{% from %}`, inheritance, and blocks. A file or a directory of macros, named to match the XML element names (`entity-find`, `service-call`, `form-single`, `field`, and so on), replaces the current FTL macro set. The generator loads the matching macro, passes the element attributes and already-rendered children, and emits JavaScript.
+
+The `serde` feature stays off. Macros receive attribute strings, child text, and already-rendered children. `set_auto_reload(false)` is set on the macro environment: 3.0 stats the file on every lookup when auto-reload is left on, and the cached artifact is the generated JavaScript. `trim_blocks` is on, set through `SyntaxConfig`, so macro output is not padded with whitespace that becomes JavaScript. There is no `minijinja-contrib`. Dates are formatted by `ec.l10n`. Fuel and autoescape remain. The `Object` trait still takes `self: &Arc<Self>` (`Send + Sync`). A node is not handed to MiniJinja. 3.0 changes floor division, `round`, and undefined-handling inside MiniJinja templates. The macros are new, so those changes are not a migration, and they do not change the JavaScript the macros emit.
 
 This keeps the properties that matter:
 
@@ -149,26 +156,38 @@ Both crates are pure Rust and small. Liquid does not need to be a complete Shopi
 ## Database
 
 - If an external Postgres or other database is configured, use it (just as with Moqui now).
-- If not, use PGLite (`pglite-rs`) on Unix as the embedded database (just as Moqui does now with H2; ie this is the default config). On Windows, startup fails and the error says to configure an external Postgres for entities.
-- On Unix, use PGLite for the sim-mode overlay database (TransactionCacheDb), whether or not the entity database is external. On Windows, sim is unsupported. Entering sim fails because the overlay cluster cannot start.
+- If not, use embedded Postgres (`postgresql_embedded` 0.21, theseus-rs). This is the default configuration, the same role H2 has today, on Linux, macOS, and Windows.
+- Use that same engine for the sim-mode overlay database (`TransactionCacheDb`), whether or not the entity database is external.
 
-### Why PGLite
+### Why embedded Postgres
 
-PGLite (`pglite-rs`) links a Postgres fork into the binary and needs no separate server install. On Unix the shared database is a child postmaster started by `open_multi_process`, and ordinary Postgres clients use its socket. The in-process API (`open`, `open_temp`) is one backend, about 23 MB RSS for `open_temp`. It is the closest equivalent to H2’s “just start” experience while speaking real Postgres.
+`postgresql_embedded` starts a real Postgres postmaster as a child process and needs no separate server install. Ordinary `postgres::Client` connections use its Unix socket. It is the “just start” experience H2 provides, and the dialect is Postgres, matching production and backing search.
 
-`open_temp` writes a directory under the system temp dir and deletes it when the instance is dropped. The process can open that in-process engine only once. The sim overlay does not use `open_temp`. PGLite replaces H2 under `TransactionCacheDb`. The per-transaction `TransactionCache` stays an in-memory map, as in the Java framework. HOLD and FLUSH behavior are a port of the Java code at the time the port begins. The `llm-client` branch is expected to keep changing until then, so this proposal does not freeze those rules. How many engines start, and where an overlay lives, is `plans/PgliteConcurrency.md`.
+The theseus Postgres 18.6.0 archive is 11.6 MB compressed on x86_64 Linux and extracts to 34.0 MB. One install serves every cluster. The Windows archive is 51.6 MB and is only in the Windows build. Sizes, `shared_buffers`, and the socket settings are `plans/EmbeddedPostgres.md`. Runtime RSS was not measured. `shared_buffers` starts at 16 MB for the entity postmaster and 8 MB for sim, and the first driver test records RSS.
 
-A separate embedded-server crate (`postgresql_embedded`) was considered. It is another child postmaster and another distribution to ship. PGLite already starts a postmaster from the binary that is linked in. External Postgres remains the production path when configured.
+`pglite-rs` was the earlier candidate. Every release shipped in a 16-day window in June 2026, its multi-process API is Unix-only, and its in-process engine can be opened once per process. SQLite is a second dialect, and H2 was the second dialect this choice replaces. DuckDB is an analytical store. A WASM build of PGlite is one connection, and this process is not a WASM target. A system `postgres` already on `PATH` does not start on its own.
+
+Embedded Postgres replaces H2 under `TransactionCacheDb`. The per-transaction `TransactionCache` stays an in-memory map, as in the Java framework. HOLD and FLUSH behavior are a port of the Java code at the time the port begins. The `llm-client` branch is expected to keep changing until then, so this proposal does not freeze those rules. How many postmasters start, and where an overlay lives, is `plans/EmbeddedPostgres.md`.
+
+External Postgres remains the production path when configured.
 
 ### Platform notes
 
-Deployments are overwhelmingly Linux. macOS matters for development, and builds should work on Linux and macOS. Windows is a lower priority, and PGLite does not run there. Startup fails when entities or search would need a PGLite postmaster. The error names that store. OpenSearch satisfies search without a Postgres. Sim is unsupported on Windows and fails when entered. There is no WASM target. A `wasm32` build would have required the framework to give up threads, and Moqui uses threads for requests, async services, scheduled jobs, and other background work. That model carries forward. The embedded database is a PGLite multi-process cluster on Unix.
+Deployments are overwhelmingly Linux. macOS matters for development, and builds should work on Linux and macOS. Windows is a lower-priority test target. Embedded Postgres runs there, so entity, search, and the sim overlay start on Windows too. There is no WASM target. A `wasm32` build would have required the framework to give up threads, and Moqui uses threads for requests, async services, scheduled jobs, and other background work. That model carries forward.
 
-The default embedded database is one multi-process cluster, so each thread has its own connection. Embedded search is the `search` schema on that cluster. The sim overlay is a second cluster, one schema per `TransactionCacheDb`. Details are in `plans/PgliteConcurrency.md`. External Postgres remains the production database when one is configured. External Postgres and MySQL traffic goes through synchronous drivers (`postgres::Client` pooled by `r2d2`, sync `mysql::Pool`). Each Postgres client drives its own runtime, as `plans/Crate-Layout.md` and `plans/PgliteConcurrency.md` describe. Pool sizes and timeouts start at the Java datasource values.
+The default embedded database is one cluster, so each thread has its own connection. Embedded search is the `search` schema on that cluster. The sim overlay is a second cluster, one schema per `TransactionCacheDb`. Details are in `plans/EmbeddedPostgres.md`. External Postgres remains the production database when one is configured. External Postgres and MySQL are `DbDriver` implementations in the host. The pool and the transaction manager live in core and call that trait. Each Postgres client drives its own runtime, as `plans/Crate-Layout.md` and `plans/EmbeddedPostgres.md` describe. Pool sizes and timeouts start at the Java datasource values.
 
 ### Transactions
 
-There is no JTA, no XA, and no Bitronix equivalent. Transactions are local to the single transactional datasource. The TransactionFacade preserves the useful service attributes (`ignore`, `force-new`, timeout) using ordinary begin / commit / rollback (and savepoints or a second connection where required). Cross-resource work uses an outbox or SECA rather than two-phase commit.
+There are no JTA types and no XA two-phase commit. Transactions are local to the single transactional datasource. The portions of Bitronix that Moqui actually uses are ported to Rust and maintained here, written against `DbDriver`.
+
+That port is the local one-phase path and the facade behavior. When the conf has no `xa-ds-class`, `TransactionInternalBitronix` wraps a plain JDBC connection in `LrcXADataSource` and commits it in one phase. Postgres and MySQL take that path. The pool settings come from the datasource conf: min, max, idle time, acquisition timeout, and a test on checkout. One connection is enlisted and shared for the life of the transaction. `TransactionFacadeImpl` is the API on top: begin-or-join, commit, rollback, `setRollbackOnly` with a cause, timeout, and synchronizations. `beforeCompletion` flushes the transaction cache. `afterCompletion` runs `runOnCommit` and `runOnRollback`, service ECAs, and the data feed. `suspend` closes the transaction's connections before it parks the transaction, so the pool can hand them out again (`TransactionFacadeImpl.groovy:544-546`).
+
+`begin` joins an active transaction and returns false. Commit and rollback run only when this frame began the transaction. A failed commit rolls back to clean up. `setRollbackOnly` records the cause, and a later commit becomes a rollback. `force-new` is suspend followed by begin. The calling thread does not hold two connections, and the pool does not keep a spare for that. Timeout comes from the service attribute. The service attributes preserved are `ignore`, `force-new`, and timeout.
+
+The manager and the pool live in core, next to the transaction facade. The manager calls `DbDriver` and does not import `postgres` or `mysql`. Embedded Postgres, external Postgres, and MySQL are the driver implementations in the host. `plans/Crate-Layout.md` places them.
+
+The Java library does not carry forward, and the port does not link `moqui/bitronix`. That fork (4.0.1, January 2026) is the behavior reference. Bitronix is about 17,800 lines, most of it the XA journal, crash recovery, and JMS. Those stay out until a datasource is configured with a real XA resource. No current Rust crate is this in-process manager: the async pools are the same layer as a generic connection pool, and the distributed-transaction crates are network coordinators. Cross-resource work uses an outbox or a SECA rather than two-phase commit. A prepared-statement cache waits on a profile. `postgres::Client` already prepares statements.
 
 ## Search
 
@@ -176,7 +195,7 @@ OpenSearch-free deployments are a day-one goal. Postgres full-text search and JS
 
 The search interface should be designed so that it is not locked to the current ElasticFacade shape. If a cleaner interface falls out of supporting both a Postgres implementation and an optional OpenSearch implementation, that interface is part of the MR-Moqui migration, not a later retrofit. OpenSearch remains available as an optional backend for deployments that want it. It is no longer required.
 
-For Postgres-backed search, the default is the `search` schema on the embedded PGLite cluster that holds entity data. Config may point the search store at an external Postgres, the same instance as the entities or another one. When the entity datasource is not Postgres, embedded search on Unix is its own PGLite cluster. On Windows that cluster does not start, and search needs an external Postgres or OpenSearch. A MySQL configuration is asked for an external Postgres only for the store that still needs one. See `plans/SearchFacade.md` and `plans/PgliteConcurrency.md`.
+For Postgres-backed search, the default is the `search` schema on the embedded cluster that holds entity data. Config may point the search store at an external Postgres, the same instance as the entities or another one. When the entity datasource is not Postgres, embedded search is its own cluster. A configuration that names an external database for a store does not start an embedded postmaster for that store. See `plans/SearchFacade.md` and `plans/EmbeddedPostgres.md`.
 
 The interface, the feature set taken from current callers, and the two backends are specified in `plans/SearchFacade.md`.
 
@@ -188,13 +207,13 @@ The interface, the feature set taken from current callers, and the two backends 
 | Screens and XML Actions | MiniJinja macros expand XML to JavaScript. Screen and form XML can also emit server HTML. No FreeMarker, and no native widget-tree renderer as the primary path. See Templating and Screen Render Modes. |
 | User-authored templates | Liquid (`liquid` crate) for email, notifications, and custom text/HTML. Sandboxed by design. |
 | Security | Do not port Shiro. Reimplement UserFacade on Rust primitives (`argon2` / `password-hash`). The framework owns the session. Artifact authorization stays Moqui’s own model and tables. See Sessions and login. |
-| Cache | `moka` for local cache. Distributed invalidation, later, is a listener on the in-process topic in `moqui-lib`. It is not a cache trait and not a Redis dependency. Hazelcast does not carry forward. |
+| Cache | A port of `MCache` and `MCacheManager`. No second cache implementation. Distributed invalidation, later, is a listener on the in-process topic in `moqui-lib`. Hazelcast does not carry forward. |
 | Logging | `tracing`. |
-| JSON / YAML / XML | `serde_json`, `serde_yaml`, `quick-xml`. |
+| JSON / YAML / XML | `serde_json`, `serde_yaml`. XML is the `MNode` port in `moqui-lib`. |
 | CSV, mail, markdown, cron, TOTP | Ordinary crates (`csv`, `lettre`, `pulldown-cmark` / `comrak`, `cron`, `totp-rs`). |
 | Content repository (JCR) | Dropped. ResourceFacade plus blob storage (filesystem or S3). |
 
-JDBC drivers, H2, Bitronix, Shiro, FreeMarker, Groovy, and the servlet stack do not carry forward. FreeMarker’s two jobs move to MiniJinja (code generation) and Liquid (user-authored text).
+JDBC drivers, H2, the Bitronix library, Shiro, FreeMarker, Groovy, and the servlet stack do not carry forward. The transaction behavior Moqui uses from Bitronix is ported onto `DbDriver`, as Transactions describes. FreeMarker’s two jobs move to MiniJinja (code generation) and Liquid (user-authored text). Where Moqui already has an implementation because the general library was the wrong shape, that implementation is ported. `MNode`, `MCache`, and the transaction manager are the cases. An external crate earns its place when it is the engine, or when another crate this runtime already needs pulls it in.
 
 ## Sessions and login
 
@@ -204,7 +223,7 @@ Login, logout, and the check that the user has logged out elsewhere live on this
 
 ## Tool components and print
 
-`xsl-fo` stays a server render mode. Turning that output into PDF, and the tool components that live outside the framework today, are a later effort. That set includes `moqui-fop`, `moqui-poi`, `moqui-image`, `moqui-cups`, and `moqui-sso`. Some of them may move into the framework. The size of the base `moqui.war` was a reason they stayed outside Moqui Java, and the size of the MR-Moqui binary is the same kind of limit. The default binary still includes PGLite, including for a deployment whose entity database is MySQL, because Unix search and sim use it. A custom build may omit `pglite-rs` only when search is an external Postgres or OpenSearch and sim is unused. Until the PDF effort, the host `pdf` module is an empty placeholder and `PdfRenderer` is the trait an engine will implement.
+`xsl-fo` stays a server render mode. Turning that output into PDF, and the tool components that live outside the framework today, are a later effort. That set includes `moqui-fop`, `moqui-poi`, `moqui-image`, `moqui-cups`, and `moqui-sso`. Some of them may move into the framework. The size of the base `moqui.war` was a reason they stayed outside Moqui Java, and the size of the MR-Moqui binary is the same kind of limit. The default binary still includes the embedded Postgres distribution, including for a deployment whose entity database is MySQL, because search and sim use it. A custom build may omit `postgresql_embedded` only when search is an external Postgres or OpenSearch and sim is unused. Until the PDF effort, the host `pdf` module is an empty placeholder and `PdfRenderer` is the trait an engine will implement.
 
 ## Screen Render Modes
 
@@ -277,7 +296,7 @@ The other qvt libraries:
 
 ## Sim Mode
 
-An ExecutionContext can be placed in sim mode so that nothing permanent is written. Settings on the context control this, as they do in the Java framework. `TransactionCacheDb` is a PGLite schema created for that context and dropped on close, in place of the private in-memory H2 database. On Unix the schema is on the overlay cluster. On Windows sim is unsupported and entering it fails. The per-transaction `TransactionCache` stays a map. HOLD, FLUSH, and `enter_sim` are ported from the Java code at the time the port begins. The database lifecycle is `plans/PgliteConcurrency.md`.
+An ExecutionContext can be placed in sim mode so that nothing permanent is written. Settings on the context control this, as they do in the Java framework. `TransactionCacheDb` is an embedded Postgres schema created for that context and dropped on close, in place of the private in-memory H2 database. The schema is on the overlay cluster. The per-transaction `TransactionCache` stays a map. HOLD, FLUSH, and `enter_sim` are ported from the Java code at the time the port begins. The database lifecycle is `plans/EmbeddedPostgres.md`.
 
 ## Component and Application Migration
 
@@ -295,11 +314,11 @@ An ExecutionContext can be placed in sim mode so that nothing permanent is writt
 | Spec language | XML (conf, entities, services, screens, SECAs, data) |
 | Scripting | JavaScript via `rquickjs` (QuickJS-NG) |
 | Groovy migration | AI-assisted. No long-lived compatibility layer. |
-| Embedded database | PGLite (`pglite-rs`) as default configuration |
+| Embedded database | `postgresql_embedded` 0.21 (theseus) as the default configuration |
 | Production database | External Postgres, MySQL, etc when configured |
-| Sim overlay | A PGLite schema per `TransactionCacheDb`, on its own cluster on Unix. Behavior is a port of the Java framework at the time of the port. |
+| Sim overlay | An embedded Postgres schema per `TransactionCacheDb`, on its own cluster. Behavior is a port of the Java framework at the time of the port. |
 | Search | Postgres FTS + JSON as a first-class, OpenSearch-free path. Interface designed day one, not required to match ElasticFacade. |
-| Transactions | Local only. No XA. |
+| Transactions | Local one-phase commit. The Bitronix portions Moqui uses, on `DbDriver`. No XA two-phase commit. |
 | HTTP | axum in the host. Framework calls are synchronous. |
 | Threads | One `ExecutionContext` per thread. Framework workers are real threads. No `Future` in the framework. |
 | Async services | Local thread. `async="distribute"` is dropped. |
@@ -312,4 +331,4 @@ An ExecutionContext can be placed in sim mode so that nothing permanent is writt
 | User-authored templates | Liquid (`liquid` crate), sandboxed by design |
 | Security | Moqui artifact authz on Rust primitives. No Shiro. |
 
-The server JavaScript host is the next specification. The first components to build are still the entity loader, the JavaScript context bridge, a PGLite-backed EntityFacade, and a minimal screen renderer.
+The server JavaScript host is the next specification. The first components to build are still the entity loader, the JavaScript context bridge, an embedded-Postgres EntityFacade, and a minimal screen renderer.

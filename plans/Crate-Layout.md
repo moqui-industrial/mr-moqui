@@ -56,7 +56,7 @@ There is no WASM target. `wasm32-wasip1` and a browser build are out of scope. T
 
 `moqui-core` uses `std::thread`. The factory starts the worker threads. "Which jobs are due" and the thread that sleeps and runs them both live in core. An async service call starts another thread and another context. Core may use `std::fs` and `std::time`.
 
-`moqui-core` does not use Tokio, axum, sync DB clients, or `pglite-rs` in its API. Calling async clients from a facade would turn entity finds, service calls, and screen renders into futures, and a QuickJS host callback cannot suspend. The host implements the blocking traits with synchronous database clients: `postgres::Client` pooled by `r2d2` for Postgres and PGLite traffic, and the sync `mysql::Pool` for MySQL. Each `postgres::Client` owns a `current_thread` runtime and drives it with `block_on` on connect, on every query, and on drop. The host does not own a Tokio handle and does not call `block_on`. Those calls run on factory `std` threads. Building that runtime panics on a thread already inside one, so the `open_multi_process` bridge has exited before the pool connects, and the pool is not dropped on the axum runtime. PGLite lifecycle is `open_multi_process`, `connection_uri` or `socket_path`, and `close`. The driver does not call `open` or `open_temp`. The socket handoff and the pool spare are `plans/PgliteConcurrency.md`. The `http` feature on `moqui-lib` links blocking `reqwest`, which starts a runtime of its own. That runtime is not the axum runtime, and core does not call the axum handle for outbound HTTP.
+`moqui-core` does not use Tokio, axum, the sync DB clients, or `postgresql_embedded`. Calling async clients from a facade would turn entity finds, service calls, and screen renders into futures, and a QuickJS host callback cannot suspend. The transaction manager and its pool live in core and call `DbDriver`. The host implements that trait with `postgres::Client` for embedded and external Postgres, and with the `mysql` client for MySQL. Each `postgres::Client` owns a `current_thread` runtime and drives it with `block_on` on connect, on every query, and on drop. The host does not own a Tokio handle. Those calls run on factory `std` threads. Building that runtime panics on a thread already inside one, so the embedded-Postgres startup bridge has exited before the pool connects, and the pool is not dropped on the axum runtime. Startup and shutdown go through `postgresql_embedded`. The socket and the settings are `plans/EmbeddedPostgres.md`. The `http` feature on `moqui-lib` links blocking `reqwest`, which starts a runtime of its own. That runtime is not the axum runtime, and core does not call the axum handle for outbound HTTP.
 
 The axum handler accepts the connection on Tokio and hands the request to a thread from the factory's worker pool. It waits for the response. It does not await a framework future, and it does not use Tokio's `spawn_blocking` pool. That pool's cap is independent of the datasource pool.
 
@@ -69,7 +69,7 @@ The one place the current code cheats is `RestClient.refuseIfSim()`, which calls
 | Module | Comes from | Notes |
 |---|---|---|
 | `error` | `BaseException` | Plain error type. Artifact exceptions stay in core. |
-| `node` | `MNode` | XML tree, location info, parse and write. FreeMarker `TemplateModel` adapters are not ported. |
+| `node` | `MNode` | XML tree, location, merge, and the writer. Parsing is filled in against the corpus. No XML crate. |
 | `resource` | `ResourceReference`, file and memory refs | Trait plus file and memory implementations. `component://` and `db://` stay in core. Classpath goes away; the framework component is a directory. |
 | `object` | `ObjectUtilities` | Field coercion: decimals, timestamps, booleans, strings. `rust_decimal` and a date-time crate live here. |
 | `string` | `StringUtilities` | Encode, decode, pretty-print, masks. Groovy class-name cleanup is not ported. |
@@ -78,10 +78,15 @@ The one place the current code cheats is `RestClient.refuseIfSim()`, which calls
 | `env` | `SystemBinding.getPropOrEnv` and `expand` | Property and environment lookup, and `${name}` expansion against those. This is string replacement, not a script engine. Context expansion (`ResourceFacade.expand`) stays in core. |
 | `etl` | `SimpleEtl`, `FlatXmlExtractor` | Extract, transform, load pipeline. The entity data loader in core uses it. |
 | `topic` | `SimpleTopic` | In-process publish. |
+| `cache` | `MCache`, `MCacheManager` | Local cache. The core cache facade uses this directly. No JSR-107 surface. |
 | `signer` | `SimpleSigner` | Signing helpers on ordinary crypto crates. |
-| `sgml` | `SimpleSgmlReader` | Small reader, depends only on string helpers. |
+| `sgml` | `SimpleSgmlReader` | OFX-style SGML, 159 lines, no attributes. Its own function onto `Node`. It is not the framework XML parser. |
 | `http` | new | `HttpClient` trait. |
 | `rest` | `RestClient` | Blocking client. Feature `http`. |
+
+`node` is the tree the rest of the framework calls. The FreeMarker half of `MNode` is not ported, and neither is the JDK SAX handler. Parsing is whatever the corpus needs, filled in when a file fails to load. The behavior to match, from the handler the corpus already goes through: UTF-8, an optional XML declaration, comments and processing instructions skipped, the element name stored raw (`getNodeNamespace` returns null today), attributes kept as written (`xmlns:xsi` and `xsi:noNamespaceSchemaLocation` are ordinary attributes), no schema fetch, no external entities, no DOCTYPE, character data including CDATA trimmed into the node's text, the five predefined entities and numeric character references expanded, and any other entity an error. The writer emits child text as CDATA. Line and column are tracked. `EntityValue`'s W3C DOM export is not ported. Acceptance is the corpus: framework conf, entity, service, and screen XML, and `mantle-udm` when it is loaded. Nothing else this runtime parses XML (`lettre`, `axum`, `postgres`, `reqwest`, MiniJinja 3 with serde off, `rquickjs`, `rustls`), so there is no XML crate. `sgml` stays its own reader. The deferred XSLT step for `xsl-fo` would bring its own engine later.
+
+`cache` carries the `MCache` design. Rust is where the same algorithms get faster. The store is a concurrent map of entries. A get checks expiry using the access, creation, and update durations. `get(key, expireBeforeTime)` drops an entry whose last update is older than a known resource change, which is how screens and resources avoid a stale parse. Stats stay: gets, hits, misses, expires, evictions. `maxEntries` is enforced by a scheduled pass (default `maxCheckSeconds` 30), not on put. The pass removes the overflow, ordered by lowest `accessCount`, then oldest `lastAccessTime`. `MCacheManager` is a name-to-cache map, enough to use as a factory. Listeners, entry processors, write-through, and MX beans stay out.
 
 `RestClient` is the proof that lib is useful alone: URI building, headers, JSON, retry, timeout, streaming, multipart. The `http` feature turns on `reqwest` with rustls, using the blocking client. `reqwest::blocking` runs requests on a Tokio runtime that client starts for itself. A call from a framework worker does not use the axum handle. A lib-only program can leave the feature off. `moqui-core` enables it and uses `RestClient` by default. A test, or a deployment with outbound HTTP disabled, passes another `HttpClient`. The sim-mode check stays at the framework caller, as the predicate described above: default-deny, with the LLM provider path allowed.
 
@@ -92,7 +97,7 @@ Not ported, on purpose:
 - `MClassLoader`. There is no classpath and no nested-jar loader.
 - `ContextBinding`. It exists to wrap a Groovy `Binding`. The script context is the context stack plus the QuickJS context in core.
 - `LiteStringMap`. Use `indexmap` until a profile says a special map is worth it.
-- `jcache` (`MCache`, `MCacheManager`, and the JSR-107 types). The cache facade in core replaces them.
+- The JSR-107 surface on top of `MCache` (listeners, entry processors, write-through, MX beans). `MCache` and `MCacheManager` are ported. The cache facade in core uses them directly.
 
 ## moqui-core
 
@@ -104,14 +109,14 @@ A trait is used when conf selects an implementation, or when the implementation 
 
 | Trait | Why it is a trait |
 |---|---|
-| `DbDriver` | Replaces `EntityDatasourceFactory` and the JDBC half of `TransactionInternal`. PGLite, external Postgres, and MySQL implement it in `moqui-host`. The methods block and return rows. Later databases use the same trait. |
+| `DbDriver` | Replaces `EntityDatasourceFactory` and the JDBC half of `TransactionInternal`. Embedded Postgres, external Postgres, and MySQL implement it in `moqui-host`. The transaction manager and its pool live in core and call this trait. The methods block and return rows. Later databases use the same trait. |
 | `HttpClient` | Defined in lib. Core uses the blocking `RestClient` unless a test or conf supplies another. Outbound HTTP with no client returns a clear error. |
 | `ServiceRunner` | Entity-auto, script, and remote runners are built in. Remote runners call `HttpClient`. |
 | `SearchBackend` | Postgres SQL for the query and aggregation trees is in core. An OpenSearch mapping that only builds HTTP bodies can live here and use `HttpClient`. |
 | `LlmProtocol`, `LlmTool` | More than one protocol and many tools. |
 | `PdfRenderer` | Optional, and later. XSL-FO output is produced here. A PDF engine is a future effort, with the tool components. See the architecture proposal. |
 
-The cache facade uses `moka` directly. Outbound mail uses `lettre` directly. Neither is a trait. Distributed invalidation, when it is added, is a listener on the in-process topic in `moqui-lib`. It is not a Redis client and not a second cache facade. Entity cache, the facade cache, and the `screen-server-static` response header stay separate. Inbound SMTP is a listening server and stays a host feature.
+The cache facade uses the `MCache` port directly. There is no second cache implementation. Outbound mail uses `lettre` directly. Neither is a trait. Distributed invalidation, when it is added, is a listener on the in-process topic in `moqui-lib`. It is not a Redis client and not a second cache facade. Entity cache, this local cache, and the `screen-server-static` response header stay separate. Inbound SMTP is a listening server and stays a host feature. Where Moqui already has an implementation because the general library was the wrong shape, that implementation is ported. `MNode`, `MCache`, and the transaction manager are the cases. An external crate earns its place when it is the engine (Postgres, QuickJS, MiniJinja, Liquid, axum) or when another crate already needed pulls it in.
 
 QuickJS-NG (`rquickjs`) is the script runner. There is one scripting language, so conf does not select a runner. MiniJinja expands framework XML into JavaScript or HTML. Liquid renders user-authored text and is the sandbox boundary. Those are two engines in `template`, not one trait an operator swaps. Tests call QuickJS, MiniJinja, and Liquid directly. The templating split is `plans/Architecture-Proposal.md`. What each environment sees is `plans/ContextObjects.md`.
 
@@ -121,9 +126,9 @@ QuickJS-NG (`rquickjs`) is the script runner. There is one scripting language, s
 
 ### Modules
 
-`context` holds the factory and the facades that are not large enough to be their own directory: artifact execution, cache, l10n, logger (over `tracing`), message, notification, resource (the `component://` scheme and the facade), transaction, user, web, conf loading, and component discovery.
+`context` holds the factory and the facades that are not large enough to be their own directory: artifact execution, cache (the facade over `MCache`), l10n, logger (over `tracing`), message, notification, resource (the `component://` scheme and the facade), transaction (the facade, the manager, and the pool), user, web, conf loading, and component discovery.
 
-`script` is the QuickJS runner. `template` is MiniJinja and Liquid. The values each one sees are `plans/ContextObjects.md`.
+`script` is the QuickJS runner. `template` is MiniJinja 3.0.0 and Liquid. The values each one sees are `plans/ContextObjects.md`.
 
 `entity` holds definitions, values, the condition tree, find, SQL rendering, the dialect profiles, the `DbDriver` trait, ECAs, the data loader and writer, the entity cache, feeds, and dynamic views. SQL text is core. Opening a connection is host.
 
@@ -131,7 +136,7 @@ QuickJS-NG (`rquickjs`) is the script runner. There is one scripting language, s
 
 `screen` holds definitions, forms, trees, URL info, and the MiniJinja expansion to HTML and to client JavaScript.
 
-`search` is the new facade from the architecture proposal, not a port of `ElasticFacade`. The API is `plans/SearchFacade.md`. Postgres query and aggregation SQL is in core. OpenSearch request bodies live here when they are just HTTP. Starting the OpenSearch process does not. The default embedded search store is the `search` schema on the entity cluster. Search tables move to their own PGLite cluster, or to an external Postgres, when config places them somewhere else, including when the entity datasource is MySQL. That embedded cluster is Unix only. On Windows the same placement needs an external Postgres or OpenSearch.
+`search` is the new facade from the architecture proposal, not a port of `ElasticFacade`. The API is `plans/SearchFacade.md`. Postgres query and aggregation SQL is in core. OpenSearch request bodies live here when they are just HTTP. Starting the OpenSearch process does not. The default embedded search store is the `search` schema on the entity cluster. Search tables move to their own embedded Postgres cluster, or to an external Postgres, when config places them somewhere else, including when the entity datasource is MySQL. Embedded search starts on Windows too.
 
 `llm` holds the client, conversation, protocol encoding, tool loop, and `a2a`. Provider calls go through `HttpClient`.
 
@@ -146,9 +151,9 @@ Other current classes, placed by the same rule:
 | `ElasticSearchLogger` | Host, beside the OpenSearch process. |
 | `ElFinderConnector` | Host, if the file API stays. It is an HTTP endpoint. |
 | `MoquiShiroRealm`, `MoquiWebSecurityManager` | Not ported. User auth is the core user facade on `argon2`. |
-| `TransactionInternalBitronix` | Not ported. Transactions are the driver connection. |
+| `TransactionInternalBitronix` | The portions Moqui uses are ported in core, against `DbDriver`: local one-phase commit, the pool, synchronizations, and suspend that returns the connection. The XA journal, crash recovery, and JMS are not ported. |
 | `H2ServerToolFactory`, `JackrabbitRunToolFactory`, `JCSCacheToolFactory` | Not ported. |
-| `MCacheToolFactory` | Replaced by the cache facade (`moka`). |
+| `MCacheToolFactory` | The cache facade on the `MCache` port. |
 | `SubEthaSmtpToolFactory` | Host, behind a feature, if inbound SMTP stays. |
 | Servlet and filter classes in `impl/webapp` | Host HTTP layer. The behavior they delegate (screen render, auth, REST, LLM, A2A, notifications) is core. |
 | `src/main/resources/org/moqui/impl/*.groovy` (send and poll email) | Core service logic. Outbound mail uses `lettre` in core. The Groovy scripts are not kept as scripts. |
@@ -163,23 +168,23 @@ The entity engine is database-agnostic in the same way the Java framework is. `m
 
 The dialect profile is the `<database>` block Moqui already has in `MoquiDefaultConf.xml`: SQL type names, join style, offset style, lateral style, full-text style, null handling, and the related flags. The SQL renderer in core takes a dialect. It does not import a driver. Core renders SQL text at runtime, as it is now. There is no SQLx dependency and no `query!` compile-time macros.
 
-`DbDriver` is the execution boundary: connect, begin, commit, rollback, savepoint, execute, query. A transaction pins one checked-out connection to the worker thread until commit or rollback. A call outside a transaction checks out and returns. `force-new` is a second checkout from that pool, with the spare in `plans/PgliteConcurrency.md`. Rows come back as the plain values `moqui-lib`'s `object` module already uses (`rust_decimal` and the date-time type), not JSON. The driver does not know entity definitions. The datasource conf selects the driver at runtime. The factory holds the group map described above.
+`DbDriver` is the execution boundary: connect, checkout, begin, commit, rollback, savepoint, execute, query, and release. The pool in core checks a connection out and enlists one for the life of the transaction. A call outside a transaction checks out and returns. `suspend` releases that connection, then parks the transaction. `force-new` is that suspend followed by begin, so the thread does not hold two connections. Checkout is `plans/EmbeddedPostgres.md`. Rows come back as the plain values `moqui-lib`'s `object` module already uses (`rust_decimal` and the date-time type), not JSON. The driver does not know entity definitions. The datasource conf selects the driver at runtime. The factory holds the group map described above.
 
-Search stays the path from the architecture proposal. By default, search tables are the `search` schema on the embedded entity cluster. They use their own PGLite cluster when the entity datasource is not that Postgres, and an external Postgres when search config names one. That store is independent of a non-Postgres entity datasource.
+Search stays the path from the architecture proposal. By default, search tables are the `search` schema on the embedded entity cluster. They use their own embedded Postgres cluster when the entity datasource is not that Postgres, and an external Postgres when search config names one. That store is independent of a non-Postgres entity datasource.
 
 Initial drivers, all in `moqui-host` and all enabled in the default binary:
 
 | Driver | Role | Dialect profile |
 |---|---|---|
-| PGLite (`pglite-rs` 0.2) | Default entity cluster on Unix when no external database is configured. `pglite-rs` is lifecycle only (`open_multi_process`, `connection_uri` / `socket_path`, `close`). Per-query traffic goes through the sync `postgres::Client` pool against that socket. Embedded search is the `search` schema on that cluster. The sim overlay is a second cluster, one schema per `TransactionCacheDb`. See `plans/PgliteConcurrency.md`. | `postgres` |
-| Sync Postgres (`postgres` 0.19, `r2d2-postgres` 0.18, `r2d2` 0.8) | External Postgres | `postgres` |
-| Sync MySQL (`mysql` 28) | External MySQL and MariaDB | `mysql8`, and the older `mysql` profile |
+| Embedded Postgres (`postgresql_embedded` 0.21) | Default entity cluster when no external database is configured. Lifecycle only: start and stop, with `bundled`, `blocking`, `theseus`, and `tls-rustls-aws-lc-rs` (default features off), and `POSTGRESQL_VERSION` pinned to 18.6.0. Per-query traffic is `postgres::Client` on the Unix socket with `NoTls`. The pool is the core transaction manager. Embedded search is the `search` schema on that cluster. The sim overlay is a second cluster, one schema per `TransactionCacheDb`. See `plans/EmbeddedPostgres.md`. | `postgres` |
+| Sync Postgres (`postgres` 0.19) | External Postgres, same client and same core pool | `postgres` |
+| Sync MySQL (`mysql` 28) | External MySQL and MariaDB. The core pool checks connections out. `mysql::Pool` is not the pooling design. | `mysql8`, and the older `mysql` profile |
 
-Each `postgres::Client` owns a `current_thread` Tokio runtime and calls `block_on` on it for connect, query, and drop. The host does not own that runtime. A `postgres::Client` is `Send` but `!Sync`, and every method takes `&mut self`, which fits one pinned checkout per worker thread. `DbDriver` methods run only on factory worker threads, never on an axum task. Pool sizes and timeouts start at the Java datasource values, with the `force-new` spare from `plans/PgliteConcurrency.md`. Memory and speed testing follow. MySQL is a first target alongside Postgres, not a follow-up milestone.
+Each `postgres::Client` owns a `current_thread` Tokio runtime and calls `block_on` on it for connect, query, and drop. The host does not own that runtime. `DbDriver` methods run only on factory worker threads, never on an axum task. Pool sizes and timeouts start at the Java datasource values. Memory and speed testing follow. MySQL is a first target alongside Postgres, not a follow-up milestone. A prepared-statement cache waits on a profile. `postgres::Client` already prepares statements.
 
-PGLite socket traffic uses `NoTls`. External Postgres TLS is `tokio-postgres-rustls` (`MakeRustlsConnect`) with its `aws-lc-rs` feature. External MySQL TLS is the `mysql` feature `rustls-tls` (aws-lc-rs). The `native-tls` feature stays off. On `mysql` 28 that feature is opt-in, not part of the default set. That is the same rustls provider family as `reqwest`'s `rustls-tls` feature. Database traffic does not also link native-tls or OpenSSL.
+Embedded Postgres socket traffic uses `NoTls`. External Postgres TLS is `tokio-postgres-rustls` (`MakeRustlsConnect`) with its `aws-lc-rs` feature. External MySQL TLS is the `mysql` feature `rustls-tls` (aws-lc-rs). The `native-tls` feature stays off. On `mysql` 28 that feature is opt-in, not part of the default set. That is the same rustls provider family as `reqwest`'s `rustls-tls` feature. Database traffic does not also link native-tls or OpenSSL. `postgresql_embedded` uses `tls-rustls-aws-lc-rs` for the same reason, and its `native-tls` feature stays off.
 
-The Java conf also defines databases to add later, still in `moqui-host`'s `db` module, as another dialect plus a `DbDriver`. Each one needs a synchronous `DbDriver` implementation; there is no SQLx dependency. SQLite is not a Moqui database and is not a target. Of the remaining Moqui databases, SQL Server, Oracle, DB2, and the rest each wait on a sync driver that implements the same trait. H2 is not on the list. PGLite replaces it. OrientDB appears only as a comment in the Java conf.
+The Java conf also defines databases to add later, still in `moqui-host`'s `db` module, as another dialect plus a `DbDriver`. Each one needs a synchronous `DbDriver` implementation; there is no SQLx dependency. SQLite is not a Moqui database and is not a target. Of the remaining Moqui databases, SQL Server, Oracle, DB2, and the rest each wait on a sync driver that implements the same trait. H2 is not on the list. Embedded Postgres replaces it. OrientDB appears only as a comment in the Java conf.
 
 | Conf name | Database | When |
 |---|---|---|
@@ -190,21 +195,21 @@ The Java conf also defines databases to add later, still in `moqui-host`'s `db` 
 | `derby` | Derby | Later, same |
 | `hsql` | HSQLDB | Later, same |
 
-Cargo features may trim a driver out of a custom build. The default feature set includes PGLite, Postgres, and MySQL. A MySQL entity database still needs Postgres or OpenSearch for search, and sim on Unix still needs the overlay cluster, so the default binary includes PGLite. A custom build may omit `pglite-rs` only when search is an external Postgres or OpenSearch and the deployment does not use sim. PGLite is Unix only. The binary-size note in `plans/Architecture-Proposal.md` is the same limit.
+Cargo features may trim a driver out of a custom build. The default feature set includes embedded Postgres, Postgres, and MySQL. A MySQL entity database still needs Postgres or OpenSearch for search, and sim still needs the overlay cluster, so the default binary includes `postgresql_embedded`. A custom build may omit it only when search is an external Postgres or OpenSearch and the deployment does not use sim. The binary-size note in `plans/Architecture-Proposal.md` is the same limit.
 
 ## moqui-host
 
-The process edge. Depends on `moqui-core` and on `moqui-lib` with the `http` feature. This is the only crate that may use axum, Tokio, the sync DB clients (`postgres`, `r2d2-postgres`, `r2d2`, `mysql`), `pglite-rs`, and process spawn. `moka` and `lettre` live in core.
+The process edge. Depends on `moqui-core` and on `moqui-lib` with the `http` feature. This is the only crate that may use axum, Tokio, the sync DB clients (`postgres`, `mysql`), `postgresql_embedded`, and process spawn. `lettre` lives in core. `MCache` lives in lib. There is no `moka`, no `r2d2`, and no XML crate.
 
 | Module | Role |
 |---|---|
 | `http` | axum routes and WebSocket upgrade. Builds the core request value, calls core on a worker thread, writes the response. Replaces `MoquiServlet`, the auth filter, the LLM and A2A servlets, FOP servlet entry, and the notification endpoint. |
-| `db` | `DbDriver` implementations: PGLite lifecycle plus a sync `postgres::Client` pool over its socket, external Postgres over the same sync pool, and external MySQL over the sync `mysql::Pool`. A transaction pins one checkout; each method runs on that client and returns rows. Later databases from the table above land here. PGLite concurrency is this module, as in `plans/PgliteConcurrency.md`. |
+| `db` | `DbDriver` implementations: embedded Postgres lifecycle, external Postgres, and external MySQL. The pool is the core transaction manager. Each method runs on the checked-out client and returns rows. Later databases from the table above land here. Embedded Postgres concurrency is this module, as in `plans/EmbeddedPostgres.md`. |
 | `mail` | Inbound SMTP, behind a feature, if it stays. Outbound mail is core. |
 | `search` | OpenSearch process supervisor. Query construction stays in core. |
 | `pdf` | Empty placeholder. PDF rendering is a later effort, along with `moqui-fop` and the other tool components. |
 
-Features on this crate, not more crates: `opensearch`, `inbound-smtp`, `pdf`. Default features are PGLite, external Postgres, MySQL, and axum.
+Features on this crate, not more crates: `opensearch`, `inbound-smtp`, `pdf`. Default features are embedded Postgres, external Postgres, MySQL, and axum.
 
 A `moqui-db` crate split out of host is a later option, and only if something needs the drivers without HTTP. It is not part of this layout. The binary always wants the HTTP server and the initial drivers together.
 
@@ -253,6 +258,6 @@ Tests that start a factory, load `framework/`, and hit HTTP live under `crates/m
 - A `moqui-api` crate, or any other interface-only crate.
 - Per-facade crates (`moqui-entity`, `moqui-service`, `moqui-screen`).
 - A `start` or `execWar` source tree.
-- A port of the JSR-107 cache API, Shiro, Bitronix, Jackrabbit, H2, JCS, or the servlet types.
+- A port of the JSR-107 cache API, Shiro, the Bitronix XA journal, Jackrabbit, H2, JCS, or the servlet types. `MCache` is ported. The Bitronix portions Moqui uses are ported against `DbDriver`.
 - A WASM target, a `moqui-js` crate, a `moqui-db` crate, or a crate per database.
 - The tool components (`moqui-fop`, `moqui-poi`, `moqui-image`, `moqui-cups`, `moqui-sso`). Whether any of them move into this repository is a later decision, limited by binary size.
