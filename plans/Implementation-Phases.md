@@ -23,14 +23,14 @@ Mantle and the other application components stay outside this repository. They a
 - Tool services are not the service facade. Send-mail, search indexing, LLM, print, and system-message handling are gate 4 service bodies on top of a facade that can already call them. Email-ECA rules are the service facade. The `lettre` transport they eventually call is gate 4.
 - XML actions are one MiniJinja macro set and one QuickJS runner, inside the service facade, before gate 1. Screen transitions reuse that runner. There is no smaller action subset built only for the load gate.
 - The script host at the end of the service facade exposes `ec.entity`, `ec.service`, `ec.message`, `ec.logger`, `ec.resource`, `ec.user`, and the static helpers from `plans/ContextObjects.md`. `ec.web` and `sri` grow with the web and screen phases. The method list is the Server host methods section of `plans/ContextObjects.md`. This document says which facade must answer before which gate.
-- Before any Groovy `<script>` body or attribute expression is rewritten, and before screen macros are written, a mechanical pre-scan extracts those texts and classifies Elvis, empty collections, Groovy ranges, and decimal arithmetic and `BigDecimal` method calls, per file. The report feeds the AI pass in `plans/Architecture-Proposal.md`. It is not a compatibility shim. mantle-usl is outside this repository. The same pass covers it before that migration is treated as ready. Counts already recorded as a review's counts are re-measured by that pass.
+- Before any Groovy `<script>` body or attribute expression is rewritten, and before screen macros are written, a mechanical pre-scan extracts those texts and classifies Elvis, empty collections, Groovy ranges, decimal arithmetic and `BigDecimal` method calls, decimal literals (Groovy decimal literals are `BigDecimal`; their scale and rounding are not JavaScript number behavior), closure idioms (`each`, `collect`, `find`, `any`, `every`), GString, the regex operators (`=~`, `==~`), and Elvis on a method chain, per file. The same toolkit extracts the translatable string call sites so the localization catalogs survive the migration, and its report is a per-expression before/after report that feeds the AI pass in `plans/Architecture-Proposal.md`. It is not a compatibility shim. mantle-usl is outside this repository. The same pass covers it before that migration is treated as ready. Counts already recorded as a review's counts are re-measured by that pass.
 - User login and artifact authorization are in place before the service facade is called complete, because entity operations and service calls consult them. The load path still disables authorization, as `ExecutionContextFactoryImpl.checkEmptyDb` does. The signed session cookie and HTTP basic auth are the web edge at gate 2. `UserFacade.loginUser` does not need a socket.
 - `HttpClient` and `RestClient` land in `moqui-lib` with the service facade, because the remote runners are part of that facade. The sim predicate default-denies. Sim itself is already implemented in the entity and transaction work. The LLM provider exception is wired when the LLM client lands.
 - MySQL is in the same driver phase as embedded Postgres and external Postgres. Gate 1 is demonstrated on embedded Postgres and repeated as a metadata, insert, and select smoke test on MySQL. Further databases (SQL Server, Oracle, DB2, Derby, HSQL) are new `DbDriver` implementations under gate 4. The facade is already written against the trait. H2 has no driver.
 - `signer` lands in `moqui-lib` with the entity facade, because field encryption uses it. `etl` and `sgml` wait for the tools phase.
 - Security ECAs run during the load gate. `Security.eecas.xml` fires on `UserGroupMember` and `UserGroupPermission`, and framework seed writes `UserGroupPermission`. `UserSecurityChecks` are Rust functions on the script host.
 - Second factor, password reset, and API-key admin wait for the tools phase. Gate 2 uses HTTP basic auth and the login transition for a user with no second factor.
-- Swagger, RAML, and JSON Schema transitions on `rest.xml` close the REST phase. Gate 2 does not depend on them. `RestApi.run` itself already exists from the service facade.
+- The OpenAPI 3.1 export and the JSON Schema transitions (`entity.json` and the service schemas) on `rest.xml` close the REST phase. Gate 2 does not depend on them. `RestApi.run` itself already exists from the service facade. Swagger 2.0 is a candidate to leave out and stays out unless a concrete consumer needs it; RAML is left out.
 - Basic `ec.l10n` format and localize land with screen macros. Localization admin screens are ordinary screens.
 - Server-static `qvt` closes gate 3, after server-merged `qvt` renders. It follows `plans/QvtServerStatic.md` and stays opt-in.
 - Search is implemented under gate 4. The design is `plans/SearchFacade.md`.
@@ -99,8 +99,9 @@ Depends on phase 2. `DbDriver` is a trait in core. Connections are host. SQL tex
 
 - `TransactionFacade` and the transaction manager, in core, calling `DbDriver`: begin-or-join, commit, rollback, savepoint, `setRollbackOnly`, timeout, `ignore`, `use-or-begin`, `force-new`, `cache`, `force-cache`, and the synchronization list (transaction cache, `runOnCommit` / `runOnRollback`, service ECAs, data feed). The feed hook follows `plans/SearchFacade.md`: when the search store is that same database, the feed writes after the cache flush and before commit; a different database or OpenSearch runs in `afterCompletion`. Until phase 9 the receive service records that search is not up, on that same side of commit. One connection enlisted for the transaction. `suspend` parks that client on the transaction, off the free list. `resume` checks the same client out. `force-new` is that suspend followed by begin. The thread holds one connection. The parked client still counts against the pool max. No JTA types and no XA two-phase commit. The rules are the Transactions section of `plans/Architecture-Proposal.md`. The transaction-cache hooks used in phase 4 sit on these same calls.
 - Dialect profiles from the `<database>` block. Postgres and MySQL in this phase.
+- Instrumentation from the start: gauges for checked-out, parked (suspended), and waiting connections, pool wait time, and service worker pool depth and queue wait, reported through `tracing` metrics. A pool that starves is the failure mode this port can create, and it must be visible.
 - Host `db`: embedded Postgres via `postgresql_embedded` (start, stop, Unix socket, `NoTls`), external Postgres with rustls, and the MySQL client with rustls. The pool is the core manager. Settings are `plans/EmbeddedPostgres.md`.
-- A test round-trips a raw statement through each driver.
+- A test round-trips a raw statement through each driver, and a streaming query round-trip per driver covers the cursor arm (`DbDriver` streaming in `plans/Crate-Layout.md`).
 
 The facade is complete against this trait. Adding SQL Server, Oracle, DB2, Derby, or HSQL later is a new driver in phase 12.
 
@@ -112,7 +113,7 @@ Bottom-up inside the phase:
 
 1. Entity XML: dictionary types, fields, relationships, reverse-many, `extend-entity`, master definitions, view-entity structure. `signer` moves into `moqui-lib` here.
 2. `EntityValue`, `EntityList`, the condition tree, find, create, update, delete, refresh, sequenced primary and secondary ids, `createOrUpdate`, foreign-key check, and dummy foreign keys.
-3. SQL renderer for insert, update, delete, select, and count, including joins, offset, and view-entity select, for the postgres and mysql profiles.
+3. SQL renderer for insert, update, delete, select, and count, including joins, offset, and view-entity select, for the postgres and mysql profiles. Statement execution is a `tracing` span with the SQL text and duration, and a slow-statement threshold logs the slow ones.
 4. `EntityDbMeta`: check and create tables, columns, indexes, foreign keys, and sequences. Startup runs the check before any load. `text-fts` columns and their indexes are part of this metadata. The `matches` operator is part of the condition tree in this same phase.
 5. Field encryption on write and read. Audit-log rows when a field has `enable-audit-log`.
 6. Entity cache, cleared on write. Transaction cache as an in-memory map. Sim mode: a schema per `TransactionCacheDb` on the overlay cluster from `plans/EmbeddedPostgres.md`. HOLD, FLUSH, and `enter_sim` are a port of the Java code at the time the port begins. A distributed cache-invalidation listener is still later, on the lib topic, and is not a second cache.
@@ -123,7 +124,7 @@ Bottom-up inside the phase:
 
 The factory holds one `DbDriver` per entity group. The default framework group is one database.
 
-Phase 4 tests cover the facade without a service call: create and read, a view-entity find, a dynamic view, an FTS `matches`, a sim write that does not land in the main schema, table check on an empty database, and `EntityFacade.rest` against an in-memory request map.
+Phase 4 tests cover the facade without a service call: create and read, a view-entity find, a dynamic view, an FTS `matches`, a sim write that does not land in the main schema, table check on an empty database, and `EntityFacade.rest` against an in-memory request map. An entity-find `iterator` streams a result set larger than one fetch and releases the connection.
 
 ## Phase 5 — User and artifact authorization
 
@@ -148,7 +149,7 @@ Depends on phases 4 and 5. This phase finishes the service facade.
 - Script-type services whose body is JavaScript. The Groovy email scripts are converted in phase 10. There is no Java runner.
 - `UserSecurityChecks` for the two security ECAs, as Rust functions on the host. ECA actions from phase 4 run through this runner. SECA rules run through it too.
 - Email-ECA rules run through the same action runner and call a service. The transport behind send-mail is phase 10. Until then the send service reports that mail is not configured.
-- `service-group`. `async="true"` starts another thread and another `ExecutionContext`. `callFuture()` is that start plus a oneshot the caller waits on. The joined sites are named in `plans/Architecture-Proposal.md`. The scheduler thread sleeps and runs due jobs. Both are core threads, as `plans/Crate-Layout.md` describes.
+- `service-group`. `async="true"` submits to the service worker pool and gets another `ExecutionContext`. `callFuture()` is that submit plus a oneshot the caller waits on. The pool is bounded (cap, bounded queue, depth metric), and a full queue fails the submit with a clear error. The joined sites are named in `plans/Architecture-Proposal.md`. The scheduler thread sleeps and runs due jobs. Both are core threads, as `plans/Crate-Layout.md` describes.
 - `RestApi`: load `*.rest.xml`, walk the path, run `<entity>` and `<service>` operations. Tested by calling `run` with a path list and a parameter map. The HTTP route is phase 7.
 - JSON-RPC dispatcher, tested the same way, with a request body and no socket.
 - Remote REST and remote JSON-RPC runners on `RestClient`.
@@ -181,7 +182,8 @@ Depends on gate 1. `EntityFacade.rest` and `RestApi` already run. This phase is 
 - Basic screen facade: parse screen XML, directory subscreens and explicit `subscreens-item`, `ScreenUrlInfo`, transition match on name and method, run the transition actions on the phase 6 runner, and honor `default-response` of `none` or a redirect. Widget rendering is phase 8. `webroot.xml` already treats `rest` as a subscreen by file name.
 - `rest.xml` transitions this phase wires: `e1` to `EntityFacade.rest`, `s1` to `RestApi.run`, `login`, and `logout`. `sendOtp` and `verifyOtp` parse, and until phase 11 they return a clear error instead of sending a code. The JSON-RPC HTTP route calls the dispatcher from phase 6.
 - Screen `require-authentication` stays false on `rest.xml`, so the transition decides. The REST handlers require a logged-in user.
-- Schema transitions (`entity.json`, `service.swagger`, and the RAML siblings) close this phase. Gate 2 does not call them.
+- Schema transitions (`entity.json`, the service schemas, and the OpenAPI 3.1 export) close this phase. Gate 2 does not call them. Swagger and RAML output is not built.
+- `/health` and `/metrics` on the HTTP edge: readiness reports the factory and pool state, and `/metrics` exposes the phase 3 gauges and the statement timings.
 
 ### Gate 2 — REST API request
 
@@ -270,7 +272,8 @@ Depends on the HTTP client, the user facade, and the screen facade for screen-se
 - Cache admin and the other tools services that wrap facades already built.
 - Print-job records. Turning the gate 3 FO document into PDF is phase 12. Until then a print or email path that asks for PDF reports that PDF is not available.
 - User remainder: preferences, password reset, TOTP, email second factor, and the admin side of API keys and login keys. The `sendOtp` and `verifyOtp` transitions start working here.
-- The Groovy shell is not replaced with a script console.
+- The Groovy shell is not replaced with a script console, and there is no web eval endpoint even in development: the hardened shell is still too risky. An SSH server in the host (exec and file access, authenticated through the user facade and artifact authz) is the better shape for admin access and pairs with `moqui-sftp`. It is an idea for a later pass, not part of the port.
+- Definition type generation (`plans/TypeGeneration.md`): TypeScript declarations from entity, service, and screen definitions, emitted by a CLI subcommand after definitions load.
 - A distributed cache-invalidation listener on the lib topic, when a deployment asks for one. It is not a Redis client and not a second cache facade.
 
 ## Phase 12 — PDF, later drivers, and the tool components
@@ -278,7 +281,7 @@ Depends on the HTTP client, the user facade, and the screen facade for screen-se
 Depends on `xsl-fo` from gate 3, and on the `DbDriver` trait from phase 3.
 
 - An implementation of `PdfRenderer`. The host `pdf` module is the placeholder until then.
-- `moqui-fop`, `moqui-poi`, `moqui-image`, `moqui-cups`, and `moqui-sso`, each weighed against binary size the way `moqui.war` size kept them out of the Java framework. A component that stays outside is listed as outside, with that reason.
+- `moqui-fop`, `moqui-poi`, `moqui-image`, `moqui-cups`, `moqui-sso`, and `moqui-sftp`, each weighed against binary size the way `moqui.war` size kept them out of the Java framework. A component that stays outside is listed as outside, with that reason.
 - Further sync drivers, each a dialect plus a `DbDriver`: SQL Server, Oracle, DB2, DB2 for i, Derby, HSQLDB. A missing driver is a configuration error that names the database. None of them block the other gate 4 work.
 
 ### Gate 4 — tools and utilities
@@ -291,12 +294,18 @@ The gate is a checklist. Each item is its own test. Entity and service behavior 
 - LLM and A2A cover the same cases as the current Java tests for those facades.
 - Every entry in the tool-component list is either implemented or recorded as staying outside.
 - A later database driver, when one is included in the build under test, runs the same metadata and insert smoke test as MySQL. A build that omits them still passes the gate.
+- Type generation emits declarations for a sample of framework and tools services and screens, and the output passes `tsc --noEmit`.
+- `/health` reports ready and `/metrics` reports the pool gauges.
 
 Scheduled jobs are a phase 6 test. Sim mode is a phase 4 test. They are not repeated on this checklist.
 
 ## Tests
 
 Unit tests live in the crate that owns the code. Lib tests do not start a factory. Each facade phase has its own tests before the next phase starts. Phase 4 tests do not call a service. Phase 6 tests do not open a socket. Phase 7 tests do not render a widget.
+
+Generated code is pinned by golden tests: one fixture XML per action and screen element, with the expected JavaScript checked in. The macros are the framework's compiler backend (`plans/Architecture-Proposal.md`, Templating), and these tests are what make an edit to them safe.
+
+The ported tests pin intended behavior. A parity harness covers the rest: the Java framework and MR-Moqui run the same fixtures and requests against the same data, and the harness diffs the observable output (REST JSON, screen output in each kept mode, and the generated SQL). It runs at the gates and its diff report is a gate artifact: what still differs, and why, with the intentional redesigns from the README named.
 
 The gates are integration tests on the binary or on `moqui-host`:
 

@@ -173,7 +173,7 @@ field     = name ("." name)*
 term      = optional leading "*" , text , optional trailing "*"
 ```
 
-`*:` immediately before a term searches every field. A trailing `*` is `Prefix`. A leading and trailing `*` is `Contains`. A quoted string is a phrase (those terms, that order). `field:[a TO b]` and `field:{a TO b}` are inclusive and exclusive ranges. `*` or an empty string matches all. `_NA_` is an ordinary term.
+`*:` immediately before a term searches every field. A trailing `*` is `Prefix`. A leading and trailing `*` is `Contains` (Postgres: trigram-indexed `ILIKE`; OpenSearch: wildcard). A quoted string is a phrase (those terms, that order). `field:[a TO b]` and `field:{a TO b}` are inclusive and exclusive ranges. `*` or an empty string matches all. `_NA_` is an ordinary term.
 
 Anything else is an error. The current client sets `lenient: true` and drops illegal clauses. The parser reports the clause instead. The tools screen link points at this grammar. It stops pointing at the Elastic query-string manual.
 
@@ -272,7 +272,7 @@ Each table has:
 - `indexed_at timestamptz`
 - `body jsonb`, the full nested document
 - a typed column for every field used in a filter, a sort, or an aggregation
-- a generated `tsvector` for every text field, default config `english`, with a GIN index. The `english` config is the one for this pass. A per-field configuration waits on a non-English corpus.
+- a generated `tsvector` for every text field, default config `english`, with a GIN index, and a `gin_trgm_ops` GIN index so a `Contains` clause compiles to index-supported `ILIKE` instead of a scan. The `english` config is the one for this pass. A per-field configuration waits on a non-English corpus. The trigram index cost is measured on the first corpus, and a document field can drop it when measurements say so.
 
 Child arrays stay inside `body`. A `Child` query is an `EXISTS` over `jsonb_array_elements` so one element has to satisfy every inner predicate. A dotted `Field` is the same extraction with a single predicate. A sum of a child number is a lateral sum of those elements, or a `jsonb` sum.
 

@@ -30,4 +30,4 @@ Most of MR-Moqui is a port of the Java framework as it exists when the port begi
 
 The port is bottom-up. The entity facade and the service facade are finished before the first gate, a data file load. Plan: [`plans/Implementation-Phases.md`](plans/Implementation-Phases.md).
 
-The architecture direction is [`plans/Architecture-Proposal.md`](plans/Architecture-Proposal.md). The crate cut is [`plans/Crate-Layout.md`](plans/Crate-Layout.md). Context objects are [`plans/ContextObjects.md`](plans/ContextObjects.md). Embedded Postgres is [`plans/EmbeddedPostgres.md`](plans/EmbeddedPostgres.md).
+The architecture direction is [`plans/Architecture-Proposal.md`](plans/Architecture-Proposal.md). The crate cut is [`plans/Crate-Layout.md`](plans/Crate-Layout.md). Context objects are [`plans/ContextObjects.md`](plans/ContextObjects.md). Embedded Postgres is [`plans/EmbeddedPostgres.md`](plans/EmbeddedPostgres.md). TypeScript generation from definitions is [`plans/TypeGeneration.md`](plans/TypeGeneration.md).
