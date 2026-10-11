@@ -71,7 +71,7 @@ The one place the current code cheats is `RestClient.refuseIfSim()`, which calls
 | `error` | `BaseException` | Plain error type. Artifact exceptions stay in core. |
 | `node` | `MNode` | XML tree, location, merge, and the writer. Parsing is filled in against the corpus. No XML crate. |
 | `resource` | `ResourceReference`, file and memory refs | Trait plus file and memory implementations. `component://` and `db://` stay in core. `content://` is an error that names the location. Classpath goes away; the framework component is a directory. |
-| `object` | `ObjectUtilities` | Field coercion: decimals, timestamps, booleans, strings. `rust_decimal` and `time` 0.3 live here. `liquid-core` already depends on `time` ^0.3.37. |
+| `object` | `ObjectUtilities` | Field coercion: decimals, timestamps, booleans, strings. `rust_decimal` and `time` 0.3 live here. |
 | `string` | `StringUtilities` | Encode, decode, pretty-print, masks. Groovy class-name cleanup is not ported. |
 | `collection` | `CollectionUtilities` | Map and list helpers the XML and entity code actually use. |
 | `context_stack` | `ContextStack` | Stack of maps for variable scope. No engine trait. What each environment sees is `plans/ContextObjects.md`. |
@@ -84,7 +84,7 @@ The one place the current code cheats is `RestClient.refuseIfSim()`, which calls
 | `http` | new | `HttpClient` trait. |
 | `rest` | `RestClient` | Blocking client. Feature `http`. |
 
-`node` is the tree the rest of the framework calls. The FreeMarker half of `MNode` is not ported, and neither is the JDK SAX handler. Parsing is whatever the corpus needs, filled in when a file fails to load. The behavior to match, from the handler the corpus already goes through: UTF-8, an optional XML declaration, comments and processing instructions skipped, the element name stored raw (`getNodeNamespace` returns null today), attributes kept as written (`xmlns:xsi` and `xsi:noNamespaceSchemaLocation` are ordinary attributes), no schema fetch, no external entities, no DOCTYPE, character data including CDATA trimmed into the node's text, the five predefined entities and numeric character references expanded, and any other entity an error. The writer emits child text as CDATA. Line and column are tracked. `EntityValue`'s W3C DOM export is not ported. Acceptance is the corpus: framework conf, entity, service, and screen XML, and `mantle-udm` when it is loaded. Nothing else this runtime parses XML (`lettre`, `axum`, `postgres`, `reqwest`, MiniJinja 3 with serde off, `rquickjs`, `rustls`), so there is no XML crate. `sgml` stays its own reader. Gate 3 `xsl-fo` emits the FO document and does not transform it. The deferred XSLT-plus-FOP step would bring its own engine with `PdfRenderer`.
+`node` is the tree the rest of the framework calls. The FreeMarker half of `MNode` is not ported, and neither is the JDK SAX handler. Parsing is whatever the corpus needs, filled in when a file fails to load. The behavior to match, from the handler the corpus already goes through: UTF-8, an optional XML declaration, comments and processing instructions skipped, the element name stored raw (`getNodeNamespace` returns null today), attributes kept as written (`xmlns:xsi` and `xsi:noNamespaceSchemaLocation` are ordinary attributes), no schema fetch, no external entities, no DOCTYPE, character data including CDATA trimmed into the node's text, the five predefined entities and numeric character references expanded, and any other entity an error. The writer emits child text as CDATA. Line and column are tracked. `EntityValue`'s W3C DOM export is not ported. Acceptance is the corpus: framework conf, entity, service, and screen XML, and `mantle-udm` when it is loaded. Nothing else this runtime parses XML (`lettre`, `axum`, `postgres`, `reqwest`, `rquickjs`, `rustls`), so there is no XML crate. `sgml` stays its own reader. Gate 3 `xsl-fo` emits the FO document and does not transform it. The deferred XSLT-plus-FOP step would bring its own engine with `PdfRenderer`.
 
 `cache` carries the `MCache` design. Rust is where the same algorithms get faster. The store is a concurrent map of entries. A get checks expiry using the access, creation, and update durations. `get(key, expireBeforeTime)` drops an entry whose last update is older than a known resource change, which is how screens and resources avoid a stale parse. Stats stay: gets, hits, misses, expires, evictions. `maxEntries` is enforced by a scheduled pass (default `maxCheckSeconds` 30), not on put. The pass removes the overflow, ordered by lowest `accessCount`, then oldest `lastAccessTime`. `MCacheManager` is a name-to-cache map, enough to use as a factory. Listeners, entry processors, write-through, and MX beans stay out.
 
@@ -115,10 +115,11 @@ A trait is used when conf selects an implementation, or when the implementation 
 | `SearchBackend` | Postgres SQL for the query and aggregation trees is in core. An OpenSearch mapping that only builds HTTP bodies can live here and use `HttpClient`. |
 | `LlmProtocol`, `LlmTool` | More than one protocol and many tools. |
 | `PdfRenderer` | Optional, and later. Core emits the XSL-FO document without this trait. A PDF engine implements it, with the tool components. See the architecture proposal. |
+| `TemplateRenderer` | Conf maps a file extension to an implementation, as Java's `<template-renderer>` does. The implementations are `JsTemplateLiteral`, the fancy renderer, and the locked-down fancy renderer. All of them run on the QuickJS runtime. See Templating in the architecture proposal. |
 
-The cache facade uses the `MCache` port directly. There is no second cache implementation. Outbound mail uses `lettre` directly. Neither is a trait. Distributed invalidation, when it is added, is a listener on the in-process topic in `moqui-lib`. It is not a Redis client and not a second cache facade. Entity cache, this local cache, and the `screen-server-static` response header stay separate. Inbound SMTP is a listening server and stays a host feature. Where Moqui already has an implementation because the general library was the wrong shape, that implementation is ported. `MNode`, `MCache`, and the transaction manager are the cases. An external crate earns its place when it is the engine (Postgres, QuickJS, MiniJinja, Liquid, axum) or when another crate already needed pulls it in.
+The cache facade uses the `MCache` port directly. There is no second cache implementation. Outbound mail uses `lettre` directly. Neither is a trait. Distributed invalidation, when it is added, is a listener on the in-process topic in `moqui-lib`. It is not a Redis client and not a second cache facade. Entity cache, this local cache, and the `screen-server-static` response header stay separate. Inbound SMTP is a listening server and stays a host feature. Where Moqui already has an implementation because the general library was the wrong shape, that implementation is ported. `MNode`, `MCache`, and the transaction manager are the cases. An external crate earns its place when it is the engine (Postgres, QuickJS, axum) or when another crate already needed pulls it in.
 
-QuickJS-NG (`rquickjs`) is the script runner. There is one scripting language, so conf does not select a runner. MiniJinja expands framework XML into JavaScript or HTML. Liquid renders user-authored text and is the sandbox boundary. Those are two engines in `template`, not one trait an operator swaps. Tests call QuickJS, MiniJinja, and Liquid directly. The templating split is `plans/Architecture-Proposal.md`. What each environment sees is `plans/ContextObjects.md`.
+QuickJS-NG (`rquickjs`) is the script and template engine. There is one language, so conf does not select a runner. Conf does select a `TemplateRenderer` by extension. XML action and screen macros are JavaScript modules on that runtime. Tests call the renderers and the macro modules directly. The split is `plans/Architecture-Proposal.md`. What each one sees is `plans/ContextObjects.md`.
 
 `ExecutionContext` and `ExecutionContextFactory` are structs. The host builds the factory and passes the host implementations. `DbDriver` is a map: one entry per entity group, plus the search store when that store is a different database. It is not one trait object. `PdfRenderer` is passed when a renderer exists. Facades are fields. There is no `Moqui.getExecutionContextFactory()` global inside lib or core. The binary may keep a process-wide factory for the CLI. The factory starts the framework's worker threads.
 
@@ -128,13 +129,13 @@ QuickJS-NG (`rquickjs`) is the script runner. There is one scripting language, s
 
 `context` holds the factory and the facades that are not large enough to be their own directory: artifact execution, cache (the facade over `MCache`), l10n, logger (over `tracing`), message, notification, resource (the `component://` scheme and the facade), transaction (the facade, the manager, and the pool), user, web, conf loading, and component discovery.
 
-`script` is the QuickJS runner. `template` is MiniJinja 3.0.0 and Liquid. The values each one sees are `plans/ContextObjects.md`.
+`script` is the QuickJS runtime. `template` is the `TemplateRenderer` implementations on that runtime: `JsTemplateLiteral`, the fancy renderer, and the locked-down variant. The values each one sees are `plans/ContextObjects.md`.
 
 `entity` holds definitions, values, the condition tree, find, SQL rendering, the dialect profiles, the `DbDriver` trait, ECAs, the data loader and writer, the entity cache, feeds, and dynamic views. SQL text is core. Opening a connection is host.
 
 `service` holds definitions, the call builders, runners, SECAs, email ECAs, REST API metadata, JSON-RPC dispatch, and job definitions, including the thread that sleeps and runs due jobs.
 
-`screen` holds definitions, forms, trees, URL info, and the MiniJinja expansion to HTML and to client JavaScript.
+`screen` holds definitions, forms, trees, URL info, and the QuickJS macro expansion to HTML and to client JavaScript.
 
 `search` is the new facade from the architecture proposal, not a port of `ElasticFacade`. The API is `plans/SearchFacade.md`. Postgres query and aggregation SQL is in core. OpenSearch request bodies live here when they are just HTTP. Starting the OpenSearch process does not. When the entity datasource is Postgres, embedded or external, default search tables are the `search` schema on that database. Search is its own embedded cluster when the entity datasource is not Postgres, and an external Postgres when a search URL names one. Embedded search starts on Windows too.
 
@@ -234,7 +235,7 @@ These are not crates.
 - `component.xml`
 - `data/`, `entity/`, `service/`, `screen/`
 - `xsd/`
-- `template/` for the MiniJinja macro libraries (XML Actions, screens, forms) and the Liquid snippets that replace framework FreeMarker
+- `template/` for the JavaScript macro modules (XML Actions, screens, forms) and the framework text templates the renderers run
 - default `conf/MoquiDefaultConf.xml`
 
 `runtime/` is the instance directory, as it is today:

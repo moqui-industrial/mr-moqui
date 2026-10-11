@@ -1,23 +1,23 @@
 # Context objects
 
-Which values MiniJinja, QuickJS, Liquid, and the browser can see, and which Rust types those environments share.
+Which values QuickJS and the browser can see, and which Rust types those environments share. Server text goes through one of the template renderers in `plans/Architecture-Proposal.md`. The macro modules that expand XML are the same runtime, with a narrower input.
 
 This follows Templating in `plans/Architecture-Proposal.md` and the browser host in `plans/QvtServerStatic.md`. The method list on server `ec` facades and on `sri` is Server host methods, below.
 
 ## Decision
 
-There are four places a value is visible. Three of them are Rust engines. The fourth is the browser.
+There are four places a value is visible. The three server places are one QuickJS runtime. The fourth is the browser.
 
 | Environment | When it runs | What it is given |
 |---|---|---|
-| MiniJinja | Once, when an XML action or screen definition is compiled. The generated text is cached. | The element being compiled: attribute strings, child element text, and the already-rendered output of its children. No `ExecutionContext`, no context stack, no entity value. |
-| QuickJS | Every server evaluation: XML actions, `<script>`, attribute expressions, and a server screen render (html, text, csv, xml, xsl-fo, and qvt when it is not server-static). | The live context stack, `ec`, and during a screen render `sri`. Entity values and lists stay host objects. |
-| Liquid | Every send of an email, notification, or other user- or admin-authored template. | A plain snapshot of the map the caller passed. Filters for format and localize. No `ec`, no `sri`, no live entity. |
+| QuickJS scripts, `JsTemplateLiteral`, and the trusted fancy renderer | Every server evaluation: XML actions, `<script>`, attribute expressions, `ec.resource.expand()`, a trusted fancy template, and a server screen render (html, text, csv, xml, xsl-fo, and qvt when it is not server-static). | The live context stack, `ec`, and during a screen render `sri`. Entity values and lists stay host objects. |
+| XML action and screen macro modules | Once, when an action or screen definition is compiled. The generated text is cached. | The element being compiled: attribute strings, child element text, and the already-rendered output of its children (or a `visit` function). No `ExecutionContext`, no context stack, no entity value. |
+| Locked-down fancy renderer | When a template is rendered with the restricted renderer. | A plain snapshot of the map the caller passed. Format and localize functions. No `ec`, no `sri`, no live entity. |
 | Browser | A server-static qvt screen, after the template is cached. | The JSON package from `plans/QvtServerStatic.md`, plus the restricted browser `ec` that plan already lists. |
 
-String expansion (`ResourceFacade.expand`, and the `${name}` expansion in `moqui-lib`) is not a fifth engine. It looks up names in the context stack and evaluates embedded expressions with QuickJS on the server, or with the restricted browser host. Property expansion in lib stays string replacement against the environment and does not see the context stack.
+String expansion (`ResourceFacade.expand`) is `JsTemplateLiteral` on that runtime. A string with no `$`, or with `$` as the last character, is returned as itself. Localization of an input shorter than 256 characters still happens first, as `ResourceFacadeImpl.expand` does. The `${name}` expansion in `moqui-lib` stays string replacement against the environment and does not see the context stack. On the server, embedded expressions run in QuickJS. In the browser, `ec.resource.expand` uses the restricted host.
 
-MiniJinja does not run on the request path. A screen macro that today calls `sri` or `ec` while FreeMarker is rendering emits a JavaScript call instead. That call runs later, in QuickJS or in the browser. Internal framework text that is not an XML macro and not user-authored may use MiniJinja with a plain map. That map is the same snapshot Liquid gets.
+The macro module does not run on the request path. A screen function that today calls `sri` or `ec` while FreeMarker is rendering emits a JavaScript call instead. That call runs later, in QuickJS or in the browser. Short framework text uses `JsTemplateLiteral` and the live context. Structured component text uses the trusted fancy renderer. Text that must not be a script uses the locked-down renderer and the snapshot.
 
 ## What Java does, and what changes
 
@@ -28,13 +28,11 @@ The two FreeMarker jobs already have different data models:
 - `XmlActions.groovy.ftl` is compiled once. Its data model is one entry, `xmlActionsRoot`, the `MNode`. `<#visit>` walks the node. The names `ec`, `context`, and `result` appear in the generated Groovy. They are not in the FreeMarker data model. The generated script header says so.
 - Screen macros run on every render. `ScreenWidgetRenderFtl` passes the whole `ContextStack` as the data model, after putting `sri` and the widgets node on it. `ec` is already on the stack. Macros both walk `.node` and call `sri` and `ec` while they write output.
 
-MiniJinja 3.0.0 has no `<#visit>` and no node type. Its `Object` trait also takes ownership: `Value::from_object` stores an `Arc`, and the object must be `Send + Sync`. That is unchanged from 2.x. The context stack is confined to one `ExecutionContext` thread, so it is the wrong type to hand to MiniJinja even before the orphan rule. The `serde` feature stays off. Macros see attribute strings, child text, and already-rendered children.
-
-The Rust walker owns the visit. For each element it renders one cached template that imports the macro named for that element (`{% from 'defs' import entity_find %}{{ entity_find(attrs, text) }}`) and passes attributes, text, and rendered children. MiniJinja has no call of a macro through a variable name, and there is no per-mode template that branches on the element name. Child output is produced first, then the parent macro wraps it, including the case where the parent emits a loop and the child script sits inside the loop. Attribute strings are copied into that macro call. The copy happens once per definition, and the cached result is the generated script. That replaces the `MNode` wrapper cache. `Node` does not implement an engine trait.
+The macro module is JavaScript on the QuickJS runtime, so a function can walk a node when the walker passes one. The Rust walker owns the default visit. For each element it calls `macros[elementName](node, children)`. `children` is the already-rendered output of the child elements, and the function places that string, including inside a loop it emits. Attribute strings are copied into that call. The copy happens once per definition, and the cached result is the generated script. That replaces the `MNode` wrapper cache. `Node` does not implement an engine trait. The function is not given the request context. Dispatch by element name is an ordinary property lookup, which is why the library is a JavaScript module rather than a template that cannot call a macro through a variable.
 
 ## One stack, three projections
 
-`ContextStack` stays in `moqui-lib`. It is a stack of maps. It implements no MiniJinja, Liquid, or QuickJS trait. `moqui-lib` does not depend on those crates. A type in lib cannot implement their traits anyway: the orphan rule requires the crate to own the type or the trait.
+`ContextStack` stays in `moqui-lib`. It is a stack of maps. It implements no QuickJS trait. `moqui-lib` does not depend on `rquickjs`. A type in lib cannot implement that trait anyway: the orphan rule requires the crate to own the type or the trait. The core runtime reads the stack through the proxy below.
 
 QuickJS is the live view. Bare names in an expression (`orderId`, `statusId`) resolve on the stack, the way the Groovy binding and the FreeMarker data model do. `context` is that stack. `ec` is the host object for the execution context and is also the `ec` entry on the stack. Assignments write the top map. A service `result` map is present when the current actions provide one, as today. The QuickJS runtime is the one already owned by that `ExecutionContext`. Values created for a call die with it. They are not stored on a process-wide runtime.
 
@@ -56,18 +54,18 @@ Macros emit bare names. They do not rewrite reads to `context.foo`. `context.foo
 
 Expression hazards that change what a macro emits, including Elvis versus `??`, empty collections, `==`, and Groovy ranges, are the table in `plans/Architecture-Proposal.md` (What changes in expressions). Macros follow that table. `??` is only for a null check. An empty string or a zero uses logical or. An empty list or map tests length. `==` stays `==`. A Groovy inclusive range becomes `slice` with an exclusive end.
 
-Liquid and the browser see a snapshot, not the stack. The snapshot is the same projection as `ContextJavaUtil.unwrapMap`:
+The locked-down fancy renderer and the browser see a snapshot, not the stack. The snapshot is the same projection as `ContextJavaUtil.unwrapMap`:
 
-- Strings, booleans, numbers, and timestamps pass through. Timestamps become ISO-8601 text in JSON and in Liquid. A decimal becomes a string in JSON and in Liquid. It does not become a JavaScript number. String order and `+` are then lexicographic and concatenation (`"10.00" < "9.00"`, `"1.00"+"2.00"`).
+- Strings, booleans, numbers, and timestamps pass through. Timestamps become ISO-8601 text in JSON and in the locked-down template. A decimal becomes a string in JSON and in the locked-down template. It does not become a JavaScript number. String order and `+` are then lexicographic and concatenation (`"10.00" < "9.00"`, `"1.00"+"2.00"`).
 - An entity value becomes the plain field map. An entity list becomes a list of those maps.
 - `EntityFind`, the execution context, `sri`, and the context stack object are dropped.
 - Anything else is dropped and logged, as `unwrap` does today.
 
-Liquid's `Value` / `ObjectView` and the browser's JSON are two sinks of that one projection. A trusted internal MiniJinja data template is a third sink. The projection is the shared code. The engine value types are not.
+The locked-down template's plain values and the browser's JSON are two sinks of that one projection. The projection is the shared code. QuickJS host objects are not.
 
 The browser package is that projection plus two filters from `plans/QvtServerStatic.md`: credential parameters are stripped, and form-list lists and pagination keys are removed. A server-static expression that does decimal arithmetic, or that calls `ObjectUtilities` for it, is a compatibility-report violation. Formatting goes through `ec.l10n`. On the server, a decimal stays a host value.
 
-A live entity value inside Liquid would let a template walk a relationship and read through to the database. The snapshot is the sandbox, matching the decision that Liquid is the boundary. Callers pass the map the template is allowed to see. Filters may format and localize. They call the same functions as `ec.l10n` on the server. They do not take an `ExecutionContext`.
+A live entity value inside the locked-down template would let it walk a relationship and read through to the database. The snapshot is that boundary. Callers pass the map the template is allowed to see. Format and localize call the same functions as `ec.l10n` on the server. They do not take an `ExecutionContext`. `JsTemplateLiteral`, the trusted fancy renderer, and scripts are not this path. They see the live context, which is the same trust as a component-authored script.
 
 ## Host objects in QuickJS
 
@@ -78,9 +76,9 @@ These are the types a script can hold. Plain maps and lists that are already pla
 | context keys | Bare names, and `context.name`. On the server an unset name is null, via the proxy above | The `ContextStack` |
 | `ec` | Host object | The `ExecutionContext` and its facades |
 | `sri` | Host object, only while a server screen render is on the stack | The screen renderer. Absent in actions that are not a render, and absent in the browser |
-| entity value | Host object, field get and set | The entity value. `unwrap` is what Liquid, JSON, and the browser receive instead |
+| entity value | Host object, field get and set | The entity value. `unwrap` is what the locked-down template, JSON, and the browser receive instead |
 | entity list | Host object, index, length, iterable, `map`, `filter` | The list. `map` returns a JavaScript array so `list.map(x => x.field)` works without copying first |
-| decimal, timestamp | Host values | `rust_decimal` and `time` from `moqui-lib`. Not JavaScript numbers. Operators are not overloaded. `valueOf` throws an error naming the method to use, and `toString` prints, so `` `${decimal}` `` interpolation works. `+`, relational operators, and `==` against a number or a string throw. `==` between two decimals does not call `valueOf` and is reference equality, so it returns false. A decimal is always truthy, including zero, so `if (amount)` and `amount || fallback` do not match Groovy. The host methods are `add`, `subtract`, `multiply`, `divide`, `eq`, `compare`, and `isZero`. `divide` uses scale `max(left, right, 10)`. Checked operations return a script error when the 28-digit coefficient overflows. The browser package and Liquid still receive a decimal as a string. A server-static expression that does decimal arithmetic is a compatibility-report violation (`plans/QvtServerStatic.md`). That is the migration rule in `plans/Architecture-Proposal.md` |
+| decimal, timestamp | Host values | `rust_decimal` and `time` from `moqui-lib`. Not JavaScript numbers. Operators are not overloaded. `valueOf` throws an error naming the method to use, and `toString` prints, so `` `${decimal}` `` interpolation works. `+`, relational operators, and `==` against a number or a string throw. `==` between two decimals does not call `valueOf` and is reference equality, so it returns false. A decimal is always truthy, including zero, so `if (amount)` and `amount || fallback` do not match Groovy. The host methods are `add`, `subtract`, `multiply`, `divide`, `eq`, `compare`, and `isZero`. `divide` uses scale `max(left, right, 10)`. Checked operations return a script error when the 28-digit coefficient overflows. The browser package and the locked-down template still receive a decimal as a string. A server-static expression that does decimal arithmetic is a compatibility-report violation (`plans/QvtServerStatic.md`). That is the migration rule in `plans/Architecture-Proposal.md` |
 | `ObjectUtilities`, `CollectionUtilities`, `StringUtilities` | The same helpers the generated script header calls today | Functions in lib, bound once per runtime. The proxy returns them when the stack has no such key. They are not own properties of `globalThis` |
 
 `ec.entity`, `ec.service`, and the rest of the facade surface are the Server host methods section. They exist only on this QuickJS object. The browser `ec` is the table in `plans/QvtServerStatic.md` and does not grow to match the server object. `sri` is not added to the browser.
@@ -90,15 +88,15 @@ Generated screen JavaScript for a server render calls `sri` and writes to the re
 ## What is reused
 
 - `Node` and `ContextStack` in lib. One tree, one stack. Engines do not own copies of them.
-- The plain projection (`unwrap`). Liquid, browser JSON, and internal MiniJinja data templates all consume it.
-- Format and localize functions. QuickJS `ec.l10n`, Liquid filters, and the browser `ec.l10n` call them. The browser implementation is the subset already specified and talks to the locale catalog, not to the server function.
+- The plain projection (`unwrap`). The locked-down template and browser JSON both consume it.
+- Format and localize functions. QuickJS `ec.l10n`, the locked-down template, and the browser `ec.l10n` call them. The browser implementation is the subset already specified and talks to the locale catalog, not to the server function.
 
 ## What is not reused
 
-- A single Rust type that implements `minijinja::value::Object`, `liquid_core::ValueView`, and an rquickjs class. The engines disagree on ownership (`Arc` and `Send` versus a thread-bound context versus an owned snapshot), and lib cannot name their traits.
+- A separate Rust value trait per template syntax. The renderers and the macro modules share the QuickJS runtime. The locked-down renderer gets the unwrap snapshot as plain JavaScript values.
 - `MNode`'s FreeMarker wrapper cache. Codegen runs once. The walker passes strings.
 - A reflection wrapper in the style of `BeansWrapper`. Each host type above is written out.
-- Live entity values, `ec`, or `sri` inside Liquid or inside the cached qvt template.
+- Live entity values, `ec`, or `sri` inside the locked-down template or inside the cached qvt template.
 
 ## Server host methods
 
@@ -150,4 +148,5 @@ The macros then read the objects those methods return. A screen URL has `path`, 
 ## Out of scope
 
 - QuickJS operator overloading for decimals. QuickJS-NG ties it to the built-in `BigDecimal` and `BigFloat` classes (`CONFIG_BIGNUM`). It does not extend to a host class, so the build flag does not give a host decimal `+`. The browser cannot share that flag either.
-- Running MiniJinja per request so a screen macro can read the context stack. Request data is read by the generated script.
+- Running the macro module per request so a screen function can read the context stack. Request data is read by the generated script.
+- A second script or template engine. V8 is the later option in `plans/Architecture-Proposal.md`, and only as a replacement for this runtime if a profile says the JavaScript is the heavy part.

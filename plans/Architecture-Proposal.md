@@ -4,7 +4,7 @@
 
 This document captures the initial architecture direction for a Rust rewrite of Moqui Framework. It is the starting proposal for the new repository.
 
-**STATUS NOTE**: Templating, screen render modes, the crate cut, search, qvt server-static, embedded Postgres, context objects, and the build order are specified. Templating is below: MiniJinja 3 expands XML Actions and screen/form XML into JavaScript, and Liquid renders user-authored text. Screen render modes are in Screen Render Modes. The crate cut is `plans/Crate-Layout.md`. Search is `plans/SearchFacade.md`. Server-static qvt is `plans/QvtServerStatic.md`. Embedded-database concurrency, the transaction manager's checkout, and the sim overlay's database lifecycle are `plans/EmbeddedPostgres.md`. What each environment can see, which types are shared, and the server host method list are `plans/ContextObjects.md`. The build order is `plans/Implementation-Phases.md`. The proposal will still move as the first components are built.
+**STATUS NOTE**: Templating, screen render modes, the crate cut, search, qvt server-static, embedded Postgres, context objects, and the build order are specified. Templating is below: QuickJS runs scripts and templates. JavaScript modules expand XML Actions and screen/form XML, `JsTemplateLiteral` is `ec.resource.expand()`, and a fancy renderer (dialect still open) covers structured text, with a locked-down variant for less-trusted templates. Screen render modes are in Screen Render Modes. The crate cut is `plans/Crate-Layout.md`. Search is `plans/SearchFacade.md`. Server-static qvt is `plans/QvtServerStatic.md`. Embedded-database concurrency, the transaction manager's checkout, and the sim overlay's database lifecycle are `plans/EmbeddedPostgres.md`. What each environment can see, which types are shared, and the server host method list are `plans/ContextObjects.md`. The build order is `plans/Implementation-Phases.md`. The proposal will still move as the first components are built.
 
 ## Repository
 
@@ -16,7 +16,7 @@ This document captures the initial architecture direction for a Rust rewrite of 
 
 - Keep XML as the spec language for configuration, entities, services, screens, SECAs, and data files, with only the adaptations required by a Rust runtime.
 - Move the heavy lifting (entity facade, service facade, screen rendering, tooling, and performance-sensitive service implementations) into Rust.
-- Use one language for inline expressions on both server and client so that XML Screens can become client-renderable.
+- Use one language (JavaScript) for scripts, templates, and inline expressions, on the server and in the browser, so that XML Screens can become client-renderable.
 - Default to an embedded Postgres (`postgresql_embedded`) when no external database is configured, and use an external Postgres when one is. The same engine backs the sim-mode overlay.
 - Make OpenSearch optional from day one by planning a search interface that can be satisfied by Postgres full-text search and JSON operators.
 - Preserve the ExecutionContext / facade shape that makes Moqui’s artifact model work.
@@ -36,7 +36,7 @@ The runtime is organized around an `ExecutionContext` that owns the facades:
 - LoggerFacade
 - SearchFacade (see below)
 
-XML Actions (`entity-find`, `service-call`, `if`, `iterate`, `set`, and the rest) and screen/form XML are expanded by MiniJinja macros into JavaScript and run by the embedded engine. An in-memory interpreter remains possible as a later optimization, but it is not the primary path. Expressions inside attributes, and `<script>` bodies, are JavaScript. Details are in Templating.
+XML Actions (`entity-find`, `service-call`, `if`, `iterate`, `set`, and the rest) and screen/form XML are expanded by JavaScript modules into JavaScript and run by the embedded engine. An in-memory interpreter remains possible as a later optimization, but it is not the primary path. Expressions inside attributes, `<script>` bodies, and text templates are JavaScript. Details are in Templating.
 
 Components remain directories with a `component.xml` descriptor, discovered and loaded at startup. Resource locations keep a scheme-based model (`component://`, and equivalents).
 
@@ -64,7 +64,7 @@ JavaScript is the scripting language. The engine is QuickJS-NG embedded through 
 
 - Small, embeddable, fast startup, and a clean Rust integration. Host functions are synchronous: the script calls, the call blocks, and it returns a value. Module loaders stay available.
 - Supports modern ECMAScript (modules, proxies, BigInt, and a large fraction of current language features). Async functions exist in the language and are unused here. A host call returns before the script continues, and the framework has no event loop that would drain a promise. It is not required to track the absolute latest spec the week it ships. QuickJS-NG is adequate. TypeScript remains an optional authoring layer (transpiled by SWC or oxc) if longer scripts later want types. It is not required for expressions.
-- Heavier options (V8 via `rusty_v8`) were considered and set aside. Binary size, build complexity, and the fact that most script work is business logic rather than tight loops made the lighter engine the better fit. Pure-Rust engines (Boa and others) are not yet the right primary runtime for a large body of existing service code.
+- Heavier options (V8 via `rusty_v8`) were considered and set aside. Binary size, build complexity, and the fact that most script work is business logic rather than tight loops made the lighter engine the better fit. The same engine runs templates. For the short strings `expand()` handles, and for a macro call that runs once per definition, V8 would cost more than it returns. If generated JavaScript or large templates later dominate a profile, switching this runtime to V8 can be reconsidered. It would replace QuickJS, not sit beside it. Pure-Rust engines (Boa and others) are not yet the right primary runtime for a large body of existing service code.
 
 ### What changes in expressions
 
@@ -101,59 +101,59 @@ Host values (`EntityValue`, `EntityList`, decimals, timestamps) expose the metho
 
 A general Groovy-to-JavaScript transpiler is not planned, and a long-lived compatibility shim for Groovy syntax is not desired. The preferred path is AI-assisted update of expressions and scripts, after the pre-scan in `plans/Implementation-Phases.md`. A temporary, narrowly scoped rewrite of the common attribute-expression idioms above may be used during the transition if it proves helpful, but it should not become something that ships and is relied on in production. The cost of manual migration is no longer a reason to keep risky compatibility layers.
 
-`mantle-udm` (entity definitions and seed data) should load with little or no change once the entity model and data loader exist. `mantle-usl` requires migration of Groovy expressions and `<script>` bodies to JavaScript. XML Action elements stay as XML. The macro library that expands them changes from FreeMarker (emitting Groovy) to MiniJinja (emitting JavaScript).
+`mantle-udm` (entity definitions and seed data) should load with little or no change once the entity model and data loader exist. `mantle-usl` requires migration of Groovy expressions and `<script>` bodies to JavaScript. XML Action elements stay as XML. The macro library that expands them changes from FreeMarker (emitting Groovy) to a JavaScript module (emitting JavaScript).
 
 ## Templating
 
-FreeMarker currently serves two different purposes. MR-Moqui splits them across two engines. What each engine is given, and what QuickJS and the browser see, is `plans/ContextObjects.md`.
+FreeMarker currently does two jobs: it expands XML Actions and screen XML into code, and it renders text against the live context. Both become JavaScript on the QuickJS runtime that already runs scripts. Scripts and templates share a language, a context, and the host objects in `plans/ContextObjects.md`.
 
-### Code generation with MiniJinja
+`GStringTemplateRenderer` was an earlier experiment along this line. It rendered a file as a Groovy `GString` through `groovy.text.GStringTemplateEngine`, and `MoquiDefaultConf.xml` registers it for the `gstring` and `html.gstring` extensions. It was viable. Rewriting the FreeMarker macro library was not worth it at the time, so the FTL set stayed. This port picks that experiment back up, with JavaScript instead of Groovy, and includes the macro libraries.
 
-XML Actions and screen/form XML are expanded by a library of macros (one per element name) into executable code. Today the target is Groovy. In MR-Moqui the target is JavaScript, run on the embedded QuickJS-NG engine described above.
+QuickJS-NG through `rquickjs` is the engine for scripts and for every template renderer below. V8 stays the later option described under Why rquickjs / QuickJS-NG. It is not a second engine in this port.
 
-MiniJinja is the engine for this library. Pin `minijinja` 3.0.0 (released 2026-10-08). It is a Jinja2-compatible template engine written in Rust, with macros, `{% import %}` / `{% from %}`, inheritance, and blocks. A file or a directory of macros, named to match the XML element names (`entity-find`, `service-call`, `form-single`, `field`, and so on), replaces the current FTL macro set. The walker renders one cached template per element name (`{% from 'defs' import entity_find %}{{ entity_find(attrs, text) }}`). MiniJinja has no call of a macro through a variable name, and there is no per-mode template that branches on the element name. The generator passes the element attributes and already-rendered children, and emits JavaScript.
+### Template renderers
 
-The `serde` feature stays off. Macros receive attribute strings, child text, and already-rendered children. `set_auto_reload(false)` is set on the macro environment: 3.0 stats the file on every lookup when auto-reload is left on, and the cached artifact is the generated JavaScript. `trim_blocks` is on, set through `SyntaxConfig`, so macro output is not padded with whitespace that becomes JavaScript. There is no `minijinja-contrib`. Dates are formatted by `ec.l10n`. Fuel remains. Autoescape is off in the codegen environment: its output is code, and value escaping happens at runtime through the host helpers. The `Object` trait still takes `self: &Arc<Self>` (`Send + Sync`). A node is not handed to MiniJinja. 3.0 changes floor division, `round`, and undefined-handling inside MiniJinja templates. The macros are new, so those changes are not a migration, and they do not change the JavaScript the macros emit.
+`TemplateRenderer` is a trait, the same shape as `org.moqui.context.TemplateRenderer`. Conf maps a file extension to an implementation, as `<template-renderer>` does today. The set stays open. A MiniJinja or Liquid renderer can be registered later if a concrete template set wants that syntax. Neither is part of this port.
+
+Three implementations are planned. All three run on the `ExecutionContext`'s QuickJS runtime. A template is compiled once and the function is cached, by location and last modified for a file, and by source text for a string. That is the cache `GStringTemplateRenderer` keeps for its Groovy template.
+
+**`JsTemplateLiteral`.** The file or string is the body of an ES6 template literal. The renderer escapes backslashes and backticks, wraps the text in a function that returns the literal, and compiles it. `${` stays an expression, so an author writes `\${` for a literal dollar brace. This is the renderer `ec.resource.expand()` uses, in place of the Groovy `"""..."""` script `ResourceFacadeImpl.expand` compiles today. Localization of an input shorter than 256 characters still happens before that compile. Bare names resolve through the server proxy. The live context is visible, including `ec` on a request. An expression inside `${}` is JavaScript, so this is the same trust level as a script. It fits the short component-authored strings the framework already expands: messages, subjects, from addresses. It has no statements. A loop is an expression, or the template belongs on the fancy renderer.
+
+**Fancy renderer.** Control flow, iteration, and partials, for a template that is mostly text with structure. Inline `<text template="true">` is this case today. `DefaultScreenMacros.any.ftl` compiles the body with FreeMarker's `?interpret`, and bodies such as `framework/screen/ScreenRenderEmail.xml` use `<#if>`, `<#list>`, and `<#assign>`. Those bodies are rewritten into the fancy dialect. The dialect and the JavaScript library are not chosen yet. Mustache.js is the candidate: small, plain JavaScript, no Node APIs, run inside QuickJS. If that candidate is kept, the renderer is named `JsMustache`. Another library gets its own name and conf extension when it is chosen. The trusted fancy renderer sees the same live context as `JsTemplateLiteral`. The library is loaded once per runtime. Each template is compiled once and cached.
+
+**Locked-down fancy renderer.** The same dialect and the same library, with a different context. If the fancy renderer is `JsMustache`, this one is `JsMustacheRestricted`. It receives the unwrap snapshot from `plans/ContextObjects.md`: plain values, decimals as strings, no `ec`, no `sri`, no live entity value. Format and localize are plain functions and do not take an `ExecutionContext`. This is new. Moqui's sandbox options have been minimal, and untrusted FreeMarker, GString, and script templates have not been accepted. Component-authored and framework templates stay on the trusted renderers. A template that may be edited by someone who is not a component author uses this renderer, selected by its own conf extension. `expand()` does not use it. A stored string that must not run as a script is rendered here, not passed to `expand()`.
+
+Email bodies stay screens, rendered in the `html` and `text` modes. Subject, from address, and the other `ec.resource.expand` call sites use `JsTemplateLiteral`.
+
+### Code generation
+
+XML Actions and screen/form XML are expanded by JavaScript functions, one per element name. Today the FreeMarker macros emit Groovy. These emit JavaScript, run on the same QuickJS runtime.
+
+The macro file is a JavaScript module. `macro-template-location` points at that file, so a theme still overrides a render mode by replacing the file, with no framework rebuild. Functions correspond to the XML elements (`entityFind`, `serviceCall`, `formSingle`, `field`, and so on). The Rust walker dispatches with `macros[elementName](node, children)`. The node is a plain object of attribute strings and child element text. `children` is the already-rendered output of the child elements, and the function places that string, including inside a loop it emits. A function may instead take `visit` and call it where the child output belongs. The function returns a string. It does not see the request `ExecutionContext`. Request data is read later, by the generated script.
+
+The functions build that string with template literals. Attribute and text values reach the generated JavaScript only through one `jsStr()` helper, and a property test runs values containing quotes, backslashes, newlines, and `${` through every function. Autoescape stays off: the output is code, and value escaping happens at runtime through the host helpers. Dates are formatted by `ec.l10n` in the generated script.
+
+Server HTML and client-renderable screen JavaScript are two modules, or one module that takes the mode. `qvt` emits a component object. The compiler in `vue.global` compiles the template string.
 
 This keeps the properties that matter:
 
-- The macros are ordinary text. They can be edited without rebuilding the framework.
+- The modules are ordinary text. They can be edited without rebuilding the framework.
 - The thing that runs is generated JavaScript, so behavior is visible and ordinary script tooling applies.
 - Location information from the original XML is written into the generated script as comments or a source map, so stack traces and debugging point back at the service or screen file.
-- Attribute and text values reach JavaScript only through one `js_str()` string-literal helper, and a property test runs values containing quotes, backslashes, newlines, and `${` through every macro.
-- Golden tests pin the generated JavaScript for a fixture per element. The macros are the framework's compiler backend, and these tests are what make an edit to them safe.
-- Composition works the same way it does with FreeMarker macros.
+- Golden tests pin the generated JavaScript for a fixture per element. The modules are the framework's compiler backend, and these tests are what make an edit to them safe.
+- Composition is a function call.
 
 An in-memory interpreter for XML Actions remains possible as a later optimization or for elements that are awkward to generate, but it is not the primary path. Generated JavaScript is preferred for lower execution overhead, well-known behavior, and easier debugging.
 
-The same MiniJinja library can target different outputs. Server-side HTML rendering and client-renderable screen JavaScript can be two macro sets, or one set with a target parameter.
-
-### Runtime text templates with Liquid
-
-Emails, notifications, custom HTML fragments, and other user- or admin-authored text are rendered with Liquid, via the `liquid` crate (liquid-rust).
-
-Liquid was designed so that untrusted or semi-trusted templates can be rendered safely. It is intentionally limited: output tags, a small set of logic tags, filters, and inclusion of other templates via `{% render %}`. There is no general scripting. liquid-rust aims at Shopify compatibility and lets the host register only the filters and tags it wants.
-
-Reusable pieces are snippets rather than FreeMarker-style macros. That is sufficient for this surface and safer. Custom filters provide Moqui-specific formatting, localization, and any limited context access that is explicitly allowed. That access is the snapshot in `plans/ContextObjects.md`.
-
-Liquid has a broad ecosystem (highlighters, editors, documentation, examples) because it is widely used beyond Shopify. That tool support is the reason to accept a second engine rather than using MiniJinja for everything.
-
-### Sandboxing
-
-MiniJinja is used for framework-authored code generation, where the authors are the component or framework developers. It is not the sandbox boundary.
-
-Liquid is the sandbox boundary for templates that may be edited by admins or come from less-trusted sources. Its restriction is structural. MiniJinja’s fuel system and restricted environments are available if a MiniJinja template ever needs limits, but user-facing text defaults to Liquid.
-
 ### Summary
 
-| Job | Engine | Notes |
+| Job | Implementation | Notes |
 |---|---|---|
-| XML Actions → JavaScript | MiniJinja macros | Replaces FTL → Groovy. Emits debuggable JS. |
-| Screen/form XML → JavaScript or HTML | MiniJinja macros | Same library, possibly different target. |
-| Emails, notifications, custom text/HTML | Liquid (`liquid` crate) | Sandboxed by design. Custom filters for Moqui helpers. |
-| Internal framework templates | MiniJinja | No second engine required when authors are the framework. |
-
-Both crates are pure Rust and small. Liquid does not need to be a complete Shopify subset on day one. Start with the standard library plus a small set of Moqui filters, and add tags only when a real template requires them.
+| XML Actions → JavaScript | QuickJS macro module | Replaces FTL → Groovy. Emits debuggable JS. Sees the element, not the request. |
+| Screen/form XML → JavaScript or HTML | QuickJS macro module | One module per mode, or one module that takes the mode. `macro-template-location` still selects the file. |
+| `ec.resource.expand()`, short component text | `JsTemplateLiteral` | Template-literal body, live context. Successor of the Groovy string `expand()` compiles. |
+| Structured text, including `<text template="true">` | Fancy renderer | Dialect and library are open. Mustache.js is the candidate (`JsMustache`). Live context. |
+| Less-trusted templates | Locked-down fancy renderer | Same library, unwrap snapshot, no `ec`. New. `expand()` does not use it. |
 
 ## Database
 
@@ -226,8 +226,8 @@ The interface, the feature set taken from current callers, and the two backends 
 | Area | Direction |
 |---|---|
 | HTTP server | `axum` + `tower` in the host. The framework sees an owned request and blocks until the response is ready. WebSocket via axum `extract::ws`. That module needs the `ws` feature, which is not in axum's default set. The feature pulls `tokio-tungstenite`, so the host does not depend on it directly. `tower-http` serves compression and an `ETag` on static assets and on the server-static qvt template. `Cache-Control` for that template stays as `plans/QvtServerStatic.md` specifies. HTTP client via blocking `reqwest`. No servlet container, no JNDI. |
-| Screens and XML Actions | MiniJinja macros expand XML to JavaScript. Screen and form XML can also emit server HTML. No FreeMarker, and no native widget-tree renderer as the primary path. See Templating and Screen Render Modes. |
-| User-authored templates | Liquid (`liquid` crate) for email, notifications, and custom text/HTML. Sandboxed by design. |
+| Screens and XML Actions | JavaScript modules expand XML to JavaScript. Screen and form XML can also emit server HTML. No FreeMarker, and no native widget-tree renderer as the primary path. See Templating and Screen Render Modes. |
+| Text templates | `JsTemplateLiteral` for `ec.resource.expand()` and short text. A fancy renderer, dialect open (Mustache.js is the candidate), for structured text. A locked-down variant of that renderer for less-trusted templates. All on QuickJS. |
 | Security | Do not port Shiro. Reimplement UserFacade on `argon2` 0.6. The `password-hash` feature is optional and part of the crate's default set; it pulls `password-hash` 0.6. A dependency that turns default features off still enables `password-hash`. The framework owns the session. Artifact authorization stays Moqui’s own model and tables. See Sessions and login. |
 | Cache | A port of `MCache` and `MCacheManager`. No second cache implementation. Distributed invalidation, later, is a listener on the in-process topic in `moqui-lib`. Hazelcast does not carry forward. |
 | Logging | `tracing`. Metrics are the same instrumentation: pool and worker-pool gauges, statement spans and timings, exposed on `/metrics`, with `/health` at the edge. |
@@ -235,7 +235,7 @@ The interface, the feature set taken from current callers, and the two backends 
 | CSV, mail, markdown, cron, TOTP | Ordinary crates (`csv`, `lettre`, `pulldown-cmark` / `comrak`, `cron`, `totp-rs`). |
 | Content repository (JCR) | Dropped. `content://` is not remapped onto blob storage. Resolving a `content://` location is an error that names the location. `db://` stays. Filesystem and S3 are their own resource implementations when a deployment asks for one. |
 
-JDBC drivers, H2, the Bitronix library, Shiro, FreeMarker, Groovy, and the servlet stack do not carry forward. The transaction behavior Moqui relies on is reimplemented in Moqui's own manager on `DbDriver`, as Transactions describes. FreeMarker’s two jobs move to MiniJinja (code generation) and Liquid (user-authored text). Where Moqui already has an implementation because the general library was the wrong shape, that implementation is ported. `MNode`, `MCache`, and the transaction manager are the cases. An external crate earns its place when it is the engine, or when another crate this runtime already needs pulls it in.
+JDBC drivers, H2, the Bitronix library, Shiro, FreeMarker, Groovy, and the servlet stack do not carry forward. The transaction behavior Moqui relies on is reimplemented in Moqui's own manager on `DbDriver`, as Transactions describes. FreeMarker's two jobs move to JavaScript on QuickJS: macro modules for code generation, and the template renderers for text. Where Moqui already has an implementation because the general library was the wrong shape, that implementation is ported. `MNode`, `MCache`, and the transaction manager are the cases. An external crate earns its place when it is the engine, or when another crate this runtime already needs pulls it in.
 
 ## Sessions and login
 
@@ -249,7 +249,7 @@ Login, logout, and the check that the user has logged out elsewhere live on this
 
 ## Screen Render Modes
 
-A screen is requested with a render-mode extension (`.html`, `.qvt`, `.text`, `.csv`, `.xml`, `.xsl-fo`). MiniJinja replaces the FreeMarker macro set for every mode. The modes themselves change as follows. `/qapps` stays the default UI. `/apps` stays the server-rendered HTML UI. `/vapps` goes away.
+A screen is requested with a render-mode extension (`.html`, `.qvt`, `.text`, `.csv`, `.xml`, `.xsl-fo`). A JavaScript macro module replaces the FreeMarker macro set for every mode. The modes themselves change as follows. `/qapps` stays the default UI. `/apps` stays the server-rendered HTML UI. `/vapps` goes away.
 
 ### Modes that stay
 
@@ -300,7 +300,7 @@ What jQuery still does is helper work, and each call has a direct replacement:
 
 Moment is loaded (67 KB gzip, with every locale) and assigned to `Vue.prototype.moment`. The only `moment()` calls are inside the commented-out datetimepicker in `m-date-time`. Quasar's date utils use the same tokens the macros already emit (`YYYY-MM-DD`, `HH:mm`). The locale map that renames `zh` to `zh-cn` exists for Moment's locale files. Quasar language packs cover `QDate` and `QTime`.
 
-`http-vue-loader` goes away with Vue 2. It splits a fetched `.qvt` into template, script, and style. MiniJinja emits a component object, and the compiler in `vue.global` compiles the template string. Vue 3 filters (`decodeHtml`, `format`) become functions.
+`http-vue-loader` goes away with Vue 2. It splits a fetched `.qvt` into template, script, and style. The qvt macro module emits a component object, and the compiler in `vue.global` compiles the template string. Vue 3 filters (`decodeHtml`, `format`) become functions.
 
 `MoquiLib` stays as the utility set and `NotificationClient`. The Select2, jQuery Validate, and Bootstrap Notify setup at the bottom of that file is part of the html stack and is deleted. qvt already overrides `notifyGrowl` with `$q.notify`.
 
@@ -323,8 +323,8 @@ An ExecutionContext can be placed in sim mode so that nothing permanent is writt
 ## Component and Application Migration
 
 - `mantle-udm`: entity XML and seed/install data. Expected to load as-is once the entity loader and data loader exist. Expression defaults or function expressions, if any, go through the JavaScript evaluator.
-- `mantle-usl`: service XML stays. Groovy expressions and scripts are migrated to JavaScript (AI-assisted). XML Actions stay as XML and are expanded to JavaScript by MiniJinja macros.
-- Screens: XML screen and form definitions stay. MiniJinja macros expand them. Render modes are in Screen Render Modes. Server-static `qvt` is [`plans/QvtServerStatic.md`](QvtServerStatic.md): the attribute stays opt-in, and expressions are JavaScript so the client can evaluate them. FreeMarker templates for notifications, email, and print move to Liquid.
+- `mantle-usl`: service XML stays. Groovy expressions and scripts are migrated to JavaScript (AI-assisted). XML Actions stay as XML and are expanded to JavaScript by the macro module.
+- Screens: XML screen and form definitions stay. JavaScript macro modules expand them. Render modes are in Screen Render Modes. Server-static `qvt` is [`plans/QvtServerStatic.md`](QvtServerStatic.md): the attribute stays opt-in, and expressions are JavaScript so the client can evaluate them. Inline `<text template="true">` bodies move to the fancy renderer. Email bodies stay screens. `ec.resource.expand()` is `JsTemplateLiteral`.
 - Applications built on Mantle follow the same pattern.
 
 ## Summary of Decisions
@@ -334,7 +334,7 @@ An ExecutionContext can be placed in sim mode so that nothing permanent is writt
 | Name | MR-Moqui (Modern Rust Moqui, “Mister Moqui”) |
 | Repository | `moqui/mr-moqui`, combining framework and runtime |
 | Spec language | XML (conf, entities, services, screens, SECAs, data) |
-| Scripting | JavaScript via `rquickjs` (QuickJS-NG) |
+| Scripting | JavaScript via `rquickjs` (QuickJS-NG), for scripts and templates. V8 is a later replacement only if a profile shows the JavaScript is the heavy part. |
 | Groovy migration | AI-assisted, after the pre-scan in `plans/Implementation-Phases.md`. No long-lived compatibility layer. Decimal `+`, comparison, `==`, and truthiness become method calls. |
 | Embedded database | `postgresql_embedded` 0.21 (theseus) as the default configuration |
 | Production database | External Postgres, MySQL, etc when configured |
@@ -347,10 +347,10 @@ An ExecutionContext can be placed in sim mode so that nothing permanent is writt
 | Sessions | Server-side session. A signed cookie carries the id. Same session for HTTP and the notification WebSocket. |
 | Print and tool components | Later. Gate 3 `xsl-fo` is the FO document. PDF waits on `PdfRenderer`. The tool components stay outside until binary size is weighed. |
 | WASM | Not a target. |
-| XML Actions | MiniJinja macros emit JavaScript. In-memory interpretation is not the primary path. |
-| Screens | MiniJinja macros emit server HTML and/or client-renderable JavaScript |
+| XML Actions | JavaScript macro modules emit JavaScript, run by QuickJS. In-memory interpretation is not the primary path. |
+| Screens | JavaScript macro modules emit server HTML and/or client-renderable JavaScript |
 | Render modes | `qvt` is the primary UI (Vue 3.5, Quasar 2.35, no jQuery or Moment). `html` stays as terse server HTML with a small shared script. `text`, `csv`, and `xml` stay as they are. `xsl-fo` stays as the FO document. `vuet` is dropped. |
-| User-authored templates | Liquid (`liquid` crate), sandboxed by design |
+| Text templates | QuickJS. `JsTemplateLiteral` for `expand()` and short text. Fancy renderer (dialect open; Mustache.js is the candidate) for structured text. Locked-down variant of that renderer for less-trusted text. |
 | Security | Moqui artifact authz on Rust primitives. No Shiro. |
 
 The server JavaScript host method list is in `plans/ContextObjects.md`. The build order is `plans/Implementation-Phases.md`: the entity facade and the service facade are whole, and both are finished before gate 1, a data file load. Screen rendering is gate 3.

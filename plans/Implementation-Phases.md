@@ -21,7 +21,7 @@ Mantle and the other application components stay outside this repository. They a
 - The entity facade is one phase: definitions, SQL, CRUD, database metadata, view-entity, dynamic view, master definitions, entity cache, transaction cache, sim mode, `text-fts` (column, index, and `matches`), audit log, field encryption, ECAs, the data loader, the data writer, entity sync, and `EntityFacade.rest`. Document assembly and feed rules live here too. The index those feeds write is `SearchFacade`, which stays gate 4. Until that facade exists, feed dispatch calls the receive service and the service records that search is not up. It does not grow a second, temporary index.
 - The service facade is the next phase, after the entity facade and after the user and artifact-authz checks those calls enforce. It includes definitions, entity-auto, inline, script, the full XML action library, QuickJS, SECAs, email-ECA rules, `service-group`, local `async="true"`, service `callFuture()`, the scheduler and scheduled jobs, parameter validation, `RestApi`, the JSON-RPC dispatcher, and the remote REST and remote JSON-RPC runners. `async="distribute"` stays dropped, as the architecture proposal already decided. `callFuture()` is the same factory thread and new `ExecutionContext` as `async="true"`, plus a oneshot the caller waits on.
 - Tool services are not the service facade. Send-mail, search indexing, LLM, print, and system-message handling are gate 4 service bodies on top of a facade that can already call them. Email-ECA rules are the service facade. The `lettre` transport they eventually call is gate 4.
-- XML actions are one MiniJinja macro set and one QuickJS runner, inside the service facade, before gate 1. Screen transitions reuse that runner. There is no smaller action subset built only for the load gate.
+- XML actions are one JavaScript macro module and one QuickJS runner, inside the service facade, before gate 1. `JsTemplateLiteral` is part of that runner, because action text calls `ec.resource.expand()`. Screen transitions reuse the runner. There is no smaller action subset built only for the load gate. The fancy renderer and its locked-down variant land with screens.
 - The script host at the end of the service facade exposes `ec.entity`, `ec.service`, `ec.message`, `ec.logger`, `ec.resource`, `ec.user`, and the static helpers from `plans/ContextObjects.md`. `ec.web` and `sri` grow with the web and screen phases. The method list is the Server host methods section of `plans/ContextObjects.md`. This document says which facade must answer before which gate.
 - Before any Groovy `<script>` body or attribute expression is rewritten, and before screen macros are written, a mechanical pre-scan extracts those texts and classifies Elvis, empty collections, Groovy ranges, decimal arithmetic and `BigDecimal` method calls, decimal `==` and truthiness, decimal literals (Groovy decimal literals are `BigDecimal`; their scale and rounding are not JavaScript number behavior), closure idioms (`each`, `collect`, `find`, `any`, `every`), GString, the regex operators (`=~`, `==~`), Elvis on a method chain, and `catch` around an entity or service call, per file. The same toolkit extracts the translatable string call sites so the localization catalogs survive the migration, and its report is a per-expression before/after report that feeds the AI pass in `plans/Architecture-Proposal.md`. It is not a compatibility shim. mantle-usl is outside this repository. The same pass covers it before that migration is treated as ready. Counts already recorded as a review's counts are re-measured by that pass.
 - User login and artifact authorization are in place before the service facade is called complete, because entity operations and service calls consult them. The load path still disables authorization, as `ExecutionContextFactoryImpl.checkEmptyDb` does. The signed session cookie and HTTP basic auth are the web edge at gate 2. `UserFacade.loginUser` does not need a socket.
@@ -53,7 +53,7 @@ Mantle and the other application components stay outside this repository. They a
 8  screen model and every kept render mode
         Gate 3 — screen rendering
 9  SearchFacade, and the feed starts indexing
-10 mail transport, Liquid, notifications
+10 mail transport, notifications
 11 LLM, A2A, and the other tools
 12 PDF, later database drivers, and the tool components
         Gate 4 — tools and utilities
@@ -61,7 +61,7 @@ Mantle and the other application components stay outside this repository. They a
 
 Inside phase 4 the entity code is still ordered bottom-up: definitions and SQL, then metadata, then the write-path features (cache, sim, full-text, ECA matching, loader and writer). ECA actions and data-file service elements call the service facade, so they are turned on at the end of phase 6, still before gate 1. That is the one cycle between the two facades. Entity is built first, with those callbacks stored and not yet run. Service is built second. The gate runs only after both sides of the callback exist.
 
-Phase 9 depends on gate 1 and can run beside phases 7 and 8. Phase 10's mail and Liquid depend on the service facade. The notification WebSocket also needs the phase 7 session cookie. Neither waits on gate 3. Phase 11 needs the HTTP client from phase 6, the screen facade, and SearchFacade where a tool calls search. Phase 12 needs `xsl-fo` from gate 3. Later database drivers in phase 12 need only the `DbDriver` trait from phase 3.
+Phase 9 depends on gate 1 and can run beside phases 7 and 8. Phase 10's mail depends on the service facade. The notification WebSocket also needs the phase 7 session cookie. Neither waits on gate 3. An email body that is a screen uses the phase 8 renderers. Phase 11 needs the HTTP client from phase 6, the screen facade, and SearchFacade where a tool calls search. Phase 12 needs `xsl-fo` from gate 3. Later database drivers in phase 12 need only the `DbDriver` trait from phase 3.
 
 ## Phase 0 — Workspace and XML trees
 
@@ -146,7 +146,7 @@ Depends on phases 4 and 5. This phase finishes the service facade.
 - Service XML, `service-include`, and `verb#noun` lookup. Implicit entity-auto: no path, verb one of `create`, `update`, `store`, `delete`, noun an entity name. A data element such as `create-moqui.security.UserAccount` resolves that way after `-` becomes `#`.
 - Sync call: parameters, the full validation set (required, matches, ranges, entity-backed validators), and the transaction attributes `ignore`, `use-or-begin` (the default), `force-new`, `cache`, `force-cache`, and `transaction-timeout`. `cache` is `use-or-begin` with the transaction cache. `force-cache` is `force-new` with the transaction cache. `transaction-isolation` is not ported. The `authenticate` attribute is enforced with phase 5.
 - Entity-auto runner, including nested maps. The plain-map load path calls the same store function.
-- XML actions: MiniJinja 3.0.0 macros named for the elements in `xml-actions-3.xsd`, emitting JavaScript, run by QuickJS. The walker is the one in `plans/ContextObjects.md`. MiniJinja sees the element, not the execution context. Macros emit bare names, and the server proxy in that plan resolves an unset name to null. One QuickJS runtime per `ExecutionContext`, on that thread. Host callbacks are `catch_unwind`, and the workspace is `panic = unwind`. Decimals stay host values and use checked arithmetic. The runtime's interrupt handler watches the transaction deadline, and `set_memory_limit` uses the conf byte cap.
+- XML actions: a JavaScript module with a function per element in `xml-actions-3.xsd`, emitting JavaScript, run by QuickJS. The walker is the one in `plans/ContextObjects.md`. The function sees the element, not the execution context. Functions emit bare names, and the server proxy in that plan resolves an unset name to null. `JsTemplateLiteral` implements `ec.resource.expand()`. One QuickJS runtime per `ExecutionContext`, on that thread. Host callbacks are `catch_unwind`, and the workspace is `panic = unwind`. Decimals stay host values and use checked arithmetic. The runtime's interrupt handler watches the transaction deadline, and `set_memory_limit` uses the conf byte cap.
 - Script-type services whose body is JavaScript. The Groovy email scripts are converted in phase 10. There is no Java runner.
 - `UserSecurityChecks` for the two security ECAs, as Rust functions on the host. ECA actions from phase 4 run through this runner. SECA rules run through it too.
 - Email-ECA rules run through the same action runner and call a service. The transport behind send-mail is phase 10. Until then the send service reports that mail is not configured.
@@ -202,9 +202,10 @@ Depends on the screen URL and transition runner from phase 7, and on the action 
 
 - The rest of the screen model: sections, `section-iterate`, containers, trees, `form-single`, `form-list`, conditional and error responses, `include-screen`, `screen-extend`, and database forms.
 - `always-actions`, `pre-actions`, section actions, and `row-actions` through the phase 6 runner.
-- MiniJinja screen and form macros. The walker passes attributes, child text, and already-rendered children. Server HTML and client JavaScript are macro targets. A native widget-tree renderer is not the path.
+- JavaScript screen and form macro modules. The walker passes attributes, child text, and already-rendered children. Server HTML and client JavaScript are module targets. A native widget-tree renderer is not the path.
+- The fancy template renderer and the locked-down variant. The dialect and the JavaScript library are chosen at the start of this phase. Mustache.js, running inside QuickJS, is the candidate, and the names in that case are `JsMustache` and `JsMustacheRestricted`. Inline `<text template="true">` bodies are rewritten into that dialect and rendered with the live context. The locked-down renderer takes the unwrap snapshot from `plans/ContextObjects.md`. `JsTemplateLiteral` is already in place from phase 6.
 - `ec.l10n` format, formatCurrency, and localize, using the session locale and time zone and the seeded localization messages. `sri` gains the methods the macros call. The method list is the Server host methods section of `plans/ContextObjects.md`. This phase implements that list, and records any method it adds.
-- Modes, in this order. Each one is a macro library on the same screen model.
+- Modes, in this order. Each one is a JavaScript macro module on the same screen model.
 
 | Order | Mode | Output |
 |---|---|---|
@@ -248,11 +249,10 @@ Depends on gate 1. Entity documents and the feed rules already assemble, and the
 
 `get#InventoryProjectedInfo` is a mantle rewrite onto `aggregate`. `get#PriceHistoryInfo` stays unimplemented because it has no callers. Both are named here so they are not ported as `ElasticFacade` clients. The inventory rewrite happens with mantle, outside this gate.
 
-## Phase 10 — Mail, Liquid, and notifications
+## Phase 10 — Mail and notifications
 
-Depends on the service facade. The notification WebSocket also needs the phase 7 session cookie. Email-ECA rules already fire and currently stop at the unconfigured send service. This phase provides that service.
+Depends on the service facade. The notification WebSocket also needs the phase 7 session cookie. Email-ECA rules already fire and currently stop at the unconfigured send service. This phase provides that service. Email bodies are screens from phase 8. Subject and from address go through `JsTemplateLiteral`.
 
-- Liquid for email, notifications, and other user-authored text. Standard library plus the small Moqui filter set in `plans/ContextObjects.md`. The snapshot is the unwrap projection. Filters format and localize and do not receive an `ExecutionContext`.
 - Outbound mail with `lettre` in core. The Groovy send scripts become Rust service logic. The send service from phase 6 then sends.
 - Inbound SMTP in the host, behind a feature.
 - Notification messages, the in-process topic, and the host WebSocket. The socket uses the phase 5 session and the phase 7 cookie. A message runs on a worker with its own `ExecutionContext`. The connection does not keep one for its lifetime.
@@ -290,7 +290,7 @@ Depends on `xsl-fo` from gate 3, and on the `DbDriver` trait from phase 3.
 The gate is a checklist. Each item is its own test. Entity and service behavior is covered by the earlier phase tests. This checklist covers the tools that call them.
 
 - SearchFacade indexes one data document on Postgres and a query returns it. The feed from phase 4 is the writer. An OpenSearch run is a second test. The default remains Postgres.
-- An email template renders through Liquid, and the send path accepts it. A test sink is enough. An email ECA that calls send uses that path.
+- An email whose body is a screen renders in `text` and `html`, the subject is a `JsTemplateLiteral` expansion, and the send path accepts it. A test sink is enough. An email ECA that calls send uses that path.
 - A notification sent from a service arrives on the WebSocket for the same session the HTTP request used.
 - LLM and A2A cover the same cases as the current Java tests for those facades.
 - Every entry in the tool-component list is either implemented or recorded as staying outside.

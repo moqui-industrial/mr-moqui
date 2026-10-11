@@ -2,7 +2,7 @@
 
 How a screen marked server-static for `qvt` is sent as a cacheable Vue template, and how the browser fills it. The XML screen schema stays. The `server-static` attribute stays the switch.
 
-This follows Screen Render Modes in `plans/Architecture-Proposal.md`. The library choices there stand: Vue 3.5, Quasar 2.35, MiniJinja emitting a component object, no jQuery, no Moment, no `http-vue-loader`. This plan is the data split, the browser host, and the compatibility check.
+This follows Screen Render Modes in `plans/Architecture-Proposal.md`. The library choices there stand: Vue 3.5, Quasar 2.35, the qvt JavaScript macro module emitting a component object, no jQuery, no Moment, no `http-vue-loader`. This plan is the data split, the browser host, and the compatibility check.
 
 The Java behavior this is built on lives in `../moqui`: `ScreenDefinition` (`serverStatic`, `ActionsTransitionItem`), `ScreenRenderImpl.doActualRender`, `ScreenForm.FormInstance.isServerStatic`, `DefaultScreenMacros.qvt.ftl`, and `WebrootVue.qvt.js`.
 

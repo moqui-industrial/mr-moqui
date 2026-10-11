@@ -4,7 +4,7 @@
 
 - Keep XML as the spec language for configuration, entities, services, screens, SECAs, and data files, with only the adaptations required by a Rust runtime.
 - Move the heavy lifting (entity facade, service facade, screen rendering, tooling, and performance-sensitive service implementations) into Rust.
-- Use one language (JavaScript) for inline expressions on both server and client so that XML Screens can become client-renderable.
+- Use one language (JavaScript) for scripts and templates on the server, and for inline expressions on the client, so that XML Screens can become client-renderable. The engine is QuickJS.
 - Default to an embedded Postgres (`postgresql_embedded`, theseus) when no external database is configured, and use an external Postgres when one is. The same engine backs the sim-mode overlay.
 - Make OpenSearch optional from day one by planning a search interface that can be satisfied by Postgres full-text search and JSON operators.
 - Preserve the ExecutionContext / facade shape that makes Moqui’s artifact model work.
@@ -26,6 +26,7 @@ Most of MR-Moqui is a port of the Java framework as it exists when the port begi
 1. **SearchFacade replaces ElasticFacade.** Postgres full-text and JSON are the default backend. OpenSearch is optional. Plan: [`plans/SearchFacade.md`](plans/SearchFacade.md).
 2. **qvt becomes server-static.** With `server-static` set for `qvt`, the server sends a data-free Vue template and the client merges data from `/actions` and from a separate form-list request. The attribute stays opt-in for this pass. Plan: [`plans/QvtServerStatic.md`](plans/QvtServerStatic.md).
 3. **Same-database data feed commits with the entity change.** When search tables are on the entity database, the feed writes after the transaction-cache flush and before commit, on the enlisted connection. In Java, `DataFeedSynchronization.beforeCompletion()` is empty and the feed runs in `afterCompletion` on the worker pool, only after the commit. A different database or OpenSearch stays after commit. Plan: [`plans/SearchFacade.md`](plans/SearchFacade.md).
+4. **JavaScript for scripts and templates.** Scripts, XML action and screen macros, and text templates are JavaScript, initially on QuickJS. `ec.resource.expand()` is a template literal. Structured text uses a second renderer whose dialect is still open, and a locked-down variant of that renderer is the sandbox for less-trusted templates. Plan: [`plans/Architecture-Proposal.md`](plans/Architecture-Proposal.md) (Templating).
 
 ## Build order
 
