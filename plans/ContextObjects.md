@@ -76,7 +76,7 @@ These are the types a script can hold. Plain maps and lists that are already pla
 | `sri` | Host object, only while a server screen render is on the stack | The screen renderer. Absent in actions that are not a render, and absent in the browser |
 | entity value | Host object, field get and set | The entity value. `unwrap` is what Liquid, JSON, and the browser receive instead |
 | entity list | Host object, index, length, iterable, `map`, `filter` | The list. `map` returns a JavaScript array so `list.map(x => x.field)` works without copying first |
-| decimal, timestamp | Host values | `rust_decimal` and the date-time type from `moqui-lib`. Not JavaScript numbers. `+` is not overloaded. Comparison and arithmetic are methods or `ObjectUtilities` helpers, on the server only |
+| decimal, timestamp | Host values | `rust_decimal` and `time` from `moqui-lib`. Not JavaScript numbers. `+` is not overloaded. Comparison and arithmetic are methods or `ObjectUtilities` helpers, on the server only |
 | `ObjectUtilities`, `CollectionUtilities`, `StringUtilities` | The same helpers the generated script header calls today | Functions in lib, bound once per runtime |
 
 `ec.entity`, `ec.service`, and the rest of the facade surface are the server host plan. They exist only on this QuickJS object. The browser `ec` is the table in `plans/QvtServerStatic.md` and does not grow to match the server object. `sri` is not added to the browser.

@@ -128,7 +128,7 @@ Phase 4 tests cover the facade without a service call: create and read, a view-e
 
 Depends on phase 4. The permission and user tables exist. Entity and service operations are not complete until they enforce these checks, so this phase sits between the two facades and still before gate 1.
 
-- Passwords with `argon2`. `loginUser`, `logoutUser`, anonymous login, `internalLoginUser`. Shiro is not carried forward.
+- Passwords with `argon2` 0.6 (`password-hash` feature). `loginUser`, `logoutUser`, anonymous login, `internalLoginUser`. Shiro is not carried forward.
 - Server-side session state: user, visit, visitor, locale, time zone, CSRF token, flash messages, saved and error parameters, screen history. The signed cookie that carries the session id is phase 7. Tests call `loginUser` on the facade directly.
 - Artifact authorization against artifact groups, permissions, and authz records, including tarpit. Entity finds and writes, and service calls, consult it. `disableAuthz` still short-circuits, which is how load and internal work run.
 - Visit and visitor rows. The stats screens are ordinary screens later.
@@ -242,7 +242,7 @@ Depends on gate 1. Entity documents and the feed rules already assemble, and the
 - One active backend. The OpenSearch backend builds HTTP bodies and sends them through `HttpClient`. The host `search` module starts the process. `/elastic` and `/kibana` proxies, and the log indexes, exist only when that backend is selected.
 - `CountDistinct` is exact on Postgres and may be approximate on OpenSearch.
 
-`get#InventoryProjectedInfo` is a mantle rewrite onto `aggregate`. It is named here so it is not ported as an `ElasticFacade` client. The rewrite happens with mantle, outside this gate.
+`get#InventoryProjectedInfo` and `get#PriceHistoryInfo` are mantle rewrites onto `aggregate`. They are named here so they are not ported as `ElasticFacade` clients. Price history has no callers. The rewrite happens with mantle, outside this gate.
 
 ## Phase 10 — Mail, Liquid, and notifications
 

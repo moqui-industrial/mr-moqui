@@ -71,7 +71,7 @@ The one place the current code cheats is `RestClient.refuseIfSim()`, which calls
 | `error` | `BaseException` | Plain error type. Artifact exceptions stay in core. |
 | `node` | `MNode` | XML tree, location, merge, and the writer. Parsing is filled in against the corpus. No XML crate. |
 | `resource` | `ResourceReference`, file and memory refs | Trait plus file and memory implementations. `component://` and `db://` stay in core. Classpath goes away; the framework component is a directory. |
-| `object` | `ObjectUtilities` | Field coercion: decimals, timestamps, booleans, strings. `rust_decimal` and a date-time crate live here. |
+| `object` | `ObjectUtilities` | Field coercion: decimals, timestamps, booleans, strings. `rust_decimal` and `time` 0.3 live here. `liquid-core` already depends on `time` ^0.3.37. |
 | `string` | `StringUtilities` | Encode, decode, pretty-print, masks. Groovy class-name cleanup is not ported. |
 | `collection` | `CollectionUtilities` | Map and list helpers the XML and entity code actually use. |
 | `context_stack` | `ContextStack` | Stack of maps for variable scope. No engine trait. What each environment sees is `plans/ContextObjects.md`. |
@@ -150,7 +150,7 @@ Other current classes, placed by the same rule:
 | `JdbcExtractor` | The ETL interfaces stay in lib. JDBC extraction is host, next to `DbDriver`. |
 | `ElasticSearchLogger` | Host, beside the OpenSearch process. |
 | `ElFinderConnector` | Host, if the file API stays. It is an HTTP endpoint. |
-| `MoquiShiroRealm`, `MoquiWebSecurityManager` | Not ported. User auth is the core user facade on `argon2`. |
+| `MoquiShiroRealm`, `MoquiWebSecurityManager` | Not ported. User auth is the core user facade on `argon2` 0.6 with the `password-hash` feature. |
 | `TransactionInternalBitronix` | The portions Moqui uses are ported in core, against `DbDriver`: local one-phase commit, the pool, synchronizations, and suspend that returns the connection. The XA journal, crash recovery, and JMS are not ported. |
 | `H2ServerToolFactory`, `JackrabbitRunToolFactory`, `JCSCacheToolFactory` | Not ported. |
 | `MCacheToolFactory` | The cache facade on the `MCache` port. |
@@ -168,7 +168,7 @@ The entity engine is database-agnostic in the same way the Java framework is. `m
 
 The dialect profile is the `<database>` block Moqui already has in `MoquiDefaultConf.xml`: SQL type names, join style, offset style, lateral style, full-text style, null handling, and the related flags. The SQL renderer in core takes a dialect. It does not import a driver. Core renders SQL text at runtime, as it is now. There is no SQLx dependency and no `query!` compile-time macros.
 
-`DbDriver` is the execution boundary: connect, checkout, begin, commit, rollback, savepoint, execute, query, and release. The pool in core checks a connection out and enlists one for the life of the transaction. A call outside a transaction checks out and returns. `suspend` releases that connection, then parks the transaction. `force-new` is that suspend followed by begin, so the thread does not hold two connections. Checkout is `plans/EmbeddedPostgres.md`. Rows come back as the plain values `moqui-lib`'s `object` module already uses (`rust_decimal` and the date-time type), not JSON. The driver does not know entity definitions. The datasource conf selects the driver at runtime. The factory holds the group map described above.
+`DbDriver` is the execution boundary: connect, checkout, begin, commit, rollback, savepoint, execute, query, and release. The pool in core checks a connection out and enlists one for the life of the transaction. A call outside a transaction checks out and returns. `suspend` releases that connection, then parks the transaction. `force-new` is that suspend followed by begin, so the thread does not hold two connections. Checkout is `plans/EmbeddedPostgres.md`. Rows come back as the plain values `moqui-lib`'s `object` module already uses (`rust_decimal` and `time`), not JSON. `postgres` decodes timestamps with `with-time-0_3`, and `mysql` with its `time` feature. The `with-chrono-0_4` and `mysql` `chrono` features stay off. The driver does not know entity definitions. The datasource conf selects the driver at runtime. The factory holds the group map described above.
 
 Search stays the path from the architecture proposal. By default, search tables are the `search` schema on the embedded entity cluster. They use their own embedded Postgres cluster when the entity datasource is not that Postgres, and an external Postgres when search config names one. That store is independent of a non-Postgres entity datasource.
 
@@ -203,7 +203,7 @@ The process edge. Depends on `moqui-core` and on `moqui-lib` with the `http` fea
 
 | Module | Role |
 |---|---|
-| `http` | axum routes and WebSocket upgrade. Builds the core request value, calls core on a worker thread, writes the response. Replaces `MoquiServlet`, the auth filter, the LLM and A2A servlets, FOP servlet entry, and the notification endpoint. |
+| `http` | axum routes and WebSocket upgrade. `extract::ws` needs axum's `ws` feature, which is not in the default set. Builds the core request value, calls core on a worker thread, writes the response. Replaces `MoquiServlet`, the auth filter, the LLM and A2A servlets, FOP servlet entry, and the notification endpoint. |
 | `db` | `DbDriver` implementations: embedded Postgres lifecycle, external Postgres, and external MySQL. The pool is the core transaction manager. Each method runs on the checked-out client and returns rows. Later databases from the table above land here. Embedded Postgres concurrency is this module, as in `plans/EmbeddedPostgres.md`. |
 | `mail` | Inbound SMTP, behind a feature, if it stays. Outbound mail is core. |
 | `search` | OpenSearch process supervisor. Query construction stays in core. |

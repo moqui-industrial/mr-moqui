@@ -34,13 +34,14 @@ Definitions are in `framework/entity/EntityEntities.xml`. `EntityDataDocument` b
 - A `DataDocumentCondition` is either part of the entity query (`MantleSalesOrderItem` requires `vendorRoleTypeId = OrgInternal`) or a post-query check.
 - Document id is the primary key values joined with `::`.
 - `DataFeed` is real-time push (`DTFDTP_RT_PUSH`) on create, update, and primary-entity delete, or manual pull. The receive service defaults to `index#DataDocuments`. The delete service defaults to `delete#DataDocument`. `index#DataFeedDocuments` rebuilds a feed in batches of 1000. The `IndexDataFeedDocuments` job wraps that call.
-- Seed documents in mantle-udm: party, communication event, product, facility, wiki page, project, task, event, request, four sales documents, five inventory documents. Feeds: Mantle General (`mantle`), Sales (`mantle_sales`), Inventory (`mantle_inventory`). PopcProduct is a clone of MantleProduct. HiveMind and PopCommerce add links.
+- Seed data is 19 `DataDocument` rows, 5 `DataFeed` rows, and 24 `DataFeedDocument` rows. Four of the feeds index through `index#DataDocuments`. `MantleSearch` (index `mantle`) is one feed split across `MantleDocumentData.xml` and `MantleDocumentWorkData.xml` (same `dataFeedId`, 9 documents: party, communication event, product, facility, wiki page, project, task, event, request). `MantleSales` (`mantle_sales`) has the four sales documents. `MantleInventoryData` (`mantle_inventory`) has the five inventory documents. `PopCommerceSearch` (index `popc`) indexes `PopcProduct`, a clone of `MantleProduct` with a post-query store condition. `MyAccountNotifications` sends task, event, communication event, request, and wiki page to `mantle.party.PartyServices.send#DataDocumentNotifications`. HiveMind and PopCommerce add screen links. The extra `MantleSearch` feed in HiveMind is inside a comment.
+- `esTypeMap` in `ElasticFacadeImpl` maps `text-fts` to `text`. A DataDocument field of that entity type is indexed as text. Column full-text stays the EntityFacade feature in `../moqui/framework/plans/DbFullTextSearch.md`. This mapping is the document-field case that page leaves open.
 
 The physical name of a document type is `dataDocumentId` converted from camel case to underscore (`MantleParty` to `mantle_party`). `indexName` groups those types. A search with no document type searches the group.
 
 ### Find screens
 
-`search#DataDocuments` sends a `bool.must` containing a Lucene `query_string` (`lenient: true`, default time zone), plus an optional `nestedQueryMap`. Each entry with a path becomes a `nested` query (`score_mode: avg`). A null path is a top-level clause. Sort accepts a leading `+` or `-`. Highlight is a list of fields. Paging is `from` / `size` with `track_total_hits`. `pageNoLimit` caps at 10000. Hits can be flattened. Each hit is given `_index`, `_id`, `_type` (the document id), and `highlights` when highlight was requested.
+`search#DataDocuments` sends a `bool.must` containing a Lucene `query_string` (`lenient: true`, default time zone), plus an optional `nestedQueryMap`. Each entry with a path becomes a `nested` query (`score_mode: avg`). A null path is a top-level clause. Sort accepts a leading `+` or `-`. Highlight is a list of fields. Paging is `from` / `size` with `track_total_hits`. `pageNoLimit` caps at 10000. Hits can be flattened. Each hit is given `_index`, `_id` (the record id), `_type` (the DataDocument id, such as `MantleParty`; a hit type of `_doc` is converted from the index name), `_version`, and `highlights` when highlight was requested.
 
 The query strings that callers build, including `StringUtilities.elasticQueryAutoWildcard`, use this subset:
 
@@ -84,7 +85,7 @@ The filter is a `bool.filter`: a date `range` (`gte` / `lt`, epoch millis) and `
 The aggregation tree is:
 
 - `date_histogram` on a date field. Calendar units are day, week, month, quarter, and year. Time zone, a display format, an optional offset (week start), newest bucket first. Buckets expose `key` and `key_as_string`.
-- `terms` on `productId` or `customerClassId`, with a size and an order by a sub-aggregation.
+- `terms` on `productId` or `customerClassId`. `get#SalesTopProduct` sends a size and an order by a sub-aggregation. `get#InvoicesByCustomerClass` sends a size and no order, then sorts the merged rows in the service.
 - `sum` and `cardinality` (`precision_threshold` 40000) on `orderId` or `invoiceId`.
 - a `filter` aggregation (`term` or `terms`) wrapping those metrics. Product lines are `itemTypeEnumId = ItemProduct`. Discounts are a fixed list of item types. New customers are `isNewCustomer = Y`.
 - `sum` of a number on each element of a child array (`issuances.issuedSaleTotal`, `issuances.issuedCostTotal`). The mapping marks issuances `nested` and `include_in_root`, so the sum sees every child value. It is not a correlated nested aggregation.
@@ -93,11 +94,11 @@ The histogram interval sent for a quarter is `1q`. The display count for a quart
 
 The four services are `get#SalesOrderSummary`, `get#SalesInvoiceSummary`, `get#SalesTopProduct`, and `get#InvoicesByCustomerClass`.
 
-`mantle.product.InventoryReportServices.get#InventoryProjectedInfo` does not run. The body imports `org.moqui.elasticsearch.ElasticSearchUtil`, and the block above it calls `search#CountBySource`, which `SearchServices.xml` records as removed. The inventory documents and the Mantle Inventory feed are real. The service is a rewrite onto `aggregate`: `terms` on `productId`, `sum` of the quantity fields, an optional `term` on `facilityId`, an optional range on a date. `ElasticSearchUtil` is not carried forward.
+`mantle.product.InventoryReportServices.get#InventoryProjectedInfo` does not run. Its actions import `org.moqui.elasticsearch.ElasticSearchUtil`, and that class is not in the repository. The five live calls are `simpleAggSearch` for order item, production estimate, asset, run consume, and run produce. `get#PriceHistoryInfo` imports the same class, calls `aggregationSearch` once, and has no callers. `search#CountBySource` is inside an XML comment above those actions, and the service is commented out in `SearchServices.xml`. The inventory documents and the Mantle Inventory feed are real. `get#InventoryProjectedInfo` is a rewrite onto `aggregate`: `terms` on `productId`, `sum` of the quantity fields, an optional `term` on `facilityId`, an optional range on a date. `ElasticSearchUtil` is not carried forward.
 
 ### Indexing, delete, and logs
 
-Indexing creates an index whose mapping comes from the DataDocument fields. Dictionary types map to keyword, text, date, long, double, or binary. Text with `sortable=Y` adds a keyword subfield. Dates use an explicit format list. Many-relationships are `nested` with `include_in_root`. Bulk index strips `_index`, `_type`, `_id`, and `_timestamp` before the body is stored. Those four are control fields.
+Indexing creates an index whose mapping comes from the DataDocument fields. Dictionary types map to keyword, text, date, long, double, or binary. `text-fts` maps to text, the same entry `esTypeMap` already has. Text with `sortable=Y` adds a keyword subfield. Dates use an explicit format list. Many-relationships are `nested` with `include_in_root`. Bulk index strips `_index`, `_type`, `_id`, and `_timestamp` before the body is stored. Those four are control fields.
 
 Delete removes one document by id, or every document matching a retention filter. The retention jobs call `delete#Documents` for `moqui_logs` (90 days) and `moqui_http_log` (180 days). Both jobs are paused in seed data.
 
@@ -109,7 +110,7 @@ The `logging` datasource group uses `ElasticDatasourceFactory`. `ArtifactHit` is
 
 ### Client methods with no application caller
 
-`call`, `callFuture`, `makeRestClient`, multi-get, partial document update, and a separate alias-exists check have no application caller. `validateQuery` does: `search#DataDocuments` calls it and, on failure, adds the message "Invalid search" and returns before searching. The strict parser reports the bad clause, and that service still returns the danger message. Tools ViewDocument is `get` by index and id, then a pretty-print. That becomes get-by-id.
+`call`, `callFuture`, `makeRestClient`, multi-get, partial document update, and a separate alias-exists check have no application caller. `validateQuery` does: `search#DataDocuments` calls it with explanations on and, on failure, adds the danger message `Invalid search: ${queryString}` and returns before searching. The explanations payload is discarded. The TODO in `SearchServices.xml` is to pull that Elastic message. The query and the response are written to the server log. Tools ViewDocument is `get` by index and id, then a pretty-print. That becomes get-by-id.
 
 ## API
 
@@ -348,7 +349,7 @@ Application logs and HTTP request logs are flat indexes, `moqui_logs` and `moqui
 | `search#MantleFiltered` | Same service. The org limit is a `Field` `In` list. |
 | Party, product, task, request, project, HiveMind, PopCommerce, PopRestStore | `Text`, `Field`, and `Child`. Auto-wildcard text stays `Text`. |
 | The four `SalesReportServices` | `aggregate`. Screen fields unchanged. |
-| `get#InventoryProjectedInfo` | Rewritten on `aggregate`, or left unimplemented until then. The current body has nothing to port. |
+| `get#InventoryProjectedInfo`, `get#PriceHistoryInfo` | Rewritten on `aggregate`, or left unimplemented. Both call the missing `ElasticSearchUtil`. Price history has no callers. The inventory body has nothing to port. |
 | Tools DataDocument Search, ViewDocument | Parsed query string. `get_document`. |
 | Log viewer, `ElasticSearchLogger`, `ElasticRequestLogFilter`, cleanup jobs | OpenSearch backend only. |
 | `ElasticDatasourceFactory`, `TestNoSqlEntity` | Not ported. |

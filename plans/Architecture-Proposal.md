@@ -203,10 +203,10 @@ The interface, the feature set taken from current callers, and the two backends 
 
 | Area | Direction |
 |---|---|
-| HTTP server | `axum` + `tower` in the host. The framework sees an owned request and blocks until the response is ready. WebSocket via axum `extract::ws`. That extract already wraps `tokio-tungstenite`, so the host does not depend on it directly. HTTP client via blocking `reqwest`. No servlet container, no JNDI. |
+| HTTP server | `axum` + `tower` in the host. The framework sees an owned request and blocks until the response is ready. WebSocket via axum `extract::ws`. That module needs the `ws` feature, which is not in axum's default set. The feature pulls `tokio-tungstenite`, so the host does not depend on it directly. HTTP client via blocking `reqwest`. No servlet container, no JNDI. |
 | Screens and XML Actions | MiniJinja macros expand XML to JavaScript. Screen and form XML can also emit server HTML. No FreeMarker, and no native widget-tree renderer as the primary path. See Templating and Screen Render Modes. |
 | User-authored templates | Liquid (`liquid` crate) for email, notifications, and custom text/HTML. Sandboxed by design. |
-| Security | Do not port Shiro. Reimplement UserFacade on Rust primitives (`argon2` / `password-hash`). The framework owns the session. Artifact authorization stays Moqui’s own model and tables. See Sessions and login. |
+| Security | Do not port Shiro. Reimplement UserFacade on `argon2` 0.6. The `password-hash` feature is optional and part of the crate's default set; it pulls `password-hash` 0.6. A dependency that turns default features off still enables `password-hash`. The framework owns the session. Artifact authorization stays Moqui’s own model and tables. See Sessions and login. |
 | Cache | A port of `MCache` and `MCacheManager`. No second cache implementation. Distributed invalidation, later, is a listener on the in-process topic in `moqui-lib`. Hazelcast does not carry forward. |
 | Logging | `tracing`. |
 | JSON / YAML / XML | `serde_json`, `serde_yaml`. XML is the `MNode` port in `moqui-lib`. |
