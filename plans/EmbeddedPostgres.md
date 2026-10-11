@@ -28,7 +28,7 @@ Startup settings:
 
 - The Unix socket directory is the data directory, kept short. `listen_addresses` is empty.
 - The client is built from the username, the database, the port the postmaster bound, and that socket directory, with `NoTls`. It does not parse a URI.
-- `shared_buffers` is 16 MB on the entity postmaster and 8 MB on sim. `max_connections` is the pool max plus a few reserved connections. `logging_collector` is off. `fsync` is on for the entity cluster. Sim may set `synchronous_commit` off. No extra extensions. Full-text and plpgsql are already in the server.
+- `shared_buffers` is 16 MB on the entity postmaster and 8 MB on sim. `max_connections` is the pool max plus a few reserved connections. `logging_collector` is off. `fsync` stays on for the entity cluster and for sim. Sim sets `synchronous_commit` off. That is the only durability relaxation. No extra extensions. Full-text and plpgsql are already in the server.
 
 Start and stop go through the crate's blocking API, bridged once during factory startup and shutdown. That bridge's runtime has exited before the pool connects. Per-query traffic is `postgres::Client`. Each client owns a `current_thread` runtime and drives it with `block_on` on connect, on every query, and on drop. Those calls run on factory `std` threads. The host does not pass in a Tokio handle.
 
@@ -36,7 +36,7 @@ Start and stop go through the crate's blocking API, bridged once during factory 
 
 Checkout goes through the transaction manager in `moqui-core`. The manager calls `DbDriver` and does not import `postgres` or `mysql`. The manager is specified with the transaction facade in `plans/Crate-Layout.md` and in the Transactions section of `plans/Architecture-Proposal.md`.
 
-A transaction enlists one connection and shares it until commit, rollback, or suspend. A call outside a transaction checks a connection out and returns it. `suspend` returns the enlisted connection to the pool, then parks the transaction. `resume` checks a connection out again. `force-new` is that suspend followed by begin. The calling thread does not hold two connections, and the pool does not keep a spare for it. A savepoint cannot commit on its own, so `force-new` does not use one.
+A transaction enlists one connection and shares it until commit, rollback, or suspend. A call outside a transaction checks a connection out and returns it. `suspend` parks that client on the transaction. The client leaves the thread and stays off the free list. `resume` checks that same client out again. `force-new` is that suspend followed by begin. The calling thread holds one connection. The parked client still counts against the pool max, and the pool does not keep an idle spare for it. The rules are the Transactions section of `plans/Architecture-Proposal.md`. A savepoint cannot commit on its own, so `force-new` does not use one.
 
 Pool sizes and timeouts start at the Java datasource values: min 5, max 50, idle time, and the acquisition timeout from `pool-time-wait`. The acquisition timeout is the fail-fast. A checkout runs the configured test query. There is no second pool implementation in the host.
 

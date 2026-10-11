@@ -260,7 +260,7 @@ get_document(document_id, id) -> body
 
 The feed itself stays. Entity create, update, and delete still register documents. The receive service calls `index_documents`. The delete service calls `delete_document`. Rebuild stays a batched read through `EntityDataDocument`.
 
-The feed writes on the same transaction as the entity change when the search store is that same database. That is the default embedded cluster, and it is an external Postgres that is also the entity database. Same database means one `DbDriver` and the transaction's pinned checkout, so the feed writes on that client. Commit and rollback then cover the row and the document. A second pool is a different database (entity tables on MySQL, or a search URL that points at another Postgres). The feed then runs after the entity transaction commits. There is no XA. A search failure after that commit is rebuilt by the existing `IndexDataFeedDocuments` job. OpenSearch is always this after-commit path.
+The feed writes on the same transaction as the entity change when the search store is that same database. That is the default embedded cluster, and it is an external Postgres that is also the entity database. Same database means one `DbDriver` and the transaction's pinned checkout, so the feed writes on that client. `suspend` parks that client on the transaction and does not return it to the free list, as the Transactions section of `plans/Architecture-Proposal.md` specifies. The feed writes on the active transaction's client. Commit and rollback then cover the row and the document. A second pool is a different database (entity tables on MySQL, or a search URL that points at another Postgres). The feed then runs after the entity transaction commits. There is no XA. A search failure after that commit is rebuilt by the existing `IndexDataFeedDocuments` job. OpenSearch is always this after-commit path.
 
 ## Postgres
 
@@ -306,7 +306,7 @@ The compiler emits the JSON the current services emit.
 - `Text` becomes a `query_string` (or a `multi_match` when the clause is only terms). It sits in `bool.must`, so it scores.
 - `Field`, `Child`, and non-text `Bool` arms sit in `bool.filter`.
 - `Child` becomes a `nested` query with the path and the inner query.
-- `DateHistogram`, `Terms`, `Sum`, `CountDistinct`, and `Filter` become `date_histogram`, `terms`, `sum`, `cardinality`, and `filter`.
+- `DateHistogram`, `Terms`, `Sum`, `CountDistinct`, and `Filter` become `date_histogram`, `terms`, `sum`, `cardinality`, and `filter`. `DateHistogram` emits `calendar_interval`, the ElasticSearch 7+ and OpenSearch key. The pre-7 `interval` name stays dropped. Postgres uses `date_trunc` and `date_bin`, above.
 
 Mappings follow `makeElasticSearchMapping`. Many-relationships stay `type: nested` with `include_in_root: true`, so dashboards that already query dotted names keep working. Keyword subfields stay for sortable text. Document types, the pre-7 interval name, and the old point-in-time paths do not.
 

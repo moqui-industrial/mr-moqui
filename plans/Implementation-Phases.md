@@ -19,10 +19,11 @@ Mantle and the other application components stay outside this repository. They a
 
 - Build bottom-up. A facade is finished, including the features that would otherwise be left as a remainder, before any gate that depends on it. Gate 1 depends on the whole entity facade and the whole service facade.
 - The entity facade is one phase: definitions, SQL, CRUD, database metadata, view-entity, dynamic view, master definitions, entity cache, transaction cache, sim mode, `text-fts` (column, index, and `matches`), audit log, field encryption, ECAs, the data loader, the data writer, entity sync, and `EntityFacade.rest`. Document assembly and feed rules live here too. The index those feeds write is `SearchFacade`, which stays gate 4. Until that facade exists, feed dispatch calls the receive service and the service records that search is not up. It does not grow a second, temporary index.
-- The service facade is the next phase, after the entity facade and after the user and artifact-authz checks those calls enforce. It includes definitions, entity-auto, inline, script, the full XML action library, QuickJS, SECAs, email-ECA rules, `service-group`, local `async="true"`, the scheduler and scheduled jobs, parameter validation, `RestApi`, the JSON-RPC dispatcher, and the remote REST and remote JSON-RPC runners. `async="distribute"` stays dropped, as the architecture proposal already decided.
+- The service facade is the next phase, after the entity facade and after the user and artifact-authz checks those calls enforce. It includes definitions, entity-auto, inline, script, the full XML action library, QuickJS, SECAs, email-ECA rules, `service-group`, local `async="true"`, service `callFuture()`, the scheduler and scheduled jobs, parameter validation, `RestApi`, the JSON-RPC dispatcher, and the remote REST and remote JSON-RPC runners. `async="distribute"` stays dropped, as the architecture proposal already decided. `callFuture()` is the same factory thread and new `ExecutionContext` as `async="true"`, plus a oneshot the caller waits on.
 - Tool services are not the service facade. Send-mail, search indexing, LLM, print, and system-message handling are gate 4 service bodies on top of a facade that can already call them. Email-ECA rules are the service facade. The `lettre` transport they eventually call is gate 4.
 - XML actions are one MiniJinja macro set and one QuickJS runner, inside the service facade, before gate 1. Screen transitions reuse that runner. There is no smaller action subset built only for the load gate.
-- The script host at the end of the service facade exposes `ec.entity`, `ec.service`, `ec.message`, `ec.logger`, `ec.resource`, `ec.user`, and the static helpers from `plans/ContextObjects.md`. `ec.web` and `sri` grow with the web and screen phases. The method list on those objects is still the open plan in `ContextObjects.md`. This document says which facade must answer before which gate.
+- The script host at the end of the service facade exposes `ec.entity`, `ec.service`, `ec.message`, `ec.logger`, `ec.resource`, `ec.user`, and the static helpers from `plans/ContextObjects.md`. `ec.web` and `sri` grow with the web and screen phases. The method list is the Server host methods section of `plans/ContextObjects.md`. This document says which facade must answer before which gate.
+- Before any Groovy `<script>` body or attribute expression is rewritten, and before screen macros are written, a mechanical pre-scan extracts those texts and classifies Elvis, empty collections, Groovy ranges, and decimal arithmetic and `BigDecimal` method calls, per file. The report feeds the AI pass in `plans/Architecture-Proposal.md`. It is not a compatibility shim. mantle-usl is outside this repository. The same pass covers it before that migration is treated as ready. Counts already recorded as a review's counts are re-measured by that pass.
 - User login and artifact authorization are in place before the service facade is called complete, because entity operations and service calls consult them. The load path still disables authorization, as `ExecutionContextFactoryImpl.checkEmptyDb` does. The signed session cookie and HTTP basic auth are the web edge at gate 2. `UserFacade.loginUser` does not need a socket.
 - `HttpClient` and `RestClient` land in `moqui-lib` with the service facade, because the remote runners are part of that facade. The sim predicate default-denies. Sim itself is already implemented in the entity and transaction work. The LLM provider exception is wired when the LLM client lands.
 - MySQL is in the same driver phase as embedded Postgres and external Postgres. Gate 1 is demonstrated on embedded Postgres and repeated as a metadata, insert, and select smoke test on MySQL. Further databases (SQL Server, Oracle, DB2, Derby, HSQL) are new `DbDriver` implementations under gate 4. The facade is already written against the trait. H2 has no driver.
@@ -33,7 +34,7 @@ Mantle and the other application components stay outside this repository. They a
 - Basic `ec.l10n` format and localize land with screen macros. Localization admin screens are ordinary screens.
 - Server-static `qvt` closes gate 3, after server-merged `qvt` renders. It follows `plans/QvtServerStatic.md` and stays opt-in.
 - Search is implemented under gate 4. The design is `plans/SearchFacade.md`.
-- PDF and the tool components (`moqui-fop`, `moqui-poi`, `moqui-image`, `moqui-cups`, `moqui-sso`) are the tail of gate 4. `xsl-fo` output exists at gate 3. `PdfRenderer` stays the empty host hook until an engine is chosen against binary size.
+- PDF and the tool components (`moqui-fop`, `moqui-poi`, `moqui-image`, `moqui-cups`, `moqui-sso`) are the tail of gate 4. `xsl-fo` at gate 3 is the FO document. `/fop/*`, xsl-fo email attachments, scheduled screen PDF attachments, and print rendering report that PDF is not available until `PdfRenderer` is implemented. The host `pdf` module stays the empty hook until an engine is chosen against binary size.
 - The Groovy shell endpoint is dropped. There is no Java service runner and no Groovy runner. Framework script services become JavaScript or Rust.
 
 ## Phase order
@@ -96,7 +97,7 @@ Depends on phase 1.
 
 Depends on phase 2. `DbDriver` is a trait in core. Connections are host. SQL text is core, written in phase 4. There is no SQLx dependency.
 
-- `TransactionFacade` and the transaction manager, in core, calling `DbDriver`: begin-or-join, commit, rollback, savepoint, `setRollbackOnly`, timeout, `ignore`, `force-new`, and the synchronization list (transaction cache, `runOnCommit` / `runOnRollback`, service ECAs, data feed). One connection enlisted for the transaction. `suspend` returns it before the transaction is parked, and `force-new` is that suspend followed by begin. No JTA types and no XA two-phase commit. The transaction-cache hooks used in phase 4 sit on these same calls.
+- `TransactionFacade` and the transaction manager, in core, calling `DbDriver`: begin-or-join, commit, rollback, savepoint, `setRollbackOnly`, timeout, `ignore`, `use-or-begin`, `force-new`, `cache`, `force-cache`, and the synchronization list (transaction cache, `runOnCommit` / `runOnRollback`, service ECAs, data feed). One connection enlisted for the transaction. `suspend` parks that client on the transaction, off the free list. `resume` checks the same client out. `force-new` is that suspend followed by begin. The thread holds one connection. The parked client still counts against the pool max. No JTA types and no XA two-phase commit. The rules are the Transactions section of `plans/Architecture-Proposal.md`. The transaction-cache hooks used in phase 4 sit on these same calls.
 - Dialect profiles from the `<database>` block. Postgres and MySQL in this phase.
 - Host `db`: embedded Postgres via `postgresql_embedded` (start, stop, Unix socket, `NoTls`), external Postgres with rustls, and the MySQL client with rustls. The pool is the core manager. Settings are `plans/EmbeddedPostgres.md`.
 - A test round-trips a raw statement through each driver.
@@ -141,13 +142,13 @@ Depends on phases 4 and 5. This phase finishes the service facade.
 
 - `http` and `RestClient` in `moqui-lib`, blocking `reqwest`. The sim predicate default-denies. Sim is live from phase 4, so the predicate sees it.
 - Service XML, `service-include`, and `verb#noun` lookup. Implicit entity-auto: no path, verb one of `create`, `update`, `store`, `delete`, noun an entity name. A data element such as `create-moqui.security.UserAccount` resolves that way after `-` becomes `#`.
-- Sync call: parameters, the full validation set (required, matches, ranges, entity-backed validators), and the transaction attributes `use-transaction`, `ignore`, and `force-new`. The `authenticate` attribute is enforced with phase 5.
+- Sync call: parameters, the full validation set (required, matches, ranges, entity-backed validators), and the transaction attributes `ignore`, `use-or-begin` (the default), `force-new`, `cache`, `force-cache`, and `transaction-timeout`. `cache` is `use-or-begin` with the transaction cache. `force-cache` is `force-new` with the transaction cache. `transaction-isolation` is not ported. The `authenticate` attribute is enforced with phase 5.
 - Entity-auto runner, including nested maps. The plain-map load path calls the same store function.
 - XML actions: MiniJinja 3.0.0 macros named for the elements in `xml-actions-3.xsd`, emitting JavaScript, run by QuickJS. The walker is the one in `plans/ContextObjects.md`. MiniJinja sees the element, not the execution context. Macros emit bare names, and the server proxy in that plan resolves an unset name to null. One QuickJS runtime per `ExecutionContext`, on that thread. Decimals stay host values.
 - Script-type services whose body is JavaScript. The Groovy email scripts are converted in phase 10. There is no Java runner.
 - `UserSecurityChecks` for the two security ECAs, as Rust functions on the host. ECA actions from phase 4 run through this runner. SECA rules run through it too.
 - Email-ECA rules run through the same action runner and call a service. The transport behind send-mail is phase 10. Until then the send service reports that mail is not configured.
-- `service-group`. `async="true"` starts another thread and another `ExecutionContext`. The scheduler thread sleeps and runs due jobs. Both are core threads, as `plans/Crate-Layout.md` describes.
+- `service-group`. `async="true"` starts another thread and another `ExecutionContext`. `callFuture()` is that start plus a oneshot the caller waits on. The joined sites are named in `plans/Architecture-Proposal.md`. The scheduler thread sleeps and runs due jobs. Both are core threads, as `plans/Crate-Layout.md` describes.
 - `RestApi`: load `*.rest.xml`, walk the path, run `<entity>` and `<service>` operations. Tested by calling `run` with a path list and a parameter map. The HTTP route is phase 7.
 - JSON-RPC dispatcher, tested the same way, with a request body and no socket.
 - Remote REST and remote JSON-RPC runners on `RestClient`.
@@ -199,7 +200,7 @@ Depends on the screen URL and transition runner from phase 7, and on the action 
 - The rest of the screen model: sections, `section-iterate`, containers, trees, `form-single`, `form-list`, conditional and error responses, `include-screen`, `screen-extend`, and database forms.
 - `always-actions`, `pre-actions`, section actions, and `row-actions` through the phase 6 runner.
 - MiniJinja screen and form macros. The walker passes attributes, child text, and already-rendered children. Server HTML and client JavaScript are macro targets. A native widget-tree renderer is not the path.
-- `ec.l10n` format, formatCurrency, and localize, using the session locale and time zone and the seeded localization messages. `sri` gains the methods the macros call. The method list remains the open host-API plan. This phase implements the calls the current macros make, and records any it adds.
+- `ec.l10n` format, formatCurrency, and localize, using the session locale and time zone and the seeded localization messages. `sri` gains the methods the macros call. The method list is the Server host methods section of `plans/ContextObjects.md`. This phase implements that list, and records any method it adds.
 - Modes, in this order. Each one is a macro library on the same screen model.
 
 | Order | Mode | Output |
@@ -207,7 +208,7 @@ Depends on the screen URL and transition runner from phase 7, and on the action 
 | 1 | `text` | Plain text, server merge |
 | 2 | `csv` | CSV, server merge |
 | 3 | `xml` | XML, server merge |
-| 4 | `xsl-fo` | XSL-FO document, server merge. PDF is phase 12 |
+| 4 | `xsl-fo` | FO document, server merge. PDF callers stay unavailable until phase 12 |
 | 5 | `html` | Terse server HTML, shared stylesheet, `moqui-html.js` |
 | 6 | `qvt` | Server-merged Vue component object |
 | 7 | `qjs`, `qvue` | Companions, kept |
@@ -265,9 +266,9 @@ Depends on the HTTP client, the user facade, and the screen facade for screen-se
 - System message receive, record, and consume. The `/rest/sm` transition on `rest.xml` starts calling `receive#IncomingSystemMessage` here.
 - ETL: `SimpleEtl` and `FlatXmlExtractor` in lib. `sgml` in lib. JDBC extract beside `DbDriver` in the host.
 - EDI handler in core.
-- `db://` and content resources. JCR is dropped. Blob storage is the filesystem, with S3 as a resource implementation when a deployment asks for it.
+- `db://` stays. JCR is dropped. Resolving a `content://` location is an error that names the location. It is not remapped onto blob storage. Filesystem and S3 are their own resource implementations when a deployment asks for one.
 - Cache admin and the other tools services that wrap facades already built.
-- Print-job records. Turning `xsl-fo` into PDF is phase 12.
+- Print-job records. Turning the gate 3 FO document into PDF is phase 12. Until then a print or email path that asks for PDF reports that PDF is not available.
 - User remainder: preferences, password reset, TOTP, email second factor, and the admin side of API keys and login keys. The `sendOtp` and `verifyOtp` transitions start working here.
 - The Groovy shell is not replaced with a script console.
 - A distributed cache-invalidation listener on the lib topic, when a deployment asks for one. It is not a Redis client and not a second cache facade.

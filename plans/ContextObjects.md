@@ -2,7 +2,7 @@
 
 Which values MiniJinja, QuickJS, Liquid, and the browser can see, and which Rust types those environments share.
 
-This follows Templating in `plans/Architecture-Proposal.md` and the browser host in `plans/QvtServerStatic.md`. The method list on server `ec` facades and on `sri` stays a later plan.
+This follows Templating in `plans/Architecture-Proposal.md` and the browser host in `plans/QvtServerStatic.md`. The method list on server `ec` facades and on `sri` is Server host methods, below.
 
 ## Decision
 
@@ -30,7 +30,7 @@ The two FreeMarker jobs already have different data models:
 
 MiniJinja 3.0.0 has no `<#visit>` and no node type. Its `Object` trait also takes ownership: `Value::from_object` stores an `Arc`, and the object must be `Send + Sync`. That is unchanged from 2.x. The context stack is confined to one `ExecutionContext` thread, so it is the wrong type to hand to MiniJinja even before the orphan rule. The `serde` feature stays off. Macros see attribute strings, child text, and already-rendered children.
 
-The Rust walker owns the visit. For each element it calls the macro named for that element and passes attributes, text, and rendered children. Child output is produced first, then the parent macro wraps it, including the case where the parent emits a loop and the child script sits inside the loop. Attribute strings are copied into that macro call. The copy happens once per definition, and the cached result is the generated script. That replaces the `MNode` wrapper cache. `Node` does not implement an engine trait.
+The Rust walker owns the visit. For each element it renders one cached template that imports the macro named for that element (`{% from 'defs' import entity_find %}{{ entity_find(attrs, text) }}`) and passes attributes, text, and rendered children. MiniJinja has no call of a macro through a variable name, and there is no per-mode template that branches on the element name. Child output is produced first, then the parent macro wraps it, including the case where the parent emits a loop and the child script sits inside the loop. Attribute strings are copied into that macro call. The copy happens once per definition, and the cached result is the generated script. That replaces the `MNode` wrapper cache. `Node` does not implement an engine trait.
 
 ## One stack, three projections
 
@@ -76,10 +76,10 @@ These are the types a script can hold. Plain maps and lists that are already pla
 | `sri` | Host object, only while a server screen render is on the stack | The screen renderer. Absent in actions that are not a render, and absent in the browser |
 | entity value | Host object, field get and set | The entity value. `unwrap` is what Liquid, JSON, and the browser receive instead |
 | entity list | Host object, index, length, iterable, `map`, `filter` | The list. `map` returns a JavaScript array so `list.map(x => x.field)` works without copying first |
-| decimal, timestamp | Host values | `rust_decimal` and `time` from `moqui-lib`. Not JavaScript numbers. `+` is not overloaded. Comparison and arithmetic are methods or `ObjectUtilities` helpers, on the server only |
+| decimal, timestamp | Host values | `rust_decimal` and `time` from `moqui-lib`. Not JavaScript numbers. `+` is not overloaded. Comparison and arithmetic are methods or `ObjectUtilities` helpers, on the server only. That is the migration rule in `plans/Architecture-Proposal.md` |
 | `ObjectUtilities`, `CollectionUtilities`, `StringUtilities` | The same helpers the generated script header calls today | Functions in lib, bound once per runtime |
 
-`ec.entity`, `ec.service`, and the rest of the facade surface are the server host plan. They exist only on this QuickJS object. The browser `ec` is the table in `plans/QvtServerStatic.md` and does not grow to match the server object. `sri` is not added to the browser.
+`ec.entity`, `ec.service`, and the rest of the facade surface are the Server host methods section. They exist only on this QuickJS object. The browser `ec` is the table in `plans/QvtServerStatic.md` and does not grow to match the server object. `sri` is not added to the browser.
 
 Generated screen JavaScript for a server render calls `sri` and writes to the render writer. Generated server-static qvt does not. It transcribes expressions into the Vue template, and the browser evaluates them against the package and the restricted `ec`.
 
@@ -96,8 +96,54 @@ Generated screen JavaScript for a server render calls `sri` and writes to the re
 - A reflection wrapper in the style of `BeansWrapper`. Each host type above is written out.
 - Live entity values, `ec`, or `sri` inside Liquid or inside the cached qvt template.
 
+## Server host methods
+
+Measured 2026-10-11 from `framework/template/XmlActions.groovy.ftl` and the kept screen macros in `runtime/template/screen-macro/` (`any`, `html`, `qvt`, `text`, `csv`, `xml`, `xsl-fo`, `plain`). `vuet` is excluded. These are the calls the generated JavaScript makes. The browser `ec` keeps `l10n` format and localize, `resource.expand`, and the user allowlist from `plans/QvtServerStatic.md`. It does not gain the rest of this list. `sri` stays off the browser.
+
+### `sri`, during a server screen render
+
+`doBoundaryComments`, `getFieldValueString`, `makeUrlByType`, `getScreenUrlInstance`, `getFieldOptions`, `getActiveScreenDef`, `popContext`, `buildUrl`, `getFieldEntityValue`, `getFieldValue`, `renderSection`, `pushSingleFormMapContext`, `renderSubscreen`, `getFieldValuePlainString`, `getFormInstance`, `getThemeIconClass`, `startFormListRow`, `endFormListRow`, `getFieldTransitionValue`, `renderSectionInclude`, `pushContext`, `setInContext`, `getFormHiddenParameters`, `getCurrentScreenUrl`, `safeCloseList`, `appendToAfterScreenWriter`, `renderIncludeScreen`, `makeFormListSingleMap`, `getRenderMode`, `getSingleFormMap`, `renderText`, `isAnchorLink`, `getFormListHeaderValues`, `startFormListSubRow`, `endFormListSubRow`, `getFieldValueClass`, `getThemeValues`, `appendToScriptWriter`, `getSectionIncludedNode`, `getFormFieldValues`, `makeFormListMultiMap`, `getNamedValuePlain`, `getFormNode`.
+
+Property: `activeInCurrentMenu`.
+
+The macros then read the objects those methods return. A screen URL has `path`, `url`, `getUrlWithParams`, `cloneUrlInstance`, `addParameter`, `removeParameter`, and `getPassThroughParameterMap`. A screen definition has `location`, `getMenuSubscreensItems`, `getDefaultMenuName`, and `getScreenName`. `makeUrlByType` returns `getUrlWithParams` and `addParameter`. `buildUrl` returns `path` and `url`.
+
+### `ec` during a server screen render
+
+- `resource` (`getResource`): `expand`, `expandNoL10n`, `expression`, `condition`.
+- `l10n` (`getL10n`): `localize`, `format`, `formatCurrency`, `formatCurrencyNoSymbol`.
+- `context` (`getContext`): `get`, plus the fields `formListFindId` and `orderByField`.
+- `web` (`getWeb`): `sessionToken`, `parameters`, `requestParameters`, `getWebappRootUrl`.
+- `user` (`getUser`): `locale`, `getLocale`, `getPeriodDescription`.
+- `screen`: `isRenderModeValid`.
+
+### Statics the screen macros call
+
+- `WebUtilities.encodeHtmlJsSafe`, `WebUtilities.fieldValuesEncodeHtmlJsSafe`.
+- `CollectionUtilities.paginateParameters`, `CollectionUtilities.getMapArrayListValues`.
+- `StringUtilities.encodeForXmlAttribute`.
+- `ScheduledJobRunner.getCronDescription`, one call.
+
+### `ec` from XML actions
+
+`XmlActions.groovy.ftl` emits these. There is no `sri` in an action run.
+
+- `service.sync` and `service.async`, then `name`, `disableAuthz`, `multi`, `ignoreTransaction`, `requireNewTransaction`, `transactionTimeout`, `useTransactionCache`, `parameters`, `parameter`, `call`. The current template also emits `distribute(true)` for `async="distribute"`. That attribute stays rejected, so the host does not implement `distribute`.
+- `entity.find`, then `useCache`, `forUpdate`, `useClone`, `distinct`, `offset`, `limit`, `selectField`, `orderBy`, `condition`, `havingCondition`, `requireSearchFormParameters`, `searchFormMap`, `one`, `list`, `count`, `iterator`, `deleteAll`, `getLimit`, `getPageIndex`, `getPageSize`.
+- The list from a find: `getPartialList`, `filterByDate`, `filterByLimit`, `size`, `pageIndex`, `pageSize`.
+- The value: `setSequencedIdPrimary`, `setSequencedIdSecondary`, `setFields`, `create`, `createOrUpdate`, `update`, `delete`, `deleteRelated`, `findRelated`, `findRelatedOne`.
+- `entity.makeValue`.
+- `entity.conditionFactory`: `makeConditionDate`, `makeActionConditionDirect`, `makeCondition`.
+- `resource.expand`, `resource.expression`, `resource.script`.
+- `message.addError`, `message.addPublic`, `message.addMessage`, `message.hasError`, `message.getErrorsString`, `message.clearErrors`, and the `errors` field.
+- `logger.warn`, `logger.log`.
+- `user.nowTimestamp`.
+- `web.sendJsonResponse`, `web.requestParameters`.
+- `context` as the default field map for `condition`, `parameters`, and `searchFormMap`.
+
+`entity-data` is still a TODO in the Java template and adds no method here.
+
 ## Out of scope
 
-- The method list on server `ec` facades and on `sri`.
-- QuickJS operator overloading for decimals. The browser cannot share it, and the build flag is not a dependency.
+- QuickJS operator overloading for decimals. QuickJS-NG ties it to the built-in `BigDecimal` and `BigFloat` classes (`CONFIG_BIGNUM`). It does not extend to a host class, so the build flag does not give a host decimal `+`. The browser cannot share that flag either.
 - Running MiniJinja per request so a screen macro can read the context stack. Request data is read by the generated script.
