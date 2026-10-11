@@ -21,7 +21,7 @@ The client loads two kinds of JSON after the template.
 
 The context object keeps the shape expressions already walk. The browser adds a separate `ec` host beside that tree. `ec.l10n` formatting, a small `ec.user` snapshot, and `ec.resource.expand` are implemented in the browser. Any other property of `ec`, and any use of `sri`, is absent and throws when an expression touches it.
 
-The schema does not grow a second template language and does not grow attributes that mark an expression as client-safe. Compatibility is a static scan of each transcribed expression, plus a render that evaluates every widget expression against real actions. A clean report is necessary before a screen is marked `server-static="qvt"`. It is not sufficient to invert the default: the render only sees the rows that run produced.
+The schema does not grow a second template language and does not grow attributes that mark an expression as client-safe. Compatibility is an `oxc_parser` walk of each transcribed expression, plus a render that evaluates every widget expression against real actions. A clean report is necessary before a screen is marked `server-static="qvt"`. It is not sufficient to invert the default: the render only sees the rows that run produced.
 
 ## Screen package and form-list package
 
@@ -101,11 +101,17 @@ The execution context used for widget evaluation can be wrapped. The wrapper's `
 
 Two places use the wrapper.
 
-The qvt macros, while emitting a server-static template, inspect each expression they transcribe. A call they can see that is outside the host is recorded. This pass is static. It misses a method chosen at runtime.
+The qvt macros, while emitting a server-static template, walk the `oxc_parser` AST of each expression they transcribe. A call outside the host is recorded. Decimal arithmetic and an `ObjectUtilities` call that does it are the same kind of AST check. This pass is static. It misses a method chosen at runtime.
 
 The full check renders the screen in a mode that walks the whole widget tree and evaluates every expression. `html`, or `qvt` with server-static forced off, both do that. The run is a screen-facade tool, not part of an ordinary user request. It uses real actions so lists, conditions, and rows actually execute, and the wrapper around widget evaluation. Each throw is caught, recorded, and the render continues. Macros also record server-only work they still perform on that path when the result would have to be baked into a static template and is not covered by package prep: `disableLink`, a `display-entity` or `entity-options` lookup that the package step does not handle, a URL that can only be built by `sri` from request state, a `section-iterate` whose list name is a form-list `@list`, and decimal arithmetic or an `ObjectUtilities` call that does it. The same tool reads `always-actions` and `pre-actions` for `service-call`, entity create, update, and delete, and message elements. Those are recorded as side effects. The wrapper stays off for them, because data prep is allowed to do that work. The record is what keeps that screen off server-static. The tool logs one report per screen: location, mode, and each violation.
 
-A clean report means this run found no violation, so the screen can be marked `server-static="qvt"` for the data that was rendered. The render only executes rows the actions produced, and the static scan misses a method chosen at runtime, so a clean report is not a proof that every future row is safe. Inverting the default waits on reports for the screens we care about, read with that limit. The report also names screens whose `always-actions` or `pre-actions` write, send, or append a message. Those stay off server-static until the form request stops repeating that work.
+A clean report means this run found no violation, so the screen can be marked `server-static="qvt"` for the data that was rendered. The render only executes rows the actions produced, and the AST walk misses a method chosen at runtime, so a clean report is not a proof that every future row is safe. Inverting the default waits on reports for the screens we care about, read with that limit. The report also names screens whose `always-actions` or `pre-actions` write, send, or append a message. Those stay off server-static until the form request stops repeating that work.
+
+## Server compile
+
+A server-static template is compiled once when the screen definition is cached. The compiler runs with Vue's `prefixIdentifiers` option, and the cached body is a render function. That function has no `with` and no `new Function`. A page whose qvt output, including fragments, is entirely server-static loads `vue.runtime.global.prod.js` and does not need `unsafe-eval`. Server-merged `qvt`, and an `X-Moqui-Qvt: merged-fragment` response, keep `vue.global.prod.js` and browser compilation. A server-static shell that can receive a merged fragment loads the compiler build, because the fragment is still compiled in the browser. A CSP without `unsafe-eval` applies only when every qvt response on that page, including fragments, is server-static.
+
+The compiler that emits `prefixIdentifiers` output is the Node build of `@vue/compiler-dom`. The browser build rejects that option (compiler error 48). The first task of this work is to load that Node build in QuickJS. A small template has already been compiled in QuickJS with the browser build. The Node build has not. If the Node build needs Node builtins, a plain-JS compiler bundle is vendored and run in QuickJS. Node is not a server process.
 
 ## Current Java behavior the port keeps
 

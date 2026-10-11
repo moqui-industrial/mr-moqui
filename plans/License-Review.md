@@ -1,12 +1,12 @@
 # License Review
 
-Reviewed 2026-10-11. The repository has no `Cargo.toml` yet, so this is a review of the planned dependency set in `plans/Architecture-Proposal.md`, `plans/Crate-Layout.md`, and `plans/EmbeddedPostgres.md`, resolved as a Linux `x86_64-unknown-linux-gnu` crate graph, plus the theseus Postgres 18.6.0 archive those plans pin. It reads the published license terms. It is not a legal opinion.
+Reviewed 2026-10-11. The graph is the workspace in this repository, resolved as a Linux `x86_64-unknown-linux-gnu` crate graph, plus the theseus Postgres 18.6.0 archive those plans pin. `moqui-db` was added after that resolve. It depends only on `moqui-lib` and adds no third-party crate. This review reads the published license terms. It is not a legal opinion.
 
 The framework license stays what Moqui Java uses. `LICENSE.md` is CC0 1.0 plus a patent grant adapted from Apache-2.0. CC0 section 4(a) waives copyright and withholds patents, so the grant is part of the license, not a preface. That grant covers Moqui's own code. It does not relicense a dependency, and a dependency's license does not become CC0 because the binary is ours.
 
 ## What "linked" means here
 
-GPL-style copyleft treats a static link as one combined work. Rust's default is a static link: every normal crate dependency is an rlib inside the `moqui` binary. A component written in Rust that depends on `moqui-lib`, `moqui-core`, or `moqui-host` is in that same binary. That is the case this review is for. A later GPL, AGPL, or SSPL crate anywhere in that graph would cover the customized binary, including the customer's Rust.
+GPL-style copyleft treats a static link as one combined work. Rust's default is a static link: every normal crate dependency is an rlib inside the `moqui` binary. A component written in Rust that depends on `moqui-lib`, `moqui-db`, `moqui-core`, or `moqui-host` is in that same binary. That is the case this review is for. A later GPL, AGPL, or SSPL crate anywhere in that graph would cover the customized binary, including the customer's Rust.
 
 Four other relationships are not that link.
 
@@ -186,7 +186,8 @@ These are served as their own files from `runtime/base-component/webroot/`. They
 
 | File | License | How it is delivered | Verdict |
 |---|---|---|---|
-| Vue 3.5 (`vue.global.prod.js`) | MIT | Script tag | OK |
+| Vue 3.5 (`vue.global.prod.js`) | MIT | Script tag. Server-merged `qvt`, and a server-static shell that can load a merged fragment. | OK |
+| Vue 3.5 runtime (`vue.runtime.global.prod.js`) | MIT | Script tag. A page whose qvt output, including fragments, is entirely server-static. Same package as the row above. | OK |
 | Quasar 2.35 (`quasar.umd.prod.js`), including `QEditor` | MIT | Script tag | OK. This is the replacement for CKEditor. |
 | Font Awesome 4.7 | Font: SIL OFL-1.1. CSS: MIT. Documentation: CC-BY-3.0. | The font and the CSS. Do not ship the docs. | OK. OFL is a font license, not a software copyleft. Stay on 4.7. Font Awesome 5+ changes the `fa fa-*` classes, and the SVG/JS icons are CC-BY-4.0. |
 | Material Icons (Google) | Apache-2.0 | Font and CSS | OK. Pictogrammers' Material Design Icons, if substituted, are Apache-2.0 for the icons and MIT for the code. |

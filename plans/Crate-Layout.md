@@ -6,13 +6,14 @@ This follows `plans/Architecture-Proposal.md`. It replaces the Gradle source set
 
 ## Decision
 
-Four crates, one workspace, and two data directories.
+Five crates, one workspace, and two data directories.
 
 ```
 mr-moqui/
   Cargo.toml                 # workspace
   crates/
     moqui-lib/               # no ExecutionContext; usable on its own
+    moqui-db/                # entity model, SQL text, dialects; no ExecutionContext and no driver
     moqui-core/              # the framework; synchronous, multi-threaded
     moqui-host/              # process edge: HTTP server, drivers, process spawn
     moqui/                   # binary: CLI and process entry
@@ -23,10 +24,10 @@ mr-moqui/
 Dependency direction is one way:
 
 ```
-moqui (bin) → moqui-host → moqui-core → moqui-lib
+moqui (bin) → moqui-host → moqui-core → moqui-db → moqui-lib
 ```
 
-`moqui-core` is the main framework crate. `moqui-host` is the crate that sits on top of it. `moqui-lib` sits under both and does not know the framework exists.
+`moqui-core` is the main framework crate. `moqui-host` is the crate that sits on top of it. `moqui-db` holds the entity model and the SQL text, and does not know the facades. `moqui-lib` sits at the bottom and does not know the framework exists. `moqui-core` also depends on `moqui-lib` directly, the same way `moqui-host` depends on both `moqui-core` and `moqui-lib`.
 
 There is no `src/start` tree and no interface-only tree. Each crate has one `src/` tree. `pub` is the supported API. Extension points that have a second implementation, or that the host must supply, are traits in the same module as the rest of that code.
 
@@ -46,9 +47,10 @@ Entity, service, and screen call each other through `ExecutionContext` (entity E
 The cuts that are real:
 
 1. Code with no framework type in its API or body can be used without starting Moqui. That is `moqui-lib`.
-2. The process edge stays above the framework. That is `moqui-host`: the HTTP server, database driver connections, and process spawn.
+2. Entity model, dialect profiles, the condition tree, and SQL and DDL text have no `ExecutionContext` and no driver client. That is `moqui-db`. Search keeps its own SQL compiler in `moqui-core` and uses this crate for quoting and placeholders.
+3. The process edge stays above the framework. That is `moqui-host`: the HTTP server, database driver connections, and process spawn.
 
-Everything else stays in `moqui-core`, including the facades, XML Actions, screens, the entity engine, services, LLM and A2A logic, the JavaScript engine, and the framework's own threads.
+Everything else stays in `moqui-core`, including the facades, XML Actions, screens, entity policy (authorization, ECAs, caches, feeds, the data loader), services, LLM and A2A logic, the JavaScript engine, and the framework's own threads.
 
 ## Threads, and why the host is separate
 
@@ -101,6 +103,22 @@ Not ported, on purpose:
 - `LiteStringMap`. Use `indexmap` until a profile says a special map is worth it.
 - The JSR-107 surface on top of `MCache` (listeners, entry processors, write-through, MX beans). `MCache` and `MCacheManager` are ported. The cache facade in core uses them directly.
 
+## moqui-db
+
+Entity model and SQL text. No `ExecutionContext`, no facade, no driver client, and no Tokio. Depends only on `moqui-lib`. A test can render SQL for a definition and a dialect without starting the framework and without opening a connection.
+
+| Piece | What it is |
+|---|---|
+| Entity model | Definitions parsed from `MNode`: dictionary types, fields, relationships, master definitions, view-entity structure. |
+| Dialect profiles | The `<database>` block: SQL type names, join style, offset style, lateral style, full-text style, null handling, and the related flags. |
+| Condition tree | The input to the renderer. `EntityFind` in core builds it. |
+| SQL and DDL text | Insert, update, delete, select, count, joins, offset, and view-entity select. |
+| Quoting and placeholders | Shared with search. Search's own SQL compiler stays in `moqui-core`. |
+
+`moqui-core` keeps entity policy: authorization, ECAs, the entity cache, the transaction cache, sim, audit, feeds, and the data loader. It keeps `EntityValue`, `EntityFind`, the `DbDriver` trait, the transaction manager, and the pool. `moqui-host` keeps the driver implementations. Row values that cross `DbDriver` stay the plain values from `moqui-lib` (`rust_decimal` and `jiff`).
+
+This is not a drivers crate. Postgres and MySQL clients stay in `moqui-host`.
+
 ## moqui-core
 
 The framework. One `src/` tree, modules by facade. Public types are `pub`. Helpers are private. There is no `impl` tree.
@@ -133,13 +151,13 @@ QuickJS-NG (`rquickjs`) is the script and template engine. There is one language
 
 `script` is the QuickJS runtime. `template` is the `TemplateRenderer` implementations on that runtime: `JsTemplateLiteral`, the fancy renderer, and the locked-down variant. The values each one sees are `plans/ContextObjects.md`.
 
-`entity` holds definitions, values, the condition tree, find, SQL rendering, the dialect profiles, the `DbDriver` trait, ECAs, the data loader and writer, the entity cache, feeds, and dynamic views. SQL text is core. Opening a connection is host.
+`entity` holds values, find, the `DbDriver` trait, ECAs, the data loader and writer, the entity cache, feeds, and dynamic views. The model, the condition tree, dialect profiles, and SQL and DDL text live in `moqui-db`. `EntityFind` calls that crate. Opening a connection is host.
 
 `service` holds definitions, the call builders, runners, SECAs, email ECAs, REST API metadata, JSON-RPC dispatch, and job definitions, including the thread that sleeps and runs due jobs. Cron expressions stay Quartz syntax, as `ScheduledJobRunner` documents. `croner` 4 parses them. The parser is built with optional seconds, `alternative_weekdays` (Sunday is 1), and `sloppy_ranges`, so a seeded expression such as `0 0/15 * * * ?` parses and a numeric day-of-week matches Quartz. `?`, `L`, `W`, and `#` are part of that parser. `getCronDescription` calls `describe()`. The crate's default `chrono` feature stays off and the `jiff` feature stays on.
 
 `screen` holds definitions, forms, trees, URL info, and the QuickJS macro expansion to HTML and to client JavaScript.
 
-`search` is the new facade from the architecture proposal, not a port of `ElasticFacade`. The API is `plans/SearchFacade.md`. Postgres query and aggregation SQL is in core. OpenSearch request bodies live here when they are just HTTP. Starting the OpenSearch process does not. When the entity datasource is Postgres, embedded or external, default search tables are the `search` schema on that database. Search is its own embedded cluster when the entity datasource is not Postgres, and an external Postgres when a search URL names one. Embedded search starts on Windows too.
+`search` is the new facade from the architecture proposal, not a port of `ElasticFacade`. The API is `plans/SearchFacade.md`. Postgres query and aggregation SQL is in core. Quoting and placeholders come from `moqui-db`. OpenSearch request bodies live here when they are just HTTP. Starting the OpenSearch process does not. When the entity datasource is Postgres, embedded or external, default search tables are the `search` schema on that database. Search is its own embedded cluster when the entity datasource is not Postgres, and an external Postgres when a search URL names one. Embedded search starts on Windows too.
 
 `llm` holds the client, conversation, protocol encoding, tool loop, and `a2a`. Provider calls go through `HttpClient`.
 
@@ -163,13 +181,13 @@ Other current classes, placed by the same rule:
 
 `rquickjs` links QuickJS-NG, which is C. It belongs in core because XML Actions and expressions are the framework. Each `ExecutionContext` owns the runtime for its thread. Functions called from JavaScript are synchronous and return values. Host callbacks assume `panic = unwind` and are wrapped in `catch_unwind`, as `plans/Architecture-Proposal.md` specifies. Do not create a `moqui-js` crate.
 
-Core can load components, parse XML, expand actions and screens, run JavaScript, evaluate entity conditions, and render SQL with no database driver and no listen socket. Opening a connection, accepting a request, and spawning an external process are host. That is what keeps a core unit test free of those.
+Core can load components, parse XML, expand actions and screens, run JavaScript, and, through `moqui-db`, evaluate entity conditions and render SQL, with no database driver and no listen socket. Opening a connection, accepting a request, and spawning an external process are host. That is what keeps a core unit test free of those.
 
 ## Databases
 
-The entity engine is database-agnostic in the same way the Java framework is. `moqui-core` owns the dialect and the SQL. `moqui-host` owns connections. Adding a database is a dialect profile plus a driver. It is not a fork of the entity facade, and it is not a new crate.
+The entity engine is database-agnostic in the same way the Java framework is. `moqui-db` owns the dialect and the SQL text. `moqui-host` owns connections. Adding a database is a dialect profile in `moqui-db` plus a `DbDriver` in `moqui-host`. It is not a fork of the entity facade.
 
-The dialect profile is the `<database>` block Moqui already has in `MoquiDefaultConf.xml`: SQL type names, join style, offset style, lateral style, full-text style, null handling, and the related flags. The SQL renderer in core takes a dialect. It does not import a driver. Core renders SQL text at runtime, as it is now. There is no SQLx dependency and no `query!` compile-time macros.
+The dialect profile is the `<database>` block Moqui already has in `MoquiDefaultConf.xml`: SQL type names, join style, offset style, lateral style, full-text style, null handling, and the related flags. The SQL renderer in `moqui-db` takes a dialect. It does not import a driver. That crate renders SQL text at runtime, as the framework does now. There is no SQLx dependency and no `query!` compile-time macros.
 
 `DbDriver` is the execution boundary: connect, checkout, begin, commit, rollback, savepoint, execute, query, and release. `query` returns rows; a streaming arm serves `entity.find.iterator`, the ETL JDBC extract, entity sync, and large exports (Postgres named cursor inside the transaction, MySQL unbuffered). An open stream pins its connection until it closes, and outside a transaction that pins a pooled checkout. The pool in core checks a connection out on the first statement and enlists it for the life of the transaction. `begin` does not check out. A call outside a transaction checks out and returns. `suspend` parks that client on the transaction, off the free list and off the thread. `resume` checks the same client out again. `force-new` is that suspend followed by begin, on the same thread, so the thread holds one connection. The parked client still counts against the pool max. Ordinary checkouts cannot take the reserve. Checkout is `plans/EmbeddedPostgres.md`. The transaction rules, including the reserve and the startup cap check, are the Transactions section of `plans/Architecture-Proposal.md`. Rows come back as the plain values `moqui-lib`'s `object` module already uses (`rust_decimal` and `time`), not JSON. `postgres` decodes timestamps with `with-time-0_3`, and `mysql` with its `time` feature. The `with-chrono-0_4` and `mysql` `chrono` features stay off. The driver does not know entity definitions. The datasource conf selects the driver at runtime. The factory holds the group map described above.
 
@@ -214,7 +232,7 @@ The process edge. Depends on `moqui-core` and on `moqui-lib` with the `http` fea
 
 Features on this crate, not more crates: `opensearch`, `inbound-smtp`, `pdf`, `pdf-servo`. Default features are embedded Postgres, external Postgres, MySQL, axum, and `pdf`. `pdf-servo` stays off. Chromium itself is not a crate and is not in the binary.
 
-A `moqui-db` crate split out of host is a later option, and only if something needs the drivers without HTTP. It is not part of this layout. The binary always wants the HTTP server and the initial drivers together.
+Drivers stay in `moqui-host`. The binary always wants the HTTP server and the initial drivers together. A crate of drivers without HTTP is not part of this layout.
 
 ## moqui binary
 
@@ -222,7 +240,7 @@ A `moqui-db` crate split out of host is a later option, and only if something ne
 
 `MoquiStart` does three things: load jars from inside a WAR, parse CLI arguments, and start embedded Jetty. The first has no Rust equivalent. The second and third are `main`.
 
-Commands match the current CLI shape: run the server, and `load` with the same flags the current `Moqui.loadData` accepts (`types`, `components`, `location`, `timeout`, `raw`, and the disable flags). The binary constructs the host stack, builds an `ExecutionContextFactory`, and either serves or loads.
+Commands match the current CLI shape: run the server, and `load` with the same flags the current `Moqui.loadData` accepts (`types`, `components`, `location`, `timeout`, `raw`, and the disable flags). `save-db` and `load-save` are the Gradle tasks of those names, against the embedded cluster, as `plans/EmbeddedPostgres.md` describes. The binary constructs the host stack, builds an `ExecutionContextFactory`, and either serves or loads.
 
 The binary stays thin. Framework behavior does not accumulate here. Extra in-process service functions that must be Rust (there is no Java service runner) are registered from the binary or from host into a core registry.
 
@@ -262,5 +280,5 @@ Tests that start a factory, load `framework/`, and hit HTTP live under `crates/m
 - Per-facade crates (`moqui-entity`, `moqui-service`, `moqui-screen`).
 - A `start` or `execWar` source tree.
 - A port of the JSR-107 cache API, Shiro, the Bitronix XA journal, Jackrabbit, H2, JCS, or the servlet types. `MCache` is ported. The transaction manager is Moqui's own, against `DbDriver`, with Bitronix's behavior as the reference.
-- A WASM target, a `moqui-js` crate, a `moqui-db` crate, or a crate per database.
+- A WASM target, a `moqui-js` crate, a crate per database, or a drivers-without-HTTP crate.
 - The tool components (`moqui-poi`, `moqui-image`, `moqui-cups`, `moqui-sso`, `moqui-sftp`). Whether any of them move into this repository is a later decision, limited by binary size. `moqui-fop` is not ported. PDF is the host `pdf` module.

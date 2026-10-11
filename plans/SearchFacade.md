@@ -14,7 +14,7 @@ OpenSearch is one optional HTTP backend. It speaks the shared `_search` and `_bu
 
 One active backend. Applications and the built-in reports always call `SearchFacade`. When the backend is OpenSearch, the indexes stay available to OpenSearch Dashboards through the existing `/elastic` and `/kibana` proxies. When the backend is Postgres, those dashboards are absent. The facade does not write to two stores. External reporting is a property of the OpenSearch backend. In-app reports use the aggregation API on whichever backend is configured.
 
-`moqui-core` owns the document model, the query and aggregation trees, the Postgres SQL, and the OpenSearch request bodies. Bodies go out through `HttpClient`. `SearchBackend` is the trait. Starting an OpenSearch process stays in `moqui-host`.
+`moqui-core` owns the document model, the query and aggregation trees, the Postgres SQL, and the OpenSearch request bodies. The SQL compiler stays in core and uses `moqui-db` for quoting and placeholders. Bodies go out through `HttpClient`. `SearchBackend` is the trait. Starting an OpenSearch process stays in `moqui-host`.
 
 Column full-text (`text-fts` on an entity field, `../moqui/framework/plans/DbFullTextSearch.md`) stays an EntityFacade feature. Skills, wiki bodies, and similar one-table text are that feature. `SearchFacade` is denormalized documents, nested child constraints, and aggregations.
 
