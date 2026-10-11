@@ -25,6 +25,7 @@ Most of MR-Moqui is a port of the Java framework as it exists when the port begi
 
 1. **SearchFacade replaces ElasticFacade.** Postgres full-text and JSON are the default backend. OpenSearch is optional. Plan: [`plans/SearchFacade.md`](plans/SearchFacade.md).
 2. **qvt becomes server-static.** With `server-static` set for `qvt`, the server sends a data-free Vue template and the client merges data from `/actions` and from a separate form-list request. The attribute stays opt-in for this pass. Plan: [`plans/QvtServerStatic.md`](plans/QvtServerStatic.md).
+3. **Same-database data feed commits with the entity change.** When search tables are on the entity database, the feed writes after the transaction-cache flush and before commit, on the enlisted connection. In Java, `DataFeedSynchronization.beforeCompletion()` is empty and the feed runs in `afterCompletion` on the worker pool, only after the commit. A different database or OpenSearch stays after commit. Plan: [`plans/SearchFacade.md`](plans/SearchFacade.md).
 
 ## Build order
 

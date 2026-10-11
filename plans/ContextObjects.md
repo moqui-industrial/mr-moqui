@@ -44,11 +44,13 @@ This is the contract for macros and for migrated scripts. It is decided before m
 
 Groovy returns null for an unset bare name. `ContextBinding.hasVariable` always returns true (`ContextBinding.java:41-45`), so the get falls through to `contextStack.getByString` and yields null instead of `MissingPropertyException`. `if (someUnsetParam)` is false. In JavaScript the same line throws `ReferenceError` at runtime. Identifier lookup calls `HasBinding` before `Get`, so a get-only trap never runs for an unset name.
 
-The server runtime installs a `Proxy` on `globalThis` for that `ExecutionContext`. It closes over that thread's `ContextStack`. It is not installed on the browser `window`. `with` is not used. Strict mode rejects it, and the proxy is the mechanism that works.
+The server runtime sets the prototype of `globalThis` to a `Proxy` for that `ExecutionContext`: `Object.setPrototypeOf(globalThis, new Proxy({}, { has, get, set }))`. The proxy closes over that thread's `ContextStack`. Assigning a `Proxy` to `globalThis` does not change identifier lookup, and an unset name still throws `ReferenceError`. The proxy is not installed on the browser `window`. `with` is not used. Strict mode rejects `with`. Evaluated scripts are strict, so an assignment goes through the `set` trap instead of creating an own global.
 
-- `has` returns true for a stack key, for a real global property, and for every other name. An unknown name still has a binding, so the read does not throw.
-- `get` returns the stack value when any map on the stack contains the key, including an explicit null. Otherwise it returns the real global (`Array`, `Math`, `ObjectUtilities`, and the rest). Otherwise it returns null.
+- `has` returns true for every name that is not already an own property of the real global. An unknown name still has a binding, so the read does not throw.
+- `get` returns the stack value when any map on the stack contains the key, including an explicit null. Otherwise it returns a host helper (`ObjectUtilities`, `CollectionUtilities`, `StringUtilities`). Otherwise it returns null. Those helpers are not own properties of `globalThis`. A context key of the same name wins.
+- Own properties of the real global (`Array`, `Math`, `Object`, and the other built-ins) are resolved by the engine before the proxy. A context key cannot hide those names.
 - `set` writes the top map, as `ContextBinding.setVariable` does. It does not create a real global.
+- An unset name is null, so `if (unset)` is false. `typeof unset` is `"object"`, because the value is null. A presence check is `== null`.
 
 Macros emit bare names. They do not rewrite reads to `context.foo`. `context.foo` still works because `context` is on the stack. Server-static qvt expressions are Vue template expressions against the JSON package. A missing key renders empty there. A new client script that mentions an unset name can still throw. That is acceptable. The proxy is not how the browser works.
 
@@ -56,7 +58,7 @@ Expression hazards that change what a macro emits, including Elvis versus `??`, 
 
 Liquid and the browser see a snapshot, not the stack. The snapshot is the same projection as `ContextJavaUtil.unwrapMap`:
 
-- Strings, booleans, numbers, and timestamps pass through. Timestamps become ISO-8601 text in JSON and in Liquid. A decimal becomes a string in JSON and in Liquid. It does not become a JavaScript number.
+- Strings, booleans, numbers, and timestamps pass through. Timestamps become ISO-8601 text in JSON and in Liquid. A decimal becomes a string in JSON and in Liquid. It does not become a JavaScript number. String order and `+` are then lexicographic and concatenation (`"10.00" < "9.00"`, `"1.00"+"2.00"`).
 - An entity value becomes the plain field map. An entity list becomes a list of those maps.
 - `EntityFind`, the execution context, `sri`, and the context stack object are dropped.
 - Anything else is dropped and logged, as `unwrap` does today.
@@ -78,8 +80,8 @@ These are the types a script can hold. Plain maps and lists that are already pla
 | `sri` | Host object, only while a server screen render is on the stack | The screen renderer. Absent in actions that are not a render, and absent in the browser |
 | entity value | Host object, field get and set | The entity value. `unwrap` is what Liquid, JSON, and the browser receive instead |
 | entity list | Host object, index, length, iterable, `map`, `filter` | The list. `map` returns a JavaScript array so `list.map(x => x.field)` works without copying first |
-| decimal, timestamp | Host values | `rust_decimal` and `time` from `moqui-lib`. Not JavaScript numbers. `+` is not overloaded, and the host `valueOf` throws an error naming the method to use while `toString` prints, so operator use fails loudly and interpolation works. Comparison and arithmetic are methods or `ObjectUtilities` helpers, on the server only. That is the migration rule in `plans/Architecture-Proposal.md` |
-| `ObjectUtilities`, `CollectionUtilities`, `StringUtilities` | The same helpers the generated script header calls today | Functions in lib, bound once per runtime |
+| decimal, timestamp | Host values | `rust_decimal` and `time` from `moqui-lib`. Not JavaScript numbers. Operators are not overloaded. `valueOf` throws an error naming the method to use, and `toString` prints, so `` `${decimal}` `` interpolation works. `+`, relational operators, and `==` against a number or a string throw. `==` between two decimals does not call `valueOf` and is reference equality, so it returns false. A decimal is always truthy, including zero, so `if (amount)` and `amount || fallback` do not match Groovy. The host methods are `add`, `subtract`, `multiply`, `divide`, `eq`, `compare`, and `isZero`. `divide` uses scale `max(left, right, 10)`. Checked operations return a script error when the 28-digit coefficient overflows. The browser package and Liquid still receive a decimal as a string. A server-static expression that does decimal arithmetic is a compatibility-report violation (`plans/QvtServerStatic.md`). That is the migration rule in `plans/Architecture-Proposal.md` |
+| `ObjectUtilities`, `CollectionUtilities`, `StringUtilities` | The same helpers the generated script header calls today | Functions in lib, bound once per runtime. The proxy returns them when the stack has no such key. They are not own properties of `globalThis` |
 
 `ec.entity`, `ec.service`, and the rest of the facade surface are the Server host methods section. They exist only on this QuickJS object. The browser `ec` is the table in `plans/QvtServerStatic.md` and does not grow to match the server object. `sri` is not added to the browser.
 
