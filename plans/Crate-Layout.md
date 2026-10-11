@@ -71,7 +71,7 @@ The one place the current code cheats is `RestClient.refuseIfSim()`, which calls
 | `error` | `BaseException` | Plain error type. Artifact exceptions stay in core. |
 | `node` | `MNode` | XML tree, location, merge, and the writer. Parsing is filled in against the corpus. No XML crate. |
 | `resource` | `ResourceReference`, file and memory refs | Trait plus file and memory implementations. `component://` and `db://` stay in core. `content://` is an error that names the location. Classpath goes away; the framework component is a directory. |
-| `object` | `ObjectUtilities` | Field coercion: decimals, timestamps, booleans, strings. `rust_decimal` and `time` 0.3 live here. |
+| `object` | `ObjectUtilities` | Field coercion: decimals, timestamps, booleans, strings. `rust_decimal` and `jiff` 0.2 live here. |
 | `string` | `StringUtilities` | Encode, decode, pretty-print, masks. Groovy class-name cleanup is not ported. |
 | `collection` | `CollectionUtilities` | Map and list helpers the XML and entity code actually use. |
 | `context_stack` | `ContextStack` | Stack of maps for variable scope. No engine trait. What each environment sees is `plans/ContextObjects.md`. |
@@ -83,6 +83,8 @@ The one place the current code cheats is `RestClient.refuseIfSim()`, which calls
 | `sgml` | `SimpleSgmlReader` | OFX-style SGML, 159 lines, no attributes. Its own function onto `Node`. It is not the framework XML parser. |
 | `http` | new | `HttpClient` trait. |
 | `rest` | `RestClient` | Blocking client. Feature `http`. |
+
+`jiff` 0.2 is the timestamp and time-zone type. It includes the IANA database, which session and user time zones need. Postgres enables `with-jiff-0_2`. `mysql_common` decodes `time` 0.3 and `chrono` and has no jiff feature, so the MySQL driver maps the driver's date tuple onto `jiff`. The `time` and `chrono` features stay off.
 
 `node` is the tree the rest of the framework calls. The FreeMarker half of `MNode` is not ported, and neither is the JDK SAX handler. Parsing is whatever the corpus needs, filled in when a file fails to load. The behavior to match, from the handler the corpus already goes through: UTF-8, an optional XML declaration, comments and processing instructions skipped, the element name stored raw (`getNodeNamespace` returns null today), attributes kept as written (`xmlns:xsi` and `xsi:noNamespaceSchemaLocation` are ordinary attributes), no schema fetch, no external entities, no DOCTYPE, character data including CDATA trimmed into the node's text, the five predefined entities and numeric character references expanded, and any other entity an error. The writer emits child text as CDATA. Line and column are tracked. `EntityValue`'s W3C DOM export is not ported. Acceptance is the corpus: framework conf, entity, service, and screen XML, and `mantle-udm` when it is loaded. Nothing else this runtime parses XML (`lettre`, `axum`, `postgres`, `reqwest`, `rquickjs`, `rustls`), so there is no XML crate. `sgml` stays its own reader. Gate 3 `xsl-fo` emits the FO document and does not transform it. The deferred XSLT-plus-FOP step would bring its own engine with `PdfRenderer`.
 
@@ -133,7 +135,7 @@ QuickJS-NG (`rquickjs`) is the script and template engine. There is one language
 
 `entity` holds definitions, values, the condition tree, find, SQL rendering, the dialect profiles, the `DbDriver` trait, ECAs, the data loader and writer, the entity cache, feeds, and dynamic views. SQL text is core. Opening a connection is host.
 
-`service` holds definitions, the call builders, runners, SECAs, email ECAs, REST API metadata, JSON-RPC dispatch, and job definitions, including the thread that sleeps and runs due jobs.
+`service` holds definitions, the call builders, runners, SECAs, email ECAs, REST API metadata, JSON-RPC dispatch, and job definitions, including the thread that sleeps and runs due jobs. Cron expressions stay Quartz syntax, as `ScheduledJobRunner` documents. `croner` 4 parses them. The parser is built with optional seconds, `alternative_weekdays` (Sunday is 1), and `sloppy_ranges`, so a seeded expression such as `0 0/15 * * * ?` parses and a numeric day-of-week matches Quartz. `?`, `L`, `W`, and `#` are part of that parser. `getCronDescription` calls `describe()`. The crate's default `chrono` feature stays off and the `jiff` feature stays on.
 
 `screen` holds definitions, forms, trees, URL info, and the QuickJS macro expansion to HTML and to client JavaScript.
 

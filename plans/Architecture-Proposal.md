@@ -232,7 +232,7 @@ The interface, the feature set taken from current callers, and the two backends 
 | Cache | A port of `MCache` and `MCacheManager`. No second cache implementation. Distributed invalidation, later, is a listener on the in-process topic in `moqui-lib`. Hazelcast does not carry forward. |
 | Logging | `tracing`. Metrics are the same instrumentation: pool and worker-pool gauges, statement spans and timings, exposed on `/metrics`, with `/health` at the edge. |
 | JSON / XML | `serde_json`. XML is the `MNode` port in `moqui-lib`. Conf is XML. The REST schema export is OpenAPI 3.1, written as JSON by the `RestSchemaUtil` port and JSON Schema-aligned, so the `entity.json` and service schema transitions stay. Swagger 2.0 is a candidate to leave out and is ported only when a concrete consumer needs it; RAML is left out. `serde_yaml` is not a dependency. |
-| CSV, mail, markdown, cron, TOTP | Ordinary crates (`csv`, `lettre`, `pulldown-cmark` / `comrak`, `cron`, `totp-rs`). |
+| CSV, mail, markdown, cron, TOTP | Ordinary crates (`csv`, `lettre`, `pulldown-cmark` / `comrak`, `croner` 4, `totp-rs`). The cron parser is the service module in `plans/Crate-Layout.md`. |
 | Content repository (JCR) | Dropped. `content://` is not remapped onto blob storage. Resolving a `content://` location is an error that names the location. `db://` stays. Filesystem and S3 are their own resource implementations when a deployment asks for one. |
 
 JDBC drivers, H2, the Bitronix library, Shiro, FreeMarker, Groovy, and the servlet stack do not carry forward. The transaction behavior Moqui relies on is reimplemented in Moqui's own manager on `DbDriver`, as Transactions describes. FreeMarker's two jobs move to JavaScript on QuickJS: macro modules for code generation, and the template renderers for text. Where Moqui already has an implementation because the general library was the wrong shape, that implementation is ported. `MNode`, `MCache`, and the transaction manager are the cases. An external crate earns its place when it is the engine, or when another crate this runtime already needs pulls it in.
@@ -352,5 +352,6 @@ An ExecutionContext can be placed in sim mode so that nothing permanent is writt
 | Render modes | `qvt` is the primary UI (Vue 3.5, Quasar 2.35, no jQuery or Moment). `html` stays as terse server HTML with a small shared script. `text`, `csv`, and `xml` stay as they are. `xsl-fo` stays as the FO document. `vuet` is dropped. |
 | Text templates | QuickJS. `JsTemplateLiteral` for `expand()` and short text. Fancy renderer (dialect open; Mustache.js is the candidate) for structured text. Locked-down variant of that renderer for less-trusted text. |
 | Security | Moqui artifact authz on Rust primitives. No Shiro. |
+| Date, time, and cron | `jiff` 0.2 for timestamps and IANA time zones. Scheduled jobs use `croner` 4 on that type. Details are `plans/Crate-Layout.md`. |
 
 The server JavaScript host method list is in `plans/ContextObjects.md`. The build order is `plans/Implementation-Phases.md`: the entity facade and the service facade are whole, and both are finished before gate 1, a data file load. Screen rendering is gate 3.
