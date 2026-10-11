@@ -36,11 +36,11 @@ Start and stop go through the crate's blocking API, bridged once during factory 
 
 Checkout goes through the transaction manager in `moqui-core`. The manager calls `DbDriver` and does not import `postgres` or `mysql`. The manager is specified with the transaction facade in `plans/Crate-Layout.md` and in the Transactions section of `plans/Architecture-Proposal.md`.
 
-A transaction enlists one connection and shares it until commit, rollback, or suspend. A call outside a transaction checks a connection out and returns it. `suspend` parks that client on the transaction. The client leaves the thread and stays off the free list. `resume` checks that same client out again. `force-new` is that suspend followed by begin. The calling thread holds one connection. The parked client still counts against the pool max, and the pool does not keep an idle spare for it. The rules are the Transactions section of `plans/Architecture-Proposal.md`. A savepoint cannot commit on its own, so `force-new` does not use one.
+A transaction enlists one connection and shares it until commit, rollback, or suspend. A call outside a transaction checks a connection out and returns it. `suspend` parks that client on the transaction. The client leaves the thread and stays off the free list. `resume` checks that same client out again. `force-new` is that suspend followed by begin. The calling thread holds one connection on that pool. The parked client still counts against the pool max, and the pool does not keep an idle spare for it. The rules are the Transactions section of `plans/Architecture-Proposal.md`. A savepoint cannot commit on its own, so `force-new` does not use one.
 
-Pool sizes and timeouts start at the Java datasource values: min 5, max 50, idle time, and the acquisition timeout from `pool-time-wait`. The acquisition timeout is the fail-fast. A checkout runs the configured test query. There is no second pool implementation in the host.
+Pool sizes and timeouts start at the Java datasource values: min 5, max 50, idle time, and the acquisition timeout from `pool-time-wait`. The acquisition timeout is the fail-fast. A checkout runs the configured test query. The host has one pool implementation, the core transaction manager. Another database is another instance of that pool. The sim overlay is one. It is not an entity-group `DbDriver` map entry. The one-connection rule is per pool, so a sim thread can hold the entity transaction's client and one overlay client.
 
-Embedded search uses the `search` schema on the entity cluster. A second postmaster starts only when the search store is actually a different database: search config names another Postgres, or the entity datasource is MySQL (or another non-Postgres) and search stays embedded. A configuration that names an external database for a store does not start an embedded postmaster for that store.
+When the entity datasource is Postgres, embedded or external, search uses the `search` schema on that database. A second postmaster starts only when the search store is a different database: search config names another Postgres, or the entity datasource is MySQL (or another non-Postgres) and search stays embedded. Naming an external database for a store does not also start an embedded postmaster for that store.
 
 ## Overlay
 
@@ -63,4 +63,4 @@ A host test that needs more than one database uses two clusters.
 - HOLD, FLUSH, and `enter_sim` follow the Java framework at the time of the port. This plan is the lifecycle of the database under `TransactionCacheDb`.
 - The per-transaction `TransactionCache` stays an in-memory map.
 - External Postgres uses the same `postgres::Client` and the same core pool as an embedded cluster socket. External MySQL is a `DbDriver` on that same manager. There is no SQLx dependency.
-- Search still has its own logical store. On the default embedded cluster that store is the `search` schema. Config can place it on another Postgres.
+- Search still has its own logical store. When the entity datasource is Postgres, embedded or external, that store is the `search` schema on that database. A search URL can place it on another Postgres.

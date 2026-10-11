@@ -8,7 +8,7 @@ This follows `plans/Architecture-Proposal.md` (Search) and `plans/Crate-Layout.m
 
 `SearchFacade` is not a port of `ElasticFacade`. `ElasticFacade` takes ElasticSearch JSON maps and posts them. Mapping that JSON onto Postgres would freeze the Elastic query language into the framework. The facade sits one layer above that. Callers pass a query tree and an aggregation tree. Each backend compiles those trees.
 
-Postgres is the default backend. When the entity database is the embedded Postgres cluster, search documents live in the `search` schema on that same cluster. Config may name an external Postgres instead, the same instance as the entities or another one. When the entity datasource is not Postgres (MySQL, for example), embedded search is its own cluster. There is no MySQL search backend. The store is independent of a non-Postgres entity datasource.
+Postgres is the default backend. When the entity datasource is Postgres, embedded or external, default search tables are the `search` schema on that database. A `<postgres>` URL is how search points at a different Postgres. When the entity datasource is not Postgres (MySQL, for example), search is its own embedded cluster. There is no MySQL search backend. The store is independent of a non-Postgres entity datasource.
 
 OpenSearch is one optional HTTP backend. It speaks the shared `_search` and `_bulk` subset that current OpenSearch and ElasticSearch 7+ have in common. The runtime already ships OpenSearch and OpenSearch Dashboards 3.4. One client covers both products for this subset. The ElasticSearch 6 and pre-7 branches in `ElasticFacadeImpl` (`interval` versus `calendar_interval`, old point-in-time paths, document types) stop here.
 
@@ -206,7 +206,7 @@ unit = Day | Week | Month | Quarter | Year
 
 `filter` is the top-level constraint (the sales date range and status lists). It does not score.
 
-`DateHistogram` buckets have `key` (bucket start, as a timestamp) and `key_display` (the formatted label, today's `key_as_string`). `offset` is the week-start shift. Quarter is a three-month bucket, which is what the sales service already does by expanding quarter into months and using interval `1q` only when it really wants a quarter.
+`DateHistogram` buckets have `key` (bucket start, as a timestamp) and `key_display` (the formatted label, today's `key_as_string`). `offset` is the week-start shift. Quarter is one three-month bucket. The sales service sends interval `1q` for that bucket. `intervalCount * 3` is the window length in months, not a rewrite of the bucket into month buckets.
 
 `Terms` orders by bucket key or by a named metric. `CountDistinct` is an integer. Postgres uses `count(distinct …)`, which is exact, so the API has no precision threshold. The OpenSearch compiler may send `precision_threshold` on its own. Callers do not. OpenSearch cardinality is then approximate, and the integer the caller sees can differ between backends. The sales summaries are the callers that notice.
 
@@ -256,15 +256,15 @@ delete_matching(target, filter: Query)
 get_document(document_id, id) -> body
 ```
 
-`ensure_index` creates the store from the DataDocument definition. There is no separate put-mapping call. A definition change rebuilds the mapping on ensure. Bulk index is the write path the feed uses. `delete_matching` is the retention job: a `Field` range on the index timestamp, and an optional extra filter.
+`ensure_index` creates the store from the DataDocument definition. There is no separate put-mapping call. A definition change rebuilds the mapping on ensure. When `manualMappingServiceName` is set, `ensure_index` runs that service with the generated mapping, as `ElasticFacadeImpl` does. Seed data does not set it. Bulk index is the write path the feed uses. `delete_matching` is the retention job: a `Field` range on the index timestamp, and an optional extra filter. That range hits the `indexed_at` column. The index timestamp is a control field, not a field of the body.
 
 The feed itself stays. Entity create, update, and delete still register documents. The receive service calls `index_documents`. The delete service calls `delete_document`. Rebuild stays a batched read through `EntityDataDocument`.
 
-The feed writes on the same transaction as the entity change when the search store is that same database. That is the default embedded cluster, and it is an external Postgres that is also the entity database. Same database means one `DbDriver` and the transaction's pinned checkout, so the feed writes on that client. `suspend` parks that client on the transaction and does not return it to the free list, as the Transactions section of `plans/Architecture-Proposal.md` specifies. The feed writes on the active transaction's client. Commit and rollback then cover the row and the document. A second pool is a different database (entity tables on MySQL, or a search URL that points at another Postgres). The feed then runs after the entity transaction commits. There is no XA. A search failure after that commit is rebuilt by the existing `IndexDataFeedDocuments` job. OpenSearch is always this after-commit path.
+The feed writes on the same transaction as the entity change when the search store is that same database. That is any entity Postgres, embedded or external, with search on the `search` schema. Same database means one `DbDriver` and the transaction's pinned checkout. `beforeCompletion` flushes the transaction cache first, and the feed then writes on that client, still before commit. `suspend` parks that client on the transaction and does not return it to the free list, as the Transactions section of `plans/Architecture-Proposal.md` specifies. Commit and rollback then cover the row and the document. Another database (entity tables on MySQL, or a search URL that points at another Postgres) is another instance of the same pool. The feed then runs after the entity transaction commits. There is no XA. A search failure after that commit is rebuilt by the existing `IndexDataFeedDocuments` job. OpenSearch is always this after-commit path.
 
 ## Postgres
 
-Schema `search`, so the tables sit beside entity tables on the default embedded cluster and whenever both stores are the same Postgres. One table per DataDocument. The table name is the physical document name (`mantle_party`). When search is its own cluster, the schema is still `search`.
+Schema `search`, so the tables sit beside entity tables whenever both stores are the same Postgres, including the default embedded cluster and an external entity Postgres. One table per DataDocument. The table name is the physical document name (`mantle_party`). When search is its own cluster, the schema is still `search`.
 
 Each table has:
 
@@ -272,7 +272,7 @@ Each table has:
 - `indexed_at timestamptz`
 - `body jsonb`, the full nested document
 - a typed column for every field used in a filter, a sort, or an aggregation
-- a generated `tsvector` for every text field, default config `english`, with a GIN index
+- a generated `tsvector` for every text field, default config `english`, with a GIN index. The `english` config is the one for this pass. A per-field configuration waits on a non-English corpus.
 
 Child arrays stay inside `body`. A `Child` query is an `EXISTS` over `jsonb_array_elements` so one element has to satisfy every inner predicate. A dotted `Field` is the same extraction with a single predicate. A sum of a child number is a lateral sum of those elements, or a `jsonb` sum.
 
@@ -297,7 +297,7 @@ Dates and timestamps in `body` are ISO-8601. Range comparisons in the API take t
 
 Text rank is `ts_rank` on the vectors the `Text` clause names. Filters are SQL `WHERE` and do not affect rank.
 
-The default is the `search` schema on the embedded entity cluster. When the entity datasource is MySQL or another non-Postgres, the default is a separate embedded Postgres cluster, including on Windows. Config may point the search store at an external Postgres, the same instance as the entities or another one. Placement and how many postmasters start are `plans/EmbeddedPostgres.md`. All Postgres traffic, including search SQL, goes through the synchronous drivers in `plans/Crate-Layout.md`. The default binary includes embedded Postgres for the embedded search cluster. A custom build may omit it only when search is an external Postgres or OpenSearch.
+When the entity datasource is Postgres, embedded or external, the default is the `search` schema on that database. When the entity datasource is MySQL or another non-Postgres, the default is a separate embedded Postgres cluster, including on Windows. A `<postgres>` URL points search at a different Postgres. Placement and how many postmasters start are `plans/EmbeddedPostgres.md`. All Postgres traffic, including search SQL, goes through the synchronous drivers in `plans/Crate-Layout.md`. The default binary includes embedded Postgres for the embedded search cluster. A custom build may omit it only when search is an external Postgres or OpenSearch.
 
 ## OpenSearch
 
@@ -307,6 +307,7 @@ The compiler emits the JSON the current services emit.
 - `Field`, `Child`, and non-text `Bool` arms sit in `bool.filter`.
 - `Child` becomes a `nested` query with the path and the inner query.
 - `DateHistogram`, `Terms`, `Sum`, `CountDistinct`, and `Filter` become `date_histogram`, `terms`, `sum`, `cardinality`, and `filter`. `DateHistogram` emits `calendar_interval`, the ElasticSearch 7+ and OpenSearch key. The pre-7 `interval` name stays dropped. Postgres uses `date_trunc` and `date_bin`, above.
+- The page total is exact. The compiler sends `track_total_hits: true`. The limit cap of 10000 is unchanged.
 
 Mappings follow `makeElasticSearchMapping`. Many-relationships stay `type: nested` with `include_in_root: true`, so dashboards that already query dotted names keep working. Keyword subfields stay for sortable text. Document types, the pre-7 interval name, and the old point-in-time paths do not.
 
@@ -329,7 +330,7 @@ Mappings follow `makeElasticSearchMapping`. Many-relationships stay `type: neste
 </search-facade>
 ```
 
-`backend` defaults to `postgres`. With no `postgres` element, tables live in the `search` schema of the embedded entity cluster, or on a dedicated embedded cluster when the entity datasource is not that Postgres. With `backend="opensearch"` the cluster element is required and the Postgres search store is not opened.
+`backend` defaults to `postgres`. With no `postgres` element, tables live in the `search` schema of the entity Postgres, embedded or external. When the entity datasource is not Postgres, that default is a dedicated embedded cluster. With `backend="opensearch"` the cluster element is required and the Postgres search store is not opened.
 
 Service parameters named `clusterName` go away. There is one backend. The `logger` cluster name goes away with the logging entity group.
 
@@ -349,7 +350,8 @@ Application logs and HTTP request logs are flat indexes, `moqui_logs` and `moqui
 | `search#MantleFiltered` | Same service. The org limit is a `Field` `In` list. |
 | Party, product, task, request, project, HiveMind, PopCommerce, PopRestStore | `Text`, `Field`, and `Child`. Auto-wildcard text stays `Text`. |
 | The four `SalesReportServices` | `aggregate`. Screen fields unchanged. |
-| `get#InventoryProjectedInfo`, `get#PriceHistoryInfo` | Rewritten on `aggregate`, or left unimplemented. Both call the missing `ElasticSearchUtil`. Price history has no callers. The inventory body has nothing to port. |
+| `get#InventoryProjectedInfo` | Mantle rewrite onto `aggregate`. It calls the missing `ElasticSearchUtil`, and the inventory body has nothing to port. The rewrite happens with mantle. |
+| `get#PriceHistoryInfo` | Left unimplemented. It calls the missing `ElasticSearchUtil` and has no callers. |
 | Tools DataDocument Search, ViewDocument | Parsed query string. `get_document`. |
 | Log viewer, `ElasticSearchLogger`, `ElasticRequestLogFilter`, cleanup jobs | OpenSearch backend only. |
 | `ElasticDatasourceFactory`, `TestNoSqlEntity` | Not ported. |

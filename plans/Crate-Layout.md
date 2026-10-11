@@ -136,7 +136,7 @@ QuickJS-NG (`rquickjs`) is the script runner. There is one scripting language, s
 
 `screen` holds definitions, forms, trees, URL info, and the MiniJinja expansion to HTML and to client JavaScript.
 
-`search` is the new facade from the architecture proposal, not a port of `ElasticFacade`. The API is `plans/SearchFacade.md`. Postgres query and aggregation SQL is in core. OpenSearch request bodies live here when they are just HTTP. Starting the OpenSearch process does not. The default embedded search store is the `search` schema on the entity cluster. Search tables move to their own embedded Postgres cluster, or to an external Postgres, when config places them somewhere else, including when the entity datasource is MySQL. Embedded search starts on Windows too.
+`search` is the new facade from the architecture proposal, not a port of `ElasticFacade`. The API is `plans/SearchFacade.md`. Postgres query and aggregation SQL is in core. OpenSearch request bodies live here when they are just HTTP. Starting the OpenSearch process does not. When the entity datasource is Postgres, embedded or external, default search tables are the `search` schema on that database. Search is its own embedded cluster when the entity datasource is not Postgres, and an external Postgres when a search URL names one. Embedded search starts on Windows too.
 
 `llm` holds the client, conversation, protocol encoding, tool loop, and `a2a`. Provider calls go through `HttpClient`.
 
@@ -170,7 +170,7 @@ The dialect profile is the `<database>` block Moqui already has in `MoquiDefault
 
 `DbDriver` is the execution boundary: connect, checkout, begin, commit, rollback, savepoint, execute, query, and release. The pool in core checks a connection out and enlists one for the life of the transaction. A call outside a transaction checks out and returns. `suspend` parks that client on the transaction, off the free list and off the thread. `resume` checks the same client out again. `force-new` is that suspend followed by begin, so the thread holds one connection. The parked client still counts against the pool max. Checkout is `plans/EmbeddedPostgres.md`. The transaction rules are the Transactions section of `plans/Architecture-Proposal.md`. Rows come back as the plain values `moqui-lib`'s `object` module already uses (`rust_decimal` and `time`), not JSON. `postgres` decodes timestamps with `with-time-0_3`, and `mysql` with its `time` feature. The `with-chrono-0_4` and `mysql` `chrono` features stay off. The driver does not know entity definitions. The datasource conf selects the driver at runtime. The factory holds the group map described above.
 
-Search stays the path from the architecture proposal. By default, search tables are the `search` schema on the embedded entity cluster. They use their own embedded Postgres cluster when the entity datasource is not that Postgres, and an external Postgres when search config names one. That store is independent of a non-Postgres entity datasource.
+Search stays the path from the architecture proposal. When the entity datasource is Postgres, embedded or external, default search tables are the `search` schema on that database. A search URL is how search points at a different Postgres. When the entity datasource is not Postgres, search is its own embedded cluster. Naming an external database for a store does not also start an embedded postmaster for that store.
 
 Initial drivers, all in `moqui-host` and all enabled in the default binary:
 

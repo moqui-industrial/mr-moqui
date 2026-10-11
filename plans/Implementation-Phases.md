@@ -61,7 +61,7 @@ Mantle and the other application components stay outside this repository. They a
 
 Inside phase 4 the entity code is still ordered bottom-up: definitions and SQL, then metadata, then the write-path features (cache, sim, full-text, ECA matching, loader and writer). ECA actions and data-file service elements call the service facade, so they are turned on at the end of phase 6, still before gate 1. That is the one cycle between the two facades. Entity is built first, with those callbacks stored and not yet run. Service is built second. The gate runs only after both sides of the callback exist.
 
-Phases 9 and 10 can proceed in parallel after gate 3. Phase 11 needs the HTTP client from phase 6, and SearchFacade where a tool calls search. Phase 12 needs `xsl-fo` from gate 3. Later database drivers in phase 12 need only the `DbDriver` trait from phase 3.
+Phase 9 depends on gate 1 and can run beside phases 7 and 8. Phase 10's mail and Liquid depend on the service facade. The notification WebSocket also needs the phase 7 session cookie. Neither waits on gate 3. Phase 11 needs the HTTP client from phase 6, the screen facade, and SearchFacade where a tool calls search. Phase 12 needs `xsl-fo` from gate 3. Later database drivers in phase 12 need only the `DbDriver` trait from phase 3.
 
 ## Phase 0 — Workspace and XML trees
 
@@ -97,7 +97,7 @@ Depends on phase 1.
 
 Depends on phase 2. `DbDriver` is a trait in core. Connections are host. SQL text is core, written in phase 4. There is no SQLx dependency.
 
-- `TransactionFacade` and the transaction manager, in core, calling `DbDriver`: begin-or-join, commit, rollback, savepoint, `setRollbackOnly`, timeout, `ignore`, `use-or-begin`, `force-new`, `cache`, `force-cache`, and the synchronization list (transaction cache, `runOnCommit` / `runOnRollback`, service ECAs, data feed). One connection enlisted for the transaction. `suspend` parks that client on the transaction, off the free list. `resume` checks the same client out. `force-new` is that suspend followed by begin. The thread holds one connection. The parked client still counts against the pool max. No JTA types and no XA two-phase commit. The rules are the Transactions section of `plans/Architecture-Proposal.md`. The transaction-cache hooks used in phase 4 sit on these same calls.
+- `TransactionFacade` and the transaction manager, in core, calling `DbDriver`: begin-or-join, commit, rollback, savepoint, `setRollbackOnly`, timeout, `ignore`, `use-or-begin`, `force-new`, `cache`, `force-cache`, and the synchronization list (transaction cache, `runOnCommit` / `runOnRollback`, service ECAs, data feed). The feed hook follows `plans/SearchFacade.md`: when the search store is that same database, the feed writes after the cache flush and before commit; a different database or OpenSearch runs in `afterCompletion`. Until phase 9 the receive service records that search is not up, on that same side of commit. One connection enlisted for the transaction. `suspend` parks that client on the transaction, off the free list. `resume` checks the same client out. `force-new` is that suspend followed by begin. The thread holds one connection. The parked client still counts against the pool max. No JTA types and no XA two-phase commit. The rules are the Transactions section of `plans/Architecture-Proposal.md`. The transaction-cache hooks used in phase 4 sit on these same calls.
 - Dialect profiles from the `<database>` block. Postgres and MySQL in this phase.
 - Host `db`: embedded Postgres via `postgresql_embedded` (start, stop, Unix socket, `NoTls`), external Postgres with rustls, and the MySQL client with rustls. The pool is the core manager. Settings are `plans/EmbeddedPostgres.md`.
 - A test round-trips a raw statement through each driver.
@@ -220,7 +220,7 @@ HTML follows the widget table in the architecture proposal: semantic elements, o
 
 Server-merged `qvt` follows the library section of the architecture proposal: Vue 3.5 and Quasar 2.35 by script tag, `m-*` wrappers, and no jQuery, Moment, or `http-vue-loader`. `QEditor` replaces CKEditor 4. A textarea plus Marked replaces SimpleMDE. Chart.js 4, a current Mermaid build that still loads from a script tag, the Assist libraries, and QZ Tray 2.3 when printing is enabled.
 
-Server-static `qvt` is last, and follows `plans/QvtServerStatic.md`. The attribute stays opt-in. The response uses the `screen-server-static` cache header. `GET {screen}/actions` and `GET {screen}/actions/{formName}` are private and uncached. The browser `ec` is the restricted one in that plan. `dynamic-container` stays server HTML. The compatibility report runs. It does not flip the default.
+Server-static `qvt` is last, and follows `plans/QvtServerStatic.md`. The attribute stays opt-in. The response uses the `screen-server-static` cache header. `GET {screen}/actions` and `GET {screen}/actions/{formName}` are private and uncached. The browser `ec` is the restricted one in that plan. `dynamic-container` stays a client fetch. The response header `X-Moqui-Qvt` is `static-template` or `merged-fragment`, as `plans/QvtServerStatic.md` specifies. The compatibility report runs. It does not flip the default.
 
 ### Gate 3 — screen rendering
 
@@ -236,18 +236,18 @@ Server-static `qvt` is last, and follows `plans/QvtServerStatic.md`. The attribu
 
 Depends on gate 1. Entity documents and the feed rules already assemble, and the service facade can call the receive service. The HTTP client already exists. The API is `plans/SearchFacade.md`.
 
-- Query tree, aggregation tree, and Postgres SQL in core. Documents live in the `search` schema on the entity cluster.
-- A separate embedded Postgres cluster, or an external Postgres, when config places search somewhere else, including when the entity datasource is MySQL. MySQL is not a search backend. Embedded search starts on Windows too.
-- The feed joins the entity transaction when both stores are the same database, and runs after commit when they are not. This replaces the phase 4 record that search is not up.
+- Query tree, aggregation tree, and Postgres SQL in core. When the entity datasource is Postgres, embedded or external, documents live in the `search` schema on that database.
+- A separate embedded Postgres cluster when the entity datasource is not Postgres, and an external Postgres when a search URL names one. MySQL is not a search backend. Embedded search starts on Windows too.
+- The feed joins the entity transaction when both stores are the same database, after the cache flush and before commit, and runs after commit when they are not. This replaces the phase 4 record that search is not up.
 - The query-string parser for the subset existing screens emit.
 - One active backend. The OpenSearch backend builds HTTP bodies and sends them through `HttpClient`. The host `search` module starts the process. `/elastic` and `/kibana` proxies, and the log indexes, exist only when that backend is selected.
 - `CountDistinct` is exact on Postgres and may be approximate on OpenSearch.
 
-`get#InventoryProjectedInfo` and `get#PriceHistoryInfo` are mantle rewrites onto `aggregate`. They are named here so they are not ported as `ElasticFacade` clients. Price history has no callers. The rewrite happens with mantle, outside this gate.
+`get#InventoryProjectedInfo` is a mantle rewrite onto `aggregate`. `get#PriceHistoryInfo` stays unimplemented because it has no callers. Both are named here so they are not ported as `ElasticFacade` clients. The inventory rewrite happens with mantle, outside this gate.
 
 ## Phase 10 — Mail, Liquid, and notifications
 
-Depends on the service facade. Email-ECA rules already fire and currently stop at the unconfigured send service. This phase provides that service.
+Depends on the service facade. The notification WebSocket also needs the phase 7 session cookie. Email-ECA rules already fire and currently stop at the unconfigured send service. This phase provides that service.
 
 - Liquid for email, notifications, and other user-authored text. Standard library plus the small Moqui filter set in `plans/ContextObjects.md`. The snapshot is the unwrap projection. Filters format and localize and do not receive an `ExecutionContext`.
 - Outbound mail with `lettre` in core. The Groovy send scripts become Rust service logic. The send service from phase 6 then sends.

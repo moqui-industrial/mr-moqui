@@ -56,12 +56,14 @@ Expression hazards that change what a macro emits, including Elvis versus `??`, 
 
 Liquid and the browser see a snapshot, not the stack. The snapshot is the same projection as `ContextJavaUtil.unwrapMap`:
 
-- Strings, booleans, numbers, and timestamps pass through. Timestamps become ISO-8601 text in JSON and in Liquid.
+- Strings, booleans, numbers, and timestamps pass through. Timestamps become ISO-8601 text in JSON and in Liquid. A decimal becomes a string in JSON and in Liquid. It does not become a JavaScript number.
 - An entity value becomes the plain field map. An entity list becomes a list of those maps.
 - `EntityFind`, the execution context, `sri`, and the context stack object are dropped.
 - Anything else is dropped and logged, as `unwrap` does today.
 
 Liquid's `Value` / `ObjectView` and the browser's JSON are two sinks of that one projection. A trusted internal MiniJinja data template is a third sink. The projection is the shared code. The engine value types are not.
+
+The browser package is that projection plus two filters from `plans/QvtServerStatic.md`: credential parameters are stripped, and form-list lists and pagination keys are removed. A server-static expression that does decimal arithmetic, or that calls `ObjectUtilities` for it, is a compatibility-report violation. Formatting goes through `ec.l10n`. On the server, a decimal stays a host value.
 
 A live entity value inside Liquid would let a template walk a relationship and read through to the database. The snapshot is the sandbox, matching the decision that Liquid is the boundary. Callers pass the map the template is allowed to see. Filters may format and localize. They call the same functions as `ec.l10n` on the server. They do not take an `ExecutionContext`.
 
