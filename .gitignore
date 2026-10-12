@@ -1,1 +1,5 @@
 /target
+/runtime/log
+/runtime/db
+/runtime/tmp
+/runtime/txlog

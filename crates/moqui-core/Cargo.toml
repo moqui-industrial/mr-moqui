@@ -21,3 +21,6 @@ csv = { workspace = true }
 pulldown-cmark = { workspace = true }
 totp-rs = { workspace = true }
 tracing = { workspace = true }
+
+[lints]
+workspace = true

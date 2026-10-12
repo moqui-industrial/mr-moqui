@@ -8,3 +8,6 @@ publish.workspace = true
 
 [dependencies]
 moqui-lib = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,3 @@
+# Moqui's line length. Every other option stays at rustfmt's default,
+# which is the common Rust style.
+max_width = 120

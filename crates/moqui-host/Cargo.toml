@@ -39,3 +39,6 @@ servo = { workspace = true, optional = true }
 russh = { workspace = true }
 russh-sftp = { workspace = true }
 huskarl = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,71 @@
+# License gate for the static graph. The accepted set is plans/License-Review.md.
+# `cargo deny check` is the default feature graph on x86_64-unknown-linux-gnu.
+# `pdf-servo` is off here. MPL-2.0 is not in the allow list, so that feature
+# fails this check until it has its own review.
+
+[graph]
+targets = ["x86_64-unknown-linux-gnu"]
+all-features = false
+
+[advisories]
+yanked = "warn"
+# Transitive unmaintained crates (webpki 0.22, pulled by mysql) stay until
+# mysql moves to rustls-webpki. A vulnerability still fails the check.
+unmaintained = "workspace"
+ignore = [
+    # rsa 0.10.0-rc.18 via russh and huskarl. No patched release as of this
+    # advisory. plans/License-Review.md accepts those crates.
+    { id = "RUSTSEC-2023-0071", reason = "Marvin timing in rsa. No safe upgrade. Used by russh and huskarl." },
+]
+
+[licenses]
+confidence-threshold = 0.8
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "0BSD",
+    "Unlicense",
+    "Zlib",
+    "BSL-1.0",
+    "PostgreSQL",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    "CC0-1.0",
+    "MIT-0",
+]
+# webpki 0.22 publishes license-file and no SPDX expression.
+# LICENSE is ISC. third-party/chromium/LICENSE is BSD-3-Clause.
+[[licenses.clarify]]
+crate = "webpki@0.22.4"
+expression = "ISC AND BSD-3-Clause"
+license-files = [
+    { path = "LICENSE", hash = 0x001c7e6c },
+    { path = "third-party/chromium/LICENSE", hash = 0x9b209a1a },
+]
+
+[bans]
+# The lockfile has duplicate versions across russh, huskarl, mysql, and sqlx.
+# Unifying them is separate from the license gate.
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+deny = [
+    { crate = "openssl", use-instead = "rustls" },
+    { crate = "openssl-sys", use-instead = "rustls" },
+    { crate = "native-tls", use-instead = "rustls" },
+    { crate = "libz-sys", reason = "flate2 stays on the pure Rust backend" },
+    { crate = "libssh2-sys", reason = "SSH is russh" },
+    { crate = "ssh2", reason = "SSH is russh" },
+    { crate = "servo", reason = "MPL-2.0. pdf-servo stays off until a separate deny report" },
+]
+
+# oxc_parser is named in the workspace and linked in phase 6.
+[bans.workspace-dependencies]
+unused = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

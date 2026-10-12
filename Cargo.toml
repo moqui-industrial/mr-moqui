@@ -24,6 +24,12 @@ license = "CC0-1.0"
 publish = false
 version = "0.1.0"
 
+# `cargo clippy` fails on Clippy's default set. `priority = -1` lets an
+# item `#[allow]` override one lint. Pedantic, nursery, and restriction
+# stay off. `cargo lint` also denies rustc warnings.
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+
 [workspace.dependencies]
 moqui-lib = { path = "crates/moqui-lib" }
 moqui-db = { path = "crates/moqui-db" }
