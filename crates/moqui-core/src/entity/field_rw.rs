@@ -64,13 +64,34 @@ pub fn before_write(
     encrypt_fields(facade, entity, values)
 }
 
-/// Adjust a row after SQL and before the find cache stores it.
+/// Decrypt, then localize, for a caller that will not cache the row.
+///
+/// The find list cache stores [`decrypt_stored`] and localizes with [`localize_stored`] on the way out,
+/// so a later read can use a different locale.
 pub fn after_read(
     facade: &EntityFacade,
     entity: &EntityDefinition,
     values: BTreeMap<String, Value>,
 ) -> Result<BTreeMap<String, Value>, Error> {
-    let values = decrypt_fields(facade, entity, values)?;
+    let values = decrypt_stored(facade, entity, values)?;
+    localize_stored(facade, entity, values)
+}
+
+/// Decrypt a row for the find cache. Localization stays out of the cached value.
+pub(crate) fn decrypt_stored(
+    facade: &EntityFacade,
+    entity: &EntityDefinition,
+    values: BTreeMap<String, Value>,
+) -> Result<BTreeMap<String, Value>, Error> {
+    decrypt_fields(facade, entity, values)
+}
+
+/// Apply the facade locale to a decrypted row.
+pub(crate) fn localize_stored(
+    facade: &EntityFacade,
+    entity: &EntityDefinition,
+    values: BTreeMap<String, Value>,
+) -> Result<BTreeMap<String, Value>, Error> {
     if raw_read() {
         return Ok(values);
     }
@@ -348,7 +369,7 @@ fn localize(
     values: BTreeMap<String, Value>,
 ) -> Result<BTreeMap<String, Value>, Error> {
     let targets = if entity.is_view {
-        facade.with_entity(&entity.full_name, |view, _, model| view_targets(view, model))?
+        view_targets_for(facade, entity)?
     } else {
         plain_targets(entity)
     };
@@ -387,6 +408,20 @@ fn plain_targets(entity: &EntityDefinition) -> Vec<LocalTarget> {
             pk_column: pk_column.clone(),
         })
         .collect()
+}
+
+/// A dynamic view is not in the model. Use a member entity to reach the model, and keep `view` as given.
+fn view_targets_for(facade: &EntityFacade, view: &EntityDefinition) -> Result<Vec<LocalTarget>, Error> {
+    let anchor = view
+        .member_entities
+        .first()
+        .map(|member| member.entity_name.as_str())
+        .unwrap_or(view.full_name.as_str());
+    match facade.with_entity(anchor, |_, _, model| view_targets(view, model)) {
+        Ok(targets) => Ok(targets),
+        Err(_) if anchor == view.full_name => Ok(Vec::new()),
+        Err(err) => Err(err),
+    }
 }
 
 fn view_targets(view: &EntityDefinition, model: &EntityModel) -> Result<Vec<LocalTarget>, Error> {

@@ -88,7 +88,7 @@ impl EntityFind {
         let condition = self.combined();
         let lookup = self.lookup(&condition);
         if let Some(cached) = cache::before_find(&self.facade, &lookup) {
-            return Ok(cached);
+            return self.localize_list(cached);
         }
         let plan = self.plan(false)?;
         let rows = query_tx(&plan.tx, &plan.sql, &plan.params)?;
@@ -96,7 +96,7 @@ impl EntityFind {
         let values = self.rows_to_values(&plan, &rows)?;
         let list = EntityList::new(values);
         cache::after_find(&self.facade, &lookup, &list)?;
-        Ok(list)
+        self.localize_list(list)
     }
 
     pub fn one(self) -> Result<Option<EntityValue>, Error> {
@@ -208,10 +208,23 @@ impl EntityFind {
             let mut values = Vec::with_capacity(rows.len());
             for row in rows {
                 let mapped = map_row(&plan.columns, row);
-                let adjusted = field_rw::after_read(&facade, entity, mapped)?;
+                let adjusted = field_rw::decrypt_stored(&facade, entity, mapped)?;
                 values.push(EntityValue::from_fields(entity.full_name.clone(), adjusted));
             }
             Ok(values)
+        })
+    }
+
+    /// Localization uses the locale at read time. The list cache keeps the decrypted row.
+    fn localize_list(&self, list: EntityList) -> Result<EntityList, Error> {
+        let facade = self.facade.clone();
+        self.facade.with_entity(&self.entity_name, |entity, _, _| {
+            let mut values = Vec::with_capacity(list.len());
+            for row in list.values() {
+                let adjusted = field_rw::localize_stored(&facade, entity, row.fields().clone())?;
+                values.push(EntityValue::from_fields(row.entity_name().to_string(), adjusted));
+            }
+            Ok(EntityList::new(values))
         })
     }
 }
@@ -271,7 +284,14 @@ impl EntityListIterator {
             }
             let value = self.memory[self.index].clone();
             self.index += 1;
-            return Ok(Some(value));
+            let facade = self.facade.clone();
+            let adjusted = self.facade.with_entity(&self.entity_name, |entity, _, _| {
+                field_rw::localize_stored(&facade, entity, value.fields().clone())
+            })?;
+            return Ok(Some(EntityValue::from_fields(
+                value.entity_name().to_string(),
+                adjusted,
+            )));
         }
         let Some(tx) = self.tx.clone() else {
             return Ok(None);

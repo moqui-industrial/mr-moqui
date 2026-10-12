@@ -163,15 +163,364 @@ fn locale_defaults_to_en_and_crypt_stays_unset() {
 
 #[test]
 fn entity_rest_is_not_implemented() {
+    use std::rc::Rc;
+
+    struct Guard(PathBuf);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn value_map(entries: Vec<(&str, Value)>) -> Value {
+        let stack = moqui_lib::context_stack::ContextStack::new();
+        let frame = stack.shared_map();
+        {
+            let mut map = frame.borrow_mut();
+            for (key, value) in entries {
+                map.insert(key.to_string(), value);
+            }
+        }
+        drop(stack);
+        Value::Map(match Rc::try_unwrap(frame) {
+            Ok(cell) => cell.into_inner(),
+            Err(frame) => frame.borrow().clone(),
+        })
+    }
+
+    fn params(entries: Vec<(&str, Value)>) -> BTreeMap<String, Value> {
+        entries
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect()
+    }
+
+    fn map_str<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+        let Value::Map(map) = value else {
+            return None;
+        };
+        map.get(key).and_then(Value::as_str)
+    }
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("moqui-writer-{label}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
     let facade = open_fake();
+
+    let err = facade.rest("", "moqui.test.TestEntity", &BTreeMap::new()).unwrap_err();
+    assert!(err.to_string().contains("must be specified"), "{err}");
     let err = facade
-        .rest("find", "moqui.test.TestEntity", &BTreeMap::new())
+        .rest("nope", "moqui.test.TestEntity", &BTreeMap::new())
         .unwrap_err();
-    assert!(err.to_string().contains("not implemented"), "{err}");
+    assert!(err.to_string().contains("not supported"), "{err}");
+
+    match facade.rest("get", "moqui.test.TestEntity", &BTreeMap::new()).unwrap() {
+        Value::List(items) => assert!(items.is_empty()),
+        other => panic!("find without a primary key returned {other:?}"),
+    }
+
+    let created = facade
+        .rest(
+            "post",
+            "moqui.test.TestEntity",
+            &params(vec![
+                ("testId", Value::string("C1")),
+                ("testMedium", Value::string("made")),
+            ]),
+        )
+        .unwrap();
+    assert_eq!(map_str(&created, "testId"), Some("C1"));
+    let err = facade
+        .rest(
+            "find",
+            "moqui.test.TestEntity",
+            &params(vec![("testId", Value::string("C1"))]),
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("No value found"), "{err}");
+
+    let err = facade
+        .rest("patch", "moqui.test.TestEntity", &BTreeMap::new())
+        .unwrap_err();
+    assert!(err.to_string().contains("cannot update"), "{err}");
+    let updated = facade
+        .rest(
+            "update",
+            "moqui.test.TestEntity",
+            &params(vec![
+                ("testId", Value::string("C1")),
+                ("testMedium", Value::string("updated")),
+            ]),
+        )
+        .unwrap();
+    assert_eq!(map_str(&updated, "testId"), Some("C1"));
+    let stored = facade
+        .rest(
+            "put",
+            "moqui.test.TestEntity",
+            &params(vec![
+                ("testId", Value::string("S1")),
+                ("testMedium", Value::string("stored")),
+            ]),
+        )
+        .unwrap();
+    assert_eq!(map_str(&stored, "testId"), Some("S1"));
+
+    let err = facade
+        .rest("delete", "moqui.test.TestEntity", &BTreeMap::new())
+        .unwrap_err();
+    assert!(err.to_string().contains("Must specify all primary key fields"), "{err}");
+    let deleted = facade
+        .rest(
+            "delete",
+            "moqui.test.TestEntity",
+            &params(vec![("testId", Value::string("C1"))]),
+        )
+        .unwrap();
+    let Value::Map(deleted_map) = deleted else {
+        panic!("delete returned {deleted:?}");
+    };
+    assert!(deleted_map.is_empty(), "{deleted_map:?}");
+
+    let listed = facade
+        .rest(
+            "find",
+            "moqui.basic.Enumeration",
+            &params(vec![(
+                "path",
+                Value::List(vec![Value::string("E1"), Value::string("type")]),
+            )]),
+        )
+        .unwrap();
+    assert!(matches!(listed, Value::List(_)), "{listed:?}");
+    let err = facade
+        .rest("find", "moqui.basic.Enumeration/E1/type/ET1", &BTreeMap::new())
+        .unwrap_err();
+    assert!(err.to_string().contains("No value found"), "{err}");
+    let err = facade
+        .rest(
+            "find",
+            "moqui.basic.Enumeration",
+            &params(vec![(
+                "path",
+                Value::List(vec![
+                    Value::string("E1"),
+                    Value::string("type"),
+                    Value::string("ET1"),
+                    Value::string("more"),
+                ]),
+            )]),
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("Only one relationship step"), "{err}");
+    let err = facade
+        .rest(
+            "find",
+            "moqui.basic.Enumeration",
+            &params(vec![(
+                "path",
+                Value::List(vec![Value::string("E1"), Value::string("missing")]),
+            )]),
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("No relationship found"), "{err}");
+    let err = facade
+        .rest(
+            "find",
+            "moqui.basic.Enumeration",
+            &params(vec![
+                ("masterNameInPath", Value::Bool(true)),
+                ("master", Value::string("missing")),
+            ]),
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("Master definition not found"), "{err}");
+
     let err = facade.dynamic_view("moqui.test.Foo", &BTreeMap::new()).unwrap_err();
-    assert!(err.to_string().contains("not implemented"), "{err}");
+    assert!(err.to_string().contains("member-entity"), "{err}");
+    let named = facade.dynamic_view("moqui.test.FooBar", &BTreeMap::new()).unwrap();
+    assert!(named.is_empty());
+    let built = facade
+        .dynamic_view(
+            "dynamic.FooJoin",
+            &params(vec![
+                (
+                    "member-entity",
+                    Value::List(vec![
+                        value_map(vec![
+                            ("entity-alias", Value::string("FOO")),
+                            ("entity-name", Value::string("moqui.test.Foo")),
+                        ]),
+                        value_map(vec![
+                            ("entity-alias", Value::string("BAR")),
+                            ("entity-name", Value::string("moqui.test.Bar")),
+                            ("join-from-alias", Value::string("FOO")),
+                            ("key-map", value_map(vec![("fooId", Value::string("fooId"))])),
+                        ]),
+                    ]),
+                ),
+                (
+                    "alias-all",
+                    value_map(vec![
+                        ("entity-alias", Value::string("FOO")),
+                        ("exclude", Value::string("fooId")),
+                    ]),
+                ),
+                (
+                    "alias",
+                    value_map(vec![
+                        ("entity-alias", Value::string("BAR")),
+                        ("name", Value::string("barRank")),
+                        ("field", Value::string("barRank")),
+                    ]),
+                ),
+                ("condition", value_map(vec![("FOO.fooId", Value::string("F1"))])),
+                ("order-by", Value::string("-fooText")),
+                ("limit", Value::I64(5)),
+            ]),
+        )
+        .unwrap();
+    assert!(built.is_empty());
+    let related = facade
+        .dynamic_view(
+            "dynamic.EnumType",
+            &params(vec![
+                (
+                    "member-entity",
+                    value_map(vec![
+                        ("entity-alias", Value::string("ENUM")),
+                        ("entity-name", Value::string("moqui.basic.Enumeration")),
+                    ]),
+                ),
+                (
+                    "member-relationship",
+                    value_map(vec![
+                        ("entity-alias", Value::string("ETP")),
+                        ("join-from-alias", Value::string("ENUM")),
+                        ("relationship", Value::string("type")),
+                    ]),
+                ),
+                (
+                    "alias",
+                    Value::List(vec![
+                        value_map(vec![
+                            ("entity-alias", Value::string("ENUM")),
+                            ("name", Value::string("enumId")),
+                        ]),
+                        value_map(vec![
+                            ("entity-alias", Value::string("ETP")),
+                            ("name", Value::string("enumTypeId")),
+                        ]),
+                    ]),
+                ),
+            ]),
+        )
+        .unwrap();
+    assert!(related.is_empty());
+
     let err = facade.write_data("moqui.test.Foo", &[]).unwrap_err();
-    assert!(err.to_string().contains("not implemented"), "{err}");
+    assert!(
+        err.to_string().contains("directory") || err.to_string().contains("file"),
+        "{err}"
+    );
+    let export = temp_dir("all");
+    let _export_guard = Guard(export.clone());
+    let medium = "a,b & <c>";
+    let mut record = BTreeMap::new();
+    record.insert("testId".to_string(), Value::string("W1"));
+    record.insert("testMedium".to_string(), Value::string(medium));
+    record.insert("testLong".to_string(), Value::string("line1\nline2"));
+    record.insert("directory".to_string(), Value::string(export.display().to_string()));
+    record.insert("prefix".to_string(), Value::string("Pre"));
+    facade.write_data("moqui.test.TestEntity", &[record]).unwrap();
+    let xml = std::fs::read_to_string(export.join("moqui.test.TestEntity.xml")).unwrap();
+    assert!(
+        xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<entity-facade-xml>\n"),
+        "{xml}"
+    );
+    assert!(xml.contains("<Premoqui.test.TestEntity "), "{xml}");
+    assert!(xml.contains("testId=\"W1\""), "{xml}");
+    assert!(xml.contains("testMedium=\"a,b &amp; &lt;c&gt;\""), "{xml}");
+    assert!(xml.contains("<testLong><![CDATA[line1\nline2]]></testLong>"), "{xml}");
+    assert!(xml.contains("</moqui.test.TestEntity>\n"), "{xml}");
+    assert!(xml.contains("</entity-facade-xml>\n"), "{xml}");
+    let json = std::fs::read_to_string(export.join("moqui.test.TestEntity.json")).unwrap();
+    assert!(json.starts_with("[\n"), "{json}");
+    assert!(json.contains("\"testId\": \"W1\""), "{json}");
+    assert!(json.contains("\"testMedium\": \"a,b & <c>\""), "{json}");
+    assert!(json.contains("\"_entity\": \"moqui.test.TestEntity\""), "{json}");
+    assert!(json.ends_with("]\n\n"), "{json}");
+    let csv = std::fs::read_to_string(export.join("moqui.test.TestEntity.csv")).unwrap();
+    assert!(csv.starts_with("moqui.test.TestEntity,export,testId\n"), "{csv}");
+    assert!(csv.contains("\"a,b & <c>\""), "{csv}");
+    let err = facade
+        .write_data(
+            "moqui.test.TestEntity",
+            &[params(vec![("directory", Value::string(export.display().to_string()))])],
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("already exists"), "{err}");
+
+    let one = temp_dir("one");
+    let _one_guard = Guard(one.clone());
+    facade
+        .write_data(
+            "moqui.test.TestEntity",
+            &[params(vec![
+                ("testId", Value::string("J1")),
+                ("directory", Value::string(one.display().to_string())),
+                ("fileType", Value::string("JSON")),
+            ])],
+        )
+        .unwrap();
+    assert!(one.join("moqui.test.TestEntity.json").is_file());
+    assert!(!one.join("moqui.test.TestEntity.xml").exists());
+    assert!(!one.join("moqui.test.TestEntity.csv").exists());
+
+    let csv_file = one.join("out.csv");
+    facade
+        .write_data(
+            "moqui.test.Foo",
+            &[params(vec![
+                ("fooId", Value::string("F9")),
+                ("fooText", Value::string("file")),
+                ("file", Value::string(csv_file.display().to_string())),
+            ])],
+        )
+        .unwrap();
+    let foo_csv = std::fs::read_to_string(&csv_file).unwrap();
+    assert!(foo_csv.starts_with("moqui.test.Foo,export,fooId\n"), "{foo_csv}");
+    assert!(foo_csv.contains("file"), "{foo_csv}");
+
+    let err = facade
+        .write_data(
+            "moqui.test.Foo",
+            &[params(vec![
+                ("directory", Value::string(export.display().to_string())),
+                ("fileType", Value::string("yaml")),
+            ])],
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("fileType"), "{err}");
+    let not_dir = one.join("notdir");
+    std::fs::write(&not_dir, "x").unwrap();
+    let err = facade
+        .write_data(
+            "moqui.test.Foo",
+            &[params(vec![(
+                "directory",
+                Value::string(not_dir.display().to_string()),
+            )])],
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("not a directory"), "{err}");
 }
 
 #[test]
