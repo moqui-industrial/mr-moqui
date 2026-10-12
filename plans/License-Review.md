@@ -60,13 +60,15 @@ These are the feature flags the resolve used. The unsafe defaults are called out
 | `lettre` 0.11 | `default-features = false`, `smtp-transport`, `builder`, `hostname`, `rustls`, `aws-lc-rs`, `webpki-roots` | Defaults, which include `native-tls`. The feature named `rustls-tls` enables `ring`, so that name stays off. `boring-tls`. |
 | `axum` 0.8 | `macros`, `ws` | |
 | `tower-http` 0.6 | `default-features = false`, `compression-gzip`, `fs`, `set-header` | |
-| `chromiumoxide` 0.9 | `default-features = false` | `fetcher`, `native-tls`, `rustls`. On 0.9.1 those three only switch on `chromiumoxide_fetcher`. There is no `tokio-runtime` feature. The plan text that names `tokio-runtime` and `rustls` on this crate does not match 0.9.1. The CDP client talks to a browser the host already started. |
+| `chromiumoxide` 0.9 | `default-features = false` | `fetcher`, `native-tls`, `rustls`. On 0.9.1 those three only switch on `chromiumoxide_fetcher`. There is no `tokio-runtime` feature. The plan matches this row: feature `pdf` leaves the defaults off, and the handler runs on its own thread against a browser the host already started. |
 | `argon2` 0.6 | `password-hash` | |
 | `croner` 4 | `default-features = false`, `jiff` | The default `chrono` feature. |
 | `totp-rs` 6 | `default-features = false`, `std`, `otpauth`, `gen_secret` | `qr` |
 | `rquickjs` 0.14 | defaults | |
 | `pulldown-cmark` | the Rust crate | `comrak` is BSD-2-Clause and is an acceptable alternate. Re-check it if a C regex backend is turned on. |
 | `pdf-servo` | absent from the default graph | The `servo` crate 0.7.0 is MPL-2.0. See below. |
+
+`oxc_parser` 0.139.0 is named in `[workspace.dependencies]` and is not a dependency of any crate. It is absent from `cargo tree -p moqui` until phase 6 links it. The 325-name count above does not include it. Its published `rust-version` is 1.94.0. Its license is MIT.
 
 `native-tls` and the `openssl` crate are not in the resolved graph. `openssl-probe` is. It only finds a certificate directory. It does not link libssl. `libz-sys` is not in the graph: `mysql` is on `minimal-rust`, and `flate2` 1.1 uses `zlib-rs`.
 

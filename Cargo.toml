@@ -76,6 +76,10 @@ totp-rs = { version = "6", default-features = false, features = [
 ] }
 tracing = "0.1"
 rquickjs = "0.14"
+# Phase 6 is the first user. Not linked until then, so this line does not
+# raise the MSRV of lib or core. 0.139.0 declares rust-version 1.94.0.
+# 0.140 and later declare 1.95 or higher.
+oxc_parser = "0.139"
 
 # --- moqui-host ---
 # rt-multi-thread is for axum. postgres::Client builds its own current_thread runtime.
