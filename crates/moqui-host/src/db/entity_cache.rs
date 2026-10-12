@@ -177,6 +177,27 @@ mod tests {
         assert!(!facade.sim_active());
         assert!(find_one(facade, "moqui.test.TestEntity", "testId", "SIM2").is_none());
         assert!(find_one(facade, "moqui.test.TestEntity", "testId", "T1").is_some());
+
+        enter_sim(facade).unwrap();
+        create_test(facade, "SIM-OUTER", "outer");
+        enter_sim(facade).unwrap();
+        assert!(facade.sim_active());
+        create_test(facade, "SIM-INNER", "inner");
+        assert!(find_one(facade, "moqui.test.TestEntity", "testId", "SIM-INNER").is_some());
+        assert!(find_one(facade, "moqui.test.TestEntity", "testId", "SIM-OUTER").is_none());
+        exit_sim(facade).unwrap();
+        assert!(facade.sim_active());
+        assert!(find_one(facade, "moqui.test.TestEntity", "testId", "SIM-OUTER").is_some());
+        assert!(find_one(facade, "moqui.test.TestEntity", "testId", "SIM-INNER").is_none());
+        exit_sim(facade).unwrap();
+        assert!(!facade.sim_active());
+        assert!(find_one(facade, "moqui.test.TestEntity", "testId", "SIM-OUTER").is_none());
+        assert!(raw_rows(
+            driver,
+            "SELECT \"testId\" FROM \"TestEntity\" WHERE \"testId\" = ?",
+            "SIM-OUTER"
+        )
+        .is_empty());
     }
 
     fn create_test(facade: &EntityFacade, id: &str, medium: &str) {

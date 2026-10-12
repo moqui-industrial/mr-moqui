@@ -252,7 +252,12 @@ fn view_joins_key_map_and_optional_member() {
     let only_rel = model.entity("moqui.basic.EnumerationAndType").unwrap();
     let rendered = select_view(only_rel, &model, postgres, None, &[], page).unwrap();
     assert!(rendered.contains("\"Enumeration\" \"ENUM\""), "{rendered}");
-    assert!(!rendered.contains("JOIN"), "{rendered}");
+    assert!(rendered.contains(" JOIN "), "{rendered}");
+    assert!(!rendered.contains("LEFT JOIN"), "{rendered}");
+    let plain = unquote(&rendered);
+    assert!(plain.contains("EnumerationType"), "{rendered}");
+    assert!(plain.contains("ENUM.enumTypeId = ETP.enumTypeId"), "{rendered}");
+    assert!(!plain.contains("1=1"), "{rendered}");
 }
 
 #[test]
@@ -340,9 +345,8 @@ fn hand_built_view_optional_empty_key_and_prefix() {
     assert!(prefixed_sql.contains("AS \"otherRightId\""), "{prefixed_sql}");
 
     let only_rel = model.entity("sample.OnlyRel").unwrap();
-    let rel_sql = select_view(only_rel, &model, &postgres, None, &[], LimitOffset::default()).unwrap();
-    assert!(!rel_sql.contains("JOIN"), "{rel_sql}");
-    assert!(rel_sql.contains("\"L\".\"leftId\""), "{rel_sql}");
+    let err = select_view(only_rel, &model, &postgres, None, &[], LimitOffset::default()).unwrap_err();
+    assert!(err.to_string().contains("has no member alias L"), "{err}");
 }
 
 #[test]

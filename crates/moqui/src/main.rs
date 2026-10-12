@@ -13,5 +13,12 @@
  */
 
 fn main() {
-    println!("{}", moqui_host::run());
+    match moqui_host::dispatch(std::env::args().skip(1)) {
+        Ok(Some(line)) => println!("{line}"),
+        Ok(None) => {}
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    }
 }

@@ -1496,6 +1496,7 @@ fn blank_view(entity_name: &str) -> EntityDefinition {
         masters: Vec::new(),
         member_entities: Vec::new(),
         member_relationships: Vec::new(),
+        view_members: Vec::new(),
         aliases: Vec::new(),
         alias_alls: Vec::new(),
         entity_condition: Vec::new(),

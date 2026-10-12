@@ -16,7 +16,7 @@
 
 use crate::dialect::Dialect;
 
-pub(crate) fn is_mysql(dialect: &Dialect) -> bool {
+pub fn is_mysql(dialect: &Dialect) -> bool {
     starts_with_ignore(&dialect.name, "mysql")
 }
 

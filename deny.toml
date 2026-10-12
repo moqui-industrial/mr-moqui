@@ -8,7 +8,7 @@ targets = ["x86_64-unknown-linux-gnu"]
 all-features = false
 
 [advisories]
-yanked = "warn"
+yanked = "deny"
 # Transitive unmaintained crates (webpki 0.22, pulled by mysql) stay until
 # mysql moves to rustls-webpki. A vulnerability still fails the check.
 unmaintained = "workspace"
@@ -19,6 +19,7 @@ ignore = [
 ]
 
 [licenses]
+# cargo-deny 0.20 removed the `unlicensed` key. An unlicensed crate is an error.
 confidence-threshold = 0.8
 allow = [
     "MIT",

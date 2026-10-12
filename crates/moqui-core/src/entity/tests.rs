@@ -14,7 +14,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use moqui_db::dialect::Dialects;
@@ -109,6 +109,225 @@ impl DbDriver for FakeDriver {
     }
 }
 
+struct Tape {
+    sql: Vec<String>,
+    password: Option<String>,
+}
+
+struct IterTape {
+    opened: bool,
+    served: bool,
+}
+
+struct IterDriver {
+    tape: Arc<Mutex<IterTape>>,
+}
+
+struct IterConn {
+    tape: Arc<Mutex<IterTape>>,
+}
+
+fn test_row() -> DbRow {
+    DbRow {
+        columns: vec![
+            ("testId".to_string(), Value::string("T1")),
+            ("testMedium".to_string(), Value::string("kept")),
+        ],
+    }
+}
+
+impl DbConnection for IterConn {
+    fn execute(&mut self, _sql: &str, _params: &[Value]) -> Result<u64, Error> {
+        Ok(1)
+    }
+
+    fn query(&mut self, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
+        self.query_once(sql, params)
+    }
+
+    fn query_once(&mut self, sql: &str, _params: &[Value]) -> Result<Vec<DbRow>, Error> {
+        if sql.contains("TestEntity") && sql.contains("SELECT") {
+            return Ok(vec![test_row()]);
+        }
+        Ok(Vec::new())
+    }
+
+    fn open_stream(&mut self, _sql: &str, _params: &[Value]) -> Result<(), Error> {
+        let mut tape = self.tape.lock().unwrap_or_else(|err| err.into_inner());
+        tape.opened = true;
+        tape.served = false;
+        Ok(())
+    }
+
+    fn next_row(&mut self) -> Result<Option<DbRow>, Error> {
+        let mut tape = self.tape.lock().unwrap_or_else(|err| err.into_inner());
+        if !tape.opened || tape.served {
+            return Ok(None);
+        }
+        tape.served = true;
+        Ok(Some(test_row()))
+    }
+
+    fn close_stream(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn stream_open(&self) -> bool {
+        self.tape.lock().unwrap_or_else(|err| err.into_inner()).opened
+    }
+
+    fn begin(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn commit(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn rollback(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn savepoint(&mut self, _name: &str) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn rollback_to_savepoint(&mut self, _name: &str) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn release_savepoint(&mut self, _name: &str) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn canceller(&self) -> Box<dyn DbCancel> {
+        Box::new(NoCancel)
+    }
+}
+
+impl DbDriver for IterDriver {
+    fn connect(&self) -> Result<Box<dyn DbConnection>, Error> {
+        Ok(Box::new(IterConn {
+            tape: Arc::clone(&self.tape),
+        }))
+    }
+}
+
+struct RecDriver {
+    tape: Arc<Mutex<Tape>>,
+}
+
+struct RecConn {
+    tape: Arc<Mutex<Tape>>,
+}
+
+impl DbConnection for RecConn {
+    fn execute(&mut self, sql: &str, params: &[Value]) -> Result<u64, Error> {
+        let mut tape = self.tape.lock().unwrap_or_else(|err| err.into_inner());
+        if let Some(stored) = params.iter().find_map(|value| {
+            value
+                .as_str()
+                .filter(|text| text.starts_with(':') && *text != "TestEntityFieldValue")
+                .map(str::to_string)
+        }) {
+            tape.password = Some(stored);
+        }
+        tape.sql.push(sql.to_string());
+        Ok(1)
+    }
+
+    fn query(&mut self, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
+        self.query_once(sql, params)
+    }
+
+    fn query_once(&mut self, sql: &str, _params: &[Value]) -> Result<Vec<DbRow>, Error> {
+        let tape = self.tape.lock().unwrap_or_else(|err| err.into_inner());
+        if sql.contains("InstanceHost") && sql.contains("SELECT") {
+            if let Some(password) = tape.password.clone() {
+                return Ok(vec![DbRow {
+                    columns: vec![
+                        ("instanceHostId".to_string(), Value::string("H1")),
+                        ("password".to_string(), Value::string(password)),
+                    ],
+                }]);
+            }
+        }
+        Ok(Vec::new())
+    }
+
+    fn open_stream(&mut self, _sql: &str, _params: &[Value]) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn next_row(&mut self) -> Result<Option<DbRow>, Error> {
+        Ok(None)
+    }
+
+    fn close_stream(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn stream_open(&self) -> bool {
+        false
+    }
+
+    fn begin(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn commit(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn rollback(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn savepoint(&mut self, _name: &str) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn rollback_to_savepoint(&mut self, _name: &str) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn release_savepoint(&mut self, _name: &str) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn canceller(&self) -> Box<dyn DbCancel> {
+        Box::new(NoCancel)
+    }
+}
+
+impl DbDriver for RecDriver {
+    fn connect(&self) -> Result<Box<dyn DbConnection>, Error> {
+        Ok(Box::new(RecConn {
+            tape: Arc::clone(&self.tape),
+        }))
+    }
+}
+
+fn open_recording(tape: Arc<Mutex<Tape>>, dialect: &str) -> EntityFacade {
+    let driver: Arc<dyn DbDriver> = Arc::new(RecDriver { tape });
+    let transactions = TransactionManager::new(
+        driver,
+        PoolConfig {
+            min: 0,
+            max: 2,
+            reserve: 1,
+            acquire_timeout: Duration::from_secs(5),
+        },
+    )
+    .unwrap();
+    EntityFacade::open(
+        &framework_dir(),
+        "transactional",
+        vec![EntityGroup::new("transactional", dialect, transactions)],
+    )
+    .unwrap()
+}
+
 fn open_fake() -> EntityFacade {
     let driver: Arc<dyn DbDriver> = Arc::new(FakeDriver);
     let transactions = TransactionManager::new(
@@ -162,7 +381,112 @@ fn locale_defaults_to_en_and_crypt_stays_unset() {
 }
 
 #[test]
-fn entity_rest_is_not_implemented() {
+fn try_insert_seals_the_password_before_sql() {
+    let tape = Arc::new(Mutex::new(Tape {
+        sql: Vec::new(),
+        password: None,
+    }));
+    let facade = open_recording(Arc::clone(&tape), "mysql");
+    facade.set_crypt(
+        CryptConfig {
+            pass: "MoquiDefaultPassword:CHANGEME".to_string(),
+            salt: "20201202".to_string(),
+            iterations: 10,
+            algorithm: "PBEWithHmacSHA256AndAES_128".to_string(),
+        },
+        Vec::new(),
+    );
+    facade.set_disable_fk_create(true);
+    facade.set_disable_data_feed(true);
+    let mut fields = BTreeMap::new();
+    fields.insert("instanceHostId".to_string(), Value::string("H1"));
+    fields.insert("password".to_string(), Value::string("TestEntityFieldValue"));
+    facade
+        .upsert_record("moqui.server.instance.InstanceHost", &fields)
+        .unwrap();
+    fields.insert("instanceHostId".to_string(), Value::string("H2"));
+    facade.begin("moqui.server.instance.InstanceHost", None).unwrap();
+    facade
+        .upsert_record("moqui.server.instance.InstanceHost", &fields)
+        .unwrap();
+    facade.commit("moqui.server.instance.InstanceHost").unwrap();
+    let recorded = tape.lock().unwrap_or_else(|err| err.into_inner());
+    let upserts: Vec<_> = recorded
+        .sql
+        .iter()
+        .filter(|sql| sql.contains("ON DUPLICATE KEY UPDATE"))
+        .collect();
+    assert_eq!(upserts.len(), 2, "{:?}", recorded.sql);
+    let stored = recorded.password.clone().unwrap_or_default();
+    assert!(stored.starts_with(':'), "{stored}");
+    assert_ne!(stored, "TestEntityFieldValue");
+    drop(recorded);
+    let found = facade
+        .find("moqui.server.instance.InstanceHost")
+        .unwrap()
+        .eq("instanceHostId", Value::string("H1"))
+        .one()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        found.get("password").and_then(Value::as_str),
+        Some("TestEntityFieldValue")
+    );
+}
+
+#[test]
+fn iterator_streams_committed_rows_and_hides_a_held_delete() {
+    let tape = Arc::new(Mutex::new(IterTape {
+        opened: false,
+        served: false,
+    }));
+    let driver: Arc<dyn DbDriver> = Arc::new(IterDriver {
+        tape: Arc::clone(&tape),
+    });
+    let transactions = TransactionManager::new(
+        driver,
+        PoolConfig {
+            min: 0,
+            max: 2,
+            reserve: 1,
+            acquire_timeout: Duration::from_secs(5),
+        },
+    )
+    .unwrap();
+    let facade = EntityFacade::open(
+        &framework_dir(),
+        "transactional",
+        vec![EntityGroup::new("transactional", "postgres", transactions)],
+    )
+    .unwrap();
+
+    facade.begin("moqui.test.TestEntity", None).unwrap();
+    let mut iter = facade.find("moqui.test.TestEntity").unwrap().iterator().unwrap();
+    let row = iter.next_value().unwrap().unwrap();
+    assert_eq!(row.get("testId").and_then(Value::as_str), Some("T1"));
+    assert!(iter.next_value().unwrap().is_none());
+    drop(iter);
+    assert!(tape.lock().unwrap_or_else(|err| err.into_inner()).opened);
+    facade.rollback("moqui.test.TestEntity").unwrap();
+
+    {
+        let mut tape = tape.lock().unwrap_or_else(|err| err.into_inner());
+        tape.opened = false;
+        tape.served = false;
+    }
+    facade.begin("moqui.test.TestEntity", None).unwrap();
+    let mut doomed = facade.make_value("moqui.test.TestEntity").unwrap();
+    doomed.set("testId", Value::string("T1"));
+    doomed.delete(&facade).unwrap();
+    let mut held = facade.find("moqui.test.TestEntity").unwrap().iterator().unwrap();
+    assert!(held.next_value().unwrap().is_none());
+    drop(held);
+    assert!(!tape.lock().unwrap_or_else(|err| err.into_inner()).opened);
+    facade.rollback("moqui.test.TestEntity").unwrap();
+}
+
+#[test]
+fn entity_rest_serves_the_verbs() {
     use std::rc::Rc;
 
     struct Guard(PathBuf);

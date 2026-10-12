@@ -17,13 +17,15 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
 use moqui_lib::error::Error;
+use moqui_lib::node::MNode;
 
-use crate::driver::{DbConnection, DbDriver};
+use crate::driver::{DbCancel, DbConnection, DbDriver};
 
 use super::pool::{Pool, PoolConfig, PoolStats, PooledConn};
 
@@ -43,11 +45,20 @@ struct Frame {
     deadline: Instant,
     conn: Rc<RefCell<Option<PooledConn>>>,
     suspended: bool,
-    rollback_only: Option<String>,
+    rollback_only: Option<RollbackInfo>,
+    cache_hold: bool,
+    fired: Arc<AtomicBool>,
+    deadline_token: u64,
     cache_flush: Vec<ConnHook>,
     feed_insert: Vec<ConnHook>,
     on_commit: Vec<AfterHook>,
     on_rollback: Vec<AfterHook>,
+}
+
+struct RollbackInfo {
+    message: String,
+    error: Option<Error>,
+    callsite: &'static std::panic::Location<'static>,
 }
 
 struct Phase {
@@ -67,14 +78,32 @@ enum Top {
 enum Prepared {
     Joined,
     Ready {
-        rollback_only: Option<String>,
-        phase: Phase,
+        rollback_only: Option<RollbackInfo>,
+        phase: Box<Phase>,
     },
+}
+
+/// How [`TransactionManager::run`] enlists the body. Service XML calls this in phase 6.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransactionAttribute {
+    Ignore,
+    UseOrBegin,
+    ForceNew,
+    Cache,
+    ForceCache,
 }
 
 struct Inner {
     id: u64,
     pool: Pool,
+    use_transaction_cache: AtomicBool,
+    use_statement_timeout: AtomicBool,
+    use_lock_track: AtomicBool,
+}
+
+struct LockHit {
+    thread: ThreadId,
+    frame: u64,
 }
 
 /// Transaction manager. `Clone` shares the pool and the thread-local stack key.
@@ -89,8 +118,45 @@ impl TransactionManager {
             inner: Arc::new(Inner {
                 id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
                 pool: Pool::new(driver, config)?,
+                use_transaction_cache: AtomicBool::new(true),
+                use_statement_timeout: AtomicBool::new(false),
+                use_lock_track: AtomicBool::new(false),
             }),
         })
+    }
+
+    /// `transaction-facade` flags. An empty expansion keeps the default.
+    pub fn configure_from_conf(&self, conf: &MNode) -> Result<(), Error> {
+        let node = if conf.name() == "transaction-facade" {
+            conf.clone()
+        } else {
+            match conf.first_named("transaction-facade") {
+                Some(node) => node,
+                None => return Ok(()),
+            }
+        };
+        self.set_use_transaction_cache(conf_flag(node.attribute("use-transaction-cache"), true));
+        self.set_use_lock_track(conf_flag(node.attribute("use-lock-track"), false));
+        self.set_use_statement_timeout(conf_flag(node.attribute("use-statement-timeout"), false));
+        Ok(())
+    }
+
+    pub fn set_use_transaction_cache(&self, value: bool) {
+        self.inner.use_transaction_cache.store(value, Ordering::Relaxed);
+    }
+
+    pub fn set_use_statement_timeout(&self, value: bool) {
+        self.inner.use_statement_timeout.store(value, Ordering::Relaxed);
+    }
+
+    pub fn set_use_lock_track(&self, value: bool) {
+        self.inner.use_lock_track.store(value, Ordering::Relaxed);
+    }
+
+    /// True when the active frame holds writes in the transaction cache.
+    pub fn transaction_cache_active(&self) -> bool {
+        self.absorb_deadline();
+        self.with_frames(|frames| active(frames).is_some_and(|frame| frame.cache_hold))
     }
 
     pub fn stats(&self) -> PoolStats {
@@ -115,12 +181,19 @@ impl TransactionManager {
                 frame.join_depth += 1;
                 return Ok(false);
             }
+            let deadline = Instant::now() + timeout;
+            let fired = Arc::new(AtomicBool::new(false));
+            let deadline_token = NEXT_DEADLINE.fetch_add(1, Ordering::Relaxed);
+            register_deadline(deadline_token, deadline, Arc::clone(&fired));
             frames.push(Frame {
                 join_depth: 0,
-                deadline: Instant::now() + timeout,
+                deadline,
                 conn: Rc::new(RefCell::new(None)),
                 suspended: false,
                 rollback_only: None,
+                cache_hold: self.inner.use_transaction_cache.load(Ordering::Relaxed),
+                fired,
+                deadline_token,
                 cache_flush: Vec::new(),
                 feed_insert: Vec::new(),
                 on_commit: Vec::new(),
@@ -130,39 +203,66 @@ impl TransactionManager {
         })
     }
 
+    /// Runs `body` under `attr`. A begun frame commits on success and rolls back on error.
+    /// A joined frame pops its join and, on error, marks the outer frame rollback-only.
+    pub fn run<T, F>(&self, attr: TransactionAttribute, timeout: Option<Duration>, body: F) -> Result<T, Error>
+    where
+        F: FnOnce() -> Result<T, Error>,
+    {
+        match attr {
+            TransactionAttribute::Ignore => self.run_ignore(body),
+            TransactionAttribute::UseOrBegin => self.run_bounded(false, false, timeout, body),
+            TransactionAttribute::ForceNew => self.run_bounded(true, false, timeout, body),
+            TransactionAttribute::Cache => self.run_bounded(false, true, timeout, body),
+            TransactionAttribute::ForceCache => self.run_bounded(true, true, timeout, body),
+        }
+    }
+
     pub fn commit(&self) -> Result<(), Error> {
         match self.prepare()? {
             Prepared::Joined => Ok(()),
             Prepared::Ready {
-                rollback_only: Some(message),
+                rollback_only: Some(info),
                 phase,
             } => {
-                tracing::warn!(%message, "commit marked rollback-only; rolling back");
-                self.complete(phase, false)?;
-                Err(Error::new(format!("transaction marked rollback-only: {message}")))
+                let error_text = info.error.as_ref().map(ToString::to_string).unwrap_or_default();
+                let callsite = format!("{}:{}", info.callsite.file(), info.callsite.line());
+                tracing::warn!(
+                    message = %info.message,
+                    error = %error_text,
+                    callsite = %callsite,
+                    "commit marked rollback-only; rolling back"
+                );
+                self.complete(*phase, false)?;
+                Err(Error::new(format!(
+                    "transaction marked rollback-only: {}",
+                    info.message
+                )))
             }
             Prepared::Ready {
                 rollback_only: None,
                 phase,
-            } => self.complete(phase, true),
+            } => self.complete(*phase, true),
         }
     }
 
     pub fn rollback(&self) -> Result<(), Error> {
         match self.prepare()? {
             Prepared::Joined => Ok(()),
-            Prepared::Ready { phase, .. } => self.complete(phase, false),
+            Prepared::Ready { phase, .. } => self.complete(*phase, false),
         }
     }
 
-    /// A later commit rolls back. The commit error includes `message`.
+    /// A later commit rolls back and logs the message, the cause, and this callsite.
+    #[track_caller]
     pub fn set_rollback_only(&self, message: impl Into<String>) -> Result<(), Error> {
-        let message = message.into();
-        let stored = self.mark_rollback_only(message)?;
-        if stored {
-            tracing::warn!("transaction set rollback-only");
-        }
-        Ok(())
+        self.store_rollback(message.into(), None)
+    }
+
+    /// Same as [`Self::set_rollback_only`], keeping the cause error for the commit log.
+    #[track_caller]
+    pub fn set_rollback_only_error(&self, message: impl Into<String>, error: Error) -> Result<(), Error> {
+        self.store_rollback(message.into(), Some(error))
     }
 
     /// Checks out once per frame and reuses that connection.
@@ -170,10 +270,12 @@ impl TransactionManager {
     /// With no active frame, checks a connection out and returns it before this function returns.
     /// An open stream is that enlisted connection: this reuses it and does not check out another.
     /// An error from the closure marks the frame rollback-only. Later calls fail until rollback.
+    #[track_caller]
     pub fn with_connection<T, F>(&self, body: F) -> Result<T, Error>
     where
         F: FnOnce(&mut dyn DbConnection) -> Result<T, Error>,
     {
+        self.absorb_deadline();
         if !self.has_active() {
             let mut pooled = self.inner.pool.checkout_ordinary()?;
             let result = body(pooled.conn());
@@ -192,16 +294,23 @@ impl TransactionManager {
             }
             *slot.borrow_mut() = Some(pooled);
         }
+        self.install_canceller();
         let mut borrow = match slot.try_borrow_mut() {
             Ok(borrow) => borrow,
             Err(_) => return Err(Error::new("connection already in use")),
         };
+        self.arm_statement_timeout(borrow.as_mut())?;
         let pooled = borrow.as_mut().ok_or_else(|| Error::new("no connection enlisted"))?;
         let result = body(pooled.conn());
         if let Err(err) = &result {
             let message = err.to_string();
+            let info = RollbackInfo {
+                message: message.clone(),
+                error: Some(Error::new(message)),
+                callsite: std::panic::Location::caller(),
+            };
             drop(borrow);
-            let _ = self.mark_rollback_only(message);
+            let _ = self.mark_rollback_only(info);
         }
         result
     }
@@ -327,30 +436,23 @@ impl TransactionManager {
     }
 
     /// Commits a frame left open, resumes and commits parked frames, and returns parked connections.
-    /// Does nothing when this thread has no frame for this manager.
-    pub fn destroy_thread(&self) -> Result<(), Error> {
+    ///
+    /// Closes an open stream first. An open stream is the enlisted connection. Phase 6 and phase 7
+    /// call this from `finally` on request, job, and async-service threads. Does nothing when this
+    /// thread has no frame for this manager.
+    pub fn destroy_all_in_thread(&self) -> Result<(), Error> {
         if self.depth() > 0 {
             tracing::warn!("thread ending with a transaction in place; committing");
         }
-        loop {
-            match self.top() {
-                Top::Empty => return Ok(()),
-                Top::Suspended => self.resume()?,
-                Top::Active => {
-                    let before = self.depth();
-                    if let Err(err) = self.commit() {
-                        if self.depth() >= before {
-                            return Err(err);
-                        }
-                        tracing::warn!(error = %err, "destroy_thread rolled back a transaction");
-                    }
-                }
-            }
-        }
+        let result = self.destroy_frames();
+        self.clear_thread_locks();
+        result
     }
 
     /// When a frame's deadline has passed, marks it rollback-only and cancels the active statement.
-    /// Does not start a timer.
+    ///
+    /// The background timer does the same without this call. This remains for the same thread.
+    #[track_caller]
     pub fn poll_deadline(&self) -> Result<(), Error> {
         let now = Instant::now();
         let canceller = self.with_frames(|frames| {
@@ -360,7 +462,12 @@ impl TransactionManager {
                     continue;
                 }
                 if frame.rollback_only.is_none() {
-                    frame.rollback_only = Some("transaction deadline exceeded".to_string());
+                    frame.fired.store(true, Ordering::SeqCst);
+                    frame.rollback_only = Some(RollbackInfo {
+                        message: "transaction deadline exceeded".to_string(),
+                        error: None,
+                        callsite: std::panic::Location::caller(),
+                    });
                     tracing::warn!("transaction deadline exceeded");
                 }
             }
@@ -408,13 +515,14 @@ impl TransactionManager {
     }
 
     fn prepare(&self) -> Result<Prepared, Error> {
+        self.absorb_deadline();
         self.with_frames(|frames| {
             let frame = active_mut(frames).ok_or_else(|| Error::new("no transaction in place"))?;
             if frame.join_depth > 0 {
                 frame.join_depth -= 1;
                 return Ok(Prepared::Joined);
             }
-            let rollback_only = frame.rollback_only.clone();
+            let rollback_only = frame.rollback_only.take();
             let phase = Phase {
                 conn: Rc::clone(&frame.conn),
                 cache_flush: std::mem::take(&mut frame.cache_flush),
@@ -422,18 +530,25 @@ impl TransactionManager {
                 on_commit: std::mem::take(&mut frame.on_commit),
                 on_rollback: std::mem::take(&mut frame.on_rollback),
             };
-            Ok(Prepared::Ready { rollback_only, phase })
+            Ok(Prepared::Ready {
+                rollback_only,
+                phase: Box::new(phase),
+            })
         })
     }
 
     fn pop_active(&self) -> Result<(), Error> {
-        self.with_frames(|frames| match frames.last() {
+        let token = self.with_frames(|frames| match frames.last() {
             Some(frame) if !frame.suspended => {
+                let token = frame.deadline_token;
                 frames.pop();
-                Ok(())
+                Ok(token)
             }
             _ => Err(Error::new("no transaction in place")),
-        })
+        })?;
+        unregister_deadline(token);
+        self.clear_frame_locks(token);
+        Ok(())
     }
 
     fn push_conn_hook(&self, kind: HookKind, hook: ConnHook) -> Result<(), Error> {
@@ -460,11 +575,11 @@ impl TransactionManager {
         })
     }
 
-    fn mark_rollback_only(&self, message: String) -> Result<bool, Error> {
+    fn mark_rollback_only(&self, info: RollbackInfo) -> Result<bool, Error> {
         self.with_frames(|frames| {
             let frame = active_mut(frames).ok_or_else(|| Error::new("no transaction in place"))?;
             if frame.rollback_only.is_none() {
-                frame.rollback_only = Some(message);
+                frame.rollback_only = Some(info);
                 Ok(true)
             } else {
                 Ok(false)
@@ -473,7 +588,9 @@ impl TransactionManager {
     }
 
     fn rollback_message(&self) -> Option<String> {
-        self.with_frames(|frames| active(frames).and_then(|frame| frame.rollback_only.clone()))
+        self.with_frames(|frames| {
+            active(frames).and_then(|frame| frame.rollback_only.as_ref().map(|info| info.message.clone()))
+        })
     }
 
     fn active_conn(&self) -> Result<Rc<RefCell<Option<PooledConn>>>, Error> {
@@ -536,6 +653,193 @@ impl TransactionManager {
             result
         })
     }
+
+    #[track_caller]
+    fn store_rollback(&self, message: String, error: Option<Error>) -> Result<(), Error> {
+        let info = RollbackInfo {
+            message,
+            error,
+            callsite: std::panic::Location::caller(),
+        };
+        let stored = self.mark_rollback_only(info)?;
+        if stored {
+            tracing::warn!("transaction set rollback-only");
+        }
+        Ok(())
+    }
+
+    fn run_ignore<T, F>(&self, body: F) -> Result<T, Error>
+    where
+        F: FnOnce() -> Result<T, Error>,
+    {
+        let mut guard = ResumeGuard {
+            mgr: self,
+            armed: false,
+        };
+        if self.has_active() {
+            self.suspend()?;
+            guard.armed = true;
+        }
+        body()
+    }
+
+    fn run_bounded<T, F>(&self, force: bool, cache: bool, timeout: Option<Duration>, body: F) -> Result<T, Error>
+    where
+        F: FnOnce() -> Result<T, Error>,
+    {
+        let began = if force {
+            self.force_new(timeout)?
+        } else {
+            self.begin(timeout)?
+        };
+        // A joined frame keeps the outer transaction's cache setting once this call returns.
+        let outer_hold = if cache { Some(self.set_cache_hold(true)?) } else { None };
+        let mut guard = UnwindGuard {
+            mgr: self,
+            began,
+            armed: true,
+        };
+        let result = body();
+        guard.armed = false;
+        if let (false, Some(hold)) = (began, outer_hold) {
+            let _ = self.set_cache_hold(hold);
+        }
+        match result {
+            Ok(value) => {
+                self.commit()?;
+                Ok(value)
+            }
+            Err(err) => {
+                if began {
+                    let _ = self.rollback();
+                } else {
+                    let message = err.to_string();
+                    let _ = self.store_rollback(message, None);
+                    let _ = self.commit();
+                }
+                Err(err)
+            }
+        }
+    }
+
+    /// Returns the previous setting.
+    fn set_cache_hold(&self, hold: bool) -> Result<bool, Error> {
+        self.with_frames(|frames| {
+            let frame = active_mut(frames).ok_or_else(|| Error::new("no transaction in place"))?;
+            Ok(std::mem::replace(&mut frame.cache_hold, hold))
+        })
+    }
+
+    fn destroy_frames(&self) -> Result<(), Error> {
+        loop {
+            match self.top() {
+                Top::Empty => return Ok(()),
+                Top::Suspended => self.resume()?,
+                Top::Active => {
+                    if let Err(err) = self.close_open_stream() {
+                        let _ = self.set_rollback_only(err.to_string());
+                    }
+                    let before = self.depth();
+                    if let Err(err) = self.commit() {
+                        if self.depth() >= before {
+                            return Err(err);
+                        }
+                        tracing::warn!(error = %err, "destroy_all_in_thread rolled back a transaction");
+                    }
+                }
+            }
+        }
+    }
+
+    fn close_open_stream(&self) -> Result<(), Error> {
+        if !self.stream_open() {
+            return Ok(());
+        }
+        self.with_enlisted(|conn| conn.close_stream())
+    }
+
+    fn install_canceller(&self) {
+        let found = self.with_frames(|frames| {
+            let frame = active(frames)?;
+            let token = frame.deadline_token;
+            let cancel = frame.conn.borrow().as_ref().and_then(|conn| conn.canceller());
+            Some((token, cancel?))
+        });
+        if let Some((token, cancel)) = found {
+            deadline_set_cancel(token, cancel);
+        }
+    }
+
+    fn arm_statement_timeout(&self, pooled: Option<&mut PooledConn>) -> Result<(), Error> {
+        if !self.inner.use_statement_timeout.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let Some(pooled) = pooled else {
+            return Ok(());
+        };
+        let remaining = self
+            .with_frames(|frames| active(frames).map(|frame| frame.deadline.saturating_duration_since(Instant::now())));
+        let remaining = remaining.unwrap_or(DEFAULT_TIMEOUT).max(Duration::from_millis(1));
+        pooled.arm_statement_timeout(remaining)
+    }
+
+    #[track_caller]
+    fn absorb_deadline(&self) {
+        let callsite = std::panic::Location::caller();
+        self.with_frames(|frames| {
+            for frame in frames.iter_mut() {
+                if !frame.fired.load(Ordering::SeqCst) || frame.rollback_only.is_some() {
+                    continue;
+                }
+                frame.rollback_only = Some(RollbackInfo {
+                    message: "transaction deadline exceeded".to_string(),
+                    error: None,
+                    callsite,
+                });
+                tracing::warn!("transaction deadline exceeded");
+            }
+        });
+    }
+
+    /// Warns when another transaction already touched this primary key. Off unless lock track is on.
+    pub fn note_entity_lock(&self, entity: &str, pk: &str) {
+        if !self.inner.use_lock_track.load(Ordering::Relaxed) || entity.is_empty() || pk.is_empty() {
+            return;
+        }
+        let thread = std::thread::current().id();
+        let frame = self.with_frames(|frames| frames.last().map(|frame| frame.deadline_token).unwrap_or(0));
+        if frame == 0 {
+            return;
+        }
+        let mut map = lock_map().lock().unwrap_or_else(|err| err.into_inner());
+        let key = (entity.to_string(), pk.to_string());
+        if let Some(existing) = map.get(&key) {
+            if existing.thread != thread || existing.frame != frame {
+                tracing::warn!(entity, pk, "two transactions touched the same entity primary key");
+            }
+        }
+        map.insert(key, LockHit { thread, frame });
+    }
+
+    /// True when `note_entity_lock` records. Callers check this before building the key.
+    pub fn lock_track_enabled(&self) -> bool {
+        self.inner.use_lock_track.load(Ordering::Relaxed)
+    }
+
+    fn clear_frame_locks(&self, frame: u64) {
+        if !self.lock_track_enabled() {
+            return;
+        }
+        let thread = std::thread::current().id();
+        let mut map = lock_map().lock().unwrap_or_else(|err| err.into_inner());
+        map.retain(|_, hit| !(hit.thread == thread && hit.frame == frame));
+    }
+
+    fn clear_thread_locks(&self) {
+        let thread = std::thread::current().id();
+        let mut map = lock_map().lock().unwrap_or_else(|err| err.into_inner());
+        map.retain(|_, hit| hit.thread != thread);
+    }
 }
 
 enum HookKind {
@@ -543,6 +847,44 @@ enum HookKind {
     Feed,
     Commit,
     Rollback,
+}
+
+/// Rolls back a frame that `run` began, or poisons the joined one, when the body unwinds.
+struct UnwindGuard<'a> {
+    mgr: &'a TransactionManager,
+    began: bool,
+    armed: bool,
+}
+
+impl Drop for UnwindGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if self.began {
+            if let Err(err) = self.mgr.rollback() {
+                tracing::warn!(error = %err, "rollback after a panic failed");
+            }
+        } else {
+            let _ = self.mgr.store_rollback("body panicked".to_string(), None);
+            let _ = self.mgr.commit();
+        }
+    }
+}
+
+struct ResumeGuard<'a> {
+    mgr: &'a TransactionManager,
+    armed: bool,
+}
+
+impl Drop for ResumeGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            if let Err(err) = self.mgr.resume() {
+                tracing::warn!(error = %err, "resume after ignore failed");
+            }
+        }
+    }
 }
 
 struct ResumeOnDrop<'a> {
@@ -616,4 +958,92 @@ fn rollback_enlisted(conn: &Rc<RefCell<Option<PooledConn>>>) -> Result<(), Error
 
 fn return_conn(conn: &Rc<RefCell<Option<PooledConn>>>) {
     drop(conn.borrow_mut().take());
+}
+
+fn conf_flag(raw: Option<String>, default: bool) -> bool {
+    let Some(raw) = raw else {
+        return default;
+    };
+    let expanded = moqui_lib::env::expand(&raw).unwrap_or(raw);
+    match expanded.as_str() {
+        "true" => true,
+        "false" => false,
+        _ => default,
+    }
+}
+
+static NEXT_DEADLINE: AtomicU64 = AtomicU64::new(1);
+
+struct DeadlineSlot {
+    token: u64,
+    when: Instant,
+    fired: Arc<AtomicBool>,
+    cancel: Mutex<Option<Box<dyn DbCancel>>>,
+}
+
+fn deadlines() -> &'static Mutex<Vec<DeadlineSlot>> {
+    static SLOTS: OnceLock<Mutex<Vec<DeadlineSlot>>> = OnceLock::new();
+    SLOTS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn ensure_deadline_timer() {
+    static STARTED: OnceLock<()> = OnceLock::new();
+    STARTED.get_or_init(|| {
+        let spawned = std::thread::Builder::new()
+            .name("moqui-tx-deadline".to_string())
+            .spawn(|| loop {
+                std::thread::sleep(Duration::from_millis(50));
+                fire_due_deadlines();
+            });
+        if let Err(err) = spawned {
+            tracing::error!(error = %err, "could not start the transaction deadline timer");
+        }
+    });
+}
+
+fn register_deadline(token: u64, when: Instant, fired: Arc<AtomicBool>) {
+    ensure_deadline_timer();
+    let mut slots = deadlines().lock().unwrap_or_else(|err| err.into_inner());
+    slots.push(DeadlineSlot {
+        token,
+        when,
+        fired,
+        cancel: Mutex::new(None),
+    });
+}
+
+fn unregister_deadline(token: u64) {
+    let mut slots = deadlines().lock().unwrap_or_else(|err| err.into_inner());
+    slots.retain(|slot| slot.token != token);
+}
+
+fn deadline_set_cancel(token: u64, cancel: Box<dyn DbCancel>) {
+    let slots = deadlines().lock().unwrap_or_else(|err| err.into_inner());
+    if let Some(slot) = slots.iter().find(|slot| slot.token == token) {
+        *slot.cancel.lock().unwrap_or_else(|err| err.into_inner()) = Some(cancel);
+    }
+}
+
+fn fire_due_deadlines() {
+    let now = Instant::now();
+    let slots = deadlines().lock().unwrap_or_else(|err| err.into_inner());
+    let mut due = Vec::new();
+    for slot in slots.iter() {
+        if now >= slot.when && !slot.fired.swap(true, Ordering::SeqCst) {
+            if let Some(cancel) = slot.cancel.lock().unwrap_or_else(|err| err.into_inner()).take() {
+                due.push(cancel);
+            }
+        }
+    }
+    drop(slots);
+    for cancel in due {
+        if let Err(err) = cancel.cancel() {
+            tracing::warn!(error = %err, "deadline cancel failed");
+        }
+    }
+}
+
+fn lock_map() -> &'static Mutex<HashMap<(String, String), LockHit>> {
+    static LOCKS: OnceLock<Mutex<HashMap<(String, String), LockHit>>> = OnceLock::new();
+    LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
 }

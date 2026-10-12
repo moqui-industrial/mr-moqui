@@ -26,6 +26,7 @@ inbound-smtp = []
 [dependencies]
 moqui-core = { workspace = true }
 moqui-lib = { workspace = true, features = ["http"] }
+tracing = { workspace = true }
 tokio = { workspace = true }
 postgresql_embedded = { workspace = true, optional = true }
 postgres = { workspace = true, optional = true }

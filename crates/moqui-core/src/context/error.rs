@@ -41,7 +41,8 @@ impl Error {
 
 impl From<moqui_lib::error::Error> for Error {
     fn from(err: moqui_lib::error::Error) -> Self {
-        Self::new(err.to_string())
+        let message = err.message().to_string();
+        Self::new(message).with_source(err)
     }
 }
 

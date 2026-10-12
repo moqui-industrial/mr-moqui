@@ -19,6 +19,8 @@
 //! keyed by SQL text. [`DbConnection::query_once`] must not take a cache slot.
 //! An open stream pins the connection until [`DbConnection::close_stream`].
 
+use std::time::Duration;
+
 use moqui_lib::error::Error;
 use moqui_lib::object::Value;
 
@@ -76,6 +78,15 @@ pub trait DbConnection: Send {
 
     /// A handle the deadline thread can call while this connection is borrowed.
     fn canceller(&self) -> Box<dyn DbCancel>;
+
+    /// Remaining statement time. `None` clears it. The default does nothing.
+    ///
+    /// Postgres sets `statement_timeout`. MySQL sets `max_execution_time`. The manager calls this
+    /// only when `use-statement-timeout` is on.
+    fn set_statement_timeout(&mut self, remaining: Option<Duration>) -> Result<(), Error> {
+        let _ = remaining;
+        Ok(())
+    }
 }
 
 /// Cancels the statement running on another thread. A connection with no

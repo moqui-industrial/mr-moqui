@@ -30,6 +30,17 @@ version = "0.1.0"
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
 
+# Check with RUSTFLAGS=-Dwarnings instead of denying here, so a new rustc does not break a build.
+[workspace.lints.rust]
+unexpected_cfgs = { level = "deny", priority = -1 }
+
+# Phase 6 unwinds across the service boundary. This is already the compiler default.
+[profile.dev]
+panic = "unwind"
+
+[profile.release]
+panic = "unwind"
+
 [workspace.dependencies]
 moqui-lib = { path = "crates/moqui-lib" }
 moqui-db = { path = "crates/moqui-db" }
@@ -89,6 +100,8 @@ totp-rs = { version = "6", default-features = false, features = [
     "gen_secret",
 ] }
 tracing = "0.1"
+# CSPRNG for CHANGEME secrets written to runtime/.env. No /dev/urandom.
+getrandom = { version = "0.3", features = ["std"] }
 rquickjs = "0.14"
 # Phase 6 is the first user. Not linked until then, so this line does not
 # raise the MSRV of lib or core. 0.139.0 declares rust-version 1.94.0.

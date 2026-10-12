@@ -18,31 +18,31 @@
 //! Feed receive and delete service names are stored and not called. Nothing is indexed.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::ThreadId;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use moqui_db::dialect::Dialect;
-use moqui_db::model::{EntityDefinition, Relationship};
-use moqui_db::sql::{insert, insert_or_update, quote_ident, select, Condition, FieldRef, LimitOffset};
+use moqui_db::model::Relationship;
+use moqui_db::sql::{insert, quote_ident, select, Condition, FieldRef, LimitOffset};
 use moqui_lib::error::Error;
 use moqui_lib::node::MNode;
 use moqui_lib::object::{basic_convert, Value};
 
-use super::exec::{self, execute_tx};
 use super::facade::EntityFacade;
 use super::params::condition_params;
 use super::value::EntityValue;
-use super::{cache, fk};
 use crate::driver::{DbConnection, DbRow};
 use crate::transaction::TransactionManager;
 
 const SKIP_FEED_ENTITY: &str = "moqui.entity.SequenceValueItem";
 const REALTIME_PUSH: &str = "DTFDTP_RT_PUSH";
 const MAX_INFLATE: usize = 16 * 1024 * 1024;
+/// Largest single XML element or JSON value the streaming loader holds at once.
+const MAX_UNIT: usize = 64 * 1024 * 1024;
+const MAX_ZIP_FILE: u64 = 256 * 1024 * 1024;
 const SAVEPOINT: &str = "moqui_feed";
 
 static NEXT_RANDOM: AtomicU64 = AtomicU64::new(1);
@@ -831,21 +831,26 @@ fn load_path(
     }
     match extension(path).as_str() {
         "xml" => {
-            let text = read_text(path)?;
-            load_xml_text(facade, location, &text, options)
+            let file = open_data(path, location)?;
+            load_xml_reader(facade, location, BufReader::new(file), options)
         }
         "csv" => {
-            let file = std::fs::File::open(path)
-                .map_err(|err| Error::new(format!("could not read {location}")).with_source(err))?;
+            let file = open_data(path, location)?;
             load_csv_reader(facade, location, file, options)
         }
         "json" => {
-            let text = read_text(path)?;
-            load_json_text(facade, location, &text, options)
+            let file = open_data(path, location)?;
+            load_json_reader(facade, location, BufReader::new(file), options)
         }
         "zip" => {
-            let bytes =
-                std::fs::read(path).map_err(|err| Error::new(format!("could not read {location}")).with_source(err))?;
+            let file = open_data(path, location)?;
+            let mut bytes = Vec::new();
+            file.take(MAX_ZIP_FILE + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|err| Error::new(format!("could not read {location}")).with_source(err))?;
+            if bytes.len() as u64 > MAX_ZIP_FILE {
+                return Err(Error::new(format!("{location} is too large to load")));
+            }
             load_zip_bytes(facade, location, &bytes, options, depth)
         }
         _ => Err(Error::new(format!("unsupported data file {location}"))),
@@ -873,27 +878,56 @@ fn load_directory(facade: &EntityFacade, path: &Path, options: &LoadOptions, dep
 }
 
 fn load_xml_text(facade: &EntityFacade, location: &str, text: &str, options: &LoadOptions) -> Result<u64, Error> {
-    let root = MNode::parse_text(location, strip_bom(text))?;
-    let root_name = root.name();
-    let file_type = if root_name == "seed-data" {
+    load_xml_reader(facade, location, std::io::Cursor::new(text.as_bytes()), options)
+}
+
+fn load_xml_reader(
+    facade: &EntityFacade,
+    location: &str,
+    reader: impl BufRead,
+    options: &LoadOptions,
+) -> Result<u64, Error> {
+    let mut input = Pull::new(reader);
+    input.skip_bom()?;
+    input.consume_match(xml_misc, "xml prologue")?;
+    let start = input.take_with(xml_start_tag, "xml root")?;
+    let file_type = if start.name == "seed-data" {
         Some("seed".to_string())
-    } else if root_name == "entity-facade-xml" {
-        root.attribute("type").filter(|value| !value.is_empty())
+    } else if start.name == "entity-facade-xml" {
+        start.attr("type").filter(|value| !value.is_empty())
     } else {
         return Err(Error::new(format!(
-            "{location} root {root_name} is not entity-facade-xml or seed-data"
+            "{location} root {} is not entity-facade-xml or seed-data",
+            start.name
         )));
     };
     if skip_type(file_type.as_deref(), &options.data_types) {
         return Ok(0);
     }
+    if start.empty {
+        return Ok(0);
+    }
     let mut total = 0_u64;
-    for child in root.children() {
-        match parse_top(facade, location, &child)? {
+    loop {
+        input.consume_match(xml_misc, "xml prologue")?;
+        if input.starts_with("</")? {
+            input.consume_match(xml_close_tag, "xml end tag")?;
+            break;
+        }
+        if input.exhausted()? {
+            return Err(Error::new(format!("{location} ended before the root was closed")));
+        }
+        let element = input.take_text(xml_element_end, "xml element")?;
+        let node = MNode::parse_text(location, &element)?;
+        match parse_top(facade, location, &node)? {
             Some(Top::Record(record)) => total = total.saturating_add(store_record(facade, options, &record)?),
             Some(Top::Service(service)) => hold_service(facade, service),
             None => {}
         }
+    }
+    input.consume_match(xml_misc, "xml prologue")?;
+    if !input.exhausted()? {
+        return Err(Error::new(format!("{location} has trailing content after the root")));
     }
     Ok(total)
 }
@@ -997,7 +1031,73 @@ fn load_csv_reader(
 }
 
 fn load_json_text(facade: &EntityFacade, location: &str, text: &str, options: &LoadOptions) -> Result<u64, Error> {
-    let root = parse_json(strip_bom(text))?;
+    load_json_reader(facade, location, std::io::Cursor::new(text.as_bytes()), options)
+}
+
+fn load_json_reader(
+    facade: &EntityFacade,
+    location: &str,
+    reader: impl BufRead,
+    options: &LoadOptions,
+) -> Result<u64, Error> {
+    let mut input = Pull::new(reader);
+    input.skip_bom()?;
+    let kind = input.take_with(json_start, "json root")?;
+    match kind {
+        JsonStart::Object => {
+            let text = input.take_text(json_value_end, "json value")?;
+            let loaded = load_json_text_value(facade, location, &text, options)?;
+            input.consume_match(json_ws, "json space")?;
+            if !input.exhausted()? {
+                return Err(Error::new(format!("{location} json has trailing data")));
+            }
+            Ok(loaded)
+        }
+        JsonStart::Array => {
+            let mut total = 0_u64;
+            let mut file_type = None;
+            let mut first = true;
+            loop {
+                input.consume_match(json_ws, "json space")?;
+                if input.starts_with("]")? {
+                    input.consume(1);
+                    break;
+                }
+                if input.exhausted()? {
+                    return Err(Error::new(format!("{location} json array ended early")));
+                }
+                let text = input.take_text(json_value_end, "json value")?;
+                let value = parse_json(&text)?;
+                let mut marker = false;
+                if first {
+                    first = false;
+                    if let Json::Object(pairs) = &value {
+                        if let Some(kind) = json_object_string(pairs, "_dataType") {
+                            file_type = Some(kind);
+                            marker = true;
+                        }
+                    }
+                }
+                if !marker && !skip_type(file_type.as_deref(), &options.data_types) {
+                    total = total.saturating_add(load_json_document(facade, location, value, options)?);
+                }
+                let end = input.take_with(json_after_value, "json separator")?;
+                if end {
+                    break;
+                }
+            }
+            Ok(total)
+        }
+    }
+}
+
+fn load_json_text_value(
+    facade: &EntityFacade,
+    location: &str,
+    text: &str,
+    options: &LoadOptions,
+) -> Result<u64, Error> {
+    let root = parse_json(text)?;
     let (file_type, values) = json_documents(root)?;
     if skip_type(file_type.as_deref(), &options.data_types) {
         return Ok(0);
@@ -1435,35 +1535,7 @@ fn try_insert_allowed(facade: &EntityFacade, entity_name: &str) -> Result<bool, 
 }
 
 fn write_upsert(facade: &EntityFacade, entity_name: &str, fields: &BTreeMap<String, Value>) -> Result<(), Error> {
-    let mut stack = HashSet::new();
-    fk::enforce(facade, entity_name, fields, &mut stack)?;
-    let _matched = match_rules(facade, entity_name, "create");
-    let (sql, params, tx) = facade.with_group(entity_name, |entity, dialect, _, tx| {
-        let columns = present_columns(entity, fields);
-        let sql = upsert_sql(entity, dialect, &columns)?;
-        let params = columns
-            .iter()
-            .map(|name| fields.get(*name).cloned().unwrap_or(Value::Null))
-            .collect::<Vec<_>>();
-        Ok((sql, params, tx.clone()))
-    })?;
-    execute_tx(&tx, &sql, &params)?;
-    cache::on_write(facade, entity_name, "create")?;
-    exec::after_statement(facade, &tx, true);
-    Ok(())
-}
-
-fn upsert_sql(entity: &EntityDefinition, dialect: &Dialect, columns: &[&str]) -> Result<String, Error> {
-    insert_or_update(entity, dialect, columns)
-}
-
-fn present_columns<'a>(entity: &'a EntityDefinition, fields: &BTreeMap<String, Value>) -> Vec<&'a str> {
-    entity
-        .fields
-        .iter()
-        .filter(|field| matches!(fields.get(&field.name), Some(value) if !value.is_null()))
-        .map(|field| field.name.as_str())
-        .collect()
+    facade.upsert_record(entity_name, fields)
 }
 
 fn value_from(
@@ -1635,17 +1707,1038 @@ fn is_data_file(path: &Path) -> bool {
     matches!(extension(path).as_str(), "xml" | "csv" | "json" | "zip")
 }
 
-fn read_text(path: &Path) -> Result<String, Error> {
-    std::fs::read_to_string(path)
-        .map_err(|err| Error::new(format!("could not read {}", path.display())).with_source(err))
-}
-
-fn strip_bom(text: &str) -> &str {
-    text.strip_prefix('\u{feff}').unwrap_or(text)
+fn open_data(path: &Path, location: &str) -> Result<std::fs::File, Error> {
+    std::fs::File::open(path).map_err(|err| Error::new(format!("could not read {location}")).with_source(err))
 }
 
 fn record_blank(record: &csv::StringRecord) -> bool {
     record.iter().all(|field| field.is_empty())
+}
+
+struct Pull<R> {
+    reader: R,
+    buf: Vec<u8>,
+    pos: usize,
+    eof: bool,
+}
+
+impl<R: BufRead> Pull<R> {
+    fn new(reader: R) -> Self {
+        Self {
+            reader,
+            buf: Vec::new(),
+            pos: 0,
+            eof: false,
+        }
+    }
+
+    fn skip_bom(&mut self) -> Result<(), Error> {
+        loop {
+            let have = self.buf.len() - self.pos;
+            if have >= 3 || self.eof {
+                break;
+            }
+            let before = self.buf.len();
+            self.fill()?;
+            if self.buf.len() == before {
+                break;
+            }
+        }
+        if self.buf[self.pos..].starts_with(&[0xef, 0xbb, 0xbf]) {
+            self.advance(3);
+        }
+        Ok(())
+    }
+
+    fn starts_with(&mut self, prefix: &str) -> Result<bool, Error> {
+        let needle = prefix.as_bytes();
+        loop {
+            let have = self.buf.len() - self.pos;
+            if have >= needle.len() || self.eof {
+                return Ok(self.buf[self.pos..].starts_with(needle));
+            }
+            let before = self.buf.len();
+            self.fill()?;
+            if self.buf.len() == before {
+                return Ok(self.buf[self.pos..].starts_with(needle));
+            }
+        }
+    }
+
+    fn consume(&mut self, n: usize) {
+        self.advance(n);
+    }
+
+    fn exhausted(&mut self) -> Result<bool, Error> {
+        if self.pos < self.buf.len() {
+            return Ok(false);
+        }
+        if !self.eof {
+            self.fill()?;
+        }
+        Ok(self.pos >= self.buf.len())
+    }
+
+    fn consume_match(
+        &mut self,
+        scan: impl Fn(&str, bool) -> Result<Option<usize>, Error>,
+        label: &str,
+    ) -> Result<(), Error> {
+        self.drive(|text, eof| Ok(scan(text, eof)?.map(|n| (n, ()))), label)?;
+        Ok(())
+    }
+
+    fn take_text(
+        &mut self,
+        scan: impl Fn(&str, bool) -> Result<Option<usize>, Error>,
+        label: &str,
+    ) -> Result<String, Error> {
+        self.drive(
+            |text, eof| {
+                let Some(n) = scan(text, eof)? else {
+                    return Ok(None);
+                };
+                if n > text.len() || !text.is_char_boundary(n) {
+                    return Err(Error::new("scan left the buffer"));
+                }
+                Ok(Some((n, text[..n].to_string())))
+            },
+            label,
+        )
+    }
+
+    fn take_with<T>(
+        &mut self,
+        scan: impl Fn(&str, bool) -> Result<Option<(usize, T)>, Error>,
+        label: &str,
+    ) -> Result<T, Error> {
+        self.drive(scan, label)
+    }
+
+    fn drive<T>(
+        &mut self,
+        mut scan: impl FnMut(&str, bool) -> Result<Option<(usize, T)>, Error>,
+        label: &str,
+    ) -> Result<T, Error> {
+        loop {
+            if self.pos >= self.buf.len() && !self.eof {
+                self.fill()?;
+            }
+            let decision = {
+                let (text, at_eof) = self.view()?;
+                scan(text, at_eof)?
+            };
+            match decision {
+                Some((n, value)) => {
+                    let (text, _) = self.view()?;
+                    if n > text.len() || !text.is_char_boundary(n) {
+                        return Err(Error::new(format!("{label} scan left the buffer")));
+                    }
+                    self.advance(n);
+                    return Ok(value);
+                }
+                None => {
+                    let (_, at_eof) = self.view()?;
+                    if at_eof {
+                        return Err(Error::new(format!("{label} ended early")));
+                    }
+                    // Rescanning after every chunk is quadratic for one large element. Waiting for the
+                    // pending text to double keeps the total scan linear.
+                    let pending = self.buf.len() - self.pos;
+                    if pending > MAX_UNIT {
+                        return Err(Error::new(format!("{label} is larger than {MAX_UNIT} bytes")));
+                    }
+                    let target = pending.saturating_mul(2).max(pending + 8192);
+                    while self.buf.len() - self.pos < target && !self.eof {
+                        self.fill()?;
+                    }
+                }
+            }
+        }
+    }
+
+    fn view(&self) -> Result<(&str, bool), Error> {
+        let bytes = &self.buf[self.pos..];
+        match std::str::from_utf8(bytes) {
+            Ok(text) => Ok((text, self.eof)),
+            Err(err) if err.error_len().is_none() && !self.eof => {
+                let valid = err.valid_up_to();
+                let text = std::str::from_utf8(&bytes[..valid]).map_err(|_| Error::new("data is not utf-8"))?;
+                Ok((text, false))
+            }
+            Err(err) => Err(Error::new("data is not utf-8").with_source(err)),
+        }
+    }
+
+    fn fill(&mut self) -> Result<(), Error> {
+        if self.eof {
+            return Ok(());
+        }
+        let mut chunk = [0_u8; 8192];
+        loop {
+            match self.reader.read(&mut chunk) {
+                Ok(0) => {
+                    self.eof = true;
+                    return Ok(());
+                }
+                Ok(n) => {
+                    self.buf.extend_from_slice(&chunk[..n]);
+                    return Ok(());
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(err) => return Err(Error::new("could not read data").with_source(err)),
+            }
+        }
+    }
+
+    fn advance(&mut self, n: usize) {
+        self.pos += n;
+        if self.pos >= 8192 {
+            self.buf.drain(..self.pos);
+            self.pos = 0;
+        }
+    }
+}
+
+struct Start {
+    name: String,
+    empty: bool,
+    attrs: Vec<(String, String)>,
+}
+
+impl Start {
+    fn attr(&self, name: &str) -> Option<String> {
+        self.attrs
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.clone())
+    }
+}
+
+enum JsonStart {
+    Object,
+    Array,
+}
+
+fn xml_misc(text: &str, eof: bool) -> Result<Option<usize>, Error> {
+    if text.is_empty() {
+        return if eof { Ok(Some(0)) } else { Ok(None) };
+    }
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    loop {
+        let next = skip_xml_ws(text, i);
+        if next >= bytes.len() {
+            return if eof { Ok(Some(next)) } else { Ok(None) };
+        }
+        i = next;
+        if bytes[i] != b'<' {
+            return Ok(Some(i));
+        }
+        let rest = &bytes[i..];
+        if rest.starts_with(b"<!--") {
+            match find_marker(rest, b"-->") {
+                Some(n) => i += n,
+                None if eof => return Err(Error::new("unclosed comment")),
+                None => return Ok(None),
+            }
+            continue;
+        }
+        if rest.starts_with(b"<?") {
+            match find_marker(rest, b"?>") {
+                Some(n) => i += n,
+                None if eof => return Err(Error::new("unclosed processing instruction")),
+                None => return Ok(None),
+            }
+            continue;
+        }
+        if doctype_prefix(rest) {
+            match skip_doctype(rest, eof)? {
+                Some(n) => i += n,
+                None => return Ok(None),
+            }
+            continue;
+        }
+        if misc_prefix(rest) {
+            return if eof { Ok(Some(i)) } else { Ok(None) };
+        }
+        return Ok(Some(i));
+    }
+}
+
+fn xml_start_tag(text: &str, eof: bool) -> Result<Option<(usize, Start)>, Error> {
+    if text.is_empty() {
+        return if eof {
+            Err(Error::new("xml root ended early"))
+        } else {
+            Ok(None)
+        };
+    }
+    let bytes = text.as_bytes();
+    if bytes[0] != b'<' {
+        return Err(Error::new("xml root does not start with '<'"));
+    }
+    if bytes.len() == 1 {
+        return if eof {
+            Err(Error::new("xml root ended early"))
+        } else {
+            Ok(None)
+        };
+    }
+    if matches!(bytes[1], b'/' | b'!' | b'?') {
+        return Err(Error::new("xml root is not an element"));
+    }
+    let Some((name, mut i)) = read_xml_name(text, 1, eof)? else {
+        return Ok(None);
+    };
+    let mut attrs = Vec::new();
+    loop {
+        let Some(next) = skip_ws_index(text, i, eof)? else {
+            return Ok(None);
+        };
+        i = next;
+        if i >= bytes.len() {
+            return if eof {
+                Err(Error::new("unclosed start tag"))
+            } else {
+                Ok(None)
+            };
+        }
+        if bytes[i] == b'/' {
+            if i + 1 >= bytes.len() {
+                return if eof {
+                    Err(Error::new("unclosed start tag"))
+                } else {
+                    Ok(None)
+                };
+            }
+            if bytes[i + 1] != b'>' {
+                return Err(Error::new("xml start tag is not closed"));
+            }
+            return Ok(Some((
+                i + 2,
+                Start {
+                    name,
+                    empty: true,
+                    attrs,
+                },
+            )));
+        }
+        if bytes[i] == b'>' {
+            return Ok(Some((
+                i + 1,
+                Start {
+                    name,
+                    empty: false,
+                    attrs,
+                },
+            )));
+        }
+        let Some((attr_name, next)) = read_xml_name(text, i, eof)? else {
+            return Ok(None);
+        };
+        i = next;
+        let Some(next) = skip_ws_index(text, i, eof)? else {
+            return Ok(None);
+        };
+        i = next;
+        if i >= bytes.len() {
+            return if eof {
+                Err(Error::new("attribute value is missing"))
+            } else {
+                Ok(None)
+            };
+        }
+        if bytes[i] != b'=' {
+            return Err(Error::new(format!("attribute {attr_name} has no value")));
+        }
+        i += 1;
+        let Some(next) = skip_ws_index(text, i, eof)? else {
+            return Ok(None);
+        };
+        i = next;
+        let Some((value, next)) = read_attr_value(text, i, eof)? else {
+            return Ok(None);
+        };
+        i = next;
+        attrs.push((attr_name, value));
+    }
+}
+
+fn xml_close_tag(text: &str, eof: bool) -> Result<Option<usize>, Error> {
+    let bytes = text.as_bytes();
+    if bytes.is_empty() {
+        return if eof {
+            Err(Error::new("xml end tag ended early"))
+        } else {
+            Ok(None)
+        };
+    }
+    if !bytes.starts_with(b"</") {
+        return Err(Error::new("xml end tag does not start with '</'"));
+    }
+    if bytes.len() < 3 {
+        return if eof {
+            Err(Error::new("xml end tag ended early"))
+        } else {
+            Ok(None)
+        };
+    }
+    let Some((_, mut i)) = read_xml_name(text, 2, eof)? else {
+        return Ok(None);
+    };
+    let Some(next) = skip_ws_index(text, i, eof)? else {
+        return Ok(None);
+    };
+    i = next;
+    if i >= bytes.len() {
+        return if eof {
+            Err(Error::new("xml end tag is not closed"))
+        } else {
+            Ok(None)
+        };
+    }
+    if bytes[i] != b'>' {
+        return Err(Error::new("xml end tag is not closed"));
+    }
+    Ok(Some(i + 1))
+}
+
+fn xml_element_end(text: &str, eof: bool) -> Result<Option<usize>, Error> {
+    let bytes = text.as_bytes();
+    if bytes.is_empty() {
+        return if eof {
+            Err(Error::new("xml element ended early"))
+        } else {
+            Ok(None)
+        };
+    }
+    if bytes[0] != b'<' {
+        return Err(Error::new("xml element does not start with '<'"));
+    }
+    let mut i = 0;
+    let mut depth = 0_i32;
+    loop {
+        if i >= bytes.len() {
+            return if eof {
+                Err(Error::new("xml element ended early"))
+            } else {
+                Ok(None)
+            };
+        }
+        if bytes[i] != b'<' {
+            if depth == 0 {
+                return Err(Error::new("xml element does not start with '<'"));
+            }
+            i += 1;
+            continue;
+        }
+        match skip_special(&bytes[i..], eof)? {
+            Special::Pending => return Ok(None),
+            Special::Comment(n) | Special::Cdata(n) | Special::Pi(n) => {
+                i += n;
+                continue;
+            }
+            Special::Decl => return Err(Error::new("this declaration is not allowed")),
+            Special::Tag => {}
+        }
+        let Some((consumed, kind)) = scan_tag(&bytes[i..], eof)? else {
+            return if eof {
+                Err(Error::new("xml element ended early"))
+            } else {
+                Ok(None)
+            };
+        };
+        if consumed == 0 {
+            return Err(Error::new("xml element ended early"));
+        }
+        i += consumed;
+        match kind {
+            TagKind::Empty => {
+                if depth == 0 {
+                    return Ok(Some(i));
+                }
+            }
+            TagKind::Open => depth += 1,
+            TagKind::Close => {
+                if depth == 0 {
+                    return Err(Error::new("xml end tag does not match"));
+                }
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(Some(i));
+                }
+            }
+        }
+    }
+}
+
+enum TagKind {
+    Empty,
+    Open,
+    Close,
+}
+
+enum Special {
+    Pending,
+    Comment(usize),
+    Cdata(usize),
+    Pi(usize),
+    Decl,
+    Tag,
+}
+
+fn skip_special(bytes: &[u8], eof: bool) -> Result<Special, Error> {
+    if bytes.starts_with(b"<!--") {
+        return match find_marker(bytes, b"-->") {
+            Some(end) => Ok(Special::Comment(end)),
+            None if eof => Err(Error::new("unclosed comment")),
+            None => Ok(Special::Pending),
+        };
+    }
+    if bytes.starts_with(b"<![CDATA[") {
+        return match find_marker(bytes, b"]]>") {
+            Some(end) => Ok(Special::Cdata(end)),
+            None if eof => Err(Error::new("unclosed cdata")),
+            None => Ok(Special::Pending),
+        };
+    }
+    if bytes.starts_with(b"<?") {
+        return match find_marker(bytes, b"?>") {
+            Some(end) => Ok(Special::Pi(end)),
+            None if eof => Err(Error::new("unclosed processing instruction")),
+            None => Ok(Special::Pending),
+        };
+    }
+    if markup_prefix(bytes) {
+        return if eof {
+            Err(Error::new("xml element ended early"))
+        } else {
+            Ok(Special::Pending)
+        };
+    }
+    if bytes.starts_with(b"<!") {
+        Ok(Special::Decl)
+    } else {
+        Ok(Special::Tag)
+    }
+}
+
+fn scan_tag(bytes: &[u8], eof: bool) -> Result<Option<(usize, TagKind)>, Error> {
+    if bytes.first() != Some(&b'<') {
+        return Err(Error::new("xml element does not start with '<'"));
+    }
+    if bytes.len() < 2 {
+        return if eof {
+            Err(Error::new("xml element ended early"))
+        } else {
+            Ok(None)
+        };
+    }
+    let close = bytes[1] == b'/';
+    let mut quote: Option<u8> = None;
+    let mut i = 1;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if let Some(q) = quote {
+            if byte == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match byte {
+            b'"' | b'\'' => {
+                quote = Some(byte);
+                i += 1;
+            }
+            b'/' => {
+                if i + 1 >= bytes.len() {
+                    return if eof {
+                        Err(Error::new("xml element ended early"))
+                    } else {
+                        Ok(None)
+                    };
+                }
+                if bytes[i + 1] == b'>' {
+                    let kind = if close { TagKind::Close } else { TagKind::Empty };
+                    return Ok(Some((i + 2, kind)));
+                }
+                i += 1;
+            }
+            b'>' => {
+                let kind = if close { TagKind::Close } else { TagKind::Open };
+                return Ok(Some((i + 1, kind)));
+            }
+            _ => i += 1,
+        }
+    }
+    if eof {
+        Err(Error::new("xml element ended early"))
+    } else {
+        Ok(None)
+    }
+}
+
+fn json_ws(text: &str, eof: bool) -> Result<Option<usize>, Error> {
+    let n = text.bytes().take_while(|byte| is_json_ws(*byte)).count();
+    if n == text.len() && !eof {
+        return Ok(None);
+    }
+    Ok(Some(n))
+}
+
+fn json_start(text: &str, eof: bool) -> Result<Option<(usize, JsonStart)>, Error> {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && is_json_ws(bytes[i]) {
+        i += 1;
+    }
+    if i >= bytes.len() {
+        return if eof {
+            Err(Error::new("json ended early"))
+        } else {
+            Ok(None)
+        };
+    }
+    match bytes[i] {
+        b'{' => Ok(Some((i, JsonStart::Object))),
+        b'[' => Ok(Some((i + 1, JsonStart::Array))),
+        found => Err(Error::new(format!("unexpected json character {}", char::from(found)))),
+    }
+}
+
+fn json_value_end(text: &str, eof: bool) -> Result<Option<usize>, Error> {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && is_json_ws(bytes[i]) {
+        i += 1;
+    }
+    if i >= bytes.len() {
+        return if eof {
+            Err(Error::new("json ended early"))
+        } else {
+            Ok(None)
+        };
+    }
+    match bytes[i] {
+        b'"' => scan_string(bytes, i, eof),
+        b'{' | b'[' => scan_container(bytes, i, eof),
+        b't' => scan_lit(bytes, i, b"true", eof),
+        b'f' => scan_lit(bytes, i, b"false", eof),
+        b'n' => scan_lit(bytes, i, b"null", eof),
+        b'-' | b'0'..=b'9' => scan_number(bytes, i, eof),
+        found => Err(Error::new(format!("unexpected json character {}", char::from(found)))),
+    }
+}
+
+fn json_after_value(text: &str, eof: bool) -> Result<Option<(usize, bool)>, Error> {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && is_json_ws(bytes[i]) {
+        i += 1;
+    }
+    if i >= bytes.len() {
+        return if eof {
+            Err(Error::new("json separator ended early"))
+        } else {
+            Ok(None)
+        };
+    }
+    match bytes[i] {
+        b',' => Ok(Some((i + 1, false))),
+        b']' => Ok(Some((i + 1, true))),
+        found => Err(Error::new(format!("unexpected json character {}", char::from(found)))),
+    }
+}
+
+fn scan_string(bytes: &[u8], start: usize, eof: bool) -> Result<Option<usize>, Error> {
+    let mut i = start + 1;
+    let mut escape = false;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        i += 1;
+        if escape {
+            escape = false;
+            continue;
+        }
+        if byte == b'\\' {
+            escape = true;
+            continue;
+        }
+        if byte == b'"' {
+            return Ok(Some(i));
+        }
+    }
+    if eof {
+        Err(Error::new("json string ended early"))
+    } else {
+        Ok(None)
+    }
+}
+
+fn scan_container(bytes: &[u8], start: usize, eof: bool) -> Result<Option<usize>, Error> {
+    let mut depth = 0_i32;
+    let mut in_string = false;
+    let mut escape = false;
+    let mut i = start;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        i += 1;
+        if in_string {
+            if escape {
+                escape = false;
+                continue;
+            }
+            if byte == b'\\' {
+                escape = true;
+                continue;
+            }
+            if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(Some(i));
+                }
+                if depth < 0 {
+                    return Err(Error::new("json container is not closed"));
+                }
+            }
+            _ => {}
+        }
+    }
+    if eof {
+        Err(Error::new("json ended early"))
+    } else {
+        Ok(None)
+    }
+}
+
+fn scan_lit(bytes: &[u8], start: usize, lit: &[u8], eof: bool) -> Result<Option<usize>, Error> {
+    let have = bytes.len().saturating_sub(start);
+    if have < lit.len() {
+        if bytes[start..].iter().zip(lit.iter()).all(|(got, want)| got == want) {
+            return if eof {
+                Err(Error::new("json literal is incomplete"))
+            } else {
+                Ok(None)
+            };
+        }
+        return Err(Error::new("json literal is incomplete"));
+    }
+    if &bytes[start..start + lit.len()] != lit {
+        return Err(Error::new("json literal is incomplete"));
+    }
+    if start + lit.len() == bytes.len() && !eof {
+        return Ok(None);
+    }
+    Ok(Some(start + lit.len()))
+}
+
+fn scan_number(bytes: &[u8], start: usize, eof: bool) -> Result<Option<usize>, Error> {
+    let mut i = start;
+    if i < bytes.len() && bytes[i] == b'-' {
+        i += 1;
+    }
+    if i >= bytes.len() {
+        return number_end(i, eof, false);
+    }
+    if bytes[i] == b'0' {
+        i += 1;
+    } else if bytes[i].is_ascii_digit() {
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+    } else {
+        return Err(Error::new("json number is incomplete"));
+    }
+    if i >= bytes.len() {
+        return number_end(i, eof, true);
+    }
+    if bytes[i] == b'.' {
+        i += 1;
+        if i >= bytes.len() {
+            return number_end(i, eof, false);
+        }
+        if !bytes[i].is_ascii_digit() {
+            return Err(Error::new("json fraction is incomplete"));
+        }
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            return number_end(i, eof, true);
+        }
+    }
+    if bytes[i] == b'e' || bytes[i] == b'E' {
+        i += 1;
+        if i >= bytes.len() {
+            return number_end(i, eof, false);
+        }
+        if bytes[i] == b'+' || bytes[i] == b'-' {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            return number_end(i, eof, false);
+        }
+        if !bytes[i].is_ascii_digit() {
+            return Err(Error::new("json exponent is incomplete"));
+        }
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            return number_end(i, eof, true);
+        }
+    }
+    Ok(Some(i))
+}
+
+fn number_end(i: usize, eof: bool, complete: bool) -> Result<Option<usize>, Error> {
+    if !eof {
+        Ok(None)
+    } else if complete {
+        Ok(Some(i))
+    } else {
+        Err(Error::new("json number is incomplete"))
+    }
+}
+
+fn is_json_ws(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | b'\r')
+}
+
+fn skip_xml_ws(text: &str, mut i: usize) -> usize {
+    let bytes = text.as_bytes();
+    while i < bytes.len() {
+        if bytes[i].is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        if bytes[i].is_ascii() || !text.is_char_boundary(i) {
+            break;
+        }
+        let Some(ch) = text[i..].chars().next() else {
+            break;
+        };
+        if !ch.is_whitespace() {
+            break;
+        }
+        i += ch.len_utf8();
+    }
+    i
+}
+
+fn skip_ws_index(text: &str, mut i: usize, eof: bool) -> Result<Option<usize>, Error> {
+    while i < text.len() {
+        let Some(ch) = text[i..].chars().next() else {
+            return Err(Error::new("xml split a character"));
+        };
+        if !ch.is_whitespace() {
+            return Ok(Some(i));
+        }
+        i += ch.len_utf8();
+    }
+    if eof {
+        Ok(Some(i))
+    } else {
+        Ok(None)
+    }
+}
+
+fn read_xml_name(text: &str, start: usize, eof: bool) -> Result<Option<(String, usize)>, Error> {
+    if start >= text.len() {
+        return if eof {
+            Err(Error::new("expected a name"))
+        } else {
+            Ok(None)
+        };
+    }
+    if !text.is_char_boundary(start) {
+        return Err(Error::new("xml split a character"));
+    }
+    let Some(first) = text[start..].chars().next() else {
+        return if eof {
+            Err(Error::new("expected a name"))
+        } else {
+            Ok(None)
+        };
+    };
+    if !xml_name_start(first) {
+        return Err(Error::new(format!("invalid name start '{first}'")));
+    }
+    let mut end = start + first.len_utf8();
+    while end < text.len() {
+        let Some(ch) = text[end..].chars().next() else {
+            break;
+        };
+        if !xml_name_char(ch) {
+            break;
+        }
+        end += ch.len_utf8();
+    }
+    if end == text.len() && !eof {
+        return Ok(None);
+    }
+    Ok(Some((text[start..end].to_string(), end)))
+}
+
+fn read_attr_value(text: &str, i: usize, eof: bool) -> Result<Option<(String, usize)>, Error> {
+    if i >= text.len() {
+        return if eof {
+            Err(Error::new("attribute value is missing"))
+        } else {
+            Ok(None)
+        };
+    }
+    let quote = text.as_bytes()[i];
+    if quote != b'"' && quote != b'\'' {
+        return Err(Error::new("attribute value must be quoted"));
+    }
+    let mut j = i + 1;
+    let mut raw = String::new();
+    while j < text.len() {
+        let Some(ch) = text[j..].chars().next() else {
+            return Err(Error::new("xml split a character"));
+        };
+        if ch == char::from(quote) {
+            return Ok(Some((decode_xml_entities(&raw)?, j + 1)));
+        }
+        if ch == '<' {
+            return Err(Error::new("'<' is not allowed in an attribute value"));
+        }
+        raw.push(ch);
+        j += ch.len_utf8();
+    }
+    if eof {
+        Err(Error::new("unclosed attribute value"))
+    } else {
+        Ok(None)
+    }
+}
+
+fn decode_xml_entities(raw: &str) -> Result<String, Error> {
+    if !raw.contains('&') {
+        return Ok(raw.to_string());
+    }
+    let mut out = String::new();
+    let mut rest = raw;
+    while let Some(at) = rest.find('&') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at + 1..];
+        let Some(end) = rest.find(';') else {
+            return Err(Error::new(format!("unterminated entity '&{rest}'")));
+        };
+        let body = &rest[..end];
+        let ch = decode_xml_entity(body).ok_or_else(|| Error::new(format!("unknown entity '&{body};'")))?;
+        out.push(ch);
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+fn decode_xml_entity(body: &str) -> Option<char> {
+    match body {
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "amp" => Some('&'),
+        "apos" => Some('\''),
+        "quot" => Some('"'),
+        _ if body.starts_with("#x") || body.starts_with("#X") => {
+            u32::from_str_radix(body.get(2..)?, 16).ok().and_then(char::from_u32)
+        }
+        _ if body.starts_with('#') => body.get(1..)?.parse::<u32>().ok().and_then(char::from_u32),
+        _ => None,
+    }
+}
+
+fn xml_name_start(ch: char) -> bool {
+    ch.is_ascii_alphabetic() || ch == '_' || ch == ':' || (!ch.is_ascii() && ch.is_alphabetic())
+}
+
+fn xml_name_char(ch: char) -> bool {
+    xml_name_start(ch) || ch.is_ascii_digit() || ch == '-' || ch == '.' || (!ch.is_ascii() && ch.is_numeric())
+}
+
+fn doctype_prefix(bytes: &[u8]) -> bool {
+    const WORD: &[u8] = b"<!DOCTYPE";
+    if bytes.len() >= WORD.len() {
+        bytes[..WORD.len()].eq_ignore_ascii_case(WORD)
+    } else {
+        bytes.len() > 2 && WORD[..bytes.len()].eq_ignore_ascii_case(bytes)
+    }
+}
+
+fn skip_doctype(bytes: &[u8], eof: bool) -> Result<Option<usize>, Error> {
+    let mut i = 0;
+    let mut quote: Option<u8> = None;
+    let mut brackets = 0_i32;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if let Some(q) = quote {
+            if byte == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match byte {
+            b'"' | b'\'' => {
+                quote = Some(byte);
+                i += 1;
+            }
+            b'[' => {
+                brackets += 1;
+                i += 1;
+            }
+            b']' => {
+                if brackets == 0 {
+                    return Err(Error::new("DOCTYPE subset is not closed"));
+                }
+                brackets -= 1;
+                i += 1;
+            }
+            b'>' if brackets == 0 => return Ok(Some(i + 1)),
+            _ => i += 1,
+        }
+    }
+    if eof {
+        Err(Error::new("unclosed DOCTYPE"))
+    } else {
+        Ok(None)
+    }
+}
+
+fn misc_prefix(bytes: &[u8]) -> bool {
+    const MARKERS: [&[u8]; 2] = [b"<!--", b"<?"];
+    MARKERS
+        .iter()
+        .any(|marker| bytes.len() < marker.len() && marker.starts_with(bytes))
+}
+
+fn markup_prefix(bytes: &[u8]) -> bool {
+    const MARKERS: [&[u8]; 3] = [b"<!--", b"<![CDATA[", b"<?"];
+    MARKERS
+        .iter()
+        .any(|marker| bytes.len() < marker.len() && marker.starts_with(bytes))
+}
+
+fn find_marker(bytes: &[u8], marker: &[u8]) -> Option<usize> {
+    if marker.is_empty() || bytes.len() < marker.len() {
+        return None;
+    }
+    bytes
+        .windows(marker.len())
+        .position(|window| window == marker)
+        .map(|at| at + marker.len())
 }
 
 fn load_zip_bytes(
@@ -2326,6 +3419,7 @@ mod tests {
 
     use moqui_db::dialect::Dialects;
     use moqui_db::model::EntityModel;
+    use moqui_db::sql::insert_or_update;
     use moqui_lib::error::Error;
     use moqui_lib::node::MNode;
     use moqui_lib::object::Value;
@@ -2552,6 +3646,29 @@ mod tests {
         (path, guard)
     }
 
+    /// A stored entry the way Java `ZipOutputStream` writes it: flag bit 3, zero local sizes, and a
+    /// data descriptor after the data. Only the central directory carries the sizes.
+    fn descriptor_zip(name: &str, data: &[u8]) -> Vec<u8> {
+        let plain = stored_zip(name, data);
+        let local_len = 30 + name.len() + data.len();
+        let mut out = plain[..local_len].to_vec();
+        out[6] |= 0x08;
+        out[18..26].fill(0);
+        let shift = 16_u32;
+        out.extend_from_slice(&0x0807_4b50_u32.to_le_bytes());
+        out.extend_from_slice(&0_u32.to_le_bytes());
+        out.extend_from_slice(&(u32::try_from(data.len()).unwrap()).to_le_bytes());
+        out.extend_from_slice(&(u32::try_from(data.len()).unwrap()).to_le_bytes());
+        let mut rest = plain[local_len..].to_vec();
+        // The end record's directory offset moves past the descriptor.
+        let end_at = rest.len() - 22;
+        let offset_at = end_at + 16;
+        let moved = u32::from_le_bytes(rest[offset_at..offset_at + 4].try_into().unwrap()) + shift;
+        rest[offset_at..offset_at + 4].copy_from_slice(&moved.to_le_bytes());
+        out.extend(rest);
+        out
+    }
+
     fn stored_zip(name: &str, data: &[u8]) -> Vec<u8> {
         let name_bytes = name.as_bytes();
         let mut local = Vec::new();
@@ -2695,6 +3812,11 @@ mod tests {
         let zip_loaded = load_entity_data(&facade, zip_path.to_str().unwrap(), &LoadOptions::default()).unwrap();
         assert_eq!(zip_loaded.records, 1);
 
+        let described = dir.join("described.zip");
+        std::fs::write(&described, descriptor_zip("rows.csv", csv)).unwrap();
+        let described_loaded = load_entity_data(&facade, described.to_str().unwrap(), &LoadOptions::default()).unwrap();
+        assert_eq!(described_loaded.records, 1);
+
         let deflated = dir.join("deflated.zip");
         let payload: &[u8] = &[
             203, 205, 47, 44, 205, 212, 43, 73, 45, 46, 209, 11, 1, 18, 174, 121, 37, 153, 37, 149, 58, 197, 169, 169,
@@ -2724,6 +3846,67 @@ mod tests {
         assert_eq!(again.records, 1);
         assert!(!facade.flags().dummy_fks);
         assert!(!facade.flags().disable_fk_create);
+    }
+
+    #[test]
+    fn loader_streams_attributes_comments_and_json_arrays() {
+        let element = r#"<moqui.test.TestEntity testId="A1" testMedium="a>b"/>"#;
+        let end = super::xml_element_end(element, true).unwrap().unwrap();
+        assert_eq!(end, element.len());
+        let node = MNode::parse_text("element", element).unwrap();
+        assert_eq!(node.attribute("testMedium").as_deref(), Some("a>b"));
+
+        let quoted = r#"{"testMedium":"say \"hi\""}"#;
+        let value_end = super::json_value_end(quoted, true).unwrap().unwrap();
+        assert_eq!(value_end, quoted.len());
+        let super::Json::Object(pairs) = super::parse_json(quoted).unwrap() else {
+            panic!("quoted json is not an object");
+        };
+        let medium = pairs.iter().find(|(key, _)| key == "testMedium").expect("testMedium");
+        assert!(matches!(&medium.1, super::Json::String(text) if text == "say \"hi\""));
+
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!-- see <http://creativecommons.org/publicdomain/zero/1.0/> -->
+<!DOCTYPE entity-facade-xml [
+  <!ELEMENT entity-facade-xml ANY>
+]>
+<entity-facade-xml type="seed">
+  <moqui.test.TestEntity testId="A1" testMedium="a>b"/>
+  <moqui.test.TestEntity testId="A2" testMedium="plain"/>
+</entity-facade-xml>
+"#;
+        let facade = open_empty();
+        let xml_reader = std::io::BufReader::with_capacity(1, std::io::Cursor::new(xml.as_bytes()));
+        let xml_loaded = super::load_xml_reader(&facade, "chunk.xml", xml_reader, &LoadOptions::default()).unwrap();
+        assert_eq!(xml_loaded, 2);
+
+        let json = r#"[{"_dataType":"seed"},{"_entity":"moqui.test.TestEntity","testId":"B1","testMedium":"one"},{"_entity":"moqui.test.TestEntity","testId":"B2","testMedium":"say \"hi\""}]"#;
+        let json_reader = std::io::BufReader::with_capacity(1, std::io::Cursor::new(json.as_bytes()));
+        let json_loaded = super::load_json_reader(&facade, "chunk.json", json_reader, &LoadOptions::default()).unwrap();
+        assert_eq!(json_loaded, 2);
+
+        let (dir, _guard) = temp_dir();
+        let json_path = dir.join("rows.json");
+        std::fs::write(&json_path, json).unwrap();
+        let from_file = load_entity_data(&facade, json_path.to_str().unwrap(), &LoadOptions::default()).unwrap();
+        assert_eq!(from_file.records, 2);
+    }
+
+    #[test]
+    fn loader_scans_one_large_element_in_linear_time() {
+        let mut medium = String::new();
+        while medium.len() < 8 * 1024 * 1024 {
+            medium.push_str("0123456789abcdef");
+        }
+        let xml = format!(
+            "<entity-facade-xml type=\"seed\"><moqui.test.TestEntity testId=\"BIG\" testMedium=\"{medium}\"/></entity-facade-xml>"
+        );
+        let facade = open_empty();
+        let started = std::time::Instant::now();
+        let reader = std::io::BufReader::with_capacity(4096, std::io::Cursor::new(xml.as_bytes()));
+        let loaded = super::load_xml_reader(&facade, "big.xml", reader, &LoadOptions::default()).unwrap();
+        assert_eq!(loaded, 1);
+        assert!(started.elapsed() < Duration::from_secs(20), "{:?}", started.elapsed());
     }
 
     fn deflate_zip(name: &str, compressed: &[u8], plain_len: usize) -> Vec<u8> {
@@ -2794,10 +3977,10 @@ mod tests {
         let model = EntityModel::load_directory(&conf, &framework.join("entity")).unwrap();
         let entity = model.entity("moqui.test.Foo").unwrap();
         let mysql = dialects.get("mysql").unwrap();
-        let sql = super::upsert_sql(entity, mysql, &["fooId", "fooText"]).unwrap();
+        let sql = insert_or_update(entity, mysql, &["fooId", "fooText"]).unwrap();
         assert!(sql.contains("ON DUPLICATE KEY UPDATE"), "{sql}");
         let postgres = dialects.get("postgres").unwrap();
-        let err = super::upsert_sql(entity, postgres, &["fooId"]).unwrap_err();
+        let err = insert_or_update(entity, postgres, &["fooId"]).unwrap_err();
         assert!(err.to_string().contains("try-insert is off"), "{err}");
     }
 

@@ -50,6 +50,8 @@ mod driver {
     enum Target {
         #[cfg(unix)]
         Unix { socket_dir: PathBuf },
+        /// Loopback TCP with [`NoTls`]. Embedded Postgres on Windows uses this.
+        TcpNoTls { host: String, port: u16 },
         Tcp {
             host: String,
             port: u16,
@@ -106,6 +108,26 @@ mod driver {
             }
         }
 
+        /// TCP host and [`NoTls`]. Embedded Windows uses `127.0.0.1` and the ephemeral port.
+        /// External servers stay on [`Self::external`].
+        #[must_use]
+        pub fn tcp_no_tls(
+            user: impl Into<String>,
+            database: impl Into<String>,
+            host: impl Into<String>,
+            port: u16,
+        ) -> Self {
+            Self {
+                user: user.into(),
+                database: database.into(),
+                password: None,
+                target: Target::TcpNoTls {
+                    host: host.into(),
+                    port,
+                },
+            }
+        }
+
         /// TCP host and rustls. `MakeRustlsConnect` implements `MakeTlsConnect` for the sync client.
         ///
         /// # Errors
@@ -153,6 +175,13 @@ mod driver {
                 #[cfg(unix)]
                 Target::Unix { socket_dir } => {
                     config.host_path(socket_dir);
+                    config.ssl_mode(SslMode::Disable);
+                    let client = config.connect(NoTls).map_err(|err| pg("connect", err))?;
+                    (client, TlsMode::None)
+                }
+                Target::TcpNoTls { host, port } => {
+                    config.host(host);
+                    config.port(*port);
                     config.ssl_mode(SslMode::Disable);
                     let client = config.connect(NoTls).map_err(|err| pg("connect", err))?;
                     (client, TlsMode::None)
@@ -334,6 +363,18 @@ mod driver {
             self.client
                 .batch_execute(&sql)
                 .map_err(|err| pg("release savepoint", err))
+        }
+
+        /// `SET LOCAL` lasts until the transaction ends, so clearing is a no-op.
+        fn set_statement_timeout(&mut self, remaining: Option<std::time::Duration>) -> Result<(), Error> {
+            let Some(remaining) = remaining else {
+                return Ok(());
+            };
+            let ms = u64::try_from(remaining.as_millis()).unwrap_or(u64::MAX);
+            self.client
+                .batch_execute(&format!("SET LOCAL statement_timeout = {ms}"))
+                .map_err(|err| pg("statement_timeout", err))?;
+            Ok(())
         }
 
         fn canceller(&self) -> Box<dyn DbCancel> {
@@ -848,6 +889,18 @@ mod driver {
         fn external_builds_a_rustls_connector_or_reports_it() {
             let driver = PostgresDriver::external("user", "db", "localhost", 5432).expect("rustls connector");
             assert!(matches!(driver.target, Target::Tcp { port: 5432, .. }));
+        }
+
+        #[test]
+        fn tcp_no_tls_builds_a_loopback_target() {
+            let driver = PostgresDriver::tcp_no_tls("postgres", "moqui", "127.0.0.1", 5432);
+            assert!(matches!(
+                driver.target,
+                Target::TcpNoTls {
+                    ref host,
+                    port: 5432
+                } if host == "127.0.0.1"
+            ));
         }
     }
 }

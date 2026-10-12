@@ -67,6 +67,8 @@
     <default-property name="entity_ds_password" value="sa" is-secret="true"/>
     <default-property name="entity_ds_crypt_pass" value="MoquiDefaultPassword:CHANGEME" is-secret="true"/>
     <default-property name="entity_ds_crypt_pass_old" value="MoquiDefaultPassword:CHANGEME" is-secret="true"/>
+    <!-- Phase 7 signs the session cookie with this key. Phase 2 generates it. -->
+    <default-property name="session_cookie_key" value="CHANGEME" is-secret="true"/>
     <default-property name="entity_add_missing_runtime" value="false"/>
     <default-property name="entity_add_missing_startup" value="true"/>
     <default-property name="entity_lock_track" value="false"/>

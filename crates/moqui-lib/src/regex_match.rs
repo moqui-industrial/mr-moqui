@@ -17,6 +17,8 @@
 //! Java `String.matches` compiles the pattern with `java.util.regex` and requires
 //! the whole input to match. `.` does not cross a line ending. There is no regex crate.
 
+use crate::error::Error;
+
 #[derive(Clone, Debug)]
 enum Re {
     Empty,
@@ -30,7 +32,7 @@ enum Re {
     End,
 }
 
-pub fn is_full_match(text: &str, pattern: &str) -> Result<bool, String> {
+pub fn is_full_match(text: &str, pattern: &str) -> Result<bool, Error> {
     if pattern.is_empty() {
         return Ok(text.is_empty());
     }
@@ -44,14 +46,14 @@ struct Parser {
     i: usize,
 }
 
-fn parse_regex(pattern: &str) -> Result<Re, String> {
+fn parse_regex(pattern: &str) -> Result<Re, Error> {
     let mut parser = Parser {
         pat: pattern.chars().collect(),
         i: 0,
     };
     let re = parser.parse_alt()?;
     if parser.i != parser.pat.len() {
-        return Err("unmatched ')' in regex".to_string());
+        return Err(Error::new("unmatched ')' in regex"));
     }
     Ok(re)
 }
@@ -65,20 +67,20 @@ impl Parser {
         self.pat.get(self.i + offset).copied()
     }
 
-    fn parse_alt(&mut self) -> Result<Re, String> {
+    fn parse_alt(&mut self) -> Result<Re, Error> {
         let mut alts = vec![self.parse_seq()?];
         while self.peek() == Some('|') {
             self.i += 1;
             alts.push(self.parse_seq()?);
         }
         if alts.len() == 1 {
-            Ok(alts.pop().unwrap())
+            Ok(alts.pop().expect("one regex alternative"))
         } else {
             Ok(Re::Alt(alts))
         }
     }
 
-    fn parse_seq(&mut self) -> Result<Re, String> {
+    fn parse_seq(&mut self) -> Result<Re, Error> {
         let mut items = Vec::new();
         while let Some(ch) = self.peek() {
             if ch == '|' || ch == ')' {
@@ -89,7 +91,7 @@ impl Parser {
         Ok(collapse(items))
     }
 
-    fn parse_repeat(&mut self) -> Result<Re, String> {
+    fn parse_repeat(&mut self) -> Result<Re, Error> {
         let atom = self.parse_atom()?;
         let (min, max) = match self.peek() {
             Some('*') => {
@@ -114,7 +116,7 @@ impl Parser {
         })
     }
 
-    fn parse_bounds(&mut self) -> Result<(u32, Option<u32>), String> {
+    fn parse_bounds(&mut self) -> Result<(u32, Option<u32>), Error> {
         self.i += 1;
         let min = self.take_u32()?;
         if self.peek() == Some('}') {
@@ -122,7 +124,7 @@ impl Parser {
             return Ok((min, Some(min)));
         }
         if self.peek() != Some(',') {
-            return Err("invalid '{n,m}' quantifier".to_string());
+            return Err(Error::new("invalid '{n,m}' quantifier"));
         }
         self.i += 1;
         if self.peek() == Some('}') {
@@ -131,29 +133,29 @@ impl Parser {
         }
         let max = self.take_u32()?;
         if self.peek() != Some('}') || max < min {
-            return Err("invalid '{n,m}' quantifier".to_string());
+            return Err(Error::new("invalid '{n,m}' quantifier"));
         }
         self.i += 1;
         Ok((min, Some(max)))
     }
 
-    fn take_u32(&mut self) -> Result<u32, String> {
+    fn take_u32(&mut self) -> Result<u32, Error> {
         let start = self.i;
         while self.peek().is_some_and(|ch| ch.is_ascii_digit()) {
             self.i += 1;
         }
         if self.i == start {
-            return Err("invalid '{n,m}' quantifier".to_string());
+            return Err(Error::new("invalid '{n,m}' quantifier"));
         }
         self.pat[start..self.i]
             .iter()
             .collect::<String>()
             .parse()
-            .map_err(|_| "invalid '{n,m}' quantifier".to_string())
+            .map_err(|_| Error::new("invalid '{n,m}' quantifier"))
     }
 
-    fn parse_atom(&mut self) -> Result<Re, String> {
-        let ch = self.peek().ok_or_else(|| "regex ended before an atom".to_string())?;
+    fn parse_atom(&mut self) -> Result<Re, Error> {
+        let ch = self.peek().ok_or_else(|| Error::new("regex ended before an atom"))?;
         match ch {
             '(' => self.parse_group(),
             '[' => self.parse_class(),
@@ -171,11 +173,11 @@ impl Parser {
             }
             '\\' => {
                 self.i += 1;
-                let esc = self.peek().ok_or_else(|| "dangling '\\' in regex".to_string())?;
+                let esc = self.peek().ok_or_else(|| Error::new("dangling '\\' in regex"))?;
                 self.i += 1;
                 Ok(escape_atom(esc))
             }
-            ')' | '|' | '*' | '+' | '?' | '{' => Err(format!("unexpected '{ch}' in regex")),
+            ')' | '|' | '*' | '+' | '?' | '{' => Err(Error::new(format!("unexpected '{ch}' in regex"))),
             _ => {
                 self.i += 1;
                 Ok(Re::Lit(ch))
@@ -183,17 +185,17 @@ impl Parser {
         }
     }
 
-    fn parse_group(&mut self) -> Result<Re, String> {
+    fn parse_group(&mut self) -> Result<Re, Error> {
         self.i += 1;
         let inner = self.parse_alt()?;
         if self.peek() != Some(')') {
-            return Err("unclosed '(' in regex".to_string());
+            return Err(Error::new("unclosed '(' in regex"));
         }
         self.i += 1;
         Ok(inner)
     }
 
-    fn parse_class(&mut self) -> Result<Re, String> {
+    fn parse_class(&mut self) -> Result<Re, Error> {
         self.i += 1;
         let negated = if self.peek() == Some('^') {
             self.i += 1;
@@ -220,21 +222,21 @@ impl Parser {
             }
         }
         if self.peek() != Some(']') {
-            return Err("unclosed '[' in regex".to_string());
+            return Err(Error::new("unclosed '[' in regex"));
         }
         self.i += 1;
         Ok(Re::Class { negated, ranges })
     }
 
-    fn class_char(&mut self) -> Result<char, String> {
-        let ch = self.peek().ok_or_else(|| "unclosed '[' in regex".to_string())?;
+    fn class_char(&mut self) -> Result<char, Error> {
+        let ch = self.peek().ok_or_else(|| Error::new("unclosed '[' in regex"))?;
         self.i += 1;
         if ch != '\\' {
             return Ok(ch);
         }
         let esc = self
             .peek()
-            .ok_or_else(|| "dangling '\\' in character class".to_string())?;
+            .ok_or_else(|| Error::new("dangling '\\' in character class"))?;
         self.i += 1;
         Ok(match esc {
             'n' => '\n',
@@ -249,7 +251,7 @@ fn collapse(mut items: Vec<Re>) -> Re {
     if items.is_empty() {
         Re::Empty
     } else if items.len() == 1 {
-        items.pop().unwrap()
+        items.pop().expect("one regex item")
     } else {
         Re::Seq(items)
     }
@@ -382,7 +384,7 @@ fn repeat_ends(inner: &Re, min: u32, max: Option<u32>, text: &[char], start: usi
         if next.is_empty() {
             break;
         }
-        let prev_layer = reached.last().unwrap();
+        let prev_layer = reached.last().expect("repeat layer");
         let only_previous = next.iter().all(|end| prev_layer.contains(end));
         reached.push(next);
         if only_previous {

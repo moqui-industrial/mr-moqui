@@ -13,11 +13,13 @@
  */
 
 //! In-memory sequenced-id bank. Refill uses a reserve connection.
+//!
+//! Postgres claims the next bank with one `INSERT ... ON CONFLICT ... RETURNING`.
+//! MySQL runs one `INSERT ... ON DUPLICATE KEY UPDATE`, then reads the row it now holds with
+//! `SELECT ... FOR UPDATE`. A bare locking read on a missing row would take a gap lock.
+//! `seqNum` stays the last reserved id. There is no native sequence.
 
-use std::fs::File;
-use std::io::Read;
-
-use moqui_db::sql::{insert, select, update, Condition, FieldRef, LimitOffset};
+use moqui_db::sql::{is_mysql, quote_ident};
 use moqui_lib::error::Error;
 use moqui_lib::object::{basic_convert, Value};
 
@@ -83,10 +85,12 @@ struct PrimarySpec {
     pk_field: String,
 }
 
+#[derive(Clone)]
 struct SeqSql {
-    select_sql: String,
-    insert_sql: String,
-    update_sql: String,
+    mysql: bool,
+    lock_sql: String,
+    mysql_upsert_sql: String,
+    upsert_sql: String,
 }
 
 pub(crate) fn assign_primary(facade: &EntityFacade, entity_name: &str) -> Result<(String, String), Error> {
@@ -115,7 +119,7 @@ pub(crate) fn assign_primary(facade: &EntityFacade, entity_name: &str) -> Result
     loop {
         let bank = banks
             .entry(spec.seq_name.clone())
-            .or_insert(SequenceBank { current: 0, end: 0 });
+            .or_insert(SequenceBank { current: 0, end: -1 });
         let roll = roll_for(spec.stagger)?;
         if let Some(id) = take_id(bank, spec.stagger, roll) {
             return Ok((spec.pk_field, apply_prefix(spec.prefix.as_deref(), &id.to_string())));
@@ -127,18 +131,19 @@ pub(crate) fn assign_primary(facade: &EntityFacade, entity_name: &str) -> Result
 }
 
 fn seq_sql(entity: &moqui_db::model::EntityDefinition, dialect: &moqui_db::dialect::Dialect) -> Result<SeqSql, Error> {
-    let condition = Condition::equals("seqName", Value::Null);
+    let table = quote_ident(dialect, &entity.table_name);
+    let name_col = quote_ident(dialect, "seqName");
+    let num_col = quote_ident(dialect, "seqNum");
+    let mysql = is_mysql(dialect);
     Ok(SeqSql {
-        select_sql: select(
-            entity,
-            dialect,
-            &[FieldRef::new("seqNum")],
-            Some(&condition),
-            &[],
-            LimitOffset::default(),
-        )?,
-        insert_sql: insert(entity, dialect, &["seqName", "seqNum"])?,
-        update_sql: update(entity, dialect, &["seqNum"], Some(&condition))?,
+        mysql,
+        lock_sql: format!("SELECT {num_col} FROM {table} WHERE {name_col} = ? FOR UPDATE"),
+        mysql_upsert_sql: format!(
+            "INSERT INTO {table} ({name_col}, {num_col}) VALUES (?, ?) ON DUPLICATE KEY UPDATE {num_col} = GREATEST({num_col} + ?, ?)"
+        ),
+        upsert_sql: format!(
+            "INSERT INTO {table} ({name_col}, {num_col}) VALUES (?, ?) ON CONFLICT ({name_col}) DO UPDATE SET {num_col} = GREATEST({table}.{num_col} + ?, ?) RETURNING {num_col}"
+        ),
     })
 }
 
@@ -149,55 +154,103 @@ fn refill(
     bank_size: u64,
     hint: i64,
 ) -> Result<SequenceBank, Error> {
-    let select_sql = prepared.select_sql.clone();
-    let insert_sql = prepared.insert_sql.clone();
-    let update_sql = prepared.update_sql.clone();
+    let prepared = prepared.clone();
     let seq_name = seq_name.to_string();
+    let size = bank_width(bank_size);
     with_reserve_tx(tx, move |conn| {
-        let (exists, stored) = read_seq(conn, &select_sql, &seq_name)?;
-        let bank = fill_bank(stored, bank_size, hint);
-        write_seq(conn, &insert_sql, &update_sql, &seq_name, bank.end, exists)?;
-        Ok(bank)
+        let (first_end, increment, hint_end) = refill_targets(size, hint);
+        let end = if prepared.mysql {
+            mysql_end(conn, &prepared, &seq_name, first_end, increment, hint_end)?
+        } else {
+            postgres_end(conn, &prepared, &seq_name, first_end, increment, hint_end)?
+        };
+        Ok(bank_from_end(end, size))
     })
 }
 
-fn read_seq(conn: &mut dyn DbConnection, sql: &str, seq_name: &str) -> Result<(bool, Option<i64>), Error> {
-    let name = basic_convert(&Value::string(seq_name), "String").value;
-    let rows = query_conn(conn, sql, &[name])?;
-    let Some(row) = rows.first() else {
-        return Ok((false, None));
-    };
-    let number = row.columns.first().and_then(|(_, value)| as_i64(value));
-    Ok((true, number))
+/// `end` is the stored `seqNum`. The bank starts `size` below it, matching [`fill_bank`].
+fn bank_from_end(end: i64, size: i64) -> SequenceBank {
+    SequenceBank {
+        current: end.saturating_sub(size),
+        end,
+    }
+}
+
+fn bank_width(bank_size: u64) -> i64 {
+    i64::try_from(bank_size.max(1)).unwrap_or(i64::MAX)
+}
+
+/// First insert stores `first_end`. A conflict stores `GREATEST(old + increment, hint_end)`.
+fn refill_targets(size: i64, hint: i64) -> (i64, i64, i64) {
+    let first_end = SEQUENCE_START.max(hint).saturating_add(size);
+    let increment = size.saturating_add(1);
+    let hint_end = hint.saturating_add(size);
+    (first_end, increment, hint_end)
+}
+
+fn postgres_end(
+    conn: &mut dyn DbConnection,
+    prepared: &SeqSql,
+    seq_name: &str,
+    first_end: i64,
+    increment: i64,
+    hint_end: i64,
+) -> Result<i64, Error> {
+    let rows = query_conn(
+        conn,
+        &prepared.upsert_sql,
+        &[
+            string_param(seq_name),
+            long_param(first_end),
+            long_param(increment),
+            long_param(hint_end),
+        ],
+    )?;
+    one_seq_num(&rows, seq_name)
+}
+
+fn mysql_end(
+    conn: &mut dyn DbConnection,
+    prepared: &SeqSql,
+    seq_name: &str,
+    first_end: i64,
+    increment: i64,
+    hint_end: i64,
+) -> Result<i64, Error> {
+    let name = string_param(seq_name);
+    super::exec::execute_conn(
+        conn,
+        &prepared.mysql_upsert_sql,
+        &[
+            name.clone(),
+            long_param(first_end),
+            long_param(increment),
+            long_param(hint_end),
+        ],
+    )?;
+    let rows = query_conn(conn, &prepared.lock_sql, std::slice::from_ref(&name))?;
+    one_seq_num(&rows, seq_name)
+}
+
+fn one_seq_num(rows: &[crate::driver::DbRow], seq_name: &str) -> Result<i64, Error> {
+    rows.first()
+        .and_then(|row| row.columns.first())
+        .and_then(|(_, value)| as_i64(value))
+        .ok_or_else(|| Error::new(format!("sequence refill for {seq_name} returned no seqNum")))
+}
+
+fn string_param(seq_name: &str) -> Value {
+    basic_convert(&Value::string(seq_name), "String").value
+}
+
+fn long_param(number: i64) -> Value {
+    basic_convert(&Value::I64(number), "Long").value
 }
 
 fn as_i64(value: &Value) -> Option<i64> {
     match basic_convert(value, "Long").value {
         Value::I64(number) => Some(number),
         _ => None,
-    }
-}
-
-fn write_seq(
-    conn: &mut dyn DbConnection,
-    insert_sql: &str,
-    update_sql: &str,
-    seq_name: &str,
-    next_id: i64,
-    exists: bool,
-) -> Result<(), Error> {
-    let name = basic_convert(&Value::string(seq_name), "String").value;
-    let number = basic_convert(&Value::I64(next_id), "Long").value;
-    if exists {
-        super::exec::execute_conn(conn, update_sql, &[number, name])?;
-        return Ok(());
-    }
-    match super::exec::execute_conn(conn, insert_sql, &[name.clone(), number.clone()]) {
-        Ok(_) => Ok(()),
-        Err(_) => {
-            super::exec::execute_conn(conn, update_sql, &[number, name])?;
-            Ok(())
-        }
     }
 }
 
@@ -217,23 +270,21 @@ fn roll_for(stagger: u64) -> Result<f64, Error> {
 
 fn unit_roll() -> Result<f64, Error> {
     let mut bytes = [0_u8; 8];
-    let mut file =
-        File::open("/dev/urandom").map_err(|err| Error::new("could not read /dev/urandom").with_source(err))?;
-    file.read_exact(&mut bytes)
-        .map_err(|err| Error::new("could not read /dev/urandom").with_source(err))?;
+    fill_random(&mut bytes)?;
     let number = u64::from_le_bytes(bytes);
     Ok((number as f64) / (u64::MAX as f64))
 }
 
 pub(crate) fn uuid_v4() -> Result<String, Error> {
     let mut bytes = [0_u8; 16];
-    let mut file =
-        File::open("/dev/urandom").map_err(|err| Error::new("could not read /dev/urandom").with_source(err))?;
-    file.read_exact(&mut bytes)
-        .map_err(|err| Error::new("could not read /dev/urandom").with_source(err))?;
+    fill_random(&mut bytes)?;
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     Ok(format_uuid(&bytes))
+}
+
+fn fill_random(bytes: &mut [u8]) -> Result<(), Error> {
+    getrandom::fill(bytes).map_err(|err| Error::new(format!("could not read random bytes: {err}")))
 }
 
 fn format_uuid(bytes: &[u8; 16]) -> String {
@@ -281,5 +332,44 @@ mod tests {
         assert_eq!(stagger_step(4, 0.9), 4);
         assert_eq!(stagger_step(4, 0.0), 1);
         assert_eq!(stagger_step(1, 0.2), 1);
+    }
+
+    #[test]
+    fn sql_end_matches_fill_bank() {
+        let (first_end, _, _) = refill_targets(50, 0);
+        assert_eq!(bank_from_end(first_end, 50), fill_bank(None, 50, 0));
+        let old = 100_050_i64;
+        let (_, increment, hint_end) = refill_targets(50, 0);
+        let bumped = old.saturating_add(increment).max(hint_end);
+        assert_eq!(bank_from_end(bumped, 50), fill_bank(Some(old), 50, 0));
+        let hint = 100_090;
+        let (_, increment, hint_end) = refill_targets(50, hint);
+        let jumped = old.saturating_add(increment).max(hint_end);
+        assert_eq!(bank_from_end(jumped, 50), fill_bank(Some(old), 50, hint));
+    }
+
+    #[test]
+    fn refill_sql_is_insert_on_conflict_or_for_update() {
+        let framework = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
+        let conf = moqui_lib::node::MNode::parse_file(framework.join("conf/MoquiDefaultConf.xml")).unwrap();
+        let model = moqui_db::model::EntityModel::load_directory(&conf, &framework.join("entity")).unwrap();
+        let dialects = moqui_db::dialect::Dialects::load(&conf).unwrap();
+        let entity = model.entity("moqui.entity.SequenceValueItem").unwrap();
+        let postgres = seq_sql(entity, dialects.get("postgres").unwrap()).unwrap();
+        assert!(!postgres.mysql);
+        assert_eq!(
+            postgres.upsert_sql,
+            "INSERT INTO \"SequenceValueItem\" (\"seqName\", \"seqNum\") VALUES (?, ?) ON CONFLICT (\"seqName\") DO UPDATE SET \"seqNum\" = GREATEST(\"SequenceValueItem\".\"seqNum\" + ?, ?) RETURNING \"seqNum\""
+        );
+        let mysql = seq_sql(entity, dialects.get("mysql").unwrap()).unwrap();
+        assert!(mysql.mysql);
+        assert_eq!(
+            mysql.lock_sql,
+            "SELECT `seqNum` FROM `SequenceValueItem` WHERE `seqName` = ? FOR UPDATE"
+        );
+        assert_eq!(
+            mysql.mysql_upsert_sql,
+            "INSERT INTO `SequenceValueItem` (`seqName`, `seqNum`) VALUES (?, ?) ON DUPLICATE KEY UPDATE `seqNum` = GREATEST(`seqNum` + ?, ?)"
+        );
     }
 }

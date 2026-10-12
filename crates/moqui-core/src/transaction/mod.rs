@@ -24,7 +24,7 @@
 mod manager;
 mod pool;
 
-pub use manager::TransactionManager;
+pub use manager::{TransactionAttribute, TransactionManager};
 pub use pool::{Pool, PoolConfig, PoolStats};
 
 #[cfg(test)]

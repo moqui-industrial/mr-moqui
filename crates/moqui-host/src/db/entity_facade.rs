@@ -22,6 +22,7 @@ use moqui_core::driver::DbDriver;
 use moqui_core::entity::{EntityFacade, EntityGroup};
 use moqui_core::transaction::{PoolConfig, TransactionManager};
 use moqui_lib::error::Error;
+use moqui_lib::node::MNode;
 
 /// Load the framework model onto the `transactional` group using the `postgres` dialect.
 pub fn open_entity_facade(
@@ -30,11 +31,15 @@ pub fn open_entity_facade(
     pool: PoolConfig,
 ) -> Result<EntityFacade, Error> {
     let transactions = TransactionManager::new(driver, pool)?;
-    EntityFacade::open(
+    let conf = MNode::parse_file(framework_dir.join("conf/MoquiDefaultConf.xml"))?;
+    transactions.configure_from_conf(&conf)?;
+    let facade = EntityFacade::open(
         framework_dir,
         "transactional",
         vec![EntityGroup::new("transactional", "postgres", transactions)],
-    )
+    )?;
+    facade.crypt_from_conf(&conf)?;
+    Ok(facade)
 }
 
 /// Install the facade so `dbresource://` reads and writes through it.
@@ -182,8 +187,44 @@ mod tests {
             .unwrap();
         assert_eq!(counted, 60);
         facade.commit("moqui.test.TestEntity").unwrap();
+
+        facade.begin("moqui.test.TestEntity", None).unwrap();
+        let committed = stream_ids(&facade);
+        assert_eq!(committed.len(), 60, "{committed:?}");
+        assert!(committed.iter().any(|id| id == "s-001"));
+        let mut doomed = facade.make_value("moqui.test.TestEntity").unwrap();
+        doomed.set("testId", Value::string("s-001"));
+        doomed.delete(&facade).unwrap();
+        let held = stream_ids(&facade);
+        assert_eq!(held.len(), 59, "{held:?}");
+        assert!(held.iter().all(|id| id != "s-001"));
+        facade.rollback("moqui.test.TestEntity").unwrap();
+
+        facade.begin("moqui.test.TestEntity", None).unwrap();
+        let restored = stream_ids(&facade);
+        assert_eq!(restored.len(), 60, "{restored:?}");
+        assert!(restored.iter().any(|id| id == "s-001"));
+        drop(restored);
+        facade.rollback("moqui.test.TestEntity").unwrap();
+
         drop(facade);
         drop(cluster);
+    }
+
+    fn stream_ids(facade: &moqui_core::entity::EntityFacade) -> Vec<String> {
+        let mut iter = facade
+            .find("moqui.test.TestEntity")
+            .unwrap()
+            .eq("testMedium", Value::string("stream"))
+            .iterator()
+            .unwrap();
+        let mut ids = Vec::new();
+        while let Some(row) = iter.next_value().unwrap() {
+            if let Some(id) = row.get("testId").and_then(Value::as_str) {
+                ids.push(id.to_string());
+            }
+        }
+        ids
     }
 
     fn temp_cluster_dir() -> PathBuf {

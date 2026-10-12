@@ -935,7 +935,7 @@ fn like_at(text: &[char], pattern: &[char], ti: usize, pi: usize) -> bool {
 }
 
 fn regex_matches(text: &str, pattern: &str) -> Result<bool, Error> {
-    regex_match::is_full_match(text, pattern).map_err(Error::new)
+    regex_match::is_full_match(text, pattern)
 }
 
 #[cfg(test)]

@@ -126,9 +126,11 @@ impl EntityFind {
         }
     }
 
-    /// Open a cursor. Drop closes it so a later statement on the transaction can run.
+    /// Open a cursor when this find has no transaction hold and no sim schema.
     ///
-    /// Postgres requires an active transaction. Fetch size is the driver's.
+    /// A hold or a sim schema is merged in memory. The cursor stays closed, so an open stream is
+    /// not asked to mix in rows that are not in the database yet. The cursor path needs an active
+    /// transaction: the open stream is that transaction's enlisted connection. Drop closes it.
     pub fn iterator(self) -> Result<EntityListIterator, Error> {
         let condition = self.combined();
         let lookup = self.lookup(&condition);

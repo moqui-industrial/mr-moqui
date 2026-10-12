@@ -49,7 +49,7 @@ pub(crate) struct NodeInner {
 type NodeMerger<'a> = dyn FnMut(&MNode, &MNode) + 'a;
 
 impl MNode {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn from_parts(
         name: String,
         attributes: IndexMap<String, String>,

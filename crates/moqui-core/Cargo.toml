@@ -7,20 +7,15 @@ license.workspace = true
 publish.workspace = true
 
 # No direct tokio, axum, postgres, mysql, or postgresql_embedded.
-# moqui-lib's http feature links blocking reqwest, which starts its own runtime.
-# lettre does not enable tokio1, so the SMTP transport does not pull Tokio.
+# moqui-lib's http feature stays off until phase 6. rquickjs, lettre, croner,
+# argon2, pulldown-cmark, and totp-rs stay workspace pins and are not linked here.
 
 [dependencies]
-moqui-lib = { workspace = true, features = ["http"] }
+moqui-lib = { workspace = true }
 moqui-db = { workspace = true }
-rquickjs = { workspace = true }
-lettre = { workspace = true }
-croner = { workspace = true }
-argon2 = { workspace = true }
 csv = { workspace = true }
-pulldown-cmark = { workspace = true }
-totp-rs = { workspace = true }
 tracing = { workspace = true }
+getrandom = { workspace = true }
 aes = { workspace = true }
 cbc = { workspace = true }
 des = { workspace = true }

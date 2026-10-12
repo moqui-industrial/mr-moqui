@@ -400,6 +400,13 @@ mod driver {
             self.command(format!("RELEASE SAVEPOINT {}", quote_ident(name)?))
         }
 
+        fn set_statement_timeout(&mut self, remaining: Option<std::time::Duration>) -> Result<(), Error> {
+            let ms = remaining
+                .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+                .unwrap_or(0);
+            self.command(format!("SET SESSION max_execution_time = {ms}"))
+        }
+
         fn canceller(&self) -> Box<dyn DbCancel> {
             Box::new(MysqlCancel {
                 state: Arc::clone(&self.kill),
@@ -861,7 +868,7 @@ mod driver {
         #[test]
         fn round_trip_stream_and_statement_cache() {
             let Some(driver) = test_driver() else {
-                println!("MySQL was not reachable");
+                tracing::debug!("MySQL was not reachable");
                 return;
             };
             let mut conn = must(driver.connect_mysql());

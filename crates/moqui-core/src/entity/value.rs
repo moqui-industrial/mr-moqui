@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use moqui_db::model::EntityDefinition;
-use moqui_db::sql::{delete, insert, update, Condition};
+use moqui_db::sql::{delete, insert, insert_or_update, update, Condition};
 use moqui_lib::error::Error;
 use moqui_lib::object::{basic_convert, Value};
 
@@ -194,6 +194,16 @@ impl EntityFacade {
         self.finish_write(entity_name, "delete", plain, false, false)
     }
 
+    /// Insert, or update on a primary-key conflict. Values are sealed the same way as a create.
+    pub(crate) fn upsert_record(&self, entity_name: &str, fields: &BTreeMap<String, Value>) -> Result<(), Error> {
+        let plain = self.normalize_values(entity_name, fields, false)?;
+        self.require_pk(entity_name, &plain)?;
+        let mut stack = HashSet::new();
+        fk::enforce(self, entity_name, &plain, &mut stack)?;
+        self.reject_view(entity_name, "create")?;
+        self.finish_write(entity_name, "upsert", plain, false, false)
+    }
+
     /// Run the write, or leave it with the cache when the gate handles it. Values are plaintext.
     fn finish_write(
         &self,
@@ -204,8 +214,21 @@ impl EntityFacade {
         skip_pk: bool,
     ) -> Result<(), Error> {
         let tx = self.transactions_for(entity_name)?;
+        if tx.lock_track_enabled() {
+            if let Ok(keys) = self.with_entity(entity_name, |entity, _, _| pk_values(entity, &plain)) {
+                let pk = keys
+                    .iter()
+                    .map(|(name, value)| format!("{name}={}", moqui_lib::object::to_plain_string(value)))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                tx.note_entity_lock(entity_name, &pk);
+            }
+        }
+        // An upsert matches ECA rules as a create, whether or not the row existed. Phase 6 `store`
+        // needs a read first to pick create or update.
+        let seal_operation = if operation == "upsert" { "create" } else { operation };
         if cache::gate_write(self, entity_name, operation, &plain)? == WriteGate::Proceed {
-            let prepared = self.seal_values(entity_name, operation, plain)?;
+            let prepared = self.seal_values(entity_name, seal_operation, plain)?;
             let (sql, params) = self.with_group(entity_name, |entity, dialect, _, _| {
                 let columns = present_columns(entity, &prepared, include_null, skip_pk);
                 let (sql, params) = if operation == "delete" {
@@ -218,6 +241,9 @@ impl EntityFacade {
                     let mut params = bind_columns(&columns, &prepared);
                     params.extend(super::params::condition_params(&condition));
                     (sql, params)
+                } else if operation == "upsert" {
+                    let sql = insert_or_update(entity, dialect, &columns)?;
+                    (sql, bind_columns(&columns, &prepared))
                 } else {
                     let sql = insert(entity, dialect, &columns)?;
                     (sql, bind_columns(&columns, &prepared))
@@ -227,7 +253,7 @@ impl EntityFacade {
             execute_tx(&tx, &sql, &params)?;
         }
         if operation != "update" {
-            let _rules = load_feed::match_rules(self, entity_name, operation);
+            let _rules = load_feed::match_rules(self, entity_name, seal_operation);
         }
         cache::on_write(self, entity_name, operation)?;
         after_statement(self, &tx, true);

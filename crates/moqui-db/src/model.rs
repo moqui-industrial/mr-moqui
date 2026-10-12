@@ -105,6 +105,13 @@ pub struct MemberRelationship {
     pub join_optional: bool,
 }
 
+/// One view member in document order. `member_entities` and `member_relationships` stay separate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ViewMember {
+    Entity(MemberEntity),
+    Relationship(MemberRelationship),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldAlias {
     pub entity_alias: Option<String>,
@@ -148,6 +155,8 @@ pub struct EntityDefinition {
     pub masters: Vec<MasterDefinition>,
     pub member_entities: Vec<MemberEntity>,
     pub member_relationships: Vec<MemberRelationship>,
+    /// `member-entity` and `member-relationship` in document order.
+    pub view_members: Vec<ViewMember>,
     pub aliases: Vec<FieldAlias>,
     pub alias_alls: Vec<AliasAll>,
     /// Child elements of `<entity-condition>`, in document order.
@@ -458,27 +467,38 @@ fn parse_entity(node: &MNode, is_view: bool, dictionary: &HashSet<String>) -> Re
         .iter()
         .map(parse_master)
         .collect::<Result<Vec<_>, _>>()?;
-    let (member_entities, member_relationships, aliases, alias_alls) = if is_view {
-        (
-            node.children_named("member-entity")
-                .iter()
-                .map(parse_member_entity)
-                .collect::<Result<Vec<_>, _>>()?,
-            node.children_named("member-relationship")
-                .iter()
-                .map(parse_member_relationship)
-                .collect::<Result<Vec<_>, _>>()?,
-            node.children_named("alias")
-                .iter()
-                .map(|child| parse_alias(child, dictionary))
-                .collect::<Result<Vec<_>, _>>()?,
-            node.children_named("alias-all")
-                .iter()
-                .map(parse_alias_all)
-                .collect::<Result<Vec<_>, _>>()?,
-        )
+    let (member_entities, member_relationships, view_members, aliases, alias_alls) = if is_view {
+        let mut member_entities = Vec::new();
+        let mut member_relationships = Vec::new();
+        let mut view_members = Vec::new();
+        for child in node.children() {
+            match child.name().as_str() {
+                "member-entity" => {
+                    let member = parse_member_entity(&child)?;
+                    view_members.push(ViewMember::Entity(member.clone()));
+                    member_entities.push(member);
+                }
+                "member-relationship" => {
+                    let member = parse_member_relationship(&child)?;
+                    view_members.push(ViewMember::Relationship(member.clone()));
+                    member_relationships.push(member);
+                }
+                _ => {}
+            }
+        }
+        let aliases = node
+            .children_named("alias")
+            .iter()
+            .map(|child| parse_alias(child, dictionary))
+            .collect::<Result<Vec<_>, _>>()?;
+        let alias_alls = node
+            .children_named("alias-all")
+            .iter()
+            .map(parse_alias_all)
+            .collect::<Result<Vec<_>, _>>()?;
+        (member_entities, member_relationships, view_members, aliases, alias_alls)
     } else {
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
     };
     Ok(EntityDefinition {
         entity_name,
@@ -507,6 +527,7 @@ fn parse_entity(node: &MNode, is_view: bool, dictionary: &HashSet<String>) -> Re
         masters,
         member_entities,
         member_relationships,
+        view_members,
         aliases,
         alias_alls,
         entity_condition: condition_children(node),

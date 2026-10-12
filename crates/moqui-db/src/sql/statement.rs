@@ -112,10 +112,12 @@ pub fn count(entity: &EntityDefinition, dialect: &Dialect, condition: Option<&Co
     Ok(sql)
 }
 
-/// View-entity select. Members are joined in order. `member_relationships` are not expanded.
+/// View-entity select. Members are joined in document order, including `member-relationship`.
 ///
 /// The first member is the driving table. A later member with `join_optional` is `LEFT JOIN`,
-/// otherwise `JOIN`. The `ON` clause is that member's `key_map`. An empty `key_map` is `ON 1=1`.
+/// otherwise `JOIN`. A `member-relationship` uses that relationship's key map. An empty
+/// `member-entity` key map is `ON 1=1`. A relationship with no key map joins the related
+/// primary key, as `EntityDefinition.groovy` does.
 /// Selected columns are the explicit aliases (`alias.field`, or `alias.name` when `field` is
 /// absent) followed by each `alias_all` expanded to that member's fields except `exclude`.
 /// A prefix is prepended, with the field's first letter uppercased, and written as `AS`.
@@ -477,21 +479,47 @@ fn prefixed_name(prefix: &str, field: &str) -> String {
 }
 
 fn view_from(view: &EntityDefinition, model: &EntityModel, dialect: &Dialect) -> Result<String, Error> {
-    if view.member_entities.is_empty() {
+    let parts = view_parts(view);
+    if parts.is_empty() {
         return Ok(String::new());
     }
     let mut sql = String::from(" FROM ");
-    for (index, member) in view.member_entities.iter().enumerate() {
-        let member_entity = model.entity(&member.entity_name)?;
-        let table = quote_ident(dialect, &member_entity.table_name);
-        let alias = quote_ident(dialect, &member.entity_alias);
+    for (index, part) in parts.iter().enumerate() {
+        let (table_entity, alias_name, optional, keys, join_from) = match part {
+            ViewPart::Entity(member) => (
+                model.entity(&member.entity_name)?,
+                member.entity_alias.as_str(),
+                member.join_optional,
+                member_keys(member),
+                member.join_from_alias.clone(),
+            ),
+            ViewPart::Relationship(member) => {
+                let from = alias_entity(view, model, &member.join_from_alias)?;
+                let relationship = from.relationship(&member.relationship).ok_or_else(|| {
+                    Error::new(format!(
+                        "view {} member {} relationship {} was not found on {}",
+                        view.full_name, member.entity_alias, member.relationship, from.full_name
+                    ))
+                })?;
+                let related = model.entity(&relationship.related)?;
+                (
+                    related,
+                    member.entity_alias.as_str(),
+                    member.join_optional,
+                    relationship_keys(relationship, related),
+                    Some(member.join_from_alias.clone()),
+                )
+            }
+        };
+        let table = quote_ident(dialect, &table_entity.table_name);
+        let alias = quote_ident(dialect, alias_name);
         if index == 0 {
             sql.push_str(&table);
             sql.push(' ');
             sql.push_str(&alias);
             continue;
         }
-        if member.join_optional {
+        if optional {
             sql.push_str(" LEFT JOIN ");
         } else {
             sql.push_str(" JOIN ");
@@ -500,27 +528,24 @@ fn view_from(view: &EntityDefinition, model: &EntityModel, dialect: &Dialect) ->
         sql.push(' ');
         sql.push_str(&alias);
         sql.push_str(" ON ");
-        if member.key_map.is_empty() {
+        if keys.is_empty() {
             sql.push_str("1=1");
             continue;
         }
-        let left_alias = member
-            .join_from_alias
-            .as_deref()
-            .unwrap_or(view.member_entities[0].entity_alias.as_str());
+        let fallback = match parts.first() {
+            Some(ViewPart::Entity(member)) => member.entity_alias.as_str(),
+            Some(ViewPart::Relationship(member)) => member.entity_alias.as_str(),
+            None => alias_name,
+        };
+        let left_alias = join_from.as_deref().unwrap_or(fallback);
         let left = quote_ident(dialect, left_alias);
-        for (key_index, key) in member.key_map.iter().enumerate() {
+        for (key_index, (field_name, related)) in keys.iter().enumerate() {
             if key_index > 0 {
                 sql.push_str(" AND ");
             }
-            let related = key
-                .related
-                .as_deref()
-                .filter(|value| !value.is_empty())
-                .unwrap_or(key.field_name.as_str());
             sql.push_str(&left);
             sql.push('.');
-            sql.push_str(&quote_ident(dialect, &key.field_name));
+            sql.push_str(&quote_ident(dialect, field_name));
             sql.push_str(" = ");
             sql.push_str(&alias);
             sql.push('.');
@@ -528,6 +553,108 @@ fn view_from(view: &EntityDefinition, model: &EntityModel, dialect: &Dialect) ->
         }
     }
     Ok(sql)
+}
+
+enum ViewPart<'a> {
+    Entity(&'a crate::model::MemberEntity),
+    Relationship(&'a crate::model::MemberRelationship),
+}
+
+fn view_parts(view: &EntityDefinition) -> Vec<ViewPart<'_>> {
+    if !view.view_members.is_empty() {
+        return view
+            .view_members
+            .iter()
+            .map(|member| match member {
+                crate::model::ViewMember::Entity(member) => ViewPart::Entity(member),
+                crate::model::ViewMember::Relationship(member) => ViewPart::Relationship(member),
+            })
+            .collect();
+    }
+    view.member_entities.iter().map(ViewPart::Entity).collect()
+}
+
+fn member_keys(member: &crate::model::MemberEntity) -> Vec<(String, String)> {
+    member
+        .key_map
+        .iter()
+        .map(|key| {
+            let related = key
+                .related
+                .clone()
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| key.field_name.clone());
+            (key.field_name.clone(), related)
+        })
+        .collect()
+}
+
+fn relationship_keys(relationship: &crate::model::Relationship, related: &EntityDefinition) -> Vec<(String, String)> {
+    if relationship.key_map.is_empty() {
+        return related
+            .pk_field_names()
+            .into_iter()
+            .map(|pk| (pk.to_string(), pk.to_string()))
+            .collect();
+    }
+    let pks = related.pk_field_names();
+    relationship
+        .key_map
+        .iter()
+        .map(|key| {
+            let related_field = match key.related.as_deref().filter(|value| !value.is_empty()) {
+                Some(name) => name.to_string(),
+                None if relationship.relationship_type.starts_with("one") && pks.len() == 1 => pks[0].to_string(),
+                None => key.field_name.clone(),
+            };
+            (key.field_name.clone(), related_field)
+        })
+        .collect()
+}
+
+fn alias_entity<'a>(
+    view: &'a EntityDefinition,
+    model: &'a EntityModel,
+    alias: &str,
+) -> Result<&'a EntityDefinition, Error> {
+    alias_entity_at(view, model, alias, 0)
+}
+
+/// A `member-relationship` chain longer than the member count has to loop.
+fn alias_entity_at<'a>(
+    view: &'a EntityDefinition,
+    model: &'a EntityModel,
+    alias: &str,
+    depth: usize,
+) -> Result<&'a EntityDefinition, Error> {
+    if depth > view.member_relationships.len() {
+        return Err(Error::new(format!(
+            "view {} member alias {alias} joins from itself",
+            view.full_name
+        )));
+    }
+    for member in &view.member_entities {
+        if member.entity_alias == alias {
+            return model.entity(&member.entity_name);
+        }
+    }
+    for member in &view.member_relationships {
+        if member.entity_alias != alias {
+            continue;
+        }
+        let from = alias_entity_at(view, model, &member.join_from_alias, depth + 1)?;
+        let relationship = from.relationship(&member.relationship).ok_or_else(|| {
+            Error::new(format!(
+                "view {} alias {} relationship {} was not found",
+                view.full_name, alias, member.relationship
+            ))
+        })?;
+        return model.entity(&relationship.related);
+    }
+    Err(Error::new(format!(
+        "view {} has no member alias {alias}",
+        view.full_name
+    )))
 }
 
 fn write_column(

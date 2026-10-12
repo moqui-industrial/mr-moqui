@@ -23,7 +23,6 @@ mod tests {
     use std::time::Duration;
 
     use moqui_core::driver::{DbDriver, DbRow};
-    use moqui_core::entity::crypto::CryptConfig;
     use moqui_core::entity::{EntityFacade, EntityList, EntityValue};
     use moqui_core::transaction::PoolConfig;
     use moqui_lib::error::Error;
@@ -40,6 +39,14 @@ mod tests {
         }
     }
 
+    struct CryptPassGuard;
+
+    impl Drop for CryptPassGuard {
+        fn drop(&mut self) {
+            moqui_lib::env::clear_property("entity_ds_crypt_pass");
+        }
+    }
+
     #[test]
     fn encrypt_audit_and_localized_reads() {
         let dir = temp_cluster_dir();
@@ -48,6 +55,8 @@ mod tests {
         let (cluster, driver) = EmbeddedCluster::start(&dir, 20).unwrap();
         let driver: Arc<dyn DbDriver> = Arc::new(driver);
         let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
+        moqui_lib::env::set_property("entity_ds_crypt_pass", "MoquiDefaultPassword:CHANGEME");
+        let _crypt_pass = CryptPassGuard;
         let facade = open_entity_facade(
             &framework,
             driver,
@@ -59,14 +68,10 @@ mod tests {
             },
         )
         .unwrap();
-        facade.set_crypt(
-            CryptConfig {
-                pass: "MoquiDefaultPassword:CHANGEME".to_string(),
-                salt: "20201202".to_string(),
-                iterations: 10,
-                algorithm: "PBEWithHmacSHA256AndAES_128".to_string(),
-            },
-            Vec::new(),
+        let (primary, _alts) = facade.crypt().expect("conf cipher");
+        assert_eq!(
+            moqui_core::entity::crypto::decrypt(":YWMS3u2Ct95vQrzfkJnX0ujHZwEyoTeuiqWrUb9dlEw=", &primary).unwrap(),
+            "TestEntityFieldValue"
         );
         facade
             .check_tables(&[
@@ -164,6 +169,65 @@ mod tests {
         facade.set_locale("en");
         assert_eq!(status_description(&facade), "Stored text");
 
+        drop(facade);
+        drop(cluster);
+    }
+
+    #[test]
+    fn two_threads_refill_one_sequence_bank() {
+        let dir = temp_cluster_dir();
+        let _guard = DirGuard(dir.clone());
+        provide_libxml2_soname(&dir);
+        let (cluster, driver) = EmbeddedCluster::start(&dir, 20).unwrap();
+        let driver: Arc<dyn DbDriver> = Arc::new(driver);
+        let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
+        let facade = open_entity_facade(
+            &framework,
+            driver,
+            PoolConfig {
+                min: 0,
+                max: 4,
+                reserve: 1,
+                acquire_timeout: Duration::from_secs(30),
+            },
+        )
+        .unwrap();
+        facade.check_tables(&["moqui.entity.SequenceValueItem"]).unwrap();
+        let facade = Arc::new(facade);
+        let mut joins = Vec::new();
+        for _ in 0..2 {
+            let facade = Arc::clone(&facade);
+            joins.push(std::thread::spawn(move || {
+                let mut ids = Vec::new();
+                for _ in 0..40 {
+                    let mut value = facade.make_value("moqui.basic.Enumeration").unwrap();
+                    value.set_sequenced_id_primary(&facade).unwrap();
+                    ids.push(value.get("enumId").and_then(Value::as_str).unwrap_or("").to_string());
+                }
+                ids
+            }));
+        }
+        let mut ids = Vec::new();
+        for join in joins {
+            ids.extend(join.join().unwrap());
+        }
+        let mut numbers: Vec<i64> = ids.iter().map(|id| id.parse::<i64>().unwrap()).collect();
+        numbers.sort_unstable();
+        let unique = numbers.len();
+        numbers.dedup();
+        assert_eq!(numbers.len(), unique);
+        assert_eq!(numbers.len(), 80, "{numbers:?}");
+        assert_eq!(numbers[0], 100_000);
+        assert_eq!(*numbers.last().unwrap(), 100_079);
+        let stored = facade
+            .find("moqui.entity.SequenceValueItem")
+            .unwrap()
+            .eq("seqName", Value::string("moqui.basic.Enumeration"))
+            .one()
+            .unwrap()
+            .unwrap();
+        let seq_num = moqui_lib::object::basic_convert(stored.get("seqNum").unwrap(), "Long").value;
+        assert_eq!(seq_num, Value::I64(100_101), "{stored:?}");
         drop(facade);
         drop(cluster);
     }

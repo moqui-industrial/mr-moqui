@@ -188,6 +188,33 @@ impl EntityFacade {
         *slot = Some((primary, alts));
     }
 
+    /// Install the cipher from `entity-facade` and its `decrypt-alt` children.
+    ///
+    /// Attributes expand through [`moqui_lib::env`]. An empty `crypt-pass` leaves encryption off.
+    pub fn crypt_from_conf(&self, conf: &MNode) -> Result<(), Error> {
+        let facade = if conf.name() == "entity-facade" {
+            conf.clone()
+        } else {
+            conf.first_named("entity-facade")
+                .ok_or_else(|| Error::new("conf has no entity-facade"))?
+        };
+        let pass = moqui_lib::env::expand(&facade.attribute("crypt-pass").unwrap_or_default())?;
+        if pass.is_empty() {
+            return Ok(());
+        }
+        let primary = crypt_config_from(&facade, pass)?;
+        let mut alts = Vec::new();
+        for child in facade.children_named("decrypt-alt") {
+            let alt_pass = moqui_lib::env::expand(&child.attribute("crypt-pass").unwrap_or_default())?;
+            if alt_pass.is_empty() {
+                continue;
+            }
+            alts.push(crypt_config_from(&child, alt_pass)?);
+        }
+        self.set_crypt(primary, alts);
+        Ok(())
+    }
+
     pub fn crypt(&self) -> Option<(CryptConfig, Vec<CryptConfig>)> {
         self.inner.crypt.read().unwrap_or_else(|err| err.into_inner()).clone()
     }
@@ -242,7 +269,7 @@ impl EntityFacade {
         Ok(EntityFind::new(self.clone(), full_name))
     }
 
-    /// `EntityFacade.rest`. Still the not-implemented stub.
+    /// `EntityFacade.rest`. Find, store, update, delete, and relationship steps.
     pub fn rest(
         &self,
         operation: &str,
@@ -304,4 +331,19 @@ impl EntityFacade {
         let mut flags = self.inner.flags.write().unwrap_or_else(|err| err.into_inner());
         edit(&mut flags);
     }
+}
+
+fn crypt_config_from(node: &MNode, pass: String) -> Result<CryptConfig, Error> {
+    let salt = moqui_lib::env::expand(&node.attribute("crypt-salt").unwrap_or_default())?;
+    let algorithm = moqui_lib::env::expand(&node.attribute("crypt-algo").unwrap_or_default())?;
+    let iter_text = moqui_lib::env::expand(&node.attribute("crypt-iter").unwrap_or_default())?;
+    let iterations = iter_text
+        .parse::<u32>()
+        .map_err(|err| Error::new(format!("entity-facade crypt-iter {iter_text} is not a number")).with_source(err))?;
+    Ok(CryptConfig {
+        pass,
+        salt,
+        iterations,
+        algorithm,
+    })
 }

@@ -18,7 +18,6 @@ use std::cell::RefCell;
 use std::cell::RefMut;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
@@ -282,10 +281,8 @@ fn ensure_env_readable(path: &Path) -> Result<(), Error> {
 
 fn generate_secret() -> Result<String, Error> {
     let mut bytes = [0_u8; 32];
-    let mut file = std::fs::File::open("/dev/urandom")
-        .map_err(|err| Error::new("could not read random bytes for a secret property").with_source(err))?;
-    std::io::Read::read_exact(&mut file, &mut bytes)
-        .map_err(|err| Error::new("could not read random bytes for a secret property").with_source(err))?;
+    getrandom::fill(&mut bytes)
+        .map_err(|err| Error::new(format!("could not read random bytes for a secret property: {err}")))?;
     Ok(standard_base64(&bytes))
 }
 
@@ -345,14 +342,16 @@ fn append_env_secrets(path: &Path, pairs: &[(String, String)]) -> Result<(), Err
     } else {
         String::new()
     };
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|err| {
-            Error::new(format!("could not append runtime environment file {}", path.display())).with_source(err)
-        })?;
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).map_err(|err| {
+        Error::new(format!("could not append runtime environment file {}", path.display())).with_source(err)
+    })?;
     if existing.is_empty() {
         file.write_all(ENV_HEADER.as_bytes()).map_err(|err| {
             Error::new(format!("could not append runtime environment file {}", path.display())).with_source(err)
@@ -368,13 +367,17 @@ fn append_env_secrets(path: &Path, pairs: &[(String, String)]) -> Result<(), Err
     file.write_all(body.as_bytes()).map_err(|err| {
         Error::new(format!("could not append runtime environment file {}", path.display())).with_source(err)
     })?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|err| {
-        Error::new(format!(
-            "could not set permissions on runtime environment file {}",
-            path.display()
-        ))
-        .with_source(err)
-    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|err| {
+            Error::new(format!(
+                "could not set permissions on runtime environment file {}",
+                path.display()
+            ))
+            .with_source(err)
+        })?;
+    }
     Ok(())
 }
 

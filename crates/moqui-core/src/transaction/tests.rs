@@ -21,7 +21,7 @@ use moqui_lib::object::Value;
 
 use crate::driver::{DbCancel, DbConnection, DbDriver, DbRow};
 
-use super::{PoolConfig, TransactionManager};
+use super::{PoolConfig, TransactionAttribute, TransactionManager};
 
 struct Shared {
     connects: AtomicUsize,
@@ -180,6 +180,12 @@ impl DbConnection for FakeConn {
     fn canceller(&self) -> Box<dyn DbCancel> {
         Box::new(FlagCancel(Arc::clone(&self.cancelled)))
     }
+
+    fn set_statement_timeout(&mut self, remaining: Option<Duration>) -> Result<(), Error> {
+        let ms = remaining.map(|duration| duration.as_millis()).unwrap_or(0);
+        self.shared.log.lock().expect("log").push(format!("timeout:{ms}"));
+        Ok(())
+    }
 }
 
 impl DbDriver for FakeDriver {
@@ -206,7 +212,7 @@ struct Clean<'a>(&'a TransactionManager);
 
 impl Drop for Clean<'_> {
     fn drop(&mut self) {
-        let _ = self.0.destroy_thread();
+        let _ = self.0.destroy_all_in_thread();
     }
 }
 
@@ -407,22 +413,22 @@ fn callbacks_run_cache_then_feed_then_commit_then_after() {
 }
 
 #[test]
-fn destroy_thread_commits_open_and_parked_frames() {
+fn destroy_all_in_thread_commits_open_and_parked_frames() {
     let (mgr, driver) = harness(small());
     assert!(mgr.begin(None).expect("begin"));
     mgr.with_connection(|_| Ok(())).expect("work");
-    mgr.destroy_thread().expect("destroy");
+    mgr.destroy_all_in_thread().expect("destroy");
     assert!(!mgr.in_transaction());
     assert_eq!(driver.event_count("commit:"), 1);
     assert_eq!(mgr.stats().checked_out, 0);
     assert_eq!(mgr.stats().parked, 0);
-    mgr.destroy_thread().expect("empty");
+    mgr.destroy_all_in_thread().expect("empty");
 
     assert!(mgr.begin(None).expect("outer"));
     mgr.with_connection(|_| Ok(())).expect("outer work");
     assert!(mgr.force_new(None).expect("inner"));
     mgr.with_connection(|_| Ok(())).expect("inner work");
-    mgr.destroy_thread().expect("both");
+    mgr.destroy_all_in_thread().expect("both");
     assert!(!mgr.in_transaction());
     assert_eq!(driver.event_count("commit:"), 3);
     assert_eq!(mgr.stats().parked, 0);
@@ -526,4 +532,209 @@ fn open_stream_reuses_the_enlisted_connection() {
     assert_eq!(mgr.stats().checkouts, 1);
     let err = mgr.force_new(None).expect_err("stream");
     assert!(err.to_string().contains("open stream"), "{err}");
+}
+
+#[test]
+fn rollback_info_is_logged_on_commit() {
+    let (mgr, _) = harness(small());
+    let _clean = Clean(&mgr);
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let subscriber = LogSubscriber(Arc::clone(&lines));
+    tracing::subscriber::with_default(subscriber, || {
+        assert!(mgr.begin(None).expect("begin"));
+        mgr.set_rollback_only("boom-cause").expect("mark");
+        let err = mgr.commit().expect_err("rollback commit");
+        assert!(err.to_string().contains("rollback-only"), "{err}");
+        assert!(err.to_string().contains("boom-cause"), "{err}");
+    });
+    let text = lines.lock().expect("lines").join("\n");
+    assert!(text.contains("boom-cause"), "{text}");
+    assert!(text.contains("callsite="), "{text}");
+    assert!(text.contains("error="), "{text}");
+}
+
+#[test]
+fn deadline_timer_cancels_without_poll() {
+    let (mgr, driver) = harness(small());
+    let _clean = Clean(&mgr);
+    assert!(mgr.begin(Some(Duration::from_millis(80))).expect("begin"));
+    mgr.with_connection(|_| Ok(())).expect("enlist");
+    std::thread::sleep(Duration::from_millis(400));
+    let blocked = mgr.with_connection(|_| Ok(())).expect_err("blocked");
+    assert!(blocked.to_string().contains("rollback-only"), "{blocked}");
+    assert!(blocked.to_string().contains("deadline"), "{blocked}");
+    assert!(driver.any_cancelled());
+    let err = mgr.commit().expect_err("deadline commit");
+    assert!(err.to_string().contains("deadline"), "{err}");
+}
+
+#[test]
+fn run_ignore_suspends_and_cache_follows_the_attribute() {
+    let (mgr, driver) = harness(small());
+    let _clean = Clean(&mgr);
+    assert!(mgr.begin(None).expect("begin"));
+    let enlisted = mgr.with_connection(conn_id).expect("enlist");
+    mgr.run(TransactionAttribute::Ignore, None, || {
+        assert!(mgr.in_transaction());
+        assert!(!mgr.transaction_cache_active());
+        Ok(())
+    })
+    .expect("ignore");
+    assert_eq!(mgr.with_connection(conn_id).expect("resumed"), enlisted);
+    mgr.commit().expect("commit");
+
+    mgr.set_use_transaction_cache(false);
+    mgr.run(TransactionAttribute::UseOrBegin, None, || {
+        assert!(!mgr.transaction_cache_active());
+        Ok(())
+    })
+    .expect("plain");
+    mgr.run(TransactionAttribute::Cache, None, || {
+        assert!(mgr.transaction_cache_active());
+        Ok(())
+    })
+    .expect("cache");
+    assert!(!mgr.in_transaction());
+    assert!(driver.event_count("commit:") >= 1);
+}
+
+#[test]
+fn run_rolls_back_a_begun_frame_when_the_body_panics() {
+    let (mgr, driver) = harness(small());
+    let _clean = Clean(&mgr);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = mgr.run(TransactionAttribute::UseOrBegin, None, || -> Result<(), Error> {
+            mgr.with_connection(|_| Ok(()))?;
+            panic!("service body failed");
+        });
+    }));
+    assert!(outcome.is_err());
+    assert!(!mgr.in_transaction());
+    assert_eq!(driver.event_count("commit:"), 0);
+    assert_eq!(driver.event_count("rollback:"), 1);
+}
+
+#[test]
+fn cache_attribute_on_a_joined_frame_restores_the_outer_setting() {
+    let (mgr, _) = harness(small());
+    let _clean = Clean(&mgr);
+    mgr.set_use_transaction_cache(false);
+    assert!(mgr.begin(None).expect("begin"));
+    mgr.run(TransactionAttribute::Cache, None, || {
+        assert!(mgr.transaction_cache_active());
+        Ok(())
+    })
+    .expect("cache");
+    assert!(!mgr.transaction_cache_active());
+    mgr.commit().expect("commit");
+}
+
+#[test]
+fn statement_timeout_is_sent_only_when_enabled() {
+    let (mgr, driver) = harness(small());
+    let _clean = Clean(&mgr);
+    assert!(mgr.begin(Some(Duration::from_secs(5))).expect("begin"));
+    mgr.with_connection(|_| Ok(())).expect("plain");
+    assert!(!driver.events().iter().any(|event| event.starts_with("timeout:")));
+    mgr.commit().expect("commit");
+
+    mgr.set_use_statement_timeout(true);
+    assert!(mgr.begin(Some(Duration::from_secs(5))).expect("begin"));
+    mgr.with_connection(|_| Ok(())).expect("limited");
+    let timeouts: Vec<_> = driver
+        .events()
+        .into_iter()
+        .filter(|event| event.starts_with("timeout:"))
+        .collect();
+    assert_eq!(timeouts.len(), 1, "{timeouts:?}");
+    let ms: u128 = timeouts[0].trim_start_matches("timeout:").parse().expect("ms");
+    assert!(ms > 1_000 && ms <= 5_000, "{ms}");
+    mgr.with_connection(|_| Ok(())).expect("second statement");
+    let armed = driver
+        .events()
+        .into_iter()
+        .filter(|event| event.starts_with("timeout:"))
+        .count();
+    assert_eq!(armed, 1, "armed once per enlist");
+    mgr.commit().expect("commit");
+    let last = driver
+        .events()
+        .into_iter()
+        .rfind(|event| event.starts_with("timeout:"))
+        .expect("cleared");
+    assert_eq!(last, "timeout:0", "returned connection has no timeout");
+}
+
+#[test]
+fn lock_track_warns_only_for_overlapping_transactions() {
+    let (mgr, _) = harness(small());
+    let _clean = Clean(&mgr);
+    mgr.set_use_lock_track(true);
+
+    let sequential = Arc::new(Mutex::new(Vec::new()));
+    tracing::subscriber::with_default(LogSubscriber(Arc::clone(&sequential)), || {
+        for _ in 0..2 {
+            assert!(mgr.begin(None).expect("begin"));
+            mgr.note_entity_lock("moqui.test.TestEntity", "T1");
+            mgr.note_entity_lock("moqui.test.TestEntity", "T1");
+            mgr.commit().expect("commit");
+        }
+    });
+    let text = sequential.lock().expect("lines").join("\n");
+    assert!(!text.contains("same entity primary key"), "{text}");
+
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    tracing::subscriber::with_default(LogSubscriber(Arc::clone(&lines)), || {
+        assert!(mgr.begin(None).expect("begin"));
+        mgr.note_entity_lock("moqui.test.TestEntity", "T1");
+        let other = mgr.clone();
+        let other_lines = Arc::clone(&lines);
+        std::thread::spawn(move || {
+            tracing::subscriber::with_default(LogSubscriber(other_lines), || {
+                assert!(other.begin(None).expect("begin"));
+                other.note_entity_lock("moqui.test.TestEntity", "T1");
+                other.commit().expect("commit");
+            });
+        })
+        .join()
+        .expect("join");
+        mgr.commit().expect("commit");
+    });
+    let text = lines.lock().expect("lines").join("\n");
+    assert!(text.contains("same entity primary key"), "{text}");
+}
+
+struct LogSubscriber(Arc<Mutex<Vec<String>>>);
+
+impl tracing::Subscriber for LogSubscriber {
+    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        let mut visit = FieldVisit(String::new());
+        event.record(&mut visit);
+        self.0.lock().expect("lines").push(visit.0);
+    }
+
+    fn enter(&self, _span: &tracing::span::Id) {}
+
+    fn exit(&self, _span: &tracing::span::Id) {}
+}
+
+struct FieldVisit(String);
+
+impl tracing::field::Visit for FieldVisit {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        use std::fmt::Write as _;
+        let _ = write!(self.0, "{}={:?} ", field.name(), value);
+    }
 }

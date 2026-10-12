@@ -19,7 +19,7 @@ base64 = { workspace = true }
 reqwest = { workspace = true, optional = true }
 
 [features]
-# A lib-only program leaves this off. moqui-core enables it.
+# A lib-only program leaves this off. Phase 6 enables it on the crate that calls HTTP.
 http = ["dep:reqwest"]
 
 [lints]

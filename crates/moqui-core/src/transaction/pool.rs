@@ -137,6 +137,7 @@ pub(super) struct PooledConn {
     class: Class,
     parked: bool,
     discard: bool,
+    timeout_armed: bool,
 }
 
 struct Tracked {
@@ -211,6 +212,10 @@ impl DbConnection for Tracked {
 
     fn canceller(&self) -> Box<dyn DbCancel> {
         self.conn.canceller()
+    }
+
+    fn set_statement_timeout(&mut self, remaining: Option<std::time::Duration>) -> Result<(), Error> {
+        self.conn.set_statement_timeout(remaining)
     }
 }
 
@@ -395,6 +400,7 @@ impl Pool {
             class,
             parked: false,
             discard: false,
+            timeout_armed: false,
         }
     }
 
@@ -499,10 +505,29 @@ impl PooledConn {
         self.discard = true;
         self.tracked.take();
     }
+
+    /// Sets the statement timeout once. Returning the connection to the pool clears it, so a
+    /// later borrower never inherits it.
+    pub(super) fn arm_statement_timeout(&mut self, remaining: std::time::Duration) -> Result<(), Error> {
+        if self.timeout_armed {
+            return Ok(());
+        }
+        self.conn().set_statement_timeout(Some(remaining))?;
+        self.timeout_armed = true;
+        Ok(())
+    }
 }
 
 impl Drop for PooledConn {
     fn drop(&mut self) {
+        if self.timeout_armed && !self.discard {
+            if let Some(tracked) = self.tracked.as_mut() {
+                if let Err(err) = tracked.set_statement_timeout(None) {
+                    tracing::warn!(error = %err, "could not clear statement timeout; discarding connection");
+                    self.discard = true;
+                }
+            }
+        }
         let Some(tracked) = self.tracked.take() else {
             if self.discard {
                 self.pool_discard();
@@ -639,6 +664,7 @@ fn release_hold(state: &mut State, class: Class, parked: bool) {
 
 fn publish(state: &State, wait: Duration) {
     tracing::debug!(
+        target: "moqui.pool",
         checked_out = state.checked_out(),
         parked = state.parked,
         waiting = state.waiting,

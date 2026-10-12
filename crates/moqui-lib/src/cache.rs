@@ -30,6 +30,7 @@ use indexmap::IndexMap;
 
 use crate::error::Error;
 
+/// Time source for cache expiry. [`ManualClock`] lets a test move time without sleeping.
 pub trait Clock: Send + Sync {
     fn now_millis(&self) -> i64;
 }

@@ -25,7 +25,9 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use moqui_db::dialect::Dialect;
 use moqui_db::model::EntityDefinition;
-use moqui_db::sql::{create_table, delete, insert, select, update, Condition, FieldRef, LimitOffset, OrderBy};
+use moqui_db::sql::{
+    create_table, delete, insert, insert_or_update, select, update, Condition, FieldRef, LimitOffset, OrderBy,
+};
 use moqui_lib::cache::{CacheConfig, MCache};
 use moqui_lib::error::Error;
 use moqui_lib::object::{compare_like, compare_obj, to_plain_string, Value};
@@ -45,7 +47,7 @@ static SIM_SEQ: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {
     static TX_HOLD: RefCell<Vec<Held>> = const { RefCell::new(Vec::new()) };
-    static SIM: RefCell<Option<SimSession>> = const { RefCell::new(None) };
+    static SIM: RefCell<Vec<SimSession>> = const { RefCell::new(Vec::new()) };
 }
 
 /// The find `list` and `iterator` ask the cache about. Owned so a cache can store the key.
@@ -73,6 +75,7 @@ enum Op {
     Create,
     Update,
     Delete,
+    Upsert,
 }
 
 #[derive(Clone)]
@@ -206,7 +209,7 @@ pub fn gate_write(
     let op = parse_op(operation)?;
     let sim = sim_live(facade);
     let tx = facade.transactions_for(entity_name)?;
-    if !sim && !tx.in_transaction() {
+    if !sim && !tx.transaction_cache_active() {
         return Ok(WriteGate::Proceed);
     }
     let prepared = prepare_handled(facade, entity_name, operation, values)?;
@@ -255,21 +258,19 @@ pub fn register_cache_flush(facade: &EntityFacade, tx: &TransactionManager) -> R
 
 /// Open a sim schema on the overlay pool and mark sim active.
 ///
+/// A second call on this thread pushes another schema. Reads and writes use the innermost one.
 /// Fails without changing `sim_active` when no overlay pool is set. Does not start a cluster.
 pub fn enter_sim(facade: &EntityFacade) -> Result<(), Error> {
     let Some(sim) = facade.sim_transactions() else {
         return Err(Error::new("sim transactions are not configured"));
     };
-    if facade.sim_active() || sim_session_open() {
-        return Err(Error::new("sim mode is already active"));
-    }
     let schema = next_schema();
     if !schema_name_ok(&schema) {
         return Err(Error::new("invalid sim schema"));
     }
     sim.with_connection(|conn| execute_conn(conn, &format!("CREATE SCHEMA {schema}"), &[]))?;
     SIM.with(|slot| {
-        *slot.borrow_mut() = Some(SimSession {
+        slot.borrow_mut().push(SimSession {
             schema,
             tables: HashSet::new(),
             tombstones: HashMap::new(),
@@ -280,10 +281,14 @@ pub fn enter_sim(facade: &EntityFacade) -> Result<(), Error> {
     Ok(())
 }
 
-/// Drop this thread's sim schema and clear `sim_active`. No session is a no-op.
+/// Drop this thread's innermost sim schema. `sim_active` stays set while an outer schema remains.
+///
+/// No session is a no-op.
 pub fn exit_sim(facade: &EntityFacade) -> Result<(), Error> {
-    let session = SIM.with(|slot| slot.borrow_mut().take());
-    facade.set_sim_active(false);
+    let session = SIM.with(|slot| slot.borrow_mut().pop());
+    if !sim_session_open() {
+        facade.set_sim_active(false);
+    }
     let Some(session) = session else {
         return Ok(());
     };
@@ -336,7 +341,7 @@ fn push_hold(held: Held) -> Result<(), Error> {
                 list.push(held);
                 Ok(())
             }
-            Op::Update => {
+            Op::Update | Op::Upsert => {
                 list.push(held);
                 Ok(())
             }
@@ -361,6 +366,12 @@ fn write_sim(
     prepared: &SealedWrite,
 ) -> Result<(), Error> {
     let hit = sim_hit(&prepared.full_name, &prepared.pk)?;
+    // The overlay dialect rejects insert-or-update. A new sim row is an insert; a written row is an update.
+    let op = match op {
+        Op::Upsert if hit.written => Op::Update,
+        Op::Upsert => Op::Create,
+        other => other,
+    };
     if op == Op::Update && hit.tombstone {
         return Ok(());
     }
@@ -465,14 +476,14 @@ fn note_sim(entity: &str, pk: &str, op: Op, created_table: bool) {
     let row_key = row_key(entity, pk);
     SIM.with(|slot| {
         let mut guard = slot.borrow_mut();
-        let Some(session) = guard.as_mut() else {
+        let Some(session) = guard.last_mut() else {
             return;
         };
         if created_table {
             session.tables.insert(entity.to_string());
         }
         match op {
-            Op::Create | Op::Update => {
+            Op::Create | Op::Update | Op::Upsert => {
                 if let Some(set) = session.tombstones.get_mut(entity) {
                     set.remove(pk);
                 }
@@ -548,7 +559,7 @@ fn apply_holds(rows: &mut Vec<MemRow>, holds: &[Held], pk_fields: &[String]) {
                     trusted: false,
                 });
             }
-            Op::Update => {
+            Op::Update | Op::Upsert => {
                 if let Some(row) = rows
                     .iter_mut()
                     .find(|row| pk_of(&row.fields, pk_fields).as_deref() == Some(held.pk.as_str()))
@@ -714,6 +725,14 @@ fn statement_for(
             let sql = insert(entity, dialect, &columns)?;
             Ok(Some((sql, bind_columns(&columns, values))))
         }
+        Op::Upsert => {
+            let columns = present_columns(entity, values, false, false);
+            if columns.is_empty() {
+                return Err(Error::new(format!("upsert has no columns for {}", entity.full_name)));
+            }
+            let sql = insert_or_update(entity, dialect, &columns)?;
+            Ok(Some((sql, bind_columns(&columns, values))))
+        }
     }
 }
 
@@ -772,7 +791,12 @@ fn prepare_handled(
     let operation = operation.to_string();
     facade.with_entity(entity_name, |entity, _, _| {
         let pk = identity(entity, values)?;
-        let sealed = field_rw::before_write(&owner, entity, &operation, values.clone())?;
+        let seal_operation = if operation == "upsert" {
+            "create"
+        } else {
+            operation.as_str()
+        };
+        let sealed = field_rw::before_write(&owner, entity, seal_operation, values.clone())?;
         Ok(SealedWrite {
             full_name: entity.full_name.clone(),
             pk,
@@ -862,14 +886,14 @@ fn sim_live(facade: &EntityFacade) -> bool {
 }
 
 fn sim_session_open() -> bool {
-    SIM.with(|slot| slot.borrow().is_some())
+    SIM.with(|slot| !slot.borrow().is_empty())
 }
 
 fn sim_hit(entity: &str, pk: &str) -> Result<SimHit, Error> {
     let key = row_key(entity, pk);
     SIM.with(|slot| {
         let guard = slot.borrow();
-        let session = guard.as_ref().ok_or_else(|| Error::new("sim session is missing"))?;
+        let session = guard.last().ok_or_else(|| Error::new("sim session is missing"))?;
         Ok(SimHit {
             schema: session.schema.clone(),
             table: session.tables.contains(entity),
@@ -882,7 +906,7 @@ fn sim_hit(entity: &str, pk: &str) -> Result<SimHit, Error> {
 fn sim_view(entity: &str) -> SimView {
     SIM.with(|slot| {
         let guard = slot.borrow();
-        let Some(session) = guard.as_ref() else {
+        let Some(session) = guard.last() else {
             return SimView::empty();
         };
         let mut hide = HashSet::new();
@@ -1061,6 +1085,7 @@ fn parse_op(operation: &str) -> Result<Op, Error> {
         "create" => Ok(Op::Create),
         "update" => Ok(Op::Update),
         "delete" => Ok(Op::Delete),
+        "upsert" => Ok(Op::Upsert),
         other => Err(Error::new(format!("unknown entity write {other}"))),
     }
 }

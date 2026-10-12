@@ -3,3 +3,4 @@
 /runtime/db
 /runtime/tmp
 /runtime/txlog
+/runtime/.env
