@@ -36,7 +36,7 @@ The member row is the instance id, the cluster base URL, and the heartbeat times
 
 ## Transport
 
-The sender is a small trait. The default implementation is an HTTPS POST to `{base}/cluster/{topic}` with the shared client certificate. The message carries an origin id. A failed send is retried briefly.
+The sender is a small trait. The default implementation is an HTTPS POST to `{base}/cluster/{topic}` with the shared client certificate. The HTTP client keeps that connection pooled. The message carries an origin id. A failed send is retried briefly. A later optional sender is a `russh` session with two channels, one for each topic, specified in `plans/Ssh.md`. The default remains this POST.
 
 Cache invalidation is safe to apply twice. A notification carries a message id so a retry does not deliver it twice.
 

@@ -28,11 +28,11 @@ Weak copyleft (MPL, EPL, LGPL) does not by itself force a customer's Rust files 
 
 ## Result
 
-The default graph is clean. Resolved on 2026-10-11 for Linux gnu, it is 325 crate names. None is GPL, LGPL, AGPL, MPL, EPL, CDDL, or SSPL. A customer can link Rust into a customized Moqui and keep that Rust proprietary or CC0. MIT, BSD, ISC, PostgreSQL, Zlib, Unicode, and CDLA-Permissive still require their notices to travel with the binary. Apache-2.0 still requires its license and any `NOTICE`. `LICENSE.md` remains the framework license. A `THIRD-PARTY-NOTICES` file is how the binary meets the rest.
+The default graph is clean. Resolved on 2026-10-11 for Linux gnu, `cargo tree -p moqui` is 377 crate names: the five workspace crates and 372 third-party names. None is GPL, LGPL, AGPL, MPL, EPL, CDDL, or SSPL. A customer can link Rust into a customized Moqui and keep that Rust proprietary or CC0. MIT, BSD, ISC, PostgreSQL, Zlib, Unicode, and CDLA-Permissive still require their notices to travel with the binary. Apache-2.0 still requires its license and any `NOTICE`. `LICENSE.md` remains the framework license. A `THIRD-PARTY-NOTICES` file is how the binary meets the rest.
 
 The one copyleft artifact in the default distribution is `bin/psql` inside the theseus Postgres 18.6.0 archive. It is the only file in that archive whose `NEEDED` entry is `libreadline.so.8` (GPL-3.0-or-later). The postmaster does not link readline. `libreadline` is not in the 18.6.0 archive; `psql` expects the host copy. Moqui never runs `psql`. Strip `psql` out of the archive before `postgresql_embedded` embeds it. Check the next theseus release the same way: the current Linux Dockerfiles pass `--with-readline`, and `scripts/bundle-runtime.sh` copies every non-libc `NEEDED` library into the install. A later archive can start shipping `libreadline.so` itself. The musl and Windows archives were not unpacked. Their build scripts pass the same `--with-readline`.
 
-`mysql` 28's `rustls-tls` feature statically links `ring` 0.17.14 beside aws-lc, through the deprecated `webpki` 0.22 crate. `ring` is Apache-2.0 AND ISC. `webpki`'s crates.io SPDX field is empty because the crate uses `license-file`. The file is an ISC grant, and `third-party/chromium/LICENSE` is BSD-3-Clause. Permissive, and worth a `cargo-deny` clarification so an empty SPDX field does not look like an unknown license. Dropping `ring` waits on a `mysql` release that uses `rustls-webpki`.
+`mysql` 28's `rustls-tls` feature statically links `ring` 0.17.14 beside aws-lc, through the deprecated `webpki` 0.22 crate. `ring` is Apache-2.0 AND ISC. `webpki`'s crates.io SPDX field is empty because the crate uses `license-file`. The file is an ISC grant, and `third-party/chromium/LICENSE` is BSD-3-Clause. Permissive, and worth a `cargo-deny` clarification so an empty SPDX field does not look like an unknown license. Dropping `ring` waits on a `mysql` release that uses `rustls-webpki`. `russh` does not add another `ring`. Its `ring`, `des`, and `dsa` features are off. `des` 0.9.0 is in the lockfile as an optional dependency of `ssh-cipher` and is not in `cargo tree -p moqui`.
 
 `postgresql_embedded` 0.21 statically links `sqlx` 0.9 (MIT OR Apache-2.0). The entity engine still has no SQLx dependency and no `query!` macros. The lifecycle crate uses `sqlx` for its own setup statements. That is allowed.
 
@@ -58,6 +58,8 @@ These are the feature flags the resolve used. The unsafe defaults are called out
 | `tokio-postgres-rustls` 0.14 | `aws-lc-rs`, `webpki-roots` | `ring`. Defaults are empty, so the crypto feature has to be named. |
 | `reqwest` 0.13 | `default-features = false`, `blocking`, `rustls`, `json`, `multipart`, `charset` | `native-tls`, `native-tls-vendored`. On 0.13, `default-tls` is already rustls with aws-lc. Name `rustls` anyway. A later reqwest that flips `default-tls` back to native-tls must not be taken on defaults. |
 | `lettre` 0.11 | `default-features = false`, `smtp-transport`, `builder`, `hostname`, `rustls`, `aws-lc-rs`, `webpki-roots` | Defaults, which include `native-tls`. The feature named `rustls-tls` enables `ring`, so that name stays off. `boring-tls`. |
+| `russh` 0.64 | `default-features = false`, `aws-lc-rs`, `flate2`, `rsa` | `ring`, `des`, `dsa`. Defaults are off so a later default cannot turn `ring` on. `rsa` stays because servers still present RSA host keys. `flate2` is SSH compression, on the `miniz_oxide` backend already enabled. |
+| `russh-sftp` 3 | no features | `async-trait`. The crate has no crypto feature. |
 | `axum` 0.8 | `macros`, `ws` | |
 | `tower-http` 0.6 | `default-features = false`, `compression-gzip`, `fs`, `set-header` | |
 | `chromiumoxide` 0.9 | `default-features = false` | `fetcher`, `native-tls`, `rustls`. On 0.9.1 those three only switch on `chromiumoxide_fetcher`. There is no `tokio-runtime` feature. The plan matches this row: feature `pdf` leaves the defaults off, and the handler runs on its own thread against a browser the host already started. |
@@ -68,9 +70,9 @@ These are the feature flags the resolve used. The unsafe defaults are called out
 | `pulldown-cmark` | the Rust crate | `comrak` is BSD-2-Clause and is an acceptable alternate. Re-check it if a C regex backend is turned on. |
 | `pdf-servo` | absent from the default graph | The `servo` crate 0.7.0 is MPL-2.0. See below. |
 
-`oxc_parser` 0.139.0 is named in `[workspace.dependencies]` and is not a dependency of any crate. It is absent from `cargo tree -p moqui` until phase 6 links it. The 325-name count above does not include it. Its published `rust-version` is 1.94.0. Its license is MIT.
+`oxc_parser` 0.139.0 is named in `[workspace.dependencies]` and is not a dependency of any crate. It is absent from `cargo tree -p moqui` until phase 6 links it. The 377-name count above does not include it. Its published `rust-version` is 1.94.0. Its license is MIT.
 
-`native-tls` and the `openssl` crate are not in the resolved graph. `openssl-probe` is. It only finds a certificate directory. It does not link libssl. `libz-sys` is not in the graph: `mysql` is on `minimal-rust`, and `flate2` 1.1 uses `zlib-rs`.
+`native-tls` and the `openssl` crate are not in the resolved graph. `openssl-probe` is. It only finds a certificate directory. It does not link libssl. `libz-sys` is not in the graph: `mysql` is on `minimal-rust`, and `flate2` 1.1 is on `rust_backend` (`miniz_oxide`). The `zlib-rs` feature is off.
 
 ## Servo, Chromium, OpenSearch
 
@@ -88,7 +90,7 @@ V8, if it ever replaces QuickJS, is BSD-3-Clause for the engine. That swap gets 
 
 Bitronix is not linked. The Java fork `org.moqui:btm` is annotated Apache-2.0 in the framework `build.gradle`. Upstream Bitronix was LGPL. The transaction manager is a behavior reimplementation against `DbDriver`. It is not a translation of LGPL source.
 
-An inbound SMTP server, an SSH server, CUPS, and the old tool components (`moqui-poi`, image, SSO, SFTP) are not in this graph. Each one is reviewed when it is proposed. CUPS is Apache-2.0. That does not pre-approve a particular Rust binding.
+An inbound SMTP server, CUPS, and the old tool components (`moqui-poi`, image, SSO, SFTP) are not in this graph. Each one is reviewed when it is proposed. CUPS is Apache-2.0. That does not pre-approve a particular Rust binding. `russh` 0.64.1 and `russh-sftp` 3.0.1 are linked from `moqui-host`. The SSH server is not implemented. `libssh` stays out. It is LGPL. `ssh2` and `libssh2` stay out. They are a C client with no server. `remotefs-ssh` is reviewed only if it is proposed.
 
 ## Direct crates
 
@@ -107,6 +109,9 @@ Versions are what `cargo` locked on 2026-10-11 for the feature set above. "Stati
 | `tokio`, `hyper` | 1.x / 1.x | MIT | Runtimes inside the host, the blocking clients, and `chromiumoxide` | Static | OK. Core stays Tokio-free; the crates still land in the binary through host and the clients. |
 | `reqwest` | 0.13.5 | MIT OR Apache-2.0 | Blocking HTTP client | Static | OK on the `rustls` feature |
 | `lettre` | 0.11.23 | MIT | Outbound SMTP | Static | OK with the feature row above |
+| `russh` | 0.64.1 | Apache-2.0 | SSH client and server. No listener yet. | Static | OK with `aws-lc-rs`, `flate2`, and `rsa`. `ring`, `des`, and `dsa` off. Depends on `rsa` 0.10.0-rc.18 and `ssh-key` 0.7.0-rc.11, both MIT OR Apache-2.0. |
+| `russh-sftp` | 3.0.1 | Apache-2.0 | SFTP v3. Does not depend on `russh`. | Static | OK. `async-trait` off. |
+| `chrono` | 0.4.45 | MIT OR Apache-2.0 | SFTP timestamps, via `russh-sftp` | Static | OK. Not a Moqui clock. Time stays `jiff`. |
 | `chromiumoxide` | 0.9.1 | MIT OR Apache-2.0 | DevTools client for PDF | Static. Does not contain Chromium. | OK with the fetcher off |
 | `rustls` | 0.23.45 | Apache-2.0 OR ISC OR MIT | TLS | Static | OK |
 | `aws-lc-rs` | 1.18.1 | ISC AND (Apache-2.0 OR ISC) | TLS crypto | Static | OK |
@@ -127,20 +132,20 @@ Versions are what `cargo` locked on 2026-10-11 for the feature set above. "Stati
 | `tracing` | 0.1.44 | MIT | Log and metrics instrumentation | Static | OK |
 | `indexmap` | 2.x | Apache-2.0 OR MIT | Map used in place of `LiteStringMap` | Static | OK |
 | `regex` | 1.x | MIT OR Apache-2.0 | Transitive | Static | OK |
-| `flate2`, `zlib-rs` | 1.1.10 / 0.6.8 | MIT OR Apache-2.0 / Zlib | Compression. Pure Rust. | Static | OK |
+| `flate2`, `miniz_oxide` | 1.1.10 / 0.9.1 | MIT OR Apache-2.0 / MIT OR Zlib OR Apache-2.0 | Compression. Pure Rust. `flate2` is on `rust_backend`. | Static | OK. `zlib-rs` and `libz-sys` are not enabled. |
 | `servo` | 0.7.0 | MPL-2.0 | In-process PDF alternate | Would be static | Hold. Off by default. |
 
 `cc`, `cmake`, `pkg-config`, and `find-msvc-tools` run at build to compile aws-lc and are not linked into the binary. Proc-macro crates (`serde_derive`, `sqlx-macros`, `tokio-macros`, and the rest) run at compile time and are not linked either. The code they expand is.
 
 ## Other licenses in the static graph
 
-266 of the 325 crate names are MIT, Apache-2.0, or MIT OR Apache-2.0. The other 59 are below. All of them are permissive. Unicode-3.0 is the current Unicode license (attribution, no share-alike). The ICU data crates carry it, pulled in by URL and text handling. `idna` itself is MIT OR Apache-2.0.
+314 of the 372 third-party names are MIT, Apache-2.0, or MIT OR Apache-2.0, including the `MIT/Apache-2.0` and `Apache-2.0 / MIT` spellings. The five workspace crates are CC0-1.0. The other 58 third-party names are below. All of them are permissive. Unicode-3.0 is the current Unicode license (attribution, no share-alike). The ICU data crates carry it, pulled in by URL and text handling. `idna` itself is MIT OR Apache-2.0.
 
 | License | Crates |
 |---|---|
 | Unicode-3.0 | `icu_collections`, `icu_locale_core`, `icu_normalizer`, `icu_normalizer_data`, `icu_properties`, `icu_properties_data`, `icu_provider`, `litemap`, `potential_utf`, `tinystr`, `writeable`, `yoke`, `yoke-derive`, `zerofrom`, `zerofrom-derive`, `zerotrie`, `zerovec`, `zerovec-derive` |
 | (MIT OR Apache-2.0) AND Unicode-3.0 | `unicode-ident` |
-| Unlicense OR MIT | `aho-corasick`, `byteorder`, `jiff`, `jiff-core`, `jiff-static`, `memchr`, `termcolor` |
+| Unlicense OR MIT | `aho-corasick`, `byteorder`, `jiff`, `jiff-core`, `memchr`, `termcolor` |
 | Unlicense OR MIT (`csv` spelling) | `csv`, `csv-core` |
 | Apache-2.0 OR ISC OR MIT | `hyper-rustls`, `rustls`, `rustls-native-certs`, `rustls-pemfile` |
 | (Apache-2.0 OR MIT) AND PostgreSQL | `postgresql_embedded`, `postgresql_archive`, `postgresql_commands` |
@@ -149,13 +154,13 @@ Versions are what `cargo` locked on 2026-10-11 for the feature set above. "Stati
 | ISC AND (Apache-2.0 OR ISC) | `aws-lc-rs` |
 | ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0) | `aws-lc-sys` |
 | Apache-2.0 AND ISC | `ring` |
-| BSD-3-Clause | `subtle` |
+| BSD-3-Clause | `curve25519-dalek`, `ed25519-dalek`, `subtle` |
 | MIT AND BSD-3-Clause | `matchit` |
 | (Apache-2.0 OR MIT) AND BSD-3-Clause | `encoding_rs` |
 | BSD-2-Clause OR Apache-2.0 OR MIT | `zerocopy` |
-| Zlib | `foldhash`, `zlib-rs` |
+| Zlib | `foldhash` |
 | Zlib OR Apache-2.0 OR MIT | `tinyvec` |
-| MIT OR Zlib OR Apache-2.0 | `lru-slab`, `miniz_oxide` |
+| MIT OR Zlib OR Apache-2.0 | `miniz_oxide` |
 | 0BSD | `quoted_printable` |
 | 0BSD OR MIT OR Apache-2.0 | `adler2` |
 | CC0-1.0 OR MIT-0 OR Apache-2.0 | `constant_time_eq`, `dunce` |
@@ -218,6 +223,8 @@ jQuery, Moment, Bootstrap 3, Select2, and the rest of `CombinedBase` are removed
 | H2 | MPL-2.0 OR EPL-1.0 | Replaced by embedded Postgres. |
 | Jakarta servlet, transaction, and mail APIs | EPL | The servlet stack is not carried. |
 | GNU readline | GPL-3.0-or-later | Not linked by the postmaster or by Rust. `psql` is the file that references it, and `psql` is stripped from the payload. |
+| `libssh` | LGPL-2.1 | Not used. `russh` is the SSH crate. |
+| `ssh2`, `libssh2` | `libssh2` is BSD-3-Clause | A C client with no server. Not used. |
 | Elasticsearch server | Elastic License 2.0 or SSPL | OpenSearch is the HTTP backend, and it is not embedded. |
 | CKEditor 5 | GPL-2.0-or-later | Replaced by Quasar `QEditor`. |
 | `chromiumoxide_fetcher`, vendored Chromium, Google Chrome as a deployment binary | Chrome is proprietary. Chromium is BSD plus a large notice. | The operator installs Chromium. |

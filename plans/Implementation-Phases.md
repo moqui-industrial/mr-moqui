@@ -35,7 +35,7 @@ Mantle and the other application components stay outside this repository. They a
 - Server-static `qvt` closes gate 3, after server-merged `qvt` renders. It follows `plans/QvtServerStatic.md` and stays opt-in.
 - Search is implemented under gate 4. The design is `plans/SearchFacade.md`.
 - PDF and the tool components (`moqui-poi`, `moqui-image`, `moqui-cups`, `moqui-sso`) are the tail of gate 4. Gate 3 `html-print` is the print document, and the name `xsl-fo` selects that mode. Email attachments, scheduled screen PDFs, and print rendering report that PDF is not available until phase 12. The engine is the long-lived Chromium in Tool components and print of `plans/Architecture-Proposal.md`. `moqui-fop` is not ported.
-- The Groovy shell endpoint is dropped. There is no Java service runner and no Groovy runner. Framework script services become JavaScript or Rust.
+- The Groovy shell endpoint is dropped. There is no Java service runner and no Groovy runner. Framework script services become JavaScript or Rust. The replacement crates are chosen in `plans/Ssh.md`. The sshd is still not part of the port.
 
 ## Phase order
 
@@ -285,7 +285,7 @@ Depends on the HTTP client, the user facade, and the screen facade for screen-se
 - Cache admin and the other tools services that wrap facades already built.
 - Print-job records. Producing the PDF is phase 12. Until then a print or email path that asks for PDF reports that PDF is not available.
 - User remainder: preferences, password reset, TOTP, email second factor, and the admin side of API keys and login keys. The `sendOtp` and `verifyOtp` transitions start working here.
-- The Groovy shell is not replaced with a script console, and there is no web eval endpoint even in development: the hardened shell is still too risky. An SSH server in the host (exec and file access, authenticated through the user facade and artifact authz) is the better shape for admin access and pairs with `moqui-sftp`. It is an idea for a later pass, not part of the port.
+- The Groovy shell is not replaced with a script console, and there is no web eval endpoint even in development: the hardened shell is still too risky. The crates are `russh` and `russh-sftp` (`plans/Ssh.md`). An SSH server in the host, authenticated through the user facade and artifact authz, is the later shape for admin access and pairs with `moqui-sftp`. The server is not part of the port.
 - Definition type generation (`plans/TypeGeneration.md`): TypeScript declarations from entity, service, and screen definitions, emitted by a CLI subcommand after definitions load.
 
 ## Phase 12 — PDF, later drivers, and the tool components
@@ -294,7 +294,7 @@ Depends on the `html-print` render from gate 3, and on the `DbDriver` trait from
 
 - `PdfRenderer` in the host, as Tool components and print in `plans/Architecture-Proposal.md` describes. One long-lived Chromium, `chromiumoxide` 0.9, the external-binary recipe, and `pdf-servo` left off.
 - Rewrite the SimpleScreens `*.xsl-fo.ftl` documents to `html-print` templates. Callers that store render mode `xsl-fo` to mean PDF render `html-print` and pass it to `PdfRenderer`. The data-prep services stay. The screen `<text type="xsl-fo">` elements that include those templates stay valid through the alias.
-- `moqui-fop` is not ported. `moqui-poi`, `moqui-image`, `moqui-cups`, `moqui-sso`, and `moqui-sftp` are each weighed against binary size the way `moqui.war` size kept them out of the Java framework. A component that stays outside is listed as outside, with that reason. `moqui-cups` consumes the PDF bytes.
+- `moqui-fop` is not ported. `moqui-poi`, `moqui-image`, `moqui-cups`, `moqui-sso`, and `moqui-sftp` are each weighed against binary size the way `moqui.war` size kept them out of the Java framework. A component that stays outside is listed as outside, with that reason. `moqui-cups` consumes the PDF bytes. When `moqui-sftp` is built, the client is `russh-sftp` on `russh`, not a new stack.
 - Further sync drivers, each a dialect plus a `DbDriver`: SQL Server, Oracle, DB2, DB2 for i, Derby, HSQLDB. A missing driver is a configuration error that names the database. None of them block the other gate 4 work.
 
 ### Gate 4 — tools and utilities

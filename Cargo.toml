@@ -119,3 +119,7 @@ tower-http = { version = "0.6", default-features = false, features = [
 chromiumoxide = { version = "0.9", default-features = false }
 # MPL-2.0 hold. Off unless moqui-host is built with pdf-servo.
 servo = "0.7"
+# SSH client and server. ring, des, and dsa stay off. aws-lc-rs matches the other TLS crates.
+russh = { version = "0.64", default-features = false, features = ["aws-lc-rs", "flate2", "rsa"] }
+# SFTP v3 subsystem. No dependency on russh; the host feeds it the channel bytes.
+russh-sftp = "3"

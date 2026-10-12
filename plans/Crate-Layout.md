@@ -220,7 +220,7 @@ Cargo features may trim a driver out of a custom build. The default feature set 
 
 ## moqui-host
 
-The process edge. Depends on `moqui-core` and on `moqui-lib` with the `http` feature. This is the only crate that may use axum, Tokio, the sync DB clients (`postgres`, `mysql`), `postgresql_embedded`, and process spawn. `lettre` lives in core. `MCache` lives in lib. There is no `moka`, no `r2d2`, and no XML crate.
+The process edge. Depends on `moqui-core` and on `moqui-lib` with the `http` feature. This is the only crate that may use axum, Tokio, the sync DB clients (`postgres`, `mysql`), `postgresql_embedded`, process spawn, and SSH (`russh`, `russh-sftp`). `lettre` lives in core. `MCache` lives in lib. There is no `moka`, no `r2d2`, and no XML crate.
 
 | Module | Role |
 |---|---|
@@ -229,6 +229,7 @@ The process edge. Depends on `moqui-core` and on `moqui-lib` with the `http` fea
 | `mail` | Inbound SMTP, behind a feature, if it stays. Outbound mail is core. |
 | `search` | OpenSearch process supervisor. Query construction stays in core. |
 | `pdf` | `PdfRenderer`. Feature `pdf` (default) links `chromiumoxide` 0.9 with `default-features = false` and drives one long-lived external Chromium. There is no `tokio-runtime` feature. `fetcher`, `native-tls`, and `rustls` only enable `chromiumoxide_fetcher` and stay off. The handler runs on its own thread. Feature `pdf-servo` (off by default) links Servo for an in-process render where a child process is forbidden. The recipe, the process flags, and the page cap are Tool components and print in `plans/Architecture-Proposal.md`. |
+| `ssh` | `russh` 0.64 and `russh-sftp` 3 are dependencies now. `russh` is `default-features = false` with `aws-lc-rs`, `flate2`, and `rsa`. `ring`, `des`, and `dsa` stay off. The listener and the client API are not implemented. `plans/Ssh.md`. |
 
 Features on this crate, not more crates: `opensearch`, `inbound-smtp`, `pdf`, `pdf-servo`. Default features are embedded Postgres, external Postgres, MySQL, axum, and `pdf`. `pdf-servo` stays off. Chromium itself is not a crate and is not in the binary.
 
