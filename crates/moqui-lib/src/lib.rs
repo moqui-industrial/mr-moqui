@@ -21,6 +21,8 @@ pub mod collection;
 pub mod context_stack;
 pub mod env;
 pub mod error;
+#[cfg(feature = "http")]
+pub mod http;
 pub mod node;
 pub mod object;
 pub mod resource;
