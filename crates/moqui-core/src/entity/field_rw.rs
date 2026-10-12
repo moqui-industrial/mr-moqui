@@ -26,9 +26,10 @@ use super::facade::EntityFacade;
 pub fn before_write(
     facade: &EntityFacade,
     entity: &EntityDefinition,
+    operation: &str,
     values: BTreeMap<String, Value>,
 ) -> Result<BTreeMap<String, Value>, Error> {
-    let _ = (facade, entity);
+    let _ = (facade, entity, operation);
     Ok(values)
 }
 

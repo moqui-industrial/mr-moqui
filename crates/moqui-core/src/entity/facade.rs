@@ -89,6 +89,7 @@ pub(crate) struct Inner {
     locale: RwLock<String>,
     crypt: RwLock<Option<(CryptConfig, Vec<CryptConfig>)>>,
     sim: AtomicBool,
+    sim_tx: RwLock<Option<TransactionManager>>,
     slots: Mutex<HashMap<TypeId, Box<dyn Any + Send>>>,
 }
 
@@ -136,6 +137,7 @@ impl EntityFacade {
                 locale: RwLock::new("en".to_string()),
                 crypt: RwLock::new(None),
                 sim: AtomicBool::new(false),
+                sim_tx: RwLock::new(None),
                 slots: Mutex::new(HashMap::new()),
             }),
         })
@@ -159,6 +161,16 @@ impl EntityFacade {
 
     pub fn sim_active(&self) -> bool {
         self.inner.sim.load(Ordering::Relaxed)
+    }
+
+    /// Overlay pool for sim mode. The host starts that cluster. `None` means sim cannot be entered.
+    pub fn set_sim_transactions(&self, transactions: Option<TransactionManager>) {
+        let mut slot = self.inner.sim_tx.write().unwrap_or_else(|err| err.into_inner());
+        *slot = transactions;
+    }
+
+    pub fn sim_transactions(&self) -> Option<TransactionManager> {
+        self.inner.sim_tx.read().unwrap_or_else(|err| err.into_inner()).clone()
     }
 
     pub fn set_locale(&self, locale: impl Into<String>) {

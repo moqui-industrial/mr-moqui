@@ -139,6 +139,8 @@ fn locale_defaults_to_en_and_crypt_stays_unset() {
     assert!(!facade.sim_active());
     facade.set_sim_active(true);
     assert!(facade.sim_active());
+    assert!(facade.sim_transactions().is_none());
+    facade.set_sim_transactions(None);
     facade.with_slot(
         || String::from("seed"),
         |slot| {

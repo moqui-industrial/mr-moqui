@@ -205,7 +205,7 @@ impl EntityFacade {
     ) -> Result<(), Error> {
         let tx = self.transactions_for(entity_name)?;
         if cache::gate_write(self, entity_name, operation, &plain)? == WriteGate::Proceed {
-            let prepared = self.seal_values(entity_name, plain)?;
+            let prepared = self.seal_values(entity_name, operation, plain)?;
             let (sql, params) = self.with_group(entity_name, |entity, dialect, _, _| {
                 let columns = present_columns(entity, &prepared, include_null, skip_pk);
                 let (sql, params) = if operation == "delete" {
@@ -349,11 +349,12 @@ impl EntityFacade {
     fn seal_values(
         &self,
         entity_name: &str,
+        operation: &str,
         values: BTreeMap<String, Value>,
     ) -> Result<BTreeMap<String, Value>, Error> {
         let facade = self.clone();
         self.with_entity(entity_name, |entity, _, _| {
-            field_rw::before_write(&facade, entity, values)
+            field_rw::before_write(&facade, entity, operation, values)
         })
     }
 
