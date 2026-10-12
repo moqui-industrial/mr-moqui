@@ -688,6 +688,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "bon"
+version = "3.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "214f5df094ce551a10a30ffb9c70243d61f121a3d985a6495933e181dee6a7d2"
+dependencies = [
+ "bon-macros",
+]
+
+[[package]]
+name = "bon-macros"
+version = "3.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2706da6c749998cc555d04184909608956a69ad3f8ab1a076fbc867b4a3c3ce5"
+dependencies = [
+ "darling 0.24.1",
+ "ident_case",
+ "prettyplease 0.3.0",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.8",
+]
+
+[[package]]
 name = "borsh"
 version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -931,6 +954,19 @@ dependencies = [
  "cipher",
  "cpufeatures 0.3.1",
  "rand_core 0.10.1",
+ "zeroize",
+]
+
+[[package]]
+name = "chacha20poly1305"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b89e1c441e926b9c82a8d023f6e1b7ae0adcfaa7d621814e4d60789bac751cb"
+dependencies = [
+ "aead",
+ "chacha20",
+ "cipher",
+ "poly1305",
  "zeroize",
 ]
 
@@ -3071,6 +3107,122 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
+name = "huskarl"
+version = "0.11.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "516fe0fae2f683de2f3686584d70dd5bdd05ea3dc3843ccf9a128f007973450c"
+dependencies = [
+ "arc-swap",
+ "base64 0.23.1",
+ "bon",
+ "bytes",
+ "form_urlencoded",
+ "getrandom 0.4.3",
+ "gloo-timers",
+ "http",
+ "huskarl-core",
+ "huskarl-crypto-native",
+ "huskarl-crypto-webcrypto",
+ "huskarl-macros",
+ "rand 0.10.3",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "snafu",
+ "subtle",
+ "tokio",
+ "web-time",
+]
+
+[[package]]
+name = "huskarl-core"
+version = "0.10.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "437c52410cd0f9c74af70758a9a00a26219333fe1869cb37a224e1490a14dfe0"
+dependencies = [
+ "arc-swap",
+ "base64 0.23.1",
+ "bon",
+ "bytes",
+ "form_urlencoded",
+ "futures-util",
+ "getrandom 0.4.3",
+ "gloo-timers",
+ "hex",
+ "http",
+ "httpdate",
+ "huskarl-macros",
+ "rand 0.10.3",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "snafu",
+ "strum 0.27.2",
+ "subtle",
+ "tokio",
+ "url",
+ "web-time",
+ "zeroize",
+]
+
+[[package]]
+name = "huskarl-crypto-native"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69eb06ed9c742d545926d7ef9efaed46bcd6c3c05cc9bd3638ba4b3e9744a92c"
+dependencies = [
+ "aead",
+ "aes-gcm",
+ "chacha20poly1305",
+ "ed25519-dalek",
+ "hmac 0.13.0",
+ "huskarl-core",
+ "huskarl-macros",
+ "p256",
+ "p384",
+ "pkcs8",
+ "rand 0.10.3",
+ "rsa",
+ "serde_json",
+ "sha2 0.11.0",
+ "signature",
+ "snafu",
+ "strum 0.27.2",
+ "subtle",
+]
+
+[[package]]
+name = "huskarl-crypto-webcrypto"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c28b08ba8aa1fef28327bd257dc46c4383b08b7d8e831961cd531d6625ef4f9d"
+dependencies = [
+ "huskarl-core",
+ "huskarl-macros",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_bytes",
+ "serde_json",
+ "snafu",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "huskarl-macros"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f17ac77a443311b433015c7f1d91f3250df2cb6dafd69d03e095c897a7eacb2a"
+dependencies = [
+ "darling 0.24.1",
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.8",
+]
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4336,6 +4488,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chromiumoxide",
+ "huskarl",
  "moqui-core",
  "moqui-lib",
  "mysql",
@@ -5676,6 +5829,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "prettyplease"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2bfe0f4c752e450fc2faf62654f1c134747922825d5b04ca717b8874f41a40c0"
+dependencies = [
+ "proc-macro2",
+ "syn 3.0.8",
+]
+
+[[package]]
 name = "primal-check"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6908,6 +7071,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-wasm-bindgen"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8302e169f0eddcc139c70f139d19d6467353af16f9fce27e8c30158036a1e16b"
+dependencies = [
+ "js-sys",
+ "serde",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "serde_bytes"
 version = "0.11.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7388,7 +7562,7 @@ version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eb6fb64ff3d72bbde246228b0e10a9f28bbdc7a91cafb3c22aec58152d12c6ed"
 dependencies = [
- "prettyplease",
+ "prettyplease 0.2.37",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -8648,6 +8822,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b3dc8af474f516a851ff4bd12db780f948b9250ad37211e4eec0bccea54e01b"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "snafu"
+version = "0.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e45cb604038abb7b926b679887b3226d8d0f23874b66623625a0454be425a4b7"
+dependencies = [
+ "snafu-derive",
+]
+
+[[package]]
+name = "snafu-derive"
+version = "0.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "287f59010008f0d7cf5e3b03196d666c1acc46c8d3e9cf34c28a1a7157601e72"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -10479,6 +10674,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
+ "serde",
  "wasm-bindgen",
 ]
 

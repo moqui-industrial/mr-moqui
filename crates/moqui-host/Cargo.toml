@@ -7,7 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 # The only crate that may depend on Tokio, axum, the sync database clients,
-# postgresql_embedded, process spawn, and SSH (russh, russh-sftp).
+# postgresql_embedded, process spawn, SSH (russh, russh-sftp), and the OIDC client (huskarl).
 
 [features]
 default = ["embedded-postgres", "postgres", "mysql", "axum", "pdf"]
@@ -38,3 +38,4 @@ chromiumoxide = { workspace = true, optional = true }
 servo = { workspace = true, optional = true }
 russh = { workspace = true }
 russh-sftp = { workspace = true }
+huskarl = { workspace = true }

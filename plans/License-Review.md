@@ -28,7 +28,7 @@ Weak copyleft (MPL, EPL, LGPL) does not by itself force a customer's Rust files 
 
 ## Result
 
-The default graph is clean. Resolved on 2026-10-11 for Linux gnu, `cargo tree -p moqui` is 377 crate names: the five workspace crates and 372 third-party names. None is GPL, LGPL, AGPL, MPL, EPL, CDDL, or SSPL. A customer can link Rust into a customized Moqui and keep that Rust proprietary or CC0. MIT, BSD, ISC, PostgreSQL, Zlib, Unicode, and CDLA-Permissive still require their notices to travel with the binary. Apache-2.0 still requires its license and any `NOTICE`. `LICENSE.md` remains the framework license. A `THIRD-PARTY-NOTICES` file is how the binary meets the rest.
+The default graph is clean. Resolved on 2026-10-11 for Linux gnu, `cargo tree -p moqui` is 387 crate names: the five workspace crates and 382 third-party names. None is GPL, LGPL, AGPL, MPL, EPL, CDDL, or SSPL. A customer can link Rust into a customized Moqui and keep that Rust proprietary or CC0. MIT, BSD, ISC, PostgreSQL, Zlib, Unicode, and CDLA-Permissive still require their notices to travel with the binary. Apache-2.0 still requires its license and any `NOTICE`. `LICENSE.md` remains the framework license. A `THIRD-PARTY-NOTICES` file is how the binary meets the rest.
 
 The one copyleft artifact in the default distribution is `bin/psql` inside the theseus Postgres 18.6.0 archive. It is the only file in that archive whose `NEEDED` entry is `libreadline.so.8` (GPL-3.0-or-later). The postmaster does not link readline. `libreadline` is not in the 18.6.0 archive; `psql` expects the host copy. Moqui never runs `psql`. Strip `psql` out of the archive before `postgresql_embedded` embeds it. Check the next theseus release the same way: the current Linux Dockerfiles pass `--with-readline`, and `scripts/bundle-runtime.sh` copies every non-libc `NEEDED` library into the install. A later archive can start shipping `libreadline.so` itself. The musl and Windows archives were not unpacked. Their build scripts pass the same `--with-readline`.
 
@@ -60,6 +60,7 @@ These are the feature flags the resolve used. The unsafe defaults are called out
 | `lettre` 0.11 | `default-features = false`, `smtp-transport`, `builder`, `hostname`, `rustls`, `aws-lc-rs`, `webpki-roots` | Defaults, which include `native-tls`. The feature named `rustls-tls` enables `ring`, so that name stays off. `boring-tls`. |
 | `russh` 0.64 | `default-features = false`, `aws-lc-rs`, `flate2`, `rsa` | `ring`, `des`, `dsa`. Defaults are off so a later default cannot turn `ring` on. `rsa` stays because servers still present RSA host keys. `flate2` is SSH compression, on the `miniz_oxide` backend already enabled. |
 | `russh-sftp` 3 | no features | `async-trait`. The crate has no crypto feature. |
+| `huskarl` 0.11 | default features, which are `default-jws-verifier-platform` | `authorization-flow-loopback`, `metrics`, `experimental-oidc-key-binding`. `huskarl-reqwest`, `huskarl-redis`, and `huskarl-google-cloud` are not dependencies. JOSE is `huskarl-crypto-native` (RustCrypto). TLS stays on `aws-lc-rs`. P-521 is not included. |
 | `axum` 0.8 | `macros`, `ws` | |
 | `tower-http` 0.6 | `default-features = false`, `compression-gzip`, `fs`, `set-header` | |
 | `chromiumoxide` 0.9 | `default-features = false` | `fetcher`, `native-tls`, `rustls`. On 0.9.1 those three only switch on `chromiumoxide_fetcher`. There is no `tokio-runtime` feature. The plan matches this row: feature `pdf` leaves the defaults off, and the handler runs on its own thread against a browser the host already started. |
@@ -70,7 +71,7 @@ These are the feature flags the resolve used. The unsafe defaults are called out
 | `pulldown-cmark` | the Rust crate | `comrak` is BSD-2-Clause and is an acceptable alternate. Re-check it if a C regex backend is turned on. |
 | `pdf-servo` | absent from the default graph | The `servo` crate 0.7.0 is MPL-2.0. See below. |
 
-`oxc_parser` 0.139.0 is named in `[workspace.dependencies]` and is not a dependency of any crate. It is absent from `cargo tree -p moqui` until phase 6 links it. The 377-name count above does not include it. Its published `rust-version` is 1.94.0. Its license is MIT.
+`oxc_parser` 0.139.0 is named in `[workspace.dependencies]` and is not a dependency of any crate. It is absent from `cargo tree -p moqui` until phase 6 links it. The 387-name count above does not include it. Its published `rust-version` is 1.94.0. Its license is MIT.
 
 `native-tls` and the `openssl` crate are not in the resolved graph. `openssl-probe` is. It only finds a certificate directory. It does not link libssl. `libz-sys` is not in the graph: `mysql` is on `minimal-rust`, and `flate2` 1.1 is on `rust_backend` (`miniz_oxide`). The `zlib-rs` feature is off.
 
@@ -90,7 +91,7 @@ V8, if it ever replaces QuickJS, is BSD-3-Clause for the engine. That swap gets 
 
 Bitronix is not linked. The Java fork `org.moqui:btm` is annotated Apache-2.0 in the framework `build.gradle`. Upstream Bitronix was LGPL. The transaction manager is a behavior reimplementation against `DbDriver`. It is not a translation of LGPL source.
 
-An inbound SMTP server, CUPS, and the old tool components (`moqui-poi`, image, SSO, SFTP) are not in this graph. Each one is reviewed when it is proposed. CUPS is Apache-2.0. That does not pre-approve a particular Rust binding. `russh` 0.64.1 and `russh-sftp` 3.0.1 are linked from `moqui-host`. The SSH server is not implemented. `libssh` stays out. It is LGPL. `ssh2` and `libssh2` stay out. They are a C client with no server. `remotefs-ssh` is reviewed only if it is proposed.
+An inbound SMTP server, CUPS, and the old tool components (`moqui-poi`, image, SFTP) are not in this graph. Each one is reviewed when it is proposed. CUPS is Apache-2.0. That does not pre-approve a particular Rust binding. `russh` 0.64.1 and `russh-sftp` 3.0.1 are linked from `moqui-host`. The SSH server is not implemented. `libssh` stays out. It is LGPL. `ssh2` and `libssh2` stay out. They are a C client with no server. `remotefs-ssh` is reviewed only if it is proposed. `huskarl` 0.11.6 is linked from `moqui-host`. The SSO redirect is not implemented. SAML is not in the graph. `samael` and `openidconnect` stay out. `saml-rs` is reviewed when it is proposed.
 
 ## Direct crates
 
@@ -111,6 +112,7 @@ Versions are what `cargo` locked on 2026-10-11 for the feature set above. "Stati
 | `lettre` | 0.11.23 | MIT | Outbound SMTP | Static | OK with the feature row above |
 | `russh` | 0.64.1 | Apache-2.0 | SSH client and server. No listener yet. | Static | OK with `aws-lc-rs`, `flate2`, and `rsa`. `ring`, `des`, and `dsa` off. Depends on `rsa` 0.10.0-rc.18 and `ssh-key` 0.7.0-rc.11, both MIT OR Apache-2.0. |
 | `russh-sftp` | 3.0.1 | Apache-2.0 | SFTP v3. Does not depend on `russh`. | Static | OK. `async-trait` off. |
+| `huskarl` | 0.11.6 | MIT OR Apache-2.0 | OIDC and OAuth 2 client. No redirect yet. | Static | OK. Default feature is the native JWS verifier. `rsa` 0.10.0-rc.18, shared with `russh`. `huskarl-crypto-webcrypto` is locked for wasm and is absent from the Linux tree. |
 | `chrono` | 0.4.45 | MIT OR Apache-2.0 | SFTP timestamps, via `russh-sftp` | Static | OK. Not a Moqui clock. Time stays `jiff`. |
 | `chromiumoxide` | 0.9.1 | MIT OR Apache-2.0 | DevTools client for PDF | Static. Does not contain Chromium. | OK with the fetcher off |
 | `rustls` | 0.23.45 | Apache-2.0 OR ISC OR MIT | TLS | Static | OK |
@@ -139,7 +141,7 @@ Versions are what `cargo` locked on 2026-10-11 for the feature set above. "Stati
 
 ## Other licenses in the static graph
 
-314 of the 372 third-party names are MIT, Apache-2.0, or MIT OR Apache-2.0, including the `MIT/Apache-2.0` and `Apache-2.0 / MIT` spellings. The five workspace crates are CC0-1.0. The other 58 third-party names are below. All of them are permissive. Unicode-3.0 is the current Unicode license (attribution, no share-alike). The ICU data crates carry it, pulled in by URL and text handling. `idna` itself is MIT OR Apache-2.0.
+324 of the 382 third-party names are MIT, Apache-2.0, or MIT OR Apache-2.0, including the `MIT/Apache-2.0` and `Apache-2.0 / MIT` spellings. The five workspace crates are CC0-1.0. The other 58 third-party names are below. All of them are permissive. Unicode-3.0 is the current Unicode license (attribution, no share-alike). The ICU data crates carry it, pulled in by URL and text handling. `idna` itself is MIT OR Apache-2.0.
 
 | License | Crates |
 |---|---|

@@ -123,3 +123,6 @@ servo = "0.7"
 russh = { version = "0.64", default-features = false, features = ["aws-lc-rs", "flate2", "rsa"] }
 # SFTP v3 subsystem. No dependency on russh; the host feeds it the channel bytes.
 russh-sftp = "3"
+# OIDC and OAuth 2 client. Default feature is the native JWS verifier.
+# Loopback, metrics, and the experimental key-binding feature stay off.
+huskarl = "0.11"
