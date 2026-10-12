@@ -16,6 +16,7 @@ moqui-db = { workspace = true }
 csv = { workspace = true }
 tracing = { workspace = true }
 getrandom = { workspace = true }
+rquickjs = { workspace = true, features = ["macro"] }
 aes = { workspace = true }
 cbc = { workspace = true }
 des = { workspace = true }
