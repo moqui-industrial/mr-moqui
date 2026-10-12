@@ -99,12 +99,6 @@ mod tests {
         rows_left: i64,
     }
 
-    impl DbCancel for FakeCancel {
-        fn cancel(&self) -> Result<(), Error> {
-            Ok(())
-        }
-    }
-
     impl DbConnection for FakeConn {
         fn execute(&mut self, _sql: &str, _params: &[Value]) -> Result<u64, Error> {
             Ok(1)

@@ -12,4 +12,20 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Transaction manager and pool. They call [`crate::driver`] and do not import a database client.
+//! Transaction manager and connection pool. They call [`crate::driver`] and do not import a database client.
+//!
+//! An open stream is the enlisted connection. [`TransactionManager::with_connection`] returns that
+//! connection while it is open and does not check out a second one. Beginning another frame is not
+//! how a stream gets a connection.
+//!
+//! No JTA types, no XA, and no `PREPARE TRANSACTION`. Savepoints forward to the enlisted connection.
+//! [`TransactionManager::force_new`] is a suspend of the current frame plus a new frame, not a savepoint.
+
+mod manager;
+mod pool;
+
+pub use manager::TransactionManager;
+pub use pool::{Pool, PoolConfig, PoolStats};
+
+#[cfg(test)]
+mod tests;
