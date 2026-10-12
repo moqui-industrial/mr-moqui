@@ -12,6 +12,31 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Entity facade. Wave 1 owns only field encryption.
+//! Entity facade. Field encryption stays in [`crypto`] and is not called from this spine.
 
+pub mod cache;
 pub mod crypto;
+pub mod field_rw;
+pub mod load_feed;
+pub mod query_rest;
+
+mod dbresource;
+mod exec;
+mod facade;
+mod find;
+mod fk;
+mod meta;
+mod params;
+mod sequence;
+mod share;
+mod value;
+
+pub use dbresource::{DbResourceChild, DbResourceInfo};
+pub use facade::{EntityFacade, EntityFlags, EntityGroup};
+pub use find::{EntityFind, EntityListIterator};
+pub use meta::EntityDbMeta;
+pub use sequence::{fill_bank, stagger_step, take_id, SequenceBank};
+pub use value::{EntityList, EntityValue};
+
+#[cfg(test)]
+mod tests;

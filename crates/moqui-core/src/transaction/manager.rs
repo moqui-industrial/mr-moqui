@@ -302,6 +302,16 @@ impl TransactionManager {
         self.push_conn_hook(HookKind::Feed, Box::new(hook))
     }
 
+    /// True when this frame already has a cache-flush hook.
+    pub fn has_cache_flush(&self) -> bool {
+        self.with_frames(|frames| active_mut(frames).is_some_and(|frame| !frame.cache_flush.is_empty()))
+    }
+
+    /// True when this frame already has a feed-insert hook.
+    pub fn has_feed_insert(&self) -> bool {
+        self.with_frames(|frames| active_mut(frames).is_some_and(|frame| !frame.feed_insert.is_empty()))
+    }
+
     pub fn on_commit<F>(&self, hook: F) -> Result<(), Error>
     where
         F: FnOnce() + Send + 'static,

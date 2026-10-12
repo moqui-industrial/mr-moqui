@@ -12,20 +12,45 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! `file`, `runtime`, and `component` resources. Other schemes are named errors.
+//! `file`, `runtime`, `component`, and `dbresource` resources. Other schemes are named errors.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
 use moqui_lib::resource::{FileResource, Resource};
 
 use super::error::Error;
+use crate::entity::{DbResourceInfo, EntityFacade};
 
-/// A resolved filesystem resource with its logical location.
+/// A resolved resource with its logical location.
+///
+/// A database resource is a snapshot. Directory children are names only; their bytes are not loaded.
 #[derive(Clone, Debug)]
 pub struct ResourceRef {
     location: String,
-    file: FileResource,
+    stored: Stored,
+}
+
+#[derive(Clone, Debug)]
+enum Stored {
+    File(FileResource),
+    Db(DbSnap),
+}
+
+#[derive(Clone, Debug)]
+struct DbSnap {
+    exists: bool,
+    is_file: bool,
+    bytes: Vec<u8>,
+    children: Vec<DbSnapChild>,
+}
+
+#[derive(Clone, Debug)]
+struct DbSnapChild {
+    location: String,
+    name: String,
+    is_file: bool,
 }
 
 impl ResourceRef {
@@ -34,54 +59,136 @@ impl ResourceRef {
     }
 
     pub fn exists(&self) -> bool {
-        self.file.exists()
+        match &self.stored {
+            Stored::File(file) => file.exists(),
+            Stored::Db(snap) => snap.exists,
+        }
     }
 
     pub fn is_file(&self) -> bool {
-        self.file.is_file()
+        match &self.stored {
+            Stored::File(file) => file.is_file(),
+            Stored::Db(snap) => snap.exists && snap.is_file,
+        }
     }
 
     pub fn is_directory(&self) -> bool {
-        self.file.is_directory()
+        match &self.stored {
+            Stored::File(file) => file.is_directory(),
+            Stored::Db(snap) => snap.exists && !snap.is_file,
+        }
     }
 
     pub fn read_text(&self) -> Result<String, Error> {
-        self.file.read_text().map_err(Error::from)
+        match &self.stored {
+            Stored::File(file) => file.read_text().map_err(Error::from),
+            Stored::Db(snap) => {
+                if !snap.exists || !snap.is_file {
+                    return Err(Error::new(format!("not a file: {}", self.location)));
+                }
+                String::from_utf8(snap.bytes.clone())
+                    .map_err(|_| Error::new(format!("dbresource is not utf-8: {}", self.location)))
+            }
+        }
     }
 
     pub fn children(&self) -> Result<Vec<Self>, Error> {
-        let files = self.file.children().map_err(Error::from)?;
-        Ok(files
-            .into_iter()
-            .map(|file| {
-                let name = file.file_name().to_string();
-                let location = join_location(&self.location, &name);
-                Self { location, file }
-            })
-            .collect())
+        match &self.stored {
+            Stored::File(file) => {
+                let files = file.children().map_err(Error::from)?;
+                Ok(files
+                    .into_iter()
+                    .map(|file| {
+                        let name = file.file_name().to_string();
+                        let location = join_location(&self.location, &name);
+                        Self {
+                            location,
+                            stored: Stored::File(file),
+                        }
+                    })
+                    .collect())
+            }
+            Stored::Db(snap) => Ok(snap
+                .children
+                .iter()
+                .filter(|child| child.is_file)
+                .map(|child| Self {
+                    location: child.location.clone(),
+                    stored: Stored::Db(DbSnap {
+                        exists: true,
+                        is_file: true,
+                        bytes: Vec::new(),
+                        children: Vec::new(),
+                    }),
+                })
+                .collect()),
+        }
     }
 
     pub fn find_child_file(&self, relative: &str) -> Self {
-        let file = self.file.find_child_file(relative);
-        let location = if relative.is_empty() {
-            self.location.clone()
-        } else {
-            join_location(&self.location, relative)
-        };
-        Self { location, file }
+        match &self.stored {
+            Stored::File(file) => {
+                let file = file.find_child_file(relative);
+                let location = if relative.is_empty() {
+                    self.location.clone()
+                } else {
+                    join_location(&self.location, relative)
+                };
+                Self {
+                    location,
+                    stored: Stored::File(file),
+                }
+            }
+            Stored::Db(snap) => {
+                if relative.is_empty() {
+                    return self.clone();
+                }
+                if let Some(child) = snap
+                    .children
+                    .iter()
+                    .find(|child| child.is_file && child.name == relative)
+                {
+                    return Self {
+                        location: child.location.clone(),
+                        stored: Stored::Db(DbSnap {
+                            exists: true,
+                            is_file: true,
+                            bytes: Vec::new(),
+                            children: Vec::new(),
+                        }),
+                    };
+                }
+                Self {
+                    location: join_location(&self.location, relative),
+                    stored: Stored::Db(DbSnap {
+                        exists: false,
+                        is_file: false,
+                        bytes: Vec::new(),
+                        children: Vec::new(),
+                    }),
+                }
+            }
+        }
     }
 }
 
 pub struct ResourceFacade {
     runtime_dir: PathBuf,
     components: HashMap<String, PathBuf>,
+    /// Shared with the factory. `None` until the host installs an entity facade.
+    entity: Arc<RwLock<Option<EntityFacade>>>,
 }
 
 impl ResourceFacade {
-    pub(super) fn new(runtime_dir: PathBuf, components: HashMap<String, PathBuf>) -> Self {
+    pub(super) fn new(
+        runtime_dir: PathBuf,
+        components: HashMap<String, PathBuf>,
+        entity: Arc<RwLock<Option<EntityFacade>>>,
+    ) -> Self {
         Self {
             runtime_dir,
             components,
+            entity,
         }
     }
 
@@ -93,7 +200,7 @@ impl ResourceFacade {
         match scheme {
             "content" => Err(Error::new(format!("content resource is not available: {location}"))),
             "http" | "https" => Err(Error::new("HTTP resources are not available")),
-            "dbresource" => Err(Error::new("database resource is not available")),
+            "dbresource" => self.db_ref(location),
             "file" => Ok(self.file_ref(location)),
             "runtime" => Ok(self.runtime_ref(location)),
             "component" => self.component_ref(location),
@@ -103,11 +210,40 @@ impl ResourceFacade {
         }
     }
 
+    /// Write bytes to a `dbresource://` file. `get` does not create a missing row.
+    pub fn write_bytes(&self, location: &str, bytes: &[u8]) -> Result<(), Error> {
+        if scheme_of(location) != "dbresource" {
+            return Err(Error::new(format!("write_bytes supports dbresource only: {location}")));
+        }
+        let facade = self
+            .installed()
+            .ok_or_else(|| Error::new("database resource is not available"))?;
+        facade.write_db_resource(location, bytes).map_err(Error::from)
+    }
+
+    fn installed(&self) -> Option<EntityFacade> {
+        self.entity.read().unwrap_or_else(|err| err.into_inner()).clone()
+    }
+
+    fn db_ref(&self, location: &str) -> Result<ResourceRef, Error> {
+        let Some(facade) = self.installed() else {
+            return Err(Error::new("database resource is not available"));
+        };
+        let info = facade.read_db_resource(location).map_err(Error::from)?;
+        if !info.exists {
+            return Err(Error::new(format!("resource not found: {location}")));
+        }
+        Ok(ResourceRef {
+            location: location.to_string(),
+            stored: Stored::Db(db_snap(location, &info)),
+        })
+    }
+
     fn file_ref(&self, location: &str) -> ResourceRef {
         let path = file_path(strip_hash(location));
         ResourceRef {
             location: location.to_string(),
-            file: FileResource::new(path.to_string_lossy()),
+            stored: Stored::File(FileResource::new(path.to_string_lossy())),
         }
     }
 
@@ -121,7 +257,7 @@ impl ResourceFacade {
         };
         ResourceRef {
             location: location.to_string(),
-            file: FileResource::new(path.to_string_lossy()),
+            stored: Stored::File(FileResource::new(path.to_string_lossy())),
         }
     }
 
@@ -147,8 +283,25 @@ impl ResourceFacade {
         };
         Ok(ResourceRef {
             location: location.to_string(),
-            file: FileResource::new(path.to_string_lossy()),
+            stored: Stored::File(FileResource::new(path.to_string_lossy())),
         })
+    }
+}
+
+fn db_snap(location: &str, info: &DbResourceInfo) -> DbSnap {
+    DbSnap {
+        exists: info.exists,
+        is_file: info.is_file,
+        bytes: info.bytes.clone(),
+        children: info
+            .children
+            .iter()
+            .map(|child| DbSnapChild {
+                location: join_location(location, &child.name),
+                name: child.name.clone(),
+                is_file: child.is_file,
+            })
+            .collect(),
     }
 }
 
@@ -198,5 +351,154 @@ fn join_location(parent: &str, child: &str) -> String {
         parent.to_string()
     } else {
         format!("{parent}/{child}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use moqui_lib::error::Error as LibError;
+    use moqui_lib::object::Value;
+
+    use super::*;
+    use crate::driver::{DbCancel, DbConnection, DbDriver, DbRow};
+    use crate::entity::EntityGroup;
+    use crate::transaction::{PoolConfig, TransactionManager};
+
+    struct NoCancel;
+
+    impl DbCancel for NoCancel {
+        fn cancel(&self) -> Result<(), LibError> {
+            Ok(())
+        }
+    }
+
+    struct FakeConn;
+
+    impl DbConnection for FakeConn {
+        fn execute(&mut self, _sql: &str, _params: &[Value]) -> Result<u64, LibError> {
+            Ok(0)
+        }
+
+        fn query(&mut self, _sql: &str, _params: &[Value]) -> Result<Vec<DbRow>, LibError> {
+            Ok(Vec::new())
+        }
+
+        fn query_once(&mut self, _sql: &str, _params: &[Value]) -> Result<Vec<DbRow>, LibError> {
+            Ok(Vec::new())
+        }
+
+        fn open_stream(&mut self, _sql: &str, _params: &[Value]) -> Result<(), LibError> {
+            Ok(())
+        }
+
+        fn next_row(&mut self) -> Result<Option<DbRow>, LibError> {
+            Ok(None)
+        }
+
+        fn close_stream(&mut self) -> Result<(), LibError> {
+            Ok(())
+        }
+
+        fn stream_open(&self) -> bool {
+            false
+        }
+
+        fn begin(&mut self) -> Result<(), LibError> {
+            Ok(())
+        }
+
+        fn commit(&mut self) -> Result<(), LibError> {
+            Ok(())
+        }
+
+        fn rollback(&mut self) -> Result<(), LibError> {
+            Ok(())
+        }
+
+        fn savepoint(&mut self, _name: &str) -> Result<(), LibError> {
+            Ok(())
+        }
+
+        fn rollback_to_savepoint(&mut self, _name: &str) -> Result<(), LibError> {
+            Ok(())
+        }
+
+        fn release_savepoint(&mut self, _name: &str) -> Result<(), LibError> {
+            Ok(())
+        }
+
+        fn canceller(&self) -> Box<dyn DbCancel> {
+            Box::new(NoCancel)
+        }
+    }
+
+    struct FakeDriver;
+
+    impl DbDriver for FakeDriver {
+        fn connect(&self) -> Result<Box<dyn DbConnection>, LibError> {
+            Ok(Box::new(FakeConn))
+        }
+    }
+
+    fn facade() -> ResourceFacade {
+        let driver: Arc<dyn DbDriver> = Arc::new(FakeDriver);
+        let transactions = TransactionManager::new(
+            driver,
+            PoolConfig {
+                min: 0,
+                max: 2,
+                reserve: 1,
+                acquire_timeout: Duration::from_secs(5),
+            },
+        )
+        .unwrap();
+        let entity = EntityFacade::open(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework"),
+            "transactional",
+            vec![EntityGroup::new("transactional", "postgres", transactions)],
+        )
+        .unwrap();
+        ResourceFacade::new(
+            PathBuf::from("/tmp/moqui-resource-test"),
+            HashMap::new(),
+            Arc::new(RwLock::new(Some(entity))),
+        )
+    }
+
+    fn empty_facade() -> ResourceFacade {
+        ResourceFacade::new(
+            PathBuf::from("/tmp/moqui-resource-test"),
+            HashMap::new(),
+            Arc::new(RwLock::new(None)),
+        )
+    }
+
+    #[test]
+    fn dbresource_without_facade_is_not_available() {
+        let err = empty_facade().get("dbresource://notes/hello.txt").unwrap_err();
+        assert!(err.to_string().contains("not available"), "{err}");
+    }
+
+    #[test]
+    fn missing_dbresource_names_the_location() {
+        let resources = facade();
+        let root = resources.get("dbresource://").unwrap();
+        assert!(root.exists());
+        assert!(root.is_directory());
+        let location = "dbresource://notes/hello.txt";
+        let err = resources.get(location).unwrap_err();
+        assert!(err.to_string().contains("resource not found"), "{err}");
+        assert!(err.to_string().contains(location), "{err}");
+    }
+
+    #[test]
+    fn db_scheme_stays_unsupported() {
+        let err = empty_facade().get("db://notes/hello.txt").unwrap_err();
+        assert!(err.to_string().contains("scheme db"), "{err}");
+        let err = facade().get("db://notes/hello.txt").unwrap_err();
+        assert!(err.to_string().contains("scheme db"), "{err}");
     }
 }

@@ -20,7 +20,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use moqui_lib::env;
 use moqui_lib::node::MNode;
@@ -32,6 +32,7 @@ use super::conf;
 use super::error::Error;
 use super::message::MessageFacade;
 use super::resource::ResourceFacade;
+use crate::entity::EntityFacade;
 
 const ENV_HEADER: &str = "# This file holds secrets and must be kept with the instance backup.\n";
 
@@ -43,6 +44,8 @@ pub struct ExecutionContextFactory {
     cache: CacheFacade,
     conf_text: String,
     property_names: Vec<String>,
+    /// Entity facade for `dbresource://`. Empty until the host calls [`Self::set_entity`].
+    entity: Arc<RwLock<Option<EntityFacade>>>,
 }
 
 impl ExecutionContextFactory {
@@ -75,7 +78,8 @@ impl ExecutionContextFactory {
         let env_path = runtime_dir.join(".env");
         let (property_names, mut set_by_boot) = apply_default_properties(&conf_node, &env_path)?;
         let components = component::discover(&runtime_dir, &framework_dir, &conf_node)?;
-        let resource = ResourceFacade::new(runtime_dir.clone(), component_roots(&components));
+        let entity = Arc::new(RwLock::new(None));
+        let resource = ResourceFacade::new(runtime_dir.clone(), component_roots(&components), Arc::clone(&entity));
         let cache = CacheFacade::from_conf(&conf_node)?;
         set_by_boot.keep();
         let conf_text = conf_node.write_string();
@@ -92,6 +96,7 @@ impl ExecutionContextFactory {
             cache,
             conf_text,
             property_names,
+            entity,
         }))
     }
 
@@ -129,6 +134,16 @@ impl ExecutionContextFactory {
 
     pub fn conf_text(&self) -> &str {
         &self.conf_text
+    }
+
+    /// Install the entity facade. `dbresource://` reads and writes through it.
+    pub fn set_entity(&self, facade: EntityFacade) {
+        *self.entity.write().unwrap_or_else(|err| err.into_inner()) = Some(facade);
+    }
+
+    /// The installed entity facade, when the host has registered one.
+    pub fn entity(&self) -> Option<EntityFacade> {
+        self.entity.read().unwrap_or_else(|err| err.into_inner()).clone()
     }
 }
 

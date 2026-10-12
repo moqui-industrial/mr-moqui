@@ -15,5 +15,6 @@
 //! `DbDriver` implementations. The pool stays in `moqui-core`.
 
 pub mod embedded;
+pub mod entity_facade;
 pub mod mysql;
 pub mod postgres;
