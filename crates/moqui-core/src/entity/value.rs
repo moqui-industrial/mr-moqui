@@ -213,7 +213,13 @@ impl EntityFacade {
         include_null: bool,
         skip_pk: bool,
     ) -> Result<(), Error> {
-        let _artifact = EntityArtifact::push(entity_name, operation);
+        let artifact = EntityArtifact::push(entity_name, operation);
+        if artifact.pushed {
+            let allowed = crate::context::ExecutionContext::with_current(|ctx| ctx.allows()).unwrap_or(false);
+            if !allowed {
+                return Err(Error::new(format!("{entity_name} is not authorized")));
+            }
+        }
         let tx = self.transactions_for(entity_name)?;
         if tx.lock_track_enabled() {
             if let Ok(keys) = self.with_entity(entity_name, |entity, _, _| pk_values(entity, &plain)) {
