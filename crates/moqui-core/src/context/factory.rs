@@ -14,17 +14,23 @@
 
 //! Execution context factory. One factory is shared. One context is thread-local.
 
-use std::cell::RefCell;
-use std::cell::RefMut;
+use std::cell::{Cell, RefCell, RefMut};
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::ptr::NonNull;
 use std::sync::{Arc, RwLock};
 
 use moqui_lib::env;
 use moqui_lib::node::MNode;
 
 use super::artifact::{ArtifactStack, AuthzGuard};
+
+thread_local! {
+    /// Depth and the context the outermost guard borrowed. This does not own the context.
+    static ENTERED: Cell<(*const ExecutionContext, u32)> = const { Cell::new((std::ptr::null(), 0)) };
+}
 use super::cache::CacheFacade;
 use super::component::{self, ComponentInfo};
 use super::conf;
@@ -82,6 +88,7 @@ impl ExecutionContextFactory {
         let cache = CacheFacade::from_conf(&conf_node)?;
         set_by_boot.keep();
         let conf_text = conf_node.write_string();
+        crate::service::start_pools()?;
         tracing::info!(
             runtime = %runtime_dir.display(),
             framework = %framework_dir.display(),
@@ -174,11 +181,64 @@ impl ExecutionContext {
     }
 
     pub fn allows(&self) -> bool {
-        self.artifacts.borrow().allows()
+        let target = self.artifacts.borrow().authz_target();
+        ArtifactStack::allows(target)
     }
 
     pub fn authz_disabled(&self) -> bool {
         self.artifacts.borrow().authz_disabled()
+    }
+
+    /// Make this context current on this thread until the guard drops.
+    ///
+    /// Nested enter increments a depth and keeps the outermost context. `current` is `Some` while
+    /// the depth is positive. The thread-local does not keep the context alive.
+    pub fn enter(&self) -> ContextGuard<'_> {
+        ENTERED.with(|slot| {
+            let (ptr, depth) = slot.get();
+            let next = if depth == 0 { std::ptr::from_ref(self) } else { ptr };
+            slot.set((next, depth.saturating_add(1)));
+        });
+        ContextGuard { _scope: PhantomData }
+    }
+
+    /// The context entered on this thread, if a guard is still alive.
+    pub fn current() -> Option<NonNull<ExecutionContext>> {
+        ENTERED.with(|slot| {
+            let (ptr, depth) = slot.get();
+            if depth == 0 {
+                None
+            } else {
+                NonNull::new(ptr.cast_mut())
+            }
+        })
+    }
+
+    /// Run `body` with the entered context. The reference cannot outlive the callback.
+    pub fn with_current<R>(body: impl FnOnce(&ExecutionContext) -> R) -> Option<R> {
+        let ptr = Self::current()?;
+        // SAFETY: `enter` stored this pointer, and a live `ContextGuard` borrows that context.
+        // Nested enter keeps the outer pointer, which stays borrowed until its guard drops.
+        Some(body(unsafe { ptr.as_ref() }))
+    }
+}
+
+/// Clears the thread-local context when dropped. Depth falls by one.
+#[must_use = "dropping the guard clears the thread-local execution context"]
+pub struct ContextGuard<'a> {
+    _scope: PhantomData<&'a ExecutionContext>,
+}
+
+impl Drop for ContextGuard<'_> {
+    fn drop(&mut self) {
+        ENTERED.with(|slot| {
+            let (ptr, depth) = slot.get();
+            if depth <= 1 {
+                slot.set((std::ptr::null(), 0));
+            } else {
+                slot.set((ptr, depth - 1));
+            }
+        });
     }
 }
 
@@ -409,6 +469,26 @@ impl Drop for PropertyRollback {
         if self.rollback {
             self.clear();
         }
+    }
+}
+
+#[cfg(test)]
+impl ExecutionContextFactory {
+    pub(crate) fn test_context() -> ExecutionContext {
+        let conf = MNode::parse_text("test", "<moqui-conf/>").expect("conf");
+        let entity = Arc::new(RwLock::new(None));
+        let runtime_dir = PathBuf::from(".");
+        let factory = Arc::new(Self {
+            runtime_dir: runtime_dir.clone(),
+            framework_dir: PathBuf::from("."),
+            components: Vec::new(),
+            resource: ResourceFacade::new(runtime_dir, std::collections::HashMap::new(), entity.clone()),
+            cache: CacheFacade::from_conf(&conf).expect("cache"),
+            conf_text: String::new(),
+            property_names: Vec::new(),
+            entity,
+        });
+        factory.new_context()
     }
 }
 

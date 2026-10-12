@@ -17,7 +17,10 @@
 pub mod context;
 pub mod driver;
 pub mod entity;
+pub mod script;
+pub mod service;
 pub mod transaction;
+pub mod user;
 
 /// Marker so the host links this crate.
 pub fn candidate() -> &'static str {

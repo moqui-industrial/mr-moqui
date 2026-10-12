@@ -921,7 +921,7 @@ fn load_xml_reader(
         let node = MNode::parse_text(location, &element)?;
         match parse_top(facade, location, &node)? {
             Some(Top::Record(record)) => total = total.saturating_add(store_record(facade, options, &record)?),
-            Some(Top::Service(service)) => hold_service(facade, service),
+            Some(Top::Service(service)) => hold_service(facade, service)?,
             None => {}
         }
     }
@@ -1024,7 +1024,7 @@ fn load_csv_reader(
                     location: location.to_string(),
                     parameters,
                 },
-            );
+            )?;
         }
     }
     Ok(total)
@@ -1127,7 +1127,7 @@ fn load_json_document(facade: &EntityFacade, location: &str, value: Json, option
                 location: location.to_string(),
                 parameters: json_service_parameters(&pairs)?,
             },
-        );
+        )?;
         Ok(0)
     } else {
         Err(Error::new(format!(
@@ -1550,8 +1550,9 @@ fn value_from(
     Ok(value)
 }
 
-fn hold_service(facade: &EntityFacade, service: HeldService) {
-    with_load_slot(facade, |slot| slot.services.push(service));
+fn hold_service(facade: &EntityFacade, service: HeldService) -> Result<(), Error> {
+    with_load_slot(facade, |slot| slot.services.push(service.clone()));
+    crate::service::run_held_service(facade, &service)
 }
 
 fn shape_of(facade: &EntityFacade, entity_name: &str) -> Result<Shape, Error> {

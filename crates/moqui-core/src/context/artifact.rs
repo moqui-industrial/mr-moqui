@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Artifact stack. Push and pop are tracing spans. Authorization is phase 5.
+//! Artifact stack. Push and pop are tracing spans. Authorization runs when a context is entered.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -21,8 +21,18 @@ use std::time::Instant;
 use super::error::Error;
 
 struct Frame {
+    artifact_type: String,
+    name: String,
+    action: String,
     entered: tracing::span::EnteredSpan,
     started: Instant,
+}
+
+/// Owned artifact identity for [`ArtifactStack::allows`]. `None` allows without the user facade.
+pub(super) struct AuthzTarget {
+    pub(super) artifact_type: String,
+    pub(super) name: String,
+    pub(super) action: String,
 }
 
 #[derive(Default)]
@@ -49,9 +59,31 @@ impl ArtifactStack {
         )
         .entered();
         self.frames.push(Frame {
+            artifact_type,
+            name,
+            action,
             entered,
             started: Instant::now(),
         });
+    }
+
+    /// `None` when no context is entered, authorization is disabled, or the stack is empty.
+    pub(super) fn authz_target(&self) -> Option<AuthzTarget> {
+        if !crate::user::context_entered() || self.authz_disabled() {
+            return None;
+        }
+        self.frames.last().map(|frame| AuthzTarget {
+            artifact_type: frame.artifact_type.clone(),
+            name: frame.name.clone(),
+            action: frame.action.clone(),
+        })
+    }
+
+    pub(super) fn allows(target: Option<AuthzTarget>) -> bool {
+        let Some(target) = target else {
+            return true;
+        };
+        crate::user::authorize(&target.artifact_type, &target.name, &target.action).is_ok()
     }
 
     pub(super) fn pop(&mut self) -> Result<(), Error> {
@@ -71,12 +103,6 @@ impl ArtifactStack {
 
     pub(super) fn authz_disabled(&self) -> bool {
         self.authz_depth.get() > 0
-    }
-
-    pub(super) fn allows(&self) -> bool {
-        // Phase 5 decides when the depth is zero. Until then the call is allowed.
-        let _disabled = self.authz_disabled();
-        true
     }
 }
 

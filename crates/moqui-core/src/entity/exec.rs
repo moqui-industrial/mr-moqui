@@ -84,6 +84,12 @@ pub(crate) fn after_statement(facade: &EntityFacade, tx: &TransactionManager, fe
     if feed && !tx.has_feed_insert() {
         let _ = load_feed::register_feed_insert(facade, tx);
     }
+    if feed && !tx.has_commit_hook() {
+        let facade = facade.clone();
+        let _ = tx.on_commit(move || {
+            let _ = crate::service::schedule_feed_receive(&facade);
+        });
+    }
 }
 
 pub(crate) fn already_exists(err: &Error) -> bool {

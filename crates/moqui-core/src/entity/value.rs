@@ -213,6 +213,7 @@ impl EntityFacade {
         include_null: bool,
         skip_pk: bool,
     ) -> Result<(), Error> {
+        let _artifact = EntityArtifact::push(entity_name, operation);
         let tx = self.transactions_for(entity_name)?;
         if tx.lock_track_enabled() {
             if let Ok(keys) = self.with_entity(entity_name, |entity, _, _| pk_values(entity, &plain)) {
@@ -227,7 +228,16 @@ impl EntityFacade {
         // An upsert matches ECA rules as a create, whether or not the row existed. Phase 6 `store`
         // needs a read first to pick create or update.
         let seal_operation = if operation == "upsert" { "create" } else { operation };
+        // Update already matched in `write_update`, including the no-column return.
+        if operation != "update" {
+            let _rules = load_feed::match_rules(self, entity_name, seal_operation);
+        }
+        let eca = crate::user::context_entered();
+        if eca {
+            crate::service::run_matched_eca(self, entity_name, seal_operation, true, &plain)?;
+        }
         if cache::gate_write(self, entity_name, operation, &plain)? == WriteGate::Proceed {
+            let after_values = eca.then(|| plain.clone());
             let prepared = self.seal_values(entity_name, seal_operation, plain)?;
             let (sql, params) = self.with_group(entity_name, |entity, dialect, _, _| {
                 let columns = present_columns(entity, &prepared, include_null, skip_pk);
@@ -251,9 +261,9 @@ impl EntityFacade {
                 Ok((sql, params))
             })?;
             execute_tx(&tx, &sql, &params)?;
-        }
-        if operation != "update" {
-            let _rules = load_feed::match_rules(self, entity_name, seal_operation);
+            if let Some(values) = after_values.as_ref() {
+                crate::service::run_matched_eca(self, entity_name, seal_operation, false, values)?;
+            }
         }
         cache::on_write(self, entity_name, operation)?;
         after_statement(self, &tx, true);
@@ -447,6 +457,35 @@ fn bind_columns(columns: &[&str], values: &BTreeMap<String, Value>) -> Vec<Value
         .iter()
         .map(|column| values.get(*column).cloned().unwrap_or(Value::Null))
         .collect()
+}
+
+struct EntityArtifact {
+    pushed: bool,
+}
+
+impl EntityArtifact {
+    fn push(entity_name: &str, operation: &str) -> Self {
+        if !crate::user::context_entered() {
+            return Self { pushed: false };
+        }
+        let action = if operation == "upsert" { "create" } else { operation };
+        let pushed = crate::context::ExecutionContext::with_current(|ctx| {
+            ctx.push("AT_ENTITY", entity_name, action);
+        })
+        .is_some();
+        Self { pushed }
+    }
+}
+
+impl Drop for EntityArtifact {
+    fn drop(&mut self) {
+        if !self.pushed {
+            return;
+        }
+        crate::context::ExecutionContext::with_current(|ctx| {
+            let _ = ctx.pop();
+        });
+    }
 }
 
 fn now_stamp() -> Value {

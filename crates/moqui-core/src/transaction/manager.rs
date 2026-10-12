@@ -421,6 +421,11 @@ impl TransactionManager {
         self.with_frames(|frames| active_mut(frames).is_some_and(|frame| !frame.feed_insert.is_empty()))
     }
 
+    /// True when this frame already has an on-commit hook.
+    pub fn has_commit_hook(&self) -> bool {
+        self.with_frames(|frames| active_mut(frames).is_some_and(|frame| !frame.on_commit.is_empty()))
+    }
+
     pub fn on_commit<F>(&self, hook: F) -> Result<(), Error>
     where
         F: FnOnce() + Send + 'static,

@@ -160,11 +160,15 @@ impl EntityFind {
     }
 
     fn combined(&self) -> Option<Condition> {
-        match self.conditions.len() {
+        let condition = match self.conditions.len() {
             0 => None,
             1 => Some(self.conditions[0].clone()),
             _ => Some(Condition::and(self.conditions.clone())),
+        };
+        if !authorization_filters() {
+            return condition;
         }
+        crate::user::apply_entity_filters(&self.entity_name, condition)
     }
 
     fn plan(&self, count_only: bool) -> Result<ReadPlan, Error> {
@@ -229,6 +233,13 @@ impl EntityFind {
             Ok(EntityList::new(values))
         })
     }
+}
+
+fn authorization_filters() -> bool {
+    if !crate::user::context_entered() {
+        return false;
+    }
+    crate::context::ExecutionContext::with_current(|ctx| !ctx.authz_disabled()).unwrap_or(false)
 }
 
 struct ReadPlan {

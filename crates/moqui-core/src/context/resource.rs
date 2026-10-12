@@ -199,7 +199,7 @@ impl ResourceFacade {
         let scheme = scheme_of(location);
         match scheme {
             "content" => Err(Error::new(format!("content resource is not available: {location}"))),
-            "http" | "https" => Err(Error::new("HTTP resources are not available")),
+            "http" | "https" => Err(crate::service::http_resource_error(location)),
             "dbresource" => self.db_ref(location),
             "file" => Ok(self.file_ref(location)),
             "runtime" => Ok(self.runtime_ref(location)),

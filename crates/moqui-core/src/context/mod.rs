@@ -28,7 +28,7 @@ pub use cache::CacheFacade;
 pub use component::ComponentInfo;
 pub use conf::{load_merged_conf, merge_conf};
 pub use error::Error;
-pub use factory::{ExecutionContext, ExecutionContextFactory};
+pub use factory::{ContextGuard, ExecutionContext, ExecutionContextFactory};
 pub use message::MessageFacade;
 pub use resource::{ResourceFacade, ResourceRef};
 
