@@ -10,7 +10,7 @@ A cluster exists when more than one instance uses the same database. Membership 
 
 Peers call each other over HTTPS. The cluster endpoint requires a client certificate. The certificate and its private key are one row in the same database. The first instance to start generates the keypair when that row is empty and stores it. Later instances load it. Each instance reads the key from the database. The connection between instances carries a TLS signature, and does not carry the key. The session-cookie HMAC key is a different row. The two keys stay distinct.
 
-The local publish stays a `SimpleTopic`. A listener fans that publish out to live peers. The receiver applies the message locally and does not send it on. One live member means no fan-out.
+The local publish stays a `SimpleTopic`. The local `MCache` drop runs on the writer. The peer message is the cache key, queued at commit and sent by one host thread after the enlisted client is back in the pool. The topic does not carry the entity body or the session map. The receiver applies the message locally and does not send it on. One live member means no fan-out.
 
 The member row holds the cluster base URL, the address peers call. Only that endpoint requires the client certificate. Public application routes do not.
 
@@ -36,15 +36,15 @@ The member row is the instance id, the cluster base URL, and the heartbeat times
 
 ## Transport
 
-The sender is a small trait. The default implementation is an HTTPS POST to `{base}/cluster/{topic}` with the shared client certificate. The HTTP client keeps that connection pooled. The message carries an origin id. A failed send is retried briefly. A later optional sender is a `russh` session with two channels, one for each topic, specified in `plans/Ssh.md`. The default remains this POST.
+The sender is a small trait. The default implementation is an HTTPS POST to `{base}/cluster/{topic}` with the shared client certificate. The HTTP client keeps that connection pooled. The send runs on one host thread, after commit, and only after the enlisted client has been returned. The message is the cache key and carries an origin id. An invalidation is safe to apply twice. A failed send is retried briefly. A later optional sender is a `russh` session with two channels, one for each topic, specified in `plans/Ssh.md`. The default remains this POST.
 
-Cache invalidation is safe to apply twice. A notification carries a message id so a retry does not deliver it twice.
+A notification carries a message id so a retry does not deliver it twice.
 
 Postgres `NOTIFY` can be another sender later, for peers that share the database and cannot open HTTPS to each other. It is not the default, and it is not specified further.
 
 ## Sessions
 
-The snapshot row is the share. A second instance loads the session by id from the database. It does not receive the session over the cluster connection. The cookie signature is HMAC-SHA256 over the session id. That key is its own row in the primary database, generated when the row is empty. It is not the cluster certificate. A bad MAC is an unknown session. Session bytes still do not cross the cluster connection. Flush modes, the reserve connection, and the guarantee points are Sessions and login in `plans/Architecture-Proposal.md`.
+The share is the `moqui.server.HttpSession` row through the entity one-cache. A second instance loads that row by id. Invalidation uses the entity-cache topic, which drops the one-cache entry. The receiver does not apply a copy of the attribute map. Session bytes still do not cross the cluster connection. The cookie signature is HMAC-SHA256 over the session id. That key is its own row in the primary database, generated when the row is empty. It is not the cluster certificate. A bad MAC is an unknown session. The merge, the reserve connection, and the flush modes are Sessions and login in `plans/Architecture-Proposal.md`.
 
 ## When it lands
 
