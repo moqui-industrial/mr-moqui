@@ -15,7 +15,9 @@
 //! Framework. Synchronous and multi-threaded. No listen socket and no database driver.
 
 pub mod context;
+pub mod driver;
 pub mod entity;
+pub mod transaction;
 
 /// Marker so the host links this crate.
 pub fn candidate() -> &'static str {

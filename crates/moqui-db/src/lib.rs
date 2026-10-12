@@ -16,6 +16,7 @@
 
 pub mod dialect;
 pub mod model;
+pub mod sql;
 
 /// Marker so a downstream crate links this one.
 pub fn candidate() -> &'static str {

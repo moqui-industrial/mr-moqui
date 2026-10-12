@@ -12,7 +12,10 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Candidate process edge. The server, drivers, and PDF renderer are not implemented yet.
+//! Process edge. HTTP, PDF, SSH, and SSO are not implemented yet.
+//! Database drivers live in [`db`].
+
+pub mod db;
 
 /// Process entry used by the `moqui` binary.
 pub fn run() -> &'static str {
