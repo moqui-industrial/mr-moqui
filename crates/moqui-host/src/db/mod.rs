@@ -18,6 +18,7 @@ pub mod embedded;
 pub mod entity_cache;
 pub mod entity_facade;
 pub mod field_rw;
+pub mod load_feed;
 pub mod mysql;
 pub mod postgres;
 pub mod query_rest;

@@ -233,6 +233,13 @@ along with this software (see the LICENSE.md file). If not, see
         <relationship type="one" related="moqui.entity.feed.DataFeed" short-alias="feed"/>
         <relationship type="one" related="moqui.entity.document.DataDocument" short-alias="document"/>
     </entity>
+    <entity entity-name="DataFeedPending" package="moqui.entity.feed" use="transactional" cache="never">
+        <field name="dataFeedPendingId" type="id" is-pk="true"/>
+        <field name="dataDocumentId" type="id"/>
+        <field name="entityName" type="text-medium"/>
+        <field name="primaryKey" type="text-medium"/>
+        <field name="operation" type="text-short"/>
+    </entity>
     <view-entity entity-name="DataFeedAndDocument" package="moqui.entity.feed">
         <member-entity entity-alias="DTFD" entity-name="moqui.entity.feed.DataFeed"/>
         <member-entity entity-alias="DFD" entity-name="moqui.entity.feed.DataFeedDocument" join-from-alias="DTFD">
