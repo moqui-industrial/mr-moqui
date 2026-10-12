@@ -22,6 +22,7 @@ use moqui_db::sql::{delete, insert, update, Condition};
 use moqui_lib::error::Error;
 use moqui_lib::object::{basic_convert, Value};
 
+use super::cache::WriteGate;
 use super::exec::{after_statement, execute_tx};
 use super::facade::EntityFacade;
 use super::field_rw;
@@ -166,63 +167,70 @@ impl EntityFacade {
     }
 
     fn insert_prepared(&self, value: &EntityValue, stack: &mut HashSet<String>) -> Result<(), Error> {
-        let prepared = self.prepare_values(&value.entity_name, &value.fields, false)?;
-        self.require_pk(&value.entity_name, &prepared)?;
-        fk::enforce(self, &value.entity_name, &prepared, stack)?;
-        let (sql, params, tx) = self.with_group(&value.entity_name, |entity, dialect, _, tx| {
-            if entity.is_view {
-                return Err(Error::new(format!("cannot create view-entity {}", entity.full_name)));
-            }
-            let columns = present_columns(entity, &prepared, false, false);
-            let sql = insert(entity, dialect, &columns)?;
-            Ok((sql, bind_columns(&columns, &prepared), tx.clone()))
-        })?;
-        execute_tx(&tx, &sql, &params)?;
-        let _rules = load_feed::match_rules(self, &value.entity_name, "create");
-        cache::on_write(self, &value.entity_name, "create")?;
-        after_statement(&tx, true);
+        let plain = self.normalize_values(&value.entity_name, &value.fields, false)?;
+        self.require_pk(&value.entity_name, &plain)?;
+        fk::enforce(self, &value.entity_name, &plain, stack)?;
+        self.reject_view(&value.entity_name, "create")?;
+        self.finish_write(&value.entity_name, "create", plain, false, false)?;
         Ok(())
     }
 
     fn write_update(&self, entity_name: &str, values: &BTreeMap<String, Value>) -> Result<(), Error> {
-        let prepared = self.prepare_values(entity_name, values, true)?;
+        let plain = self.normalize_values(entity_name, values, true)?;
         let _rules = load_feed::match_rules(self, entity_name, "update");
-        let (sql, params, tx) = self.with_group(entity_name, |entity, dialect, _, tx| {
-            if entity.is_view {
-                return Err(Error::new(format!("cannot update view-entity {}", entity.full_name)));
-            }
-            let columns = present_columns(entity, &prepared, true, true);
-            if columns.is_empty() {
-                return Ok((None, Vec::new(), tx.clone()));
-            }
-            let condition = pk_condition(entity, &prepared)?;
-            let sql = update(entity, dialect, &columns, Some(&condition))?;
-            let mut params = bind_columns(&columns, &prepared);
-            params.extend(super::params::condition_params(&condition));
-            Ok((Some(sql), params, tx.clone()))
+        self.reject_view(entity_name, "update")?;
+        let has_columns = self.with_entity(entity_name, |entity, _, _| {
+            Ok(!present_columns(entity, &plain, true, true).is_empty())
         })?;
-        if let Some(sql) = sql {
-            execute_tx(&tx, &sql, &params)?;
-            cache::on_write(self, entity_name, "update")?;
-            after_statement(&tx, true);
+        if !has_columns {
+            return Ok(());
         }
-        Ok(())
+        self.finish_write(entity_name, "update", plain, true, true)
     }
 
     fn write_delete(&self, entity_name: &str, values: &BTreeMap<String, Value>) -> Result<(), Error> {
-        let prepared = self.prepare_values(entity_name, values, false)?;
-        let _rules = load_feed::match_rules(self, entity_name, "delete");
-        let (sql, params, tx) = self.with_group(entity_name, |entity, dialect, _, tx| {
-            if entity.is_view {
-                return Err(Error::new(format!("cannot delete view-entity {}", entity.full_name)));
-            }
-            let condition = pk_condition(entity, &prepared)?;
-            let sql = delete(entity, dialect, Some(&condition))?;
-            Ok((sql, super::params::condition_params(&condition), tx.clone()))
-        })?;
-        execute_tx(&tx, &sql, &params)?;
-        cache::on_write(self, entity_name, "delete")?;
-        after_statement(&tx, true);
+        let plain = self.normalize_values(entity_name, values, false)?;
+        self.reject_view(entity_name, "delete")?;
+        self.finish_write(entity_name, "delete", plain, false, false)
+    }
+
+    /// Run the write, or leave it with the cache when the gate handles it. Values are plaintext.
+    fn finish_write(
+        &self,
+        entity_name: &str,
+        operation: &str,
+        plain: BTreeMap<String, Value>,
+        include_null: bool,
+        skip_pk: bool,
+    ) -> Result<(), Error> {
+        let tx = self.transactions_for(entity_name)?;
+        if cache::gate_write(self, entity_name, operation, &plain)? == WriteGate::Proceed {
+            let prepared = self.seal_values(entity_name, plain)?;
+            let (sql, params) = self.with_group(entity_name, |entity, dialect, _, _| {
+                let columns = present_columns(entity, &prepared, include_null, skip_pk);
+                let (sql, params) = if operation == "delete" {
+                    let condition = pk_condition(entity, &prepared)?;
+                    let sql = delete(entity, dialect, Some(&condition))?;
+                    (sql, super::params::condition_params(&condition))
+                } else if operation == "update" {
+                    let condition = pk_condition(entity, &prepared)?;
+                    let sql = update(entity, dialect, &columns, Some(&condition))?;
+                    let mut params = bind_columns(&columns, &prepared);
+                    params.extend(super::params::condition_params(&condition));
+                    (sql, params)
+                } else {
+                    let sql = insert(entity, dialect, &columns)?;
+                    (sql, bind_columns(&columns, &prepared))
+                };
+                Ok((sql, params))
+            })?;
+            execute_tx(&tx, &sql, &params)?;
+        }
+        if operation != "update" {
+            let _rules = load_feed::match_rules(self, entity_name, operation);
+        }
+        cache::on_write(self, entity_name, operation)?;
+        after_statement(self, &tx, true);
         Ok(())
     }
 
@@ -303,13 +311,12 @@ impl EntityFacade {
         Ok((seq_field, format!("{next:0width$}")))
     }
 
-    fn prepare_values(
+    fn normalize_values(
         &self,
         entity_name: &str,
         values: &BTreeMap<String, Value>,
         update: bool,
     ) -> Result<BTreeMap<String, Value>, Error> {
-        let facade = self.clone();
         self.with_entity(entity_name, |entity, _, model| {
             let mut out = values.clone();
             if entity.field("lastUpdatedStamp").is_some() {
@@ -318,10 +325,9 @@ impl EntityFacade {
                     out.insert("lastUpdatedStamp".to_string(), now_stamp());
                 }
             }
-            let written = field_rw::before_write(&facade, entity, out)?;
             let mut normalized = BTreeMap::new();
             for field in &entity.fields {
-                let Some(value) = written.get(&field.name) else {
+                let Some(value) = out.get(&field.name) else {
                     continue;
                 };
                 if value.is_null() {
@@ -337,6 +343,27 @@ impl EntityFacade {
                 normalized.insert(field.name.clone(), converted);
             }
             Ok(normalized)
+        })
+    }
+
+    fn seal_values(
+        &self,
+        entity_name: &str,
+        values: BTreeMap<String, Value>,
+    ) -> Result<BTreeMap<String, Value>, Error> {
+        let facade = self.clone();
+        self.with_entity(entity_name, |entity, _, _| {
+            field_rw::before_write(&facade, entity, values)
+        })
+    }
+
+    fn reject_view(&self, entity_name: &str, verb: &str) -> Result<(), Error> {
+        self.with_entity(entity_name, |entity, _, _| {
+            if entity.is_view {
+                Err(Error::new(format!("cannot {verb} view-entity {}", entity.full_name)))
+            } else {
+                Ok(())
+            }
         })
     }
 }

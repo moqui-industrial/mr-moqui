@@ -20,6 +20,7 @@ use moqui_lib::error::Error;
 use moqui_lib::object::Value;
 
 use super::cache;
+use super::facade::EntityFacade;
 use super::load_feed;
 use crate::driver::{DbConnection, DbRow};
 use crate::transaction::TransactionManager;
@@ -73,15 +74,15 @@ where
 }
 
 /// Register the cache and feed hooks once for the open frame.
-pub(crate) fn after_statement(tx: &TransactionManager, feed: bool) {
+pub(crate) fn after_statement(facade: &EntityFacade, tx: &TransactionManager, feed: bool) {
     if !tx.in_transaction() {
         return;
     }
-    if !tx.has_cache_flush() && cache::register_cache_flush(tx).is_err() {
+    if !tx.has_cache_flush() && cache::register_cache_flush(facade, tx).is_err() {
         return;
     }
     if feed && !tx.has_feed_insert() {
-        let _ = load_feed::register_feed_insert(tx);
+        let _ = load_feed::register_feed_insert(facade, tx);
     }
 }
 

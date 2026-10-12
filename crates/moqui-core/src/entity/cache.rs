@@ -14,23 +14,78 @@
 
 //! Find and write cache hooks. Later: entity cache, transaction cache, and sim overlay.
 
-use moqui_db::sql::Condition;
+use std::collections::BTreeMap;
+
+use moqui_db::sql::{Condition, OrderBy};
 use moqui_lib::error::Error;
+use moqui_lib::object::Value;
 
 use super::facade::EntityFacade;
 use super::value::EntityList;
 use crate::transaction::TransactionManager;
 
-/// Look up a cached find. This spine always misses.
-pub fn before_find(facade: &EntityFacade, entity_name: &str, condition: Option<&Condition>) -> Option<EntityList> {
+/// The find `list` and `iterator` ask the cache about. Owned so a cache can store the key.
+pub struct FindLookup {
+    pub entity_name: String,
+    pub condition: Option<Condition>,
+    pub order: Vec<OrderBy>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+/// Whether the caller should run the write on the enlisted connection.
+///
+/// `Handled` means this module stored the write or ran it itself. Return that only when the write
+/// will not be lost: a transaction cache inside an open frame, or a sim write already sent to the
+/// overlay. `on_write` still runs after either variant and is the one-cache invalidation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteGate {
+    Proceed,
+    Handled,
+}
+
+/// Look up a cached list. This spine always misses.
+pub fn before_find(facade: &EntityFacade, lookup: &FindLookup) -> Option<EntityList> {
+    let _ = (
+        facade,
+        &lookup.entity_name,
+        &lookup.condition,
+        &lookup.order,
+        lookup.limit,
+        lookup.offset,
+    );
+    None
+}
+
+/// Look up a cached count. This spine always misses. The value is the count, not a list length.
+pub fn before_count(facade: &EntityFacade, entity_name: &str, condition: Option<&Condition>) -> Option<i64> {
     let _ = (facade, entity_name, condition);
     None
 }
 
-/// Store a find result. This spine does not cache.
-pub fn after_find(facade: &EntityFacade, entity_name: &str, rows: &EntityList) -> Result<(), Error> {
-    let _ = (facade, entity_name, rows);
+/// Store a find result. Rows are already decrypted and localized.
+pub fn after_find(facade: &EntityFacade, lookup: &FindLookup, rows: &EntityList) -> Result<(), Error> {
+    let _ = (
+        facade,
+        &lookup.entity_name,
+        &lookup.condition,
+        &lookup.order,
+        lookup.limit,
+        lookup.offset,
+        rows,
+    );
     Ok(())
+}
+
+/// Decide whether SQL on the enlisted connection should run. Values are normalized and not yet encrypted.
+pub fn gate_write(
+    facade: &EntityFacade,
+    entity_name: &str,
+    operation: &str,
+    values: &BTreeMap<String, Value>,
+) -> Result<WriteGate, Error> {
+    let _ = (facade, entity_name, operation, values);
+    Ok(WriteGate::Proceed)
 }
 
 /// Note a create, update, or delete. This spine does not invalidate a cache.
@@ -40,6 +95,18 @@ pub fn on_write(facade: &EntityFacade, entity_name: &str, operation: &str) -> Re
 }
 
 /// Register a no-op `on_cache_flush` so the transaction slot exists.
-pub fn register_cache_flush(tx: &TransactionManager) -> Result<(), Error> {
+pub fn register_cache_flush(facade: &EntityFacade, tx: &TransactionManager) -> Result<(), Error> {
+    let _ = facade;
     tx.on_cache_flush(|_| Ok(()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WriteGate;
+
+    #[test]
+    fn handled_is_a_write_gate() {
+        assert_eq!(WriteGate::Handled, WriteGate::Handled);
+        assert_ne!(WriteGate::Proceed, WriteGate::Handled);
+    }
 }

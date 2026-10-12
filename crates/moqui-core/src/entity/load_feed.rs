@@ -28,6 +28,7 @@ pub fn match_rules(facade: &EntityFacade, entity_name: &str, operation: &str) ->
 }
 
 /// Register a no-op `on_feed_insert`. This spine does not insert `DataFeedPending`.
-pub fn register_feed_insert(tx: &TransactionManager) -> Result<(), Error> {
+pub fn register_feed_insert(facade: &EntityFacade, tx: &TransactionManager) -> Result<(), Error> {
+    let _ = facade;
     tx.on_feed_insert(|_| Ok(()))
 }

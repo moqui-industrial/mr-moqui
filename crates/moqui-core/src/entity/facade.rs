@@ -14,9 +14,10 @@
 
 //! One entity facade. One [`TransactionManager`] per entity group.
 
+use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -87,6 +88,8 @@ pub(crate) struct Inner {
     pub(crate) db_ready: AtomicBool,
     locale: RwLock<String>,
     crypt: RwLock<Option<(CryptConfig, Vec<CryptConfig>)>>,
+    sim: AtomicBool,
+    slots: Mutex<HashMap<TypeId, Box<dyn Any + Send>>>,
 }
 
 /// Entity facade shared by the factory. Clone shares the model, banks, and pools.
@@ -132,8 +135,30 @@ impl EntityFacade {
                 db_ready: AtomicBool::new(false),
                 locale: RwLock::new("en".to_string()),
                 crypt: RwLock::new(None),
+                sim: AtomicBool::new(false),
+                slots: Mutex::new(HashMap::new()),
             }),
         })
+    }
+
+    /// Hook-module state. `init` runs once per `T`. Do not call `with_slot` from `body`.
+    pub fn with_slot<T, R>(&self, init: impl FnOnce() -> T, body: impl FnOnce(&mut T) -> R) -> R
+    where
+        T: Any + Send + 'static,
+    {
+        let mut slots = self.inner.slots.lock().unwrap_or_else(|err| err.into_inner());
+        let entry = slots.entry(TypeId::of::<T>()).or_insert_with(|| Box::new(init()));
+        let value = entry.downcast_mut::<T>().expect("slot type matches its TypeId");
+        body(value)
+    }
+
+    /// True while sim mode should keep writes off the main schema. The cache module sets this.
+    pub fn set_sim_active(&self, value: bool) {
+        self.inner.sim.store(value, Ordering::Relaxed);
+    }
+
+    pub fn sim_active(&self) -> bool {
+        self.inner.sim.load(Ordering::Relaxed)
     }
 
     pub fn set_locale(&self, locale: impl Into<String>) {

@@ -136,6 +136,17 @@ fn locale_defaults_to_en_and_crypt_stays_unset() {
     assert!(facade.crypt().is_none());
     facade.set_locale("fr");
     assert_eq!(facade.locale(), "fr");
+    assert!(!facade.sim_active());
+    facade.set_sim_active(true);
+    assert!(facade.sim_active());
+    facade.with_slot(
+        || String::from("seed"),
+        |slot| {
+            assert_eq!(slot, "seed");
+            slot.push_str("-kept");
+        },
+    );
+    facade.with_slot(|| String::from("other"), |slot| assert_eq!(slot, "seed-kept"));
     let primary = CryptConfig {
         pass: "MoquiDefaultPassword:CHANGEME".to_string(),
         salt: "20201202".to_string(),

@@ -18,7 +18,7 @@ use moqui_db::sql::{count, select, select_view, Condition, FieldRef, LimitOffset
 use moqui_lib::error::Error;
 use moqui_lib::object::{basic_convert, Value};
 
-use super::cache;
+use super::cache::{self, FindLookup};
 use super::exec::{after_statement, query_tx};
 use super::facade::EntityFacade;
 use super::field_rw;
@@ -86,15 +86,16 @@ impl EntityFind {
 
     pub fn list(self) -> Result<EntityList, Error> {
         let condition = self.combined();
-        if let Some(cached) = cache::before_find(&self.facade, &self.entity_name, condition.as_ref()) {
+        let lookup = self.lookup(&condition);
+        if let Some(cached) = cache::before_find(&self.facade, &lookup) {
             return Ok(cached);
         }
         let plan = self.plan(false)?;
         let rows = query_tx(&plan.tx, &plan.sql, &plan.params)?;
-        after_statement(&plan.tx, false);
+        after_statement(&self.facade, &plan.tx, false);
         let values = self.rows_to_values(&plan, &rows)?;
         let list = EntityList::new(values);
-        cache::after_find(&self.facade, &self.entity_name, &list)?;
+        cache::after_find(&self.facade, &lookup, &list)?;
         Ok(list)
     }
 
@@ -108,12 +109,12 @@ impl EntityFind {
 
     pub fn count(self) -> Result<i64, Error> {
         let condition = self.combined();
-        if let Some(cached) = cache::before_find(&self.facade, &self.entity_name, condition.as_ref()) {
-            return i64::try_from(cached.len()).map_err(|_| Error::new("find count overflowed"));
+        if let Some(count) = cache::before_count(&self.facade, &self.entity_name, condition.as_ref()) {
+            return Ok(count);
         }
         let plan = self.plan(true)?;
         let rows = query_tx(&plan.tx, &plan.sql, &plan.params)?;
-        after_statement(&plan.tx, false);
+        after_statement(&self.facade, &plan.tx, false);
         let value = rows
             .first()
             .and_then(|row| row.columns.first())
@@ -130,19 +131,30 @@ impl EntityFind {
     /// Postgres requires an active transaction. Fetch size is the driver's.
     pub fn iterator(self) -> Result<EntityListIterator, Error> {
         let condition = self.combined();
-        if let Some(cached) = cache::before_find(&self.facade, &self.entity_name, condition.as_ref()) {
+        let lookup = self.lookup(&condition);
+        if let Some(cached) = cache::before_find(&self.facade, &lookup) {
             return Ok(EntityListIterator::memory(self.facade, self.entity_name, cached));
         }
         let plan = self.plan(false)?;
         plan.tx
             .with_connection(|conn| conn.open_stream(&plan.sql, &plan.params))?;
-        after_statement(&plan.tx, false);
+        after_statement(&self.facade, &plan.tx, false);
         Ok(EntityListIterator::stream(
             self.facade,
             self.entity_name,
             plan.columns,
             plan.tx,
         ))
+    }
+
+    fn lookup(&self, condition: &Option<Condition>) -> FindLookup {
+        FindLookup {
+            entity_name: self.entity_name.clone(),
+            condition: condition.clone(),
+            order: self.order.clone(),
+            limit: self.limit,
+            offset: self.offset,
+        }
     }
 
     fn combined(&self) -> Option<Condition> {
