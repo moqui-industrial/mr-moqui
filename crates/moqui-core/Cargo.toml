@@ -23,6 +23,8 @@ pbkdf2 = { workspace = true }
 md-5 = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
+argon2 = { workspace = true }
+sha1 = { workspace = true }
 
 [lints]
 workspace = true

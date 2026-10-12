@@ -12,18 +12,219 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Server session. The fields are phase 5.
+//! In-memory session. No database row and no cookie.
+
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 
 use crate::context::Error;
 
+#[derive(Clone, Debug, Default)]
+struct Memory {
+    user_id: Option<String>,
+    username: Option<String>,
+    visit_id: Option<String>,
+    visitor_id: Option<String>,
+    locale: Option<String>,
+    time_zone: Option<String>,
+    csrf_token: Option<String>,
+    anonymous: bool,
+    flash: Vec<String>,
+    saved: BTreeMap<String, String>,
+    errors: BTreeMap<String, String>,
+    screen_history: Vec<String>,
+}
+
+thread_local! {
+    static SESSION: RefCell<Memory> = RefCell::new(Memory::default());
+}
+
+/// The logged-in username. `Ok(None)` when nobody is logged in.
 pub fn current_username() -> Result<Option<String>, Error> {
-    Ok(None)
+    Ok(with_session(|session| session.username.clone()))
+}
+
+pub fn current_user_id() -> Result<Option<String>, Error> {
+    Ok(with_session(|session| session.user_id.clone()))
+}
+
+pub fn is_anonymous() -> Result<bool, Error> {
+    Ok(with_session(|session| session.anonymous))
+}
+
+/// CSRF token for this thread. Generated from `getrandom` the first time it is read.
+pub fn csrf_token() -> Result<String, Error> {
+    let existing = with_session(|session| session.csrf_token.clone());
+    if let Some(token) = existing {
+        return Ok(token);
+    }
+    let token = random_hex(32)?;
+    with_session(|session| {
+        if session.csrf_token.is_none() {
+            session.csrf_token = Some(token.clone());
+        }
+    });
+    Ok(with_session(|session| session.csrf_token.clone().unwrap_or(token)))
+}
+
+pub fn visit_id() -> Result<Option<String>, Error> {
+    Ok(with_session(|session| session.visit_id.clone()))
+}
+
+pub fn visitor_id() -> Result<Option<String>, Error> {
+    Ok(with_session(|session| session.visitor_id.clone()))
+}
+
+pub fn locale() -> Result<Option<String>, Error> {
+    Ok(with_session(|session| session.locale.clone()))
+}
+
+pub fn time_zone() -> Result<Option<String>, Error> {
+    Ok(with_session(|session| session.time_zone.clone()))
+}
+
+pub fn flash_messages() -> Result<Vec<String>, Error> {
+    Ok(with_session(|session| session.flash.clone()))
+}
+
+pub fn saved_parameters() -> Result<BTreeMap<String, String>, Error> {
+    Ok(with_session(|session| session.saved.clone()))
+}
+
+pub fn error_parameters() -> Result<BTreeMap<String, String>, Error> {
+    Ok(with_session(|session| session.errors.clone()))
+}
+
+pub fn screen_history() -> Result<Vec<String>, Error> {
+    Ok(with_session(|session| session.screen_history.clone()))
+}
+
+pub fn set_locale(locale: Option<&str>) {
+    with_session(|session| session.locale = locale.map(str::to_string));
+}
+
+pub fn set_time_zone(time_zone: Option<&str>) {
+    with_session(|session| session.time_zone = time_zone.map(str::to_string));
+}
+
+#[allow(dead_code)]
+pub fn add_flash_message(message: &str) {
+    with_session(|session| session.flash.push(message.to_string()));
+}
+
+#[allow(dead_code)]
+pub fn save_parameter(name: &str, value: &str) {
+    with_session(|session| {
+        session.saved.insert(name.to_string(), value.to_string());
+    });
+}
+
+#[allow(dead_code)]
+pub fn set_error_parameter(name: &str, value: &str) {
+    with_session(|session| {
+        session.errors.insert(name.to_string(), value.to_string());
+    });
+}
+
+#[allow(dead_code)]
+pub fn push_screen_history(screen: &str) {
+    with_session(|session| session.screen_history.push(screen.to_string()));
+}
+
+pub(crate) fn set_user(user_id: &str, username: &str) {
+    with_session(|session| {
+        session.user_id = Some(user_id.to_string());
+        session.username = Some(username.to_string());
+        session.anonymous = false;
+    });
+}
+
+#[allow(dead_code)]
+pub(crate) fn set_anonymous(anonymous: bool) {
+    with_session(|session| session.anonymous = anonymous);
+}
+
+pub(crate) fn set_visit(visit_id: &str, visitor_id: &str) {
+    with_session(|session| {
+        session.visit_id = Some(visit_id.to_string());
+        session.visitor_id = Some(visitor_id.to_string());
+    });
+}
+
+/// Clears the user and the anonymous flag. Visit ids and screen state stay.
+#[allow(dead_code)]
+pub(crate) fn clear_login() {
+    with_session(|session| {
+        session.user_id = None;
+        session.username = None;
+        session.anonymous = false;
+    });
+}
+
+#[allow(dead_code)]
+pub(crate) fn reset_session() {
+    with_session(|session| *session = Memory::default());
+}
+
+fn with_session<T>(body: impl FnOnce(&mut Memory) -> T) -> T {
+    SESSION.with(|slot| body(&mut slot.borrow_mut()))
+}
+
+fn random_hex(size: usize) -> Result<String, Error> {
+    let mut bytes = vec![0_u8; size];
+    getrandom::fill(&mut bytes).map_err(|err| Error::new(format!("could not read random bytes: {err}")))?;
+    Ok(encode_hex(&bytes))
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(char::from(HEX[usize::from(byte >> 4)]));
+        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn current_username_is_a_stub() {
-        assert!(super::current_username().unwrap().is_none());
+    fn current_username_is_none_until_a_user_is_set() {
+        reset_session();
+        assert!(current_username().unwrap().is_none());
+        assert!(current_user_id().unwrap().is_none());
+        assert!(!is_anonymous().unwrap());
+        set_user("U1", "ada");
+        set_locale(Some("en"));
+        set_time_zone(Some("UTC"));
+        set_visit("100000", "visitor-1");
+        add_flash_message("saved-flash");
+        save_parameter("q", "1");
+        set_error_parameter("password", "required");
+        push_screen_history("Login");
+        assert_eq!(current_username().unwrap().as_deref(), Some("ada"));
+        assert_eq!(current_user_id().unwrap().as_deref(), Some("U1"));
+        assert_eq!(locale().unwrap().as_deref(), Some("en"));
+        assert_eq!(time_zone().unwrap().as_deref(), Some("UTC"));
+        assert_eq!(visit_id().unwrap().as_deref(), Some("100000"));
+        assert_eq!(visitor_id().unwrap().as_deref(), Some("visitor-1"));
+        assert_eq!(flash_messages().unwrap(), vec!["saved-flash".to_string()]);
+        assert_eq!(saved_parameters().unwrap().get("q").map(String::as_str), Some("1"));
+        assert_eq!(
+            error_parameters().unwrap().get("password").map(String::as_str),
+            Some("required")
+        );
+        assert_eq!(screen_history().unwrap(), vec!["Login".to_string()]);
+        let token = csrf_token().unwrap();
+        assert_eq!(token.len(), 64);
+        assert_eq!(csrf_token().unwrap(), token);
+        assert!(!is_anonymous().unwrap());
+        clear_login();
+        assert!(current_username().unwrap().is_none());
+        assert!(!is_anonymous().unwrap());
+        assert_eq!(visit_id().unwrap().as_deref(), Some("100000"));
+        reset_session();
     }
 }

@@ -12,19 +12,115 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Password policy. The rules are phase 5.
+//! Password policy from `user-facade/password`. Missing conf uses the documented fallbacks.
 
-use crate::context::Error;
+use moqui_lib::node::MNode;
 
+use crate::context::{Error, ExecutionContext};
+
+/// Reject a password that is short, has too few digits, or has no non-alphanumeric character.
 pub fn password_acceptable(password: &str) -> Result<(), Error> {
-    let _ = password;
+    let (min_length, min_digits, min_others) = password_rules();
+    let length = i64::try_from(password.chars().count()).unwrap_or(i64::MAX);
+    if length < min_length {
+        return Err(Error::new(format!("Password shorter than {min_length} characters")));
+    }
+    let digits = count_matching(password, |ch| ch.is_ascii_digit());
+    if digits < min_digits {
+        return Err(Error::new(format!(
+            "Password needs {min_digits} digit/number characters"
+        )));
+    }
+    let others = count_matching(password, |ch| !ch.is_alphabetic() && !ch.is_ascii_digit());
+    if others < min_others {
+        return Err(Error::new(format!(
+            "Password needs {min_others} other characters (not letter or digit)"
+        )));
+    }
     Ok(())
+}
+
+pub(crate) fn password_rules() -> (i64, i64, i64) {
+    (
+        conf_number("password", "min-length", 8),
+        conf_number("password", "min-digits", 1),
+        conf_number("password", "min-others", 1),
+    )
+}
+
+#[allow(dead_code)]
+pub(crate) fn history_limit() -> i64 {
+    conf_number("password", "history-limit", 5)
+}
+
+/// Java uses 12 when the attribute is missing. The XML default, when present, is 104.
+pub(crate) fn change_weeks() -> i64 {
+    conf_number("password", "change-weeks", 12)
+}
+
+pub(crate) fn password_hash_type() -> String {
+    conf_text("password", "encrypt-hash-type", "SHA-256")
+}
+
+#[allow(dead_code)]
+pub(crate) fn login_key_hash_type() -> String {
+    conf_text("login-key", "encrypt-hash-type", "SHA-256")
+}
+
+pub(crate) fn max_failures() -> i64 {
+    conf_number("login", "max-failures", 3)
+}
+
+/// Conf default is 5. Java's in-code fallback when the attribute is missing is 30; this reads the attribute.
+pub(crate) fn disable_minutes() -> i64 {
+    conf_number("login", "disable-minutes", 5)
+}
+
+fn count_matching(password: &str, pred: impl Fn(char) -> bool) -> i64 {
+    i64::try_from(password.chars().filter(|ch| pred(*ch)).count()).unwrap_or(i64::MAX)
+}
+
+fn conf_number(child: &str, name: &str, fallback: i64) -> i64 {
+    conf_text_opt(child, name)
+        .and_then(|text| text.parse().ok())
+        .unwrap_or(fallback)
+}
+
+fn conf_text(child: &str, name: &str, fallback: &str) -> String {
+    conf_text_opt(child, name).unwrap_or_else(|| fallback.to_string())
+}
+
+fn conf_text_opt(child: &str, name: &str) -> Option<String> {
+    ExecutionContext::with_current(|ctx| facade_attr(ctx.factory().conf_text(), child, name)).flatten()
+}
+
+fn facade_attr(text: &str, child: &str, name: &str) -> Option<String> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    let root = MNode::parse_text("moqui-conf", text).ok()?;
+    let facade = root.first_named("user-facade")?;
+    let node = facade.first_named(child)?;
+    let value = node.attribute(name)?;
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::password_acceptable;
+
     #[test]
-    fn password_acceptable_is_a_stub() {
-        super::password_acceptable("secret").unwrap();
+    fn password_acceptable_rejects_secret_and_accepts_a_mixed_password() {
+        let short = password_acceptable("secret").unwrap_err();
+        assert!(short.to_string().contains("shorter"), "{short}");
+        let no_digit = password_acceptable("Secret!!").unwrap_err();
+        assert!(no_digit.to_string().contains("digit"), "{no_digit}");
+        let no_other = password_acceptable("Secret12").unwrap_err();
+        assert!(no_other.to_string().contains("other"), "{no_other}");
+        password_acceptable("Secret1!").unwrap();
     }
 }

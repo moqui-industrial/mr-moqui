@@ -12,22 +12,1563 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Login. The user facade is not installed in this slice.
+//! Login against `moqui.security.UserAccount`. The session is memory only.
 
-use crate::context::Error;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use moqui_db::sql::{select as sql_select, update as sql_update, Condition, FieldRef, LimitOffset};
+use moqui_lib::object::{basic_convert, Value};
+
+use super::password::{self, hash_password};
+use super::policy::{self, password_acceptable};
+use super::session;
+use crate::context::{Error, ExecutionContext};
+use crate::driver::{DbConnection, DbRow};
+use crate::entity::{EntityFacade, EntityValue};
+
+const USER_ACCOUNT: &str = "moqui.security.UserAccount";
+#[allow(dead_code)] // Used by change_password, which the library reaches only from tests.
+const PASSWORD_HISTORY: &str = "moqui.security.UserPasswordHistory";
+const INVALID_LOGIN: &str = "The username or password is not valid";
+const WEEK_MILLIS: i64 = 7 * 24 * 60 * 60 * 1000;
+
+/// Check the password and, on success, set the in-memory user.
+///
+/// Unknown users, an empty username, and an empty password share one message.
 pub fn login_user(username: &str, password: &str) -> Result<(), Error> {
-    let _ = (username, password);
-    Err(Error::new("the user facade is not installed"))
+    if username.is_empty() || password.is_empty() {
+        return Err(Error::new(INVALID_LOGIN));
+    }
+    let facade = entity_facade()?;
+    let Some(account) = find_username(&facade, username)? else {
+        return Err(Error::new(INVALID_LOGIN));
+    };
+    let now = now_millis();
+    gate_account(&facade, &account, now)?;
+    if !password_ok(&account, password)? {
+        let user_id = text_field(&account, "userId");
+        if !user_id.is_empty() {
+            increment_failed(&facade, &user_id)?;
+        }
+        return Err(Error::new(INVALID_LOGIN));
+    }
+    post_password(&account, now)?;
+    password_acceptable(password)?;
+    finish_login(&facade, &account, Some(password), true)
+}
+
+/// Set the in-memory user without checking the password.
+#[allow(dead_code)]
+pub fn internal_login_user(username: &str) -> Result<(), Error> {
+    if username.is_empty() {
+        return Err(Error::new("No username specified"));
+    }
+    let facade = entity_facade()?;
+    let Some(account) = find_username(&facade, username)? else {
+        return Err(Error::new(INVALID_LOGIN));
+    };
+    let now = now_millis();
+    gate_account(&facade, &account, now)?;
+    post_password(&account, now)?;
+    finish_login(&facade, &account, None, false)
+}
+
+/// Mark the session anonymous. Does not set a username and does not use the `_NA_` account.
+#[allow(dead_code)]
+pub fn login_anonymous() -> Result<(), Error> {
+    if session::current_username()?.is_some() || session::is_anonymous()? {
+        return Ok(());
+    }
+    session::set_anonymous(true);
+    Ok(())
+}
+
+/// Clear the in-memory user and anonymous flag. Sets `hasLoggedOut` when a facade is present.
+#[allow(dead_code)]
+pub fn logout() -> Result<(), Error> {
+    let update = if let Some(user_id) = session::current_user_id()? {
+        match entity_facade() {
+            Ok(facade) => mark_logged_out(&facade, &user_id),
+            Err(_) => Ok(()),
+        }
+    } else {
+        Ok(())
+    };
+    session::clear_login();
+    update
+}
+
+/// Replace the password with argon2 and push the old hash into `UserPasswordHistory`.
+#[allow(dead_code)]
+pub fn change_password(user_id: &str, new_password: &str) -> Result<(), Error> {
+    password_acceptable(new_password)?;
+    let facade = entity_facade()?;
+    let account = find_user_id(&facade, user_id)?
+        .ok_or_else(|| Error::new(format!("Cannot update password, account not found with ID {user_id}")))?;
+    if password_ok(&account, new_password)? {
+        return Err(Error::new("New password is same as current password"));
+    }
+    reject_history(&facade, &account, user_id, new_password)?;
+    remember_history(&facade, &account, user_id)?;
+    trim_history(&facade, user_id)?;
+    let hashed = hash_password(new_password)?;
+    update_user(
+        &facade,
+        user_id,
+        &[
+            ("currentPassword", Value::string(hashed)),
+            ("passwordHashType", Value::string("argon2")),
+            ("passwordSalt", Value::string("")),
+            ("passwordBase64", Value::string("N")),
+            ("passwordSetDate", now_value()),
+            ("requirePasswordChange", Value::string("N")),
+            ("disabled", Value::string("N")),
+            ("resetPassword", Value::Null),
+            ("resetPasswordSetDate", Value::Null),
+        ],
+    )
+}
+
+pub(crate) fn entity_facade() -> Result<EntityFacade, Error> {
+    match ExecutionContext::with_current(|ctx| ctx.factory().entity()) {
+        None => Err(Error::new("no execution context")),
+        Some(None) => Err(Error::new("no entity facade")),
+        Some(Some(facade)) => Ok(facade),
+    }
+}
+
+pub(crate) fn now_value() -> Value {
+    basic_convert(&Value::I64(now_millis()), "java.sql.Timestamp").value
+}
+
+pub(crate) fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+        .unwrap_or(0)
+}
+
+fn gate_account(facade: &EntityFacade, account: &EntityValue, now: i64) -> Result<(), Error> {
+    let user_id = text_field(account, "userId");
+    if still_disabled(account, now) {
+        if !user_id.is_empty() {
+            increment_failed(facade, &user_id)?;
+        }
+        return Err(Error::new(INVALID_LOGIN));
+    }
+    if terminated(account, now) {
+        return Err(Error::new(INVALID_LOGIN));
+    }
+    Ok(())
+}
+
+fn post_password(account: &EntityValue, now: i64) -> Result<(), Error> {
+    if text_field(account, "requirePasswordChange") == "Y" {
+        return Err(Error::new(
+            "Authenticate failed because the account requires a password change",
+        ));
+    }
+    if password_expired(account, now) {
+        return Err(Error::new("Authenticate failed because the password must be changed"));
+    }
+    Ok(())
+}
+
+fn finish_login(facade: &EntityFacade, account: &EntityValue, plain: Option<&str>, rehash: bool) -> Result<(), Error> {
+    let user_id = text_field(account, "userId");
+    let username = text_field(account, "username");
+    if user_id.is_empty() || username.is_empty() {
+        return Err(Error::new(INVALID_LOGIN));
+    }
+    let mut fields = Vec::new();
+    if rehash && legacy_hash(account) {
+        if let Some(plain) = plain {
+            let hashed = hash_password(plain)?;
+            fields.push(("currentPassword", Value::string(hashed)));
+            fields.push(("passwordHashType", Value::string("argon2")));
+            fields.push(("passwordSalt", Value::string("")));
+            fields.push(("passwordBase64", Value::string("N")));
+        }
+    }
+    if needs_reset(account) {
+        fields.push(("successiveFailedLogins", Value::I64(0)));
+        fields.push(("disabled", Value::string("N")));
+        fields.push(("disabledDateTime", Value::Null));
+        fields.push(("hasLoggedOut", Value::string("N")));
+    }
+    if !fields.is_empty() {
+        update_user(facade, &user_id, &fields)?;
+    }
+    session::set_user(&user_id, &username);
+    let locale = nonempty(text_field(account, "locale"));
+    let zone = nonempty(text_field(account, "timeZone"));
+    session::set_locale(locale.as_deref());
+    session::set_time_zone(zone.as_deref());
+    touch_session()
+}
+
+fn touch_session() -> Result<(), Error> {
+    let _ = session::current_user_id()?;
+    let _ = session::is_anonymous()?;
+    let _ = session::csrf_token()?;
+    let _ = session::visit_id()?;
+    let _ = session::visitor_id()?;
+    let _ = session::locale()?;
+    let _ = session::time_zone()?;
+    let _ = session::flash_messages()?;
+    let _ = session::saved_parameters()?;
+    let _ = session::error_parameters()?;
+    let _ = session::screen_history()?;
+    Ok(())
+}
+
+fn legacy_hash(account: &EntityValue) -> bool {
+    !password::is_argon2(
+        &text_field(account, "passwordHashType"),
+        &text_field(account, "currentPassword"),
+    )
+}
+
+fn needs_reset(account: &EntityValue) -> bool {
+    field_i64(account, "successiveFailedLogins").unwrap_or(0) != 0
+        || text_field(account, "disabled") == "Y"
+        || field_millis(account, "disabledDateTime").is_some()
+        || text_field(account, "hasLoggedOut") == "Y"
+}
+
+fn still_disabled(account: &EntityValue, now: i64) -> bool {
+    if text_field(account, "disabled") != "Y" {
+        return false;
+    }
+    let Some(disabled_at) = field_millis(account, "disabledDateTime") else {
+        return true;
+    };
+    let window_ms = policy::disable_minutes().saturating_mul(60_000);
+    disabled_at.saturating_add(window_ms) > now
+}
+
+fn terminated(account: &EntityValue, now: i64) -> bool {
+    field_millis(account, "terminateDate").is_some_and(|term| now > term)
+}
+
+fn password_expired(account: &EntityValue, now: i64) -> bool {
+    let Some(set_at) = field_millis(account, "passwordSetDate") else {
+        return false;
+    };
+    let weeks = policy::change_weeks();
+    if weeks <= 0 {
+        return false;
+    }
+    now.saturating_sub(set_at) / WEEK_MILLIS > weeks
+}
+
+fn password_ok(account: &EntityValue, password: &str) -> Result<bool, Error> {
+    password::passwords_match(
+        password,
+        &text_field(account, "currentPassword"),
+        &text_field(account, "passwordHashType"),
+        &text_field(account, "passwordSalt"),
+        text_field(account, "passwordBase64") == "Y",
+    )
+}
+
+#[allow(dead_code)]
+fn reject_history(
+    facade: &EntityFacade,
+    account: &EntityValue,
+    user_id: &str,
+    new_password: &str,
+) -> Result<(), Error> {
+    let base64 = text_field(account, "passwordBase64") == "Y";
+    let rows = facade
+        .find(PASSWORD_HISTORY)?
+        .eq("userId", Value::string(user_id))
+        .list()?;
+    for row in rows.iter() {
+        let matched = password::passwords_match(
+            new_password,
+            &text_field(row, "password"),
+            &text_field(row, "passwordHashType"),
+            &text_field(row, "passwordSalt"),
+            base64,
+        )?;
+        if matched {
+            let limit = policy::history_limit();
+            return Err(Error::new(format!("Password was used in last {limit} passwords")));
+        }
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn remember_history(facade: &EntityFacade, account: &EntityValue, user_id: &str) -> Result<(), Error> {
+    let mut row = facade.make_value(PASSWORD_HISTORY)?;
+    row.set("userId", Value::string(user_id));
+    row.set("fromDate", now_value());
+    row.set("password", Value::string(text_field(account, "currentPassword")));
+    row.set("passwordSalt", Value::string(text_field(account, "passwordSalt")));
+    row.set(
+        "passwordHashType",
+        Value::string(text_field(account, "passwordHashType")),
+    );
+    row.create(facade)?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn trim_history(facade: &EntityFacade, user_id: &str) -> Result<(), Error> {
+    let rows = facade
+        .find(PASSWORD_HISTORY)?
+        .eq("userId", Value::string(user_id))
+        .order_by("fromDate", false)
+        .list()?;
+    let limit = usize::try_from(policy::history_limit().max(0)).unwrap_or(0);
+    let overflow = rows.len().saturating_sub(limit);
+    for row in rows.iter().take(overflow) {
+        row.delete(facade)?;
+    }
+    Ok(())
+}
+
+fn find_username(facade: &EntityFacade, username: &str) -> Result<Option<EntityValue>, Error> {
+    Ok(facade
+        .find(USER_ACCOUNT)?
+        .eq("username", Value::string(username))
+        .one()?)
+}
+
+#[allow(dead_code)]
+fn find_user_id(facade: &EntityFacade, user_id: &str) -> Result<Option<EntityValue>, Error> {
+    Ok(facade.find(USER_ACCOUNT)?.eq("userId", Value::string(user_id)).one()?)
+}
+
+fn update_user(facade: &EntityFacade, user_id: &str, fields: &[(&str, Value)]) -> Result<(), Error> {
+    let mut value = facade.make_value(USER_ACCOUNT)?;
+    value.set("userId", Value::string(user_id));
+    for (name, field) in fields {
+        value.set(*name, field.clone());
+    }
+    value.update(facade)?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn mark_logged_out(facade: &EntityFacade, user_id: &str) -> Result<(), Error> {
+    update_user(facade, user_id, &[("hasLoggedOut", Value::string("Y"))])
+}
+
+/// Failed-login count commits on a reserve connection, so the caller's rollback does not drop it.
+fn increment_failed(facade: &EntityFacade, user_id: &str) -> Result<(), Error> {
+    let (select_sql, update_sql) = facade.with_entity(USER_ACCOUNT, |entity, dialect, _| {
+        let condition = Condition::equals("userId", Value::string(user_id));
+        let fields = [
+            FieldRef::new("successiveFailedLogins"),
+            FieldRef::new("disabled"),
+            FieldRef::new("disabledDateTime"),
+        ];
+        let select_sql = sql_select(entity, dialect, &fields, Some(&condition), &[], LimitOffset::default())?;
+        let update_sql = sql_update(
+            entity,
+            dialect,
+            &["successiveFailedLogins", "disabled", "disabledDateTime"],
+            Some(&condition),
+        )?;
+        Ok((select_sql, update_sql))
+    })?;
+    let tx = facade.transactions_for(USER_ACCOUNT)?;
+    let user_id = user_id.to_string();
+    tx.with_reserve(|conn| apply_failed_increment(conn, &select_sql, &update_sql, &user_id))?;
+    Ok(())
+}
+
+fn apply_failed_increment(
+    conn: &mut dyn DbConnection,
+    select_sql: &str,
+    update_sql: &str,
+    user_id: &str,
+) -> Result<(), moqui_lib::error::Error> {
+    conn.begin()?;
+    let outcome = write_failed_increment(conn, select_sql, update_sql, user_id);
+    match outcome {
+        Ok(()) => conn.commit(),
+        Err(err) => {
+            let _ = conn.rollback();
+            Err(err)
+        }
+    }
+}
+
+fn write_failed_increment(
+    conn: &mut dyn DbConnection,
+    select_sql: &str,
+    update_sql: &str,
+    user_id: &str,
+) -> Result<(), moqui_lib::error::Error> {
+    let key = [Value::string(user_id)];
+    let rows = conn.query(select_sql, &key)?;
+    let Some(row) = rows.first() else {
+        return Err(moqui_lib::error::Error::new(format!("no UserAccount {user_id}")));
+    };
+    let next = row_i64(row, "successiveFailedLogins").saturating_add(1);
+    let disable = next > policy::max_failures();
+    let disabled = if disable {
+        Value::string("Y")
+    } else {
+        row_value(row, "disabled")
+    };
+    let when = if disable {
+        now_value()
+    } else {
+        row_value(row, "disabledDateTime")
+    };
+    let params = [Value::I64(next), disabled, when, Value::string(user_id)];
+    conn.execute(update_sql, &params)?;
+    Ok(())
+}
+
+fn row_value(row: &DbRow, name: &str) -> Value {
+    row.get(name).cloned().unwrap_or(Value::Null)
+}
+
+fn row_i64(row: &DbRow, name: &str) -> i64 {
+    match row.get(name) {
+        Some(Value::I64(number)) => *number,
+        Some(Value::I32(number)) => i64::from(*number),
+        _ => 0,
+    }
+}
+
+fn text_field(value: &EntityValue, name: &str) -> String {
+    value.get(name).and_then(Value::as_str).unwrap_or("").to_string()
+}
+
+fn field_i64(value: &EntityValue, name: &str) -> Option<i64> {
+    value.get(name).and_then(value_i64)
+}
+
+fn field_millis(value: &EntityValue, name: &str) -> Option<i64> {
+    value.get(name).and_then(value_millis)
+}
+
+fn value_i64(value: &Value) -> Option<i64> {
+    match value {
+        Value::I64(number) => Some(*number),
+        Value::I32(number) => Some(i64::from(*number)),
+        Value::String(text) => text.parse().ok(),
+        _ => None,
+    }
+}
+
+fn value_millis(value: &Value) -> Option<i64> {
+    match value {
+        Value::Timestamp(timestamp) => Some(timestamp.as_millisecond()),
+        other => value_i64(other),
+    }
+}
+
+fn nonempty(value: String) -> Option<String> {
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod memdb {
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use moqui_lib::error::Error;
+    use moqui_lib::object::{compare_obj, Value};
+
+    use crate::driver::{DbCancel, DbConnection, DbDriver, DbRow};
+    use crate::entity::{EntityFacade, EntityGroup};
+    use crate::transaction::{PoolConfig, TransactionManager};
+
+    type Row = BTreeMap<String, Value>;
+    type Tables = BTreeMap<String, Vec<Row>>;
+
+    pub(crate) fn open() -> EntityFacade {
+        let driver: Arc<dyn DbDriver> = Arc::new(MemDriver {
+            store: Arc::new(Mutex::new(BTreeMap::new())),
+        });
+        let transactions = TransactionManager::new(
+            driver,
+            PoolConfig {
+                min: 0,
+                max: 4,
+                reserve: 2,
+                acquire_timeout: Duration::from_secs(5),
+            },
+        )
+        .expect("memory pool");
+        let facade = EntityFacade::open(
+            &framework_dir(),
+            "transactional",
+            vec![EntityGroup::new("transactional", "postgres", transactions)],
+        )
+        .expect("entity facade");
+        facade.set_disable_audit_log(true);
+        facade.set_disable_entity_eca(true);
+        facade.set_disable_fk_create(true);
+        facade.set_disable_data_feed(true);
+        facade
+    }
+
+    fn framework_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework")
+    }
+
+    struct MemDriver {
+        store: Arc<Mutex<Tables>>,
+    }
+
+    struct MemConn {
+        store: Arc<Mutex<Tables>>,
+        local: Option<Tables>,
+        dirty: BTreeSet<String>,
+    }
+
+    struct NoCancel;
+
+    impl DbCancel for NoCancel {
+        fn cancel(&self) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    impl DbDriver for MemDriver {
+        fn connect(&self) -> Result<Box<dyn DbConnection>, Error> {
+            Ok(Box::new(MemConn {
+                store: Arc::clone(&self.store),
+                local: None,
+                dirty: BTreeSet::new(),
+            }))
+        }
+    }
+
+    impl DbConnection for MemConn {
+        fn execute(&mut self, sql: &str, params: &[Value]) -> Result<u64, Error> {
+            Ok(self.apply(sql, params)?.0)
+        }
+
+        fn query(&mut self, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
+            Ok(self.apply(sql, params)?.1)
+        }
+
+        fn query_once(&mut self, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
+            self.query(sql, params)
+        }
+
+        fn open_stream(&mut self, _sql: &str, _params: &[Value]) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn next_row(&mut self) -> Result<Option<DbRow>, Error> {
+            Ok(None)
+        }
+
+        fn close_stream(&mut self) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn stream_open(&self) -> bool {
+            false
+        }
+
+        fn begin(&mut self) -> Result<(), Error> {
+            if self.local.is_none() {
+                let committed = self.store.lock().unwrap_or_else(|err| err.into_inner()).clone();
+                self.local = Some(committed);
+                self.dirty.clear();
+            }
+            Ok(())
+        }
+
+        fn commit(&mut self) -> Result<(), Error> {
+            let Some(local) = self.local.take() else {
+                return Ok(());
+            };
+            let dirty = std::mem::take(&mut self.dirty);
+            let mut committed = self.store.lock().unwrap_or_else(|err| err.into_inner());
+            for table in dirty {
+                let rows = local.get(&table).cloned().unwrap_or_default();
+                committed.insert(table, rows);
+            }
+            Ok(())
+        }
+
+        fn rollback(&mut self) -> Result<(), Error> {
+            self.local = None;
+            self.dirty.clear();
+            Ok(())
+        }
+
+        fn savepoint(&mut self, _name: &str) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn rollback_to_savepoint(&mut self, _name: &str) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn release_savepoint(&mut self, _name: &str) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn canceller(&self) -> Box<dyn DbCancel> {
+            Box::new(NoCancel)
+        }
+    }
+
+    impl MemConn {
+        fn apply(&mut self, sql: &str, params: &[Value]) -> Result<(u64, Vec<DbRow>), Error> {
+            let sql = sql.trim();
+            // The pool checks out a connection with `SELECT 1`.
+            if sql.eq_ignore_ascii_case("SELECT 1") {
+                return Ok((
+                    1,
+                    vec![DbRow {
+                        columns: vec![("1".to_string(), Value::I64(1))],
+                    }],
+                ));
+            }
+            if sql.contains("ON CONFLICT") && sql.contains("SequenceValueItem") {
+                return self.sequence(params);
+            }
+            let stmt = parse(sql).map_err(|err| Error::new(format!("{err} sql={sql}")))?;
+            self.exec(stmt, params)
+        }
+
+        fn sequence(&mut self, params: &[Value]) -> Result<(u64, Vec<DbRow>), Error> {
+            if params.len() < 4 {
+                return Err(Error::new("sequence refill is missing parameters"));
+            }
+            let name = params[0].clone();
+            let first_end = as_i64(&params[1])?;
+            let increment = as_i64(&params[2])?;
+            let hint_end = as_i64(&params[3])?;
+            let mut rows = self.read_table("SequenceValueItem");
+            let end = if let Some(row) = rows.iter_mut().find(|row| row.get("seqName") == Some(&name)) {
+                let old = row.get("seqNum").and_then(|value| as_i64(value).ok()).unwrap_or(0);
+                let new_end = old.saturating_add(increment).max(hint_end);
+                row.insert("seqNum".to_string(), Value::I64(new_end));
+                new_end
+            } else {
+                let mut row = BTreeMap::new();
+                row.insert("seqName".to_string(), name);
+                row.insert("seqNum".to_string(), Value::I64(first_end));
+                rows.push(row);
+                first_end
+            };
+            self.put_table("SequenceValueItem", rows);
+            Ok((
+                1,
+                vec![DbRow {
+                    columns: vec![("seqNum".to_string(), Value::I64(end))],
+                }],
+            ))
+        }
+
+        fn exec(&mut self, stmt: Stmt, params: &[Value]) -> Result<(u64, Vec<DbRow>), Error> {
+            match stmt {
+                Stmt::Insert { table, columns } => {
+                    let mut row = BTreeMap::new();
+                    for (index, column) in columns.iter().enumerate() {
+                        let value = params
+                            .get(index)
+                            .cloned()
+                            .ok_or_else(|| Error::new("insert is missing a parameter"))?;
+                        row.insert(column.clone(), value);
+                    }
+                    let mut rows = self.read_table(&table);
+                    rows.push(row);
+                    self.put_table(&table, rows);
+                    Ok((1, Vec::new()))
+                }
+                Stmt::Update { table, columns, pred } => {
+                    let values = columns
+                        .iter()
+                        .enumerate()
+                        .map(|(index, _)| {
+                            params
+                                .get(index)
+                                .cloned()
+                                .ok_or_else(|| Error::new("update is missing a parameter"))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let start = columns.len();
+                    let mut rows = self.read_table(&table);
+                    let mut count = 0_u64;
+                    for row in &mut rows {
+                        if keep(&pred, row, params, start)? {
+                            for (column, value) in columns.iter().zip(&values) {
+                                row.insert(column.clone(), value.clone());
+                            }
+                            count += 1;
+                        }
+                    }
+                    self.put_table(&table, rows);
+                    Ok((count, Vec::new()))
+                }
+                Stmt::Delete { table, pred } => {
+                    let rows = self.read_table(&table);
+                    let mut kept = Vec::new();
+                    let mut count = 0_u64;
+                    for row in rows {
+                        if keep(&pred, &row, params, 0)? {
+                            count += 1;
+                        } else {
+                            kept.push(row);
+                        }
+                    }
+                    self.put_table(&table, kept);
+                    Ok((count, Vec::new()))
+                }
+                Stmt::Select(query) => self.exec_select(&query, params),
+            }
+        }
+
+        fn exec_select(&mut self, query: &SelectQuery, params: &[Value]) -> Result<(u64, Vec<DbRow>), Error> {
+            let mut matched = Vec::new();
+            for row in self.read_table(&query.table) {
+                if keep(&query.pred, &row, params, 0)? {
+                    matched.push(row);
+                }
+            }
+            if query.count {
+                let n = i64::try_from(matched.len()).unwrap_or(i64::MAX);
+                return Ok((
+                    1,
+                    vec![DbRow {
+                        columns: vec![("count".to_string(), Value::I64(n))],
+                    }],
+                ));
+            }
+            matched.sort_by(|left, right| sort_rows(left, right, &query.order));
+            let mut idx = pred_slots(&query.pred);
+            let skip = if query.offset {
+                as_i64(take_param(params, &mut idx)?)?
+            } else {
+                0
+            };
+            let take_n = if query.limit {
+                Some(as_i64(take_param(params, &mut idx)?)?)
+            } else {
+                None
+            };
+            let start = usize::try_from(skip.max(0)).unwrap_or(0);
+            let window: Vec<Row> = match take_n {
+                Some(limit) => {
+                    let len = usize::try_from(limit.max(0)).unwrap_or(0);
+                    matched.into_iter().skip(start).take(len).collect()
+                }
+                None => matched.into_iter().skip(start).collect(),
+            };
+            let projected: Vec<DbRow> = window.iter().map(|row| project(row, &query.columns)).collect();
+            let n = u64::try_from(projected.len()).unwrap_or(u64::MAX);
+            Ok((n, projected))
+        }
+
+        fn read_table(&self, table: &str) -> Vec<Row> {
+            if let Some(local) = &self.local {
+                return local.get(table).cloned().unwrap_or_default();
+            }
+            self.store
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .get(table)
+                .cloned()
+                .unwrap_or_default()
+        }
+
+        fn put_table(&mut self, table: &str, rows: Vec<Row>) {
+            if let Some(local) = self.local.as_mut() {
+                local.insert(table.to_string(), rows);
+                self.dirty.insert(table.to_string());
+                return;
+            }
+            self.store
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .insert(table.to_string(), rows);
+        }
+    }
+
+    fn keep(pred: &Option<Pred>, row: &Row, params: &[Value], start: usize) -> Result<bool, Error> {
+        let Some(pred) = pred else {
+            return Ok(true);
+        };
+        let mut idx = start;
+        eval_pred(pred, row, params, &mut idx)
+    }
+
+    fn pred_slots(pred: &Option<Pred>) -> usize {
+        pred.as_ref().map(count_slots).unwrap_or(0)
+    }
+
+    fn count_slots(pred: &Pred) -> usize {
+        match pred {
+            Pred::Cmp { .. } => 1,
+            Pred::IsNull { .. } => 0,
+            Pred::And(parts) | Pred::Or(parts) => parts.iter().map(count_slots).sum(),
+        }
+    }
+
+    fn eval_pred(pred: &Pred, row: &Row, params: &[Value], idx: &mut usize) -> Result<bool, Error> {
+        match pred {
+            Pred::Cmp { field, op } => {
+                let param = take_param(params, idx)?;
+                let left = row.get(field).cloned().unwrap_or(Value::Null);
+                Ok(compare(&left, *op, param))
+            }
+            Pred::IsNull { field, negated } => {
+                let is_null = row.get(field).is_none_or(Value::is_null);
+                Ok(if *negated { !is_null } else { is_null })
+            }
+            Pred::And(parts) => {
+                let mut all = true;
+                for part in parts {
+                    if !eval_pred(part, row, params, idx)? {
+                        all = false;
+                    }
+                }
+                Ok(all)
+            }
+            Pred::Or(parts) => {
+                let mut any = false;
+                for part in parts {
+                    if eval_pred(part, row, params, idx)? {
+                        any = true;
+                    }
+                }
+                Ok(any)
+            }
+        }
+    }
+
+    fn compare(left: &Value, op: Op, right: &Value) -> bool {
+        let ordering = cmp_values(left, right);
+        match op {
+            Op::Eq => left == right,
+            Op::Ne => left != right,
+            Op::Lt => ordering == std::cmp::Ordering::Less,
+            Op::Gt => ordering == std::cmp::Ordering::Greater,
+            Op::Le => ordering != std::cmp::Ordering::Greater,
+            Op::Ge => ordering != std::cmp::Ordering::Less,
+        }
+    }
+
+    fn cmp_values(left: &Value, right: &Value) -> std::cmp::Ordering {
+        if left.is_null() && right.is_null() {
+            return std::cmp::Ordering::Equal;
+        }
+        if left.is_null() {
+            return std::cmp::Ordering::Greater;
+        }
+        if right.is_null() {
+            return std::cmp::Ordering::Less;
+        }
+        compare_obj(left, right).unwrap_or(std::cmp::Ordering::Equal)
+    }
+
+    fn sort_rows(left: &Row, right: &Row, order: &[OrderKey]) -> std::cmp::Ordering {
+        for key in order {
+            let left_value = left.get(&key.field).cloned().unwrap_or(Value::Null);
+            let right_value = right.get(&key.field).cloned().unwrap_or(Value::Null);
+            let mut ordering = cmp_values(&left_value, &right_value);
+            if key.desc {
+                ordering = ordering.reverse();
+            }
+            if ordering != std::cmp::Ordering::Equal {
+                return ordering;
+            }
+        }
+        std::cmp::Ordering::Equal
+    }
+
+    fn project(row: &Row, columns: &[String]) -> DbRow {
+        DbRow {
+            columns: columns
+                .iter()
+                .map(|name| (name.clone(), row.get(name).cloned().unwrap_or(Value::Null)))
+                .collect(),
+        }
+    }
+
+    fn take_param<'a>(params: &'a [Value], idx: &mut usize) -> Result<&'a Value, Error> {
+        let value = params.get(*idx).ok_or_else(|| Error::new("sql parameter missing"))?;
+        *idx += 1;
+        Ok(value)
+    }
+
+    fn as_i64(value: &Value) -> Result<i64, Error> {
+        match value {
+            Value::I64(number) => Ok(*number),
+            Value::I32(number) => Ok(i64::from(*number)),
+            Value::String(text) => text.parse().map_err(|_| Error::new("parameter is not an integer")),
+            _ => Err(Error::new("parameter is not an integer")),
+        }
+    }
+
+    enum Stmt {
+        Insert {
+            table: String,
+            columns: Vec<String>,
+        },
+        Update {
+            table: String,
+            columns: Vec<String>,
+            pred: Option<Pred>,
+        },
+        Delete {
+            table: String,
+            pred: Option<Pred>,
+        },
+        Select(SelectQuery),
+    }
+
+    struct SelectQuery {
+        count: bool,
+        columns: Vec<String>,
+        table: String,
+        pred: Option<Pred>,
+        order: Vec<OrderKey>,
+        limit: bool,
+        offset: bool,
+    }
+
+    enum Pred {
+        Cmp { field: String, op: Op },
+        IsNull { field: String, negated: bool },
+        And(Vec<Pred>),
+        Or(Vec<Pred>),
+    }
+
+    #[derive(Clone, Copy)]
+    enum Op {
+        Eq,
+        Ne,
+        Lt,
+        Gt,
+        Le,
+        Ge,
+    }
+
+    struct OrderKey {
+        field: String,
+        desc: bool,
+    }
+
+    fn parse(sql: &str) -> Result<Stmt, Error> {
+        let mut cur = Cur { sql, i: 0 };
+        let stmt = if cur.eat_keyword("INSERT") {
+            parse_insert(&mut cur)?
+        } else if cur.eat_keyword("UPDATE") {
+            parse_update(&mut cur)?
+        } else if cur.eat_keyword("DELETE") {
+            parse_delete(&mut cur)?
+        } else if cur.eat_keyword("SELECT") {
+            parse_select(&mut cur)?
+        } else {
+            return Err(cur.fail("unsupported sql"));
+        };
+        Ok(stmt)
+    }
+
+    fn parse_insert(cur: &mut Cur) -> Result<Stmt, Error> {
+        cur.expect_keyword("INTO")?;
+        let table = cur.quoted()?;
+        cur.expect_symbol(b'(')?;
+        let mut columns = Vec::new();
+        loop {
+            columns.push(cur.quoted()?);
+            if !cur.eat_symbol(b',') {
+                break;
+            }
+        }
+        cur.expect_symbol(b')')?;
+        cur.expect_keyword("VALUES")?;
+        cur.expect_symbol(b'(')?;
+        for index in 0..columns.len() {
+            if index > 0 {
+                cur.expect_symbol(b',')?;
+            }
+            cur.expect_symbol(b'?')?;
+        }
+        cur.expect_symbol(b')')?;
+        cur.expect_end()?;
+        Ok(Stmt::Insert { table, columns })
+    }
+
+    fn parse_update(cur: &mut Cur) -> Result<Stmt, Error> {
+        let table = cur.quoted()?;
+        cur.expect_keyword("SET")?;
+        let mut columns = Vec::new();
+        loop {
+            columns.push(cur.quoted()?);
+            cur.expect_symbol(b'=')?;
+            cur.expect_symbol(b'?')?;
+            if !cur.eat_symbol(b',') {
+                break;
+            }
+        }
+        let pred = if cur.eat_keyword("WHERE") {
+            Some(parse_or(cur)?)
+        } else {
+            None
+        };
+        cur.expect_end()?;
+        Ok(Stmt::Update { table, columns, pred })
+    }
+
+    fn parse_delete(cur: &mut Cur) -> Result<Stmt, Error> {
+        cur.expect_keyword("FROM")?;
+        let table = cur.quoted()?;
+        let pred = if cur.eat_keyword("WHERE") {
+            Some(parse_or(cur)?)
+        } else {
+            None
+        };
+        cur.expect_end()?;
+        Ok(Stmt::Delete { table, pred })
+    }
+
+    fn parse_select(cur: &mut Cur) -> Result<Stmt, Error> {
+        let count = if cur.eat_keyword("COUNT") {
+            cur.expect_symbol(b'(')?;
+            cur.expect_symbol(b'*')?;
+            cur.expect_symbol(b')')?;
+            true
+        } else {
+            false
+        };
+        let columns = if count { Vec::new() } else { parse_columns(cur)? };
+        cur.expect_keyword("FROM")?;
+        let table = cur.quoted()?;
+        let pred = if cur.eat_keyword("WHERE") {
+            Some(parse_or(cur)?)
+        } else {
+            None
+        };
+        let order = if cur.eat_keyword("ORDER") {
+            cur.expect_keyword("BY")?;
+            parse_order(cur)?
+        } else {
+            Vec::new()
+        };
+        let limit = if cur.eat_keyword("LIMIT") {
+            cur.expect_symbol(b'?')?;
+            true
+        } else {
+            false
+        };
+        let offset = if cur.eat_keyword("OFFSET") {
+            cur.expect_symbol(b'?')?;
+            true
+        } else {
+            false
+        };
+        cur.expect_end()?;
+        Ok(Stmt::Select(SelectQuery {
+            count,
+            columns,
+            table,
+            pred,
+            order,
+            limit,
+            offset,
+        }))
+    }
+
+    fn parse_columns(cur: &mut Cur) -> Result<Vec<String>, Error> {
+        let mut columns = Vec::new();
+        loop {
+            if cur.peek_keyword("FROM") {
+                break;
+            }
+            columns.push(cur.quoted()?);
+            if !cur.eat_symbol(b',') {
+                break;
+            }
+        }
+        if columns.is_empty() {
+            return Err(cur.fail("select has no columns"));
+        }
+        Ok(columns)
+    }
+
+    fn parse_order(cur: &mut Cur) -> Result<Vec<OrderKey>, Error> {
+        let mut order = Vec::new();
+        loop {
+            let field = cur.quoted()?;
+            let desc = if cur.eat_keyword("DESC") {
+                true
+            } else if cur.eat_keyword("ASC") {
+                false
+            } else {
+                return Err(cur.fail("expected ASC or DESC"));
+            };
+            order.push(OrderKey { field, desc });
+            if !cur.eat_symbol(b',') {
+                break;
+            }
+        }
+        Ok(order)
+    }
+
+    fn parse_or(cur: &mut Cur) -> Result<Pred, Error> {
+        let mut parts = vec![parse_and(cur)?];
+        while cur.eat_keyword("OR") {
+            parts.push(parse_and(cur)?);
+        }
+        Ok(fold(parts, false))
+    }
+
+    fn parse_and(cur: &mut Cur) -> Result<Pred, Error> {
+        let mut parts = vec![parse_primary(cur)?];
+        while cur.eat_keyword("AND") {
+            parts.push(parse_primary(cur)?);
+        }
+        Ok(fold(parts, true))
+    }
+
+    fn parse_primary(cur: &mut Cur) -> Result<Pred, Error> {
+        if cur.eat_symbol(b'(') {
+            let pred = parse_or(cur)?;
+            cur.expect_symbol(b')')?;
+            return Ok(pred);
+        }
+        let field = cur.quoted()?;
+        if cur.eat_keyword("IS") {
+            let negated = cur.eat_keyword("NOT");
+            cur.expect_keyword("NULL")?;
+            return Ok(Pred::IsNull { field, negated });
+        }
+        let Some(op) = cur.eat_op() else {
+            return Err(cur.fail("expected comparison"));
+        };
+        cur.expect_symbol(b'?')?;
+        Ok(Pred::Cmp { field, op })
+    }
+
+    fn fold(mut parts: Vec<Pred>, and: bool) -> Pred {
+        if parts.len() == 1 {
+            return parts.remove(0);
+        }
+        if and {
+            Pred::And(parts)
+        } else {
+            Pred::Or(parts)
+        }
+    }
+
+    struct Cur<'a> {
+        sql: &'a str,
+        i: usize,
+    }
+
+    impl Cur<'_> {
+        fn skip(&mut self) {
+            while self.i < self.sql.len() && self.sql.as_bytes()[self.i].is_ascii_whitespace() {
+                self.i += 1;
+            }
+        }
+
+        fn eat_keyword(&mut self, word: &str) -> bool {
+            self.skip();
+            let rest = &self.sql[self.i..];
+            if rest.len() < word.len() || !rest.starts_with(word) {
+                return false;
+            }
+            let end = self.i + word.len();
+            if end < self.sql.len() {
+                let next = self.sql.as_bytes()[end];
+                if next.is_ascii_alphanumeric() || next == b'_' {
+                    return false;
+                }
+            }
+            self.i = end;
+            true
+        }
+
+        fn peek_keyword(&mut self, word: &str) -> bool {
+            let saved = self.i;
+            let found = self.eat_keyword(word);
+            self.i = saved;
+            found
+        }
+
+        fn eat_symbol(&mut self, symbol: u8) -> bool {
+            self.skip();
+            if self.i < self.sql.len() && self.sql.as_bytes()[self.i] == symbol {
+                self.i += 1;
+                true
+            } else {
+                false
+            }
+        }
+
+        fn eat_op(&mut self) -> Option<Op> {
+            self.skip();
+            let rest = &self.sql[self.i..];
+            let (op, len) = if rest.starts_with("<>") {
+                (Op::Ne, 2)
+            } else if rest.starts_with("<=") {
+                (Op::Le, 2)
+            } else if rest.starts_with(">=") {
+                (Op::Ge, 2)
+            } else if rest.starts_with('<') {
+                (Op::Lt, 1)
+            } else if rest.starts_with('>') {
+                (Op::Gt, 1)
+            } else if rest.starts_with('=') {
+                (Op::Eq, 1)
+            } else {
+                return None;
+            };
+            self.i += len;
+            Some(op)
+        }
+
+        fn quoted(&mut self) -> Result<String, Error> {
+            if !self.eat_symbol(b'"') {
+                return Err(self.fail("expected identifier"));
+            }
+            let start = self.i;
+            while self.i < self.sql.len() && self.sql.as_bytes()[self.i] != b'"' {
+                self.i += 1;
+            }
+            if self.i >= self.sql.len() {
+                return Err(self.fail("unterminated identifier"));
+            }
+            let name = self.sql[start..self.i].to_string();
+            self.i += 1;
+            Ok(name)
+        }
+
+        fn expect_keyword(&mut self, word: &str) -> Result<(), Error> {
+            if self.eat_keyword(word) {
+                Ok(())
+            } else {
+                Err(self.fail(&format!("expected {word}")))
+            }
+        }
+
+        fn expect_symbol(&mut self, symbol: u8) -> Result<(), Error> {
+            if self.eat_symbol(symbol) {
+                Ok(())
+            } else {
+                Err(self.fail(&format!("expected {}", char::from(symbol))))
+            }
+        }
+
+        fn expect_end(&mut self) -> Result<(), Error> {
+            self.skip();
+            if self.i == self.sql.len() {
+                Ok(())
+            } else {
+                Err(self.fail("unexpected sql"))
+            }
+        }
+
+        fn fail(&self, message: &str) -> Error {
+            let rest: String = self.sql[self.i..].chars().take(160).collect();
+            Error::new(format!("{message} at '{rest}'"))
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use moqui_lib::object::{basic_convert, Value};
+
+    use super::super::password::{passwords_match, simple_hash};
+    use super::super::session;
+    use super::memdb;
+    use super::*;
+    use crate::context::ExecutionContextFactory;
+    use crate::entity::EntityFacade;
+
     #[test]
-    fn login_reports_that_the_user_facade_is_not_installed() {
-        let err = super::login_user("john", "secret").unwrap_err();
-        let shown = err.to_string();
-        assert!(shown.contains("user facade"), "{shown}");
-        assert!(shown.contains("not installed"), "{shown}");
+    fn login_user_sets_current_username_and_logout_clears_it() {
+        let (ctx, facade) = open_ctx();
+        let _guard = ctx.enter();
+        session::add_flash_message("keep");
+        assert_eq!(login_user("", "Secret1!").unwrap_err().to_string(), INVALID_LOGIN);
+        assert_eq!(login_user("ada", "").unwrap_err().to_string(), INVALID_LOGIN);
+        assert_eq!(
+            login_user("missing", "Secret1!").unwrap_err().to_string(),
+            INVALID_LOGIN
+        );
+        assert_eq!(session::flash_messages().unwrap(), vec!["keep".to_string()]);
+        assert!(session::current_username().unwrap().is_none());
+
+        login_anonymous().unwrap();
+        assert!(session::current_username().unwrap().is_none());
+        assert!(session::is_anonymous().unwrap());
+
+        create_user(&facade, "ada", "Secret1!", |value| {
+            value.set("locale", Value::string("en"));
+            value.set("timeZone", Value::string("UTC"));
+        });
+        login_user("ada", "Secret1!").unwrap();
+        assert_eq!(session::current_username().unwrap().as_deref(), Some("ada"));
+        assert!(!session::is_anonymous().unwrap());
+        assert_eq!(session::locale().unwrap().as_deref(), Some("en"));
+        assert_eq!(session::time_zone().unwrap().as_deref(), Some("UTC"));
+        assert_eq!(session::csrf_token().unwrap().len(), 64);
+        assert_eq!(session::flash_messages().unwrap(), vec!["keep".to_string()]);
+
+        logout().unwrap();
+        assert!(session::current_username().unwrap().is_none());
+        assert!(!session::is_anonymous().unwrap());
+        let row = load_user(&facade, "ada");
+        assert_eq!(text(&row, "hasLoggedOut"), "Y");
+        session::reset_session();
+    }
+
+    #[test]
+    fn a_legacy_hash_verifies_and_the_stored_value_becomes_an_argon2_string() {
+        let (ctx, facade) = open_ctx();
+        let _guard = ctx.enter();
+        create_user(&facade, "ada", "Secret1!", |_| {});
+        login_user("ada", "Secret1!").unwrap();
+        let row = load_user(&facade, "ada");
+        let stored = text(&row, "currentPassword");
+        assert!(stored.starts_with("$argon2id$"), "{stored}");
+        assert_eq!(text(&row, "passwordHashType"), "argon2");
+        assert!(passwords_match("Secret1!", &stored, "argon2", "", false).unwrap());
+        logout().unwrap();
+        session::reset_session();
+    }
+
+    #[test]
+    fn the_fourth_failed_login_disables_the_account_the_third_does_not_and_it_survives_rollback() {
+        let (ctx, facade) = open_ctx();
+        let _guard = ctx.enter();
+        session::add_flash_message("keep");
+        create_user(&facade, "ada", "Secret1!", |_| {});
+        for _ in 0..3 {
+            assert_eq!(login_user("ada", "wrong").unwrap_err().to_string(), INVALID_LOGIN);
+        }
+        let before = load_user(&facade, "ada");
+        assert_eq!(i64_field(&before, "successiveFailedLogins"), 3);
+        assert_ne!(text(&before, "disabled"), "Y");
+
+        facade.begin(USER_ACCOUNT, None).unwrap();
+        let mut hinted = load_user(&facade, "ada");
+        hinted.set("passwordHint", Value::string("changed"));
+        hinted.update(&facade).unwrap();
+        let failed = login_user("ada", "wrong");
+        facade.rollback(USER_ACCOUNT).unwrap();
+        assert_eq!(failed.unwrap_err().to_string(), INVALID_LOGIN);
+
+        let after = load_user(&facade, "ada");
+        assert_eq!(i64_field(&after, "successiveFailedLogins"), 4);
+        assert_eq!(text(&after, "disabled"), "Y");
+        assert!(!after.get("disabledDateTime").is_none_or(Value::is_null));
+        assert_eq!(text(&after, "passwordHint"), "original");
+        assert!(session::current_username().unwrap().is_none());
+        assert_eq!(session::flash_messages().unwrap(), vec!["keep".to_string()]);
+        session::reset_session();
+    }
+
+    #[test]
+    fn disabled_without_a_timestamp_stays_disabled_and_terminate_does_not_increment() {
+        let (ctx, facade) = open_ctx();
+        let _guard = ctx.enter();
+        create_user(&facade, "stuck", "Secret1!", |value| {
+            value.set("disabled", Value::string("Y"));
+        });
+        assert_eq!(login_user("stuck", "Secret1!").unwrap_err().to_string(), INVALID_LOGIN);
+        let stuck = load_user(&facade, "stuck");
+        assert_eq!(text(&stuck, "disabled"), "Y");
+        assert_eq!(i64_field(&stuck, "successiveFailedLogins"), 1);
+        assert!(!text(&stuck, "currentPassword").starts_with("$argon2"));
+
+        create_user(&facade, "gone", "Secret1!", |value| {
+            value.set("terminateDate", stamp(1));
+        });
+        assert_eq!(login_user("gone", "Secret1!").unwrap_err().to_string(), INVALID_LOGIN);
+        let gone = load_user(&facade, "gone");
+        assert_eq!(i64_field(&gone, "successiveFailedLogins"), 0);
+        assert!(!text(&gone, "currentPassword").starts_with("$argon2"));
+        session::reset_session();
+    }
+
+    #[test]
+    fn a_correct_password_logs_in_after_the_disable_window() {
+        let (ctx, facade) = open_ctx();
+        let _guard = ctx.enter();
+        let opened = now_millis() - 6 * 60_000;
+        create_user(&facade, "ada", "Secret1!", |value| {
+            value.set("disabled", Value::string("Y"));
+            value.set("disabledDateTime", stamp(opened));
+            value.set("successiveFailedLogins", Value::I64(4));
+        });
+        login_user("ada", "Secret1!").unwrap();
+        assert_eq!(session::current_username().unwrap().as_deref(), Some("ada"));
+        let row = load_user(&facade, "ada");
+        assert_eq!(text(&row, "disabled"), "N");
+        assert!(row.get("disabledDateTime").is_none_or(Value::is_null));
+        assert_eq!(i64_field(&row, "successiveFailedLogins"), 0);
+        assert!(text(&row, "currentPassword").starts_with("$argon2id$"));
+        logout().unwrap();
+        session::reset_session();
+    }
+
+    #[test]
+    fn require_password_change_and_an_old_password_fail_without_rehash() {
+        let (ctx, facade) = open_ctx();
+        let _guard = ctx.enter();
+        create_user(&facade, "must", "Secret1!", |value| {
+            value.set("requirePasswordChange", Value::string("Y"));
+        });
+        let err = login_user("must", "Secret1!").unwrap_err();
+        assert!(err.to_string().contains("password change"), "{err}");
+        assert_eq!(i64_field(&load_user(&facade, "must"), "successiveFailedLogins"), 0);
+        assert!(!text(&load_user(&facade, "must"), "currentPassword").starts_with("$argon2"));
+
+        let old = now_millis() - 13 * WEEK_MILLIS;
+        create_user(&facade, "stale", "Secret1!", |value| {
+            value.set("passwordSetDate", stamp(old));
+        });
+        let err = login_user("stale", "Secret1!").unwrap_err();
+        assert!(err.to_string().contains("must be changed"), "{err}");
+        assert!(!text(&load_user(&facade, "stale"), "currentPassword").starts_with("$argon2"));
+        assert!(session::current_username().unwrap().is_none());
+        session::reset_session();
+    }
+
+    #[test]
+    fn a_weak_password_does_not_rehash_or_log_in() {
+        let (ctx, facade) = open_ctx();
+        let _guard = ctx.enter();
+        create_user(&facade, "ada", "secret", |_| {});
+        let err = login_user("ada", "secret").unwrap_err();
+        assert!(err.to_string().contains("shorter"), "{err}");
+        assert!(session::current_username().unwrap().is_none());
+        assert!(!text(&load_user(&facade, "ada"), "currentPassword").starts_with("$argon2"));
+        assert_eq!(i64_field(&load_user(&facade, "ada"), "successiveFailedLogins"), 0);
+        session::reset_session();
+    }
+
+    #[test]
+    fn internal_login_skips_the_password_and_anonymous_does_not_set_a_username() {
+        let (ctx, facade) = open_ctx();
+        let _guard = ctx.enter();
+        create_user(&facade, "ada", "Secret1!", |_| {});
+        internal_login_user("ada").unwrap();
+        assert_eq!(session::current_username().unwrap().as_deref(), Some("ada"));
+        assert!(!text(&load_user(&facade, "ada"), "currentPassword").starts_with("$argon2"));
+        login_anonymous().unwrap();
+        assert_eq!(session::current_username().unwrap().as_deref(), Some("ada"));
+        logout().unwrap();
+        login_anonymous().unwrap();
+        assert!(session::current_username().unwrap().is_none());
+        assert!(session::is_anonymous().unwrap());
+        assert_eq!(
+            internal_login_user("").unwrap_err().to_string(),
+            "No username specified"
+        );
+        session::reset_session();
+    }
+
+    #[test]
+    fn change_password_stores_argon2_and_rejects_history() {
+        let (ctx, facade) = open_ctx();
+        let _guard = ctx.enter();
+        create_user(&facade, "ada", "Secret1!", |_| {});
+        for millis in 1..=5 {
+            let mut row = facade.make_value(PASSWORD_HISTORY).unwrap();
+            row.set("userId", Value::string("ada"));
+            row.set("fromDate", stamp(millis));
+            row.set("password", Value::string("not-a-real-hash"));
+            row.set("passwordSalt", Value::string("s4lt"));
+            row.set("passwordHashType", Value::string("SHA-256"));
+            row.create(&facade).unwrap();
+        }
+        change_password("ada", "Secret2!").unwrap();
+        let account = load_user(&facade, "ada");
+        let stored = text(&account, "currentPassword");
+        assert!(stored.starts_with("$argon2id$"), "{stored}");
+        assert_eq!(text(&account, "passwordHashType"), "argon2");
+        let history = facade
+            .find(PASSWORD_HISTORY)
+            .unwrap()
+            .eq("userId", Value::string("ada"))
+            .order_by("fromDate", false)
+            .list()
+            .unwrap();
+        assert_eq!(history.len(), 5);
+        assert!(history.iter().all(|row| field_millis(row, "fromDate") != Some(1)));
+        let current = change_password("ada", "Secret2!").unwrap_err();
+        assert!(current.to_string().contains("current"), "{current}");
+        let reused = change_password("ada", "Secret1!").unwrap_err();
+        assert!(reused.to_string().contains("last"), "{reused}");
+        session::reset_session();
+    }
+
+    fn open_ctx() -> (crate::context::ExecutionContext, EntityFacade) {
+        session::reset_session();
+        let ctx = ExecutionContextFactory::test_context();
+        let facade = memdb::open();
+        ctx.factory().set_entity(facade.clone());
+        (ctx, facade)
+    }
+
+    fn create_user(facade: &EntityFacade, username: &str, password: &str, fill: impl FnOnce(&mut EntityValue)) {
+        let stored = simple_hash(password, "s4lt", "SHA-256", false).unwrap();
+        let mut value = facade.make_value(USER_ACCOUNT).unwrap();
+        value.set("userId", Value::string(username));
+        value.set("username", Value::string(username));
+        value.set("currentPassword", Value::string(stored));
+        value.set("passwordSalt", Value::string("s4lt"));
+        value.set("passwordHashType", Value::string("SHA-256"));
+        value.set("passwordBase64", Value::string("N"));
+        value.set("passwordHint", Value::string("original"));
+        fill(&mut value);
+        value.create(facade).unwrap();
+    }
+
+    fn load_user(facade: &EntityFacade, username: &str) -> EntityValue {
+        facade
+            .find(USER_ACCOUNT)
+            .unwrap()
+            .eq("username", Value::string(username))
+            .one()
+            .unwrap()
+            .unwrap_or_else(|| panic!("missing {username}"))
+    }
+
+    fn text(value: &EntityValue, field: &str) -> String {
+        value.get(field).and_then(Value::as_str).unwrap_or("").to_string()
+    }
+
+    fn i64_field(value: &EntityValue, field: &str) -> i64 {
+        match value.get(field) {
+            Some(Value::I64(number)) => *number,
+            Some(Value::I32(number)) => i64::from(*number),
+            _ => 0,
+        }
+    }
+
+    fn stamp(millis: i64) -> Value {
+        basic_convert(&Value::I64(millis), "java.sql.Timestamp").value
+    }
+
+    fn now_millis() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+            .unwrap_or(0)
     }
 }
