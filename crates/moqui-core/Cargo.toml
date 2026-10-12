@@ -21,6 +21,13 @@ csv = { workspace = true }
 pulldown-cmark = { workspace = true }
 totp-rs = { workspace = true }
 tracing = { workspace = true }
+aes = { workspace = true }
+cbc = { workspace = true }
+des = { workspace = true }
+pbkdf2 = { workspace = true }
+md-5 = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
 
 [lints]
 workspace = true
