@@ -137,7 +137,7 @@ A trait is used when conf selects an implementation, or when the implementation 
 | `PdfRenderer` | Optional. Core renders `html-print` without this trait. The host prints that HTML to PDF. The default engine is a long-lived Chromium process. `pdf-servo` is an in-process alternate. See Tool components and print in the architecture proposal. |
 | `TemplateRenderer` | Conf maps a file extension to an implementation, as Java's `<template-renderer>` does. The implementations are `JsTemplateLiteral`, the fancy renderer, and the locked-down fancy renderer. All of them run on the QuickJS runtime. See Templating in the architecture proposal. |
 
-The cache facade uses the `MCache` port directly. There is no second cache implementation. Outbound mail uses `lettre` directly. Neither is a trait. Distributed invalidation, when it is added, is a listener on the in-process topic in `moqui-lib`. It is not a Redis client and not a second cache facade. Entity cache, this local cache, and the `screen-server-static` response header stay separate. Inbound SMTP is a listening server and stays a host feature. Where Moqui already has an implementation because the general library was the wrong shape, that implementation is ported. `MNode`, `MCache`, and the transaction manager are the cases. An external crate earns its place when it is the engine (Postgres, QuickJS, axum) or when another crate already needed pulls it in.
+The cache facade uses the `MCache` port directly. There is no second cache implementation. Outbound mail uses `lettre` directly. Neither is a trait. Distributed invalidation is a listener on the in-process topic. The member table, the certificate row, and that listener are in core, beside the cache and the session. The HTTPS listener and the client calls are in `moqui-host`. There is no new crate. The protocol is `plans/Cluster.md`. It is not a Redis client and not a second cache facade. Entity cache, this local cache, and the `screen-server-static` response header stay separate. Inbound SMTP is a listening server and stays a host feature. Where Moqui already has an implementation because the general library was the wrong shape, that implementation is ported. `MNode`, `MCache`, and the transaction manager are the cases. An external crate earns its place when it is the engine (Postgres, QuickJS, axum) or when another crate already needed pulls it in.
 
 QuickJS-NG (`rquickjs`) is the script and template engine. There is one language, so conf does not select a runner. Conf does select a `TemplateRenderer` by extension. XML action and screen macros are JavaScript modules on that runtime. Tests call the renderers and the macro modules directly. The split is `plans/Architecture-Proposal.md`. What each one sees is `plans/ContextObjects.md`.
 
@@ -224,7 +224,7 @@ The process edge. Depends on `moqui-core` and on `moqui-lib` with the `http` fea
 
 | Module | Role |
 |---|---|
-| `http` | axum routes and WebSocket upgrade. `extract::ws` needs axum's `ws` feature, which is not in the default set. Builds the core request value, calls core on a worker thread, writes the response. Replaces `MoquiServlet`, the auth filter, the LLM and A2A servlets, and the notification endpoint. The `/fop/*` and `/htmlr/*` servlets are not ported. |
+| `http` | axum routes and WebSocket upgrade. `extract::ws` needs axum's `ws` feature, which is not in the default set. Builds the core request value, calls core on a worker thread, writes the response. Replaces `MoquiServlet`, the auth filter, the LLM and A2A servlets, and the notification endpoint. The cluster endpoint from `plans/Cluster.md` is a route here, and the client calls that send to peers are here too. The `/fop/*` and `/htmlr/*` servlets are not ported. |
 | `db` | `DbDriver` implementations: embedded Postgres lifecycle, external Postgres, and external MySQL. The pool is the core transaction manager. Each method runs on the checked-out client and returns rows. Later databases from the table above land here. Embedded Postgres concurrency is this module, as in `plans/EmbeddedPostgres.md`. |
 | `mail` | Inbound SMTP, behind a feature, if it stays. Outbound mail is core. |
 | `search` | OpenSearch process supervisor. Query construction stays in core. |
@@ -264,7 +264,7 @@ These are not crates.
 - `base-component/webroot/` for the browser assets (Vue, Quasar, `moqui-html.js`)
 - `base-component/tools/` for the tools component XML
 - `component/` for add-ons such as mantle, which stay outside this repository
-- log, sessions, and other runtime state, gitignored as they are now
+- logs and temp files, gitignored as they are now. Session snapshots are database rows, not files under this directory (`plans/Cluster.md`).
 
 Screen macros that are framework code live under `framework/template/`. The runtime can still override a template by location. Instance conf stays in `runtime/conf/`.
 
