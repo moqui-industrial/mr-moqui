@@ -13,7 +13,9 @@
  */
 
 //! Entity model, SQL text, and dialects. No `ExecutionContext` and no driver.
-//! The modules in `plans/Crate-Layout.md` are not implemented yet.
+
+pub mod dialect;
+pub mod model;
 
 /// Marker so a downstream crate links this one.
 pub fn candidate() -> &'static str {

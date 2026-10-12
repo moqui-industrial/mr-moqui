@@ -12,7 +12,10 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Candidate framework crate. Facades are not implemented yet.
+//! Framework. Synchronous and multi-threaded. No listen socket and no database driver.
+
+pub mod context;
+pub mod entity;
 
 /// Marker so the host links this crate.
 pub fn candidate() -> &'static str {
