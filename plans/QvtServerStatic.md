@@ -64,7 +64,7 @@ Expressions are JavaScript, the same language the server evaluator uses. A decim
 
 Conditions that choose structure become `v-if` on that scope: `section.@condition`, `conditional-field.@condition`, `field.@hide`, `link.@condition`, `label.@condition`, `container-dialog.@condition`, `image.@condition`. Every branch is in the template. `section-iterate` becomes `v-for` over `@list`. `visible-when` stays a client expression, transcribed from `@field`, `@from`, and `@value` without evaluating them on the server.
 
-Formatting that the server applies inside `expand` and inside display widgets is a call on `ec.l10n` in the template. `@format`, currency attributes, and an author expression that already calls `ec.l10n.format` all go through that host. The locale catalog for `localize` is loaded once per session locale, not written into the template.
+Formatting that the server applies inside `expand` and inside display widgets is a call on `ec.l10n` in the template. `@format`, currency attributes, and an author expression that already calls `ec.l10n.format` all go through that host. The locale catalog for `localize` is loaded once per session locale, not written into the template. `format` implements the Java pattern subset the screens use (`#,##0.00`, `yyyy-MM-dd`, `yyyy-MM-dd HH:mm`, and the currency patterns), with `HALF_EVEN`. `0.125` at two places is `0.12`. The server function lives in `moqui-lib`. The browser copy is checked against the same vectors. QuickJS `Intl` and `toFixed` are not the formatter. There is no number-format crate.
 
 Links are transcribed as a path plus the `<parameter>` elements, evaluated against the scope. The server still enforces artifact authz on navigation and on the transition. This pass does not bake `disableLink` into the template, and it does not add a permission map to the package. A link the user may not use is still rendered. The server rejects the request.
 
@@ -81,7 +81,7 @@ The browser `ec` is a small object implemented in the qvt client runtime. It is 
 | Member | Behavior in the browser |
 |---|---|
 | `ec.l10n.localize` | Looks up the string in the locale catalog. A missing entry returns the original string, as the server does. |
-| `ec.l10n.format` | Formats a date, time, or number with the session locale and time zone. |
+| `ec.l10n.format` | Formats a date, time, or number with the session locale and time zone. The pattern subset and `HALF_EVEN` rounding are the phase 8 rule above and in `plans/Implementation-Phases.md`. |
 | `ec.l10n.formatCurrency` | Formats a currency amount, with the currency symbol. |
 | `ec.l10n.formatCurrencyNoSymbol` | Formats a currency amount, without the symbol. |
 | `ec.user.userId`, `username`, `locale`, `timeZone` | The logged-in session. |

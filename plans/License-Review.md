@@ -207,7 +207,7 @@ These are served as their own files from `runtime/base-component/webroot/`. They
 | highlight.js | BSD-3-Clause | Assist panel, language subset | OK |
 | Tom Select | Apache-2.0 | html mode, lazy | OK |
 | SortableJS | MIT | html column picker, lazy | OK |
-| Mustache.js | MIT | Candidate for the fancy template renderer, run inside QuickJS | OK if chosen. The dialect is still open. |
+| Mustache.js | MIT | Not used. The fancy renderer is an in-tree compiler of `if`, `list`, and `assign` to one cached JavaScript function. | Not a dependency. |
 | QZ Tray `qz-tray.js` 2.3 | LGPL-2.1-only | Separate script, only when printing is enabled | Acceptable on the browser rule. Do not concatenate it into `moqui-html.js` or a qvt bundle. Ship the LGPL text and a link to the source. |
 | QZ Tray desktop application | LGPL-2.1, and the qz.io builds add a premium signing certificate | Operator installs it | Do not vendor the desktop binary. Same shape as Chromium. |
 | `moqui-html.js`, `MoquiLib`, macro modules | CC0 plus the patent grant | Ours | OK |

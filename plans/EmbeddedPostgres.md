@@ -24,7 +24,7 @@ Measured theseus Postgres 18.6.0 archive sizes, 2026-10-11. The compressed figur
 
 Runtime RSS was not measured. `shared_buffers` dominates it, so the settings below start small, and the first driver test records RSS.
 
-Startup settings:
+Startup settings. The first two bullets are the Unix recipe. Windows is the section below.
 
 - The Unix socket directory is the data directory, kept short. `listen_addresses` is empty.
 - The client is built from the username, the database, the port the postmaster bound, and that socket directory, with `NoTls`. It does not parse a URI.
@@ -50,7 +50,7 @@ The overlay is a second cluster, started on the first `startTxCacheDb` and kept 
 
 ## Windows
 
-theseus runs on Windows. Embedded entity, embedded search, and the sim overlay start there. Windows stays a lower-priority test target. The 51.6 MB archive is only in the Windows build.
+theseus runs on Windows. Embedded entity, embedded search, and the sim overlay start there. Windows sets `listen_addresses` to `127.0.0.1` and an ephemeral port. `postgres::Config` uses that host and port. There is no named pipe. Unix stays the socket directory and empty `listen_addresses`. The rest of startup, the pool, and the sim schemas are unchanged. Windows stays a lower-priority test target. The 51.6 MB archive is only in the Windows build.
 
 ## Startup, shutdown, and tests
 
@@ -70,5 +70,5 @@ After a hard kill, startup reads `postmaster.pid`. A live process on our data di
 
 - HOLD, FLUSH, and `enter_sim` follow the Java framework at the time of the port. This plan is the lifecycle of the database under `TransactionCacheDb`.
 - The per-transaction `TransactionCache` stays an in-memory map.
-- External Postgres uses the same `postgres::Client` and the same core pool as an embedded cluster socket. External MySQL is a `DbDriver` on that same manager. There is no SQLx dependency.
+- External Postgres uses the same `postgres::Client` and the same core pool as an embedded cluster. On Unix that cluster is a socket. On Windows it is TCP to `127.0.0.1`. External MySQL is a `DbDriver` on that same manager. There is no SQLx dependency.
 - Search still has its own logical store. When the entity datasource is Postgres, embedded or external, that store is the `search` schema on that database. A search URL can place it on another Postgres.

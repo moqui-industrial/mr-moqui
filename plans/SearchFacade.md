@@ -297,7 +297,7 @@ Dates and timestamps in `body` are ISO-8601. Range comparisons in the API take t
 
 Text rank is `ts_rank` on the vectors the `Text` clause names. Filters are SQL `WHERE` and do not affect rank.
 
-When the entity datasource is Postgres, embedded or external, the default is the `search` schema on that database. When the entity datasource is MySQL or another non-Postgres, the default is a separate embedded Postgres cluster, including on Windows. A `<postgres>` URL points search at a different Postgres. Placement and how many postmasters start are `plans/EmbeddedPostgres.md`. All Postgres traffic, including search SQL, goes through the synchronous drivers in `plans/Crate-Layout.md`. The default binary includes embedded Postgres for the embedded search cluster. A custom build may omit it only when search is an external Postgres or OpenSearch.
+When the entity datasource is Postgres, embedded or external, the default is the `search` schema on that database. When the entity datasource is MySQL or another non-Postgres, the default is a separate embedded Postgres cluster, including on Windows, where that cluster connects over TCP to `127.0.0.1` on an ephemeral port, as `plans/EmbeddedPostgres.md` specifies. A `<postgres>` URL points search at a different Postgres. Placement and how many postmasters start are `plans/EmbeddedPostgres.md`. All Postgres traffic, including search SQL, goes through the synchronous drivers in `plans/Crate-Layout.md`. The default binary includes embedded Postgres for the embedded search cluster. A custom build may omit it only when search is an external Postgres or OpenSearch.
 
 ## OpenSearch
 

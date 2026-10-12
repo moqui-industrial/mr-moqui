@@ -8,7 +8,7 @@ This follows that section and the cache row in the same proposal. `moqui-hazelca
 
 A cluster exists when more than one instance uses the same database. Membership is a table in that database. Each instance upserts its own row on startup and refreshes a heartbeat. Peers are the other rows whose heartbeat is newer than a few intervals. There is no seed list and no multicast.
 
-Peers call each other over HTTPS. The cluster endpoint requires a client certificate. The certificate and its private key are one row in the same database. The first instance to start generates the keypair when that row is empty and stores it. Later instances load it. Each instance reads the key from the database. The connection between instances carries a TLS signature, and does not carry the key.
+Peers call each other over HTTPS. The cluster endpoint requires a client certificate. The certificate and its private key are one row in the same database. The first instance to start generates the keypair when that row is empty and stores it. Later instances load it. Each instance reads the key from the database. The connection between instances carries a TLS signature, and does not carry the key. The session-cookie HMAC key is a different row. The two keys stay distinct.
 
 The local publish stays a `SimpleTopic`. A listener fans that publish out to live peers. The receiver applies the message locally and does not send it on. One live member means no fan-out.
 
@@ -44,7 +44,7 @@ Postgres `NOTIFY` can be another sender later, for peers that share the database
 
 ## Sessions
 
-The snapshot row is the share. A second instance loads the session by id from the database. It does not receive the session over the cluster connection. Flush modes, the reserve connection, and the guarantee points are Sessions and login in `plans/Architecture-Proposal.md`.
+The snapshot row is the share. A second instance loads the session by id from the database. It does not receive the session over the cluster connection. The cookie signature is HMAC-SHA256 over the session id. That key is its own row in the primary database, generated when the row is empty. It is not the cluster certificate. A bad MAC is an unknown session. Session bytes still do not cross the cluster connection. Flush modes, the reserve connection, and the guarantee points are Sessions and login in `plans/Architecture-Proposal.md`.
 
 ## When it lands
 

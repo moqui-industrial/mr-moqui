@@ -17,7 +17,7 @@ There are four places a value is visible. The three server places are one QuickJ
 
 String expansion (`ResourceFacade.expand`) is `JsTemplateLiteral` on that runtime. A string with no `$`, or with `$` as the last character, is returned as itself. Localization of an input shorter than 256 characters still happens first, as `ResourceFacadeImpl.expand` does. The `${name}` expansion in `moqui-lib` stays string replacement against the environment and does not see the context stack. On the server, embedded expressions run in QuickJS. In the browser, `ec.resource.expand` uses the restricted host.
 
-The macro module does not run on the request path. A screen function that today calls `sri` or `ec` while FreeMarker is rendering emits a JavaScript call instead. That call runs later, in QuickJS or in the browser. Short framework text uses `JsTemplateLiteral` and the live context. Structured component text uses the trusted fancy renderer. Text that must not be a script uses the locked-down renderer and the snapshot.
+The macro module does not run on the request path. A screen function that today calls `sri` or `ec` while FreeMarker is rendering emits a JavaScript call instead. That call runs later, in QuickJS or in the browser. Short framework text uses `JsTemplateLiteral` and the live context. Structured component text uses the trusted fancy renderer. Text that must not be a script uses the locked-down renderer and the snapshot. The fancy dialect is `if`, `list`, and `assign`, compiled to one cached JavaScript function. The trusted renderer and the locked-down renderer are that same compiler. There is no Mustache library. `ScreenRenderEmail.xml` is the fixture.
 
 ## What Java does, and what changes
 
