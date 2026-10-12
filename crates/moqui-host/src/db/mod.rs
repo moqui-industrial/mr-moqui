@@ -16,5 +16,6 @@
 
 pub mod embedded;
 pub mod entity_facade;
+pub mod field_rw;
 pub mod mysql;
 pub mod postgres;
