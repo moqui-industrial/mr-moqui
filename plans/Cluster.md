@@ -8,15 +8,15 @@ This follows that section and the cache row in the same proposal. `moqui-hazelca
 
 A cluster exists when more than one instance uses the same database. Membership is a table in that database. Each instance upserts its own row on startup and refreshes a heartbeat. Peers are the other rows whose heartbeat is newer than a few intervals. There is no seed list and no multicast.
 
-Peers call each other over HTTPS. The cluster endpoint requires a client certificate. The certificate and its private key are one row in the same database. The first instance to start generates the keypair when that row is empty and stores it. Later instances load it. Each instance reads the key from the database. The connection between instances carries a TLS signature, and does not carry the key. The session-cookie HMAC key is a different row. The two keys stay distinct.
+Peers call each other over HTTPS. The cluster endpoint requires a client certificate. The certificate and its private key are secret configuration, not database rows: `cluster_tls_cert` and `cluster_tls_key` `default-property`s in `MoquiDefaultConf.xml`, the `entity_ds_crypt_pass` pattern, set by config file or environment and generated into `runtime/.env` when left at the `CHANGEME` default (Decision 1 of `plans/MimoReview.md`). Clustered deployments provision the same pair on every instance; the pair is base64 DER on single-line `.env` values. The connection between instances carries a TLS signature, and does not carry the key. The session-cookie HMAC key (`session_cookie_key`) is a different property. The two keys stay distinct.
 
 The local publish stays a `SimpleTopic`. The local `MCache` drop runs on the writer. The peer message is the cache key, queued at commit and sent by one host thread after the enlisted client is back in the pool. The topic does not carry the entity body or the session map. The receiver applies the message locally and does not send it on. One live member means no fan-out.
 
 The member row holds the cluster base URL, the address peers call. Only that endpoint requires the client certificate. Public application routes do not.
 
-`moqui-host` owns the HTTPS listener and the client calls. The member table, the certificate row, and the topic listener are in `moqui-core`, beside the cache and the session. There is no new crate, no Redis, no gossip library, no Raft, and no Hazelcast. `rustls` is already the TLS stack.
+`moqui-host` owns the HTTPS listener and the client calls. The member table, the key-material loading, and the topic listener are in `moqui-core`, beside the cache and the session. There is no new crate, no Redis, no gossip library, no Raft, and no Hazelcast. `rustls` is already the TLS stack.
 
-Operational state that instances must share, or that must survive a restart, goes in the database. Logs, the embedded Postgres data directory, and temp files stay on disk. The database files themselves stay files.
+Operational state that instances must share, or that must survive a restart, goes in the database. Secrets do not. Key material is configuration (`runtime/.env` or the deployment's environment), never a row. Logs, the embedded Postgres data directory, and temp files stay on disk. The database files themselves stay files.
 
 ## What moqui-hazelcast wires
 
@@ -32,7 +32,7 @@ The component turns on five uses. Two stay, as topics. Three do not.
 
 ## Membership
 
-The member row is the instance id, the cluster base URL, and the heartbeat timestamp. Startup upserts it. A row that stops refreshing drops out of the peer set after a few intervals. The certificate row is separate and singular. Every instance that can read the database can load the same keypair.
+The member row is the instance id, the cluster base URL, the heartbeat timestamp, and key fingerprints (SHA-256 of the session-cookie HMAC key, and the certificate fingerprint). Startup upserts it. A row that stops refreshing drops out of the peer set after a few intervals. The keys themselves are configuration, shared by provisioning. A member whose fingerprints differ from the live peer set fails startup with a clear message, so a copy-paste provisioning mistake is caught instead of surfacing as invalid cookies.
 
 ## Transport
 
@@ -44,11 +44,11 @@ Postgres `NOTIFY` can be another sender later, for peers that share the database
 
 ## Sessions
 
-The share is the `moqui.server.HttpSession` row through the entity one-cache. A second instance loads that row by id. Invalidation uses the entity-cache topic, which drops the one-cache entry. The receiver does not apply a copy of the attribute map. Session bytes still do not cross the cluster connection. The cookie signature is HMAC-SHA256 over the session id. That key is its own row in the primary database, generated when the row is empty. It is not the cluster certificate. A bad MAC is an unknown session. The merge, the reserve connection, and the flush modes are Sessions and login in `plans/Architecture-Proposal.md`.
+The share is the `moqui.server.HttpSession` row through the entity one-cache. A second instance loads that row by id. Invalidation uses the entity-cache topic, which drops the one-cache entry. The receiver does not apply a copy of the attribute map. Session bytes still do not cross the cluster connection. The cookie signature is HMAC-SHA256 over the session id. That key is its own secret property (`session_cookie_key`), generated into `runtime/.env` when left at the `CHANGEME` default. It is not the cluster certificate. A bad MAC is an unknown session. The merge, the reserve connection, and the flush modes are Sessions and login in `plans/Architecture-Proposal.md`.
 
 ## When it lands
 
-The session row is written in phase 7 of `plans/Implementation-Phases.md`, with the web edge. The member heartbeat, the certificate row, and the topic fan-out land in phase 10, with notifications. A single-node gate does not need a second instance.
+The session row is written in phase 7 of `plans/Implementation-Phases.md`, with the web edge. The member heartbeat, the key fingerprints, and the topic fan-out land in phase 10, with notifications. A single-node gate does not need a second instance.
 
 ## Out of scope
 
@@ -58,3 +58,4 @@ The session row is written in phase 7 of `plans/Implementation-Phases.md`, with 
 - A file snapshot under `runtime/sessions`.
 - A seed list, multicast, or any discovery that does not read the member table.
 - A pre-shared key sent on the request. The credential on the wire is the TLS client certificate.
+- Key material as database rows. Keys are configuration (`runtime/.env` or environment).

@@ -20,7 +20,7 @@ Nothing in this pass opens a port or transfers a file. The dependency is the cho
 
 An SFTP client covers what `moqui-sftp` does today. A built-in sshd in the host covers server-to-server file and command exchange, and it replaces the Groovy shell. There is still no web eval endpoint.
 
-Authentication goes through the user facade and artifact authz. `russh` supplies the channel and the PTY. The command loop is Moqui: a small command set, plus a JavaScript runner. The SFTP server root is a resource location, not a view of the host disk. The host key is a database row, the same idea as the cluster certificate in `plans/Cluster.md`.
+Authentication goes through the user facade and artifact authz. `russh` supplies the channel and the PTY. The command loop is Moqui: a small command set, plus a JavaScript runner. The SFTP server root is a resource location, not a view of the host disk. The host key is a secret property (`ssh_host_key`), the same pattern as the cluster certificate in `plans/Cluster.md`: a `CHANGEME` default generated into `runtime/.env` when unset (`plans/MimoReview.md` Decision 1). It is not a database row.
 
 ## Later: remotefs-ssh
 
