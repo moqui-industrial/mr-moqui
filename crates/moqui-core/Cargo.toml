@@ -27,6 +27,7 @@ base64 = { workspace = true }
 argon2 = { workspace = true }
 sha1 = { workspace = true }
 oxc_parser = { workspace = true }
+croner = { workspace = true }
 
 [lints]
 workspace = true
