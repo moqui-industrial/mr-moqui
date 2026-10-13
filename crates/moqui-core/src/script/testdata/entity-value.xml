@@ -1,0 +1,6 @@
+<actions>
+    <entity-make-value entity-name="moqui.test.TestEntity" value-field="row" map="seedMap"/>
+    <entity-create value-field="row"/>
+    <entity-update value-field="row"/>
+    <entity-delete value-field="row"/>
+</actions>

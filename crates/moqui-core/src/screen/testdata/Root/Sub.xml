@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<screen require-authentication="false" allow-extra-path="true">
+    <parameter name="needed" required="true"/>
+    <transition name="up"><default-response url="../Home"/></transition>
+    <transition name="here"><default-response url="."/></transition>
+    <always-actions><script>trace.push('Sub.always')</script></always-actions>
+    <subscreens><subscreens-item name="Deep"/></subscreens>
+    <pre-actions><script>trace.push('Sub.pre')</script></pre-actions>
+    <actions><script>trace.push('Sub.actions')</script></actions>
+    <widgets><subscreens-active/></widgets>
+</screen>

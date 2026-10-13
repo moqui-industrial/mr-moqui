@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<screen require-authentication="false" server-static="qvt" allow-extra-path="true">
+    <widgets><label text="extra"/></widgets>
+</screen>

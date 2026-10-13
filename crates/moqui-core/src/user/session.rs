@@ -1,0 +1,2468 @@
+/*
+ * This software is in the public domain under CC0 1.0 Universal plus a
+ * Grant of Patent License.
+ *
+ * To the extent possible under law, the author(s) have dedicated all
+ * copyright and related and neighboring rights to this software to the
+ * public domain worldwide. This software is distributed without any
+ * warranty.
+ *
+ * You should have received a copy of the CC0 Public Domain Dedication
+ * along with this software (see the LICENSE.md file). If not, see
+ * <http://creativecommons.org/publicdomain/zero/1.0/>.
+ */
+
+//! Session state owned by the [`ExecutionContext`] it belongs to.
+//!
+//! A bound web session also lives in the factory map and flushes to `moqui.server.HttpSession`.
+//! The authorization cache stays on the context and is not written to the row. With no context
+//! entered, reads see an empty session and writes are dropped.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, MutexGuard};
+
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use base64::Engine;
+use hmac::{Hmac, Mac};
+use moqui_db::sql::{
+    delete as sql_delete, insert as sql_insert, select as sql_select, update as sql_update, CompareOp, Condition,
+    FieldRef, LimitOffset,
+};
+use moqui_lib::object::Value;
+use sha2::Sha256;
+
+use super::authz::AuthzCheck;
+use super::login::now_millis;
+use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
+use crate::driver::{DbConnection, DbRow};
+use crate::entity::{cache, EntityFacade, EntityValue};
+
+/// What the artifact authorization checks cached for the logged-in user, and when.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct AuthzCache {
+    pub(crate) generation: u64,
+    pub(crate) groups: Option<Arc<std::collections::HashSet<String>>>,
+    pub(crate) checks: Option<Arc<Vec<Arc<AuthzCheck>>>>,
+    pub(crate) tarpit: BTreeMap<String, Arc<Vec<TarpitCheck>>>,
+}
+
+/// One tarpit rule for an artifact type, for the user's groups.
+#[derive(Clone, Debug)]
+pub(crate) struct TarpitCheck {
+    pub(crate) artifact_name: String,
+    pub(crate) name_is_pattern: bool,
+    pub(crate) max_hits_count: i64,
+    pub(crate) max_hits_duration: i64,
+    pub(crate) tarpit_duration: i64,
+}
+
+pub const SESSION_COOKIE_NAME: &str = "moqui.session";
+pub const VISITOR_COOKIE_NAME: &str = "moqui.visitor";
+
+const HTTP_SESSION: &str = "moqui.server.HttpSession";
+const VISITOR: &str = "moqui.server.Visitor";
+const VISIT: &str = "moqui.server.Visit";
+const USER_ACCOUNT: &str = "moqui.security.UserAccount";
+const SAVED: &str = "moqui.saved.parameters";
+const ERROR_PARAMETERS: &str = "moqui.error.parameters";
+const MESSAGE_PUBLIC: &str = "moqui.message.public";
+const MESSAGE_ERROR: &str = "moqui.message.error";
+const SCREEN_HISTORY: &str = "moqui.screen.history";
+#[allow(dead_code)] // Stored when a caller puts the key in the attribute map. No setter in this slice.
+const LAST_PATH: &str = "moqui.screen.last.path";
+#[allow(dead_code)] // Stored when a caller puts the key in the attribute map. No setter in this slice.
+const LAST_PARAMETERS: &str = "moqui.screen.last.parameters";
+const MAX_FLUSH_ATTEMPTS: usize = 5;
+const VISITOR_MAX_AGE: u64 = 31_536_000;
+/// `sessionId` is dictionary type `id` (`VARCHAR(40)`). Hex encoding uses two characters per byte.
+const SESSION_ID_BYTES: usize = 20;
+/// `sessionToken` is `text-short` (`VARCHAR(63)`). Twenty bytes is forty hex characters.
+const SESSION_TOKEN_BYTES: usize = 20;
+const ROW_FIELDS: &[&str] = &[
+    "sessionId",
+    "userId",
+    "visitId",
+    "visitorId",
+    "locale",
+    "timeZone",
+    "sessionToken",
+    "attributes",
+    "sessionRevision",
+    "lastUpdatedStamp",
+];
+const INSERT_COLUMNS: &[&str] = ROW_FIELDS;
+
+type SessionMac = Hmac<Sha256>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FlushMode {
+    Eventual,
+    Guarantee,
+}
+
+/// Factory-owned sessions and the flush mode from `webapp_session_flush`.
+pub struct SessionTable {
+    pub(crate) mode: FlushMode,
+    sessions: BTreeMap<String, LiveSession>,
+    /// Millis of the last sweep of expired `HttpSession` rows.
+    last_purge: i64,
+}
+
+impl SessionTable {
+    pub(crate) fn new(mode: FlushMode) -> Self {
+        Self {
+            mode,
+            sessions: BTreeMap::new(),
+            last_purge: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Column {
+    UserId,
+    VisitId,
+    VisitorId,
+    Locale,
+    TimeZone,
+    SessionToken,
+}
+
+#[derive(Clone, Debug, Default)]
+struct Columns {
+    user_id: Option<String>,
+    visit_id: Option<String>,
+    visitor_id: Option<String>,
+    locale: Option<String>,
+    time_zone: Option<String>,
+    session_token: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct Snapshot {
+    revision: i64,
+    revision_value: Value,
+    columns: Columns,
+    attributes: BTreeMap<String, Json>,
+}
+
+#[derive(Clone, Debug)]
+struct LiveSession {
+    columns: Columns,
+    username: Option<String>,
+    anonymous: bool,
+    attributes: BTreeMap<String, Json>,
+    dirty_columns: BTreeSet<Column>,
+    dirty_json: BTreeSet<String>,
+    snapshot: Option<Snapshot>,
+    invalidated: bool,
+    /// Previous id after password rotation. Not flushed and not adopted.
+    retired: bool,
+    /// Millis of the last request that bound this session.
+    last_access: i64,
+    /// Millis when `lastUpdatedStamp` was last written or queued for writing.
+    touch_mark: i64,
+    /// Write `lastUpdatedStamp` at the next flush even with no dirty field.
+    touch: bool,
+}
+
+struct Base {
+    exists: bool,
+    revision: i64,
+    revision_value: Value,
+    columns: Columns,
+    attributes: BTreeMap<String, Json>,
+}
+
+struct Merged {
+    columns: Columns,
+    attributes: BTreeMap<String, Json>,
+    revision: i64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Json {
+    Null,
+    Bool(bool),
+    Number(String),
+    Text(String),
+    List(Vec<Json>),
+    Map(BTreeMap<String, Json>),
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct Memory {
+    pub(crate) authz: AuthzCache,
+    user_id: Option<String>,
+    username: Option<String>,
+    visit_id: Option<String>,
+    visitor_id: Option<String>,
+    locale: Option<String>,
+    time_zone: Option<String>,
+    csrf_token: Option<String>,
+    anonymous: bool,
+    flash: Vec<String>,
+    flash_errors: Vec<String>,
+    saved: BTreeMap<String, String>,
+    errors: BTreeMap<String, String>,
+    screen_history: Vec<String>,
+    attributes: BTreeMap<String, Json>,
+    bound_id: Option<String>,
+    factory: Option<Arc<ExecutionContextFactory>>,
+    dirty_columns: BTreeSet<Column>,
+    dirty_json: BTreeSet<String>,
+}
+
+struct ThreadView {
+    bound_id: Option<String>,
+    factory: Option<Arc<ExecutionContextFactory>>,
+    user_id: Option<String>,
+    username: Option<String>,
+    visit_id: Option<String>,
+    visitor_id: Option<String>,
+    locale: Option<String>,
+    time_zone: Option<String>,
+    csrf_token: Option<String>,
+    anonymous: bool,
+    attributes: BTreeMap<String, Json>,
+    dirty_columns: BTreeSet<Column>,
+    dirty_json: BTreeSet<String>,
+}
+
+/// Borrow of one web session on this thread. Drop copies dirty fields back to the factory.
+#[must_use = "dropping the guard unbinds the web session"]
+pub struct SessionGuard {
+    https: bool,
+}
+
+impl SessionGuard {
+    pub fn session_id(&self) -> String {
+        with_session(|session| session.bound_id.clone().unwrap_or_default())
+    }
+
+    pub fn visitor_id(&self) -> Option<String> {
+        with_session(|session| session.visitor_id.clone())
+    }
+
+    pub fn session_cookie_header(&self) -> Result<String, Error> {
+        format_session_cookie(&self.session_id(), self.https)
+    }
+
+    pub fn visitor_cookie_header(&self) -> Option<String> {
+        self.visitor_id()
+            .map(|visitor_id| format_visitor_cookie(&visitor_id, self.https))
+    }
+}
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        unbind_current();
+    }
+}
+
+/// Bind this thread to a factory session.
+///
+/// `session_cookie` is the `moqui.session` value. A bad MAC, a missing row, or a malformed value
+/// mints a new id. `visitor_cookie` is the `moqui.visitor` value.
+pub fn bind(
+    factory: &Arc<ExecutionContextFactory>,
+    session_cookie: Option<&str>,
+    visitor_cookie: Option<&str>,
+    https: bool,
+) -> Result<SessionGuard, Error> {
+    if ExecutionContext::current().is_none() {
+        return Err(Error::new("no execution context"));
+    }
+    if with_session(|session| session.bound_id.is_some()) {
+        return Err(Error::new("a web session is already bound"));
+    }
+    let presented = presented_id(session_cookie)?;
+    let (id, created) = resolve_id(factory, presented.as_deref())?;
+    touch_session(factory, &id);
+    install_thread(factory, &id)?;
+    if let Err(err) = ensure_visit(factory, visitor_cookie).and_then(|_| forget_user_logged_out_elsewhere()) {
+        unbind_current();
+        if created {
+            lock_sessions(factory).sessions.remove(&id);
+        }
+        return Err(err);
+    }
+    Ok(SessionGuard { https })
+}
+
+/// `moqui.session={id}.{mac}; HttpOnly; SameSite=Lax; Path=/` and `; Secure` when `https`.
+pub fn format_session_cookie(session_id: &str, https: bool) -> Result<String, Error> {
+    let mac = sign_session(session_id)?;
+    Ok(format!(
+        "{SESSION_COOKIE_NAME}={session_id}.{mac}{}",
+        cookie_flags(https, None)
+    ))
+}
+
+/// `moqui.visitor` cookie. `Max-Age` is one year. `Secure` only when `https` is set.
+pub fn format_visitor_cookie(visitor_id: &str, https: bool) -> String {
+    format!(
+        "{VISITOR_COOKIE_NAME}={visitor_id}{}",
+        cookie_flags(https, Some(VISITOR_MAX_AGE))
+    )
+}
+
+/// Session id when the MAC matches. Malformed values and a bad MAC are `Ok(None)`.
+pub fn verify_session_cookie(value: &str) -> Result<Option<String>, Error> {
+    let Some((id, tag_b64)) = split_session_cookie(value) else {
+        return Ok(None);
+    };
+    let Ok(tag) = URL_SAFE_NO_PAD.decode(tag_b64) else {
+        return Ok(None);
+    };
+    if mac_matches(id, &tag)? {
+        Ok(Some(id.to_string()))
+    } else {
+        Ok(None)
+    }
+}
+
+/// The user of a session this node holds live: `None` when the node has no current copy (the
+/// caller reads the `HttpSession` row), `Some(None)` when the session has no user or was rotated
+/// away. An eventual flush has not written a new login yet, so the live copy comes first. A copy
+/// another node changed is current only for the columns written here.
+pub fn live_session_user_id(factory: &ExecutionContextFactory, session_id: &str) -> Option<Option<String>> {
+    let table = lock_sessions(factory);
+    let live = table.sessions.get(session_id)?;
+    if live.retired {
+        return Some(None);
+    }
+    if live.invalidated && !live.dirty_columns.contains(&Column::UserId) {
+        return None;
+    }
+    Some(live.columns.user_id.clone().filter(|user_id| !user_id.is_empty()))
+}
+
+/// Guarantee mode flushes the bound session. Eventual mode returns without writing.
+pub fn end_request() -> Result<(), Error> {
+    flush_bound_if_guarantee()
+}
+
+/// Drop the clean snapshot for `id` and keep dirty fields. A missing id is left unset.
+pub fn invalidate(id: &str) {
+    let Some(factory) = bound_factory() else {
+        return;
+    };
+    let mut table = lock_sessions(&factory);
+    let Some(live) = table.sessions.get_mut(id) else {
+        return;
+    };
+    live.snapshot = None;
+    live.invalidated = true;
+}
+
+pub(crate) fn flush_mode_from_property() -> Result<FlushMode, Error> {
+    match moqui_lib::env::get_prop_or_env("webapp_session_flush").as_str() {
+        "" | "eventual" => Ok(FlushMode::Eventual),
+        "guarantee" => Ok(FlushMode::Guarantee),
+        other => Err(Error::new(format!(
+            "property webapp_session_flush must be eventual or guarantee, not {other}"
+        ))),
+    }
+}
+
+/// Write every dirty live session on this factory. The bound thread is synced first.
+pub(crate) fn flush_dirty(factory: &ExecutionContextFactory) -> Result<(), Error> {
+    sync_bound(factory);
+    expire_idle(factory)?;
+    let ids: Vec<String> = {
+        let table = lock_sessions(factory);
+        table
+            .sessions
+            .iter()
+            .filter(|(_, live)| needs_flush(live))
+            .map(|(id, _)| id.clone())
+            .collect()
+    };
+    for id in ids {
+        flush_id(factory, &id)?;
+    }
+    Ok(())
+}
+
+/// Move the bound session onto a new id after a successful password check.
+pub(crate) fn rotate_on_password_login() -> Result<(), Error> {
+    let (factory, old_id) = with_session(|session| (session.factory.clone(), session.bound_id.clone()));
+    let (Some(factory), Some(old_id)) = (factory, old_id) else {
+        return Ok(());
+    };
+    sync_bound(&factory);
+    let facade = factory.entity().ok_or_else(|| Error::new("no entity facade"))?;
+    let new_id = random_hex(SESSION_ID_BYTES)?;
+    let new_token = random_hex(SESSION_TOKEN_BYTES)?;
+    stage_rotated(&factory, &old_id, &new_id, &new_token)?;
+    if let Err(err) = delete_session_row(&facade, &old_id) {
+        lock_sessions(&factory).sessions.remove(&new_id);
+        return Err(err);
+    }
+    retire_old(&factory, &old_id);
+    invalidate(&old_id);
+    invalidate(&new_id);
+    with_session(|session| {
+        session.bound_id = Some(new_id.clone());
+        session.csrf_token = Some(new_token);
+        session.dirty_columns.clear();
+        session.dirty_json.clear();
+    });
+    let guarantee = lock_sessions(&factory).mode == FlushMode::Guarantee;
+    if guarantee {
+        flush_id(&factory, &new_id)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn flush_after_logout() -> Result<(), Error> {
+    flush_bound_if_guarantee()
+}
+
+/// The logged-in username. `Ok(None)` when nobody is logged in.
+pub fn current_username() -> Result<Option<String>, Error> {
+    Ok(with_session(|session| session.username.clone()))
+}
+
+pub fn current_user_id() -> Result<Option<String>, Error> {
+    Ok(with_session(|session| session.user_id.clone()))
+}
+
+pub fn is_anonymous() -> Result<bool, Error> {
+    Ok(with_session(|session| session.anonymous))
+}
+
+/// Store the client address on this session's visit. An empty address is left unchanged.
+///
+/// # Errors
+///
+/// Returns an error when the visit row cannot be read or updated.
+pub fn remember_client_ip(address: &str) -> Result<(), Error> {
+    let address = address.trim();
+    if address.is_empty() {
+        return Ok(());
+    }
+    let Some(visit_id) = visit_id()? else {
+        return Ok(());
+    };
+    let Some(factory) = bound_factory() else {
+        return Ok(());
+    };
+    let Some(facade) = factory.entity() else {
+        return Ok(());
+    };
+    let _authz = without_authz();
+    let Some(mut visit) = facade
+        .find(VISIT)
+        .map_err(Error::from)?
+        .eq("visitId", Value::string(&visit_id))
+        .one()
+        .map_err(Error::from)?
+    else {
+        return Ok(());
+    };
+    visit.set("clientIpAddress", Value::string(address));
+    visit.update(&facade).map_err(Error::from)
+}
+
+/// Every session attribute as text. Maps and lists are JSON.
+pub fn session_attributes() -> BTreeMap<String, String> {
+    with_session(|session| {
+        session
+            .attributes
+            .iter()
+            .filter_map(|(key, value)| attribute_text(Some(value)).map(|text| (key.clone(), text)))
+            .collect()
+    })
+}
+
+/// One session attribute as text. Maps and lists are returned as JSON.
+#[allow(dead_code)] // The library target does not compile the session test that calls this.
+pub fn session_attribute(name: &str) -> Option<String> {
+    with_session(|session| attribute_text(session.attributes.get(name)))
+}
+
+/// Replace one session attribute. `None` removes it.
+#[allow(dead_code)] // The library target does not compile the session test that calls this.
+pub fn set_session_attribute(name: &str, value: Option<&str>) {
+    with_session(|session| match value {
+        Some(text) => put_json(session, name, Json::Text(text.to_string())),
+        None => {
+            session.attributes.remove(name);
+            if session.bound_id.is_some() {
+                session.dirty_json.insert(name.to_string());
+            }
+        }
+    });
+}
+
+/// True when the attribute is a boolean true or the text `true` or `Y`.
+pub fn session_attribute_flag(name: &str) -> bool {
+    with_session(|session| match session.attributes.get(name) {
+        Some(Json::Bool(flag)) => *flag,
+        Some(Json::Text(text)) => matches!(text.as_str(), "true" | "Y" | "y"),
+        _ => false,
+    })
+}
+
+fn attribute_text(value: Option<&Json>) -> Option<String> {
+    match value {
+        Some(Json::Text(text)) => Some(text.clone()),
+        Some(Json::Bool(true)) => Some("true".to_string()),
+        Some(Json::Bool(false)) => Some("false".to_string()),
+        Some(Json::Number(text)) => Some(text.clone()),
+        Some(Json::Null) | None => None,
+        Some(other) => Some(encode_json(other)),
+    }
+}
+
+/// The CSRF token when one is already stored. Does not create one.
+pub fn peek_csrf_token() -> Option<String> {
+    with_session(|session| session.csrf_token.clone())
+}
+
+/// CSRF token for this thread. A bound session uses `sessionToken`.
+pub fn csrf_token() -> Result<String, Error> {
+    let existing = with_session(|session| session.csrf_token.clone());
+    if let Some(token) = existing {
+        return Ok(token);
+    }
+    let token = random_hex(SESSION_TOKEN_BYTES)?;
+    with_session(|session| {
+        if session.csrf_token.is_none() {
+            session.csrf_token = Some(token.clone());
+            mark_column(session, Column::SessionToken);
+        }
+    });
+    Ok(with_session(|session| session.csrf_token.clone().unwrap_or(token)))
+}
+
+pub fn visit_id() -> Result<Option<String>, Error> {
+    Ok(with_session(|session| session.visit_id.clone()))
+}
+
+pub fn visitor_id() -> Result<Option<String>, Error> {
+    Ok(with_session(|session| session.visitor_id.clone()))
+}
+
+pub fn locale() -> Result<Option<String>, Error> {
+    Ok(with_session(|session| session.locale.clone()))
+}
+
+pub fn time_zone() -> Result<Option<String>, Error> {
+    Ok(with_session(|session| session.time_zone.clone()))
+}
+
+pub fn flash_messages() -> Result<Vec<String>, Error> {
+    Ok(with_session(|session| session.flash.clone()))
+}
+
+pub fn saved_parameters() -> Result<BTreeMap<String, String>, Error> {
+    Ok(with_session(|session| session.saved.clone()))
+}
+
+pub fn error_parameters() -> Result<BTreeMap<String, String>, Error> {
+    Ok(with_session(|session| session.errors.clone()))
+}
+
+pub fn screen_history() -> Result<Vec<String>, Error> {
+    Ok(with_session(|session| session.screen_history.clone()))
+}
+
+pub fn set_locale(locale: Option<&str>) {
+    with_session(|session| {
+        session.locale = locale.map(str::to_string);
+        mark_column(session, Column::Locale);
+    });
+}
+
+pub fn set_time_zone(time_zone: Option<&str>) {
+    with_session(|session| {
+        session.time_zone = time_zone.map(str::to_string);
+        mark_column(session, Column::TimeZone);
+    });
+}
+
+#[allow(dead_code)]
+pub fn add_flash_message(message: &str) {
+    with_session(|session| {
+        session.flash.push(message.to_string());
+        let encoded = json_string_list(&session.flash);
+        put_json(session, MESSAGE_PUBLIC, encoded);
+    });
+}
+
+/// An error message the next page shows, kept apart from the messages.
+pub fn add_flash_error(message: &str) {
+    with_session(|session| {
+        session.flash_errors.push(message.to_string());
+        let encoded = json_string_list(&session.flash_errors);
+        put_json(session, MESSAGE_ERROR, encoded);
+    });
+}
+
+/// What the last response saved for this page: messages, errors and the parameters of a failed submit.
+/// The session forgets them, so a page shows them once.
+#[derive(Clone, Debug, Default)]
+pub struct SavedForPage {
+    pub messages: Vec<String>,
+    pub errors: Vec<String>,
+    pub error_parameters: BTreeMap<String, String>,
+}
+
+pub fn take_saved_for_page() -> SavedForPage {
+    with_session(|session| {
+        let taken = SavedForPage {
+            messages: std::mem::take(&mut session.flash),
+            errors: std::mem::take(&mut session.flash_errors),
+            error_parameters: std::mem::take(&mut session.errors),
+        };
+        for key in [MESSAGE_PUBLIC, MESSAGE_ERROR, ERROR_PARAMETERS] {
+            if session.attributes.remove(key).is_some() && session.bound_id.is_some() {
+                session.dirty_json.insert(key.to_string());
+            }
+        }
+        taken
+    })
+}
+
+#[allow(dead_code)]
+pub fn save_parameter(name: &str, value: &str) {
+    with_session(|session| {
+        session.saved.insert(name.to_string(), value.to_string());
+        let encoded = json_string_map(&session.saved);
+        put_json(session, SAVED, encoded);
+    });
+}
+
+#[allow(dead_code)]
+pub fn set_error_parameter(name: &str, value: &str) {
+    with_session(|session| {
+        session.errors.insert(name.to_string(), value.to_string());
+        let encoded = json_string_map(&session.errors);
+        put_json(session, ERROR_PARAMETERS, encoded);
+    });
+}
+
+#[allow(dead_code)]
+pub fn push_screen_history(screen: &str) {
+    with_session(|session| {
+        // Newest first, without repeats, and no more than 40.
+        session.screen_history.retain(|existing| existing != screen);
+        session.screen_history.insert(0, screen.to_string());
+        session.screen_history.truncate(40);
+        let encoded = json_string_list(&session.screen_history);
+        put_json(session, SCREEN_HISTORY, encoded);
+    });
+}
+
+/// A new login starts a new session view: the CSRF token and cached authorization data are dropped.
+pub(crate) fn set_user(user_id: &str, username: &str) {
+    with_session(|session| {
+        session.user_id = Some(user_id.to_string());
+        session.username = Some(username.to_string());
+        session.anonymous = false;
+        session.csrf_token = None;
+        session.authz = AuthzCache::default();
+        mark_column(session, Column::UserId);
+    });
+}
+
+pub(crate) fn set_anonymous(anonymous: bool) {
+    with_session(|session| session.anonymous = anonymous);
+}
+
+pub(crate) fn set_visit(visit_id: &str, visitor_id: &str) {
+    with_session(|session| {
+        session.visit_id = Some(visit_id.to_string());
+        session.visitor_id = Some(visitor_id.to_string());
+        mark_column(session, Column::VisitId);
+        mark_column(session, Column::VisitorId);
+    });
+}
+
+/// Clears the user and the anonymous flag. Visit ids and screen state stay. The CSRF token and
+/// cached authorization data go, so a later login cannot reuse them.
+pub(crate) fn clear_login() {
+    with_session(|session| {
+        session.user_id = None;
+        session.username = None;
+        session.anonymous = false;
+        session.csrf_token = None;
+        session.authz = AuthzCache::default();
+        mark_column(session, Column::UserId);
+    });
+}
+
+#[allow(dead_code)]
+pub(crate) fn reset_session() {
+    with_session(|session| *session = Memory::default());
+}
+
+pub(crate) fn with_session<T>(body: impl FnOnce(&mut Memory) -> T) -> T {
+    let mut pending = Some(body);
+    let ran = ExecutionContext::with_current(|ec| pending.take().map(|run| run(&mut ec.session())));
+    match ran.flatten() {
+        Some(value) => value,
+        None => match pending.take() {
+            Some(run) => run(&mut Memory::default()),
+            None => unreachable!("the session body runs once"),
+        },
+    }
+}
+
+fn lock_sessions(factory: &ExecutionContextFactory) -> MutexGuard<'_, SessionTable> {
+    factory.sessions.lock().unwrap_or_else(|err| err.into_inner())
+}
+
+fn random_hex(size: usize) -> Result<String, Error> {
+    let mut bytes = vec![0_u8; size];
+    getrandom::fill(&mut bytes).map_err(|err| Error::new(format!("could not read random bytes: {err}")))?;
+    Ok(encode_hex(&bytes))
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(char::from(HEX[usize::from(byte >> 4)]));
+        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    out
+}
+
+fn presented_id(session_cookie: Option<&str>) -> Result<Option<String>, Error> {
+    match session_cookie {
+        Some(value) if !value.is_empty() => verify_session_cookie(value),
+        _ => Ok(None),
+    }
+}
+
+fn resolve_id(factory: &Arc<ExecutionContextFactory>, presented: Option<&str>) -> Result<(String, bool), Error> {
+    if let Some(id) = presented {
+        if adopt_presented(factory, id)? {
+            return Ok((id.to_string(), false));
+        }
+    }
+    let id = random_hex(SESSION_ID_BYTES)?;
+    let token = random_hex(SESSION_TOKEN_BYTES)?;
+    let live = LiveSession {
+        columns: Columns {
+            session_token: Some(token),
+            ..Columns::default()
+        },
+        username: None,
+        anonymous: false,
+        attributes: BTreeMap::new(),
+        dirty_columns: all_columns(),
+        dirty_json: BTreeSet::new(),
+        snapshot: None,
+        invalidated: false,
+        retired: false,
+        last_access: now_millis(),
+        touch_mark: 0,
+        touch: false,
+    };
+    lock_sessions(factory).sessions.insert(id.clone(), live);
+    Ok((id, true))
+}
+
+fn adopt_presented(factory: &ExecutionContextFactory, id: &str) -> Result<bool, Error> {
+    let timeout = session_timeout_millis();
+    let now = now_millis();
+    let mut expired = false;
+    let retired = {
+        let mut table = lock_sessions(factory);
+        match table.sessions.get(id) {
+            Some(live) if live.retired => true,
+            Some(live) if is_idle(live.last_access, now, timeout) => {
+                expired = true;
+                table.sessions.remove(id);
+                false
+            }
+            Some(_) => return Ok(true),
+            None => false,
+        }
+    };
+    if retired {
+        return Ok(false);
+    }
+    let Some(facade) = factory.entity() else {
+        return Ok(false);
+    };
+    if expired {
+        delete_session_row(&facade, id)?;
+        return Ok(false);
+    }
+    let Some(row) = read_row(&facade, id)? else {
+        return Ok(false);
+    };
+    let stamp = row.get("lastUpdatedStamp").and_then(super::login::value_millis);
+    if stamp.is_some_and(|stamp| is_idle(stamp, now, timeout)) {
+        delete_session_row(&facade, id)?;
+        return Ok(false);
+    }
+    install_from_row(factory, id)?;
+    Ok(true)
+}
+
+/// `webapp_session_timeout` in minutes, 60 when unset. 0 or a negative value never expires.
+fn session_timeout_millis() -> Option<i64> {
+    let raw = moqui_lib::env::get_prop_or_env("webapp_session_timeout");
+    let minutes = raw.trim().parse::<i64>().unwrap_or(60);
+    (minutes > 0).then(|| minutes.saturating_mul(60_000))
+}
+
+fn is_idle(last_access: i64, now: i64, timeout: Option<i64>) -> bool {
+    timeout.is_some_and(|timeout| now.saturating_sub(last_access) > timeout)
+}
+
+/// Record a request on a bound session. `lastUpdatedStamp` is rewritten at most every quarter timeout.
+fn touch_session(factory: &ExecutionContextFactory, id: &str) {
+    let timeout = session_timeout_millis();
+    let now = now_millis();
+    let mut table = lock_sessions(factory);
+    let Some(live) = table.sessions.get_mut(id) else {
+        return;
+    };
+    live.last_access = now;
+    let Some(timeout) = timeout else {
+        return;
+    };
+    if now.saturating_sub(live.touch_mark) > timeout / 4 {
+        live.touch_mark = now;
+        live.touch = true;
+    }
+}
+
+/// Drop idle sessions from memory and, at most once a minute, delete idle `HttpSession` rows.
+fn expire_idle(factory: &ExecutionContextFactory) -> Result<(), Error> {
+    let Some(timeout) = session_timeout_millis() else {
+        return Ok(());
+    };
+    let now = now_millis();
+    let purge = {
+        let mut table = lock_sessions(factory);
+        table
+            .sessions
+            .retain(|_, live| !is_idle(live.last_access, now, Some(timeout)));
+        if now.saturating_sub(table.last_purge) > 60_000 {
+            table.last_purge = now;
+            true
+        } else {
+            false
+        }
+    };
+    if !purge {
+        return Ok(());
+    }
+    let Some(facade) = factory.entity() else {
+        return Ok(());
+    };
+    let cutoff = super::login::stamp_value(now.saturating_sub(timeout));
+    let condition = Condition::less("lastUpdatedStamp", cutoff.clone());
+    let sql = facade
+        .with_entity(HTTP_SESSION, |entity, dialect, _| {
+            sql_delete(entity, dialect, Some(&condition)).map(|statement| statement.sql)
+        })
+        .map_err(Error::from)?;
+    with_session_sql(&facade, |conn| {
+        conn.execute(&sql, &[cutoff])?;
+        Ok(())
+    })?;
+    cache::on_write(&facade, HTTP_SESSION, "delete", &BTreeMap::new()).map_err(Error::from)
+}
+
+fn install_from_row(factory: &ExecutionContextFactory, id: &str) -> Result<(), Error> {
+    let facade = factory.entity().ok_or_else(|| Error::new("no entity facade"))?;
+    let Some(row) = read_row(&facade, id)? else {
+        return Err(Error::new("session row disappeared"));
+    };
+    let base = base_from_row(&row)?;
+    let stamp = row.get("lastUpdatedStamp").and_then(super::login::value_millis);
+    let username = base
+        .columns
+        .user_id
+        .as_deref()
+        .and_then(|user_id| username_for(&facade, user_id));
+    let live = LiveSession {
+        columns: base.columns.clone(),
+        username,
+        anonymous: false,
+        attributes: base.attributes.clone(),
+        dirty_columns: BTreeSet::new(),
+        dirty_json: BTreeSet::new(),
+        snapshot: Some(snapshot_from_base(&base)),
+        invalidated: false,
+        retired: false,
+        last_access: stamp.unwrap_or_else(now_millis),
+        touch_mark: stamp.unwrap_or(0),
+        touch: false,
+    };
+    let mut table = lock_sessions(factory);
+    if table.sessions.get(id).is_some_and(|existing| !existing.retired) {
+        return Ok(());
+    }
+    table.sessions.insert(id.to_string(), live);
+    Ok(())
+}
+
+fn install_thread(factory: &Arc<ExecutionContextFactory>, id: &str) -> Result<(), Error> {
+    let live = lock_sessions(factory)
+        .sessions
+        .get(id)
+        .cloned()
+        .ok_or_else(|| Error::new("session disappeared"))?;
+    // Leave `authz` alone. A new context starts empty, and a login clears it in `set_user`.
+    with_session(|session| {
+        session.user_id = live.columns.user_id.clone();
+        session.username = live.username.clone();
+        session.visit_id = live.columns.visit_id.clone();
+        session.visitor_id = live.columns.visitor_id.clone();
+        session.locale = live.columns.locale.clone();
+        session.time_zone = live.columns.time_zone.clone();
+        session.csrf_token = live.columns.session_token.clone();
+        session.anonymous = live.anonymous;
+        session.attributes = live.attributes.clone();
+        project_known(session);
+        session.bound_id = Some(id.to_string());
+        session.factory = Some(Arc::clone(factory));
+        session.dirty_columns.clear();
+        session.dirty_json.clear();
+    });
+    Ok(())
+}
+
+fn forget_user_logged_out_elsewhere() -> Result<(), Error> {
+    let Some(user_id) = current_user_id()? else {
+        return Ok(());
+    };
+    let Some(factory) = bound_factory() else {
+        return Ok(());
+    };
+    let Some(facade) = factory.entity() else {
+        return Ok(());
+    };
+    // Visit and account reads during bind run before a user is authorized.
+    let _authz = without_authz();
+    let Some(account) = facade
+        .find(USER_ACCOUNT)
+        .map_err(Error::from)?
+        .eq("userId", Value::string(&user_id))
+        .one()
+        .map_err(Error::from)?
+    else {
+        return Ok(());
+    };
+    let logged_out = account
+        .get("hasLoggedOut")
+        .and_then(Value::as_str)
+        .is_some_and(|flag| flag == "Y");
+    if logged_out {
+        clear_login();
+    }
+    Ok(())
+}
+
+fn ensure_visit(factory: &Arc<ExecutionContextFactory>, visitor_cookie: Option<&str>) -> Result<(), Error> {
+    if visit_id()?.is_some() {
+        return Ok(());
+    }
+    let _authz = without_authz();
+    let facade = factory.entity().ok_or_else(|| Error::new("no entity facade"))?;
+    let visitor_id = resolve_visitor(&facade, visitor_cookie)?;
+    let visit_id = create_visit(&facade, &visitor_id)?;
+    set_visit(&visit_id, &visitor_id);
+    Ok(())
+}
+
+fn resolve_visitor(facade: &EntityFacade, cookie: Option<&str>) -> Result<String, Error> {
+    if let Some(id) = cookie.map(str::trim).filter(|id| !id.is_empty()) {
+        let found = facade
+            .find(VISITOR)
+            .map_err(Error::from)?
+            .eq("visitorId", Value::string(id))
+            .one()
+            .map_err(Error::from)?;
+        if found.is_some() {
+            return Ok(id.to_string());
+        }
+    }
+    create_visitor(facade)
+}
+
+fn create_visitor(facade: &EntityFacade) -> Result<String, Error> {
+    let mut visitor = facade.make_value(VISITOR).map_err(Error::from)?;
+    visitor.set("createdDate", super::login::now_value());
+    visitor.set_sequenced_id_primary(facade).map_err(Error::from)?;
+    let visitor_id = required_id(&visitor, "visitorId")?;
+    visitor.create(facade).map_err(Error::from)?;
+    Ok(visitor_id)
+}
+
+fn create_visit(facade: &EntityFacade, visitor_id: &str) -> Result<String, Error> {
+    let mut visit = facade.make_value(VISIT).map_err(Error::from)?;
+    visit.set("visitorId", Value::string(visitor_id));
+    visit.set("fromDate", super::login::now_value());
+    if let Some(user_id) = current_user_id()? {
+        visit.set("userId", Value::string(user_id));
+    }
+    visit.set_sequenced_id_primary(facade).map_err(Error::from)?;
+    let visit_id = required_id(&visit, "visitId")?;
+    visit.create(facade).map_err(Error::from)?;
+    Ok(visit_id)
+}
+
+fn required_id(value: &EntityValue, field: &str) -> Result<String, Error> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| Error::new(format!("{field} was not sequenced")))
+}
+
+fn without_authz() -> Option<crate::context::AuthzGuard> {
+    ExecutionContext::with_current(|ctx| ctx.disable_authz())
+}
+
+fn username_for(facade: &EntityFacade, user_id: &str) -> Option<String> {
+    let _authz = without_authz();
+    let row = facade
+        .find(USER_ACCOUNT)
+        .ok()?
+        .eq("userId", Value::string(user_id))
+        .one()
+        .ok()??;
+    row.get("username")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+fn unbind_current() {
+    let view = with_session(thread_view);
+    let Some(id) = view.bound_id.clone() else {
+        return;
+    };
+    let Some(factory) = view.factory.clone() else {
+        clear_bind();
+        return;
+    };
+    {
+        let mut table = lock_sessions(&factory);
+        if let Some(live) = table.sessions.get_mut(&id) {
+            if !live.retired {
+                apply_thread(live, &view);
+            }
+        } else if view_dirty(&view) {
+            let mut live = live_from_thread(&view);
+            live.dirty_columns = all_columns();
+            live.dirty_json = live.attributes.keys().cloned().collect();
+            table.sessions.insert(id, live);
+        }
+    }
+    clear_bind();
+}
+
+fn clear_bind() {
+    with_session(|session| {
+        session.bound_id = None;
+        session.factory = None;
+        session.dirty_columns.clear();
+        session.dirty_json.clear();
+    });
+}
+
+fn sync_bound(factory: &ExecutionContextFactory) {
+    let view = with_session(thread_view);
+    let Some(thread_factory) = &view.factory else {
+        return;
+    };
+    if !std::ptr::eq(Arc::as_ptr(thread_factory), std::ptr::from_ref(factory)) {
+        return;
+    }
+    let Some(id) = view.bound_id.clone() else {
+        return;
+    };
+    {
+        let mut table = lock_sessions(factory);
+        if let Some(live) = table.sessions.get_mut(&id) {
+            if !live.retired {
+                apply_thread(live, &view);
+            }
+        }
+    }
+    with_session(|session| {
+        if session.bound_id.as_deref() == Some(id.as_str()) {
+            session.dirty_columns.clear();
+            session.dirty_json.clear();
+        }
+    });
+}
+
+fn flush_bound_if_guarantee() -> Result<(), Error> {
+    let (factory, id) = with_session(|session| (session.factory.clone(), session.bound_id.clone()));
+    let (Some(factory), Some(id)) = (factory, id) else {
+        return Ok(());
+    };
+    let guarantee = lock_sessions(&factory).mode == FlushMode::Guarantee;
+    if !guarantee {
+        return Ok(());
+    }
+    sync_bound(&factory);
+    flush_id(&factory, &id)
+}
+
+fn flush_id(factory: &ExecutionContextFactory, id: &str) -> Result<(), Error> {
+    let facade = factory.entity().ok_or_else(|| Error::new("no entity facade"))?;
+    let mut table = lock_sessions(factory);
+    if table.sessions.get(id).is_none_or(|live| !needs_flush(live)) {
+        return Ok(());
+    }
+    let mut force_sql = false;
+    for _ in 0..MAX_FLUSH_ATTEMPTS {
+        let Some(live) = table.sessions.get(id) else {
+            return Ok(());
+        };
+        if !needs_flush(live) {
+            return Ok(());
+        }
+        let dirty_columns = live.dirty_columns.clone();
+        let dirty_json = live.dirty_json.clone();
+        let base = load_base(&facade, id, live, force_sql)?;
+        let merged = overlay(live, &base);
+        if !write_merged(&facade, id, &base, &merged, &dirty_columns, &dirty_json)? {
+            force_sql = true;
+            continue;
+        }
+        store_success(&mut table, id, &merged);
+        cache::on_write(&facade, HTTP_SESSION, "update", &session_key(id)).map_err(Error::from)?;
+        return Ok(());
+    }
+    Err(Error::new(format!("HttpSession sessionRevision conflict for {id}")))
+}
+
+fn store_success(table: &mut SessionTable, id: &str, merged: &Merged) {
+    let Some(live) = table.sessions.get_mut(id) else {
+        return;
+    };
+    live.columns = merged.columns.clone();
+    live.attributes = merged.attributes.clone();
+    live.snapshot = Some(Snapshot {
+        revision: merged.revision,
+        revision_value: Value::I64(merged.revision),
+        columns: merged.columns.clone(),
+        attributes: merged.attributes.clone(),
+    });
+    live.dirty_columns.clear();
+    live.dirty_json.clear();
+    live.invalidated = false;
+    live.touch = false;
+}
+
+fn load_base(facade: &EntityFacade, id: &str, live: &LiveSession, force_sql: bool) -> Result<Base, Error> {
+    if !force_sql && !live.invalidated {
+        if let Some(snapshot) = &live.snapshot {
+            return Ok(base_from_snapshot(snapshot));
+        }
+    }
+    match read_row(facade, id)? {
+        Some(row) => base_from_row(&row),
+        None => Ok(Base {
+            exists: false,
+            revision: 0,
+            revision_value: Value::I64(0),
+            columns: Columns::default(),
+            attributes: BTreeMap::new(),
+        }),
+    }
+}
+
+fn overlay(live: &LiveSession, base: &Base) -> Merged {
+    let mut columns = base.columns.clone();
+    copy_dirty_columns(&live.dirty_columns, &live.columns, &mut columns);
+    let mut attributes = base.attributes.clone();
+    for key in &live.dirty_json {
+        match live.attributes.get(key) {
+            Some(value) => {
+                attributes.insert(key.clone(), value.clone());
+            }
+            None => {
+                attributes.remove(key);
+            }
+        }
+    }
+    Merged {
+        columns,
+        attributes,
+        revision: base.revision.saturating_add(1),
+    }
+}
+
+fn write_merged(
+    facade: &EntityFacade,
+    id: &str,
+    base: &Base,
+    merged: &Merged,
+    dirty_columns: &BTreeSet<Column>,
+    dirty_json: &BTreeSet<String>,
+) -> Result<bool, Error> {
+    if !base.exists {
+        insert_row(facade, id, merged)?;
+        return Ok(true);
+    }
+    let (names, mut params) = update_assignments(merged, dirty_columns, dirty_json);
+    params.push(Value::string(id));
+    params.push(base.revision_value.clone());
+    let sql = facade
+        .with_entity(HTTP_SESSION, |entity, dialect, _| {
+            let condition = Condition::and(vec![
+                Condition::bound("sessionId", CompareOp::Equals),
+                Condition::bound("sessionRevision", CompareOp::Equals),
+            ]);
+            sql_update(entity, dialect, &names, Some(&condition)).map(|statement| statement.sql)
+        })
+        .map_err(Error::from)?;
+    let count = with_session_sql(facade, |conn| conn.execute(&sql, &params))?;
+    Ok(count > 0)
+}
+
+fn update_assignments(
+    merged: &Merged,
+    dirty_columns: &BTreeSet<Column>,
+    dirty_json: &BTreeSet<String>,
+) -> (Vec<&'static str>, Vec<Value>) {
+    let mut names = Vec::new();
+    let mut params = Vec::new();
+    for column in dirty_columns {
+        names.push(column_name(*column));
+        params.push(column_value(&merged.columns, *column));
+    }
+    if !dirty_json.is_empty() {
+        names.push("attributes");
+        params.push(Value::string(encode_json(&Json::Map(merged.attributes.clone()))));
+    }
+    names.push("sessionRevision");
+    params.push(Value::I64(merged.revision));
+    names.push("lastUpdatedStamp");
+    params.push(super::login::now_value());
+    (names, params)
+}
+
+fn insert_row(facade: &EntityFacade, id: &str, merged: &Merged) -> Result<(), Error> {
+    let sql = facade
+        .with_entity(HTTP_SESSION, |entity, dialect, _| {
+            sql_insert(entity, dialect, INSERT_COLUMNS)
+        })
+        .map_err(Error::from)?;
+    let params = insert_params(id, merged);
+    with_session_sql(facade, |conn| {
+        conn.execute(&sql, &params)?;
+        Ok(())
+    })
+}
+
+fn insert_params(id: &str, merged: &Merged) -> Vec<Value> {
+    vec![
+        Value::string(id),
+        column_value(&merged.columns, Column::UserId),
+        column_value(&merged.columns, Column::VisitId),
+        column_value(&merged.columns, Column::VisitorId),
+        column_value(&merged.columns, Column::Locale),
+        column_value(&merged.columns, Column::TimeZone),
+        column_value(&merged.columns, Column::SessionToken),
+        Value::string(encode_json(&Json::Map(merged.attributes.clone()))),
+        Value::I64(merged.revision),
+        super::login::now_value(),
+    ]
+}
+
+fn read_row(facade: &EntityFacade, id: &str) -> Result<Option<DbRow>, Error> {
+    let fields: Vec<FieldRef> = ROW_FIELDS.iter().copied().map(FieldRef::new).collect();
+    let condition = Condition::equals("sessionId", Value::string(id));
+    let sql = facade
+        .with_entity(HTTP_SESSION, |entity, dialect, _| {
+            sql_select(entity, dialect, &fields, Some(&condition), &[], LimitOffset::default())
+                .map(|statement| statement.sql)
+        })
+        .map_err(Error::from)?;
+    let params = [Value::string(id)];
+    let rows = with_session_sql(facade, |conn| conn.query(&sql, &params))?;
+    Ok(rows.into_iter().next())
+}
+
+fn delete_session_row(facade: &EntityFacade, id: &str) -> Result<(), Error> {
+    let condition = Condition::equals("sessionId", Value::string(id));
+    let sql = facade
+        .with_entity(HTTP_SESSION, |entity, dialect, _| {
+            sql_delete(entity, dialect, Some(&condition)).map(|statement| statement.sql)
+        })
+        .map_err(Error::from)?;
+    with_session_sql(facade, |conn| {
+        conn.execute(&sql, &[Value::string(id)])?;
+        Ok(())
+    })?;
+    cache::on_write(facade, HTTP_SESSION, "delete", &session_key(id)).map_err(Error::from)
+}
+
+fn session_key(id: &str) -> BTreeMap<String, Value> {
+    let mut keys = BTreeMap::new();
+    keys.insert("sessionId".to_string(), Value::string(id));
+    keys
+}
+
+fn with_session_sql<T>(
+    facade: &EntityFacade,
+    body: impl FnOnce(&mut dyn DbConnection) -> Result<T, moqui_lib::error::Error>,
+) -> Result<T, Error> {
+    let tx = facade.transactions_for(HTTP_SESSION)?;
+    crate::entity::exec::with_reserve_tx(&tx, body).map_err(Error::from)
+}
+
+fn base_from_row(row: &DbRow) -> Result<Base, Error> {
+    let (revision, revision_value) = revision_of(row.get("sessionRevision"));
+    Ok(Base {
+        exists: true,
+        revision,
+        revision_value,
+        columns: Columns {
+            user_id: opt_text(row, "userId"),
+            visit_id: opt_text(row, "visitId"),
+            visitor_id: opt_text(row, "visitorId"),
+            locale: opt_text(row, "locale"),
+            time_zone: opt_text(row, "timeZone"),
+            session_token: opt_text(row, "sessionToken"),
+        },
+        attributes: attributes_from_row(row)?,
+    })
+}
+
+fn attributes_from_row(row: &DbRow) -> Result<BTreeMap<String, Json>, Error> {
+    let text = match row.get("attributes") {
+        Some(Value::String(text)) if !text.is_empty() => text.as_str(),
+        Some(Value::String(_)) | Some(Value::Null) | None => return Ok(BTreeMap::new()),
+        Some(_) => return Err(Error::new("HttpSession attributes is not text")),
+    };
+    match parse_json(text)? {
+        Json::Map(map) => Ok(map),
+        _ => Err(Error::new("HttpSession attributes is not a JSON object")),
+    }
+}
+
+fn base_from_snapshot(snapshot: &Snapshot) -> Base {
+    Base {
+        exists: true,
+        revision: snapshot.revision,
+        revision_value: snapshot.revision_value.clone(),
+        columns: snapshot.columns.clone(),
+        attributes: snapshot.attributes.clone(),
+    }
+}
+
+fn snapshot_from_base(base: &Base) -> Snapshot {
+    Snapshot {
+        revision: base.revision,
+        revision_value: base.revision_value.clone(),
+        columns: base.columns.clone(),
+        attributes: base.attributes.clone(),
+    }
+}
+
+fn revision_of(value: Option<&Value>) -> (i64, Value) {
+    match value {
+        Some(Value::I64(number)) => (*number, Value::I64(*number)),
+        Some(Value::I32(number)) => (i64::from(*number), Value::I32(*number)),
+        Some(Value::String(text)) => (text.parse().unwrap_or(0), Value::String(text.clone())),
+        Some(other) => (0, other.clone()),
+        None => (0, Value::Null),
+    }
+}
+
+fn opt_text(row: &DbRow, name: &str) -> Option<String> {
+    match row.get(name) {
+        Some(Value::String(text)) if !text.is_empty() => Some(text.clone()),
+        _ => None,
+    }
+}
+
+fn stage_rotated(factory: &ExecutionContextFactory, old_id: &str, new_id: &str, new_token: &str) -> Result<(), Error> {
+    let mut table = lock_sessions(factory);
+    let Some(old) = table.sessions.get(old_id) else {
+        return Err(Error::new("bound session is missing"));
+    };
+    if old.retired {
+        return Err(Error::new("bound session is missing"));
+    }
+    let mut born = old.clone();
+    born.columns.session_token = Some(new_token.to_string());
+    born.dirty_columns = all_columns();
+    born.dirty_json = born.attributes.keys().cloned().collect();
+    born.snapshot = None;
+    born.invalidated = false;
+    born.retired = false;
+    table.sessions.insert(new_id.to_string(), born);
+    Ok(())
+}
+
+fn retire_old(factory: &ExecutionContextFactory, old_id: &str) {
+    let mut table = lock_sessions(factory);
+    let Some(old) = table.sessions.get_mut(old_id) else {
+        return;
+    };
+    old.dirty_columns.clear();
+    old.dirty_json.clear();
+    old.retired = true;
+}
+
+fn needs_flush(live: &LiveSession) -> bool {
+    !live.retired && (live.touch || !live.dirty_columns.is_empty() || !live.dirty_json.is_empty())
+}
+
+fn bound_factory() -> Option<Arc<ExecutionContextFactory>> {
+    let bound = with_session(|session| session.factory.clone());
+    if bound.is_some() {
+        return bound;
+    }
+    ExecutionContext::with_current(|ctx| Arc::clone(ctx.factory()))
+}
+
+fn thread_view(session: &mut Memory) -> ThreadView {
+    ThreadView {
+        bound_id: session.bound_id.clone(),
+        factory: session.factory.clone(),
+        user_id: session.user_id.clone(),
+        username: session.username.clone(),
+        visit_id: session.visit_id.clone(),
+        visitor_id: session.visitor_id.clone(),
+        locale: session.locale.clone(),
+        time_zone: session.time_zone.clone(),
+        csrf_token: session.csrf_token.clone(),
+        anonymous: session.anonymous,
+        attributes: session.attributes.clone(),
+        dirty_columns: session.dirty_columns.clone(),
+        dirty_json: session.dirty_json.clone(),
+    }
+}
+
+fn apply_thread(live: &mut LiveSession, view: &ThreadView) {
+    copy_dirty_columns(&view.dirty_columns, &view_columns(view), &mut live.columns);
+    for key in &view.dirty_json {
+        match view.attributes.get(key) {
+            Some(value) => {
+                live.attributes.insert(key.clone(), value.clone());
+            }
+            None => {
+                live.attributes.remove(key);
+            }
+        }
+    }
+    live.dirty_columns.extend(&view.dirty_columns);
+    live.dirty_json.extend(view.dirty_json.iter().cloned());
+    live.username = view.username.clone();
+    live.anonymous = view.anonymous;
+}
+
+fn view_columns(view: &ThreadView) -> Columns {
+    Columns {
+        user_id: view.user_id.clone(),
+        visit_id: view.visit_id.clone(),
+        visitor_id: view.visitor_id.clone(),
+        locale: view.locale.clone(),
+        time_zone: view.time_zone.clone(),
+        session_token: view.csrf_token.clone(),
+    }
+}
+
+fn copy_dirty_columns(dirty: &BTreeSet<Column>, from: &Columns, into: &mut Columns) {
+    if dirty.contains(&Column::UserId) {
+        into.user_id = from.user_id.clone();
+    }
+    if dirty.contains(&Column::VisitId) {
+        into.visit_id = from.visit_id.clone();
+    }
+    if dirty.contains(&Column::VisitorId) {
+        into.visitor_id = from.visitor_id.clone();
+    }
+    if dirty.contains(&Column::Locale) {
+        into.locale = from.locale.clone();
+    }
+    if dirty.contains(&Column::TimeZone) {
+        into.time_zone = from.time_zone.clone();
+    }
+    if dirty.contains(&Column::SessionToken) {
+        into.session_token = from.session_token.clone();
+    }
+}
+
+fn live_from_thread(view: &ThreadView) -> LiveSession {
+    LiveSession {
+        columns: view_columns(view),
+        username: view.username.clone(),
+        anonymous: view.anonymous,
+        attributes: view.attributes.clone(),
+        dirty_columns: view.dirty_columns.clone(),
+        dirty_json: view.dirty_json.clone(),
+        snapshot: None,
+        invalidated: false,
+        retired: false,
+        last_access: now_millis(),
+        touch_mark: 0,
+        touch: false,
+    }
+}
+
+fn view_dirty(view: &ThreadView) -> bool {
+    !view.dirty_columns.is_empty() || !view.dirty_json.is_empty()
+}
+
+fn all_columns() -> BTreeSet<Column> {
+    BTreeSet::from([
+        Column::UserId,
+        Column::VisitId,
+        Column::VisitorId,
+        Column::Locale,
+        Column::TimeZone,
+        Column::SessionToken,
+    ])
+}
+
+fn column_name(column: Column) -> &'static str {
+    match column {
+        Column::UserId => "userId",
+        Column::VisitId => "visitId",
+        Column::VisitorId => "visitorId",
+        Column::Locale => "locale",
+        Column::TimeZone => "timeZone",
+        Column::SessionToken => "sessionToken",
+    }
+}
+
+fn column_value(columns: &Columns, column: Column) -> Value {
+    let text = match column {
+        Column::UserId => &columns.user_id,
+        Column::VisitId => &columns.visit_id,
+        Column::VisitorId => &columns.visitor_id,
+        Column::Locale => &columns.locale,
+        Column::TimeZone => &columns.time_zone,
+        Column::SessionToken => &columns.session_token,
+    };
+    match text {
+        Some(value) => Value::string(value),
+        None => Value::Null,
+    }
+}
+
+fn mark_column(session: &mut Memory, column: Column) {
+    if session.bound_id.is_some() {
+        session.dirty_columns.insert(column);
+    }
+}
+
+fn put_json(session: &mut Memory, key: &str, value: Json) {
+    session.attributes.insert(key.to_string(), value);
+    if session.bound_id.is_some() {
+        session.dirty_json.insert(key.to_string());
+    }
+}
+
+fn project_known(session: &mut Memory) {
+    session.saved = attributes_string_map(&session.attributes, SAVED);
+    session.errors = attributes_string_map(&session.attributes, ERROR_PARAMETERS);
+    session.flash = attributes_string_list(&session.attributes, MESSAGE_PUBLIC);
+    session.flash_errors = attributes_string_list(&session.attributes, MESSAGE_ERROR);
+    session.screen_history = attributes_string_list(&session.attributes, SCREEN_HISTORY);
+}
+
+fn attributes_string_map(attributes: &BTreeMap<String, Json>, key: &str) -> BTreeMap<String, String> {
+    let Some(Json::Map(map)) = attributes.get(key) else {
+        return BTreeMap::new();
+    };
+    map.iter()
+        .filter_map(|(name, value)| match value {
+            Json::Text(text) => Some((name.clone(), text.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn attributes_string_list(attributes: &BTreeMap<String, Json>, key: &str) -> Vec<String> {
+    let Some(Json::List(list)) = attributes.get(key) else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|value| match value {
+            Json::Text(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn json_string_map(map: &BTreeMap<String, String>) -> Json {
+    Json::Map(
+        map.iter()
+            .map(|(key, value)| (key.clone(), Json::Text(value.clone())))
+            .collect(),
+    )
+}
+
+fn json_string_list(list: &[String]) -> Json {
+    Json::List(list.iter().map(|text| Json::Text(text.clone())).collect())
+}
+
+fn cookie_flags(https: bool, max_age: Option<u64>) -> String {
+    let mut out = String::from("; HttpOnly; SameSite=Lax; Path=/");
+    if let Some(age) = max_age {
+        out.push_str(&format!("; Max-Age={age}"));
+    }
+    if https {
+        out.push_str("; Secure");
+    }
+    out
+}
+
+fn split_session_cookie(value: &str) -> Option<(&str, &str)> {
+    let (id, tag) = value.split_once('.')?;
+    if tag.contains('.') || !is_session_id(id) {
+        return None;
+    }
+    Some((id, tag))
+}
+
+fn is_session_id(id: &str) -> bool {
+    id.len() == SESSION_ID_BYTES * 2
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn sign_session(id: &str) -> Result<String, Error> {
+    let key = cookie_key()?;
+    let mut mac =
+        SessionMac::new_from_slice(&key).map_err(|_| Error::new("session_cookie_key cannot be used as an HMAC key"))?;
+    mac.update(id.as_bytes());
+    Ok(URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
+}
+
+fn mac_matches(id: &str, tag: &[u8]) -> Result<bool, Error> {
+    let key = cookie_key()?;
+    let mut mac =
+        SessionMac::new_from_slice(&key).map_err(|_| Error::new("session_cookie_key cannot be used as an HMAC key"))?;
+    mac.update(id.as_bytes());
+    // verify_slice compares the tag in constant time.
+    Ok(mac.verify_slice(tag).is_ok())
+}
+
+fn cookie_key() -> Result<Vec<u8>, Error> {
+    let raw = moqui_lib::env::get_prop_or_env("session_cookie_key");
+    if raw.is_empty() {
+        return Err(Error::new("session_cookie_key is not set"));
+    }
+    STANDARD
+        .decode(raw.trim().as_bytes())
+        .map_err(|_| Error::new("session_cookie_key is not standard base64"))
+}
+
+fn encode_json(value: &Json) -> String {
+    let mut out = String::new();
+    write_json(&mut out, value);
+    out
+}
+
+fn write_json(out: &mut String, value: &Json) {
+    match value {
+        Json::Null => out.push_str("null"),
+        Json::Bool(true) => out.push_str("true"),
+        Json::Bool(false) => out.push_str("false"),
+        Json::Number(text) => out.push_str(text),
+        Json::Text(text) => write_string(out, text),
+        Json::List(list) => write_list(out, list),
+        Json::Map(map) => write_map(out, map),
+    }
+}
+
+fn write_list(out: &mut String, list: &[Json]) {
+    out.push('[');
+    for (index, value) in list.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        write_json(out, value);
+    }
+    out.push(']');
+}
+
+fn write_map(out: &mut String, map: &BTreeMap<String, Json>) {
+    out.push('{');
+    for (index, (key, value)) in map.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        write_string(out, key);
+        out.push(':');
+        write_json(out, value);
+    }
+    out.push('}');
+}
+
+fn write_string(out: &mut String, text: &str) {
+    out.push('"');
+    for ch in text.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ch if (ch as u32) < 0x20 => {
+                let code = ch as u32;
+                out.push_str(&format!("\\u{code:04x}"));
+            }
+            ch => out.push(ch),
+        }
+    }
+    out.push('"');
+}
+
+fn parse_json(text: &str) -> Result<Json, Error> {
+    let mut parser = JsonParser { rest: text };
+    let value = parser.value()?;
+    parser.skip();
+    if parser.rest.is_empty() {
+        Ok(value)
+    } else {
+        Err(Error::new("HttpSession attributes JSON has trailing data"))
+    }
+}
+
+struct JsonParser<'a> {
+    rest: &'a str,
+}
+
+impl JsonParser<'_> {
+    fn value(&mut self) -> Result<Json, Error> {
+        self.skip();
+        match self.peek() {
+            Some('"') => Ok(Json::Text(self.parse_string()?)),
+            Some('{') => self.parse_object(),
+            Some('[') => self.parse_array(),
+            Some('t') => {
+                self.eat("true")?;
+                Ok(Json::Bool(true))
+            }
+            Some('f') => {
+                self.eat("false")?;
+                Ok(Json::Bool(false))
+            }
+            Some('n') => {
+                self.eat("null")?;
+                Ok(Json::Null)
+            }
+            Some('-' | '0'..='9') => self.parse_number(),
+            _ => Err(Error::new("HttpSession attributes JSON is invalid")),
+        }
+    }
+
+    fn parse_object(&mut self) -> Result<Json, Error> {
+        self.expect('{')?;
+        let mut map = BTreeMap::new();
+        self.skip();
+        if self.peek() == Some('}') {
+            self.bump()?;
+            return Ok(Json::Map(map));
+        }
+        loop {
+            self.skip();
+            let key = self.parse_string()?;
+            self.skip();
+            self.expect(':')?;
+            let value = self.value()?;
+            map.insert(key, value);
+            self.skip();
+            match self.bump()? {
+                ',' => {}
+                '}' => return Ok(Json::Map(map)),
+                _ => return Err(Error::new("HttpSession attributes JSON is invalid")),
+            }
+        }
+    }
+
+    fn parse_array(&mut self) -> Result<Json, Error> {
+        self.expect('[')?;
+        let mut list = Vec::new();
+        self.skip();
+        if self.peek() == Some(']') {
+            self.bump()?;
+            return Ok(Json::List(list));
+        }
+        loop {
+            list.push(self.value()?);
+            self.skip();
+            match self.bump()? {
+                ',' => {}
+                ']' => return Ok(Json::List(list)),
+                _ => return Err(Error::new("HttpSession attributes JSON is invalid")),
+            }
+        }
+    }
+
+    fn parse_string(&mut self) -> Result<String, Error> {
+        self.expect('"')?;
+        let mut out = String::new();
+        loop {
+            match self.bump()? {
+                '"' => return Ok(out),
+                '\\' => out.push(self.escaped()?),
+                ch if (ch as u32) < 0x20 => {
+                    return Err(Error::new("HttpSession attributes JSON has a control character"));
+                }
+                ch => out.push(ch),
+            }
+        }
+    }
+
+    fn escaped(&mut self) -> Result<char, Error> {
+        match self.bump()? {
+            '"' => Ok('"'),
+            '\\' => Ok('\\'),
+            '/' => Ok('/'),
+            'n' => Ok('\n'),
+            'r' => Ok('\r'),
+            't' => Ok('\t'),
+            'u' => self.hex4(),
+            _ => Err(Error::new("HttpSession attributes JSON has a bad escape")),
+        }
+    }
+
+    fn hex4(&mut self) -> Result<char, Error> {
+        let mut code = 0_u32;
+        for _ in 0..4 {
+            let ch = self.bump()?;
+            let digit = ch
+                .to_digit(16)
+                .ok_or_else(|| Error::new("HttpSession attributes JSON has a bad escape"))?;
+            code = (code << 4) | digit;
+        }
+        char::from_u32(code).ok_or_else(|| Error::new("HttpSession attributes JSON has a bad escape"))
+    }
+
+    fn parse_number(&mut self) -> Result<Json, Error> {
+        let start = self.rest;
+        if self.peek() == Some('-') {
+            self.bump()?;
+        }
+        let mut digits = false;
+        while matches!(self.peek(), Some(ch) if ch.is_ascii_digit()) {
+            digits = true;
+            self.bump()?;
+        }
+        if self.peek() == Some('.') {
+            self.bump()?;
+            while matches!(self.peek(), Some(ch) if ch.is_ascii_digit()) {
+                digits = true;
+                self.bump()?;
+            }
+        }
+        if matches!(self.peek(), Some('e' | 'E')) {
+            self.bump()?;
+            if matches!(self.peek(), Some('+' | '-')) {
+                self.bump()?;
+            }
+            while matches!(self.peek(), Some(ch) if ch.is_ascii_digit()) {
+                digits = true;
+                self.bump()?;
+            }
+        }
+        if !digits {
+            return Err(Error::new("HttpSession attributes JSON is invalid"));
+        }
+        let consumed = start.len() - self.rest.len();
+        Ok(Json::Number(start[..consumed].to_string()))
+    }
+
+    fn eat(&mut self, literal: &str) -> Result<(), Error> {
+        match self.rest.strip_prefix(literal) {
+            Some(rest) => {
+                self.rest = rest;
+                Ok(())
+            }
+            None => Err(Error::new("HttpSession attributes JSON is invalid")),
+        }
+    }
+
+    fn expect(&mut self, want: char) -> Result<(), Error> {
+        if self.bump()? == want {
+            Ok(())
+        } else {
+            Err(Error::new("HttpSession attributes JSON is invalid"))
+        }
+    }
+
+    fn bump(&mut self) -> Result<char, Error> {
+        let mut chars = self.rest.chars();
+        let ch = chars
+            .next()
+            .ok_or_else(|| Error::new("HttpSession attributes JSON ended early"))?;
+        self.rest = chars.as_str();
+        Ok(ch)
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.rest.chars().next()
+    }
+
+    fn skip(&mut self) {
+        self.rest = self.rest.trim_start();
+    }
+}
+
+/// Process-wide lock for tests that set `session_cookie_key` or other webapp properties.
+#[cfg(test)]
+pub(crate) fn cookie_property_lock() -> MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|err| err.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, MutexGuard};
+
+    use base64::Engine;
+
+    use moqui_lib::object::Value;
+
+    use super::super::login;
+    use super::super::password::{hash_login_key, simple_hash};
+    use super::*;
+    use crate::context::ExecutionContextFactory;
+    use crate::entity::{EntityFacade, EntityValue};
+
+    #[test]
+    fn a_session_belongs_to_its_context_and_never_leaks_to_the_next() {
+        let first = ExecutionContextFactory::test_context();
+        {
+            let _entered = first.enter();
+            set_user("U1", "ada");
+            assert_eq!(current_username().unwrap().as_deref(), Some("ada"));
+        }
+        assert!(current_username().unwrap().is_none());
+        let second = ExecutionContextFactory::test_context();
+        let _entered = second.enter();
+        assert!(
+            current_username().unwrap().is_none(),
+            "a new context starts with no user"
+        );
+    }
+
+    #[test]
+    fn session_attribute_round_trip_stays_on_this_context() {
+        let ctx = ExecutionContextFactory::test_context();
+        let _entered = ctx.enter();
+        set_session_attribute("saved", Some("yes"));
+        assert_eq!(session_attribute("saved").as_deref(), Some("yes"));
+        set_session_attribute("saved", None);
+        assert_eq!(session_attribute("saved"), None);
+    }
+
+    #[test]
+    fn login_and_logout_rotate_the_csrf_token() {
+        let ctx = ExecutionContextFactory::test_context();
+        let _entered = ctx.enter();
+        let anonymous = csrf_token().unwrap();
+        set_user("U1", "ada");
+        let after_login = csrf_token().unwrap();
+        assert_ne!(anonymous, after_login);
+        clear_login();
+        assert_ne!(after_login, csrf_token().unwrap());
+    }
+
+    #[test]
+    fn current_username_is_none_until_a_user_is_set() {
+        let ctx = ExecutionContextFactory::test_context();
+        let _entered = ctx.enter();
+        reset_session();
+        assert!(current_username().unwrap().is_none());
+        assert!(current_user_id().unwrap().is_none());
+        assert!(!is_anonymous().unwrap());
+        set_user("U1", "ada");
+        set_locale(Some("en"));
+        set_time_zone(Some("UTC"));
+        set_visit("100000", "visitor-1");
+        add_flash_message("saved-flash");
+        save_parameter("q", "1");
+        set_error_parameter("password", "required");
+        push_screen_history("Login");
+        assert_eq!(current_username().unwrap().as_deref(), Some("ada"));
+        assert_eq!(current_user_id().unwrap().as_deref(), Some("U1"));
+        assert_eq!(locale().unwrap().as_deref(), Some("en"));
+        assert_eq!(time_zone().unwrap().as_deref(), Some("UTC"));
+        assert_eq!(visit_id().unwrap().as_deref(), Some("100000"));
+        assert_eq!(visitor_id().unwrap().as_deref(), Some("visitor-1"));
+        assert_eq!(flash_messages().unwrap(), vec!["saved-flash".to_string()]);
+        assert_eq!(saved_parameters().unwrap().get("q").map(String::as_str), Some("1"));
+        assert_eq!(
+            error_parameters().unwrap().get("password").map(String::as_str),
+            Some("required")
+        );
+        assert_eq!(screen_history().unwrap(), vec!["Login".to_string()]);
+        let token = csrf_token().unwrap();
+        assert_eq!(token.len(), SESSION_TOKEN_BYTES * 2);
+        assert_eq!(csrf_token().unwrap(), token);
+        assert!(!is_anonymous().unwrap());
+        clear_login();
+        assert!(current_username().unwrap().is_none());
+        assert!(!is_anonymous().unwrap());
+        assert_eq!(visit_id().unwrap().as_deref(), Some("100000"));
+        reset_session();
+    }
+
+    #[test]
+    fn a_bad_mac_is_an_unknown_session() {
+        let (_lock, ctx, _facade, _key) = setup();
+        let _entered = ctx.enter();
+        let factory = Arc::clone(ctx.factory());
+        let id = "ab".repeat(SESSION_ID_BYTES);
+        let header = format_session_cookie(&id, false).unwrap();
+        assert!(header.starts_with("moqui.session="));
+        assert!(header.contains("HttpOnly"));
+        assert!(header.contains("SameSite=Lax"));
+        assert!(header.contains("Path=/"));
+        assert!(!header.contains("Secure"));
+        let secure = format_session_cookie(&id, true).unwrap();
+        assert!(secure.contains("Secure"));
+        let visitor = format_visitor_cookie("visitor-1", false);
+        assert!(visitor.starts_with("moqui.visitor=visitor-1;"));
+        assert!(visitor.contains("Max-Age=31536000"));
+        assert!(visitor.contains("HttpOnly"));
+        assert!(!visitor.contains("Secure"));
+        assert!(format_visitor_cookie("visitor-1", true).contains("Secure"));
+
+        let value = cookie_value(&header);
+        assert_eq!(verify_session_cookie(value).unwrap().as_deref(), Some(id.as_str()));
+        let bad = tamper_mac(value);
+        assert!(verify_session_cookie(&bad).unwrap().is_none());
+        assert!(verify_session_cookie("nope").unwrap().is_none());
+        assert!(verify_session_cookie("abc.def.ghi").unwrap().is_none());
+
+        let guard = bind(&factory, Some(&bad), None, false).unwrap();
+        assert_ne!(guard.session_id(), id);
+        drop(guard);
+        let ghost = format_session_cookie(&id, false).unwrap();
+        let guard = bind(&factory, Some(cookie_value(&ghost)), None, false).unwrap();
+        assert_ne!(guard.session_id(), id);
+    }
+
+    #[test]
+    fn flush_then_drop_the_map_reloads_the_signed_cookie() {
+        let (_lock, ctx, _facade, _key) = setup();
+        let _entered = ctx.enter();
+        let factory = Arc::clone(ctx.factory());
+        let guard = bind(&factory, None, None, false).unwrap();
+        save_parameter("color", "blue");
+        flush_dirty(&factory).unwrap();
+        let id = guard.session_id();
+        let cookie = guard.session_cookie_header().unwrap();
+        drop(guard);
+        clear_sessions(&factory);
+        let guard = bind(&factory, Some(cookie_value(&cookie)), None, false).unwrap();
+        assert_eq!(guard.session_id(), id);
+        assert_eq!(
+            saved_parameters().unwrap().get("color").map(String::as_str),
+            Some("blue")
+        );
+    }
+
+    #[test]
+    fn an_idle_session_expires_and_its_row_is_deleted() {
+        let (_lock, ctx, facade, _key) = setup();
+        let _entered = ctx.enter();
+        let factory = Arc::clone(ctx.factory());
+        let guard = bind(&factory, None, None, false).unwrap();
+        save_parameter("color", "blue");
+        flush_dirty(&factory).unwrap();
+        let id = guard.session_id();
+        let cookie = guard.session_cookie_header().unwrap();
+        drop(guard);
+        assert!(read_row(&facade, &id).unwrap().is_some());
+
+        // Two hours idle against the 60 minute default.
+        lock_sessions(&factory).sessions.get_mut(&id).unwrap().last_access = now_millis() - 2 * 60 * 60_000;
+        let guard = bind(&factory, Some(cookie_value(&cookie)), None, false).unwrap();
+        assert_ne!(guard.session_id(), id);
+        assert!(saved_parameters().unwrap().is_empty());
+        assert!(read_row(&facade, &id).unwrap().is_none());
+    }
+
+    #[test]
+    fn the_sweep_drops_idle_sessions_and_keeps_active_ones() {
+        let (_lock, ctx, _facade, _key) = setup();
+        let _entered = ctx.enter();
+        let factory = Arc::clone(ctx.factory());
+        let guard = bind(&factory, None, None, false).unwrap();
+        let active = guard.session_id();
+        drop(guard);
+        let stale = random_hex(SESSION_ID_BYTES).unwrap();
+        {
+            let mut table = lock_sessions(&factory);
+            let mut live = table.sessions.get(&active).unwrap().clone();
+            live.last_access = now_millis() - 3 * 60 * 60_000;
+            table.sessions.insert(stale.clone(), live);
+        }
+        expire_idle(&factory).unwrap();
+        let table = lock_sessions(&factory);
+        assert!(table.sessions.contains_key(&active));
+        assert!(!table.sessions.contains_key(&stale));
+    }
+
+    #[test]
+    fn dirty_merge_keeps_a_clean_json_key() {
+        let (_lock, ctx, facade, _key) = setup();
+        let _entered = ctx.enter();
+        let factory = Arc::clone(ctx.factory());
+        let guard = bind(&factory, None, None, false).unwrap();
+        save_parameter("a", "one");
+        set_error_parameter("b", "two");
+        flush_dirty(&factory).unwrap();
+        let id = guard.session_id();
+        invalidate(&id);
+        let replacement = attributes_json("from-db", "two");
+        exec_update(
+            &facade,
+            &["attributes"],
+            &[Value::string(&replacement), Value::string(&id)],
+        );
+        set_error_parameter("b", "new");
+        flush_dirty(&factory).unwrap();
+        let row = load_session(&facade, &id);
+        let parsed = parse_json(&text(&row, "attributes")).unwrap();
+        let Json::Map(map) = parsed else {
+            panic!("attributes object");
+        };
+        assert_eq!(
+            map.get(SAVED),
+            Some(&Json::Map(BTreeMap::from([(
+                "a".to_string(),
+                Json::Text("from-db".to_string())
+            )])))
+        );
+        assert_eq!(
+            map.get(ERROR_PARAMETERS),
+            Some(&Json::Map(BTreeMap::from([(
+                "b".to_string(),
+                Json::Text("new".to_string())
+            )])))
+        );
+        assert_eq!(map.get("moqui.second.factor"), Some(&Json::Text("kept".to_string())));
+    }
+
+    #[test]
+    fn revision_conflict_retries_and_keeps_the_clean_column() {
+        let (_lock, ctx, facade, _key) = setup();
+        let _entered = ctx.enter();
+        let factory = Arc::clone(ctx.factory());
+        let guard = bind(&factory, None, None, false).unwrap();
+        set_locale(Some("en"));
+        save_parameter("q", "1");
+        flush_dirty(&factory).unwrap();
+        let id = guard.session_id();
+        exec_update(
+            &facade,
+            &["locale", "sessionRevision"],
+            &[Value::string("fr"), Value::I64(7), Value::string(&id)],
+        );
+        save_parameter("q", "2");
+        flush_dirty(&factory).unwrap();
+        let row = load_session(&facade, &id);
+        assert_eq!(text(&row, "locale"), "fr");
+        assert_eq!(i64_field(&row, "sessionRevision"), 8);
+        let parsed = parse_json(&text(&row, "attributes")).unwrap();
+        let Json::Map(map) = parsed else {
+            panic!("attributes object");
+        };
+        assert_eq!(
+            map.get(SAVED),
+            Some(&Json::Map(BTreeMap::from([(
+                "q".to_string(),
+                Json::Text("2".to_string())
+            )])))
+        );
+    }
+
+    #[test]
+    fn password_login_rotates_and_a_failed_password_keeps_the_id() {
+        let (_lock, ctx, facade, _key) = setup();
+        let _entered = ctx.enter();
+        let factory = Arc::clone(ctx.factory());
+        create_user(&facade, "ada", "Secret1!");
+        let guard = bind(&factory, None, None, false).unwrap();
+        flush_dirty(&factory).unwrap();
+        let old_id = guard.session_id();
+        let old_csrf = csrf_token().unwrap();
+        assert!(login::login_user("ada", "wrong").is_err());
+        assert_eq!(guard.session_id(), old_id);
+        assert!(current_username().unwrap().is_none());
+        assert!(load_session_optional(&facade, &old_id).is_some());
+
+        login::login_user("ada", "Secret1!").unwrap();
+        let new_id = guard.session_id();
+        assert_ne!(new_id, old_id);
+        assert_eq!(current_username().unwrap().as_deref(), Some("ada"));
+        let new_csrf = csrf_token().unwrap();
+        assert_ne!(new_csrf, old_csrf);
+        assert_eq!(new_csrf.len(), SESSION_TOKEN_BYTES * 2);
+        assert!(load_session_optional(&facade, &old_id).is_none());
+        flush_dirty(&factory).unwrap();
+        let row = load_session(&facade, &new_id);
+        assert_eq!(text(&row, "userId"), "ada");
+
+        login::logout().unwrap();
+        let stayed = guard.session_id();
+        login::internal_login_user("ada").unwrap();
+        assert_eq!(guard.session_id(), stayed);
+        login::logout().unwrap();
+    }
+
+    #[test]
+    fn guarantee_flush_survives_clearing_the_factory_map() {
+        let (_lock, ctx, _facade, _key) = setup();
+        let _entered = ctx.enter();
+        let factory = Arc::clone(ctx.factory());
+
+        let guard = bind(&factory, None, None, false).unwrap();
+        save_parameter("k", "v");
+        end_request().unwrap();
+        let cookie = guard.session_cookie_header().unwrap();
+        drop(guard);
+        clear_sessions(&factory);
+        let guard = bind(&factory, Some(cookie_value(&cookie)), None, false).unwrap();
+        assert!(!saved_parameters().unwrap().contains_key("k"));
+        drop(guard);
+
+        lock_sessions(&factory).mode = FlushMode::Guarantee;
+        let guard = bind(&factory, None, None, false).unwrap();
+        save_parameter("k", "v");
+        end_request().unwrap();
+        let id = guard.session_id();
+        let cookie = guard.session_cookie_header().unwrap();
+        drop(guard);
+        clear_sessions(&factory);
+        let guard = bind(&factory, Some(cookie_value(&cookie)), None, false).unwrap();
+        assert_eq!(guard.session_id(), id);
+        assert_eq!(saved_parameters().unwrap().get("k").map(String::as_str), Some("v"));
+    }
+
+    #[test]
+    fn login_key_header_logs_in_and_an_expired_key_does_not() {
+        let (_lock, ctx, facade, _key) = setup();
+        let _entered = ctx.enter();
+        let factory = Arc::clone(ctx.factory());
+        create_user(&facade, "ada", "Secret1!");
+        create_login_key(&facade, "temp-key", "ada", None);
+        create_login_key(&facade, "old-key", "ada", Some(1));
+        let guard = bind(&factory, None, None, false).unwrap();
+        let id = guard.session_id();
+        login::apply_header_keys(Some("temp-key"), None).unwrap();
+        assert_eq!(current_username().unwrap().as_deref(), Some("ada"));
+        assert_eq!(guard.session_id(), id);
+        login::logout().unwrap();
+        assert!(login::apply_header_keys(None, Some("old-key")).is_err());
+        assert!(current_username().unwrap().is_none());
+        assert_eq!(guard.session_id(), id);
+        login::login_user("ada", "Secret1!").unwrap();
+        let rotated = guard.session_id();
+        login::apply_header_keys(Some("not-a-key"), None).unwrap();
+        assert_eq!(current_username().unwrap().as_deref(), Some("ada"));
+        assert_eq!(guard.session_id(), rotated);
+    }
+
+    #[test]
+    fn a_query_string_api_key_is_not_consulted() {
+        let (_lock, ctx, facade, _key) = setup();
+        let _entered = ctx.enter();
+        create_user(&facade, "ada", "Secret1!");
+        create_login_key(&facade, "temp-key", "ada", None);
+        save_parameter("api_key", "temp-key");
+        let mut other = BTreeMap::new();
+        other.insert("api_key".to_string(), "temp-key".to_string());
+        login::apply_header_keys(None, None).unwrap();
+        assert!(current_username().unwrap().is_none());
+        assert_eq!(other.get("api_key").map(String::as_str), Some("temp-key"));
+    }
+
+    #[test]
+    fn one_visit_per_bound_session_reuses_a_known_visitor() {
+        let (_lock, ctx, facade, _key) = setup();
+        let _entered = ctx.enter();
+        let factory = Arc::clone(ctx.factory());
+        let guard = bind(&factory, None, None, false).unwrap();
+        let session_id = guard.session_id();
+        let visit = visit_id().unwrap().unwrap();
+        let visitor = guard.visitor_id().unwrap();
+        let session_cookie = guard.session_cookie_header().unwrap();
+        let visitor_cookie = guard.visitor_cookie_header().unwrap();
+        drop(guard);
+        let guard = bind(
+            &factory,
+            Some(cookie_value(&session_cookie)),
+            Some(cookie_value(&visitor_cookie)),
+            false,
+        )
+        .unwrap();
+        assert_eq!(guard.session_id(), session_id);
+        assert_eq!(visit_id().unwrap().as_deref(), Some(visit.as_str()));
+        assert_eq!(guard.visitor_id().as_deref(), Some(visitor.as_str()));
+        assert_eq!(count_entity(&facade, VISIT), 1);
+        drop(guard);
+
+        let guard = bind(&factory, None, Some(&visitor), false).unwrap();
+        assert_ne!(guard.session_id(), session_id);
+        assert_eq!(guard.visitor_id().as_deref(), Some(visitor.as_str()));
+        assert_ne!(visit_id().unwrap().as_deref(), Some(visit.as_str()));
+        assert_eq!(count_entity(&facade, VISIT), 2);
+        assert_eq!(count_entity(&facade, VISITOR), 1);
+        drop(guard);
+
+        let guard = bind(&factory, None, Some("missing-visitor"), false).unwrap();
+        assert_ne!(guard.visitor_id().as_deref(), Some("missing-visitor"));
+        assert_eq!(count_entity(&facade, VISITOR), 2);
+    }
+
+    struct KeyGuard;
+
+    impl KeyGuard {
+        fn install() -> Self {
+            moqui_lib::env::set_property("session_cookie_key", test_cookie_key());
+            Self
+        }
+    }
+
+    impl Drop for KeyGuard {
+        fn drop(&mut self) {
+            moqui_lib::env::clear_property("session_cookie_key");
+            reset_session();
+        }
+    }
+
+    fn setup() -> (
+        MutexGuard<'static, ()>,
+        crate::context::ExecutionContext,
+        EntityFacade,
+        KeyGuard,
+    ) {
+        let lock = cookie_tests_lock();
+        reset_session();
+        let key = KeyGuard::install();
+        let ctx = ExecutionContextFactory::test_context();
+        let facade = crate::testing::open();
+        ctx.factory().set_entity(facade.clone());
+        (lock, ctx, facade, key)
+    }
+
+    fn cookie_tests_lock() -> MutexGuard<'static, ()> {
+        super::cookie_property_lock()
+    }
+
+    fn test_cookie_key() -> String {
+        STANDARD.encode([9_u8; 32])
+    }
+
+    fn clear_sessions(factory: &ExecutionContextFactory) {
+        lock_sessions(factory).sessions.clear();
+    }
+
+    fn cookie_value(header: &str) -> &str {
+        header.split(';').next().unwrap().split_once('=').unwrap().1
+    }
+
+    fn tamper_mac(value: &str) -> String {
+        let (id, mac) = value.split_once('.').unwrap();
+        let mut raw = URL_SAFE_NO_PAD.decode(mac).unwrap();
+        raw[0] ^= 0x01;
+        format!("{id}.{}", URL_SAFE_NO_PAD.encode(raw))
+    }
+
+    fn attributes_json(saved: &str, error: &str) -> String {
+        let mut saved_map = BTreeMap::new();
+        saved_map.insert("a".to_string(), saved.to_string());
+        let mut error_map = BTreeMap::new();
+        error_map.insert("b".to_string(), error.to_string());
+        let mut root = BTreeMap::new();
+        root.insert(SAVED.to_string(), json_string_map(&saved_map));
+        root.insert(ERROR_PARAMETERS.to_string(), json_string_map(&error_map));
+        root.insert("moqui.second.factor".to_string(), Json::Text("kept".to_string()));
+        encode_json(&Json::Map(root))
+    }
+
+    fn exec_update(facade: &EntityFacade, columns: &[&str], params: &[Value]) {
+        let sql = facade
+            .with_entity(HTTP_SESSION, |entity, dialect, _| {
+                let condition = moqui_db::sql::Condition::bound("sessionId", moqui_db::sql::CompareOp::Equals);
+                moqui_db::sql::update(entity, dialect, columns, Some(&condition)).map(|statement| statement.sql)
+            })
+            .unwrap();
+        let tx = facade.transactions_for(HTTP_SESSION).unwrap();
+        crate::entity::exec::with_reserve_tx(&tx, |conn| {
+            conn.execute(&sql, params)?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    fn create_user(facade: &EntityFacade, username: &str, password: &str) {
+        let stored = simple_hash(password, "s4lt", "SHA-256", false).unwrap();
+        let mut value = facade.make_value(USER_ACCOUNT).unwrap();
+        value.set("userId", Value::string(username));
+        value.set("username", Value::string(username));
+        value.set("currentPassword", Value::string(stored));
+        value.set("passwordSalt", Value::string("s4lt"));
+        value.set("passwordHashType", Value::string("SHA-256"));
+        value.set("passwordBase64", Value::string("N"));
+        value.create(facade).unwrap();
+    }
+
+    fn create_login_key(facade: &EntityFacade, key: &str, user_id: &str, thru_millis: Option<i64>) {
+        let mut row = facade.make_value("moqui.security.UserLoginKey").unwrap();
+        row.set("loginKey", Value::string(hash_login_key(key).unwrap()));
+        row.set("userId", Value::string(user_id));
+        row.set("fromDate", stamp(1));
+        if let Some(millis) = thru_millis {
+            row.set("thruDate", stamp(millis));
+        }
+        row.create(facade).unwrap();
+    }
+
+    fn load_session(facade: &EntityFacade, id: &str) -> EntityValue {
+        load_session_optional(facade, id).unwrap_or_else(|| panic!("missing session {id}"))
+    }
+
+    fn load_session_optional(facade: &EntityFacade, id: &str) -> Option<EntityValue> {
+        facade
+            .find(HTTP_SESSION)
+            .unwrap()
+            .eq("sessionId", Value::string(id))
+            .one()
+            .unwrap()
+    }
+
+    fn count_entity(facade: &EntityFacade, name: &str) -> usize {
+        facade.find(name).unwrap().list().unwrap().len()
+    }
+
+    fn text(value: &EntityValue, field: &str) -> String {
+        value.get(field).and_then(Value::as_str).unwrap_or("").to_string()
+    }
+
+    fn i64_field(value: &EntityValue, field: &str) -> i64 {
+        match value.get(field) {
+            Some(Value::I64(number)) => *number,
+            Some(Value::I32(number)) => i64::from(*number),
+            _ => 0,
+        }
+    }
+
+    fn stamp(millis: i64) -> Value {
+        moqui_lib::object::basic_convert(&Value::I64(millis), "java.sql.Timestamp").value
+    }
+}

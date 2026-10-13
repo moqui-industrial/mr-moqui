@@ -1,0 +1,16 @@
+<#-- The end of an html page: widget forms and dialogs that were saved for it, the libraries its widgets need, and its script. -->
+${raw(sri.getAfterScreenWriterText())}
+<#list Array.from(footer_stylesheets || []) as sheet>
+<link rel="stylesheet" href="${sheet}">
+</#list>
+<#list Array.from(footer_scripts || []).concat(sri.getThemeValues("STRT_SCRIPT_FOOTER")) as script>
+<script src="${script}"></script>
+</#list>
+<#assign scriptText = sri.getScriptWriterText()>
+<#if scriptText>
+<script>
+${raw(scriptText)}
+</script>
+</#if>
+</body>
+</html>

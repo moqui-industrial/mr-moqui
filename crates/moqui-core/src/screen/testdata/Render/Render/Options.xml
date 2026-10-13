@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A drop-down whose options come from a transition of this screen: dynamic-options. -->
+<screen require-authentication="false">
+    <transition name="roleOptions" read-only="true">
+        <actions><script>ec.web.sendJsonResponse({options: [{value: 'R1-' + company, label: 'Role one of ' + company},
+            {value: 'R2-' + company, label: 'Role two'}, {value: 'R3', label: ''}]})</script></actions>
+        <default-response type="none"/>
+    </transition>
+    <transition name="plainList" read-only="true">
+        <actions><script>ec.web.sendJsonResponse([{id: 'x', name: 'Ex'}, {id: 'y', name: 'Why'}])</script></actions>
+        <default-response type="none"/>
+    </transition>
+    <widgets>
+        <form-single name="OptForm" map="values">
+            <field name="role"><default-field title="Role">
+                <drop-down no-current-selected-key="R1-Acme">
+                    <dynamic-options transition="roleOptions"><depends-on field="company"/></dynamic-options>
+                </drop-down></default-field></field>
+            <field name="plain"><default-field title="Plain">
+                <drop-down>
+                    <dynamic-options transition="plainList" value-field="id" label-field="name"/>
+                </drop-down></default-field></field>
+            <field name="searched"><default-field title="Searched">
+                <drop-down>
+                    <dynamic-options transition="plainList" server-search="true" value-field="id" label-field="name"/>
+                </drop-down></default-field></field>
+        </form-single>
+    </widgets>
+</screen>

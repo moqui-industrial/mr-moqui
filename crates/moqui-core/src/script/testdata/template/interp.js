@@ -1,0 +1,16 @@
+$o.push($s(name));
+$o.push(" ");
+$o.push($s(missing));
+$o.push(" ");
+$o.push($s(html(markup)));
+$o.push(" ");
+$o.push($s(raw(markup)));
+$o.push(" ");
+$o.push($s(markup));
+$o.push("\n");
+$o.push($s(`inline ${name}`));
+$o.push(" ");
+$o.push($s( {a: 1}.a ));
+$o.push(" ");
+$o.push($s("}"));
+$o.push("\n");

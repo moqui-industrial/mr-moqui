@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        require-authentication="false">
+    <widgets>
+        <render-mode><text type="html"><![CDATA[
+            <main class="error-page">
+                <h1><i class="fa fa-ban text-danger"></i> Access Forbidden (${errorCode})</h1>
+                <#assign aeii = errorThrowable ? errorThrowable.getArtifactInfo() : null>
+                <#if aeii>
+                    <p class="text-danger">User <code>${html(ec.user.username ?? ec.l10n.localize("N/A"))}</code> is not authorized for ${html(aeii.getActionDescription())} on ${html(aeii.getTypeDescription())} <code>${html(aeii.getName())}</code></p>
+                <#else>
+                    <p class="text-danger">${html(errorMessage)}</p>
+                </#if>
+                <p class="actions">
+                <a data-btn="primary" data-size="lg" href="${sri.buildUrl("/").url}">Go Home</a>
+                <a data-btn="primary" data-size="lg" href="#" data-history-back>Go Back</a>
+                <#if showErrorDetail><a data-btn="primary" data-size="lg" href="#ErrorDetail" data-dialog="ErrorDetail">See Detail</a></#if>
+            </p>
+            </main>
+            <#if showErrorDetail>
+            <dialog id="ErrorDetail" style="--w:900px"><header><h4>Error Detail</h4><button type="button" class="close" data-close aria-label="Close">&times;</button></header><div class="body">
+<pre>
+${html(errorThrowable.message)}
+</pre>
+            </div></dialog>
+            </#if>
+        ]]></text></render-mode>
+    </widgets>
+</screen>

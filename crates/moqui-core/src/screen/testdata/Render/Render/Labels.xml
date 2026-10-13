@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<screen require-authentication="false" default-menu-title="Labels">
+    <actions>
+        <set field="who" value="Ada"/>
+        <set field="rows" from="[{name: 'a', n: 1}, {name: 'b', n: 2}]"/>
+    </actions>
+    <widgets>
+        <label text="Hello ${who}"/>
+        <container>
+            <label text="in container"/>
+        </container>
+        <container-box>
+            <box-header title="Box"><label text="Header"/></box-header>
+            <box-body><label text="Body"/></box-body>
+        </container-box>
+        <section name="Second">
+            <widgets><label text="in section"/></widgets>
+        </section>
+        <section-iterate name="Each" list="rows" entry="row">
+            <widgets><label text="${row.name}-${row.n}-${sectionEntryIndex}"/></widgets>
+        </section-iterate>
+    </widgets>
+</screen>

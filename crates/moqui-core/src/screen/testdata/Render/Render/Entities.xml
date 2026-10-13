@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A form-single over an entity value and a form-list over an entity-find, for the render tests. -->
+<screen require-authentication="false">
+    <actions>
+        <entity-find-one entity-name="moqui.basic.EnumerationType" value-field="enumType"/>
+    </actions>
+    <widgets>
+        <form-single name="TypeForm" map="enumType">
+            <field name="enumTypeId"><default-field><display/></default-field></field>
+            <field name="description"><default-field><text-line/></default-field></field>
+            <field name="typeText" from="enumTypeId"><default-field>
+                <display-entity entity-name="moqui.basic.EnumerationType" text="Type: ${description}"/>
+            </default-field></field>
+            <field name="missing" from="'NoSuchType'"><default-field>
+                <display-entity entity-name="moqui.basic.EnumerationType" default-text="no such type"/>
+            </default-field></field>
+            <field name="pick"><default-field>
+                <drop-down no-current-selected-key="B">
+                    <entity-options key="${enumTypeId}" text="${description} (${enumTypeId})">
+                        <entity-find entity-name="moqui.basic.EnumerationType"><order-by field-name="enumTypeId"/></entity-find>
+                    </entity-options>
+                </drop-down>
+            </default-field></field>
+        </form-single>
+        <form-list name="EnumList" list="enumList">
+            <entity-find entity-name="moqui.basic.Enumeration">
+                <econdition field-name="enumTypeId" from="enumTypeId"/>
+                <order-by field-name="sequenceNum,enumId"/>
+            </entity-find>
+            <row-actions><set field="upper" from="description.toUpperCase()"/></row-actions>
+            <field name="enumId"><default-field><display/></default-field></field>
+            <field name="upper"><default-field><display/></default-field></field>
+            <field name="enumTypeId"><default-field><display-entity entity-name="moqui.basic.EnumerationType"/></default-field></field>
+        </form-list>
+    </widgets>
+</screen>

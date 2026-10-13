@@ -1,0 +1,13 @@
+<widgets>
+    <form-single name="LinkForm">
+        <field name="a"><default-field><link url="go" text="Go ${a}" link-type="anchor"/></default-field></field>
+        <field name="b"><default-field><link url="go" text="Hidden ${b}" link-type="hidden-form-link" condition="b != null"/></default-field></field>
+        <field name="c"><default-field><link url="go" text="Plain" link-type="auto"/></default-field></field>
+        <field name="d"><default-field><link url="go" entity-name="moqui.basic.Enumeration" link-type="anchor" text="${description}"/></default-field></field>
+        <field name="e"><default-field><link url="go" text="Mapped ${v}" text-map="{v: 1}" link-type="anchor"/></default-field></field>
+    </form-single>
+    <link url="go" text="Standalone"/>
+    <label text="Cond ${name}" condition="name"/>
+    <label text="Mapped ${v}" text-map="{v: 2}"/>
+    <image url="/img.png" alt="An image"/>
+</widgets>

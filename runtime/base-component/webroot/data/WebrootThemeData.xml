@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a 
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<entity-facade-xml type="seed-initial">
+    <!-- Default Theme (note that DEFAULT ScreenTheme record defined in ScreenEntities.xml) -->
+
+    <!-- The html client: Font Awesome 4 icons, the Moqui style sheet, and the script that binds the data attributes
+         the html macros write. The libs paths are what browser-libs vendoring fills (see webroot/README.md). -->
+    <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT" sequenceNum="1" resourceTypeEnumId="STRT_STYLESHEET"
+            resourceValue="/libs/fontawesome/css/font-awesome.min.css"/>
+    <!-- Add external theme(s) here  -->
+    <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT" sequenceNum="10" resourceTypeEnumId="STRT_STYLESHEET" resourceValue=""/>
+    <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT" sequenceNum="20" resourceTypeEnumId="STRT_STYLESHEET"
+            resourceValue="/css/moqui-html.css"/>
+    <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT" sequenceNum="30" resourceTypeEnumId="STRT_SCRIPT"
+            resourceValue="/js/moqui-html.js"/>
+
+    <!-- Logo, icon, body class -->
+    <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT" sequenceNum="100" resourceTypeEnumId="STRT_HEADER_LOGO"
+            resourceValue="/images/MoquiLogoSmall.png"/>
+    <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT" sequenceNum="101" resourceTypeEnumId="STRT_SHORTCUT_ICON"
+            resourceValue="/favicon.ico"/>
+
+    <!-- Footer items -->
+    <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT" sequenceNum="200" resourceTypeEnumId="STRT_FOOTER_ITEM">
+        <resourceValue><![CDATA[<p><a href="https://www.moqui.org/" target="_blank">${ec.resource.expand('Built on Moqui Framework ${ec.factory.moquiVersion}', '')}</a></p>]]></resourceValue>
+    </moqui.screen.ScreenThemeResource>
+    <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT" sequenceNum="201" resourceTypeEnumId="STRT_FOOTER_ITEM">
+        <resourceValue><![CDATA[<p><a href="/apps/ScreenTree">${ec.l10n.localize('Site Map')}</a></p>]]></resourceValue>
+    </moqui.screen.ScreenThemeResource>
+</entity-facade-xml>

@@ -145,6 +145,180 @@ The macros then read the objects those methods return. A screen URL has `path`, 
 
 `entity-data` is still a TODO in the Java template and adds no method here.
 
+### Added by phase 8 slice 1
+
+The framework screens call these before any widget renders, so they exist ahead of the rest of `sri`.
+
+- `sri.sendRedirectAndStopRender(url)`: 302, or 205 with `X-Redirect-To` in an always-standalone mode, and the screen is not rendered. The rest of `sri` waits for slice 2.
+- `ec.web.saveScreenLastInfo(path, parameters)`: pushes the path, or the screen being rendered, on the screen history. The parameters are not saved yet.
+- `ec.user.getPreference(key)`: the `UserPreference` row for the logged-in user, else null. Preference groups are not read.
+- `System.getProperty(name)`: `get_prop_or_env`, null when empty.
+- A script `Set` kept in a context name round-trips between action blocks. The stack holds it as a one-key map `{"__set__": [items]}` and the next block gets a `Set` back. `html_scripts`, `footer_scripts`, and `html_stylesheets` depend on this.
+
+### Added by phase 8 slice 2
+
+The macro engine, `sri`, and the text, csv and xml modes. The macro modules are
+`framework/template/screen/{ScreenSupport,ScreenText,ScreenCsv,ScreenXml}.js`. They are embedded in the binary,
+and a `macro-template-location` that is a real file other than the built-in path replaces the mode's module.
+A module is a function of the support object and `ScreenSupport` and returns `{macros, opaque, prelude}`. The
+walker builds the whole node tree first (`name`, `attrs`, `text`, `children`, `parent`, and `inert` for the
+descendants of an `opaque` element), then calls `macros[name](node, children)` in post-order. A macro that must
+place a child in a loop of its own reads `node.children[i].source`, so there is no separate `visit` hook.
+
+`sri`, added now. Methods that return text in Java return `""` here, so `${sri.renderSubscreen()}` in a string
+template still works.
+
+- Output and state: `write`, `getRenderMode`, `doBoundaryComments`, `getActiveScreenDef` (`location`, `screenName`,
+  `getScreenName`, `getLocation`, `getDefaultMenuName`), `encodeHtml`, `appendToAfterScreenWriter`,
+  `appendToScriptWriter`, `getAfterScreenWriterText`, `getScriptWriterText`.
+- Rendering: `renderSection`, `renderSectionInclude` (also a name or location with `${}`), `renderSubscreen`,
+  `renderIncludeScreen`, `renderText`, `getSectionIncludedNode` (the section name only).
+- Context: `pushContext`, `popContext`, `setInContext`, `pushSingleFormMapContext`, `getSingleFormMap`. The map
+  argument of the last two is the map or an expression string, as `form-single.@map` is.
+- Fields: `getFieldValue`, `getFieldValueString` (one argument with a widget, or field, default, format and, for
+  date-time, the type), `getFieldValuePlainString`, `getFieldValueClass`, `getNamedValuePlain`, `getFieldEntityValue`,
+  `getFieldOptions` (a `Map`, so numeric-looking keys keep their order). The widget and field arguments are element
+  objects `{name, attrs, text, children, parent}` that the generated code writes as literals.
+- Forms: `getFormNode`, `getFormInstance` (`formNode`, `name`, `list` only), `getFormHiddenParameters`,
+  `openFormList(name)` (runs the form's `entity-find` and `row-actions` and the fields' `from`, returns `{id, count}`),
+  `startFormListRow(info, index)`, `endFormListRow`, `safeCloseList(info)`, `formListColumnCharWidths`. Java passes the
+  row and the render info to `startFormListRow`. Here the rows stay on the host so dates and decimals keep their types.
+- URLs: `buildUrl`, `buildUrlFromTarget`, `makeUrlByType`, `getScreenUrlInstance`, `getCurrentScreenUrl`,
+  `isAnchorLink`, and the property `activeInCurrentMenu`. A URL object has `path`, `url`, `pathWithParams`, `readOnly`,
+  `getPath`, `getUrl`, `getPathWithParams`, `getUrlWithParams(extension)`, `getMinimalPathUrl`, `isReadOnly`,
+  `cloneUrlInstance`, `addParameter`, `addParameters`, `removeParameter` (these three return the URL),
+  `getParameterMap`, `getPassThroughParameterMap`.
+- Themes: `getThemeIconClass`, `getThemeValues`. The current theme is the user's `UserScreenTheme`, else the
+  `Enumeration.enumCode` of the theme type, which is simpler than Java: user group themes and the `DEFAULT` lookup
+  are not read.
+
+`sri`, intentionally deferred to the html slices because only their macros call them: `getFieldTransitionValue` and
+the server-side `dynamic-options` (both run a transition as a test render), `makeFormListSingleMap`,
+`makeFormListMultiMap`, `getFormListHeaderValues`, `getFormFieldValues`, `startFormListSubRow`, `endFormListSubRow`,
+`getFormInstance().makeFormListRenderInfo()`, and the screen definition's `getMenuSubscreensItems`.
+Form-list `group-by`, `sub-list`, `show-total`, saved finds and `select-columns` are deferred with them.
+`auto-fields-service`, `auto-widget-service`, `DbForm` forms and `dynamic="true"` forms are not assembled. A related
+entity's drop-down in `auto-fields-entity` is a text widget.
+
+`ec` and statics, added now:
+
+- `ec.resource`: `expand(text, location, map)` (localizes first when shorter than 256 characters, as Java does),
+  `expandNoL10n`, `expression(expr, location, map)`, `condition(expr, location)`. The optional map is put in a
+  context frame of its own for the call.
+- `ec.l10n`: `localize` (the `LocalizedMessage` locale chain `en_US`, `en`, `default`, the text before `##` as a last
+  try, an error over 255 characters, cached in `l10n.message`), `format(value, pattern)`, `formatCurrency(amount, uomId,
+  digits)`, `formatCurrencyNoSymbol`, `parseTimestamp(text, format)`. The formatter is `moqui_lib::format`: the `#,##0.00`
+  pattern subset with `HALF_EVEN`, a small separator table for the common languages, the currency symbol from the
+  `Uom` row or a table of ISO codes, and the date patterns of `moqui_lib::datefmt`. Shared vectors:
+  `crates/moqui-lib/testdata/format-vectors.json`.
+- `ec.context`: `get(name)` and the properties `formListFindId` and `orderByField`.
+- `ec.screen.isRenderModeValid(mode)`.
+- `ec.web`: `requestParameters`, `getWebappRootUrl(...)` (the base URL; the four arguments are ignored).
+- `ec.user`: `locale`, `getLocale()` (text such as `en_US`), `nowTimestamp` (a time stamp reaches a script as text).
+- `WebUtilities`: `encodeHtml`, `encodeHtmlJsSafe`, `fieldValuesEncodeHtmlJsSafe`, `ipMatches`,
+  `isSafeSinglePathSegment`, `isSameOriginRedirect(url, host)`, `lastPathSegment`.
+- `StringUtilities`: `encodeForXmlAttribute`, `base64UrlEncode`, `base64UrlDecode`.
+- `CollectionUtilities`: `paginateParameters`, `getMapArrayListValues`.
+- `entity find .orderBy("a,-b,^c")` takes comma separated fields, as Java does.
+- `ScheduledJobRunner.getCronDescription`, `ec.user.getPeriodDescription` and `ec.web.request` are not added.
+
+### Added by phase 8 slice 3
+
+The fancy renderers, the print mode, and the render calls services use. Dialect and registration are Template
+renderers in `plans/Architecture-Proposal.md`.
+
+- The locked-down renderer runs in its own QuickJS runtime on the thread, with no `ec`, `sri`, context stack or host
+  objects. The snapshot is JSON of the map passed in (`unwrap_json`: a decimal is a string, an entity value is its
+  field map, an entity list is a list of maps, a host object is dropped and logged), parsed there and read through a
+  `with` over a `Proxy` that returns null for an unset name. `format(value, pattern)` and `localize(text)` are its only
+  functions besides the language built-ins. A run is cut off after five seconds and 32 MB.
+- `sri.renderInlineText(body)`: a `<text template="true">` body as a trusted fancy template, returning the text. The
+  function is compiled once per body and kept per engine. `sri.renderText(location, template)` picks the renderer by the
+  extension of the location, and a location with no renderer is a trusted fancy template.
+- `sri.once(key)`: true the first time a render sees the key. The print mode writes its document wrapper with it.
+- `ec.resource.template(location, data)`: the file rendered by the renderer for its extension, as text.
+- `ec.resource.xslFoTransform(...)`: throws "PDF is not available until phase 12".
+- `ec.screen.render(options)` with `{screenPath, renderMode, rootScreen, baseLinkUrl, lastStandalone, parameters}`
+  returns `{status, contentType, text}`, and `ec.screen.makeRender()` is the Java builder over it (`webappName`,
+  `rootScreen`, `rootScreenFromHost` (ignored), `screenPath`, `renderMode`, `baseLinkUrl`, `lastStandalone`,
+  `parameters`, `render()` returning text). `ec.screen.getMimeTypeByMode(mode)` and `ec.screen.isRenderModeText(mode)`.
+  A render started inside a render keeps the outer render's output; `xsl-fo` means `html-print` in all of them.
+- `sri.getFieldOptions` runs `dynamic-options` through `ScreenTest` (`screen::ScreenTest`, `ec.screen.makeTest()` in
+  Java) when the other option sources give nothing: the transition is rendered with the `depends-on` values and the
+  parameters, and its JSON (a list, or a map with `options`) is read with `value-field` and `label-field`.
+
+### Added by phase 8 slice 4
+
+The html mode, its page shell, static files, uploads, and the messages a redirect carries.
+
+- Mode runtime: a macro module may export `runtime`, source that each script engine runs once before the first unit of
+  that module (`$mqHtml` for `ScreenHtml.js`). `sri.getFieldValidation(subNode)` (`{classes, regexp, message}` from
+  `validate-service`/`validate-parameter` or `validate-entity`/`validate-field`), `sri.getMenuItems(path?)` (the menu
+  entries of the active screen, or of the screen at `path`: `name`, `title`, `url`, `disabled`, `inPath`, `image`,
+  `imageType`, `hasParameters`; only items the user may view), `sri.getScreenUrlInfo()` (`targetScreen`, `parentScreen`,
+  each with `screenName` and `getDefaultMenuName()`).
+- `ec.web`: `getPageMessages()` (`{message, typeString}` for saved then current messages and errors), `savedMessages`,
+  `savedErrors`, `savedValidationErrors`, `errorParameters` (what a failed submit posted, once), `getScreenHistory()`
+  (`{name, url, urlNoParams}`), `getResourceDistinctValue()`, `getHostName(withPort)`, `multiPartParameters`.
+- `ec.user.passwordRules` (`minLength`, `minDigits`, `minOthers`), `ec.factory.moquiVersion`, and `find.disableAuthz()` on
+  an entity find.
+- Uploaded file object: `name`, `fileName`, `fieldName`, `contentType`, `size`, `getString()`, `write(location)`
+  (`dbresource://` only), `isInMemory()`. A script cannot hold the bytes.
+- Error pages: `errorThrowable` has `message`, `getMessage()`, `getArtifactInfo()` (`getName()`,
+  `getActionDescription()`, `getTypeDescription()`), `getArtifactStack()` (empty), `getStackTrace()` (the message lines),
+  `pathFromLastScreen`, `fullPathNameList`, `resourceLocation`, `lastSd` (null).
+- Host: `web::body_limit(request)`, `web::max_upload()` (`webapp_max_upload`), `webapp_notification_endpoint`,
+  `ResourceRef::{read_bytes, size, file_path}`.
+- Browser library paths the html mode references (vendored by the libs slice, same paths):
+  `/libs/fontawesome/css/font-awesome.min.css` (with `/libs/fontawesome/fonts/`),
+  `/libs/tom-select/tom-select.complete.min.js`, `/libs/tom-select/tom-select.css`, `/libs/sortablejs/Sortable.min.js`.
+  `runtime/base-component/webroot/screen/webroot/README.md` lists them too.
+
+### Added by phase 8 slice 6
+
+The qvt mode, its shell and the menu data.
+
+- `sri.getMenuData(pathNames)`: the `menuData` transition of `webroot.xml`. A list of `{name, title, subscreens, path, pathWithParams,
+  hasTabMenu, renderModes, image, imageType}` for each screen on the path above the target and a last `{..., extraPathList, screenDocList,
+  savedFinds}` for the target; null after a 401, 403 or 404 JSON error was sent. `savedFinds` and `screenDocList` are empty lists. It runs the
+  `pre-actions` of the screens on the path from the third, and drops the subscreens the user may not view (the parents are on the artifact stack for
+  the check), a subscreen with a missing required parameter, and one that is not `menu-include` and not on the path. `getMenuItems` is still the html
+  navigation.
+- `sri.getScreenUrlInfo().extraPathNameList`: the names after the transition. The url objects of `makeUrlByType` and `buildUrl` gain `isScreenUrl()`
+  (not a plain URL), `isTransition()` and `getTransitionMethod()` (lower case, empty for a screen).
+- `ec.user.timeZone` / `getTimeZone()` (the session zone name, else `UTC`) and `ec.user.userAccount` (the signed-in user's `UserAccount` as a map without
+  `currentPassword`, `passwordSalt`, `passwordHashType`, `passwordSetDate`, `passwordHint`, `successiveFailedLogins`, `disabledDateTime` and
+  `requirePasswordChange`).
+- Mode runtime for qvt: `$mqQvt` (`ScreenQvt.js`), with the form values of `ScreenRenderImpl.addFormFieldValue` computed in the runtime from the widget
+  elements and `sri.getFieldValue*`, `getFieldOptions`, `getFieldEntityValue`, `getFormHiddenParameters`, `getNamedValuePlain`. `T.options.mode`
+  is the render mode for a module that serves more than one (`ScreenPlain.js`).
+- Response headers of the qvt family: `Cache-Control: private, no-store`, and `X-Moqui-Qvt: merged-fragment` for `qvt`.
+- `screen::vue_check::compile_errors(compiler_source, templates)`: the vendored Vue compiler in a QuickJS runtime of its own, for tests and the compatibility report.
+- Still deferred: `getFieldTransitionValue` (a `dynamic-options` label for a value that has no option is the value), `getUserFormListFinds` and the saved find list,
+  `getFormInstance().getFieldValidationJsRules` (the rules come from `getFieldValidation`: number, digits and a pattern).
+
+### Added by phase 8 slice 7
+
+Server-static qvt (`plans/QvtServerStatic.md`).
+
+- `sri.staticUrl(text, urlType)`: where a link of a static template goes, with no parameters: `{path, exists, isTransition, isScreen, readOnly, method}`. The
+  name is resolved against the screen being rendered, and a name that is a transition of the active screen is found when the screen is not mounted. A
+  text with `${` is not resolved.
+- `sri.staticCheck(json)` and `sri.staticNote(kind, element, detail)`: the expressions a static macro wrote (`[{expr, element, attr}]`) and the server-only
+  work it could not write. Both do nothing unless a compatibility report is being made.
+- `ScreenQvtStatic.js` runtime `$mqQvtS` (`$s`): it writes the template. The generated unit reads no request data and runs no action.
+- Server package (`GET {screen}/actions`): the unwrapped context with credential names removed at any depth, the lists and page keys of every form-list removed
+  (`{list}`, `Count`, `PageIndex`, `PageSize`, `PageMaxIndex`, `PageRangeLow`, `PageRangeHigh`), and `mqExtra_{form}` for each form-single: `{field}_display`
+  (display-entity and entity links), the fields its `set` elements made, and the option lists of its drop-downs under `mqOpt_{form}_{field}_{sub}_{widget}`, where the
+  two indexes are the places of the field's sub-node among the field's children and of the widget in the sub-node. `GET {screen}/actions/{form}` answers the same
+  kind of map for a form-list: the list under its name, the page keys, the values of the header fields, the option lists, and each row with `{field}_display` and the
+  fields its `set` elements made.
+- Browser `ec` (`qvt.makeEc`): the table in `plans/QvtServerStatic.md`. `ec.resource.expand(text, table)` and `expandNoL10n` take the table of functions by
+  expression text that the compiled template carries; there is no `eval`. `$mq` is the helper object (`str`, `dflt`, `nul`, `cur`, `fmt`, `merge`, `qs`, `url`,
+  `shown`). `$scope` is the scope chain. The compatibility report's wrapped `ec` has the same members.
+- Report: `screen::statics::static_report`, `static_reports_for_files`, `StaticReport`, `Violation`. `script::set_widget_wrap` turns the wrapped `ec` on for widget
+  expressions (`eval_condition`, `eval_value`, `eval_map`, `expand`, `ec.resource.expand/condition/expression`), and `run_actions` turns it off for the actions.
+
 ## Out of scope
 
 - QuickJS operator overloading for decimals. QuickJS-NG ties it to the built-in `BigDecimal` and `BigFloat` classes (`CONFIG_BIGNUM`). It does not extend to a host class, so the build flag does not give a host decimal `+`. The browser cannot share that flag either.

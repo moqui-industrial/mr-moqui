@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<screen require-authentication="false">
+    <actions><set field="includedSet" value="yes"/></actions>
+    <widgets>
+        <label text="included ${who}"/>
+        <section name="Shared"><widgets><label text="shared ${who}"/></widgets></section>
+    </widgets>
+</screen>

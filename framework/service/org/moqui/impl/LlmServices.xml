@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
+    <service verb="clean" noun="LlmData" authenticate="false" transaction-timeout="600">
+        <description>Purge old LLM call logs, messages, and conversations. Messages first so the LlmMessage FK to LlmConversation is not violated.</description>
+        <in-parameters><parameter name="daysToKeep" type="Integer" default="90"/></in-parameters>
+        <out-parameters>
+            <parameter name="callLogsRemoved" type="Long"/>
+            <parameter name="messagesRemoved" type="Long"/>
+            <parameter name="conversationsRemoved" type="Long"/>
+        </out-parameters>
+        <actions><script>
+            import org.moqui.context.ExecutionContext
+            import org.moqui.entity.EntityCondition
+            ExecutionContext ec = context.ec
+            Calendar basisCal = ec.user.getCalendarSafe()
+            basisCal.add(Calendar.DAY_OF_YEAR, (int) -daysToKeep)
+            basisTimestamp = new Timestamp(basisCal.getTimeInMillis())
+            // Delete children of old conversations first so the LlmMessage FK cannot fail the job.
+            def oldConvs = ec.entity.find("moqui.llm.LlmConversation")
+                    .condition("lastMessageDate", EntityCondition.LESS_THAN, basisTimestamp)
+                    .disableAuthz().list()
+            def oldIds = oldConvs.collect { it.conversationId }.findAll { it }
+            callLogsRemoved = 0L
+            messagesRemoved = 0L
+            conversationsRemoved = 0L
+            if (oldIds) {
+                callLogsRemoved += ec.entity.find("moqui.llm.LlmCallLog")
+                        .condition("conversationId", EntityCondition.IN, oldIds)
+                        .disableAuthz().deleteAll()
+                messagesRemoved += ec.entity.find("moqui.llm.LlmMessage")
+                        .condition("conversationId", EntityCondition.IN, oldIds)
+                        .disableAuthz().deleteAll()
+                conversationsRemoved += ec.entity.find("moqui.llm.LlmConversation")
+                        .condition("conversationId", EntityCondition.IN, oldIds)
+                        .disableAuthz().deleteAll()
+            }
+            messagesRemoved += ec.entity.find("moqui.llm.LlmMessage")
+                    .condition("sentDate", EntityCondition.LESS_THAN, basisTimestamp)
+                    .disableAuthz().deleteAll()
+            callLogsRemoved += ec.entity.find("moqui.llm.LlmCallLog")
+                    .condition("startDate", EntityCondition.LESS_THAN, basisTimestamp)
+                    .disableAuthz().deleteAll()
+            ec.logger.info("Removed ${callLogsRemoved} LlmCallLog, ${messagesRemoved} LlmMessage, ${conversationsRemoved} LlmConversation records more than ${daysToKeep} days old")
+        </script></actions>
+    </service>
+
+    <!-- Sync wrappers for Service REST (/rest/s1/moqui/llm/...). Do not SSE through these. -->
+    <service verb="chat" noun="Conversation" authenticate="true" allow-remote="true" validate="false" transaction="ignore">
+        <description>New LLM turn (sync JSON). Use POST /llm/v1/chat for SSE.</description>
+        <in-parameters>
+            <parameter name="profile"/>
+            <parameter name="conversationId"/>
+            <parameter name="canvasId"/>
+            <parameter name="system"/>
+            <parameter name="user"/>
+            <parameter name="messages" type="List"/>
+            <parameter name="tools" type="List"/>
+            <parameter name="injectContext" type="List"/>
+            <parameter name="temperature" type="Double"/>
+            <parameter name="maxTokens" type="Integer"/>
+            <parameter name="reasoning"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="conversationId"/>
+            <parameter name="content"/>
+            <parameter name="finishReason"/>
+            <parameter name="yielded" type="Boolean"/>
+            <parameter name="pendingToolCalls" type="List"/>
+            <parameter name="toolResults" type="List"/>
+            <parameter name="usage" type="Map"/>
+            <parameter name="model"/>
+            <parameter name="profile"/>
+            <parameter name="reasoning"/>
+            <parameter name="durationMs" type="Long"/>
+        </out-parameters>
+        <actions><script>
+            def result = org.moqui.impl.llm.LlmGateway.chat(ec, context)
+            if (result) context.putAll(result)
+        </script></actions>
+    </service>
+    <service verb="resume" noun="Conversation" authenticate="true" allow-remote="true" validate="false" transaction="ignore">
+        <description>Post client tool results and continue the agent loop (sync).</description>
+        <in-parameters>
+            <parameter name="conversationId" required="true"/>
+            <parameter name="profile"/>
+            <parameter name="toolResults" type="List"/>
+            <parameter name="tools" type="List"/>
+            <parameter name="reasoning"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="conversationId"/>
+            <parameter name="content"/>
+            <parameter name="finishReason"/>
+            <parameter name="yielded" type="Boolean"/>
+            <parameter name="pendingToolCalls" type="List"/>
+            <parameter name="toolResults" type="List"/>
+            <parameter name="usage" type="Map"/>
+            <parameter name="model"/>
+            <parameter name="profile"/>
+            <parameter name="reasoning"/>
+            <parameter name="durationMs" type="Long"/>
+        </out-parameters>
+        <actions><script>
+            def result = org.moqui.impl.llm.LlmGateway.resume(ec, context)
+            if (result) context.putAll(result)
+        </script></actions>
+    </service>
+    <service verb="cancel" noun="Conversation" authenticate="true" allow-remote="true">
+        <description>Abort Streaming or Yielded. 409 if the conversation is not in-flight.</description>
+        <in-parameters>
+            <parameter name="conversationId" required="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="conversationId"/>
+            <parameter name="status"/>
+            <parameter name="httpStatus" type="Integer"/>
+            <parameter name="message"/>
+        </out-parameters>
+        <actions><script>
+            def result = org.moqui.impl.llm.LlmGateway.cancel(ec, conversationId)
+            if (result) context.putAll(result)
+            if (result?.httpStatus == 409)
+                throw new org.moqui.llm.LlmException(result.message ?: "Conversation is not Streaming or Yielded",
+                        null, org.moqui.llm.LlmFinishReason.ERROR, 409, null, conversationId)
+        </script></actions>
+    </service>
+    <service verb="get" noun="Conversation" authenticate="true" allow-remote="true">
+        <description>Conversation history. Owner or ADMIN only.</description>
+        <in-parameters>
+            <parameter name="conversationId" required="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="conversationId"/>
+            <parameter name="profileName"/>
+            <parameter name="userId"/>
+            <parameter name="status"/>
+            <parameter name="title"/>
+            <parameter name="history" type="List"/>
+            <parameter name="pendingToolCalls" type="List"/>
+            <parameter name="attributes" type="Map"/>
+        </out-parameters>
+        <actions><script>
+            def result = org.moqui.impl.llm.LlmGateway.getConversationMap(ec, conversationId)
+            if (result) context.putAll(result)
+        </script></actions>
+    </service>
+    <service verb="get" noun="LlmProfiles" authenticate="true" allow-remote="true">
+        <description>LLM profiles the current user is authorized to use. No API keys.</description>
+        <out-parameters>
+            <parameter name="profileList" type="List"><parameter name="profile" type="Map"/></parameter>
+        </out-parameters>
+        <actions><script>
+            profileList = org.moqui.impl.llm.LlmGateway.listProfiles(ec)
+        </script></actions>
+    </service>
+</services>

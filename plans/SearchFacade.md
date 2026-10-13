@@ -130,64 +130,75 @@ target: Documents(document ids) | Index(index name)
 
 The body is the nested document. Flattening for a screen is a helper over the map, the same idea as `CollectionUtilities.flattenNestedMap`. It is not a search option and it does not change what is stored.
 
-`SearchPage` is the hits and the total count. Page index, page max, and the range labels stay in the service that faces the screen.
+`SearchPage` is the hits and the total count. Page index, page max, and the range labels stay in the service that faces the screen. A hit also carries the physical store name, which `search#DataDocuments` returns as `_index`; `_type` is the document id and `_id` the record id. HiveMind QuickSearch and SimpleScreens `Search.xml` read `_type`. `_version` has no caller and is not returned.
 
 ### Query
 
 ```text
 Query =
-    Text { terms, fields: All | Only(names), match: Prefix | Contains | Term | Phrase }
-  | Field { name, op, value }
+    MatchAll
+  | Text { terms, fields: All | Only(names), match: Term | Prefix | Contains | Phrase | Wildcard }
+  | Field { name, op, value, values, gt, gte, lt, lte, negate }
   | Bool { all: [Query], any: [Query], none: [Query], min_any: number? }
   | Child { path, query: Query }
 
-FieldOp = Eq | In | Prefix | Wildcard | Range { lt, lte, gt, gte } | Exists
-          and the negation of each
+FieldOp = Eq | In | Prefix | Wildcard | Range | Exists
 ```
 
+Scripts pass the same tree as maps: `"match_all"`, `{text: {terms, fields: "all" | [names], match}}`, `{field: {name, op, value, values, gt, gte, lt, lte, negate}}`, `{bool: {all, any, none, min_any}}`, `{child: {path, query}}`. A string in that place is a query string.
+
 `Text` is the scored clause. It replaces `elasticQueryAutoWildcard` and `*:`. An empty text query matches every document. `Phrase` preserves term order and adjacency after configured text analysis; quoted query-string input compiles to this variant. PostgreSQL compiles it with `phraseto_tsquery`, and OpenSearch uses an equivalent phrase query. Golden tests distinguish adjacent, reversed, and separated terms, including stop-word handling.
+
+How a clause matches depends on the field's kind. That is the Elastic behavior for `text` and `keyword` mappings, and the screens rely on it:
+
+| Kind | `field:v` | `field:v*` | `field:*v*` |
+|---|---|---|---|
+| text | a token, case-insensitive | a token prefix | a substring, case-insensitive |
+| keyword | the exact value, case-sensitive | a value prefix, case-sensitive | a substring, case-sensitive |
+| number, date | equal after conversion; a bare date is that UTC day | no match | no match |
+
+A bare term, or `*:term`, searches every string and number in the document, children included. A value that cannot be read for its field (text on a number field) matches nothing, as the Elastic `lenient` flag had it. A field the document does not have matches nothing.
 
 `Field` does not score. A name with a dot (`contactMechs.city`, `issuances.issuedSaleTotal` used as a filter) matches if any element of that child array matches. That is the dotted query-string behavior.
 
 `Child` matches if one element of `path` satisfies the whole inner query. Party classification and the Pop store category are `Child`. Two feature ids AND-ed together are two `Field` clauses, because the document must have both features, not both on the same feature row.
 
-`Bool.min_any` is `minimum_should_match`. The classification query sets it to 1.
+`Bool.min_any` is `minimum_should_match`. The classification query sets it to 1. With none given it is 1 when `all` is empty and `any` is not, and 0 otherwise, as an Elastic `bool` has it. PopRestStore's category query is a should-only `bool` and relies on that default. A `bool` with only `none` matches every document except those. A negated clause also matches a document that lacks the field, as `must_not` does.
 
 ### Query string
 
 The tools search box and the existing screen expressions pass a string. The facade parses the subset below into a `Query`. Services that are touched for MR-Moqui build a `Query` directly. The parser exists so the box and unmigrated expressions still run.
 
 ```text
-query     = or
-or        = and ("OR" and)*
-and       = not ("AND" not)*          juxtaposition is also AND
-not       = "NOT" unary | unary
-unary     = "(" or ")" | clause
-clause    = "_exists_:" field
-          | "*:*"
-          | field ":" value
-          | value
-value     = term | quoted | "(" or ")" | range
-range     = "[" bound "TO" bound "]" | "{" bound "TO" bound "}"
+query     = clause*
+clause    = [conj] [mod] (field ":")? unary
+conj      = "AND" | "&&" | "OR" | "||"
+mod       = "+" | "-" | "NOT" | "!"
+unary     = "(" query ")" | range | quoted | term
+range     = ("[" | "{") bound "TO" bound ("]" | "}")
 field     = name ("." name)*
-term      = optional leading "*" , text , optional trailing "*"
+term      = characters, "\" escapes; "*" and "?" are wildcards
 ```
 
-`*:` immediately before a term searches every field. A trailing `*` is `Prefix`. A leading and trailing `*` is `Contains` (Postgres: trigram-indexed `ILIKE`; OpenSearch: wildcard). A quoted string is a phrase (those terms, that order). `field:[a TO b]` and `field:{a TO b}` are inclusive and exclusive ranges. `*` or an empty string matches all. `_NA_` is an ordinary term.
+Clauses combine as Lucene's classic parser combines them, which is what `query_string` did. Juxtaposition is OR (the default operator). `AND` makes the clauses on both sides required. `+` requires a clause, and `-` and `NOT` prohibit one. A group with only optional clauses needs one of them. So `(*:jo* *:sm*) AND roles.roleTypeId:Customer` is "either term, and the role".
 
-Anything else is an error. The current client sets `lenient: true` and drops illegal clauses. The parser reports the clause instead. The tools screen link points at this grammar. It stops pointing at the Elastic query-string manual.
+`*:` immediately before a term searches every field, as a bare term does. A trailing `*` is `Prefix`. A leading and trailing `*` is `Contains` (Postgres: trigram-indexed `ILIKE` on a text column, a substring of a token on all fields; OpenSearch: wildcard). Other `*` and `?` are `Wildcard`. A quoted string is a phrase (those terms, that order). `field:[a TO b]` and `field:{a TO b}` are inclusive and exclusive ranges, and `*` is an open bound. `field:*` and `_exists_:field` are exists. `*`, `*:*`, or an empty string matches all. `_NA_` is an ordinary term. A hyphen, `@`, or `.` inside a term is part of it, so `foo-bar` and `jo@example.com*` are single terms. A leading `-` is the prohibit operator, which PopRestStore's split user input can produce.
+
+Fuzzy (`~`), boost (`^`), and regex (`/re/`) are errors that name the clause. `search#DataDocuments` turns a parse error into the danger message `Invalid search: ...` with that detail and an empty page, as it did for a failed validate. The tools screen link points at this grammar. It stops pointing at the Elastic query-string manual.
+
+`search#DataDocuments` also still takes `nestedQueryMap` with Elastic query JSON (a map or JSON text), because `PartyServices.search#Party` and PopRestStore build it and both live outside this repository. The service reads the subset they use into a `Query`: `bool` (`must`, `filter`, `should`, `must_not`, `minimum_should_match`), `term`, `terms`, `match`, `range` (`gt`, `gte`, `lt`, `lte`, epoch millis or ISO), `exists`, `prefix`, `wildcard`, `nested`, and `query_string`. Each path key becomes a `Child`. Other Elastic query types are an error that names them. Callers that are migrated pass a `query` map instead.
 
 The OpenSearch log viewer is the exception. It sends the string through as a `query_string` on the log index. That path is not this parser, and it exists only on the OpenSearch backend.
 
 ### Sort, page, highlight
 
-Sort is a field and a direction. A text field sorts on its unanalyzed value, which is the `.keyword` subfield today. Sorting a field that has no unanalyzed value is an error.
+Sort is a field and a direction. A text field sorts on its unanalyzed value, which is the `.keyword` subfield today. A trailing `.keyword` in a sort or query name is accepted and names that same field. Sorting a text field that is not `sortable` is an error. A field of a child array sorts by its smallest value ascending and its largest descending, as Elastic sorts a multi-valued field: `search#Party` sorts on `userAccounts.username.keyword`. Missing values sort last in either direction. `_score` and `_id` sort by rank and record id.
 
 Page is offset and limit. The limit cap is 10000, matching the current window. The total is exact. Keyset pagination waits until a caller needs past that cap.
 
 With no sort, order is score descending, then id. `Field`, `Child`, and the `all` / `none` arms of `Bool` do not affect score. `Text` does.
 
-Highlight is an optional field list. It does not change which rows match. Party search is the caller that asks for it. Postgres uses `ts_headline` where the field is in the `tsvector`, and a plain substring snippet otherwise. Whether a given screen renders `highlights` is checked when that screen is ported. The API still returns them.
+Highlight is an optional field list. It does not change which rows match. Party search is the caller that asks for it, and `FindParty.xml` renders it: the shape is `{field: [fragment, ...]}` and matched words are wrapped in `<em>` and `</em>`, which the screen rewrites to `<strong>`. Fragments are made in Rust from the stored body and the query's positive text clauses, so both backends return the same shape. Only fields with a match appear. The text is not HTML-escaped, as Elastic does not escape it.
 
 ### Aggregate
 
@@ -196,19 +207,23 @@ aggregate(target, filter: Query, aggs: named Agg) -> named results
 
 Agg =
     Filter { query: Query, aggs }
-  | DateHistogram { field, unit, time_zone, format, offset, order, aggs }
+  | DateHistogram { field, unit, time_zone, format, offset, order, min_doc_count, aggs }
   | Terms { field, size, order, aggs }
   | Sum { field }
   | CountDistinct { field }
 
-unit = Day | Week | Month | Quarter | Year
+unit = Minute | Hour | Day | Week | Month | Quarter | Year
 ```
 
-`filter` is the top-level constraint (the sales date range and status lists). It does not score.
+The map form is the Elastic aggregation JSON the services already build, so a migrated service changes little: `{date_histogram: {field, calendar_interval | unit, time_zone, format, offset, order: {_key: desc}, min_doc_count}, aggs}`, `{terms: {field, size, order: {name: desc}}, aggs}`, `{sum: {field}}`, `{cardinality | count_distinct: {field}}`, and `{filter: <query>, aggs}` where the query is an Elastic `term`/`terms`/`bool` map or `{query: <query map>}`. `precision_threshold` is accepted and ignored.
 
-`DateHistogram` buckets have `key` (bucket start, as a timestamp) and `key_display` (the formatted label, today's `key_as_string`). `offset` is the week-start shift. Quarter is one three-month bucket. The sales service sends interval `1q` for that bucket. `intervalCount * 3` is the window length in months, not a rewrite of the bucket into month buckets.
+Results are keyed by aggregation name. A bucket aggregation is `{buckets: [{key, key_display, doc_count, <sub>...}]}`. A filter is `{doc_count, <sub>...}`. A metric is a number, where Elastic had `{value}`. `get#SalesInvoiceSummary` and `get#InvoicesByCustomerClass` read `doc_count` from buckets as the invoice count, so it is part of the shape.
 
-`Terms` orders by bucket key or by a named metric. `CountDistinct` is an integer. Postgres uses `count(distinct …)`, which is exact, so the API has no precision threshold. The OpenSearch compiler may send `precision_threshold` on its own. Callers do not. OpenSearch cardinality is then approximate, and the integer the caller sees can differ between backends. The sales summaries are the callers that notice.
+`filter` is the top-level constraint (the sales date range and status lists). It does not score. An aggregation runs over one document type.
+
+`DateHistogram` buckets have `key` (bucket start, as a timestamp) and `key_display` (the formatted label, today's `key_as_string`). `format` is a Java `DateTimeFormatter` pattern in the root locale, so `dd MMM yyyy` shows `04 Jan 2026`; the invoice summary merges its two histograms by that string. `time_zone` defaults to the server zone. `offset` is an Elastic duration (`+6d`, `-1d`, `+3h`) and applies to any unit: the bucket is `trunc(local - offset) + offset`. The weekly sales default sends the user's first day of the week against Monday, which is `-1d` for Sunday. Quarter is one three-month bucket. The sales service sends interval `1q` for that bucket. `intervalCount * 3` is the window length in months, not a rewrite of the bucket into month buckets. `order` is by key, ascending unless `desc`. With `min_doc_count` 0 (the default) every period between the first and last non-empty period has a bucket, as Elastic fills them; periods outside that span, though inside the filter's date range, have none. The invoice histogram sends `min_doc_count: 1`, which drops empty periods.
+
+`Terms` orders by `_count` (the default, descending, then key ascending), `_key`, or a named metric, and keeps `size` buckets. A document with no value for the field is in no bucket, as Elastic has no missing bucket: discount items have no `productId`. A sum over nothing is 0, not null, as Elastic returns it, because the services add and divide the sums. `CountDistinct` over nothing is 0. `CountDistinct` is an integer. Postgres uses `count(distinct …)`, which is exact, so the API has no precision threshold. The OpenSearch compiler may send `precision_threshold` on its own. Callers do not. OpenSearch cardinality is then approximate, and the integer the caller sees can differ between backends. The sales summaries are the callers that notice.
 
 A `Sum` or `CountDistinct` field may be a root field or a number on each element of a child array. The aggregate is over those numbers. `issuances.issuedSaleTotal` is a sum of child numbers. It is not a `Child` query and it is not a nested aggregation.
 
@@ -260,7 +275,7 @@ get_document(document_id, id) -> body
 
 The feed itself stays. Entity create, update, and delete still register documents. The receive service calls `index_documents`. The delete service calls `delete_document`. Rebuild stays a batched read through `EntityDataDocument`.
 
-Entity create, update, and delete still register document keys during the transaction. After the transaction-cache flush and before commit, on the enlisted connection, the feed inserts `moqui.entity.feed.DataFeedPending`: `dataDocumentId`, `entityName`, the primary key, and the operation (`index` or `delete`). Rollback drops the row. `suspend` parks that client as the Transactions section of `plans/Architecture-Proposal.md` specifies. After commit the service pool assembles the document, calls `index_documents` or `delete_document`, and deletes the pending row. A full pool leaves the row for the scheduler to submit. `IndexDataFeedDocuments` drains the rows that remain. Same-database Postgres, a second Postgres, and OpenSearch use this path. There is no XA. An index failure leaves the pending row and does not roll the entity change back. A later search can see the entity row before the document.
+Entity create, update, and delete register the written values during the transaction, keyed by the transaction frame, so a `force-new` commit takes only its own. After the transaction-cache flush and before commit, on the enlisted connection, the feed resolves each write to the documents it touches and inserts `moqui.entity.feed.DataFeedPending`: `dataDocumentId`, the primary entity, the document's record id, and the operation (`index` or `delete`). A write to the primary entity keys itself; a delete is a `delete` row. A write to a related entity is walked back along the document's relationship path, from the written values (so a deleted child still finds its parent), to the primary records it reaches, each an `index` row. Rollback drops the writes. `suspend` parks that client as the Transactions section of `plans/Architecture-Proposal.md` specifies. After commit the inserted row ids go to `org.moqui.EntityServices.process#DataFeedPending` on the service pool. That service assembles each document, calls the receive service of every real-time feed that has the document (`documentList`, defaulting to `index#DataDocuments`), calls the feed's delete service for a document that no longer assembles (gone, or now outside the document's conditions), and deletes the rows it delivered. Feeds that receive through their own service, such as `MyAccountNotifications`, run the same way. A full pool stores the call as a one-shot job. The `process_DataFeedPending_frequent` job delivers rows that remain, such as those left while search was not configured. Same-database Postgres, a second Postgres, and OpenSearch use this path. There is no XA. An index failure leaves the pending row and does not roll the entity change back. A later search can see the entity row before the document.
 
 ## Universal Mantle search
 
@@ -323,9 +338,16 @@ Each table has:
 
 - `doc_id text` primary key
 - `indexed_at timestamptz`
-- `body jsonb`, the full nested document
-- a typed column for every field used in a filter, a sort, or an aggregation
-- a generated `tsvector` for every text field, default config `english`, with a GIN index, and a `gin_trgm_ops` GIN index so a `Contains` clause compiles to index-supported `ILIKE` instead of a scan. Schema init runs `CREATE EXTENSION IF NOT EXISTS pg_trgm` before that index. The `english` config is the one for this pass. A per-field configuration waits on a non-English corpus. The trigram index cost is measured on the first corpus, and a document field can drop it when measurements say so.
+- `body jsonb`, the full nested document, control fields removed, timestamps as ISO-8601 UTC and dates as `yyyy-MM-dd`
+- a typed column `f_<name>` for every root field: `text` for keyword and text, `bigint`, `numeric` (exact, where the Elastic mapping was `double`), `timestamptz`, `boolean`. The indexer computes these from the body; they are not generated columns, because the date conversion must not depend on the session zone.
+- `all_text`, a generated `jsonb_to_tsvector('simple', body, '["string","numeric"]')` with a GIN index, for bare terms
+- per text column, a GIN index on `to_tsvector('simple', column)` and a `gin_trgm_ops` GIN index so a `Contains` clause compiles to index-supported `ILIKE` instead of a scan. Schema init runs `CREATE EXTENSION IF NOT EXISTS pg_trgm` before that index, and leaves the trigram indexes out when the extension cannot be created. Keyword, number, and date columns have a btree index.
+
+The text configuration is `simple`: lower-cased tokens, no stemming, no stop words. That is the closest Postgres has to Elastic's `standard` analyzer, which the current mappings use (no analyzer is set), so a prefix or token match finds what it found before. A per-field configuration waits on a corpus that needs one. The trigram index cost is measured on the first corpus, and a document field can drop it when measurements say so.
+
+`search.document_index` records each document's table and a signature of the stored shape. `ensure_index` creates the table, or drops and recreates it when the signature changed, and logs that the feed must be rebuilt. DDL runs on a reserve connection, autocommit. Reads run on the caller's connection, inside its transaction when one is open. Writes join the caller's transaction or begin their own.
+
+A `DataDocumentField.fieldType` is a search mapping type name (`keyword`, `text`, `long`, `double`, `float`, `date`), not a dictionary type, as in the Mantle documents. Without one the kind comes from the entity field's dictionary type (the `esTypeMap` table), and an expression field is `double`, as `makePropertyMap` has it.
 
 Child arrays stay inside `body`. A `Child` query is an `EXISTS` over `jsonb_array_elements` so one element has to satisfy every inner predicate. A dotted `Field` is the same extraction with a single predicate. A sum of a child number is a lateral sum of those elements, or a `jsonb` sum.
 
@@ -344,11 +366,11 @@ EXISTS (
 
 If a measured document is too slow in that form, that document gains a child table. The API does not change.
 
-`DateHistogram` is `date_trunc` in the requested time zone. The week offset uses `date_bin`. `Terms` is `GROUP BY`, `ORDER BY`, and `LIMIT`. Index-time expressions are stored values. They are not re-evaluated in SQL.
+`DateHistogram` is `(date_trunc(unit, (col AT TIME ZONE tz) - offset) + offset) AT TIME ZONE tz`. Postgres weeks start Monday, as Elastic's do, so the offset alone moves the week start; `date_bin` is not used, because it cannot step by month. Each bucket level is one `GROUP BY` statement over the keys of the bucket aggregations above it. Metrics and filter counts in that level are columns, a `Filter` adding `FILTER (WHERE ..)`. A sum of a child number is a lateral per-row sum. `Terms` ordering and size, and the empty date buckets, are applied in Rust to the grouped rows. Index-time expressions are stored values. They are not re-evaluated in SQL.
 
 Dates and timestamps in `body` are ISO-8601. Range comparisons in the API take timestamps. The current client serializes timestamps with a custom Jackson serializer because ElasticSearch rejects a negative epoch millis. Postgres stores a `timestamptz` and does not need that workaround. The OpenSearch compiler formats dates in the mapping's accepted formats.
 
-Text rank is `ts_rank` on the vectors the `Text` clause names. Filters are SQL `WHERE` and do not affect rank.
+Text rank is `ts_rank` of `all_text` against the query's positive term, prefix, and phrase clauses. Filters are SQL `WHERE` and do not affect rank.
 
 When the entity datasource is Postgres, embedded or external, the default is the `search` schema on that database. When the entity datasource is MySQL or another non-Postgres, the default is a separate embedded Postgres cluster, including on Windows, where that cluster connects over TCP to `127.0.0.1` on an ephemeral port, as `plans/EmbeddedPostgres.md` specifies. A `<postgres>` URL points search at a different Postgres. Placement and how many postmasters start are `plans/EmbeddedPostgres.md`. All Postgres traffic, including search SQL, goes through the synchronous drivers in `plans/Crate-Layout.md`. The default binary includes embedded Postgres for the embedded search cluster. A custom build may omit it only when search is an external Postgres or OpenSearch.
 
@@ -398,11 +420,15 @@ Mappings follow `makeElasticSearchMapping`. Many-relationships stay `type: neste
 
 `CountDistinct` may send `precision_threshold` inside the HTTP body. The value returned to the caller is the integer from the response.
 
+Each stored document carries `_indexed_at` (epoch millis), which a retention `delete_matching` on `@timestamp` filters, and which `get_document` and hits leave out. The mapping's `_meta` carries the shape signature, so `ensure_index` rebuilds an index whose definition changed, and an index with an `indexName` gets that alias. Highlights are made from `_source` by the same Rust code as on Postgres. The compiler is in core (`search::opensearch`), and the same parity test runs against both backends; the OpenSearch run is ignored unless `OPENSEARCH_URL` is set.
+
 ## Config
 
 `search-facade` replaces `elastic-facade`.
 
 ```xml
+<search-facade backend="${search_backend}"/>   <!-- default property search_backend is postgres -->
+
 <search-facade backend="postgres"/>
 
 <search-facade backend="postgres">
@@ -436,7 +462,8 @@ Application logs and HTTP request logs are flat indexes, `moqui_logs` and `moqui
 
 | Caller | Becomes |
 |---|---|
-| `SearchServices.search#DataDocuments` | `SearchFacade.search`. A query string is still accepted and parsed. |
+| `SearchServices.search#DataDocuments` | `SearchFacade.search`. A query string is still accepted and parsed, `nestedQueryMap` Elastic JSON is read as `Child` queries, and a `query` map is AND-ed. The body is JavaScript on `ec.search`. |
+| `index#WikiSpacePages` | Same service, `ec.entity.getDataDocuments` and `index#DataDocuments`. |
 | `index#DataDocuments`, `index#DataFeedDocuments`, `delete#DataDocument`, `delete#Documents` | `index_documents`, the feed rebuild, `delete_document`, `delete_matching` |
 | `put#DataDocumentMappings`, `delete#ElasticIndex` | `ensure_index`. Dropping a document store is an admin method on the backend. |
 | `search#MantleFiltered` | Same service. The org limit is a `Field` `In` list. |
@@ -447,7 +474,7 @@ Application logs and HTTP request logs are flat indexes, `moqui_logs` and `moqui
 | Tools DataDocument Search, ViewDocument | Parsed query string. `get_document`. |
 | Log viewer, `ElasticSearchLogger`, `ElasticRequestLogFilter`, cleanup jobs | OpenSearch backend only. |
 | `ElasticDatasourceFactory`, `TestNoSqlEntity` | Not ported. |
-| `ec.elastic` / `getElastic()` | `ec.search` |
+| `ec.elastic` / `getElastic()` | `ec.search`: `search`, `aggregate`, `parseQuery`, `elasticQuery`, `indexDocuments`, `deleteDocument`, `deleteMatching`, `getDocument`, `ensureIndex`, `dropIndex`, `indexExists`, `documentTypes`, `isAvailable`, `backendName`, `flatten`, `processFeedPending`, `rebuildFeed`. Each search call takes one options map with `documentType` or `indexName`. |
 
 DataDocument and DataFeed entity XML stay. Seed documents stay. Groovy expressions inside field paths are part of the mantle expression migration to JavaScript. This design does not change those expressions.
 

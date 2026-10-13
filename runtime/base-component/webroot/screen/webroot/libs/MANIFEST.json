@@ -1,0 +1,410 @@
+{
+  "generatedBy": "libs/refresh.mjs",
+  "buildTools": {
+    "esbuild": "0.28.2",
+    "@vue/compiler-dom": "3.5.44",
+    "@vue/compiler-core": "3.5.44",
+    "@vue/shared": "3.5.44",
+    "@babel/parser": "7.29.9",
+    "@babel/types": "7.29.8",
+    "@babel/helper-string-parser": "7.29.7",
+    "@babel/helper-validator-identifier": "7.29.7",
+    "entities": "7.0.1",
+    "estree-walker": "2.0.2",
+    "source-map-js": "1.2.2",
+    "highlight.js": "11.12.0"
+  },
+  "notices": {
+    "path": "NOTICES.md",
+    "sha256": "26000eb720121f69b96637e0bb8c779c8b67d053e139fc1b6ad7dca04620b6a6"
+  },
+  "libraries": [
+    {
+      "id": "fontawesome",
+      "name": "Font Awesome",
+      "version": "4.7.0",
+      "license": "OFL-1.1 AND MIT",
+      "note": "Fonts: SIL OFL 1.1. CSS: MIT. The documentation (CC-BY-3.0) is not shipped.",
+      "source": "https://registry.npmjs.org/font-awesome/-/font-awesome-4.7.0.tgz",
+      "npm": "font-awesome@4.7.0",
+      "tarballIntegrity": "sha512-U6kGnykA/6bFmg1M/oT9EkFeIYv7JlX3bozwQJWiiLz6L0w3F5vBVPxHlwyX/vtNq1ckcpRKOB9f2Qal/VtFpg==",
+      "files": [
+        {
+          "path": "fontawesome/css/font-awesome.min.css",
+          "from": "css/font-awesome.min.css",
+          "size": 31000,
+          "sha256": "799aeb25cc0373fdee0e1b1db7ad6c2f6a0e058dfadaa3379689f583213190bd"
+        },
+        {
+          "path": "fontawesome/fonts/fontawesome-webfont.woff2",
+          "from": "fonts/fontawesome-webfont.woff2",
+          "size": 77160,
+          "sha256": "2adefcbc041e7d18fcf2d417879dc5a09997aa64d675b7a3c4b6ce33da13f3fe"
+        },
+        {
+          "path": "fontawesome/fonts/fontawesome-webfont.woff",
+          "from": "fonts/fontawesome-webfont.woff",
+          "size": 98024,
+          "sha256": "ba0c59deb5450f5cb41b3f93609ee2d0d995415877ddfa223e8a8a7533474f07"
+        },
+        {
+          "path": "fontawesome/fonts/fontawesome-webfont.ttf",
+          "from": "fonts/fontawesome-webfont.ttf",
+          "size": 165548,
+          "sha256": "aa58f33f239a0fb02f5c7a6c45c043d7a9ac9a093335806694ecd6d4edc0d6a8"
+        },
+        {
+          "path": "fontawesome/fonts/fontawesome-webfont.eot",
+          "from": "fonts/fontawesome-webfont.eot",
+          "size": 165742,
+          "sha256": "7bfcab6db99d5cfbf1705ca0536ddc78585432cc5fa41bbd7ad0f009033b2979"
+        },
+        {
+          "path": "fontawesome/fonts/fontawesome-webfont.svg",
+          "from": "fonts/fontawesome-webfont.svg",
+          "size": 444379,
+          "sha256": "ad6157926c1622ba4e1d03d478f1541368524bfc46f51e42fe0d945f7ef323e4"
+        }
+      ]
+    },
+    {
+      "id": "tom-select",
+      "name": "Tom Select",
+      "version": "2.6.2",
+      "license": "Apache-2.0",
+      "source": "https://registry.npmjs.org/tom-select/-/tom-select-2.6.2.tgz",
+      "npm": "tom-select@2.6.2",
+      "tarballIntegrity": "sha512-eiXIkk82XzzUTOVQDFpy+ZGejuqdTvMukyUyeZBQaKnqW42UoTiTZnrod/eX0rkqJEc4rZY9DZ3zdjV07i29wQ==",
+      "files": [
+        {
+          "path": "tom-select/tom-select.complete.min.js",
+          "from": "dist/js/tom-select.complete.min.js",
+          "size": 51804,
+          "sha256": "8f9d7d3420e938c2c9817818b56df43ea46feae5bf1f5a2e828863c034df0e37"
+        },
+        {
+          "path": "tom-select/tom-select.css",
+          "from": "dist/css/tom-select.css",
+          "size": 9913,
+          "sha256": "9927adfdda16f802eed295c3dd0f4845cfb3db2038b62324546a3b6a96a15624"
+        }
+      ]
+    },
+    {
+      "id": "sortablejs",
+      "name": "SortableJS",
+      "version": "1.15.7",
+      "license": "MIT",
+      "source": "https://registry.npmjs.org/sortablejs/-/sortablejs-1.15.7.tgz",
+      "npm": "sortablejs@1.15.7",
+      "tarballIntegrity": "sha512-Kk8wLQPlS+yi1ZEf48a4+fzHa4yxjC30M/Sr2AnQu+f/MPwvvX9XjZ6OWejiz8crBsLwSq8GHqaxaET7u6ux0A==",
+      "files": [
+        {
+          "path": "sortablejs/Sortable.min.js",
+          "from": "Sortable.min.js",
+          "size": 45478,
+          "sha256": "bf4241bc73fef7f11c59a283a69fe8051cdd31c6d8ff5a2b9ba219e7831fcf76"
+        }
+      ]
+    },
+    {
+      "id": "vue",
+      "name": "Vue",
+      "version": "3.5.44",
+      "license": "MIT",
+      "source": "https://registry.npmjs.org/vue/-/vue-3.5.44.tgz",
+      "npm": "vue@3.5.44",
+      "tarballIntegrity": "sha512-dvvmaOCG7lAMkJTPqPwWeGMsPS6DIsFsfZDUgBp9V6mHf9b3+/wyVwYR4Es+WV6uJC0FKRxp81Obcq0ZwUcGFQ==",
+      "files": [
+        {
+          "path": "vue/vue.global.prod.js",
+          "from": "dist/vue.global.prod.js",
+          "size": 170605,
+          "sha256": "e0a2a0866a8de8887542e24f3c218aad3d907b88f30966068792ba992296dc9f"
+        },
+        {
+          "path": "vue/vue.runtime.global.prod.js",
+          "from": "dist/vue.runtime.global.prod.js",
+          "size": 111232,
+          "sha256": "d4ce95b94ad5808c55c26a1de57098bd7aa5fc07c31cc2ceb517b24a80633a13"
+        },
+        {
+          "path": "vue/VERSION",
+          "from": "generated",
+          "size": 68,
+          "sha256": "5166b9c018945b3daf2c8e7926bf585dd556b83fde685984ffcc99d445dd6353"
+        }
+      ]
+    },
+    {
+      "id": "vue-compiler-dom",
+      "name": "@vue/compiler-dom (Node build, bundled for QuickJS)",
+      "version": "3.5.44",
+      "license": "MIT AND BSD-2-Clause",
+      "note": "Bundles @babel/parser (MIT), entities (BSD-2-Clause), estree-walker (MIT), @vue/* (MIT).",
+      "source": "https://registry.npmjs.org/@vue/compiler-dom/-/compiler-dom-3.5.44.tgz",
+      "npm": "@vue/compiler-dom@3.5.44",
+      "tarballIntegrity": "sha512-W5AoBFWdw1lQAKiHowkfgFKFab82oSRT6sGsPfw/q1GRjsy/ZJFLHGhJyBRIFN9APLTUduDH9U2JAiPOIyKuYg==",
+      "build": "esbuild --bundle --minify --format=iife --global-name=VueCompilerDOM --platform=node --target=es2020 with NODE_ENV=production, source-map-js aliased to a stub that throws (only used for sourceMap:true), and an atob shim injected (QuickJS has no atob; entities decodes its tables with it at load). Exposes the global VueCompilerDOM. No Node builtins are required.",
+      "files": [
+        {
+          "path": "vue/compiler-dom.cjs.js",
+          "from": "build",
+          "size": 467288,
+          "sha256": "9841e5861ebeb855cd18367c61b2b1caeb8ea9622028a0c033075cfe33bd46cc"
+        }
+      ]
+    },
+    {
+      "id": "quasar",
+      "name": "Quasar",
+      "version": "2.35.1",
+      "license": "MIT",
+      "source": "https://registry.npmjs.org/quasar/-/quasar-2.35.1.tgz",
+      "npm": "quasar@2.35.1",
+      "tarballIntegrity": "sha512-Y8HJm5AVary0DJAT4Up5wWJCzbCo27nprugWTXHJ0rlQ6OuC1ftmBArBBPaXJFAHqLTafoxsMfRQ7qAncqvgBw==",
+      "files": [
+        {
+          "path": "quasar/quasar.umd.prod.js",
+          "from": "dist/quasar.umd.prod.js",
+          "size": 603322,
+          "sha256": "00df9deb25ca4c0c58a92af8012253b69d1c222571f9b21b2adde82923a7d3c2"
+        },
+        {
+          "path": "quasar/quasar.prod.css",
+          "from": "dist/quasar.prod.css",
+          "size": 214825,
+          "sha256": "89537f185db0036dbb28467b0589fbc0767f23eae773537a90221dc2e6ecbd9a"
+        },
+        {
+          "path": "quasar/lang/en-US.umd.prod.js",
+          "from": "dist/lang/en-US.umd.prod.js",
+          "size": 3006,
+          "sha256": "90f837fdd69530d6b789c1a90885735a3e1967fe95b19271aa84639aa4cbf2ec"
+        },
+        {
+          "path": "quasar/lang/de.umd.prod.js",
+          "from": "dist/lang/de.umd.prod.js",
+          "size": 3270,
+          "sha256": "b81506ce92812fcfdf5196c15e7a064a3fa0d75810eae53b167686d0cc1f8c82"
+        },
+        {
+          "path": "quasar/lang/es.umd.prod.js",
+          "from": "dist/lang/es.umd.prod.js",
+          "size": 3307,
+          "sha256": "456f9faf4ab08d08dda6906623073d65768cbdc7b8a5c76d3e9e84e0226c5ce8"
+        },
+        {
+          "path": "quasar/lang/fr.umd.prod.js",
+          "from": "dist/lang/fr.umd.prod.js",
+          "size": 3488,
+          "sha256": "5a69e2365bc19bcae8aad71d03f9c17893e2a1839f9221353e5a3a12c0a1abdd"
+        },
+        {
+          "path": "quasar/lang/it.umd.prod.js",
+          "from": "dist/lang/it.umd.prod.js",
+          "size": 3338,
+          "sha256": "08234c72d74fcd9b5025d36434385bbf758204004a98d18bc1540ff85d420dfd"
+        },
+        {
+          "path": "quasar/lang/pt-BR.umd.prod.js",
+          "from": "dist/lang/pt-BR.umd.prod.js",
+          "size": 3318,
+          "sha256": "1420335c550cb18f415e44ffb9e76c6b5f35e78351d3a21a9cd8a96d20aa0b7b"
+        },
+        {
+          "path": "quasar/lang/ja.umd.prod.js",
+          "from": "dist/lang/ja.umd.prod.js",
+          "size": 3427,
+          "sha256": "effe83ddebb8e6041eaf30712c9c5f54f953fbfc5bca4997aeb30e21a8ecec47"
+        },
+        {
+          "path": "quasar/lang/zh-CN.umd.prod.js",
+          "from": "dist/lang/zh-CN.umd.prod.js",
+          "size": 3117,
+          "sha256": "909c33e7bd30a1f3507bf8422320b432978abfa32add93973cf9dbb52dfed12c"
+        },
+        {
+          "path": "quasar/lang/ru.umd.prod.js",
+          "from": "dist/lang/ru.umd.prod.js",
+          "size": 4978,
+          "sha256": "6a8c9c27383950f9c0dbf0fda9c311cc104002cddc139ebd40858f1f93d52949"
+        },
+        {
+          "path": "quasar/lang/nl.umd.prod.js",
+          "from": "dist/lang/nl.umd.prod.js",
+          "size": 3166,
+          "sha256": "5867786bb872ad173922d0db9b468dc0e843b935b337c4440db188fbb2bfc27c"
+        }
+      ]
+    },
+    {
+      "id": "material-icons",
+      "name": "Material Icons (Google)",
+      "version": "1.13.14",
+      "license": "Apache-2.0",
+      "source": "https://registry.npmjs.org/material-icons/-/material-icons-1.13.14.tgz",
+      "npm": "material-icons@1.13.14",
+      "tarballIntegrity": "sha512-kZOfc7xCC0rAT8Q3DQixYAeT+tBqZnxkseQtp2bxBxz7q5pMAC+wmit7vJn1g/l7wRU+HEPq23gER4iPjGs5Cg==",
+      "files": [
+        {
+          "path": "material-icons/material-icons.css",
+          "from": "iconfont/material-icons.css",
+          "size": 3314,
+          "sha256": "87229031256becf38b1a3c44701f8047e41cb89598571f31039ed65b50e7be5c"
+        },
+        {
+          "path": "material-icons/material-icons.woff2",
+          "from": "iconfont/material-icons.woff2",
+          "size": 128352,
+          "sha256": "8265f64786397d6b832d1ca0aafdf149ad84e72759fffa9f7272e91a0fb015d1"
+        },
+        {
+          "path": "material-icons/material-icons.woff",
+          "from": "iconfont/material-icons.woff",
+          "size": 164912,
+          "sha256": "fd84f88b497040d4f7d5e8c9f8635aef8d3e706c0fa52e2b6facf14eee87e522"
+        }
+      ]
+    },
+    {
+      "id": "chartjs",
+      "name": "Chart.js",
+      "version": "4.5.1",
+      "license": "MIT",
+      "source": "https://registry.npmjs.org/chart.js/-/chart.js-4.5.1.tgz",
+      "npm": "chart.js@4.5.1",
+      "tarballIntegrity": "sha512-GIjfiT9dbmHRiYi6Nl2yFCq7kkwdkp1W/lp2J99rX0yo9tgJGn3lKQATztIjb5tVtevcBtIdICNWqlq5+E8/Pw==",
+      "files": [
+        {
+          "path": "chartjs/chart.umd.min.js",
+          "from": "dist/chart.umd.min.js",
+          "size": 208522,
+          "sha256": "48444a82d4edcb5bec0f1965faacdde18d9c17db3063d042abada2f705c9f54a"
+        }
+      ]
+    },
+    {
+      "id": "mermaid",
+      "name": "Mermaid",
+      "version": "11.17.2",
+      "license": "MIT",
+      "source": "https://registry.npmjs.org/mermaid/-/mermaid-11.17.2.tgz",
+      "npm": "mermaid@11.17.2",
+      "tarballIntegrity": "sha512-V6K3C8EBdEsPFZXSKMJe6ppQOENxuHARr9GvHX4hh47lAbhMRD9qf4oEK7LoaRQxULMa80/qt5gHO73aCleBBg==",
+      "files": [
+        {
+          "path": "mermaid/mermaid.min.js",
+          "from": "dist/mermaid.min.js",
+          "size": 3572661,
+          "sha256": "581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8"
+        }
+      ]
+    },
+    {
+      "id": "marked",
+      "name": "Marked",
+      "version": "18.1.1",
+      "license": "MIT",
+      "source": "https://registry.npmjs.org/marked/-/marked-18.1.1.tgz",
+      "npm": "marked@18.1.1",
+      "tarballIntegrity": "sha512-zEGgrtUG8crk+TrMacJSVABU4DYDDkS8uqgU3ohrn/2fW9C2AEfUrO3m6IhpIpQpl7YcVpiXXC9cSMWDANT3dg==",
+      "build": "esbuild --minify --legal-comments=none on lib/marked.umd.js (a transform, no bundling), banner kept as one line.",
+      "files": [
+        {
+          "path": "marked/marked.umd.min.js",
+          "from": "build",
+          "size": 47503,
+          "sha256": "cf95e8c4731931a46fbded7322c4ce273830e7009f79994972142b6757bdbea3"
+        }
+      ]
+    },
+    {
+      "id": "dompurify",
+      "name": "DOMPurify",
+      "version": "3.4.17",
+      "license": "MPL-2.0 OR Apache-2.0",
+      "note": "Taken under Apache-2.0.",
+      "source": "https://registry.npmjs.org/dompurify/-/dompurify-3.4.17.tgz",
+      "npm": "dompurify@3.4.17",
+      "tarballIntegrity": "sha512-B/pSlYVHQ58kqISD/yDjuJ1yfzI34m1gF4lAod2bwSRhiN4K5Cl3H8Af7hqB2PmTL911tdEudnnXn5FnhRoz0w==",
+      "files": [
+        {
+          "path": "dompurify/purify.min.js",
+          "from": "dist/purify.min.js",
+          "size": 29828,
+          "sha256": "cd37898f9782adf54820c413191b5691803f0f137c799d6edcfd38523b4c2c31"
+        }
+      ]
+    },
+    {
+      "id": "highlightjs",
+      "name": "highlight.js",
+      "version": "11.12.0",
+      "license": "BSD-3-Clause",
+      "source": "https://registry.npmjs.org/highlight.js/-/highlight.js-11.12.0.tgz",
+      "npm": "highlight.js@11.12.0",
+      "tarballIntegrity": "sha512-nbfWpyRMcMrPMmDwJB+dhX/eiaPKtc2RB+0QZskqJ3WjRA/FDS0e9hZrx8EC/lbEv8gXy98FcDbNa/dspAaJMg==",
+      "build": "esbuild --bundle --minify --format=iife --global-name=hljs of lib/core plus the languages bash, css, diff, groovy, java, javascript, json, markdown, plaintext, python, rust, sql, typescript, xml, yaml. Exposes the global hljs.",
+      "files": [
+        {
+          "path": "highlightjs/styles/github-dark.min.css",
+          "from": "styles/github-dark.min.css",
+          "size": 1315,
+          "sha256": "9f208d022102b1d0c7aebfecd8e42ca7997d5de636649d2b31ea63093d809019"
+        },
+        {
+          "path": "highlightjs/styles/github.min.css",
+          "from": "styles/github.min.css",
+          "size": 1309,
+          "sha256": "3a9a5def8b9c311e5ae43abde85c63133185eed4f0d9f67fea4b00a8308cf066"
+        },
+        {
+          "path": "highlightjs/highlight.min.js",
+          "from": "build",
+          "size": 77309,
+          "sha256": "ffc9eeb1e124cfde5cc6e7220149b1e7891ba50a498f86740ea0da4c925b982e"
+        }
+      ]
+    },
+    {
+      "id": "qz-tray",
+      "name": "QZ Tray connector (qz-tray.js)",
+      "version": "2.3.0",
+      "license": "LGPL-2.1-only",
+      "note": "The file is served unmodified as its own script, and only when printing is enabled. Never concatenated or minified into another file.",
+      "source": "https://registry.npmjs.org/qz-tray/-/qz-tray-2.3.0.tgz",
+      "npm": "qz-tray@2.3.0",
+      "tarballIntegrity": "sha512-hviWThaaUHdjSTjs1q7D8ow8F7l1iBUhbM3J+sOL2DgkTlXO5DmxQewMdirdQgnUQAuaiSzVB9wIhiltOn1aaQ==",
+      "files": [
+        {
+          "path": "qz-tray/qz-tray.js",
+          "from": "qz-tray.js",
+          "size": 150507,
+          "sha256": "2516fe196e7b7db0ae10a6c90f6210f08d8bc52a65d203d70795637d2c4340be"
+        }
+      ]
+    },
+    {
+      "id": "license-texts",
+      "name": "License texts",
+      "version": "-",
+      "license": "n/a",
+      "source": "see each file",
+      "files": [
+        {
+          "path": "licenses/LGPL-2.1.txt",
+          "from": "https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt",
+          "size": 26419,
+          "sha256": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95"
+        },
+        {
+          "path": "licenses/OFL-1.1.txt",
+          "from": "https://openfontlicense.org/documents/OFL.txt",
+          "size": 4599,
+          "sha256": "1d361a8f8e8ce6e68457dcd93fb56e162e6baa3bbb7e7573a290d44399f6b57e"
+        }
+      ]
+    }
+  ]
+}

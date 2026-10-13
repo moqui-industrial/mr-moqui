@@ -1,0 +1,10 @@
+Start
+<#if status == "open">
+Open ${count}
+<#elseif status == "closed">
+Closed
+<#else>
+Other
+</#if>
+<#if !items.length>No items<#else>${items.length} items</#if>
+End

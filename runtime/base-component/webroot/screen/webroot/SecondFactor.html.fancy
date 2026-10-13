@@ -1,0 +1,20 @@
+<#-- Enter an authentication code, or ask for one to be sent. -->
+<p class="strong center">${ec.l10n.localize("Enter an Authentication Code")}</p>
+<p class="center">${ec.l10n.localize("An authentication code is required for your account, you have these options:")}</p>
+<ul class="form-signin">
+<#list factorTypeDescriptions as factorType>
+<li>${factorType}</li>
+</#list>
+</ul>
+<form method="post" action="${sri.buildUrl("verifyUserAuthcFactor").url}" class="form-signin">
+<input name="moquiSessionToken" type="hidden" value="${ec.web.sessionToken}">
+<input name="code" type="text" inputmode="numeric" autocomplete="one-time-code" required placeholder="${ec.l10n.localize("Authentication Code")}" aria-label="${ec.l10n.localize("Authentication Code")}">
+<button data-btn="primary" data-size="lg" type="submit">${ec.l10n.localize("Verify Code")}</button>
+</form>
+<#list sendableFactors as userAuthcFactor>
+<form method="post" action="${sri.buildUrl("sendOtp").url}" class="form-signin center">
+<input type="hidden" name="factorId" value="${userAuthcFactor.factorId}">
+<input type="hidden" name="moquiSessionToken" value="${ec.web.sessionToken}">
+<button data-btn="primary" type="submit">${ec.l10n.localize("Send code to")} ${userAuthcFactor.factorOption || ""}</button>
+</form>
+</#list>

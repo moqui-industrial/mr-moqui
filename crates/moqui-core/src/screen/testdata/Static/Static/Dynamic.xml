@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Marked, but a form extends an expression, so there is no single template to cache. -->
+<screen require-authentication="false" server-static="qvt">
+    <actions><set field="formName" value="Base"/></actions>
+    <widgets>
+        <label text="dynamic screen"/>
+        <form-single name="Wide" dynamic="true" extends="${formName}"/>
+    </widgets>
+</screen>

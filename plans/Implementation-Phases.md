@@ -19,7 +19,8 @@ Mantle and the other application components stay outside this repository. They a
 
 - Build bottom-up. A facade is finished, including the features that would otherwise be left as a remainder, before any gate that depends on it. Gate 1 depends on the whole entity facade and the whole service facade.
 - The entity facade is one phase: definitions, SQL, CRUD, database metadata, view-entity, dynamic view, master definitions, entity cache, transaction cache, sim mode, `text-fts` (column, index, and `matches`), audit log, field encryption, localized fields, ECAs, the data loader, the data writer, and `EntityFacade.rest`. Document assembly and feed rules live here too. The index those feeds write is `SearchFacade`, which stays gate 4. Until that facade exists, feed dispatch inserts the pending row and the receive service records that search is not up. It leaves that row. It does not grow a second, temporary index.
-- The service facade is the next phase, after the entity facade and after the user and artifact-authz checks those calls enforce. It includes definitions, entity-auto, inline, script, the full XML action library, QuickJS, SECAs, email-ECA rules, `service-group`, local `async="true"`, service `callFuture()`, the scheduler and scheduled jobs, parameter validation, `RestApi`, the JSON-RPC dispatcher, and the remote REST and remote JSON-RPC runners. `async="distribute"` stays dropped, as the architecture proposal already decided. `callFuture()` is the same factory thread and new `ExecutionContext` as `async="true"`, plus a oneshot the caller waits on.
+- The service facade is the next phase, after the entity facade and after the user and artifact-authz checks those calls enforce. It includes definitions, entity-auto, inline, script, the full XML action library, QuickJS, SECAs, email-ECA rules, `service-group`, local `async="true"`, service `callFuture()`, the scheduler and scheduled jobs, parameter validation, `RestApi`, and the remote REST runner. `async="distribute"` stays dropped, as the architecture proposal already decided. `callFuture()` is the same factory thread and new `ExecutionContext` as `async="true"`, plus a oneshot the caller waits on.
+- JSON-RPC is not included. Moqui's generic service endpoint (`rpc.xml`, `handleJsonRpcServiceCall`, service type `remote-json-rpc`, `callJsonRpc`, `send#SystemMessageJsonRpc`) was not used seriously, and its authorization semantics are a reason XML-configured REST exists. There is no dispatcher, no remote JSON-RPC runner, and no `/rpc` route. A service of type `remote-json-rpc` fails registration. Copied Java XML that names it stays in the tree and is not wired. The A2A protocol binding is a different wire format and stays in the phase 11 plan.
 - Tool services are not the service facade. Send-mail, search indexing, LLM, print, and system-message handling are gate 4 service bodies on top of a facade that can already call them. Email-ECA rules are the service facade. The `lettre` transport they eventually call is gate 4.
 - XML actions are one JavaScript macro module and one QuickJS runner, inside the service facade, before gate 1. `JsTemplateLiteral` is part of that runner, because action text calls `ec.resource.expand()`. Screen transitions reuse the runner. There is no smaller action subset built only for the load gate. The fancy renderer and its locked-down variant land with screens.
 - The script host at the end of the service facade exposes `ec.entity`, `ec.service`, `ec.message`, `ec.logger`, `ec.resource`, `ec.user`, and the static helpers from `plans/ContextObjects.md`. `ec.web` and `sri` grow with the web and screen phases. The method list is the Server host methods section of `plans/ContextObjects.md`. This document says which facade must answer before which gate.
@@ -108,7 +109,7 @@ Throwaway programs, run before phases 3 and 6 are treated as settled. They are n
 Depends on phase 2. `DbDriver` is a trait in core. Connections are host. Dialect profiles and SQL text are `moqui-db`. The SQL text is written in phase 4. There is no SQLx dependency.
 
 - `TransactionFacade` and the transaction manager, in core, calling `DbDriver`: begin-or-join, commit, rollback, savepoint, `setRollbackOnly`, timeout, `ignore`, `use-or-begin`, `force-new`, `cache`, `force-cache`, and the synchronization list (transaction cache, `runOnCommit` / `runOnRollback`, service ECAs, data feed). `begin` records the deadline and does not check out. The first statement enlists one connection. The feed hook follows `plans/SearchFacade.md` and the fixed phases in the Transactions section: after the cache flush and before commit, the feed inserts the pending row on the enlisted connection. Phase 3 registers that insert. Phase 6 points the after-commit slot at the receive service, which records that search is not up and leaves the pending row. Phase 9 consumes the row with the index write. `suspend` parks that client on the transaction, off the free list. `resume` checks the same client out. `force-new` is that suspend followed by begin, on the same thread and the same `ExecutionContext`. The park budget is 1. The thread holds one ordinary connection per pool. The parked client still counts against the pool max. A reserve inside the pool (default 8) serves side-channel work. Startup fails when `(request cap + service cap) × 2` exceeds `pool_max - reserve`. One deadline per transaction, default 60 seconds. The timer marks rollback-only and cancels the active statement. `destroyAllInThread` runs in a `finally` block on every request, job, and async-service thread. No JTA types and no XA two-phase commit. The rules are the Transactions section of `plans/Architecture-Proposal.md`. The transaction-cache hooks used in phase 4 sit on these same calls.
-- Per-connection prepared-statement LRU, cap 100, keyed by SQL text, on the Postgres and MySQL drivers. Entity SQL uses it. `query_typed` is the one-shot path.
+- Per-connection prepared-statement LRU, cap 100, keyed by SQL text, on the Postgres and MySQL drivers. Entity SQL uses it. `query_once` is the one-shot path.
 - Dialect profiles from the `<database>` block, in `moqui-db`. Postgres and MySQL in this phase.
 - Instrumentation from the start: gauges for checked-out, parked (suspended), and waiting connections, pool wait time, and service worker pool depth and queue wait, reported through `tracing` metrics. A pool that starves is the failure mode this port can create, and it must be visible.
 - Host `db`: embedded Postgres via `postgresql_embedded` (start, stop, `NoTls`), external Postgres with rustls, and the MySQL client with rustls. Unix embedded traffic uses the socket directory. Windows uses TCP to `127.0.0.1` on an ephemeral port. The pool is the core manager. Settings, `save-db` / `load-save`, the major-version upgrade path, and orphaned-postmaster handling are `plans/EmbeddedPostgres.md`.
@@ -132,11 +133,11 @@ Bottom-up inside the phase:
 8. Dynamic view. Data writer. `EntityFacade.rest` (find, create, store, update, delete, path primary keys, relationship steps, dependent levels, master name), tested by calling the facade, with no HTTP server yet.
 9. ECA rules loaded and matched on create, update, and delete. The action bodies run once phase 6 can run them.
 10. Data loader for entity elements: streaming XML, CSV, and JSON, including a zip of those. Roots `entity-facade-xml` and `seed-data`. Type filter, component filter, conf `load-data` locations, nested relationships, `onlyCreate`, `useTryInsert`, dummy foreign keys. Service-named elements are parsed and held until phase 6 runs them. `never-try-insert="true"` on Postgres forces `useTryInsert` off, and the loader uses `createOrUpdate`. When try-insert is on, Postgres uses `INSERT ... ON CONFLICT` and MySQL uses `INSERT ... ON DUPLICATE KEY UPDATE`. An unhandled statement error marks the transaction rollback-only. Codegen emits a savepoint around a `try` whose body contains an entity or service call. `ignore-error="true"` stays a message-level flag. The rule is the Transactions section of `plans/Architecture-Proposal.md`.
-11. Data-document assembly and data-feed rules. Feed dispatch is stored here and calls the receive service once phase 6 can run it. That service does not index until phase 9. `disableEntityEca`, `disableAuditLog`, `disableFkCreate`, and `disableDataFeed` work.
+11. Data-feed rules. Feed dispatch is stored here and calls the receive service once phase 6 can run it. That service does not index until phase 9. `disableEntityEca`, `disableAuditLog`, `disableFkCreate`, and `disableDataFeed` work. Document assembly (the `EntityDataDocument` port) did not land in this phase; it landed with phase 9, with the feed's delete rows and related-entity resolution.
 
 The factory holds one `DbDriver` per entity group. The default framework group is one database. `dbresource://` resolves through this facade. `db://` is not a scheme.
 
-Phase 4 tests cover the facade without a service call: create and read, a view-entity find, a dynamic view, an FTS `matches`, a sim write that does not land in the main schema, table check on an empty database, and `EntityFacade.rest` against an in-memory request map. An entity-find `iterator` streams a result set larger than one fetch and releases the connection.
+Phase 4 tests cover the facade without a service call: create and read, a view-entity find, a dynamic view, an FTS `matches`, a sim write that does not land in the main schema, table check on an empty database, and `EntityFacade.rest` against an in-memory request map. An entity-find `iterator` streams a result set larger than one fetch and releases the connection. A hold or a sim schema uses the merged in-memory list, and the cursor opens only when there is no overlay.
 
 ## Phase 5 — User and artifact authorization
 
@@ -161,15 +162,26 @@ Depends on phases 4 and 5. This phase finishes the service facade.
 - `semaphore` is `wait` or `fail`. The default name is the service name. `semaphore-name` replaces it. `semaphore-parameter` scopes the row by that parameter's value. The row is `moqui.service.semaphore.ServiceParameterSemaphore`. The check and the clear each run on a reserve connection, before the service's own transaction. `fail` returns an error when the row is held. `wait` sleeps until the row is free or the semaphore timeout fires. `poll#EmailServer` is `semaphore="fail"`.
 - Sync call: parameters, the full validation set (required, matches, ranges, entity-backed validators), and the transaction attributes `ignore`, `use-or-begin` (the default), `force-new`, `cache`, `force-cache`, and `transaction-timeout`. `cache` is `use-or-begin` with the transaction cache. `force-cache` is `force-new` with the transaction cache. `transaction-isolation` is not ported. The `authenticate` attribute is enforced with phase 5.
 - Entity-auto runner, including nested maps. The plain-map load path calls the same store function.
-- XML actions: a JavaScript module with a function per element in `xml-actions-3.xsd`, emitting JavaScript, run by QuickJS. The walker is the one in `plans/ContextObjects.md`. The function sees the element, not the execution context. Functions emit bare names, and the server proxy in that plan resolves an unset name to null. `JsTemplateLiteral` implements `ec.resource.expand()`. One QuickJS runtime per `ExecutionContext`, on that thread. The runtime is created in phase 5 and reused. `destroyAllInThread` does not rebuild it. Host callbacks are `catch_unwind`, and the workspace is `panic = unwind`. Decimals stay host values and use checked arithmetic. The runtime's interrupt handler watches the transaction deadline, and `set_memory_limit` uses the conf byte cap.
+- XML actions: a JavaScript module with a function per element in `xml-actions-3.xsd`, emitting JavaScript, run by QuickJS. The walker is the one in `plans/ContextObjects.md`. The function sees the element, not the execution context. Functions emit bare names, and the server proxy in that plan resolves an unset name to null. `JsTemplateLiteral` implements `ec.resource.expand()`. One QuickJS runtime per thread and per nesting depth, not per `ExecutionContext`: a script that calls a service that runs a script needs a second runtime, because a `Context::with` cannot be entered again. Each is created when first needed and reused. The shared context stack is per thread. Scripts run in sloppy mode, because a bare assignment is how a name reaches the stack. `destroyAllInThread` does not rebuild it. Host callbacks are `catch_unwind`, and the workspace is `panic = unwind`. Decimals stay host values and use checked arithmetic. The runtime's interrupt handler watches the transaction deadline, and `set_memory_limit` uses the conf byte cap.
 - Script-type services whose body is JavaScript. The Groovy email scripts are converted in phase 10. There is no Java runner.
 - `UserSecurityChecks` for the two security ECAs, as Rust functions on the host. ECA actions from phase 4 run through this runner. SECA rules run through it too.
 - Email-ECA rules run through the same action runner and call a service. The transport behind send-mail is phase 10. Until then the send service reports that mail is not configured.
-- `service-group`. `async="true"` submits to the service worker pool and gets another `ExecutionContext`. `callFuture()` is that submit plus a oneshot the caller waits on. The pool is bounded (cap, bounded queue, depth metric). A `callFuture` submit against a full queue fails with a clear error and does not block a thread that already holds a transaction. A `callFuture` whose caller is already a pool thread runs on a reserved worker, so the join cannot occupy every worker. Fire-and-forget that must survive a full queue, including commit and rollback synchronizations and any `afterCompletion` submit, is inserted as a one-shot service job. The scheduler tick submits that row, and a due job, to the service pool when a slot is free, and leaves the row when the pool is full. The tick does not run the body. `ServiceJobRun` stays the history row of a named job. It is not that queue. The joined sites are named in `plans/Architecture-Proposal.md`. The scheduler thread sleeps and dispatches, with the `croner` parser in `plans/Crate-Layout.md`. Both are core threads, as that file describes.
+- `service-group` is not built: Moqui's own `xml-actions-3.xsd` has it commented out as tabled. `async="true"` submits to the service worker pool and gets another `ExecutionContext`. `callFuture()` is that submit plus a oneshot the caller waits on. The pool is bounded (cap, bounded queue, depth metric). A `callFuture` submit against a full queue fails with a clear error and does not block a thread that already holds a transaction. A `callFuture` whose caller is already a pool thread runs on a reserved worker, so the join cannot occupy every worker. Fire-and-forget that must survive a full queue, including commit and rollback synchronizations and any `afterCompletion` submit, is inserted as a one-shot service job. The scheduler tick submits that row, and a due job, to the service pool when a slot is free, and leaves the row when the pool is full. The tick does not run the body. `ServiceJobRun` stays the history row of a named job. It is not that queue. The joined sites are named in `plans/Architecture-Proposal.md`. The scheduler thread sleeps and dispatches, with the `croner` parser in `plans/Crate-Layout.md`. Both are core threads, as that file describes.
 - Definition load parses every JavaScript expression with `oxc_parser` 0.139.0 (`rust-version` 1.94.0, the host floor). The version is named in the workspace `Cargo.toml` and no crate depends on it until this phase, so lib and core stay checkable on older rustc. 0.140 and later declare a higher MSRV. 0.153.0 declares Rust 1.97. A Groovy leftover fails that load. The same AST is what the phase 8 compatibility report walks. The binary subcommand is `moqui lint`. The decimal lint in `plans/TypeGeneration.md` is this parse.
 - `RestApi`: load `*.rest.xml`, walk the path, run `<entity>` and `<service>` operations. Tested by calling `run` with a path list and a parameter map. The HTTP route is phase 7.
-- JSON-RPC dispatcher, tested the same way, with a request body and no socket.
-- Remote REST and remote JSON-RPC runners on `RestClient`.
+- Remote REST runner on `RestClient`. JSON-RPC is not included, as the Decisions section says.
+
+### Where the code differs from the text above
+
+These were decided while building phases 5 and 6 and are not defects.
+
+- **Authorization.** `isPermitted` is ported: frames carry what was authorized, a child inherits from its parent when the record says `inheritAuthz`, an always-allow skips the checks, and a deny on the stack stops a plain allow. Entity reads need `view`. Tarpit counts hits for services and screens, not entities, as in Java. The per-user group and check lists are cached on the session and reload when an authorization table is written. `filterMap` and `authzServiceName` are honored. Session state lives on the `ExecutionContext`.
+- **Errors carry a kind.** `ErrorKind` (unauthorized, authentication required, tarpit, not found, method not allowed) is what phase 7 maps to status codes.
+- **Service calls.** A service goes on the artifact stack. Message errors left by the body roll the transaction back and the call still returns its results. `post-commit` rules run after a failure and skip unless `run-on-error`. Authentication is not required while authorization is disabled, which is how a data load calls services.
+- **Parameters.** A value that cannot become the declared type is an error. `allow-html` defaults to `none`; `safe` cleans the value with `ammonia`'s default allow-list (disallowed tags and attributes are dropped, script and style content removed, unsafe URL schemes removed, links get `rel="noopener noreferrer"`), without Jsoup's removal messages. Text with no `<` is not touched. `default` is an expression and `default-value` is expanded text.
+- **Jobs.** `ServiceJob` rows with a cron expression run from a scheduler pass every `scheduled-job-check-time` seconds, in the server time zone. The lock is taken with a conditional write on a reserve connection, not `FOR UPDATE`. A fire-and-forget call that finds the pool queue full is stored as a `ServiceJob` named `ASYNC_QUEUE_<id>`, its parameters as text, and submitted when a worker is free. A script's `ec.service.async()...callFuture()` returns a future with `get()`, `get(timeoutMs)` and `isDone()`; Rust code has `service::start_future` and `service::call_future`. Service definitions belong to the factory, so `lint` and `load_definitions` need an entered context and two factories in one process no longer share services.
+- **XML actions.** `searchFormMap` (`search-form-inputs`), `requireSearchFormParameters`, `havingCondition`, `forUpdate(true)`, `distinct(true)`, `selectField`, `ignore-case` and `to-field-name` conditions are implemented, with SQL for view-entity aggregates (`GROUP BY`/`HAVING`), `DISTINCT`, `FOR UPDATE`, `UPPER()` comparison and field-to-field comparison. `cache` and `use-clone` hints are accepted and change nothing. Still not implemented: `multi` service calls, `distribute` (a load error), and `entity-data`. Deliberate gaps: `get` on a future has no default timeout (as in Java), the script runtime is per thread and depth rather than per execution context, and scripts are not strict-mode.
+- **Remote.** `remote-rest` sends GET, POST, PUT, PATCH, and DELETE with a typed JSON body. `RestClient` follows redirects only to the same host, refuses a response over 16 MiB, and can refuse internal addresses (`deny_internal_addresses`), which the caller turns on for URLs a user supplied. `http(s)://` resources are fetched on first read.
 
 Phase 6 then turns on the two callbacks phase 4 stored: ECA action execution, and data-file service elements (`sync()` on the mapped name). It also points the after-commit feed slot at the receive service. That service records that search is not up and leaves the pending row until phase 9.
 
@@ -201,7 +213,7 @@ Depends on gate 1. `EntityFacade.rest` and `RestApi` already run. This phase is 
 - CORS applies when the request `Origin` is in `webapp.@allow-origins`. Preflight answers the Java allow-headers and methods. `Access-Control-Allow-Credentials` is true. A missing allow-list sends no allow-origin header.
 - `WebFacade`: parameters, a JSON object or JSON list body, `sendJsonResponse`, `sendJsonError`, `sendTextResponse`, session attributes, and the response headers entity REST already sets (`X-Total-Count`, the page headers, `X-Run-Time-ms`). Multipart waits for the form file widget in phase 8. `ec.web` is added to the script host here.
 - Basic screen facade: parse screen XML, directory subscreens and explicit `subscreens-item`, `ScreenUrlInfo`, transition match on name and method, run the transition actions on the phase 6 runner, and honor `default-response` of `none` or a redirect. Widget rendering is phase 8. `webroot.xml` already treats `rest` as a subscreen by file name.
-- `rest.xml` transitions this phase wires: `e1` to `EntityFacade.rest`, `s1` to `RestApi.run`, `login`, and `logout`. `sendOtp` and `verifyOtp` parse, and until phase 11 they return a clear error instead of sending a code. `/rest/sm` parses and returns a clear error that system messages are not available until phase 11. The JSON-RPC HTTP route calls the dispatcher from phase 6.
+- `rest.xml` transitions this phase wires: `e1` to `EntityFacade.rest`, `s1` to `RestApi.run`, `login`, and `logout`. `sendOtp` and `verifyOtp` parse, and until phase 11 they return a clear error instead of sending a code. `/rest/sm` parses and returns a clear error that system messages are not available until phase 11. The JSON-RPC route is not built.
 - Screen `require-authentication` stays false on `rest.xml`, so the transition decides. The REST handlers require a logged-in user.
 - Schema transitions (`entity.json`, the service schemas, and the OpenAPI 3.1 export) close this phase. Gate 2 does not call them. Swagger and RAML output is not built.
 - `/health` and `/metrics` on the HTTP edge: readiness reports the factory and pool state, and `/metrics` exposes the phase 3 gauges and the statement timings.
@@ -215,6 +227,8 @@ Depends on gate 1. `EntityFacade.rest` and `RestApi` already run. This phase is 
 - An anonymous request receives 401. A user without permission receives 403.
 
 The response is JSON from the transition. Widget HTML is not part of this gate.
+
+Review follow-ups landed after gate 2: a request authenticated by its own credentials (Basic, `api_key`, `login_key`, `authUsername`) skips the session-token check as in Java; web sessions expire after `webapp_session_timeout` minutes (default 60, 0 never) and idle `HttpSession` rows are purged from the scheduler tick; repeated query or form names become list parameters; `X-Forwarded-Proto` is believed only when `webapp_client_ip_header` marks a proxy; a full request queue is `ErrorKind::Unavailable` (503). Still open: `session.rs` keeps its own small JSON codec because it must preserve number text and key order, and `userInfo` stays commented out in `rest.xml` as in Java.
 
 ## Phase 8 — Screen model and render modes
 
@@ -259,6 +273,186 @@ Server-static `qvt` is last, and follows `plans/QvtServerStatic.md`. The attribu
 - A `/vapps` path has no screen.
 - The `html-print` body is HTML and does not include `moqui-html.js`. A request with extension `.xsl-fo` returns that same body.
 
+### Where the code differs from the text above
+
+A summary of slices 0 to 8 first, then the notes appended slice by slice.
+
+- **Shape.** The plan held: one screen model (slice 1: definitions, cache, `ScreenUrlInfo`, `makeRender()` with no socket), one macro walker
+  (slice 2), and a JavaScript macro module for each mode (`ScreenText.js`, `ScreenCsv.js`, `ScreenXml.js`, `ScreenHtmlPrint.js`, `ScreenHtml.js`,
+  `ScreenQvt.js`, `ScreenPlain.js` for `qjs`/`qvue`, `ScreenQvtStatic.js`). Screen XML expressions were migrated from Groovy to JavaScript and are
+  linted (`moqui lint --screens`, slice 0); 3 Groovy screens still do not load and are named by the lint and the report. Templates are the `fancy`
+  dialect (slice 3), not FreeMarker; a `.ftl` location is refused.
+- **Deviations that stay.** `html-print` writes its own document wrapper; `xsl-fo` is only an alias. The body of a `.qvt` response is a
+  template the client wraps, not a component object (the Java shape). `/qapps` is html and loads `.qvt` from `/apps`. Request text in qvt uses
+  `&#123;` instead of `v-pre`. Server-static `include-screen` is inlined and tree JSON is a 501. The macro-level differences are listed at the top
+  of `ScreenHtml.js` and `ScreenQvt.js`.
+- **Fixed in slice 8 (found by the Gate 3 harness).** A transition's `service-call` (default `out-map="context"`) failed with `cannot put with key
+  'context'`, so every form post through a transition shortcut was a 500: `XmlActions.js` now puts each result on the context by name. A
+  `default-response` to a screen did not carry the target screen's `parameter` values (Java's `UrlInstance.getParameterMap`), so
+  `updateArtifactGroup` redirected to `ArtifactGroupDetail` without `artifactGroupId`. A transition requested with `Accept: application/json`
+  (the qvt `m-form`) got a 302 to the page html; it now gets Java's `sendJsonRedirect` JSON (`screenUrl`, `screenPathList`,
+  `screenParameters`, `messageInfos`, `currentParameters`), and the messages are not also saved for the next page. `entity-find` with
+  `search-form-inputs` did not set `<list>Count`, `PageIndex`, `PageSize`, `PageMaxIndex`, `PageRangeLow` and `PageRangeHigh`, so no
+  form-list in any mode had pages (the find now has `getLimit`, `getOffset` and `copy` for it). `Header.html.fancy` wrote a script or style
+  sheet twice when the theme and the page both named it (every error page loaded `moqui-html.js` twice). In qvt `fields-initial`, a `link` after a
+  `display-entity` in one field replaced the entity text with the id (Java does the same). The `m-*` field wrappers passed `id` to
+  `q-input`/`q-select`/`q-file`, which drop it; they now pass `for`, so the native input has the id. `m-static-form-list` reused the row
+  components of the last page, and an `m-form` copies its `fields-initial` once, so page 2 showed the rows of page 1.
+- **Deferred.** PDF bytes (phase 12); `ScreenServices.xml` service bodies (mail screen bodies were done after slice 8, see phase 10's
+  "Screen mail after phase 8"); `vuet` and `/vapps` (dropped); the Assist panel; saved finds and screen documents (nothing reads the user finds yet); in a
+  static template, row selection, first/second/last rows, aggregation, the column picker and the csv/text/pdf buttons; precompiled `m-*`
+  templates, which `webapp_qvt_static_only=true` waits for; the `lookup` widget (a text line, as the Java macro was commented out). A static
+  template is fetched once to read `X-Moqui-Qvt` and then loaded again by a script element (a URL without the query), so it downloads twice.
+
+- **Slice 3, fancy renderers.** `script/template.rs` compiles the dialect in Rust to one JavaScript function, cached by
+  source text, and the trusted renderer runs it on the script runtime. The locked-down renderer runs the same function in
+  a separate QuickJS runtime (isolation is a runtime, not a scope trick). `fancy`, `html.fancy`, `fancy-locked` and
+  `html.fancy-locked` are registered in `MoquiDefaultConf.xml`. `moqui lint --screens` compiles every template body, so
+  leftover FreeMarker is a lint failure. The 51 bodies that already compiled and the 10 that did not (the error pages,
+  `AppList`, the `apps.xml` footer, `Login` and `GroovyShell`) are in the dialect. The ten `.ftl` locations are listed in
+  the lint report and are slice 4 work (`Header.html`, `Footer.html`, `navbar.html`, `Login`, `SecondFactor`,
+  `AutoScreenMenu`, `WebrootVue.qvt`), except `Header.xsl-fo.ftl`, which `ScreenHtmlPrint.js` replaces.
+- **html-print.** The document wrapper (`@page` rules for the ten paper and orientation names, a page number in the
+  footer, `documentTitle` in the header) is written by the first `widgets` of the render, not by `webroot.xml`, because
+  the mode is always standalone. `layoutMaster` selects the page. `xsl-fo` is `html-print` for the request extension, the
+  `renderMode` parameter, the builder, a screen's `render-modes` and a `<text type>` list.
+- **`ScreenServices.xml`.** Only the `async="distribute"` attribute changed. Service bodies are still Groovy and wait for
+  the service migration; `ec.screen.makeRender()`, `getMimeTypeByMode` and `isRenderModeText` exist so that migration is a
+  rewrite of the script, and PDF bytes report that PDF is not available until phase 12.
+- `BasicWidgetTemplates.xml` is in `runtime/base-component/webroot/template/screen/` with its Elvis expressions as `||`.
+- **Slice 4, html.** `ScreenHtml.js` writes the markup of every widget the Java html macros handled (containers, box,
+  panel, native `dialog`, dynamic container and dialog, button menu, tree, links with confirmation and link type, images,
+  labels, editable, subscreen menus and panels, form-single with field layout, groups and accordion, form-list with row
+  forms, header sort, pagination, find dialog, column picker, CSV and print links, and every field widget). The widget
+  markup is in a runtime object that each script engine runs once (a module's `runtime` property, run before the first
+  unit that names it), so a unit holds only the structure of its form and calls `$h.dropDown(...)` and the like. The
+  attributes the client binds are listed in `webroot/js/README.md`. Differences: option text and labels are always
+  encoded; a text-line `ac-transition` is a `select` that Tom Select fills, so `name_ac` is not posted; `lookup` is a text
+  line (the Java macro was commented out); a form-list with `group-by` sub-lists renders every column in the main row; the
+  saved-find and column dialogs show only when the screen has `formSaveFind` and `formSelectColumns`, which no screen has
+  yet; `show-pdf-button` links to the `html-print` page. No unit has a `<script>`.
+- **Page shell.** `Header`, `Footer`, `navbar`, `Messages`, `Login` and `SecondFactor` are `.html.fancy` files, and the
+  `webroot.xml`, `apps.xml`, `Login.xml`, `SecondFactor.xml`, error and `AppList` screens use them. `.ftl` locations are
+  refused when rendered, so the `.ftl` files left are `WebrootVue.qvt.ftl` (qapps) and `AutoScreenMenu.qvt.ftl`, which
+  belong to the qvt slice. The `vuet` text types are gone. The default theme links Font Awesome, `moqui-html.css` and
+  `moqui-html.js` (with `defer`); Tom Select and SortableJS are added to `footer_scripts` and `footer_stylesheets` by the
+  widgets that use them, and the client loads them itself for a fragment that has no footer. The component data files
+  (theme, localization, security) were not read by `moqui load` then; since the Phase 10 merge `moqui load` and the empty-database
+  load read each component's `data` directory, and the gate no longer loads them by location (slice 8).
+- **Static files.** The path walk ends at a file under a screen's directory when a name is neither a subscreen nor a
+  transition (`screen/static_files.rs`). A transition named `favicon.ico` would hide the file, so `webroot.xml` has none.
+  Weak `ETag` from the modification time and size, 304, HEAD, a year of `immutable` for `*.min.*` or a `v` parameter and an
+  hour with revalidation otherwise. The host adds tower-http's gzip layer to the whole router; brotli is not enabled, since
+  its feature adds a crate for a saving gzip mostly gives.
+- **Multipart.** axum's `multipart` feature needs `multer`, which is not in the tree, and the request pool takes an owned
+  request, so the host reads the body (up to `webapp_max_upload`, default 100 MiB, while it reads; other bodies stop at
+  1 MiB) and `web/multipart.rs` parses it. Text fields join the parameters. A file is an `UploadedFile` host object
+  (`name`, `contentType`, `size`, `getString()`, `write("dbresource://...")`) in the parameters and in
+  `ec.web.multiPartParameters`, with `_fileUploadList`. A file that starts like a program is a 415 unless
+  `webapp_upload_executable_allow` is `true`.
+- **Messages and forms.** A response that redirects saves its messages and errors in the session, and its request
+  parameters when it had errors (not passwords or the token). The next request that asks gets them once: `ec.web.getPageMessages()`
+  for the shell, `ec.web.errorParameters` and the field values of a form. Pages the user got in `html` go on the screen
+  history, newest first, for `screen-last` and the navbar menu. A failure for a browser (`Accept: text/html`, not an API path) renders
+  `error/*` with `errorCode`, `errorType`, `errorMessage`, `errorThrowable` and `showErrorDetail`.
+- **Slice 6, qvt server-merged, qjs, qvue.** `ScreenQvt.js` writes the Vue template of the target screen, as the html module does: a runtime
+  object that each engine runs once (`$mqQvt`) holds the markup of each widget and a unit holds the structure of its form. The body of a `.qvt`
+  response is the template, not a component object: the client wraps it as `{template: '<div id="...">' + body + '</div>'}` as the Java client
+  did, so `qjs` (the script object) and `qvue` (a component file) stay companions of the same screen. The widgets are the `m-*` wrappers
+  of `js/WebrootVue.qvt.js` (list in `webroot/js/README.md`); a macro writes no raw `q-input`, `q-select`, `q-date` or `q-field`. Form fields
+  start from `fields-initial` (the port of `addFormFieldValue` is in the runtime, so a form-list row gets its values from the row it
+  renders), a widget binds `v-model` inside a form and `model-value` outside one, and every opening brace of request text is the character
+  reference `&#123;`, which keeps data from being read as an interpolation (the Java macros used `v-pre`). Differences from the FreeMarker macros are
+  at the top of `ScreenQvt.js`: `text-line` with `ac-transition` is an `m-drop-down` with `server-search` (the Java macro wrote an error),
+  a confirmation is a `data-confirm` attribute the shell answers, the `background-message` is text and not evaluated, `editor-type` `html`
+  and `md` are `m-text-area` (`QEditor`; a text area with a Marked preview), `lookup` is a text line, the Inputmask `mask` is converted to Quasar's
+  tokens, a form-list with `group-by` sub-lists keeps every column in the main row, the navigation bar of a form-list sits above the table, and
+  the saved finds list and the screen documents are not written (nothing reads the user finds yet). The saved find dialog has the save-new-find form
+  only, and the column dialog is `m-form-column-config`. `ScreenPlain.js` serves `qjs` and `qvue`: the text of the screen's own `render-mode`
+  elements and the subscreen and section calls. The mode a unit is made for reaches a module that serves more than one mode as
+  `T.options.mode`.
+- **Page shell and host.** `/qapps/**` is `webroot/screen/webroot/qapps.xml` (`allow-extra-path`) and renders `includes/WebrootVue.qvt.html.fancy`
+  in the html mode; the screens it shows are fetched from `/apps/**` as `.qvt` (`.qjs`, `.qvue`) and are always standalone, so only the target
+  screen renders and `pre-actions` run from the third screen of the path on. The default mode of `/qapps` is therefore html, and qvt
+  is the mode of what it loads. The pre-actions of `qapps.xml` add the scripts to `footer_scripts` and build `qvtConfig`, which the shell writes
+  as the one JSON block `<script type="application/json" id="moqui-config">` (shape in `js/README.md`). The `AutoScreenMenu.qvt.ftl` of the tools
+  component is `AutoScreenMenu.qvt.fancy`, and `AutoEdit.xml` names it. A qvt-family response (`qvt`, `qjs`, `qvue`) that is not server-static says
+  `Cache-Control: private, no-store`, and `qvt` says `X-Moqui-Qvt: merged-fragment` (`render.rs`, `add_client_component_headers`).
+  `sri.getMenuData` (`screen/menu.rs`) is the `menuData` transition of `webroot.xml`: the pre-actions of the screens on the path from the third on run
+  (an error in one is logged), each screen on the path has its subscreens in menu order with the ones the user may not view or that miss a required
+  parameter dropped, and the target comes last with its extra path and render modes; 401 for nobody, 404 for a path that is no screen and 403 for one
+  the user may not view. A grant is read with the parents of the item on the artifact stack, so it reaches the screens below. The `apps.xml` transition `l10nCatalog`
+  answers the messages of a locale for `moqui.l10n.localize`. `ec.user.timeZone` and a `ec.user.userAccount` without its password columns are new host
+  properties; `sri.getScreenUrlInfo().extraPathNameList` and the url methods `isScreenUrl`, `isTransition` and `getTransitionMethod` too. The
+  emailed link of `ScreenRenderEmail.xml` and the `ServiceJobError` link point to `/qapps` and not to the dropped `/vapps`. The FreeMarker and GString
+  renderers and caches of the Java conf are out of `MoquiDefaultConf.xml` and `MoquiDevConf.xml`.
+- **The client.** `MoquiLib.js`, `MoquiL10n.js`, `WebrootVue.qvt.js` and `MoquiQzComponent.js` in `webroot/js` are plain ES2020 on Vue 3.5 and Quasar 2.35
+  (the vendored libs), with `fetch` for requests, one JSON settings block, `QPopupEdit` for `m-editable`, `QEditor`, Chart.js 4, Mermaid 11
+  (`mermaid.run`), QZ Tray 2.3 on `QDialog`, a vue-router stand-in for Quasar's `to`, and `loadComponent` choosing by the `X-Moqui-Qvt` header (only
+  `merged-fragment` is handled; `static-template` is an error until the server-static slice installs its handler in `moqui.qvtHandlers`). The Assist
+  panel (`js/assist`) is not ported. `MoquiL10n.js` checks against `crates/moqui-lib/testdata/format-vectors.json`.
+- **Tests.** Golden code for `qvt`, `qjs`, `qvue` (`script/testdata/screen/<mode>/`), the rendered templates in `qvt/render/*.qvt` (each compiled with the vendored
+  Vue compiler in QuickJS, `screen::vue_check`), menu data with permissions (`tests/menu.rs`), the Node tests of the client (run by `cargo test` when `node` is on the
+  path), and `gate3.rs` for `ArtifactGroupDetail` as `.qvt`, `.qjs` and `.qvue`, the `/qapps` shell and `/menuData` over HTTP.
+- **Slice 7, server-static qvt.** `server-static` names `qvt` (list or `all`), or the screen has only subscreens placeholders (or no widgets), and
+  `statics::eligibility_of` finds nothing that needs request data: a `dynamic="true"` form, an `extends` or `auto-fields-*` named by an expression, a form that says
+  its own `server-static` without qvt, a `section-include` or `include-screen` named by an expression or of a screen with forms, `allow-extra-path`, a qvt macro module other
+  than the built-in one, `render-modes` without qvt. Such a screen stays a server merge, with the reason in the report and no static header. The template is `ScreenQvtStatic.js`
+  (unit mode `qvt-static`), run once with no actions: `section` is `v-if`, `section-iterate` is `v-for`, a form-single is an `m-scope` over its map and an `m-form` whose
+  `fields-initial` are expressions over the scope, a form-list is `m-static-form-list`. Text is `v-text` of a localized call, and `${}` text is
+  `ec.resource.expand(pattern, {expr: () => expr})`. The Vue compiler (`prefixIdentifiers`, in QuickJS, read from `libs/vue/compiler-dom.cjs.js`) compiles it when the definition
+  is cached; the response is the script `moqui.qvtStatic[path] = function (Vue) {...}` that a script element loads, `X-Moqui-Qvt: static-template`, `Cache-Control` of
+  `screen-server-static`, a weak `ETag` over the script and the resolved definition (screen XML with `screen-extend`, each form and its extensions, the source files, the macro
+  module), 304. Every screen has the implicit `actions` transition: `GET {screen}/actions` runs `always-actions` from the first screen, `pre-actions` from the third, the root
+  actions and the actions of the sections it reaches, and answers the package; `GET {screen}/actions/{form}` answers a form-list. `display-entity`, `entity-options`,
+  `list-options` and `dynamic-options` without `server-search` are looked up on the server (`list-options` too, which the plan left in the template), and a `set` in a field runs
+  there. Differences from the plan: credential names are stripped at any depth; `include-screen` is written inline in the including template (and its actions run in the
+  package) instead of a child component; tree node JSON is a 501 and form-list aggregation is not done (the report names screens that need them); first/second/last rows, row
+  selection, saved finds, the column picker, the csv, text and pdf buttons, a multi form and `button-menu` are not written in a static template; the non-qvt modes get the cache header
+  when the screen names them, and the automatic subscreens-only case gets it for qvt only (a page of html holds the navbar of the user). `webapp_qvt_static_only=true` loads
+  `vue.runtime.global.prod.js`, and waits for the `m-*` components and the shell to be precompiled before it can be used: they still have string templates.
+  The report is `moqui lint --screens --qvt-static [report-file]` (one block for each screen file: location, mode, verdict, reasons and violations; it does not fail the
+  process) and `screen::statics::static_report` with `full` for the render with the wrapped `ec`. Over this tree 128 screens: 73 clean, 38 with violations, 14 stay a server merge,
+  3 (the Groovy screens) do not load. `ArtifactGroupDetail` is clean, and Gate 3 marks it with a `screen-extend` in its own runtime.
+- **Slice 8, the Gate 3 harness.** `tests/gate3.rs` and `tests/gate3_browser.rs` share the seeded server in `tests/common/mod.rs`: one embedded
+  Postgres, the seed load (framework files and each component's `data` directory, so the themes, pagination text and the tools app groups are
+  rows without a by-location load), the demo users, and three screens of the test runtime (`GateCompanion`, `GateWidgets` with click to edit,
+  a background submit with a date, a drop-down and a multiple drop-down, a form-list with the column picker and 186 rows, and Chart.js and
+  Mermaid in qvt text; `GateStaticList`, server-static with the same list). `gate3.rs` adds a form post through `updateArtifactGroup` (the
+  session cookie and the page's token; refused without the token; the JSON answer for `Accept: application/json`), that `html-print` names no
+  `moqui-html.js` and no script, and that the seed load wrote the tools and webroot data. `crates/moqui/tests/lint_cli.rs` runs the binary's
+  `lint --screens` and `lint --screens --qvt-static` and checks both exit 0. The browser smoke is a small Chrome DevTools Protocol client over
+  `tungstenite` (`tests/common/cdp.rs`), not `chromiumoxide` and not `PdfRenderer`: Chromium with `--headless=new`, a temporary profile, a page
+  attached with a flat session, `Runtime.evaluate`, mouse and key events through `Input`, and every `Runtime.exceptionThrown`,
+  `Runtime.consoleAPICalled` error or warning and `Log.entryAdded` error or warning collected as a problem.
+
+### Gate 3 status
+
+Every item of Gate 3 has a test, and they pass. The browser items, in `tests/gate3_browser.rs`, with the console clean on every page:
+
+- `html` (under `/apps`, with the navbar): `moqui-html.js` once, the form values and rows, the menus moved into the navbar, a native dialog opened
+  and closed, a form post through the transition that comes back to the page with the new value; click to edit; a background submit (date,
+  drop-down, the multiple drop-down through Tom Select loaded on use) with its message and no navigation; the column picker with SortableJS
+  loaded on use and the tree in its input; page 2 and a descending sort of the form-list.
+- `html-print`: no `window.moqui`, no script, the three form-list tables. `text`, `csv` and `xml`: fetched by the page with their content types, and
+  the xml parses with `DOMParser`.
+- `qvt` through `/qapps`, server-merged: the shell mounts, the form-single is a `QForm` with its value, the rows show the display-entity text, a
+  container dialog opens with a drop-down whose `QMenu` lists the server's options, a row's `m-drop-down` is changed through its menu and the row's
+  `m-form` posts with the session token (stored in the database); Chart.js and Mermaid are absent on that page and load and draw on the
+  widgets page; `m-editable` saves through `QPopupEdit`; `m-date-time` takes a day from the `QDate` popup; the form posts in the background with
+  its message; the column dialog opens; page 2 of the list.
+- `qvt` server-static (the fixture marked by `screen-extend`): `moqui.qvtStatic[path]` is a function, the script, `/actions` and
+  `/actions/ArtifactAuthzList` were requested, the form value and rows come from the packages, there is no literal `{{`, `${` or `ec.` in the
+  rendered text, the dialog and the row post work as above; on `GateStaticList` page 2 and the descending sort fetch `/actions/EnumList` and
+  redraw. The same run executes the compatibility report and checks the fixture is clean.
+
+The notification WebSocket is a separate browser test (Phase 10, below): a notification sent through the core API shows as a toast in
+`html` and as a Quasar notify in `/qapps`.
+
+Not run in the browser: file downloads (the `Content-Disposition` path of `m-form`), QZ Tray, dynamic containers and trees, `m-form-link` header find forms, the dark-mode toggle, and
+the Login second factor. The `qjs` and `qvue` companions are checked over HTTP only. The smoke checks content, behavior and the console; it does
+not judge layout.
+
 ## Phase 9 — SearchFacade
 
 Depends on gate 1. Entity documents and the feed rules already assemble, and the service facade can call the receive service. The HTTP client already exists. The API is `plans/SearchFacade.md`.
@@ -269,6 +463,17 @@ Depends on gate 1. Entity documents and the feed rules already assemble, and the
 - The query-string parser for the subset existing screens emit.
 - One active backend. The OpenSearch backend builds HTTP bodies and sends them through `HttpClient`. The host `search` module starts the process. `/elastic` and `/kibana` proxies, and the log indexes, exist only when that backend is selected.
 - `CountDistinct` is exact on Postgres and may be approximate on OpenSearch.
+
+### Where the code differs from the text above
+
+Phase 9 was checked against `SalesSummary.xml` through `SalesReportServices`, and against `SearchServices.xml` and its callers. The changes to the API are in `plans/SearchFacade.md`.
+
+- **Document assembly.** `entity::document` is the `EntityDataDocument` port: one outer-join query per document from the field paths, rows merged into nested maps (type-one flattened, type-many as lists keyed by the relationship alias), expression fields in JavaScript after the query, query and post-query conditions, `manualDataServiceName`, and batched feed reads that page on the primary key.
+- **Feed.** A write records its values and its transaction frame. Before commit the feed resolves writes to document ids, a related write by walking back along the relationship path, and inserts one pending row per document with `index` or `delete`. After commit `process#DataFeedPending` runs on the pool and calls each real-time feed's receive or delete service. The `process_DataFeedPending_frequent` job retries what is left. The Postgres `xmin` probe remains only for writes recorded without values.
+- **Text** uses the `simple` configuration, not `english`, to match Elastic's `standard` analyzer.
+- **Services.** `SearchServices.xml` bodies are JavaScript on `ec.search`. `search#DataDocuments` reads the Elastic JSON `nestedQueryMap` that unmigrated callers send. A `<script>` body may end with a top-level `return`.
+- **Store placement** is the host `search` module: the entity Postgres `search` schema, a `postgres` url, or a dedicated embedded cluster under `runtime/db/search` when the entity database is not Postgres. The data load attaches search when it can.
+- **OpenSearch** request bodies are built by the compiler in core. Starting the OpenSearch process, the `/elastic` and `/kibana` proxies, and the log indexes wait for the web phases.
 
 `get#InventoryProjectedInfo` is a mantle rewrite onto `aggregate`. `get#PriceHistoryInfo` stays unimplemented because it has no callers. Both are named here so they are not ported as `ElasticFacade` clients. The inventory rewrite happens with mantle, outside this gate.
 
@@ -282,6 +487,95 @@ Depends on the service facade. The notification WebSocket also needs the phase 7
 - The cluster sender from `plans/Cluster.md`: the `cluster_tls_cert` / `cluster_tls_key` configuration and the member-row key fingerprints, and HTTPS fan-out of the cache-invalidation topic and the notification topic. The local cache drop stays on the writer. The peer send is one host thread after commit, after the enlisted client is back in the pool. Member heartbeat runs on the scheduler tick. One live member means no fan-out. The same-session WebSocket test stays the single-node case.
 - Markdown for screen and wiki text that asks for it.
 
+### This pass (Phase 8 still open)
+
+Phase 8 owns screen rendering. This pass builds the Phase 10 slices that do not call `ScreenFacade.makeRender()`.
+
+In this pass:
+
+- Outbound SMTP with `lettre` in core, and a test sink. `send#EmailMessage` sends a stored row. `send#EmailTemplate` expands subject and from through `JsTemplateLiteral`, writes the `EmailMessage` row, and sends when `body` and `bodyText` are already parameters. `email_allowed_hosts` and `allowedToDomains` apply. Sim mode returns `emailMessageId` `SIM` and does not connect. An empty SMTP host logs and does not send.
+- `poll#EmailServer` for IMAP and POP3, rustls, no `native-tls`, if a blocking crate passes `plans/License-Review.md`. Each new message runs the email-ECA rules. The seed job stays paused. The poll loop is tested with a fake store.
+- Notification messages and the in-process topic. The host WebSocket `/notws` uses the phase 7 session cookie. A text frame runs on the service pool with its own `ExecutionContext`. Job errors notify topic `ServiceJobError`. Recipient resolution is one query per source, not one query per user.
+- Cluster membership, generated `cluster_tls_cert` / `cluster_tls_key`, key fingerprints, heartbeat on the scheduler tick, and HTTPS fan-out of `entity-cache-invalidate` and `notification-message`. One live member does not fan out. The peer send is `on_commit`, after the enlisted client is back in the pool.
+- `pulldown-cmark` as `moqui_lib::markdown::to_html`.
+
+Still deferred (to phase 12 where named):
+
+- The embedded SMTP server, the russh cluster sender, and Postgres `NOTIFY`.
+- PDF bytes for an `xsl-fo` attachment (phase 12).
+
+### Screen mail after phase 8
+
+Done once Gate 3 passed. `service/mail.rs` follows `sendEmailTemplate.groovy`; tests are in `service/mail.rs`,
+`service/email_eca.rs` and `notify/tests.rs`, with fixture screens in `service/testdata/mail`.
+
+- **Body.** A template with `bodyScreenLocation` renders that screen with `make_render` (no socket; the render installs its own web slot
+  and restores the one of a request in progress, sends no session map and records no history) in `html` for `body` and in `text` for
+  `bodyText`. The context is a frame with the service parameters, the `bodyParameters` over them, and the script's values (`emailTypeEnumId`,
+  `ccAddresses`, `bccAddresses`, `fromAddress`, `fromName`, `subject`, `webappName`, `webHostName`, `emailMessageId`); the `bodyParameters`
+  are also the render's request parameters. Links start from the conf `webapp` named by `webappName` (default `webroot`), as Java's
+  `makeWebappHost` with no request: `https` and the https host and port when `https-enabled`, else `http`, an empty host is `localhost`
+  (`ExecutionContextFactory::webapp_root_url`). The render runs before the `EmailMessage` row goes to `ES_READY`, as in Java.
+- **`send#ScreenRenderEmail`** works end to end: its two Groovy map literals are JavaScript, and the seed templates' `classpath://screen/...`
+  locations resolve (`ResourceFacade` reads `classpath://` from the framework directory, as `locate` already did). It requires a user, as in
+  Java.
+- **Attachments.** `EmailTemplateAttachment` rows: `attachmentCondition` (JavaScript) skips a row, `screenRenderMode` renders
+  `attachmentLocation` as the root screen or `screenPath` under the root screen as last standalone, `forEachIn` renders one attachment for each
+  entry (a map's fields, or `forEachEntry`, in a pushed frame), the file name is expanded in the context and defaults to the screen name with
+  the mode as extension, the content type is the mode's (`text/csv`, `text/plain`, `text/xml`, `text/html`), and blank output is no attachment.
+  The `attachments` parameter takes `contentText`, `contentBytes`, a screen render, or a location. A row with no mode sends the bytes at its
+  location.
+- **`xsl-fo`.** The attachment is skipped with a logged warning that says `PDF is not available until phase 12`, and the email goes out
+  without it. That is what Java does when the PDF transform throws (`logger.warn`, no attachment, send continues). No error is added.
+- **Failures.** A body or attachment render that fails, or an `attachmentCondition`/`forEachIn` that throws, stops the send: logged, and the
+  message (not error) `Error sending email: ...`, as the Groovy outer catch. A created `EmailMessage` stays in draft.
+- **Notifications.** `emailNotifications` Y (topic user, else topic) sends `send#EmailTemplate` with the wrapped message as `bodyParameters`,
+  so `NotificationEmail.xml` renders. A saved `EmailMessage` id is returned by user (`email_message_id_by_user_id`) and, for a persisted
+  notification, stored with the sent date on its `NotificationMessageUser` row, as Java's `store#NotificationMessageUser`. A failed email
+  is logged, and the caller's messages and errors are restored, so the in-app send still succeeds.
+- **Gate 4 check.** `screen_body_renders_html_and_text_and_sends_with_attachments`: a screen body in both modes, a `JsTemplateLiteral`
+  subject, the MIME text through the test sink (`multipart/mixed` holding `multipart/alternative` with `text/plain` and `text/html`), csv
+  attachments from `forEachIn`, a conditional text attachment, a skipped one, a plain file, an html attachment from the parameter, and the
+  `xsl-fo` one left out. The email-ECA test sends through the same path.
+
+Where it differs from Java:
+
+- A `body` or `bodyText` the caller passes is used and only the missing part is rendered (the Groovy script declares the parameters but
+  always renders both). With no `bodyScreenLocation` and neither part, the send is the error `email has no body`.
+- The text part is rendered only when the screen's `render-modes` allow `text`; Java rendered text unconditionally. Blank output is no part.
+- `EmailTemplate` has no locale field: the body renders in the locale of the user the service runs as, which is Java's behavior too.
+- There is one root screen, so `screenPath` attachments render under it; `webHostName` does not pick a root screen by host. It is still in
+  the context, where `ScreenRenderEmail.xml` and `NotificationEmail.xml` use it for links.
+- A screen render accepts an anonymous login (an `anonymous-view` service such as `send#EmailTemplate`) for a screen that requires
+  authentication, as Java's `getLoggedInAnonymous()` check does; before, only a named user passed (`screen/render.rs`).
+- An `attachments` entry that has no content, screen, or location is logged, as in Java, not added as an error.
+
+### After Phase 8: markdown and the browser notification client
+
+- **Markdown.** The template registry has the renderer classes `markdown` (`.md`, `.markdown`) and `markdown-fancy` (`.md.fancy`,
+  `.markdown.fancy`, the port of Java's `.md.ftl`), in `MoquiDefaultConf.xml` and in the fallback list of a factory with no conf. So
+  `ec.resource.template` and a screen `<text location>` (`sri.renderText`) render a markdown file, which is how a wiki page is shown.
+  The markdown is CommonMark plus GitHub tables, and raw HTML passes through as with Java's flexmark: a markdown file is a trusted
+  template file, not sanitized. The HTML of a file is kept by location and modified time, as Java's `resource.markdown.location` cache.
+  `ec.resource.expand` does not render markdown, in Java or here. Differences: the flexmark `[TOC]` block is not rendered; in
+  `.md.fancy` the tags, comments, `${}` and escapes are set aside before the markdown pass and put back after it (Java ran markdown
+  over the FreeMarker source, so markdown could escape an expression), a tag alone in a paragraph loses the `<p>`, and `${}` output is
+  HTML escaped as in `.html.fancy`. A `<text>` picks its mode by `type` as in Java: a wiki-style `type="html,qvt"` renders the HTML in
+  both modes (in qvt it is part of the Vue template, as in Java, so the file is trusted there too), and a text mode `<text template="false">`
+  writes the source. The wiki screens are not in this tree (they are in HiveMind); `WikiServices.xml` renders no markdown. Tests: the
+  renderer unit tests in `script/template/tests.rs` and `screen/tests/markdown.rs` (a `.md` and a `.md.fancy` text in html, in qvt
+  compiled by the Vue compiler, and the source in text).
+- **Notification client.** `webapp_notification_endpoint` defaults to `/notws`, the Java endpoint. The html header names it
+  (`meta[name=moqui-notify]`) and the `/qapps` settings carry it only for a signed in user, so a page with no user opens no socket.
+  `moqui-html.js` subscribes to `ALL` when the socket opens, shows a notification with a title and `showAlert` as a toast (with its
+  link), and reopens a closed socket after a growing delay, at most ten times in a row. The qvt client is the Java one: `ALL`, a desktop
+  notification when the browser allows it, else a Quasar notify, and six reopen tries 30 seconds apart. Two server changes came with it:
+  every socket of a session is registered (the first port kept one per session, so a second tab got nothing; Java keys its endpoints by
+  the WebSocket session, one per connection), and the upgrade reads the user from the live session of the node before the `HttpSession`
+  row, because the eventual flush has not written a fresh login when the page opens its socket. Test: `gate3_browser.rs`
+  `a_notification_sent_on_the_server_shows_in_the_html_and_qapps_pages` (the login page has no socket; after sign in a
+  `NotificationMessage` sent through the core API shows in `html` and in `/qapps`, and the console stays clean).
+
 ## Phase 11 — LLM, A2A, and the other tools
 
 Depends on the HTTP client, the user facade, and the screen facade for screen-search hints. Search-backed tools wait on phase 9. The LLM client sets the sim-allow exception on `RestClient`.
@@ -290,8 +584,8 @@ Depends on the HTTP client, the user facade, and the screen facade for screen-se
 - A2A routes in the host, following `../moqui/framework/plans/A2A-Server.md`. This document does not restate that plan. Streams do not hold an `ExecutionContext`.
 - ElFinder on the host, when the file API stays.
 - Artifact hit bins and the flush that writes them. The flush is a subscriber on the phase 2 artifact spans and runs as reserve-connection work on the scheduler tick. It still writes `ArtifactHit` and `ArtifactHitBin`, and the tools screens still read those tables.
-- System messages, a port of the Java services, no redesign. `queue#SystemMessage` inserts `SmsgProduced` in a new transaction (`force-new`), then `sendNow` (the default) submits `send#ProducedSystemMessage` as local async. Senders are the type's `sendServiceName`: REST, JSON-RPC, or direct local. Status moves `SmsgProduced` to `SmsgSending`, then `SmsgSent`, or back to the prior status on failure. `receive#IncomingSystemMessage` is the `/rest/sm` transition from phase 7. Consume runs the type's consume service. Ack uses `produceAckServiceName`. `reset#SystemMessageInError` puts an error row back to produced or received. The paused jobs `send_AllProducedSystemMessages_frequent` and `consume_AllReceivedSystemMessages_frequent` stay paused.
-- Entity sync, a port of `EntitySyncServices`, no redesign. `run#EntitySyncAll` finds sync rows that are not running and submits `run#EntitySync` as local async. One sync holds its `EntitySync` row. Includes select records since the last stamp. Push calls `put#EntitySyncData` on the remote. Pull calls `get#EntitySyncData`. Both ride `RestClient`. A history row records the run. The seed job `run_EntitySyncAll_frequent` stays paused. This is not the cluster sender. Cluster still moves cache invalidation and notifications only. The streaming cursor that serves the include query is the `DbDriver` arm from phase 3.
+- System messages, a port of the Java services, no redesign. `queue#SystemMessage` inserts `SmsgProduced` in a new transaction (`force-new`), then `sendNow` (the default) submits `send#ProducedSystemMessage` as local async. Senders are the type's `sendServiceName`: REST or direct local. `send#SystemMessageJsonRpc` is not ported. Status moves `SmsgProduced` to `SmsgSending`, then `SmsgSent`, or back to the prior status on failure. `receive#IncomingSystemMessage` is the `/rest/sm` transition from phase 7. Consume runs the type's consume service. Ack uses `produceAckServiceName`. `reset#SystemMessageInError` puts an error row back to produced or received. The paused jobs `send_AllProducedSystemMessages_frequent` and `consume_AllReceivedSystemMessages_frequent` stay paused.
+- Entity sync, a port of `EntitySyncServices`, no redesign. `run#EntitySyncAll` finds sync rows that are not running and submits `run#EntitySync` as local async. One sync holds its `EntitySync` row. Includes select records since the last stamp. Push calls `put#EntitySyncData` on the remote. Pull calls `get#EntitySyncData`. Both ride `RestClient`. The Java push uses `callJsonRpc`. That client is not ported. A history row records the run. The seed job `run_EntitySyncAll_frequent` stays paused. This is not the cluster sender. Cluster still moves cache invalidation and notifications only. The streaming cursor that serves the include query is the `DbDriver` arm from phase 3.
 - ETL: `SimpleEtl` and `FlatXmlExtractor` in lib. `sgml` in lib. JDBC extract beside `DbDriver` in the host.
 - EDI handler in core.
 - `dbresource://` is the phase 4 scheme. JCR is dropped. Resolving a `content://` location is an error that names the location. It is not remapped onto blob storage. Filesystem and S3 are their own resource implementations when a deployment asks for one.

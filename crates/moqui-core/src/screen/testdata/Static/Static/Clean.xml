@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A screen with nothing the browser cannot do: its report is clean. -->
+<screen require-authentication="false" server-static="qvt">
+    <actions><set field="who" value="Ada"/></actions>
+    <widgets>
+        <label text="Hello ${who} at ${ec.l10n.format('1234.5', '#,##0.00')}"/>
+        <label text="${ec.user.username || 'nobody'}"/>
+    </widgets>
+</screen>

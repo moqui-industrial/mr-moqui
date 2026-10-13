@@ -1,0 +1,15 @@
+<#-- The tabs of an auto-generated entity screen: the entity itself and each dependent entity, then the active subscreen. -->
+<#assign masterUrl = sri.buildUrl("AutoEditMaster").addParameter("aen", aen).addParameters(masterPrimaryKeyMap || {}).removeParameter("den")>
+<div id="auto-menu">
+<nav class="tabs" id="auto-edit-tabs"><ul>
+<li<#if sri.getScreenUrlInstance().getPath().indexOf(masterUrl.getPath()) === 0 && !den> class="active"</#if>><a href="${masterUrl.getUrlWithParams()}">${aen}</a></li>
+<#list relationshipInfoList || [] as relationshipInfo>
+<#assign curKeyMap = relationshipInfo.getTargetParameterMap(context)>
+<#if curKeyMap>
+<#assign tabUrl = sri.buildUrl("AutoEditDetail").addParameters(masterPrimaryKeyMap || {}).addParameter("den", relationshipInfo.riRelatedEntityName()).addParameter("aen", aen).addParameters(curKeyMap)>
+<li<#if relationshipInfo.riRelatedEntityName() == den> class="active"</#if>><a href="${tabUrl.getUrlWithParams()}">${relationshipInfo.riPrettyName()}</a></li>
+</#if>
+</#list>
+</ul></nav>
+${sri.renderSubscreen()}
+</div>

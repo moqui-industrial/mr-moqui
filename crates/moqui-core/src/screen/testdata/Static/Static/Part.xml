@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Included by Includer: its actions run in the including screen's package, and its widgets are in the including template. -->
+<screen require-authentication="false">
+    <actions><set field="partValue" value="PART-ZEBRA-VALUE"/></actions>
+    <widgets>
+        <label text="part says ${partValue}" type="p"/>
+        <section name="Shared" condition="partValue"><actions><set field="sectionValue" value="SECTION-ZEBRA"/></actions>
+            <widgets><label text="section says ${sectionValue}" type="p"/></widgets></section>
+    </widgets>
+</screen>

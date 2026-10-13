@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Fixture screen tree for the screen tests. Every screen records its actions in the trace list. -->
+<screen require-authentication="false">
+    <always-actions>
+        <set field="trace" from="[]"/>
+        <script>trace.push('Root.always')</script>
+    </always-actions>
+    <transition name="goUrl"><default-response url="Sub"/></transition>
+    <transition name="goAbsolute"><default-response url="/Sub/Deep"/></transition>
+    <transition name="goPlain"><default-response url="/plain/target" url-type="plain"/></transition>
+    <transition name="goParams">
+        <default-response url="Sub"><parameter name="x" value="1"/><parameter name="who" from="'a b'"/></default-response>
+    </transition>
+    <transition name="goNone"><default-response type="none"/></transition>
+    <transition name="goCond">
+        <conditional-response url="Home"><condition><expression>flag == 'y'</expression></condition></conditional-response>
+        <default-response url="Sub"/>
+    </transition>
+    <transition name="goCompare">
+        <conditional-response url="Home">
+            <condition><compare field="flag" operator="equals" value="y"/></condition>
+        </conditional-response>
+        <default-response url="Sub"/>
+    </transition>
+    <transition name="failTx">
+        <actions><message error="true">bad input</message></actions>
+        <error-response url="/Home"/>
+        <default-response url="Sub"/>
+    </transition>
+    <transition name="okTx">
+        <actions><script>trace.push('okTx')</script></actions>
+        <error-response url="/Home"/>
+        <default-response url="Sub"/>
+    </transition>
+    <transition name="byId" method="get">
+        <path-parameter name="itemId"/>
+        <actions><script>ec.web.sendJsonResponse({id: itemId, trace: trace})</script></actions>
+        <default-response type="none"/>
+    </transition>
+    <transition name="postOnly" method="post"><default-response type="none"/></transition>
+    <transition name="echo">
+        <actions><script>ec.web.sendJsonResponse({who: ec.web.sessionAttributes.who, p: ec.web.parameters.p, pFromContext: p})</script></actions>
+        <default-response type="none"/>
+    </transition>
+    <transition name="service"><service-call name="moqui.Missing.noop"/><default-response type="none"/></transition>
+    <subscreens default-item="Home">
+        <subscreens-item name="Linked" location="src/screen/testdata/Elsewhere/Other.xml"
+                menu-title="Linked Items" menu-index="1"/>
+    </subscreens>
+    <pre-actions><script>trace.push('Root.pre')</script></pre-actions>
+    <actions><script>trace.push('Root.actions')</script></actions>
+    <widgets><subscreens-active/></widgets>
+</screen>

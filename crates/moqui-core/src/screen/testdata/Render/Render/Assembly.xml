@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Form assembly for the render tests: extends, widget-template-include, auto-fields-entity. -->
+<screen require-authentication="false">
+    <actions>
+        <set field="fv" from="{base: 'b1', own: 'o1', yn: 'N', enumId: 'E1', description: 'Desc', sequenceNum: 5}"/>
+    </actions>
+    <widgets>
+        <form-single name="BaseForm" map="fv">
+            <field name="base"><default-field><display/></default-field></field>
+            <field name="own"><default-field title="Base Own"><display/></default-field></field>
+        </form-single>
+        <form-single name="ChildForm" extends="BaseForm" map="fv">
+            <field name="own"><default-field title="Child Own"><display/></default-field></field>
+            <field name="yn"><default-field>
+                <widget-template-include location="src/screen/testdata/Render/Templates.xml#yesNo"/>
+            </default-field></field>
+        </form-single>
+        <form-single name="AutoForm" map="fv">
+            <auto-fields-entity entity-name="moqui.basic.Enumeration" include="nonpk" field-type="display">
+                <exclude field-name="enumCode"/>
+            </auto-fields-entity>
+            <field name="description"><default-field title="Changed"><display/></default-field></field>
+        </form-single>
+    </widgets>
+</screen>

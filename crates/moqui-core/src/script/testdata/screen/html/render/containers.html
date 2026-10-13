@@ -1,0 +1,25 @@
+<section id="Wrap" class="wide"><h4 class="text-strong">in wrap</h4>
+</section>
+<section class="box" data-type="info"><header><h5>Boxed Ada</h5><div class="toolbar"><a href="/add">Add</a>
+</div></header><div class="body" style="max-height:200px;overflow-y:auto"><span>body</span>
+</div></section>
+<div class="row gap"><div class="col" style="--md:6;--xs:12"><span>one</span>
+</div><div class="col end" style="--md:6;--xs:12"><span>two</span>
+</div></div>
+<div id="Pan" class="panel-layout"><header><span>head</span>
+</header><div class="panel-middle"><aside class="left" style="width:120px"><span>left</span>
+</aside><main><span>center</span>
+</main></div></div>
+<button type="button" id="Dlg-button" data-dialog="Dlg" data-btn="primary" title="Open"><i class="fa fa-plus"></i> Open</button><dialog id="Dlg" class="container-dialog" style="--w:500px"><header><h4>Open</h4><button type="button" class="close" data-close aria-label="Close">&times;</button></header><div class="body">
+<span>dialog body</span>
+</div></dialog>
+<div id="Dyn" data-load="/load?p=1&amp;_dynamic_container_id=Dyn"><span class="loading">Loading...</span></div>
+<button type="button" id="DynDlg-button" data-dialog="DynDlg" data-btn="primary" title="Edit"><i class="fa fa-share"></i> Edit</button><details class="menu"><summary data-btn="info"><i class="fa fa-cog"></i> Actions</summary><ul><li><a href="/one">One</a>
+</li><li><a href="/two" data-confirm="Sure?">Two</a>
+</li></ul></details>
+<div id="Nodes" class="tree" data-url="/treeItems" data-params="{&quot;root&quot;:&quot;a&quot;,&quot;treeOpenPath&quot;:&quot;a/b&quot;}"></div>
+<span id="Ed" class="editable" data-url="/save" data-name="name" data-widget="textarea" title="Click to edit">Ada</span><a href="/go" target="_blank" data-btn="success" title="Go now"><i class="fa fa-go"></i> Go &amp; see <span class="badge">3</span></a>
+<a href="http://example.com/x">Out</a>
+<p class="muted" title="tip">Line Ada</p>
+<span>a &lt; b<br>next</span>
+<img src="/img.png" alt="Logo" width="20" height="20" class="logo"><b>raw</b><i>Ada</i><dialog id="DynDlg" class="dynamic-dialog" style="--w:760px" data-load="/edit?id=R7"><header><h4>Edit</h4><button type="button" class="close" data-close aria-label="Close">&times;</button></header><div class="body"><span class="loading">Loading...</span></div></dialog>

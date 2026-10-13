@@ -1,0 +1,6 @@
+<screen>
+    <widgets>
+        <label text="root ${name}"/>
+        <subscreens-active/>
+    </widgets>
+</screen>

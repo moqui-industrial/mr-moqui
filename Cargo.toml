@@ -24,6 +24,23 @@ license = "CC0-1.0"
 publish = false
 version = "0.1.0"
 
+# `cargo clippy` fails on Clippy's default set. `priority = -1` lets an
+# item `#[allow]` override one lint. Pedantic, nursery, and restriction
+# stay off. `cargo lint` also denies rustc warnings.
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+
+# Check with RUSTFLAGS=-Dwarnings instead of denying here, so a new rustc does not break a build.
+[workspace.lints.rust]
+unexpected_cfgs = { level = "deny", priority = -1 }
+
+# Phase 6 unwinds across the service boundary. This is already the compiler default.
+[profile.dev]
+panic = "unwind"
+
+[profile.release]
+panic = "unwind"
+
 [workspace.dependencies]
 moqui-lib = { path = "crates/moqui-lib" }
 moqui-db = { path = "crates/moqui-db" }
@@ -36,12 +53,18 @@ jiff = "0.2"
 rust_decimal = { version = "1", features = ["serde"] }
 indexmap = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["arbitrary_precision"] }
 # Signer stand-ins. Stay in RustCrypto (or aws-lc). No OpenSSL.
 hmac = "0.12"
 sha2 = "0.10"
 sha1 = "0.10"
 base64 = "0.22"
+# SimpleSigner (RSA SHA1withRSA, PKCS#1 v1.5). The rsa release candidate is the one russh and huskarl already
+# resolve, so the graph has one rsa. It needs digest 0.11, so its SHA-1 is sha1 0.11 under another name and the
+# SHA-2 variants come from rsa's own re-export. plans/License-Review.md records RUSTSEC-2023-0071.
+rsa = { version = "0.10.0-rc.18", features = ["sha2"] }
+sha1-digest-011 = { package = "sha1", version = "0.11", features = ["oid"] }
+rand_core = "0.10"
 # Name rustls. On 0.13 that is aws-lc, but default-tls must not be inherited:
 # a later release could point default-tls back at native-tls.
 reqwest = { version = "0.13", default-features = false, features = [
@@ -53,6 +76,14 @@ reqwest = { version = "0.13", default-features = false, features = [
 ] }
 
 # --- moqui-core (no direct tokio, axum, postgres, mysql, or postgresql_embedded) ---
+# Field encryption. pbkdf2 0.12 stays on hmac 0.12 and sha2 0.10.
+# aes, cbc, and des share cipher 0.5. cbc alloc is the Vec padding API.
+aes = "0.9"
+cbc = { version = "0.2", features = ["alloc"] }
+des = "0.9"
+pbkdf2 = "0.12"
+md-5 = "0.10"
+
 # Do not enable the feature named rustls-tls: on this crate it selects ring.
 # hostname is an optional dependency feature. tokio1 stays off, so SMTP is not async.
 lettre = { version = "0.11", default-features = false, features = [
@@ -63,23 +94,41 @@ lettre = { version = "0.11", default-features = false, features = [
     "aws-lc-rs",
     "webpki-roots",
 ] }
+# Blocking IMAP. The default feature tls is native-tls and stays off.
+# 2.4.1 has no rustls feature. rustls-connector is a dev-dependency and is not linked.
+# The TCP stream is wrapped with rustls below.
+imap = { version = "2.4", default-features = false }
+# Direct so IMAP and POP3 can build a ClientConfig on aws-lc. ring stays off.
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "aws_lc_rs"] }
+webpki-roots = "1"
+# Self-signed cluster certificate. ring and pem stay off. aws-lc-rs is the crypto provider.
+# x509-parser and fips stay off. time is certificate validity only; clocks stay jiff.
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }
 # Default feature is chrono. Quartz parsing uses jiff.
 croner = { version = "4", default-features = false, features = ["jiff"] }
 # No std feature on 0.6. Defaults are alloc, getrandom, and password-hash.
 argon2 = { version = "0.6", features = ["password-hash"] }
 csv = "1"
-pulldown-cmark = "0.13"
+# html only. The default set also links getopts for the crate's CLI.
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 totp-rs = { version = "6", default-features = false, features = [
     "std",
     "otpauth",
     "gen_secret",
 ] }
 tracing = "0.1"
+# CSPRNG for CHANGEME secrets written to runtime/.env. No /dev/urandom.
+getrandom = { version = "0.3", features = ["std"] }
 rquickjs = "0.14"
 # Phase 6 is the first user. Not linked until then, so this line does not
 # raise the MSRV of lib or core. 0.139.0 declares rust-version 1.94.0.
 # 0.140 and later declare 1.95 or higher.
 oxc_parser = "0.139"
+# The ESTree JSON of a parsed expression, for the server-static compatibility walk. Already in the tree under oxc_parser.
+oxc_ast = { version = "0.139", features = ["serialize"] }
+# HTML cleaning for allow-html="safe" service parameters. MIT OR Apache-2.0. Builder::default() is the
+# conservative maintained allow-list; there is no custom list in this repo.
+ammonia = "4"
 
 # --- moqui-host ---
 # rt-multi-thread is for axum. postgres::Client builds its own current_thread runtime.

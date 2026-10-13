@@ -1,0 +1,151 @@
+<#-- The page shell of /qapps: the Quasar layout, the navigation of the Vue application and the settings it reads. The JSON block is
+     the one place the client takes its settings from (qvtConfig is made by the pre-actions of qapps.xml). Text that comes from the
+     user or the data is written with vt(), which also writes the opening brace of a Vue interpolation as a character reference. -->
+<#assign vt = ((text) => raw(sri.encodeHtml(text == null ? "" : text).split("{").join("&#123;")))>
+<#assign logoList = sri.getThemeValues("STRT_HEADER_LOGO")>
+<#assign titleList = sri.getThemeValues("STRT_HEADER_TITLE")>
+<#assign fullName = (ec.user.userAccount && ec.user.userAccount.userFullName) || "">
+<script type="application/json" id="moqui-config">${raw(JSON.stringify(qvtConfig).split("<").join("\\u003c"))}</script>
+<div id="apps-root" style="display:none;">
+    <q-layout view="hHh LpR fFf">
+        <q-header reveal bordered class="bg-black text-white" id="top"><q-toolbar style="font-size:15px;">
+            <q-btn dense flat icon="menu" @click="toggleLeftOpen()"></q-btn>
+<#if logoList.length>
+            <m-link href="/apps"><div class="q-mx-md q-mt-sm"><img src="${sri.buildUrl(logoList[0]).url}" alt="Home" height="32"></div></m-link>
+</#if>
+<#if titleList.length>
+            <q-toolbar-title>${vt(ec.resource.expand(titleList[0], ""))}</q-toolbar-title>
+</#if>
+            <template v-for="(navMenuItem, menuIndex) in navMenuList"><template v-if="menuIndex < (navMenuList.length - 1)">
+                <m-link v-if="navMenuItem.hasTabMenu" :href="getNavHref(menuIndex)" class="gt-xs">{{navMenuItem.title}}</m-link>
+                <div v-else-if="navMenuItem.subscreens && navMenuItem.subscreens.length" class="cursor-pointer gt-xs">
+                    {{navMenuItem.title}}
+                    <q-menu anchor="bottom left" self="top left"><q-list dense style="min-width: 200px">
+                        <q-item v-for="subscreen in navMenuItem.subscreens" :key="subscreen.name" :class="{'bg-primary':subscreen.active, 'text-white':subscreen.active}" clickable v-close-popup><q-item-section>
+                            <m-link :href="subscreen.pathWithParams">
+                                <template v-if="subscreen.image">
+                                    <i v-if="subscreen.imageType === 'icon'" :class="subscreen.image" style="padding-right: 4px;"></i>
+                                    <img v-else :src="subscreen.image" :alt="subscreen.title" width="18" class="invertible" style="padding-right: 4px;">
+                                </template>
+                                <i v-else class="fa fa-link" style="padding-right: 8px;"></i>
+                                {{subscreen.title}}
+                            </m-link>
+                        </q-item-section></q-item>
+                    </q-list></q-menu>
+                </div>
+                <m-link v-else :href="getNavHref(menuIndex)" class="gt-xs">{{navMenuItem.title}}</m-link>
+                <q-icon size="1.5em" name="chevron_right" color="grey" class="gt-xs"></q-icon>
+            </template></template>
+            <m-link v-if="navMenuList.length > 0" :href="getNavHref(navMenuList.length - 1)" class="gt-xs">{{navMenuList[navMenuList.length - 1].title}}</m-link>
+
+            <q-space></q-space>
+
+            <q-circular-progress indeterminate size="20px" color="light-blue" class="q-ma-xs" :class="{ hidden: loading < 1 }"></q-circular-progress>
+
+            <component :is="qzVue" ref="qzVue"></component>
+
+            <q-btn dense flat icon="help_outline" color="info" :class="{hidden:!documentMenuList.length}">
+                <q-tooltip>${vt(ec.l10n.localize("Documentation"))}</q-tooltip>
+                <q-menu><q-list dense class="q-my-md">
+                    <q-item v-for="screenDoc in documentMenuList" :key="screenDoc.index"><q-item-section>
+                        <m-dynamic-dialog :url="currentPath + '/screenDoc?docIndex=' + screenDoc.index" :button-text="screenDoc.title" :title="screenDoc.title"></m-dynamic-dialog>
+                    </q-item-section></q-item>
+                </q-list></q-menu>
+            </q-btn>
+
+            <template v-for="navPlugin in navPlugins"><component :is="navPlugin"></component></template>
+
+            <q-btn dense flat icon="notifications">
+                <q-tooltip>${vt(ec.l10n.localize("Notify History"))}</q-tooltip>
+                <q-menu><q-list dense style="min-width: 300px">
+                    <q-item v-for="(histItem, histIndex) in notifyHistoryList" :key="histIndex"><q-item-section>
+                        <q-banner dense rounded class="text-white" :class="'bg-' + getQuasarColor(histItem.type)">
+                            <strong>{{histItem.time}}</strong> <span>{{histItem.message}}</span>
+                            <template v-if="histItem.link != null" v-slot:action>
+                                <q-btn :to="histItem.link" flat color="white" label="View"></q-btn>
+                            </template>
+                        </q-banner>
+                    </q-item-section></q-item>
+                </q-list></q-menu>
+            </q-btn>
+
+            <q-btn dense flat icon="history">
+                <q-tooltip>${vt(ec.l10n.localize("Screen History"))}</q-tooltip>
+                <q-menu><q-list dense style="min-width: 300px">
+                    <q-item v-for="histItem in navHistoryList" :key="histItem.pathWithParams" clickable v-close-popup><q-item-section>
+                        <m-link :href="histItem.pathWithParams">
+                            <template v-if="histItem.image">
+                                <i v-if="histItem.imageType === 'icon'" :class="histItem.image" style="padding-right: 8px;"></i>
+                                <img v-else :src="histItem.image" :alt="histItem.title" width="18" style="padding-right: 4px;">
+                            </template>
+                            <i v-else class="fa fa-link" style="padding-right: 8px;"></i>
+                            {{histItem.title}}
+                        </m-link>
+                    </q-item-section></q-item>
+                </q-list></q-menu>
+            </q-btn>
+
+            <q-btn dense flat icon="account_circle">
+                <q-tooltip>${vt(fullName || ec.l10n.localize("Account"))}</q-tooltip>
+                <q-menu><q-card flat bordered>
+                    <q-card-section horizontal class="q-pa-md">
+                        <q-card-section>
+<#if fullName>
+                            <div class="q-mb-sm text-strong">${vt(ec.l10n.localize("Welcome"))} ${vt(fullName)}</div>
+</#if>
+                            <template v-for="(accountPlugin, accountIndex) in accountPlugins" :key="accountIndex"><component :is="accountPlugin"></component></template>
+                        </q-card-section>
+                        <q-separator vertical></q-separator>
+                        <q-card-actions vertical class="justify-around q-px-md">
+                            <q-btn flat dense icon="settings_power" color="negative" type="a" href="${sri.buildUrl("/Login/logout").url}" data-confirm="${ec.l10n.localize("Logout")} ${fullName}?">
+                                <q-tooltip>${vt(ec.l10n.localize("Logout"))} ${vt(fullName)}</q-tooltip></q-btn>
+                            <q-btn flat dense @click.prevent="switchDarkLight()" icon="invert_colors">
+                                <q-tooltip>${vt(ec.l10n.localize("Switch Dark/Light"))}</q-tooltip></q-btn>
+                            <q-btn flat dense icon="autorenew" color="negative" @click="reLoginShowDialog"><q-tooltip>Re-Login</q-tooltip></q-btn>
+                        </q-card-actions>
+                    </q-card-section>
+                </q-card></q-menu>
+            </q-btn>
+        </q-toolbar></q-header>
+
+        <q-page-container>
+            <div class="shell-row">
+                <div v-show="leftOpen" class="app-menu-col" :class="{ 'app-menu-overlay': $q.screen.lt.md }">
+                    <q-btn dense flat icon="menu" @click="toggleLeftOpen()" class="lt-sm"></q-btn>
+                    <q-list dense padding><m-menu-nav-item :menu-index="0"></m-menu-nav-item></q-list>
+                </div>
+                <q-page class="shell-page-col">
+                    <div class="q-ma-sm"><m-subscreens-active></m-subscreens-active></div>
+                </q-page>
+            </div>
+        </q-page-container>
+
+        <q-footer reveal bordered class="bg-grey-9 text-white row q-pa-xs" id="footer">
+<#list sri.getThemeValues("STRT_FOOTER_ITEM") as footerItem>
+            ${raw(sri.renderInlineText(footerItem))}
+</#list>
+        </q-footer>
+    </q-layout>
+
+    <m-dialog v-model="reLoginShow" width="400" title="${ec.l10n.localize("Re-Login")}">
+        <div v-if="reLoginMfaData">
+            <div style="text-align:center;padding-bottom:10px">User <strong>{{username}}</strong> requires an authentication code, you have these options:</div>
+            <div style="text-align:center;padding-bottom:10px">{{reLoginMfaData.factorTypeDescriptions.join(", ")}}</div>
+            <q-form @submit.prevent="reLoginVerifyOtp" autocapitalize="off" autocomplete="off">
+                <m-text-line v-model="reLoginOtp" name="code" type="password" label="${ec.l10n.localize("Authentication Code")}"></m-text-line>
+                <q-btn outline no-caps color="primary" type="submit" label="${ec.l10n.localize("Sign in")}"></q-btn>
+            </q-form>
+            <div v-for="sendableFactor in reLoginMfaData.sendableFactors" :key="sendableFactor.factorId" style="padding:8px">
+                <q-btn outline no-caps dense :label="moqui.config.labels.sendCodeTo + ' ' + sendableFactor.factorOption" @click.prevent="reLoginSendOtp(sendableFactor.factorId)"></q-btn>
+            </div>
+        </div>
+        <div v-else>
+            <div style="text-align:center;padding-bottom:10px">Please sign in to continue as user <strong>{{username}}</strong></div>
+            <q-form @submit.prevent="reLoginSubmit" autocapitalize="off" autocomplete="off">
+                <m-text-line v-model="reLoginPassword" name="password" type="password" label="${ec.l10n.localize("Password")}"></m-text-line>
+                <q-btn outline no-caps color="primary" type="submit" label="${ec.l10n.localize("Sign in")}"></q-btn>
+                <q-btn outline no-caps color="negative" @click.prevent="reLoginReload" label="${ec.l10n.localize("Reload Page")}"></q-btn>
+            </q-form>
+        </div>
+    </m-dialog>
+</div>

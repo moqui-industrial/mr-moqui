@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<widget-templates>
+    <widget-template name="yesNo"><drop-down><option key="Y" text="Yes"/><option key="N" text="No"/></drop-down></widget-template>
+</widget-templates>

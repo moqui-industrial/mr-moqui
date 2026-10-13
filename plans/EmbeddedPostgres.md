@@ -62,9 +62,9 @@ A host test that needs more than one database uses two clusters.
 
 `save-db` and `load-save` are binary commands, the Gradle tasks of those names. They run `pg_dump` and `pg_restore` from the theseus archive against the entity cluster, custom format. When the `search` schema lives on that cluster, the dump includes it. `plans/License-Review.md` walked every ELF in the 18.6.0 archive. `psql` is the only binary that needs `libreadline`, and it stays stripped. `pg_dump`, `pg_restore`, `pg_upgrade`, and `pg_basebackup` stay in the payload. Each theseus bump rechecks `NEEDED` the same way.
 
-`PG_VERSION` in the data directory is the installed major version. A minor bump starts the new postmaster on the same directory. A major bump cannot open the old directory. The previous server binaries stay beside the new install, and startup runs `pg_upgrade`, or dumps and restores.
+`PG_VERSION` in the data directory is the installed major version. A minor bump starts the new postmaster on the same directory. A major bump cannot open the old directory. Only one major (18) ships today, so startup refuses a data directory from another major and names both versions; it does not run `pg_upgrade`. The upgrade path (previous server binaries beside the new install, then `pg_upgrade`, or `save-db` and `load-save`) lands with the first theseus bump that changes the major, in the phase that bumps it.
 
-After a hard kill, startup reads `postmaster.pid`. A live process on our data directory is adopted when the version matches, and refused with that pid when it does not. Startup does not kill an unrelated postmaster and does not start a second one on the same directory.
+After a hard kill, startup reads `postmaster.pid`. A live process on our data directory is adopted when the version matches, and refused with that pid when it does not. An adopted postmaster is never stopped by the process that adopted it, so `save-db` and `load-save` run beside a live server leave it running. Startup does not kill an unrelated postmaster and does not start a second one on the same directory.
 
 ## What this does not change
 

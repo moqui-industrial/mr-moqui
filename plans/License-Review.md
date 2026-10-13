@@ -57,7 +57,10 @@ These are the feature flags the resolve used. The unsafe defaults are called out
 | `mysql` 28 | `default-features = false`, `minimal-rust`, `derive`, `buffer-pool`, `rustls-tls`, `rust_decimal` | `minimal` (system zlib through `flate2`). `native-tls`. `rustls-tls-ring`. `chrono`. `time`. |
 | `tokio-postgres-rustls` 0.14 | `aws-lc-rs`, `webpki-roots` | `ring`. Defaults are empty, so the crypto feature has to be named. |
 | `reqwest` 0.13 | `default-features = false`, `blocking`, `rustls`, `json`, `multipart`, `charset` | `native-tls`, `native-tls-vendored`. On 0.13, `default-tls` is already rustls with aws-lc. Name `rustls` anyway. A later reqwest that flips `default-tls` back to native-tls must not be taken on defaults. |
-| `lettre` 0.11 | `default-features = false`, `smtp-transport`, `builder`, `hostname`, `rustls`, `aws-lc-rs`, `webpki-roots` | Defaults, which include `native-tls`. The feature named `rustls-tls` enables `ring`, so that name stays off. `boring-tls`. |
+| `lettre` 0.11 | `default-features = false`, `smtp-transport`, `builder`, `hostname`, `rustls`, `aws-lc-rs`, `webpki-roots` | Defaults, which include `native-tls`. The feature named `rustls-tls` enables `ring`, so that name stays off. `boring-tls`. `tokio1` stays off, so SMTP is blocking. |
+| `imap` 2.4 | `default-features = false` | `tls`, which is `native-tls` and is the default. 2.4.1 has no rustls feature. `rustls-connector` is a dev-dependency and is not linked. The TCP stream is wrapped with `rustls` in moqui-core. Depends on `chrono` 0.4, `nom` 5, and `imap-proto` 0.10 (MIT OR Apache-2.0). |
+| `rustls` 0.23 | `default-features = false`, `std`, `tls12`, `aws_lc_rs` | `ring`. This direct dependency is the IMAP and POP3 stream. `aws_lc_rs` is the crypto provider passed to `ClientConfig`, not a process-global default. POP3 has no crate: the client is in moqui-core on the same stream. Published POP3 clients are OpenSSL, MPL-2.0, LGPL, or Tokio. |
+| `rcgen` 0.14 | `default-features = false`, `aws_lc_rs` | `ring`, `pem`, `x509-parser`, `fips`. Defaults include `ring` and `pem`. The pair is a self-signed cluster certificate, base64 DER, linked from moqui-core only. `time` is certificate validity only. Moqui clocks stay `jiff`. aws-lc is the crypto provider. No OpenSSL. |
 | `russh` 0.64 | `default-features = false`, `aws-lc-rs`, `flate2`, `rsa` | `ring`, `des`, `dsa`. Defaults are off so a later default cannot turn `ring` on. `rsa` stays because servers still present RSA host keys. `flate2` is SSH compression, on the `miniz_oxide` backend already enabled. |
 | `russh-sftp` 3 | no features | `async-trait`. The crate has no crypto feature. |
 | `huskarl` 0.11 | default features, which are `default-jws-verifier-platform` | `authorization-flow-loopback`, `metrics`, `experimental-oidc-key-binding`. `huskarl-reqwest`, `huskarl-redis`, and `huskarl-google-cloud` are not dependencies. JOSE is `huskarl-crypto-native` (RustCrypto). TLS stays on `aws-lc-rs`. P-521 is not included. |
@@ -110,12 +113,17 @@ Versions are what `cargo` locked on 2026-10-11 for the feature set above. "Stati
 | `tokio`, `hyper` | 1.x / 1.x | MIT | Runtimes inside the host, the blocking clients, and `chromiumoxide` | Static | OK. Core stays Tokio-free; the crates still land in the binary through host and the clients. |
 | `reqwest` | 0.13.5 | MIT OR Apache-2.0 | Blocking HTTP client | Static | OK on the `rustls` feature |
 | `lettre` | 0.11.23 | MIT | Outbound SMTP | Static | OK with the feature row above |
+| `imap` | 2.4.1 | Apache-2.0 OR MIT | Blocking IMAP client. POP3 is in-tree, not a crate. | Static | OK with `default-features = false`. The `tls` feature is `native-tls` and stays off. 2.4.1 has no rustls feature. No `ring` from this crate. |
 | `russh` | 0.64.1 | Apache-2.0 | SSH client and server. No listener yet. | Static | OK with `aws-lc-rs`, `flate2`, and `rsa`. `ring`, `des`, and `dsa` off. Depends on `rsa` 0.10.0-rc.18 and `ssh-key` 0.7.0-rc.11, both MIT OR Apache-2.0. |
 | `russh-sftp` | 3.0.1 | Apache-2.0 | SFTP v3. Does not depend on `russh`. | Static | OK. `async-trait` off. |
 | `huskarl` | 0.11.6 | MIT OR Apache-2.0 | OIDC and OAuth 2 client. No redirect yet. | Static | OK. Default feature is the native JWS verifier. `rsa` 0.10.0-rc.18, shared with `russh`. `huskarl-crypto-webcrypto` is locked for wasm and is absent from the Linux tree. |
-| `chrono` | 0.4.45 | MIT OR Apache-2.0 | SFTP timestamps, via `russh-sftp` | Static | OK. Not a Moqui clock. Time stays `jiff`. |
+| `chrono` | 0.4.45 | MIT OR Apache-2.0 | SFTP timestamps via `russh-sftp`, and IMAP `INTERNALDATE` via `imap` | Static | OK. Not a Moqui clock. Time stays `jiff`. |
 | `chromiumoxide` | 0.9.1 | MIT OR Apache-2.0 | DevTools client for PDF | Static. Does not contain Chromium. | OK with the fetcher off |
 | `rustls` | 0.23.45 | Apache-2.0 OR ISC OR MIT | TLS | Static | OK |
+| `rcgen` | 0.14.10 | MIT OR Apache-2.0 | Self-signed cluster certificate | Static, moqui-core only | OK with `aws_lc_rs`. `ring`, `pem`, `x509-parser`, and `fips` stay off. `x509-parser` is an optional dependency and is not linked. |
+| `time` | 0.3.55 | MIT OR Apache-2.0 | `not_before` and `not_after` for that certificate. `rcgen` turns its default features off. | Static | OK. Not a Moqui clock. Clocks stay `jiff`. Pulls `deranged` 0.5.8, `num-conv` 0.2.2, `powerfmt` 0.2.1, and `time-core` 0.1.9, all MIT OR Apache-2.0. |
+| `yasna` | 0.6.0 | MIT OR Apache-2.0 | DER encoding used by `rcgen` | Static | OK |
+| `rustls-pki-types` | 1.15.1 | MIT OR Apache-2.0 | Certificate DER type used by `rcgen` and `rustls` | Static | OK |
 | `aws-lc-rs` | 1.18.1 | ISC AND (Apache-2.0 OR ISC) | TLS crypto | Static | OK |
 | `aws-lc-sys` | 0.45.0 | ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0) | aws-lc C sources | Static C, compiled at build | OK. The `AND` means every one of those notice obligations applies. None of them is copyleft. |
 | `ring` | 0.17.14 | Apache-2.0 AND ISC | Pulled only by `mysql` → `webpki` 0.22 | Static | OK. Not the chosen TLS provider. |
@@ -127,6 +135,7 @@ Versions are what `cargo` locked on 2026-10-11 for the feature set above. "Stati
 | `rust_decimal` | 1.x | MIT | Decimals | Static | OK |
 | `argon2`, `password-hash` | 0.6.0 / 0.6.1 | MIT OR Apache-2.0 | Password hashes | Static | OK |
 | `hmac`, `sha1`, `sha2`, `blake2`, `digest` | RustCrypto | MIT OR Apache-2.0 | Signer and TOTP | Static | OK. Further signer crates stay in RustCrypto or aws-lc. |
+| `rsa` | 0.10.0-rc.18, RustCrypto | MIT OR Apache-2.0 | `SimpleSigner` in `moqui-lib` (`SHA1withRSA` for QZ Tray) | Static | OK. It is the same `rsa` that `russh` and `huskarl` already resolve, so the graph has one. A direct `sha1` 0.11 (MIT OR Apache-2.0, renamed `sha1-digest-011`) feeds it, because `rsa` is on `digest` 0.11 and the other `sha1` is 0.10. RUSTSEC-2023-0071 (Marvin timing in private-key operations) is already ignored in `deny.toml`. The signer uses the randomized signing path, which blinds the private-key operation, and it signs print job strings that the browser already holds. The ignore stays until a patched `rsa` is released. |
 | `totp-rs` | 6.0.0 | MIT | TOTP | Static | OK with `qr` off |
 | `serde`, `serde_json` | 1.x | MIT OR Apache-2.0 | JSON | Static | OK |
 | `csv`, `csv-core` | 1.4.0 / 0.1.13 | Unlicense OR MIT | CSV | Static | OK |
@@ -135,6 +144,7 @@ Versions are what `cargo` locked on 2026-10-11 for the feature set above. "Stati
 | `indexmap` | 2.x | Apache-2.0 OR MIT | Map used in place of `LiteStringMap` | Static | OK |
 | `regex` | 1.x | MIT OR Apache-2.0 | Transitive | Static | OK |
 | `flate2`, `miniz_oxide` | 1.1.10 / 0.9.1 | MIT OR Apache-2.0 / MIT OR Zlib OR Apache-2.0 | Compression. Pure Rust. `flate2` is on `rust_backend`. | Static | OK. `zlib-rs` and `libz-sys` are not enabled. |
+| `ammonia` | 4.2.3 | MIT OR Apache-2.0 | HTML cleaning for `allow-html="safe"`, with its default allow-list | Static. Pulls `html5ever` 0.40 and `markup5ever` (MIT OR Apache-2.0), `url`, `maplit`, `tendril`, `string_cache`, `phf`. Also pulls `cssparser` 0.38 and `dtoa-short` 0.3.5, both **MPL-2.0**. | OK with a narrow exception. MPL-2.0 is file-level copyleft: we do not modify those crates, so the duty is to keep their license notice and offer their source, which the crates.io release is. `deny.toml` allows MPL-2.0 for those two crates by name and no other. |
 | `servo` | 0.7.0 | MPL-2.0 | In-process PDF alternate | Would be static | Hold. Off by default. |
 
 `cc`, `cmake`, `pkg-config`, and `find-msvc-tools` run at build to compile aws-lc and are not linked into the binary. Proc-macro crates (`serde_derive`, `sqlx-macros`, `tokio-macros`, and the rest) run at compile time and are not linked either. The code they expand is.
@@ -195,20 +205,21 @@ These are served as their own files from `runtime/base-component/webroot/`. They
 
 | File | License | How it is delivered | Verdict |
 |---|---|---|---|
-| Vue 3.5 (`vue.global.prod.js`) | MIT | Script tag. Server-merged `qvt`, and a server-static shell that can load a merged fragment. | OK |
-| Vue 3.5 runtime (`vue.runtime.global.prod.js`) | MIT | Script tag. A page whose qvt output, including fragments, is entirely server-static. Same package as the row above. | OK |
-| Quasar 2.35 (`quasar.umd.prod.js`), including `QEditor` | MIT | Script tag | OK. This is the replacement for CKEditor. |
-| Font Awesome 4.7 | Font: SIL OFL-1.1. CSS: MIT. Documentation: CC-BY-3.0. | The font and the CSS. Do not ship the docs. | OK. OFL is a font license, not a software copyleft. Stay on 4.7. Font Awesome 5+ changes the `fa fa-*` classes, and the SVG/JS icons are CC-BY-4.0. |
-| Material Icons (Google) | Apache-2.0 | Font and CSS | OK. Pictogrammers' Material Design Icons, if substituted, are Apache-2.0 for the icons and MIT for the code. |
-| Chart.js 4 | MIT | Lazy script | OK |
-| Mermaid, script-tag build | MIT for the package | Lazy script | OK for the MIT package. When the build is pinned, confirm it does not embed elkjs. elkjs is EPL-2.0. If a build needs it, that file stays separate and its source notice ships. It still does not enter the Rust link. |
-| Marked | MIT | Assist panel | OK |
-| DOMPurify | MPL-2.0 OR Apache-2.0 | Assist panel, its own file | OK under Apache-2.0. Record the election. |
-| highlight.js | BSD-3-Clause | Assist panel, language subset | OK |
-| Tom Select | Apache-2.0 | html mode, lazy | OK |
-| SortableJS | MIT | html column picker, lazy | OK |
+| Vue 3.5.44 (`vue.global.prod.js`) | MIT | Script tag. Server-merged `qvt`, and a server-static shell that can load a merged fragment. | OK |
+| Vue 3.5.44 runtime (`vue.runtime.global.prod.js`) | MIT | Script tag. A page whose qvt output, including fragments, is entirely server-static. Same package as the row above. | OK |
+| `@vue/compiler-dom` 3.5.44, Node build, bundled for QuickJS (`vue/compiler-dom.cjs.js`) | MIT, with `@babel/parser` (MIT), `entities` (BSD-2-Clause), `estree-walker` (MIT) and `@vue/*` (MIT) inside the bundle | Read by the server and run in QuickJS. Not sent to browsers. Built by `libs/refresh.mjs` with esbuild 0.28.2 (MIT, build tool only). | OK. Their notices are in `libs/NOTICES.md`. |
+| Quasar 2.35.1 (`quasar.umd.prod.js`), including `QEditor` | MIT | Script tag | OK. This is the replacement for CKEditor. |
+| Font Awesome 4.7.0 (npm `font-awesome`) | Font: SIL OFL-1.1. CSS: MIT. Documentation: CC-BY-3.0. | The font and the CSS. Do not ship the docs. | OK. OFL is a font license, not a software copyleft. Stay on 4.7. Font Awesome 5+ changes the `fa fa-*` classes, and the SVG/JS icons are CC-BY-4.0. |
+| Material Icons (Google) 1.13.14 (npm `material-icons`, filled style only) | Apache-2.0 | Font and CSS | OK. Pictogrammers' Material Design Icons, if substituted, are Apache-2.0 for the icons and MIT for the code. |
+| Chart.js 4.5.1 | MIT | Lazy script | OK |
+| Mermaid 11.17.2, `dist/mermaid.min.js` | MIT for the package | Lazy script | OK for the MIT package. Checked on the pinned build: it does not embed elkjs (the `elk` strings are layout option names). The bundle carries DOMPurify (Apache-2.0 OR MPL-2.0) and the other npm dependencies of mermaid (`d3` ISC and BSD-3-Clause, `cytoscape`, `dayjs`, `katex`, `roughjs`, `stylis`, `uuid` and the rest MIT). `mermaid.init` is gone in 11, use `mermaid.run`. Original note: elkjs is EPL-2.0. If a build needs it, that file stays separate and its source notice ships. It still does not enter the Rust link. |
+| Marked 18.1.1 | MIT | Assist panel. Minified by esbuild from `lib/marked.umd.js`, banner kept. | OK |
+| DOMPurify 3.4.17 (`purify.min.js`) | MPL-2.0 OR Apache-2.0 | Assist panel, its own file | OK under Apache-2.0. Election recorded: we take Apache-2.0, and `libs/NOTICES.md` carries both texts. |
+| highlight.js 11.12.0 | BSD-3-Clause | Assist panel. Core plus bash, css, diff, groovy, java, javascript, json, markdown, plaintext, python, rust, sql, typescript, xml, yaml, bundled by esbuild, and two themes. | OK |
+| Tom Select 2.6.2 (`tom-select.complete.min.js`) | Apache-2.0 | html mode, lazy | OK |
+| SortableJS 1.15.7 | MIT | html column picker, lazy | OK |
 | Mustache.js | MIT | Not used. The fancy renderer is an in-tree compiler of `if`, `list`, and `assign` to one cached JavaScript function. | Not a dependency. |
-| QZ Tray `qz-tray.js` 2.3 | LGPL-2.1-only | Separate script, only when printing is enabled | Acceptable on the browser rule. Do not concatenate it into `moqui-html.js` or a qvt bundle. Ship the LGPL text and a link to the source. |
+| QZ Tray `qz-tray.js` 2.3.0 (npm `qz-tray`, the file header says `@license LGPL-2.1-only`) | LGPL-2.1-only | Separate script, only when printing is enabled (user preference `qz.print.enabled`). Served unmodified from `/libs/qz-tray/qz-tray.js`, never minified, concatenated, or edited, so a customer can replace it. The LGPL text is `libs/licenses/LGPL-2.1.txt` and `libs/NOTICES.md` links the source (`https://github.com/qzind/tray`, tag v2.3.0). Flagged: the only copyleft file in `libs/`. | Acceptable on the browser rule. Do not concatenate it into `moqui-html.js` or a qvt bundle. Ship the LGPL text and a link to the source. |
 | QZ Tray desktop application | LGPL-2.1, and the qz.io builds add a premium signing certificate | Operator installs it | Do not vendor the desktop binary. Same shape as Chromium. |
 | `moqui-html.js`, `MoquiLib`, macro modules | CC0 plus the patent grant | Ours | OK |
 

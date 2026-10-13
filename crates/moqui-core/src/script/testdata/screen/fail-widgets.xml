@@ -1,0 +1,3 @@
+<fail-widgets>
+    <label text="failed ${name}"/>
+</fail-widgets>

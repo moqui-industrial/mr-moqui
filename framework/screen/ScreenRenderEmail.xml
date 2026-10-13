@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd">
+    <actions>
+        <set field="title" from="title || 'Rendered screen attached'"/>
+        <set field="bodyParmKeys" from="[]"/>
+        <if condition="bodyParameters &amp;&amp; Object.keys(bodyParameters).length">
+            <set field="excludeParmKeys" from="['moquiSessionToken', 'screenRenderMode', 'moquiFormName', 'title', 'emailSubject',
+                    'toAddresses', 'findButton', 'submitButton', 'lastStandalone', 'pageNoLimit', 'screenPath', 'webHostName']"/>
+            <script>bodyParmKeys = Object.keys(bodyParameters).filter(key => !excludeParmKeys.includes(key)).sort()</script>
+        </if>
+        <if condition="webHostName &amp;&amp; screenPath">
+            <script><![CDATA[
+                if (!screenPath.startsWith('/')) screenPath = '/' + screenPath
+                screenPath = screenPath.replaceAll('/apps/', '/qapps/')
+                curScreenUrl = "https://" + webHostName + screenPath
+                const parms = bodyParmKeys.map(key => encodeURIComponent(key) + '=' + encodeURIComponent(bodyParameters[key] ?? ''))
+                if (parms.length) curScreenUrl += '?' + parms.join('&')
+            ]]></script>
+        </if>
+    </actions>
+    <widgets><render-mode>
+        <text type="html,html-print"><![CDATA[
+<html><body>
+    <h2>${html(title)}</h2>
+
+    <#if curScreenUrl>
+        <p><a href="${html(curScreenUrl)}">${html(curScreenUrl)}</a></p>
+    </#if>
+
+    <#list bodyParmKeys as parmName>
+        <#assign parmValue = bodyParameters[parmName] ?? ''>
+        <#if parmValue !== ''>
+            <div><strong>${html(parmName)}</strong>: ${html(parmValue)}</div>
+        </#if>
+    </#list>
+</body></html>
+        ]]></text>
+        <text type="text"><![CDATA[
+${title}
+
+<#if curScreenUrl>
+${curScreenUrl}
+
+</#if>
+<#list bodyParmKeys as parmName>
+    <#assign parmValue = bodyParameters[parmName] ?? ''>
+    <#if parmValue !== ''>
+${parmName}: ${parmValue}
+    </#if>
+</#list>
+        ]]></text>
+    </render-mode></widgets>
+</screen>

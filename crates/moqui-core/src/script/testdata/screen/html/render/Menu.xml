@@ -1,0 +1,8 @@
+<screen require-authentication="false" default-menu-title="Menu Root">
+    <subscreens default-item="One"/>
+    <widgets>
+        <subscreens-menu id="Tabs"/>
+        <subscreens-menu type="popup" id="Pop" title="Pick"/>
+        <subscreens-active/>
+    </widgets>
+</screen>

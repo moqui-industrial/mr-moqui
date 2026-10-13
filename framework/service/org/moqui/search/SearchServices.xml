@@ -1,0 +1,241 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
+    <!-- These run on ec.search (SearchFacade), not an Elastic client. The backend is the search-facade conf element:
+        Postgres by default, or OpenSearch. clusterName is accepted and ignored; there is one search backend. -->
+
+    <service verb="index" noun="DataDocuments" authenticate="false" no-remember-parameters="true" transaction-timeout="3600">
+        <implements service="org.moqui.EntityServices.receive#DataFeed"/>
+        <in-parameters>
+            <parameter name="dataFeedId" required="false"/>
+            <parameter name="feedStamp" type="Timestamp" required="false"/>
+            <parameter name="verifyIndexes" type="Boolean" default="true"/>
+            <parameter name="clusterName" default-value="default"/>
+        </in-parameters>
+        <actions><script><![CDATA[
+            if (!ec.search.isAvailable()) { ec.message.addError("Search is not configured, not indexing documents"); return; }
+            // the store for each document type is made or rebuilt as needed, so verifyIndexes has nothing more to do
+            ec.search.indexDocuments(documentList);
+        ]]></script></actions>
+    </service>
+    <service verb="put" noun="DataDocumentMappings">
+        <in-parameters>
+            <parameter name="indexName" required="true"/>
+            <parameter name="clusterName" default-value="default"/>
+        </in-parameters>
+        <actions><script><![CDATA[
+            if (!ec.search.isAvailable()) { ec.message.addMessage("Search is not configured, not updating mappings", "danger"); return; }
+            ec.search.ensureIndex({indexName: indexName});
+        ]]></script></actions>
+    </service>
+    <service verb="index" noun="DataFeedDocuments" authenticate="false" transaction-timeout="3600">
+        <description>Index all documents associated with the feed within the date range. Recommend calling through the IndexDataFeedDocuments service job.</description>
+        <in-parameters>
+            <parameter name="dataFeedId" required="true"/>
+            <parameter name="dataDocumentId"/>
+            <parameter name="fromUpdateStamp" type="Timestamp"/>
+            <parameter name="thruUpdateStamp" type="Timestamp"/>
+            <parameter name="batchSize" type="Integer" default="1000"/>
+            <parameter name="clusterName" default-value="default"/>
+        </in-parameters>
+        <out-parameters><parameter name="documentsIndexed" type="Integer"/></out-parameters>
+        <actions><script><![CDATA[
+            const startTime = Date.now();
+            documentsIndexed = ec.search.rebuildFeed({dataFeedId: dataFeedId, dataDocumentId: dataDocumentId,
+                    fromUpdateStamp: fromUpdateStamp, thruUpdateStamp: thruUpdateStamp, batchSize: batchSize});
+            ec.message.addMessage(`Indexed ${documentsIndexed} documents for feed ${dataFeedId} in ${Date.now() - startTime}ms`);
+        ]]></script></actions>
+    </service>
+    <service verb="index" noun="WikiSpacePages">
+        <in-parameters>
+            <parameter name="wikiSpaceId"/>
+            <parameter name="dataDocumentId" required="true"/>
+            <parameter name="clusterName" default-value="default"/>
+        </in-parameters>
+        <actions>
+            <service-call name="org.moqui.impl.WikiServices.get#WikiSpacePages" in-map="{wikiSpaceId: wikiSpaceId}" out-map="context"/>
+            <script><![CDATA[
+                recordsCreated = 0;
+                documentList = [];
+                for (const allChildFileFlat of (allChildFileFlatList || [])) {
+                    const getWpiResult = ec.service.sync().name("org.moqui.impl.WikiServices.get#WikiPageId")
+                            .parameters({wikiSpaceId: wikiSpaceId, pagePath: allChildFileFlat.path, createIfMissing: true}).call();
+                    if (getWpiResult == null) return;
+                    if (getWpiResult.createdRecord) recordsCreated = recordsCreated + 1;
+                    for (const document of ec.entity.getDataDocuments(dataDocumentId, {wikiPageId: getWpiResult.wikiPageId})) documentList.push(document);
+                }
+                ec.service.sync().name("org.moqui.search.SearchServices.index#DataDocuments").parameter("documentList", documentList).call();
+                ec.message.addMessage(`Found and indexed ${(allChildFileFlatList || []).length} pages in Wiki Space ${wikiSpaceId}, created DB records for ${recordsCreated}.`);
+            ]]></script>
+        </actions>
+    </service>
+
+    <service verb="search" noun="DataDocuments">
+        <description>
+            The queryString format is the Lucene-style subset SearchFacade parses: terms with a trailing * for prefix or *term*
+            for contains, field:value, _exists_:field, *:*, field:[a TO b], quoted phrases, AND, OR, NOT, +, -, and parentheses.
+            A dotted field (roles.roleTypeId) matches when any element of that child list has the value.
+
+            nestedQueryMap keys are child list paths (or empty for a top-level clause); each value is a query that one element
+            must satisfy: an Elastic-style bool/term/terms/match/range/exists map or JSON string, or a SearchFacade query map.
+            query is an optional SearchFacade query map that must also match.
+
+            orderByFields entries are field names with an optional leading + or -; a trailing .keyword names the unanalyzed value.
+        </description>
+        <in-parameters>
+            <parameter name="indexName" required="true"/>
+            <parameter name="documentType">
+                <description>The DataDocument ID, or a comma-separated list of them; when empty every document in indexName is searched.</description></parameter>
+            <parameter name="queryString" required="true"/>
+            <parameter name="nestedQueryMap" type="Map"><description>For explicit field constraints and such; key is path and
+                may be null for a general query; value is a query JSON String (parsed to Map) or a query Map object</description></parameter>
+            <parameter name="query" type="Map"><description>A SearchFacade query map, AND-ed with the queryString.</description></parameter>
+            <parameter name="orderByFields" type="List"><parameter name="orderByField"/></parameter>
+            <parameter name="highlightFields" type="List"><parameter name="highlightField"/></parameter>
+            <parameter name="pageIndex" type="Integer" default="0"/>
+            <parameter name="pageSize" type="Integer" default="20"/>
+            <parameter name="pageNoLimit" type="Boolean" default="false"/>
+            <parameter name="flattenDocument" type="Boolean" default="true"/>
+            <parameter name="clusterName" default-value="default"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="documentList" type="List"><parameter name="document" type="Map"/></parameter>
+            <parameter name="documentListCount" type="Integer">
+                <description>The total count of hits, not just the limited number returned.</description></parameter>
+            <parameter name="documentListPageIndex" type="Integer"/>
+            <parameter name="documentListPageSize" type="Integer"/>
+            <parameter name="documentListPageMaxIndex" type="Integer"/>
+            <parameter name="documentListPageRangeLow" type="Integer"/>
+            <parameter name="documentListPageRangeHigh" type="Integer"/>
+        </out-parameters>
+        <actions><script><![CDATA[
+            const fromOffset = pageNoLimit ? 0 : pageIndex * pageSize;
+            // the result window is limited to 10000, as Elastic's default max_result_window
+            const sizeLimit = pageNoLimit ? 10000 : pageSize;
+            documentList = [];
+            documentListCount = 0;
+            documentListPageIndex = pageIndex;
+            documentListPageSize = pageSize;
+            documentListPageMaxIndex = 0;
+            documentListPageRangeLow = 0;
+            documentListPageRangeHigh = 0;
+
+            if (!ec.search.isAvailable()) { ec.message.addMessage("Search is not configured, not running search", "danger"); return; }
+            const target = documentType ? {documentType: documentType} : {indexName: indexName};
+            if (!ec.search.indexExists(target)) {
+                ec.logger.warn(`Tried to search with indexName ${indexName} that does not exist, returning empty list`);
+                return;
+            }
+
+            const hasHighlights = highlightFields != null && highlightFields.length > 0;
+            let result;
+            try {
+                const clauses = [ec.search.parseQuery(queryString)];
+                if (nestedQueryMap) {
+                    for (const nestedPath of Object.keys(nestedQueryMap)) {
+                        const nestedQuery = ec.search.elasticQuery(nestedQueryMap[nestedPath]);
+                        clauses.push(nestedPath && nestedPath !== "null" ? {child: {path: nestedPath, query: nestedQuery}} : nestedQuery);
+                    }
+                }
+                if (query) clauses.push(query);
+                result = ec.search.search(Object.assign({}, target, {query: {bool: {all: clauses}}, sort: orderByFields,
+                        highlight: highlightFields, offset: fromOffset, limit: sizeLimit}));
+            } catch (err) {
+                ec.message.addMessage(`Invalid search: ${queryString} (${err && err.message ? err.message : err})`, "danger");
+                return;
+            }
+
+            for (const hit of result.hits) {
+                const document = Object.assign({}, flattenDocument ? ec.search.flatten(hit.body) : hit.body);
+                document._index = hit.index;
+                document._id = hit.id;
+                document._type = hit.documentId;
+                if (hasHighlights) document.highlights = hit.highlights;
+                documentList.push(document);
+            }
+
+            documentListCount = result.total;
+            documentListPageMaxIndex = documentListCount > 0 ? Math.trunc((documentListCount - 1) / documentListPageSize) : 0;
+            documentListPageRangeLow = documentListPageIndex * documentListPageSize + 1;
+            documentListPageRangeHigh = (documentListPageIndex * documentListPageSize) + documentListPageSize;
+            if (documentListPageRangeHigh > documentListCount) documentListPageRangeHigh = documentListCount;
+        ]]></script></actions>
+    </service>
+
+    <service verb="delete" noun="DataDocument" authenticate="anonymous-all">
+        <implements service="org.moqui.EntityServices.receive#DataFeedDelete"/>
+        <in-parameters>
+            <parameter name="indexName"/>
+            <parameter name="dataDocumentId" required="false"><description>For DataFeed compatibility; when specified the
+                document is deleted from this DataDocument (or comma-separated list) instead of every DataDocument in indexName</description></parameter>
+            <parameter name="documentId" required="true"/>
+            <parameter name="clusterName" default-value="default"/>
+        </in-parameters>
+        <actions><script><![CDATA[
+            if (!ec.search.isAvailable()) { ec.message.addError(`Search is not configured, not deleting document ${documentId}`); return; }
+            const types = dataDocumentId ? ec.search.documentTypes({documentType: dataDocumentId}) :
+                    (indexName ? ec.search.documentTypes({indexName: indexName}) : []);
+            for (const type of types) ec.search.deleteDocument(type, documentId);
+        ]]></script></actions>
+    </service>
+
+    <service verb="delete" noun="Documents" authenticate="anonymous-all" transaction-timeout="1800">
+        <!-- authenticate=anonymous-all as this is called in a service job, should be exposed through only trusted UI/etc -->
+        <in-parameters>
+            <parameter name="indexName" required="true"/>
+            <parameter name="timestampField" default-value="@timestamp"><description>@timestamp and _timestamp are the
+                time each document was indexed; any other name is a date field of the documents.</description></parameter>
+            <parameter name="daysToKeep" type="Integer"/>
+            <parameter name="queryString"/>
+            <parameter name="clusterName" default-value="default"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="deletedCount" type="Long"/>
+        </out-parameters>
+        <actions><script><![CDATA[
+            deletedCount = 0;
+            if (daysToKeep == null && !queryString) { ec.message.addError("To delete documents must specify daysToKeep, queryString, or both"); return; }
+            if (!ec.search.isAvailable()) { ec.message.addMessage("Search is not configured, not deleting documents", "danger"); return; }
+            if (ec.search.documentTypes({indexName: indexName}).length === 0) {
+                ec.message.addMessage(`The ${ec.search.backendName()} search backend has no index ${indexName}`, "warning");
+                return;
+            }
+
+            const clauses = [];
+            if (queryString) clauses.push(ec.search.parseQuery(queryString));
+            if (daysToKeep != null) {
+                const thruMillis = Date.now() - daysToKeep * 24 * 60 * 60 * 1000;
+                clauses.push({field: {name: timestampField, op: "range", lte: thruMillis}});
+            }
+            deletedCount = ec.search.deleteMatching({indexName: indexName, filter: {bool: {all: clauses}}});
+
+            const resultMsg = `Deleted ${deletedCount} documents from index ${indexName} with days to keep ${daysToKeep} and query ${queryString}`;
+            ec.logger.info(resultMsg);
+            ec.message.addMessage(resultMsg);
+        ]]></script></actions>
+    </service>
+
+    <service verb="delete" noun="ElasticIndex">
+        <description>Drop the search store of every DataDocument in indexName. The next index call makes it again.</description>
+        <in-parameters>
+            <parameter name="indexName" required="true"/>
+            <parameter name="clusterName" default-value="default"/>
+        </in-parameters>
+        <actions><script><![CDATA[
+            if (!ec.search.isAvailable()) { ec.message.addMessage("Search is not configured, not dropping an index", "danger"); return; }
+            ec.search.dropIndex({indexName: indexName});
+        ]]></script></actions>
+    </service>
+</services>

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        require-authentication="true" default-menu-include="false" default-menu-title="App List">
+
+    <widgets>
+        <container style="center">
+            <label text="Choose an Application" type="h2"/>
+            <render-mode>
+                <text type="html"><![CDATA[
+                    <#list sri.getMenuItems("/apps") as item>
+                    <#if !item.hasParameters>
+                    <a href="${html(item.url)}" data-btn="primary" data-size="lg" class="app-list-link"><#if item.image && item.imageType == "icon"><i class="${html(item.image)}"></i><#elseif item.image><img src="${html(item.imageType == "url-plain" ? item.image : sri.buildUrl(item.image).url)}" height="18" alt=""><#else><i class="fa fa-link"></i></#if> ${html(ec.resource.expand(item.title, ""))}</a>
+                    </#if>
+                    </#list>
+                    <p>&nbsp;</p>
+                    <div>You are using the <strong>standard</strong> UI</div>
+                    <div><a href="${html(sri.buildUrl("/qapps").url)}">Switch to the dynamic Material UI</a></div>
+                ]]></text>
+                <text type="qvt"><![CDATA[
+                    <#list sri.getMenuItems("/apps") as item>
+                    <#if !item.hasParameters>
+                    <div class="q-my-sm"><q-btn outline no-caps to="${html(item.url)}" style="min-width:250px"><i class="${html(item.image && item.imageType == "icon" ? item.image : "fa fa-link")}" style="padding-right: 8px;"></i> ${html(ec.resource.expand(item.title, ""))}</q-btn></div>
+                    </#if>
+                    </#list>
+                    <p>&nbsp;</p>
+                    <div>You are using the <strong>dynamic Material</strong> UI</div>
+                    <div><a href="/apps">Switch to the standard UI</a></div>
+                ]]></text>
+            </render-mode>
+        </container>
+    </widgets>
+</screen>

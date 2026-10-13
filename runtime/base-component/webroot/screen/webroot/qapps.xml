@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        require-authentication="false" screen-theme-type-enum-id="STT_INTERNAL_QUASAR" default-menu-title="Applications" allow-extra-path="true">
+    <!-- NOTE: require-authentication=false so no permission required but in pre-actions if no user logged in goes to login screen -->
+
+    <pre-actions><script><![CDATA[
+        // if user not logged in save current path and params then redirect to Login
+        if (!ec.user.userId) { ec.web.saveScreenLastInfo(null, null); sri.sendRedirectAndStopRender('/Login') }
+
+        // The libraries and the client, in the order they load. footer_scripts is written by Footer.html.fancy after the page.
+        // vue.global.prod.js is the build with the template compiler, which server-merged qvt and the string templates of the m-* components need
+        // (and unsafe-eval in a CSP). vue.runtime.global.prod.js has no compiler: webapp_qvt_static_only=true loads it, for a deployment whose pages
+        // get only server-static templates and whose components are precompiled (plans/QvtServerStatic.md, Server compile).
+        const quasarLangs = ['en-US', 'de', 'es', 'fr', 'it', 'pt-BR', 'ja', 'zh-CN', 'ru', 'nl']
+        const localeTag = String(ec.user.locale || 'en_US').replace('_', '-')
+        const language = localeTag.split('-')[0]
+        let quasarLang = quasarLangs.includes(localeTag) ? localeTag : quasarLangs.find((tag) => tag.split('-')[0] === language) || 'en-US'
+        const staticOnly = System.getProperty('webapp_qvt_static_only') == 'true'
+        footer_scripts.add(staticOnly ? '/libs/vue/vue.runtime.global.prod.js' : '/libs/vue/vue.global.prod.js')
+        footer_scripts.add('/libs/quasar/quasar.umd.prod.js')
+        footer_scripts.add('/libs/quasar/lang/' + quasarLang + '.umd.prod.js')
+        footer_scripts.add('/js/MoquiLib.js')
+        footer_scripts.add('/js/MoquiL10n.js')
+        footer_scripts.add('/js/WebrootVue.qvt.js')
+
+        // The settings of the client: one JSON block in the shell, WebrootVue.qvt.html.fancy.
+        const qzEnabled = ec.user.getPreference('qz.print.enabled') == 'true'
+        // The snapshot of the user for the browser ec of a server-static screen: the account without its password columns, and the
+        // preferences the user has set (ec.user.getPreference falls back to group and default values, so each is read through it).
+        const account = ec.user.userAccount || {}
+        const preferences = {}
+        if (ec.user.userId) {
+            const found = ec.entity.find('moqui.security.UserPreference').condition('userId', ec.user.userId).disableAuthz().list()
+            for (let i = 0; i < found.length; i++) {
+                const key = found.get(i).get('preferenceKey')
+                preferences[key] = ec.user.getPreference(key)
+            }
+        }
+        qvtConfig = {
+            sessionToken: ec.web.sessionToken, appHost: ec.web.getHostName(true), appRootPath: '', basePath: '/apps', linkBasePath: '/qapps',
+            userId: ec.user.userId, username: ec.user.username, userFullName: (ec.user.userAccount && ec.user.userAccount.userFullName) || '',
+            locale: localeTag, timeZone: ec.user.timeZone, quasarLang: quasarLang.replace(/-([a-zA-Z])/g, (m, ch) => ch.toUpperCase()),
+            darkMode: ec.user.getPreference('QUASAR_DARK') == 'true', leftOpen: ec.user.getPreference('QUASAR_LEFT_OPEN') == 'true',
+            notificationEndpoint: (ec.user.userId && System.getProperty('webapp_notification_endpoint')) || '',
+            navPlugins: sri.getThemeValues('STRT_HEADER_NAVBAR_COMP'), accountPlugins: sri.getThemeValues('STRT_HEADER_ACCOUNT_COMP'),
+            qz: { enabled: qzEnabled },
+            userAccount: { partyId: account.partyId || '', emailAddress: account.emailAddress || '', userFullName: account.userFullName || '' },
+            preferences: preferences,
+            qvt: { build: staticOnly ? 'runtime' : 'compiler', handles: staticOnly ? ['static-template'] : ['merged-fragment', 'static-template'] },
+            labels: { sendCodeTo: ec.l10n.localize('Send code to') }
+        }
+        // conditional QZ Tray scripts, only for a user who turned printing on; the client loads them
+    ]]></script></pre-actions>
+
+    <widgets>
+        <render-mode>
+            <!-- for html just render the navbar (Vue page wrapper and nav component) -->
+            <text type="html" location="component://webroot/screen/includes/WebrootVue.qvt.html.fancy"/>
+            <!-- not meant to be used for anything else, for all other render modes go directly through /apps -->
+        </render-mode>
+    </widgets>
+</screen>

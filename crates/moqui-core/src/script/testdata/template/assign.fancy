@@ -1,0 +1,6 @@
+<#assign total = price * 2>
+<#assign label = "Total: " + total>
+${label} (${(total > 10) ? "big" : "small"})
+<#-- a comment
+spanning lines -->
+Escaped \${literal} and \<#if not a tag>

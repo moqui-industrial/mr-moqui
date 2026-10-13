@@ -1,0 +1,40 @@
+<screen require-authentication="false">
+    <transition name="open"><default-response type="none"/></transition>
+    <transition name="saveAll"><default-response type="none"/></transition>
+    <actions>
+        <set field="rowList" from="[{id: 'I1', title: 'Widget', qty: 2.5, status: 'X', rowId: 'r1'}, {id: 'I2', title: 'Gadget &lt;b>', qty: 3, status: 'OK', rowId: 'r2'}]"/>
+        <set field="rowListCount" from="30"/>
+        <set field="rowListPageIndex" from="2"/>
+        <set field="rowListPageMaxIndex" from="5"/>
+        <set field="rowListPageRangeLow" from="41"/>
+        <set field="rowListPageRangeHigh" from="60"/>
+        <set field="orderByField" value="-id"/>
+    </actions>
+    <widgets>
+        <form-list name="Rich" list="rowList" show-csv-button="true" show-all-button="true" style="wide">
+            <field name="id"><header-field show-order-by="true"><text-find/></header-field><default-field><display/></default-field></field>
+            <field name="title" align="center"><header-field container-style="head"><drop-down><option key="A"/></drop-down></header-field>
+                <default-field container-style="titled"><text-line/></default-field></field>
+            <field name="qty" align="right"><default-field><display format="0.0"/></default-field></field>
+            <field name="status">
+                <conditional-field condition="status == 'X'"><display text="Excluded"/></conditional-field>
+                <default-field><display/></default-field>
+            </field>
+            <field name="link"><default-field title="Open"><link url="open" text="Open ${id}" link-type="anchor"/></default-field></field>
+            <field name="rowId"><default-field><hidden/></default-field></field>
+            <field name="act"><default-field title="Do"><submit/></default-field></field>
+        </form-list>
+        <form-list name="Multi" list="rowList" multi="true" transition="saveAll" paginate="false">
+            <field name="id"><default-field><display/></default-field></field>
+            <field name="note"><default-field><text-line/></default-field></field>
+            <field name="all"><default-field title="Save"><submit/></default-field></field>
+        </form-list>
+        <form-list name="Dialog" list="rowList" paginate="false" header-dialog="true">
+            <field name="id"><header-field><text-find/></header-field><default-field><display/></default-field></field>
+            <field name="title"><default-field><display/></default-field></field>
+        </form-list>
+        <form-list name="Edge" list="rowList" skip-form="true" skip-header="true" paginate="false">
+            <field name="id"><default-field><display/></default-field></field>
+        </form-list>
+    </widgets>
+</screen>

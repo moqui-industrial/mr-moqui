@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The screen lists only html and the form says qvt: the form inherits the screen's value unless it says its own, so the screen is not marked. -->
+<screen require-authentication="false" server-static="html">
+    <widgets>
+        <form-single name="In" server-static="qvt"><field name="a"><default-field><text-line/></default-field></field></form-single>
+    </widgets>
+</screen>

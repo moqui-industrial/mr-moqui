@@ -1,0 +1,29 @@
+<#-- The top of an html page: head with the theme's style sheets and scripts, then the opening of the body. Footer.html.fancy closes it. -->
+<#assign suffix = "">
+<#assign outerStyle = ec.user.getPreference("OUTER_STYLE")>
+<#assign parentMenuName = (sri.getScreenUrlInfo().parentScreen ? sri.getScreenUrlInfo().parentScreen.getDefaultMenuName() : "") || "">
+<#assign defaultMenuName = sri.getScreenUrlInfo().targetScreen.getDefaultMenuName() || "">
+<!DOCTYPE html>
+<html lang="${(ec.user.locale || "en").replace("_", "-")}"<#if outerStyle == "bg-dark"> data-theme="dark"<#elseif outerStyle == "bg-light"> data-theme="light"</#if>>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="moquiSessionToken" content="${ec.web.sessionToken}">
+<#if ec.user.userId && System.getProperty("webapp_notification_endpoint")><meta name="moqui-notify" content="${System.getProperty("webapp_notification_endpoint")}"></#if>
+<#if html_keywords><meta name="keywords" content="${html_keywords}"></#if>
+<#if html_description><meta name="description" content="${html_description}"></#if>
+<title><#if html_title>${html_title}<#else><#if parentMenuName>${ec.resource.expand(parentMenuName, "")} - </#if><#if defaultMenuName>${ec.resource.expand(defaultMenuName, "")}</#if></#if></title>
+<link rel="apple-touch-icon" href="/MoquiLogo100.png">
+<#list sri.getThemeValues("STRT_SHORTCUT_ICON") as iconLocation>
+<link rel="icon" href="${sri.buildUrl(iconLocation).url}">
+</#list>
+<#list Array.from(new Set(sri.getThemeValues("STRT_STYLESHEET").concat(Array.from(html_stylesheets || [])))) as sheet>
+<#assign sheetUrl = sheet.indexOf("http") === 0 ? sheet : sri.buildUrl(sheet).url>
+<link rel="stylesheet" href="${sheetUrl}${(sheet.indexOf("http") !== 0 && sheetUrl.indexOf("?") < 0) ? "?v=" + ec.web.getResourceDistinctValue() : ""}">
+</#list>
+<#list Array.from(new Set(Array.from(html_scripts || []).concat(sri.getThemeValues("STRT_SCRIPT")))) as script>
+<#assign scriptUrl = script.indexOf("http") === 0 ? script : sri.buildUrl(script).url>
+<script src="${scriptUrl}${(script.indexOf("http") !== 0 && scriptUrl.indexOf("?") < 0) ? "?v=" + ec.web.getResourceDistinctValue() : ""}" defer></script>
+</#list>
+</head>
+<body class="${System.getProperty("instance_purpose") || "production"}${sri.getThemeValues("STRT_BODY_CLASS").map((item) => " " + item).join("")} ${sri.getScreenUrlInfo().targetScreen.screenName || ""}${hideNav == "true" ? " hide-nav" : ""}">
