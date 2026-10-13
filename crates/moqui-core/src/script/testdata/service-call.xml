@@ -1,0 +1,5 @@
+<actions>
+    <service-call name="org.moqui.example.ExampleServices.do#Thing" in-map="true" out-map="result" transaction="force-new" transaction-timeout="30" disable-authz="true">
+        <field-map field-name="orderId" from="orderId"/>
+    </service-call>
+</actions>

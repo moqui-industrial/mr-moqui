@@ -1,0 +1,6 @@
+<actions>
+    <set field="statusId" from="orderStatus"/>
+    <set field="label" value="Hello ${name}"/>
+    <set field="code" from="orderStatus" set-if-empty="false"/>
+    <set field="fallback" from="orderStatus" default-value="Open"/>
+</actions>
