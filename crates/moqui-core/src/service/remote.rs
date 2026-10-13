@@ -35,9 +35,6 @@ pub fn http_resource_error(location: &str) -> Error {
 /// `method` overrides `verb`. [`RestClient`] sends GET and POST, so only GET is
 /// sent as GET. Every other verb is POST, which is also the default when `verb`
 /// is not an HTTP method. `allow_in_sim` stays false.
-///
-/// `service::call::sync` does not call this yet.
-#[allow(dead_code)] // Reachable once sync dispatches ServiceKind::RemoteRest.
 pub fn run_remote_rest(
     service_name: &str,
     location: &str,

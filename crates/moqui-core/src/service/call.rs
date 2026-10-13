@@ -161,7 +161,15 @@ fn execute(
         ServiceKind::Mail => Err(LibError::new(format!("mail is not configured ({})", def.location))),
         ServiceKind::Interface => Err(LibError::new(format!("interface {} has no runner", def.name))),
         ServiceKind::Script => Err(LibError::new("script runner is not running yet")),
-        ServiceKind::RemoteRest => Err(LibError::new(format!("service {} has no REST dispatcher", def.name))),
+        ServiceKind::RemoteRest => super::remote::run_remote_rest(
+            &def.name,
+            &def.location,
+            None,
+            &def.verb,
+            parameters,
+            facade.sim_active(),
+        )
+        .map_err(|err| LibError::new(err.message())),
         ServiceKind::EntityAuto => run_entity(facade, &def.verb, &def.noun, parameters, 0),
         ServiceKind::Inline => run_inline(def, parameters),
     }
@@ -680,6 +688,28 @@ mod tests {
             crate::script::context_value("secaMark").and_then(|value| value.as_str().map(str::to_string)),
             Some("seen".to_string())
         );
+    }
+
+    #[test]
+    fn remote_rest_in_sim_mode_errors_before_a_socket() {
+        let _gate = crate::service::define::lock_tests();
+        crate::service::define::reset();
+        let path = write_fixture(
+            "remote",
+            r#"<services>
+                <service verb="ping" noun="Remote" type="remote-rest" authenticate="false" location="http://127.0.0.1:1/no-such-remote"/>
+            </services>"#,
+        );
+        let failures = crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+        let facade = mem::open(Arc::new(Mutex::new(Vec::new())));
+        facade.set_sim_active(true);
+        let ctx = ExecutionContextFactory::test_context();
+        ctx.factory().set_entity(facade);
+        let _entered = ctx.enter();
+        let err = sync("ping#Remote", &BTreeMap::new()).unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("sim mode is active"), "{text}");
     }
 
     fn write_fixture(name: &str, body: &str) -> PathBuf {
