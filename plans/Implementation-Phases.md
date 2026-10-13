@@ -274,7 +274,34 @@ Server-static `qvt` is last, and follows `plans/QvtServerStatic.md`. The attribu
 
 ### Where the code differs from the text above
 
-Appended slice by slice.
+A summary of slices 0 to 8 first, then the notes appended slice by slice.
+
+- **Shape.** The plan held: one screen model (slice 1: definitions, cache, `ScreenUrlInfo`, `makeRender()` with no socket), one macro walker
+  (slice 2), and a JavaScript macro module for each mode (`ScreenText.js`, `ScreenCsv.js`, `ScreenXml.js`, `ScreenHtmlPrint.js`, `ScreenHtml.js`,
+  `ScreenQvt.js`, `ScreenPlain.js` for `qjs`/`qvue`, `ScreenQvtStatic.js`). Screen XML expressions were migrated from Groovy to JavaScript and are
+  linted (`moqui lint --screens`, slice 0); 3 Groovy screens still do not load and are named by the lint and the report. Templates are the `fancy`
+  dialect (slice 3), not FreeMarker; a `.ftl` location is refused.
+- **Deviations that stay.** `html-print` writes its own document wrapper; `xsl-fo` is only an alias. The body of a `.qvt` response is a
+  template the client wraps, not a component object (the Java shape). `/qapps` is html and loads `.qvt` from `/apps`. Request text in qvt uses
+  `&#123;` instead of `v-pre`. Server-static `include-screen` is inlined and tree JSON is a 501. The macro-level differences are listed at the top
+  of `ScreenHtml.js` and `ScreenQvt.js`.
+- **Fixed in slice 8 (found by the Gate 3 harness).** A transition's `service-call` (default `out-map="context"`) failed with `cannot put with key
+  'context'`, so every form post through a transition shortcut was a 500: `XmlActions.js` now puts each result on the context by name. A
+  `default-response` to a screen did not carry the target screen's `parameter` values (Java's `UrlInstance.getParameterMap`), so
+  `updateArtifactGroup` redirected to `ArtifactGroupDetail` without `artifactGroupId`. A transition requested with `Accept: application/json`
+  (the qvt `m-form`) got a 302 to the page html; it now gets Java's `sendJsonRedirect` JSON (`screenUrl`, `screenPathList`,
+  `screenParameters`, `messageInfos`, `currentParameters`), and the messages are not also saved for the next page. `entity-find` with
+  `search-form-inputs` did not set `<list>Count`, `PageIndex`, `PageSize`, `PageMaxIndex`, `PageRangeLow` and `PageRangeHigh`, so no
+  form-list in any mode had pages (the find now has `getLimit`, `getOffset` and `copy` for it). `Header.html.fancy` wrote a script or style
+  sheet twice when the theme and the page both named it (every error page loaded `moqui-html.js` twice). In qvt `fields-initial`, a `link` after a
+  `display-entity` in one field replaced the entity text with the id (Java does the same). The `m-*` field wrappers passed `id` to
+  `q-input`/`q-select`/`q-file`, which drop it; they now pass `for`, so the native input has the id. `m-static-form-list` reused the row
+  components of the last page, and an `m-form` copies its `fields-initial` once, so page 2 showed the rows of page 1.
+- **Deferred.** PDF bytes (phase 12); `ScreenServices.xml` service bodies (mail screen bodies were done after slice 8, see phase 10's
+  "Screen mail after phase 8"); `vuet` and `/vapps` (dropped); the Assist panel; saved finds and screen documents (nothing reads the user finds yet); in a
+  static template, row selection, first/second/last rows, aggregation, the column picker and the csv/text/pdf buttons; precompiled `m-*`
+  templates, which `webapp_qvt_static_only=true` waits for; the `lookup` widget (a text line, as the Java macro was commented out). A static
+  template is fetched once to read `X-Moqui-Qvt` and then loaded again by a script element (a URL without the query), so it downloads twice.
 
 - **Slice 3, fancy renderers.** `script/template.rs` compiles the dialect in Rust to one JavaScript function, cached by
   source text, and the trusted renderer runs it on the script runtime. The locked-down renderer runs the same function in
@@ -309,7 +336,8 @@ Appended slice by slice.
   belong to the qvt slice. The `vuet` text types are gone. The default theme links Font Awesome, `moqui-html.css` and
   `moqui-html.js` (with `defer`); Tom Select and SortableJS are added to `footer_scripts` and `footer_stylesheets` by the
   widgets that use them, and the client loads them itself for a fragment that has no footer. The component data files
-  (theme, localization, security) are not read by `moqui load`; the gate loads them by location.
+  (theme, localization, security) were not read by `moqui load` then; since the Phase 10 merge `moqui load` and the empty-database
+  load read each component's `data` directory, and the gate no longer loads them by location (slice 8).
 - **Static files.** The path walk ends at a file under a screen's directory when a name is neither a subscreen nor a
   transition (`screen/static_files.rs`). A transition named `favicon.ico` would hide the file, so `webroot.xml` has none.
   Weak `ETag` from the modification time and size, 304, HEAD, a year of `immutable` for `*.min.*` or a `v` parameter and an
@@ -385,6 +413,44 @@ Appended slice by slice.
   The report is `moqui lint --screens --qvt-static [report-file]` (one block for each screen file: location, mode, verdict, reasons and violations; it does not fail the
   process) and `screen::statics::static_report` with `full` for the render with the wrapped `ec`. Over this tree 128 screens: 73 clean, 38 with violations, 14 stay a server merge,
   3 (the Groovy screens) do not load. `ArtifactGroupDetail` is clean, and Gate 3 marks it with a `screen-extend` in its own runtime.
+- **Slice 8, the Gate 3 harness.** `tests/gate3.rs` and `tests/gate3_browser.rs` share the seeded server in `tests/common/mod.rs`: one embedded
+  Postgres, the seed load (framework files and each component's `data` directory, so the themes, pagination text and the tools app groups are
+  rows without a by-location load), the demo users, and three screens of the test runtime (`GateCompanion`, `GateWidgets` with click to edit,
+  a background submit with a date, a drop-down and a multiple drop-down, a form-list with the column picker and 186 rows, and Chart.js and
+  Mermaid in qvt text; `GateStaticList`, server-static with the same list). `gate3.rs` adds a form post through `updateArtifactGroup` (the
+  session cookie and the page's token; refused without the token; the JSON answer for `Accept: application/json`), that `html-print` names no
+  `moqui-html.js` and no script, and that the seed load wrote the tools and webroot data. `crates/moqui/tests/lint_cli.rs` runs the binary's
+  `lint --screens` and `lint --screens --qvt-static` and checks both exit 0. The browser smoke is a small Chrome DevTools Protocol client over
+  `tungstenite` (`tests/common/cdp.rs`), not `chromiumoxide` and not `PdfRenderer`: Chromium with `--headless=new`, a temporary profile, a page
+  attached with a flat session, `Runtime.evaluate`, mouse and key events through `Input`, and every `Runtime.exceptionThrown`,
+  `Runtime.consoleAPICalled` error or warning and `Log.entryAdded` error or warning collected as a problem.
+
+### Gate 3 status
+
+Every item of Gate 3 has a test, and they pass. The browser items, in `tests/gate3_browser.rs`, with the console clean on every page:
+
+- `html` (under `/apps`, with the navbar): `moqui-html.js` once, the form values and rows, the menus moved into the navbar, a native dialog opened
+  and closed, a form post through the transition that comes back to the page with the new value; click to edit; a background submit (date,
+  drop-down, the multiple drop-down through Tom Select loaded on use) with its message and no navigation; the column picker with SortableJS
+  loaded on use and the tree in its input; page 2 and a descending sort of the form-list.
+- `html-print`: no `window.moqui`, no script, the three form-list tables. `text`, `csv` and `xml`: fetched by the page with their content types, and
+  the xml parses with `DOMParser`.
+- `qvt` through `/qapps`, server-merged: the shell mounts, the form-single is a `QForm` with its value, the rows show the display-entity text, a
+  container dialog opens with a drop-down whose `QMenu` lists the server's options, a row's `m-drop-down` is changed through its menu and the row's
+  `m-form` posts with the session token (stored in the database); Chart.js and Mermaid are absent on that page and load and draw on the
+  widgets page; `m-editable` saves through `QPopupEdit`; `m-date-time` takes a day from the `QDate` popup; the form posts in the background with
+  its message; the column dialog opens; page 2 of the list.
+- `qvt` server-static (the fixture marked by `screen-extend`): `moqui.qvtStatic[path]` is a function, the script, `/actions` and
+  `/actions/ArtifactAuthzList` were requested, the form value and rows come from the packages, there is no literal `{{`, `${` or `ec.` in the
+  rendered text, the dialog and the row post work as above; on `GateStaticList` page 2 and the descending sort fetch `/actions/EnumList` and
+  redraw. The same run executes the compatibility report and checks the fixture is clean.
+
+The notification WebSocket is a separate browser test (Phase 10, below): a notification sent through the core API shows as a toast in
+`html` and as a Quasar notify in `/qapps`.
+
+Not run in the browser: file downloads (the `Content-Disposition` path of `m-form`), QZ Tray, dynamic containers and trees, `m-form-link` header find forms, the dark-mode toggle, and
+the Login second factor. The `qjs` and `qvue` companions are checked over HTTP only. The smoke checks content, behavior and the console; it does
+not judge layout.
 
 ## Phase 9 — SearchFacade
 
@@ -430,16 +496,84 @@ In this pass:
 - `poll#EmailServer` for IMAP and POP3, rustls, no `native-tls`, if a blocking crate passes `plans/License-Review.md`. Each new message runs the email-ECA rules. The seed job stays paused. The poll loop is tested with a fake store.
 - Notification messages and the in-process topic. The host WebSocket `/notws` uses the phase 7 session cookie. A text frame runs on the service pool with its own `ExecutionContext`. Job errors notify topic `ServiceJobError`. Recipient resolution is one query per source, not one query per user.
 - Cluster membership, generated `cluster_tls_cert` / `cluster_tls_key`, key fingerprints, heartbeat on the scheduler tick, and HTTPS fan-out of `entity-cache-invalidate` and `notification-message`. One live member does not fan out. The peer send is `on_commit`, after the enlisted client is back in the pool.
-- `pulldown-cmark` as `moqui_lib::markdown::to_html`. No screen or wiki widget calls it yet.
+- `pulldown-cmark` as `moqui_lib::markdown::to_html`.
 
-Deferred until phase 8, or phase 12 where named:
+Still deferred (to phase 12 where named):
 
-- A `bodyScreenLocation` with no supplied body returns `screen mail body is not available` and does not open SMTP. `send#ScreenRenderEmail` stays XML and hits that path.
-- Screen attachments, `forEachIn`, and `attachmentCondition`. `screenRenderMode` `xsl-fo` reports that PDF is not available.
-- A notification with `emailNotifications` Y still persists and reaches the socket. The email attempt logs the screen-body error and does not fail the in-app send.
-- The gate 4 check that a screen body renders in `text` and `html`.
-- The markdown call site inside a screen or wiki widget.
 - The embedded SMTP server, the russh cluster sender, and Postgres `NOTIFY`.
+- PDF bytes for an `xsl-fo` attachment (phase 12).
+
+### Screen mail after phase 8
+
+Done once Gate 3 passed. `service/mail.rs` follows `sendEmailTemplate.groovy`; tests are in `service/mail.rs`,
+`service/email_eca.rs` and `notify/tests.rs`, with fixture screens in `service/testdata/mail`.
+
+- **Body.** A template with `bodyScreenLocation` renders that screen with `make_render` (no socket; the render installs its own web slot
+  and restores the one of a request in progress, sends no session map and records no history) in `html` for `body` and in `text` for
+  `bodyText`. The context is a frame with the service parameters, the `bodyParameters` over them, and the script's values (`emailTypeEnumId`,
+  `ccAddresses`, `bccAddresses`, `fromAddress`, `fromName`, `subject`, `webappName`, `webHostName`, `emailMessageId`); the `bodyParameters`
+  are also the render's request parameters. Links start from the conf `webapp` named by `webappName` (default `webroot`), as Java's
+  `makeWebappHost` with no request: `https` and the https host and port when `https-enabled`, else `http`, an empty host is `localhost`
+  (`ExecutionContextFactory::webapp_root_url`). The render runs before the `EmailMessage` row goes to `ES_READY`, as in Java.
+- **`send#ScreenRenderEmail`** works end to end: its two Groovy map literals are JavaScript, and the seed templates' `classpath://screen/...`
+  locations resolve (`ResourceFacade` reads `classpath://` from the framework directory, as `locate` already did). It requires a user, as in
+  Java.
+- **Attachments.** `EmailTemplateAttachment` rows: `attachmentCondition` (JavaScript) skips a row, `screenRenderMode` renders
+  `attachmentLocation` as the root screen or `screenPath` under the root screen as last standalone, `forEachIn` renders one attachment for each
+  entry (a map's fields, or `forEachEntry`, in a pushed frame), the file name is expanded in the context and defaults to the screen name with
+  the mode as extension, the content type is the mode's (`text/csv`, `text/plain`, `text/xml`, `text/html`), and blank output is no attachment.
+  The `attachments` parameter takes `contentText`, `contentBytes`, a screen render, or a location. A row with no mode sends the bytes at its
+  location.
+- **`xsl-fo`.** The attachment is skipped with a logged warning that says `PDF is not available until phase 12`, and the email goes out
+  without it. That is what Java does when the PDF transform throws (`logger.warn`, no attachment, send continues). No error is added.
+- **Failures.** A body or attachment render that fails, or an `attachmentCondition`/`forEachIn` that throws, stops the send: logged, and the
+  message (not error) `Error sending email: ...`, as the Groovy outer catch. A created `EmailMessage` stays in draft.
+- **Notifications.** `emailNotifications` Y (topic user, else topic) sends `send#EmailTemplate` with the wrapped message as `bodyParameters`,
+  so `NotificationEmail.xml` renders. A saved `EmailMessage` id is returned by user (`email_message_id_by_user_id`) and, for a persisted
+  notification, stored with the sent date on its `NotificationMessageUser` row, as Java's `store#NotificationMessageUser`. A failed email
+  is logged, and the caller's messages and errors are restored, so the in-app send still succeeds.
+- **Gate 4 check.** `screen_body_renders_html_and_text_and_sends_with_attachments`: a screen body in both modes, a `JsTemplateLiteral`
+  subject, the MIME text through the test sink (`multipart/mixed` holding `multipart/alternative` with `text/plain` and `text/html`), csv
+  attachments from `forEachIn`, a conditional text attachment, a skipped one, a plain file, an html attachment from the parameter, and the
+  `xsl-fo` one left out. The email-ECA test sends through the same path.
+
+Where it differs from Java:
+
+- A `body` or `bodyText` the caller passes is used and only the missing part is rendered (the Groovy script declares the parameters but
+  always renders both). With no `bodyScreenLocation` and neither part, the send is the error `email has no body`.
+- The text part is rendered only when the screen's `render-modes` allow `text`; Java rendered text unconditionally. Blank output is no part.
+- `EmailTemplate` has no locale field: the body renders in the locale of the user the service runs as, which is Java's behavior too.
+- There is one root screen, so `screenPath` attachments render under it; `webHostName` does not pick a root screen by host. It is still in
+  the context, where `ScreenRenderEmail.xml` and `NotificationEmail.xml` use it for links.
+- A screen render accepts an anonymous login (an `anonymous-view` service such as `send#EmailTemplate`) for a screen that requires
+  authentication, as Java's `getLoggedInAnonymous()` check does; before, only a named user passed (`screen/render.rs`).
+- An `attachments` entry that has no content, screen, or location is logged, as in Java, not added as an error.
+
+### After Phase 8: markdown and the browser notification client
+
+- **Markdown.** The template registry has the renderer classes `markdown` (`.md`, `.markdown`) and `markdown-fancy` (`.md.fancy`,
+  `.markdown.fancy`, the port of Java's `.md.ftl`), in `MoquiDefaultConf.xml` and in the fallback list of a factory with no conf. So
+  `ec.resource.template` and a screen `<text location>` (`sri.renderText`) render a markdown file, which is how a wiki page is shown.
+  The markdown is CommonMark plus GitHub tables, and raw HTML passes through as with Java's flexmark: a markdown file is a trusted
+  template file, not sanitized. The HTML of a file is kept by location and modified time, as Java's `resource.markdown.location` cache.
+  `ec.resource.expand` does not render markdown, in Java or here. Differences: the flexmark `[TOC]` block is not rendered; in
+  `.md.fancy` the tags, comments, `${}` and escapes are set aside before the markdown pass and put back after it (Java ran markdown
+  over the FreeMarker source, so markdown could escape an expression), a tag alone in a paragraph loses the `<p>`, and `${}` output is
+  HTML escaped as in `.html.fancy`. A `<text>` picks its mode by `type` as in Java: a wiki-style `type="html,qvt"` renders the HTML in
+  both modes (in qvt it is part of the Vue template, as in Java, so the file is trusted there too), and a text mode `<text template="false">`
+  writes the source. The wiki screens are not in this tree (they are in HiveMind); `WikiServices.xml` renders no markdown. Tests: the
+  renderer unit tests in `script/template/tests.rs` and `screen/tests/markdown.rs` (a `.md` and a `.md.fancy` text in html, in qvt
+  compiled by the Vue compiler, and the source in text).
+- **Notification client.** `webapp_notification_endpoint` defaults to `/notws`, the Java endpoint. The html header names it
+  (`meta[name=moqui-notify]`) and the `/qapps` settings carry it only for a signed in user, so a page with no user opens no socket.
+  `moqui-html.js` subscribes to `ALL` when the socket opens, shows a notification with a title and `showAlert` as a toast (with its
+  link), and reopens a closed socket after a growing delay, at most ten times in a row. The qvt client is the Java one: `ALL`, a desktop
+  notification when the browser allows it, else a Quasar notify, and six reopen tries 30 seconds apart. Two server changes came with it:
+  every socket of a session is registered (the first port kept one per session, so a second tab got nothing; Java keys its endpoints by
+  the WebSocket session, one per connection), and the upgrade reads the user from the live session of the node before the `HttpSession`
+  row, because the eventual flush has not written a fresh login when the page opens its socket. Test: `gate3_browser.rs`
+  `a_notification_sent_on_the_server_shows_in_the_html_and_qapps_pages` (the login page has no socket; after sign in a
+  `NotificationMessage` sent through the core API shows in `html` and in `/qapps`, and the console stays clean).
 
 ## Phase 11 — LLM, A2A, and the other tools
 

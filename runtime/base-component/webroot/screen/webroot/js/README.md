@@ -8,7 +8,7 @@ links follow, and a select shows its current option.
 Tests of the pure functions run under Node:
 `node --test runtime/base-component/webroot/screen/webroot/js/moqui-html.test.js`. The cargo test
 `screen::tests::files::the_html_client_passes_its_node_tests` runs them when `node` is on the path. Behavior in a
-browser is the Chromium smoke of Gate 3.
+browser is the Chromium smoke of Gate 3 (`crates/moqui-host/tests/gate3_browser.rs`).
 
 ## Attributes
 
@@ -67,7 +67,8 @@ The client of the `qvt` render mode and of the `/qapps` shell: Vue 3.5 (the buil
 The tests are `MoquiLib.test.js`, `MoquiL10n.test.js`, `WebrootVue.qvt.test.js` and `WebrootVue.qvt.static.test.js` (the script and package
 the server answers for `crates/moqui-core` `testdata/Static/Items` run on the real Vue runtime over a fake DOM; every component template compiles with the vendored
 Vue compiler; `loadComponent` is checked with a stub for the request). `cargo test` runs them when `node` is on the path. What needs a
-browser (mounting, Quasar, focus, downloads, the WebSocket) is the Chromium smoke of Gate 3.
+browser (mounting, Quasar menus and popups, dialogs, posts, the lazy libraries, static lists) is the Chromium smoke of Gate 3
+(`crates/moqui-host/tests/gate3_browser.rs`); downloads and the notification WebSocket are not driven there yet.
 
 ## Page shell and settings
 
@@ -118,7 +119,8 @@ screen) with the extra path and query, and gives `callback` a component. It retu
 
 `ScreenQvt.js` writes only these names for widgets. A widget binds with `v-model` (`modelValue`) inside a form, and with `model-value`
 outside one. The wrappers add `dense outlined stack-label` themselves, tint a field that differs from its form's `fields-initial`, and
-take `fields` where they read the fields they depend on (`depends-on`). Raw `q-input`, `q-select`, `q-date` and `q-field` are not written by a
+take `fields` where they read the fields they depend on (`depends-on`). The `id` a macro gives a field wrapper is the id of its native input (the
+`for` of the Quasar field), so `label for`, `focus-field` and `document.getElementById` find the input. Raw `q-input`, `q-select`, `q-date` and `q-field` are not written by a
 macro; `q-btn`, `q-tooltip`, `q-badge`, `q-list`, `q-btn-dropdown`, `q-expansion-item` and the layout classes are.
 
 | Component | For |
@@ -175,7 +177,8 @@ screen package, `private, no-store`) and shows the render function over it.
   date or time from the pattern for a string), `merge`, `url` / `qs` (path and query from a parameter map), `shown` (`visible-when`).
 - **`m-static-form-list`** fetches `<path>/actions/<name>` with the request's parameters and the page and sort it has changed (`setPageIndex`, `sortBy`,
   `orderBy`), draws `m-form-paginate` and `m-form-go-page`, the `header` slot (`sortBy`, `orderBy`, `action`, `orderByField`) and the `row` slot once for each row with
-  the row on the scope of the screen (`rowIndex` is a name of it).
+  the row on the scope of the screen (`rowIndex` is a name of it). The rows of each answer are new components (an `m-form` copies its
+`fields-initial` once), so another page or order is not patched into the rows of the last one.
 
 ## Not here
 

@@ -448,6 +448,46 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn a_paginated_search_sets_the_page_keys_of_the_list() -> Result<(), Error> {
+        clear_context_stack();
+        let facade = open_facade();
+        let ctx = ExecutionContextFactory::test_context();
+        ctx.factory().set_entity(facade.clone());
+        let _guard = ctx.enter();
+        for index in 0..25 {
+            let mut row = facade.make_value("moqui.test.TestEntity").expect("make row");
+            row.set("testId", Value::string(format!("P{index:02}")));
+            row.create(&facade).expect("create row");
+        }
+        let actions = r#"<actions><entity-find entity-name="moqui.test.TestEntity" list="found">
+            <search-form-inputs default-order-by="testId"/></entity-find></actions>"#;
+        // a full page: the count of all rows comes from the database
+        set_context_name("pageIndex", Value::I32(1))?;
+        set_context_name("pageSize", Value::I32(10))?;
+        run_actions(actions)?;
+        for check in [
+            "found.length === 10",
+            "found.get(0).get('testId') === 'P10'",
+            "foundCount === 25",
+            "foundPageIndex === 1",
+            "foundPageSize === 10",
+            "foundPageMaxIndex === 2",
+            "foundPageRangeLow === 11",
+            "foundPageRangeHigh === 20",
+        ] {
+            assert!(eval_condition(check)?, "{check}");
+        }
+        // the last page is short: the count is the rows before it and on it
+        set_context_name("pageIndex", Value::I32(2))?;
+        run_actions(actions)?;
+        for check in ["found.length === 5", "foundCount === 25", "foundPageRangeHigh === 25"] {
+            assert!(eval_condition(check)?, "{check}");
+        }
+        clear_context_stack();
+        Ok(())
+    }
+
     fn macro_names() -> Result<Vec<String>, Error> {
         crate::script::runtime::with_ctx(|ctx| {
             let macros = load_macros(ctx, false)?;

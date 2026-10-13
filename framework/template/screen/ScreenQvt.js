@@ -36,6 +36,7 @@
 //    screen documents are not written (the user finds are not read yet), and the navigation bar sits above the
 //    table of a form-list and not in a table row.
 //  - The mask of a text-line is converted from the Inputmask patterns (9, a, *) to Quasar mask tokens.
+//  - In fields-initial a link does not replace the _display text of a display or display-entity before it in the same field.
 (function (T, S) {
     "use strict";
 
@@ -312,7 +313,9 @@
                 } else if (at(widget, "text")) text = ec.resource.expand(at(widget, "text"), "");
                 if (text !== null && text !== undefined) {
                     text = String(text).trim();
-                    if (text && text !== "null" && text.indexOf("null:") !== 0) out[name + "_display"] = text;
+                    // A display or display-entity before the link in the same field keeps its text (Java let the link replace it, so
+                    // `display-entity` + `link` showed the id twice).
+                    if (text && text !== "null" && text.indexOf("null:") !== 0 && !(name + "_display" in out)) out[name + "_display"] = text;
                 }
             } else if (kind !== "submit" && kind !== "reset" && kind !== "label" && kind !== "image") {
                 out[name] = plain;

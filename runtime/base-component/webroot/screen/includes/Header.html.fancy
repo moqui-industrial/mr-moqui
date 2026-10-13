@@ -9,7 +9,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="moquiSessionToken" content="${ec.web.sessionToken}">
-<#if System.getProperty("webapp_notification_endpoint")><meta name="moqui-notify" content="${System.getProperty("webapp_notification_endpoint")}"></#if>
+<#if ec.user.userId && System.getProperty("webapp_notification_endpoint")><meta name="moqui-notify" content="${System.getProperty("webapp_notification_endpoint")}"></#if>
 <#if html_keywords><meta name="keywords" content="${html_keywords}"></#if>
 <#if html_description><meta name="description" content="${html_description}"></#if>
 <title><#if html_title>${html_title}<#else><#if parentMenuName>${ec.resource.expand(parentMenuName, "")} - </#if><#if defaultMenuName>${ec.resource.expand(defaultMenuName, "")}</#if></#if></title>
@@ -17,11 +17,11 @@
 <#list sri.getThemeValues("STRT_SHORTCUT_ICON") as iconLocation>
 <link rel="icon" href="${sri.buildUrl(iconLocation).url}">
 </#list>
-<#list sri.getThemeValues("STRT_STYLESHEET").concat(Array.from(html_stylesheets || [])) as sheet>
+<#list Array.from(new Set(sri.getThemeValues("STRT_STYLESHEET").concat(Array.from(html_stylesheets || [])))) as sheet>
 <#assign sheetUrl = sheet.indexOf("http") === 0 ? sheet : sri.buildUrl(sheet).url>
 <link rel="stylesheet" href="${sheetUrl}${(sheet.indexOf("http") !== 0 && sheetUrl.indexOf("?") < 0) ? "?v=" + ec.web.getResourceDistinctValue() : ""}">
 </#list>
-<#list Array.from(html_scripts || []).concat(sri.getThemeValues("STRT_SCRIPT")) as script>
+<#list Array.from(new Set(Array.from(html_scripts || []).concat(sri.getThemeValues("STRT_SCRIPT")))) as script>
 <#assign scriptUrl = script.indexOf("http") === 0 ? script : sri.buildUrl(script).url>
 <script src="${scriptUrl}${(script.indexOf("http") !== 0 && scriptUrl.indexOf("?") < 0) ? "?v=" + ec.web.getResourceDistinctValue() : ""}" defer></script>
 </#list>

@@ -68,7 +68,8 @@ mod tests {
     use crate::entity::EntityFacade;
 
     #[test]
-    fn email_eca_runs_its_action_and_mail_is_not_configured() {
+    fn email_eca_runs_its_action_and_sends_the_screen_mail() {
+        let _lock = crate::user::session::cookie_property_lock();
         let facade = open();
         let context = ExecutionContextFactory::test_context_in(
             "",
@@ -93,18 +94,54 @@ mod tests {
             </emecas>"#,
             ),
         );
-        context.factory().set_entity(facade);
+        context.factory().set_entity(facade.clone());
         let _entered = context.enter();
         crate::service::load_definitions().unwrap();
-        // A failed service-call adds an error and the rule's generated code returns, as in Java.
+        // No template yet: the send adds an error and the rule's generated code returns, as in Java.
         run_email_rules(&BTreeMap::new()).unwrap();
         let errors = context.message().errors().join("\n");
-        assert!(
-            errors.contains("No EmailTemplate record found") || errors.contains("screen mail body is not available"),
-            "{errors}"
-        );
-        assert!(!errors.contains("mail is not configured"), "{errors}");
+        assert!(errors.contains("No EmailTemplate record found"), "{errors}");
         assert!(context.message().messages().iter().any(|text| text == "emailEcaRan"));
+        context.message().clear();
+
+        // With the template, its body screen renders in html and text and the mail goes out.
+        let body = format!("{}/src/service/testdata/mail/MailBody.xml", env!("CARGO_MANIFEST_DIR"));
+        seed(
+            &facade,
+            &context,
+            "moqui.basic.email.EmailServer",
+            &[("emailServerId", "ECA_SMTP"), ("smtpHost", "smtp.example.com")],
+        );
+        seed(
+            &facade,
+            &context,
+            "moqui.basic.email.EmailTemplate",
+            &[
+                ("emailTemplateId", "T1"),
+                ("emailServerId", "ECA_SMTP"),
+                ("fromAddress", "from@example.com"),
+                ("subject", "Noticed"),
+                ("bodyScreenLocation", &body),
+            ],
+        );
+        let sink = crate::service::SinkGuard::install();
+        run_email_rules(&BTreeMap::new()).unwrap();
+        let errors = context.message().errors().join("\n");
+        assert!(errors.is_empty(), "{errors}");
+        let sent = sink.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].to, ["a@example.com"]);
+        assert!(sent[0].body.contains("Hello nobody"), "{}", sent[0].body);
+        assert!(sent[0].body_text.contains("Subject: Noticed"), "{}", sent[0].body_text);
+    }
+
+    fn seed(facade: &EntityFacade, context: &crate::context::ExecutionContext, entity: &str, fields: &[(&str, &str)]) {
+        let _authz = context.disable_authz();
+        let mut row = facade.make_value(entity).expect("make");
+        for (name, value) in fields {
+            row.set(*name, moqui_lib::object::Value::string(*value));
+        }
+        row.create(facade).expect("create");
     }
 
     fn open() -> EntityFacade {

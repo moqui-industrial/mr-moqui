@@ -836,7 +836,9 @@ fn load_in_context(
     if let Some(location) = &flags.location {
         eprintln!("load {location}");
         records = records.saturating_add(load_entity_data(facade, location, &options)?.records);
-    } else if entity_count(facade, "moqui.basic.Enumeration")? == 0 || flags.data_types.is_some() || !flags.components.is_empty()
+    } else if entity_count(facade, "moqui.basic.Enumeration")? == 0
+        || flags.data_types.is_some()
+        || !flags.components.is_empty()
     {
         for path in framework_xml_paths(framework_dir)? {
             let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
@@ -894,7 +896,11 @@ fn component_data_locations(factory: &moqui_core::context::ExecutionContextFacto
             .filter(|name| [".xml", ".csv", ".json"].iter().any(|ext| name.ends_with(ext)))
             .collect();
         names.sort();
-        locations.extend(names.into_iter().map(|name| format!("component://{}/data/{name}", info.name)));
+        locations.extend(
+            names
+                .into_iter()
+                .map(|name| format!("component://{}/data/{name}", info.name)),
+        );
     }
     locations
 }

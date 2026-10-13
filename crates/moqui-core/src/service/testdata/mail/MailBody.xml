@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- An email body screen for the mail tests: html and text, from bodyParameters and the template values. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd">
+    <actions>
+        <set field="greeting" from="'Hello ' + (name || 'nobody')"/>
+    </actions>
+    <widgets><render-mode>
+        <text type="html"><![CDATA[<html><body><p class="greeting">${html(greeting)}</p><p>${html(subject)} via ${html(webappName)} message ${html(emailMessageId ?? '')}</p></body></html>]]></text>
+        <text type="text"><![CDATA[${greeting}
+Subject: ${subject}
+]]></text>
+    </render-mode></widgets>
+</screen>

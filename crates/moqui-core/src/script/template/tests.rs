@@ -205,3 +205,58 @@ fn registry_picks_the_longest_extension() {
         .unwrap();
     assert_eq!(html, "&lt;");
 }
+
+#[test]
+fn markdown_renders_html_and_passes_raw_html_through() {
+    let registry = TemplateRegistry::parse("<moqui-conf/>");
+    let renderer = registry.renderer_for("component://x/page.md").expect("md renderer");
+    let html = renderer
+        .render(
+            "# Title\n\nSome *text* and <span class=\"k\">raw</span> & ${notAnInterp}\n",
+            None,
+        )
+        .unwrap();
+    assert!(html.contains("<h1>Title</h1>"), "{html}");
+    assert!(html.contains("<em>text</em>"), "{html}");
+    assert!(html.contains("<span class=\"k\">raw</span>"), "{html}");
+    assert!(html.contains("&amp; ${notAnInterp}"), "{html}");
+    assert!(registry.renderer_for("component://x/page.markdown").is_some());
+    // a markdown file is not a template, so there is nothing to check
+    assert!(renderer.check("<#if broken").is_ok());
+}
+
+#[test]
+fn markdown_fancy_converts_markdown_then_runs_the_template() {
+    let registry = TemplateRegistry::parse(
+        r#"<moqui-conf><resource-facade>
+        <template-renderer extension="fancy" class="fancy"/>
+        <template-renderer extension="md" class="markdown"/>
+        <template-renderer extension="md.fancy" class="markdown-fancy"/>
+        </resource-facade></moqui-conf>"#,
+    );
+    assert!(registry.renderer_for("component://x/page.md").is_some());
+    let renderer = registry
+        .renderer_for("component://x/page.md.fancy")
+        .expect("md.fancy renderer");
+    let source = "# Hello ${name}\n\n<#if (items.length > 0) && show>\n\n<#list items as item>\n\n- **${item}** \\${kept}\n\n</#list>\n\n</#if>\n\n[link](${url})\n";
+    // markdown would escape the `>` and `&&` of the tag and drop the backslash of the escape, and a
+    // tag alone in a paragraph loses the paragraph
+    let prepared = markdown_fancy_source(source).unwrap();
+    assert!(prepared.contains("<#if (items.length > 0) && show>\n"), "{prepared}");
+    assert!(prepared.contains("\\${kept}"), "{prepared}");
+    assert!(
+        !prepared.contains("<p><#") && !prepared.contains("<p></#"),
+        "{prepared}"
+    );
+    let data = moqui_lib::json::from_json(&serde_json::json!({
+        "name": "<World>", "items": ["a", "b"], "show": true, "url": "/x?a=1&b=2"
+    }));
+    let html = renderer.render(source, Some(&data)).unwrap();
+    assert!(html.contains("<h1>Hello &lt;World&gt;</h1>"), "{html}");
+    assert!(html.contains("<li><strong>a</strong> ${kept}</li>"), "{html}");
+    assert!(html.contains("<li><strong>b</strong> ${kept}</li>"), "{html}");
+    assert!(html.contains("<a href=\"/x?a=1&amp;b=2\">link</a>"), "{html}");
+    renderer.check(source).unwrap();
+    assert!(renderer.check("<#if x>\n\nno end\n").is_err());
+    assert!(markdown_fancy_source("${unclosed").is_err());
+}

@@ -38,8 +38,11 @@ pub use define::load_definitions;
 pub use define::{check, lint};
 pub use eca::{run_held_service, run_matched_eca, schedule_feed_receive, search_not_up};
 pub use email_eca::run_email_rules;
+#[cfg(test)]
 pub(crate) use jobs::send_job_error_notification;
 pub use jobs::{run_job_now, PassReport};
+#[cfg(test)]
+pub(crate) use mail::SinkGuard;
 pub use pool::{start_pools, ServicePools};
 pub(crate) use remote::parse_json;
 pub use remote::shared_http_client;

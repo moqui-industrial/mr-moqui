@@ -13,8 +13,8 @@
  */
 
 //! `GET /notws`. The socket is checked with the session cookie, then pushed notification JSON.
-//! No execution context is kept for the life of the socket. A second socket for the same session
-//! stays open and receives nothing.
+//! No execution context is kept for the life of the socket. Each socket of a session (a page in
+//! each tab) is registered and receives the notifications of its topics.
 
 use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -115,6 +115,10 @@ fn session_user(factory: Arc<ExecutionContextFactory>, session_id: String) -> Re
 }
 
 fn user_of(factory: &ExecutionContextFactory, session_id: &str) -> Result<Option<String>, CoreError> {
+    // a login the eventual flush has not written yet is in the live session of this node
+    if let Some(user_id) = moqui_core::user::live_session_user_id(factory, session_id) {
+        return Ok(user_id);
+    }
     let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz)
         .ok_or_else(|| CoreError::new("no execution context is entered"))?;
     let facade = factory
@@ -148,15 +152,7 @@ async fn run_socket(
         topics: Mutex::new(HashSet::new()),
         tx,
     });
-    if !try_register(&slot) {
-        tracing::warn!(
-            session_id = %slot.session_id,
-            user_id = %slot.user_id,
-            "notification socket already registered for this session; not registering another"
-        );
-        idle_unregistered(&mut socket, &mut shutdown).await;
-        return;
-    }
+    register(&slot);
     tracing::debug!(session_id = %slot.session_id, user_id = %slot.user_id, "notification socket open");
     if *shutdown.borrow() {
         unregister(id);
@@ -229,10 +225,8 @@ fn parse_command(text: &str) -> Option<TopicCommand> {
     let text = text.trim();
     let (subscribe, names) = if let Some(rest) = text.strip_prefix("subscribe:") {
         (true, rest)
-    } else if let Some(rest) = text.strip_prefix("unsubscribe:") {
-        (false, rest)
     } else {
-        return None;
+        (false, text.strip_prefix("unsubscribe:")?)
     };
     let names = names
         .split(',')
@@ -340,38 +334,10 @@ fn json_users(body: &serde_json::Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// One socket per session. The first connection stays registered.
-fn try_register(slot: &Arc<Slot>) -> bool {
-    let mut open = lock(sockets());
-    if open.values().any(|existing| existing.session_id == slot.session_id) {
-        return false;
-    }
-    open.insert(slot.id, Arc::clone(slot));
-    true
-}
-
-async fn idle_unregistered(socket: &mut WebSocket, shutdown: &mut tokio::sync::watch::Receiver<bool>) {
-    loop {
-        tokio::select! {
-            biased;
-            changed = shutdown.changed() => {
-                if changed.is_err() || *shutdown.borrow() {
-                    break;
-                }
-            }
-            incoming = socket.recv() => {
-                match incoming {
-                    Some(Ok(Message::Ping(payload))) => {
-                        if socket.send(Message::Pong(payload)).await.is_err() {
-                            break;
-                        }
-                    }
-                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
-                    Some(Ok(_)) => {}
-                }
-            }
-        }
-    }
+/// Every socket is registered, so each tab of a session gets the notifications. Java keys its endpoints by the WebSocket
+/// session, which is one per connection.
+fn register(slot: &Arc<Slot>) {
+    lock(sockets()).insert(slot.id, Arc::clone(slot));
 }
 
 fn unregister(id: u64) {

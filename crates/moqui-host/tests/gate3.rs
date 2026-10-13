@@ -12,9 +12,10 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Gate 3, started: a real framework screen rendered in the text, csv, xml, html-print, html and qvt modes (with the
-//! qjs and qvue companions) through the HTTP server with the seeded embedded-Postgres data, and the `/qapps` shell
-//! with its menu data. The later slices add the server-static pair and the browser smoke.
+//! Gate 3: a real framework screen rendered in the text, csv, xml, html-print, html and qvt modes (with the qjs and qvue
+//! companions) through the HTTP server with the seeded embedded-Postgres data, a form post through its transition, the
+//! server-static template and `/actions` pair, the `/qapps` shell with its menu data, and the compatibility report from the
+//! binary. The browser smoke is `gate3_browser.rs`, on the same setup (`common/mod.rs`).
 //!
 //! The fixture is `component://tools/screen/System/Security/ArtifactGroup/ArtifactGroupDetail.xml`.
 //! It has what the gate asks for:
@@ -27,151 +28,20 @@
 //!
 //! The other candidates either keep their forms in dialogs, which the text modes do not show, or
 //! call services, search or the file system.
-//!
-//! The tools screens are not mounted under any app by the conf in this repository, so the test adds the
-//! mount in a `conf/MoquiDevConf.xml` of its temporary runtime, which is where a deployment would.
 
 #![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
 
+mod common;
+
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
-use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::net::TcpStream;
+use std::path::PathBuf;
+use std::time::Duration;
 
-use moqui_host::{load_data, start_server, LoadFlags};
-
-/// The conf of the test runtime. `companion` is the location of a screen with qjs and qvue text of its own.
-fn conf(companion: &str) -> String {
-    format!(
-        r#"<moqui-conf>
-    <screen-facade>
-        <screen location="component://webroot/screen/webroot.xml">
-            <subscreens-item name="System" menu-title="System" location="component://tools/screen/System.xml"/>
-            <subscreens-item name="Tools" menu-title="Tools" location="component://tools/screen/Tools.xml"/>
-        </screen>
-        <screen location="component://webroot/screen/webroot/apps.xml">
-            <subscreens-item name="System" menu-title="System" location="component://tools/screen/System.xml"/>
-            <subscreens-item name="GateCompanion" menu-title="Companion" menu-include="false" location="{companion}"/>
-        </screen>
-    </screen-facade>
-</moqui-conf>"#
-    )
-}
-
-/// A screen with the three client forms: its widgets are the qvt template, and it has a qjs object and a qvue component file.
-const COMPANION: &str = r#"<screen require-authentication="false">
-    <widgets>
-        <label text="Companion {{literal}} text" type="p"/>
-        <render-mode>
-            <text type="qjs"><![CDATA[define([], function () { return { data: function () { return { count: 1 }; } }; });]]></text>
-            <text type="qvue"><![CDATA[<template><p>{{count}}</p></template>
-<script>export default { data() { return { count: 2 }; } }</script>]]></text>
-        </render-mode>
-    </widgets>
-</screen>"#;
-
-/// One embedded Postgres at a time: the tests set process-wide properties while they start.
-static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// The seeded server the gate tests share the setup of. Fields drop in order: the server stops before its directories go.
-struct Gate {
-    server: moqui_host::Server,
-    _serial: std::sync::MutexGuard<'static, ()>,
-    _runtime: DirGuard,
-    _cluster: DirGuard,
-}
-
-fn start(label: &str) -> Gate {
-    start_with(label, false)
-}
-
-/// The component of a deployment that marks the fixture screen server-static for qvt without editing the screen: a `screen-extend` file.
-const STATIC_EXTEND: &str = r#"<screen-extend server-static="qvt"/>"#;
-
-fn start_with(label: &str, static_fixture: bool) -> Gate {
-    let serial = SERIAL.lock().unwrap_or_else(|err| err.into_inner());
-    let runtime = temp_dir(&format!("moqui-gate3-rt-{label}"));
-    let cluster_dir = temp_dir(&format!("moqui-gate3-pg-{label}"));
-    let runtime_guard = DirGuard(runtime.clone());
-    let cluster_guard = DirGuard(cluster_dir.clone());
-    std::fs::create_dir_all(runtime.join("conf")).unwrap();
-    std::fs::create_dir_all(&cluster_dir).unwrap();
-    let companion = runtime.join("GateCompanion.xml");
-    std::fs::write(&companion, COMPANION).unwrap();
-    std::fs::write(
-        runtime.join("conf/MoquiDevConf.xml"),
-        conf(&companion.display().to_string()),
-    )
-    .unwrap();
-    if static_fixture {
-        let component = runtime.join("component/gate-static");
-        let extend = component.join("screen-extend/tools/screen/System/Security/ArtifactGroup");
-        std::fs::create_dir_all(&extend).unwrap();
-        std::fs::write(component.join("component.xml"), r#"<component name="gate-static"/>"#).unwrap();
-        std::fs::write(extend.join("ArtifactGroupDetail.xml"), STATIC_EXTEND).unwrap();
-    }
-    let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
-    let base =
-        std::fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component")).unwrap();
-    std::os::unix::fs::symlink(&base, runtime.join("base-component")).unwrap();
-
-    let seed = load_data(&runtime, &framework, &cluster_dir, &LoadFlags::default()).unwrap();
-    assert!(seed.enumeration > 0, "enumeration {}", seed.enumeration);
-    let demo = base.join("webroot/data/WebrootSecurityDemoData.xml");
-    let demo_flags = LoadFlags {
-        location: Some(demo.display().to_string()),
-        data_types: Some(vec!["demo".to_string()]),
-        ..LoadFlags::default()
-    };
-    load_data(&runtime, &framework, &cluster_dir, &demo_flags).unwrap();
-    // The default theme (style sheets, scripts, logo), the pagination text and the access to the applications list are component data, which a
-    // load from the framework alone does not read.
-    for name in [
-        "WebrootThemeData.xml",
-        "WebrootQuasarThemeData.xml",
-        "WebrootL10nData.xml",
-        "WebrootSecurityData.xml",
-    ] {
-        let flags = LoadFlags {
-            location: Some(base.join("webroot/data").join(name).display().to_string()),
-            ..LoadFlags::default()
-        };
-        load_data(&runtime, &framework, &cluster_dir, &flags).unwrap();
-    }
-    // The ADMIN group may view the System app, as the tools component's own security data says, and the
-    // artifact group the screen shows has a member, two authorizations and a tarpit to list.
-    let grant = runtime.join("system-app.xml");
-    std::fs::write(
-        &grant,
-        r#"<entity-facade-xml type="seed">
-            <moqui.security.ArtifactGroup artifactGroupId="SYSTEM_APP" description="System App (via root screen)"/>
-            <moqui.security.ArtifactGroupMember artifactGroupId="SYSTEM_APP"
-                artifactName="component://tools/screen/System.xml" artifactTypeEnumId="AT_XML_SCREEN"
-                nameIsPattern="N" inheritAuthz="Y"/>
-            <moqui.security.ArtifactAuthz artifactAuthzId="SYSTEM_APP_ADMIN" userGroupId="ADMIN"
-                artifactGroupId="SYSTEM_APP" authzTypeEnumId="AUTHZT_ALWAYS" authzActionEnumId="AUTHZA_ALL"/>
-            <moqui.security.ArtifactAuthz artifactAuthzId="SYSTEM_APP_ALL" userGroupId="ALL_USERS"
-                artifactGroupId="SYSTEM_APP" authzTypeEnumId="AUTHZT_DENY" authzActionEnumId="AUTHZA_UPDATE"/>
-            <moqui.security.ArtifactTarpit artifactTarpitId="SYSTEM_APP_TARPIT" userGroupId="ALL_USERS"
-                artifactGroupId="SYSTEM_APP" maxHitsCount="100" maxHitsDuration="60" tarpitDuration="30"/>
-            </entity-facade-xml>"#,
-    )
-    .unwrap();
-    let grant_flags = LoadFlags {
-        location: Some(grant.display().to_string()),
-        ..LoadFlags::default()
-    };
-    load_data(&runtime, &framework, &cluster_dir, &grant_flags).unwrap();
-
-    let bind = SocketAddr::from(([127, 0, 0, 1], 0));
-    let server = start_server(&runtime, &framework, &cluster_dir, bind).unwrap();
-    Gate {
-        server,
-        _serial: serial,
-        _runtime: runtime_guard,
-        _cluster: cluster_guard,
-    }
-}
+use common::{
+    basic, cookies_of, exchange, header, http_request, merge_cookies, session_token, sign_in, start, start_with,
+    FIXTURE,
+};
 
 #[test]
 fn artifact_group_detail_renders_as_text_csv_xml_and_html_print() {
@@ -292,6 +162,9 @@ fn artifact_group_detail_renders_as_text_csv_xml_and_html_print() {
     assert!(print.contains("SYSTEM_APP_ADMIN"), "{print}");
     assert!(print.contains("Always Allow (overrides Deny)"), "{print}");
     assert!(print.contains("All Users (all users members by default) - <a href=\"/System/Security/ArtifactGroup/ArtifactGroupDetail/userGroupDetail?artifactGroupId=SYSTEM_APP\">ALL_USERS</a>"), "{print}");
+    // a print document has no client: no moqui-html.js and no script at all
+    assert!(!print.contains("moqui-html.js"), "{print}");
+    assert!(!print.contains("<script"), "{print}");
     let (content_type, xsl_fo) = get("xsl-fo");
     assert_eq!(content_type.as_deref(), Some("text/html;charset=UTF-8"));
     assert_eq!(xsl_fo, print);
@@ -411,6 +284,170 @@ fn artifact_group_detail_renders_as_html_with_the_shared_client() {
         assert!(!lower.contains(word), "{word} in {html}");
     }
     assert_eq!(html.matches("<script").count(), 1, "{html}");
+}
+
+/// A form post of the html page runs the fixture's `updateArtifactGroup` transition with the session cookie and the token of the page,
+/// and the response is the redirect of the transition to the screen, which then shows the new value. Without the token it is refused.
+#[test]
+fn a_form_post_runs_the_transition_and_returns_its_response() {
+    let gate = start("post");
+    let address = gate.server.address();
+    let cookie = sign_in(address, "john.doe", "moqui");
+    let page = format!("{FIXTURE}.html?artifactGroupId=SYSTEM_APP");
+    let (status, headers, html) = exchange(address, &http_request("GET", &page, &[("Cookie", &cookie)], ""));
+    assert_eq!(status, 200, "{html}");
+    let cookie = merge_cookies(&cookie, &headers);
+    let token = session_token(&html).expect("the page carries the session token");
+    assert!(
+        html.contains(&format!("action=\"{FIXTURE}/updateArtifactGroup\"")),
+        "{html}"
+    );
+    let post = |body: &str| {
+        exchange(
+            address,
+            &http_request(
+                "POST",
+                &format!("{FIXTURE}/updateArtifactGroup"),
+                &[
+                    ("Cookie", &cookie),
+                    ("Content-Type", "application/x-www-form-urlencoded"),
+                    ("Accept", "text/html"),
+                ],
+                body,
+            ),
+        )
+    };
+
+    // no token: refused before the service runs
+    let (status, _, body) = post("artifactGroupId=SYSTEM_APP&description=No+token");
+    assert_eq!(status, 401, "{body}");
+
+    // the form as the browser sends it: the fields and the token
+    let (status, headers, body) = post(&format!(
+        "artifactGroupId=SYSTEM_APP&description=Changed+by+the+gate&submitButton=Update&moquiSessionToken={token}"
+    ));
+    assert_eq!(status, 302, "{body}");
+    let location = header(&headers, "location").expect("the transition's response is a redirect");
+    assert!(location.starts_with(FIXTURE), "{location}");
+    assert!(location.contains("artifactGroupId=SYSTEM_APP"), "{location}");
+    let (status, _, after) = exchange(address, &http_request("GET", &location, &[("Cookie", &cookie)], ""));
+    assert_eq!(status, 200, "{after}");
+    assert!(after.contains("value=\"Changed by the gate\""), "{after}");
+    assert!(!after.contains("No token"), "{after}");
+
+    // the qvt m-form posts with fetch and accepts JSON: the redirect is the screen URL in a JSON answer
+    let (status, headers, body) = exchange(
+        address,
+        &http_request(
+            "POST",
+            &format!("{FIXTURE}/updateArtifactGroup"),
+            &[
+                ("Cookie", &cookie),
+                ("Content-Type", "application/x-www-form-urlencoded"),
+                ("Accept", "application/json"),
+                ("X-CSRF-Token", &token),
+            ],
+            "artifactGroupId=SYSTEM_APP&description=Changed+by+fetch",
+        ),
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(header(&headers, "content-type").as_deref(), Some("application/json"));
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        json["screenUrl"],
+        format!("{FIXTURE}?artifactGroupId=SYSTEM_APP"),
+        "{body}"
+    );
+    assert_eq!(json["screenParameters"]["artifactGroupId"], "SYSTEM_APP", "{body}");
+    assert_eq!(json["currentParameters"]["description"], "Changed by fetch", "{body}");
+    assert!(json["currentParameters"].get("moquiSessionToken").is_none(), "{body}");
+
+    // an error page under the html theme loads the client and the style sheet once, though both the theme and error.xml name them
+    let (status, _, error) = exchange(
+        address,
+        &http_request(
+            "GET",
+            "/System/NoSuchScreen",
+            &[("Cookie", &cookie), ("Accept", "text/html")],
+            "",
+        ),
+    );
+    assert_eq!(status, 404, "{error}");
+    assert_eq!(error.matches("/js/moqui-html.js").count(), 1, "{error}");
+    assert_eq!(error.matches("/css/moqui-html.css").count(), 1, "{error}");
+}
+
+/// The seed load reads each component's `data` directory: the tools app groups (`ToolsSecurityData.xml`, whose short-alias
+/// elements need the alias lookup) and the default themes of webroot are rows after a load that names no location.
+#[test]
+fn the_seed_load_reads_the_data_directory_of_each_component() {
+    use moqui_lib::object::Value;
+
+    let gate = start("data");
+    let factory = gate.server.factory();
+    let ctx = factory.new_context();
+    let entered = ctx.enter();
+    let authz = ctx.disable_authz();
+    let facade = factory.entity().unwrap();
+    let text = |entity: &str, conditions: &[(&str, &str)], field: &str| -> Vec<String> {
+        let mut find = facade.find(entity).unwrap();
+        for (name, value) in conditions {
+            find = find.eq(name, Value::string(*value));
+        }
+        find.list()
+            .unwrap()
+            .values()
+            .iter()
+            .map(|row| row.get(field).and_then(Value::as_str).unwrap_or("").to_string())
+            .collect()
+    };
+    // tools: the groups, their members through the `artifacts` alias and their authorizations through `authz`
+    assert_eq!(
+        text(
+            "moqui.security.ArtifactGroup",
+            &[("artifactGroupId", "TOOLS_APP")],
+            "description"
+        ),
+        ["Tools App (via root screen)"]
+    );
+    assert_eq!(
+        text(
+            "moqui.security.ArtifactGroupMember",
+            &[("artifactGroupId", "TOOLS_APP")],
+            "artifactName"
+        ),
+        ["component://tools/screen/Tools.xml"]
+    );
+    assert_eq!(
+        text(
+            "moqui.security.ArtifactAuthz",
+            &[("artifactAuthzId", "MOQUI_API_ADMIN")],
+            "artifactGroupId"
+        ),
+        ["MOQUI_API"]
+    );
+    // webroot: the html theme's style sheet and client, the Quasar theme, and the localized pagination text
+    let resources = text(
+        "moqui.screen.ScreenThemeResource",
+        &[("screenThemeId", "DEFAULT")],
+        "resourceValue",
+    );
+    assert!(
+        resources.iter().any(|value| value.contains("moqui-html.css"))
+            && resources.iter().any(|value| value.contains("moqui-html.js")),
+        "{resources:?}"
+    );
+    assert_eq!(
+        text(
+            "moqui.screen.ScreenTheme",
+            &[("screenThemeId", "DEFAULT_QUASAR")],
+            "screenThemeTypeEnumId"
+        ),
+        ["STT_INTERNAL_QUASAR"]
+    );
+    assert!(!text("moqui.basic.LocalizedMessage", &[], "original").is_empty());
+    drop(authz);
+    drop(entered);
 }
 
 #[test]
@@ -657,6 +694,11 @@ fn artifact_group_detail_renders_as_qvt_and_answers_qjs_and_qvue() {
         "{qvt}"
     );
     assert!(qvt.contains("'artifactAuthzId':'SYSTEM_APP_ADMIN'"), "{qvt}");
+    // a display-entity followed by a link in one field: the display text is the entity text, and the link does not replace it
+    assert!(
+        qvt.contains("'userGroupId':'ADMIN','userGroupId_display':'Administrators (full access) - '"),
+        "{qvt}"
+    );
     assert!(
         qvt.contains("<m-drop-down name=\"authzTypeEnumId\" id=\"ArtifactAuthzList_authzTypeEnumId_0\""),
         "{qvt}"
@@ -933,7 +975,7 @@ fn the_qapps_shell_and_its_menu_data_work_for_a_signed_in_user() {
     assert_eq!(config["locale"], "en-US");
     assert_eq!(config["quasarLang"], "enUS");
     assert_eq!(config["darkMode"], false);
-    assert_eq!(config["notificationEndpoint"], "");
+    assert_eq!(config["notificationEndpoint"], "/notws");
     assert_eq!(config["qvt"]["handles"][0], "merged-fragment");
     assert_eq!(config["qvt"]["handles"][1], "static-template");
     assert_eq!(config["qvt"]["build"], "compiler");
@@ -1013,163 +1055,4 @@ fn the_qapps_shell_and_its_menu_data_work_for_a_signed_in_user() {
     let catalog: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(catalog["locale"], "en_US");
     assert!(catalog["messages"].is_object(), "{body}");
-}
-
-fn header(headers: &[(String, String)], name: &str) -> Option<String> {
-    headers
-        .iter()
-        .find(|(key, _)| key.eq_ignore_ascii_case(name))
-        .map(|(_, value)| value.clone())
-}
-
-/// The cookies a response sets as a `Cookie` header value.
-fn cookies_of(headers: &[(String, String)]) -> String {
-    headers
-        .iter()
-        .filter(|(key, _)| key.eq_ignore_ascii_case("set-cookie"))
-        .filter_map(|(_, value)| value.split(';').next().map(str::to_string))
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-fn basic(username: &str, password: &str) -> String {
-    format!("Basic {}", base64(&format!("{username}:{password}").into_bytes()))
-}
-
-fn http_request(method: &str, path: &str, headers: &[(&str, &str)], body: &str) -> String {
-    let mut out = format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n");
-    for (name, value) in headers {
-        out.push_str(name);
-        out.push_str(": ");
-        out.push_str(value);
-        out.push_str("\r\n");
-    }
-    if !body.is_empty() || method.eq_ignore_ascii_case("POST") {
-        out.push_str(&format!("Content-Length: {}\r\n", body.len()));
-    }
-    out.push_str("\r\n");
-    out.push_str(body);
-    out
-}
-
-fn exchange(address: SocketAddr, request: &str) -> (u16, Vec<(String, String)>, String) {
-    let mut stream = TcpStream::connect(address).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(120))).unwrap();
-    stream.set_write_timeout(Some(Duration::from_secs(30))).unwrap();
-    stream.write_all(request.as_bytes()).unwrap();
-    let mut buf = Vec::new();
-    let mut tmp = [0_u8; 8192];
-    loop {
-        match stream.read(&mut tmp) {
-            Ok(0) => break,
-            Ok(count) => buf.extend_from_slice(&tmp[..count]),
-            Err(err) if err.kind() == std::io::ErrorKind::TimedOut || err.kind() == std::io::ErrorKind::WouldBlock => {
-                if response_complete(&buf) {
-                    break;
-                }
-                panic!("timed out after {} bytes: {}", buf.len(), String::from_utf8_lossy(&buf));
-            }
-            Err(err) => panic!("read failed after {} bytes: {err}", buf.len()),
-        }
-        if response_complete(&buf) {
-            break;
-        }
-    }
-    parse_response(&buf)
-}
-
-fn response_complete(buf: &[u8]) -> bool {
-    let Some(split) = find_header_end(buf) else {
-        return false;
-    };
-    let head = String::from_utf8_lossy(&buf[..split]);
-    let Some(length) = content_length(&head) else {
-        return false;
-    };
-    buf.len() >= split + 4 + length
-}
-
-fn find_header_end(buf: &[u8]) -> Option<usize> {
-    buf.windows(4).position(|window| window == b"\r\n\r\n")
-}
-
-fn content_length(head: &str) -> Option<usize> {
-    for line in head.split("\r\n").skip(1) {
-        let (name, value) = line.split_once(':')?;
-        if name.eq_ignore_ascii_case("content-length") {
-            return value.trim().parse().ok();
-        }
-    }
-    None
-}
-
-fn parse_response(buf: &[u8]) -> (u16, Vec<(String, String)>, String) {
-    let text = String::from_utf8_lossy(buf);
-    let (head, body) = text.split_once("\r\n\r\n").unwrap_or((text.as_ref(), ""));
-    let mut lines = head.split("\r\n");
-    let status_line = lines.next().unwrap_or("");
-    let status = status_line
-        .split_whitespace()
-        .nth(1)
-        .unwrap_or("0")
-        .parse()
-        .unwrap_or(0);
-    let mut headers = Vec::new();
-    for line in lines {
-        if let Some((name, value)) = line.split_once(':') {
-            headers.push((name.trim().to_string(), value.trim().to_string()));
-        }
-    }
-    (status, headers, body.to_string())
-}
-
-fn base64(bytes: &[u8]) -> String {
-    let mut out = String::new();
-    let mut index = 0;
-    while index + 3 <= bytes.len() {
-        let chunk = ((bytes[index] as u32) << 16) | ((bytes[index + 1] as u32) << 8) | (bytes[index + 2] as u32);
-        push_base64(&mut out, chunk, 4);
-        index += 3;
-    }
-    let rest = bytes.len() - index;
-    if rest == 1 {
-        push_base64(&mut out, (bytes[index] as u32) << 16, 2);
-        out.push('=');
-        out.push('=');
-    } else if rest == 2 {
-        let chunk = ((bytes[index] as u32) << 16) | ((bytes[index + 1] as u32) << 8);
-        push_base64(&mut out, chunk, 3);
-        out.push('=');
-    }
-    out
-}
-
-fn push_base64(out: &mut String, chunk: u32, count: usize) {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let shifts = [18, 12, 6, 0];
-    for shift in shifts.into_iter().take(count) {
-        let piece = ((chunk >> shift) & 63) as usize;
-        out.push(ALPHABET[piece] as char);
-    }
-}
-
-fn temp_dir(prefix: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let name = format!("{prefix}-{}-{nanos}", std::process::id());
-    if Path::new("/tmp").is_dir() {
-        PathBuf::from("/tmp").join(name)
-    } else {
-        std::env::temp_dir().join(name)
-    }
-}
-
-struct DirGuard(PathBuf);
-
-impl Drop for DirGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
 }

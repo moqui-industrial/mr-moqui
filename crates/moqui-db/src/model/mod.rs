@@ -339,7 +339,7 @@ impl EntityModel {
         expand_key_pairs(&mut entities, &index_by_full);
         let mut by_short_alias = HashMap::new();
         for (index, entity) in entities.iter().enumerate() {
-            if let Some(alias) = &entity.short_alias {
+            if let Some(alias) = entity.short_alias.as_ref().filter(|alias| !alias.is_empty()) {
                 by_short_alias.entry(alias.clone()).or_insert(index);
             }
         }
@@ -805,7 +805,7 @@ fn resolve_relationships(
         }
     }
     for entity in entities.iter() {
-        if let Some(alias) = &entity.short_alias {
+        if let Some(alias) = entity.short_alias.as_ref().filter(|alias| !alias.is_empty()) {
             names.entry(alias.clone()).or_insert_with(|| entity.full_name.clone());
         }
     }

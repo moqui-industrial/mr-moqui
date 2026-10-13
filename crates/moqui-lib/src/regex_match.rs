@@ -38,7 +38,11 @@ enum Re {
     },
     Seq(Vec<Re>),
     Alt(Vec<Re>),
-    Repeat { inner: Box<Re>, min: u32, max: Option<u32> },
+    Repeat {
+        inner: Box<Re>,
+        min: u32,
+        max: Option<u32>,
+    },
     Start,
     End,
 }
@@ -242,11 +246,17 @@ impl Parser {
             }
             let start = match self.class_item()? {
                 ClassItem::Char(start) => start,
-                ClassItem::Set { negated: false, ranges: set } => {
+                ClassItem::Set {
+                    negated: false,
+                    ranges: set,
+                } => {
                     ranges.extend(set);
                     continue;
                 }
-                ClassItem::Set { negated: true, ranges: set } => {
+                ClassItem::Set {
+                    negated: true,
+                    ranges: set,
+                } => {
                     outside.push(set);
                     continue;
                 }
@@ -381,9 +391,7 @@ fn ends(re: &Re, text: &[char], pos: usize) -> Vec<usize> {
             ranges,
             outside,
         } => match text.get(pos) {
-            Some(ch)
-                if (class_hit(*ch, ranges) || outside.iter().any(|set| !class_hit(*ch, set))) ^ negated =>
-            {
+            Some(ch) if (class_hit(*ch, ranges) || outside.iter().any(|set| !class_hit(*ch, set))) ^ negated => {
                 vec![pos + 1]
             }
             _ => Vec::new(),
@@ -523,7 +531,9 @@ mod tests {
 
     #[test]
     fn unsupported_features_fail_closed() {
-        for pattern in [r"(a)\1", r"\bword", r"a*+", "(?=a)a", "(?i)a", r"\p{L}", "[a[b]]", "[a&&b]", r"\x41"] {
+        for pattern in [
+            r"(a)\1", r"\bword", r"a*+", "(?=a)a", "(?i)a", r"\p{L}", "[a[b]]", "[a&&b]", r"\x41",
+        ] {
             assert!(is_full_match("a1", pattern).is_err(), "{pattern}");
         }
     }

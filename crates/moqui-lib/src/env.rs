@@ -259,8 +259,14 @@ mod tests {
         set_property("moqui_lib_env_zone", "America/Denver");
         assert_eq!(expand("${moqui_lib_env_port?:'3306'}").unwrap(), "5433");
         assert_eq!(expand("${moqui_lib_env_none_zz?:'3306'}").unwrap(), "3306");
-        assert_eq!(expand("${moqui_lib_env_none_zz ?: moqui_lib_env_zone}").unwrap(), "America/Denver");
-        assert_eq!(expand("${moqui_lib_env_none_zz ?: moqui_lib_env_none_yy ?: \"x\"}").unwrap(), "x");
+        assert_eq!(
+            expand("${moqui_lib_env_none_zz ?: moqui_lib_env_zone}").unwrap(),
+            "America/Denver"
+        );
+        assert_eq!(
+            expand("${moqui_lib_env_none_zz ?: moqui_lib_env_none_yy ?: \"x\"}").unwrap(),
+            "x"
+        );
         assert_eq!(expand("${moqui_lib_env_none_zz ?: moqui_lib_env_none_yy}").unwrap(), "");
         assert_eq!(expand("${a ?: 1+2}").unwrap(), "${a ?: 1+2}");
         assert_eq!(expand("${a ?: 'x}").unwrap(), "${a ?: 'x}");

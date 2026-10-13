@@ -70,7 +70,7 @@ fn notws_push_and_one_cluster_invalidation() {
         "ephemeral cluster port was not recorded"
     );
 
-    // Two logins, two sessions. A second socket on the first session stays open and gets nothing.
+    // Two logins, two sessions. A second socket on the first session (another tab) gets the notifications too.
     let cookie_all = login(http);
     let cookie_other = login(http);
     assert_ne!(cookie_all, cookie_other, "each login mints its own session");
@@ -93,11 +93,17 @@ fn notws_push_and_one_cluster_invalidation() {
     drain(&mut other);
     let mut extra = open_socket(http, &cookie_all);
     extra.send(Message::Text("subscribe:ALL".into())).unwrap();
-    send_note(&factory, &user_id, ONLY_TOPIC);
+    // the subscription of the extra socket is applied on the service pool, so send until it arrives
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut saw_extra = false;
+    while Instant::now() < deadline && !saw_extra {
+        send_note(&factory, &user_id, ONLY_TOPIC);
+        saw_extra = read_for(&mut extra, ONLY_TOPIC, Duration::from_millis(250));
+    }
+    assert!(saw_extra, "the second socket of the session got nothing");
     let frame = read_until(&mut all, ONLY_TOPIC, Duration::from_secs(3));
     assert!(frame.contains(&user_id), "{frame}");
     assert_absent(&mut other, ONLY_TOPIC, Duration::from_millis(400));
-    assert_absent(&mut extra, ONLY_TOPIC, Duration::from_millis(400));
     drop(all);
     drop(other);
     drop(extra);

@@ -24,6 +24,8 @@ pub(super) struct ConfCache {
     artifact: HashMap<(String, String), bool>,
     /// `user-facade` child attributes: `(child, attribute)` to the non-empty value.
     user_facade: HashMap<(String, String), String>,
+    /// `webapp` attributes: `(webapp name, attribute)` to the raw value, `${}` not yet expanded.
+    webapp: HashMap<(String, String), String>,
 }
 
 impl ConfCache {
@@ -58,6 +60,16 @@ impl ConfCache {
                 }
             }
         }
+        if let Some(list) = root.first_named("webapp-list") {
+            for node in list.children_named("webapp") {
+                let Some(webapp) = node.attribute("name") else {
+                    continue;
+                };
+                for (name, value) in node.attributes() {
+                    cache.webapp.entry((webapp.clone(), name)).or_insert(value);
+                }
+            }
+        }
         cache
     }
 
@@ -70,5 +82,9 @@ impl ConfCache {
 
     pub(super) fn user_facade_attr(&self, child: &str, name: &str) -> Option<String> {
         self.user_facade.get(&(child.to_string(), name.to_string())).cloned()
+    }
+
+    pub(super) fn webapp_attr(&self, webapp: &str, name: &str) -> Option<String> {
+        self.webapp.get(&(webapp.to_string(), name.to_string())).cloned()
     }
 }

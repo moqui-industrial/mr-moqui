@@ -93,6 +93,17 @@ pub(super) struct HostFind {
     pub(super) inner: RefCell<Option<EntityFind>>,
 }
 
+impl HostFind {
+    /// A clone of the find this object holds, which stays usable.
+    fn peek(&self, ctx: &Ctx<'_>) -> rquickjs::Result<EntityFind> {
+        self.inner
+            .borrow()
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| Exception::throw_message(ctx, "this find was already run"))
+    }
+}
+
 #[rquickjs::methods(rename_all = "camelCase")]
 impl HostFind {
     fn condition<'js>(
@@ -236,6 +247,30 @@ impl HostFind {
                 .count()
                 .map_err(|err| throw_lib(&ctx, &err))?;
             i64_to_js(&ctx, number)
+        })
+    }
+
+    /// `getLimit()`: the limit of the find, or null. Does not use the find up.
+    fn get_limit<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || match self.peek(&ctx)?.limit_value() {
+            Some(limit) => i64_to_js(&ctx, limit),
+            None => Null.into_js(&ctx),
+        })
+    }
+
+    /// `getOffset()`: the offset of the find, or null. Does not use the find up.
+    fn get_offset<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || match self.peek(&ctx)?.offset_value() {
+            Some(offset) => i64_to_js(&ctx, offset),
+            None => Null.into_js(&ctx),
+        })
+    }
+
+    /// A copy of the find, so a page's `list()` and the `count()` of all rows can both run.
+    fn copy<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<Class<'js, HostFind>> {
+        host_guard(&ctx, || {
+            let find = self.peek(&ctx)?;
+            wrap_find(&ctx, find)
         })
     }
 

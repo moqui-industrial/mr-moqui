@@ -27,8 +27,9 @@
     <default-property name="webapp_upload_executable_allow" value="false"/>
     <!-- Largest multipart/form-data request body, in bytes or with a k, m or g suffix. Other request bodies stop at 1 MiB. -->
     <default-property name="webapp_max_upload" value="104857600"/>
-    <!-- Path of the notification WebSocket the html client connects to, such as /notws. Empty means the client does not connect. -->
-    <default-property name="webapp_notification_endpoint" value=""/>
+    <!-- Path of the notification WebSocket the html and qvt clients of a signed in user connect to, the /notws endpoint by default as
+        in Java. Empty means the clients do not connect. -->
+    <default-property name="webapp_notification_endpoint" value="/notws"/>
 
     <!--
         webapp_client_ip_header is how Moqui reads the client IP from a trusted proxy (X-Real-IP, CF-Connecting-IP,
@@ -414,8 +415,12 @@
         <template-renderer extension="fancy-locked" class="fancy-locked"/>
         <template-renderer extension="html.fancy-locked" class="fancy-locked-html"/>
 
-        <template-renderer extension="md" class="org.moqui.impl.context.renderer.MarkdownTemplateRenderer"/>
-        <template-renderer extension="markdown" class="org.moqui.impl.context.renderer.MarkdownTemplateRenderer"/>
+        <!-- markdown: CommonMark with tables, raw HTML passed through. md.fancy is the port of md.ftl: markdown to HTML,
+            then a trusted fancy template with HTML escaped ${} output -->
+        <template-renderer extension="md" class="markdown"/>
+        <template-renderer extension="markdown" class="markdown"/>
+        <template-renderer extension="md.fancy" class="markdown-fancy"/>
+        <template-renderer extension="markdown.fancy" class="markdown-fancy"/>
 
         <!-- a renderer for .html isn't necessary because the default is to write the text as-is, however this is useful
             so that the extension becomes a default extension and doesn't have to be in the URL -->

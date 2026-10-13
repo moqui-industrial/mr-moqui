@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Markdown text widgets: a .md file in html and qvt (as wiki pages are shown), its source in text, and a .md.fancy
+    template with request data. -->
+<screen require-authentication="false">
+    <actions><set field="who" value="Ada &amp; co"/></actions>
+    <widgets>
+        <render-mode>
+            <text type="html,qvt" location="src/screen/testdata/Markdown/Page.md"/>
+            <text type="text" location="src/screen/testdata/Markdown/Page.md" template="false"/>
+        </render-mode>
+        <render-mode>
+            <text type="html,qvt" location="src/screen/testdata/Markdown/Greeting.md.fancy"/>
+        </render-mode>
+    </widgets>
+</screen>

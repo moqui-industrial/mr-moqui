@@ -231,6 +231,35 @@ impl ExecutionContextFactory {
         self.conf().user_facade_attr(child, name)
     }
 
+    /// The root URL of a conf `webapp` for a render with no request: Java's `makeWebappHost` with no
+    /// web facade. `https://` and the https host and port when `https-enabled` is `true`, else `http://` and
+    /// the http ones; an empty host is `localhost`, and the default port is left out. Empty when the
+    /// conf has no such webapp.
+    pub fn webapp_root_url(&self, webapp_name: &str) -> String {
+        let conf = self.conf();
+        let attr = |name: &str| {
+            conf.webapp_attr(webapp_name, name)
+                .map(|raw| moqui_lib::env::expand(&raw).unwrap_or(raw))
+                .map(|value| value.trim().to_string())
+                .unwrap_or_default()
+        };
+        if conf.webapp_attr(webapp_name, "name").is_none() {
+            return String::new();
+        }
+        let https = attr("https-enabled") == "true";
+        let (scheme, host, port, default_port) = if https {
+            ("https", attr("https-host"), attr("https-port"), "443")
+        } else {
+            ("http", attr("http-host"), attr("http-port"), "80")
+        };
+        let host = if host.is_empty() { "localhost".to_string() } else { host };
+        if port.is_empty() || port == default_port {
+            format!("{scheme}://{host}")
+        } else {
+            format!("{scheme}://{host}:{port}")
+        }
+    }
+
     fn conf(&self) -> &ConfCache {
         self.conf_cache.get_or_init(|| ConfCache::parse(&self.conf_text))
     }

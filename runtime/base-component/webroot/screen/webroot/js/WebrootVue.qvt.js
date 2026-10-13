@@ -503,7 +503,7 @@
         name: "mStaticFormList",
         inject: { mqScope: { default: null }, mqScreen: { default: null } },
         props: { name: { type: String, required: true }, id: String, action: String, listName: String, multi: Boolean, skipForm: Boolean, skipHeader: Boolean },
-        data() { return { pkg: null, searchObj: {}, loading: false }; },
+        data() { return { pkg: null, searchObj: {}, loading: false, generation: 0 }; },
         computed: {
             idVal() { return this.id && this.id.length ? this.id : this.name; },
             listKey() { return this.listName || this.name; },
@@ -524,6 +524,8 @@
                 moqui.request(screen.path + "/actions/" + encodeURIComponent(this.name), { params }).then((result) => {
                     this.loading = false;
                     this.pkg = result.json && moqui.isPlainObject(result.json) ? result.json : {};
+                    // the rows of another page or order are new: an m-form copies its fields-initial once, so a row is not patched in place
+                    this.generation++;
                 }, (err) => { this.loading = false; moqui.handleLoadError(err); });
             },
             setPageIndex(index) { this.searchObj = Object.assign({}, this.searchObj, { pageIndex: index }); this.fetchRows(); },
@@ -544,7 +546,7 @@
             const rowNodes = [];
             this.rows.forEach((row, rowIndex) => {
                 const scope = qvt.makeScope(() => Object.assign({}, this.rows[rowIndex], { rowIndex, _formMap: this.rows[rowIndex] }), formScope);
-                rowNodes.push(h(V.Fragment, { key: rowIndex }, slots.row ? slots.row(scope) : []));
+                rowNodes.push(h(V.Fragment, { key: this.generation + "_" + rowIndex }, slots.row ? slots.row(scope) : []));
             });
             const nav = h("div", { class: "form-list-nav-row row items-center" }, [
                 h(V.resolveComponent("q-space")),
@@ -1449,7 +1451,7 @@
         emits: ["update:modelValue"],
         template:
             '<q-input dense outlined stack-label :label="label" :model-value="local" @update:model-value="onInput" :rules="allRules"' +
-                    ' :mask="inputMask" fill-mask :id="id" :name="name" :form="form" :disable="disable" :size="sizeVal"' +
+                    ' :mask="inputMask" fill-mask :for="id" :name="name" :form="form" :disable="disable" :size="sizeVal"' +
                     ' style="max-width:max-content;" :bg-color="bg">' +
                 '<template v-slot:prepend v-if="hasDate">' +
                     '<q-icon name="event" class="cursor-pointer">' +
@@ -1512,7 +1514,7 @@
                 '</m-date-time>' +
             '</div>' +
             '<div v-else class="row"><q-input dense outlined stack-label :label="label" v-model="fields[name+\'_pdate\']"' +
-                    ' mask="####-##-##" fill-mask :id="id" :name="name+\'_pdate\'" :form="form" style="max-width:max-content;"' +
+                    ' mask="####-##-##" fill-mask :for="id" :name="name+\'_pdate\'" :form="form" style="max-width:max-content;"' +
                     ' :bg-color="changed(name+\'_pdate\')">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
                 '<template v-slot:before>' +
@@ -1555,7 +1557,7 @@
         emits: ["update:modelValue"],
         data() { return { curDisplay: this.display, loading: false }; },
         template:
-            '<q-input v-if="labelWrapper" dense outlined readonly stack-label autogrow :model-value="displayValue" :label="label" :id="id" :name="name" :loading="loading">' +
+            '<q-input v-if="labelWrapper" dense outlined readonly stack-label autogrow :model-value="displayValue" :label="label" :for="id" :name="name" :loading="loading">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
             '</q-input>' +
             '<span v-else :id="id">' +
@@ -1614,7 +1616,7 @@
         data() { return { curOptions: this.options, allOptions: this.options, lastSearch: null, loading: false }; },
         template:
             '<q-select ref="qSelect" :model-value="modelValue" @update:model-value="handleInput"' +
-                    ' dense outlined options-dense use-input :hide-selected="multiple" :name="name" :id="id" :form="form"' +
+                    ' dense outlined options-dense use-input :hide-selected="multiple" :name="name" :for="id" :form="form"' +
                     ' :input-debounce="serverSearch ? serverDelay : 100" @filter="filterFn" :clearable="allowEmpty||multiple" :disable="disable"' +
                     ' :multiple="multiple" :emit-value="!onSelectGoTo" map-options behavior="menu" :new-value-mode="combo ? \'add-unique\' : undefined"' +
                     ' :rules="[val => allowEmpty||multiple||combo||val===\'\'||(val&&val.length)||\'Please select an option\']"' +
@@ -1767,7 +1769,7 @@
         data() { return { loading: false }; },
         template:
             '<q-input dense outlined stack-label :label="label" :prefix="prefix" :model-value="local" @update:model-value="onInput" :type="type"' +
-                    ' :id="id" :name="name" :size="size" :maxlength="maxlength" :form="form" :loading="loading" :rules="allRules" :disable="disable" :bg-color="bg"' +
+                    ' :for="id" :name="name" :size="size" :maxlength="maxlength" :form="form" :loading="loading" :rules="allRules" :disable="disable" :bg-color="bg"' +
                     ' :mask="mask" :fill-mask="fillMask" :reverse-fill-mask="reverseFillMask" autocapitalize="off" autocomplete="off">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
             '</q-input>',
@@ -1879,7 +1881,7 @@
             disable: Boolean, form: String, tooltip: String },
         emits: ["update:modelValue"],
         template:
-            '<q-file dense outlined stack-label :label="label" :model-value="modelValue" @update:model-value="$emit(\'update:modelValue\', $event)" :name="name" :id="id"' +
+            '<q-file dense outlined stack-label :label="label" :model-value="modelValue" @update:model-value="$emit(\'update:modelValue\', $event)" :name="name" :for="id"' +
                 ' :size="size" :multiple="multiple" :accept="accept" :form="form" :disable="disable" :bg-color="bg">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
             '</q-file>'
@@ -2381,8 +2383,8 @@
             moqui.appRootPath = this.appRootPath;
             moqui.onSessionToken = (token) => { if (token !== this.moquiSessionToken) this.setSessionToken(token, true); };
             this.$q.dark.set(!!config.darkMode);
-            // Open the socket only when the server names an endpoint.
-            if (config.notificationEndpoint) {
+            // Open the socket only for a signed in user, and when the server names an endpoint (/notws by default).
+            if (config.notificationEndpoint && config.userId) {
                 const wsScheme = root.location.protocol === "https:" ? "wss://" : "ws://";
                 this.notificationClient = new moqui.NotificationClient(wsScheme + this.appHost + this.appRootPath + config.notificationEndpoint);
             }

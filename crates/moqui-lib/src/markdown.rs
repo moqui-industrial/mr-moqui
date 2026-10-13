@@ -12,13 +12,18 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! CommonMark to HTML. Screen and wiki widgets call this later; nothing in the screen model does yet.
+//! CommonMark to HTML, the `.md` and `.markdown` template renderers.
+//!
+//! Java renders these with flexmark, the tables and TOC extensions, and raw HTML passed through. This
+//! is CommonMark plus GitHub tables, and raw HTML is passed through as Java does: a markdown file is
+//! trusted like any other template file. The `[TOC]` block of the flexmark TOC extension is not
+//! rendered; it stays a paragraph.
 
-use pulldown_cmark::{html, Parser};
+use pulldown_cmark::{html, Options, Parser};
 
-/// Render `source` as HTML. The parser is the crate default: no tables, no footnotes, no raw HTML pass-through beyond CommonMark.
+/// Render `source` as HTML: CommonMark with tables. Raw HTML blocks and inline HTML are written as is.
 pub fn to_html(source: &str) -> String {
-    let parser = Parser::new(source);
+    let parser = Parser::new_ext(source, Options::ENABLE_TABLES);
     let mut out = String::new();
     html::push_html(&mut out, parser);
     out
@@ -34,5 +39,14 @@ mod tests {
         assert!(html.contains("<h1>Title</h1>"), "{html}");
         assert!(html.contains("<li>one</li>"), "{html}");
         assert!(html.contains("<li>two</li>"), "{html}");
+    }
+
+    #[test]
+    fn tables_and_raw_html_pass_through() {
+        let html =
+            to_html("| a | b |\n|---|---|\n| 1 | 2 |\n\n<div class=\"note\">kept</div>\n\ntext <b>bold</b> & more\n");
+        assert!(html.contains("<table>") && html.contains("<td>1</td>"), "{html}");
+        assert!(html.contains("<div class=\"note\">kept</div>"), "{html}");
+        assert!(html.contains("text <b>bold</b> &amp; more"), "{html}");
     }
 }

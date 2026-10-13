@@ -26,19 +26,22 @@ mod visit;
 pub use authz::{authorize, context_entered};
 pub(crate) use authz::{denied, is_permitted, note_entity_write, AuthInfo, Permit};
 pub use filter::apply_entity_filters;
+#[cfg(test)]
+pub(crate) use login::stamp_value;
 pub use login::{
     apply_header_keys, change_password, internal_login_user, login_anonymous, login_user, login_user_key, logout,
     logout_anonymous_only,
 };
-pub(crate) use login::{now_millis, now_value, stamp_value, value_millis};
+pub(crate) use login::{now_millis, now_value, value_millis};
 pub use password::hash_password;
 pub use period::period_range;
 pub use policy::password_acceptable;
 pub(crate) use session::Memory;
 pub use session::{
     bind, csrf_token, current_user_id, current_username, end_request, error_parameters, flash_messages,
-    format_session_cookie, format_visitor_cookie, invalidate, is_anonymous, locale, saved_parameters, screen_history,
-    time_zone, verify_session_cookie, visit_id, visitor_id, SessionGuard, SESSION_COOKIE_NAME, VISITOR_COOKIE_NAME,
+    format_session_cookie, format_visitor_cookie, invalidate, is_anonymous, live_session_user_id, locale,
+    saved_parameters, screen_history, time_zone, verify_session_cookie, visit_id, visitor_id, SessionGuard,
+    SESSION_COOKIE_NAME, VISITOR_COOKIE_NAME,
 };
 pub use visit::record_visit;
 

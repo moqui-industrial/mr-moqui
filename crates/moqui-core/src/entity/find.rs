@@ -30,7 +30,8 @@ use super::value::{EntityArtifact, EntityList, EntityValue};
 use crate::driver::DbRow;
 use crate::transaction::TransactionManager;
 
-/// A find builder. Methods consume `self` so conditions chain.
+/// A find builder. Methods consume `self` so conditions chain. A clone is the same find, for a count beside a list.
+#[derive(Clone)]
 pub struct EntityFind {
     pub(super) facade: EntityFacade,
     entity_name: String,
@@ -170,6 +171,16 @@ impl EntityFind {
     pub fn offset(mut self, offset: i64) -> Self {
         self.offset = Some(offset);
         self
+    }
+
+    /// The limit set by `limit` or a paginated `search_form_map`.
+    pub fn limit_value(&self) -> Option<i64> {
+        self.limit
+    }
+
+    /// The offset set by `offset` or a paginated `search_form_map`.
+    pub fn offset_value(&self) -> Option<i64> {
+        self.offset
     }
 
     pub fn list(self) -> Result<EntityList, Error> {

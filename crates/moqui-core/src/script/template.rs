@@ -65,6 +65,25 @@ pub trait TemplateRenderer: Send + Sync {
     ///
     /// Returns an error when the template does not compile.
     fn check(&self, source: &str) -> Result<(), Error>;
+
+    /// The text a file template is kept as between renders. Markdown is converted once here, as
+    /// Java keeps the rendered markdown of a location in `resource.markdown.location`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the source cannot be prepared.
+    fn prepare(&self, source: &str) -> Result<String, Error> {
+        Ok(source.to_string())
+    }
+
+    /// Render text that `prepare` returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the template does not compile or throws.
+    fn render_prepared(&self, prepared: &str, data: Option<&Value>) -> Result<String, Error> {
+        self.render(prepared, data)
+    }
 }
 
 /// The trusted fancy renderer: the live context, `ec` and `sri`.
@@ -111,9 +130,119 @@ impl TemplateRenderer for LockedRenderer {
     }
 }
 
-/// The renderer a conf `class` names: `fancy`, `fancy-html`, `fancy-locked` or `fancy-locked-html`.
+/// `.md` and `.markdown`: CommonMark with tables to HTML, raw HTML passed through as Java's
+/// flexmark renderer does. There is no context: the file is not a template.
+pub struct MarkdownRenderer;
+
+impl TemplateRenderer for MarkdownRenderer {
+    fn render(&self, source: &str, _data: Option<&Value>) -> Result<String, Error> {
+        Ok(moqui_lib::markdown::to_html(source))
+    }
+
+    fn check(&self, _source: &str) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn prepare(&self, source: &str) -> Result<String, Error> {
+        Ok(moqui_lib::markdown::to_html(source))
+    }
+
+    fn render_prepared(&self, prepared: &str, _data: Option<&Value>) -> Result<String, Error> {
+        Ok(prepared.to_string())
+    }
+}
+
+/// `.md.fancy` and `.markdown.fancy`, the port of Java's `.md.ftl`: the markdown is converted to
+/// HTML first and the result is a trusted fancy template. Unlike Java, the tags and `${}` of the
+/// template are set aside before the markdown pass, so markdown does not escape their text, and
+/// `${}` output is HTML escaped as in `.html.fancy` (FreeMarker in Java did not escape it).
+pub struct MarkdownFancyRenderer;
+
+impl TemplateRenderer for MarkdownFancyRenderer {
+    fn render(&self, source: &str, data: Option<&Value>) -> Result<String, Error> {
+        self.render_prepared(&self.prepare(source)?, data)
+    }
+
+    fn check(&self, source: &str) -> Result<(), Error> {
+        FancyRenderer { escape: Escape::Html }.check(&self.prepare(source)?)
+    }
+
+    fn prepare(&self, source: &str) -> Result<String, Error> {
+        markdown_fancy_source(source)
+    }
+
+    fn render_prepared(&self, prepared: &str, data: Option<&Value>) -> Result<String, Error> {
+        FancyRenderer { escape: Escape::Html }.render(prepared, data)
+    }
+}
+
+/// The fancy template that a markdown template becomes: the markdown converted to HTML with each
+/// tag, comment, `${}` and escape of the template put back as written. A tag alone in a paragraph
+/// loses the paragraph, so a tag on its own line stays on its own line.
+///
+/// # Errors
+///
+/// Returns an error when a tag or `${` of the template is not closed.
+pub fn markdown_fancy_source(source: &str) -> Result<String, Error> {
+    let mut prefix_number = 0;
+    let prefix = loop {
+        let candidate = format!("mqfancy{prefix_number}p");
+        if !source.contains(&candidate) {
+            break candidate;
+        }
+        prefix_number += 1;
+    };
+    // (placeholder, original text, is a tag)
+    let mut held: Vec<(String, String, bool)> = Vec::new();
+    let mut markdown = String::with_capacity(source.len());
+    let mut index = 0;
+    while index < source.len() {
+        let rest = &source[index..];
+        let span = if rest.starts_with("\\${") || rest.starts_with("\\<#") {
+            Some((index + 3, false))
+        } else if rest.starts_with("<#--") {
+            let end = rest
+                .find("-->")
+                .ok_or_else(|| fail(source, index, "comment is not closed"))?;
+            Some((index + end + 3, true))
+        } else if rest.starts_with("${") {
+            let end =
+                scan_expression(source, index + 2, b'}').ok_or_else(|| fail(source, index, "${ has no closing }"))?;
+            Some((end + 1, false))
+        } else if rest.starts_with("<#") || rest.starts_with("</#") || rest.starts_with("<@") || rest.starts_with("</@")
+        {
+            let (_, next) = tag(source, index)?;
+            Some((next, true))
+        } else {
+            None
+        };
+        if let Some((end, is_tag)) = span {
+            let placeholder = format!("{prefix}{}x", held.len());
+            markdown.push_str(&placeholder);
+            held.push((placeholder, source[index..end].to_string(), is_tag));
+            index = end;
+        } else {
+            let ch = rest.chars().next().unwrap_or('\u{FFFD}');
+            markdown.push(ch);
+            index += ch.len_utf8();
+        }
+    }
+    let mut html = moqui_lib::markdown::to_html(&markdown);
+    for (placeholder, original, is_tag) in &held {
+        if *is_tag {
+            html = html.replace(&format!("<p>{placeholder}</p>"), original);
+        }
+        html = html.replace(placeholder, original);
+    }
+    Ok(html)
+}
+
+/// The renderer a conf `class` names: `fancy`, `fancy-html`, `fancy-locked`, `fancy-locked-html`,
+/// `markdown` or `markdown-fancy`.
 pub fn renderer_by_class(class: &str) -> Option<Arc<dyn TemplateRenderer>> {
     Some(match class {
+        "markdown" => Arc::new(MarkdownRenderer),
+        "markdown-fancy" => Arc::new(MarkdownFancyRenderer),
         "fancy" => Arc::new(FancyRenderer { escape: Escape::None }),
         "fancy-html" => Arc::new(FancyRenderer { escape: Escape::Html }),
         "fancy-locked" => Arc::new(LockedRenderer { escape: Escape::None }),
@@ -181,13 +310,17 @@ impl TemplateRegistry {
                 }
             }
         }
-        // A factory with no conf still renders `.fancy` files.
+        // A factory with no conf still renders `.fancy` and markdown files.
         if by_extension.is_empty() {
             for (extension, class) in [
                 ("fancy", "fancy"),
                 ("html.fancy", "fancy-html"),
                 ("fancy-locked", "fancy-locked"),
                 ("html.fancy-locked", "fancy-locked-html"),
+                ("md", "markdown"),
+                ("markdown", "markdown"),
+                ("md.fancy", "markdown-fancy"),
+                ("markdown.fancy", "markdown-fancy"),
             ] {
                 if let Some(renderer) = renderer_by_class(class) {
                     by_extension.push((extension.to_string(), renderer));
@@ -210,8 +343,9 @@ impl TemplateRegistry {
             .map(|(_, renderer)| Arc::clone(renderer))
     }
 
-    /// Render a file template. `ec.resource.template`. The compiled form is kept by location and
-    /// last-modified time. A location whose extension has no renderer is an error.
+    /// Render a file template. `ec.resource.template`. The prepared text (the HTML of a markdown
+    /// file) is kept by location and last-modified time, and the compiled form by its text. A
+    /// location whose extension has no renderer is an error.
     ///
     /// # Errors
     ///
@@ -237,7 +371,7 @@ impl TemplateRegistry {
         let text = match cached {
             Some(text) => text,
             None => {
-                let text = resource.read_text()?;
+                let text = renderer.prepare(&resource.read_text()?)?;
                 let mut files = self.files.lock().unwrap_or_else(|err| err.into_inner());
                 if files.len() >= MAX_COMPILED {
                     files.clear();
@@ -246,7 +380,7 @@ impl TemplateRegistry {
                 text
             }
         };
-        renderer.render(&text, data)
+        renderer.render_prepared(&text, data)
     }
 }
 
