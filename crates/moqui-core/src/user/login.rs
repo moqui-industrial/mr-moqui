@@ -39,12 +39,18 @@ pub fn login_user(username: &str, password: &str) -> Result<(), Error> {
     if username.is_empty() || password.is_empty() {
         return Err(Error::new(INVALID_LOGIN));
     }
+    // The login reads and writes the user's own account whatever the caller may do.
+    let _authz = without_authz();
     let facade = entity_facade()?;
     let Some(account) = find_username(&facade, username)? else {
+        password::burn_verify(password);
         return Err(Error::new(INVALID_LOGIN));
     };
     let now = now_millis();
-    gate_account(&facade, &account, now)?;
+    if let Err(err) = gate_account(&facade, &account, now) {
+        password::burn_verify(password);
+        return Err(err);
+    }
     if !password_ok(&account, password)? {
         let user_id = text_field(&account, "userId");
         if !user_id.is_empty() {
@@ -53,16 +59,24 @@ pub fn login_user(username: &str, password: &str) -> Result<(), Error> {
         return Err(Error::new(INVALID_LOGIN));
     }
     post_password(&account, now)?;
-    password_acceptable(password)?;
     finish_login(&facade, &account, Some(password), true)
 }
 
+/// Authorization is off while the login code reads and writes the user tables.
+fn without_authz() -> Option<crate::context::AuthzGuard> {
+    ExecutionContext::with_current(|ctx| ctx.disable_authz())
+}
+
 /// Set the in-memory user without checking the password.
-#[allow(dead_code)]
+///
+/// # Errors
+///
+/// Returns an error when the account is unknown, disabled, terminated, or needs a password change.
 pub fn internal_login_user(username: &str) -> Result<(), Error> {
     if username.is_empty() {
         return Err(Error::new("No username specified"));
     }
+    let _authz = without_authz();
     let facade = entity_facade()?;
     let Some(account) = find_username(&facade, username)? else {
         return Err(Error::new(INVALID_LOGIN));
@@ -73,19 +87,34 @@ pub fn internal_login_user(username: &str) -> Result<(), Error> {
     finish_login(&facade, &account, None, false)
 }
 
-/// Mark the session anonymous. Does not set a username and does not use the `_NA_` account.
-#[allow(dead_code)]
-pub fn login_anonymous() -> Result<(), Error> {
+/// Mark the session anonymous when nobody is logged in. Returns true when it did, so the caller
+/// can undo it with [`logout_anonymous_only`]. This does not use the `_NA_` account.
+///
+/// # Errors
+///
+/// Returns an error only if the session cannot be read.
+pub fn login_anonymous() -> Result<bool, Error> {
     if session::current_username()?.is_some() || session::is_anonymous()? {
-        return Ok(());
+        return Ok(false);
     }
     session::set_anonymous(true);
-    Ok(())
+    Ok(true)
 }
 
-/// Clear the in-memory user and anonymous flag. Sets `hasLoggedOut` when a facade is present.
-#[allow(dead_code)]
+/// Undo [`login_anonymous`] without touching a real login.
+pub fn logout_anonymous_only() {
+    if session::current_username().ok().flatten().is_none() {
+        session::set_anonymous(false);
+    }
+}
+
+/// Clear the in-memory user and anonymous flag. Sets `hasLoggedOut` on the account.
+///
+/// # Errors
+///
+/// Returns an error when the account row cannot be updated. The session is cleared either way.
 pub fn logout() -> Result<(), Error> {
+    let _authz = without_authz();
     let update = if let Some(user_id) = session::current_user_id()? {
         match entity_facade() {
             Ok(facade) => mark_logged_out(&facade, &user_id),
@@ -99,9 +128,16 @@ pub fn logout() -> Result<(), Error> {
 }
 
 /// Replace the password with argon2 and push the old hash into `UserPasswordHistory`.
-#[allow(dead_code)]
+///
+/// The history rows and the new password are one transaction, so a failure part way leaves both
+/// as they were.
+///
+/// # Errors
+///
+/// Returns an error when the policy rejects the password, it was used recently, or a write fails.
 pub fn change_password(user_id: &str, new_password: &str) -> Result<(), Error> {
     password_acceptable(new_password)?;
+    let _authz = without_authz();
     let facade = entity_facade()?;
     let account = find_user_id(&facade, user_id)?
         .ok_or_else(|| Error::new(format!("Cannot update password, account not found with ID {user_id}")))?;
@@ -109,11 +145,19 @@ pub fn change_password(user_id: &str, new_password: &str) -> Result<(), Error> {
         return Err(Error::new("New password is same as current password"));
     }
     reject_history(&facade, &account, user_id, new_password)?;
-    remember_history(&facade, &account, user_id)?;
-    trim_history(&facade, user_id)?;
     let hashed = hash_password(new_password)?;
+    let tx = facade.transactions_for(USER_ACCOUNT)?;
+    tx.run(crate::transaction::TransactionAttribute::UseOrBegin, None, || {
+        remember_history(&facade, &account, user_id)?;
+        trim_history(&facade, user_id)?;
+        Ok(update_password_fields(&facade, user_id, &hashed)?)
+    })?;
+    Ok(())
+}
+
+fn update_password_fields(facade: &EntityFacade, user_id: &str, hashed: &str) -> Result<(), Error> {
     update_user(
-        &facade,
+        facade,
         user_id,
         &[
             ("currentPassword", Value::string(hashed)),
@@ -205,21 +249,18 @@ fn finish_login(facade: &EntityFacade, account: &EntityValue, plain: Option<&str
     let zone = nonempty(text_field(account, "timeZone"));
     session::set_locale(locale.as_deref());
     session::set_time_zone(zone.as_deref());
-    touch_session()
+    link_visit(facade, &user_id)
 }
 
-fn touch_session() -> Result<(), Error> {
-    let _ = session::current_user_id()?;
-    let _ = session::is_anonymous()?;
-    let _ = session::csrf_token()?;
-    let _ = session::visit_id()?;
-    let _ = session::visitor_id()?;
-    let _ = session::locale()?;
-    let _ = session::time_zone()?;
-    let _ = session::flash_messages()?;
-    let _ = session::saved_parameters()?;
-    let _ = session::error_parameters()?;
-    let _ = session::screen_history()?;
+/// The visit that began before login now belongs to the user.
+fn link_visit(facade: &EntityFacade, user_id: &str) -> Result<(), Error> {
+    let Some(visit_id) = session::visit_id()?.filter(|id| !id.is_empty()) else {
+        return Ok(());
+    };
+    let mut visit = facade.make_value("moqui.server.Visit")?;
+    visit.set("visitId", Value::string(visit_id));
+    visit.set("userId", Value::string(user_id));
+    visit.update(facade)?;
     Ok(())
 }
 
@@ -359,37 +400,51 @@ fn mark_logged_out(facade: &EntityFacade, user_id: &str) -> Result<(), Error> {
 }
 
 /// Failed-login count commits on a reserve connection, so the caller's rollback does not drop it.
+///
+/// The update only applies to the count that was read, and a lost race reads again, so parallel
+/// guesses cannot count as one.
 fn increment_failed(facade: &EntityFacade, user_id: &str) -> Result<(), Error> {
-    let (select_sql, update_sql) = facade.with_entity(USER_ACCOUNT, |entity, dialect, _| {
-        let condition = Condition::equals("userId", Value::string(user_id));
+    let statements = facade.with_entity(USER_ACCOUNT, |entity, dialect, _| {
+        let by_user = Condition::equals("userId", Value::string(user_id));
         let fields = [
             FieldRef::new("successiveFailedLogins"),
             FieldRef::new("disabled"),
             FieldRef::new("disabledDateTime"),
         ];
-        let select_sql = sql_select(entity, dialect, &fields, Some(&condition), &[], LimitOffset::default())?;
-        let update_sql = sql_update(
-            entity,
-            dialect,
-            &["successiveFailedLogins", "disabled", "disabledDateTime"],
-            Some(&condition),
-        )?;
-        Ok((select_sql, update_sql))
+        let set = ["successiveFailedLogins", "disabled", "disabledDateTime"];
+        let select_sql = sql_select(entity, dialect, &fields, Some(&by_user), &[], LimitOffset::default())?;
+        let counted = Condition::and(vec![
+            by_user.clone(),
+            Condition::equals("successiveFailedLogins", Value::I64(0)),
+        ]);
+        let uncounted = Condition::and(vec![by_user.clone(), Condition::is_null("successiveFailedLogins")]);
+        Ok(IncrementSql {
+            select: select_sql,
+            update_counted: sql_update(entity, dialect, &set, Some(&counted))?,
+            update_uncounted: sql_update(entity, dialect, &set, Some(&uncounted))?,
+        })
     })?;
     let tx = facade.transactions_for(USER_ACCOUNT)?;
     let user_id = user_id.to_string();
-    tx.with_reserve(|conn| apply_failed_increment(conn, &select_sql, &update_sql, &user_id))?;
+    tx.with_reserve(|conn| apply_failed_increment(conn, &statements, &user_id))?;
     Ok(())
 }
 
+struct IncrementSql {
+    select: String,
+    update_counted: String,
+    update_uncounted: String,
+}
+
+const INCREMENT_ATTEMPTS: usize = 8;
+
 fn apply_failed_increment(
     conn: &mut dyn DbConnection,
-    select_sql: &str,
-    update_sql: &str,
+    statements: &IncrementSql,
     user_id: &str,
 ) -> Result<(), moqui_lib::error::Error> {
     conn.begin()?;
-    let outcome = write_failed_increment(conn, select_sql, update_sql, user_id);
+    let outcome = write_failed_increment(conn, statements, user_id);
     match outcome {
         Ok(()) => conn.commit(),
         Err(err) => {
@@ -401,30 +456,43 @@ fn apply_failed_increment(
 
 fn write_failed_increment(
     conn: &mut dyn DbConnection,
-    select_sql: &str,
-    update_sql: &str,
+    statements: &IncrementSql,
     user_id: &str,
 ) -> Result<(), moqui_lib::error::Error> {
     let key = [Value::string(user_id)];
-    let rows = conn.query(select_sql, &key)?;
-    let Some(row) = rows.first() else {
-        return Err(moqui_lib::error::Error::new(format!("no UserAccount {user_id}")));
-    };
-    let next = row_i64(row, "successiveFailedLogins").saturating_add(1);
-    let disable = next > policy::max_failures();
-    let disabled = if disable {
-        Value::string("Y")
-    } else {
-        row_value(row, "disabled")
-    };
-    let when = if disable {
-        now_value()
-    } else {
-        row_value(row, "disabledDateTime")
-    };
-    let params = [Value::I64(next), disabled, when, Value::string(user_id)];
-    conn.execute(update_sql, &params)?;
-    Ok(())
+    for _ in 0..INCREMENT_ATTEMPTS {
+        let rows = conn.query(&statements.select, &key)?;
+        let Some(row) = rows.first() else {
+            return Err(moqui_lib::error::Error::new(format!("no UserAccount {user_id}")));
+        };
+        let previous = row.get("successiveFailedLogins").filter(|value| !value.is_null());
+        let next = row_i64(row, "successiveFailedLogins").saturating_add(1);
+        let disable = next > policy::max_failures();
+        let disabled = if disable {
+            Value::string("Y")
+        } else {
+            row_value(row, "disabled")
+        };
+        let when = if disable {
+            now_value()
+        } else {
+            row_value(row, "disabledDateTime")
+        };
+        let mut params = vec![Value::I64(next), disabled, when, Value::string(user_id)];
+        let sql = match previous {
+            Some(_) => {
+                params.push(Value::I64(row_i64(row, "successiveFailedLogins")));
+                &statements.update_counted
+            }
+            None => &statements.update_uncounted,
+        };
+        if conn.execute(sql, &params)? > 0 {
+            return Ok(());
+        }
+    }
+    Err(moqui_lib::error::Error::new(format!(
+        "could not count a failed login for {user_id}: the account kept changing"
+    )))
 }
 
 fn row_value(row: &DbRow, name: &str) -> Value {
@@ -493,6 +561,11 @@ pub(crate) mod memdb {
     type Tables = BTreeMap<String, Vec<Row>>;
 
     pub(crate) fn open() -> EntityFacade {
+        open_at(&framework_dir())
+    }
+
+    /// The same database over the entity files under `framework_dir`.
+    pub(crate) fn open_at(framework_dir: &std::path::Path) -> EntityFacade {
         let driver: Arc<dyn DbDriver> = Arc::new(MemDriver {
             store: Arc::new(Mutex::new(BTreeMap::new())),
         });
@@ -507,7 +580,7 @@ pub(crate) mod memdb {
         )
         .expect("memory pool");
         let facade = EntityFacade::open(
-            &framework_dir(),
+            framework_dir,
             "transactional",
             vec![EntityGroup::new("transactional", "postgres", transactions)],
         )
@@ -814,6 +887,7 @@ pub(crate) mod memdb {
     fn count_slots(pred: &Pred) -> usize {
         match pred {
             Pred::Cmp { .. } => 1,
+            Pred::In { slots, .. } => *slots,
             Pred::IsNull { .. } => 0,
             Pred::And(parts) | Pred::Or(parts) => parts.iter().map(count_slots).sum(),
         }
@@ -825,6 +899,16 @@ pub(crate) mod memdb {
                 let param = take_param(params, idx)?;
                 let left = row.get(field).cloned().unwrap_or(Value::Null);
                 Ok(compare(&left, *op, param))
+            }
+            Pred::In { field, slots } => {
+                let left = row.get(field).cloned().unwrap_or(Value::Null);
+                let mut found = false;
+                for _ in 0..*slots {
+                    if compare(&left, Op::Eq, take_param(params, idx)?) {
+                        found = true;
+                    }
+                }
+                Ok(found)
             }
             Pred::IsNull { field, negated } => {
                 let is_null = row.get(field).is_none_or(Value::is_null);
@@ -943,8 +1027,19 @@ pub(crate) mod memdb {
     }
 
     enum Pred {
-        Cmp { field: String, op: Op },
-        IsNull { field: String, negated: bool },
+        Cmp {
+            field: String,
+            op: Op,
+        },
+        /// `IN (?, ...)` with `slots` placeholders. An empty list is false.
+        In {
+            field: String,
+            slots: usize,
+        },
+        IsNull {
+            field: String,
+            negated: bool,
+        },
         And(Vec<Pred>),
         Or(Vec<Pred>),
     }
@@ -1050,6 +1145,11 @@ pub(crate) mod memdb {
         let columns = if count { Vec::new() } else { parse_columns(cur)? };
         cur.expect_keyword("FROM")?;
         let table = cur.quoted()?;
+        // A view select aliases its member table: FROM "Product" "PROD".
+        cur.skip();
+        if cur.peek_symbol(b'"') {
+            cur.quoted()?;
+        }
         let pred = if cur.eat_keyword("WHERE") {
             Some(parse_or(cur)?)
         } else {
@@ -1149,6 +1249,16 @@ pub(crate) mod memdb {
             cur.expect_keyword("NULL")?;
             return Ok(Pred::IsNull { field, negated });
         }
+        if cur.eat_keyword("IN") {
+            cur.expect_symbol(b'(')?;
+            let mut slots = 0;
+            while !cur.eat_symbol(b')') {
+                cur.expect_symbol(b'?')?;
+                slots += 1;
+                cur.eat_symbol(b',');
+            }
+            return Ok(Pred::In { field, slots });
+        }
         let Some(op) = cur.eat_op() else {
             return Err(cur.fail("expected comparison"));
         };
@@ -1235,7 +1345,22 @@ pub(crate) mod memdb {
             Some(op)
         }
 
+        fn peek_symbol(&mut self, symbol: u8) -> bool {
+            self.skip();
+            self.i < self.sql.len() && self.sql.as_bytes()[self.i] == symbol
+        }
+
+        /// A quoted name, or `"ALIAS"."name"` which is the name.
         fn quoted(&mut self) -> Result<String, Error> {
+            let first = self.quoted_part()?;
+            if self.i < self.sql.len() && self.sql.as_bytes()[self.i] == b'.' {
+                self.i += 1;
+                return self.quoted_part();
+            }
+            Ok(first)
+        }
+
+        fn quoted_part(&mut self) -> Result<String, Error> {
             if !self.eat_symbol(b'"') {
                 return Err(self.fail("expected identifier"));
             }
@@ -1448,15 +1573,15 @@ mod tests {
     }
 
     #[test]
-    fn a_weak_password_does_not_rehash_or_log_in() {
+    fn a_password_below_the_current_policy_still_logs_in() {
+        // The policy applies when a password is set. Java does not check it at login, so a user
+        // whose password predates the policy is not locked out.
         let (ctx, facade) = open_ctx();
         let _guard = ctx.enter();
         create_user(&facade, "ada", "secret", |_| {});
-        let err = login_user("ada", "secret").unwrap_err();
-        assert!(err.to_string().contains("shorter"), "{err}");
-        assert!(session::current_username().unwrap().is_none());
-        assert!(!text(&load_user(&facade, "ada"), "currentPassword").starts_with("$argon2"));
-        assert_eq!(i64_field(&load_user(&facade, "ada"), "successiveFailedLogins"), 0);
+        login_user("ada", "secret").unwrap();
+        assert_eq!(session::current_username().unwrap().as_deref(), Some("ada"));
+        assert!(text(&load_user(&facade, "ada"), "currentPassword").starts_with("$argon2"));
         session::reset_session();
     }
 

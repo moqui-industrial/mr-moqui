@@ -34,10 +34,12 @@ thread_local! {
 use super::cache::CacheFacade;
 use super::component::{self, ComponentInfo};
 use super::conf;
+use super::confcache::ConfCache;
 use super::error::Error;
 use super::message::MessageFacade;
 use super::resource::ResourceFacade;
 use crate::entity::EntityFacade;
+use crate::user::AuthInfo;
 
 const ENV_HEADER: &str = "# This file holds secrets and must be kept with the instance backup.\n";
 
@@ -48,6 +50,9 @@ pub struct ExecutionContextFactory {
     resource: ResourceFacade,
     cache: CacheFacade,
     conf_text: String,
+    conf_cache: std::sync::OnceLock<ConfCache>,
+    /// Hit times per `userId@type:name`, for tarpit counting.
+    tarpit_hits: std::sync::Mutex<std::collections::HashMap<String, Vec<i64>>>,
     property_names: Vec<String>,
     /// Entity facade for `dbresource://`. Empty until the host calls [`Self::set_entity`].
     entity: Arc<RwLock<Option<EntityFacade>>>,
@@ -105,6 +110,8 @@ impl ExecutionContextFactory {
             resource,
             cache,
             conf_text,
+            conf_cache: std::sync::OnceLock::new(),
+            tarpit_hits: std::sync::Mutex::new(std::collections::HashMap::new()),
             property_names,
             entity,
             pools,
@@ -116,6 +123,7 @@ impl ExecutionContextFactory {
             factory: Arc::clone(self),
             messages: RefCell::new(MessageFacade::new()),
             artifacts: RefCell::new(ArtifactStack::new()),
+            session: RefCell::new(crate::user::Memory::default()),
         }
     }
 
@@ -143,6 +151,45 @@ impl ExecutionContextFactory {
         &self.property_names
     }
 
+    /// True when the `artifact-execution` element for `artifact_type` has `flag="true"`.
+    pub fn artifact_flag(&self, artifact_type: &str, flag: &str) -> bool {
+        self.conf().artifact_flag(artifact_type, flag)
+    }
+
+    /// A non-empty `user-facade` child attribute from the conf.
+    pub fn user_facade_attr(&self, child: &str, name: &str) -> Option<String> {
+        self.conf().user_facade_attr(child, name)
+    }
+
+    fn conf(&self) -> &ConfCache {
+        self.conf_cache.get_or_init(|| ConfCache::parse(&self.conf_text))
+    }
+
+    /// Hit times recorded for a tarpit key, oldest first.
+    pub fn tarpit_times(&self, key: &str) -> Vec<i64> {
+        self.tarpit_hits
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .get(key)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Record a hit. Times older than `keep_ms` are dropped so the list stays small.
+    pub fn record_tarpit_hit(&self, key: &str, now_ms: i64, keep_ms: i64) {
+        let mut hits = self.tarpit_hits.lock().unwrap_or_else(|err| err.into_inner());
+        let list = hits.entry(key.to_string()).or_default();
+        list.retain(|time| now_ms - *time < keep_ms.max(1));
+        list.push(now_ms);
+    }
+
+    pub fn clear_tarpit_hits(&self, key: &str) {
+        self.tarpit_hits
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .remove(key);
+    }
+
     pub fn conf_text(&self) -> &str {
         &self.conf_text
     }
@@ -162,6 +209,7 @@ pub struct ExecutionContext {
     factory: Arc<ExecutionContextFactory>,
     messages: RefCell<MessageFacade>,
     artifacts: RefCell<ArtifactStack>,
+    session: RefCell<crate::user::Memory>,
 }
 
 impl ExecutionContext {
@@ -169,12 +217,82 @@ impl ExecutionContext {
         &self.factory
     }
 
+    pub(crate) fn session(&self) -> RefMut<'_, crate::user::Memory> {
+        self.session.borrow_mut()
+    }
+
     pub fn message(&self) -> RefMut<'_, MessageFacade> {
         self.messages.borrow_mut()
     }
 
+    /// Push an artifact frame without any check, for a frame that is already authorized.
     pub fn push(&self, artifact_type: &str, name: &str, action: &str) {
-        self.artifacts.borrow_mut().push(artifact_type, name, action);
+        self.artifacts
+            .borrow_mut()
+            .push_with(artifact_type, name, action, AuthInfo::default());
+    }
+
+    /// Decide an artifact against the frame below it, then push it. A denied artifact is not pushed.
+    ///
+    /// `requires_authz` false pushes the frame whatever the records say, so that it can still
+    /// inherit. `parameters` feed the `filterMap` of an authorization record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the user is not authorized, or a tarpit lock applies.
+    pub fn push_checked(
+        &self,
+        artifact_type: &str,
+        name: &str,
+        action: &str,
+        requires_authz: bool,
+        count_tarpit: bool,
+        parameters: Option<&std::collections::BTreeMap<String, moqui_lib::object::Value>>,
+    ) -> Result<(), Error> {
+        let (last, ancestor_deny, authz_disabled) = self.stack_authz_state();
+        // The decision reads entities, which push their own frames, so no borrow is held here.
+        let (permitted, info) = crate::user::is_permitted(
+            artifact_type,
+            name,
+            action,
+            &crate::user::Permit {
+                requires_authz,
+                authz_disabled,
+                count_tarpit,
+                parameters,
+            },
+            last.as_ref(),
+            ancestor_deny,
+        )?;
+        if !permitted {
+            tracing::warn!(stack = %self.artifacts.borrow().names(), "artifact authorization failed");
+            return Err(crate::user::denied(artifact_type, name, action, &info));
+        }
+        self.artifacts.borrow_mut().push_with(artifact_type, name, action, info);
+        Ok(())
+    }
+
+    /// The frame below, any deny on the stack, and whether authorization is disabled.
+    pub(crate) fn stack_authz_state(&self) -> (Option<AuthInfo>, bool, bool) {
+        let artifacts = self.artifacts.borrow();
+        let (last, deny) = artifacts.authz_state();
+        (last, deny, artifacts.authz_disabled())
+    }
+
+    /// Auth info of the top frame.
+    pub(crate) fn top_authz_info(&self) -> Option<AuthInfo> {
+        self.artifacts.borrow().authz_state().0
+    }
+
+    /// Mark the top frame inheritable for an anonymous user: all actions, or view only.
+    pub fn set_anonymous_authorized(&self, all_actions: bool, user_id: &str) {
+        if let Some(info) = self.artifacts.borrow_mut().top_info_mut() {
+            if all_actions {
+                info.anonymous_all(user_id);
+            } else {
+                info.anonymous_view(user_id);
+            }
+        }
     }
 
     pub fn pop(&self) -> Result<(), Error> {
@@ -183,11 +301,6 @@ impl ExecutionContext {
 
     pub fn disable_authz(&self) -> AuthzGuard {
         self.artifacts.borrow().disable_authz()
-    }
-
-    pub fn allows(&self) -> bool {
-        let target = self.artifacts.borrow().authz_target();
-        ArtifactStack::allows(target)
     }
 
     pub fn authz_disabled(&self) -> bool {
@@ -480,6 +593,11 @@ impl Drop for PropertyRollback {
 #[cfg(test)]
 impl ExecutionContextFactory {
     pub(crate) fn test_context() -> ExecutionContext {
+        Self::test_context_with_conf("")
+    }
+
+    /// A test context whose conf text is `conf_text`, for example an `artifact-execution-facade`.
+    pub(crate) fn test_context_with_conf(conf_text: &str) -> ExecutionContext {
         let conf = MNode::parse_text("test", "<moqui-conf/>").expect("conf");
         let entity = Arc::new(RwLock::new(None));
         let runtime_dir = PathBuf::from(".");
@@ -489,7 +607,9 @@ impl ExecutionContextFactory {
             components: Vec::new(),
             resource: ResourceFacade::new(runtime_dir, std::collections::HashMap::new(), entity.clone()),
             cache: CacheFacade::from_conf(&conf).expect("cache"),
-            conf_text: String::new(),
+            conf_text: conf_text.to_string(),
+            conf_cache: std::sync::OnceLock::new(),
+            tarpit_hits: std::sync::Mutex::new(std::collections::HashMap::new()),
             property_names: Vec::new(),
             entity,
             pools: crate::service::ServicePools::idle(),

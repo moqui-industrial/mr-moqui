@@ -20,7 +20,7 @@ use moqui_db::model::{EntityDefinition, EntityModel};
 use moqui_db::sql::Condition;
 use moqui_lib::object::Value;
 
-use super::authz::{authz_enabled_for, context_entered, granting_ids};
+use super::authz::{authz_enabled_for, context_entered};
 use super::login::entity_facade;
 use crate::context::{Error, ExecutionContext};
 use crate::entity::{EntityFacade, EntityValue};
@@ -49,10 +49,16 @@ pub fn apply_entity_filters(entity_name: &str, condition: Option<Condition>) -> 
 }
 
 fn extra_conditions(entity_name: &str) -> Result<Vec<Condition>, Error> {
-    let ids = granting_ids("AT_ENTITY", entity_name, "view")?;
-    if ids.is_empty() {
+    // The filters come from the record that authorized this find, the frame on top of the stack.
+    // A find that was not authorized by a record, or was inherited from no record, has none.
+    let Some(authz_id) = ExecutionContext::with_current(|ec| ec.top_authz_info())
+        .flatten()
+        .and_then(|info| info.aacv)
+        .map(|check| check.artifact_authz_id.clone())
+    else {
         return Ok(Vec::new());
-    }
+    };
+    let ids = [authz_id];
     let facade = entity_facade()?;
     let _guard =
         ExecutionContext::with_current(|ctx| ctx.disable_authz()).ok_or_else(|| Error::new("no execution context"))?;
@@ -116,9 +122,17 @@ fn one_filter(
         Err(err) => return Err(err),
     };
     let join_or = text(filter, "joinOr") == "Y";
+    let comparison = text(filter, "comparisonEnumId");
     facade
         .with_entity(entity_name, |entity, _, model| {
-            conditions_for(entity, model, &filter_entity, &map, join_or, allow_missing)
+            conditions_for(
+                entity,
+                model,
+                &filter_entity,
+                &map,
+                (join_or, &comparison),
+                allow_missing,
+            )
         })
         .map_err(Error::from)
 }
@@ -135,7 +149,7 @@ fn conditions_for(
     model: &EntityModel,
     filter_entity: &str,
     map: &BTreeMap<String, Value>,
-    join_or: bool,
+    (join_or, comparison): (bool, &str),
     allow_missing: bool,
 ) -> Result<Option<Condition>, moqui_lib::error::Error> {
     let relation = if entity.full_name == filter_entity {
@@ -170,7 +184,7 @@ fn conditions_for(
             )));
         }
         for name in names {
-            parts.push(value_condition(&name, value));
+            parts.push(value_condition(&name, value, comparison)?);
         }
     }
     Ok(join_conditions(parts, join_or))
@@ -229,11 +243,51 @@ fn prefixed_name(prefix: &str, field: &str) -> String {
     name
 }
 
-fn value_condition(field: &str, value: &Value) -> Condition {
-    match value {
-        Value::List(items) => Condition::is_in(field, items.clone()),
-        other => Condition::equals(field, other.clone()),
-    }
+/// One filter entry. With no comparison a list is `IN` and anything else is equality, as Java
+/// does; an enum id such as `ENTCO_LESS` picks the operator.
+fn value_condition(field: &str, value: &Value, comparison: &str) -> Result<Condition, moqui_lib::error::Error> {
+    let list = |value: &Value| match value {
+        Value::List(items) => items.clone(),
+        Value::Null => Vec::new(),
+        other => vec![other.clone()],
+    };
+    let condition = match comparison {
+        "" if matches!(value, Value::List(_)) => Condition::is_in(field, list(value)),
+        "" | "ENTCO_EQUALS" if value.is_null() => Condition::is_null(field),
+        "" | "ENTCO_EQUALS" => Condition::equals(field, value.clone()),
+        "ENTCO_NOT_EQUALS" if value.is_null() => Condition::is_not_null(field),
+        "ENTCO_NOT_EQUALS" => Condition::not_equals(field, value.clone()),
+        "ENTCO_LESS" => Condition::less(field, value.clone()),
+        "ENTCO_GREATER" => Condition::greater(field, value.clone()),
+        "ENTCO_LESS_EQ" => Condition::less_equal(field, value.clone()),
+        "ENTCO_GREATER_EQ" => Condition::greater_equal(field, value.clone()),
+        "ENTCO_IN" => Condition::is_in(field, list(value)),
+        "ENTCO_NOT_IN" => Condition::not_in(field, list(value)),
+        "ENTCO_BETWEEN" | "ENTCO_NOT_BETWEEN" => {
+            let mut bounds = list(value).into_iter();
+            let (Some(low), Some(high)) = (bounds.next(), bounds.next()) else {
+                return Err(moqui_lib::error::Error::new(format!(
+                    "filter on {field} needs a low and a high value for between"
+                )));
+            };
+            let between = Condition::between(field, low, high);
+            if comparison == "ENTCO_NOT_BETWEEN" {
+                Condition::negate(between)
+            } else {
+                between
+            }
+        }
+        "ENTCO_LIKE" => Condition::like(field, value.clone()),
+        "ENTCO_NOT_LIKE" => Condition::not_like(field, value.clone()),
+        "ENTCO_IS_NULL" => Condition::is_null(field),
+        "ENTCO_IS_NOT_NULL" => Condition::is_not_null(field),
+        other => {
+            return Err(moqui_lib::error::Error::new(format!(
+                "unknown filter comparison {other} on {field}"
+            )))
+        }
+    };
+    Ok(condition)
 }
 
 fn join_conditions(parts: Vec<Condition>, join_or: bool) -> Option<Condition> {
@@ -277,22 +331,17 @@ fn text(row: &EntityValue, field: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::{Arc, Mutex};
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use moqui_db::sql::Condition;
-    use moqui_lib::error::Error;
     use moqui_lib::object::Value;
 
     use super::super::session;
     use crate::context::ExecutionContextFactory;
-    use crate::driver::{DbCancel, DbConnection, DbDriver, DbRow};
-    use crate::entity::{EntityFacade, EntityGroup};
+    use crate::entity::EntityFacade;
     use crate::script::{clear_context_stack, set_context_name};
-    use crate::transaction::{PoolConfig, TransactionManager};
 
     static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -341,6 +390,10 @@ mod tests {
         )
         .unwrap();
 
+        // The filters come from the record that allowed this frame.
+        context
+            .push_checked("AT_ENTITY", VIEW, "view", true, false, None)
+            .expect("the ALL_USERS allow covers the view");
         let incoming = Condition::equals("productId", Value::string("P1"));
         let filtered = super::apply_entity_filters(VIEW, Some(incoming)).expect("user org filter");
         assert!(has_equals(&filtered, "productId", "P1"), "{filtered:?}");
@@ -351,6 +404,43 @@ mod tests {
         let both = super::apply_entity_filters(VIEW, None).expect("both filters");
         assert!(has_in(&both, "ownerPartyId", &["ORG1", "ORG2"]), "{both:?}");
         assert!(has_equals(&both, "ownerPartyId", "ORG9"), "{both:?}");
+
+        context.pop().unwrap();
+
+        // The same filters on a real find through the view: ORG9 is out until the active org is set.
+        {
+            let _guard = context.disable_authz();
+            for (id, owner) in [("P1", "ORG1"), ("P2", "ORG9"), ("P3", "ORG2")] {
+                create(
+                    &facade,
+                    "mantle.product.Product",
+                    &[("productId", id), ("ownerPartyId", owner)],
+                );
+            }
+        }
+        clear_context_stack();
+        set_context_name(
+            "filterOrgIds",
+            Value::List(vec![Value::string("ORG1"), Value::string("ORG2")]),
+        )
+        .unwrap();
+        let ids = |facade: &EntityFacade| -> Vec<String> {
+            let mut ids: Vec<String> = facade
+                .find(VIEW)
+                .unwrap()
+                .list()
+                .unwrap()
+                .values()
+                .iter()
+                .filter_map(|row| row.get("productId").and_then(Value::as_str).map(str::to_string))
+                .collect();
+            ids.sort();
+            ids
+        };
+        // applyCond on the active org set skips it while activeOrgId is unset.
+        assert_eq!(ids(&facade), ["P1", "P3"]);
+        set_context_name("activeOrgId", Value::string("ORG1")).unwrap();
+        assert_eq!(ids(&facade), ["P1"]);
 
         clear_context_stack();
         session::reset_session();
@@ -491,30 +581,7 @@ mod tests {
     }
 
     fn open_mem(framework_dir: &Path) -> EntityFacade {
-        let driver: Arc<dyn DbDriver> = Arc::new(MemDriver {
-            store: Arc::new(Mutex::new(BTreeMap::new())),
-        });
-        let transactions = TransactionManager::new(
-            driver,
-            PoolConfig {
-                min: 0,
-                max: 4,
-                reserve: 2,
-                acquire_timeout: Duration::from_secs(5),
-            },
-        )
-        .expect("memory pool");
-        let facade = EntityFacade::open(
-            framework_dir,
-            "transactional",
-            vec![EntityGroup::new("transactional", "postgres", transactions)],
-        )
-        .expect("entity facade");
-        facade.set_disable_audit_log(true);
-        facade.set_disable_entity_eca(true);
-        facade.set_disable_fk_create(true);
-        facade.set_disable_data_feed(true);
-        facade
+        super::super::login::memdb::open_at(framework_dir)
     }
 
     struct TempDir(PathBuf);
@@ -540,267 +607,5 @@ mod tests {
         let path = std::env::temp_dir().join(format!("moqui-{label}-{}-{nanos}-{seq}", std::process::id()));
         std::fs::create_dir_all(&path).unwrap();
         TempDir(path)
-    }
-
-    type Row = BTreeMap<String, Value>;
-    type Tables = BTreeMap<String, Vec<Row>>;
-
-    struct MemDriver {
-        store: Arc<Mutex<Tables>>,
-    }
-
-    struct MemConn {
-        store: Arc<Mutex<Tables>>,
-    }
-
-    struct NoCancel;
-
-    impl DbCancel for NoCancel {
-        fn cancel(&self) -> Result<(), Error> {
-            Ok(())
-        }
-    }
-
-    impl DbDriver for MemDriver {
-        fn connect(&self) -> Result<Box<dyn DbConnection>, Error> {
-            Ok(Box::new(MemConn {
-                store: Arc::clone(&self.store),
-            }))
-        }
-    }
-
-    impl DbConnection for MemConn {
-        fn execute(&mut self, sql: &str, params: &[Value]) -> Result<u64, Error> {
-            Ok(self.apply(sql, params)?.0)
-        }
-
-        fn query(&mut self, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
-            Ok(self.apply(sql, params)?.1)
-        }
-
-        fn query_once(&mut self, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
-            self.query(sql, params)
-        }
-
-        fn open_stream(&mut self, _sql: &str, _params: &[Value]) -> Result<(), Error> {
-            Ok(())
-        }
-
-        fn next_row(&mut self) -> Result<Option<DbRow>, Error> {
-            Ok(None)
-        }
-
-        fn close_stream(&mut self) -> Result<(), Error> {
-            Ok(())
-        }
-
-        fn stream_open(&self) -> bool {
-            false
-        }
-
-        fn begin(&mut self) -> Result<(), Error> {
-            Ok(())
-        }
-
-        fn commit(&mut self) -> Result<(), Error> {
-            Ok(())
-        }
-
-        fn rollback(&mut self) -> Result<(), Error> {
-            Ok(())
-        }
-
-        fn savepoint(&mut self, _name: &str) -> Result<(), Error> {
-            Ok(())
-        }
-
-        fn rollback_to_savepoint(&mut self, _name: &str) -> Result<(), Error> {
-            Ok(())
-        }
-
-        fn release_savepoint(&mut self, _name: &str) -> Result<(), Error> {
-            Ok(())
-        }
-
-        fn canceller(&self) -> Box<dyn DbCancel> {
-            Box::new(NoCancel)
-        }
-    }
-
-    impl MemConn {
-        fn apply(&mut self, sql: &str, params: &[Value]) -> Result<(u64, Vec<DbRow>), Error> {
-            let sql = sql.trim();
-            if sql.eq_ignore_ascii_case("SELECT 1") {
-                return Ok((
-                    1,
-                    vec![DbRow {
-                        columns: vec![("1".to_string(), Value::I64(1))],
-                    }],
-                ));
-            }
-            let mut cur = Cur { sql, i: 0 };
-            if cur.eat_keyword("INSERT") {
-                return self.insert(&mut cur, params);
-            }
-            if cur.eat_keyword("SELECT") {
-                return self.select(&mut cur);
-            }
-            Err(Error::new(format!("unsupported sql {sql}")))
-        }
-
-        fn insert(&mut self, cur: &mut Cur<'_>, params: &[Value]) -> Result<(u64, Vec<DbRow>), Error> {
-            cur.expect_keyword("INTO")?;
-            let table = cur.quoted()?;
-            cur.expect_symbol(b'(')?;
-            let mut columns = Vec::new();
-            loop {
-                columns.push(cur.quoted()?);
-                if !cur.eat_symbol(b',') {
-                    break;
-                }
-            }
-            cur.expect_symbol(b')')?;
-            cur.expect_keyword("VALUES")?;
-            cur.expect_symbol(b'(')?;
-            for index in 0..columns.len() {
-                if index > 0 {
-                    cur.expect_symbol(b',')?;
-                }
-                cur.expect_symbol(b'?')?;
-            }
-            cur.expect_symbol(b')')?;
-            cur.expect_end()?;
-            let mut row = BTreeMap::new();
-            for (index, column) in columns.iter().enumerate() {
-                let value = params
-                    .get(index)
-                    .cloned()
-                    .ok_or_else(|| Error::new("insert is missing a parameter"))?;
-                row.insert(column.clone(), value);
-            }
-            let mut tables = self.store.lock().unwrap_or_else(|err| err.into_inner());
-            tables.entry(table).or_default().push(row);
-            Ok((1, Vec::new()))
-        }
-
-        fn select(&mut self, cur: &mut Cur<'_>) -> Result<(u64, Vec<DbRow>), Error> {
-            let mut columns = Vec::new();
-            loop {
-                if cur.eat_keyword("FROM") {
-                    break;
-                }
-                columns.push(cur.quoted()?);
-                if !cur.eat_symbol(b',') {
-                    break;
-                }
-            }
-            if columns.is_empty() {
-                return Err(Error::new(format!("select has no columns in {}", cur.sql)));
-            }
-            if !cur.keyword_was_from() {
-                cur.expect_keyword("FROM")?;
-            }
-            let table = cur.quoted()?;
-            cur.expect_end()?;
-            let tables = self.store.lock().unwrap_or_else(|err| err.into_inner());
-            let rows = tables.get(&table).cloned().unwrap_or_default();
-            let projected = rows
-                .iter()
-                .map(|row| DbRow {
-                    columns: columns
-                        .iter()
-                        .map(|column| (column.clone(), row.get(column).cloned().unwrap_or(Value::Null)))
-                        .collect(),
-                })
-                .collect::<Vec<_>>();
-            let count = u64::try_from(projected.len()).unwrap_or(u64::MAX);
-            Ok((count, projected))
-        }
-    }
-
-    struct Cur<'a> {
-        sql: &'a str,
-        i: usize,
-    }
-
-    impl Cur<'_> {
-        fn skip(&mut self) {
-            while self.i < self.sql.len() && self.sql.as_bytes()[self.i].is_ascii_whitespace() {
-                self.i += 1;
-            }
-        }
-
-        fn eat_keyword(&mut self, word: &str) -> bool {
-            self.skip();
-            let rest = &self.sql[self.i..];
-            if rest.len() < word.len() || !rest[..word.len()].eq_ignore_ascii_case(word) {
-                return false;
-            }
-            let boundary = rest.as_bytes().get(word.len()).copied();
-            if boundary.is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_') {
-                return false;
-            }
-            self.i += word.len();
-            true
-        }
-
-        fn keyword_was_from(&self) -> bool {
-            let head = self.sql[..self.i].trim_end();
-            head.len() >= 4 && head[head.len() - 4..].eq_ignore_ascii_case("FROM")
-        }
-
-        fn expect_keyword(&mut self, word: &str) -> Result<(), Error> {
-            if self.eat_keyword(word) {
-                Ok(())
-            } else {
-                Err(Error::new(format!("expected {word} in {}", self.sql)))
-            }
-        }
-
-        fn quoted(&mut self) -> Result<String, Error> {
-            self.skip();
-            let bytes = self.sql.as_bytes();
-            if self.i >= bytes.len() || bytes[self.i] != b'"' {
-                return Err(Error::new(format!("expected ident in {}", self.sql)));
-            }
-            self.i += 1;
-            let start = self.i;
-            while self.i < bytes.len() && bytes[self.i] != b'"' {
-                self.i += 1;
-            }
-            if self.i >= bytes.len() {
-                return Err(Error::new("unterminated ident"));
-            }
-            let name = self.sql[start..self.i].to_string();
-            self.i += 1;
-            Ok(name)
-        }
-
-        fn eat_symbol(&mut self, symbol: u8) -> bool {
-            self.skip();
-            if self.sql.as_bytes().get(self.i) == Some(&symbol) {
-                self.i += 1;
-                true
-            } else {
-                false
-            }
-        }
-
-        fn expect_symbol(&mut self, symbol: u8) -> Result<(), Error> {
-            if self.eat_symbol(symbol) {
-                Ok(())
-            } else {
-                Err(Error::new(format!("expected {} in {}", char::from(symbol), self.sql)))
-            }
-        }
-
-        fn expect_end(&mut self) -> Result<(), Error> {
-            self.skip();
-            if self.i >= self.sql.len() {
-                Ok(())
-            } else {
-                Err(Error::new(format!("unexpected sql tail in {}", self.sql)))
-            }
-        }
     }
 }

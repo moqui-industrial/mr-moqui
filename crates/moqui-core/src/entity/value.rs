@@ -213,13 +213,9 @@ impl EntityFacade {
         include_null: bool,
         skip_pk: bool,
     ) -> Result<(), Error> {
-        let artifact = EntityArtifact::push(entity_name, operation);
-        if artifact.pushed {
-            let allowed = crate::context::ExecutionContext::with_current(|ctx| ctx.allows()).unwrap_or(false);
-            if !allowed {
-                return Err(Error::new(format!("{entity_name} is not authorized")));
-            }
-        }
+        // Declared first, so it drops last: the authorization cache is invalidated after the write.
+        let _note = WriteNote(entity_name);
+        let _artifact = EntityArtifact::push(self, entity_name, operation)?;
         let tx = self.transactions_for(entity_name)?;
         if tx.lock_track_enabled() {
             if let Ok(keys) = self.with_entity(entity_name, |entity, _, _| pk_values(entity, &plain)) {
@@ -465,21 +461,52 @@ fn bind_columns(columns: &[&str], values: &BTreeMap<String, Value>) -> Vec<Value
         .collect()
 }
 
-struct EntityArtifact {
+/// Tells the authorization cache an entity changed, once the write is over.
+struct WriteNote<'a>(&'a str);
+
+impl Drop for WriteNote<'_> {
+    fn drop(&mut self) {
+        crate::user::note_entity_write(self.0);
+    }
+}
+
+/// An `AT_ENTITY` frame on the artifact stack for one entity operation.
+///
+/// The frame is decided against the one below it, so a service or screen that was allowed to do
+/// this inherits the entity access. An entity whose `authorize-skip` covers the operation is
+/// pushed without needing an allow.
+pub(crate) struct EntityArtifact {
     pushed: bool,
 }
 
 impl EntityArtifact {
-    fn push(entity_name: &str, operation: &str) -> Self {
+    pub(crate) fn push(facade: &EntityFacade, entity_name: &str, operation: &str) -> Result<Self, Error> {
         if !crate::user::context_entered() {
-            return Self { pushed: false };
+            return Ok(Self { pushed: false });
         }
         let action = if operation == "upsert" { "create" } else { operation };
-        let pushed = crate::context::ExecutionContext::with_current(|ctx| {
-            ctx.push("AT_ENTITY", entity_name, action);
-        })
-        .is_some();
-        Self { pushed }
+        let skip = facade
+            .with_entity(entity_name, |entity, _, _| Ok(entity.authorize_skip.clone()))
+            .unwrap_or_default();
+        let requires_authz = !skips_authz(&skip, action);
+        let outcome = crate::context::ExecutionContext::with_current(|ctx| {
+            ctx.push_checked("AT_ENTITY", entity_name, action, requires_authz, false, None)
+        });
+        match outcome {
+            Some(Ok(())) => Ok(Self { pushed: true }),
+            Some(Err(err)) => Err(Error::new(err.message().to_string()).with_source(err)),
+            None => Ok(Self { pushed: false }),
+        }
+    }
+}
+
+/// `authorize-skip` is `true`, or a list that can name `create` and `view`. Update and delete
+/// are skipped only by `true`.
+fn skips_authz(skip: &str, action: &str) -> bool {
+    match skip {
+        "" | "false" => false,
+        "true" => true,
+        list => matches!(action, "create" | "view") && list.split(',').any(|part| part.trim() == action),
     }
 }
 

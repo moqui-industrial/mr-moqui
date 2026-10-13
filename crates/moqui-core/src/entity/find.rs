@@ -23,7 +23,7 @@ use super::exec::{after_statement, query_tx};
 use super::facade::EntityFacade;
 use super::field_rw;
 use super::params::{condition_params, entity_columns, map_row, page_params, view_columns};
-use super::value::{EntityList, EntityValue};
+use super::value::{EntityArtifact, EntityList, EntityValue};
 use crate::driver::DbRow;
 use crate::transaction::TransactionManager;
 
@@ -89,6 +89,8 @@ impl EntityFind {
     }
 
     pub fn list(self) -> Result<EntityList, Error> {
+        // The view frame is what authorizes the read, and the filters come from its record.
+        let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view")?;
         let condition = self.combined();
         let lookup = self.lookup(&condition);
         if let Some(cached) = cache::before_find(&self.facade, &lookup) {
@@ -112,6 +114,7 @@ impl EntityFind {
     }
 
     pub fn count(self) -> Result<i64, Error> {
+        let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view")?;
         let condition = self.combined();
         if let Some(count) = cache::before_count(&self.facade, &self.entity_name, condition.as_ref()) {
             return Ok(count);
@@ -136,6 +139,7 @@ impl EntityFind {
     /// not asked to mix in rows that are not in the database yet. The cursor path needs an active
     /// transaction: the open stream is that transaction's enlisted connection. Drop closes it.
     pub fn iterator(self) -> Result<EntityListIterator, Error> {
+        let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view")?;
         let condition = self.combined();
         let lookup = self.lookup(&condition);
         if let Some(cached) = cache::before_find(&self.facade, &lookup) {

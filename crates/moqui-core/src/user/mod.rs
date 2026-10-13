@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! User facade. Login, passwords, and authorization are no-ops until phase 5.
+//! User facade: login, passwords, the in-memory session, and artifact authorization.
 
 mod authz;
 mod filter;
@@ -23,9 +23,14 @@ mod session;
 mod visit;
 
 pub use authz::{authorize, context_entered};
+pub(crate) use authz::{denied, is_permitted, note_entity_write, AuthInfo, Permit};
 pub use filter::apply_entity_filters;
-pub use login::login_user;
+pub use login::{change_password, internal_login_user, login_anonymous, login_user, logout, logout_anonymous_only};
 pub use password::hash_password;
 pub use policy::password_acceptable;
-pub use session::current_username;
+pub(crate) use session::Memory;
+pub use session::{
+    csrf_token, current_user_id, current_username, error_parameters, flash_messages, is_anonymous, locale,
+    saved_parameters, screen_history, time_zone, visit_id, visitor_id,
+};
 pub use visit::record_visit;

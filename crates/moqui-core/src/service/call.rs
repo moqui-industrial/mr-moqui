@@ -79,9 +79,28 @@ pub fn sync_with(
     super::seca::run_seca_rules(&def.name, "pre-validate", parameters, None)?;
     let cleaned = validate::clean(&def, parameters, facade.as_ref())?;
     super::seca::run_seca_rules(&def.name, "pre-auth", &cleaned, None)?;
-    if def.authenticate != Authenticate::Off {
-        crate::user::authorize("AT_SERVICE", &def.name, auth_action(&def))?;
+    // A call with credentials logs in first, as Java does with authUsername and authPassword.
+    if let Some((username, password)) = auth_credentials(parameters) {
+        if let Err(err) = crate::user::login_user(&username, &password) {
+            add_error(err.message());
+            return Ok(BTreeMap::new());
+        }
     }
+    // Internal work with authorization disabled, a data load for one, needs no logged-in user.
+    let authz_off = crate::context::ExecutionContext::with_current(|ctx| ctx.authz_disabled()).unwrap_or(true);
+    if def.authenticate == Authenticate::Required
+        && !authz_off
+        && crate::user::current_username().ok().flatten().is_none()
+        && !crate::user::is_anonymous().unwrap_or(false)
+    {
+        return Err(Error::of_kind(
+            crate::context::ErrorKind::AuthenticationRequired,
+            format!("User must be logged in to call service {}", def.name),
+        ));
+    }
+    // The service goes on the artifact stack, so the entity operations it makes inherit its
+    // authorization. Only a service that requires authentication needs an allow record.
+    let _frame = ServiceFrame::push(&def, &cleaned)?;
     let facade = facade.ok_or_else(|| Error::new("no entity facade is installed"))?;
     let guard = semaphore::take(&def, &cleaned, &facade)?;
     let entity_name = if def.kind == ServiceKind::EntityAuto && !def.noun.is_empty() {
@@ -105,6 +124,92 @@ pub fn sync_with(
     super::seca::run_seca_rules(&def.name, "post-commit", &cleaned, Some(&produced))?;
     drop(guard);
     Ok(project(&def, produced))
+}
+
+/// The artifact frame for a running service. It pops when dropped, and ends an anonymous login the
+/// call started.
+struct ServiceFrame {
+    pushed: bool,
+    anonymous: bool,
+}
+
+impl ServiceFrame {
+    fn push(def: &ServiceDef, parameters: &BTreeMap<String, Value>) -> Result<Self, Error> {
+        if !crate::user::context_entered() {
+            return Ok(Self {
+                pushed: false,
+                anonymous: false,
+            });
+        }
+        let requires_authz = def.authenticate == Authenticate::Required;
+        let outcome = crate::context::ExecutionContext::with_current(|ctx| {
+            ctx.push_checked(
+                "AT_SERVICE",
+                &def.name,
+                auth_action(def),
+                requires_authz,
+                true,
+                Some(parameters),
+            )
+        });
+        if let Some(Err(err)) = outcome {
+            return Err(err);
+        }
+        let mut frame = Self {
+            pushed: outcome.is_some(),
+            anonymous: false,
+        };
+        // After the push, so the frame is the one marked.
+        let all = match def.authenticate {
+            Authenticate::AnonymousAll => Some(true),
+            Authenticate::AnonymousView => Some(false),
+            _ => None,
+        };
+        if let Some(all) = all {
+            let user_id = crate::user::current_user_id().ok().flatten().unwrap_or_default();
+            crate::context::ExecutionContext::with_current(|ctx| ctx.set_anonymous_authorized(all, &user_id));
+            frame.anonymous = crate::user::login_anonymous().unwrap_or(false);
+        }
+        Ok(frame)
+    }
+}
+
+impl Drop for ServiceFrame {
+    fn drop(&mut self) {
+        if self.anonymous {
+            crate::user::logout_anonymous_only();
+        }
+        if self.pushed {
+            crate::context::ExecutionContext::with_current(|ctx| {
+                let _ = ctx.pop();
+            });
+        }
+    }
+}
+
+/// `authUsername` and `authPassword`, or the same inside `authUserAccount`.
+fn auth_credentials(parameters: &BTreeMap<String, Value>) -> Option<(String, String)> {
+    let text = |value: Option<&Value>| value.map(moqui_lib::object::to_plain_string).unwrap_or_default();
+    let (mut username, mut password) = (String::new(), String::new());
+    if parameters.contains_key("authUsername") {
+        username = text(parameters.get("authUsername"));
+        password = text(parameters.get("authPassword"));
+    } else if let Some(Value::Map(account)) = parameters.get("authUserAccount") {
+        username = text(account.get("username"));
+        if username.is_empty() {
+            username = text(parameters.get("authUsername"));
+        }
+        password = text(account.get("currentPassword"));
+        if password.is_empty() {
+            password = text(parameters.get("authPassword"));
+        }
+    }
+    (!username.is_empty() && !password.is_empty()).then_some((username, password))
+}
+
+fn add_error(message: &str) {
+    let message = message.to_string();
+    crate::context::ExecutionContext::with_current(|ctx| ctx.message().add_error(message));
 }
 
 fn register_tx_rollback(
@@ -183,11 +288,7 @@ fn split_name(name: &str) -> (String, String) {
 }
 
 fn auth_action(def: &ServiceDef) -> &str {
-    match def.authenticate {
-        Authenticate::AnonymousView => "view",
-        Authenticate::AnonymousAll => "all",
-        _ => def.authz_action.as_deref().unwrap_or_else(|| verb_action(&def.verb)),
-    }
+    def.authz_action.as_deref().unwrap_or_else(|| verb_action(&def.verb))
 }
 
 fn verb_action(verb: &str) -> &'static str {
@@ -611,6 +712,7 @@ mod tests {
         let ctx = ExecutionContextFactory::test_context();
         ctx.factory().set_entity(facade.clone());
         let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
         let mut params = BTreeMap::new();
         params.insert("testId".into(), Value::string("T1"));
         params.insert("testMedium".into(), Value::string("first"));
@@ -669,6 +771,7 @@ mod tests {
         let ctx = ExecutionContextFactory::test_context();
         ctx.factory().set_entity(facade.clone());
         let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
         let mut row = facade
             .make_value("moqui.service.semaphore.ServiceParameterSemaphore")
             .unwrap();
@@ -714,6 +817,7 @@ mod tests {
         let ctx = ExecutionContextFactory::test_context();
         ctx.factory().set_entity(facade.clone());
         let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
         let mut seed = facade.make_value("moqui.test.TestEntity").unwrap();
         seed.set("testId", Value::string("A"));
         seed.set("testMedium", Value::string("seed"));
@@ -746,6 +850,7 @@ mod tests {
         ctx.factory().set_entity(facade.clone());
         {
             let _entered = ctx.enter();
+            let _authz = ctx.disable_authz();
             for (id, medium) in tape_rows {
                 let mut row = facade.make_value("moqui.test.TestEntity").unwrap();
                 row.set("testId", Value::string(*id));
@@ -787,6 +892,7 @@ mod tests {
         assert!(failures.is_empty(), "{failures:?}");
         let (_facade, ctx) = seeded_context(&[("A", "alpha")]);
         let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
         let mut params = BTreeMap::new();
         params.insert("testId".into(), Value::string("A"));
         let out = sync("probe#Row", &params).unwrap();
@@ -837,6 +943,7 @@ mod tests {
         assert!(failures.is_empty(), "{failures:?}");
         let (_facade, ctx) = seeded_context(&[]);
         let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
         let mut params = BTreeMap::new();
         params.insert("n".into(), Value::I32(21));
         let out = sync("outer#Num", &params).unwrap();
@@ -868,6 +975,7 @@ mod tests {
         assert!(failures.is_empty(), "{failures:?}");
         let (_facade, ctx) = seeded_context(&[]);
         let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
         let started = std::time::Instant::now();
         let err = sync("spin#Forever", &BTreeMap::new()).expect_err("interrupted");
         assert!(started.elapsed() < std::time::Duration::from_secs(10), "{err}");
@@ -896,6 +1004,7 @@ mod tests {
         let ctx = ExecutionContextFactory::test_context();
         ctx.factory().set_entity(facade);
         let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
         sync("mark#Row", &BTreeMap::new()).unwrap();
         // The rule runs in its own context frame, so its effect is seen through the message facade.
         assert!(ctx.message().messages().iter().any(|text| text == "seen"));
@@ -918,6 +1027,7 @@ mod tests {
         let ctx = ExecutionContextFactory::test_context();
         ctx.factory().set_entity(facade);
         let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
         let err = sync("ping#Remote", &BTreeMap::new()).unwrap_err();
         let text = err.to_string();
         assert!(text.contains("sim mode is active"), "{text}");

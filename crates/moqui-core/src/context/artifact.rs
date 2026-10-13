@@ -12,27 +12,22 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Artifact stack. Push and pop are tracing spans. Authorization runs when a context is entered.
+//! Artifact stack. Push and pop are tracing spans. A checked push decides the frame against the one below it.
 
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Instant;
 
 use super::error::Error;
+use crate::user::AuthInfo;
 
 struct Frame {
     artifact_type: String,
     name: String,
     action: String,
+    info: AuthInfo,
     entered: tracing::span::EnteredSpan,
     started: Instant,
-}
-
-/// Owned artifact identity for [`ArtifactStack::allows`]. `None` allows without the user facade.
-pub(super) struct AuthzTarget {
-    pub(super) artifact_type: String,
-    pub(super) name: String,
-    pub(super) action: String,
 }
 
 #[derive(Default)]
@@ -46,7 +41,8 @@ impl ArtifactStack {
         Self::default()
     }
 
-    pub(super) fn push(&mut self, artifact_type: &str, name: &str, action: &str) {
+    /// Push a frame that has already been decided. `info` is what the decision recorded.
+    pub(super) fn push_with(&mut self, artifact_type: &str, name: &str, action: &str, info: AuthInfo) {
         let artifact_type = artifact_type.to_string();
         let name = name.to_string();
         let action = action.to_string();
@@ -62,28 +58,34 @@ impl ArtifactStack {
             artifact_type,
             name,
             action,
+            info,
             entered,
             started: Instant::now(),
         });
     }
 
-    /// `None` when no context is entered, authorization is disabled, or the stack is empty.
-    pub(super) fn authz_target(&self) -> Option<AuthzTarget> {
-        if !crate::user::context_entered() || self.authz_disabled() {
-            return None;
-        }
-        self.frames.last().map(|frame| AuthzTarget {
-            artifact_type: frame.artifact_type.clone(),
-            name: frame.name.clone(),
-            action: frame.action.clone(),
-        })
+    /// Info of the top frame, and whether any frame carries a deny.
+    pub(super) fn authz_state(&self) -> (Option<AuthInfo>, bool) {
+        let last = self.frames.last().map(|frame| frame.info.clone());
+        let deny = self
+            .frames
+            .iter()
+            .any(|frame| frame.info.authz_type.as_deref() == Some("AUTHZT_DENY"));
+        (last, deny)
     }
 
-    pub(super) fn allows(target: Option<AuthzTarget>) -> bool {
-        let Some(target) = target else {
-            return true;
-        };
-        crate::user::authorize(&target.artifact_type, &target.name, &target.action).is_ok()
+    /// The stack as `type:name:action`, top first, for a failure message.
+    pub(super) fn names(&self) -> String {
+        self.frames
+            .iter()
+            .rev()
+            .map(|frame| format!("{}:{}:{}", frame.artifact_type, frame.name, frame.action))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    pub(super) fn top_info_mut(&mut self) -> Option<&mut AuthInfo> {
+        self.frames.last_mut().map(|frame| &mut frame.info)
     }
 
     pub(super) fn pop(&mut self) -> Result<(), Error> {

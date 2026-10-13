@@ -12,38 +12,465 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Artifact authorization from `ArtifactAuthz` and `ArtifactGroupMember`.
+//! Artifact authorization, ported from `ArtifactExecutionFacadeImpl.isPermitted`.
+//!
+//! The artifact stack carries each frame's [`AuthInfo`]. A new frame is decided against its
+//! parent frame: an inheritable allow on the parent covers it, an always-allow skips every
+//! check, and a deny anywhere on the stack stops a plain allow. The checks for a user's groups
+//! are read once and kept on the session until an authorization table changes.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
-use moqui_lib::node::MNode;
 use moqui_lib::object::Value;
 
-use super::login::entity_facade;
-use super::session::current_user_id;
+use super::login::{entity_facade, now_millis};
+use super::session::{current_user_id, with_session, AuthzCache, TarpitCheck};
 use crate::context::{Error, ExecutionContext};
 use crate::entity::{EntityFacade, EntityValue};
+
+const AUTHZT_ALWAYS: &str = "AUTHZT_ALWAYS";
+const AUTHZT_DENY: &str = "AUTHZT_DENY";
+const AUTHZT_ALLOW: &str = "AUTHZT_ALLOW";
+const AUTHZA_ALL: &str = "AUTHZA_ALL";
+const AT_ENTITY: &str = "AT_ENTITY";
+
+/// Bumped when a table the cached checks come from changes, so sessions reload them.
+static AUTHZ_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Entity writes call this. Only the authorization tables change the generation.
+pub(crate) fn note_entity_write(entity_name: &str) {
+    if matches!(
+        entity_name,
+        "moqui.security.ArtifactAuthz"
+            | "moqui.security.ArtifactGroupMember"
+            | "moqui.security.UserGroupMember"
+            | "moqui.security.ArtifactTarpit"
+    ) {
+        AUTHZ_GENERATION.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// One row of `ArtifactAuthz` joined to a member of its artifact group.
+#[derive(Debug)]
+pub(crate) struct AuthzCheck {
+    pub(crate) artifact_authz_id: String,
+    pub(crate) authz_type: String,
+    pub(crate) authz_action: String,
+    pub(crate) authz_service_name: String,
+    pub(crate) artifact_name: String,
+    pub(crate) artifact_type: String,
+    pub(crate) name_is_pattern: bool,
+    pub(crate) inherit_authz: bool,
+    pub(crate) filter_map: String,
+}
+
+/// What was authorized for an artifact frame, and whether a child frame may inherit it.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct AuthInfo {
+    pub(crate) user_id: String,
+    pub(crate) authz_type: Option<String>,
+    pub(crate) action: Option<String>,
+    pub(crate) inheritable: bool,
+    pub(crate) granted: Option<bool>,
+    pub(crate) aacv: Option<Arc<AuthzCheck>>,
+}
+
+impl AuthInfo {
+    fn from_check(check: &Arc<AuthzCheck>, user_id: &str, granted: bool) -> Self {
+        Self {
+            user_id: user_id.to_string(),
+            authz_type: Some(check.authz_type.clone()),
+            action: Some(check.authz_action.clone()),
+            inheritable: check.inherit_authz,
+            granted: Some(granted),
+            aacv: Some(Arc::clone(check)),
+        }
+    }
+
+    /// Mark the frame inheritable for any action, as `setAnonymousAuthorizedAll` does.
+    pub(crate) fn anonymous_all(&mut self, user_id: &str) {
+        self.inheritable = true;
+        self.user_id = if user_id.is_empty() {
+            "_NA_".to_string()
+        } else {
+            user_id.to_string()
+        };
+        if self.authz_type.as_deref() != Some(AUTHZT_ALWAYS) {
+            self.authz_type = Some(AUTHZT_ALLOW.to_string());
+        }
+        self.action = Some(AUTHZA_ALL.to_string());
+    }
+
+    /// Mark the frame inheritable for view, as `setAnonymousAuthorizedView` does.
+    pub(crate) fn anonymous_view(&mut self, user_id: &str) {
+        self.inheritable = true;
+        self.user_id = if user_id.is_empty() {
+            "_NA_".to_string()
+        } else {
+            user_id.to_string()
+        };
+        if self.authz_type.as_deref() != Some(AUTHZT_ALWAYS) {
+            self.authz_type = Some(AUTHZT_ALLOW.to_string());
+        }
+        if self.action.as_deref() != Some(AUTHZA_ALL) {
+            self.action = Some("AUTHZA_VIEW".to_string());
+        }
+    }
+}
+
+/// The enum id for an action name. Ids pass through.
+pub(crate) fn action_enum(action: &str) -> String {
+    match action {
+        "view" => "AUTHZA_VIEW",
+        "create" => "AUTHZA_CREATE",
+        "update" => "AUTHZA_UPDATE",
+        "delete" => "AUTHZA_DELETE",
+        "all" => AUTHZA_ALL,
+        other => other,
+    }
+    .to_string()
+}
 
 /// True while an [`crate::context::ExecutionContext::enter`] guard is live on this thread.
 pub fn context_entered() -> bool {
     ExecutionContext::current().is_some()
 }
 
-/// Allow the artifact when no context is entered, authz is disabled, or the conf flag is not true.
+/// Check one artifact without pushing it, against the top of the entered context's stack.
 ///
-/// Otherwise a matching `AUTHZT_ALWAYS` allows immediately, `AUTHZT_DENY` beats `AUTHZT_ALLOW`,
-/// and no matching allow is an error. `authzServiceName` is ignored.
+/// Allowed when no context is entered or authorization is disabled. This is the check a push makes,
+/// for code that only asks.
+///
+/// # Errors
+///
+/// Returns an error naming the user, artifact, and action when the user is not authorized.
 pub fn authorize(artifact_type: &str, name: &str, action: &str) -> Result<(), Error> {
     if !context_entered() {
         return Ok(());
     }
-    if ExecutionContext::with_current(|ctx| ctx.authz_disabled()).unwrap_or(false) {
+    let (last, ancestor_deny, disabled) =
+        ExecutionContext::with_current(|ec| ec.stack_authz_state()).unwrap_or((None, false, true));
+    let (permitted, info) = is_permitted(
+        artifact_type,
+        name,
+        action,
+        &Permit {
+            requires_authz: true,
+            authz_disabled: disabled,
+            count_tarpit: false,
+            parameters: None,
+        },
+        last.as_ref(),
+        ancestor_deny,
+    )?;
+    if permitted {
+        Ok(())
+    } else {
+        Err(denied(artifact_type, name, action, &info))
+    }
+}
+
+/// What a push asks of [`is_permitted`].
+pub(crate) struct Permit<'a> {
+    pub(crate) requires_authz: bool,
+    pub(crate) authz_disabled: bool,
+    pub(crate) count_tarpit: bool,
+    pub(crate) parameters: Option<&'a BTreeMap<String, Value>>,
+}
+
+pub(crate) fn denied(artifact_type: &str, name: &str, action: &str, info: &AuthInfo) -> Error {
+    let user = current_user_id().ok().flatten().unwrap_or_default();
+    let user = if user.is_empty() { "[No User]".to_string() } else { user };
+    let because = match &info.aacv {
+        Some(_) if info.granted == Some(false) => " because of a deny record",
+        _ => "",
+    };
+    Error::of_kind(
+        crate::context::ErrorKind::Unauthorized,
+        format!("User {user} is not authorized for {artifact_type} [{name}] action {action}{because}"),
+    )
+}
+
+/// Decide a new frame, as Java `isPermitted` does. Returns the decision and the frame's auth info.
+///
+/// `last` is the info of the frame below, `ancestor_deny` is true when any frame carries a deny.
+pub(crate) fn is_permitted(
+    artifact_type: &str,
+    name: &str,
+    action: &str,
+    permit: &Permit<'_>,
+    last: Option<&AuthInfo>,
+    ancestor_deny: bool,
+) -> Result<(bool, AuthInfo), Error> {
+    let is_entity = artifact_type == AT_ENTITY;
+    let inherited = |info: &mut AuthInfo| {
+        if let Some(last) = last {
+            *info = last.clone();
+        }
+    };
+    let mut info = AuthInfo::default();
+    // Entities are checked while the checks themselves read entities, so this must not recurse.
+    if (!permit.requires_authz || permit.authz_disabled) && is_entity {
+        if last.is_some_and(|last| last.inheritable) {
+            inherited(&mut info);
+        }
+        return Ok((true, info));
+    }
+    if !context_entered() {
+        return Ok((true, info));
+    }
+    let action_id = action_enum(action);
+    if !is_entity
+        && permit.count_tarpit
+        && artifact_flag(artifact_type, "tarpit-enabled")
+        && (permit.requires_authz || (artifact_type != "AT_XML_SCREEN" && artifact_type != "AT_REST_PATH"))
+    {
+        check_tarpit(artifact_type, name)?;
+    }
+    if let Some(last) = last {
+        if last.inheritable
+            && last.authz_type.as_deref() == Some(AUTHZT_ALWAYS)
+            && (last.action.as_deref() == Some(AUTHZA_ALL) || last.action.as_deref() == Some(action_id.as_str()))
+        {
+            return Ok((true, last.clone()));
+        }
+    }
+    if !artifact_flag(artifact_type, "authz-enabled") {
+        inherited(&mut info);
+        return Ok((true, info));
+    }
+    let user_id = current_user_id()?.unwrap_or_default();
+    let mut deny: Option<Arc<AuthzCheck>> = None;
+    let mut allow: Option<Arc<AuthzCheck>> = None;
+    {
+        let _guard = disable_authz_guard()?;
+        let facade = entity_facade()?;
+        let checks = user_checks(&facade)?;
+        for check in checks.iter() {
+            if check.artifact_type != artifact_type
+                || !(check.authz_action == AUTHZA_ALL || check.authz_action == action_id)
+                || !(check.name_is_pattern || check.artifact_name == name)
+            {
+                continue;
+            }
+            if check.name_is_pattern && !pattern_matches(&check.artifact_name, name) {
+                continue;
+            }
+            if !check.filter_map.is_empty() && !filter_map_matches(&check.filter_map, permit.parameters) {
+                continue;
+            }
+            let mut authz_type = check.authz_type.clone();
+            if !check.authz_service_name.is_empty() {
+                if let Some(overridden) =
+                    authz_service_type(&check.authz_service_name, &user_id, &action_id, artifact_type, name)?
+                {
+                    authz_type = overridden;
+                }
+            }
+            match authz_type.as_str() {
+                AUTHZT_DENY => deny = Some(Arc::clone(check)),
+                AUTHZT_ALWAYS => return Ok((true, AuthInfo::from_check(check, &user_id, true))),
+                AUTHZT_ALLOW if deny.is_none() && !ancestor_deny => allow = Some(Arc::clone(check)),
+                _ => {}
+            }
+        }
+        if let Some(check) = deny {
+            info = AuthInfo::from_check(&check, &user_id, false);
+            if !permit.requires_authz || permit.authz_disabled {
+                return Ok((true, info));
+            }
+            record_failure(&facade, artifact_type, name, &action_id, &user_id, true);
+            return Ok((false, info));
+        }
+        if let Some(check) = allow {
+            return Ok((true, AuthInfo::from_check(&check, &user_id, true)));
+        }
+        if let Some(last) = last {
+            if last.inheritable
+                && (last.user_id == "_NA_" || last.user_id == user_id)
+                && (last.action.as_deref() == Some(AUTHZA_ALL) || last.action.as_deref() == Some(action_id.as_str()))
+                && last.authz_type.as_deref() != Some(AUTHZT_DENY)
+            {
+                return Ok((true, last.clone()));
+            }
+        }
+        if !permit.requires_authz || permit.authz_disabled {
+            if last.is_some_and(|last| last.inheritable) {
+                inherited(&mut info);
+            }
+            return Ok((true, info));
+        }
+        record_failure(&facade, artifact_type, name, &action_id, &user_id, false);
+    }
+    info.granted = Some(false);
+    Ok((false, info))
+}
+
+fn disable_authz_guard() -> Result<crate::context::AuthzGuard, Error> {
+    ExecutionContext::with_current(|ec| ec.disable_authz())
+        .ok_or_else(|| Error::new("User is not authorized (no execution context)"))
+}
+
+fn pattern_matches(pattern: &str, name: &str) -> bool {
+    moqui_lib::object::compare(&Value::string(name), "matches", &Value::string(pattern), "String").unwrap_or(false)
+}
+
+/// Every entry of the check's `filterMap` must equal the same parameter. Without parameters the
+/// filter does not apply, as in Java.
+fn filter_map_matches(expression: &str, parameters: Option<&BTreeMap<String, Value>>) -> bool {
+    let Some(parameters) = parameters else {
+        return true;
+    };
+    match crate::script::eval_map(expression) {
+        Ok(wanted) => wanted
+            .iter()
+            .all(|(key, value)| parameters.get(key).is_some_and(|actual| actual == value)),
+        Err(err) => {
+            tracing::warn!(error = %err, "authz filterMap did not evaluate; the record is skipped");
+            false
+        }
+    }
+}
+
+/// The service named on an authz record may change the record's type.
+fn authz_service_type(
+    service: &str,
+    user_id: &str,
+    action_id: &str,
+    artifact_type: &str,
+    name: &str,
+) -> Result<Option<String>, Error> {
+    let mut parameters = BTreeMap::new();
+    parameters.insert("userId".to_string(), Value::string(user_id));
+    parameters.insert("authzActionEnumId".to_string(), Value::string(action_id));
+    parameters.insert("artifactTypeEnumId".to_string(), Value::string(artifact_type));
+    parameters.insert("artifactName".to_string(), Value::string(name));
+    let result = crate::service::call::sync(service, &parameters)?;
+    Ok(result
+        .get("authzTypeEnumId")
+        .map(moqui_lib::object::to_plain_string)
+        .filter(|text| !text.is_empty()))
+}
+
+/// Write the failure row. It is advisory, so a failure here is logged and the decision stands.
+fn record_failure(
+    facade: &EntityFacade,
+    artifact_type: &str,
+    name: &str,
+    action_id: &str,
+    user_id: &str,
+    is_deny: bool,
+) {
+    let outcome = (|| -> Result<(), Error> {
+        let mut row = facade.make_value("moqui.security.ArtifactAuthzFailure")?;
+        row.set_sequenced_id_primary(facade)?;
+        row.set("artifactName", Value::string(name));
+        row.set("artifactTypeEnumId", Value::string(artifact_type));
+        row.set("authzActionEnumId", Value::string(action_id));
+        row.set("userId", Value::string(user_id));
+        row.set("failureDate", super::login::now_value());
+        row.set("isDeny", Value::string(if is_deny { "Y" } else { "N" }));
+        row.create(facade)?;
+        Ok(())
+    })();
+    if let Err(err) = outcome {
+        tracing::warn!(error = %err, "could not record an artifact authorization failure");
+    }
+}
+
+/// Velocity limit. Counts hits per user and artifact and locks the artifact when a rule is exceeded.
+fn check_tarpit(artifact_type: &str, name: &str) -> Result<(), Error> {
+    let _guard = disable_authz_guard()?;
+    let facade = entity_facade()?;
+    let checks = tarpit_checks(&facade, artifact_type)?;
+    if checks.is_empty() {
         return Ok(());
     }
-    if !authz_enabled_for(artifact_type) {
-        return Ok(());
+    let user_id = current_user_id()?.unwrap_or_default();
+    let key = format!("{user_id}@{artifact_type}:{name}");
+    let now = now_millis();
+    let times = ExecutionContext::with_current(|ec| ec.factory().tarpit_times(&key)).unwrap_or_default();
+    let mut record = false;
+    let mut lock_for = 0_i64;
+    let mut longest = 0_i64;
+    for check in checks.iter() {
+        let matched = if check.name_is_pattern {
+            pattern_matches(&check.artifact_name, name)
+        } else {
+            check.artifact_name == name
+        };
+        if !matched {
+            continue;
+        }
+        record = true;
+        let window_ms = check.max_hits_duration.saturating_mul(1000);
+        longest = longest.max(window_ms);
+        let recent = times
+            .iter()
+            .filter(|time| now - **time >= 0 && now - **time < window_ms)
+            .count();
+        // The current hit counts too.
+        let hits = i64::try_from(recent).unwrap_or(i64::MAX).saturating_add(1);
+        if hits > check.max_hits_count && check.tarpit_duration > lock_for {
+            lock_for = check.tarpit_duration;
+            tracing::warn!(
+                user = %user_id,
+                artifact = %key,
+                "tarpit limit exceeded; locking for {lock_for} seconds"
+            );
+        }
     }
-    with_disabled_facade(|facade| decide(facade, artifact_type, name, action))
+    if record {
+        ExecutionContext::with_current(|ec| {
+            ec.factory().record_tarpit_hit(&key, now, longest.max(60_000));
+        });
+        let locks = facade
+            .find("moqui.security.ArtifactTarpitLock")?
+            .eq("userId", Value::string(&user_id))
+            .eq("artifactName", Value::string(name))
+            .eq("artifactTypeEnumId", Value::string(artifact_type))
+            .list()?;
+        let now_value = super::login::now_value();
+        for lock in locks.values() {
+            let Some(release) = lock.get("releaseDateTime").filter(|value| !value.is_null()) else {
+                continue;
+            };
+            if moqui_lib::object::compare_obj(release, &now_value).ok() == Some(std::cmp::Ordering::Greater) {
+                let seconds = match release {
+                    Value::Timestamp(stamp) => (stamp.as_millisecond() - now) / 1000,
+                    _ => 0,
+                };
+                return Err(Error::of_kind(
+                    crate::context::ErrorKind::Tarpit,
+                    format!(
+                        "User {user_id} has accessed {artifact_type} {name} too many times; retry after {seconds} seconds"
+                    ),
+                ));
+            }
+        }
+    }
+    if lock_for > 0 {
+        let release = moqui_lib::object::basic_convert(
+            &Value::I64(now.saturating_add(lock_for.saturating_mul(1000))),
+            "java.sql.Timestamp",
+        )
+        .value;
+        let mut row = facade.make_value("moqui.security.ArtifactTarpitLock")?;
+        row.set_sequenced_id_primary(&facade)?;
+        row.set("userId", Value::string(&user_id));
+        row.set("artifactName", Value::string(name));
+        row.set("artifactTypeEnumId", Value::string(artifact_type));
+        row.set("releaseDateTime", release);
+        row.create(&facade)?;
+        ExecutionContext::with_current(|ec| ec.factory().clear_tarpit_hits(&key));
+    }
+    Ok(())
+}
+
+fn artifact_flag(artifact_type: &str, flag: &str) -> bool {
+    ExecutionContext::with_current(|ec| ec.factory().artifact_flag(artifact_type, flag)).unwrap_or(false)
 }
 
 /// True when `artifact-execution` for this type has `authz-enabled="true"`.
@@ -51,198 +478,138 @@ pub(crate) fn authz_enabled_for(artifact_type: &str) -> bool {
     artifact_flag(artifact_type, "authz-enabled")
 }
 
-/// Artifact authz ids that grant `action` on `name`. Empty when a deny wins or nothing allows.
-pub(crate) fn granting_ids(artifact_type: &str, name: &str, action: &str) -> Result<Vec<String>, Error> {
-    with_disabled_facade(|facade| {
-        let groups = user_groups(facade)?;
-        let checks = load_checks(facade)?;
-        let mut always = Vec::new();
-        let mut allow = Vec::new();
-        let mut deny = false;
-        for check in checks {
-            if !matches_check(&groups, &check, artifact_type, name, action) {
-                continue;
-            }
-            match check.authz_type.as_str() {
-                "AUTHZT_ALWAYS" => always.push(check.artifact_authz_id),
-                "AUTHZT_DENY" => deny = true,
-                "AUTHZT_ALLOW" => allow.push(check.artifact_authz_id),
-                _ => {}
-            }
+fn generation() -> u64 {
+    AUTHZ_GENERATION.load(Ordering::Relaxed)
+}
+
+/// Run `body` on the session's cache, which is reset when the generation moved.
+fn with_cache<T>(body: impl FnOnce(&mut AuthzCache) -> T) -> T {
+    let now = generation();
+    with_session(|session| {
+        if session.authz.generation != now {
+            session.authz = AuthzCache {
+                generation: now,
+                ..AuthzCache::default()
+            };
         }
-        if !always.is_empty() {
-            return Ok(always);
-        }
-        if deny {
-            return Ok(Vec::new());
-        }
-        Ok(allow)
+        body(&mut session.authz)
     })
 }
 
-fn decide(facade: &EntityFacade, artifact_type: &str, name: &str, action: &str) -> Result<(), Error> {
-    if tarpit_locked(facade, artifact_type, name)? {
-        return Err(denied(artifact_type, name, action));
+/// The user's groups: `ALL_USERS` and each group with an open membership.
+fn user_groups(facade: &EntityFacade) -> Result<Arc<HashSet<String>>, Error> {
+    if let Some(groups) = with_cache(|cache| cache.groups.clone()) {
+        return Ok(groups);
+    }
+    let mut groups = HashSet::new();
+    groups.insert("ALL_USERS".to_string());
+    if let Some(user_id) = current_user_id()?.filter(|id| !id.is_empty()) {
+        let now = super::login::now_value();
+        let rows = facade
+            .find("moqui.security.UserGroupMember")?
+            .eq("userId", Value::string(&user_id))
+            .list()?;
+        for row in rows.values() {
+            if !membership_open(row, &now) {
+                continue;
+            }
+            let group = text(row, "userGroupId");
+            if !group.is_empty() {
+                groups.insert(group);
+            }
+        }
+    }
+    let groups = Arc::new(groups);
+    with_cache(|cache| cache.groups = Some(Arc::clone(&groups)));
+    Ok(groups)
+}
+
+fn user_checks(facade: &EntityFacade) -> Result<Arc<Vec<Arc<AuthzCheck>>>, Error> {
+    if let Some(checks) = with_cache(|cache| cache.checks.clone()) {
+        return Ok(checks);
     }
     let groups = user_groups(facade)?;
-    let checks = load_checks(facade)?;
-    let mut denied_hit = false;
-    let mut allowed = false;
-    for check in &checks {
-        if !matches_check(&groups, check, artifact_type, name, action) {
-            continue;
-        }
-        match check.authz_type.as_str() {
-            "AUTHZT_ALWAYS" => return Ok(()),
-            "AUTHZT_DENY" => denied_hit = true,
-            "AUTHZT_ALLOW" => allowed = true,
-            _ => {}
-        }
-    }
-    if denied_hit || !allowed {
-        return Err(denied(artifact_type, name, action));
-    }
-    Ok(())
-}
-
-fn denied(artifact_type: &str, name: &str, action: &str) -> Error {
-    let user = current_user_id().ok().flatten().unwrap_or_default();
-    Error::new(format!(
-        "User [{user}] is not authorized for {artifact_type} [{name}] action {action}"
-    ))
-}
-
-fn with_disabled_facade<T>(body: impl FnOnce(&EntityFacade) -> Result<T, Error>) -> Result<T, Error> {
-    let facade = match entity_facade() {
-        Ok(facade) => facade,
-        Err(err) => return Err(Error::new(format!("User is not authorized ({err})"))),
-    };
-    let _guard = ExecutionContext::with_current(|ctx| ctx.disable_authz())
-        .ok_or_else(|| Error::new("User is not authorized (no execution context)"))?;
-    body(&facade)
-}
-
-/// An existing lock blocks only when `tarpit-enabled="true"`. Hits are not recorded.
-fn tarpit_locked(facade: &EntityFacade, artifact_type: &str, name: &str) -> Result<bool, Error> {
-    if !artifact_flag(artifact_type, "tarpit-enabled") {
-        return Ok(false);
-    }
-    let Some(user_id) = current_user_id()? else {
-        return Ok(false);
-    };
-    if user_id.is_empty() {
-        return Ok(false);
-    }
-    let now = super::login::now_value();
-    let rows = facade.find("moqui.security.ArtifactTarpitLock")?.list()?;
-    for row in rows.values() {
-        if text(row, "userId") != user_id
-            || text(row, "artifactTypeEnumId") != artifact_type
-            || text(row, "artifactName") != name
-        {
-            continue;
-        }
-        let Some(release) = row.get("releaseDateTime") else {
-            continue;
-        };
-        if release.is_null() {
-            continue;
-        }
-        if moqui_lib::object::compare_obj(release, &now).ok() == Some(std::cmp::Ordering::Greater) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-fn artifact_flag(artifact_type: &str, flag: &str) -> bool {
-    ExecutionContext::with_current(|ctx| flag_in(ctx.factory().conf_text(), artifact_type, flag)).unwrap_or(false)
-}
-
-fn flag_in(text: &str, artifact_type: &str, flag: &str) -> bool {
-    if text.trim().is_empty() {
-        return false;
-    }
-    let Ok(root) = MNode::parse_text("moqui-conf", text) else {
-        return false;
-    };
-    let Some(facade) = root.first_named("artifact-execution-facade") else {
-        return false;
-    };
-    for node in facade.children_named("artifact-execution") {
-        if node.attribute("type").as_deref() != Some(artifact_type) {
-            continue;
-        }
-        return node.attribute(flag).as_deref() == Some("true");
-    }
-    false
-}
-
-struct Check {
-    artifact_authz_id: String,
-    user_group_id: String,
-    authz_type: String,
-    authz_action: String,
-    artifact_name: String,
-    artifact_type: String,
-    name_is_pattern: bool,
-}
-
-fn load_checks(facade: &EntityFacade) -> Result<Vec<Check>, Error> {
-    let authz_rows = facade.find("moqui.security.ArtifactAuthz")?.list()?;
-    let member_rows = facade.find("moqui.security.ArtifactGroupMember")?.list()?;
+    let mut ordered: Vec<&String> = groups.iter().collect();
+    ordered.sort();
+    let mut members: BTreeMap<String, Vec<EntityValue>> = BTreeMap::new();
     let mut checks = Vec::new();
-    for authz in authz_rows.values() {
-        let group_id = text(authz, "artifactGroupId");
-        let user_group = text(authz, "userGroupId");
-        let authz_id = text(authz, "artifactAuthzId");
-        if group_id.is_empty() || user_group.is_empty() || authz_id.is_empty() {
-            continue;
-        }
-        for member in member_rows.values() {
-            if text(member, "artifactGroupId") != group_id {
+    for group in ordered {
+        let authz_rows = facade
+            .find("moqui.security.ArtifactAuthz")?
+            .eq("userGroupId", Value::string(group))
+            .list()?;
+        for authz in authz_rows.values() {
+            let group_id = text(authz, "artifactGroupId");
+            let authz_id = text(authz, "artifactAuthzId");
+            if group_id.is_empty() || authz_id.is_empty() {
                 continue;
             }
-            let artifact_name = text(member, "artifactName");
-            let artifact_type = text(member, "artifactTypeEnumId");
-            if artifact_name.is_empty() || artifact_type.is_empty() {
-                continue;
+            if !members.contains_key(&group_id) {
+                let rows = facade
+                    .find("moqui.security.ArtifactGroupMember")?
+                    .eq("artifactGroupId", Value::string(&group_id))
+                    .list()?;
+                members.insert(group_id.clone(), rows.values().to_vec());
             }
-            checks.push(Check {
-                artifact_authz_id: authz_id.clone(),
-                user_group_id: user_group.clone(),
-                authz_type: text(authz, "authzTypeEnumId"),
-                authz_action: text(authz, "authzActionEnumId"),
-                artifact_name,
-                artifact_type,
-                name_is_pattern: text(member, "nameIsPattern") == "Y",
-            });
+            for member in members.get(&group_id).map(Vec::as_slice).unwrap_or_default() {
+                let artifact_name = text(member, "artifactName");
+                let artifact_type = text(member, "artifactTypeEnumId");
+                if artifact_name.is_empty() || artifact_type.is_empty() {
+                    continue;
+                }
+                checks.push(Arc::new(AuthzCheck {
+                    artifact_authz_id: authz_id.clone(),
+                    authz_type: text(authz, "authzTypeEnumId"),
+                    authz_action: text(authz, "authzActionEnumId"),
+                    authz_service_name: text(authz, "authzServiceName"),
+                    artifact_name,
+                    artifact_type,
+                    name_is_pattern: text(member, "nameIsPattern") == "Y",
+                    inherit_authz: text(member, "inheritAuthz") == "Y",
+                    filter_map: text(member, "filterMap"),
+                }));
+            }
         }
     }
+    let checks = Arc::new(checks);
+    with_cache(|cache| cache.checks = Some(Arc::clone(&checks)));
     Ok(checks)
 }
 
-fn user_groups(facade: &EntityFacade) -> Result<HashSet<String>, Error> {
-    let mut groups = HashSet::new();
-    groups.insert("ALL_USERS".to_string());
-    let Some(user_id) = current_user_id()? else {
-        return Ok(groups);
-    };
-    if user_id.is_empty() {
-        return Ok(groups);
+fn tarpit_checks(facade: &EntityFacade, artifact_type: &str) -> Result<Arc<Vec<TarpitCheck>>, Error> {
+    if let Some(found) = with_cache(|cache| cache.tarpit.get(artifact_type).cloned()) {
+        return Ok(found);
     }
-    let now = super::login::now_value();
-    let rows = facade.find("moqui.security.UserGroupMember")?.list()?;
-    for row in rows.values() {
-        if text(row, "userId") != user_id || !membership_open(row, &now) {
-            continue;
-        }
-        let group = text(row, "userGroupId");
-        if !group.is_empty() {
-            groups.insert(group);
+    let groups = user_groups(facade)?;
+    let mut checks = Vec::new();
+    for group in groups.iter() {
+        let tarpits = facade
+            .find("moqui.security.ArtifactTarpit")?
+            .eq("userGroupId", Value::string(group))
+            .list()?;
+        for tarpit in tarpits.values() {
+            let group_id = text(tarpit, "artifactGroupId");
+            let members = facade
+                .find("moqui.security.ArtifactGroupMember")?
+                .eq("artifactGroupId", Value::string(&group_id))
+                .eq("artifactTypeEnumId", Value::string(artifact_type))
+                .list()?;
+            for member in members.values() {
+                checks.push(TarpitCheck {
+                    artifact_name: text(member, "artifactName"),
+                    name_is_pattern: text(member, "nameIsPattern") == "Y",
+                    max_hits_count: number(tarpit, "maxHitsCount"),
+                    max_hits_duration: number(tarpit, "maxHitsDuration"),
+                    tarpit_duration: number(tarpit, "tarpitDuration"),
+                });
+            }
         }
     }
-    Ok(groups)
+    let checks = Arc::new(checks);
+    with_cache(|cache| {
+        cache.tarpit.insert(artifact_type.to_string(), Arc::clone(&checks));
+    });
+    Ok(checks)
 }
 
 fn membership_open(row: &EntityValue, now: &Value) -> bool {
@@ -264,39 +631,15 @@ fn membership_open(row: &EntityValue, now: &Value) -> bool {
     }
 }
 
-fn matches_check(groups: &HashSet<String>, check: &Check, artifact_type: &str, name: &str, action: &str) -> bool {
-    groups.contains(&check.user_group_id)
-        && check.artifact_type == artifact_type
-        && action_matches(&check.authz_action, action)
-        && name_matches(&check.artifact_name, check.name_is_pattern, name)
+fn number(row: &EntityValue, field: &str) -> i64 {
+    basic_long(row.get(field)).unwrap_or_default()
 }
 
-fn action_matches(record_action: &str, requested: &str) -> bool {
-    if record_action == "AUTHZA_ALL" {
-        return true;
+fn basic_long(value: Option<&Value>) -> Option<i64> {
+    match moqui_lib::object::basic_convert(value?, "Long").value {
+        Value::I64(number) => Some(number),
+        _ => None,
     }
-    let requested_enum = match requested {
-        "view" => "AUTHZA_VIEW",
-        "create" => "AUTHZA_CREATE",
-        "update" => "AUTHZA_UPDATE",
-        "delete" => "AUTHZA_DELETE",
-        "all" => "AUTHZA_ALL",
-        other => other,
-    };
-    record_action == requested || record_action == requested_enum
-}
-
-fn name_matches(member_name: &str, pattern: bool, artifact_name: &str) -> bool {
-    if !pattern {
-        return member_name == artifact_name;
-    }
-    moqui_lib::object::compare(
-        &Value::string(artifact_name),
-        "matches",
-        &Value::string(member_name),
-        "String",
-    )
-    .unwrap_or(false)
 }
 
 fn text(row: &EntityValue, field: &str) -> String {
@@ -327,7 +670,6 @@ mod tests {
         let context = ExecutionContextFactory::test_context();
         assert!(!super::context_entered());
         assert!(ExecutionContext::current().is_none());
-        assert!(context.allows());
         let outer = context.enter();
         assert!(super::context_entered());
         assert!(ExecutionContext::current().is_some());
@@ -338,41 +680,297 @@ mod tests {
         drop(outer);
         assert!(!super::context_entered());
         assert!(ExecutionContext::current().is_none());
-        assert!(context.allows());
     }
 
-    #[test]
-    fn user_without_a_record_is_denied_an_entity_create() {
-        session::reset_session();
+    /// A booted factory with the real conf, so artifact authorization is on, over an in-memory database.
+    struct World {
+        _runtime: TempDir,
+        _factory: std::sync::Arc<ExecutionContextFactory>,
+        context: ExecutionContext,
+        facade: EntityFacade,
+    }
+
+    fn world() -> World {
         let runtime = temp_dir("authz-runtime");
         let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
         let factory = ExecutionContextFactory::boot_with_framework(runtime.path(), &framework).expect("boot");
         let facade = memdb::open();
         factory.set_entity(facade.clone());
         let context = factory.new_context();
-        let _entered = context.enter();
+        World {
+            _runtime: runtime,
+            _factory: factory,
+            context,
+            facade,
+        }
+    }
+
+    /// An authz record for `artifact_name`: the group member, the authz row, and the type and action.
+    fn grant(world: &World, id: &str, artifact_type: &str, artifact_name: &str, authz_type: &str, inherit: &str) {
+        let _guard = world.context.disable_authz();
+        create(
+            &world.facade,
+            "moqui.security.ArtifactGroupMember",
+            &[
+                ("artifactGroupId", id),
+                ("artifactName", artifact_name),
+                ("artifactTypeEnumId", artifact_type),
+                ("nameIsPattern", "N"),
+                ("inheritAuthz", inherit),
+            ],
+        );
+        create(
+            &world.facade,
+            "moqui.security.ArtifactAuthz",
+            &[
+                ("artifactAuthzId", id),
+                ("userGroupId", "ALL_USERS"),
+                ("artifactGroupId", id),
+                ("authzTypeEnumId", authz_type),
+                ("authzActionEnumId", "AUTHZA_ALL"),
+            ],
+        );
+    }
+
+    fn create(facade: &EntityFacade, name: &str, fields: &[(&str, &str)]) {
+        let mut value = facade.make_value(name).unwrap();
+        for (field, text) in fields {
+            value.set(*field, Value::string(*text));
+        }
+        value.create(facade).unwrap();
+    }
+
+    const ENTITY: &str = "moqui.test.TestEntity";
+
+    #[test]
+    fn reads_and_writes_need_an_allow_record() {
+        let world = world();
+        let _entered = world.context.enter();
         session::set_user("nobody", "nobody");
+        let row = test_row(&world.facade);
+        let err = row.create(&world.facade).expect_err("create without an allow");
+        assert_eq!(
+            crate::context::ErrorKind::of(&err),
+            crate::context::ErrorKind::Unauthorized,
+            "{err}"
+        );
+        let err = world
+            .facade
+            .find(ENTITY)
+            .unwrap()
+            .list()
+            .expect_err("read without an allow");
+        assert!(err.to_string().contains("not authorized"), "{err}");
+        assert!(world.facade.find(ENTITY).unwrap().count().is_err());
 
-        let row = test_row(&facade);
-        let err = row.create(&facade).expect_err("create without an allow");
-        assert!(err.to_string().contains("authorized"), "{err}");
+        grant(&world, "READ_TEST", "AT_ENTITY", ENTITY, "AUTHZT_ALLOW", "N");
+        world.facade.find(ENTITY).unwrap().list().expect("read after the allow");
+        row.create(&world.facade).expect("the allow is for all actions");
 
-        let guard = context.disable_authz();
-        row.create(&facade).expect("create with authz disabled");
-        drop(guard);
-
-        let found = facade
-            .find("moqui.test.TestEntity")
+        let guard = world.context.disable_authz();
+        let found = world
+            .facade
+            .find(ENTITY)
             .unwrap()
             .eq("testId", Value::string("T-DENY"))
             .list()
             .unwrap();
+        drop(guard);
         assert_eq!(found.len(), 1);
-        session::reset_session();
+    }
+
+    #[test]
+    fn deny_beats_allow_and_always_beats_deny() {
+        let world = world();
+        let _entered = world.context.enter();
+        session::set_user("nobody", "nobody");
+        grant(&world, "ALLOW_TEST", "AT_ENTITY", ENTITY, "AUTHZT_ALLOW", "N");
+        grant(&world, "DENY_TEST", "AT_ENTITY", ENTITY, "AUTHZT_DENY", "N");
+        let err = world.facade.find(ENTITY).unwrap().list().expect_err("deny wins");
+        assert!(err.to_string().contains("deny record"), "{err}");
+        grant(&world, "ALWAYS_TEST", "AT_ENTITY", ENTITY, "AUTHZT_ALWAYS", "N");
+        world.facade.find(ENTITY).unwrap().list().expect("always wins");
+    }
+
+    #[test]
+    fn an_inheritable_service_allow_covers_the_entity_operations_it_makes() {
+        let world = world();
+        let _entered = world.context.enter();
+        session::set_user("nobody", "nobody");
+        grant(&world, "SVC_TEST", "AT_SERVICE", "test.Make#Row", "AUTHZT_ALLOW", "Y");
+        // Without the service frame the entity is not allowed.
+        assert!(test_row(&world.facade).create(&world.facade).is_err());
+        world
+            .context
+            .push_checked("AT_SERVICE", "test.Make#Row", "all", true, false, None)
+            .expect("the service is allowed");
+        test_row(&world.facade)
+            .create(&world.facade)
+            .expect("the entity write inherits the service's allow");
+        world.facade.find(ENTITY).unwrap().list().expect("so does a read");
+        world.context.pop().unwrap();
+        assert!(test_row(&world.facade).create(&world.facade).is_err());
+
+        // The same allow without inheritance covers only the service.
+        grant(
+            &world,
+            "NOINH_TEST",
+            "AT_SERVICE",
+            "test.Other#Row",
+            "AUTHZT_ALLOW",
+            "N",
+        );
+        world
+            .context
+            .push_checked("AT_SERVICE", "test.Other#Row", "all", true, false, None)
+            .expect("the service is allowed");
+        assert!(world.facade.find(ENTITY).unwrap().list().is_err());
+        world.context.pop().unwrap();
+        // A deny below the stack keeps a plain allow from applying.
+    }
+
+    #[test]
+    fn a_deny_on_the_stack_stops_a_plain_allow_above_it() {
+        let world = world();
+        let _entered = world.context.enter();
+        session::set_user("nobody", "nobody");
+        grant(&world, "DENYSVC", "AT_SERVICE", "test.Denied#Row", "AUTHZT_DENY", "N");
+        // A denied frame is not pushed, so the deny is seen as the explicit-deny error.
+        let err = world
+            .context
+            .push_checked("AT_SERVICE", "test.Denied#Row", "all", true, false, None)
+            .expect_err("denied");
+        assert!(err.to_string().contains("deny record"), "{err}");
+        // Not requiring authz pushes it anyway, carrying the deny.
+        world
+            .context
+            .push_checked("AT_SERVICE", "test.Denied#Row", "all", false, false, None)
+            .expect("pushed without needing authz");
+        grant(&world, "ENT_ALLOW", "AT_ENTITY", ENTITY, "AUTHZT_ALLOW", "N");
+        assert!(
+            world.facade.find(ENTITY).unwrap().list().is_err(),
+            "the allow does not apply under a deny frame"
+        );
+        world.context.pop().unwrap();
+        world
+            .facade
+            .find(ENTITY)
+            .unwrap()
+            .list()
+            .expect("allowed once the deny frame is gone");
+    }
+
+    #[test]
+    fn a_new_allow_is_seen_without_a_new_session() {
+        let world = world();
+        let _entered = world.context.enter();
+        session::set_user("nobody", "nobody");
+        assert!(world.facade.find(ENTITY).unwrap().list().is_err());
+        grant(&world, "LATE_TEST", "AT_ENTITY", ENTITY, "AUTHZT_ALLOW", "N");
+        world
+            .facade
+            .find(ENTITY)
+            .unwrap()
+            .list()
+            .expect("the cached checks were reloaded");
+    }
+
+    #[test]
+    fn a_failed_check_leaves_an_authz_failure_row() {
+        let world = world();
+        let _entered = world.context.enter();
+        session::set_user("nobody", "nobody");
+        assert!(world.facade.find(ENTITY).unwrap().list().is_err());
+        let _guard = world.context.disable_authz();
+        let failures = world
+            .facade
+            .find("moqui.security.ArtifactAuthzFailure")
+            .unwrap()
+            .eq("artifactName", Value::string(ENTITY))
+            .list()
+            .unwrap();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures.values()[0].get("isDeny").and_then(Value::as_str), Some("N"));
+    }
+
+    #[test]
+    fn a_service_over_its_hit_limit_is_locked() {
+        let world = world();
+        let _entered = world.context.enter();
+        session::set_user("nobody", "nobody");
+        grant(&world, "TARPIT_SVC", "AT_SERVICE", "test.Busy#Row", "AUTHZT_ALLOW", "N");
+        {
+            let _guard = world.context.disable_authz();
+            create(
+                &world.facade,
+                "moqui.security.ArtifactTarpit",
+                &[
+                    ("userGroupId", "ALL_USERS"),
+                    ("artifactGroupId", "TARPIT_SVC"),
+                    ("maxHitsCount", "2"),
+                    ("maxHitsDuration", "60"),
+                    ("tarpitDuration", "120"),
+                ],
+            );
+        }
+        for _ in 0..2 {
+            world
+                .context
+                .push_checked("AT_SERVICE", "test.Busy#Row", "all", true, true, None)
+                .expect("under the limit");
+            world.context.pop().unwrap();
+        }
+        let err = world
+            .context
+            .push_checked("AT_SERVICE", "test.Busy#Row", "all", true, true, None);
+        assert!(err.is_ok(), "the third hit exceeds the limit and sets the lock");
+        world.context.pop().unwrap();
+        let err = world
+            .context
+            .push_checked("AT_SERVICE", "test.Busy#Row", "all", true, true, None)
+            .expect_err("locked");
+        assert_eq!(err.kind(), crate::context::ErrorKind::Tarpit, "{err}");
+    }
+
+    #[test]
+    fn login_works_with_authorization_on_and_no_entity_allows() {
+        let world = world();
+        let _entered = world.context.enter();
+        {
+            let _guard = world.context.disable_authz();
+            let mut user = world.facade.make_value("moqui.security.UserAccount").unwrap();
+            user.set("userId", Value::string("U1"));
+            user.set("username", Value::string("ada"));
+            user.set(
+                "currentPassword",
+                Value::string(super::super::password::hash_password("Secret1!").unwrap()),
+            );
+            user.set("passwordHashType", Value::string("argon2"));
+            user.set("successiveFailedLogins", Value::I64(2));
+            user.create(&world.facade).unwrap();
+        }
+        // Authorization is on and the caller is anonymous: the login must still read and update.
+        super::super::login_user("ada", "Secret1!").expect("login");
+        assert_eq!(session::current_username().unwrap().as_deref(), Some("ada"));
+        let _guard = world.context.disable_authz();
+        let user = world
+            .facade
+            .find("moqui.security.UserAccount")
+            .unwrap()
+            .eq("userId", Value::string("U1"))
+            .one()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            user.get("successiveFailedLogins")
+                .map(moqui_lib::object::to_plain_string)
+                .as_deref(),
+            Some("0")
+        );
     }
 
     fn test_row(facade: &EntityFacade) -> EntityValue {
-        let mut row = facade.make_value("moqui.test.TestEntity").unwrap();
+        let mut row = facade.make_value(ENTITY).unwrap();
         row.set("testId", Value::string("T-DENY"));
         row
     }

@@ -18,6 +18,7 @@ mod artifact;
 mod cache;
 mod component;
 mod conf;
+mod confcache;
 mod error;
 mod factory;
 mod locate;
@@ -28,7 +29,7 @@ pub use artifact::AuthzGuard;
 pub use cache::CacheFacade;
 pub use component::ComponentInfo;
 pub use conf::{load_merged_conf, merge_conf};
-pub use error::Error;
+pub use error::{Error, ErrorKind};
 pub use factory::{ContextGuard, ExecutionContext, ExecutionContextFactory};
 pub use locate::{framework_dir, locate};
 pub use message::MessageFacade;
@@ -259,20 +260,18 @@ mod tests {
         std::os::unix::fs::symlink(root.join("runtime/base-component"), temp.path().join("base-component")).unwrap();
         let factory = ExecutionContextFactory::boot_with_framework(temp.path(), root.join("framework")).unwrap();
         let context = factory.new_context();
-        assert!(context.allows());
         assert!(!context.authz_disabled());
-        context.push("AT_XML_SCREEN", "tools", "view");
-        assert!(context.allows());
+        context
+            .push_checked("AT_XML_SCREEN", "tools", "view", true, false, None)
+            .unwrap();
         {
             let guard = context.disable_authz();
             assert!(context.authz_disabled());
-            assert!(context.allows());
             context.push("AT_SERVICE", "nested", "run");
             context.pop().unwrap();
             drop(guard);
         }
         assert!(!context.authz_disabled());
-        assert!(context.allows());
         context.pop().unwrap();
         assert!(context.pop().is_err());
 

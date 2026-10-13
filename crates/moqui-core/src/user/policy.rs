@@ -14,8 +14,6 @@
 
 //! Password policy from `user-facade/password`. Missing conf uses the documented fallbacks.
 
-use moqui_lib::node::MNode;
-
 use crate::context::{Error, ExecutionContext};
 
 /// Reject a password that is short, has too few digits, or has no non-alphanumeric character.
@@ -48,7 +46,6 @@ pub(crate) fn password_rules() -> (i64, i64, i64) {
     )
 }
 
-#[allow(dead_code)]
 pub(crate) fn history_limit() -> i64 {
     conf_number("password", "history-limit", 5)
 }
@@ -91,22 +88,7 @@ fn conf_text(child: &str, name: &str, fallback: &str) -> String {
 }
 
 fn conf_text_opt(child: &str, name: &str) -> Option<String> {
-    ExecutionContext::with_current(|ctx| facade_attr(ctx.factory().conf_text(), child, name)).flatten()
-}
-
-fn facade_attr(text: &str, child: &str, name: &str) -> Option<String> {
-    if text.trim().is_empty() {
-        return None;
-    }
-    let root = MNode::parse_text("moqui-conf", text).ok()?;
-    let facade = root.first_named("user-facade")?;
-    let node = facade.first_named(child)?;
-    let value = node.attribute(name)?;
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
+    ExecutionContext::with_current(|ctx| ctx.factory().user_facade_attr(child, name)).flatten()
 }
 
 #[cfg(test)]

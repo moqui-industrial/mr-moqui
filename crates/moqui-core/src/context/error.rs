@@ -16,8 +16,36 @@
 
 use std::fmt;
 
+/// What a caller can act on. The web layer maps these to 401, 403, and 429.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ErrorKind {
+    #[default]
+    General,
+    /// The call needs a logged-in user.
+    AuthenticationRequired,
+    /// The user is logged in and not allowed.
+    Unauthorized,
+    /// Too many hits on an artifact.
+    Tarpit,
+}
+
+impl ErrorKind {
+    /// The kind of the first context [`Error`] in an error's source chain, or `General`.
+    pub fn of(err: &(dyn std::error::Error + 'static)) -> Self {
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+        while let Some(found) = current {
+            if let Some(context) = found.downcast_ref::<Error>() {
+                return context.kind;
+            }
+            current = found.source();
+        }
+        Self::General
+    }
+}
+
 pub struct Error {
     message: String,
+    kind: ErrorKind,
     source: Option<Box<dyn std::error::Error + Send + Sync>>,
 }
 
@@ -25,8 +53,20 @@ impl Error {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            kind: ErrorKind::General,
             source: None,
         }
+    }
+
+    pub fn of_kind(kind: ErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            ..Self::new(message)
+        }
+    }
+
+    pub fn kind(&self) -> ErrorKind {
+        self.kind
     }
 
     pub fn with_source(mut self, source: impl std::error::Error + Send + Sync + 'static) -> Self {
@@ -43,6 +83,12 @@ impl From<moqui_lib::error::Error> for Error {
     fn from(err: moqui_lib::error::Error) -> Self {
         let message = err.message().to_string();
         Self::new(message).with_source(err)
+    }
+}
+
+impl From<Error> for moqui_lib::error::Error {
+    fn from(err: Error) -> Self {
+        moqui_lib::error::Error::new(err.message)
     }
 }
 

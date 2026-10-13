@@ -50,7 +50,7 @@ pub fn simple_hash(password: &str, salt: &str, hash_type: &str, base64_encode: b
 }
 
 /// Login-key hash. Uses `login-key/@encrypt-hash-type`, an empty salt, and hex. Never argon2.
-#[allow(dead_code)]
+#[allow(dead_code)] // Login keys arrive with the web layer.
 pub fn hash_login_key(login_key: &str) -> Result<String, Error> {
     simple_hash(login_key, "", &policy::login_key_hash_type(), false)
 }
@@ -74,14 +74,33 @@ pub(crate) fn passwords_match(
         return verify_argon2(plain, stored);
     }
     let hashed = simple_hash(plain, salt, hash_type, base64_encode)?;
-    Ok(hashed == stored)
+    Ok(constant_time_eq(hashed.as_bytes(), stored.as_bytes()))
+}
+
+/// Compare without stopping at the first difference.
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter().zip(right).fold(0_u8, |acc, (a, b)| acc | (a ^ b)) == 0
+}
+
+/// Run a verification that always fails, so an unknown or locked account takes as long as a wrong password.
+pub(crate) fn burn_verify(plain: &str) {
+    static DUMMY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let stored = DUMMY.get_or_init(|| hash_password("burn-verify-placeholder").unwrap_or_default());
+    let _ = passwords_match(plain, stored, ARGON2, "", false);
 }
 
 fn verify_argon2(plain: &str, stored: &str) -> Result<bool, Error> {
     match Argon2::default().verify_password(plain.as_bytes(), stored) {
         Ok(()) => Ok(true),
         Err(argon2::password_hash::Error::PasswordInvalid) => Ok(false),
-        Err(err) => Err(Error::new(format!("argon2 verify failed: {err}"))),
+        // A malformed stored hash is a failed login, the same as a wrong password.
+        Err(err) => {
+            tracing::warn!(error = %err, "stored argon2 hash could not be verified");
+            Ok(false)
+        }
     }
 }
 
