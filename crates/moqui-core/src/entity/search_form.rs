@@ -102,17 +102,10 @@ impl EntityFind {
         Ok(SearchFormResult { find: self, context })
     }
 
-    /// `name`, `-name` (descending), `+name`, with `^` for ignore case (not applied), comma separated.
+    /// `name`, `-name` (descending), `+name`, with `^` for upper case, comma separated.
     fn order_by_list(mut self, text: &str) -> Self {
         for part in text.split(',') {
-            let part = part.trim().trim_start_matches('^');
-            let (name, descending) = match part.strip_prefix('-') {
-                Some(rest) => (rest, true),
-                None => (part.trim_start_matches('+'), false),
-            };
-            if !name.is_empty() {
-                self = self.order_by(name, descending);
-            }
+            self = self.order_by_text(part);
         }
         self
     }
@@ -131,7 +124,7 @@ impl EntityFind {
                     })
                     .map(|alias| alias.name.as_str())
                     .collect();
-                return Ok(view_columns(entity, model)?
+                return Ok(view_columns(entity)
                     .into_iter()
                     .map(|(name, java_type)| SearchField {
                         aggregate: aggregates.contains(name.as_str()),

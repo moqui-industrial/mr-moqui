@@ -32,7 +32,6 @@ use moqui_lib::node::MNode;
 use moqui_lib::object::{basic_convert, Value};
 
 use super::facade::EntityFacade;
-use super::params::condition_params;
 use super::value::EntityValue;
 use crate::driver::{DbConnection, DbRow};
 use crate::transaction::TransactionManager;
@@ -946,7 +945,7 @@ fn select_sql(
 ) -> Result<(String, Vec<Value>), Error> {
     facade.with_entity(entity_name, |entity, dialect, _| {
         let fields: Vec<FieldRef> = columns.iter().copied().map(FieldRef::new).collect();
-        let sql = select(
+        let statement = select(
             entity,
             dialect,
             &fields,
@@ -954,8 +953,7 @@ fn select_sql(
             &[],
             LimitOffset::default(),
         )?;
-        let params = condition.as_ref().map(condition_params).unwrap_or_default();
-        Ok((sql, params))
+        Ok((statement.sql, statement.params))
     })
 }
 
@@ -3210,7 +3208,7 @@ fn load_zip_bytes(
                 return Err(Error::new(format!(
                     "zip entry {} uses an unsupported method",
                     meta.name
-                )))
+                )));
             }
         };
         if meta.method == 8

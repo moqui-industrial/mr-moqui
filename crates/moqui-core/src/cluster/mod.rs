@@ -482,7 +482,7 @@ fn load_members(facade: &EntityFacade) -> Result<Vec<LoadedMember>, Error> {
     let fields: Vec<FieldRef> = MEMBER_COLUMNS.iter().copied().map(FieldRef::new).collect();
     let sql = facade
         .with_entity(MEMBER, |entity, dialect, _| {
-            sql_select(entity, dialect, &fields, None, &[], LimitOffset::default())
+            sql_select(entity, dialect, &fields, None, &[], LimitOffset::default()).map(|statement| statement.sql)
         })
         .map_err(Error::from)?;
     let tx = facade.transactions_for(MEMBER).map_err(Error::from)?;
@@ -514,7 +514,7 @@ fn write_member(facade: &EntityFacade, member: &Member) -> Result<(), Error> {
     let by_id = Condition::equals("instanceId", Value::string(&member.instance_id));
     let (select_sql, insert_sql, update_sql) = facade
         .with_entity(MEMBER, |entity, dialect, _| {
-            let select_sql = sql_select(entity, dialect, &fields, Some(&by_id), &[], LimitOffset::default())?;
+            let select_sql = sql_select(entity, dialect, &fields, Some(&by_id), &[], LimitOffset::default())?.sql;
             let insert_sql = sql_insert(entity, dialect, MEMBER_COLUMNS)?;
             let update_sql = sql_update(
                 entity,
@@ -526,7 +526,8 @@ fn write_member(facade: &EntityFacade, member: &Member) -> Result<(), Error> {
                     "certFingerprint",
                 ],
                 Some(&by_id),
-            )?;
+            )?
+            .sql;
             Ok((select_sql, insert_sql, update_sql))
         })
         .map_err(Error::from)?;
@@ -563,7 +564,7 @@ fn touch_member(facade: &EntityFacade, instance_id: &str) -> Result<(), Error> {
     let condition = Condition::equals("instanceId", Value::string(instance_id));
     let sql = facade
         .with_entity(MEMBER, |entity, dialect, _| {
-            sql_update(entity, dialect, &["heartbeat"], Some(&condition))
+            sql_update(entity, dialect, &["heartbeat"], Some(&condition)).map(|statement| statement.sql)
         })
         .map_err(Error::from)?;
     let params = [now_value(), Value::string(instance_id)];

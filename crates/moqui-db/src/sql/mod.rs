@@ -16,17 +16,68 @@
 //!
 //! Identifiers are the model field and table names. `name-replace` runs before quoting.
 //! Postgres quotes with `"`. MySQL quotes with backticks. Placeholders stay `?`.
+//!
+//! Every builder that writes a placeholder returns a [`Statement`] whose `params` are the values
+//! for those placeholders, in order. Insert and update `SET` columns are the exception: the caller
+//! binds those first, then the statement's params.
 
 mod condition;
 mod ident;
 mod statement;
+mod view;
 
-pub use condition::{render_condition, CompareOp, Condition, FieldRef, LimitOffset, Nulls, OrderBy};
+use moqui_lib::error::Error;
+use moqui_lib::object::{basic_convert, Value};
+
+pub use condition::{comparison, render_condition, CompareOp, Condition, FieldRef, LimitOffset, Nulls, OrderBy};
 pub use ident::{is_mysql, quote_ident};
 pub use statement::{
-    add_column, count, create_foreign_key, create_index, create_table, delete, insert, insert_or_update, select,
-    select_view, select_view_with, select_with, update, SelectOptions,
+    add_column, count, count_with, create_fk_index, create_foreign_key, create_index, create_table, delete,
+    foreign_key_index_name, foreign_key_name, insert, insert_or_update, select, select_with, update, SelectOptions,
 };
+pub use view::{count_view, select_view, select_view_with};
+
+/// SQL text and the values for its placeholders, in order.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Statement {
+    pub sql: String,
+    pub params: Vec<Value>,
+}
+
+/// What a find needs from the running framework to evaluate a view's `entity-condition` and the
+/// `${}` in its SQL expressions. Core passes its execution context; tests use [`PlainValues`].
+pub trait ConditionValues {
+    /// What a `date-filter` without `valid-date` compares with.
+    fn now(&self) -> Value;
+    /// Expand `${}` in a definition value or SQL expression. Only called on text that has `${`.
+    fn expand(&self, text: &str) -> Result<String, Error>;
+    /// Convert definition text to a Java type, as Java `convertFieldString` does.
+    fn convert(&self, text: &str, java_type: &str) -> Result<Value, Error>;
+}
+
+/// [`ConditionValues`] with a fixed now, plain conversion, and no expansion.
+#[derive(Debug, Clone)]
+pub struct PlainValues {
+    pub now: Value,
+}
+
+impl ConditionValues for PlainValues {
+    fn now(&self) -> Value {
+        self.now.clone()
+    }
+
+    fn expand(&self, text: &str) -> Result<String, Error> {
+        Err(Error::new(format!("no context to expand {text}")))
+    }
+
+    fn convert(&self, text: &str, java_type: &str) -> Result<Value, Error> {
+        if text.is_empty() || text == "null" {
+            return Ok(Value::Null);
+        }
+        let converted = basic_convert(&Value::string(text), java_type);
+        Ok(converted.value)
+    }
+}
 
 #[cfg(test)]
 mod tests;

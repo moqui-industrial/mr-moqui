@@ -855,7 +855,17 @@ fn foobar_select_view_joins_member_entities() {
     let dialects = Dialects::load(&conf).unwrap();
     let dialect = dialects.get("postgres").unwrap();
     let view = model.entity("moqui.test.FooBar").unwrap();
-    let sql = select_view(view, &model, dialect, None, &[], LimitOffset::default()).unwrap();
+    let sql = select_view(
+        view,
+        &model,
+        dialect,
+        &super::find::FindValues,
+        None,
+        &[],
+        LimitOffset::default(),
+    )
+    .unwrap()
+    .sql;
     assert!(sql.contains("JOIN"), "{sql}");
     assert!(sql.contains("Foo"), "{sql}");
     assert!(sql.contains("Bar"), "{sql}");

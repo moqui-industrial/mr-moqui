@@ -35,7 +35,8 @@ use moqui_lib::object::{basic_convert, is_empty, to_plain_string, Value};
 use super::exec::{after_statement, query_tx};
 use super::facade::EntityFacade;
 use super::field_rw;
-use super::params::{self, condition_params, map_row, page_params, view_columns};
+use super::find::FindValues;
+use super::params::{self, map_row, view_columns};
 use super::value::EntityValue;
 
 const MAX_DEPTH: u32 = 32;
@@ -403,7 +404,7 @@ fn find_rest(facade: &EntityFacade, target: &Resolved, parameters: &BTreeMap<Str
         find = find.condition(condition.clone());
     }
     for entry in plan.order {
-        find = find.order_by(&entry.field.name, entry.descending);
+        find = find.order_by_entry(entry);
     }
     if let Some(limit) = page.limit {
         find = find.limit(limit);
@@ -853,7 +854,7 @@ fn nest_related(
         for item in items {
             let Value::Map(_) = &item else { continue };
             let mut child_parameters = map_to_btree(&item);
-            copy_parent_keys(&mut child_parameters, &parent_keys, relationship.as_ref(), facade)?;
+            copy_parent_keys(&mut child_parameters, &parent_keys, relationship.as_ref());
             nested.push(mutate(facade, nested_verb, &child_name, &child_parameters, depth + 1)?);
         }
         if nested.is_empty() {
@@ -884,16 +885,14 @@ fn copy_parent_keys(
     child: &mut BTreeMap<String, Value>,
     parent: &BTreeMap<String, Value>,
     relationship: Option<&Relationship>,
-    facade: &EntityFacade,
-) -> Result<(), Error> {
+) {
     for (key, value) in parent {
         child.entry(key.clone()).or_insert_with(|| value.clone());
     }
     let Some(relationship) = relationship else {
-        return Ok(());
+        return;
     };
-    let target = load_snap(facade, &relationship.related)?;
-    for (source, related) in expand_key_map(&relationship.relationship_type, &relationship.key_map, &target) {
+    for (source, related) in relationship.key_pairs.clone() {
         if let Some(value) = parent.get(&source) {
             if !is_empty(value) {
                 child.insert(related, value.clone());
@@ -903,7 +902,6 @@ fn copy_parent_keys(
     for key_value in &relationship.key_values {
         child.insert(key_value.related.clone(), Value::string(&key_value.value));
     }
-    Ok(())
 }
 
 fn defined_name(facade: &EntityFacade, name: &str) -> Option<String> {
@@ -1155,7 +1153,7 @@ fn related_rows(
     one: bool,
 ) -> Result<Vec<EntityValue>, Error> {
     let target = load_snap(facade, &relationship.related)?;
-    let pairs = expand_key_map(&relationship.relationship_type, &relationship.key_map, &target);
+    let pairs = relationship.key_pairs.clone();
     let mut find = facade.find(&target.full_name)?;
     let mut bound = false;
     for (source_name, target_name) in pairs {
@@ -1197,45 +1195,7 @@ pub(crate) fn relationship_pairs(
         })
     })?;
     let target = load_snap(facade, &relationship.related)?;
-    let pairs = expand_key_map(&relationship.relationship_type, &relationship.key_map, &target);
-    Ok((target.full_name, pairs))
-}
-
-fn expand_key_map(relationship_type: &str, key_map: &[KeyMap], target: &EntitySnap) -> Vec<(String, String)> {
-    let pks: Vec<String> = target
-        .fields
-        .iter()
-        .filter(|field| field.is_pk)
-        .map(|field| field.name.clone())
-        .collect();
-    let one = relationship_type.starts_with("one");
-    if key_map.is_empty() && one {
-        return pks.into_iter().map(|pk| (pk.clone(), pk)).collect();
-    }
-    if key_map.len() == 1 {
-        let map = &key_map[0];
-        let related = match map.related.as_deref().filter(|value| !value.is_empty()) {
-            Some(related) => related.to_string(),
-            None if one && pks.len() == 1 => pks[0].clone(),
-            None => map.field_name.clone(),
-        };
-        return vec![(map.field_name.clone(), related)];
-    }
-    let field_names: HashSet<&str> = target.fields.iter().map(|field| field.name.as_str()).collect();
-    key_map
-        .iter()
-        .map(|map| {
-            let mut related = map
-                .related
-                .clone()
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| map.field_name.clone());
-            if one && pks.len() == 1 && !field_names.contains(related.as_str()) {
-                related = pks[0].clone();
-            }
-            (map.field_name.clone(), related)
-        })
-        .collect()
+    Ok((target.full_name, relationship.key_pairs))
 }
 
 fn node_to_value(node: &RecordNode) -> Value {
@@ -1288,7 +1248,7 @@ fn named_view(
     }
     if let Some(value) = param(parameters, &["order-by", "orderBy", "orderByField"]) {
         for entry in parse_order(value) {
-            find = find.order_by(&entry.field.name, entry.descending);
+            find = find.order_by_entry(entry);
         }
     }
     let page = explicit_page(parameters);
@@ -1388,11 +1348,10 @@ fn member_from_spec(facade: &EntityFacade, spec: &Value) -> Result<MemberEntity,
         .map(parse_key_map)
         .unwrap_or_default();
     Ok(MemberEntity {
-        entity_alias,
-        entity_name: full_name,
         join_from_alias: optional_string(spec, &["join-from-alias", "joinFromAlias"]),
         join_optional: map_get(spec, &["join-optional", "joinOptional"]).is_some_and(flag_value),
         key_map,
+        ..MemberEntity::new(entity_alias, full_name)
     })
 }
 
@@ -1458,19 +1417,20 @@ fn push_relationship_member(
         })
     })?;
     let target = load_snap(facade, &relationship.related)?;
-    let key_map = expand_key_map(&relationship.relationship_type, &relationship.key_map, &target)
-        .into_iter()
+    let key_map = relationship
+        .key_pairs
+        .iter()
+        .cloned()
         .map(|(field_name, related)| KeyMap {
             field_name,
             related: Some(related),
         })
         .collect();
     members.push(MemberEntity {
-        entity_alias: entity_alias.clone(),
-        entity_name: target.full_name,
         join_from_alias: Some(join_from),
         join_optional: optional,
         key_map,
+        ..MemberEntity::new(entity_alias.clone(), target.full_name)
     });
     for key_value in relationship.key_values {
         conditions.push(Condition::equals(
@@ -1488,6 +1448,7 @@ fn alias_from_spec(spec: &Value) -> Result<FieldAlias, Error> {
         field: optional_string(spec, &["field"]),
         function: optional_string(spec, &["function"]),
         field_type: optional_string(spec, &["type", "field-type", "fieldType"]),
+        ..FieldAlias::default()
     })
 }
 
@@ -1577,47 +1538,11 @@ fn explicit_page(parameters: &BTreeMap<String, Value>) -> Page {
 }
 
 fn blank_view(entity_name: &str) -> EntityDefinition {
-    let (package_name, name, full_name) = match entity_name.rsplit_once('.') {
+    match entity_name.rsplit_once('.') {
         Some((package_name, name)) if !package_name.is_empty() && !name.is_empty() => {
-            (package_name.to_string(), name.to_string(), entity_name.to_string())
+            EntityDefinition::new_view(name, package_name)
         }
-        _ => (
-            String::from("dynamic"),
-            entity_name.to_string(),
-            format!("dynamic.{entity_name}"),
-        ),
-    };
-    EntityDefinition {
-        entity_name: name,
-        package_name,
-        full_name,
-        table_name: String::new(),
-        group: None,
-        entity_use: String::from("transactional"),
-        cache: String::from("false"),
-        authorize_skip: String::from("false"),
-        create_only: false,
-        enable_audit_log: None,
-        sequence_bank_size: 0,
-        sequence_primary_stagger: 0,
-        sequence_primary_prefix: None,
-        sequence_primary_use_uuid: false,
-        sequence_secondary_padded_length: 0,
-        optimistic_lock: false,
-        no_update_stamp: false,
-        has_dependents: false,
-        is_view: true,
-        short_alias: None,
-        fields: Vec::new(),
-        relationships: Vec::new(),
-        indexes: Vec::new(),
-        masters: Vec::new(),
-        member_entities: Vec::new(),
-        member_relationships: Vec::new(),
-        view_members: Vec::new(),
-        aliases: Vec::new(),
-        alias_alls: Vec::new(),
-        entity_condition: Vec::new(),
+        _ => EntityDefinition::new_view(entity_name, "dynamic"),
     }
 }
 
@@ -1629,26 +1554,27 @@ fn run_view(facade: &EntityFacade, built: &BuiltView) -> Result<Vec<BTreeMap<Str
         .map(|member| member.entity_name.clone())
         .ok_or_else(|| Error::new("dynamic view needs a member-entity"))?;
     let page = built.page;
-    let (sql, columns, tx, params) = facade.with_group(&anchor, |_, dialect, model, tx| {
-        let sql = select_view(
-            &built.view,
+    let (view, statement, tx) = facade.with_group(&anchor, |_, dialect, model, tx| {
+        let mut view = built.view.clone();
+        model.complete_view(&mut view)?;
+        let statement = select_view(
+            &view,
             model,
             dialect,
+            &FindValues,
             built.condition.as_ref(),
             &built.order,
             page,
         )?;
-        let columns = view_columns(&built.view, model)?;
-        let mut params = built.condition.as_ref().map(condition_params).unwrap_or_default();
-        params.extend(page_params(dialect, page));
-        Ok((sql, columns, tx.clone(), params))
+        Ok((view, statement, tx.clone()))
     })?;
-    let rows = query_tx(&tx, &sql, &params)?;
+    let columns = view_columns(&view);
+    let rows = query_tx(&tx, &statement.sql, &statement.params)?;
     after_statement(facade, &tx, false);
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let mapped = map_row(&columns, &row);
-        out.push(field_rw::after_read(facade, &built.view, mapped)?);
+        out.push(field_rw::after_read(facade, &view, mapped)?);
     }
     Ok(out)
 }
@@ -1673,13 +1599,7 @@ pub(crate) fn run_code_view(
     page: LimitOffset,
 ) -> Result<Vec<BTreeMap<String, Value>>, Error> {
     let primary = load_snap(facade, &code.primary_entity)?;
-    let mut members = vec![MemberEntity {
-        entity_alias: code.primary_alias.clone(),
-        entity_name: primary.full_name,
-        join_from_alias: None,
-        join_optional: false,
-        key_map: Vec::new(),
-    }];
+    let mut members = vec![MemberEntity::new(code.primary_alias.clone(), primary.full_name)];
     let mut conditions = Vec::new();
     for (alias, join_from, relationship, optional) in &code.relationships {
         push_relationship_member(
@@ -1707,31 +1627,20 @@ pub(crate) fn run_code_view(
     )
 }
 
+/// Comma-separated order entries as Java `FieldOrderOptions` reads them. `alias.field` names a
+/// member field of a view.
 fn parse_order(value: &Value) -> Vec<OrderBy> {
     let text = match value {
         Value::List(items) => items.iter().map(text_of).collect::<Vec<_>>().join(","),
         other => text_of(other),
     };
-    let mut order = Vec::new();
-    for part in text.split(',') {
-        let part = part.trim();
-        if part.is_empty() {
-            continue;
-        }
-        let descending = part.starts_with('-') || part.to_ascii_uppercase().ends_with(" DESC");
-        let token = part.trim_start_matches(['-', '+']).trim();
-        let token = token.split_whitespace().next().unwrap_or(token);
-        if token.is_empty() {
-            continue;
-        }
-        let field = field_ref(token);
-        order.push(if descending {
-            OrderBy::desc(field)
-        } else {
-            OrderBy::asc(field)
-        });
-    }
-    order
+    text.split(',')
+        .filter_map(OrderBy::parse)
+        .map(|mut entry| {
+            entry.field = field_ref(&entry.field.name);
+            entry
+        })
+        .collect()
 }
 
 fn destinations(full_name: &str, records: &[BTreeMap<String, Value>]) -> Result<Vec<(PathBuf, FileKind)>, Error> {

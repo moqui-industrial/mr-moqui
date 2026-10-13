@@ -503,13 +503,7 @@ fn code_view(info: &DocumentInfo) -> CodeView {
     let mut relationships = Vec::new();
     let mut aliases = Vec::new();
     for name in &info.primary_pk {
-        aliases.push(FieldAlias {
-            entity_alias: Some(PRIMARY_ALIAS.to_string()),
-            name: pk_alias(name),
-            field: Some(name.clone()),
-            function: None,
-            field_type: None,
-        });
+        aliases.push(FieldAlias::column(pk_alias(name), PRIMARY_ALIAS, Some(name.clone())));
     }
     info.walk(|path, node| {
         if let Some(rel) = path.last() {
@@ -525,11 +519,12 @@ fn code_view(info: &DocumentInfo) -> CodeView {
                 continue;
             }
             aliases.push(FieldAlias {
-                entity_alias: Some(node.member_alias.clone()),
-                name: field.alias.clone(),
-                field: Some(field.path_element.clone()),
                 function: field.function.clone(),
-                field_type: None,
+                ..FieldAlias::column(
+                    field.alias.clone(),
+                    node.member_alias.clone(),
+                    Some(field.path_element.clone()),
+                )
             });
         }
     });
@@ -635,7 +630,7 @@ fn document_condition(cond: &DocCondition) -> Result<Condition, Error> {
             return Err(Error::new(format!(
                 "DataDocument condition operator {other} on {} is not supported",
                 cond.field_alias
-            )))
+            )));
         }
     })
 }

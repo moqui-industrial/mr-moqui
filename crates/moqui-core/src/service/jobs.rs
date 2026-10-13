@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use moqui_db::sql::{insert, update, Condition};
+use moqui_db::sql::{insert, update, CompareOp, Condition};
 use moqui_lib::error::Error as LibError;
 use moqui_lib::object::{basic_convert, to_plain_string, Value};
 
@@ -606,17 +606,17 @@ impl LockPlan {
     fn new(facade: &EntityFacade) -> Result<Self, Error> {
         facade
             .with_group(JOB_LOCK, |entity, dialect, _, tx| {
-                let by_job = Condition::equals("jobName", Value::Null);
+                let by_job = Condition::bound("jobName", CompareOp::Equals);
                 let free = Condition::and(vec![by_job.clone(), Condition::is_null("jobRunId")]);
-                let held = Condition::and(vec![by_job.clone(), Condition::equals("jobRunId", Value::Null)]);
+                let held = Condition::and(vec![by_job.clone(), Condition::bound("jobRunId", CompareOp::Equals)]);
                 let set = ["jobRunId", "lastRunTime"];
                 Ok(Self {
                     tx: tx.clone(),
                     insert_sql: insert(entity, dialect, &["jobName", "jobRunId", "lastRunTime"])?,
-                    claim_free_sql: update(entity, dialect, &set, Some(&free))?,
-                    claim_run_sql: update(entity, dialect, &set, Some(&held))?,
-                    release_sql: update(entity, dialect, &set, Some(&held))?,
-                    delete_sql: moqui_db::sql::delete(entity, dialect, Some(&by_job))?,
+                    claim_free_sql: update(entity, dialect, &set, Some(&free))?.sql,
+                    claim_run_sql: update(entity, dialect, &set, Some(&held))?.sql,
+                    release_sql: update(entity, dialect, &set, Some(&held))?.sql,
+                    delete_sql: moqui_db::sql::delete(entity, dialect, Some(&by_job))?.sql,
                 })
             })
             .map_err(Error::from)

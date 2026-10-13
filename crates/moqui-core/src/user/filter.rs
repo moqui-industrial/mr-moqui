@@ -16,7 +16,7 @@
 
 use std::collections::BTreeMap;
 
-use moqui_db::model::{EntityDefinition, EntityModel};
+use moqui_db::model::EntityDefinition;
 use moqui_db::sql::Condition;
 use moqui_lib::object::Value;
 
@@ -124,15 +124,8 @@ fn one_filter(
     let join_or = text(filter, "joinOr") == "Y";
     let comparison = text(filter, "comparisonEnumId");
     facade
-        .with_entity(entity_name, |entity, _, model| {
-            conditions_for(
-                entity,
-                model,
-                &filter_entity,
-                &map,
-                (join_or, &comparison),
-                allow_missing,
-            )
+        .with_entity(entity_name, |entity, _, _| {
+            conditions_for(entity, &filter_entity, &map, (join_or, &comparison), allow_missing)
         })
         .map_err(Error::from)
 }
@@ -146,7 +139,6 @@ enum Relation {
 
 fn conditions_for(
     entity: &EntityDefinition,
-    model: &EntityModel,
     filter_entity: &str,
     map: &BTreeMap<String, Value>,
     (join_or, comparison): (bool, &str),
@@ -171,7 +163,7 @@ fn conditions_for(
     for (field, value) in map {
         let names = match relation {
             Relation::Direct => vec![field.clone()],
-            Relation::Member => member_aliases(entity, model, filter_entity, field),
+            Relation::Member => member_aliases(entity, filter_entity, field),
             Relation::None => Vec::new(),
         };
         if names.is_empty() {
@@ -190,7 +182,9 @@ fn conditions_for(
     Ok(join_conditions(parts, join_or))
 }
 
-fn member_aliases(entity: &EntityDefinition, model: &EntityModel, member_name: &str, field: &str) -> Vec<String> {
+/// View aliases that read `field` of the member entity `member_name`. `aliases` already holds
+/// what each `alias-all` expands to.
+fn member_aliases(entity: &EntityDefinition, member_name: &str, field: &str) -> Vec<String> {
     let mut names = Vec::new();
     for alias in &entity.aliases {
         let Some(entity_alias) = alias.entity_alias.as_deref() else {
@@ -207,40 +201,7 @@ fn member_aliases(entity: &EntityDefinition, model: &EntityModel, member_name: &
             names.push(alias.name.clone());
         }
     }
-    for alias_all in &entity.alias_alls {
-        let Some(member) = entity.member(&alias_all.entity_alias) else {
-            continue;
-        };
-        if member.entity_name != member_name || alias_all.exclude.iter().any(|item| item == field) {
-            continue;
-        }
-        let Ok(member_entity) = model.entity(&member.entity_name) else {
-            continue;
-        };
-        if member_entity.field(field).is_none() {
-            continue;
-        }
-        let out_name = match alias_all.prefix.as_deref() {
-            Some(prefix) => prefixed_name(prefix, field),
-            None => field.to_string(),
-        };
-        if names.iter().any(|name| name == &out_name) || entity.alias(&out_name).is_some() {
-            continue;
-        }
-        names.push(out_name);
-    }
     names
-}
-
-fn prefixed_name(prefix: &str, field: &str) -> String {
-    let mut name = String::with_capacity(prefix.len() + field.len());
-    name.push_str(prefix);
-    let mut chars = field.chars();
-    if let Some(first) = chars.next() {
-        name.push(first.to_ascii_uppercase());
-        name.push_str(chars.as_str());
-    }
-    name
 }
 
 /// One filter entry. With no comparison a list is `IN` and anything else is equality, as Java
@@ -284,7 +245,7 @@ fn value_condition(field: &str, value: &Value, comparison: &str) -> Result<Condi
         other => {
             return Err(moqui_lib::error::Error::new(format!(
                 "unknown filter comparison {other} on {field}"
-            )))
+            )));
         }
     };
     Ok(condition)

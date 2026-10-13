@@ -14,7 +14,10 @@
 
 //! Entity find. The condition tree is `moqui_db`. A view uses `select_view`.
 
-use moqui_db::sql::{count, select_view_with, select_with, Condition, FieldRef, LimitOffset, OrderBy, SelectOptions};
+use moqui_db::sql::{
+    count_view, count_with, select_view_with, select_with, Condition, ConditionValues, FieldRef, LimitOffset, OrderBy,
+    SelectOptions,
+};
 use moqui_lib::error::Error;
 use moqui_lib::object::{basic_convert, Value};
 
@@ -22,7 +25,7 @@ use super::cache::{self, FindLookup};
 use super::exec::{after_statement, query_tx};
 use super::facade::EntityFacade;
 use super::field_rw;
-use super::params::{condition_params, entity_columns, map_row, page_params, view_columns};
+use super::params::{entity_columns, map_row, view_columns};
 use super::value::{EntityArtifact, EntityList, EntityValue};
 use crate::driver::DbRow;
 use crate::transaction::TransactionManager;
@@ -115,6 +118,17 @@ impl EntityFind {
         self
     }
 
+    /// An order-by entry as Java writes it: `-field`, `^field` for upper case, `field NULLS FIRST`.
+    pub fn order_by_text(mut self, text: &str) -> Self {
+        self.order.extend(OrderBy::parse(text));
+        self
+    }
+
+    pub fn order_by_entry(mut self, entry: OrderBy) -> Self {
+        self.order.push(entry);
+        self
+    }
+
     /// `SELECT DISTINCT`. Not cached and not merged with held or sim rows.
     pub fn distinct(mut self, distinct: bool) -> Self {
         self.distinct = distinct;
@@ -134,8 +148,9 @@ impl EntityFind {
         self
     }
 
-    /// Read only these fields of an entity. A field the entity does not have is an error. The
-    /// values returned have just these fields. A view-entity always reads its own alias list.
+    /// Read only these fields. A field the entity does not have is an error. The values returned
+    /// have just these fields. On a view-entity only the members those fields read are joined,
+    /// and with an aggregate alias the selected fields are the `GROUP BY`.
     pub fn select_field(mut self, field: &str) -> Self {
         self.select_fields.push(field.to_string());
         self
@@ -289,58 +304,61 @@ impl EntityFind {
         let options = SelectOptions {
             distinct: self.distinct,
             for_update: self.for_update,
-            having: having.clone(),
+            having,
+            fields: self.select_fields.clone(),
         };
         self.facade.with_group(&self.entity_name, |entity, dialect, model, tx| {
-            let (sql, columns) = if count_only {
-                if entity.is_view {
-                    return Err(Error::new(format!("cannot count view-entity {}", entity.full_name)));
+            for name in &self.select_fields {
+                if !entity.has_field(name) {
+                    return Err(Error::new(format!("{} has no field {name}", entity.full_name)));
                 }
-                (count(entity, dialect, condition.as_ref())?, Vec::new())
-            } else if entity.is_view {
-                (
-                    select_view_with(entity, model, dialect, condition.as_ref(), &self.order, page, &options)?,
-                    view_columns(entity, model)?,
-                )
+            }
+            let wanted =
+                |name: &str| self.select_fields.is_empty() || self.select_fields.iter().any(|field| field == name);
+            let (statement, mut columns) = if entity.is_view {
+                let statement = if count_only {
+                    count_view(entity, model, dialect, &FindValues, condition.as_ref(), &options)?
+                } else {
+                    select_view_with(
+                        entity,
+                        model,
+                        dialect,
+                        &FindValues,
+                        condition.as_ref(),
+                        &self.order,
+                        page,
+                        &options,
+                    )?
+                };
+                (statement, view_columns(entity))
+            } else if count_only {
+                (count_with(entity, dialect, condition.as_ref(), &options)?, Vec::new())
             } else {
-                for name in &self.select_fields {
-                    if entity.field(name).is_none() {
-                        return Err(Error::new(format!("{} has no field {name}", entity.full_name)));
-                    }
-                }
-                let wanted =
-                    |name: &str| self.select_fields.is_empty() || self.select_fields.iter().any(|field| field == name);
                 let fields: Vec<FieldRef> = entity
                     .fields
                     .iter()
                     .filter(|field| wanted(&field.name))
                     .map(|field| FieldRef::new(&field.name))
                     .collect();
-                let mut columns = entity_columns(entity, model);
-                columns.retain(|(name, _)| wanted(name));
-                (
-                    select_with(
-                        entity,
-                        dialect,
-                        &fields,
-                        condition.as_ref(),
-                        &self.order,
-                        page,
-                        &options,
-                    )?,
-                    columns,
-                )
+                let statement = select_with(
+                    entity,
+                    dialect,
+                    &fields,
+                    condition.as_ref(),
+                    &self.order,
+                    page,
+                    &options,
+                )?;
+                (statement, entity_columns(entity, model))
             };
-            let mut params = condition.as_ref().map(condition_params).unwrap_or_default();
-            if let Some(having) = &having {
-                params.extend(condition_params(having));
-            }
-            if !count_only {
-                params.extend(page_params(dialect, page));
+            if count_only {
+                columns.clear();
+            } else {
+                columns.retain(|(name, _)| wanted(name));
             }
             Ok(ReadPlan {
-                sql,
-                params,
+                sql: statement.sql,
+                params: statement.params,
                 columns,
                 tx: tx.clone(),
             })
@@ -371,6 +389,32 @@ impl EntityFind {
             }
             Ok(EntityList::new(values))
         })
+    }
+}
+
+/// What a view's `entity-condition` and SQL expressions read: the time now, `${}` expansion in
+/// the script runtime, and plain conversion of definition text.
+pub(crate) struct FindValues;
+
+impl ConditionValues for FindValues {
+    fn now(&self) -> Value {
+        let millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+            .unwrap_or(0);
+        basic_convert(&Value::I64(millis), "java.sql.Timestamp").value
+    }
+
+    fn expand(&self, text: &str) -> Result<String, Error> {
+        crate::script::expand(text).map_err(|err| Error::new(err.message()))
+    }
+
+    fn convert(&self, text: &str, java_type: &str) -> Result<Value, Error> {
+        if text.is_empty() || text == "null" {
+            return Ok(Value::Null);
+        }
+        Ok(basic_convert(&Value::string(text), java_type).value)
     }
 }
 
@@ -596,7 +640,19 @@ mod tests {
                 .any(|sql| sql.ends_with("WHERE \"testId\" <= \"testMedium\"")),
             "{tape:?}"
         );
-        let params = super::condition_params(&Condition::ignore_case(Condition::equals("x", Value::string("Alpha"))));
-        assert_eq!(params, vec![Value::string("ALPHA")]);
+        let dialect = moqui_db::dialect::Dialects::load(
+            &moqui_lib::node::MNode::parse_text(
+                "conf",
+                r#"<database-list><database name="postgres"/></database-list>"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let rendered = moqui_db::sql::render_condition(
+            &Condition::ignore_case(Condition::equals("x", Value::string("Alpha"))),
+            dialect.get("postgres").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(rendered.params, vec![Value::string("ALPHA")]);
     }
 }

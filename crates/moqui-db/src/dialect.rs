@@ -34,6 +34,7 @@ pub struct NameReplace {
 ///
 /// String fields are `None` when the attribute is absent. XSD defaults are not filled in.
 /// `never_nulls`, `never_try_insert`, and `use_binary_type_for_blob` are false when absent.
+/// `use_foreign_key_indexes` is true unless the attribute is `false`.
 /// `sql_types` holds only that database's `<database-type>` entries.
 /// `placeholder` is always [`PLACEHOLDER`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +57,9 @@ pub struct Dialect {
     pub fk_style: Option<String>,
     pub default_test_query: Option<String>,
     pub result_fetch_size: Option<i32>,
+    /// Text written in place of `FOR UPDATE`.
+    pub for_update: Option<String>,
+    pub use_foreign_key_indexes: bool,
     /// `<database-type type>` to `sql-type`. A missing type is left for the dictionary default.
     pub sql_types: BTreeMap<String, String>,
     pub name_replaces: Vec<NameReplace>,
@@ -164,6 +168,8 @@ fn parse_database(node: &MNode) -> Result<Dialect, Error> {
         fk_style: optional(node, "fk-style"),
         default_test_query: optional(node, "default-test-query"),
         result_fetch_size: optional_int(node, "result-fetch-size")?,
+        for_update: optional(node, "for-update"),
+        use_foreign_key_indexes: !matches!(optional(node, "use-foreign-key-indexes").as_deref(), Some("false")),
         sql_types,
         name_replaces,
     })

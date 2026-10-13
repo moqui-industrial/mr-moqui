@@ -18,7 +18,7 @@
 use std::collections::{HashMap, HashSet};
 
 use moqui_db::dialect::Dialect;
-use moqui_db::sql::{add_column, create_foreign_key, create_index, create_table, quote_ident};
+use moqui_db::sql::{add_column, create_fk_index, create_foreign_key, create_index, create_table, quote_ident};
 use moqui_lib::error::Error;
 use moqui_lib::object::Value;
 
@@ -188,7 +188,7 @@ fn ensure_columns(facade: &EntityFacade, conn: &mut dyn DbConnection, name: &str
         let present = column_names(conn, dialect, &entity.table_name)?;
         let mut statements = Vec::new();
         for field in &entity.fields {
-            if has_name(&present, &field.name) {
+            if has_name(&present, &field.column_name) {
                 continue;
             }
             statements.push(add_column(entity, field, model, dialect)?);
@@ -206,6 +206,18 @@ fn ensure_indexes(facade: &EntityFacade, conn: &mut dyn DbConnection, name: &str
         let mut statements = Vec::new();
         for index in &entity.indexes {
             statements.push(create_index(entity, index, dialect)?);
+        }
+        // Java creates an index on the keys of each foreign key; Postgres does not index them itself.
+        if dialect.use_foreign_key_indexes {
+            for relationship in &entity.relationships {
+                if relationship.is_auto_reverse
+                    || relationship.relationship_type != "one"
+                    || relationship.key_pairs.is_empty()
+                {
+                    continue;
+                }
+                statements.push(create_fk_index(entity, relationship, dialect)?);
+            }
         }
         Ok(statements)
     })?;

@@ -500,14 +500,23 @@ fn cmp_values(left: &Value, right: &Value) -> std::cmp::Ordering {
     compare_obj(left, right).unwrap_or(std::cmp::Ordering::Equal)
 }
 
+/// Nulls sort last unless the key says first, in either direction, as the SQL is written.
 fn sort_rows(left: &Row, right: &Row, order: &[OrderKey]) -> std::cmp::Ordering {
     for key in order {
-        let left_value = left.get(&key.field).cloned().unwrap_or(Value::Null);
-        let right_value = right.get(&key.field).cloned().unwrap_or(Value::Null);
-        let mut ordering = cmp_values(&left_value, &right_value);
-        if key.desc {
-            ordering = ordering.reverse();
-        }
+        let read = |row: &Row| match row.get(&key.field).cloned().unwrap_or(Value::Null) {
+            Value::String(text) if key.upper => Value::String(text.to_uppercase()),
+            other => other,
+        };
+        let (left_value, right_value) = (read(left), read(right));
+        let ordering = match (left_value.is_null(), right_value.is_null()) {
+            (true, true) => std::cmp::Ordering::Equal,
+            (true, false) if key.nulls_first => std::cmp::Ordering::Less,
+            (true, false) => std::cmp::Ordering::Greater,
+            (false, true) if key.nulls_first => std::cmp::Ordering::Greater,
+            (false, true) => std::cmp::Ordering::Less,
+            (false, false) if key.desc => cmp_values(&left_value, &right_value).reverse(),
+            (false, false) => cmp_values(&left_value, &right_value),
+        };
         if ordering != std::cmp::Ordering::Equal {
             return ordering;
         }
@@ -597,6 +606,8 @@ enum Op {
 struct OrderKey {
     field: String,
     desc: bool,
+    nulls_first: bool,
+    upper: bool,
 }
 
 fn parse(sql: &str) -> Result<Stmt, Error> {
@@ -697,7 +708,21 @@ fn parse_select(cur: &mut Cur) -> Result<Stmt, Error> {
     };
     let order = if cur.eat_keyword("ORDER") {
         cur.expect_keyword("BY")?;
-        parse_order(cur)?
+        // `ORDER BY 1` sorts by the first column.
+        if cur.eat_symbol(b'1') {
+            columns
+                .first()
+                .map(|field| OrderKey {
+                    field: field.clone(),
+                    desc: false,
+                    nulls_first: false,
+                    upper: false,
+                })
+                .into_iter()
+                .collect()
+        } else {
+            parse_order(cur)?
+        }
     } else {
         Vec::new()
     };
@@ -745,7 +770,14 @@ fn parse_columns(cur: &mut Cur) -> Result<Vec<String>, Error> {
 fn parse_order(cur: &mut Cur) -> Result<Vec<OrderKey>, Error> {
     let mut order = Vec::new();
     loop {
+        let upper = cur.eat_keyword("UPPER") || cur.eat_keyword("LOWER");
+        if upper {
+            cur.expect_symbol(b'(')?;
+        }
         let field = cur.quoted()?;
+        if upper {
+            cur.expect_symbol(b')')?;
+        }
         let desc = if cur.eat_keyword("DESC") {
             true
         } else if cur.eat_keyword("ASC") {
@@ -753,7 +785,22 @@ fn parse_order(cur: &mut Cur) -> Result<Vec<OrderKey>, Error> {
         } else {
             return Err(cur.fail("expected ASC or DESC"));
         };
-        order.push(OrderKey { field, desc });
+        let nulls_first = if cur.eat_keyword("NULLS") {
+            if cur.eat_keyword("FIRST") {
+                true
+            } else {
+                cur.expect_keyword("LAST")?;
+                false
+            }
+        } else {
+            false
+        };
+        order.push(OrderKey {
+            field,
+            desc,
+            nulls_first,
+            upper,
+        });
         if !cur.eat_symbol(b',') {
             break;
         }

@@ -20,10 +20,6 @@ pub fn is_mysql(dialect: &Dialect) -> bool {
     starts_with_ignore(&dialect.name, "mysql")
 }
 
-pub(crate) fn is_postgres(dialect: &Dialect) -> bool {
-    starts_with_ignore(&dialect.name, "postgres")
-}
-
 fn starts_with_ignore(name: &str, prefix: &str) -> bool {
     name.len() >= prefix.len() && name[..prefix.len()].eq_ignore_ascii_case(prefix)
 }
@@ -76,17 +72,32 @@ pub(crate) fn placeholders(dialect: &Dialect, count: usize) -> String {
     out
 }
 
-pub(crate) fn clip_name(name: &str, limit: Option<u32>) -> String {
-    let Some(limit) = limit else {
-        return name.to_string();
-    };
-    let limit = limit as usize;
-    if name.len() <= limit {
+/// `constraint-name-clip-length`, 30 when absent, as Java defaults it.
+pub(crate) fn clip_length(dialect: &Dialect) -> usize {
+    dialect.constraint_name_clip_length.map_or(30, |length| length as usize)
+}
+
+/// The first `limit` characters.
+pub(crate) fn clip_name(name: &str, limit: usize) -> String {
+    name.chars().take(limit).collect()
+}
+
+/// Java `EntityDbMeta.shrinkName`: drop vowels from the end toward the start until the name fits,
+/// then clip to one less than `limit`.
+pub(crate) fn shrink_name(name: &str, limit: usize) -> String {
+    let mut chars: Vec<char> = name.chars().collect();
+    if chars.len() <= limit {
         return name.to_string();
     }
-    let mut end = limit;
-    while end > 0 && !name.is_char_boundary(end) {
-        end -= 1;
+    let mut index = chars.len();
+    while index > 0 && chars.len() > limit {
+        index -= 1;
+        if "AEIOUaeiou".contains(chars[index]) {
+            chars.remove(index);
+        }
     }
-    name[..end].to_string()
+    if chars.len() > limit {
+        chars.truncate(limit.saturating_sub(1));
+    }
+    chars.into_iter().collect()
 }

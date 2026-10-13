@@ -434,7 +434,7 @@ fn view_targets(view: &EntityDefinition, model: &EntityModel) -> Result<Vec<Loca
         let Some(entity_alias) = alias.entity_alias.as_deref() else {
             continue;
         };
-        let Some(member_name) = member_entity_name(view, model, entity_alias)? else {
+        let Some(member_name) = member_entity_name(view, entity_alias) else {
             continue;
         };
         let member = model.entity(&member_name)?;
@@ -456,34 +456,6 @@ fn view_targets(view: &EntityDefinition, model: &EntityModel) -> Result<Vec<Loca
             },
         );
     }
-    for alias_all in &view.alias_alls {
-        let Some(member_name) = member_entity_name(view, model, &alias_all.entity_alias)? else {
-            continue;
-        };
-        let member = model.entity(&member_name)?;
-        let Some(pk_column) = member_pk_column(view, member, &alias_all.entity_alias) else {
-            continue;
-        };
-        for field in &member.fields {
-            if !field.enable_localization || alias_all.exclude.iter().any(|name| name == &field.name) {
-                continue;
-            }
-            let column = match alias_all.prefix.as_deref() {
-                Some(prefix) => prefixed_name(prefix, &field.name),
-                None => field.name.clone(),
-            };
-            push_target(
-                &mut targets,
-                &mut seen,
-                LocalTarget {
-                    entity_name: member.full_name.clone(),
-                    field_name: field.name.clone(),
-                    column,
-                    pk_column: pk_column.clone(),
-                },
-            );
-        }
-    }
     Ok(targets)
 }
 
@@ -493,20 +465,8 @@ fn push_target(targets: &mut Vec<LocalTarget>, seen: &mut HashSet<String>, targe
     }
 }
 
-fn member_entity_name(view: &EntityDefinition, model: &EntityModel, alias: &str) -> Result<Option<String>, Error> {
-    if let Some(member) = view.member(alias) {
-        return Ok(Some(member.entity_name.clone()));
-    }
-    let Some(link) = view.member_relationships.iter().find(|item| item.entity_alias == alias) else {
-        return Ok(None);
-    };
-    let Some(from) = view.member(&link.join_from_alias) else {
-        return Ok(None);
-    };
-    let from_entity = model.entity(&from.entity_name)?;
-    Ok(from_entity
-        .relationship(&link.relationship)
-        .map(|relationship| relationship.related.clone()))
+fn member_entity_name(view: &EntityDefinition, alias: &str) -> Option<String> {
+    view.member(alias).map(|member| member.entity_name.clone())
 }
 
 fn member_pk_column(view: &EntityDefinition, member: &EntityDefinition, entity_alias: &str) -> Option<String> {
@@ -520,27 +480,7 @@ fn member_pk_column(view: &EntityDefinition, member: &EntityDefinition, entity_a
             return Some(alias.name.clone());
         }
     }
-    for alias_all in &view.alias_alls {
-        if alias_all.entity_alias != entity_alias || alias_all.exclude.iter().any(|name| name == &pk) {
-            continue;
-        }
-        return Some(match alias_all.prefix.as_deref() {
-            Some(prefix) => prefixed_name(prefix, &pk),
-            None => pk,
-        });
-    }
     None
-}
-
-fn prefixed_name(prefix: &str, field: &str) -> String {
-    let mut name = String::with_capacity(prefix.len() + field.len());
-    name.push_str(prefix);
-    let mut chars = field.chars();
-    if let Some(first) = chars.next() {
-        name.push(first.to_ascii_uppercase());
-        name.push_str(chars.as_str());
-    }
-    name
 }
 
 fn pk_text(value: Option<&Value>) -> Option<String> {

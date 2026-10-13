@@ -227,6 +227,71 @@ mod tests {
         drop(cluster);
     }
 
+    /// Every framework view-entity runs a paged select and a count on Postgres, with every
+    /// framework table and foreign key index in place.
+    #[test]
+    fn every_framework_view_selects_and_counts_on_postgres() {
+        let dir = temp_cluster_dir();
+        let _guard = DirGuard(dir.clone());
+        provide_libxml2_soname(&dir);
+        let (cluster, driver) = EmbeddedCluster::start(&dir, 20).unwrap();
+        let driver: Arc<dyn DbDriver> = Arc::new(driver);
+        let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
+        let transactions = moqui_core::transaction::TransactionManager::new(
+            driver,
+            PoolConfig {
+                min: 0,
+                max: 4,
+                reserve: 1,
+                acquire_timeout: Duration::from_secs(30),
+            },
+        )
+        .unwrap();
+        let facade = moqui_core::entity::EntityFacade::open(
+            &framework,
+            "transactional",
+            vec![
+                moqui_core::entity::EntityGroup::new("transactional", "postgres", transactions.clone()),
+                moqui_core::entity::EntityGroup::new("logging", "postgres", transactions),
+            ],
+        )
+        .unwrap();
+        facade.check_all_tables().unwrap();
+
+        let mut views = Vec::new();
+        let mut paths: Vec<PathBuf> = std::fs::read_dir(framework.join("entity"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "xml"))
+            .collect();
+        paths.sort();
+        for path in paths {
+            let root = moqui_lib::node::MNode::parse_file(&path).unwrap();
+            for view in root.children_named("view-entity") {
+                let package = view.attribute("package").unwrap_or_default();
+                let name = view.attribute("entity-name").unwrap_or_default();
+                views.push(format!("{package}.{name}"));
+            }
+        }
+        assert!(views.len() > 20, "{views:?}");
+        let mut failures = Vec::new();
+        for view in &views {
+            let listed = facade.find(view).and_then(|find| find.limit(1).list());
+            if let Err(err) = listed {
+                failures.push(format!("{view} select: {err}"));
+            }
+            let counted = facade.find(view).and_then(|find| find.count());
+            if let Err(err) = counted {
+                failures.push(format!("{view} count: {err}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+
+        drop(facade);
+        drop(cluster);
+    }
+
     fn stream_ids(facade: &moqui_core::entity::EntityFacade) -> Vec<String> {
         let mut iter = facade
             .find("moqui.test.TestEntity")

@@ -14,10 +14,8 @@
 
 //! Share a loaded [`EntityModel`] across threads.
 //!
-//! `EntityModel` contains `MNode`, which is `Rc` and not `Send`. The facade never
-//! reads `entity_condition` after load.
-
-#![warn(clippy::non_send_fields_in_send_ty)]
+//! The model holds no `MNode`, so it is `Send` and `Sync` on its own; the assertion below keeps
+//! it that way.
 
 use moqui_db::model::EntityModel;
 
@@ -36,10 +34,7 @@ impl SharedModel {
     }
 }
 
-// SAFETY: after load the model is immutable. `entity_condition` holds `MNode`
-// (`Rc<RefCell<_>>`). This facade never reads, clones, or drops those nodes on
-// another thread. Callers read plain definition fields only. The surrounding
-// `Arc` drops the model on one thread when the last facade goes away.
-#[expect(clippy::non_send_fields_in_send_ty)]
-unsafe impl Send for SharedModel {}
-unsafe impl Sync for SharedModel {}
+const _: fn() = || {
+    fn shared<T: Send + Sync>() {}
+    shared::<SharedModel>();
+};

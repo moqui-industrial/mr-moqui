@@ -148,12 +148,8 @@ impl HostFind {
     fn order_by<'js>(&self, ctx: Ctx<'js>, field: String) -> rquickjs::Result<Class<'js, HostFind>> {
         host_guard(&ctx, || {
             let mut find = take_find(&ctx, &self.inner)?;
-            for part in field.split(',').map(str::trim).filter(|part| !part.is_empty()) {
-                let (name, descending) = match part.strip_prefix('-') {
-                    Some(rest) => (rest, true),
-                    None => (part.strip_prefix('+').unwrap_or(part), false),
-                };
-                find = find.order_by(name.trim_start_matches('^'), descending);
+            for part in field.split(',') {
+                find = find.order_by_text(part);
             }
             wrap_find(&ctx, find)
         })
@@ -571,11 +567,7 @@ impl HostEntity {
             }
             if let Some(Value::List(fields)) = order.0.as_ref().map(|value| js_to_host(&ctx, value)).transpose()? {
                 for field in fields {
-                    let text = moqui_lib::object::to_plain_string(&field);
-                    match text.strip_prefix('-') {
-                        Some(rest) => find = find.order_by(rest, true),
-                        None => find = find.order_by(text.trim_start_matches('+'), false),
-                    }
+                    find = find.order_by_text(&moqui_lib::object::to_plain_string(&field));
                 }
             }
             let list = find.list().map_err(|err| throw_lib(&ctx, &err))?;

@@ -25,8 +25,8 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use hmac::{Hmac, Mac};
 use moqui_db::sql::{
-    delete as sql_delete, insert as sql_insert, select as sql_select, update as sql_update, Condition, FieldRef,
-    LimitOffset,
+    delete as sql_delete, insert as sql_insert, select as sql_select, update as sql_update, CompareOp, Condition,
+    FieldRef, LimitOffset,
 };
 use moqui_lib::object::Value;
 use sha2::Sha256;
@@ -848,7 +848,7 @@ fn expire_idle(factory: &ExecutionContextFactory) -> Result<(), Error> {
     let condition = Condition::less("lastUpdatedStamp", cutoff.clone());
     let sql = facade
         .with_entity(HTTP_SESSION, |entity, dialect, _| {
-            sql_delete(entity, dialect, Some(&condition))
+            sql_delete(entity, dialect, Some(&condition)).map(|statement| statement.sql)
         })
         .map_err(Error::from)?;
     with_session_sql(&facade, |conn| {
@@ -1203,10 +1203,10 @@ fn write_merged(
     let sql = facade
         .with_entity(HTTP_SESSION, |entity, dialect, _| {
             let condition = Condition::and(vec![
-                Condition::equals("sessionId", Value::Null),
-                Condition::equals("sessionRevision", Value::Null),
+                Condition::bound("sessionId", CompareOp::Equals),
+                Condition::bound("sessionRevision", CompareOp::Equals),
             ]);
-            sql_update(entity, dialect, &names, Some(&condition))
+            sql_update(entity, dialect, &names, Some(&condition)).map(|statement| statement.sql)
         })
         .map_err(Error::from)?;
     let count = with_session_sql(facade, |conn| conn.execute(&sql, &params))?;
@@ -1269,6 +1269,7 @@ fn read_row(facade: &EntityFacade, id: &str) -> Result<Option<DbRow>, Error> {
     let sql = facade
         .with_entity(HTTP_SESSION, |entity, dialect, _| {
             sql_select(entity, dialect, &fields, Some(&condition), &[], LimitOffset::default())
+                .map(|statement| statement.sql)
         })
         .map_err(Error::from)?;
     let params = [Value::string(id)];
@@ -1280,7 +1281,7 @@ fn delete_session_row(facade: &EntityFacade, id: &str) -> Result<(), Error> {
     let condition = Condition::equals("sessionId", Value::string(id));
     let sql = facade
         .with_entity(HTTP_SESSION, |entity, dialect, _| {
-            sql_delete(entity, dialect, Some(&condition))
+            sql_delete(entity, dialect, Some(&condition)).map(|statement| statement.sql)
         })
         .map_err(Error::from)?;
     with_session_sql(facade, |conn| {
@@ -2381,8 +2382,8 @@ mod tests {
     fn exec_update(facade: &EntityFacade, columns: &[&str], params: &[Value]) {
         let sql = facade
             .with_entity(HTTP_SESSION, |entity, dialect, _| {
-                let condition = moqui_db::sql::Condition::equals("sessionId", Value::Null);
-                moqui_db::sql::update(entity, dialect, columns, Some(&condition))
+                let condition = moqui_db::sql::Condition::bound("sessionId", moqui_db::sql::CompareOp::Equals);
+                moqui_db::sql::update(entity, dialect, columns, Some(&condition)).map(|statement| statement.sql)
             })
             .unwrap();
         let tx = facade.transactions_for(HTTP_SESSION).unwrap();

@@ -246,14 +246,14 @@ impl EntityFacade {
                 let columns = present_columns(entity, &prepared, include_null, skip_pk);
                 let (sql, params) = if operation == "delete" {
                     let condition = pk_condition(entity, &prepared)?;
-                    let sql = delete(entity, dialect, Some(&condition))?;
-                    (sql, super::params::condition_params(&condition))
+                    let statement = delete(entity, dialect, Some(&condition))?;
+                    (statement.sql, statement.params)
                 } else if operation == "update" {
                     let condition = pk_condition(entity, &prepared)?;
-                    let sql = update(entity, dialect, &columns, Some(&condition))?;
+                    let statement = update(entity, dialect, &columns, Some(&condition))?;
                     let mut params = bind_columns(&columns, &prepared);
-                    params.extend(super::params::condition_params(&condition));
-                    (sql, params)
+                    params.extend(statement.params);
+                    (statement.sql, params)
                 } else if operation == "upsert" {
                     let sql = insert_or_update(entity, dialect, &columns)?;
                     (sql, bind_columns(&columns, &prepared))

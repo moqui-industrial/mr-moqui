@@ -13,12 +13,25 @@
  */
 
 //! Entity definitions parsed from `MNode`. No SQL and no driver.
+//!
+//! The model keeps no `MNode`, so a loaded model is `Send` and `Sync`.
+
+mod condition;
+mod view;
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use moqui_lib::error::Error;
 use moqui_lib::node::MNode;
+
+pub use condition::{ConditionGroup, ConditionItem, DateFilter, ECondition, EntityConditionDef};
+pub use view::{
+    prefixed_name, AliasAll, AliasExpr, CaseAlias, ComplexAlias, ComplexField, ComplexPart, FieldAlias, MemberEntity,
+    SubSelect, AGGREGATE_FUNCTIONS,
+};
+
+use view::SourceField;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DictionaryType {
@@ -28,10 +41,14 @@ pub struct DictionaryType {
 }
 
 /// `not_null` is the attribute only. A primary key does not set it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FieldDefinition {
     pub name: String,
+    /// `column-name`, or the field name.
+    pub column_name: String,
     pub field_type: String,
+    /// Dictionary Java type of `field_type`.
+    pub java_type: String,
     pub is_pk: bool,
     pub encrypt: bool,
     pub enable_audit_log: Option<String>,
@@ -39,6 +56,17 @@ pub struct FieldDefinition {
     pub create_only: bool,
     pub default_value: Option<String>,
     pub not_null: bool,
+}
+
+impl FieldDefinition {
+    /// True when the Java type is a string, which is when Java applies `UPPER()` for ignore-case.
+    pub fn is_text(&self) -> bool {
+        is_text_java_type(&self.java_type)
+    }
+}
+
+pub(crate) fn is_text_java_type(java_type: &str) -> bool {
+    java_type == "String" || java_type == "java.lang.String"
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,7 +82,7 @@ pub struct KeyValue {
 }
 
 /// `name` is `title#fullName`, or the related entity's full name when there is no title.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Relationship {
     pub name: String,
     pub relationship_type: String,
@@ -62,9 +90,14 @@ pub struct Relationship {
     pub related_entity_name: String,
     pub title: Option<String>,
     pub short_alias: Option<String>,
+    pub fk_name: Option<String>,
     pub is_auto_reverse: bool,
     pub mutable: bool,
+    /// `key-map` as written.
     pub key_map: Vec<KeyMap>,
+    /// Field on this entity to field on the related entity, expanded as Java
+    /// `getRelationshipExpandedKeyMapInternal` does. Filled at load.
+    pub key_pairs: Vec<(String, String)>,
     pub key_values: Vec<KeyValue>,
 }
 
@@ -88,46 +121,7 @@ pub struct MasterDefinition {
     pub details: Vec<MasterDetail>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MemberEntity {
-    pub entity_alias: String,
-    pub entity_name: String,
-    pub join_from_alias: Option<String>,
-    pub join_optional: bool,
-    pub key_map: Vec<KeyMap>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MemberRelationship {
-    pub entity_alias: String,
-    pub join_from_alias: String,
-    pub relationship: String,
-    pub join_optional: bool,
-}
-
-/// One view member in document order. `member_entities` and `member_relationships` stay separate.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ViewMember {
-    Entity(MemberEntity),
-    Relationship(MemberRelationship),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FieldAlias {
-    pub entity_alias: Option<String>,
-    pub name: String,
-    pub field: Option<String>,
-    pub function: Option<String>,
-    pub field_type: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AliasAll {
-    pub entity_alias: String,
-    pub prefix: Option<String>,
-    pub exclude: Vec<String>,
-}
-
+#[derive(Clone, Default)]
 pub struct EntityDefinition {
     pub entity_name: String,
     pub package_name: String,
@@ -153,14 +147,14 @@ pub struct EntityDefinition {
     pub relationships: Vec<Relationship>,
     pub indexes: Vec<IndexDefinition>,
     pub masters: Vec<MasterDefinition>,
+    /// `member-entity` and `member-relationship` in document order. Complete after
+    /// [`EntityModel::complete_view`].
     pub member_entities: Vec<MemberEntity>,
-    pub member_relationships: Vec<MemberRelationship>,
-    /// `member-entity` and `member-relationship` in document order.
-    pub view_members: Vec<ViewMember>,
+    /// Every alias, including those `alias-all` expands to, after [`EntityModel::complete_view`].
     pub aliases: Vec<FieldAlias>,
+    /// `alias-all` as written. Already expanded into `aliases` once the view is complete.
     pub alias_alls: Vec<AliasAll>,
-    /// Child elements of `<entity-condition>`, in document order.
-    pub entity_condition: Vec<MNode>,
+    pub entity_condition: Option<EntityConditionDef>,
 }
 
 impl std::fmt::Debug for EntityDefinition {
@@ -176,16 +170,86 @@ impl std::fmt::Debug for EntityDefinition {
 }
 
 impl EntityDefinition {
+    /// An empty view-entity to fill in code, then pass to [`EntityModel::complete_view`].
+    pub fn new_view(entity_name: impl Into<String>, package_name: impl Into<String>) -> Self {
+        let entity_name = entity_name.into();
+        let package_name = package_name.into();
+        Self {
+            full_name: format!("{package_name}.{entity_name}"),
+            entity_name,
+            package_name,
+            entity_use: "transactional".to_string(),
+            cache: "false".to_string(),
+            authorize_skip: "false".to_string(),
+            is_view: true,
+            ..Self::default()
+        }
+    }
+
     pub fn field(&self, name: &str) -> Option<&FieldDefinition> {
         self.fields.iter().find(|field| field.name == name)
     }
 
+    /// Primary key field names. For a view, the aliases of member primary keys.
     pub fn pk_field_names(&self) -> Vec<&str> {
+        if self.is_view {
+            return self
+                .aliases
+                .iter()
+                .filter(|alias| alias.is_pk)
+                .map(|alias| alias.name.as_str())
+                .collect();
+        }
         self.fields
             .iter()
             .filter(|field| field.is_pk)
             .map(|field| field.name.as_str())
             .collect()
+    }
+
+    /// Field names, or alias names for a view.
+    pub fn field_names(&self) -> Vec<&str> {
+        if self.is_view {
+            self.aliases.iter().map(|alias| alias.name.as_str()).collect()
+        } else {
+            self.fields.iter().map(|field| field.name.as_str()).collect()
+        }
+    }
+
+    /// A field, or an alias for a view.
+    pub fn has_field(&self, name: &str) -> bool {
+        if self.is_view {
+            self.alias(name).is_some()
+        } else {
+            self.field(name).is_some()
+        }
+    }
+
+    /// Java type of a field, or of an alias for a view. Empty when the alias has no type.
+    pub fn java_type_of(&self, name: &str) -> Option<&str> {
+        if self.is_view {
+            self.alias(name).map(|alias| alias.java_type.as_str())
+        } else {
+            self.field(name).map(|field| field.java_type.as_str())
+        }
+    }
+
+    fn view_field(&self, name: &str) -> Option<SourceField> {
+        if self.is_view {
+            self.alias(name).map(|alias| SourceField {
+                field_type: alias.field_type.clone(),
+                is_pk: alias.is_pk,
+                encrypt: alias.encrypt,
+                enable_localization: alias.enable_localization,
+            })
+        } else {
+            self.field(name).map(|field| SourceField {
+                field_type: Some(field.field_type.clone()),
+                is_pk: field.is_pk,
+                encrypt: field.encrypt,
+                enable_localization: field.enable_localization,
+            })
+        }
     }
 
     /// Full relationship name, `short-alias`, or the related entity name when there is no title.
@@ -220,13 +284,13 @@ pub struct EntityModel {
     entities: Vec<EntityDefinition>,
     by_full: HashMap<String, usize>,
     by_name: HashMap<String, Vec<usize>>,
+    by_short_alias: HashMap<String, usize>,
 }
 
 impl EntityModel {
     /// `conf` is a tree that contains `<database-list>`. Documents whose root is not `entities` are skipped.
     pub fn load(conf: &MNode, documents: &[MNode]) -> Result<Self, Error> {
         let dictionary = parse_dictionary(conf)?;
-        let dictionary_names: HashSet<String> = dictionary.iter().map(|entry| entry.type_name.clone()).collect();
         let mut nodes: Vec<MNode> = Vec::new();
         let mut view_flags: Vec<bool> = Vec::new();
         let mut by_full: HashMap<String, usize> = HashMap::new();
@@ -261,7 +325,7 @@ impl EntityModel {
         let mut index_by_full = HashMap::with_capacity(nodes.len());
         let mut index_by_name: HashMap<String, Vec<usize>> = HashMap::new();
         for (node, is_view) in nodes.iter().zip(view_flags) {
-            let definition = parse_entity(node, is_view, &dictionary_names)?;
+            let definition = parse_entity(node, is_view, &dictionary)?;
             let index = entities.len();
             index_by_name
                 .entry(definition.entity_name.clone())
@@ -272,12 +336,24 @@ impl EntityModel {
         }
         resolve_relationships(&mut entities, &index_by_name)?;
         create_auto_reverses(&mut entities, &index_by_full)?;
-        Ok(Self {
+        expand_key_pairs(&mut entities, &index_by_full);
+        let mut by_short_alias = HashMap::new();
+        for (index, entity) in entities.iter().enumerate() {
+            if let Some(alias) = &entity.short_alias {
+                by_short_alias.entry(alias.clone()).or_insert(index);
+            }
+        }
+        let mut model = Self {
             dictionary,
             entities,
             by_full: index_by_full,
             by_name: index_by_name,
-        })
+            by_short_alias,
+        };
+        model.complete_views()?;
+        // A relationship to a view expands against the view's primary key aliases, which exist now.
+        expand_key_pairs(&mut model.entities, &model.by_full);
+        Ok(model)
     }
 
     /// Every `*.xml` in `directory` whose root is `entities`. `*.eecas.xml` has another root and is skipped.
@@ -302,21 +378,76 @@ impl EntityModel {
         self.entities.iter().map(|entity| entity.full_name.as_str()).collect()
     }
 
-    /// Full name, or an entity name that belongs to one definition.
+    /// Full name, an entity name that belongs to one definition, or a `short-alias`, as Java's
+    /// definition cache keys them.
     pub fn entity(&self, name: &str) -> Result<&EntityDefinition, Error> {
+        self.entity_index(name).map(|index| &self.entities[index])
+    }
+
+    fn entity_index(&self, name: &str) -> Result<usize, Error> {
         if let Some(index) = self.by_full.get(name) {
-            return Ok(&self.entities[*index]);
+            return Ok(*index);
         }
         match self.by_name.get(name) {
-            Some(indexes) if indexes.len() == 1 => Ok(&self.entities[indexes[0]]),
+            Some(indexes) if indexes.len() == 1 => Ok(indexes[0]),
             Some(_) => Err(Error::new(format!("entity name {name} is not unique"))),
-            None => Err(Error::new(format!("no entity named {name}"))),
+            None => self
+                .by_short_alias
+                .get(name)
+                .copied()
+                .ok_or_else(|| Error::new(format!("no entity named {name}"))),
         }
     }
 
     pub fn entity_full(&self, full_name: &str) -> Option<&EntityDefinition> {
         self.by_full.get(full_name).map(|index| &self.entities[*index])
     }
+
+    /// Complete every view, members first, so a view that joins another view sees it finished.
+    fn complete_views(&mut self) -> Result<(), Error> {
+        let mut state = vec![Completion::Pending; self.entities.len()];
+        for index in 0..self.entities.len() {
+            self.complete_at(index, &mut state)?;
+        }
+        Ok(())
+    }
+
+    fn complete_at(&mut self, index: usize, state: &mut [Completion]) -> Result<(), Error> {
+        if !self.entities[index].is_view || state[index] == Completion::Done {
+            return Ok(());
+        }
+        if state[index] == Completion::Running {
+            return Err(Error::new(format!(
+                "view-entity {} is a member of itself",
+                self.entities[index].full_name
+            )));
+        }
+        state[index] = Completion::Running;
+        // Complete member views first, so their aliases are there when this view's are derived.
+        let members: Vec<String> = self.entities[index]
+            .member_entities
+            .iter()
+            .filter(|member| member.relationship.is_none())
+            .map(|member| member.entity_name.clone())
+            .collect();
+        for member in members {
+            let member_index = self.entity_index(&member)?;
+            self.complete_at(member_index, state)?;
+        }
+        let mut view = std::mem::take(&mut self.entities[index]);
+        let completed = self.complete_view(&mut view);
+        self.entities[index] = view;
+        completed?;
+        state[index] = Completion::Done;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Completion {
+    Pending,
+    Running,
+    Done,
 }
 
 fn entity_documents(directory: &Path) -> Result<Vec<MNode>, Error> {
@@ -425,16 +556,28 @@ fn replace_or_append(
     Ok(())
 }
 
-fn parse_entity(node: &MNode, is_view: bool, dictionary: &HashSet<String>) -> Result<EntityDefinition, Error> {
+fn parse_entity(node: &MNode, is_view: bool, dictionary: &[DictionaryType]) -> Result<EntityDefinition, Error> {
+    let dictionary_names: HashSet<String> = dictionary.iter().map(|entry| entry.type_name.clone()).collect();
+    let java_of = |field_type: &str| {
+        dictionary
+            .iter()
+            .find(|entry| entry.type_name == field_type)
+            .map(|entry| entry.java_type.clone())
+            .unwrap_or_default()
+    };
     let (entity_name, package_name) = entity_identity(node)?;
     let full_name = format!("{package_name}.{entity_name}");
     let table_name = optional_attr(node, "table-name").unwrap_or_else(|| entity_name.clone());
     let create_only = is_true(node, "create-only");
     let enable_audit_log = optional_attr(node, "enable-audit-log");
     let no_update_stamp = is_true(node, "no-update-stamp");
-    let mut fields = parse_fields(node, create_only, enable_audit_log.as_deref(), dictionary)?;
+    let mut fields = if is_view {
+        Vec::new()
+    } else {
+        parse_fields(node, create_only, enable_audit_log.as_deref(), &dictionary_names)?
+    };
     if !is_view && !no_update_stamp && !fields.iter().any(|field| field.name == "lastUpdatedStamp") {
-        if !dictionary.contains("date-time") {
+        if !dictionary_names.contains("date-time") {
             return Err(located(
                 node,
                 format!("entity {full_name} needs dictionary type date-time for lastUpdatedStamp"),
@@ -442,15 +585,15 @@ fn parse_entity(node: &MNode, is_view: bool, dictionary: &HashSet<String>) -> Re
         }
         fields.push(FieldDefinition {
             name: "lastUpdatedStamp".to_string(),
+            column_name: "lastUpdatedStamp".to_string(),
             field_type: "date-time".to_string(),
-            is_pk: false,
-            encrypt: false,
             enable_audit_log: enable_audit_log.clone(),
-            enable_localization: false,
             create_only,
-            default_value: None,
-            not_null: false,
+            ..FieldDefinition::default()
         });
+    }
+    for field in &mut fields {
+        field.java_type = java_of(&field.field_type);
     }
     let relationships = node
         .children_named("relationship")
@@ -467,38 +610,35 @@ fn parse_entity(node: &MNode, is_view: bool, dictionary: &HashSet<String>) -> Re
         .iter()
         .map(parse_master)
         .collect::<Result<Vec<_>, _>>()?;
-    let (member_entities, member_relationships, view_members, aliases, alias_alls) = if is_view {
+    let (member_entities, aliases, alias_alls, entity_condition) = if is_view {
         let mut member_entities = Vec::new();
-        let mut member_relationships = Vec::new();
-        let mut view_members = Vec::new();
         for child in node.children() {
-            match child.name().as_str() {
-                "member-entity" => {
-                    let member = parse_member_entity(&child)?;
-                    view_members.push(ViewMember::Entity(member.clone()));
-                    member_entities.push(member);
-                }
-                "member-relationship" => {
-                    let member = parse_member_relationship(&child)?;
-                    view_members.push(ViewMember::Relationship(member.clone()));
-                    member_relationships.push(member);
-                }
-                _ => {}
+            if matches!(child.name().as_str(), "member-entity" | "member-relationship") {
+                member_entities.push(view::parse_member(&child)?);
             }
         }
-        let aliases = node
+        let mut aliases = node
             .children_named("alias")
             .iter()
-            .map(|child| parse_alias(child, dictionary))
+            .map(|child| view::parse_alias(child, &dictionary_names))
             .collect::<Result<Vec<_>, _>>()?;
+        for alias in &mut aliases {
+            if let Some(field_type) = &alias.field_type {
+                alias.java_type = java_of(field_type);
+            }
+        }
         let alias_alls = node
             .children_named("alias-all")
             .iter()
-            .map(parse_alias_all)
+            .map(view::parse_alias_all)
             .collect::<Result<Vec<_>, _>>()?;
-        (member_entities, member_relationships, view_members, aliases, alias_alls)
+        let entity_condition = node
+            .first_named("entity-condition")
+            .map(|condition| EntityConditionDef::parse(&condition))
+            .transpose()?;
+        (member_entities, aliases, alias_alls, entity_condition)
     } else {
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
+        (Vec::new(), Vec::new(), Vec::new(), None)
     };
     Ok(EntityDefinition {
         entity_name,
@@ -526,11 +666,9 @@ fn parse_entity(node: &MNode, is_view: bool, dictionary: &HashSet<String>) -> Re
         indexes,
         masters,
         member_entities,
-        member_relationships,
-        view_members,
         aliases,
         alias_alls,
-        entity_condition: condition_children(node),
+        entity_condition,
     })
 }
 
@@ -551,8 +689,10 @@ fn parse_fields(
             ));
         }
         fields.push(FieldDefinition {
+            column_name: optional_attr(&child, "column-name").unwrap_or_else(|| name.clone()),
             name,
             field_type,
+            java_type: String::new(),
             is_pk: is_true(&child, "is-pk"),
             encrypt: is_true(&child, "encrypt"),
             enable_audit_log: optional_attr(&child, "enable-audit-log").or_else(|| entity_audit.map(str::to_string)),
@@ -581,9 +721,11 @@ fn parse_relationship(node: &MNode) -> Result<Relationship, Error> {
         related_entity_name: String::new(),
         title: optional_attr(node, "title"),
         short_alias: optional_attr(node, "short-alias"),
+        fk_name: optional_attr(node, "fk-name"),
         is_auto_reverse: is_true(node, "is-auto-reverse"),
         mutable,
         key_map: parse_key_maps(node)?,
+        key_pairs: Vec::new(),
         key_values: parse_key_values(node)?,
     })
 }
@@ -647,64 +789,6 @@ fn parse_detail(node: &MNode) -> Result<MasterDetail, Error> {
         use_master: optional_attr(node, "use-master"),
         details,
     })
-}
-
-fn parse_member_entity(node: &MNode) -> Result<MemberEntity, Error> {
-    Ok(MemberEntity {
-        entity_alias: require_attr(node, "entity-alias")?,
-        entity_name: require_attr(node, "entity-name")?,
-        join_from_alias: optional_attr(node, "join-from-alias"),
-        join_optional: is_true(node, "join-optional"),
-        key_map: parse_key_maps(node)?,
-    })
-}
-
-fn parse_member_relationship(node: &MNode) -> Result<MemberRelationship, Error> {
-    Ok(MemberRelationship {
-        entity_alias: require_attr(node, "entity-alias")?,
-        join_from_alias: require_attr(node, "join-from-alias")?,
-        relationship: require_attr(node, "relationship")?,
-        join_optional: is_true(node, "join-optional"),
-    })
-}
-
-fn parse_alias(node: &MNode, dictionary: &HashSet<String>) -> Result<FieldAlias, Error> {
-    let name = require_attr(node, "name")?;
-    let field_type = optional_attr(node, "type");
-    if let Some(field_type) = &field_type {
-        if !dictionary.contains(field_type) {
-            return Err(located(
-                node,
-                format!("alias {name} type {field_type} is not a dictionary type"),
-            ));
-        }
-    }
-    Ok(FieldAlias {
-        entity_alias: optional_attr(node, "entity-alias"),
-        name,
-        field: optional_attr(node, "field"),
-        function: optional_attr(node, "function"),
-        field_type,
-    })
-}
-
-fn parse_alias_all(node: &MNode) -> Result<AliasAll, Error> {
-    let exclude = node
-        .children_named("exclude")
-        .iter()
-        .map(|child| require_attr(child, "field"))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(AliasAll {
-        entity_alias: require_attr(node, "entity-alias")?,
-        prefix: optional_attr(node, "prefix"),
-        exclude,
-    })
-}
-
-fn condition_children(node: &MNode) -> Vec<MNode> {
-    node.first_named("entity-condition")
-        .map(|condition| condition.children().iter().map(MNode::deep_copy).collect())
-        .unwrap_or_default()
 }
 
 fn resolve_relationships(
@@ -832,15 +916,35 @@ fn create_auto_reverses(entities: &mut [EntityDefinition], by_full: &HashMap<Str
                 related: reverse.source_full,
                 related_entity_name: reverse.source_name,
                 title: reverse.title,
-                short_alias: None,
                 is_auto_reverse: true,
                 mutable: true,
                 key_map,
-                key_values: Vec::new(),
+                ..Relationship::default()
             });
         }
     }
     Ok(())
+}
+
+/// Fill `key_pairs` on every relationship, auto-reverse ones included.
+fn expand_key_pairs(entities: &mut [EntityDefinition], by_full: &HashMap<String, usize>) {
+    for index in 0..entities.len() {
+        let pairs: Vec<Vec<(String, String)>> = entities[index]
+            .relationships
+            .iter()
+            .map(|relationship| match by_full.get(&relationship.related) {
+                Some(&target) => expand_key_map(
+                    &relationship.relationship_type,
+                    &relationship.key_map,
+                    &entities[target],
+                ),
+                None => Vec::new(),
+            })
+            .collect();
+        for (relationship, pairs) in entities[index].relationships.iter_mut().zip(pairs) {
+            relationship.key_pairs = pairs;
+        }
+    }
 }
 
 fn pk_strings(entity: &EntityDefinition) -> Vec<String> {
@@ -852,8 +956,14 @@ fn pk_strings(entity: &EntityDefinition) -> Vec<String> {
         .collect()
 }
 
-fn expand_key_map(relationship_type: &str, key_map: &[KeyMap], target: &EntityDefinition) -> Vec<(String, String)> {
-    let pks = pk_strings(target);
+/// Java `EntityDefinition.getRelationshipExpandedKeyMapInternal`.
+///
+/// With no key-map on a `one` relationship, every related primary key maps to the same name. One
+/// key-map without `related` maps to the related single primary key on a `one` relationship,
+/// otherwise to the same name. With several, a `related` name that is not a related field falls
+/// back to the related single primary key on a `one` relationship.
+pub fn expand_key_map(relationship_type: &str, key_map: &[KeyMap], target: &EntityDefinition) -> Vec<(String, String)> {
+    let pks: Vec<String> = target.pk_field_names().into_iter().map(str::to_string).collect();
     let one = relationship_type.starts_with("one");
     if key_map.is_empty() && one {
         return pks.into_iter().map(|pk| (pk.clone(), pk)).collect();
@@ -867,7 +977,6 @@ fn expand_key_map(relationship_type: &str, key_map: &[KeyMap], target: &EntityDe
         };
         return vec![(map.field_name.clone(), related)];
     }
-    let field_names: HashSet<&str> = target.fields.iter().map(|field| field.name.as_str()).collect();
     key_map
         .iter()
         .map(|map| {
@@ -876,7 +985,7 @@ fn expand_key_map(relationship_type: &str, key_map: &[KeyMap], target: &EntityDe
                 .clone()
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| map.field_name.clone());
-            if one && pks.len() == 1 && !field_names.contains(related.as_str()) {
+            if one && pks.len() == 1 && !target.has_field(&related) {
                 related = pks[0].clone();
             }
             (map.field_name.clone(), related)
@@ -930,168 +1039,4 @@ fn located(node: &MNode, message: impl Into<String>) -> Error {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn workspace_root() -> std::path::PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-    }
-
-    fn framework_model() -> EntityModel {
-        let root = workspace_root();
-        let conf = MNode::parse_file(root.join("framework/conf/MoquiDefaultConf.xml")).unwrap();
-        EntityModel::load_directory(&conf, &root.join("framework/entity")).unwrap()
-    }
-
-    #[test]
-    fn framework_entities_and_dictionary_load() {
-        let model = framework_model();
-        assert!(!model.full_names().is_empty());
-        let id = model.dictionary_type("id").unwrap();
-        assert_eq!(id.java_type, "java.lang.String");
-        assert_eq!(id.default_sql_type, "VARCHAR(40)");
-        assert!(model.dictionary_type("text-fts").is_some());
-
-        let enumeration = model.entity("moqui.basic.Enumeration").unwrap();
-        assert_eq!(model.entity("Enumeration").unwrap().full_name, enumeration.full_name);
-        assert_eq!(enumeration.table_name, "Enumeration");
-        assert_eq!(enumeration.entity_use, "configuration");
-        assert_eq!(enumeration.cache, "true");
-        assert_eq!(enumeration.sequence_bank_size, 50);
-        assert_eq!(enumeration.sequence_primary_stagger, 1);
-        assert_eq!(enumeration.sequence_secondary_padded_length, 2);
-        assert!(enumeration.sequence_primary_prefix.is_none());
-        assert!(!enumeration.sequence_primary_use_uuid);
-        let stamp = enumeration.field("lastUpdatedStamp").unwrap();
-        assert_eq!(stamp.field_type, "date-time");
-        assert!(!stamp.is_pk);
-        assert!(!stamp.not_null);
-        assert_eq!(enumeration.masters[0].name, "default");
-        assert_eq!(enumeration.masters[0].details[0].relationship, "type");
-
-        let factor = model.entity("moqui.security.UserAuthcFactor").unwrap();
-        let factor_id = factor.field("factorId").unwrap();
-        assert!(factor_id.is_pk);
-        assert!(!factor_id.not_null);
-        assert!(factor.field("userId").unwrap().not_null);
-
-        let audit = model.entity("moqui.entity.EntityAuditLog").unwrap();
-        assert!(audit.create_only);
-        assert!(audit.field("changedEntityName").unwrap().create_only);
-        assert!(audit.field("lastUpdatedStamp").unwrap().create_only);
-        let index = audit
-            .indexes
-            .iter()
-            .find(|index| index.name == "ENTAUDLOG_PKPRIM")
-            .unwrap();
-        assert!(!index.unique);
-        assert_eq!(index.fields, vec!["pkPrimaryValue".to_string()]);
-
-        let detail = model.entity("moqui.basic.StatusFlowTransitionToDetail").unwrap();
-        assert_eq!(detail.entity_condition.len(), 1);
-        assert_eq!(detail.entity_condition[0].name(), "order-by");
-        assert_eq!(
-            detail.entity_condition[0].attribute("field-name").as_deref(),
-            Some("sequenceNum")
-        );
-
-        let missing = model.entity("moqui.missing.NoSuch").unwrap_err();
-        assert!(missing.to_string().contains("NoSuch"));
-        assert!(model.entity_full("moqui.missing.NoSuch").is_none());
-    }
-
-    #[test]
-    fn artifact_authz_check_view_keeps_members() {
-        let model = framework_model();
-        let view = model.entity("moqui.security.ArtifactAuthzCheckView").unwrap();
-        assert!(view.is_view);
-        assert_eq!(view.full_name, "moqui.security.ArtifactAuthzCheckView");
-        let member = view.member("AAZ").unwrap();
-        assert_eq!(member.entity_name, "moqui.security.ArtifactAuthz");
-        assert_eq!(view.member_relationships.len(), 1);
-        assert_eq!(view.member_relationships[0].entity_alias, "AGM");
-        assert_eq!(view.member_relationships[0].relationship, "groupMembers");
-        let alias = view.alias("artifactName").unwrap();
-        assert_eq!(alias.entity_alias.as_deref(), Some("AGM"));
-        assert!(alias.field.is_none());
-    }
-
-    #[test]
-    fn extend_entity_adds_a_field() {
-        let root = workspace_root();
-        let conf = MNode::parse_file(root.join("framework/conf/MoquiDefaultConf.xml")).unwrap();
-        let mut documents = entity_documents(&root.join("framework/entity")).unwrap();
-        documents.push(
-            MNode::parse_text(
-                "inline-extend.xml",
-                r#"<entities>
-                    <extend-entity entity-name="Geo" package="moqui.basic">
-                        <field name="extraNote" type="text-short"/>
-                    </extend-entity>
-                </entities>"#,
-            )
-            .unwrap(),
-        );
-        let model = EntityModel::load(&conf, &documents).unwrap();
-        let geo = model.entity("moqui.basic.Geo").unwrap();
-        let field = geo.field("extraNote").unwrap();
-        assert_eq!(field.field_type, "text-short");
-        assert!(!field.is_pk);
-        assert!(!field.not_null);
-        assert!(geo.field("geoId").unwrap().is_pk);
-    }
-
-    #[test]
-    fn auto_reverse_swaps_the_uom_conversion_key_map() {
-        let model = framework_model();
-        let conversion = model.entity("moqui.basic.UomConversion").unwrap();
-        let forward = conversion.relationship("To#moqui.basic.Uom").unwrap();
-        assert_eq!(forward.relationship_type, "one");
-        assert!(!forward.is_auto_reverse);
-        assert_eq!(forward.key_map.len(), 1);
-        assert_eq!(forward.key_map[0].field_name, "toUomId");
-        assert_eq!(forward.key_map[0].related.as_deref(), Some("uomId"));
-
-        let uom = model.entity("moqui.basic.Uom").unwrap();
-        let reverse = uom.relationship("To#moqui.basic.UomConversion").unwrap();
-        assert!(reverse.is_auto_reverse);
-        assert_eq!(reverse.relationship_type, "many");
-        assert_eq!(reverse.related, "moqui.basic.UomConversion");
-        assert!(reverse.mutable);
-        assert_eq!(reverse.key_map.len(), 1);
-        assert_eq!(reverse.key_map[0].field_name, "uomId");
-        assert_eq!(reverse.key_map[0].related.as_deref(), Some("toUomId"));
-        assert!(uom.has_dependents);
-        assert!(uom.relationship("toConversions").is_some());
-    }
-
-    #[test]
-    fn short_entity_name_must_be_unique() {
-        let conf = MNode::parse_text(
-            "conf.xml",
-            r#"<database-list>
-                <dictionary-type type="id" java-type="java.lang.String" default-sql-type="VARCHAR(40)"/>
-            </database-list>"#,
-        )
-        .unwrap();
-        let document = MNode::parse_text(
-            "entities.xml",
-            r#"<entities>
-                <entity entity-name="Same" package="one.a" no-update-stamp="true">
-                    <field name="id" type="id" is-pk="true"/>
-                </entity>
-                <entity entity-name="Same" package="two.b" no-update-stamp="true">
-                    <field name="id" type="id" is-pk="true"/>
-                </entity>
-            </entities>"#,
-        )
-        .unwrap();
-        let model = EntityModel::load(&conf, &[document]).unwrap();
-        assert!(model.entity("one.a.Same").is_ok());
-        assert!(model.entity("two.b.Same").is_ok());
-        let err = model.entity("Same").unwrap_err();
-        assert!(err.to_string().contains("not unique"));
-        assert_eq!(model.full_names().len(), 2);
-        assert!(model.entity("one.a.Same").unwrap().field("lastUpdatedStamp").is_none());
-    }
-}
+mod tests;

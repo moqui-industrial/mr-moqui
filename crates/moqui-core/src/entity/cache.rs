@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use moqui_db::dialect::Dialect;
 use moqui_db::model::EntityDefinition;
 use moqui_db::sql::{
-    create_table, delete, insert, insert_or_update, select, update, CompareOp, Condition, FieldRef, LimitOffset,
+    create_table, delete, insert, insert_or_update, select, update, CompareOp, Condition, FieldRef, LimitOffset, Nulls,
     OrderBy,
 };
 use moqui_lib::cache::{CacheConfig, MCache};
@@ -36,7 +36,7 @@ use moqui_lib::object::{compare_like, compare_obj, to_plain_string, Value};
 use super::exec::{execute_conn, execute_script, query_conn, query_tx};
 use super::facade::EntityFacade;
 use super::field_rw;
-use super::params::{condition_params, entity_columns, map_row};
+use super::params::{entity_columns, map_row};
 use super::value::{EntityList, EntityValue};
 use crate::driver::{DbConnection, DbRow};
 use crate::transaction::TransactionManager;
@@ -632,11 +632,10 @@ fn load_by_pk(
     let plan = facade.with_group(entity_name, |entity, dialect, model, tx| {
         let condition = pk_condition(entity, values)?;
         let fields: Vec<FieldRef> = entity.fields.iter().map(|field| FieldRef::new(&field.name)).collect();
-        let sql = select(entity, dialect, &fields, Some(&condition), &[], LimitOffset::default())?;
-        let params = condition_params(&condition);
+        let statement = select(entity, dialect, &fields, Some(&condition), &[], LimitOffset::default())?;
         Ok(SelectPlan {
-            sql,
-            params,
+            sql: statement.sql,
+            params: statement.params,
             columns: entity_columns(entity, model),
             tx: tx.clone(),
         })
@@ -664,14 +663,10 @@ fn plan_select(
             return Err(Error::new(format!("cannot overlay view-entity {}", entity.full_name)));
         }
         let fields: Vec<FieldRef> = entity.fields.iter().map(|field| FieldRef::new(&field.name)).collect();
-        let sql = select(entity, dialect, &fields, condition, order, LimitOffset::default())?;
-        let params = match condition {
-            Some(condition) => condition_params(condition),
-            None => Vec::new(),
-        };
+        let statement = select(entity, dialect, &fields, condition, order, LimitOffset::default())?;
         Ok(SelectPlan {
-            sql,
-            params,
+            sql: statement.sql,
+            params: statement.params,
             columns: entity_columns(entity, model),
             tx: tx.clone(),
         })
@@ -721,8 +716,8 @@ fn statement_for(
     match operation {
         Op::Delete => {
             let condition = pk_condition(entity, values)?;
-            let sql = delete(entity, dialect, Some(&condition))?;
-            Ok(Some((sql, condition_params(&condition))))
+            let statement = delete(entity, dialect, Some(&condition))?;
+            Ok(Some((statement.sql, statement.params)))
         }
         Op::Update => {
             let columns = present_columns(entity, values, true, true);
@@ -730,10 +725,10 @@ fn statement_for(
                 return Ok(None);
             }
             let condition = pk_condition(entity, values)?;
-            let sql = update(entity, dialect, &columns, Some(&condition))?;
+            let statement = update(entity, dialect, &columns, Some(&condition))?;
             let mut params = bind_columns(&columns, values);
-            params.extend(condition_params(&condition));
-            Ok(Some((sql, params)))
+            params.extend(statement.params);
+            Ok(Some((statement.sql, params)))
         }
         Op::Create => {
             let columns = present_columns(entity, values, false, false);
@@ -1003,12 +998,16 @@ fn page_rows(mut rows: Vec<EntityValue>, limit: Option<i64>, offset: Option<i64>
 fn sort_rows(rows: &mut [MemRow], order: &[OrderBy]) {
     rows.sort_by(|left, right| {
         for entry in order {
-            let left_value = left.fields.get(&entry.field.name).cloned().unwrap_or(Value::Null);
-            let right_value = right.fields.get(&entry.field.name).cloned().unwrap_or(Value::Null);
-            let mut ord = cmp_nulls_last(&left_value, &right_value);
-            if entry.descending {
-                ord = ord.reverse();
-            }
+            let read = |row: &MemRow| {
+                let value = row.fields.get(&entry.field.name).cloned().unwrap_or(Value::Null);
+                match (entry.case, value) {
+                    (Some(true), Value::String(text)) => Value::String(text.to_uppercase()),
+                    (Some(false), Value::String(text)) => Value::String(text.to_lowercase()),
+                    (_, value) => value,
+                }
+            };
+            let nulls_first = entry.nulls == Some(Nulls::First);
+            let ord = cmp_order(&read(left), &read(right), entry.descending, nulls_first);
             if ord != Ordering::Equal {
                 return ord;
             }
@@ -1017,17 +1016,22 @@ fn sort_rows(rows: &mut [MemRow], order: &[OrderBy]) {
     });
 }
 
-fn cmp_nulls_last(left: &Value, right: &Value) -> Ordering {
-    if left.is_null() && right.is_null() {
-        return Ordering::Equal;
+/// The order the SQL writes: nulls last unless asked first, whatever the direction.
+fn cmp_order(left: &Value, right: &Value, descending: bool, nulls_first: bool) -> Ordering {
+    let null_side = if nulls_first { Ordering::Less } else { Ordering::Greater };
+    match (left.is_null(), right.is_null()) {
+        (true, true) => Ordering::Equal,
+        (true, false) => null_side,
+        (false, true) => null_side.reverse(),
+        (false, false) => {
+            let ord = compare_obj(left, right).unwrap_or(Ordering::Equal);
+            if descending {
+                ord.reverse()
+            } else {
+                ord
+            }
+        }
     }
-    if left.is_null() {
-        return Ordering::Greater;
-    }
-    if right.is_null() {
-        return Ordering::Less;
-    }
-    compare_obj(left, right).unwrap_or(Ordering::Equal)
 }
 
 fn row_matches(condition: Option<&Condition>, fields: &BTreeMap<String, Value>) -> bool {
@@ -1043,6 +1047,13 @@ fn eval_condition(condition: &Condition, fields: &BTreeMap<String, Value>) -> bo
         Condition::NotEquals(field, expected) => {
             let got = field_value(fields, &field.name);
             !got.is_null() && got != *expected
+        }
+        // A null value is IS NULL and IS NOT NULL in the SQL, as Java writes it.
+        Condition::Like(field, pattern) | Condition::Between(field, pattern, _) if pattern.is_null() => {
+            field_value(fields, &field.name).is_null()
+        }
+        Condition::NotLike(field, pattern) | Condition::NotBetween(field, pattern, _) if pattern.is_null() => {
+            !field_value(fields, &field.name).is_null()
         }
         Condition::Less(field, expected) => {
             cmp_present(&field_value(fields, &field.name), expected) == Some(Ordering::Less)
@@ -1076,6 +1087,14 @@ fn eval_condition(condition: &Condition, fields: &BTreeMap<String, Value>) -> bo
             let below = cmp_present(&got, high).is_some_and(|ord| ord != Ordering::Greater);
             above && below
         }
+        Condition::NotBetween(field, low, high) => {
+            let got = field_value(fields, &field.name);
+            let below = cmp_present(&got, low) == Some(Ordering::Less);
+            let above = cmp_present(&got, high) == Some(Ordering::Greater);
+            below || above
+        }
+        // A caller-bound placeholder has no value to compare.
+        Condition::Bound(..) => false,
         Condition::Like(field, pattern) => compare_like(&field_value(fields, &field.name), pattern),
         Condition::NotLike(field, pattern) => !compare_like(&field_value(fields, &field.name), pattern),
         Condition::IsNull(field) => field_value(fields, &field.name).is_null(),
@@ -1103,8 +1122,31 @@ fn eval_condition(condition: &Condition, fields: &BTreeMap<String, Value>) -> bo
                     other => (name.clone(), other.clone()),
                 })
                 .collect();
-            eval_condition(&inner.as_ref().clone().upper_values(), &upper)
+            eval_condition(&upper_values(inner.as_ref().clone()), &upper)
         }
+    }
+}
+
+/// The condition with every text value upper-cased, to compare against upper-cased fields.
+fn upper_values(condition: Condition) -> Condition {
+    let upper = |value: Value| match value {
+        Value::String(text) => Value::String(text.to_uppercase()),
+        other => other,
+    };
+    match condition {
+        Condition::Equals(field, value) => Condition::Equals(field, upper(value)),
+        Condition::NotEquals(field, value) => Condition::NotEquals(field, upper(value)),
+        Condition::Less(field, value) => Condition::Less(field, upper(value)),
+        Condition::Greater(field, value) => Condition::Greater(field, upper(value)),
+        Condition::LessEqual(field, value) => Condition::LessEqual(field, upper(value)),
+        Condition::GreaterEqual(field, value) => Condition::GreaterEqual(field, upper(value)),
+        Condition::Like(field, value) => Condition::Like(field, upper(value)),
+        Condition::NotLike(field, value) => Condition::NotLike(field, upper(value)),
+        Condition::In(field, values) => Condition::In(field, values.into_iter().map(upper).collect()),
+        Condition::NotIn(field, values) => Condition::NotIn(field, values.into_iter().map(upper).collect()),
+        Condition::Between(field, low, high) => Condition::Between(field, upper(low), upper(high)),
+        Condition::NotBetween(field, low, high) => Condition::NotBetween(field, upper(low), upper(high)),
+        other => other,
     }
 }
 

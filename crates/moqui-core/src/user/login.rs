@@ -479,7 +479,7 @@ fn increment_failed(facade: &EntityFacade, user_id: &str) -> Result<(), Error> {
             FieldRef::new("disabledDateTime"),
         ];
         let set = ["successiveFailedLogins", "disabled", "disabledDateTime"];
-        let select_sql = sql_select(entity, dialect, &fields, Some(&by_user), &[], LimitOffset::default())?;
+        let select_sql = sql_select(entity, dialect, &fields, Some(&by_user), &[], LimitOffset::default())?.sql;
         let counted = Condition::and(vec![
             by_user.clone(),
             Condition::equals("successiveFailedLogins", Value::I64(0)),
@@ -487,8 +487,8 @@ fn increment_failed(facade: &EntityFacade, user_id: &str) -> Result<(), Error> {
         let uncounted = Condition::and(vec![by_user.clone(), Condition::is_null("successiveFailedLogins")]);
         Ok(IncrementSql {
             select: select_sql,
-            update_counted: sql_update(entity, dialect, &set, Some(&counted))?,
-            update_uncounted: sql_update(entity, dialect, &set, Some(&uncounted))?,
+            update_counted: sql_update(entity, dialect, &set, Some(&counted))?.sql,
+            update_uncounted: sql_update(entity, dialect, &set, Some(&uncounted))?.sql,
         })
     })?;
     let tx = facade.transactions_for(USER_ACCOUNT)?;

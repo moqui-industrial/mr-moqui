@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use moqui_db::sql::{insert, select, update, Condition, FieldRef, LimitOffset};
+use moqui_db::sql::{insert, select, update, CompareOp, Condition, FieldRef, LimitOffset};
 use moqui_lib::error::Error as LibError;
 use moqui_lib::object::{basic_convert, is_empty, to_plain_string, Value};
 
@@ -122,22 +122,25 @@ fn plan(facade: &EntityFacade) -> Result<Plan, Error> {
     facade
         .with_group(ServiceDef::semaphore_entity(), |entity, dialect, _, tx| {
             let condition = Condition::and(vec![
-                Condition::equals("serviceName", Value::Null),
-                Condition::equals("parameterValue", Value::Null),
+                Condition::bound("serviceName", CompareOp::Equals),
+                Condition::bound("parameterValue", CompareOp::Equals),
             ]);
             let fields: Vec<FieldRef> = COLUMNS.iter().copied().map(FieldRef::new).collect();
-            let select_sql = select(entity, dialect, &fields, Some(&condition), &[], LimitOffset::default())?;
+            let select_sql = select(entity, dialect, &fields, Some(&condition), &[], LimitOffset::default())?.sql;
             let insert_sql = insert(entity, dialect, &COLUMNS)?;
             let set = ["lockThread", "lockTime"];
             let free = Condition::and(vec![condition.clone(), Condition::is_null("lockThread")]);
-            let owned = Condition::and(vec![condition.clone(), Condition::equals("lockThread", Value::Null)]);
+            let owned = Condition::and(vec![
+                condition.clone(),
+                Condition::bound("lockThread", CompareOp::Equals),
+            ]);
             Ok(Plan {
                 tx: tx.clone(),
                 select_sql,
                 insert_sql,
-                claim_free_sql: update(entity, dialect, &set, Some(&free))?,
-                claim_stale_sql: update(entity, dialect, &set, Some(&owned))?,
-                clear_sql: update(entity, dialect, &set, Some(&owned))?,
+                claim_free_sql: update(entity, dialect, &set, Some(&free))?.sql,
+                claim_stale_sql: update(entity, dialect, &set, Some(&owned))?.sql,
+                clear_sql: update(entity, dialect, &set, Some(&owned))?.sql,
             })
         })
         .map_err(Error::from)

@@ -12,7 +12,10 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Insert, update, delete, select, count, view-entity select, and DDL text.
+//! Insert, update, delete, select, and count on an entity, and DDL text.
+//!
+//! Field names are written as the field's `column-name`. A selected field whose column has
+//! another name is read back under the field name with `AS`.
 
 use std::collections::HashSet;
 
@@ -21,63 +24,96 @@ use moqui_lib::error::Error;
 use crate::dialect::Dialect;
 use crate::model::{EntityDefinition, EntityModel, FieldDefinition, IndexDefinition, Relationship};
 
-use super::condition::{fts_config, render_condition, write_field, Condition, FieldRef, LimitOffset, Nulls, OrderBy};
-use super::ident::{clip_name, is_mysql, is_postgres, placeholders, quote_ident, quote_list};
-use std::collections::HashMap;
+use super::condition::{fts_config, Column, Condition, FieldRef, LimitOffset, OrderBy, Writer};
+use super::ident::{clip_length, clip_name, is_mysql, placeholders, quote_ident, shrink_name};
+use super::Statement;
 
-/// `INSERT INTO table (columns) VALUES (?, ?)`. The caller chooses the columns. None are skipped.
+/// What a select can ask for beyond conditions, order, and paging.
+#[derive(Debug, Clone, Default)]
+pub struct SelectOptions {
+    pub distinct: bool,
+    /// Lock the selected rows. Needs a transaction, and cannot go with `distinct` or a `GROUP BY`.
+    pub for_update: bool,
+    /// A condition on an aggregate. Only a view with an aggregate alias has a `GROUP BY` for it.
+    pub having: Option<Condition>,
+    /// For a view: the aliases to select. Empty selects every alias. For a count with
+    /// `distinct`, the fields that are distinct.
+    pub fields: Vec<String>,
+}
+
+/// The column a field name maps to on a plain entity, and whether it is text.
+pub(crate) fn entity_column(entity: &EntityDefinition, dialect: &Dialect, field: &FieldRef) -> Column {
+    if field.expr.is_some() || field.entity_alias.is_some() {
+        return Column::plain(dialect, field);
+    }
+    match entity.field(&field.name) {
+        Some(definition) => Column {
+            sql: quote_ident(dialect, &definition.column_name),
+            text: Some(definition.is_text()),
+        },
+        None => Column::plain(dialect, field),
+    }
+}
+
+fn column_name<'a>(entity: &'a EntityDefinition, name: &'a str) -> &'a str {
+    entity.field(name).map_or(name, |field| field.column_name.as_str())
+}
+
+/// `INSERT INTO table (columns) VALUES (?, ?)`. The caller chooses the fields and binds them.
 pub fn insert(entity: &EntityDefinition, dialect: &Dialect, columns: &[&str]) -> Result<String, Error> {
     if columns.is_empty() {
         return Err(Error::new("insert has no columns"));
     }
+    let names: Vec<&str> = columns.iter().map(|name| column_name(entity, name)).collect();
     let mut sql = String::new();
     sql.push_str("INSERT INTO ");
     sql.push_str(&quote_ident(dialect, &entity.table_name));
     sql.push_str(" (");
-    sql.push_str(&quote_list(dialect, columns));
+    sql.push_str(&quote_list(dialect, &names));
     sql.push_str(") VALUES (");
     sql.push_str(&placeholders(dialect, columns.len()));
     sql.push(')');
     Ok(sql)
 }
 
-/// `UPDATE table SET col = ? WHERE ...`. An empty condition omits `WHERE`.
+/// `UPDATE table SET col = ? WHERE ...`. The caller binds the `SET` values, then the statement's
+/// params. An empty condition omits `WHERE`.
 pub fn update(
     entity: &EntityDefinition,
     dialect: &Dialect,
     columns: &[&str],
     condition: Option<&Condition>,
-) -> Result<String, Error> {
+) -> Result<Statement, Error> {
     if columns.is_empty() {
         return Err(Error::new("update has no columns"));
     }
-    let mut sql = String::new();
-    sql.push_str("UPDATE ");
-    sql.push_str(&quote_ident(dialect, &entity.table_name));
-    sql.push_str(" SET ");
+    let mut out = Writer::new(dialect);
+    out.push("UPDATE ");
+    out.push(&quote_ident(dialect, &entity.table_name));
+    out.push(" SET ");
     for (index, column) in columns.iter().enumerate() {
         if index > 0 {
-            sql.push_str(", ");
+            out.push(", ");
         }
-        sql.push_str(&quote_ident(dialect, column));
-        sql.push_str(" = ");
-        sql.push_str(dialect.placeholder);
+        out.push(&quote_ident(dialect, column_name(entity, column)));
+        out.push(" = ");
+        out.push(dialect.placeholder);
     }
-    append_where(&mut sql, dialect, condition)?;
-    Ok(sql)
+    where_clause(&mut out, entity, condition)?;
+    Ok(out.finish())
 }
 
 /// `DELETE FROM table WHERE ...`. An empty condition omits `WHERE`.
-pub fn delete(entity: &EntityDefinition, dialect: &Dialect, condition: Option<&Condition>) -> Result<String, Error> {
-    let mut sql = String::new();
-    sql.push_str("DELETE FROM ");
-    sql.push_str(&quote_ident(dialect, &entity.table_name));
-    append_where(&mut sql, dialect, condition)?;
-    Ok(sql)
+pub fn delete(entity: &EntityDefinition, dialect: &Dialect, condition: Option<&Condition>) -> Result<Statement, Error> {
+    let mut out = Writer::new(dialect);
+    out.push("DELETE FROM ");
+    out.push(&quote_ident(dialect, &entity.table_name));
+    where_clause(&mut out, entity, condition)?;
+    Ok(out.finish())
 }
 
 /// `SELECT fields FROM table WHERE ... ORDER BY ...` plus limit and offset.
-/// An empty `fields` list selects `*`. Schema is omitted.
+/// An empty `fields` list selects every field. Schema is omitted.
 pub fn select(
     entity: &EntityDefinition,
     dialect: &Dialect,
@@ -85,7 +121,7 @@ pub fn select(
     condition: Option<&Condition>,
     order_by: &[OrderBy],
     page: LimitOffset,
-) -> Result<String, Error> {
+) -> Result<Statement, Error> {
     select_with(
         entity,
         dialect,
@@ -97,17 +133,7 @@ pub fn select(
     )
 }
 
-/// What a select can ask for beyond conditions, order, and paging.
-#[derive(Debug, Clone, Default)]
-pub struct SelectOptions {
-    pub distinct: bool,
-    /// Lock the selected rows. Needs a transaction, and cannot go with `distinct` or a `GROUP BY`.
-    pub for_update: bool,
-    /// A condition on an aggregate. Only a view with a function alias has a `GROUP BY` to hang it on.
-    pub having: Option<Condition>,
-}
-
-/// [`select`] with [`SelectOptions`].
+/// [`select`] with [`SelectOptions`]. `options.fields` is not used; `fields` chooses the columns.
 pub fn select_with(
     entity: &EntityDefinition,
     dialect: &Dialect,
@@ -116,7 +142,13 @@ pub fn select_with(
     order_by: &[OrderBy],
     page: LimitOffset,
     options: &SelectOptions,
-) -> Result<String, Error> {
+) -> Result<Statement, Error> {
+    if entity.is_view {
+        return Err(Error::new(format!(
+            "{} is a view-entity; use select_view",
+            entity.full_name
+        )));
+    }
     if options.having.is_some() {
         return Err(Error::new(format!(
             "{} has no aggregate fields, so a having condition has nothing to apply to",
@@ -126,254 +158,109 @@ pub fn select_with(
     if options.for_update && options.distinct {
         return Err(Error::new("a select cannot be both distinct and for update"));
     }
-    let mut sql = String::from(if options.distinct {
+    let mut out = Writer::new(dialect);
+    out.push(if options.distinct {
         "SELECT DISTINCT "
     } else {
         "SELECT "
     });
-    if fields.is_empty() {
-        sql.push('*');
+    out.push(&select_list(entity, dialect, fields));
+    out.push(" FROM ");
+    out.push(&quote_ident(dialect, &entity.table_name));
+    where_clause(&mut out, entity, condition)?;
+    let columns = |field: &FieldRef| Ok(entity_column(entity, dialect, field));
+    out.order_by(order_by, page.is_set(), &columns)?;
+    out.page(page);
+    if options.for_update {
+        for_update(&mut out);
+    }
+    Ok(out.finish())
+}
+
+/// `FOR UPDATE`, or the database's `for-update` text.
+pub(crate) fn for_update(out: &mut Writer<'_>) {
+    out.push(" ");
+    let text = out.dialect.for_update.as_deref().unwrap_or("FOR UPDATE").to_string();
+    out.push(&text);
+}
+
+fn select_list(entity: &EntityDefinition, dialect: &Dialect, fields: &[FieldRef]) -> String {
+    let all: Vec<FieldRef>;
+    let fields = if fields.is_empty() {
+        if entity.fields.iter().all(|field| field.column_name == field.name) {
+            return "*".to_string();
+        }
+        all = entity.fields.iter().map(|field| FieldRef::new(&field.name)).collect();
+        &all
     } else {
-        for (index, field) in fields.iter().enumerate() {
-            if index > 0 {
-                sql.push_str(", ");
-            }
-            write_field(&mut sql, dialect, field);
+        fields
+    };
+    let mut sql = String::new();
+    for (index, field) in fields.iter().enumerate() {
+        if index > 0 {
+            sql.push_str(", ");
+        }
+        let column = entity_column(entity, dialect, field);
+        sql.push_str(&column.sql);
+        if field.expr.is_none() && field.entity_alias.is_none() && column_name(entity, &field.name) != field.name {
+            sql.push_str(" AS ");
+            sql.push_str(&quote_ident(dialect, &field.name));
         }
     }
-    sql.push_str(" FROM ");
-    sql.push_str(&quote_ident(dialect, &entity.table_name));
-    append_where(&mut sql, dialect, condition)?;
-    append_order(&mut sql, dialect, order_by);
-    append_page(&mut sql, dialect, page);
-    if options.for_update {
-        sql.push_str(" FOR UPDATE");
-    }
-    Ok(sql)
+    sql
 }
 
 /// `SELECT COUNT(*) FROM table WHERE ...`. No `ORDER BY` and no limit.
-pub fn count(entity: &EntityDefinition, dialect: &Dialect, condition: Option<&Condition>) -> Result<String, Error> {
-    let mut sql = String::from("SELECT COUNT(*) FROM ");
-    sql.push_str(&quote_ident(dialect, &entity.table_name));
-    append_where(&mut sql, dialect, condition)?;
-    Ok(sql)
+pub fn count(entity: &EntityDefinition, dialect: &Dialect, condition: Option<&Condition>) -> Result<Statement, Error> {
+    count_with(entity, dialect, condition, &SelectOptions::default())
 }
 
-/// View-entity select. Members are joined in document order, including `member-relationship`.
-///
-/// The first member is the driving table. A later member with `join_optional` is `LEFT JOIN`,
-/// otherwise `JOIN`. A `member-relationship` uses that relationship's key map. An empty
-/// `member-entity` key map is `ON 1=1`. A relationship with no key map joins the related
-/// primary key, as `EntityDefinition.groovy` does.
-/// Selected columns are the explicit aliases (`alias.field`, or `alias.name` when `field` is
-/// absent) followed by each `alias_all` expanded to that member's fields except `exclude`.
-/// A prefix is prepended, with the field's first letter uppercased, and written as `AS`.
-pub fn select_view(
-    view: &EntityDefinition,
-    model: &EntityModel,
+/// [`count`] with [`SelectOptions`]. A distinct count over `options.fields` counts a
+/// `SELECT DISTINCT` sub-select, as Java does.
+pub fn count_with(
+    entity: &EntityDefinition,
     dialect: &Dialect,
     condition: Option<&Condition>,
-    order_by: &[OrderBy],
-    page: LimitOffset,
-) -> Result<String, Error> {
-    select_view_with(
-        view,
-        model,
-        dialect,
-        condition,
-        order_by,
-        page,
-        &SelectOptions::default(),
-    )
-}
-
-/// [`select_view`] with [`SelectOptions`].
-///
-/// An alias with `function` aggregates (`min`, `max`, `sum`, `avg`, `count`, `count-distinct`) or
-/// transforms (`upper`, `lower`) its column. When any alias aggregates, every other selected column
-/// goes in a `GROUP BY`, as Java does. Field names in `condition`, `order_by`, and
-/// `options.having` are the view's alias names. They are written as the member column or the
-/// function expression the alias stands for, so a name two members share is not ambiguous and a
-/// condition on an aggregate names the aggregate.
-pub fn select_view_with(
-    view: &EntityDefinition,
-    model: &EntityModel,
-    dialect: &Dialect,
-    condition: Option<&Condition>,
-    order_by: &[OrderBy],
-    page: LimitOffset,
     options: &SelectOptions,
-) -> Result<String, Error> {
-    let resolver = ViewFields::new(view, model, dialect)?;
-    let grouped = resolver.has_aggregate;
-    if options.having.is_some() && !grouped {
+) -> Result<Statement, Error> {
+    if entity.is_view {
         return Err(Error::new(format!(
-            "view {} has no aggregate alias, so a having condition has nothing to apply to",
-            view.full_name
+            "{} is a view-entity; use count_view",
+            entity.full_name
         )));
     }
-    if options.for_update && (options.distinct || grouped) {
-        return Err(Error::new("a select cannot lock rows with distinct or an aggregate"));
-    }
-    let where_condition = condition.map(|condition| resolver.resolve(condition.clone()));
-    if let Some(found) = &where_condition {
-        if found.any_field(&mut |field| resolver.is_aggregate_expr(field)) {
-            return Err(Error::new(
-                "a condition on an aggregate alias must be a having condition, not a where condition",
-            ));
-        }
-    }
-    let ordering: Vec<OrderBy> = order_by
-        .iter()
-        .map(|entry| OrderBy {
-            field: resolver.resolve_field(entry.field.clone()),
-            descending: entry.descending,
-            nulls: entry.nulls,
-        })
-        .collect();
-    let mut sql = String::from(if options.distinct {
-        "SELECT DISTINCT "
+    let mut out = Writer::new(dialect);
+    let wrapped = options.distinct && !options.fields.is_empty();
+    if wrapped {
+        let fields: Vec<FieldRef> = options.fields.iter().map(FieldRef::new).collect();
+        out.push("SELECT COUNT(*) FROM (SELECT DISTINCT ");
+        out.push(&select_list(entity, dialect, &fields));
     } else {
-        "SELECT "
-    });
-    sql.push_str(&view_select_list(view, model, dialect)?);
-    sql.push_str(&view_from(view, model, dialect)?);
-    append_where(&mut sql, dialect, where_condition.as_ref())?;
-    if grouped {
-        sql.push_str(" GROUP BY ");
-        sql.push_str(&resolver.group_by.join(", "));
-        if let Some(having) = &options.having {
-            let resolved = resolver.resolve(having.clone());
-            let rendered = render_condition(&resolved, dialect)?;
-            if !rendered.is_empty() {
-                sql.push_str(" HAVING ");
-                sql.push_str(&rendered);
-            }
-        }
+        out.push("SELECT COUNT(*)");
     }
-    append_order(&mut sql, dialect, &ordering);
-    append_page(&mut sql, dialect, page);
-    if options.for_update {
-        sql.push_str(" FOR UPDATE");
+    out.push(" FROM ");
+    out.push(&quote_ident(dialect, &entity.table_name));
+    where_clause(&mut out, entity, condition)?;
+    if wrapped {
+        out.push(") TEMP_NAME");
     }
-    Ok(sql)
+    Ok(out.finish())
 }
 
-/// The columns and expressions a view's alias names stand for.
-struct ViewFields {
-    by_name: HashMap<String, FieldRef>,
-    has_aggregate: bool,
-    group_by: Vec<String>,
-}
-
-impl ViewFields {
-    fn new(view: &EntityDefinition, model: &EntityModel, dialect: &Dialect) -> Result<Self, Error> {
-        let mut by_name = HashMap::new();
-        let mut group_by = Vec::new();
-        let mut has_aggregate = false;
-        for alias in &view.aliases {
-            let source = alias.field.as_deref().unwrap_or(alias.name.as_str());
-            let column = column_sql(dialect, alias.entity_alias.as_deref(), source);
-            match alias.function.as_deref() {
-                Some(function) => {
-                    let expr = function_sql(function, &column)?;
-                    if is_aggregate(function) {
-                        has_aggregate = true;
-                    } else {
-                        group_by.push(expr.clone());
-                    }
-                    by_name.insert(alias.name.clone(), FieldRef::expression(alias.name.clone(), expr));
-                }
-                None => {
-                    group_by.push(column);
-                    let field = match alias.entity_alias.as_deref() {
-                        Some(entity_alias) => FieldRef::aliased(entity_alias, source),
-                        None => FieldRef::new(source),
-                    };
-                    by_name.insert(alias.name.clone(), field);
-                }
-            }
-        }
-        for alias_all in &view.alias_alls {
-            let member = view.member(&alias_all.entity_alias).ok_or_else(|| {
-                Error::new(format!(
-                    "view {} alias-all {} has no member-entity",
-                    view.full_name, alias_all.entity_alias
-                ))
-            })?;
-            let member_entity = model.entity(&member.entity_name)?;
-            for field in &member_entity.fields {
-                if alias_all.exclude.iter().any(|name| name == &field.name) {
-                    continue;
-                }
-                let out_name = match alias_all.prefix.as_deref() {
-                    Some(prefix) => prefixed_name(prefix, &field.name),
-                    None => field.name.clone(),
-                };
-                if by_name.contains_key(&out_name) {
-                    continue;
-                }
-                group_by.push(column_sql(dialect, Some(&alias_all.entity_alias), &field.name));
-                by_name.insert(
-                    out_name,
-                    FieldRef::aliased(alias_all.entity_alias.clone(), field.name.clone()),
-                );
-            }
-        }
-        Ok(Self {
-            by_name,
-            has_aggregate,
-            group_by,
-        })
+fn where_clause(out: &mut Writer<'_>, entity: &EntityDefinition, condition: Option<&Condition>) -> Result<(), Error> {
+    let Some(condition) = condition else {
+        return Ok(());
+    };
+    let dialect = out.dialect;
+    let columns = |field: &FieldRef| Ok(entity_column(entity, dialect, field));
+    let mut inner = Writer::new(dialect);
+    inner.condition(condition, &columns)?;
+    let rendered = inner.finish();
+    if !rendered.sql.is_empty() {
+        out.push(" WHERE ");
+        out.append(rendered);
     }
-
-    fn resolve_field(&self, field: FieldRef) -> FieldRef {
-        if field.entity_alias.is_some() || field.expr.is_some() {
-            return field;
-        }
-        self.by_name.get(&field.name).cloned().unwrap_or(field)
-    }
-
-    fn resolve(&self, condition: Condition) -> Condition {
-        condition.map_fields(&mut |field| self.resolve_field(field))
-    }
-
-    fn is_aggregate_expr(&self, field: &FieldRef) -> bool {
-        field.expr.as_ref().is_some_and(|expr| {
-            ["MIN(", "MAX(", "SUM(", "AVG(", "COUNT("]
-                .iter()
-                .any(|prefix| expr.starts_with(prefix))
-        })
-    }
-}
-
-fn column_sql(dialect: &Dialect, entity_alias: Option<&str>, source: &str) -> String {
-    let mut out = String::new();
-    if let Some(entity_alias) = entity_alias {
-        out.push_str(&quote_ident(dialect, entity_alias));
-        out.push('.');
-    }
-    out.push_str(&quote_ident(dialect, source));
-    out
-}
-
-fn is_aggregate(function: &str) -> bool {
-    matches!(function, "min" | "max" | "sum" | "avg" | "count" | "count-distinct")
-}
-
-fn function_sql(function: &str, column: &str) -> Result<String, Error> {
-    Ok(match function {
-        "min" => format!("MIN({column})"),
-        "max" => format!("MAX({column})"),
-        "sum" => format!("SUM({column})"),
-        "avg" => format!("AVG({column})"),
-        "count" => format!("COUNT({column})"),
-        "count-distinct" => format!("COUNT(DISTINCT {column})"),
-        "upper" => format!("UPPER({column})"),
-        "lower" => format!("LOWER({column})"),
-        other => return Err(Error::new(format!("alias function {other} is not supported"))),
-    })
+    Ok(())
 }
 
 /// Insert, then update on a key conflict.
@@ -395,10 +282,15 @@ pub fn insert_or_update(entity: &EntityDefinition, dialect: &Dialect, columns: &
         .iter()
         .copied()
         .filter(|column| !pk_owned.contains(column))
+        .map(|column| column_name(entity, column))
         .collect();
     if is_mysql(dialect) {
         sql.push_str(" ON DUPLICATE KEY UPDATE ");
-        let targets: Vec<&str> = if updates.is_empty() { vec![columns[0]] } else { updates };
+        let targets: Vec<&str> = if updates.is_empty() {
+            vec![column_name(entity, columns[0])]
+        } else {
+            updates
+        };
         for (index, column) in targets.iter().enumerate() {
             if index > 0 {
                 sql.push_str(", ");
@@ -417,8 +309,9 @@ pub fn insert_or_update(entity: &EntityDefinition, dialect: &Dialect, columns: &
             entity.full_name
         )));
     }
+    let pk_columns: Vec<&str> = pk.iter().map(|name| column_name(entity, name)).collect();
     sql.push_str(" ON CONFLICT (");
-    sql.push_str(&quote_list(dialect, &pk));
+    sql.push_str(&quote_list(dialect, &pk_columns));
     sql.push(')');
     if updates.is_empty() {
         sql.push_str(" DO NOTHING");
@@ -439,7 +332,8 @@ pub fn insert_or_update(entity: &EntityDefinition, dialect: &Dialect, columns: &
 
 /// `CREATE TABLE`, plus one `CREATE INDEX ... USING gin (to_tsvector(...))` per `text-fts`
 /// column when the profile is `postgres-tsvector`. MySQL puts `FULLTEXT` on the table and
-/// appends `ENGINE`, character set, and collate when the profile sets them.
+/// appends `ENGINE`, character set, and collate when the profile sets them. Primary key columns
+/// are `NOT NULL`, and the key constraint is `PK_` plus the table name, clipped.
 pub fn create_table(entity: &EntityDefinition, model: &EntityModel, dialect: &Dialect) -> Result<String, Error> {
     if entity.is_view {
         return Err(Error::new(format!(
@@ -457,18 +351,16 @@ pub fn create_table(entity: &EntityDefinition, model: &EntityModel, dialect: &Di
         if index > 0 {
             sql.push_str(", ");
         }
-        write_column(&mut sql, model, dialect, field)?;
+        write_column(&mut sql, model, dialect, field, true)?;
     }
     let pk = entity.pk_field_names();
     if !pk.is_empty() {
         sql.push_str(", CONSTRAINT ");
-        let pk_name = clip_name(
-            &format!("PK_{}", entity.table_name),
-            dialect.constraint_name_clip_length,
-        );
+        let pk_name = clip_name(&format!("PK_{}", entity.table_name), clip_length(dialect));
         sql.push_str(&quote_ident(dialect, &pk_name));
         sql.push_str(" PRIMARY KEY (");
-        sql.push_str(&quote_list(dialect, &pk));
+        let pk_columns: Vec<&str> = pk.iter().map(|name| column_name(entity, name)).collect();
+        sql.push_str(&quote_list(dialect, &pk_columns));
         sql.push(')');
     }
     if is_mysql(dialect) && dialect.fts_style.as_deref() == Some("mysql-fulltext") {
@@ -476,7 +368,7 @@ pub fn create_table(entity: &EntityDefinition, model: &EntityModel, dialect: &Di
             sql.push_str(", FULLTEXT INDEX ");
             sql.push_str(&quote_ident(dialect, &fts_index_name(entity, &field.name, dialect)));
             sql.push_str(" (");
-            sql.push_str(&quote_ident(dialect, &field.name));
+            sql.push_str(&quote_ident(dialect, &field.column_name));
             sql.push(')');
         }
     }
@@ -503,14 +395,14 @@ pub fn create_table(entity: &EntityDefinition, model: &EntityModel, dialect: &Di
             sql.push_str(" USING gin (to_tsvector('");
             sql.push_str(&config);
             sql.push_str("', ");
-            sql.push_str(&quote_ident(dialect, &field.name));
+            sql.push_str(&quote_ident(dialect, &field.column_name));
             sql.push_str("))");
         }
     }
     Ok(sql)
 }
 
-/// `CREATE [UNIQUE] INDEX name ON table (fields)`.
+/// `CREATE [UNIQUE] INDEX name ON table (fields)`. The name is written as defined, as Java does.
 pub fn create_index(entity: &EntityDefinition, index: &IndexDefinition, dialect: &Dialect) -> Result<String, Error> {
     if index.fields.is_empty() {
         return Err(Error::new(format!("index {} has no fields", index.name)));
@@ -520,48 +412,89 @@ pub fn create_index(entity: &EntityDefinition, index: &IndexDefinition, dialect:
         sql.push_str("UNIQUE ");
     }
     sql.push_str("INDEX ");
-    sql.push_str(&quote_ident(
-        dialect,
-        &clip_name(&index.name, dialect.constraint_name_clip_length),
-    ));
+    sql.push_str(&quote_ident(dialect, &index.name));
     sql.push_str(" ON ");
     sql.push_str(&quote_ident(dialect, &entity.table_name));
     sql.push_str(" (");
-    sql.push_str(&quote_list(dialect, &index.fields));
+    let columns: Vec<&str> = index.fields.iter().map(|name| column_name(entity, name)).collect();
+    sql.push_str(&quote_list(dialect, &columns));
     sql.push(')');
     Ok(sql)
 }
 
-/// `ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY ... REFERENCES ...`.
-///
-/// Only a `type=one` relationship that is not `is-auto-reverse` and not `one-nofk`.
-/// An empty `key_map` uses the related entity's primary keys under the same names.
-/// The constraint name is clipped to `constraint_name_clip_length` when that is set.
-pub fn create_foreign_key(
-    entity: &EntityDefinition,
-    relationship: &Relationship,
-    related: &EntityDefinition,
-    dialect: &Dialect,
-) -> Result<String, Error> {
+fn require_foreign_key(entity: &EntityDefinition, relationship: &Relationship) -> Result<(), Error> {
     if relationship.is_auto_reverse || relationship.relationship_type != "one" {
         return Err(Error::new(format!(
             "foreign key requires a type=one relationship that is not auto-reverse, found {} on {}",
             relationship.relationship_type, entity.full_name
         )));
     }
-    let pairs = foreign_key_pairs(relationship, related)?;
+    if relationship.key_pairs.is_empty() {
+        return Err(Error::new(format!(
+            "relationship {} on {} has no key fields",
+            relationship.name, entity.full_name
+        )));
+    }
+    Ok(())
+}
+
+/// `ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY ... REFERENCES ...`.
+///
+/// Only a `type=one` relationship that is not `is-auto-reverse`. The keys are the relationship's
+/// expanded key map. The name is [`foreign_key_name`].
+pub fn create_foreign_key(
+    entity: &EntityDefinition,
+    relationship: &Relationship,
+    related: &EntityDefinition,
+    dialect: &Dialect,
+) -> Result<String, Error> {
+    require_foreign_key(entity, relationship)?;
     let mut sql = String::from("ALTER TABLE ");
     sql.push_str(&quote_ident(dialect, &entity.table_name));
     sql.push_str(" ADD CONSTRAINT ");
     sql.push_str(&quote_ident(dialect, &foreign_key_name(entity, relationship, dialect)));
     sql.push_str(" FOREIGN KEY (");
-    let sources: Vec<&str> = pairs.iter().map(|(source, _)| source.as_str()).collect();
-    let targets: Vec<&str> = pairs.iter().map(|(_, target)| target.as_str()).collect();
+    let sources: Vec<&str> = relationship
+        .key_pairs
+        .iter()
+        .map(|(source, _)| column_name(entity, source))
+        .collect();
+    let targets: Vec<&str> = relationship
+        .key_pairs
+        .iter()
+        .map(|(_, target)| column_name(related, target))
+        .collect();
     sql.push_str(&quote_list(dialect, &sources));
     sql.push_str(") REFERENCES ");
     sql.push_str(&quote_ident(dialect, &related.table_name));
     sql.push_str(" (");
     sql.push_str(&quote_list(dialect, &targets));
+    sql.push(')');
+    Ok(sql)
+}
+
+/// `CREATE INDEX` on the key fields of a `type=one` relationship, as Java `createIndexes` does
+/// for every foreign key. Postgres does not index a foreign key on its own.
+pub fn create_fk_index(
+    entity: &EntityDefinition,
+    relationship: &Relationship,
+    dialect: &Dialect,
+) -> Result<String, Error> {
+    require_foreign_key(entity, relationship)?;
+    let mut sql = String::from("CREATE INDEX ");
+    sql.push_str(&quote_ident(
+        dialect,
+        &foreign_key_index_name(entity, relationship, dialect),
+    ));
+    sql.push_str(" ON ");
+    sql.push_str(&quote_ident(dialect, &entity.table_name));
+    sql.push_str(" (");
+    let columns: Vec<&str> = relationship
+        .key_pairs
+        .iter()
+        .map(|(source, _)| column_name(entity, source))
+        .collect();
+    sql.push_str(&quote_list(dialect, &columns));
     sql.push(')');
     Ok(sql)
 }
@@ -582,323 +515,72 @@ pub fn add_column(
     let mut sql = String::from("ALTER TABLE ");
     sql.push_str(&quote_ident(dialect, &entity.table_name));
     sql.push_str(" ADD ");
-    write_column(&mut sql, model, dialect, field)?;
+    write_column(&mut sql, model, dialect, field, false)?;
     Ok(sql)
 }
 
-fn append_where(sql: &mut String, dialect: &Dialect, condition: Option<&Condition>) -> Result<(), Error> {
-    let Some(condition) = condition else {
-        return Ok(());
+/// Java `makeFkConstraintName`: `fk-name`, or the entity name, the title (sharing a prefix with
+/// the entity name, the shared part is reduced to its capitals), and the related entity name,
+/// shrunk to the clip length.
+pub fn foreign_key_name(entity: &EntityDefinition, relationship: &Relationship, dialect: &Dialect) -> String {
+    let name = match relationship.fk_name.as_deref() {
+        Some(fk_name) => fk_name.to_string(),
+        None => {
+            let title: Vec<char> = relationship.title.as_deref().unwrap_or("").chars().collect();
+            let common = common_prefix(&title, &entity.entity_name.chars().collect::<Vec<_>>());
+            let mut name = entity.entity_name.clone();
+            if common > 0 {
+                name.extend(title[..common].iter().filter(|ch| ch.is_uppercase()));
+                name.extend(&title[common..]);
+            } else {
+                name.extend(&title);
+            }
+            name.push_str(&relationship.related_entity_name);
+            name
+        }
     };
-    let rendered = render_condition(condition, dialect)?;
-    if rendered.is_empty() {
-        return Ok(());
-    }
-    sql.push_str(" WHERE ");
-    sql.push_str(&rendered);
-    Ok(())
+    shrink_name(&name, clip_length(dialect))
 }
 
-fn append_order(sql: &mut String, dialect: &Dialect, order_by: &[OrderBy]) {
-    if order_by.is_empty() {
-        return;
-    }
-    sql.push_str(" ORDER BY ");
-    let write_nulls = is_postgres(dialect) && !dialect.never_nulls;
-    for (index, entry) in order_by.iter().enumerate() {
-        if index > 0 {
-            sql.push_str(", ");
-        }
-        write_field(sql, dialect, &entry.field);
-        sql.push_str(if entry.descending { " DESC" } else { " ASC" });
-        if write_nulls {
-            match entry.nulls {
-                Some(Nulls::First) => sql.push_str(" NULLS FIRST"),
-                Some(Nulls::Last) => sql.push_str(" NULLS LAST"),
-                None => {}
+/// Java `makeFkIndexName`: like [`foreign_key_name`], with the related name's end that repeats
+/// the entity name's end reduced to its capitals, shrunk to three less than the clip length, and
+/// `IDX` in front.
+pub fn foreign_key_index_name(entity: &EntityDefinition, relationship: &Relationship, dialect: &Dialect) -> String {
+    let name = match relationship.fk_name.as_deref() {
+        Some(fk_name) => fk_name.to_string(),
+        None => {
+            let title: Vec<char> = relationship.title.as_deref().unwrap_or("").chars().collect();
+            let own: Vec<char> = entity.entity_name.chars().collect();
+            let related: Vec<char> = relationship.related_entity_name.chars().collect();
+            let common = common_prefix(&title, &own);
+            let related_length = related.len();
+            let mut end = related_length.saturating_sub(1);
+            while end > 0 && own.len() > end && related[end] == own[own.len() - (related_length - end)] {
+                end -= 1;
             }
-        }
-    }
-}
-
-fn append_page(sql: &mut String, dialect: &Dialect, page: LimitOffset) {
-    let ph = dialect.placeholder;
-    let limit_style = dialect.offset_style.as_deref() == Some("limit");
-    match (limit_style, page.limit.is_some(), page.offset.is_some()) {
-        (false, true, _) => {
-            sql.push_str(" LIMIT ");
-            sql.push_str(ph);
-            sql.push_str(" OFFSET ");
-            sql.push_str(ph);
-        }
-        (false, false, true) => {
-            sql.push_str(" OFFSET ");
-            sql.push_str(ph);
-        }
-        (true, true, false) => {
-            sql.push_str(" LIMIT ");
-            sql.push_str(ph);
-        }
-        (true, _, true) => {
-            sql.push_str(" LIMIT ");
-            sql.push_str(ph);
-            sql.push_str(", ");
-            sql.push_str(ph);
-        }
-        (_, false, false) => {}
-    }
-}
-
-fn view_select_list(view: &EntityDefinition, model: &EntityModel, dialect: &Dialect) -> Result<String, Error> {
-    let mut parts = Vec::new();
-    let mut used = HashSet::new();
-    for alias in &view.aliases {
-        let source = alias.field.as_deref().unwrap_or(alias.name.as_str());
-        let column = column_sql(dialect, alias.entity_alias.as_deref(), source);
-        if let Some(function) = alias.function.as_deref() {
-            // A function result always needs the alias name, which is what the row reader looks for.
-            used.insert(alias.name.clone());
-            parts.push(format!(
-                "{} AS {}",
-                function_sql(function, &column)?,
-                quote_ident(dialect, &alias.name)
-            ));
-            continue;
-        }
-        let mut expr = column;
-        if alias.field.as_deref().is_some_and(|field| field != alias.name) {
-            expr.push_str(" AS ");
-            expr.push_str(&quote_ident(dialect, &alias.name));
-        }
-        used.insert(alias.name.clone());
-        parts.push(expr);
-    }
-    for alias_all in &view.alias_alls {
-        let member = view.member(&alias_all.entity_alias).ok_or_else(|| {
-            Error::new(format!(
-                "view {} alias-all {} has no member-entity",
-                view.full_name, alias_all.entity_alias
-            ))
-        })?;
-        let member_entity = model.entity(&member.entity_name)?;
-        let excluded: HashSet<&str> = alias_all.exclude.iter().map(String::as_str).collect();
-        for field in &member_entity.fields {
-            if excluded.contains(field.name.as_str()) {
-                continue;
+            let mut name = entity.entity_name.clone();
+            if common > 0 {
+                name.extend(title[..common].iter().filter(|ch| ch.is_uppercase()));
+                name.extend(&title[common..]);
+            } else {
+                name.extend(&title);
             }
-            let out_name = match alias_all.prefix.as_deref() {
-                Some(prefix) => prefixed_name(prefix, &field.name),
-                None => field.name.clone(),
-            };
-            if !used.insert(out_name.clone()) {
-                continue;
+            if !related.is_empty() {
+                name.extend(&related[..=end]);
+                if end + 1 < related_length {
+                    name.extend(related[end + 1..].iter().filter(|ch| ch.is_uppercase()));
+                }
             }
-            let mut expr = String::new();
-            expr.push_str(&quote_ident(dialect, &alias_all.entity_alias));
-            expr.push('.');
-            expr.push_str(&quote_ident(dialect, &field.name));
-            if alias_all.prefix.is_some() {
-                expr.push_str(" AS ");
-                expr.push_str(&quote_ident(dialect, &out_name));
-            }
-            parts.push(expr);
+            name
         }
-    }
-    if parts.is_empty() {
-        Ok("*".to_string())
-    } else {
-        Ok(parts.join(", "))
-    }
+    };
+    let mut out = String::from("IDX");
+    out.push_str(&shrink_name(&name, clip_length(dialect).saturating_sub(3)));
+    out
 }
 
-fn prefixed_name(prefix: &str, field: &str) -> String {
-    let mut name = String::with_capacity(prefix.len() + field.len());
-    name.push_str(prefix);
-    let mut chars = field.chars();
-    if let Some(first) = chars.next() {
-        name.push(first.to_ascii_uppercase());
-        name.push_str(chars.as_str());
-    }
-    name
-}
-
-fn view_from(view: &EntityDefinition, model: &EntityModel, dialect: &Dialect) -> Result<String, Error> {
-    let parts = view_parts(view);
-    if parts.is_empty() {
-        return Ok(String::new());
-    }
-    let mut sql = String::from(" FROM ");
-    for (index, part) in parts.iter().enumerate() {
-        let (table_entity, alias_name, optional, keys, join_from) = match part {
-            ViewPart::Entity(member) => (
-                model.entity(&member.entity_name)?,
-                member.entity_alias.as_str(),
-                member.join_optional,
-                member_keys(member),
-                member.join_from_alias.clone(),
-            ),
-            ViewPart::Relationship(member) => {
-                let from = alias_entity(view, model, &member.join_from_alias)?;
-                let relationship = from.relationship(&member.relationship).ok_or_else(|| {
-                    Error::new(format!(
-                        "view {} member {} relationship {} was not found on {}",
-                        view.full_name, member.entity_alias, member.relationship, from.full_name
-                    ))
-                })?;
-                let related = model.entity(&relationship.related)?;
-                (
-                    related,
-                    member.entity_alias.as_str(),
-                    member.join_optional,
-                    relationship_keys(relationship, related),
-                    Some(member.join_from_alias.clone()),
-                )
-            }
-        };
-        let table = quote_ident(dialect, &table_entity.table_name);
-        let alias = quote_ident(dialect, alias_name);
-        if index == 0 {
-            sql.push_str(&table);
-            sql.push(' ');
-            sql.push_str(&alias);
-            continue;
-        }
-        if optional {
-            sql.push_str(" LEFT JOIN ");
-        } else {
-            sql.push_str(" JOIN ");
-        }
-        sql.push_str(&table);
-        sql.push(' ');
-        sql.push_str(&alias);
-        sql.push_str(" ON ");
-        if keys.is_empty() {
-            sql.push_str("1=1");
-            continue;
-        }
-        let fallback = match parts.first() {
-            Some(ViewPart::Entity(member)) => member.entity_alias.as_str(),
-            Some(ViewPart::Relationship(member)) => member.entity_alias.as_str(),
-            None => alias_name,
-        };
-        let left_alias = join_from.as_deref().unwrap_or(fallback);
-        let left = quote_ident(dialect, left_alias);
-        for (key_index, (field_name, related)) in keys.iter().enumerate() {
-            if key_index > 0 {
-                sql.push_str(" AND ");
-            }
-            sql.push_str(&left);
-            sql.push('.');
-            sql.push_str(&quote_ident(dialect, field_name));
-            sql.push_str(" = ");
-            sql.push_str(&alias);
-            sql.push('.');
-            sql.push_str(&quote_ident(dialect, related));
-        }
-    }
-    Ok(sql)
-}
-
-enum ViewPart<'a> {
-    Entity(&'a crate::model::MemberEntity),
-    Relationship(&'a crate::model::MemberRelationship),
-}
-
-fn view_parts(view: &EntityDefinition) -> Vec<ViewPart<'_>> {
-    if !view.view_members.is_empty() {
-        return view
-            .view_members
-            .iter()
-            .map(|member| match member {
-                crate::model::ViewMember::Entity(member) => ViewPart::Entity(member),
-                crate::model::ViewMember::Relationship(member) => ViewPart::Relationship(member),
-            })
-            .collect();
-    }
-    view.member_entities.iter().map(ViewPart::Entity).collect()
-}
-
-fn member_keys(member: &crate::model::MemberEntity) -> Vec<(String, String)> {
-    member
-        .key_map
-        .iter()
-        .map(|key| {
-            let related = key
-                .related
-                .clone()
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| key.field_name.clone());
-            (key.field_name.clone(), related)
-        })
-        .collect()
-}
-
-fn relationship_keys(relationship: &crate::model::Relationship, related: &EntityDefinition) -> Vec<(String, String)> {
-    if relationship.key_map.is_empty() {
-        return related
-            .pk_field_names()
-            .into_iter()
-            .map(|pk| (pk.to_string(), pk.to_string()))
-            .collect();
-    }
-    let pks = related.pk_field_names();
-    relationship
-        .key_map
-        .iter()
-        .map(|key| {
-            let related_field = match key.related.as_deref().filter(|value| !value.is_empty()) {
-                Some(name) => name.to_string(),
-                None if relationship.relationship_type.starts_with("one") && pks.len() == 1 => pks[0].to_string(),
-                None => key.field_name.clone(),
-            };
-            (key.field_name.clone(), related_field)
-        })
-        .collect()
-}
-
-fn alias_entity<'a>(
-    view: &'a EntityDefinition,
-    model: &'a EntityModel,
-    alias: &str,
-) -> Result<&'a EntityDefinition, Error> {
-    alias_entity_at(view, model, alias, 0)
-}
-
-/// A `member-relationship` chain longer than the member count has to loop.
-fn alias_entity_at<'a>(
-    view: &'a EntityDefinition,
-    model: &'a EntityModel,
-    alias: &str,
-    depth: usize,
-) -> Result<&'a EntityDefinition, Error> {
-    if depth > view.member_relationships.len() {
-        return Err(Error::new(format!(
-            "view {} member alias {alias} joins from itself",
-            view.full_name
-        )));
-    }
-    for member in &view.member_entities {
-        if member.entity_alias == alias {
-            return model.entity(&member.entity_name);
-        }
-    }
-    for member in &view.member_relationships {
-        if member.entity_alias != alias {
-            continue;
-        }
-        let from = alias_entity_at(view, model, &member.join_from_alias, depth + 1)?;
-        let relationship = from.relationship(&member.relationship).ok_or_else(|| {
-            Error::new(format!(
-                "view {} alias {} relationship {} was not found",
-                view.full_name, alias, member.relationship
-            ))
-        })?;
-        return model.entity(&relationship.related);
-    }
-    Err(Error::new(format!(
-        "view {} has no member alias {alias}",
-        view.full_name
-    )))
+fn common_prefix(left: &[char], right: &[char]) -> usize {
+    left.iter().zip(right).take_while(|(a, b)| a == b).count()
 }
 
 fn write_column(
@@ -906,9 +588,10 @@ fn write_column(
     model: &EntityModel,
     dialect: &Dialect,
     field: &FieldDefinition,
+    in_create: bool,
 ) -> Result<(), Error> {
     let (sql_type, java_type) = column_type(model, dialect, field)?;
-    sql.push_str(&quote_ident(dialect, &field.name));
+    sql.push_str(&quote_ident(dialect, &field.column_name));
     sql.push(' ');
     sql.push_str(&sql_type);
     if java_type.ends_with("String") {
@@ -921,7 +604,7 @@ fn write_column(
             sql.push_str(collate);
         }
     }
-    if field.not_null {
+    if in_create && (field.is_pk || field.not_null) {
         sql.push_str(" NOT NULL");
     }
     Ok(())
@@ -942,52 +625,9 @@ fn column_type(model: &EntityModel, dialect: &Dialect, field: &FieldDefinition) 
 }
 
 fn fts_index_name(entity: &EntityDefinition, field: &str, dialect: &Dialect) -> String {
-    clip_name(
-        &format!("{}_{}_FTS", entity.table_name, field),
-        dialect.constraint_name_clip_length,
-    )
+    clip_name(&format!("{}_{}_FTS", entity.table_name, field), clip_length(dialect))
 }
 
-fn foreign_key_name(entity: &EntityDefinition, relationship: &Relationship, dialect: &Dialect) -> String {
-    let mut name = entity.entity_name.clone();
-    if let Some(title) = relationship.title.as_deref() {
-        name.push_str(title);
-    }
-    name.push_str(&relationship.related_entity_name);
-    clip_name(&name, dialect.constraint_name_clip_length)
-}
-
-fn foreign_key_pairs(relationship: &Relationship, related: &EntityDefinition) -> Result<Vec<(String, String)>, Error> {
-    if relationship.key_map.is_empty() {
-        let pairs: Vec<(String, String)> = related
-            .pk_field_names()
-            .into_iter()
-            .map(|name| (name.to_string(), name.to_string()))
-            .collect();
-        if pairs.is_empty() {
-            return Err(Error::new(format!(
-                "relationship {} has no key-map and {} has no primary key",
-                relationship.name, related.full_name
-            )));
-        }
-        return Ok(pairs);
-    }
-    let mut pairs = Vec::with_capacity(relationship.key_map.len());
-    let related_fields: HashSet<&str> = related.fields.iter().map(|field| field.name.as_str()).collect();
-    let related_pk = related.pk_field_names();
-    for key in &relationship.key_map {
-        let mut target = key
-            .related
-            .clone()
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| key.field_name.clone());
-        let related_missing = key.related.as_deref().unwrap_or("").is_empty();
-        let use_single_pk = related_pk.len() == 1
-            && ((relationship.key_map.len() == 1 && related_missing) || !related_fields.contains(target.as_str()));
-        if use_single_pk {
-            target = related_pk[0].to_string();
-        }
-        pairs.push((key.field_name.clone(), target));
-    }
-    Ok(pairs)
+fn quote_list(dialect: &Dialect, names: &[impl AsRef<str>]) -> String {
+    super::ident::quote_list(dialect, names)
 }
