@@ -221,6 +221,12 @@ pub(crate) fn is_permitted(
     if !context_entered() {
         return Ok((true, info));
     }
+    // While authorization is disabled nothing below can be refused, and everything under this
+    // frame runs disabled too, so there is no authorization to record for it to inherit.
+    if permit.authz_disabled {
+        inherited(&mut info);
+        return Ok((true, info));
+    }
     let action_id = action_enum(action);
     if !is_entity
         && permit.count_tarpit
@@ -658,7 +664,6 @@ mod tests {
 
     use moqui_lib::object::Value;
 
-    use super::super::login::memdb;
     use super::super::session;
     use crate::context::{ExecutionContext, ExecutionContextFactory};
     use crate::entity::{EntityFacade, EntityValue};
@@ -694,7 +699,7 @@ mod tests {
         let runtime = temp_dir("authz-runtime");
         let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
         let factory = ExecutionContextFactory::boot_with_framework(runtime.path(), &framework).expect("boot");
-        let facade = memdb::open();
+        let facade = crate::testing::open();
         factory.set_entity(facade.clone());
         let context = factory.new_context();
         World {
@@ -741,6 +746,22 @@ mod tests {
     }
 
     const ENTITY: &str = "moqui.test.TestEntity";
+
+    #[test]
+    fn a_second_context_entered_on_the_thread_is_the_current_one_until_it_drops() {
+        let outer = ExecutionContextFactory::test_context();
+        let inner = ExecutionContextFactory::test_context();
+        let _outer = outer.enter();
+        outer.message().add_message("outer");
+        {
+            let _inner = inner.enter();
+            inner.message().add_message("inner");
+            let seen = ExecutionContext::with_current(|ec| ec.message().messages().to_vec()).unwrap();
+            assert_eq!(seen, ["inner"], "the innermost context answers");
+        }
+        let seen = ExecutionContext::with_current(|ec| ec.message().messages().to_vec()).unwrap();
+        assert_eq!(seen, ["outer"], "the outer context is back");
+    }
 
     #[test]
     fn reads_and_writes_need_an_allow_record() {

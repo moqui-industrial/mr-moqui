@@ -23,7 +23,6 @@ use moqui_lib::object::Value;
 use super::{locate, serve_at};
 use crate::context::ExecutionContextFactory;
 use crate::entity::EntityFacade;
-use crate::user::memdb;
 use crate::web::WebRequest;
 
 fn webroot() -> PathBuf {
@@ -66,7 +65,6 @@ impl Drop for Env {
         for name in &self.names {
             moqui_lib::env::clear_property(name);
         }
-        crate::service::clear_files();
     }
 }
 
@@ -80,7 +78,7 @@ impl World {
     fn open(conf: &str) -> Self {
         let env = Env::new();
         let context = ExecutionContextFactory::test_context_with_conf(conf);
-        let facade = memdb::open();
+        let facade = crate::testing::open();
         context.factory().set_entity(facade.clone());
         let entered = context.enter();
         let _authz = context.disable_authz();
@@ -93,7 +91,7 @@ impl World {
     }
 
     fn load_service_rest(&self) {
-        crate::service::load_file(&tools_rest()).unwrap();
+        crate::service::install(&self.factory, &[tools_rest()]);
     }
 
     fn user(&self, username: &str, group: Option<&str>) {

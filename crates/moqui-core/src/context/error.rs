@@ -27,6 +27,10 @@ pub enum ErrorKind {
     Unauthorized,
     /// Too many hits on an artifact.
     Tarpit,
+    /// There is no such resource.
+    NotFound,
+    /// The resource exists but not for this method.
+    MethodNotAllowed,
 }
 
 impl ErrorKind {

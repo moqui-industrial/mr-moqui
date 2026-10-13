@@ -166,7 +166,7 @@ fn finish_entity(started: Instant, result: Result<Value, Error>) {
         }
         Err(err) => {
             let _ = query_rest::take_page_info();
-            web::send_json_error(web::status_for(err.message()), err.message());
+            web::send_json_error(web::status_for(&err), err.message());
         }
     }
 }
@@ -205,17 +205,15 @@ fn service_rest(call: &Call<'_>) -> Result<bool, Error> {
         }
         Err(err) => {
             let _ = query_rest::take_page_info();
-            web::send_json_error(web::status_for(err.message()), err.message());
+            web::send_json_error(web::status_for(&err), err.message());
         }
     }
     Ok(true)
 }
 
 fn service_one(extra: &[String], parameters: &BTreeMap<String, Value>, verb: &str) -> Result<Value, Error> {
-    let mut parameters = parameters.clone();
-    parameters.insert("_method".to_string(), Value::string(verb));
     let path: Vec<&str> = extra.iter().map(String::as_str).collect();
-    crate::service::run(&path, &parameters)
+    crate::service::run(&path, verb, parameters)
 }
 
 fn service_list(call: &Call<'_>, verb: &str, items: &[Value]) -> Result<Value, Error> {

@@ -21,11 +21,11 @@ mod condition;
 mod ident;
 mod statement;
 
-pub use condition::{render_condition, Condition, FieldRef, LimitOffset, Nulls, OrderBy};
+pub use condition::{render_condition, CompareOp, Condition, FieldRef, LimitOffset, Nulls, OrderBy};
 pub use ident::{is_mysql, quote_ident};
 pub use statement::{
     add_column, count, create_foreign_key, create_index, create_table, delete, insert, insert_or_update, select,
-    select_view, update,
+    select_view, select_view_with, select_with, update, SelectOptions,
 };
 
 #[cfg(test)]

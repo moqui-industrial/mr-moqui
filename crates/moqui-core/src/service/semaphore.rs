@@ -53,6 +53,7 @@ pub(crate) fn take(
     let plan = plan(facade)?;
     let name = def.semaphore_name.clone().unwrap_or_else(|| def.name.clone());
     let scope = scope_value(def, parameters);
+    let owner = owner_label();
     let started = Instant::now();
     let pause = if def.semaphore_sleep.is_zero() {
         Duration::from_millis(1)
@@ -60,10 +61,11 @@ pub(crate) fn take(
         def.semaphore_sleep
     };
     loop {
-        if try_lock(&plan, &name, &scope, def.semaphore_ignore)? {
+        if try_lock(&plan, &name, &scope, def.semaphore_ignore, &owner)? {
             return Ok(Some(Guard {
                 tx: plan.tx.clone(),
-                update_sql: plan.update_sql.clone(),
+                clear_sql: plan.clear_sql.clone(),
+                owner,
                 name,
                 scope,
             }));
@@ -78,7 +80,10 @@ pub(crate) fn take(
 
 pub(crate) struct Guard {
     tx: TransactionManager,
-    update_sql: String,
+    clear_sql: String,
+    /// The label this call wrote. The clear only applies while the row still carries it, so a
+    /// holder whose lock was taken over after the ignore time does not free the new holder's lock.
+    owner: Value,
     name: String,
     scope: String,
 }
@@ -90,9 +95,10 @@ impl Drop for Guard {
             Value::Null,
             Value::string(&self.name),
             Value::string(&self.scope),
+            self.owner.clone(),
         ];
         let cleared = reserve(&self.tx, |conn| {
-            conn.execute(&self.update_sql, &params)?;
+            conn.execute(&self.clear_sql, &params)?;
             Ok(())
         });
         if let Err(err) = cleared {
@@ -105,7 +111,11 @@ struct Plan {
     tx: TransactionManager,
     select_sql: String,
     insert_sql: String,
-    update_sql: String,
+    /// Claim a row nobody holds. Applies only while `lockThread` is still null.
+    claim_free_sql: String,
+    /// Claim a row whose hold expired. Applies only while `lockThread` is still the expired one.
+    claim_stale_sql: String,
+    clear_sql: String,
 }
 
 fn plan(facade: &EntityFacade) -> Result<Plan, Error> {
@@ -118,19 +128,26 @@ fn plan(facade: &EntityFacade) -> Result<Plan, Error> {
             let fields: Vec<FieldRef> = COLUMNS.iter().copied().map(FieldRef::new).collect();
             let select_sql = select(entity, dialect, &fields, Some(&condition), &[], LimitOffset::default())?;
             let insert_sql = insert(entity, dialect, &COLUMNS)?;
-            let update_sql = update(entity, dialect, &["lockThread", "lockTime"], Some(&condition))?;
+            let set = ["lockThread", "lockTime"];
+            let free = Condition::and(vec![condition.clone(), Condition::is_null("lockThread")]);
+            let owned = Condition::and(vec![condition.clone(), Condition::equals("lockThread", Value::Null)]);
             Ok(Plan {
                 tx: tx.clone(),
                 select_sql,
                 insert_sql,
-                update_sql,
+                claim_free_sql: update(entity, dialect, &set, Some(&free))?,
+                claim_stale_sql: update(entity, dialect, &set, Some(&owned))?,
+                clear_sql: update(entity, dialect, &set, Some(&owned))?,
             })
         })
         .map_err(Error::from)
 }
 
 /// True when this call owns the row.
-fn try_lock(plan: &Plan, name: &str, scope: &str, ignore: Duration) -> Result<bool, Error> {
+///
+/// Every way to take the row is a conditional write, and one that changes no row means someone
+/// else got there first. Two callers cannot both win, and a lost insert race reads as held.
+fn try_lock(plan: &Plan, name: &str, scope: &str, ignore: Duration, owner: &Value) -> Result<bool, Error> {
     let name_value = Value::string(name);
     let scope_value = Value::string(scope);
     reserve(&plan.tx, |conn| {
@@ -140,13 +157,27 @@ fn try_lock(plan: &Plan, name: &str, scope: &str, ignore: Duration) -> Result<bo
             if held(row, ignore, now) {
                 return Ok(false);
             }
-            let params = vec![thread_label(), now_stamp(), name_value, scope_value];
-            conn.execute(&plan.update_sql, &params)?;
-            return Ok(true);
+            let previous = row.get("lockThread").cloned().unwrap_or(Value::Null);
+            if previous.is_null() {
+                let params = vec![owner.clone(), now_stamp(), name_value, scope_value];
+                return Ok(conn.execute(&plan.claim_free_sql, &params)? > 0);
+            }
+            let params = vec![owner.clone(), now_stamp(), name_value, scope_value, previous];
+            return Ok(conn.execute(&plan.claim_stale_sql, &params)? > 0);
         }
-        let params = vec![name_value, scope_value, thread_label(), now_stamp()];
-        conn.execute(&plan.insert_sql, &params)?;
-        Ok(true)
+        let params = vec![name_value.clone(), scope_value.clone(), owner.clone(), now_stamp()];
+        match conn.execute(&plan.insert_sql, &params) {
+            Ok(_) => Ok(true),
+            Err(err) => {
+                // A concurrent insert of the same key is a held lock. Anything else is a failure.
+                let _ = conn.rollback();
+                conn.begin()?;
+                if conn.query(&plan.select_sql, &[name_value, scope_value])?.is_empty() {
+                    return Err(err);
+                }
+                Ok(false)
+            }
+        }
     })
 }
 
@@ -179,13 +210,17 @@ fn scope_value(def: &ServiceDef, parameters: &BTreeMap<String, Value>) -> String
     }
 }
 
-fn thread_label() -> Value {
+/// The thread, plus a number that is new on every call, so a hold can be told from a later hold
+/// by the same thread.
+fn owner_label() -> Value {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let current = std::thread::current();
     let label = current.name().map(str::to_string).unwrap_or_else(|| {
         let id = current.id();
         format!("{id:?}")
     });
-    Value::string(label)
+    let number = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Value::string(format!("{label}#{number}"))
 }
 
 fn now_stamp() -> Value {

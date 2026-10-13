@@ -20,20 +20,37 @@ use crate::context::Error;
 
 /// Parse JavaScript. An expression or a program is accepted. `1 + 1` is accepted.
 ///
-/// Groovy leftovers fail before the parser, because oxc treats `?.` as optional chaining.
+/// Groovy that is not also JavaScript fails the parse: Elvis `?:`, closures `{ x -> }`, map
+/// literals `[a:1]`, and `as` casts. Optional chaining `?.` is JavaScript and is accepted.
 pub fn parse_js(expr: &str) -> Result<(), Error> {
     let expr = expr.trim();
     if expr.is_empty() {
         return Ok(());
     }
-    let shown = clip(expr);
-    if let Some(kind) = groovy_marker(expr) {
-        return Err(Error::new(format!("expression `{shown}` is Groovy ({kind})")));
-    }
     if parse_expression(expr).is_ok() || parse_program(expr).is_ok() {
         return Ok(());
     }
-    Err(Error::new(format!("expression `{shown}` is not JavaScript")))
+    let shown = clip(expr);
+    Err(Error::new(match groovy_hint(expr) {
+        Some(kind) => format!("expression `{shown}` is Groovy ({kind})"),
+        None => format!("expression `{shown}` is not JavaScript"),
+    }))
+}
+
+/// Parse a whole generated script. The error names the first problem the parser reports.
+pub(crate) fn check_program(source: &str) -> Result<(), Error> {
+    let allocator = std::default::Default::default();
+    let source_type = std::default::Default::default();
+    let parsed = Parser::new(&allocator, source, source_type).parse();
+    if parsed.panicked || parsed.diagnostics.has_errors() {
+        let detail = parsed
+            .diagnostics
+            .errors()
+            .next()
+            .map_or_else(|| "syntax error".to_string(), |diagnostic| diagnostic.to_string());
+        return Err(Error::new(format!("generated script is not JavaScript: {detail}")));
+    }
+    Ok(())
 }
 
 fn parse_expression(source: &str) -> Result<(), Error> {
@@ -57,12 +74,10 @@ fn parse_program(source: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn groovy_marker(text: &str) -> Option<&'static str> {
+/// Why a failed parse looks like Groovy, to make the message useful. It never decides a parse.
+fn groovy_hint(text: &str) -> Option<&'static str> {
     if text.contains("?:") {
         return Some("?:");
-    }
-    if text.contains("?.") {
-        return Some("?.");
     }
     if has_groovy_arrow(text) {
         return Some("->");

@@ -135,6 +135,7 @@ Versions are what `cargo` locked on 2026-10-11 for the feature set above. "Stati
 | `indexmap` | 2.x | Apache-2.0 OR MIT | Map used in place of `LiteStringMap` | Static | OK |
 | `regex` | 1.x | MIT OR Apache-2.0 | Transitive | Static | OK |
 | `flate2`, `miniz_oxide` | 1.1.10 / 0.9.1 | MIT OR Apache-2.0 / MIT OR Zlib OR Apache-2.0 | Compression. Pure Rust. `flate2` is on `rust_backend`. | Static | OK. `zlib-rs` and `libz-sys` are not enabled. |
+| `ammonia` | 4.2.3 | MIT OR Apache-2.0 | HTML cleaning for `allow-html="safe"`, with its default allow-list | Static. Pulls `html5ever` 0.40 and `markup5ever` (MIT OR Apache-2.0), `url`, `maplit`, `tendril`, `string_cache`, `phf`. Also pulls `cssparser` 0.38 and `dtoa-short` 0.3.5, both **MPL-2.0**. | OK with a narrow exception. MPL-2.0 is file-level copyleft: we do not modify those crates, so the duty is to keep their license notice and offer their source, which the crates.io release is. `deny.toml` allows MPL-2.0 for those two crates by name and no other. |
 | `servo` | 0.7.0 | MPL-2.0 | In-process PDF alternate | Would be static | Hold. Off by default. |
 
 `cc`, `cmake`, `pkg-config`, and `find-msvc-tools` run at build to compile aws-lc and are not linked into the binary. Proc-macro crates (`serde_derive`, `sqlx-macros`, `tokio-macros`, and the rest) run at compile time and are not linked either. The code they expand is.

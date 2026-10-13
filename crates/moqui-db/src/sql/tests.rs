@@ -22,7 +22,8 @@ use crate::model::EntityModel;
 
 use super::{
     add_column, count, create_foreign_key, create_index, create_table, delete, insert, insert_or_update,
-    render_condition, select, select_view, update, Condition, FieldRef, LimitOffset, Nulls, OrderBy,
+    render_condition, select, select_view, select_view_with, select_with, update, CompareOp, Condition, FieldRef,
+    LimitOffset, Nulls, OrderBy, SelectOptions,
 };
 
 fn workspace_root() -> std::path::PathBuf {
@@ -416,4 +417,205 @@ fn ddl_table_index_column_and_foreign_key() {
     let deleted = delete(enumeration, postgres, Some(&Condition::is_null("description"))).unwrap();
     assert!(unquote(&deleted).contains("description IS NULL"), "{deleted}");
     assert!(deleted.starts_with("DELETE FROM \"Enumeration\" WHERE "), "{deleted}");
+}
+
+fn sample_postgres() -> Dialect {
+    let (_, dialects) = framework();
+    dialects.get("postgres").unwrap().clone()
+}
+
+fn totals_model() -> EntityModel {
+    let root = workspace_root();
+    let conf = MNode::parse_file(root.join("framework/conf/MoquiDefaultConf.xml")).expect("conf");
+    let doc = MNode::parse_text(
+        "entities",
+        r#"<entities>
+            <entity entity-name="Order" package="sample">
+                <field name="orderId" type="id" is-pk="true"/>
+                <field name="customerId" type="id"/>
+            </entity>
+            <entity entity-name="OrderItem" package="sample">
+                <field name="orderId" type="id" is-pk="true"/>
+                <field name="itemSeqId" type="id" is-pk="true"/>
+                <field name="quantity" type="number-decimal"/>
+                <field name="productId" type="id"/>
+            </entity>
+            <view-entity entity-name="OrderTotal" package="sample">
+                <member-entity entity-alias="O" entity-name="sample.Order"/>
+                <member-entity entity-alias="OI" entity-name="sample.OrderItem" join-from-alias="O">
+                    <key-map field-name="orderId"/>
+                </member-entity>
+                <alias name="orderId" entity-alias="O"/>
+                <alias name="customerId" entity-alias="O"/>
+                <alias name="totalQuantity" entity-alias="OI" field="quantity" function="sum"/>
+                <alias name="itemCount" entity-alias="OI" field="itemSeqId" function="count"/>
+                <alias name="productCount" entity-alias="OI" field="productId" function="count-distinct"/>
+                <alias name="upperCustomer" entity-alias="O" field="customerId" function="upper"/>
+            </view-entity>
+            <view-entity entity-name="OrderAndItem" package="sample">
+                <member-entity entity-alias="O" entity-name="sample.Order"/>
+                <member-entity entity-alias="OI" entity-name="sample.OrderItem" join-from-alias="O">
+                    <key-map field-name="orderId"/>
+                </member-entity>
+                <alias name="orderId" entity-alias="O"/>
+                <alias name="quantity" entity-alias="OI"/>
+            </view-entity>
+        </entities>"#,
+    )
+    .unwrap();
+    EntityModel::load(&conf, &[doc]).unwrap()
+}
+
+#[test]
+fn aggregate_aliases_group_the_other_columns_and_having_names_the_aggregate() {
+    let model = totals_model();
+    let postgres = sample_postgres();
+    let view = model.entity("sample.OrderTotal").unwrap();
+    let options = SelectOptions {
+        having: Some(Condition::greater("totalQuantity", Value::I32(5))),
+        ..SelectOptions::default()
+    };
+    let sql = select_view_with(
+        view,
+        &model,
+        &postgres,
+        Some(&Condition::equals("customerId", Value::string("C1"))),
+        &[OrderBy::desc("totalQuantity")],
+        LimitOffset::default(),
+        &options,
+    )
+    .unwrap();
+    let plain = unquote(&sql);
+    assert!(plain.contains("SUM(OI.quantity) AS totalQuantity"), "{sql}");
+    assert!(plain.contains("COUNT(OI.itemSeqId) AS itemCount"), "{sql}");
+    assert!(plain.contains("COUNT(DISTINCT OI.productId) AS productCount"), "{sql}");
+    assert!(plain.contains("UPPER(O.customerId) AS upperCustomer"), "{sql}");
+    // The plain columns and the non-aggregate function are grouped; the aggregates are not.
+    assert!(
+        plain.contains("GROUP BY O.orderId, O.customerId, UPPER(O.customerId)"),
+        "{sql}"
+    );
+    assert!(
+        plain.contains("WHERE O.customerId = ?"),
+        "alias names become member columns: {sql}"
+    );
+    assert!(plain.contains("HAVING SUM(OI.quantity) > ?"), "{sql}");
+    assert!(plain.contains("ORDER BY SUM(OI.quantity) DESC"), "{sql}");
+    let where_pos = plain.find("WHERE").unwrap();
+    assert!(
+        where_pos < plain.find("GROUP BY").unwrap() && plain.find("GROUP BY").unwrap() < plain.find("HAVING").unwrap()
+    );
+}
+
+#[test]
+fn an_aggregate_in_where_or_a_having_without_one_is_an_error() {
+    let model = totals_model();
+    let postgres = sample_postgres();
+    let totals = model.entity("sample.OrderTotal").unwrap();
+    let err = select_view(
+        totals,
+        &model,
+        &postgres,
+        Some(&Condition::greater("totalQuantity", Value::I32(5))),
+        &[],
+        LimitOffset::default(),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("having"), "{err}");
+    let plain = model.entity("sample.OrderAndItem").unwrap();
+    let options = SelectOptions {
+        having: Some(Condition::greater("quantity", Value::I32(1))),
+        ..SelectOptions::default()
+    };
+    let err = select_view_with(plain, &model, &postgres, None, &[], LimitOffset::default(), &options).unwrap_err();
+    assert!(err.to_string().contains("no aggregate"), "{err}");
+}
+
+#[test]
+fn distinct_and_for_update_are_written_and_cannot_be_combined() {
+    let model = totals_model();
+    let postgres = sample_postgres();
+    let order = model.entity("sample.Order").unwrap();
+    let distinct = SelectOptions {
+        distinct: true,
+        ..SelectOptions::default()
+    };
+    let sql = select_with(
+        order,
+        &postgres,
+        &[FieldRef::new("customerId")],
+        None,
+        &[],
+        LimitOffset::default(),
+        &distinct,
+    )
+    .unwrap();
+    assert!(sql.starts_with("SELECT DISTINCT \"customerId\" FROM"), "{sql}");
+    let locking = SelectOptions {
+        for_update: true,
+        ..SelectOptions::default()
+    };
+    let sql = select_with(
+        order,
+        &postgres,
+        &[],
+        Some(&Condition::equals("orderId", Value::string("1"))),
+        &[],
+        LimitOffset {
+            limit: Some(1),
+            offset: None,
+        },
+        &locking,
+    )
+    .unwrap();
+    assert!(
+        sql.ends_with(" LIMIT ? OFFSET ? FOR UPDATE") || sql.ends_with(" LIMIT ? FOR UPDATE"),
+        "{sql}"
+    );
+    let both = SelectOptions {
+        distinct: true,
+        for_update: true,
+        ..SelectOptions::default()
+    };
+    assert!(select_with(order, &postgres, &[], None, &[], LimitOffset::default(), &both).is_err());
+    let view = model.entity("sample.OrderAndItem").unwrap();
+    let sql = select_view_with(view, &model, &postgres, None, &[], LimitOffset::default(), &locking).unwrap();
+    assert!(sql.ends_with(" FOR UPDATE"), "{sql}");
+    assert!(!sql.contains("GROUP BY"), "{sql}");
+    let totals = model.entity("sample.OrderTotal").unwrap();
+    assert!(select_view_with(totals, &model, &postgres, None, &[], LimitOffset::default(), &locking).is_err());
+}
+
+#[test]
+fn ignore_case_and_field_comparisons_render() {
+    let postgres = sample_postgres();
+    let equals = render_condition(
+        &Condition::ignore_case(Condition::equals("name", Value::string("x"))),
+        &postgres,
+    )
+    .unwrap();
+    assert_eq!(equals, "UPPER(\"name\") = UPPER(?)");
+    let like = render_condition(
+        &Condition::ignore_case(Condition::like("name", Value::string("%x"))),
+        &postgres,
+    )
+    .unwrap();
+    assert_eq!(like, "UPPER(\"name\") LIKE UPPER(?)");
+    let list = render_condition(
+        &Condition::ignore_case(Condition::is_in("name", vec![Value::string("a"), Value::string("b")])),
+        &postgres,
+    )
+    .unwrap();
+    assert_eq!(list, "UPPER(\"name\") IN (UPPER(?), UPPER(?))");
+    assert!(render_condition(&Condition::ignore_case(Condition::and(vec![])), &postgres).is_err());
+    let fields = render_condition(
+        &Condition::compare_fields(
+            FieldRef::aliased("O", "fromDate"),
+            CompareOp::LessEqual,
+            FieldRef::aliased("O", "thruDate"),
+        ),
+        &postgres,
+    )
+    .unwrap();
+    assert_eq!(fields, "\"O\".\"fromDate\" <= \"O\".\"thruDate\"");
 }

@@ -12,78 +12,71 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Service ECA. Rules are loaded from XML. `sync` does not call [`run_seca_rules`] yet.
+//! Service ECA. Rules come from the factory's `*.secas.xml` files (see `eca_rules`).
 
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 
-#[cfg(test)]
 use moqui_lib::node::MNode;
 use moqui_lib::object::Value;
 
+use super::eca_rules;
 use crate::context::{Error, ExecutionContext};
 
 #[derive(Clone, Debug)]
-struct SecaRule {
+pub(super) struct SecaRule {
     service_plain: String,
     when_name: String,
     name_is_pattern: bool,
     run_on_error: bool,
-    priority: i32,
+    pub(super) priority: i32,
     condition: String,
     actions: String,
 }
 
-thread_local! {
-    static RULES: RefCell<Vec<SecaRule>> = const { RefCell::new(Vec::new()) };
-}
-
-/// Replace the thread-local SECA rules with those in `xml`.
-#[cfg(test)]
-pub fn load_seca_rules(xml: &str) -> Result<(), Error> {
-    let root = MNode::parse_text("secas", xml)?;
-    let nodes = if root.name() == "seca" {
-        vec![root]
-    } else {
-        root.children_named("seca")
-    };
-    let mut rules = nodes.iter().map(rule_from).collect::<Vec<_>>();
-    rules.sort_by_key(|rule| rule.priority);
-    RULES.with(|slot| *slot.borrow_mut() = rules);
-    Ok(())
-}
-
 /// Run SECA actions whose service and `when` match. A false condition skips the rule.
+///
+/// Each rule runs in its own context frame holding the parameters, `parameters`, and, for the
+/// rules that run after the service, the results and `results`.
 pub fn run_seca_rules(
     service: &str,
     when: &str,
     parameters: &BTreeMap<String, Value>,
     results: Option<&BTreeMap<String, Value>>,
 ) -> Result<(), Error> {
-    let mut rules = RULES.with(|slot| slot.borrow().clone());
-    rules.sort_by_key(|rule| rule.priority);
-    for rule in rules {
-        if rule.when_name != when || !service_matches(&rule, service) {
+    let Some(rules) = eca_rules::current() else {
+        return Ok(());
+    };
+    for rule in &rules.seca {
+        if rule.when_name != when || !service_matches(rule, service) {
             continue;
         }
         if !rule.run_on_error && message_has_error() {
             continue;
         }
-        let _frame = super::callback::publish_names(parameters)?;
-        let _results_frame = match results {
-            Some(results) => Some(super::callback::publish_names(results)?),
-            None => None,
-        };
-        if !super::callback::condition_allows(&rule.condition)? {
+        let _frame = super::rule_actions::publish_names(parameters)?;
+        crate::script::set_context_name("parameters", Value::Map(to_index_map(parameters)))?;
+        if let Some(results) = results {
+            for (name, value) in results {
+                crate::script::set_context_name(name, value.clone())?;
+            }
+            crate::script::set_context_name("results", Value::Map(to_index_map(results)))?;
+        }
+        if !super::rule_actions::condition_allows(&rule.condition)? {
             continue;
         }
-        super::callback::run_stored_actions(&rule.actions)?;
+        super::rule_actions::run_stored_actions(&rule.actions)?;
     }
     Ok(())
 }
 
-#[cfg(test)]
-fn rule_from(node: &MNode) -> SecaRule {
+fn to_index_map(values: &BTreeMap<String, Value>) -> indexmap::IndexMap<String, Value> {
+    values
+        .iter()
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
+}
+
+pub(super) fn seca_rule_from(node: &MNode) -> SecaRule {
     let service = node.attribute("service").unwrap_or_default();
     SecaRule {
         service_plain: service.replace('#', ""),
@@ -129,12 +122,16 @@ mod tests {
 
     use moqui_lib::object::Value;
 
-    use super::{load_seca_rules, run_seca_rules};
+    use super::run_seca_rules;
+    use crate::service::eca_rules;
 
     #[test]
     fn seca_for_a_test_service_runs_its_action() {
-        load_seca_rules(
-            r#"<secas>
+        let context = crate::context::ExecutionContextFactory::test_context();
+        eca_rules::install(
+            context.factory(),
+            eca_rules::from_xml(
+                r#"<secas>
                 <seca service="test.example#Run" when="pre-service" priority="8">
                     <actions><script>ec.message.addMessage("late");</script></actions>
                 </seca>
@@ -146,9 +143,9 @@ mod tests {
                     <actions><script>ec.message.addMessage("early");</script></actions>
                 </seca>
             </secas>"#,
-        )
-        .unwrap();
-        let context = crate::context::ExecutionContextFactory::test_context();
+                "",
+            ),
+        );
         let _entered = context.enter();
         let mut parameters = BTreeMap::new();
         parameters.insert("note".to_string(), Value::string("go"));

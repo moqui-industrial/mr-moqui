@@ -28,8 +28,11 @@ base64 = { workspace = true }
 argon2 = { workspace = true }
 sha1 = { workspace = true }
 oxc_parser = { workspace = true }
+ammonia = { workspace = true }
 croner = { workspace = true }
 indexmap = { workspace = true }
+jiff = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

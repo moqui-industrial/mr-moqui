@@ -12,106 +12,46 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Cron jobs for one [`ServicePools`](super::ServicePools). The scheduler only enqueues.
+//! The scheduler thread and the Quartz cron parser. The thread only sleeps and starts passes; a
+//! pass is in `jobs`.
 
-use std::cmp::Ordering;
-use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
-use croner::errors::CronError;
 use croner::parser::{CronParser, Seconds};
-use croner::{CivilDateTime, Cron, CronDateTime, Resolution, Weekday};
-use moqui_lib::object::Value;
+use croner::Cron;
 
-use super::pool::{capture_factory, lock_mutex, Shared, Work};
-use crate::context::{Error, ExecutionContext};
+use super::pool::{lock_mutex, Shared};
+use crate::context::Error;
 
+/// How often the thread looks at the stop flag. A pass runs every `check_interval`.
 const SLICE: Duration = Duration::from_millis(250);
 
-pub(crate) struct CronJob {
-    pub name: String,
-    pub cron: Cron,
-    pub service: String,
-    pub parameters: BTreeMap<String, Value>,
-    pub factory: Arc<crate::context::ExecutionContextFactory>,
-    pub next_fire: i64,
-}
-
-/// No-op entry retained for `service::schedule`. Does not start threads or read the factory.
-pub fn schedule(name: &str) -> Result<(), Error> {
-    let _ = name;
-    let _ = ExecutionContext::current();
-    Ok(())
-}
-
-impl super::ServicePools {
-    /// Register a cron job on this pool. The scheduler enqueues it when due.
-    pub fn add_job(
-        &self,
-        name: &str,
-        cron: &str,
-        service: &str,
-        parameters: &BTreeMap<String, Value>,
-    ) -> Result<(), Error> {
-        let shared = self
-            .shared
-            .as_ref()
-            .ok_or_else(|| Error::new("service worker pool is not running"))?;
-        let factory = capture_factory()?;
-        let cron = parse_cron(cron)?;
-        let next_fire = following(&cron, unix_now(), true);
-        {
-            let mut state = lock_mutex(&shared.state);
-            if state.stop {
-                return Err(Error::new("service worker pool is not running"));
-            }
-            state.jobs.push(CronJob {
-                name: name.to_string(),
-                cron,
-                service: service.to_string(),
-                parameters: parameters.clone(),
-                factory,
-                next_fire,
-            });
-        }
-        shared.wake.notify_all();
-        Ok(())
-    }
-
-    /// One scheduler pass: enqueue a free slot, or leave a due job due.
-    pub fn tick(&self) {
-        if let Some(shared) = &self.shared {
-            dispatch_and_wake(shared);
-        }
-    }
-
-    /// Completed runs of a named job. Increments after the worker's sync returns Ok.
-    pub fn job_runs(&self, name: &str) -> u32 {
-        let Some(shared) = &self.shared else {
-            return 0;
-        };
-        lock_mutex(&shared.state).runs.get(name).copied().unwrap_or(0)
-    }
-}
-
 pub(crate) fn scheduler_loop(shared: Arc<Shared>) {
+    let mut last_pass = Instant::now();
     loop {
-        if schedule_slice(&shared).is_none() {
-            return;
+        {
+            let state = lock_mutex(&shared.state);
+            if state.stop {
+                return;
+            }
+            let (state, _) = shared
+                .wake
+                .wait_timeout(state, SLICE)
+                .unwrap_or_else(|err| err.into_inner());
+            if state.stop {
+                return;
+            }
         }
-        let state = lock_mutex(&shared.state);
-        if state.stop {
-            return;
+        if last_pass.elapsed() >= shared.check_interval {
+            last_pass = Instant::now();
+            super::jobs::run_scheduled(&shared);
+            super::pool::run_tick_hook(&shared);
         }
-        let (state, _) = shared
-            .wake
-            .wait_timeout(state, SLICE)
-            .unwrap_or_else(|err| err.into_inner());
-        drop(state);
     }
 }
 
+/// Quartz syntax: optional seconds, Sunday is day 1, `?` `L` `W` `#` allowed.
 pub(crate) fn parse_cron(pattern: &str) -> Result<Cron, Error> {
     CronParser::builder()
         .seconds(Seconds::Optional)
@@ -120,163 +60,6 @@ pub(crate) fn parse_cron(pattern: &str) -> Result<Cron, Error> {
         .build()
         .parse(pattern)
         .map_err(|err| Error::new(format!("cron pattern: {err}")))
-}
-
-fn schedule_slice(shared: &Shared) -> Option<()> {
-    let queued = {
-        let mut state = lock_mutex(&shared.state);
-        if state.stop {
-            return None;
-        }
-        dispatch(&mut state, shared.queue_cap)
-    };
-    if queued {
-        shared.wake.notify_all();
-    }
-    let hook = lock_mutex(&shared.tick_hook).clone();
-    if let Some(hook) = hook {
-        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| hook())).is_err() {
-            tracing::warn!("scheduler tick hook panicked");
-        }
-    }
-    Some(())
-}
-
-fn dispatch_and_wake(shared: &Shared) {
-    let _ = schedule_slice(shared);
-}
-
-fn dispatch(state: &mut super::pool::State, cap: usize) -> bool {
-    let oneshots = drain_oneshots(state, cap);
-    let jobs = enqueue_due(state, cap);
-    oneshots || jobs
-}
-
-fn drain_oneshots(state: &mut super::pool::State, cap: usize) -> bool {
-    let mut queued = false;
-    while state.queue.len() < cap {
-        let Some(shot) = state.oneshots.pop_front() else {
-            break;
-        };
-        state
-            .queue
-            .push_back(Work::service(shot.name, shot.parameters, shot.factory, None));
-        queued = true;
-    }
-    queued
-}
-
-fn enqueue_due(state: &mut super::pool::State, cap: usize) -> bool {
-    let now = unix_now();
-    let mut queued = false;
-    for job in &mut state.jobs {
-        if job.next_fire > now {
-            continue;
-        }
-        if state.queue.len() >= cap {
-            break;
-        }
-        state.queue.push_back(Work::service(
-            job.service.clone(),
-            job.parameters.clone(),
-            Arc::clone(&job.factory),
-            Some(job.name.clone()),
-        ));
-        job.next_fire = following(&job.cron, now, false).max(now.saturating_add(1));
-        queued = true;
-    }
-    queued
-}
-
-fn following(cron: &Cron, now: i64, inclusive: bool) -> i64 {
-    match cron.find_next_occurrence(&UtcSec(now), inclusive) {
-        Ok(next) => next.0,
-        Err(_) => i64::MAX,
-    }
-}
-
-fn unix_now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
-}
-
-#[derive(Clone, Copy)]
-struct UtcSec(i64);
-
-impl CronDateTime for UtcSec {
-    fn to_civil(&self) -> CivilDateTime {
-        civil_from_unix(self.0)
-    }
-
-    fn civil_weekday(&self) -> Weekday {
-        let days = self.0.div_euclid(86_400);
-        let index = (days + 4).rem_euclid(7);
-        Weekday::from_days_from_sunday(u32::try_from(index).unwrap_or(4))
-    }
-
-    fn resolve_civil(&self, civil: CivilDateTime) -> Result<Resolution<Self>, CronError> {
-        Ok(Resolution::Single(UtcSec(unix_from_civil(civil)?)))
-    }
-
-    fn checked_add_seconds(&self, seconds: i64) -> Option<Self> {
-        self.0.checked_add(seconds).map(UtcSec)
-    }
-
-    fn cmp_instant(&self, other: &Self) -> Ordering {
-        self.0.cmp(&other.0)
-    }
-}
-
-fn civil_from_unix(secs: i64) -> CivilDateTime {
-    let days = secs.div_euclid(86_400);
-    let sod = secs.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
-    let hour = u32::try_from(sod / 3_600).unwrap_or(0);
-    let minute = u32::try_from((sod % 3_600) / 60).unwrap_or(0);
-    let second = u32::try_from(sod % 60).unwrap_or(0);
-    CivilDateTime::from_ymd_hms(year, month, day, hour, minute, second)
-        .unwrap_or_else(|_| CivilDateTime::from_ymd_hms(1970, 1, 1, 0, 0, 0).unwrap_or_else(|_| unreachable!("epoch")))
-}
-
-fn unix_from_civil(civil: CivilDateTime) -> Result<i64, CronError> {
-    let days = days_from_civil(civil.year(), civil.month(), civil.day());
-    let sod = i64::from(civil.hour()) * 3_600 + i64::from(civil.minute()) * 60 + i64::from(civil.second());
-    days.checked_mul(86_400)
-        .and_then(|base| base.checked_add(sod))
-        .ok_or(CronError::InvalidDate)
-}
-
-fn civil_from_days(days: i64) -> (i32, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = u64::try_from(z - era * 146_097).unwrap_or(0);
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = i64::try_from(yoe).unwrap_or(0) + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if month <= 2 { y + 1 } else { y };
-    (
-        i32::try_from(year).unwrap_or(1970),
-        u32::try_from(month).unwrap_or(1),
-        u32::try_from(day).unwrap_or(1),
-    )
-}
-
-fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
-    let mut y = i64::from(year);
-    if month <= 2 {
-        y -= 1;
-    }
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = u64::try_from(y - era * 400).unwrap_or(0);
-    let mp = if month > 2 { month - 3 } else { month + 9 };
-    let doy = (153 * u64::from(mp) + 2) / 5 + u64::from(day) - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + i64::try_from(doe).unwrap_or(0) - 719_468
 }
 
 #[cfg(test)]
@@ -288,36 +71,31 @@ mod tests {
 
     use moqui_lib::object::Value;
 
-    use croner::CronDateTime;
-
     use super::super::pool::ServicePools;
-    use super::{parse_cron, schedule};
-    use crate::context::ExecutionContextFactory;
+    use super::parse_cron;
+    use crate::context::{ExecutionContext, ExecutionContextFactory};
+    use crate::entity::EntityFacade;
 
     #[test]
     fn quartz_patterns_parse_and_describe() {
-        schedule("poll#EmailServer").unwrap();
         parse_cron("0 0/15 * * * ?").unwrap();
         let nightly = parse_cron("0 0 2 * * ?").unwrap();
         assert!(!nightly.describe().is_empty());
         let every = parse_cron("* * * * * *").unwrap();
-        let now = super::UtcSec(super::unix_now());
+        let now = jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::system());
         let next = every.find_next_occurrence(&now, true).unwrap();
-        assert!(next.0 >= now.0 && next.0 - now.0 <= 1);
-        let epoch = super::UtcSec(0);
-        let civil = epoch.to_civil();
-        assert_eq!((civil.year(), civil.month(), civil.day()), (1970, 1, 1));
-        assert_eq!(epoch.civil_weekday(), croner::Weekday::Thursday);
+        let wait = next.timestamp().as_second() - now.timestamp().as_second();
+        assert!((0..=1).contains(&wait), "{wait}");
+        // Sunday is day 1 and Monday day 2, as in Quartz.
+        parse_cron("0 0 8 ? * 2").unwrap();
     }
 
     #[test]
     fn call_future_returns_the_out_parameter() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
-        register_echo();
         let ctx = ExecutionContextFactory::test_context();
-        ctx.factory().set_entity(mem::open());
+        ctx.factory().set_entity(crate::testing::open());
         let _entered = ctx.enter();
+        register_echo();
         let pools = ServicePools::bounded(2, 8);
         let mut params = BTreeMap::new();
         params.insert("note".into(), Value::string("hello"));
@@ -331,16 +109,7 @@ mod tests {
         let _entered = ctx.enter();
         let pools = ServicePools::bounded(1, 1);
         let hold = Hold::new();
-        let task_hold = hold.clone();
-        let (started_tx, started_rx) = std::sync::mpsc::channel();
-        pools
-            .submit_task(move || {
-                started_tx.send(()).unwrap();
-                task_hold.wait();
-            })
-            .unwrap();
-        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        pools.submit_task(|| {}).unwrap();
+        fill_queue(&pools, &hold);
         let started = Instant::now();
         let err = pools.call_future("echo#Note", &BTreeMap::new()).unwrap_err();
         assert!(started.elapsed() < Duration::from_secs(1), "call_future blocked");
@@ -348,65 +117,11 @@ mod tests {
     }
 
     #[test]
-    fn every_second_job_reaches_one_run() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
-        register_echo();
-        let ctx = ExecutionContextFactory::test_context();
-        ctx.factory().set_entity(mem::open());
-        let _entered = ctx.enter();
-        let pools = ServicePools::bounded(2, 8);
-        let mut params = BTreeMap::new();
-        params.insert("note".into(), Value::string("pulse"));
-        pools.add_job("pulse", "* * * * * *", "echo#Note", &params).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while pools.job_runs("pulse") < 1 {
-            assert!(Instant::now() < deadline, "scheduler did not run the service");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-
-    #[test]
-    fn tick_leaves_a_due_job_when_the_queue_is_full() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
-        register_echo();
-        let ctx = ExecutionContextFactory::test_context();
-        ctx.factory().set_entity(mem::open());
-        let _entered = ctx.enter();
-        let pools = ServicePools::bounded(1, 1);
-        let hold = Hold::new();
-        let task_hold = hold.clone();
-        let (started_tx, started_rx) = std::sync::mpsc::channel();
-        pools
-            .submit_task(move || {
-                started_tx.send(()).unwrap();
-                task_hold.wait();
-            })
-            .unwrap();
-        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        pools.submit_task(|| {}).unwrap();
-        let mut params = BTreeMap::new();
-        params.insert("note".into(), Value::string("later"));
-        pools.add_job("later", "* * * * * *", "echo#Note", &params).unwrap();
-        pools.tick();
-        assert_eq!(pools.job_runs("later"), 0);
-        hold.open();
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while pools.job_runs("later") < 1 {
-            pools.tick();
-            assert!(Instant::now() < deadline, "tick did not submit the due job");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
-
-    #[test]
     fn one_worker_call_future_uses_a_reserved_thread() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
-        register_echo();
         let ctx = ExecutionContextFactory::test_context();
-        ctx.factory().set_entity(mem::open());
+        ctx.factory().set_entity(crate::testing::open());
+        let _entered = ctx.enter();
+        register_echo();
         let factory = Arc::clone(ctx.factory());
         let pools = ServicePools::bounded(1, 1);
         let shared = pools.shared_handle();
@@ -458,11 +173,321 @@ mod tests {
         .unwrap();
         assert_eq!(junk.sizes(), (32, 65_535));
         drop(junk);
-        let zero =
-            super::super::start_pools(r#"<moqui-conf><tools worker-pool-max="0" worker-queue="0"/></moqui-conf>"#)
-                .unwrap();
-        assert_eq!(zero.sizes(), (0, 0));
-        drop(zero);
+        let none = super::super::start_pools(r#"<moqui-conf><tools worker-pool-max="0"/></moqui-conf>"#);
+        assert!(none.is_err(), "a pool with no workers can never run anything");
+    }
+
+    // ---- scheduled jobs ----------------------------------------------------------------------
+
+    const SERVICES: &str = r#"<services>
+        <service verb="echo" noun="Note" authenticate="false" transaction="ignore">
+            <in-parameters><parameter name="note"/></in-parameters>
+            <out-parameters><parameter name="note"/></out-parameters>
+        </service>
+        <service verb="mark" noun="Row">
+            <in-parameters><parameter name="note"/></in-parameters>
+            <actions>
+                <entity-make-value entity-name="moqui.test.TestEntity" value-field="made"/>
+                <script>made.set("testId", note); made.set("testMedium", "from-job");</script>
+                <entity-create value-field="made"/>
+            </actions>
+        </service>
+        <service verb="markOpen" noun="Row" authenticate="false">
+            <in-parameters><parameter name="note"/></in-parameters>
+            <actions>
+                <entity-make-value entity-name="moqui.test.TestEntity" value-field="made"/>
+                <script>made.set("testId", note); made.set("testMedium", "open");</script>
+                <entity-create value-field="made"/>
+            </actions>
+        </service>
+        <service verb="fail" noun="Always">
+            <actions><message error="true">job failed</message></actions>
+        </service>
+    </services>"#;
+
+    struct Jobs {
+        ctx: ExecutionContext,
+        facade: EntityFacade,
+        pools_handle: Arc<super::super::pool::Shared>,
+    }
+
+    fn jobs_world(workers: usize, queue: usize) -> Jobs {
+        let path = std::env::temp_dir().join(format!("moqui-jobs-{}.xml", std::process::id()));
+        std::fs::write(&path, SERVICES).unwrap();
+        let pools = ServicePools::bounded(workers, queue);
+        let pools_handle = pools.shared_handle();
+        let ctx = ExecutionContextFactory::test_context_with("", pools);
+        let facade = crate::testing::open();
+        ctx.factory().set_entity(facade.clone());
+        {
+            let _entered = ctx.enter();
+            let failures = crate::service::lint(std::slice::from_ref(&path)).unwrap();
+            assert!(failures.is_empty(), "{failures:?}");
+        }
+        Jobs {
+            ctx,
+            facade,
+            pools_handle,
+        }
+    }
+
+    fn create(facade: &EntityFacade, name: &str, fields: &[(&str, &str)]) {
+        let mut value = facade.make_value(name).unwrap();
+        for (field, text) in fields {
+            value.set(*field, Value::string(*text));
+        }
+        value.create(facade).unwrap();
+    }
+
+    fn add_job(world: &Jobs, name: &str, service: &str, cron: &str, extra: &[(&str, &str)]) {
+        let mut fields = vec![
+            ("jobName", name),
+            ("serviceName", service),
+            ("cronExpression", cron),
+            ("paused", "N"),
+        ];
+        fields.extend_from_slice(extra);
+        create(&world.facade, "moqui.service.job.ServiceJob", &fields);
+    }
+
+    fn runs(world: &Jobs, name: &str) -> Vec<crate::entity::EntityValue> {
+        world
+            .facade
+            .find("moqui.service.job.ServiceJobRun")
+            .unwrap()
+            .eq("jobName", Value::string(name))
+            .list()
+            .unwrap()
+            .values()
+            .to_vec()
+    }
+
+    fn text(row: &crate::entity::EntityValue, field: &str) -> String {
+        row.get(field)
+            .map(moqui_lib::object::to_plain_string)
+            .unwrap_or_default()
+    }
+
+    fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn a_due_job_runs_once_and_leaves_its_history() {
+        let world = jobs_world(2, 8);
+        let _entered = world.ctx.enter();
+        let _authz = world.ctx.disable_authz();
+        add_job(&world, "J1", "mark#Row", "* * * * * *", &[]);
+        create(
+            &world.facade,
+            "moqui.service.job.ServiceJobParameter",
+            &[
+                ("jobName", "J1"),
+                ("parameterName", "note"),
+                ("parameterValue", "ran-once"),
+            ],
+        );
+        let pools = world.ctx.factory().service_pools();
+        let report = pools.tick();
+        assert_eq!(report.jobs_run, 1, "{report:?}");
+        wait_for("the run to finish", || {
+            runs(&world, "J1").iter().any(|run| text(run, "hasError") == "N")
+        });
+        let row = world
+            .facade
+            .find("moqui.test.TestEntity")
+            .unwrap()
+            .eq("testId", Value::string("ran-once"))
+            .one()
+            .unwrap()
+            .expect("the job's service ran with its stored parameter");
+        assert_eq!(text(&row, "testMedium"), "from-job");
+        let lock = world
+            .facade
+            .find("moqui.service.job.ServiceJobRunLock")
+            .unwrap()
+            .eq("jobName", Value::string("J1"))
+            .one()
+            .unwrap()
+            .expect("the lock row");
+        assert_eq!(text(&lock, "jobRunId"), "", "the lock is cleared after the run");
+        assert!(!text(&lock, "lastRunTime").is_empty());
+        assert_eq!(runs(&world, "J1").len(), 1);
+    }
+
+    #[test]
+    fn paused_and_future_jobs_do_not_run_and_a_held_lock_blocks_a_job() {
+        let world = jobs_world(2, 8);
+        let _entered = world.ctx.enter();
+        let _authz = world.ctx.disable_authz();
+        add_job(&world, "PAUSED", "echo#Note", "* * * * * *", &[("paused", "Y")]);
+        // Every first of January: nothing before now has been missed yet this year only if it ran.
+        add_job(&world, "HELD", "echo#Note", "* * * * * *", &[]);
+        create(
+            &world.facade,
+            "moqui.service.job.ServiceJobRunLock",
+            &[("jobName", "HELD"), ("jobRunId", "OTHER-INSTANCE")],
+        );
+        let mut lock = world
+            .facade
+            .find("moqui.service.job.ServiceJobRunLock")
+            .unwrap()
+            .eq("jobName", Value::string("HELD"))
+            .one()
+            .unwrap()
+            .unwrap();
+        lock.set(
+            "lastRunTime",
+            moqui_lib::object::basic_convert(
+                &Value::I64(jiff::Timestamp::now().as_millisecond()),
+                "java.sql.Timestamp",
+            )
+            .value,
+        );
+        lock.update(&world.facade).unwrap();
+        let report = world.ctx.factory().service_pools().tick();
+        assert_eq!(report.jobs_run, 0, "{report:?}");
+        assert_eq!(report.jobs_paused, 1);
+        assert!(runs(&world, "HELD").is_empty());
+        assert!(runs(&world, "PAUSED").is_empty());
+    }
+
+    #[test]
+    fn a_failed_run_is_recorded_and_not_retried_before_the_minimum_retry_time() {
+        let world = jobs_world(2, 8);
+        let _entered = world.ctx.enter();
+        let _authz = world.ctx.disable_authz();
+        add_job(&world, "BAD", "fail#Always", "* * * * * *", &[("minRetryTime", "60")]);
+        assert_eq!(world.ctx.factory().service_pools().tick().jobs_run, 1);
+        wait_for("the failed run", || {
+            runs(&world, "BAD").iter().any(|run| text(run, "hasError") == "Y")
+        });
+        let run = runs(&world, "BAD").remove(0);
+        assert!(text(&run, "errors").contains("job failed"), "{}", text(&run, "errors"));
+        std::thread::sleep(Duration::from_millis(1100));
+        let report = world.ctx.factory().service_pools().tick();
+        assert_eq!(report.jobs_run, 0, "{report:?}");
+        assert_eq!(runs(&world, "BAD").len(), 1);
+    }
+
+    #[test]
+    fn a_repeat_count_pauses_the_job_after_that_many_runs() {
+        let world = jobs_world(2, 8);
+        let _entered = world.ctx.enter();
+        let _authz = world.ctx.disable_authz();
+        add_job(&world, "ONCE", "echo#Note", "* * * * * *", &[("repeatCount", "1")]);
+        assert_eq!(world.ctx.factory().service_pools().tick().jobs_run, 1);
+        wait_for("the run", || {
+            runs(&world, "ONCE").iter().any(|run| !text(run, "endTime").is_empty())
+        });
+        std::thread::sleep(Duration::from_millis(1100));
+        let report = world.ctx.factory().service_pools().tick();
+        assert_eq!(report.jobs_run, 0, "{report:?}");
+        let job = world
+            .facade
+            .find("moqui.service.job.ServiceJob")
+            .unwrap()
+            .eq("jobName", Value::string("ONCE"))
+            .one()
+            .unwrap()
+            .unwrap();
+        assert_eq!(text(&job, "paused"), "Y");
+    }
+
+    #[test]
+    fn a_call_that_finds_the_queue_full_is_stored_as_a_job_and_run_later() {
+        let world = jobs_world(1, 1);
+        let _entered = world.ctx.enter();
+        let _authz = world.ctx.disable_authz();
+        let pools = world.ctx.factory().service_pools();
+        let hold = Hold::new();
+        fill_queue(pools, &hold);
+        let mut params = BTreeMap::new();
+        params.insert("note".into(), Value::string("queued-call"));
+        pools.submit("mark#Row", &params).expect("stored, not lost");
+        let stored: Vec<_> = world
+            .facade
+            .find("moqui.service.job.ServiceJob")
+            .unwrap()
+            .list()
+            .unwrap()
+            .values()
+            .iter()
+            .filter(|job| text(job, "jobName").starts_with(super::super::jobs::QUEUE_PREFIX))
+            .cloned()
+            .collect();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(text(&stored[0], "serviceName"), "mark#Row");
+        // The queue is still full, so the pass leaves the stored call alone.
+        assert_eq!(pools.tick().jobs_run, 0);
+        hold.open();
+        wait_for("the queue to drain", || world.pools_handle.job_slots() > 0);
+        let mut submitted = false;
+        wait_for("the queued call to run", || {
+            if !submitted {
+                submitted = pools.tick().jobs_run == 1;
+            }
+            world
+                .facade
+                .find("moqui.test.TestEntity")
+                .unwrap()
+                .eq("testId", Value::string("queued-call"))
+                .one()
+                .unwrap()
+                .is_some()
+        });
+        wait_for("the stored call to be removed", || {
+            world
+                .facade
+                .find("moqui.service.job.ServiceJob")
+                .unwrap()
+                .list()
+                .unwrap()
+                .values()
+                .iter()
+                .all(|job| !text(job, "jobName").starts_with(super::super::jobs::QUEUE_PREFIX))
+        });
+    }
+
+    #[test]
+    fn a_failed_async_call_is_not_silent() {
+        // The worker logs the failure; the caller of a fire-and-forget call gets nothing back, so
+        // the observable part is that the pool survives and runs the next call.
+        let world = jobs_world(1, 8);
+        let _entered = world.ctx.enter();
+        let _authz = world.ctx.disable_authz();
+        let pools = world.ctx.factory().service_pools();
+        pools.submit("nothing#Registered", &BTreeMap::new()).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("note".into(), Value::string("after-failure"));
+        pools.submit("markOpen#Row", &params).unwrap();
+        wait_for("the second call", || {
+            world
+                .facade
+                .find("moqui.test.TestEntity")
+                .unwrap()
+                .eq("testId", Value::string("after-failure"))
+                .one()
+                .unwrap()
+                .is_some()
+        });
+    }
+
+    fn fill_queue(pools: &ServicePools, hold: &Hold) {
+        let task_hold = hold.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        pools
+            .submit_task(move || {
+                started_tx.send(()).unwrap();
+                task_hold.wait();
+            })
+            .unwrap();
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        pools.submit_task(|| {}).unwrap();
     }
 
     fn register_echo() {
@@ -477,7 +502,7 @@ mod tests {
             </services>"#,
         )
         .unwrap();
-        let failures = crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
+        let failures = crate::service::lint(std::slice::from_ref(&path)).unwrap();
         assert!(failures.is_empty(), "{failures:?}");
     }
 
@@ -517,121 +542,5 @@ mod tests {
 
     fn framework_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework")
-    }
-
-    mod mem {
-        use std::path::PathBuf;
-        use std::sync::Arc;
-        use std::time::Duration;
-
-        use moqui_lib::error::Error;
-        use moqui_lib::object::Value;
-
-        use crate::driver::{DbCancel, DbConnection, DbDriver, DbRow};
-        use crate::entity::{EntityFacade, EntityGroup};
-        use crate::transaction::{PoolConfig, TransactionManager};
-
-        pub(super) fn open() -> EntityFacade {
-            let driver: Arc<dyn DbDriver> = Arc::new(StubDriver);
-            let transactions = TransactionManager::new(
-                driver,
-                PoolConfig {
-                    min: 0,
-                    max: 2,
-                    reserve: 0,
-                    acquire_timeout: Duration::from_secs(5),
-                },
-            )
-            .expect("memory pool");
-            let facade = EntityFacade::open(
-                &framework_dir(),
-                "transactional",
-                vec![EntityGroup::new("transactional", "postgres", transactions)],
-            )
-            .expect("entity facade");
-            facade.set_disable_audit_log(true);
-            facade.set_disable_entity_eca(true);
-            facade.set_disable_fk_create(true);
-            facade.set_disable_data_feed(true);
-            facade
-        }
-
-        fn framework_dir() -> PathBuf {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework")
-        }
-
-        struct StubDriver;
-        struct StubConn;
-        struct StubCancel;
-
-        impl DbCancel for StubCancel {
-            fn cancel(&self) -> Result<(), Error> {
-                Ok(())
-            }
-        }
-
-        impl DbDriver for StubDriver {
-            fn connect(&self) -> Result<Box<dyn DbConnection>, Error> {
-                Ok(Box::new(StubConn))
-            }
-        }
-
-        impl DbConnection for StubConn {
-            fn execute(&mut self, _sql: &str, _params: &[Value]) -> Result<u64, Error> {
-                Ok(0)
-            }
-
-            fn query(&mut self, _sql: &str, _params: &[Value]) -> Result<Vec<DbRow>, Error> {
-                Ok(Vec::new())
-            }
-
-            fn query_once(&mut self, _sql: &str, _params: &[Value]) -> Result<Vec<DbRow>, Error> {
-                Ok(Vec::new())
-            }
-
-            fn open_stream(&mut self, _sql: &str, _params: &[Value]) -> Result<(), Error> {
-                Ok(())
-            }
-
-            fn next_row(&mut self) -> Result<Option<DbRow>, Error> {
-                Ok(None)
-            }
-
-            fn close_stream(&mut self) -> Result<(), Error> {
-                Ok(())
-            }
-
-            fn stream_open(&self) -> bool {
-                false
-            }
-
-            fn begin(&mut self) -> Result<(), Error> {
-                Ok(())
-            }
-
-            fn commit(&mut self) -> Result<(), Error> {
-                Ok(())
-            }
-
-            fn rollback(&mut self) -> Result<(), Error> {
-                Ok(())
-            }
-
-            fn savepoint(&mut self, _name: &str) -> Result<(), Error> {
-                Ok(())
-            }
-
-            fn rollback_to_savepoint(&mut self, _name: &str) -> Result<(), Error> {
-                Ok(())
-            }
-
-            fn release_savepoint(&mut self, _name: &str) -> Result<(), Error> {
-                Ok(())
-            }
-
-            fn canceller(&self) -> Box<dyn DbCancel> {
-                Box::new(StubCancel)
-            }
-        }
     }
 }

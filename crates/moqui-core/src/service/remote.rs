@@ -15,26 +15,31 @@
 //! Remote REST runner. `http` and `https` resource gets stay unavailable.
 
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
-use moqui_lib::http::{sim_allows_http, RestClient};
+use moqui_lib::http::{redacted, sim_allows_http, Method, RestClient};
+use moqui_lib::json::{from_json, to_json};
 use moqui_lib::object::{to_plain_string, Value};
 
 use crate::context::{Error, ExecutionContext};
 
-/// `http` and `https` resource gets fail with this error.
-///
-/// The boot test requires `HTTP` and `not available` and must not contact the
-/// location. A live fetch would fail that test.
-pub fn http_resource_error(location: &str) -> Error {
-    let _ = location;
-    Error::new("HTTP resources are not available")
+/// One client for every remote call, so connections and TLS state are reused.
+fn client() -> &'static RestClient {
+    static CLIENT: OnceLock<RestClient> = OnceLock::new();
+    CLIENT.get_or_init(RestClient::new)
 }
 
-/// Call a `remote-rest` location. `sim` denies before [`RestClient`] exists.
+/// The client every outbound call shares. Resource gets for `http://` locations use it too.
+pub fn shared_http_client() -> &'static RestClient {
+    client()
+}
+
+/// Call a `remote-rest` location. `sim` denies before [`RestClient`] sends anything.
 ///
-/// `method` overrides `verb`. [`RestClient`] sends GET and POST, so only GET is
-/// sent as GET. Every other verb is POST, which is also the default when `verb`
-/// is not an HTTP method. `allow_in_sim` stays false.
+/// `method` overrides `verb`. The method is the one named when it is an HTTP method this client
+/// sends (GET, POST, PUT, PATCH, DELETE) and POST otherwise. `allow_in_sim` stays false. Only GET
+/// puts the parameters in the query; the other methods send them as a JSON body. The response is
+/// the JSON object, or `{response: ...}` for any other body.
 pub fn run_remote_rest(
     service_name: &str,
     location: &str,
@@ -50,45 +55,49 @@ pub fn run_remote_rest(
     }
     let http_method = choose_method(method, verb);
     let mut url = expand_location(location, parameters)?;
-    if http_method == "GET" {
+    if http_method == Method::Get {
         url = with_query(&url, parameters);
     }
+    let shown = redacted(&url);
     if !sim_allows_http(sim, false) {
         return Err(Error::new(format!(
-            "HTTP {http_method} {url} denied because sim mode is active"
+            "HTTP {http_method} {shown} denied because sim mode is active"
         )));
     }
-    let client = RestClient::new();
-    let response = if http_method == "GET" {
-        client.get(url).send(false)?
+    let call = client().request(http_method, url);
+    let response = if http_method == Method::Get || parameters.is_empty() {
+        call.send(false)?
     } else {
-        let body = json_scalars(parameters);
-        let call = client.post(url);
-        if body.is_empty() {
-            call.send(false)?
-        } else {
-            call.json(&body).send(false)?
-        }
+        let body = to_json(&Value::Map(
+            parameters
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect(),
+        ));
+        call.json(&body).send(false)?
     };
     let status = response.status();
     if !(200..300).contains(&status) {
-        let message = format!("Remote service error {status}: {}", response.body());
+        // The remote's body can hold anything, so it goes to the log and not into the message.
+        tracing::warn!(service = service_name, status, url = %shown, body = %clip(response.body()), "remote REST error");
+        let message = format!("Remote service error {status}");
         let _ = ExecutionContext::with_current(|ctx| ctx.message().add_error(message.clone()));
         return Err(Error::new(message));
     }
     Ok(response_map(response.body()))
 }
 
-fn choose_method(method: Option<&str>, verb: &str) -> &'static str {
-    let named = method.map(str::trim).filter(|text| !text.is_empty());
-    let raw = named.unwrap_or(verb);
-    if raw.eq_ignore_ascii_case("get") {
-        "GET"
-    } else {
-        "POST"
-    }
+fn clip(text: &str) -> String {
+    text.chars().take(500).collect()
 }
 
+fn choose_method(method: Option<&str>, verb: &str) -> Method {
+    let named = method.map(str::trim).filter(|text| !text.is_empty());
+    Method::parse(named.unwrap_or(verb)).unwrap_or(Method::Post)
+}
+
+/// Replace `${name}` with the parameter, percent-encoded, so a value cannot add a path segment, a
+/// query, or a new host. Names that are not parameters stay for the environment expansion.
 fn expand_location(location: &str, parameters: &BTreeMap<String, Value>) -> Result<String, Error> {
     let mut out = String::with_capacity(location.len());
     let mut rest = location;
@@ -102,7 +111,7 @@ fn expand_location(location: &str, parameters: &BTreeMap<String, Value>) -> Resu
         };
         let name = &after[..end];
         if let Some(value) = parameters.get(name) {
-            out.push_str(&to_plain_string(value));
+            out.push_str(&percent_encode(&to_plain_string(value)));
         } else {
             out.push_str("${");
             out.push_str(name);
@@ -138,21 +147,6 @@ fn encode_query(parameters: &BTreeMap<String, Value>) -> String {
     parts.join("&")
 }
 
-fn json_scalars(parameters: &BTreeMap<String, Value>) -> BTreeMap<String, String> {
-    let mut body = BTreeMap::new();
-    for (key, value) in parameters {
-        if matches!(value, Value::Map(_) | Value::List(_)) {
-            continue;
-        }
-        let text = to_plain_string(value);
-        if text.is_empty() {
-            continue;
-        }
-        body.insert(key.clone(), text);
-    }
-    body
-}
-
 fn percent_encode(text: &str) -> String {
     let mut out = String::new();
     for byte in text.as_bytes() {
@@ -169,204 +163,17 @@ fn response_map(body: &str) -> BTreeMap<String, Value> {
     if trimmed.is_empty() {
         return BTreeMap::new();
     }
-    match parse_json(trimmed) {
+    let parsed = serde_json::from_str::<serde_json::Value>(trimmed).map(|json| from_json(&json));
+    match parsed {
         Ok(Value::Map(map)) => map.into_iter().collect(),
-        Ok(other) => {
-            let mut map = BTreeMap::new();
-            map.insert("response".to_string(), other);
-            map
-        }
-        Err(_) => {
-            let mut map = BTreeMap::new();
-            map.insert("response".to_string(), Value::string(trimmed));
-            map
-        }
+        Ok(other) => BTreeMap::from([("response".to_string(), other)]),
+        Err(_) => BTreeMap::from([("response".to_string(), Value::string(trimmed))]),
     }
 }
 
 pub(crate) fn parse_json(text: &str) -> Result<Value, Error> {
-    let mut parser = Json {
-        text: text.as_bytes(),
-        index: 0,
-    };
-    parser.skip();
-    let value = parser.value()?;
-    parser.skip();
-    if parser.index != parser.text.len() {
-        return Err(Error::new("trailing JSON"));
-    }
-    Ok(value)
-}
-
-struct Json<'a> {
-    text: &'a [u8],
-    index: usize,
-}
-
-impl Json<'_> {
-    fn value(&mut self) -> Result<Value, Error> {
-        self.skip();
-        let Some(byte) = self.peek() else {
-            return Err(Error::new("JSON value is missing"));
-        };
-        match byte {
-            b'{' => self.object(),
-            b'[' => self.array(),
-            b'"' => Ok(Value::string(self.string()?)),
-            b't' => self.literal(b"true", Value::Bool(true)),
-            b'f' => self.literal(b"false", Value::Bool(false)),
-            b'n' => self.literal(b"null", Value::Null),
-            b'-' | b'0'..=b'9' => self.number(),
-            _ => Err(Error::new("JSON value is not valid")),
-        }
-    }
-
-    fn object(&mut self) -> Result<Value, Error> {
-        self.bump(b'{')?;
-        let map = moqui_lib::context_stack::ContextStack::new();
-        let frame = map.shared_map();
-        self.skip();
-        if self.peek() == Some(b'}') {
-            self.index += 1;
-            drop(map);
-            return Ok(unwrap_frame(frame));
-        }
-        loop {
-            self.skip();
-            let key = self.string()?;
-            self.skip();
-            self.bump(b':')?;
-            let value = self.value()?;
-            frame.borrow_mut().insert(key, value);
-            self.skip();
-            match self.peek() {
-                Some(b',') => self.index += 1,
-                Some(b'}') => {
-                    self.index += 1;
-                    break;
-                }
-                _ => return Err(Error::new("JSON object is not closed")),
-            }
-        }
-        drop(map);
-        Ok(unwrap_frame(frame))
-    }
-
-    fn array(&mut self) -> Result<Value, Error> {
-        self.bump(b'[')?;
-        let mut items = Vec::new();
-        self.skip();
-        if self.peek() == Some(b']') {
-            self.index += 1;
-            return Ok(Value::List(items));
-        }
-        loop {
-            items.push(self.value()?);
-            self.skip();
-            match self.peek() {
-                Some(b',') => self.index += 1,
-                Some(b']') => {
-                    self.index += 1;
-                    break;
-                }
-                _ => return Err(Error::new("JSON array is not closed")),
-            }
-        }
-        Ok(Value::List(items))
-    }
-
-    fn string(&mut self) -> Result<String, Error> {
-        self.bump(b'"')?;
-        let mut out = String::new();
-        while let Some(byte) = self.peek() {
-            self.index += 1;
-            match byte {
-                b'"' => return Ok(out),
-                b'\\' => {
-                    let escaped = self.peek().ok_or_else(|| Error::new("JSON string escape is missing"))?;
-                    self.index += 1;
-                    match escaped {
-                        b'"' | b'\\' | b'/' => out.push(char::from(escaped)),
-                        b'b' => out.push('\u{0008}'),
-                        b'f' => out.push('\u{000c}'),
-                        b'n' => out.push('\n'),
-                        b'r' => out.push('\r'),
-                        b't' => out.push('\t'),
-                        b'u' => out.push(self.hex_char()?),
-                        _ => return Err(Error::new("JSON string escape is not valid")),
-                    }
-                }
-                _ => out.push(char::from(byte)),
-            }
-        }
-        Err(Error::new("JSON string is not closed"))
-    }
-
-    fn hex_char(&mut self) -> Result<char, Error> {
-        if self.index + 4 > self.text.len() {
-            return Err(Error::new("JSON unicode escape is short"));
-        }
-        let hex = std::str::from_utf8(&self.text[self.index..self.index + 4])
-            .map_err(|_| Error::new("JSON unicode escape is not hex"))?;
-        let code = u32::from_str_radix(hex, 16).map_err(|_| Error::new("JSON unicode escape is not hex"))?;
-        self.index += 4;
-        char::from_u32(code).ok_or_else(|| Error::new("JSON unicode escape is not a character"))
-    }
-
-    fn number(&mut self) -> Result<Value, Error> {
-        let start = self.index;
-        if self.peek() == Some(b'-') {
-            self.index += 1;
-        }
-        while matches!(self.peek(), Some(b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-')) {
-            self.index += 1;
-        }
-        let text =
-            std::str::from_utf8(&self.text[start..self.index]).map_err(|_| Error::new("JSON number is not utf-8"))?;
-        if let Ok(number) = text.parse::<i64>() {
-            return Ok(Value::I64(number));
-        }
-        if let Ok(number) = text.parse::<f64>() {
-            return Ok(Value::F64(number));
-        }
-        Err(Error::new(format!("JSON number {text} is not valid")))
-    }
-
-    fn literal(&mut self, word: &[u8], value: Value) -> Result<Value, Error> {
-        if self.text[self.index..].starts_with(word) {
-            self.index += word.len();
-            Ok(value)
-        } else {
-            Err(Error::new("JSON literal is not valid"))
-        }
-    }
-
-    fn bump(&mut self, expected: u8) -> Result<(), Error> {
-        self.skip();
-        if self.peek() == Some(expected) {
-            self.index += 1;
-            Ok(())
-        } else {
-            Err(Error::new(format!("JSON expected {}", char::from(expected))))
-        }
-    }
-
-    fn peek(&self) -> Option<u8> {
-        self.text.get(self.index).copied()
-    }
-
-    fn skip(&mut self) {
-        while matches!(self.peek(), Some(b' ' | b'\n' | b'\r' | b'\t')) {
-            self.index += 1;
-        }
-    }
-}
-
-fn unwrap_frame(frame: moqui_lib::context_stack::Frame) -> Value {
-    Value::Map(match std::rc::Rc::try_unwrap(frame) {
-        Ok(cell) => cell.into_inner(),
-        Err(frame) => frame.borrow().clone(),
-    })
+    let json = serde_json::from_str::<serde_json::Value>(text).map_err(|err| Error::new(format!("JSON: {err}")))?;
+    Ok(from_json(&json))
 }
 
 #[cfg(test)]
@@ -382,11 +189,83 @@ mod tests {
     use super::run_remote_rest;
 
     #[test]
-    fn http_resource_error_names_http_and_not_available() {
-        let err = super::http_resource_error("https://example.com/");
-        let shown = err.to_string();
-        assert!(shown.contains("HTTP"), "{shown}");
-        assert!(shown.contains("not available"), "{shown}");
+    fn a_parameter_in_the_url_cannot_change_the_host_or_the_path() {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("id".to_string(), Value::string("a/../b?x=1#y"));
+        let url = super::expand_location("http://example.test/items/${id}", &parameters).unwrap();
+        assert_eq!(url, "http://example.test/items/a%2F..%2Fb%3Fx%3D1%23y");
+    }
+
+    #[test]
+    fn json_responses_keep_non_ascii_text_and_exact_decimals() {
+        let map = super::response_map(r#"{"name":"Zoë 🐘","price":12.50,"count":3}"#);
+        assert_eq!(map.get("name").and_then(Value::as_str), Some("Zoë 🐘"));
+        assert_eq!(
+            map.get("price").map(moqui_lib::object::to_plain_string).as_deref(),
+            Some("12.50")
+        );
+        assert_eq!(map.get("count"), Some(&Value::I64(3)));
+        let other = super::response_map("[1,2]");
+        assert!(matches!(other.get("response"), Some(Value::List(items)) if items.len() == 2));
+        let text = super::response_map("plain text");
+        assert_eq!(text.get("response").and_then(Value::as_str), Some("plain text"));
+    }
+
+    #[test]
+    fn verbs_pick_the_http_method_and_unknown_ones_post() {
+        use moqui_lib::http::Method;
+        assert_eq!(super::choose_method(None, "get"), Method::Get);
+        assert_eq!(super::choose_method(None, "delete"), Method::Delete);
+        assert_eq!(super::choose_method(Some("PUT"), "send"), Method::Put);
+        assert_eq!(super::choose_method(None, "send"), Method::Post);
+    }
+
+    #[test]
+    fn a_non_get_call_sends_typed_json() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let server = thread::spawn(move || serve_one(listener));
+        let mut parameters = BTreeMap::new();
+        parameters.insert("count".to_string(), Value::I32(3));
+        parameters.insert("flag".to_string(), Value::Bool(true));
+        parameters.insert("name".to_string(), Value::string("Zoë"));
+        run_remote_rest(
+            "example.put#Item",
+            &format!("http://127.0.0.1:{port}/items"),
+            Some("PUT"),
+            "put",
+            &parameters,
+            false,
+        )
+        .expect("stub response");
+        let request = server.join().expect("server thread");
+        assert!(request.starts_with("PUT /items"), "{request}");
+        assert!(
+            request.contains(r#""count":3"#) && request.contains(r#""flag":true"#),
+            "{request}"
+        );
+    }
+
+    #[test]
+    fn an_http_resource_is_fetched_when_read_and_not_when_resolved() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let server = thread::spawn(move || serve_one(listener));
+        let ctx = crate::context::ExecutionContextFactory::test_context();
+        let resource = ctx
+            .factory()
+            .resource()
+            .get(&format!("http://127.0.0.1:{port}/items"))
+            .expect("resolving opens no connection");
+        let text = resource.read_text().expect("fetched on read");
+        assert!(text.contains("DayOfWeek"), "{text}");
+        let request = server.join().expect("server thread");
+        assert!(request.starts_with("GET /items"), "{request}");
+        // The result is kept, so reading again does not fetch again (the stub served only one).
+        assert!(resource.read_text().is_ok());
+        assert!(resource.exists());
+        let missing = ctx.factory().resource().get("http://127.0.0.1:9/nothing").unwrap();
+        assert!(!missing.exists());
     }
 
     #[test]

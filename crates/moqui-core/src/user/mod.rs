@@ -18,6 +18,7 @@ mod authz;
 mod filter;
 mod login;
 mod password;
+mod period;
 mod policy;
 pub(crate) mod session;
 mod visit;
@@ -30,6 +31,7 @@ pub use login::{
     logout_anonymous_only,
 };
 pub use password::hash_password;
+pub use period::period_range;
 pub use policy::password_acceptable;
 pub(crate) use session::Memory;
 pub use session::{
@@ -38,6 +40,3 @@ pub use session::{
     time_zone, verify_session_cookie, visit_id, visitor_id, SessionGuard, SESSION_COOKIE_NAME, VISITOR_COOKIE_NAME,
 };
 pub use visit::record_visit;
-
-#[cfg(test)]
-pub(crate) use login::memdb;

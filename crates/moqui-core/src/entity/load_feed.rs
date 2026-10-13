@@ -3922,6 +3922,11 @@ mod tests {
     #[test]
     fn loader_filters_types_holds_services_and_reads_zip() {
         let facade = open_empty();
+        // A data-file service element runs in the entered context.
+        let context = crate::context::ExecutionContextFactory::test_context();
+        context.factory().set_entity(facade.clone());
+        let _entered = context.enter();
+        let _authz = context.disable_authz();
         let (dir, _guard) = temp_dir();
         let xml = dir.join("rows.xml");
         std::fs::write(

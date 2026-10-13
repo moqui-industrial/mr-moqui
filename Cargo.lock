@@ -123,6 +123,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ammonia"
+version = "4.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "061e83b03c2681c18a6787d956e355c74e0b98ba7ba3d69b0822ade1e6f1d716"
+dependencies = [
+ "cssparser",
+ "html5ever",
+ "maplit",
+ "url",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4289,6 +4301,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "maplit"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e2e65a1a2e43cfcb47a895c4c8b10d1f4a61097f9f254f183aee60cad9c651d"
+
+[[package]]
 name = "markup5ever"
 version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4446,6 +4464,7 @@ name = "moqui-core"
 version = "0.1.0"
 dependencies = [
  "aes",
+ "ammonia",
  "argon2",
  "base64 0.22.1",
  "cbc",
@@ -4455,12 +4474,14 @@ dependencies = [
  "getrandom 0.3.4",
  "hmac 0.12.1",
  "indexmap 2.14.2",
+ "jiff",
  "md-5 0.10.6",
  "moqui-db",
  "moqui-lib",
  "oxc_parser",
  "pbkdf2 0.12.2",
  "rquickjs",
+ "serde_json",
  "sha1 0.10.7",
  "sha2 0.10.9",
  "tracing",

@@ -23,6 +23,7 @@ use crate::model::{EntityDefinition, EntityModel, FieldDefinition, IndexDefiniti
 
 use super::condition::{fts_config, render_condition, write_field, Condition, FieldRef, LimitOffset, Nulls, OrderBy};
 use super::ident::{clip_name, is_mysql, is_postgres, placeholders, quote_ident, quote_list};
+use std::collections::HashMap;
 
 /// `INSERT INTO table (columns) VALUES (?, ?)`. The caller chooses the columns. None are skipped.
 pub fn insert(entity: &EntityDefinition, dialect: &Dialect, columns: &[&str]) -> Result<String, Error> {
@@ -85,7 +86,51 @@ pub fn select(
     order_by: &[OrderBy],
     page: LimitOffset,
 ) -> Result<String, Error> {
-    let mut sql = String::from("SELECT ");
+    select_with(
+        entity,
+        dialect,
+        fields,
+        condition,
+        order_by,
+        page,
+        &SelectOptions::default(),
+    )
+}
+
+/// What a select can ask for beyond conditions, order, and paging.
+#[derive(Debug, Clone, Default)]
+pub struct SelectOptions {
+    pub distinct: bool,
+    /// Lock the selected rows. Needs a transaction, and cannot go with `distinct` or a `GROUP BY`.
+    pub for_update: bool,
+    /// A condition on an aggregate. Only a view with a function alias has a `GROUP BY` to hang it on.
+    pub having: Option<Condition>,
+}
+
+/// [`select`] with [`SelectOptions`].
+pub fn select_with(
+    entity: &EntityDefinition,
+    dialect: &Dialect,
+    fields: &[FieldRef],
+    condition: Option<&Condition>,
+    order_by: &[OrderBy],
+    page: LimitOffset,
+    options: &SelectOptions,
+) -> Result<String, Error> {
+    if options.having.is_some() {
+        return Err(Error::new(format!(
+            "{} has no aggregate fields, so a having condition has nothing to apply to",
+            entity.full_name
+        )));
+    }
+    if options.for_update && options.distinct {
+        return Err(Error::new("a select cannot be both distinct and for update"));
+    }
+    let mut sql = String::from(if options.distinct {
+        "SELECT DISTINCT "
+    } else {
+        "SELECT "
+    });
     if fields.is_empty() {
         sql.push('*');
     } else {
@@ -101,6 +146,9 @@ pub fn select(
     append_where(&mut sql, dialect, condition)?;
     append_order(&mut sql, dialect, order_by);
     append_page(&mut sql, dialect, page);
+    if options.for_update {
+        sql.push_str(" FOR UPDATE");
+    }
     Ok(sql)
 }
 
@@ -129,13 +177,203 @@ pub fn select_view(
     order_by: &[OrderBy],
     page: LimitOffset,
 ) -> Result<String, Error> {
-    let mut sql = String::from("SELECT ");
+    select_view_with(
+        view,
+        model,
+        dialect,
+        condition,
+        order_by,
+        page,
+        &SelectOptions::default(),
+    )
+}
+
+/// [`select_view`] with [`SelectOptions`].
+///
+/// An alias with `function` aggregates (`min`, `max`, `sum`, `avg`, `count`, `count-distinct`) or
+/// transforms (`upper`, `lower`) its column. When any alias aggregates, every other selected column
+/// goes in a `GROUP BY`, as Java does. Field names in `condition`, `order_by`, and
+/// `options.having` are the view's alias names. They are written as the member column or the
+/// function expression the alias stands for, so a name two members share is not ambiguous and a
+/// condition on an aggregate names the aggregate.
+pub fn select_view_with(
+    view: &EntityDefinition,
+    model: &EntityModel,
+    dialect: &Dialect,
+    condition: Option<&Condition>,
+    order_by: &[OrderBy],
+    page: LimitOffset,
+    options: &SelectOptions,
+) -> Result<String, Error> {
+    let resolver = ViewFields::new(view, model, dialect)?;
+    let grouped = resolver.has_aggregate;
+    if options.having.is_some() && !grouped {
+        return Err(Error::new(format!(
+            "view {} has no aggregate alias, so a having condition has nothing to apply to",
+            view.full_name
+        )));
+    }
+    if options.for_update && (options.distinct || grouped) {
+        return Err(Error::new("a select cannot lock rows with distinct or an aggregate"));
+    }
+    let where_condition = condition.map(|condition| resolver.resolve(condition.clone()));
+    if let Some(found) = &where_condition {
+        if found.any_field(&mut |field| resolver.is_aggregate_expr(field)) {
+            return Err(Error::new(
+                "a condition on an aggregate alias must be a having condition, not a where condition",
+            ));
+        }
+    }
+    let ordering: Vec<OrderBy> = order_by
+        .iter()
+        .map(|entry| OrderBy {
+            field: resolver.resolve_field(entry.field.clone()),
+            descending: entry.descending,
+            nulls: entry.nulls,
+        })
+        .collect();
+    let mut sql = String::from(if options.distinct {
+        "SELECT DISTINCT "
+    } else {
+        "SELECT "
+    });
     sql.push_str(&view_select_list(view, model, dialect)?);
     sql.push_str(&view_from(view, model, dialect)?);
-    append_where(&mut sql, dialect, condition)?;
-    append_order(&mut sql, dialect, order_by);
+    append_where(&mut sql, dialect, where_condition.as_ref())?;
+    if grouped {
+        sql.push_str(" GROUP BY ");
+        sql.push_str(&resolver.group_by.join(", "));
+        if let Some(having) = &options.having {
+            let resolved = resolver.resolve(having.clone());
+            let rendered = render_condition(&resolved, dialect)?;
+            if !rendered.is_empty() {
+                sql.push_str(" HAVING ");
+                sql.push_str(&rendered);
+            }
+        }
+    }
+    append_order(&mut sql, dialect, &ordering);
     append_page(&mut sql, dialect, page);
+    if options.for_update {
+        sql.push_str(" FOR UPDATE");
+    }
     Ok(sql)
+}
+
+/// The columns and expressions a view's alias names stand for.
+struct ViewFields {
+    by_name: HashMap<String, FieldRef>,
+    has_aggregate: bool,
+    group_by: Vec<String>,
+}
+
+impl ViewFields {
+    fn new(view: &EntityDefinition, model: &EntityModel, dialect: &Dialect) -> Result<Self, Error> {
+        let mut by_name = HashMap::new();
+        let mut group_by = Vec::new();
+        let mut has_aggregate = false;
+        for alias in &view.aliases {
+            let source = alias.field.as_deref().unwrap_or(alias.name.as_str());
+            let column = column_sql(dialect, alias.entity_alias.as_deref(), source);
+            match alias.function.as_deref() {
+                Some(function) => {
+                    let expr = function_sql(function, &column)?;
+                    if is_aggregate(function) {
+                        has_aggregate = true;
+                    } else {
+                        group_by.push(expr.clone());
+                    }
+                    by_name.insert(alias.name.clone(), FieldRef::expression(alias.name.clone(), expr));
+                }
+                None => {
+                    group_by.push(column);
+                    let field = match alias.entity_alias.as_deref() {
+                        Some(entity_alias) => FieldRef::aliased(entity_alias, source),
+                        None => FieldRef::new(source),
+                    };
+                    by_name.insert(alias.name.clone(), field);
+                }
+            }
+        }
+        for alias_all in &view.alias_alls {
+            let member = view.member(&alias_all.entity_alias).ok_or_else(|| {
+                Error::new(format!(
+                    "view {} alias-all {} has no member-entity",
+                    view.full_name, alias_all.entity_alias
+                ))
+            })?;
+            let member_entity = model.entity(&member.entity_name)?;
+            for field in &member_entity.fields {
+                if alias_all.exclude.iter().any(|name| name == &field.name) {
+                    continue;
+                }
+                let out_name = match alias_all.prefix.as_deref() {
+                    Some(prefix) => prefixed_name(prefix, &field.name),
+                    None => field.name.clone(),
+                };
+                if by_name.contains_key(&out_name) {
+                    continue;
+                }
+                group_by.push(column_sql(dialect, Some(&alias_all.entity_alias), &field.name));
+                by_name.insert(
+                    out_name,
+                    FieldRef::aliased(alias_all.entity_alias.clone(), field.name.clone()),
+                );
+            }
+        }
+        Ok(Self {
+            by_name,
+            has_aggregate,
+            group_by,
+        })
+    }
+
+    fn resolve_field(&self, field: FieldRef) -> FieldRef {
+        if field.entity_alias.is_some() || field.expr.is_some() {
+            return field;
+        }
+        self.by_name.get(&field.name).cloned().unwrap_or(field)
+    }
+
+    fn resolve(&self, condition: Condition) -> Condition {
+        condition.map_fields(&mut |field| self.resolve_field(field))
+    }
+
+    fn is_aggregate_expr(&self, field: &FieldRef) -> bool {
+        field.expr.as_ref().is_some_and(|expr| {
+            ["MIN(", "MAX(", "SUM(", "AVG(", "COUNT("]
+                .iter()
+                .any(|prefix| expr.starts_with(prefix))
+        })
+    }
+}
+
+fn column_sql(dialect: &Dialect, entity_alias: Option<&str>, source: &str) -> String {
+    let mut out = String::new();
+    if let Some(entity_alias) = entity_alias {
+        out.push_str(&quote_ident(dialect, entity_alias));
+        out.push('.');
+    }
+    out.push_str(&quote_ident(dialect, source));
+    out
+}
+
+fn is_aggregate(function: &str) -> bool {
+    matches!(function, "min" | "max" | "sum" | "avg" | "count" | "count-distinct")
+}
+
+fn function_sql(function: &str, column: &str) -> Result<String, Error> {
+    Ok(match function {
+        "min" => format!("MIN({column})"),
+        "max" => format!("MAX({column})"),
+        "sum" => format!("SUM({column})"),
+        "avg" => format!("AVG({column})"),
+        "count" => format!("COUNT({column})"),
+        "count-distinct" => format!("COUNT(DISTINCT {column})"),
+        "upper" => format!("UPPER({column})"),
+        "lower" => format!("LOWER({column})"),
+        other => return Err(Error::new(format!("alias function {other} is not supported"))),
+    })
 }
 
 /// Insert, then update on a key conflict.
@@ -416,12 +654,18 @@ fn view_select_list(view: &EntityDefinition, model: &EntityModel, dialect: &Dial
     let mut used = HashSet::new();
     for alias in &view.aliases {
         let source = alias.field.as_deref().unwrap_or(alias.name.as_str());
-        let mut expr = String::new();
-        if let Some(entity_alias) = alias.entity_alias.as_deref() {
-            expr.push_str(&quote_ident(dialect, entity_alias));
-            expr.push('.');
+        let column = column_sql(dialect, alias.entity_alias.as_deref(), source);
+        if let Some(function) = alias.function.as_deref() {
+            // A function result always needs the alias name, which is what the row reader looks for.
+            used.insert(alias.name.clone());
+            parts.push(format!(
+                "{} AS {}",
+                function_sql(function, &column)?,
+                quote_ident(dialect, &alias.name)
+            ));
+            continue;
         }
-        expr.push_str(&quote_ident(dialect, source));
+        let mut expr = column;
         if alias.field.as_deref().is_some_and(|field| field != alias.name) {
             expr.push_str(" AS ");
             expr.push_str(&quote_ident(dialect, &alias.name));

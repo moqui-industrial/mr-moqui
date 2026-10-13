@@ -70,6 +70,16 @@ mod tests {
             ])
             .unwrap();
 
+        // The data-file service element runs in an entered context, as a real load does.
+        let factory_dir = dir.join("runtime");
+        std::fs::create_dir_all(&factory_dir).unwrap();
+        let factory =
+            moqui_core::context::ExecutionContextFactory::boot_with_framework(&factory_dir, &framework).unwrap();
+        crate::db::entity_facade::attach(&factory, facade.clone());
+        let context = factory.new_context();
+        let _entered = context.enter();
+        let _authz = context.disable_authz();
+
         let fix = dir.join("fixtures");
         std::fs::create_dir_all(&fix).unwrap();
         let xml = fix.join("rows.xml");
@@ -91,7 +101,11 @@ mod tests {
         assert!(held
             .iter()
             .any(|service| service.name == "create#moqui.test.TestEntity"));
-        assert!(row_missing(&facade, "moqui.test.TestEntity", "testId", "SVC"));
+        // The element is remembered and also ran, as the entered context lets it.
+        assert_eq!(
+            text_of(&facade, "moqui.test.TestEntity", "testId", "SVC", "testMedium"),
+            Some("held".to_string())
+        );
 
         let demo = fix.join("demo.xml");
         std::fs::write(

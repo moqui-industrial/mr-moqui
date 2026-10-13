@@ -16,12 +16,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use moqui_lib::node::MNode;
 
-use crate::context::Error;
+use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
 use crate::transaction::TransactionAttribute;
 
 const SEMAPHORE_ENTITY: &str = "moqui.service.semaphore.ServiceParameterSemaphore";
@@ -34,6 +34,8 @@ pub(crate) enum ServiceKind {
     Interface,
     RemoteRest,
     Mail,
+    /// A script service whose language this port does not run, such as Groovy.
+    Unsupported,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,8 +67,27 @@ pub(crate) enum Include {
     All,
 }
 
+/// `allow-html`. The default, `none`, rejects text with a `<`. `safe` cleans the markup, as Jsoup
+/// does in Java, and `any` leaves it alone.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum AllowHtml {
+    #[default]
+    None,
+    Safe,
+    Any,
+}
+
+fn allow_html_of(node: &MNode) -> AllowHtml {
+    match node.attribute("allow-html").as_deref() {
+        Some("any") => AllowHtml::Any,
+        Some("safe") => AllowHtml::Safe,
+        _ => AllowHtml::None,
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct AutoParams {
+    pub allow_html: AllowHtml,
     pub entity_name: Option<String>,
     pub include: Include,
     pub exclude: Vec<String>,
@@ -113,9 +134,11 @@ pub(crate) struct ParamDef {
     pub name: String,
     pub java_type: String,
     pub required: Required,
+    /// `default-value`: text with `${}` expanded against the other parameters, then converted.
     pub default_value: Option<String>,
-    pub entity_name: Option<String>,
-    pub field_name: Option<String>,
+    /// `default`: a JavaScript expression over the other parameters.
+    pub default_expr: Option<String>,
+    pub allow_html: AllowHtml,
     pub checks: Vec<Check>,
     pub auto: Option<AutoParams>,
 }
@@ -182,6 +205,7 @@ impl ServiceDef {
     }
 }
 
+#[derive(Default)]
 struct Registry {
     services: BTreeMap<String, ServiceDef>,
     failures: Vec<String>,
@@ -194,46 +218,49 @@ struct ServiceInclude {
     location: String,
 }
 
-static REGISTRY: Mutex<Registry> = Mutex::new(Registry {
-    services: BTreeMap::new(),
-    failures: Vec::new(),
-});
+type Shared = RwLock<Arc<Registry>>;
 
-#[cfg(test)]
-static TEST_GATE: Mutex<()> = Mutex::new(());
-
-fn lock() -> MutexGuard<'static, Registry> {
-    REGISTRY.lock().unwrap_or_else(|err| err.into_inner())
+/// The entered context's factory and its registry, or an error when no context is entered.
+fn entered() -> Result<Arc<Shared>, Error> {
+    ExecutionContext::with_current(|ctx| registry_of(ctx.factory()))
+        .ok_or_else(|| Error::new("no execution context is entered; service definitions belong to its factory"))
 }
 
-#[cfg(test)]
-pub(crate) fn lock_tests() -> MutexGuard<'static, ()> {
-    TEST_GATE.lock().unwrap_or_else(|err| err.into_inner())
+fn registry_of(factory: &Arc<ExecutionContextFactory>) -> Arc<Shared> {
+    factory.extension::<Shared>(|_| RwLock::new(Arc::new(Registry::default())))
 }
 
-#[cfg(test)]
-pub(crate) fn reset() {
-    *lock() = Registry {
-        services: BTreeMap::new(),
-        failures: Vec::new(),
-    };
+fn snapshot(shared: &Shared) -> Arc<Registry> {
+    Arc::clone(&shared.read().unwrap_or_else(|err| err.into_inner()))
 }
 
 #[cfg(test)]
 pub(crate) fn is_registered(name: &str) -> bool {
-    lock().services.contains_key(name)
+    find(name).is_some()
 }
 
+/// A service of the entered context's factory. `None` when it is not defined or no context is entered.
 pub(crate) fn find(name: &str) -> Option<ServiceDef> {
-    lock().services.get(name).cloned()
+    let shared = entered().ok()?;
+    snapshot(&shared).services.get(name).cloned()
 }
 
+/// Register the configured service files with the entered context's factory.
+///
+/// # Errors
+///
+/// Returns an error when no context is entered or a file cannot be read.
 pub fn load_definitions() -> Result<(), Error> {
     lint(&[])?;
     Ok(())
 }
 
-/// Registration failures for `paths`, or for the configured service files when `paths` is empty.
+/// Register `paths`, or the configured service files when `paths` is empty, with the entered
+/// context's factory, replacing what it had. Returns the registration failures.
+///
+/// # Errors
+///
+/// Returns an error when no context is entered or a file cannot be read.
 pub fn lint(paths: &[PathBuf]) -> Result<Vec<String>, Error> {
     if paths.is_empty() {
         let configured = configured_paths()?;
@@ -241,12 +268,30 @@ pub fn lint(paths: &[PathBuf]) -> Result<Vec<String>, Error> {
     } else {
         install(paths)?;
     }
-    Ok(lock().failures.clone())
+    Ok(snapshot(&*entered()?).failures.clone())
+}
+
+/// Registration failures for `paths`, or the configured service files when `paths` is empty,
+/// without changing the services that are registered. This is what `moqui lint` runs.
+///
+/// # Errors
+///
+/// Returns an error when a file cannot be read.
+pub fn check(paths: &[PathBuf]) -> Result<Vec<String>, Error> {
+    let configured;
+    let paths = if paths.is_empty() {
+        configured = configured_paths()?;
+        &configured[..]
+    } else {
+        paths
+    };
+    Ok(build(paths)?.failures)
 }
 
 fn install(paths: &[PathBuf]) -> Result<(), Error> {
     let registry = build(paths)?;
-    *lock() = registry;
+    let shared = entered()?;
+    *shared.write().unwrap_or_else(|err| err.into_inner()) = Arc::new(registry);
     Ok(())
 }
 
@@ -266,8 +311,9 @@ fn build(paths: &[PathBuf]) -> Result<Registry, Error> {
             &mut pending,
         )?;
     }
-    resolve_implements(&mut services, &mut failures);
+    // Includes first, so a service can implement a name that is only an include alias.
     resolve_includes(&includes, &mut services, &mut failures);
+    resolve_implements(&mut services, &mut failures);
     Ok(Registry { services, failures })
 }
 
@@ -339,10 +385,25 @@ fn load_service(prefix: &str, node: &MNode, services: &mut BTreeMap<String, Serv
         failures.push(format!("service {name} type camel is not included"));
         return;
     }
+    if !matches!(
+        type_name.as_str(),
+        "inline" | "entity-auto" | "script" | "interface" | "remote-rest"
+    ) {
+        failures.push(format!("service {name} has unknown type {type_name}"));
+        return;
+    }
     let mut expression_errors = Vec::new();
     if !expressions_ok(&name, node, &mut expression_errors) {
         failures.extend(expression_errors);
         return;
+    }
+    // The generated script is what runs, so it is what must parse. This reaches every attribute
+    // that becomes JavaScript, not only the ones named in `is_expression_attr`.
+    if let Some(actions) = node.first_named("actions") {
+        if let Err(err) = crate::script::check_actions(&actions.write_string()) {
+            failures.push(format!("service {name} {err}"));
+            return;
+        }
     }
     let location = node.attribute("location").unwrap_or_default();
     let kind = kind_of(&type_name, &location);
@@ -395,12 +456,19 @@ fn load_service(prefix: &str, node: &MNode, services: &mut BTreeMap<String, Serv
 fn kind_of(type_name: &str, location: &str) -> ServiceKind {
     match type_name {
         "entity-auto" => ServiceKind::EntityAuto,
-        "script" if is_groovy_location(location) => ServiceKind::Mail,
+        "script" if is_groovy_location(location) && is_mail_location(location) => ServiceKind::Mail,
+        "script" if is_groovy_location(location) => ServiceKind::Unsupported,
         "script" => ServiceKind::Script,
         "interface" => ServiceKind::Interface,
         "remote-rest" => ServiceKind::RemoteRest,
         _ => ServiceKind::Inline,
     }
+}
+
+/// The framework's email scripts are Groovy until the mail transport lands; they report that mail
+/// is not configured. Any other Groovy script is simply not runnable.
+fn is_mail_location(location: &str) -> bool {
+    location.to_ascii_lowercase().contains("email")
 }
 
 fn is_groovy_location(location: &str) -> bool {
@@ -472,7 +540,7 @@ fn expressions_ok(service: &str, node: &MNode, errors: &mut Vec<String>) -> bool
         }
     }
     for (key, value) in node.attributes() {
-        if is_expression_attr(&key) || value_has_groovy(&value) {
+        if is_expression_attr(&key) {
             if let Err(err) = check_javascript(service, &value) {
                 errors.push(err);
                 ok = false;
@@ -489,11 +557,6 @@ fn expressions_ok(service: &str, node: &MNode, errors: &mut Vec<String>) -> bool
 
 fn is_expression_attr(key: &str) -> bool {
     matches!(key, "from" | "condition" | "default" | "in-map")
-}
-
-/// Gate for attributes that are not expressions. `parse_js` still rejects the marker.
-fn value_has_groovy(text: &str) -> bool {
-    text.contains("?:") || text.contains("?.") || text.contains("->")
 }
 
 fn check_javascript(service: &str, text: &str) -> Result<(), String> {
@@ -518,8 +581,8 @@ fn parse_parameter(node: &MNode) -> ParamDef {
         java_type: node.attribute("type").unwrap_or_else(|| "String".to_string()),
         required: required_of(node, Required::False),
         default_value: node.attribute("default-value"),
-        entity_name: node.attribute("entity-name"),
-        field_name: node.attribute("field-name"),
+        default_expr: node.attribute("default").filter(|text| !text.is_empty()),
+        allow_html: allow_html_of(node),
         checks: parse_checks(node),
         auto: None,
     }
@@ -542,10 +605,11 @@ fn parse_auto(node: &MNode) -> ParamDef {
         java_type: "String".to_string(),
         required,
         default_value: None,
-        entity_name: node.attribute("entity-name"),
-        field_name: None,
+        default_expr: None,
+        allow_html: AllowHtml::None,
         checks: Vec::new(),
         auto: Some(AutoParams {
+            allow_html: allow_html_of(node),
             entity_name: node.attribute("entity-name"),
             include,
             exclude,
@@ -847,8 +911,8 @@ mod tests {
 
     #[test]
     fn groovy_leftover_fails_that_service_and_keeps_the_neighbor() {
-        let _gate = super::lock_tests();
-        super::reset();
+        let ctx = crate::context::ExecutionContextFactory::test_context();
+        let _entered = ctx.enter();
         let path = write_fixture(
             "groovy",
             r#"<services>
@@ -870,8 +934,8 @@ mod tests {
 
     #[test]
     fn remote_json_rpc_is_not_registered() {
-        let _gate = super::lock_tests();
-        super::reset();
+        let ctx = crate::context::ExecutionContextFactory::test_context();
+        let _entered = ctx.enter();
         let path = write_fixture(
             "rpc",
             r#"<services>
@@ -888,8 +952,12 @@ mod tests {
 
     #[test]
     fn load_definitions_registers_email_services() {
-        let _gate = super::lock_tests();
-        super::reset();
+        let ctx = crate::context::ExecutionContextFactory::test_context_in(
+            "",
+            crate::service::ServicePools::idle(),
+            crate::context::framework_dir(),
+        );
+        let _entered = ctx.enter();
         super::load_definitions().unwrap();
         assert!(
             super::is_registered("org.moqui.EmailServices.send#EmailTemplate"),
@@ -904,7 +972,7 @@ mod tests {
     }
 
     fn explain(needle: &str) -> String {
-        super::lock()
+        super::snapshot(&super::entered().unwrap())
             .failures
             .iter()
             .filter(|line| line.contains(needle))

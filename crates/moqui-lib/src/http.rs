@@ -30,6 +30,10 @@ use serde::Serialize;
 use crate::error::Error;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Largest response body read. A larger one is an error, not a truncated body.
+const MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_REDIRECTS: usize = 5;
 
 /// Whether an outbound call is allowed.
 ///
@@ -45,13 +49,31 @@ pub fn sim_allows_http(sim: bool, allow_in_sim: bool) -> bool {
 pub enum Method {
     Get,
     Post,
+    Put,
+    Patch,
+    Delete,
 }
 
 impl Method {
+    /// The method for a name such as `put`, ignoring case. `None` when it is not one this client sends.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_uppercase().as_str() {
+            "GET" => Some(Self::Get),
+            "POST" => Some(Self::Post),
+            "PUT" => Some(Self::Put),
+            "PATCH" => Some(Self::Patch),
+            "DELETE" => Some(Self::Delete),
+            _ => None,
+        }
+    }
+
     fn as_str(self) -> &'static str {
         match self {
             Self::Get => "GET",
             Self::Post => "POST",
+            Self::Put => "PUT",
+            Self::Patch => "PATCH",
+            Self::Delete => "DELETE",
         }
     }
 
@@ -59,6 +81,9 @@ impl Method {
         match self {
             Self::Get => reqwest::Method::GET,
             Self::Post => reqwest::Method::POST,
+            Self::Put => reqwest::Method::PUT,
+            Self::Patch => reqwest::Method::PATCH,
+            Self::Delete => reqwest::Method::DELETE,
         }
     }
 }
@@ -122,6 +147,7 @@ impl RestResponse {
 #[derive(Debug)]
 pub struct RestClient {
     timeout: Duration,
+    deny_internal: bool,
     transport: OnceLock<reqwest::blocking::Client>,
 }
 
@@ -135,8 +161,18 @@ impl RestClient {
     pub const fn new() -> Self {
         Self {
             timeout: DEFAULT_TIMEOUT,
+            deny_internal: false,
             transport: OnceLock::new(),
         }
+    }
+
+    /// Refuse a host that resolves to a loopback, private, link-local, or unspecified address,
+    /// including the cloud metadata address. Use it for URLs a user or a remote system supplied.
+    /// The framework's own calls to a local server leave it off.
+    #[must_use]
+    pub fn deny_internal_addresses(mut self, deny: bool) -> Self {
+        self.deny_internal = deny;
+        self
     }
 
     /// Full-response timeout. The default is 30 seconds.
@@ -154,11 +190,32 @@ impl RestClient {
         self.call(Method::Post, url)
     }
 
+    pub fn put(&self, url: impl Into<String>) -> Call<'_> {
+        self.call(Method::Put, url)
+    }
+
+    pub fn patch(&self, url: impl Into<String>) -> Call<'_> {
+        self.call(Method::Patch, url)
+    }
+
+    pub fn delete(&self, url: impl Into<String>) -> Call<'_> {
+        self.call(Method::Delete, url)
+    }
+
+    /// A call with a method chosen at run time.
+    pub fn request(&self, method: Method, url: impl Into<String>) -> Call<'_> {
+        self.call(method, url)
+    }
+
     /// Send a request that already passed [`sim_allows_http`].
     pub fn execute(&self, request: PreparedRequest) -> Result<RestResponse, Error> {
         let client = self.transport()?;
         let method = request.method;
         let url = request.url;
+        let shown = redacted(&url);
+        if self.deny_internal {
+            deny_internal(&url)?;
+        }
         let mut builder = client.request(method.as_reqwest(), &url);
         for (name, value) in &request.headers {
             builder = builder.header(name.as_str(), value.as_str());
@@ -169,11 +226,25 @@ impl RestClient {
         let response = builder
             .timeout(request.timeout)
             .send()
-            .map_err(|err| Error::new(format!("HTTP {method} {url} failed")).with_source(err))?;
+            .map_err(|err| Error::new(format!("HTTP {method} {shown} failed")).with_source(err.without_url()))?;
         let status = response.status().as_u16();
-        let body = response
-            .text()
-            .map_err(|err| Error::new(format!("HTTP {method} {url} response body failed")).with_source(err))?;
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_RESPONSE_BYTES)
+        {
+            return Err(Error::new(format!(
+                "HTTP {method} {shown} response is larger than the limit"
+            )));
+        }
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::Read::take(response, MAX_RESPONSE_BYTES + 1), &mut bytes)
+            .map_err(|err| Error::new(format!("HTTP {method} {shown} response body failed")).with_source(err))?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_RESPONSE_BYTES {
+            return Err(Error::new(format!(
+                "HTTP {method} {shown} response is larger than the limit"
+            )));
+        }
+        let body = String::from_utf8_lossy(&bytes).into_owned();
         Ok(RestResponse { status, body })
     }
 
@@ -195,6 +266,8 @@ impl RestClient {
         }
         let built = reqwest::blocking::Client::builder()
             .timeout(self.timeout)
+            .connect_timeout(CONNECT_TIMEOUT)
+            .redirect(redirect_policy())
             .build()
             .map_err(|err| Error::new("could not build the HTTP client").with_source(err))?;
         Ok(self.transport.get_or_init(|| built))
@@ -254,7 +327,8 @@ impl Call<'_> {
         if !sim_allows_http(sim, self.allow_in_sim) {
             return Err(Error::new(format!(
                 "HTTP {} {} denied because sim mode is active",
-                self.method, self.url
+                self.method,
+                redacted(&self.url)
             )));
         }
         self.into_prepared()
@@ -268,8 +342,11 @@ impl Call<'_> {
     }
 
     fn into_prepared(self) -> Result<PreparedRequest, Error> {
-        reqwest::Url::parse(&self.url)
-            .map_err(|err| Error::new(format!("invalid URL {}", self.url)).with_source(err))?;
+        let parsed = reqwest::Url::parse(&self.url)
+            .map_err(|err| Error::new(format!("invalid URL {}", redacted(&self.url))).with_source(err))?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(Error::new(format!("URL {} must be http or https", redacted(&self.url))));
+        }
         for (name, value) in &self.headers {
             check_header(name, value)?;
         }
@@ -291,6 +368,81 @@ impl Call<'_> {
             body,
             timeout: self.timeout,
         })
+    }
+}
+
+/// Follow a few redirects, and only to the same host over the same or a safer scheme. A redirect
+/// anywhere else comes back as the 3xx response, so a header meant for one server never goes to another.
+fn redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= MAX_REDIRECTS {
+            return attempt.stop();
+        }
+        let next = attempt.url();
+        let origin = attempt.previous().first().cloned();
+        let same_host = origin.as_ref().is_some_and(|first| {
+            first.host_str() == next.host_str() && first.port_or_known_default() == next.port_or_known_default()
+        });
+        let downgrade = origin
+            .as_ref()
+            .is_some_and(|first| first.scheme() == "https" && next.scheme() != "https");
+        if same_host && !downgrade && matches!(next.scheme(), "http" | "https") {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
+
+/// `scheme://host/path` with no user, password, or query, for messages and logs.
+pub fn redacted(url: &str) -> String {
+    match reqwest::Url::parse(url) {
+        Ok(parsed) => {
+            let host = parsed.host_str().unwrap_or("");
+            let port = parsed.port().map(|port| format!(":{port}")).unwrap_or_default();
+            format!("{}://{host}{port}{}", parsed.scheme(), parsed.path())
+        }
+        Err(_) => "(invalid URL)".to_string(),
+    }
+}
+
+fn deny_internal(url: &str) -> Result<(), Error> {
+    use std::net::ToSocketAddrs;
+
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|err| Error::new(format!("invalid URL {}", redacted(url))).with_source(err))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| Error::new(format!("URL {} has no host", redacted(url))))?;
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let addresses = (host, port)
+        .to_socket_addrs()
+        .map_err(|err| Error::new(format!("could not resolve {host}")).with_source(err))?;
+    for address in addresses {
+        if internal_address(address.ip()) {
+            return Err(Error::new(format!(
+                "{} is an internal address and is not allowed here",
+                redacted(url)
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn internal_address(address: std::net::IpAddr) -> bool {
+    match address {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified() || v4.is_broadcast()
+        }
+        std::net::IpAddr::V6(v6) => {
+            let segments = v6.segments();
+            v6.is_loopback()
+                || v6.is_unspecified()
+                // unique local fc00::/7 and link local fe80::/10
+                || (segments[0] & 0xfe00) == 0xfc00
+                || (segments[0] & 0xffc0) == 0xfe80
+                || v6.to_ipv4_mapped().is_some_and(|v4| internal_address(std::net::IpAddr::V4(v4)))
+        }
     }
 }
 
@@ -324,6 +476,47 @@ mod tests {
         assert!(error.message().contains("denied because sim mode is active"), "{error}");
         assert!(error.message().contains("http://example.test/denied"));
         assert!(client.transport.get().is_none());
+    }
+
+    #[test]
+    fn redaction_drops_user_password_and_query() {
+        assert_eq!(
+            redacted("https://user:secret@example.test:8443/a/b?token=1#x"),
+            "https://example.test:8443/a/b"
+        );
+        assert_eq!(redacted("not a url"), "(invalid URL)");
+    }
+
+    #[test]
+    fn only_http_and_https_are_sent_and_methods_parse() {
+        let client = RestClient::new();
+        let err = client.get("file:///etc/passwd").prepare(false).expect_err("scheme");
+        assert!(err.message().contains("http or https"), "{err}");
+        assert_eq!(Method::parse("put"), Some(Method::Put));
+        assert_eq!(Method::parse("TRACE"), None);
+        let delete = client.delete("http://example.test/x").prepare(false).unwrap();
+        assert_eq!(delete.method(), Method::Delete);
+    }
+
+    #[test]
+    fn internal_addresses_are_recognized() {
+        for text in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "192.168.0.9",
+            "169.254.169.254",
+            "0.0.0.0",
+            "::1",
+            "fd00::1",
+            "fe80::1",
+        ] {
+            assert!(internal_address(text.parse().unwrap()), "{text}");
+        }
+        assert!(!internal_address("93.184.216.34".parse().unwrap()));
+        let client = RestClient::new().deny_internal_addresses(true);
+        let request = client.get("http://127.0.0.1:9/x").prepare(false).unwrap();
+        let err = client.execute(request).expect_err("loopback is denied before a socket");
+        assert!(err.message().contains("internal address"), "{err}");
     }
 
     #[test]

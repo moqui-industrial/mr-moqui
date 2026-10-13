@@ -1,0 +1,466 @@
+/*
+ * This software is in the public domain under CC0 1.0 Universal plus a
+ * Grant of Patent License.
+ *
+ * To the extent possible under law, the author(s) have dedicated all
+ * copyright and related and neighboring rights to this software to the
+ * public domain worldwide. This software is distributed without any
+ * warranty.
+ *
+ * You should have received a copy of the CC0 Public Domain Dedication
+ * along with this software (see the LICENSE.md file). If not, see
+ * <http://creativecommons.org/publicdomain/zero/1.0/>.
+ */
+
+//! Entity ECA actions, data-file service elements, and feed receive.
+//!
+//! Security scripts from `Security.eecas.xml` run as Rust checks. Other action
+//! bodies run through `script::run_actions`. Feed receive records that search is
+//! not up and leaves `DataFeedPending` rows in place.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use moqui_lib::error::Error;
+use moqui_lib::node::MNode;
+use moqui_lib::object::Value;
+
+use super::rule_actions::{condition_allows, publish_names, run_stored_actions};
+use super::security_checks::{assert_privileged_group_membership, assert_sealed_permission_grant, map_text};
+use crate::context::ExecutionContext;
+use crate::entity::load_feed::{self, HeldService};
+use crate::entity::EntityFacade;
+
+/// Whether feed receive found search down. Kept with the facade, so it is the same on every thread
+/// and one facade's state never shows on another.
+#[derive(Default)]
+struct SearchState {
+    down: std::sync::atomic::AtomicBool,
+}
+
+/// True after [`schedule_feed_receive`] remembered at least one receive service for this facade.
+pub fn search_not_up(facade: &EntityFacade) -> bool {
+    facade.with_slot(SearchState::default, |state| {
+        state.down.load(std::sync::atomic::Ordering::Relaxed)
+    })
+}
+
+/// Run matched ECA rules. `before` selects run-before rules. Ids come from the last match.
+pub fn run_matched_eca(
+    facade: &EntityFacade,
+    entity_name: &str,
+    operation: &str,
+    before: bool,
+    values: &BTreeMap<String, Value>,
+) -> Result<(), Error> {
+    tracing::debug!(entity = entity_name, operation, before, "running matched entity eca");
+    let matched: BTreeSet<String> = load_feed::matched_eca_ids(facade).into_iter().collect();
+    if matched.is_empty() {
+        return Ok(());
+    }
+    for rule in load_feed::eca_rules(facade, entity_name) {
+        if !matched.contains(&rule.id) || rule.run_before != before {
+            continue;
+        }
+        let _frame = publish_names(values).map_err(to_lib)?;
+        if !condition_allows(&rule.condition).map_err(to_lib)? {
+            continue;
+        }
+        run_rule_actions(facade, &rule.actions, values)?;
+    }
+    Ok(())
+}
+
+/// Run one data-file service element through [`crate::service::call::sync`].
+///
+/// `sync` reads the facade on the current execution context. A load that has not
+/// entered a context keeps the held service and does not call it.
+pub fn run_held_service(facade: &EntityFacade, service: &HeldService) -> Result<(), Error> {
+    tracing::debug!(
+        service = %service.name,
+        location = %service.location,
+        feed_off = facade.flags().disable_data_feed,
+        "running held data-file service"
+    );
+    let mut params = BTreeMap::new();
+    for (name, value) in &service.parameters {
+        params.insert(name.clone(), Value::string(value));
+    }
+    // The service runs in the entered context. Without one it cannot run, and saying it did would
+    // lose the data-file element silently.
+    if !crate::user::context_entered() {
+        return Err(Error::new(format!(
+            "data-file service {} cannot run without an execution context",
+            service.name
+        )));
+    }
+    let _guard = ExecutionContext::with_current(|ctx| ctx.disable_authz());
+    super::call::sync(&service.name, &params).map(|_| ()).map_err(to_lib)
+}
+
+/// Record that search is not up for each remembered receive service. Runs inline.
+pub fn schedule_feed_receive(facade: &EntityFacade) -> Result<(), Error> {
+    let services = load_feed::held_feed_services(facade);
+    if services.is_empty() {
+        return Ok(());
+    }
+    for service in &services {
+        let registered = super::define::find(&service.receive_service).is_some();
+        facade.with_slot(SearchState::default, |state| {
+            state.down.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        tracing::debug!(
+            service = %service.receive_service,
+            registered,
+            search_down = true,
+            "feed receive left search down"
+        );
+    }
+    Ok(())
+}
+
+/// The two `UserSecurityChecks` calls are Rust here. A rule is one of them only when its whole
+/// action is a single `<script>` that is that call, not when the text merely mentions it.
+enum SecurityCheck {
+    PrivilegedGroupMembership,
+    SealedPermissionGrant,
+}
+
+fn security_check_of(actions: &str) -> Option<SecurityCheck> {
+    let root = MNode::parse_text("actions", actions).ok()?;
+    let nodes = if root.name() == "script" {
+        vec![root]
+    } else {
+        root.children()
+    };
+    let [only] = nodes.as_slice() else {
+        return None;
+    };
+    if only.name() != "script" {
+        return None;
+    }
+    let text = only.text()?;
+    let call = text.trim();
+    if call.starts_with("org.moqui.impl.util.UserSecurityChecks.assertPrivilegedGroupMembership(") {
+        Some(SecurityCheck::PrivilegedGroupMembership)
+    } else if call.starts_with("org.moqui.impl.util.UserSecurityChecks.assertSealedPermissionGrant(") {
+        Some(SecurityCheck::SealedPermissionGrant)
+    } else {
+        None
+    }
+}
+
+fn run_rule_actions(facade: &EntityFacade, actions: &str, values: &BTreeMap<String, Value>) -> Result<(), Error> {
+    match security_check_of(actions) {
+        Some(SecurityCheck::PrivilegedGroupMembership) => {
+            assert_privileged_group_membership(facade, &map_text(values, "userGroupId"))
+        }
+        Some(SecurityCheck::SealedPermissionGrant) => {
+            assert_sealed_permission_grant(facade, &map_text(values, "userPermissionId"))
+        }
+        None => run_stored_actions(actions).map_err(to_lib),
+    }
+}
+
+pub(super) fn to_lib(err: crate::context::Error) -> Error {
+    Error::new(err.message())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use moqui_lib::object::{basic_convert, Value};
+
+    use super::super::security_checks::{reset_sealed_grant, sealed_grant_entered};
+    use super::search_not_up;
+    use crate::context::ExecutionContextFactory;
+    use crate::entity::load_feed::{load_entity_data, LoadOptions};
+    use crate::entity::{EntityFacade, EntityValue};
+    use crate::user::{hash_password, login_user};
+
+    static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn sealed_permission_create_is_stored_when_authz_is_disabled() {
+        let (facade, context, _runtime) = boot_security();
+        let _entered = context.enter();
+        let _authz = context.disable_authz();
+        seed_entity_allow(&facade);
+        reset_sealed_grant();
+        permission_row(&facade, "ADMIN", "ADMIN_PASSWORD")
+            .create(&facade)
+            .expect("create with authz disabled");
+        assert!(sealed_grant_entered());
+        assert_eq!(permission_count(&facade, "ADMIN", "ADMIN_PASSWORD"), 1);
+    }
+
+    #[test]
+    fn sealed_permission_create_is_denied_without_the_permission() {
+        let (facade, context, _runtime) = boot_security();
+        let _entered = context.enter();
+        {
+            let _authz = context.disable_authz();
+            seed_entity_allow(&facade);
+            seed_user(&facade, "plain", "Secret-12");
+        }
+        login_user("plain", "Secret-12").expect("login");
+        let seen = crate::user::current_username().expect("username");
+        assert_eq!(
+            seen.as_deref(),
+            Some("plain"),
+            "current_username cannot see the logged-in user"
+        );
+        reset_sealed_grant();
+        let err = permission_row(&facade, "ADMIN", "ADMIN_PASSWORD")
+            .create(&facade)
+            .expect_err("sealed permission");
+        let text = err.to_string();
+        assert!(text.contains("authorized"), "{text}");
+        assert!(text.contains("ADMIN_PASSWORD"), "{text}");
+        assert!(sealed_grant_entered());
+        assert_eq!(permission_count(&facade, "ADMIN", "ADMIN_PASSWORD"), 0);
+    }
+
+    #[test]
+    fn data_file_runs_entity_auto_and_inline_service() {
+        let service = write_temp(
+            "inline",
+            r#"<services>
+                <service verb="copy" noun="Row">
+                    <in-parameters><parameter name="seedId"/></in-parameters>
+                    <actions>
+                        <entity-find entity-name="moqui.test.TestEntity" list="found">
+                            <econdition field-name="testId" from="seedId"/>
+                        </entity-find>
+                        <entity-make-value entity-name="moqui.test.TestEntity" value-field="made"/>
+                        <script>made.set("testId", "B"); made.set("testMedium", "made");</script>
+                        <entity-create value-field="made"/>
+                    </actions>
+                </service>
+            </services>"#,
+        );
+        let facade = crate::testing::open_with(
+            &crate::testing::framework_dir(),
+            crate::testing::Options {
+                entity_eca: false,
+                data_feed: false,
+                tape: None,
+            },
+        );
+        let context = ExecutionContextFactory::test_context();
+        context.factory().set_entity(facade.clone());
+        let _entered = context.enter();
+        let failures = crate::service::lint(std::slice::from_ref(&service)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+        let data = write_temp(
+            "data",
+            r#"<entity-facade-xml>
+                <moqui.test.TestEntity testId="E1" testMedium="entity"/>
+                <create-moqui.test.TestEntity testId="A1" testMedium="auto"/>
+                <copy-Row seedId="E1"/>
+            </entity-facade-xml>"#,
+        );
+        load_entity_data(&facade, &data.display().to_string(), &LoadOptions::default()).unwrap();
+        assert_eq!(field(&facade, "A1", "testMedium").as_deref(), Some("auto"));
+        assert_eq!(field(&facade, "B", "testMedium").as_deref(), Some("made"));
+    }
+
+    #[test]
+    fn feed_commit_keeps_pending_and_records_search_not_up() {
+        let facade = crate::testing::open_with(
+            &crate::testing::framework_dir(),
+            crate::testing::Options {
+                entity_eca: false,
+                data_feed: true,
+                tape: None,
+            },
+        );
+        let context = ExecutionContextFactory::test_context();
+        context.factory().set_entity(facade.clone());
+        let _entered = context.enter();
+        create_row(
+            &facade,
+            "moqui.basic.EnumerationType",
+            &[("enumTypeId", "DataFeedType")],
+        );
+        create_row(
+            &facade,
+            "moqui.basic.Enumeration",
+            &[("enumId", "DTFDTP_RT_PUSH"), ("enumTypeId", "DataFeedType")],
+        );
+        create_row(
+            &facade,
+            "moqui.entity.document.DataDocument",
+            &[("dataDocumentId", "DOC1"), ("primaryEntityName", "moqui.test.Foo")],
+        );
+        create_row(
+            &facade,
+            "moqui.entity.feed.DataFeed",
+            &[
+                ("dataFeedId", "FEED1"),
+                ("dataFeedTypeEnumId", "DTFDTP_RT_PUSH"),
+                (
+                    "feedReceiveServiceName",
+                    "org.moqui.search.SearchServices.index#DataDocuments",
+                ),
+                (
+                    "feedDeleteServiceName",
+                    "org.moqui.search.SearchServices.delete#DataDocument",
+                ),
+            ],
+        );
+        create_row(
+            &facade,
+            "moqui.entity.feed.DataFeedDocument",
+            &[("dataFeedId", "FEED1"), ("dataDocumentId", "DOC1")],
+        );
+        facade.begin("moqui.test.Foo", None).unwrap();
+        create_row(&facade, "moqui.test.Foo", &[("fooId", "F1"), ("fooText", "alpha")]);
+        facade.commit("moqui.test.Foo").unwrap();
+        let pending = facade
+            .find("moqui.entity.feed.DataFeedPending")
+            .unwrap()
+            .list()
+            .unwrap();
+        assert!(
+            pending.values().iter().any(|row| {
+                text(row, "dataDocumentId") == "DOC1"
+                    && text(row, "entityName") == "moqui.test.Foo"
+                    && text(row, "primaryKey") == "F1"
+                    && text(row, "operation") == "index"
+            }),
+            "{pending:?}"
+        );
+        assert!(search_not_up(&facade));
+    }
+
+    fn boot_security() -> (EntityFacade, crate::context::ExecutionContext, TempDir) {
+        let runtime = temp_dir("seca-runtime");
+        let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
+        let factory = ExecutionContextFactory::boot_with_framework(runtime.path(), &framework).expect("boot");
+        let facade = crate::testing::open_with(
+            &crate::testing::framework_dir(),
+            crate::testing::Options {
+                entity_eca: true,
+                data_feed: false,
+                tape: None,
+            },
+        );
+        factory.set_entity(facade.clone());
+        let context = factory.new_context();
+        (facade, context, runtime)
+    }
+
+    fn seed_entity_allow(facade: &EntityFacade) {
+        create_row(
+            facade,
+            "moqui.security.ArtifactGroupMember",
+            &[
+                ("artifactGroupId", "SEALED_ENTITY"),
+                ("artifactName", ".*"),
+                ("artifactTypeEnumId", "AT_ENTITY"),
+                ("nameIsPattern", "Y"),
+            ],
+        );
+        create_row(
+            facade,
+            "moqui.security.ArtifactAuthz",
+            &[
+                ("artifactAuthzId", "SEALED_ALLOW"),
+                ("userGroupId", "ALL_USERS"),
+                ("artifactGroupId", "SEALED_ENTITY"),
+                ("authzTypeEnumId", "AUTHZT_ALLOW"),
+                ("authzActionEnumId", "AUTHZA_ALL"),
+            ],
+        );
+    }
+
+    fn seed_user(facade: &EntityFacade, username: &str, password: &str) {
+        let hashed = hash_password(password).expect("hash");
+        let mut row = facade.make_value("moqui.security.UserAccount").unwrap();
+        row.set("userId", Value::string("U1"));
+        row.set("username", Value::string(username));
+        row.set("currentPassword", Value::string(hashed));
+        row.set("passwordHashType", Value::string("argon2"));
+        row.set("passwordSalt", Value::string(""));
+        row.set("passwordBase64", Value::string("N"));
+        row.set("disabled", Value::string("N"));
+        row.set("requirePasswordChange", Value::string("N"));
+        row.create(facade).unwrap();
+    }
+
+    fn permission_row(facade: &EntityFacade, group_id: &str, permission_id: &str) -> EntityValue {
+        let mut row = facade.make_value("moqui.security.UserGroupPermission").unwrap();
+        row.set("userGroupId", Value::string(group_id));
+        row.set("userPermissionId", Value::string(permission_id));
+        row.set("fromDate", basic_convert(&Value::I64(0), "java.sql.Timestamp").value);
+        row
+    }
+
+    fn permission_count(facade: &EntityFacade, group_id: &str, permission_id: &str) -> usize {
+        facade
+            .find("moqui.security.UserGroupPermission")
+            .unwrap()
+            .eq("userGroupId", Value::string(group_id))
+            .eq("userPermissionId", Value::string(permission_id))
+            .list()
+            .unwrap()
+            .len()
+    }
+
+    fn field(facade: &EntityFacade, test_id: &str, name: &str) -> Option<String> {
+        facade
+            .find("moqui.test.TestEntity")
+            .unwrap()
+            .eq("testId", Value::string(test_id))
+            .one()
+            .unwrap()
+            .and_then(|row| row.get(name).and_then(Value::as_str).map(str::to_string))
+    }
+
+    fn create_row(facade: &EntityFacade, entity: &str, pairs: &[(&str, &str)]) {
+        let mut row = facade.make_value(entity).unwrap();
+        for (name, value) in pairs {
+            row.set(*name, Value::string(*value));
+        }
+        row.create(facade).unwrap();
+    }
+
+    fn text(row: &EntityValue, field: &str) -> String {
+        row.get(field).and_then(Value::as_str).unwrap_or("").to_string()
+    }
+
+    fn write_temp(label: &str, body: &str) -> PathBuf {
+        let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("moqui-cb-{label}-{seq}-{}.xml", std::process::id()));
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn temp_dir(label: &str) -> TempDir {
+        let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!("moqui-{label}-{nanos}-{seq}"));
+        std::fs::create_dir_all(&path).unwrap();
+        TempDir(path)
+    }
+}

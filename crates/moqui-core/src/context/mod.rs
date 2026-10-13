@@ -169,11 +169,8 @@ mod tests {
         assert!(caches.iter().any(|name| name == "service.location"));
         let content = factory.resource().get("content://main/x").unwrap_err();
         assert!(content.to_string().contains("content://main/x"));
-        let https = factory.resource().get("https://example.com/").unwrap_err();
-        assert!(https.to_string().contains("HTTP"));
-        assert!(https.to_string().contains("not available"));
-        let http = factory.resource().get("http://example.com/").unwrap_err();
-        assert!(http.to_string().contains("HTTP"));
+        // An http location resolves without a connection; it is fetched when read.
+        factory.resource().get("https://example.com/").expect("https resolves");
         let database = factory.resource().get("dbresource://x").unwrap_err();
         assert!(database.to_string().contains("not available"));
         let unknown = factory.resource().get("ftp://files.example/a").unwrap_err();

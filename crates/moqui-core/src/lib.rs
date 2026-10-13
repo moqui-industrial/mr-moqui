@@ -20,6 +20,8 @@ pub mod entity;
 pub mod screen;
 pub mod script;
 pub mod service;
+#[cfg(test)]
+mod testing;
 pub mod transaction;
 pub mod user;
 pub mod web;

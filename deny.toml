@@ -37,6 +37,14 @@ allow = [
     "CC0-1.0",
     "MIT-0",
 ]
+# ammonia (HTML cleaning for allow-html="safe") needs cssparser and dtoa-short, which are
+# MPL-2.0. Unmodified static use only asks for those files' source, which crates.io serves.
+# No other crate may be MPL-2.0. plans/License-Review.md records the exception.
+exceptions = [
+    { allow = ["MPL-2.0"], crate = "cssparser" },
+    { allow = ["MPL-2.0"], crate = "dtoa-short" },
+]
+
 # webpki 0.22 publishes license-file and no SPDX expression.
 # LICENSE is ISC. third-party/chromium/LICENSE is BSD-3-Clause.
 [[licenses.clarify]]

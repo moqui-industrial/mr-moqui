@@ -21,7 +21,7 @@ use moqui_lib::error::Error as LibError;
 use moqui_lib::object::{is_empty, Value};
 
 use super::define::{Authenticate, ServiceDef, ServiceKind};
-use super::{semaphore, validate};
+use super::validate;
 use crate::context::Error;
 use crate::entity::{EntityFacade, EntityValue};
 use crate::transaction::TransactionAttribute;
@@ -53,6 +53,95 @@ impl CallOptions {
             (true, false) => TransactionAttribute::ForceNew,
             (false, true) => TransactionAttribute::Cache,
             (true, true) => TransactionAttribute::ForceCache,
+        }
+    }
+}
+
+/// Run `name` on a service worker and return at once. The worker has its own execution context and
+/// acts as the current user. A failure is logged there. If the worker queue is full the call is
+/// stored as a one-shot service job instead.
+///
+/// # Errors
+///
+/// Returns an error when there is no execution context, the pool is not running, or a full queue
+/// cannot store the call.
+pub fn async_call(name: &str, parameters: &BTreeMap<String, Value>) -> Result<(), Error> {
+    let factory = super::pool::capture_factory()?;
+    factory.service_pools().submit(&canonical(name), parameters)
+}
+
+/// Run `name` on a service worker and wait for its out parameters. [`start_future`] returns without waiting.
+///
+/// # Errors
+///
+/// Returns an error when the call fails, or the worker queue is full.
+pub fn call_future(name: &str, parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, Error> {
+    let factory = super::pool::capture_factory()?;
+    factory.service_pools().call_future(&canonical(name), parameters)
+}
+
+/// Start `name` on a service worker and return a handle for its out parameters. Like
+/// [`call_future`], a full queue is an error at once.
+///
+/// # Errors
+///
+/// Returns an error when there is no execution context, the pool is not running, or the queue is full.
+pub fn start_future(name: &str, parameters: &BTreeMap<String, Value>) -> Result<ServiceFuture, Error> {
+    let factory = super::pool::capture_factory()?;
+    let receiver = factory.service_pools().submit_future(&canonical(name), parameters)?;
+    Ok(ServiceFuture { receiver, done: None })
+}
+
+/// A started service call. Java's `Future<Map>` from `callFuture`.
+pub struct ServiceFuture {
+    receiver: super::pool::CallReceiver,
+    done: Option<Result<BTreeMap<String, Value>, Error>>,
+}
+
+impl ServiceFuture {
+    fn settle(&mut self, wait: Option<std::time::Duration>) -> Result<bool, Error> {
+        if self.done.is_some() {
+            return Ok(true);
+        }
+        let received = match wait {
+            None => Some(super::pool::receive(&self.receiver)),
+            Some(limit) if limit.is_zero() => match self.receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Some(Err(Error::new("service worker pool is not running")))
+                }
+            },
+            Some(limit) => match self.receiver.recv_timeout(limit) {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    Some(Err(Error::new("service worker pool is not running")))
+                }
+            },
+        };
+        self.done = received;
+        Ok(self.done.is_some())
+    }
+
+    /// Whether the call has finished, successfully or not.
+    pub fn is_done(&mut self) -> bool {
+        self.settle(Some(std::time::Duration::ZERO)).unwrap_or(false)
+    }
+
+    /// Wait for the out parameters; with a limit, `Ok(None)` means it was not done in time.
+    ///
+    /// # Errors
+    ///
+    /// Returns the service's own error when the call failed.
+    pub fn get(&mut self, limit: Option<std::time::Duration>) -> Result<Option<BTreeMap<String, Value>>, Error> {
+        if !self.settle(limit)? {
+            return Ok(None);
+        }
+        match &self.done {
+            Some(Ok(out)) => Ok(Some(out.clone())),
+            Some(Err(err)) => Err(Error::new(err.message().to_string())),
+            None => Ok(None),
         }
     }
 }
@@ -102,7 +191,7 @@ pub fn sync_with(
     // authorization. Only a service that requires authentication needs an allow record.
     let _frame = ServiceFrame::push(&def, &cleaned)?;
     let facade = facade.ok_or_else(|| Error::new("no entity facade is installed"))?;
-    let guard = semaphore::take(&def, &cleaned, &facade)?;
+    let guard = crate::service::semaphore::take(&def, &cleaned, &facade)?;
     let entity_name = if def.kind == ServiceKind::EntityAuto && !def.noun.is_empty() {
         def.noun.clone()
     } else {
@@ -110,20 +199,50 @@ pub fn sync_with(
     };
     let tx = facade.transactions_for(&entity_name)?;
     let attribute = options.attribute(def.transaction);
-    let produced = tx.run(attribute, options.timeout.or(def.timeout), || {
+    // Errors the service leaves in the message facade roll the transaction back but are not a
+    // failure of the call: the results come back with the errors alongside, as in Java.
+    let mut message_failed: Option<BTreeMap<String, Value>> = None;
+    let outcome = tx.run(attribute, options.timeout.or(def.timeout), || {
         let _deadline = crate::script::DeadlineGuard::new(tx.time_remaining());
         // on_rollback is not a commit hook. tx-commit is last so a post-service
         // entity write can still register the feed schedule hook.
         register_tx_rollback(&tx, &def.name, &cleaned)?;
         super::seca::run_seca_rules(&def.name, "pre-service", &cleaned, None).map_err(script_err)?;
+        if message_has_error() {
+            tracing::warn!(service = %def.name, "errors before the service ran, so it was not run");
+            return Ok(BTreeMap::new());
+        }
         let produced = execute(&def, &cleaned, &facade)?;
         super::seca::run_seca_rules(&def.name, "post-service", &cleaned, Some(&produced)).map_err(script_err)?;
-        register_tx_commit(&tx, &def.name, &cleaned, &produced)?;
+        if message_has_error() {
+            message_failed = Some(produced.clone());
+            tx.set_rollback_only(format!("Error running service {} (message)", def.name))?;
+        } else {
+            register_tx_commit(&tx, &def.name, &cleaned, &produced)?;
+        }
         Ok(produced)
-    })?;
-    super::seca::run_seca_rules(&def.name, "post-commit", &cleaned, Some(&produced))?;
+    });
+    let produced = match outcome {
+        Ok(produced) => Ok(produced),
+        Err(err) => match message_failed.take() {
+            Some(produced) => Ok(produced),
+            None => {
+                // A failure is also an error message, so rules that skip on error skip.
+                add_error(&err.to_string());
+                Err(err)
+            }
+        },
+    };
+    // post-commit rules run whether or not the service worked. Those that skip on error do.
+    let post = super::seca::run_seca_rules(&def.name, "post-commit", &cleaned, produced.as_ref().ok());
     drop(guard);
+    let produced = produced?;
+    post?;
     Ok(project(&def, produced))
+}
+
+fn message_has_error() -> bool {
+    crate::context::ExecutionContext::with_current(|ctx| !ctx.message().errors().is_empty()).unwrap_or(false)
 }
 
 /// The artifact frame for a running service. It pops when dropped, and ends an anonymous login the
@@ -309,7 +428,11 @@ fn execute(
     match def.kind {
         ServiceKind::Mail => Err(LibError::new(format!("mail is not configured ({})", def.location))),
         ServiceKind::Interface => Err(LibError::new(format!("interface {} has no runner", def.name))),
-        ServiceKind::Script => Err(LibError::new("script runner is not running yet")),
+        ServiceKind::Unsupported => Err(LibError::new(format!(
+            "service {} runs {}, a script language this port does not run",
+            def.name, def.location
+        ))),
+        ServiceKind::Script => run_script(def, parameters),
         ServiceKind::RemoteRest => super::remote::run_remote_rest(
             &def.name,
             &def.location,
@@ -332,6 +455,11 @@ fn run_inline(def: &ServiceDef, parameters: &BTreeMap<String, Value>) -> Result<
     if !def.actions.trim().is_empty() {
         crate::script::run_actions(&def.actions).map_err(script_err)?;
     }
+    Ok(collect_outputs(def))
+}
+
+/// The declared out-parameters, read from the script frame.
+fn collect_outputs(def: &ServiceDef) -> BTreeMap<String, Value> {
     let mut out = BTreeMap::new();
     for param in &def.out_params {
         if param.name.is_empty() || param.required == super::define::Required::Disabled {
@@ -341,7 +469,18 @@ fn run_inline(def: &ServiceDef, parameters: &BTreeMap<String, Value>) -> Result<
             out.insert(param.name.clone(), value);
         }
     }
-    Ok(out)
+    out
+}
+
+/// A script service whose body is a JavaScript file. It reads the parameters as bare names and
+/// leaves its results the same way, as inline actions do.
+fn run_script(def: &ServiceDef, parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, LibError> {
+    let _frame = crate::script::ContextFrame::push();
+    for (name, value) in parameters {
+        crate::script::set_context_name(name, value.clone()).map_err(script_err)?;
+    }
+    crate::script::run_script_location(&def.location).map_err(script_err)?;
+    Ok(collect_outputs(def))
 }
 
 fn script_err(err: crate::context::Error) -> LibError {
@@ -407,7 +546,11 @@ fn run_entity(
         }
         other => return Err(LibError::new(format!("entity-auto verb {other} is not supported"))),
     }
-    nest(facade, verb, noun, parameters, &record, depth)?;
+    // Java deletes only the named record. Deleting children after the parent would break their
+    // foreign keys, and before it would delete rows the caller never named.
+    if verb != "delete" {
+        nest(facade, verb, noun, parameters, &record, depth)?;
+    }
     let mut out = BTreeMap::new();
     for pk in &pk_names {
         if let Some(value) = record.get(pk) {
@@ -705,10 +848,8 @@ mod tests {
 
     #[test]
     fn entity_auto_store_inserts_then_updates() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let tape = Arc::new(Mutex::new(Vec::new()));
-        let facade = mem::open(Arc::clone(&tape));
+        let facade = crate::testing::open_with_tape(Arc::clone(&tape));
         let ctx = ExecutionContextFactory::test_context();
         ctx.factory().set_entity(facade.clone());
         let _entered = ctx.enter();
@@ -736,8 +877,6 @@ mod tests {
 
     #[test]
     fn missing_required_parameter_is_named() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let path = write_fixture(
             "required",
             r#"<services>
@@ -746,7 +885,9 @@ mod tests {
                 </service>
             </services>"#,
         );
-        crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
+        let ctx = ExecutionContextFactory::test_context();
+        let _entered = ctx.enter();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
         let err = sync("need#Value", &BTreeMap::new()).unwrap_err();
         let text = err.to_string();
         assert!(text.contains("amount"), "{text}");
@@ -755,8 +896,6 @@ mod tests {
 
     #[test]
     fn held_fail_semaphore_errors() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let path = write_fixture(
             "semaphore",
             r#"<services>
@@ -765,12 +904,12 @@ mod tests {
                 </service>
             </services>"#,
         );
-        crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
         let tape = Arc::new(Mutex::new(Vec::new()));
-        let facade = mem::open(tape);
+        let facade = crate::testing::open_with_tape(tape);
         let ctx = ExecutionContextFactory::test_context();
         ctx.factory().set_entity(facade.clone());
         let _entered = ctx.enter();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
         let _authz = ctx.disable_authz();
         let mut row = facade
             .make_value("moqui.service.semaphore.ServiceParameterSemaphore")
@@ -791,9 +930,46 @@ mod tests {
     }
 
     #[test]
+    fn a_stale_semaphore_is_taken_over_and_its_old_owner_cannot_free_the_new_hold() {
+        let path = write_fixture(
+            "semaphore-takeover",
+            r#"<services><service verb="guard" noun="Row" semaphore="fail"/></services>"#,
+        );
+        let (facade, ctx) = seeded_context(&[]);
+        let _entered = ctx.enter();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        let _authz = ctx.disable_authz();
+        let mut quick = crate::service::define::find("guard#Row").expect("registered");
+        quick.semaphore_ignore = std::time::Duration::from_millis(1);
+        let mut patient = quick.clone();
+        patient.semaphore_ignore = std::time::Duration::from_secs(3600);
+        let none = BTreeMap::new();
+
+        let first = crate::service::semaphore::take(&quick, &none, &facade)
+            .unwrap()
+            .expect("first hold");
+        assert!(
+            crate::service::semaphore::take(&patient, &none, &facade).is_err(),
+            "held"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let second = crate::service::semaphore::take(&quick, &none, &facade)
+            .unwrap()
+            .expect("takes over the stale hold");
+        // The first holder finishing late must not free the second holder's lock.
+        drop(first);
+        assert!(
+            crate::service::semaphore::take(&patient, &none, &facade).is_err(),
+            "still held by the second"
+        );
+        drop(second);
+        crate::service::semaphore::take(&patient, &none, &facade)
+            .unwrap()
+            .expect("free once the owner is done");
+    }
+
+    #[test]
     fn inline_actions_find_and_create_rows() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let path = write_fixture(
             "inline",
             r#"<services>
@@ -811,12 +987,12 @@ mod tests {
                 </service>
             </services>"#,
         );
-        let failures = crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
-        assert!(failures.is_empty(), "{failures:?}");
-        let facade = mem::open(Arc::new(Mutex::new(Vec::new())));
+        let facade = crate::testing::open();
         let ctx = ExecutionContextFactory::test_context();
         ctx.factory().set_entity(facade.clone());
         let _entered = ctx.enter();
+        let failures = crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
         let _authz = ctx.disable_authz();
         let mut seed = facade.make_value("moqui.test.TestEntity").unwrap();
         seed.set("testId", Value::string("A"));
@@ -845,7 +1021,7 @@ mod tests {
     }
 
     fn seeded_context(tape_rows: &[(&str, &str)]) -> (crate::entity::EntityFacade, crate::context::ExecutionContext) {
-        let facade = mem::open(Arc::new(Mutex::new(Vec::new())));
+        let facade = crate::testing::open();
         let ctx = ExecutionContextFactory::test_context();
         ctx.factory().set_entity(facade.clone());
         {
@@ -863,8 +1039,6 @@ mod tests {
 
     #[test]
     fn action_outputs_reach_out_parameters_without_script_assignment() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let path = write_fixture(
             "outputs",
             r#"<services>
@@ -888,10 +1062,10 @@ mod tests {
                 </service>
             </services>"#,
         );
-        let failures = crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
-        assert!(failures.is_empty(), "{failures:?}");
         let (_facade, ctx) = seeded_context(&[("A", "alpha")]);
         let _entered = ctx.enter();
+        let failures = crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
         let _authz = ctx.disable_authz();
         let mut params = BTreeMap::new();
         params.insert("testId".into(), Value::string("A"));
@@ -910,8 +1084,6 @@ mod tests {
 
     #[test]
     fn service_call_action_passes_parameters_and_merges_out_map() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let path = write_fixture(
             "nested-call",
             r#"<services>
@@ -939,10 +1111,10 @@ mod tests {
                 </service>
             </services>"#,
         );
-        let failures = crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
-        assert!(failures.is_empty(), "{failures:?}");
         let (_facade, ctx) = seeded_context(&[]);
         let _entered = ctx.enter();
+        let failures = crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
         let _authz = ctx.disable_authz();
         let mut params = BTreeMap::new();
         params.insert("n".into(), Value::I32(21));
@@ -960,9 +1132,188 @@ mod tests {
     }
 
     #[test]
+    fn message_errors_roll_back_but_return_the_results() {
+        let path = write_fixture(
+            "message-error",
+            r#"<services>
+                <service verb="halfway" noun="Row">
+                    <out-parameters><parameter name="note"/></out-parameters>
+                    <actions>
+                        <entity-make-value entity-name="moqui.test.TestEntity" value-field="made"/>
+                        <script>made.set("testId", "ROLLED"); note = "ran";</script>
+                        <entity-create value-field="made"/>
+                        <message error="true">boom</message>
+                    </actions>
+                </service>
+            </services>"#,
+        );
+        let (facade, ctx) = seeded_context(&[]);
+        let _entered = ctx.enter();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        let _authz = ctx.disable_authz();
+        let out = sync("halfway#Row", &BTreeMap::new()).expect("the call itself did not fail");
+        assert_eq!(out.get("note").and_then(Value::as_str), Some("ran"));
+        assert_eq!(ctx.message().errors(), ["boom"]);
+        let rows = facade.find("moqui.test.TestEntity").unwrap().list().unwrap();
+        assert_eq!(rows.len(), 0, "the create was rolled back with the message error");
+    }
+
+    #[test]
+    fn post_commit_rules_run_after_a_failure_only_when_they_run_on_error() {
+        let path = write_fixture(
+            "post-commit",
+            r#"<services>
+                <service verb="shell" noun="Only" type="interface"/>
+            </services>"#,
+        );
+        let facade = crate::testing::open();
+        let ctx = ExecutionContextFactory::test_context();
+        super::super::eca_rules::install(
+            ctx.factory(),
+            super::super::eca_rules::from_xml(
+                r#"<secas>
+                    <seca service="shell#Only" when="post-commit">
+                        <actions><script>ec.message.addMessage("plain")</script></actions>
+                    </seca>
+                    <seca service="shell#Only" when="post-commit" run-on-error="true">
+                        <actions><script>ec.message.addMessage("cleanup")</script></actions>
+                    </seca>
+                </secas>"#,
+                "",
+            ),
+        );
+        ctx.factory().set_entity(facade);
+        let _entered = ctx.enter();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        let _authz = ctx.disable_authz();
+        assert!(sync("shell#Only", &BTreeMap::new()).is_err());
+        assert_eq!(ctx.message().messages(), ["cleanup"]);
+    }
+
+    #[test]
+    fn parameters_are_converted_then_checked_and_defaults_apply() {
+        let path = write_fixture(
+            "validation",
+            r#"<services>
+                <service verb="typed" noun="Input">
+                    <in-parameters>
+                        <parameter name="count" type="Integer"><number-range min="1" max="10"/></parameter>
+                        <parameter name="label"/>
+                        <parameter name="rich" allow-html="any"/>
+                        <parameter name="careful" allow-html="safe"/>
+                        <parameter name="calc" type="Integer" default="2 + 3"/>
+                        <parameter name="tpl" default-value="${label}-suffix"/>
+                    </in-parameters>
+                </service>
+            </services>"#,
+        );
+        let (_facade, ctx) = seeded_context(&[]);
+        let _entered = ctx.enter();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        let text = |value: &str| Value::string(value);
+        let call = |pairs: &[(&str, Value)]| {
+            let params: BTreeMap<String, Value> = pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+            crate::service::validate("typed#Input", &params)
+        };
+
+        let ok = call(&[("count", text("7")), ("label", text("hi"))]).unwrap();
+        assert_eq!(ok.get("count"), Some(&Value::I32(7)), "converted to the declared type");
+        assert_eq!(ok.get("calc"), Some(&Value::I32(5)), "default expression");
+        assert_eq!(
+            ok.get("tpl").and_then(Value::as_str),
+            Some("hi-suffix"),
+            "default-value expands"
+        );
+
+        let bad = call(&[("count", text("abc"))]).unwrap_err();
+        assert!(bad.to_string().contains("not a valid Integer"), "{bad}");
+        let range = call(&[("count", text("11"))]).unwrap_err();
+        assert!(
+            range.to_string().contains("count"),
+            "a range check sees the converted number: {range}"
+        );
+
+        let html = call(&[("label", text("<b>x</b>"))]).unwrap_err();
+        assert!(html.to_string().contains("HTML not allowed"), "{html}");
+        call(&[("rich", text("<b>x</b>"))]).expect("allow-html any");
+        let cleaned = call(&[(
+            "careful",
+            text(r#"<b onclick="x()">hi</b><script>bad()</script> <a href="javascript:evil()">l</a> <img src="http://h/i.png" onerror="x()">"#),
+        )])
+        .expect("safe cleans instead of rejecting");
+        let out = cleaned.get("careful").and_then(Value::as_str).unwrap().to_string();
+        assert!(out.contains("<b>hi</b>"), "{out}");
+        assert!(
+            !out.contains("script") && !out.contains("bad()") && !out.contains("onclick"),
+            "{out}"
+        );
+        assert!(!out.contains("javascript:") && !out.contains("onerror"), "{out}");
+        assert!(out.contains(r#"src="http://h/i.png""#), "{out}");
+        let link = call(&[("careful", text(r#"<a href="https://example.com/">go</a>"#))]).unwrap();
+        let link = link.get("careful").and_then(Value::as_str).unwrap().to_string();
+        assert!(link.contains(r#"rel="noopener noreferrer""#), "{link}");
+        let plain = call(&[("careful", text("a & b, no markup"))]).unwrap();
+        assert_eq!(plain.get("careful").and_then(Value::as_str), Some("a & b, no markup"));
+    }
+
+    #[test]
+    fn an_update_service_with_auto_parameters_accepts_a_changed_field() {
+        let (facade, ctx) = seeded_context(&[("U1", "before")]);
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        let mut params = BTreeMap::new();
+        params.insert("testId".into(), Value::string("U1"));
+        params.insert("testMedium".into(), Value::string("after"));
+        sync("update#moqui.test.TestEntity", &params).expect("update by primary key with a changed field");
+        let row = facade
+            .find("moqui.test.TestEntity")
+            .unwrap()
+            .eq("testId", Value::string("U1"))
+            .one()
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.get("testMedium").and_then(Value::as_str), Some("after"));
+    }
+
+    #[test]
+    fn a_script_service_runs_its_javascript_file_and_optional_chaining_loads() {
+        let script = std::env::temp_dir().join(format!("moqui-script-service-{}.js", std::process::id()));
+        std::fs::write(&script, "shout = greeting.toUpperCase() + '!';").unwrap();
+        let path = write_fixture(
+            "script-service",
+            &format!(
+                r#"<services>
+                    <service verb="shout" noun="Greeting" type="script" location="{}">
+                        <in-parameters><parameter name="greeting"/></in-parameters>
+                        <out-parameters><parameter name="shout"/></out-parameters>
+                    </service>
+                    <service verb="chain" noun="Safely">
+                        <out-parameters><parameter name="seen"/></out-parameters>
+                        <actions><set field="seen" from="missing?.name ?? 'none'"/></actions>
+                    </service>
+                    <service verb="groovy" noun="Elvis">
+                        <actions><set field="x" from="a ?: b"/></actions>
+                    </service>
+                </services>"#,
+                script.display()
+            ),
+        );
+        let (_facade, ctx) = seeded_context(&[]);
+        let _entered = ctx.enter();
+        let failures = crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        assert_eq!(failures.len(), 1, "only the Elvis service fails: {failures:?}");
+        assert!(failures[0].contains("groovy#Elvis"), "{failures:?}");
+        let _authz = ctx.disable_authz();
+        let mut params = BTreeMap::new();
+        params.insert("greeting".into(), Value::string("hello"));
+        let out = sync("shout#Greeting", &params).unwrap();
+        assert_eq!(out.get("shout").and_then(Value::as_str), Some("HELLO!"));
+        let out = sync("chain#Safely", &BTreeMap::new()).unwrap();
+        assert_eq!(out.get("seen").and_then(Value::as_str), Some("none"));
+    }
+
+    #[test]
     fn a_runaway_script_ends_at_the_transaction_deadline() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let path = write_fixture(
             "runaway",
             r#"<services>
@@ -971,10 +1322,10 @@ mod tests {
                 </service>
             </services>"#,
         );
-        let failures = crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
-        assert!(failures.is_empty(), "{failures:?}");
         let (_facade, ctx) = seeded_context(&[]);
         let _entered = ctx.enter();
+        let failures = crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
         let _authz = ctx.disable_authz();
         let started = std::time::Instant::now();
         let err = sync("spin#Forever", &BTreeMap::new()).expect_err("interrupted");
@@ -983,27 +1334,28 @@ mod tests {
 
     #[test]
     fn post_service_seca_runs_its_action() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let path = write_fixture(
             "seca",
             r#"<services>
                 <service verb="mark" noun="Row"/>
             </services>"#,
         );
-        crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
-        super::super::seca::load_seca_rules(
-            r#"<secas>
-                <seca service="mark#Row" when="post-service">
-                    <actions><script>ec.message.addMessage("seen")</script></actions>
-                </seca>
-            </secas>"#,
-        )
-        .unwrap();
-        let facade = mem::open(Arc::new(Mutex::new(Vec::new())));
+        let facade = crate::testing::open();
         let ctx = ExecutionContextFactory::test_context();
+        super::super::eca_rules::install(
+            ctx.factory(),
+            super::super::eca_rules::from_xml(
+                r#"<secas>
+                    <seca service="mark#Row" when="post-service">
+                        <actions><script>ec.message.addMessage("seen")</script></actions>
+                    </seca>
+                </secas>"#,
+                "",
+            ),
+        );
         ctx.factory().set_entity(facade);
         let _entered = ctx.enter();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
         let _authz = ctx.disable_authz();
         sync("mark#Row", &BTreeMap::new()).unwrap();
         // The rule runs in its own context frame, so its effect is seen through the message facade.
@@ -1012,21 +1364,19 @@ mod tests {
 
     #[test]
     fn remote_rest_in_sim_mode_errors_before_a_socket() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let path = write_fixture(
             "remote",
             r#"<services>
                 <service verb="ping" noun="Remote" type="remote-rest" authenticate="false" location="http://127.0.0.1:1/no-such-remote"/>
             </services>"#,
         );
-        let failures = crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
-        assert!(failures.is_empty(), "{failures:?}");
-        let facade = mem::open(Arc::new(Mutex::new(Vec::new())));
+        let facade = crate::testing::open();
         facade.set_sim_active(true);
         let ctx = ExecutionContextFactory::test_context();
         ctx.factory().set_entity(facade);
         let _entered = ctx.enter();
+        let failures = crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
         let _authz = ctx.disable_authz();
         let err = sync("ping#Remote", &BTreeMap::new()).unwrap_err();
         let text = err.to_string();
@@ -1037,823 +1387,5 @@ mod tests {
         let path = std::env::temp_dir().join(format!("moqui-svc-{name}-{}.xml", std::process::id()));
         std::fs::write(&path, body).unwrap();
         path
-    }
-
-    mod mem {
-        use std::collections::{BTreeMap, BTreeSet};
-        use std::path::PathBuf;
-        use std::sync::{Arc, Mutex};
-        use std::time::Duration;
-
-        use moqui_lib::error::Error;
-        use moqui_lib::object::{compare_obj, Value};
-
-        use crate::driver::{DbCancel, DbConnection, DbDriver, DbRow};
-        use crate::entity::{EntityFacade, EntityGroup};
-        use crate::transaction::{PoolConfig, TransactionManager};
-
-        type Row = BTreeMap<String, Value>;
-        type Tables = BTreeMap<String, Vec<Row>>;
-
-        pub(super) fn open(tape: Arc<Mutex<Vec<String>>>) -> EntityFacade {
-            let driver: Arc<dyn DbDriver> = Arc::new(MemDriver {
-                store: Arc::new(Mutex::new(BTreeMap::new())),
-                tape: Arc::clone(&tape),
-            });
-            let transactions = TransactionManager::new(
-                driver,
-                PoolConfig {
-                    min: 0,
-                    max: 4,
-                    reserve: 2,
-                    acquire_timeout: Duration::from_secs(5),
-                },
-            )
-            .expect("memory pool");
-            let facade = EntityFacade::open(
-                &framework_dir(),
-                "transactional",
-                vec![EntityGroup::new("transactional", "postgres", transactions)],
-            )
-            .expect("entity facade");
-            facade.set_disable_audit_log(true);
-            facade.set_disable_entity_eca(true);
-            facade.set_disable_fk_create(true);
-            facade.set_disable_data_feed(true);
-            facade
-        }
-
-        fn framework_dir() -> PathBuf {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework")
-        }
-
-        struct MemDriver {
-            store: Arc<Mutex<Tables>>,
-            tape: Arc<Mutex<Vec<String>>>,
-        }
-
-        struct MemConn {
-            store: Arc<Mutex<Tables>>,
-            tape: Arc<Mutex<Vec<String>>>,
-            local: Option<Tables>,
-            dirty: BTreeSet<String>,
-        }
-
-        struct NoCancel;
-
-        impl DbCancel for NoCancel {
-            fn cancel(&self) -> Result<(), Error> {
-                Ok(())
-            }
-        }
-
-        impl DbDriver for MemDriver {
-            fn connect(&self) -> Result<Box<dyn DbConnection>, Error> {
-                Ok(Box::new(MemConn {
-                    store: Arc::clone(&self.store),
-                    tape: Arc::clone(&self.tape),
-                    local: None,
-                    dirty: BTreeSet::new(),
-                }))
-            }
-        }
-
-        impl DbConnection for MemConn {
-            fn execute(&mut self, sql: &str, params: &[Value]) -> Result<u64, Error> {
-                Ok(self.apply(sql, params)?.0)
-            }
-
-            fn query(&mut self, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
-                Ok(self.apply(sql, params)?.1)
-            }
-
-            fn query_once(&mut self, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
-                self.query(sql, params)
-            }
-
-            fn open_stream(&mut self, _sql: &str, _params: &[Value]) -> Result<(), Error> {
-                Ok(())
-            }
-
-            fn next_row(&mut self) -> Result<Option<DbRow>, Error> {
-                Ok(None)
-            }
-
-            fn close_stream(&mut self) -> Result<(), Error> {
-                Ok(())
-            }
-
-            fn stream_open(&self) -> bool {
-                false
-            }
-
-            fn begin(&mut self) -> Result<(), Error> {
-                if self.local.is_none() {
-                    let committed = self.store.lock().unwrap_or_else(|err| err.into_inner()).clone();
-                    self.local = Some(committed);
-                    self.dirty.clear();
-                }
-                Ok(())
-            }
-
-            fn commit(&mut self) -> Result<(), Error> {
-                let Some(local) = self.local.take() else {
-                    return Ok(());
-                };
-                let dirty = std::mem::take(&mut self.dirty);
-                let mut committed = self.store.lock().unwrap_or_else(|err| err.into_inner());
-                for table in dirty {
-                    let rows = local.get(&table).cloned().unwrap_or_default();
-                    committed.insert(table, rows);
-                }
-                Ok(())
-            }
-
-            fn rollback(&mut self) -> Result<(), Error> {
-                self.local = None;
-                self.dirty.clear();
-                Ok(())
-            }
-
-            fn savepoint(&mut self, _name: &str) -> Result<(), Error> {
-                Ok(())
-            }
-
-            fn rollback_to_savepoint(&mut self, _name: &str) -> Result<(), Error> {
-                Ok(())
-            }
-
-            fn release_savepoint(&mut self, _name: &str) -> Result<(), Error> {
-                Ok(())
-            }
-
-            fn canceller(&self) -> Box<dyn DbCancel> {
-                Box::new(NoCancel)
-            }
-        }
-
-        impl MemConn {
-            fn apply(&mut self, sql: &str, params: &[Value]) -> Result<(u64, Vec<DbRow>), Error> {
-                let sql = sql.trim();
-                // The pool checks out a connection with `SELECT 1`.
-                if !sql.eq_ignore_ascii_case("SELECT 1") {
-                    self.tape
-                        .lock()
-                        .unwrap_or_else(|err| err.into_inner())
-                        .push(sql.to_string());
-                }
-                if sql.eq_ignore_ascii_case("SELECT 1") {
-                    return Ok((
-                        1,
-                        vec![DbRow {
-                            columns: vec![("1".to_string(), Value::I64(1))],
-                        }],
-                    ));
-                }
-                if sql.contains("ON CONFLICT") && sql.contains("SequenceValueItem") {
-                    return self.sequence(params);
-                }
-                let stmt = parse(sql).map_err(|err| Error::new(format!("{err} sql={sql}")))?;
-                self.exec(stmt, params)
-            }
-
-            fn sequence(&mut self, params: &[Value]) -> Result<(u64, Vec<DbRow>), Error> {
-                if params.len() < 4 {
-                    return Err(Error::new("sequence refill is missing parameters"));
-                }
-                let name = params[0].clone();
-                let first_end = as_i64(&params[1])?;
-                let increment = as_i64(&params[2])?;
-                let hint_end = as_i64(&params[3])?;
-                let mut rows = self.read_table("SequenceValueItem");
-                let end = if let Some(row) = rows.iter_mut().find(|row| row.get("seqName") == Some(&name)) {
-                    let old = row.get("seqNum").and_then(|value| as_i64(value).ok()).unwrap_or(0);
-                    let new_end = old.saturating_add(increment).max(hint_end);
-                    row.insert("seqNum".to_string(), Value::I64(new_end));
-                    new_end
-                } else {
-                    let mut row = BTreeMap::new();
-                    row.insert("seqName".to_string(), name);
-                    row.insert("seqNum".to_string(), Value::I64(first_end));
-                    rows.push(row);
-                    first_end
-                };
-                self.put_table("SequenceValueItem", rows);
-                Ok((
-                    1,
-                    vec![DbRow {
-                        columns: vec![("seqNum".to_string(), Value::I64(end))],
-                    }],
-                ))
-            }
-
-            fn exec(&mut self, stmt: Stmt, params: &[Value]) -> Result<(u64, Vec<DbRow>), Error> {
-                match stmt {
-                    Stmt::Insert { table, columns } => {
-                        let mut row = BTreeMap::new();
-                        for (index, column) in columns.iter().enumerate() {
-                            let value = params
-                                .get(index)
-                                .cloned()
-                                .ok_or_else(|| Error::new("insert is missing a parameter"))?;
-                            row.insert(column.clone(), value);
-                        }
-                        let mut rows = self.read_table(&table);
-                        rows.push(row);
-                        self.put_table(&table, rows);
-                        Ok((1, Vec::new()))
-                    }
-                    Stmt::Update { table, columns, pred } => {
-                        let values = columns
-                            .iter()
-                            .enumerate()
-                            .map(|(index, _)| {
-                                params
-                                    .get(index)
-                                    .cloned()
-                                    .ok_or_else(|| Error::new("update is missing a parameter"))
-                            })
-                            .collect::<Result<Vec<_>, _>>()?;
-                        let start = columns.len();
-                        let mut rows = self.read_table(&table);
-                        let mut count = 0_u64;
-                        for row in &mut rows {
-                            if keep(&pred, row, params, start)? {
-                                for (column, value) in columns.iter().zip(&values) {
-                                    row.insert(column.clone(), value.clone());
-                                }
-                                count += 1;
-                            }
-                        }
-                        self.put_table(&table, rows);
-                        Ok((count, Vec::new()))
-                    }
-                    Stmt::Delete { table, pred } => {
-                        let rows = self.read_table(&table);
-                        let mut kept = Vec::new();
-                        let mut count = 0_u64;
-                        for row in rows {
-                            if keep(&pred, &row, params, 0)? {
-                                count += 1;
-                            } else {
-                                kept.push(row);
-                            }
-                        }
-                        self.put_table(&table, kept);
-                        Ok((count, Vec::new()))
-                    }
-                    Stmt::Select(query) => self.exec_select(&query, params),
-                }
-            }
-
-            fn exec_select(&mut self, query: &SelectQuery, params: &[Value]) -> Result<(u64, Vec<DbRow>), Error> {
-                let mut matched = Vec::new();
-                for row in self.read_table(&query.table) {
-                    if keep(&query.pred, &row, params, 0)? {
-                        matched.push(row);
-                    }
-                }
-                if query.count {
-                    let n = i64::try_from(matched.len()).unwrap_or(i64::MAX);
-                    return Ok((
-                        1,
-                        vec![DbRow {
-                            columns: vec![("count".to_string(), Value::I64(n))],
-                        }],
-                    ));
-                }
-                matched.sort_by(|left, right| sort_rows(left, right, &query.order));
-                // Postgres writes `LIMIT ? OFFSET ?`, so the limit parameter is first.
-                let mut idx = pred_slots(&query.pred);
-                let take_n = if query.limit {
-                    Some(as_i64(take_param(params, &mut idx)?)?)
-                } else {
-                    None
-                };
-                let skip = if query.offset {
-                    as_i64(take_param(params, &mut idx)?)?
-                } else {
-                    0
-                };
-                let start = usize::try_from(skip.max(0)).unwrap_or(0);
-                let window: Vec<Row> = match take_n {
-                    Some(limit) => {
-                        let len = usize::try_from(limit.max(0)).unwrap_or(0);
-                        matched.into_iter().skip(start).take(len).collect()
-                    }
-                    None => matched.into_iter().skip(start).collect(),
-                };
-                let projected: Vec<DbRow> = window.iter().map(|row| project(row, &query.columns)).collect();
-                let n = u64::try_from(projected.len()).unwrap_or(u64::MAX);
-                Ok((n, projected))
-            }
-
-            fn read_table(&self, table: &str) -> Vec<Row> {
-                if let Some(local) = &self.local {
-                    return local.get(table).cloned().unwrap_or_default();
-                }
-                self.store
-                    .lock()
-                    .unwrap_or_else(|err| err.into_inner())
-                    .get(table)
-                    .cloned()
-                    .unwrap_or_default()
-            }
-
-            fn put_table(&mut self, table: &str, rows: Vec<Row>) {
-                if let Some(local) = self.local.as_mut() {
-                    local.insert(table.to_string(), rows);
-                    self.dirty.insert(table.to_string());
-                    return;
-                }
-                self.store
-                    .lock()
-                    .unwrap_or_else(|err| err.into_inner())
-                    .insert(table.to_string(), rows);
-            }
-        }
-
-        fn keep(pred: &Option<Pred>, row: &Row, params: &[Value], start: usize) -> Result<bool, Error> {
-            let Some(pred) = pred else {
-                return Ok(true);
-            };
-            let mut idx = start;
-            eval_pred(pred, row, params, &mut idx)
-        }
-
-        fn pred_slots(pred: &Option<Pred>) -> usize {
-            pred.as_ref().map(count_slots).unwrap_or(0)
-        }
-
-        fn count_slots(pred: &Pred) -> usize {
-            match pred {
-                Pred::Cmp { .. } => 1,
-                Pred::IsNull { .. } => 0,
-                Pred::And(parts) | Pred::Or(parts) => parts.iter().map(count_slots).sum(),
-            }
-        }
-
-        fn eval_pred(pred: &Pred, row: &Row, params: &[Value], idx: &mut usize) -> Result<bool, Error> {
-            match pred {
-                Pred::Cmp { field, op } => {
-                    let param = take_param(params, idx)?;
-                    let left = row.get(field).cloned().unwrap_or(Value::Null);
-                    Ok(compare(&left, *op, param))
-                }
-                Pred::IsNull { field, negated } => {
-                    let is_null = row.get(field).is_none_or(Value::is_null);
-                    Ok(if *negated { !is_null } else { is_null })
-                }
-                Pred::And(parts) => {
-                    let mut all = true;
-                    for part in parts {
-                        if !eval_pred(part, row, params, idx)? {
-                            all = false;
-                        }
-                    }
-                    Ok(all)
-                }
-                Pred::Or(parts) => {
-                    let mut any = false;
-                    for part in parts {
-                        if eval_pred(part, row, params, idx)? {
-                            any = true;
-                        }
-                    }
-                    Ok(any)
-                }
-            }
-        }
-
-        fn compare(left: &Value, op: Op, right: &Value) -> bool {
-            let ordering = cmp_values(left, right);
-            match op {
-                Op::Eq => left == right,
-                Op::Ne => left != right,
-                Op::Lt => ordering == std::cmp::Ordering::Less,
-                Op::Gt => ordering == std::cmp::Ordering::Greater,
-                Op::Le => ordering != std::cmp::Ordering::Greater,
-                Op::Ge => ordering != std::cmp::Ordering::Less,
-            }
-        }
-
-        fn cmp_values(left: &Value, right: &Value) -> std::cmp::Ordering {
-            if left.is_null() && right.is_null() {
-                return std::cmp::Ordering::Equal;
-            }
-            if left.is_null() {
-                return std::cmp::Ordering::Greater;
-            }
-            if right.is_null() {
-                return std::cmp::Ordering::Less;
-            }
-            compare_obj(left, right).unwrap_or(std::cmp::Ordering::Equal)
-        }
-
-        fn sort_rows(left: &Row, right: &Row, order: &[OrderKey]) -> std::cmp::Ordering {
-            for key in order {
-                let left_value = left.get(&key.field).cloned().unwrap_or(Value::Null);
-                let right_value = right.get(&key.field).cloned().unwrap_or(Value::Null);
-                let mut ordering = cmp_values(&left_value, &right_value);
-                if key.desc {
-                    ordering = ordering.reverse();
-                }
-                if ordering != std::cmp::Ordering::Equal {
-                    return ordering;
-                }
-            }
-            std::cmp::Ordering::Equal
-        }
-
-        fn project(row: &Row, columns: &[String]) -> DbRow {
-            DbRow {
-                columns: columns
-                    .iter()
-                    .map(|name| (name.clone(), row.get(name).cloned().unwrap_or(Value::Null)))
-                    .collect(),
-            }
-        }
-
-        fn take_param<'a>(params: &'a [Value], idx: &mut usize) -> Result<&'a Value, Error> {
-            let value = params.get(*idx).ok_or_else(|| Error::new("sql parameter missing"))?;
-            *idx += 1;
-            Ok(value)
-        }
-
-        fn as_i64(value: &Value) -> Result<i64, Error> {
-            match value {
-                Value::I64(number) => Ok(*number),
-                Value::I32(number) => Ok(i64::from(*number)),
-                Value::String(text) => text.parse().map_err(|_| Error::new("parameter is not an integer")),
-                _ => Err(Error::new("parameter is not an integer")),
-            }
-        }
-
-        enum Stmt {
-            Insert {
-                table: String,
-                columns: Vec<String>,
-            },
-            Update {
-                table: String,
-                columns: Vec<String>,
-                pred: Option<Pred>,
-            },
-            Delete {
-                table: String,
-                pred: Option<Pred>,
-            },
-            Select(SelectQuery),
-        }
-
-        struct SelectQuery {
-            count: bool,
-            columns: Vec<String>,
-            table: String,
-            pred: Option<Pred>,
-            order: Vec<OrderKey>,
-            limit: bool,
-            offset: bool,
-        }
-
-        enum Pred {
-            Cmp { field: String, op: Op },
-            IsNull { field: String, negated: bool },
-            And(Vec<Pred>),
-            Or(Vec<Pred>),
-        }
-
-        #[derive(Clone, Copy)]
-        enum Op {
-            Eq,
-            Ne,
-            Lt,
-            Gt,
-            Le,
-            Ge,
-        }
-
-        struct OrderKey {
-            field: String,
-            desc: bool,
-        }
-
-        fn parse(sql: &str) -> Result<Stmt, Error> {
-            let mut cur = Cur { sql, i: 0 };
-            let stmt = if cur.eat_keyword("INSERT") {
-                parse_insert(&mut cur)?
-            } else if cur.eat_keyword("UPDATE") {
-                parse_update(&mut cur)?
-            } else if cur.eat_keyword("DELETE") {
-                parse_delete(&mut cur)?
-            } else if cur.eat_keyword("SELECT") {
-                parse_select(&mut cur)?
-            } else {
-                return Err(cur.fail("unsupported sql"));
-            };
-            Ok(stmt)
-        }
-
-        fn parse_insert(cur: &mut Cur) -> Result<Stmt, Error> {
-            cur.expect_keyword("INTO")?;
-            let table = cur.quoted()?;
-            cur.expect_symbol(b'(')?;
-            let mut columns = Vec::new();
-            loop {
-                columns.push(cur.quoted()?);
-                if !cur.eat_symbol(b',') {
-                    break;
-                }
-            }
-            cur.expect_symbol(b')')?;
-            cur.expect_keyword("VALUES")?;
-            cur.expect_symbol(b'(')?;
-            for index in 0..columns.len() {
-                if index > 0 {
-                    cur.expect_symbol(b',')?;
-                }
-                cur.expect_symbol(b'?')?;
-            }
-            cur.expect_symbol(b')')?;
-            cur.expect_end()?;
-            Ok(Stmt::Insert { table, columns })
-        }
-
-        fn parse_update(cur: &mut Cur) -> Result<Stmt, Error> {
-            let table = cur.quoted()?;
-            cur.expect_keyword("SET")?;
-            let mut columns = Vec::new();
-            loop {
-                columns.push(cur.quoted()?);
-                cur.expect_symbol(b'=')?;
-                cur.expect_symbol(b'?')?;
-                if !cur.eat_symbol(b',') {
-                    break;
-                }
-            }
-            let pred = if cur.eat_keyword("WHERE") {
-                Some(parse_or(cur)?)
-            } else {
-                None
-            };
-            cur.expect_end()?;
-            Ok(Stmt::Update { table, columns, pred })
-        }
-
-        fn parse_delete(cur: &mut Cur) -> Result<Stmt, Error> {
-            cur.expect_keyword("FROM")?;
-            let table = cur.quoted()?;
-            let pred = if cur.eat_keyword("WHERE") {
-                Some(parse_or(cur)?)
-            } else {
-                None
-            };
-            cur.expect_end()?;
-            Ok(Stmt::Delete { table, pred })
-        }
-
-        fn parse_select(cur: &mut Cur) -> Result<Stmt, Error> {
-            let count = if cur.eat_keyword("COUNT") {
-                cur.expect_symbol(b'(')?;
-                cur.expect_symbol(b'*')?;
-                cur.expect_symbol(b')')?;
-                true
-            } else {
-                false
-            };
-            let columns = if count { Vec::new() } else { parse_columns(cur)? };
-            cur.expect_keyword("FROM")?;
-            let table = cur.quoted()?;
-            let pred = if cur.eat_keyword("WHERE") {
-                Some(parse_or(cur)?)
-            } else {
-                None
-            };
-            let order = if cur.eat_keyword("ORDER") {
-                cur.expect_keyword("BY")?;
-                parse_order(cur)?
-            } else {
-                Vec::new()
-            };
-            let limit = if cur.eat_keyword("LIMIT") {
-                cur.expect_symbol(b'?')?;
-                true
-            } else {
-                false
-            };
-            let offset = if cur.eat_keyword("OFFSET") {
-                cur.expect_symbol(b'?')?;
-                true
-            } else {
-                false
-            };
-            cur.expect_end()?;
-            Ok(Stmt::Select(SelectQuery {
-                count,
-                columns,
-                table,
-                pred,
-                order,
-                limit,
-                offset,
-            }))
-        }
-
-        fn parse_columns(cur: &mut Cur) -> Result<Vec<String>, Error> {
-            let mut columns = Vec::new();
-            loop {
-                if cur.peek_keyword("FROM") {
-                    break;
-                }
-                columns.push(cur.quoted()?);
-                if !cur.eat_symbol(b',') {
-                    break;
-                }
-            }
-            if columns.is_empty() {
-                return Err(cur.fail("select has no columns"));
-            }
-            Ok(columns)
-        }
-
-        fn parse_order(cur: &mut Cur) -> Result<Vec<OrderKey>, Error> {
-            let mut order = Vec::new();
-            loop {
-                let field = cur.quoted()?;
-                let desc = if cur.eat_keyword("DESC") {
-                    true
-                } else if cur.eat_keyword("ASC") {
-                    false
-                } else {
-                    return Err(cur.fail("expected ASC or DESC"));
-                };
-                order.push(OrderKey { field, desc });
-                if !cur.eat_symbol(b',') {
-                    break;
-                }
-            }
-            Ok(order)
-        }
-
-        fn parse_or(cur: &mut Cur) -> Result<Pred, Error> {
-            let mut parts = vec![parse_and(cur)?];
-            while cur.eat_keyword("OR") {
-                parts.push(parse_and(cur)?);
-            }
-            Ok(fold(parts, false))
-        }
-
-        fn parse_and(cur: &mut Cur) -> Result<Pred, Error> {
-            let mut parts = vec![parse_primary(cur)?];
-            while cur.eat_keyword("AND") {
-                parts.push(parse_primary(cur)?);
-            }
-            Ok(fold(parts, true))
-        }
-
-        fn parse_primary(cur: &mut Cur) -> Result<Pred, Error> {
-            if cur.eat_symbol(b'(') {
-                let pred = parse_or(cur)?;
-                cur.expect_symbol(b')')?;
-                return Ok(pred);
-            }
-            let field = cur.quoted()?;
-            if cur.eat_keyword("IS") {
-                let negated = cur.eat_keyword("NOT");
-                cur.expect_keyword("NULL")?;
-                return Ok(Pred::IsNull { field, negated });
-            }
-            let Some(op) = cur.eat_op() else {
-                return Err(cur.fail("expected comparison"));
-            };
-            cur.expect_symbol(b'?')?;
-            Ok(Pred::Cmp { field, op })
-        }
-
-        fn fold(mut parts: Vec<Pred>, and: bool) -> Pred {
-            if parts.len() == 1 {
-                return parts.remove(0);
-            }
-            if and {
-                Pred::And(parts)
-            } else {
-                Pred::Or(parts)
-            }
-        }
-
-        struct Cur<'a> {
-            sql: &'a str,
-            i: usize,
-        }
-
-        impl Cur<'_> {
-            fn skip(&mut self) {
-                while self.i < self.sql.len() && self.sql.as_bytes()[self.i].is_ascii_whitespace() {
-                    self.i += 1;
-                }
-            }
-
-            fn eat_keyword(&mut self, word: &str) -> bool {
-                self.skip();
-                let rest = &self.sql[self.i..];
-                if rest.len() < word.len() || !rest.starts_with(word) {
-                    return false;
-                }
-                let end = self.i + word.len();
-                if end < self.sql.len() {
-                    let next = self.sql.as_bytes()[end];
-                    if next.is_ascii_alphanumeric() || next == b'_' {
-                        return false;
-                    }
-                }
-                self.i = end;
-                true
-            }
-
-            fn peek_keyword(&mut self, word: &str) -> bool {
-                let saved = self.i;
-                let found = self.eat_keyword(word);
-                self.i = saved;
-                found
-            }
-
-            fn eat_symbol(&mut self, symbol: u8) -> bool {
-                self.skip();
-                if self.i < self.sql.len() && self.sql.as_bytes()[self.i] == symbol {
-                    self.i += 1;
-                    true
-                } else {
-                    false
-                }
-            }
-
-            fn eat_op(&mut self) -> Option<Op> {
-                self.skip();
-                let rest = &self.sql[self.i..];
-                let (op, len) = if rest.starts_with("<>") {
-                    (Op::Ne, 2)
-                } else if rest.starts_with("<=") {
-                    (Op::Le, 2)
-                } else if rest.starts_with(">=") {
-                    (Op::Ge, 2)
-                } else if rest.starts_with('<') {
-                    (Op::Lt, 1)
-                } else if rest.starts_with('>') {
-                    (Op::Gt, 1)
-                } else if rest.starts_with('=') {
-                    (Op::Eq, 1)
-                } else {
-                    return None;
-                };
-                self.i += len;
-                Some(op)
-            }
-
-            fn quoted(&mut self) -> Result<String, Error> {
-                if !self.eat_symbol(b'"') {
-                    return Err(self.fail("expected identifier"));
-                }
-                let start = self.i;
-                while self.i < self.sql.len() && self.sql.as_bytes()[self.i] != b'"' {
-                    self.i += 1;
-                }
-                if self.i >= self.sql.len() {
-                    return Err(self.fail("unterminated identifier"));
-                }
-                let name = self.sql[start..self.i].to_string();
-                self.i += 1;
-                Ok(name)
-            }
-
-            fn expect_keyword(&mut self, word: &str) -> Result<(), Error> {
-                if self.eat_keyword(word) {
-                    Ok(())
-                } else {
-                    Err(self.fail(&format!("expected {word}")))
-                }
-            }
-
-            fn expect_symbol(&mut self, symbol: u8) -> Result<(), Error> {
-                if self.eat_symbol(symbol) {
-                    Ok(())
-                } else {
-                    Err(self.fail(&format!("expected {}", char::from(symbol))))
-                }
-            }
-
-            fn expect_end(&mut self) -> Result<(), Error> {
-                self.skip();
-                if self.i == self.sql.len() {
-                    Ok(())
-                } else {
-                    Err(self.fail("unexpected sql"))
-                }
-            }
-
-            fn fail(&self, message: &str) -> Error {
-                let rest: String = self.sql[self.i..].chars().take(160).collect();
-                Error::new(format!("{message} at '{rest}'"))
-            }
-        }
     }
 }

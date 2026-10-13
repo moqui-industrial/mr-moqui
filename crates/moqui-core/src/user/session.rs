@@ -1765,7 +1765,7 @@ mod tests {
 
     use moqui_lib::object::Value;
 
-    use super::super::login::{self, memdb};
+    use super::super::login;
     use super::super::password::{hash_login_key, simple_hash};
     use super::*;
     use crate::context::ExecutionContextFactory;
@@ -2145,7 +2145,7 @@ mod tests {
         reset_session();
         let key = KeyGuard::install();
         let ctx = ExecutionContextFactory::test_context();
-        let facade = memdb::open();
+        let facade = crate::testing::open();
         ctx.factory().set_entity(facade.clone());
         (lock, ctx, facade, key)
     }

@@ -54,6 +54,8 @@ pub struct ExecutionContextFactory {
     /// Hit times per `userId@type:name`, for tarpit counting.
     tarpit_hits: std::sync::Mutex<std::collections::HashMap<String, Vec<i64>>>,
     property_names: Vec<String>,
+    extensions:
+        std::sync::Mutex<std::collections::HashMap<std::any::TypeId, std::sync::Arc<dyn std::any::Any + Send + Sync>>>,
     /// Entity facade for `dbresource://`. Empty until the host calls [`Self::set_entity`].
     entity: Arc<RwLock<Option<EntityFacade>>>,
     /// This factory's pool guard. Drops with the factory. Idle has no workers.
@@ -116,11 +118,13 @@ impl ExecutionContextFactory {
             conf_cache: std::sync::OnceLock::new(),
             tarpit_hits: std::sync::Mutex::new(std::collections::HashMap::new()),
             property_names,
+            extensions: std::sync::Mutex::new(std::collections::HashMap::new()),
             entity,
             pools,
             requests: crate::service::RequestPool::idle(),
             sessions: std::sync::Mutex::new(crate::user::session::SessionTable::new(flush_mode)),
         });
+        factory.pools.attach(&factory);
         install_session_flush(&factory);
         Ok(factory)
     }
@@ -147,6 +151,11 @@ impl ExecutionContextFactory {
     /// The factory request pool. Idle until [`Self::start_request_pool`].
     pub fn request_pool(&self) -> &crate::service::RequestPool {
         &self.requests
+    }
+
+    /// This factory's service worker pool and scheduler.
+    pub fn service_pools(&self) -> &crate::service::ServicePools {
+        &self.pools
     }
 
     pub fn new_context(self: &Arc<Self>) -> ExecutionContext {
@@ -180,6 +189,31 @@ impl ExecutionContextFactory {
 
     pub fn property_names(&self) -> &[String] {
         &self.property_names
+    }
+
+    /// State another facade keeps per factory, made on first use. `init` may use the factory but
+    /// not ask for another extension of its own type.
+    pub fn extension<T: std::any::Any + Send + Sync>(&self, init: impl FnOnce(&Self) -> T) -> Arc<T> {
+        let key = std::any::TypeId::of::<T>();
+        let existing = self
+            .extensions
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .get(&key)
+            .cloned();
+        let value: Arc<dyn std::any::Any + Send + Sync> = match existing {
+            Some(value) => value,
+            None => {
+                // Not under the lock, so init can read other extensions.
+                let made: Arc<dyn std::any::Any + Send + Sync> = Arc::new(init(self));
+                let mut map = self.extensions.lock().unwrap_or_else(|err| err.into_inner());
+                Arc::clone(map.entry(key).or_insert(made))
+            }
+        };
+        match value.downcast::<T>() {
+            Ok(typed) => typed,
+            Err(_) => unreachable!("an extension is stored under its own type id"),
+        }
     }
 
     /// True when the `artifact-execution` element for `artifact_type` has `flag="true"`.
@@ -340,15 +374,19 @@ impl ExecutionContext {
 
     /// Make this context current on this thread until the guard drops.
     ///
-    /// Nested enter increments a depth and keeps the outermost context. `current` is `Some` while
-    /// the depth is positive. The thread-local does not keep the context alive.
+    /// Entering while another context is current makes this one current, and dropping its guard
+    /// brings the other back. `current` is `Some` while any guard is alive. The thread-local does
+    /// not keep the context alive.
     pub fn enter(&self) -> ContextGuard<'_> {
-        ENTERED.with(|slot| {
-            let (ptr, depth) = slot.get();
-            let next = if depth == 0 { std::ptr::from_ref(self) } else { ptr };
-            slot.set((next, depth.saturating_add(1)));
+        let previous = ENTERED.with(|slot| {
+            let previous = slot.get();
+            slot.set((std::ptr::from_ref(self), previous.1.saturating_add(1)));
+            previous
         });
-        ContextGuard { _scope: PhantomData }
+        ContextGuard {
+            previous,
+            _scope: PhantomData,
+        }
     }
 
     /// The context entered on this thread, if a guard is still alive.
@@ -366,28 +404,25 @@ impl ExecutionContext {
     /// Run `body` with the entered context. The reference cannot outlive the callback.
     pub fn with_current<R>(body: impl FnOnce(&ExecutionContext) -> R) -> Option<R> {
         let ptr = Self::current()?;
-        // SAFETY: `enter` stored this pointer, and a live `ContextGuard` borrows that context.
-        // Nested enter keeps the outer pointer, which stays borrowed until its guard drops.
+        // SAFETY: `enter` stored this pointer, and a live `ContextGuard` borrows that context. A
+        // guard restores the previous pointer when it drops, so the pointer here is always the
+        // innermost guard's, whose context is borrowed until that guard drops.
         Some(body(unsafe { ptr.as_ref() }))
     }
 }
 
-/// Clears the thread-local context when dropped. Depth falls by one.
+/// Restores the previously entered context, or none, when dropped.
 #[must_use = "dropping the guard clears the thread-local execution context"]
 pub struct ContextGuard<'a> {
+    /// What was current before this guard, put back on drop.
+    previous: (*const ExecutionContext, u32),
+    // A guard belongs to the thread it was made on: the raw pointer above already makes it !Send.
     _scope: PhantomData<&'a ExecutionContext>,
 }
 
 impl Drop for ContextGuard<'_> {
     fn drop(&mut self) {
-        ENTERED.with(|slot| {
-            let (ptr, depth) = slot.get();
-            if depth <= 1 {
-                slot.set((std::ptr::null(), 0));
-            } else {
-                slot.set((ptr, depth - 1));
-            }
-        });
+        ENTERED.with(|slot| slot.set(self.previous));
     }
 }
 
@@ -641,12 +676,26 @@ impl ExecutionContextFactory {
 
     /// A test context whose conf text is `conf_text`, for example an `artifact-execution-facade`.
     pub(crate) fn test_context_with_conf(conf_text: &str) -> ExecutionContext {
+        Self::test_context_with(conf_text, crate::service::ServicePools::idle())
+    }
+
+    /// A test context whose factory owns `pools`, attached so the scheduler can reach the factory.
+    pub(crate) fn test_context_with(conf_text: &str, pools: crate::service::ServicePools) -> ExecutionContext {
+        Self::test_context_in(conf_text, pools, PathBuf::from("."))
+    }
+
+    /// A test context whose framework directory is `framework_dir`, so framework files resolve.
+    pub(crate) fn test_context_in(
+        conf_text: &str,
+        pools: crate::service::ServicePools,
+        framework_dir: PathBuf,
+    ) -> ExecutionContext {
         let conf = MNode::parse_text("test", "<moqui-conf/>").expect("conf");
         let entity = Arc::new(RwLock::new(None));
         let runtime_dir = PathBuf::from(".");
         let factory = Arc::new(Self {
             runtime_dir: runtime_dir.clone(),
-            framework_dir: PathBuf::from("."),
+            framework_dir,
             components: Vec::new(),
             resource: ResourceFacade::new(runtime_dir, std::collections::HashMap::new(), entity.clone()),
             cache: CacheFacade::from_conf(&conf).expect("cache"),
@@ -654,13 +703,15 @@ impl ExecutionContextFactory {
             conf_cache: std::sync::OnceLock::new(),
             tarpit_hits: std::sync::Mutex::new(std::collections::HashMap::new()),
             property_names: Vec::new(),
+            extensions: std::sync::Mutex::new(std::collections::HashMap::new()),
             entity,
-            pools: crate::service::ServicePools::idle(),
+            pools,
             requests: crate::service::RequestPool::idle(),
             sessions: std::sync::Mutex::new(crate::user::session::SessionTable::new(
                 crate::user::session::FlushMode::Eventual,
             )),
         });
+        factory.pools.attach(&factory);
         factory.new_context()
     }
 }

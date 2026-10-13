@@ -25,7 +25,7 @@ use base64::Engine;
 use indexmap::IndexMap;
 use moqui_lib::object::Value;
 
-use crate::context::ExecutionContext;
+use crate::context::{Error, ErrorKind, ExecutionContext};
 use crate::entity::query_rest;
 
 const BODY_LIMIT: usize = 1024 * 1024;
@@ -477,8 +477,19 @@ pub(crate) fn early_error(request: &WebRequest, status: u16, message: &str) -> W
     finish_response(request, json_error(status, message), false)
 }
 
-/// Map an entity or service error onto 401, 403, 404, 405, or 500.
-pub(crate) fn status_for(message: &str) -> u16 {
+/// Map an entity or service error onto 401, 403, 404, 405, 429, or 500.
+///
+/// [`ErrorKind`] wins. A general error still matches the entity messages that have no kind.
+pub(crate) fn status_for(err: &Error) -> u16 {
+    match err.kind() {
+        ErrorKind::AuthenticationRequired => return 401,
+        ErrorKind::Unauthorized => return 403,
+        ErrorKind::Tarpit => return 429,
+        ErrorKind::NotFound => return 404,
+        ErrorKind::MethodNotAllowed => return 405,
+        ErrorKind::General => {}
+    }
+    let message = err.message();
     let lower = message.to_ascii_lowercase();
     if lower.contains("user must be logged in") || lower.contains("authentication required") {
         return 401;
