@@ -48,7 +48,11 @@ fn every_file_in_the_manifest_exists_with_its_recorded_sha256() {
         listed.push(path.to_string());
     };
     let notices = &manifest["notices"];
-    check(notices["path"].as_str().unwrap(), notices["sha256"].as_str().unwrap(), None);
+    check(
+        notices["path"].as_str().unwrap(),
+        notices["sha256"].as_str().unwrap(),
+        None,
+    );
     let libraries = manifest["libraries"].as_array().unwrap();
     assert!(libraries.len() >= 14);
     for lib in libraries {
@@ -81,7 +85,10 @@ fn every_file_in_the_manifest_exists_with_its_recorded_sha256() {
     }
     found.sort();
     listed.sort();
-    assert_eq!(found, listed, "files in libs/ that are not in MANIFEST.json, or the reverse");
+    assert_eq!(
+        found, listed,
+        "files in libs/ that are not in MANIFEST.json, or the reverse"
+    );
 }
 
 #[test]
@@ -102,7 +109,10 @@ fn the_manifest_licenses_are_the_reviewed_set() {
             "license-texts" => "n/a",
             _ => "MIT",
         };
-        assert_eq!(license, reviewed, "{id}: license changed, review plans/License-Review.md");
+        assert_eq!(
+            license, reviewed,
+            "{id}: license changed, review plans/License-Review.md"
+        );
     }
 }
 
@@ -118,7 +128,9 @@ fn with_compiler<R>(body: impl FnOnce(&rquickjs::Ctx<'_>) -> R) -> R {
     let context = Context::full(&runtime).unwrap();
     context.with(|ctx| {
         let started = Instant::now();
-        ctx.eval::<(), _>(compiler_script()).catch(&ctx).unwrap_or_else(|err| panic!("load: {err}"));
+        ctx.eval::<(), _>(compiler_script())
+            .catch(&ctx)
+            .unwrap_or_else(|err| panic!("load: {err}"));
         eprintln!("compiler-dom bundle loaded in {:?}", started.elapsed());
         body(&ctx)
     })
@@ -129,7 +141,9 @@ fn compile(ctx: &rquickjs::Ctx<'_>, template: &str) -> String {
         "VueCompilerDOM.compile({}, {{prefixIdentifiers: true, mode: 'function'}}).code",
         serde_json::to_string(template).unwrap()
     );
-    ctx.eval::<String, _>(source).catch(ctx).unwrap_or_else(|err| panic!("compile: {err}"))
+    ctx.eval::<String, _>(source)
+        .catch(ctx)
+        .unwrap_or_else(|err| panic!("compile: {err}"))
 }
 
 #[test]

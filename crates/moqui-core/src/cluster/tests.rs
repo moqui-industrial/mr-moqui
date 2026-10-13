@@ -29,8 +29,6 @@ use crate::entity::EntityFacade;
 use crate::notify::{self, TopicMessage};
 use crate::user::{now_millis, now_value, stamp_value};
 
-static TEST_LOCK: Mutex<()> = Mutex::new(());
-
 const PROPS: &[&str] = &[
     "instance_id",
     "session_cookie_key",
@@ -54,7 +52,7 @@ impl Drop for Clean {
 }
 
 fn lock() -> std::sync::MutexGuard<'static, ()> {
-    TEST_LOCK.lock().unwrap_or_else(|err| err.into_inner())
+    crate::user::session::cookie_property_lock()
 }
 
 struct Recording {
@@ -86,13 +84,19 @@ fn install_recording() -> Arc<Recording> {
     recording
 }
 
+/// Counts and fails only posts whose payload names `only`. Started cluster state is process-wide,
+/// so commits from tests running alongside also reach the installed sender.
 struct Scripted {
+    only: &'static str,
     fails_left: AtomicUsize,
     calls: AtomicUsize,
 }
 
 impl Sender for Scripted {
-    fn post(&self, _base_url: &str, _topic: &str, _payload: &[u8]) -> Result<(), Error> {
+    fn post(&self, _base_url: &str, _topic: &str, payload: &[u8]) -> Result<(), Error> {
+        if !String::from_utf8_lossy(payload).contains(self.only) {
+            return Ok(());
+        }
         self.calls.fetch_add(1, Ordering::SeqCst);
         let left = self.fails_left.load(Ordering::SeqCst);
         if left > 0 {
@@ -333,6 +337,7 @@ fn a_sender_retries_three_times_and_an_always_failing_sender_does_not_panic() {
     preset("inst-retry");
     let fingerprints = super::configured_fingerprints().unwrap();
     let scripted = Arc::new(Scripted {
+        only: "RETRY-V4",
         fails_left: AtomicUsize::new(2),
         calls: AtomicUsize::new(0),
     });
@@ -349,19 +354,20 @@ fn a_sender_retries_three_times_and_an_always_failing_sender_does_not_panic() {
         &fingerprints.session,
         &fingerprints.cert,
     );
-    write_visitor(&facade, "V4", true);
+    write_visitor(&facade, "RETRY-V4", true);
     assert_eq!(scripted.calls.load(Ordering::SeqCst), 3);
 
     let always = Arc::new(Scripted {
+        only: "RETRY-V5",
         fails_left: AtomicUsize::new(9),
         calls: AtomicUsize::new(0),
     });
     super::install_sender(Arc::clone(&always) as Arc<dyn Sender>);
-    write_visitor(&facade, "V5", true);
+    write_visitor(&facade, "RETRY-V5", true);
     assert_eq!(always.calls.load(Ordering::SeqCst), 3);
 
     *super::sender_slot() = None;
-    write_visitor(&facade, "V6", true);
+    write_visitor(&facade, "RETRY-V6", true);
 }
 
 #[test]

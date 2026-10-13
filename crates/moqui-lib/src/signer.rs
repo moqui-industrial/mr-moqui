@@ -32,9 +32,9 @@ use base64::Engine;
 use rsa::pkcs1::DecodeRsaPrivateKey;
 use rsa::pkcs1v15::SigningKey;
 use rsa::pkcs8::DecodePrivateKey;
+use rsa::sha2::{Sha256, Sha384, Sha512};
 use rsa::signature::{RandomizedSigner, SignatureEncoding};
 use rsa::RsaPrivateKey;
-use rsa::sha2::{Sha256, Sha384, Sha512};
 use sha1_digest_011::Sha1;
 
 use crate::error::Error;
@@ -219,7 +219,6 @@ fn parse_private_key(der: &[u8]) -> Result<RsaPrivateKey, Error> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,46 +230,46 @@ mod tests {
     // PKCS8, and cross-checked with `openssl dgst -sha1 -sign key.pem | base64`.
     const MSG1: &str = "Hello QZ";
     const MSG2: &str = "caf\u{e9} \u{20ac} 1/2 print job {\"call\":\"print\",\"params\":{}}";
-const SHA1_MSG1: &str = concat!(
-    "O42KHicKJoEdDMDXBzv9QGNQnRg0jgPrQTsU7PRDOYWmAtRUd5rc4IChsjYL7GzW",
-    "YwRS1p3egjHzijdnzGyssd3pWAy80rUzeeTPi1jeeyTqApzC8/pHdRSsYwBk8Hwj",
-    "JAHi8kGJBjFXgZ7seDJVxhFs+sBTdsBx8lCUc+SWqcYx/fxYOrBQXnQ/K6fXaq9U",
-    "PU03Lj+cdcT3Ms6mxJUcwXwU7AsuaExo68F+DaICtQXEyz7PeO7bbGlNhDXz9a1U",
-    "cbfRhFJTW9p/94w51io97Yk7BkTVJa3ncyU+qRZDeHIORHalcMFG1SVSmXEP3qIM",
-    "2r2+ua1rzVy2KufZPgCAmQ=="
-);
-const SHA1_MSG2: &str = concat!(
-    "oQdatLT109kEJiYz0VbJbWRmmub3Znq56343q5P6u40oacbSDRFaPckC4eZVfMYg",
-    "6piEQ88/9txP05+cooOOmM+ueyRZv3d4Q/3Ke/EEly11mShWlb2WdOlVNvPdiuNd",
-    "LBlSpn/rWvuS1kG1gPEuPkMJVwyzDwqNb2YrdyuUs+iS3pGdHGnjNuxsLZalpRAD",
-    "9FTJ/nAlJs2b8vAVW4fHWAHIkRDY+iF7jFR9+txCqxFlVX1L8X9dYrLRZpPPmM6h",
-    "/KPbZkzLMle4JuFS4c7Wzxjr4Xft6T1aRJ/CkXd1D5LnHREx4xy7nZzcMZGIpuPx",
-    "Aes6woTbTgHS3oaM1illOA=="
-);
-const SHA1_EMPTY: &str = concat!(
-    "MkpOicZ6GdR9xziQP0lcB1S86VQO+k+TpX+wxe+APhU052RgZkJaepTvlVWrqlsY",
-    "8K4tHukGSVSpxkI5oVVqhRGaGYMAMxAJVRFy0yiXf9oP8iOtsz16M6JRP6KzxTOm",
-    "dr63lHuzt3QmajGmYHXAxWAN8vnSYl3Y7yS6O2UPcmDyruEL0xqGE5q7hwugP5oq",
-    "LpInmHjdqeqI0H9ZtkxhOymlqKsA6VoklD1WbNPCULS8X/qzu1vkdJL9IRcGSwys",
-    "0mmY1UcIgkd1szRLyiWJe4xo742gU9dXhqW0VTGAkYY0XxEJ2sEBZWSY4ZtM193d",
-    "QX0J2y2VA8uZ0rRWfidewA=="
-);
-const SHA256_MSG1: &str = concat!(
-    "KP+R/BzcNnGqgUBJwlcQaKg3omVYhm/GxcYyJmBRg9YoTIClHdi1EXJRdNKwNw32",
-    "NEZTE8YpVWe29MiL90pNeYEsA+8FJTHMxAAoBRjFhx41Gzbdb5Y6ziwuSpM8FybD",
-    "0vlTY2TlTLrHCleC//mQi70eli/jEkGUDQtQT97xLA/bal5w3d3UHDp2wNbr5fuh",
-    "ADevZQYiQFv4CIoJ/lr8cRuS2sJxyD2t/VidF1TwTndjuaL0qWzfsCpxzax/sr9w",
-    "FqgDdWHpLbvfNgqs2b19Arwps4b6srTyGcB34VpBGIXk/Kpo5PUg+cXJ5ijW3wSI",
-    "h826n4Ky7G4YZ08Ajdn3oQ=="
-);
-const SHA256_MSG2: &str = concat!(
-    "OYAAZVeTm6Na5sxW5UkQjHCnNA443FP5cN8nPphABW/yGvJZVMkoQDV64CuUdQOf",
-    "a1cKi6yfvT340VvYoZf8fXCcFvx3eLW+sITMu7O5r21TuzAd7E7ZkFSkQ2zIBftD",
-    "IlRlwmjhWhcixA4wvb6O+nsZt9arKsrkbYT04uPMIA8z/jdWQqNFBy3u/mzBYpX0",
-    "z43BkUdFw3Hr6YEu1HuoKkmKc324ZttiJtdTI3Ja9T+JBf+e4wcPhzHv3Zlmvc0t",
-    "9ehWubNWiMzqbma0X3qv7exTN5acBAeLgNObHgG0Auw74XIEAtg3MHo7wAvNBZYF",
-    "vlHynF3e8EvrB5hNcImo6w=="
-);
+    const SHA1_MSG1: &str = concat!(
+        "O42KHicKJoEdDMDXBzv9QGNQnRg0jgPrQTsU7PRDOYWmAtRUd5rc4IChsjYL7GzW",
+        "YwRS1p3egjHzijdnzGyssd3pWAy80rUzeeTPi1jeeyTqApzC8/pHdRSsYwBk8Hwj",
+        "JAHi8kGJBjFXgZ7seDJVxhFs+sBTdsBx8lCUc+SWqcYx/fxYOrBQXnQ/K6fXaq9U",
+        "PU03Lj+cdcT3Ms6mxJUcwXwU7AsuaExo68F+DaICtQXEyz7PeO7bbGlNhDXz9a1U",
+        "cbfRhFJTW9p/94w51io97Yk7BkTVJa3ncyU+qRZDeHIORHalcMFG1SVSmXEP3qIM",
+        "2r2+ua1rzVy2KufZPgCAmQ=="
+    );
+    const SHA1_MSG2: &str = concat!(
+        "oQdatLT109kEJiYz0VbJbWRmmub3Znq56343q5P6u40oacbSDRFaPckC4eZVfMYg",
+        "6piEQ88/9txP05+cooOOmM+ueyRZv3d4Q/3Ke/EEly11mShWlb2WdOlVNvPdiuNd",
+        "LBlSpn/rWvuS1kG1gPEuPkMJVwyzDwqNb2YrdyuUs+iS3pGdHGnjNuxsLZalpRAD",
+        "9FTJ/nAlJs2b8vAVW4fHWAHIkRDY+iF7jFR9+txCqxFlVX1L8X9dYrLRZpPPmM6h",
+        "/KPbZkzLMle4JuFS4c7Wzxjr4Xft6T1aRJ/CkXd1D5LnHREx4xy7nZzcMZGIpuPx",
+        "Aes6woTbTgHS3oaM1illOA=="
+    );
+    const SHA1_EMPTY: &str = concat!(
+        "MkpOicZ6GdR9xziQP0lcB1S86VQO+k+TpX+wxe+APhU052RgZkJaepTvlVWrqlsY",
+        "8K4tHukGSVSpxkI5oVVqhRGaGYMAMxAJVRFy0yiXf9oP8iOtsz16M6JRP6KzxTOm",
+        "dr63lHuzt3QmajGmYHXAxWAN8vnSYl3Y7yS6O2UPcmDyruEL0xqGE5q7hwugP5oq",
+        "LpInmHjdqeqI0H9ZtkxhOymlqKsA6VoklD1WbNPCULS8X/qzu1vkdJL9IRcGSwys",
+        "0mmY1UcIgkd1szRLyiWJe4xo742gU9dXhqW0VTGAkYY0XxEJ2sEBZWSY4ZtM193d",
+        "QX0J2y2VA8uZ0rRWfidewA=="
+    );
+    const SHA256_MSG1: &str = concat!(
+        "KP+R/BzcNnGqgUBJwlcQaKg3omVYhm/GxcYyJmBRg9YoTIClHdi1EXJRdNKwNw32",
+        "NEZTE8YpVWe29MiL90pNeYEsA+8FJTHMxAAoBRjFhx41Gzbdb5Y6ziwuSpM8FybD",
+        "0vlTY2TlTLrHCleC//mQi70eli/jEkGUDQtQT97xLA/bal5w3d3UHDp2wNbr5fuh",
+        "ADevZQYiQFv4CIoJ/lr8cRuS2sJxyD2t/VidF1TwTndjuaL0qWzfsCpxzax/sr9w",
+        "FqgDdWHpLbvfNgqs2b19Arwps4b6srTyGcB34VpBGIXk/Kpo5PUg+cXJ5ijW3wSI",
+        "h826n4Ky7G4YZ08Ajdn3oQ=="
+    );
+    const SHA256_MSG2: &str = concat!(
+        "OYAAZVeTm6Na5sxW5UkQjHCnNA443FP5cN8nPphABW/yGvJZVMkoQDV64CuUdQOf",
+        "a1cKi6yfvT340VvYoZf8fXCcFvx3eLW+sITMu7O5r21TuzAd7E7ZkFSkQ2zIBftD",
+        "IlRlwmjhWhcixA4wvb6O+nsZt9arKsrkbYT04uPMIA8z/jdWQqNFBy3u/mzBYpX0",
+        "z43BkUdFw3Hr6YEu1HuoKkmKc324ZttiJtdTI3Ja9T+JBf+e4wcPhzHv3Zlmvc0t",
+        "9ehWubNWiMzqbma0X3qv7exTN5acBAeLgNObHgG0Auw74XIEAtg3MHo7wAvNBZYF",
+        "vlHynF3e8EvrB5hNcImo6w=="
+    );
 
     #[test]
     fn sha1_with_rsa_matches_java_pkcs8() {
@@ -299,19 +298,37 @@ const SHA256_MSG2: &str = concat!(
     fn crlf_and_indented_pem_still_reads() {
         let crlf = PKCS8.replace('\n', "\r\n");
         assert_eq!(SimpleSigner::from_pem("crlf", &crlf).sign(MSG1).unwrap(), SHA1_MSG1);
-        let bare: String = PKCS8.lines().filter(|l| !l.starts_with("-----")).collect::<Vec<_>>().join("\n");
+        let bare: String = PKCS8
+            .lines()
+            .filter(|l| !l.starts_with("-----"))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert_eq!(SimpleSigner::from_pem("bare", &bare).sign(MSG1).unwrap(), SHA1_MSG1);
     }
 
     #[test]
     fn a_bad_key_fails_at_sign_not_at_construction() {
-        let signer = SimpleSigner::from_pem("classpath://qz-private-key.pem", "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n");
+        let signer = SimpleSigner::from_pem(
+            "classpath://qz-private-key.pem",
+            "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n",
+        );
         assert!(!signer.is_loaded());
         let err = signer.sign("x").unwrap_err();
-        assert!(err.message().contains("Cannot sign message, key could not be loaded from resource classpath://qz-private-key.pem"), "{}", err.message());
+        assert!(
+            err.message()
+                .contains("Cannot sign message, key could not be loaded from resource classpath://qz-private-key.pem"),
+            "{}",
+            err.message()
+        );
         assert!(SimpleSigner::from_pem("t", "not base64 !!").sign("x").is_err());
-        assert!(SimpleSigner::from_pem_with("t", PKCS8, Some("DSA"), None).sign("x").is_err());
-        assert!(SimpleSigner::from_pem_with("t", PKCS8, None, Some("MD5withRSA")).sign("x").is_err());
-        assert!(SimpleSigner::from_file(Path::new("/nonexistent/qz.pem")).sign("x").is_err());
+        assert!(SimpleSigner::from_pem_with("t", PKCS8, Some("DSA"), None)
+            .sign("x")
+            .is_err());
+        assert!(SimpleSigner::from_pem_with("t", PKCS8, None, Some("MD5withRSA"))
+            .sign("x")
+            .is_err());
+        assert!(SimpleSigner::from_file(Path::new("/nonexistent/qz.pem"))
+            .sign("x")
+            .is_err());
     }
 }

@@ -410,6 +410,7 @@ fn as_timestamp(value: &Value) -> Option<jiff::Timestamp> {
 }
 
 /// ForceNew commits before the caller can roll back.
+#[allow(clippy::too_many_arguments)]
 fn persist_rows(
     facade: &EntityFacade,
     topic: &str,
@@ -460,6 +461,7 @@ fn persist_rows(
     .map_err(Error::from)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn wrapped_message(
     message: &NotificationMessage,
     topic: Option<&EntityValue>,
@@ -478,7 +480,7 @@ fn wrapped_message(
             .sub_topic
             .as_ref()
             .filter(|text| !text.is_empty())
-            .map(|text| Value::string(text))
+            .map(Value::string)
             .unwrap_or(Value::Null),
     );
     wrapped.insert("sentDate".to_string(), sent.cloned().unwrap_or(Value::Null));
@@ -487,7 +489,7 @@ fn wrapped_message(
         message
             .notification_message_id
             .as_ref()
-            .map(|id| Value::string(id))
+            .map(Value::string)
             .unwrap_or(Value::Null),
     );
     wrapped.insert(

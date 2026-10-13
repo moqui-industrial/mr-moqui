@@ -346,7 +346,10 @@ mod tests {
     fn boot_security() -> (EntityFacade, crate::context::ExecutionContext, TempDir) {
         let runtime = temp_dir("seca-runtime");
         let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
-        let factory = ExecutionContextFactory::boot_with_framework(runtime.path(), &framework).expect("boot");
+        let factory = {
+            let _lock = crate::user::session::cookie_property_lock();
+            ExecutionContextFactory::boot_with_framework(runtime.path(), &framework).expect("boot")
+        };
         let facade = crate::testing::open_with(
             &crate::testing::framework_dir(),
             crate::testing::Options {

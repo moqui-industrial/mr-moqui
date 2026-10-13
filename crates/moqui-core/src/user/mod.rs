@@ -26,11 +26,13 @@ mod visit;
 pub use authz::{authorize, context_entered};
 pub(crate) use authz::{denied, is_permitted, note_entity_write, AuthInfo, Permit};
 pub use filter::apply_entity_filters;
+#[cfg(test)]
+pub(crate) use login::stamp_value;
 pub use login::{
     apply_header_keys, change_password, internal_login_user, login_anonymous, login_user, login_user_key, logout,
     logout_anonymous_only,
 };
-pub(crate) use login::{now_millis, now_value, stamp_value, value_millis};
+pub(crate) use login::{now_millis, now_value, value_millis};
 pub use password::hash_password;
 pub use period::period_range;
 pub use policy::password_acceptable;

@@ -229,10 +229,8 @@ fn parse_command(text: &str) -> Option<TopicCommand> {
     let text = text.trim();
     let (subscribe, names) = if let Some(rest) = text.strip_prefix("subscribe:") {
         (true, rest)
-    } else if let Some(rest) = text.strip_prefix("unsubscribe:") {
-        (false, rest)
     } else {
-        return None;
+        (false, text.strip_prefix("unsubscribe:")?)
     };
     let names = names
         .split(',')

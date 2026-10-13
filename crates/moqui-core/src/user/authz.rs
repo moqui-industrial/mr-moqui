@@ -698,7 +698,10 @@ mod tests {
     fn world() -> World {
         let runtime = temp_dir("authz-runtime");
         let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
-        let factory = ExecutionContextFactory::boot_with_framework(runtime.path(), &framework).expect("boot");
+        let factory = {
+            let _lock = crate::user::session::cookie_property_lock();
+            ExecutionContextFactory::boot_with_framework(runtime.path(), &framework).expect("boot")
+        };
         let facade = crate::testing::open();
         factory.set_entity(facade.clone());
         let context = factory.new_context();

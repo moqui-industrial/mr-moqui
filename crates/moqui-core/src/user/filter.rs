@@ -374,7 +374,10 @@ mod tests {
         clear_context_stack();
         let runtime = temp_dir("filter-runtime");
         let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
-        let factory = ExecutionContextFactory::boot_with_framework(runtime.path(), &framework).expect("boot");
+        let factory = {
+            let _lock = crate::user::session::cookie_property_lock();
+            ExecutionContextFactory::boot_with_framework(runtime.path(), &framework).expect("boot")
+        };
         let (facade, _model_dir) = product_facade();
         factory.set_entity(facade.clone());
         let context = factory.new_context();

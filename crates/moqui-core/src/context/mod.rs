@@ -39,15 +39,12 @@ pub use resource::{ResourceFacade, ResourceRef};
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
     use std::time::SystemTime;
 
     use moqui_lib::env;
     use moqui_lib::node::MNode;
 
     use super::ExecutionContextFactory;
-
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn workspace_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -136,7 +133,7 @@ mod tests {
 
     #[test]
     fn boot_registers_components_and_named_resource_errors() {
-        let _lock = TEST_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let _lock = crate::user::session::cookie_property_lock();
         let root = workspace_root();
         let _env = EnvGuard::new(root.clone());
         let before = repo_env_stamp(&root);
@@ -181,7 +178,7 @@ mod tests {
 
     #[test]
     fn generated_secret_is_stable_and_unwritable_env_fails() {
-        let _lock = TEST_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let _lock = crate::user::session::cookie_property_lock();
         let root = workspace_root();
         let _env = EnvGuard::new(root.clone());
         let before = repo_env_stamp(&root);
@@ -245,7 +242,7 @@ mod tests {
 
     #[test]
     fn artifact_stack_allows_and_authz_depth_follows_the_guard() {
-        let _lock = TEST_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let _lock = crate::user::session::cookie_property_lock();
         let root = workspace_root();
         let _env = EnvGuard::new(root.clone());
         let before = repo_env_stamp(&root);

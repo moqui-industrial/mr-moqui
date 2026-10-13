@@ -263,7 +263,7 @@ fn subscriber_receives_one_message() {
     message.insert("label".to_string(), Value::string(&label));
     let mut note = NotificationMessage::new();
     note.topic("HelloTopic")
-        .title(format!("Hello ${{label}}"))
+        .title("Hello ${label}")
         .message_map(message)
         .persist(false)
         .send()

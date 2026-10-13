@@ -220,6 +220,7 @@ pub struct EntityModel {
     entities: Vec<EntityDefinition>,
     by_full: HashMap<String, usize>,
     by_name: HashMap<String, Vec<usize>>,
+    by_alias: HashMap<String, usize>,
 }
 
 impl EntityModel {
@@ -272,11 +273,18 @@ impl EntityModel {
         }
         resolve_relationships(&mut entities, &index_by_name)?;
         create_auto_reverses(&mut entities, &index_by_full)?;
+        let mut by_alias = HashMap::new();
+        for (index, entity) in entities.iter().enumerate() {
+            if let Some(alias) = entity.short_alias.as_ref().filter(|alias| !alias.is_empty()) {
+                by_alias.entry(alias.clone()).or_insert(index);
+            }
+        }
         Ok(Self {
             dictionary,
             entities,
             by_full: index_by_full,
             by_name: index_by_name,
+            by_alias,
         })
     }
 
@@ -302,7 +310,7 @@ impl EntityModel {
         self.entities.iter().map(|entity| entity.full_name.as_str()).collect()
     }
 
-    /// Full name, or an entity name that belongs to one definition.
+    /// Full name, an entity name that belongs to one definition, or a `short-alias`.
     pub fn entity(&self, name: &str) -> Result<&EntityDefinition, Error> {
         if let Some(index) = self.by_full.get(name) {
             return Ok(&self.entities[*index]);
@@ -310,7 +318,10 @@ impl EntityModel {
         match self.by_name.get(name) {
             Some(indexes) if indexes.len() == 1 => Ok(&self.entities[indexes[0]]),
             Some(_) => Err(Error::new(format!("entity name {name} is not unique"))),
-            None => Err(Error::new(format!("no entity named {name}"))),
+            None => match self.by_alias.get(name) {
+                Some(index) => Ok(&self.entities[*index]),
+                None => Err(Error::new(format!("no entity named {name}"))),
+            },
         }
     }
 
@@ -998,6 +1009,14 @@ mod tests {
         let missing = model.entity("moqui.missing.NoSuch").unwrap_err();
         assert!(missing.to_string().contains("NoSuch"));
         assert!(model.entity_full("moqui.missing.NoSuch").is_none());
+    }
+
+    #[test]
+    fn a_short_alias_names_its_entity() {
+        let model = framework_model();
+        let group = model.entity("artifactGroups").unwrap();
+        assert_eq!(group.full_name, "moqui.security.ArtifactGroup");
+        assert!(model.entity("noSuchAlias").is_err());
     }
 
     #[test]
