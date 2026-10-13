@@ -31,7 +31,7 @@ along with this software (see the LICENSE.md file). If not, see
         <!-- NOTE: this template will take care of the active subscreen, if needed; it's not needed for the dynamic menu -->
         <render-mode>
             <text type="html" location="component://tools/template/AutoScreenMenu.html.fancy"/>
-            <text type="qvt" location="component://tools/template/AutoScreenMenu.qvt.ftl"/>
+            <text type="qvt" location="component://tools/template/AutoScreenMenu.qvt.fancy"/>
         </render-mode>
     </widgets>
 </screen>

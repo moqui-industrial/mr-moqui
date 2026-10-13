@@ -265,6 +265,26 @@ impl HostUser {
         host_guard(&ctx, || Ok(crate::l10n::locale()))
     }
 
+    /// The time zone of the session, the user's own when there is no other, else UTC.
+    #[qjs(get, rename = "timeZone")]
+    fn time_zone_property(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(session_time_zone_name()))
+    }
+
+    fn get_time_zone(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(session_time_zone_name()))
+    }
+
+    /// The logged-in user's `UserAccount` without the password and lockout columns, or null.
+    #[qjs(get, rename = "userAccount")]
+    fn user_account_property<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || match user_account_snapshot() {
+            Ok(Some(map)) => host_to_js(&ctx, Value::Map(map)),
+            Ok(None) => Null.into_js(&ctx),
+            Err(err) => Err(Exception::throw_message(&ctx, err.message())),
+        })
+    }
+
     /// The current time. A script sees time stamps as text, so this is the text of the stamp.
     #[qjs(get, rename = "nowTimestamp")]
     fn now_timestamp_property<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
@@ -288,6 +308,49 @@ impl HostUser {
             Err(err) => Err(Exception::throw_message(&ctx, err.message())),
         })
     }
+}
+
+fn session_time_zone_name() -> String {
+    crate::user::time_zone()
+        .ok()
+        .flatten()
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "UTC".to_string())
+}
+
+/// The columns of `UserAccount` that never leave the server.
+const USER_ACCOUNT_PRIVATE: [&str; 8] = [
+    "currentPassword",
+    "passwordSalt",
+    "passwordHashType",
+    "passwordSetDate",
+    "passwordHint",
+    "successiveFailedLogins",
+    "disabledDateTime",
+    "requirePasswordChange",
+];
+
+fn user_account_snapshot() -> Result<Option<indexmap::IndexMap<String, Value>>, crate::context::Error> {
+    let Some(user_id) = crate::user::current_user_id()? else {
+        return Ok(None);
+    };
+    let Some(facade) = crate::context::ExecutionContext::with_current(|ec| ec.factory().entity()).flatten() else {
+        return Ok(None);
+    };
+    let _authz = crate::context::ExecutionContext::with_current(|ec| ec.disable_authz());
+    let found = facade
+        .find("moqui.security.UserAccount")
+        .map_err(crate::context::Error::from)?
+        .eq("userId", Value::string(&user_id))
+        .one()
+        .map_err(crate::context::Error::from)?;
+    Ok(found.map(|row| {
+        row.fields()
+            .iter()
+            .filter(|(key, _)| !USER_ACCOUNT_PRIVATE.contains(&key.as_str()))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
+    }))
 }
 
 fn user_preference(key: &str) -> Result<Option<String>, crate::context::Error> {

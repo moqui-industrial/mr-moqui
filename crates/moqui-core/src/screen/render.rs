@@ -382,8 +382,25 @@ pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> 
     let begin = state.url_info.begin_transaction;
     let timeout = state.url_info.transaction_timeout;
     in_transaction(begin, timeout, || render_screens(&state, &facade))?;
+    add_client_component_headers(&state);
     record_history(job, &state);
     Ok(())
+}
+
+/// The qvt family answers a client that builds a component from the text. A merged response is for one user and one
+/// request, so it is never cached, and `X-Moqui-Qvt` names how the client handles the text: `merged-fragment` is a
+/// template with the request's values in it. (A server-static template says `static-template` and caches.)
+fn add_client_component_headers(state: &RenderState) {
+    if !matches!(state.render_mode.as_str(), "qvt" | "qjs" | "qvue")
+        || !web::output_sent()
+        || web::output_status() != 200
+    {
+        return;
+    }
+    web::add_header("Cache-Control", "private, no-store");
+    if state.render_mode == "qvt" {
+        web::add_header("X-Moqui-Qvt", "merged-fragment");
+    }
 }
 
 /// A page the user got in `html` goes on the screen history, newest first, with its query. A fragment

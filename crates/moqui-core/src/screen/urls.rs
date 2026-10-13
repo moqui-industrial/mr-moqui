@@ -43,6 +43,8 @@ pub struct UrlInstance {
     pub read_only: bool,
     pub exists: bool,
     pub is_transition: bool,
+    /// The HTTP method of the transition, lower case, empty for a screen.
+    pub transition_method: String,
 }
 
 impl UrlInstance {
@@ -219,6 +221,7 @@ fn resolve_names(state: &RenderState, names: Vec<String>) -> Result<UrlInstance,
             }
             if let Some(transition) = info.transition(None) {
                 url.is_transition = true;
+                url.transition_method = transition.method.to_ascii_lowercase();
                 url.read_only = transition.read_only;
                 for item in &transition.parameters {
                     if let Some(value) = parameter_value(item)? {

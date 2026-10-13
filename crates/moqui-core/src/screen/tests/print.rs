@@ -393,11 +393,11 @@ fn screen_render_email_renders_in_text_and_html_print() {
             .unwrap_or_else(|err| panic!("{mode}: {err}"))
     };
     // The text body: the title, the link with the parameters sorted and the excluded one left out, then a
-    // line for each parameter that has a value. The path /apps/ is changed to /vapps/ by the screen's script.
+    // line for each parameter that has a value. The path /apps/ is changed to /qapps/ by the screen's script.
     let text = render_mode("text").body_text();
     assert_eq!(
         text,
-        "Daily Report\n\nhttps://example.com/vapps/Reports/Daily?alpha=first&empty=&zeta=%3Cb%3Ebold%3C%2Fb%3E%20%26%20more\n\n\
+        "Daily Report\n\nhttps://example.com/qapps/Reports/Daily?alpha=first&empty=&zeta=%3Cb%3Ebold%3C%2Fb%3E%20%26%20more\n\n\
          alpha: first\nzeta: <b>bold</b> & more\n"
     );
     // The html body is the html-print body too, and escapes the values.
@@ -405,7 +405,7 @@ fn screen_render_email_renders_in_text_and_html_print() {
     let body = print_body(&print);
     assert!(body.contains("<h2>Daily Report</h2>"), "{body}");
     assert!(
-        body.contains("<a href=\"https://example.com/vapps/Reports/Daily?alpha=first&amp;empty=&amp;zeta=%3Cb%3Ebold%3C%2Fb%3E%20%26%20more\">"),
+        body.contains("<a href=\"https://example.com/qapps/Reports/Daily?alpha=first&amp;empty=&amp;zeta=%3Cb%3Ebold%3C%2Fb%3E%20%26%20more\">"),
         "{body}"
     );
     assert!(body.contains("<div><strong>alpha</strong>: first</div>"), "{body}");

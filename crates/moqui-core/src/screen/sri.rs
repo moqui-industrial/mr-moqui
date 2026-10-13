@@ -1589,7 +1589,7 @@ pub fn menu_items(state: &RenderState, screen_path: Option<&str>) -> Result<Vec<
 
 /// Whether the user may view a screen: a screen that requires authentication needs a user and
 /// an authorization record.
-fn screen_permitted(def: &ScreenDef) -> bool {
+pub(super) fn screen_permitted(def: &ScreenDef) -> bool {
     let required = def.authentication == super::definition::Authentication::Required;
     if required && user::current_username().ok().flatten().is_none() {
         return false;

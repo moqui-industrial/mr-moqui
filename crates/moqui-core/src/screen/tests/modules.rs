@@ -236,12 +236,40 @@ fn an_unknown_element_a_bad_expression_and_a_missing_module_are_clear_errors() {
     .unwrap_err();
     assert!(bad.message().contains("not JavaScript"), "{bad}");
 
-    // qvt has no module yet: empty widgets render nothing, others say why not
-    let empty = render(write("Empty.xml", ""), "qvt").unwrap();
-    assert!(empty.body.is_empty());
-    let qvt = render(write("Qvt.xml", "<label text=\"a\"/>"), "qvt").unwrap_err();
-    assert!(qvt.message().contains("no macro module ScreenQvt.js"), "{qvt}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
+#[test]
+fn a_mode_whose_module_file_is_missing_says_so_for_widgets_and_renders_nothing_for_none() {
+    let dir = std::env::temp_dir().join(format!("moqui-macro-missing-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let write = |name: &str, widgets: &str| {
+        let path = dir.join(name);
+        std::fs::write(
+            &path,
+            format!(r#"<screen require-authentication="false"><widgets>{widgets}</widgets></screen>"#),
+        )
+        .unwrap();
+        path.to_string_lossy().into_owned()
+    };
+    let conf = r#"<moqui-conf><screen-facade><screen-text-output type="qvt" mime-type="text/html" macro-template-location="framework/template/screen/Gone.js"/></screen-facade></moqui-conf>"#;
+    let world = World::open(conf);
+    let context = world.factory.new_context();
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    let render = |location: String| {
+        make_render(&world.factory)
+            .root_screen(location)
+            .render_mode("qvt")
+            .render()
+    };
+    let empty = render(write("Empty.xml", "")).unwrap();
+    assert!(empty.body.is_empty());
+    let missing = render(write("Qvt.xml", "<label text=\"a\"/>")).unwrap_err();
+    assert!(
+        missing.message().contains("there is no macro module Gone.js"),
+        "{missing}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

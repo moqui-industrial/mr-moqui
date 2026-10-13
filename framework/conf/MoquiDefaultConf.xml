@@ -192,8 +192,6 @@
         <cache name="screen.url" value-type="org.moqui.impl.screen.ScreenUrlInfo"/>
         <cache name="screen.info" value-type="List"/>
         <cache name="screen.info.ref.rev" value-type="Set"/>
-        <cache name="screen.template.mode" value-type="freemarker.template.Template"/>
-        <cache name="screen.template.location" value-type="freemarker.template.Template"/>
         <cache name="widget.template.location" value-type="MNode"/>
         <cache name="screen.find.path" value-type="ArrayList"/>
         <cache name="screen.form.db.node" value-type="MNode"/>
@@ -203,8 +201,6 @@
         <cache name="resource.javascript.location" value-type="java.lang.Class"/>
 
         <!-- These caches must be local caches (use additional methods on MCache not in javax.cache.Cache) -->
-        <cache name="resource.ftl.location" value-type="freemarker.template.Template" type="local" max-elements="10000"/>
-        <cache name="resource.gstring.location" value-type="groovy.text.Template" type="local" max-elements="10000"/>
         <cache name="resource.wiki.location" value-type="String" type="local" max-elements="10000" expire-time-live="3600"/>
         <cache name="resource.markdown.location" value-type="String" type="local" max-elements="10000" expire-time-live="3600"/>
         <cache name="resource.text.location" value-type="String" type="local" max-elements="10000" expire-time-live="3600"/>
@@ -404,11 +400,6 @@
         <resource-reference scheme="dbresource" class="org.moqui.impl.context.reference.DbResourceReference"/>
 
         <!-- renderer class needs to implement the org.moqui.context.TemplateRenderer interface -->
-        <template-renderer extension="ftl" class="org.moqui.impl.context.renderer.FtlTemplateRenderer"/>
-        <template-renderer extension="html.ftl" class="org.moqui.impl.context.renderer.FtlTemplateRenderer"/>
-        <template-renderer extension="json.ftl" class="org.moqui.impl.context.renderer.FtlTemplateRenderer"/>
-        <template-renderer extension="gstring" class="org.moqui.impl.context.renderer.GStringTemplateRenderer"/>
-        <template-renderer extension="html.gstring" class="org.moqui.impl.context.renderer.GStringTemplateRenderer"/>
 
         <!-- fancy templates: if, list and assign tags plus ${expr}, compiled to a cached JavaScript function. The
             -locked renderers see only the plain snapshot of the map passed in. See Templating in plans/Architecture-Proposal.md -->
@@ -419,8 +410,6 @@
 
         <template-renderer extension="md" class="org.moqui.impl.context.renderer.MarkdownTemplateRenderer"/>
         <template-renderer extension="markdown" class="org.moqui.impl.context.renderer.MarkdownTemplateRenderer"/>
-        <template-renderer extension="md.ftl" class="org.moqui.impl.context.renderer.FtlMarkdownTemplateRenderer"/>
-        <template-renderer extension="markdown.ftl" class="org.moqui.impl.context.renderer.FtlMarkdownTemplateRenderer"/>
 
         <!-- a renderer for .html isn't necessary because the default is to write the text as-is, however this is useful
             so that the extension becomes a default extension and doesn't have to be in the URL -->

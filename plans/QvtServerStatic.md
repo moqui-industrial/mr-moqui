@@ -72,7 +72,7 @@ Links are transcribed as a path plus the `<parameter>` elements, evaluated again
 
 `dynamic="true"`, and a form whose `extends`, service name, or entity name is an expression, rebuild the widget tree from request data. There is no single template to cache. The qvt response for that screen stays a server merge, the static cache header is withheld, and the compatibility report says why. DbForm and `screen-extend` are configuration. They are part of the resolved definition, and the cache identity includes that resolved definition so a form edited in the database is not served as the previous template.
 
-`m-form-list` in `WebrootVue.qvt.js` is a stub (Bootstrap markup, no sub-rows, no row selection, no saved finds). The static form-list is a new Quasar component that fetches `/actions/{formName}`, pushes each row, and paginates by changing that request. It does not reuse the stub.
+`m-form-list` in `WebrootVue.qvt.js` is a stub (Bootstrap markup, no sub-rows, no row selection, no saved finds). The static form-list is a new Quasar component that fetches `/actions/{formName}`, pushes each row, and paginates by changing that request. It does not reuse the stub. Phase 8 slice 6 replaced the stub with a client component of that shape (`m-form-list` in `webroot/js/WebrootVue.qvt.js`: rows from a list or a URL, sort, pages, selection, sub-row slot, and the slots `rowForm`, `row`, `header`); the static macros fill its slots, and the server-merged macros still write the rows themselves. The client side of the `X-Moqui-Qvt` header is `moqui.qvtHandlers`: this work installs the `static-template` handler there.
 
 ## Browser host
 

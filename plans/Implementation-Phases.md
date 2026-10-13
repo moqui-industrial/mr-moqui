@@ -326,6 +326,45 @@ Appended slice by slice.
   for the shell, `ec.web.errorParameters` and the field values of a form. Pages the user got in `html` go on the screen
   history, newest first, for `screen-last` and the navbar menu. A failure for a browser (`Accept: text/html`, not an API path) renders
   `error/*` with `errorCode`, `errorType`, `errorMessage`, `errorThrowable` and `showErrorDetail`.
+- **Slice 6, qvt server-merged, qjs, qvue.** `ScreenQvt.js` writes the Vue template of the target screen, as the html module does: a runtime
+  object that each engine runs once (`$mqQvt`) holds the markup of each widget and a unit holds the structure of its form. The body of a `.qvt`
+  response is the template, not a component object: the client wraps it as `{template: '<div id="...">' + body + '</div>'}` as the Java client
+  did, so `qjs` (the script object) and `qvue` (a component file) stay companions of the same screen. The widgets are the `m-*` wrappers
+  of `js/WebrootVue.qvt.js` (list in `webroot/js/README.md`); a macro writes no raw `q-input`, `q-select`, `q-date` or `q-field`. Form fields
+  start from `fields-initial` (the port of `addFormFieldValue` is in the runtime, so a form-list row gets its values from the row it
+  renders), a widget binds `v-model` inside a form and `model-value` outside one, and every opening brace of request text is the character
+  reference `&#123;`, which keeps data from being read as an interpolation (the Java macros used `v-pre`). Differences from the FreeMarker macros are
+  at the top of `ScreenQvt.js`: `text-line` with `ac-transition` is an `m-drop-down` with `server-search` (the Java macro wrote an error),
+  a confirmation is a `data-confirm` attribute the shell answers, the `background-message` is text and not evaluated, `editor-type` `html`
+  and `md` are `m-text-area` (`QEditor`; a text area with a Marked preview), `lookup` is a text line, the Inputmask `mask` is converted to Quasar's
+  tokens, a form-list with `group-by` sub-lists keeps every column in the main row, the navigation bar of a form-list sits above the table, and
+  the saved finds list and the screen documents are not written (nothing reads the user finds yet). The saved find dialog has the save-new-find form
+  only, and the column dialog is `m-form-column-config`. `ScreenPlain.js` serves `qjs` and `qvue`: the text of the screen's own `render-mode`
+  elements and the subscreen and section calls. The mode a unit is made for reaches a module that serves more than one mode as
+  `T.options.mode`.
+- **Page shell and host.** `/qapps/**` is `webroot/screen/webroot/qapps.xml` (`allow-extra-path`) and renders `includes/WebrootVue.qvt.html.fancy`
+  in the html mode; the screens it shows are fetched from `/apps/**` as `.qvt` (`.qjs`, `.qvue`) and are always standalone, so only the target
+  screen renders and `pre-actions` run from the third screen of the path on. The default mode of `/qapps` is therefore html, and qvt
+  is the mode of what it loads. The pre-actions of `qapps.xml` add the scripts to `footer_scripts` and build `qvtConfig`, which the shell writes
+  as the one JSON block `<script type="application/json" id="moqui-config">` (shape in `js/README.md`). The `AutoScreenMenu.qvt.ftl` of the tools
+  component is `AutoScreenMenu.qvt.fancy`, and `AutoEdit.xml` names it. A qvt-family response (`qvt`, `qjs`, `qvue`) that is not server-static says
+  `Cache-Control: private, no-store`, and `qvt` says `X-Moqui-Qvt: merged-fragment` (`render.rs`, `add_client_component_headers`).
+  `sri.getMenuData` (`screen/menu.rs`) is the `menuData` transition of `webroot.xml`: the pre-actions of the screens on the path from the third on run
+  (an error in one is logged), each screen on the path has its subscreens in menu order with the ones the user may not view or that miss a required
+  parameter dropped, and the target comes last with its extra path and render modes; 401 for nobody, 404 for a path that is no screen and 403 for one
+  the user may not view. A grant is read with the parents of the item on the artifact stack, so it reaches the screens below. The `apps.xml` transition `l10nCatalog`
+  answers the messages of a locale for `moqui.l10n.localize`. `ec.user.timeZone` and a `ec.user.userAccount` without its password columns are new host
+  properties; `sri.getScreenUrlInfo().extraPathNameList` and the url methods `isScreenUrl`, `isTransition` and `getTransitionMethod` too. The
+  emailed link of `ScreenRenderEmail.xml` and the `ServiceJobError` link point to `/qapps` and not to the dropped `/vapps`. The FreeMarker and GString
+  renderers and caches of the Java conf are out of `MoquiDefaultConf.xml` and `MoquiDevConf.xml`.
+- **The client.** `MoquiLib.js`, `MoquiL10n.js`, `WebrootVue.qvt.js` and `MoquiQzComponent.js` in `webroot/js` are plain ES2020 on Vue 3.5 and Quasar 2.35
+  (the vendored libs), with `fetch` for requests, one JSON settings block, `QPopupEdit` for `m-editable`, `QEditor`, Chart.js 4, Mermaid 11
+  (`mermaid.run`), QZ Tray 2.3 on `QDialog`, a vue-router stand-in for Quasar's `to`, and `loadComponent` choosing by the `X-Moqui-Qvt` header (only
+  `merged-fragment` is handled; `static-template` is an error until the server-static slice installs its handler in `moqui.qvtHandlers`). The Assist
+  panel (`js/assist`) is not ported. `MoquiL10n.js` checks against `crates/moqui-lib/testdata/format-vectors.json`.
+- **Tests.** Golden code for `qvt`, `qjs`, `qvue` (`script/testdata/screen/<mode>/`), the rendered templates in `qvt/render/*.qvt` (each compiled with the vendored
+  Vue compiler in QuickJS, `screen::vue_check`), menu data with permissions (`tests/menu.rs`), the Node tests of the client (run by `cargo test` when `node` is on the
+  path), and `gate3.rs` for `ArtifactGroupDetail` as `.qvt`, `.qjs` and `.qvue`, the `/qapps` shell and `/menuData` over HTTP.
 
 ## Phase 9 — SearchFacade
 

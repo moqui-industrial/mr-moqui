@@ -20,47 +20,39 @@ along with this software (see the LICENSE.md file). If not, see
         // if user not logged in save current path and params then redirect to Login
         if (!ec.user.userId) { ec.web.saveScreenLastInfo(null, null); sri.sendRedirectAndStopRender('/Login') }
 
-        html_scripts.add('/libs/moment.js/moment-with-locales.min.js')
-        html_scripts.add('/libs/jquery/jquery.min.js')
+        // The libraries and the client, in the order they load. footer_scripts is written by Footer.html.fancy after the page.
+        // vue.global.prod.js is the build with the template compiler, which server-merged qvt needs (and unsafe-eval in a CSP).
+        const quasarLangs = ['en-US', 'de', 'es', 'fr', 'it', 'pt-BR', 'ja', 'zh-CN', 'ru', 'nl']
+        const localeTag = String(ec.user.locale || 'en_US').replace('_', '-')
+        const language = localeTag.split('-')[0]
+        let quasarLang = quasarLangs.includes(localeTag) ? localeTag : quasarLangs.find((tag) => tag.split('-')[0] === language) || 'en-US'
+        footer_scripts.add('/libs/vue/vue.global.prod.js')
+        footer_scripts.add('/libs/quasar/quasar.umd.prod.js')
+        footer_scripts.add('/libs/quasar/lang/' + quasarLang + '.umd.prod.js')
+        footer_scripts.add('/js/MoquiLib.js')
+        footer_scripts.add('/js/MoquiL10n.js')
+        footer_scripts.add('/js/WebrootVue.qvt.js')
 
-        const instancePurpose = System.getProperty("instance_purpose")
-        if (!instancePurpose || instancePurpose == 'production') {
-            /* ========== Production Mode ========== */
-            html_scripts.add('/js/MoquiLib.min.js')
-            // Vue JS
-            footer_scripts.add('/libs/vue/vue.min.js')
-            // http-vue-loader
-            footer_scripts.add('/js/http-vue-loader/httpVueLoader.js')
-            // Quasar
-            footer_scripts.add("/libs/quasar/quasar.umd.min.js")
-            // Webroot Quasar-Vue instance, in footer so runs after page loaded
-            footer_scripts.add('/js/WebrootVue.qvt.min.js')
-        } else {
-            /* ========== Dev Mode ========== */
-            html_scripts.add('/js/MoquiLib.js')
-            // Vue JS
-            footer_scripts.add('/libs/vue/vue.js')
-            // http-vue-loader
-            footer_scripts.add('/js/http-vue-loader/httpVueLoader.js')
-            // Quasar
-            footer_scripts.add("/libs/quasar/quasar.umd.min.js")
-            // Webroot Quasar-Vue instance, in footer so runs after page loaded
-            footer_scripts.add('/js/WebrootVue.qvt.js')
+        // The settings of the client: one JSON block in the shell, WebrootVue.qvt.html.fancy.
+        const qzEnabled = ec.user.getPreference('qz.print.enabled') == 'true'
+        qvtConfig = {
+            sessionToken: ec.web.sessionToken, appHost: ec.web.getHostName(true), appRootPath: '', basePath: '/apps', linkBasePath: '/qapps',
+            userId: ec.user.userId, username: ec.user.username, userFullName: (ec.user.userAccount && ec.user.userAccount.userFullName) || '',
+            locale: localeTag, timeZone: ec.user.timeZone, quasarLang: quasarLang.replace(/-([a-zA-Z])/g, (m, ch) => ch.toUpperCase()),
+            darkMode: ec.user.getPreference('QUASAR_DARK') == 'true', leftOpen: ec.user.getPreference('QUASAR_LEFT_OPEN') == 'true',
+            notificationEndpoint: System.getProperty('webapp_notification_endpoint') || '',
+            navPlugins: sri.getThemeValues('STRT_HEADER_NAVBAR_COMP'), accountPlugins: sri.getThemeValues('STRT_HEADER_ACCOUNT_COMP'),
+            qz: { enabled: qzEnabled },
+            qvt: { build: 'compiler', handles: ['merged-fragment'] },
+            labels: { sendCodeTo: ec.l10n.localize('Send code to') }
         }
-
-        // conditional QZ Tray scripts, only include if enabled
-        if (ec.user.getPreference("qz.print.enabled") == "true") {
-            footer_scripts.add('/js/qz-tray/sha-256.min.js')
-            footer_scripts.add('/js/qz-tray/qz-tray.min.js')
-            // TODO migrate MoquiQzComponent.js to MoquiQzComponent.qvt.js
-            footer_scripts.add('/js/qz-tray/MoquiQzComponent.js')
-        }
+        // conditional QZ Tray scripts, only for a user who turned printing on; the client loads them
     ]]></script></pre-actions>
 
     <widgets>
         <render-mode>
             <!-- for html just render the navbar (Vue page wrapper and nav component) -->
-            <text type="html" location="component://webroot/screen/includes/WebrootVue.qvt.ftl"/>
+            <text type="html" location="component://webroot/screen/includes/WebrootVue.qvt.html.fancy"/>
             <!-- not meant to be used for anything else, for all other render modes go directly through /apps -->
         </render-mode>
     </widgets>

@@ -23,6 +23,7 @@ mod definition;
 mod dispatch;
 pub(crate) mod form;
 pub(crate) mod generate;
+pub(crate) mod menu;
 mod pdf;
 mod render;
 mod schema;
@@ -31,6 +32,7 @@ pub(crate) mod sri;
 pub mod static_files;
 mod url;
 pub(crate) mod urls;
+pub mod vue_check;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

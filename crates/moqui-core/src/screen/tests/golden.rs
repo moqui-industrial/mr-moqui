@@ -96,6 +96,25 @@ fn golden_html() {
     }
 }
 
+/// Fixtures only the qvt mode has: row selection, a form that posts every row, the find and column dialogs, and the rest of the widgets.
+const QVT_FIXTURES: &[&str] = &["qvt-extras"];
+
+#[test]
+fn golden_qvt() {
+    for name in FIXTURES.iter().chain(HTML_FIXTURES).chain(QVT_FIXTURES) {
+        check("qvt", name, false);
+    }
+}
+
+#[test]
+fn golden_qjs_and_qvue() {
+    for mode in ["qjs", "qvue"] {
+        for name in FIXTURES {
+            check(mode, name, false);
+        }
+    }
+}
+
 #[test]
 fn debug_comments_name_each_element() {
     check("text", "links-labels", true);
@@ -103,8 +122,13 @@ fn debug_comments_name_each_element() {
 
 #[test]
 fn every_generated_unit_parses_and_declares_no_global() {
-    for mode in ["text", "csv", "xml", "html-print", "html"] {
-        for name in FIXTURES.iter().chain(if mode == "html" { HTML_FIXTURES } else { &[] }) {
+    for mode in ["text", "csv", "xml", "html-print", "html", "qvt", "qjs", "qvue"] {
+        let extra: &[&str] = match mode {
+            "html" => HTML_FIXTURES,
+            "qvt" => &["html-containers", "html-fields", "html-form-list", "qvt-extras"],
+            _ => &[],
+        };
+        for name in FIXTURES.iter().chain(extra) {
             let xml = std::fs::read_to_string(testdata().join(format!("{name}.xml"))).unwrap();
             let body = generate_xml(mode, &xml, false).unwrap();
             // Names the generated code declares start with $, so a screen field cannot be hidden.

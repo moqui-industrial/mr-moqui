@@ -185,3 +185,29 @@ fn the_html_client_passes_its_node_tests() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// The qvt client: MoquiLib.js, the formatter MoquiL10n.js (checked against the vectors the server formatter uses),
+/// and the components of WebrootVue.qvt.js (every template compiles). Nothing runs when `node` is not installed.
+#[test]
+fn the_qvt_client_passes_its_node_tests() {
+    let dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/webroot/screen/webroot/js");
+    let mut command = std::process::Command::new("node");
+    command.arg("--test");
+    for name in ["MoquiLib.test.js", "MoquiL10n.test.js", "WebrootVue.qvt.test.js"] {
+        command.arg(dir.join(name));
+    }
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(err) => {
+            eprintln!("skipping the qvt client tests, no node: {err}");
+            return;
+        }
+    };
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

@@ -24,7 +24,7 @@ along with this software (see the LICENSE.md file). If not, see
         <if condition="webHostName &amp;&amp; screenPath">
             <script><![CDATA[
                 if (!screenPath.startsWith('/')) screenPath = '/' + screenPath
-                screenPath = screenPath.replaceAll('/apps/', '/vapps/')
+                screenPath = screenPath.replaceAll('/apps/', '/qapps/')
                 curScreenUrl = "https://" + webHostName + screenPath
                 const parms = bodyParmKeys.map(key => encodeURIComponent(key) + '=' + encodeURIComponent(bodyParameters[key] ?? ''))
                 if (parms.length) curScreenUrl += '?' + parms.join('&')

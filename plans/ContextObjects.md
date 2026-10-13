@@ -195,7 +195,7 @@ template still works.
 `sri`, intentionally deferred to the html slices because only their macros call them: `getFieldTransitionValue` and
 the server-side `dynamic-options` (both run a transition as a test render), `makeFormListSingleMap`,
 `makeFormListMultiMap`, `getFormListHeaderValues`, `getFormFieldValues`, `startFormListSubRow`, `endFormListSubRow`,
-`getMenuData`, `getFormInstance().makeFormListRenderInfo()`, and the screen definition's `getMenuSubscreensItems`.
+`getFormInstance().makeFormListRenderInfo()`, and the screen definition's `getMenuSubscreensItems`.
 Form-list `group-by`, `sub-list`, `show-total`, saved finds and `select-columns` are deferred with them.
 `auto-fields-service`, `auto-widget-service`, `DbForm` forms and `dynamic="true"` forms are not assembled. A related
 entity's drop-down in `auto-fields-entity` is a text widget.
@@ -273,6 +273,29 @@ The html mode, its page shell, static files, uploads, and the messages a redirec
   `/libs/fontawesome/css/font-awesome.min.css` (with `/libs/fontawesome/fonts/`),
   `/libs/tom-select/tom-select.complete.min.js`, `/libs/tom-select/tom-select.css`, `/libs/sortablejs/Sortable.min.js`.
   `runtime/base-component/webroot/screen/webroot/README.md` lists them too.
+
+### Added by phase 8 slice 6
+
+The qvt mode, its shell and the menu data.
+
+- `sri.getMenuData(pathNames)`: the `menuData` transition of `webroot.xml`. A list of `{name, title, subscreens, path, pathWithParams,
+  hasTabMenu, renderModes, image, imageType}` for each screen on the path above the target and a last `{..., extraPathList, screenDocList,
+  savedFinds}` for the target; null after a 401, 403 or 404 JSON error was sent. `savedFinds` and `screenDocList` are empty lists. It runs the
+  `pre-actions` of the screens on the path from the third, and drops the subscreens the user may not view (the parents are on the artifact stack for
+  the check), a subscreen with a missing required parameter, and one that is not `menu-include` and not on the path. `getMenuItems` is still the html
+  navigation.
+- `sri.getScreenUrlInfo().extraPathNameList`: the names after the transition. The url objects of `makeUrlByType` and `buildUrl` gain `isScreenUrl()`
+  (not a plain URL), `isTransition()` and `getTransitionMethod()` (lower case, empty for a screen).
+- `ec.user.timeZone` / `getTimeZone()` (the session zone name, else `UTC`) and `ec.user.userAccount` (the signed-in user's `UserAccount` as a map without
+  `currentPassword`, `passwordSalt`, `passwordHashType`, `passwordSetDate`, `passwordHint`, `successiveFailedLogins`, `disabledDateTime` and
+  `requirePasswordChange`).
+- Mode runtime for qvt: `$mqQvt` (`ScreenQvt.js`), with the form values of `ScreenRenderImpl.addFormFieldValue` computed in the runtime from the widget
+  elements and `sri.getFieldValue*`, `getFieldOptions`, `getFieldEntityValue`, `getFormHiddenParameters`, `getNamedValuePlain`. `T.options.mode`
+  is the render mode for a module that serves more than one (`ScreenPlain.js`).
+- Response headers of the qvt family: `Cache-Control: private, no-store`, and `X-Moqui-Qvt: merged-fragment` for `qvt`.
+- `screen::vue_check::compile_errors(compiler_source, templates)`: the vendored Vue compiler in a QuickJS runtime of its own, for tests and the compatibility report.
+- Still deferred: `getFieldTransitionValue` (a `dynamic-options` label for a value that has no option is the value), `getUserFormListFinds` and the saved find list,
+  `getFormInstance().getFieldValidationJsRules` (the rules come from `getFieldValidation`: number, digits and a pattern).
 
 ## Out of scope
 

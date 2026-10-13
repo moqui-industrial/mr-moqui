@@ -1,0 +1,4 @@
+<screen require-authentication="false" default-menu-title="Panel Root">
+    <subscreens default-item="One"/>
+    <widgets><subscreens-panel id="Pan"/></widgets>
+</screen>

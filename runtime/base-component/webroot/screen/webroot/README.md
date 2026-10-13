@@ -12,6 +12,8 @@ a request with a `v` parameter and an hour with revalidation for the rest. The h
 |---|---|
 | `css/moqui-html.css` | style sheet of the `html` mode (light and dark, responsive, print) |
 | `js/moqui-html.js` | client of the `html` mode. `js/README.md` lists the data attributes. `js/moqui-html.test.js` runs under Node |
+| `js/MoquiLib.js`, `js/MoquiL10n.js`, `js/WebrootVue.qvt.js`, `js/MoquiQzComponent.js` | client of the `qvt` mode and the `/qapps` shell (Vue 3.5, Quasar 2.35). `js/README.md` lists the components and the settings block. Their `*.test.js` files run under Node |
+| `css/WebrootVue.qvt.css` | style sheet of the `qvt` shell and widgets |
 | `images/`, `MoquiLogo100.png`, `favicon.ico` | logo and icon |
 
 ## Vendored browser libraries (`libs/`)
@@ -44,7 +46,12 @@ The `html` mode theme (`WebrootThemeData.xml`) links Font Awesome, the style she
 SortableJS adds its paths to `footer_scripts` and `footer_stylesheets`, which `Footer.html.fancy` writes. A fragment that
 a page loads later has no footer, so the client loads the library itself the first time it needs it.
 
-The Assist client copied from the Java tree (`js/assist/AssistOpenUiLibrary.js`) still names the old paths `/libs/Chart.js/Chart.min.js`,
+The `/qapps` shell loads `vue/vue.global.prod.js` (the compiler build, because server-merged `qvt` is compiled in the browser), `quasar/quasar.umd.prod.js`, the
+language pack that matches the user locale, `MoquiLib.js`, `MoquiL10n.js` and `WebrootVue.qvt.js`, in that order, with the Font Awesome, Material Icons,
+Quasar and `WebrootVue.qvt.css` style sheets of the `DEFAULT_QUASAR` theme (`data/WebrootQuasarThemeData.xml`). Chart.js, Mermaid, Marked, DOMPurify and
+QZ Tray are loaded by the component that needs them, from the paths in the table. The Assist panel is not ported yet.
+
+The Assist client of the Java tree (`js/assist/AssistOpenUiLibrary.js`, not copied here) names the old paths `/libs/Chart.js/Chart.min.js`,
 `/libs/marked/marked.umd.min.js`, `/libs/dompurify/purify.min.js`, `/libs/highlight.js/highlight.min.js` and
 `/libs/highlight.js/styles/github-dark.min.css`. Here they are `chartjs/chart.umd.min.js`, `marked/marked.umd.min.js` (same),
 `dompurify/purify.min.js` (same), `highlightjs/highlight.min.js` and `highlightjs/styles/github-dark.min.css`.

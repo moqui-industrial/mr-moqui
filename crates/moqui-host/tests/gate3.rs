@@ -12,8 +12,9 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Gate 3, started: a real framework screen rendered in the text, csv, xml and html-print modes through the HTTP
-//! server with the seeded embedded-Postgres data. The later slices add the other modes to this file.
+//! Gate 3, started: a real framework screen rendered in the text, csv, xml, html-print, html and qvt modes (with the
+//! qjs and qvue companions) through the HTTP server with the seeded embedded-Postgres data, and the `/qapps` shell
+//! with its menu data. The later slices add the server-static pair and the browser smoke.
 //!
 //! The fixture is `component://tools/screen/System/Security/ArtifactGroup/ArtifactGroupDetail.xml`.
 //! It has what the gate asks for:
@@ -39,7 +40,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use moqui_host::{load_data, start_server, LoadFlags};
 
-const CONF: &str = r#"<moqui-conf>
+/// The conf of the test runtime. `companion` is the location of a screen with qjs and qvue text of its own.
+fn conf(companion: &str) -> String {
+    format!(
+        r#"<moqui-conf>
     <screen-facade>
         <screen location="component://webroot/screen/webroot.xml">
             <subscreens-item name="System" menu-title="System" location="component://tools/screen/System.xml"/>
@@ -47,9 +51,24 @@ const CONF: &str = r#"<moqui-conf>
         </screen>
         <screen location="component://webroot/screen/webroot/apps.xml">
             <subscreens-item name="System" menu-title="System" location="component://tools/screen/System.xml"/>
+            <subscreens-item name="GateCompanion" menu-title="Companion" menu-include="false" location="{companion}"/>
         </screen>
     </screen-facade>
-</moqui-conf>"#;
+</moqui-conf>"#
+    )
+}
+
+/// A screen with the three client forms: its widgets are the qvt template, and it has a qjs object and a qvue component file.
+const COMPANION: &str = r#"<screen require-authentication="false">
+    <widgets>
+        <label text="Companion {{literal}} text" type="p"/>
+        <render-mode>
+            <text type="qjs"><![CDATA[define([], function () { return { data: function () { return { count: 1 }; } }; });]]></text>
+            <text type="qvue"><![CDATA[<template><p>{{count}}</p></template>
+<script>export default { data() { return { count: 2 }; } }</script>]]></text>
+        </render-mode>
+    </widgets>
+</screen>"#;
 
 /// One embedded Postgres at a time: the tests set process-wide properties while they start.
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -70,7 +89,13 @@ fn start(label: &str) -> Gate {
     let cluster_guard = DirGuard(cluster_dir.clone());
     std::fs::create_dir_all(runtime.join("conf")).unwrap();
     std::fs::create_dir_all(&cluster_dir).unwrap();
-    std::fs::write(runtime.join("conf/MoquiDevConf.xml"), CONF).unwrap();
+    let companion = runtime.join("GateCompanion.xml");
+    std::fs::write(&companion, COMPANION).unwrap();
+    std::fs::write(
+        runtime.join("conf/MoquiDevConf.xml"),
+        conf(&companion.display().to_string()),
+    )
+    .unwrap();
     let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
     let base =
         std::fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component")).unwrap();
@@ -87,7 +112,12 @@ fn start(label: &str) -> Gate {
     load_data(&runtime, &framework, &cluster_dir, &demo_flags).unwrap();
     // The default theme (style sheets, scripts, logo), the pagination text and the access to the applications list are component data, which a
     // load from the framework alone does not read.
-    for name in ["WebrootThemeData.xml", "WebrootL10nData.xml", "WebrootSecurityData.xml"] {
+    for name in [
+        "WebrootThemeData.xml",
+        "WebrootQuasarThemeData.xml",
+        "WebrootL10nData.xml",
+        "WebrootSecurityData.xml",
+    ] {
         let flags = LoadFlags {
             location: Some(base.join("webroot/data").join(name).display().to_string()),
             ..LoadFlags::default()
@@ -563,6 +593,267 @@ fn static_files_are_served_with_validators_compression_and_no_way_out() {
         assert!(!body.contains("root:"), "{path}: {body}");
         assert!(!body.contains("<screen"), "{path}: {body}");
     }
+}
+
+/// The Vue compiler bundle of the vendored libraries.
+fn vue_compiler() -> String {
+    std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../runtime/base-component/webroot/screen/webroot/libs/vue/compiler-dom.cjs.js"),
+    )
+    .unwrap()
+}
+
+#[test]
+fn artifact_group_detail_renders_as_qvt_and_answers_qjs_and_qvue() {
+    let gate = start("qvt");
+    let address = gate.server.address();
+    let john = basic("john.doe", "moqui");
+    let get = |path: &str| exchange(address, &http_request("GET", path, &[("Authorization", &john)], ""));
+
+    // qvt is the template of the screen under /apps, as the shell fetches it: the screen alone, with the request's values merged in
+    let path = "/apps/System/Security/ArtifactGroup/ArtifactGroupDetail.qvt?artifactGroupId=SYSTEM_APP";
+    let (status, headers, qvt) = get(path);
+    assert_eq!(status, 200, "{qvt}");
+    assert_eq!(
+        header(&headers, "content-type").as_deref(),
+        Some("text/html;charset=UTF-8")
+    );
+    assert_eq!(header(&headers, "cache-control").as_deref(), Some("private, no-store"));
+    assert_eq!(header(&headers, "x-moqui-qvt").as_deref(), Some("merged-fragment"));
+    assert!(!qvt.contains("Error rendering"), "{qvt}");
+    // standalone: no document, no shell, no page header
+    assert!(
+        !qvt.contains("<html") && !qvt.contains("<body") && !qvt.contains("moqui-html.js"),
+        "{qvt}"
+    );
+    // the form-single is an m-form whose fields start from fields-initial, and the widgets are wrappers
+    assert!(
+        qvt.contains("<m-form name=\"ArtifactGroupForm\" id=\"ArtifactGroupForm\" action=\"/apps/System/Security/ArtifactGroup/ArtifactGroupDetail/updateArtifactGroup\""),
+        "{qvt}"
+    );
+    assert!(qvt.contains("'artifactGroupId':'SYSTEM_APP'"), "{qvt}");
+    assert!(qvt.contains("'description':'System App (via root screen)'"), "{qvt}");
+    assert!(qvt.contains("<m-text-line"), "{qvt}");
+    assert!(qvt.contains("v-model=\"formProps.fields.description\""), "{qvt}");
+    // the form-lists are div tables with a form for each row, and the authz type is a drop-down with its options
+    assert!(qvt.contains("id=\"ArtifactAuthzList_table\""), "{qvt}");
+    assert!(
+        qvt.contains("<m-form name=\"ArtifactAuthzList_0\" id=\"ArtifactAuthzList_0\""),
+        "{qvt}"
+    );
+    assert!(qvt.contains("'artifactAuthzId':'SYSTEM_APP_ADMIN'"), "{qvt}");
+    assert!(
+        qvt.contains("<m-drop-down name=\"authzTypeEnumId\" id=\"ArtifactAuthzList_authzTypeEnumId_0\""),
+        "{qvt}"
+    );
+    assert!(
+        qvt.contains("'value':'AUTHZT_ALWAYS','label':'Always Allow (overrides Deny)'"),
+        "{qvt}"
+    );
+    assert!(qvt.contains("<m-container-dialog id=\"AddAuthzDialog\""), "{qvt}");
+    // no raw Quasar input, and nothing of the jQuery stack
+    for raw in [
+        "<q-input",
+        "<q-select",
+        "<q-date",
+        "<q-time",
+        "jquery",
+        "bootstrap",
+        "select2",
+        "moment",
+    ] {
+        assert!(!qvt.to_ascii_lowercase().contains(raw), "{raw} in {qvt}");
+    }
+    // the Vue compiler accepts it
+    let errors = moqui_core::screen::vue_check::compile_errors(&vue_compiler(), std::slice::from_ref(&qvt)).unwrap();
+    assert!(errors.is_empty(), "{errors:?}\n{qvt}");
+
+    // qjs and qvue answer with the companion text the screen has, and the type of the mode. This screen has none.
+    for (extension, content_type) in [
+        ("qjs", "application/javascript;charset=UTF-8"),
+        ("qvue", "text/html;charset=UTF-8"),
+    ] {
+        let path =
+            format!("/apps/System/Security/ArtifactGroup/ArtifactGroupDetail.{extension}?artifactGroupId=SYSTEM_APP");
+        let (status, headers, body) = get(&path);
+        assert_eq!(status, 200, "{extension}: {body}");
+        assert_eq!(header(&headers, "content-type").as_deref(), Some(content_type));
+        assert_eq!(body, "", "{extension}");
+    }
+
+    // a screen with companions: the qvt is its template with the text safe from interpolation, the qjs the object of the
+    // component, and the qvue a component file
+    let (status, headers, template) = get("/apps/GateCompanion.qvt");
+    assert_eq!(status, 200, "{template}");
+    assert_eq!(header(&headers, "x-moqui-qvt").as_deref(), Some("merged-fragment"));
+    assert_eq!(
+        template,
+        "<p class=\"text-inline\">Companion &#123;&#123;literal}} text</p>\n"
+    );
+    let (status, headers, qjs) = get("/apps/GateCompanion.qjs");
+    assert_eq!(status, 200, "{qjs}");
+    assert_eq!(
+        header(&headers, "content-type").as_deref(),
+        Some("application/javascript;charset=UTF-8")
+    );
+    assert_eq!(header(&headers, "cache-control").as_deref(), Some("private, no-store"));
+    assert!(header(&headers, "x-moqui-qvt").is_none());
+    assert_eq!(
+        qjs,
+        "define([], function () { return { data: function () { return { count: 1 }; } }; });"
+    );
+    let (status, headers, qvue) = get("/apps/GateCompanion.qvue");
+    assert_eq!(status, 200, "{qvue}");
+    assert_eq!(
+        header(&headers, "content-type").as_deref(),
+        Some("text/html;charset=UTF-8")
+    );
+    assert!(qvue.starts_with("<template><p>{{count}}</p></template>"), "{qvue}");
+    assert!(qvue.contains("export default"), "{qvue}");
+
+    // unknown render modes and /vapps are not there
+    let (status, _, _) = get("/apps/System/Security/ArtifactGroup/ArtifactGroupDetail.vuet?artifactGroupId=SYSTEM_APP");
+    assert_eq!(status, 404);
+    for path in ["/vapps", "/vapps/System", "/vapps.qvt"] {
+        let (status, _, body) = get(path);
+        assert_eq!(status, 404, "{path}: {body}");
+    }
+}
+
+#[test]
+fn the_qapps_shell_and_its_menu_data_work_for_a_signed_in_user() {
+    let gate = start("qapps");
+    let address = gate.server.address();
+    let john = basic("john.doe", "moqui");
+
+    // nobody signed in: /qapps goes to the sign-in page
+    let (status, headers, _) = exchange(address, &http_request("GET", "/qapps", &[], ""));
+    assert_eq!(status, 302);
+    assert_eq!(header(&headers, "location").as_deref(), Some("/Login"));
+
+    // the shell for john.doe: the Quasar theme, the libraries in order, the Vue shell and the one settings block
+    let (status, headers, shell) = exchange(
+        address,
+        &http_request("GET", "/qapps/System", &[("Authorization", &john)], ""),
+    );
+    assert_eq!(status, 200, "{shell}");
+    assert_eq!(
+        header(&headers, "content-type").as_deref(),
+        Some("text/html;charset=UTF-8")
+    );
+    assert!(!shell.contains("Error rendering"), "{shell}");
+    for sheet in [
+        "/libs/fontawesome/css/font-awesome.min.css",
+        "/libs/material-icons/material-icons.css",
+        "/libs/quasar/quasar.prod.css",
+        "/css/WebrootVue.qvt.css",
+    ] {
+        assert!(
+            shell.contains(&format!("<link rel=\"stylesheet\" href=\"{sheet}")),
+            "{sheet} in {shell}"
+        );
+    }
+    let mut at = 0;
+    for script in [
+        "/libs/vue/vue.global.prod.js",
+        "/libs/quasar/quasar.umd.prod.js",
+        "/libs/quasar/lang/en-US.umd.prod.js",
+        "/js/MoquiLib.js",
+        "/js/MoquiL10n.js",
+        "/js/WebrootVue.qvt.js",
+    ] {
+        let found = shell[at..]
+            .find(&format!("<script src=\"{script}\""))
+            .unwrap_or_else(|| panic!("{script} in order in {shell}"));
+        at += found;
+    }
+    assert!(
+        shell.contains("<div id=\"apps-root\" style=\"display:none;\">"),
+        "{shell}"
+    );
+    assert!(shell.contains("<q-layout view=\"hHh LpR fFf\">"), "{shell}");
+    assert!(shell.contains("<m-subscreens-active></m-subscreens-active>"), "{shell}");
+    let marker = "<script type=\"application/json\" id=\"moqui-config\">";
+    let start = shell.find(marker).expect("settings block") + marker.len();
+    let end = shell[start..].find("</script>").unwrap() + start;
+    let config: serde_json::Value = serde_json::from_str(&shell[start..end]).unwrap();
+    assert_eq!(config["username"], "john.doe");
+    assert_eq!(config["basePath"], "/apps");
+    assert_eq!(config["linkBasePath"], "/qapps");
+    assert_eq!(config["appRootPath"], "");
+    assert_eq!(config["locale"], "en-US");
+    assert_eq!(config["quasarLang"], "enUS");
+    assert_eq!(config["darkMode"], false);
+    assert_eq!(config["notificationEndpoint"], "");
+    assert_eq!(config["qvt"]["handles"][0], "merged-fragment");
+    assert!(
+        config["sessionToken"].as_str().is_some_and(|token| !token.is_empty()),
+        "{config}"
+    );
+    // no jQuery, Moment or inline script besides the data block
+    let lower = shell.to_ascii_lowercase();
+    for word in ["jquery", "moment", "bootstrap", "select2", "httpvueloader"] {
+        assert!(!lower.contains(word), "{word} in {shell}");
+    }
+    assert_eq!(shell.matches("<script>").count(), 0, "{shell}");
+
+    // menu data: a screen on the path for each name, the subscreens the user may view, and the target last
+    let path = "/menuData/apps/System/Security/ArtifactGroup/ArtifactGroupDetail?artifactGroupId=SYSTEM_APP";
+    let (status, headers, body) = exchange(address, &http_request("GET", path, &[("Authorization", &john)], ""));
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(header(&headers, "content-type").as_deref(), Some("application/json"));
+    let menu: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let names: Vec<&str> = menu
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        ["apps", "System", "Security", "ArtifactGroup", "ArtifactGroupDetail"],
+        "{body}"
+    );
+    let system = &menu[1];
+    assert_eq!(system["path"], "/apps/System");
+    let subscreens = system["subscreens"].as_array().unwrap();
+    assert!(
+        subscreens
+            .iter()
+            .any(|item| item["name"] == "Security" && item["active"] == true),
+        "{body}"
+    );
+    let last = menu.as_array().unwrap().last().unwrap();
+    assert_eq!(last["path"], "/apps/System/Security/ArtifactGroup/ArtifactGroupDetail");
+    assert_eq!(
+        last["pathWithParams"],
+        "/apps/System/Security/ArtifactGroup/ArtifactGroupDetail?artifactGroupId=SYSTEM_APP"
+    );
+    assert!(last["extraPathList"].as_array().unwrap().is_empty());
+    assert!(
+        last["renderModes"].as_array().unwrap().iter().any(|mode| mode == "all"),
+        "{body}"
+    );
+
+    // not signed in is 401 and a path that is no screen is 404
+    let (status, _, body) = exchange(address, &http_request("GET", "/menuData/apps/System", &[], ""));
+    assert_eq!(status, 401, "{body}");
+    let (status, _, body) = exchange(
+        address,
+        &http_request("GET", "/menuData/apps/NoSuchScreen", &[("Authorization", &john)], ""),
+    );
+    assert_eq!(status, 404, "{body}");
+
+    // the catalog of messages for the browser
+    let (status, _, body) = exchange(
+        address,
+        &http_request("GET", "/apps/l10nCatalog?locale=en_US", &[("Authorization", &john)], ""),
+    );
+    assert_eq!(status, 200, "{body}");
+    let catalog: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(catalog["locale"], "en_US");
+    assert!(catalog["messages"].is_object(), "{body}");
 }
 
 fn header(headers: &[(String, String)], name: &str) -> Option<String> {

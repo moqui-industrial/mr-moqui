@@ -76,6 +76,19 @@ impl HostUrl {
         self.inner.borrow().read_only
     }
 
+    /// A screen or transition of this server, not a plain URL.
+    fn is_screen_url(&self) -> bool {
+        self.inner.borrow().plain.is_none()
+    }
+
+    fn is_transition(&self) -> bool {
+        self.inner.borrow().is_transition
+    }
+
+    fn get_transition_method(&self) -> String {
+        self.inner.borrow().transition_method.clone()
+    }
+
     fn get_disable_link(&self) -> bool {
         !self.inner.borrow().exists
     }

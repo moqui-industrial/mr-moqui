@@ -47,3 +47,112 @@ browser is the Chromium smoke of Gate 3.
 
 `window.moqui` has `bind(element)` (call it after you insert html), `notify(text, type)`, `load(element, url)`,
 `request(url, fetchOptions)` and `post(url, params)`.
+
+---
+
+# The qvt client
+
+The client of the `qvt` render mode and of the `/qapps` shell: Vue 3.5 (the build with the template compiler) and Quasar 2.35 from
+`../libs`. There is no build step and no other library: no jQuery, Moment, Select2, Bootstrap Notify, jQuery Validate or
+`http-vue-loader`. The pages of the `html` mode load `moqui-html.js` instead, and the two never share a page (both define `window.moqui`).
+
+| File | What |
+|---|---|
+| `MoquiLib.js` | the `moqui` object: type checks, `deepCopy`, field comparison, `objToSearch` / `searchToObj` / `parseHref` / `makeHref`, `request` (fetch with the session token), `loadScript` / `loadStylesheet`, `parseVue` and `evalComponentJs` (the `qvue` and `qjs` text), `NotificationClient`, `LruMap`. Runs under Node. |
+| `MoquiL10n.js` | `moqui.l10n`: `format`, `formatCurrency`, `formatCurrencyNoSymbol` and `localize`. A copy of `crates/moqui-lib` `format.rs` and `datefmt.rs`: Java `DecimalFormat` and date pattern subset, HALF_EVEN on decimal text. `MoquiL10n.test.js` runs `crates/moqui-lib/testdata/format-vectors.json`. |
+| `WebrootVue.qvt.js` | the `m-*` components and the application. `moqui.qvt.components` holds the definitions. |
+| `MoquiQzComponent.js` | QZ Tray 2.3 printing, loaded after `/libs/qz-tray/qz-tray.js` and only when the user preference `qz.print.enabled` is `true`. |
+| `../css/WebrootVue.qvt.css` | the styles of the shell, the div tables and the widgets |
+
+The tests are `MoquiLib.test.js`, `MoquiL10n.test.js` and `WebrootVue.qvt.test.js` (every component template compiles with the vendored
+Vue compiler; `loadComponent` is checked with a stub for the request). `cargo test` runs them when `node` is on the path. What needs a
+browser (mounting, Quasar, focus, downloads, the WebSocket) is the Chromium smoke of Gate 3.
+
+## Page shell and settings
+
+`/qapps/**` is one HTML page, `includes/WebrootVue.qvt.html.fancy`, made by the pre-actions of `qapps.xml`. The libraries load at the end
+of the body in this order: `vue/vue.global.prod.js`, `quasar/quasar.umd.prod.js`, `quasar/lang/<pack>.umd.prod.js`, `MoquiLib.js`,
+`MoquiL10n.js`, `WebrootVue.qvt.js`. Compiling templates in the browser needs `unsafe-eval` in a content security policy; the page has no
+inline script and no inline event handler, and the settings are a data block:
+
+```html
+<script type="application/json" id="moqui-config">{ ... }</script>
+```
+
+| Key | Meaning |
+|---|---|
+| `sessionToken` | the CSRF token. `moqui.request` sends it as `X-CSRF-Token` on writes and a form adds `moquiSessionToken`. A response header `X-CSRF-Token` replaces it, and the other tabs are told through a `BroadcastChannel`. |
+| `appHost`, `appRootPath` | host with port, and the context path (empty here) |
+| `basePath`, `linkBasePath` | `/apps` and `/qapps`: screens are fetched under the first and the address of the page is under the second. `getLinkPath` converts. |
+| `userId`, `username`, `userFullName` | the signed-in user |
+| `locale`, `timeZone`, `quasarLang` | `en-US` style tag, zone name, and the key of the language pack in `Quasar.Lang` (`enUS`, `ptBR`, `zhCN`, `de`, ...) |
+| `darkMode`, `leftOpen` | the preferences `QUASAR_DARK` and `QUASAR_LEFT_OPEN` |
+| `notificationEndpoint` | the path of the notification WebSocket, from `webapp_notification_endpoint`. Empty means no socket is opened. |
+| `navPlugins`, `accountPlugins` | theme values `STRT_HEADER_NAVBAR_COMP` and `STRT_HEADER_ACCOUNT_COMP`: URLs of components for the header |
+| `qz` | `{enabled}`: print through QZ Tray |
+| `qvt` | `{build, handles}`: the Vue build this page loaded (`compiler`) and the `X-Moqui-Qvt` responses it handles (`merged-fragment`) |
+| `labels` | text the shell needs localized |
+| `quasar`, `currencies` | optional: Quasar configuration (brand, notify, loading bar), and `{USD: {symbol, fractionDigits}}` for `formatCurrency` |
+
+The catalog of messages for `localize` is fetched from `/apps/l10nCatalog?locale=` once the page starts: `{locale, messages: {original: localized}}`
+with the `default`, language and locale entries merged.
+
+## Loading a screen
+
+`moqui.loadComponent(urlInfo, callback, divId)` requests `<path>.qvt` (or `.qjs` / `.qvue` when the menu data lists that render mode for the
+screen) with the extra path and query, and gives `callback` a component. It returns an object with `abort()`.
+
+- `205` and `X-Redirect-To`: the shell goes to that address (a redirect of a render that is always standalone).
+- `.qvue`: the text is a component file: `<template>`, `<script>` (`module.exports =`, `export default` or `define(...)`) and `<style>`.
+- `.qjs`: an object expression or `define(...)`. Without a `template` the template is the `.qvt` of the same screen.
+- `.qvt`: the response header `X-Moqui-Qvt` chooses the handler in `moqui.qvtHandlers`:
+  `merged-fragment` (the default) wraps the text as the template `<div id="divId">text</div>`, and `<script>` and `<link>` in it become
+  `m-script` and `m-stylesheet`; `static-template` is a data-free template whose handler the server-static work adds, and until then
+  such a response is an error.
+- A response with `Cache-Control: max-age` is kept by screen path in `moqui.componentCache` (50 entries). A merged response says
+  `private, no-store` and is never kept.
+
+## The components the macros write
+
+`ScreenQvt.js` writes only these names for widgets. A widget binds with `v-model` (`modelValue`) inside a form, and with `model-value`
+outside one. The wrappers add `dense outlined stack-label` themselves, tint a field that differs from its form's `fields-initial`, and
+take `fields` where they read the fields they depend on (`depends-on`). Raw `q-input`, `q-select`, `q-date` and `q-field` are not written by a
+macro; `q-btn`, `q-tooltip`, `q-badge`, `q-list`, `q-btn-dropdown`, `q-expansion-item` and the layout classes are.
+
+| Component | For |
+|---|---|
+| `m-form` | form-single and rows of a form-list: `fields-initial`, `v-slot:default="formProps"` (`fields`, `hasFieldsChanged`, `fieldChanged`, checkbox set), submit by `fetch` (JSON answer, or a download), `submit-message`, `submit-reload-id`, `submit-hide-id`, `focus-field`, `exclude-empty-fields`, `parent-checkbox-set` |
+| `m-form-link` | a form that goes to a screen: the fields become the query. Slot `fields`, `clearForm` |
+| `m-checkbox-set` | selected rows: `checkbox-count`, `checkbox-parameter`, `checkbox-list-mode`, `checkbox-values` |
+| `m-form-list` | a list drawn by the client from rows it fetches, with sort, pages, selection and sub rows (see below) |
+| `m-form-paginate`, `m-form-go-page`, `m-form-column-config` | page buttons, jump to a page, the column picker |
+| `m-text-line`, `m-text-area` | text input. `m-text-area` with `editor-type` `html` is `QEditor`, and `md` is a text area with a Marked preview |
+| `m-drop-down` | `options`, `options-url`, `options-parameters`, `depends-on`, `server-search`, `multiple`, `allow-empty`, `combo`, `submit-on-select`, `options-load-init` |
+| `m-date-time`, `m-date-period` | `QDate` and `QTime` in a popup; period and from-thru |
+| `m-display` | text or a read-only field (`label-wrapper`), `display`, `value-url` |
+| `m-check`, `m-radio`, `m-file`, `m-field`, `m-text-find`, `m-range-find` | the other widgets |
+| `m-editable` | click to edit, `QPopupEdit`, `url`, `url-parameters`, `parameter-name`, `widget-type`, `load-url` |
+| `m-link` | a screen link: `href`, `load-id`, `confirmation`. A `data-confirm` attribute on any button or link is asked first |
+| `m-container-box`, `m-box-body`, `m-container-dialog`, `m-dialog` | boxes and dialogs |
+| `m-dynamic-container`, `m-dynamic-dialog` | a screen loaded into a container, or a dialog, with `load`, `reload` and `hide` |
+| `m-tree-top`, `m-tree-item` | tree |
+| `m-subscreens-tabs` (also `m-subscreens-menu`), `m-subscreens-active`, `m-subscreens-panel` | the subscreen menu and the place of the active subscreen |
+| `m-menu-nav-item`, `m-menu-subscreen-item`, `m-menu-item-content` | the navigation of the shell |
+| `m-chart`, `m-mermaid` | Chart.js 4 and Mermaid 11, loaded on first use |
+| `m-script`, `m-stylesheet` | `<script>` and `<link>` of a screen's text |
+
+`m-form-list` takes `rows` (a list, or the URL of the rows, else `<current screen>/actions/<name>`), `search`, `list-name`, `action`, `multi`,
+`skip-form`, `skip-header`, `header-form`, `selection` and the buttons, and slots `rowForm` (`fields`, `rowIndex`), `row` (`fields`, `rowIndex`,
+`selected`), `subRow` (`row`, `subRow`), `header` (`search`, `sortBy`, `orderBy`), `headerForm`, `nav`. The answer to a rows request is a list, or a map with the
+list under the name of the form and `Count`, `PageIndex`, `PageSize`, `PageMaxIndex`, `PageRangeLow`, `PageRangeHigh` keys. The server-merged
+macros write the rows themselves; this component is for the screens that fetch.
+
+The shell gives Quasar a stand-in for `vue-router` (`$router.resolve`, `push`, `replace`, and `$route`), so `q-btn to="..."` navigates with `setUrl`.
+`moqui.webrootVue` is the root: `setUrl(url, bodyParameters)`, `setParameters(obj)`, `reloadContainer(id)`, `loadContainer(id, url)`,
+`hideContainer(id)`, `addNotify`, `getLinkPath`.
+
+## Not here
+
+The Assist panel (`js/assist`, the chat and canvas, `confAssist`) is not ported: it needs the vendored Chart.js, Marked, DOMPurify and highlight.js paths
+of `../README.md` (`chartjs/chart.umd.min.js`, `highlightjs/highlight.min.js`, `highlightjs/styles/github-dark.min.css`) when it is. Server-static
+templates and the browser `ec` host of `plans/QvtServerStatic.md` come with the server-static work.

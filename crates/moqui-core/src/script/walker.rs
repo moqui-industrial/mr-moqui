@@ -53,9 +53,26 @@ pub(crate) fn load_chain<'js>(
     modules: &[&str],
     debug: bool,
 ) -> Result<Vec<Object<'js>>, Error> {
+    load_chain_for(ctx, support, modules, debug, "")
+}
+
+/// [`load_chain`] with the render mode the modules generate for, which a module that serves more than one
+/// mode reads from `options.mode` when its macros run.
+///
+/// # Errors
+///
+/// Same as [`load_chain`].
+pub(crate) fn load_chain_for<'js>(
+    ctx: &Ctx<'js>,
+    support: &str,
+    modules: &[&str],
+    debug: bool,
+    mode: &str,
+) -> Result<Vec<Object<'js>>, Error> {
     let support: Object = super::runtime::eval_source(ctx, support)?;
     let options: Object = support.get("options").map_err(js_err)?;
     options.set("debug", debug).map_err(js_err)?;
+    options.set("mode", mode).map_err(js_err)?;
     let mut results = vec![support];
     let mut built = Vec::new();
     for module in modules {

@@ -40,7 +40,7 @@ const TEMPLATE_SUPPORT: &str = include_str!("../../../../framework/template/Temp
 const SCREEN_SUPPORT: &str = include_str!("../../../../framework/template/screen/ScreenSupport.js");
 
 /// The mode modules built into the binary, by file name.
-const MODE_MODULES: [(&str, &str); 5] = [
+const MODE_MODULES: [(&str, &str); 7] = [
     (
         "ScreenText.js",
         include_str!("../../../../framework/template/screen/ScreenText.js"),
@@ -60,6 +60,14 @@ const MODE_MODULES: [(&str, &str); 5] = [
     (
         "ScreenHtml.js",
         include_str!("../../../../framework/template/screen/ScreenHtml.js"),
+    ),
+    (
+        "ScreenQvt.js",
+        include_str!("../../../../framework/template/screen/ScreenQvt.js"),
+    ),
+    (
+        "ScreenPlain.js",
+        include_str!("../../../../framework/template/screen/ScreenPlain.js"),
     ),
 ];
 
@@ -331,15 +339,11 @@ fn mode_source(factory: &ExecutionContextFactory, location: &str) -> Result<Stri
         .iter()
         .find(|(name, _)| *name == file)
         .map(|(_, source)| (*source).to_string())
-        .ok_or_else(|| {
-            Error::new(format!(
-                "there is no macro module {file} at {location}; qvt, qjs and qvue come in a later slice"
-            ))
-        })
+        .ok_or_else(|| Error::new(format!("there is no macro module {file} at {location}")))
 }
 
 fn load_mode_source<'js>(ctx: &Ctx<'js>, source: &str, mode: &str, debug: bool) -> Result<ModeModule<'js>, Error> {
-    let chain = walker::load_chain(ctx, TEMPLATE_SUPPORT, &[SCREEN_SUPPORT, source], debug)?;
+    let chain = walker::load_chain_for(ctx, TEMPLATE_SUPPORT, &[SCREEN_SUPPORT, source], debug, mode)?;
     let module = chain
         .into_iter()
         .next_back()
@@ -399,6 +403,8 @@ pub fn generate_xml(mode: &str, xml: &str, debug_comments: bool) -> Result<Strin
         "xml" => "ScreenXml.js",
         "html-print" => "ScreenHtmlPrint.js",
         "html" => "ScreenHtml.js",
+        "qvt" => "ScreenQvt.js",
+        "qjs" | "qvue" => "ScreenPlain.js",
         other => return Err(Error::new(format!("no built-in macro module for render mode {other}"))),
     };
     let source = MODE_MODULES
@@ -425,6 +431,8 @@ pub fn generate_unit_source(mode: &str, xml: &str) -> Result<String, Error> {
         "csv" => "ScreenCsv.js",
         "html-print" => "ScreenHtmlPrint.js",
         "html" => "ScreenHtml.js",
+        "qvt" => "ScreenQvt.js",
+        "qjs" | "qvue" => "ScreenPlain.js",
         _ => "ScreenXml.js",
     };
     let source = MODE_MODULES

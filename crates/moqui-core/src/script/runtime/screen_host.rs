@@ -273,7 +273,9 @@ fn sri_get_screen_url_info<'js>(ctx: Ctx<'js>) -> rquickjs::Result<Object<'js>> 
             let parent = defs.len().checked_sub(2).and_then(|index| defs.get(index)).cloned();
             Ok((Arc::clone(&state.url_info.target_screen), parent))
         })?;
+        let extra = with_render(&ctx, false, |state| Ok(state.url_info.extra_path.clone()))?;
         let object = Object::new(ctx.clone())?;
+        object.set("extraPathNameList", extra)?;
         object.set("targetScreen", screen_def_object(&ctx, &target)?)?;
         if let Some(parent) = parent {
             object.set("parentScreen", screen_def_object(&ctx, &parent)?)?;
@@ -622,6 +624,17 @@ fn sri_get_menu_items<'js>(ctx: Ctx<'js>, screen_path: Opt<String>) -> rquickjs:
     })
 }
 
+/// `sri.getMenuData(pathNameList)`: the menu data of the `menuData` transition, or null after an error was sent.
+fn sri_get_menu_data<'js>(ctx: Ctx<'js>, names: Vec<String>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let found = with_render(&ctx, false, |state| crate::screen::menu::menu_data(state, &names))?;
+        match found {
+            Some(value) => collection_to_js(&ctx, value),
+            None => Null.into_js(&ctx),
+        }
+    })
+}
+
 fn sri_get_after_screen_writer_text(ctx: Ctx<'_>) -> rquickjs::Result<String> {
     host_guard(&ctx, || {
         with_render(&ctx, false, |state| {
@@ -715,6 +728,7 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("getSectionIncludedNode", sri_get_section_included_node);
     method!("getFieldValidation", sri_get_field_validation);
     method!("getMenuItems", sri_get_menu_items);
+    method!("getMenuData", sri_get_menu_data);
     super::urls::install(ctx, &sri)?;
     Ok(sri)
 }
