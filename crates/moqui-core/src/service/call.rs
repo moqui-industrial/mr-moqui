@@ -38,7 +38,6 @@ pub fn sync(name: &str, parameters: &BTreeMap<String, Value>) -> Result<BTreeMap
     }
     let facade = facade.ok_or_else(|| Error::new("no entity facade is installed"))?;
     let guard = semaphore::take(&def, &cleaned, &facade)?;
-    super::seca::run_seca_rules(&def.name, "pre-service", &cleaned, None)?;
     let entity_name = if def.kind == ServiceKind::EntityAuto && !def.noun.is_empty() {
         def.noun.clone()
     } else {
@@ -46,15 +45,15 @@ pub fn sync(name: &str, parameters: &BTreeMap<String, Value>) -> Result<BTreeMap
     };
     let tx = facade.transactions_for(&entity_name)?;
     let produced = tx.run(def.transaction, def.timeout, || {
-        // Rollback is not a commit hook, so it does not hide the feed schedule hook.
+        // on_rollback is not a commit hook. tx-commit is last so a post-service
+        // entity write can still register the feed schedule hook.
         register_tx_rollback(&tx, &def.name, &cleaned)?;
+        super::seca::run_seca_rules(&def.name, "pre-service", &cleaned, None).map_err(script_err)?;
         let produced = execute(&def, &cleaned, &facade)?;
-        // Entity statements register the feed schedule hook during execute.
-        // tx-commit is attached after that, so the pending row still schedules.
+        super::seca::run_seca_rules(&def.name, "post-service", &cleaned, Some(&produced)).map_err(script_err)?;
         register_tx_commit(&tx, &def.name, &cleaned, &produced)?;
         Ok(produced)
     })?;
-    super::seca::run_seca_rules(&def.name, "post-service", &cleaned, Some(&produced))?;
     super::seca::run_seca_rules(&def.name, "post-commit", &cleaned, Some(&produced))?;
     drop(guard);
     Ok(project(&def, produced))
