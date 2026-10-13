@@ -16,6 +16,11 @@
 //!
 //! Java `String.matches` compiles the pattern with `java.util.regex` and requires
 //! the whole input to match. `.` does not cross a line ending. There is no regex crate.
+//!
+//! Groups do not capture, so `(?:...)` is the same as `(...)` and a reluctant quantifier
+//! accepts the same strings as a greedy one. Backreferences, lookaround, inline flags,
+//! possessive quantifiers and escapes outside `\d\D\w\W\s\S\n\r\t\f` are errors rather
+//! than literals, so an unsupported pattern fails closed.
 
 use crate::error::Error;
 
@@ -24,7 +29,13 @@ enum Re {
     Empty,
     Lit(char),
     Any,
-    Class { negated: bool, ranges: Vec<(char, char)> },
+    /// A char hits when it is in `ranges`, or outside any one of the `outside` sets
+    /// (`\D`, `\W`, `\S` inside a class).
+    Class {
+        negated: bool,
+        ranges: Vec<(char, char)>,
+        outside: Vec<Vec<(char, char)>>,
+    },
     Seq(Vec<Re>),
     Alt(Vec<Re>),
     Repeat { inner: Box<Re>, min: u32, max: Option<u32> },
@@ -109,6 +120,11 @@ impl Parser {
             Some('{') => self.parse_bounds()?,
             _ => return Ok(atom),
         };
+        match self.peek() {
+            Some('?') => self.i += 1,
+            Some('+') => return Err(Error::new("possessive quantifiers are not supported in regex")),
+            _ => {}
+        }
         Ok(Re::Repeat {
             inner: Box::new(atom),
             min,
@@ -175,7 +191,7 @@ impl Parser {
                 self.i += 1;
                 let esc = self.peek().ok_or_else(|| Error::new("dangling '\\' in regex"))?;
                 self.i += 1;
-                Ok(escape_atom(esc))
+                escape_atom(esc)
             }
             ')' | '|' | '*' | '+' | '?' | '{' => Err(Error::new(format!("unexpected '{ch}' in regex"))),
             _ => {
@@ -187,6 +203,14 @@ impl Parser {
 
     fn parse_group(&mut self) -> Result<Re, Error> {
         self.i += 1;
+        if self.peek() == Some('?') {
+            if self.peek_at(1) != Some(':') {
+                return Err(Error::new(
+                    "lookaround, named groups and inline flags are not supported in regex",
+                ));
+            }
+            self.i += 2;
+        }
         let inner = self.parse_alt()?;
         if self.peek() != Some(')') {
             return Err(Error::new("unclosed '(' in regex"));
@@ -204,6 +228,7 @@ impl Parser {
             false
         };
         let mut ranges = Vec::new();
+        let mut outside = Vec::new();
         if self.peek() == Some(']') {
             ranges.push((']', ']'));
             self.i += 1;
@@ -212,10 +237,28 @@ impl Parser {
             if ch == ']' {
                 break;
             }
-            let start = self.class_char()?;
+            if ch == '[' || (ch == '&' && self.peek_at(1) == Some('&')) {
+                return Err(Error::new("nested classes and '&&' are not supported in regex"));
+            }
+            let start = match self.class_item()? {
+                ClassItem::Char(start) => start,
+                ClassItem::Set { negated: false, ranges: set } => {
+                    ranges.extend(set);
+                    continue;
+                }
+                ClassItem::Set { negated: true, ranges: set } => {
+                    outside.push(set);
+                    continue;
+                }
+            };
             if self.peek() == Some('-') && self.peek_at(1).is_some_and(|next| next != ']') {
                 self.i += 1;
-                let end = self.class_char()?;
+                let ClassItem::Char(end) = self.class_item()? else {
+                    return Err(Error::new("illegal character range in regex"));
+                };
+                if end < start {
+                    return Err(Error::new("illegal character range in regex"));
+                }
                 ranges.push((start, end));
             } else {
                 ranges.push((start, start));
@@ -225,26 +268,34 @@ impl Parser {
             return Err(Error::new("unclosed '[' in regex"));
         }
         self.i += 1;
-        Ok(Re::Class { negated, ranges })
+        Ok(Re::Class {
+            negated,
+            ranges,
+            outside,
+        })
     }
 
-    fn class_char(&mut self) -> Result<char, Error> {
+    fn class_item(&mut self) -> Result<ClassItem, Error> {
         let ch = self.peek().ok_or_else(|| Error::new("unclosed '[' in regex"))?;
         self.i += 1;
         if ch != '\\' {
-            return Ok(ch);
+            return Ok(ClassItem::Char(ch));
         }
         let esc = self
             .peek()
             .ok_or_else(|| Error::new("dangling '\\' in character class"))?;
         self.i += 1;
-        Ok(match esc {
-            'n' => '\n',
-            'r' => '\r',
-            't' => '\t',
-            other => other,
+        Ok(match escape_atom(esc)? {
+            Re::Lit(lit) => ClassItem::Char(lit),
+            Re::Class { negated, ranges, .. } => ClassItem::Set { negated, ranges },
+            _ => return Err(Error::new(format!("unsupported escape '\\{esc}' in character class"))),
         })
     }
+}
+
+enum ClassItem {
+    Char(char),
+    Set { negated: bool, ranges: Vec<(char, char)> },
 }
 
 fn collapse(mut items: Vec<Re>) -> Re {
@@ -257,44 +308,43 @@ fn collapse(mut items: Vec<Re>) -> Re {
     }
 }
 
-fn escape_atom(ch: char) -> Re {
-    match ch {
-        'd' => digits(false),
-        'D' => digits(true),
-        'w' => Re::Class {
-            negated: false,
-            ranges: vec![('A', 'Z'), ('a', 'z'), ('0', '9'), ('_', '_')],
-        },
-        'W' => Re::Class {
-            negated: true,
-            ranges: vec![('A', 'Z'), ('a', 'z'), ('0', '9'), ('_', '_')],
-        },
-        's' => whitespace(false),
-        'S' => whitespace(true),
+/// Java rejects an escaped letter it does not define and reads an escaped digit as a
+/// backreference or octal value. Neither is supported here, so both are errors.
+fn escape_atom(ch: char) -> Result<Re, Error> {
+    Ok(match ch {
+        'd' => shorthand(false, &[('0', '9')]),
+        'D' => shorthand(true, &[('0', '9')]),
+        'w' => shorthand(false, WORD),
+        'W' => shorthand(true, WORD),
+        's' => shorthand(false, SPACE),
+        'S' => shorthand(true, SPACE),
         'n' => Re::Lit('\n'),
         'r' => Re::Lit('\r'),
         't' => Re::Lit('\t'),
+        'f' => Re::Lit('\u{000c}'),
+        other if other.is_ascii_alphanumeric() => {
+            return Err(Error::new(format!("unsupported escape '\\{other}' in regex")));
+        }
         other => Re::Lit(other),
-    }
+    })
 }
 
-fn digits(negated: bool) -> Re {
-    Re::Class {
-        negated,
-        ranges: vec![('0', '9')],
-    }
-}
+const WORD: &[(char, char)] = &[('A', 'Z'), ('a', 'z'), ('0', '9'), ('_', '_')];
 
-fn whitespace(negated: bool) -> Re {
+const SPACE: &[(char, char)] = &[
+    (' ', ' '),
+    ('\t', '\t'),
+    ('\n', '\n'),
+    ('\u{000b}', '\u{000b}'),
+    ('\u{000c}', '\u{000c}'),
+    ('\r', '\r'),
+];
+
+fn shorthand(negated: bool, ranges: &[(char, char)]) -> Re {
     Re::Class {
         negated,
-        ranges: vec![
-            (' ', ' '),
-            ('\t', '\t'),
-            ('\n', '\n'),
-            ('\r', '\r'),
-            ('\u{000c}', '\u{000c}'),
-        ],
+        ranges: ranges.to_vec(),
+        outside: Vec::new(),
     }
 }
 
@@ -320,14 +370,22 @@ fn ends(re: &Re, text: &[char], pos: usize) -> Vec<usize> {
             }
         }
         Re::End => {
-            if pos == text.len() {
+            if pos == text.len() || is_final_terminator(&text[pos..]) {
                 vec![pos]
             } else {
                 Vec::new()
             }
         }
-        Re::Class { negated, ranges } => match text.get(pos) {
-            Some(ch) if class_hit(*ch, ranges) ^ negated => vec![pos + 1],
+        Re::Class {
+            negated,
+            ranges,
+            outside,
+        } => match text.get(pos) {
+            Some(ch)
+                if (class_hit(*ch, ranges) || outside.iter().any(|set| !class_hit(*ch, set))) ^ negated =>
+            {
+                vec![pos + 1]
+            }
             _ => Vec::new(),
         },
         Re::Seq(items) => {
@@ -367,6 +425,15 @@ fn is_line_end(ch: char) -> bool {
     matches!(ch, '\n' | '\r' | '\u{0085}' | '\u{2028}' | '\u{2029}')
 }
 
+/// Without `MULTILINE`, Java `$` also matches before one line terminator that ends the input.
+fn is_final_terminator(rest: &[char]) -> bool {
+    match rest {
+        [ch] => is_line_end(*ch),
+        ['\r', '\n'] => true,
+        _ => false,
+    }
+}
+
 fn repeat_ends(inner: &Re, min: u32, max: Option<u32>, text: &[char], start: usize) -> Vec<usize> {
     let cap = max.unwrap_or_else(|| (text.len() as u32).saturating_add(1));
     let mut reached = vec![vec![start]];
@@ -404,4 +471,60 @@ fn repeat_ends(inner: &Re, min: u32, max: Option<u32>, text: &[char], start: usi
     out.sort_unstable();
     out.dedup();
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_full_match;
+
+    fn hit(text: &str, pattern: &str) -> bool {
+        is_full_match(text, pattern).unwrap()
+    }
+
+    #[test]
+    fn stock_moqui_patterns() {
+        let wiki = r"[\w\.\-,':()!\? ]*";
+        assert!(hit("Page1", wiki));
+        assert!(hit("My Page (v2)!", wiki));
+        assert!(hit("it's_a-b.c,d:e?", wiki));
+        assert!(!hit("bad/name", wiki));
+        let phone = r"^\+?\d[-\. \d]*\d\d$";
+        assert!(hit("+1 801-555.1234", phone));
+        assert!(!hit("801x5551234", phone));
+        assert!(hit("snake_case9", "[a-z][a-z0-9_]*"));
+        assert!(!hit("Snake", "[a-z][a-z0-9_]*"));
+        assert!(hit("org.moqui2", r"[a-z][a-z0-9\.]*"));
+        assert!(hit("camelCase_1", r"[A-Za-z]\w*"));
+        assert!(hit("Pascal", r"[A-Z]\w*"));
+        assert!(!hit("pascal", r"[A-Z]\w*"));
+    }
+
+    #[test]
+    fn shorthands_inside_classes() {
+        assert!(hit("a1 _", r"[\d\w\s]+"));
+        assert!(!hit("-", r"[\d\w\s]"));
+        assert!(hit("x", r"[\D]"));
+        assert!(!hit("5", r"[\D]"));
+        assert!(hit("5", r"[^\D]"));
+        assert!(hit("-", r"[\d-]"));
+        assert!(hit("\u{000b}", r"\s"));
+        assert!(is_full_match("a", r"[\d-z]").is_ok());
+        assert!(is_full_match("a", r"[a-\d]").is_err());
+    }
+
+    #[test]
+    fn groups_quantifiers_and_anchors() {
+        assert!(hit("abab", "(?:ab)+"));
+        assert!(hit("aaa", "a*?"));
+        assert!(hit("ab", "a{1,2}?b"));
+        assert!(hit("a\n", "a$\n"));
+        assert!(!hit("a\n", "a$"));
+    }
+
+    #[test]
+    fn unsupported_features_fail_closed() {
+        for pattern in [r"(a)\1", r"\bword", r"a*+", "(?=a)a", "(?i)a", r"\p{L}", "[a[b]]", "[a&&b]", r"\x41"] {
+            assert!(is_full_match("a1", pattern).is_err(), "{pattern}");
+        }
+    }
 }

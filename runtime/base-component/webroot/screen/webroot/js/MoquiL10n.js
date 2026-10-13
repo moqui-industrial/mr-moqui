@@ -74,18 +74,28 @@
         const parts = String(locale || "").split(/[_-]/);
         const language = parts[0] || "";
         const region = parts[1] || "";
-        if (language === "de" && region === "CH") return ["\u2019", "."];
+        if ((language === "de" || language === "it") && region === "CH") return ["\u2019", "."];
         if (language === "fr" && region === "CH") return ["\u202f", ","];
+        if (language === "es" && region === "MX") return [",", "."];
         if (["de", "es", "it", "nl", "pt", "id", "tr", "da", "el", "ro", "hr", "sl"].includes(language)) return [".", ","];
         if (language === "fr") return ["\u202f", ","];
         if (["ru", "pl", "cs", "sk", "sv", "fi", "nb", "no", "uk", "bg", "hu", "lt", "lv"].includes(language)) return ["\u00a0", ","];
         return [",", "."];
     };
 
-    const currencySuffix = (locale) => {
-        const language = String(locale || "").split(/[_-]/)[0];
-        const suffixLanguages = ["de", "fr", "es", "it", "nl", "pt", "ru", "pl", "cs", "sk", "sv", "fi", "nb", "no", "da", "uk", "bg", "hu", "lt", "lv", "ro", "hr", "sl", "el", "tr"];
-        return suffixLanguages.includes(language) && !["es_MX", "pt_BR", "nl_NL", "de_CH"].includes(String(locale).replace("-", "_"));
+    const SUFFIX_LANGUAGES = ["de", "fr", "es", "it", "nl", "pt", "ru", "pl", "cs", "sk", "sv", "fi", "nb", "no", "da", "uk", "bg", "hu", "lt", "lv", "ro", "hr", "sl", "el"];
+
+    // The currency pattern of a locale, as the JDK's CLDR data has it; number is the digits part such as #,##0.00
+    const currencyPattern = (locale, number) => {
+        const parts = String(locale || "").split(/[_-]/);
+        const language = parts[0] || "";
+        const region = parts[1] || "";
+        if (language === "nl" && region === "NL") return CURRENCY_SIGN + "\u00a0" + number + ";" + CURRENCY_SIGN + "\u00a0-" + number;
+        if ((language === "de" || language === "it") && region === "CH") return CURRENCY_SIGN + "\u00a0" + number + ";" + CURRENCY_SIGN + "-" + number;
+        if (language === "pt" && region === "BR") return CURRENCY_SIGN + "\u00a0" + number;
+        if (language === "es" && region === "MX") return CURRENCY_SIGN + number;
+        if (SUFFIX_LANGUAGES.includes(language)) return number + "\u00a0" + CURRENCY_SIGN;
+        return CURRENCY_SIGN + number;
     };
 
     // ---- number patterns ----
@@ -128,7 +138,11 @@
                     literal = "'";
                     index += 1;
                 } else {
-                    while (index < chars.length && chars[index] !== "'") {
+                    while (index < chars.length) {
+                        if (chars[index] === "'") {
+                            if (chars[index + 1] !== "'") break;
+                            index += 1;
+                        }
                         literal += chars[index];
                         index += 1;
                     }
@@ -197,7 +211,8 @@
         while (frac.length < layout.minFrac) frac += "0";
         intText = intText.replace(/^0+/, "");
         while (intText.length < layout.minInt) intText = "0" + intText;
-        if (intText === "" && frac === "") intText = "0";
+        // Java prints a zero integer digit when the pattern asks for none, so #.## gives 0.5 and 0
+        if (intText === "") intText = "0";
         return [intText, frac];
     };
 
@@ -240,10 +255,8 @@
         const dec = parseDecimal(value);
         if (!dec) throw new Error("cannot format " + String(value) + " as currency");
         const fraction = fractionDigits > 0 ? "." + "0".repeat(fractionDigits) : "";
-        let pattern;
-        if (!symbol) pattern = "#,##0" + fraction;
-        else if (currencySuffix(locale)) pattern = "#,##0" + fraction + "\u00a0" + CURRENCY_SIGN;
-        else pattern = CURRENCY_SIGN + "#,##0" + fraction;
+        const number = "#,##0" + fraction;
+        const pattern = symbol ? currencyPattern(locale, number) : number;
         const [positive, negative] = parsePattern(pattern, symbol);
         return renderNumber(dec, positive, negative, locale);
     };
@@ -258,11 +271,17 @@
         return (value < 0 ? "-" : "") + "0".repeat(Math.max(0, width - text.length)) + text;
     };
 
-    const offsetText = (seconds, colon, zForZero) => {
+    // width "hours" is +HH, "minutes" +HHMM, "colon" +HH:MM; X prints Z for a zero offset
+    const offsetText = (seconds, width, zForZero) => {
         if (seconds === 0 && zForZero) return "Z";
         const total = Math.floor(Math.abs(seconds) / 60);
-        return (seconds < 0 ? "-" : "+") + pad(Math.floor(total / 60), 2) + (colon ? ":" : "") + pad(total % 60, 2);
+        const hours = (seconds < 0 ? "-" : "+") + pad(Math.floor(total / 60), 2);
+        if (width === "hours") return hours;
+        return hours + (width === "colon" ? ":" : "") + pad(total % 60, 2);
     };
+
+    // The short zone name as SimpleDateFormat prints it (PST); a name that is only an offset prints as GMT-03:00
+    const zoneText = (f) => (/^[A-Za-z]+$/.test(f.zoneName || "") ? f.zoneName : "GMT" + offsetText(f.offset, "colon", false));
 
     const dayOfYear = (year, month, day) => Math.round((Date.UTC(year, month - 1, day) - Date.UTC(year, 0, 1)) / 86400000) + 1;
 
@@ -325,10 +344,9 @@
                     out += nanos.slice(0, Math.min(count, 9)) + "0".repeat(Math.max(0, count - 9));
                     break;
                 }
-                case "Z": out += offsetText(f.offset, count >= 4, false); break;
-                case "X": out += offsetText(f.offset, count >= 3, true); break;
-                case "x": out += offsetText(f.offset, count >= 3, false); break;
-                case "z": out += f.zone || "UTC"; break;
+                case "Z": out += offsetText(f.offset, "minutes", false); break;
+                case "X": case "x": out += offsetText(f.offset, count === 1 ? "hours" : count === 2 ? "minutes" : "colon", ch === "X"); break;
+                case "z": out += zoneText(f); break;
                 default: throw new Error("date pattern letter " + ch + " is not supported in " + pattern);
             }
         }
@@ -341,7 +359,7 @@
         if (!formatter) {
             formatter = new Intl.DateTimeFormat("en-US", {
                 timeZone: zone, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric",
-                hour: "numeric", minute: "numeric", second: "numeric", weekday: "long"
+                hour: "numeric", minute: "numeric", second: "numeric", weekday: "long", timeZoneName: "short"
             });
             zoneFormatters[zone] = formatter;
         }
@@ -357,7 +375,7 @@
         const offset = Math.round((asUtc - Math.floor(instant.getTime() / 1000) * 1000) / 1000);
         return {
             year, month, day, hour, minute, second, nano: ((instant.getTime() % 1000) + 1000) % 1000 * 1000000,
-            weekday: WEEKDAYS.indexOf(parts.weekday), offset, zone
+            weekday: WEEKDAYS.indexOf(parts.weekday), offset, zone, zoneName: parts.timeZoneName
         };
     };
 
@@ -382,7 +400,7 @@
         const month = Number(match[2]);
         const day = Number(match[3]);
         const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
-        return formatFields({ year, month, day, hour: 0, minute: 0, second: 0, nano: 0, weekday, offset: 0, zone: "UTC" }, pattern && pattern.length ? pattern : "yyyy-MM-dd");
+        return formatFields({ year, month, day, hour: 0, minute: 0, second: 0, nano: 0, weekday, offset: 0, zone: "UTC", zoneName: "UTC" }, pattern && pattern.length ? pattern : "yyyy-MM-dd");
     };
 
     const formatTime = (value, pattern) => {
@@ -391,7 +409,7 @@
         const nano = Number(((match[4] || "") + "000000000").slice(0, 9));
         return formatFields({
             year: 1970, month: 1, day: 1, hour: Number(match[1]), minute: Number(match[2]), second: Number(match[3] || 0), nano,
-            weekday: 4, offset: 0, zone: "UTC"
+            weekday: 4, offset: 0, zone: "UTC", zoneName: "UTC"
         }, pattern && pattern.length ? pattern : "HH:mm:ss");
     };
 

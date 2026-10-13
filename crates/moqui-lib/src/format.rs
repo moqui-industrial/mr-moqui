@@ -40,8 +40,9 @@ fn separators(locale: &str) -> (&'static str, &'static str) {
     let language = locale.split(['_', '-']).next().unwrap_or("");
     let region = locale.split(['_', '-']).nth(1).unwrap_or("");
     match (language, region) {
-        ("de", "CH") => ("\u{2019}", "."),
+        ("de" | "it", "CH") => ("\u{2019}", "."),
         ("fr", "CH") => ("\u{202f}", ","),
+        ("es", "MX") => (",", "."),
         ("de" | "es" | "it" | "nl" | "pt" | "id" | "tr" | "da" | "el" | "ro" | "hr" | "sl", _) => (".", ","),
         ("fr", _) => ("\u{202f}", ","),
         ("ru" | "pl" | "cs" | "sk" | "sv" | "fi" | "nb" | "no" | "uk" | "bg" | "hu" | "lt" | "lv", _) => {
@@ -51,9 +52,24 @@ fn separators(locale: &str) -> (&'static str, &'static str) {
     }
 }
 
-/// Whether the currency symbol follows the number in this locale.
-fn currency_suffix(locale: &str) -> bool {
+/// The currency pattern of a locale, as the JDK's CLDR data has it. `number` is the digits
+/// part, such as `#,##0.00`.
+fn currency_pattern(locale: &str, number: &str) -> String {
     let language = locale.split(['_', '-']).next().unwrap_or("");
+    let region = locale.split(['_', '-']).nth(1).unwrap_or("");
+    match (language, region) {
+        ("nl", "NL") => format!("{CURRENCY_SIGN}\u{a0}{number};{CURRENCY_SIGN}\u{a0}-{number}"),
+        ("de" | "it", "CH") => format!("{CURRENCY_SIGN}\u{a0}{number};{CURRENCY_SIGN}-{number}"),
+        ("pt", "BR") => format!("{CURRENCY_SIGN}\u{a0}{number}"),
+        ("es", "MX") => format!("{CURRENCY_SIGN}{number}"),
+        _ if currency_suffix(language) => format!("{number}\u{a0}{CURRENCY_SIGN}"),
+        _ => format!("{CURRENCY_SIGN}{number}"),
+    }
+}
+
+/// Whether the currency symbol follows the number in this language. `currency_pattern` handles
+/// the regions that differ.
+fn currency_suffix(language: &str) -> bool {
     matches!(
         language,
         "de" | "fr"
@@ -79,8 +95,7 @@ fn currency_suffix(locale: &str) -> bool {
             | "hr"
             | "sl"
             | "el"
-            | "tr"
-    ) && !matches!(locale, "es_MX" | "pt_BR" | "nl_NL" | "de_CH")
+    )
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -148,7 +163,13 @@ fn parse_half(half: &str, symbol: &str, whole: &str) -> Result<Layout, Error> {
                 literal.push('\'');
                 index += 1;
             } else {
-                while index < chars.len() && chars[index] != '\'' {
+                while index < chars.len() {
+                    if chars[index] == '\'' {
+                        if chars.get(index + 1) != Some(&'\'') {
+                            break;
+                        }
+                        index += 1;
+                    }
                     literal.push(chars[index]);
                     index += 1;
                 }
@@ -232,8 +253,8 @@ fn digits(value: Decimal, layout: &Layout) -> (String, String) {
     while int_text.len() < layout.min_int {
         int_text.insert(0, '0');
     }
-    // Java prints a zero rather than nothing when no integer or fraction digit is printed.
-    if int_text.is_empty() && frac.is_empty() {
+    // Java prints a zero integer digit when the pattern asks for none, so `#.##` gives 0.5 and 0.
+    if int_text.is_empty() {
         int_text.push('0');
     }
     (int_text, frac)
@@ -319,12 +340,11 @@ pub fn format_currency(value: Decimal, symbol: &str, fraction_digits: usize, loc
     } else {
         String::new()
     };
+    let number = format!("#,##0{frac}");
     let pattern = if symbol.is_empty() {
-        format!("#,##0{frac}")
-    } else if currency_suffix(locale) {
-        format!("#,##0{frac}\u{a0}{CURRENCY_SIGN}")
+        number
     } else {
-        format!("{CURRENCY_SIGN}#,##0{frac}")
+        currency_pattern(locale, &number)
     };
     match parse_pattern(&pattern, symbol) {
         Ok((positive, negative)) => render(value, &positive, negative.as_ref(), locale),

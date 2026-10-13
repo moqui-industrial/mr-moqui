@@ -701,7 +701,7 @@ mod tests {
         );
         holds(r#"StringUtilities.base64UrlEncode("??>>") === "Pz8-Pg""#);
         holds(r#"CollectionUtilities.getMapArrayListValues([{a: 1}, {a: null}, {b: 2}], "a", true).length === 1"#);
-        holds(r#"CollectionUtilities.getMapArrayListValues([{a: 1}, {a: null}, {b: 2}], "a", false).length === 2"#);
+        holds(r#"CollectionUtilities.getMapArrayListValues([{a: 1}, {a: null}, {b: 2}], "a", false).length === 3"#);
         holds(
             r#"(function () {
                 const page = {pageIndex: 1, pageSize: 10};

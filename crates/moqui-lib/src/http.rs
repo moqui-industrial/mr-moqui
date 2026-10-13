@@ -18,7 +18,16 @@
 //! `allow_in_sim` defaults to false, so a sim call is denied. There is no
 //! provider allow-list. A denied call returns before a [`PreparedRequest`]
 //! exists. The first [`Call::send`] builds a `reqwest::blocking` client,
-//! which starts its own runtime and panics on a thread already inside one.
+//! which runs its own runtime on its own thread.
+//!
+//! Call it from a framework worker or a `spawn_blocking` thread, never from an
+//! async task. On a Tokio worker a debug build panics (reqwest's check) and a
+//! release build blocks the worker for the whole request. There is no guard
+//! here, because Tokio does not say whether blocking is allowed on a thread and
+//! a check for "inside a runtime" would also refuse `spawn_blocking`.
+//!
+//! TLS certificates and host names are verified. Java `RestClient` trusts any
+//! certificate; a remote with a self-signed certificate needs it trusted at the OS.
 
 use std::fmt;
 use std::sync::OnceLock;
