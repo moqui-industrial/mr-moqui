@@ -155,6 +155,73 @@ The framework screens call these before any widget renders, so they exist ahead 
 - `System.getProperty(name)`: `get_prop_or_env`, null when empty.
 - A script `Set` kept in a context name round-trips between action blocks. The stack holds it as a one-key map `{"__set__": [items]}` and the next block gets a `Set` back. `html_scripts`, `footer_scripts`, and `html_stylesheets` depend on this.
 
+### Added by phase 8 slice 2
+
+The macro engine, `sri`, and the text, csv and xml modes. The macro modules are
+`framework/template/screen/{ScreenSupport,ScreenText,ScreenCsv,ScreenXml}.js`. They are embedded in the binary,
+and a `macro-template-location` that is a real file other than the built-in path replaces the mode's module.
+A module is a function of the support object and `ScreenSupport` and returns `{macros, opaque, prelude}`. The
+walker builds the whole node tree first (`name`, `attrs`, `text`, `children`, `parent`, and `inert` for the
+descendants of an `opaque` element), then calls `macros[name](node, children)` in post-order. A macro that must
+place a child in a loop of its own reads `node.children[i].source`, so there is no separate `visit` hook.
+
+`sri`, added now. Methods that return text in Java return `""` here, so `${sri.renderSubscreen()}` in a string
+template still works.
+
+- Output and state: `write`, `getRenderMode`, `doBoundaryComments`, `getActiveScreenDef` (`location`, `screenName`,
+  `getScreenName`, `getLocation`, `getDefaultMenuName`), `encodeHtml`, `appendToAfterScreenWriter`,
+  `appendToScriptWriter`, `getAfterScreenWriterText`, `getScriptWriterText`.
+- Rendering: `renderSection`, `renderSectionInclude` (also a name or location with `${}`), `renderSubscreen`,
+  `renderIncludeScreen`, `renderText`, `getSectionIncludedNode` (the section name only).
+- Context: `pushContext`, `popContext`, `setInContext`, `pushSingleFormMapContext`, `getSingleFormMap`. The map
+  argument of the last two is the map or an expression string, as `form-single.@map` is.
+- Fields: `getFieldValue`, `getFieldValueString` (one argument with a widget, or field, default, format and, for
+  date-time, the type), `getFieldValuePlainString`, `getFieldValueClass`, `getNamedValuePlain`, `getFieldEntityValue`,
+  `getFieldOptions` (a `Map`, so numeric-looking keys keep their order). The widget and field arguments are element
+  objects `{name, attrs, text, children, parent}` that the generated code writes as literals.
+- Forms: `getFormNode`, `getFormInstance` (`formNode`, `name`, `list` only), `getFormHiddenParameters`,
+  `openFormList(name)` (runs the form's `entity-find` and `row-actions` and the fields' `from`, returns `{id, count}`),
+  `startFormListRow(info, index)`, `endFormListRow`, `safeCloseList(info)`, `formListColumnCharWidths`. Java passes the
+  row and the render info to `startFormListRow`. Here the rows stay on the host so dates and decimals keep their types.
+- URLs: `buildUrl`, `buildUrlFromTarget`, `makeUrlByType`, `getScreenUrlInstance`, `getCurrentScreenUrl`,
+  `isAnchorLink`, and the property `activeInCurrentMenu`. A URL object has `path`, `url`, `pathWithParams`, `readOnly`,
+  `getPath`, `getUrl`, `getPathWithParams`, `getUrlWithParams(extension)`, `getMinimalPathUrl`, `isReadOnly`,
+  `cloneUrlInstance`, `addParameter`, `addParameters`, `removeParameter` (these three return the URL),
+  `getParameterMap`, `getPassThroughParameterMap`.
+- Themes: `getThemeIconClass`, `getThemeValues`. The current theme is the user's `UserScreenTheme`, else the
+  `Enumeration.enumCode` of the theme type, which is simpler than Java: user group themes and the `DEFAULT` lookup
+  are not read.
+
+`sri`, intentionally deferred to the html slices because only their macros call them: `getFieldTransitionValue` and
+the server-side `dynamic-options` (both run a transition as a test render), `makeFormListSingleMap`,
+`makeFormListMultiMap`, `getFormListHeaderValues`, `getFormFieldValues`, `startFormListSubRow`, `endFormListSubRow`,
+`getMenuData`, `getFormInstance().makeFormListRenderInfo()`, and the screen definition's `getMenuSubscreensItems`.
+Form-list `group-by`, `sub-list`, `show-total`, saved finds and `select-columns` are deferred with them.
+`auto-fields-service`, `auto-widget-service`, `DbForm` forms and `dynamic="true"` forms are not assembled. A related
+entity's drop-down in `auto-fields-entity` is a text widget.
+
+`ec` and statics, added now:
+
+- `ec.resource`: `expand(text, location, map)` (localizes first when shorter than 256 characters, as Java does),
+  `expandNoL10n`, `expression(expr, location, map)`, `condition(expr, location)`. The optional map is put in a
+  context frame of its own for the call.
+- `ec.l10n`: `localize` (the `LocalizedMessage` locale chain `en_US`, `en`, `default`, the text before `##` as a last
+  try, an error over 255 characters, cached in `l10n.message`), `format(value, pattern)`, `formatCurrency(amount, uomId,
+  digits)`, `formatCurrencyNoSymbol`, `parseTimestamp(text, format)`. The formatter is `moqui_lib::format`: the `#,##0.00`
+  pattern subset with `HALF_EVEN`, a small separator table for the common languages, the currency symbol from the
+  `Uom` row or a table of ISO codes, and the date patterns of `moqui_lib::datefmt`. Shared vectors:
+  `crates/moqui-lib/testdata/format-vectors.json`.
+- `ec.context`: `get(name)` and the properties `formListFindId` and `orderByField`.
+- `ec.screen.isRenderModeValid(mode)`.
+- `ec.web`: `requestParameters`, `getWebappRootUrl(...)` (the base URL; the four arguments are ignored).
+- `ec.user`: `locale`, `getLocale()` (text such as `en_US`), `nowTimestamp` (a time stamp reaches a script as text).
+- `WebUtilities`: `encodeHtml`, `encodeHtmlJsSafe`, `fieldValuesEncodeHtmlJsSafe`, `ipMatches`,
+  `isSafeSinglePathSegment`, `isSameOriginRedirect(url, host)`, `lastPathSegment`.
+- `StringUtilities`: `encodeForXmlAttribute`, `base64UrlEncode`, `base64UrlDecode`.
+- `CollectionUtilities`: `paginateParameters`, `getMapArrayListValues`.
+- `entity find .orderBy("a,-b,^c")` takes comma separated fields, as Java does.
+- `ScheduledJobRunner.getCronDescription`, `ec.user.getPeriodDescription` and `ec.web.request` are not added.
+
 ## Out of scope
 
 - QuickJS operator overloading for decimals. QuickJS-NG ties it to the built-in `BigDecimal` and `BigFloat` classes (`CONFIG_BIGNUM`). It does not extend to a host class, so the build flag does not give a host decimal `+`. The browser cannot share that flag either.

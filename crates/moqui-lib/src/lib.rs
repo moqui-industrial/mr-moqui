@@ -22,6 +22,7 @@ pub mod context_stack;
 pub mod datefmt;
 pub mod env;
 pub mod error;
+pub mod format;
 #[cfg(feature = "http")]
 pub mod http;
 pub mod json;

@@ -243,6 +243,21 @@ impl HostUser {
         })
     }
 
+    #[qjs(get, rename = "locale")]
+    fn locale_property(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(crate::l10n::locale()))
+    }
+
+    fn get_locale(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(crate::l10n::locale()))
+    }
+
+    /// The current time. A script sees time stamps as text, so this is the text of the stamp.
+    #[qjs(get, rename = "nowTimestamp")]
+    fn now_timestamp_property<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || host_to_js(&ctx, now_timestamp()))
+    }
+
     #[qjs(get)]
     fn username<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || match crate::user::current_username() {
@@ -339,6 +354,23 @@ impl HostWeb {
     #[qjs(get)]
     fn parameters<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || host_to_js(&ctx, map_value(crate::web::parameters())))
+    }
+
+    #[qjs(get, rename = "requestParameters")]
+    fn request_parameters_property<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || host_to_js(&ctx, map_value(crate::web::parameters())))
+    }
+
+    /// The root URL of the web app. The arguments are the ones Java takes and are not needed here.
+    fn get_webapp_root_url(
+        &self,
+        ctx: Ctx<'_>,
+        _webapp_name: Opt<JsValue<'_>>,
+        _servlet_context_path: Opt<JsValue<'_>>,
+        _include_webapp_path: Opt<JsValue<'_>>,
+        _is_secure: Opt<JsValue<'_>>,
+    ) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(crate::web::base_url().trim_end_matches('/').to_string()))
     }
 
     #[qjs(get)]

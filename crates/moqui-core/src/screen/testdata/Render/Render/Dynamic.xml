@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A form whose entity is chosen by the request, for the render tests. -->
+<screen require-authentication="false">
+    <actions>
+        <set field="row" from="{enumTypeId: 'T1', description: 'Dyn type', sequenceNum: 7, enumId: 'E9'}"/>
+    </actions>
+    <widgets>
+        <form-single name="DynForm" map="row" dynamic="true">
+            <auto-fields-entity entity-name="${entityName}" field-type="display" include="nonpk"/>
+        </form-single>
+    </widgets>
+</screen>

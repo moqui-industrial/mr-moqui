@@ -448,8 +448,11 @@ fn basic_auth_writes_skip_the_session_token_but_a_cookie_session_does_not() {
     assert_eq!(response.status, 401, "{}", response.body_text());
 }
 
+mod golden;
+mod modules;
 mod render;
 mod walk;
+mod widgets;
 
 /// The fixture screen tree under `testdata`, as a root screen location.
 fn fixture_root() -> String {

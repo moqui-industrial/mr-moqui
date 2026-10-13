@@ -4,5 +4,5 @@
     <pre-actions><script>trace.push('Deep.pre')</script></pre-actions>
     <subscreens default-item="Leaf"/>
     <actions><script>trace.push('Deep.actions')</script></actions>
-    <widgets/>
+    <widgets><subscreens-active/></widgets>
 </screen>

@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Calls sri from actions and sends what it returns as JSON, for the sri method tests. -->
+<screen require-authentication="false">
+    <transition name="go" read-only="true"><default-response url="."/></transition>
+    <transition name="change"><actions><script>1</script></actions><default-response url="."/></transition>
+    <actions><script><![CDATA[
+        const field = (widget, name, formName, map) => ({
+            name: widget, attrs: {},
+            parent: {name: 'default-field', attrs: {}, parent: {name: 'field', attrs: {name: name, from: ''},
+                parent: {name: 'form-single', attrs: {name: formName, map: map}}}}});
+        const fieldOnly = (name, attrs, map) => ({name: 'field', attrs: Object.assign({name: name}, attrs || {}),
+            parent: {name: 'form-single', attrs: {name: 'F', map: map}}});
+
+        // urls
+        const url = sri.buildUrl('../Forms');
+        const withParam = sri.buildUrl('../Forms').addParameter('a', 'b x').addParameter('skip', null);
+        const clone = withParam.cloneUrlInstance().addParameter('c', 1);
+        withParam.removeParameter('a');
+        const made = sri.makeUrlByType('/go?x=1', 'plain', null);
+        const trans = sri.makeUrlByType('go', 'transition', {name: 'x', attrs: {'parameter-map': '{p: 1}'},
+            children: [{name: 'parameter', attrs: {name: 'q', value: 'two'}}, {name: 'parameter', attrs: {name: 'who'}}]});
+        const change = sri.buildUrl('change');
+
+        // field values: the map, the context, error-free default
+        mapValues = {amount: 12.5, name: 'Ada'}
+        ctxOnly = 'from context'
+        const values = {
+            fromMap: sri.getFieldValueString(field('text-line', 'amount', 'F', 'mapValues')),
+            fromMapName: sri.getFieldValueString(field('text-line', 'name', 'F', 'mapValues')),
+            fromContext: sri.getFieldValueString(field('text-line', 'ctxOnly', 'F', 'mapValues')),
+            defaulted: sri.getFieldValueString(Object.assign(field('text-line', 'nothing', 'F', 'mapValues'), {attrs: {'default-value': 'dflt ${ctxOnly}'}})),
+            formatted: sri.getFieldValueString(Object.assign(field('display', 'amount', 'F', 'mapValues'), {attrs: {format: '0.000'}})),
+            textFormat: sri.getFieldValueString(Object.assign(field('display', 'amount', 'F', 'mapValues'), {attrs: {format: '0.000', 'text-format': '#'}})),
+            plain: sri.getFieldValuePlainString(fieldOnly('amount', {}, 'mapValues'), ''),
+            plainDefault: sri.getFieldValuePlainString(fieldOnly('nothing', {}, 'mapValues'), 'd${ctxOnly}'),
+            valueClass: sri.getFieldValueClass(fieldOnly('amount', {}, 'mapValues')),
+            from: sri.getFieldValue(fieldOnly('x', {from: '1 + 2'}, 'mapValues'), ''),
+            named: sri.getNamedValuePlain('name', {name: 'form-single', attrs: {map: 'mapValues'}}),
+            namedContext: sri.getNamedValuePlain('ctxOnly', {name: 'form-list', attrs: {}}),
+        };
+
+        // options
+        listOptions = [{k: 'a', t: 'Alpha'}, {k: 'b', t: 'Beta'}]
+        const options = {
+            option: Array.from(sri.getFieldOptions({name: 'drop-down', attrs: {}, children: [
+                {name: 'option', attrs: {key: 'Y', text: 'Yes'}}, {name: 'option', attrs: {key: '${ctxOnly}'}},
+                {name: 'list-options', attrs: {list: 'listOptions', key: '${k}', text: '${t}'}},
+                {name: 'list-options', attrs: {list: "['p', 'q']"}}],
+                parent: {name: 'default-field', attrs: {}, parent: {name: 'field', attrs: {name: 'f'}}}}).entries()),
+        };
+
+        // context, writers, themes
+        sri.pushContext(); setLocal = 'inner'; const inner = setLocal; sri.popContext();
+        sri.setInContext({name: 'set', attrs: {field: 'viaSet', value: 'v-${ctxOnly}'}});
+        sri.setInContext({name: 'set', attrs: {field: 'viaFrom', from: '2 * 21', type: 'String'}});
+        sri.setInContext({name: 'set', attrs: {field: 'viaDefault', from: 'null', 'default-value': 'dd'}});
+        sri.appendToAfterScreenWriter('after1'); sri.appendToAfterScreenWriter('after2');
+        sri.appendToScriptWriter('script1');
+        const after = sri.getAfterScreenWriterText();
+        const afterAgain = sri.getAfterScreenWriterText();
+        const single = sri.getSingleFormMap('mapValues');
+        const included = sri.getSectionIncludedNode({name: 'section-include', attrs: {location: 'x.xml#Named'}});
+
+        ec.web.sendJsonResponse({
+            mode: sri.getRenderMode(), boundary: sri.doBoundaryComments(), active: sri.getActiveScreenDef().getScreenName(),
+            path: url.path, url: url.url, readOnly: url.readOnly, withParam: withParam.pathWithParams, clone: clone.pathWithParams,
+            made: made.url, madePath: made.path,
+            trans: trans.pathWithParams, transReadOnly: trans.isReadOnly(), changeReadOnly: change.isReadOnly(),
+            anchor: sri.isAnchorLink({attrs: {'link-type': 'anchor'}}, url),
+            anchorAuto: sri.isAnchorLink({attrs: {}}, url), anchorAutoTransition: sri.isAnchorLink({attrs: {}}, change),
+            anchorPlain: sri.isAnchorLink({attrs: {'url-type': 'plain'}}, change),
+            current: sri.getCurrentScreenUrl().path, currentSame: sri.getScreenUrlInstance().url,
+            values: values, options: options, inner: inner, innerAfter: typeof setLocal, viaSet: viaSet, viaFrom: viaFrom, viaDefault: viaDefault,
+            after: after, afterAgain: afterAgain, single: single, included: included.attrs.name,
+            hidden: sri.getFormHiddenParameters({name: 'form-single', attrs: {}, children: [{name: 'hidden-parameters', attrs: {}, children: [
+                {name: 'parameter', attrs: {name: 'h', value: 'hv'}}, {name: 'parameter', attrs: {name: 'empty', value: ''}}]}]}),
+            encode: sri.encodeHtml('<a href="x">&\'</a>'),
+            activeInMenu: sri.activeInCurrentMenu,
+        })
+    ]]></script></actions>
+    <widgets/>
+</screen>

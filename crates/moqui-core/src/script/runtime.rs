@@ -42,21 +42,30 @@ use rquickjs::{
 mod conditions;
 mod convert;
 mod decimal;
+mod ec_extra;
 mod entities;
 mod facades;
 mod helpers;
+mod screen_host;
 mod search;
 mod services;
+mod urls;
+mod values;
 
 use conditions::*;
 use convert::*;
 use decimal::*;
+pub use ec_extra::expand_localized;
 use entities::*;
 pub use facades::run_script_location;
 use facades::*;
 use helpers::*;
+pub(crate) use screen_host::with_screen_runner;
 use search::*;
 use services::*;
+pub(crate) use values::{
+    context_combined, pop_context_frame, put_context_all, value_entity_name, value_field, value_items, value_map,
+};
 
 use crate::context::{Error, ExecutionContext};
 use moqui_db::sql::{CompareOp, Condition};
@@ -108,9 +117,12 @@ struct Engine {
     /// they are written back to the stack at the end of the run and before a host call.
     tracked: RefCell<HashMap<String, Persistent<JsValue<'static>>>>,
     templates: RefCell<HashMap<String, Persistent<Function<'static>>>>,
+    /// Compiled screen units by unit id.
+    units: RefCell<HashMap<u64, Persistent<Function<'static>>>>,
     object_utilities: Persistent<Object<'static>>,
     collection_utilities: Persistent<Object<'static>>,
     string_utilities: Persistent<Object<'static>>,
+    web_utilities: Persistent<Object<'static>>,
     context: Context,
     // The context and its persistents borrow this runtime. Drop order frees them first.
     #[allow(dead_code)]
@@ -122,6 +134,7 @@ enum HelperKind {
     Object,
     Collection,
     String,
+    Web,
 }
 
 /// Push an empty frame on the thread-local context stack.
@@ -165,13 +178,22 @@ pub fn run_script(source: &str) -> Result<(), Error> {
     eval_script(source)
 }
 
+/// A source that starts with `{` is an object literal in an expression, not a block.
+fn as_expression(source: &str) -> std::borrow::Cow<'_, str> {
+    if source.trim_start().starts_with('{') {
+        std::borrow::Cow::Owned(format!("({source}\n)"))
+    } else {
+        std::borrow::Cow::Borrowed(source)
+    }
+}
+
 /// Evaluate a strict expression. Null, false, and a zero number are false. A decimal is true.
 pub fn eval_condition(expression: &str) -> Result<bool, Error> {
     if expression.as_bytes().contains(&0) {
         return Err(Error::new("script source contains a null byte"));
     }
     with_context(|ctx| {
-        let value = eval_js::<JsValue>(ctx, expression)?;
+        let value = eval_js::<JsValue>(ctx, &as_expression(expression))?;
         Ok(js_truthy(&value))
     })
 }
@@ -187,7 +209,7 @@ pub fn expand(template: &str) -> Result<String, Error> {
     with_context(|ctx| expand_in(ctx, template))
 }
 
-pub(super) fn with_ctx<R>(body: impl FnOnce(&Ctx) -> Result<R, Error>) -> Result<R, Error> {
+pub(crate) fn with_ctx<R>(body: impl FnOnce(&Ctx) -> Result<R, Error>) -> Result<R, Error> {
     with_context(body)
 }
 
@@ -332,9 +354,11 @@ impl Engine {
         Ok(Self {
             tracked: RefCell::new(HashMap::new()),
             templates: RefCell::new(HashMap::new()),
+            units: RefCell::new(HashMap::new()),
             object_utilities: helpers.object_utilities,
             collection_utilities: helpers.collection_utilities,
             string_utilities: helpers.string_utilities,
+            web_utilities: helpers.web_utilities,
             context,
             runtime,
         })
@@ -345,20 +369,24 @@ struct Helpers {
     object_utilities: Persistent<Object<'static>>,
     collection_utilities: Persistent<Object<'static>>,
     string_utilities: Persistent<Object<'static>>,
+    web_utilities: Persistent<Object<'static>>,
 }
 
 fn install_context(ctx: &Ctx<'_>) -> Result<Helpers, Error> {
-    let object_utilities = Persistent::save(ctx, Object::new(ctx.clone()).map_err(js_error)?);
-    let collection_utilities = Persistent::save(ctx, Object::new(ctx.clone()).map_err(js_error)?);
-    let string_utilities = Persistent::save(ctx, Object::new(ctx.clone()).map_err(js_error)?);
+    let object_utilities = Object::new(ctx.clone()).map_err(js_error)?;
+    let collection_utilities = Object::new(ctx.clone()).map_err(js_error)?;
+    let string_utilities = Object::new(ctx.clone()).map_err(js_error)?;
+    let web_utilities = Object::new(ctx.clone()).map_err(js_error)?;
+    ec_extra::fill_helpers(ctx, &string_utilities, &collection_utilities, &web_utilities)?;
     // Own property before the proxy. A later set walks the prototype and the proxy refuses objects.
     install_ec(ctx)?;
     install_helpers(ctx)?;
     install_proxy(ctx)?;
     Ok(Helpers {
-        object_utilities,
-        collection_utilities,
-        string_utilities,
+        object_utilities: Persistent::save(ctx, object_utilities),
+        collection_utilities: Persistent::save(ctx, collection_utilities),
+        string_utilities: Persistent::save(ctx, string_utilities),
+        web_utilities: Persistent::save(ctx, web_utilities),
     })
 }
 
@@ -502,6 +530,7 @@ fn helper_kind(name: &str) -> Option<HelperKind> {
         "ObjectUtilities" => Some(HelperKind::Object),
         "CollectionUtilities" => Some(HelperKind::Collection),
         "StringUtilities" => Some(HelperKind::String),
+        "WebUtilities" => Some(HelperKind::Web),
         _ => None,
     }
 }
@@ -514,6 +543,7 @@ fn helper_object<'js>(ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<Option<Obj
         HelperKind::Object => engine.object_utilities.clone(),
         HelperKind::Collection => engine.collection_utilities.clone(),
         HelperKind::String => engine.string_utilities.clone(),
+        HelperKind::Web => engine.web_utilities.clone(),
     });
     let Some(persistent) = persistent else {
         return Ok(None);
@@ -632,11 +662,9 @@ fn install_ec(ctx: &Ctx<'_>) -> Result<(), Error> {
     ec.set("web", web).map_err(js_error)?;
     ec.set("cache", cache_object(ctx)?).map_err(js_error)?;
     ec.set("search", search_object(ctx)?).map_err(js_error)?;
+    ec_extra::install_ec_extras(ctx, &ec)?;
     caught(ctx, "globals", ctx.globals().set("ec", ec))?;
-    let sri = Object::new(ctx.clone()).map_err(js_error)?;
-    let redirect = Function::new(ctx.clone(), sri_send_redirect_and_stop_render).map_err(js_error)?;
-    sri.set("sendRedirectAndStopRender", redirect).map_err(js_error)?;
-    caught(ctx, "globals", ctx.globals().set("sri", sri))?;
+    caught(ctx, "globals", ctx.globals().set("sri", screen_host::sri_object(ctx)?))?;
     let system = Object::new(ctx.clone()).map_err(js_error)?;
     let property = Function::new(ctx.clone(), system_get_property).map_err(js_error)?;
     system.set("getProperty", property).map_err(js_error)?;
@@ -686,6 +714,7 @@ fn resource_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     resource.set("expand", expand).map_err(js_error)?;
     let script = Function::new(ctx.clone(), resource_script).map_err(js_error)?;
     resource.set("script", script).map_err(js_error)?;
+    ec_extra::add_resource_functions(ctx, &resource)?;
     Ok(resource)
 }
 
@@ -745,7 +774,7 @@ pub fn eval_value(expression: &str) -> Result<Value, Error> {
         return Err(Error::new("script source contains a null byte"));
     }
     with_context(|ctx| {
-        let evaluated = eval_js::<JsValue>(ctx, expression)?;
+        let evaluated = eval_js::<JsValue>(ctx, &as_expression(expression))?;
         js_value_to_host(ctx, &evaluated)
     })
 }
@@ -756,7 +785,7 @@ pub fn eval_map(expression: &str) -> Result<std::collections::BTreeMap<String, V
         return Err(Error::new("script source contains a null byte"));
     }
     with_context(|ctx| {
-        let evaluated = eval_js::<JsValue>(ctx, expression)?;
+        let evaluated = eval_js::<JsValue>(ctx, &as_expression(expression))?;
         object_map(ctx, &evaluated)
     })
 }

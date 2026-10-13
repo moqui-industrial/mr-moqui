@@ -1,0 +1,15 @@
+sri.write($csv(ec.resource.expand("Title ${name}")));
+sri.write($csv(ec.resource.expand("inside")));
+sri.write($csv(ec.resource.expand("Body")));
+sri.write($csv(ec.resource.expand("Nopad")));
+sri.write($csv(ec.resource.expand("ph")));
+sri.write($csv(ec.resource.expand("pl")));
+sri.write($csv(ec.resource.expand("pc")));
+sri.write($csv(ec.resource.expand("pr")));
+sri.write($csv(ec.resource.expand("pf")));
+sri.renderSection("First");
+sri.renderSection("Each");
+sri.renderSectionInclude({"name":"section-include","attrs":{"name":"First"}});
+sri.renderSubscreen();
+sri.renderSubscreen();
+sri.renderIncludeScreen("component://x/screen/Other.xml", "true");

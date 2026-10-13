@@ -201,8 +201,10 @@ pub(crate) struct Job<'a> {
     pub started: Instant,
 }
 
-/// What a running render exposes to the code that writes the screen. Slice 2 attaches `sri` here.
+/// What a running render exposes to the code that writes the screen: `sri` reads this.
 pub struct RenderState {
+    pub factory: Arc<ExecutionContextFactory>,
+    pub facade: Arc<ScreenFacade>,
     pub url_info: Arc<ScreenUrlInfo>,
     /// Canonical render mode: `html-print` for `xsl-fo`.
     pub render_mode: String,
@@ -210,12 +212,66 @@ pub struct RenderState {
     pub character_encoding: String,
     /// The mode's `screen-text-output` says it is always standalone.
     pub always_standalone: bool,
+    /// The macro module for the mode: the last `macro-template` of a screen in the path, else the conf's.
+    pub macro_location: String,
     /// Index into `url_info.path_defs` of the screen being rendered.
     pub screen_path_index: Cell<usize>,
     /// Set by actions that sent their own response, so the screen is not rendered.
     pub dont_do_render: Cell<bool>,
     /// Locations of screens that are skipped because a required parameter is missing.
     pub stopped: RefCell<Vec<String>>,
+    /// A screen rendered by `include-screen`, which is the active screen while it renders.
+    pub override_def: RefCell<Option<Arc<ScreenDef>>>,
+    /// Text for the end of the output, and for a script block after it.
+    pub after_text: RefCell<String>,
+    pub script_text: RefCell<String>,
+    /// The rows of the form-lists being rendered, by handle.
+    pub form_lists: RefCell<Vec<Option<super::sri::FormRows>>>,
+    /// Dynamic forms being rendered, by name, which `sri` reads instead of the definition's forms.
+    pub dynamic_forms: RefCell<std::collections::HashMap<String, Arc<super::form::FormInstance>>>,
+}
+
+impl RenderState {
+    fn new(
+        factory: &Arc<ExecutionContextFactory>,
+        facade: &Arc<ScreenFacade>,
+        info: Arc<ScreenUrlInfo>,
+        mode: String,
+        content_type: String,
+        character_encoding: String,
+    ) -> Self {
+        let always_standalone = facade.is_always_standalone(&mode);
+        let macro_location = info
+            .path_defs
+            .iter()
+            .filter_map(|def| def.macro_template_location(&mode))
+            .rfind(|location| !location.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                facade
+                    .text_output(&mode)
+                    .map(|output| output.macro_template_location.clone())
+            })
+            .unwrap_or_default();
+        Self {
+            factory: Arc::clone(factory),
+            facade: Arc::clone(facade),
+            url_info: info,
+            render_mode: mode,
+            content_type,
+            character_encoding,
+            always_standalone,
+            macro_location,
+            screen_path_index: Cell::new(0),
+            dont_do_render: Cell::new(false),
+            stopped: RefCell::new(Vec::new()),
+            override_def: RefCell::new(None),
+            after_text: RefCell::new(String::new()),
+            script_text: RefCell::new(String::new()),
+            form_lists: RefCell::new(Vec::new()),
+            dynamic_forms: RefCell::new(std::collections::HashMap::new()),
+        }
+    }
 }
 
 thread_local! {
@@ -307,17 +363,14 @@ pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> 
         ));
     }
     let (content_type, encoding) = output_type(&facade, &info, &mode);
-    let always_standalone = facade.is_always_standalone(&mode);
-    let state = Rc::new(RenderState {
-        url_info: Arc::new(info),
-        render_mode: mode,
+    let state = Rc::new(RenderState::new(
+        factory,
+        &facade,
+        Arc::new(info),
+        mode,
         content_type,
-        character_encoding: encoding,
-        always_standalone,
-        screen_path_index: Cell::new(0),
-        dont_do_render: Cell::new(false),
-        stopped: RefCell::new(Vec::new()),
-    });
+        encoding,
+    ));
     let _active = ActiveGuard::install(Rc::clone(&state));
     let begin = state.url_info.begin_transaction;
     let timeout = state.url_info.transaction_timeout;
@@ -340,6 +393,29 @@ fn render_screens(state: &RenderState, facade: &ScreenFacade) -> Result<(), Erro
         }
     }
 
+    // A screen that sets saveFilename makes the response a download.
+    if let Some(filename) = script::context_value("saveFilename").map(|value| text_of(Some(&value))) {
+        if !filename.is_empty() {
+            let safe: String = filename
+                .chars()
+                .map(|ch| {
+                    if ch.is_ascii_graphic() && !matches!(ch, '"' | '\\' | ';') {
+                        ch
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            web::add_header(
+                "Content-Disposition",
+                format!(
+                    "attachment; filename=\"{safe}\"; filename*=utf-8''{}",
+                    encode_component(&filename)
+                ),
+            );
+        }
+    }
+
     // Screens before the render start only sit on the stack, unless the mode is always standalone:
     // then the parents' pre-actions run too, from the third screen on (not webroot and apps).
     let first_pre =
@@ -348,13 +424,15 @@ fn render_screens(state: &RenderState, facade: &ScreenFacade) -> Result<(), Erro
         } else {
             info.render_path_difference
         };
-    let mut frames = Frames::default();
-    for (index, def) in defs.iter().enumerate() {
-        frames.enter_screen(def, index == last)?;
-        if index >= first_pre {
-            state.screen_path_index.set(index);
-            if let Some(actions) = &def.pre_actions {
-                script::run_actions(&actions.xml)?;
+    {
+        let mut frames = Frames::default();
+        for (index, def) in defs.iter().enumerate() {
+            frames.enter_screen(def, index == last)?;
+            if index >= first_pre {
+                state.screen_path_index.set(index);
+                if let Some(actions) = &def.pre_actions {
+                    script::run_actions(&actions.xml)?;
+                }
             }
         }
     }
@@ -374,38 +452,24 @@ fn render_screens(state: &RenderState, facade: &ScreenFacade) -> Result<(), Erro
             }
         }
     }
+    // The screens above the render start stay on the artifact stack so the screens below inherit.
+    let mut inherited = Frames::default();
+    for def in &defs[..info.render_path_difference.min(defs.len())] {
+        inherited.push_screen(def, false)?;
+    }
     state.screen_path_index.set(info.render_path_difference);
     render_body(state)
 }
 
-/// Where slice 2 plugs in the macro walker. It now runs each rendered screen's root-section
-/// actions in order and sends the headers with an empty body. The walker takes over from here:
-/// it runs the sections itself and writes through [`web::write_output`].
+/// Render the first screen to render, which renders the ones below it through `sri.renderSubscreen`.
+/// The output opens when the first text is written, or here when nothing was.
 fn render_body(state: &RenderState) -> Result<(), Error> {
-    for index in state.url_info.render_path_difference..state.url_info.path_defs.len() {
-        let def = &state.url_info.path_defs[index];
-        if state.stopped.borrow().contains(&def.location) {
-            continue;
-        }
-        state.screen_path_index.set(index);
-        let root = &def.root;
-        let holds = match &root.condition {
-            Some(condition) => check_condition(condition)?,
-            None => true,
-        };
-        if holds {
-            if let Some(actions) = &root.actions {
-                script::run_actions(&actions.xml)?;
-            }
-        }
+    let is_target = state.url_info.path_defs.len() <= state.screen_path_index.get() + 1;
+    script::with_screen_runner(|runner| super::sri::render_active_screen(state, runner, is_target))?;
+    super::sri::flush_end_text(state);
+    if !web::output_sent() && !state.dont_do_render.get() {
+        web::start_output(200, &super::sri::content_type_header(state));
     }
-    if web::output_sent() || state.dont_do_render.get() {
-        return Ok(());
-    }
-    web::start_output(
-        200,
-        &format!("{};charset={}", state.content_type, state.character_encoding),
-    );
     Ok(())
 }
 
@@ -481,26 +545,32 @@ fn check_authentication(info: &ScreenUrlInfo) -> Result<(), Error> {
 /// Artifact frames pushed for a request, popped in reverse when this drops. Anonymous-access
 /// screens log the session in as anonymous until then.
 #[derive(Default)]
-struct Frames {
+pub(super) struct Frames {
     pushed: usize,
     anonymous: bool,
 }
 
 impl Frames {
-    fn push(&mut self, artifact_type: &str, name: &str, action: &str, requires_authz: bool) -> Result<(), Error> {
+    pub(super) fn push(
+        &mut self,
+        artifact_type: &str,
+        name: &str,
+        action: &str,
+        requires_authz: bool,
+    ) -> Result<(), Error> {
         ExecutionContext::with_current(|ec| ec.push_checked(artifact_type, name, action, requires_authz, false, None))
             .unwrap_or(Ok(()))?;
         self.pushed += 1;
         Ok(())
     }
 
-    fn push_screen(&mut self, def: &ScreenDef, requires_authz: bool) -> Result<(), Error> {
+    pub(super) fn push_screen(&mut self, def: &ScreenDef, requires_authz: bool) -> Result<(), Error> {
         self.push("AT_XML_SCREEN", &def.location, "view", requires_authz)
     }
 
     /// Push a screen's frame, with authorization required only for the last screen of the path
     /// when it requires authentication, and apply `anonymous-view` and `anonymous-all`.
-    fn enter_screen(&mut self, def: &ScreenDef, is_last: bool) -> Result<(), Error> {
+    pub(super) fn enter_screen(&mut self, def: &ScreenDef, is_last: bool) -> Result<(), Error> {
         self.push_screen(def, is_last && def.authentication == Authentication::Required)?;
         self.apply_anonymous(def)
     }
@@ -559,16 +629,14 @@ fn run_transition(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>, info: S
     let mode = DEFAULT_MODE.to_string();
     let facade = ScreenFacade::of(factory);
     let (content_type, encoding) = output_type(&facade, &info, &mode);
-    let state = Rc::new(RenderState {
-        url_info: Arc::clone(&info),
-        render_mode: mode,
+    let state = Rc::new(RenderState::new(
+        factory,
+        &facade,
+        Arc::clone(&info),
+        mode,
         content_type,
-        character_encoding: encoding,
-        always_standalone: false,
-        screen_path_index: Cell::new(0),
-        dont_do_render: Cell::new(false),
-        stopped: RefCell::new(Vec::new()),
-    });
+        encoding,
+    ));
     let _active = ActiveGuard::install(Rc::clone(&state));
 
     // Screens above the transition are only on the stack, so they inherit but are not decided.
@@ -667,7 +735,7 @@ fn set_all_parameters(info: &ScreenUrlInfo, transition: &TransitionDef) -> Resul
     Ok(())
 }
 
-fn parameter_value(parameter: &ParameterDef) -> Result<Option<Value>, Error> {
+pub(super) fn parameter_value(parameter: &ParameterDef) -> Result<Option<Value>, Error> {
     if let Some(from) = &parameter.from {
         return Ok(Some(script::eval_value(from)?));
     }
@@ -760,7 +828,7 @@ fn save_parameters() {
     }
 }
 
-fn with_query(mut location: String, parameters: &BTreeMap<String, String>) -> String {
+pub(super) fn with_query(mut location: String, parameters: &BTreeMap<String, String>) -> String {
     let mut query = String::new();
     for (name, value) in parameters {
         if value.is_empty() {
@@ -782,7 +850,7 @@ fn with_query(mut location: String, parameters: &BTreeMap<String, String>) -> St
     location
 }
 
-fn encode_component(text: &str) -> String {
+pub(super) fn encode_component(text: &str) -> String {
     let mut out = String::new();
     for byte in text.bytes() {
         if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
@@ -849,7 +917,7 @@ fn missing_parameter(parameters: &BTreeMap<String, Value>, transition: &Transiti
         .map(str::to_string)
 }
 
-fn is_empty(value: Option<&Value>) -> bool {
+pub(super) fn is_empty(value: Option<&Value>) -> bool {
     match value {
         None | Some(Value::Null) => true,
         Some(Value::String(text)) => text.is_empty(),
@@ -888,6 +956,6 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     left.len() == right.len() && left.iter().zip(right).fold(0_u8, |acc, (a, b)| acc | (a ^ b)) == 0
 }
 
-fn text_of(value: Option<&Value>) -> String {
+pub(super) fn text_of(value: Option<&Value>) -> String {
     value.map(moqui_lib::object::to_plain_string).unwrap_or_default()
 }

@@ -47,7 +47,7 @@ along with this software (see the LICENSE.md file). If not, see
         <entity-find-one entity-name="moqui.security.ArtifactGroup" value-field="artifactGroup"/>
 
         <entity-find entity-name="moqui.security.ArtifactGroupMember" list="memberList">
-            <econdition field-name="artifactGroupId"/><order-by field-name="preferenceKey"/></entity-find>
+            <econdition field-name="artifactGroupId"/><order-by field-name="artifactName"/></entity-find>
         <entity-find entity-name="moqui.security.ArtifactAuthz" list="authzList">
             <econdition field-name="artifactGroupId"/><order-by field-name="userGroupId,authzTypeEnumId"/></entity-find>
         <entity-find entity-name="moqui.security.ArtifactTarpit" list="tarpitList">

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Sections, fail-widgets, include-screen and text for the render tests. -->
+<screen require-authentication="false">
+    <actions>
+        <set field="show" from="false"/>
+        <set field="who" value="Grace"/>
+    </actions>
+    <widgets>
+        <section name="Hidden" condition="show">
+            <widgets><label text="shown"/></widgets>
+            <fail-widgets><label text="failed"/></fail-widgets>
+        </section>
+        <include-screen location="src/screen/testdata/Render/Render/Included.xml" share-scope="false"/>
+        <label text="after ${includedSet}"/>
+        <include-screen location="src/screen/testdata/Render/Render/Included.xml" share-scope="true"/>
+        <label text="after ${includedSet}"/>
+        <section-include location="src/screen/testdata/Render/Render/Included.xml#Shared"/>
+        <section-include location="${dynamicLocation}" name="Shared"/>
+        <render-mode><text type="text">text-only ${who}</text><text type="csv">csv-only</text></render-mode>
+        <text type="text,xml" template="false">plain ${who}</text>
+        <text>template ${who}</text>
+        <include-screen location="src/screen/testdata/Render/Render/Nope.xml"/>
+        <section name="Broken">
+            <actions><message error="true">oops ${who}</message></actions>
+            <widgets><label text="not rendered"/></widgets>
+        </section>
+        <label text="after the error"/>
+    </widgets>
+</screen>

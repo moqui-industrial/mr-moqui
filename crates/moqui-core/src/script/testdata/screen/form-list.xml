@@ -1,0 +1,25 @@
+<widgets>
+    <form-list name="Rows" list="rowList">
+        <row-actions><set field="extra" value="x"/></row-actions>
+        <field name="id"><header-field show-order-by="true"><text-find/></header-field><default-field><display/></default-field></field>
+        <field name="title" print-width="30" print-width-type="characters"><default-field title="The Title"><text-line/></default-field></field>
+        <field name="qty" align="right" print-width="20"><default-field><display format="0.0"/></default-field></field>
+        <field name="amt" hide="hideAmt"><default-field><display currency-unit-field="'USD'"/></default-field></field>
+        <field name="status">
+            <conditional-field condition="status == 'X'"><display text="Excluded"/></conditional-field>
+            <default-field><display/></default-field>
+        </field>
+        <field name="link"><default-field title="Open"><link url="open" text="Open ${id}" link-type="anchor"/></default-field></field>
+        <field name="h"><default-field><hidden/></default-field></field>
+        <field name="b"><default-field title="Do"><submit/></default-field></field>
+    </form-list>
+    <form-list name="Cols" list="rowList">
+        <field name="a"><default-field><display/></default-field></field>
+        <field name="b"><default-field><display/></default-field></field>
+        <field name="c"><default-field><display/></default-field></field>
+        <columns>
+            <column><field-ref name="a"/><field-ref name="b"/></column>
+            <column><field-ref name="c"/></column>
+        </columns>
+    </form-list>
+</widgets>

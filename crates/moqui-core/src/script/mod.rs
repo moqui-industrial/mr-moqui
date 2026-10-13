@@ -18,14 +18,22 @@ mod actions;
 mod parse;
 mod runtime;
 pub mod screen_lint;
+pub(crate) mod walker;
 
 pub use actions::{check_actions, run_actions};
+pub(crate) use parse::check_program;
 pub use parse::parse_js;
+#[cfg(test)]
+pub(crate) use runtime::with_ctx as walker_context;
 pub use runtime::{
     clear_context_stack, context_value, eval_map, eval_value, expand, push_context_frame, run_script,
     run_script_location, set_context_name,
 };
-pub use runtime::{eval_condition, ContextFrame, DeadlineGuard};
+pub(crate) use runtime::{
+    context_combined, pop_context_frame, put_context_all, value_entity_name, value_field, value_items, value_map,
+    with_screen_runner,
+};
+pub use runtime::{eval_condition, expand_localized, ContextFrame, DeadlineGuard};
 
 #[cfg(test)]
 mod tests {

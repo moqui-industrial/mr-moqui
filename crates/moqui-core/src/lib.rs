@@ -17,6 +17,7 @@
 pub mod context;
 pub mod driver;
 pub mod entity;
+pub mod l10n;
 pub mod screen;
 pub mod script;
 pub mod search;

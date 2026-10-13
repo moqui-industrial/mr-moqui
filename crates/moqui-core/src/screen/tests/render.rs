@@ -24,11 +24,16 @@ use super::{fixture_root, request, World};
 use crate::context::{Error, ErrorKind, ExecutionContextFactory};
 use crate::screen::{make_render, serve_at, RenderOutput, ScreenFacade};
 
+/// Render `path` in text mode unless the path names a mode. The screens render the screens below
+/// them, and html has no macro module until a later slice.
 fn render(factory: &std::sync::Arc<ExecutionContextFactory>, path: &str) -> Result<RenderOutput, Error> {
-    make_render(factory)
-        .root_screen(fixture_root())
-        .screen_path(path)
-        .render()
+    let named = path.rsplit('/').next().unwrap_or("").contains('.');
+    let render = make_render(factory).root_screen(fixture_root()).screen_path(path);
+    if named {
+        render.render()
+    } else {
+        render.render_mode("text").render()
+    }
 }
 
 fn trace_of(output: &RenderOutput) -> Vec<String> {
@@ -56,6 +61,7 @@ fn always_actions_run_before_pre_actions_before_actions_down_the_path() {
     let output = make_render(context.factory())
         .root_screen(fixture_root())
         .screen_path("/Sub/Deep")
+        .render_mode("text")
         .parameters(parameters(&[("needed", "yes")]))
         .render()
         .unwrap();
@@ -82,11 +88,19 @@ fn always_actions_run_before_pre_actions_before_actions_down_the_path() {
 #[test]
 fn a_screen_with_a_missing_required_parameter_is_skipped_and_reports_an_error() {
     let context = ExecutionContextFactory::test_context();
-    // Sub needs `needed`. Without it Sub's actions do not run, but the other screens' do.
+    // Sub needs `needed`. Without it Sub does not render, and the error is shown where the widgets
+    // would be, as Java does for any section that finds an error.
     let output = render(context.factory(), "/Sub/Deep").unwrap();
-    let trace = trace_of(&output);
-    assert!(!trace.contains(&"Sub.actions".to_string()), "{trace:?}");
-    assert!(trace.contains(&"Deep.actions".to_string()), "{trace:?}");
+    assert_eq!(output.body_text(), "Required parameter missing (needed)");
+    // With the parameter the whole path renders: Deep's actions run.
+    let with = make_render(context.factory())
+        .root_screen(fixture_root())
+        .screen_path("/Sub/Deep")
+        .render_mode("text")
+        .parameters(parameters(&[("needed", "yes")]))
+        .render()
+        .unwrap();
+    assert!(trace_of(&with).contains(&"Deep.actions".to_string()));
 }
 
 #[test]
@@ -107,9 +121,14 @@ fn an_always_standalone_mode_starts_pre_actions_at_the_third_screen() {
             "Leaf.actions",
         ]
     );
-    // The same path as html runs every screen's pre-actions.
-    let html = render(context.factory(), "/Sub/Deep/Leaf.html").unwrap();
-    assert!(trace_of(&html).contains(&"Root.pre".to_string()));
+    // The same path as text runs every screen's pre-actions.
+    let text = make_render(context.factory())
+        .root_screen(fixture_root())
+        .screen_path("/Sub/Deep/Leaf.text")
+        .parameters(parameters(&[("needed", "yes")]))
+        .render()
+        .unwrap();
+    assert!(trace_of(&text).contains(&"Root.pre".to_string()));
 }
 
 #[test]
@@ -126,45 +145,54 @@ fn a_transition_runs_always_actions_but_not_pre_actions_or_screen_actions() {
 #[test]
 fn make_render_without_a_socket_sends_status_content_type_and_an_empty_body() {
     let context = ExecutionContextFactory::test_context();
-    // Sub has no output of its own, so the render is the placeholder.
-    let html = render(context.factory(), "/Sub").unwrap();
+    // A screen with empty widgets has no output of its own. The modes with a macro module write their
+    // wrapper, if they have one, and the others write nothing.
+    let picker = format!(
+        "{}/src/screen/testdata/Elsewhere/PickerA.xml",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let as_mode = |mode: &str| {
+        make_render(context.factory())
+            .root_screen(picker.clone())
+            .render_mode(mode)
+            .render()
+            .unwrap()
+    };
+    let html = as_mode("html");
     assert_eq!(html.status, 200);
     assert_eq!(html.content_type(), Some("text/html;charset=UTF-8"));
     assert!(html.body.is_empty(), "{}", html.body_text());
 
-    for (path, content_type) in [
-        ("/Sub.csv", "text/csv;charset=UTF-8"),
-        ("/Sub.text", "text/plain;charset=UTF-8"),
-        ("/Sub.xml", "text/xml;charset=UTF-8"),
-        ("/Sub.qjs", "application/javascript;charset=UTF-8"),
-        ("/Sub.qvt", "text/html;charset=UTF-8"),
-        ("/Sub.html-print", "text/html;charset=UTF-8"),
-        ("/Sub.xsl-fo", "text/html;charset=UTF-8"),
+    for (mode, content_type, body) in [
+        ("csv", "text/csv;charset=UTF-8", ""),
+        ("text", "text/plain;charset=UTF-8", ""),
+        ("xml", "text/xml;charset=UTF-8", "<PickerA>\n</PickerA>\n"),
+        ("qjs", "application/javascript;charset=UTF-8", ""),
+        ("qvt", "text/html;charset=UTF-8", ""),
+        ("html-print", "text/html;charset=UTF-8", ""),
+        ("xsl-fo", "text/html;charset=UTF-8", ""),
     ] {
-        let output = render(context.factory(), path).unwrap();
-        assert_eq!(output.status, 200, "{path}");
-        assert_eq!(output.content_type(), Some(content_type), "{path}");
-        assert!(output.body.is_empty(), "{path}");
+        let output = as_mode(mode);
+        assert_eq!(output.status, 200, "{mode}");
+        assert_eq!(output.content_type(), Some(content_type), "{mode}");
+        assert_eq!(output.body_text(), body, "{mode}");
     }
     // The render mode can come from the builder or the renderMode parameter instead of the path.
     let by_builder = make_render(context.factory())
-        .root_screen(fixture_root())
-        .screen_path("/Sub")
+        .root_screen(picker.clone())
         .render_mode("xsl-fo")
         .render()
         .unwrap();
     assert_eq!(by_builder.content_type(), Some("text/html;charset=UTF-8"));
     let by_parameter = make_render(context.factory())
-        .root_screen(fixture_root())
-        .screen_path("/Sub")
+        .root_screen(picker.clone())
         .parameters(parameters(&[("renderMode", "csv")]))
         .render()
         .unwrap();
     assert_eq!(by_parameter.content_type(), Some("text/csv;charset=UTF-8"));
     // A mode nobody configured is a 404.
     let unknown = make_render(context.factory())
-        .root_screen(fixture_root())
-        .screen_path("/Sub")
+        .root_screen(picker)
         .render_mode("vuet")
         .render()
         .unwrap_err();
@@ -202,7 +230,7 @@ fn a_screen_that_requires_authentication_is_401_for_nobody_and_200_for_a_user() 
     let anonymous = render(&world.factory, "/Secure").unwrap_err();
     assert_eq!(anonymous.kind(), ErrorKind::AuthenticationRequired);
 
-    let response = serve_at(&world.factory, request("GET", "/Secure"), &fixture_root());
+    let response = serve_at(&world.factory, request("GET", "/Secure.text"), &fixture_root());
     assert_eq!(response.status, 401, "{}", response.body_text());
 
     world.user("admin", None);
@@ -239,18 +267,18 @@ fn a_signed_in_user_without_an_allow_record_is_403_on_a_screen() {
     world.allow_screen("ADMIN", &secure);
     let root = fixture_root();
 
-    let mut denied = request("GET", "/Secure");
+    let mut denied = request("GET", "/Secure.text");
     denied.set_header("authorization", super::basic("plain"));
     let response = serve_at(&world.factory, denied, &root);
     assert_eq!(response.status, 403, "{}", response.body_text());
 
-    let mut allowed = request("GET", "/Secure");
+    let mut allowed = request("GET", "/Secure.text");
     allowed.set_header("authorization", super::basic("admin"));
     let response = serve_at(&world.factory, allowed, &root);
     assert_eq!(response.status, 200, "{}", response.body_text());
     assert!(response.body_text().contains("secure"), "{}", response.body_text());
 
-    let mut nobody = request("GET", "/Secure");
+    let mut nobody = request("GET", "/Secure.text");
     nobody.peer_ip = "127.0.0.1".to_string();
     assert_eq!(serve_at(&world.factory, nobody, &root).status, 401);
 }

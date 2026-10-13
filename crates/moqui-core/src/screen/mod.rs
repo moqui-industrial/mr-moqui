@@ -21,9 +21,13 @@
 mod cache;
 mod definition;
 mod dispatch;
+pub(crate) mod form;
+pub(crate) mod generate;
 mod render;
 mod schema;
+pub(crate) mod sri;
 mod url;
+pub(crate) mod urls;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -44,6 +48,7 @@ pub use render::{
     make_render, save_screen_last_info, send_redirect_and_stop_render, with_current_render, RenderOutput, RenderState,
     ScreenRender,
 };
+pub use sri::encode_html;
 pub use url::{parse_last_standalone, resolve_screen_path, ScreenUrlInfo};
 
 const ROOT_SCREEN: &str = "component://webroot/screen/webroot.xml";

@@ -1,0 +1,38 @@
+<widgets>
+    <form-single name="AllFields" map="fv">
+        <field name="firstName"><default-field><text-line size="20"/></default-field></field>
+        <field name="bio"><default-field title="About"><text-area rows="3"/></default-field></field>
+        <field name="userGroupId"><default-field><text-find hide-options="true"/></default-field></field>
+        <field name="status"><default-field>
+            <drop-down no-current-selected-key="N/A"><option key="A" text="Active"/><option key="${k}"/></drop-down></default-field></field>
+        <field name="kind"><default-field><radio no-current-selected-key="X"><option key="X"/><option key="Y" text="Why"/></radio></default-field></field>
+        <field name="flag"><default-field><check no-current-selected-key="${dflt}"><option key="Y" text="Yes"/></check></default-field></field>
+        <field name="stamp"><default-field><date-time/></default-field></field>
+        <field name="day"><default-field><date-time type="date" format="MM/dd/yyyy"/></default-field></field>
+        <field name="at"><default-field><date-time type="time" default-value="12:00"/></default-field></field>
+        <field name="from"><default-field><date-find/></default-field></field>
+        <field name="amount"><default-field><display currency-unit-field="uom"/></default-field></field>
+        <field name="price"><default-field><display currency-unit-field="uom" currency-hide-symbol="true" text="${price}"/></default-field></field>
+        <field name="note"><default-field><display text="Note ${note}" text-map="{note: 'm'}"/></default-field></field>
+        <field name="enumId"><default-field><display-entity entity-name="moqui.basic.Enumeration" text="${description}" default-text="none"/></default-field></field>
+        <field name="doc"><default-field><file/></default-field></field>
+        <field name="pw"><default-field><password/></default-field></field>
+        <field name="range"><default-field><range-find/></default-field></field>
+        <field name="clear"><default-field><reset/></default-field></field>
+        <field name="secret"><default-field><hidden/></default-field></field>
+        <field name="skip"><default-field><ignored/></default-field></field>
+        <field name="go"><default-field title="Go Now"><submit/></default-field></field>
+        <field name="sel"><default-field>
+            <drop-down><entity-options key="${enumId}" text="${description}"><entity-find entity-name="moqui.basic.Enumeration">
+                <econdition field-name="enumTypeId" value="T"/><order-by field-name="description"/></entity-find></entity-options></drop-down></default-field></field>
+        <field name="lst"><default-field><drop-down><list-options list="opts" key="${k}" text="${t}"/></drop-down></default-field></field>
+        <field name="mix">
+            <conditional-field condition="mode == 'a'"><text-line/></conditional-field>
+            <conditional-field condition="mode == 'b'"><hidden/></conditional-field>
+            <default-field><display/></default-field>
+        </field>
+        <field name="withSet"><default-field><set field="shown" value="x${y}"/><display text="${shown}"/></default-field></field>
+        <field name="hidden1" hide="true"><default-field><display/></default-field></field>
+        <field-layout><field-row><field-ref name="firstName"/><field-ref name="bio"/></field-row></field-layout>
+    </form-single>
+</widgets>

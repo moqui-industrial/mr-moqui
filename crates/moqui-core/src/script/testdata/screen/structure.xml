@@ -1,0 +1,31 @@
+<widgets>
+    <label text="Title ${name}"/>
+    <container id="Box1">
+        <label text="inside"/>
+        <container-row>
+            <row-col lg="6"><label text="left"/></row-col>
+            <row-col lg="6"><label text="right"/></row-col>
+        </container-row>
+    </container>
+    <container-box>
+        <box-header title="Header"><label text="Head"/></box-header>
+        <box-toolbar><label text="toolbar"/></box-toolbar>
+        <box-body><label text="Body"/></box-body>
+        <box-body-nopad><label text="Nopad"/></box-body-nopad>
+    </container-box>
+    <container-panel>
+        <panel-header><label text="ph"/></panel-header>
+        <panel-left><label text="pl"/></panel-left>
+        <panel-center><label text="pc"/></panel-center>
+        <panel-right><label text="pr"/></panel-right>
+        <panel-footer><label text="pf"/></panel-footer>
+    </container-panel>
+    <container-dialog id="D1" button-text="Open ${name}"><label text="in dialog"/></container-dialog>
+    <section name="First"><widgets><label text="first"/></widgets></section>
+    <section-iterate name="Each" list="rows" entry="row"><widgets><label text="${row}"/></widgets></section-iterate>
+    <section-include name="First"/>
+    <subscreens-menu/>
+    <subscreens-active/>
+    <subscreens-panel/>
+    <include-screen location="component://x/screen/Other.xml" share-scope="true"/>
+</widgets>

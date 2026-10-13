@@ -1,0 +1,7 @@
+<widgets>
+    <button-menu text="Menu"><menu-item text="x"/></button-menu>
+    <dynamic-container id="Dyn" transition="load"/>
+    <dynamic-dialog id="DynD" button-text="Dyn" transition="load"/>
+    <include-content type="text/html" location="component://x/y.html"/>
+    <tree name="T" transition="t" root-node-name="n"/>
+</widgets>

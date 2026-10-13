@@ -144,13 +144,17 @@ impl HostFind {
         })
     }
 
+    /// Comma separated fields, each with an optional `-` for descending, `+`, or `^` for ignore case.
     fn order_by<'js>(&self, ctx: Ctx<'js>, field: String) -> rquickjs::Result<Class<'js, HostFind>> {
         host_guard(&ctx, || {
-            let (name, descending) = match field.strip_prefix('-') {
-                Some(rest) => (rest.to_string(), true),
-                None => (field, false),
-            };
-            let find = take_find(&ctx, &self.inner)?.order_by(&name, descending);
+            let mut find = take_find(&ctx, &self.inner)?;
+            for part in field.split(',').map(str::trim).filter(|part| !part.is_empty()) {
+                let (name, descending) = match part.strip_prefix('-') {
+                    Some(rest) => (rest, true),
+                    None => (part.strip_prefix('+').unwrap_or(part), false),
+                };
+                find = find.order_by(name.trim_start_matches('^'), descending);
+            }
             wrap_find(&ctx, find)
         })
     }

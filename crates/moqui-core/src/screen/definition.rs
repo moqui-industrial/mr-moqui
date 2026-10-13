@@ -67,13 +67,13 @@ pub struct Actions {
 
 impl Actions {
     /// The children of `node` as an `<actions>` element, whatever `node` is called.
-    fn from_node(node: &MNode, label: &str) -> Result<Self, Error> {
+    pub(super) fn from_node(node: &MNode, label: &str) -> Result<Self, Error> {
         let copy = node.deep_copy();
         copy.set_name("actions");
         Self::from_xml(copy.write_string(), label)
     }
 
-    fn from_xml(xml: String, label: &str) -> Result<Self, Error> {
+    pub(super) fn from_xml(xml: String, label: &str) -> Result<Self, Error> {
         crate::script::check_actions(&xml).map_err(|err| Error::new(format!("{label}: {}", err.message())))?;
         Ok(Self { xml: Arc::from(xml) })
     }
@@ -482,6 +482,8 @@ impl SectionDef {
 pub struct FormDef {
     pub name: String,
     pub list: bool,
+    /// `dynamic="true"`: assembled from the context each time it renders.
+    pub dynamic: bool,
     pub node: XmlFragment,
     /// Same-named forms from `screen-extend` files, in the order they were found.
     pub extensions: Vec<XmlFragment>,
@@ -548,6 +550,8 @@ pub struct ScreenDef {
     /// The merged screen XML, after `screen-extend`.
     pub source: XmlFragment,
     pub sources: Vec<Source>,
+    /// Render code and assembled forms made while rendering. They live as long as this definition.
+    pub(super) generated: super::generate::Generated,
 }
 
 impl ScreenDef {
@@ -756,6 +760,7 @@ impl ScreenDef {
                             FormDef {
                                 name: name.clone(),
                                 list: kind == "form-list",
+                                dynamic: item.attribute("dynamic").as_deref() == Some("true"),
                                 node: XmlFragment::of(&item),
                                 extensions: extended
                                     .forms
@@ -843,6 +848,7 @@ impl ScreenDef {
             has_tab_menu,
             source: XmlFragment::of(node),
             sources,
+            generated: super::generate::Generated::default(),
         })
     }
 }

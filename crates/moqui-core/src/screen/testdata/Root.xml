@@ -49,5 +49,5 @@
     </subscreens>
     <pre-actions><script>trace.push('Root.pre')</script></pre-actions>
     <actions><script>trace.push('Root.actions')</script></actions>
-    <widgets/>
+    <widgets><subscreens-active/></widgets>
 </screen>

@@ -15,11 +15,12 @@
 //! XML actions. One cached script per action XML text. Names in that script are bare.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use moqui_lib::node::MNode;
-use rquickjs::{Array, CatchResultExt, Ctx, Function, Object};
+use rquickjs::{Ctx, Object};
 
+use super::walker::{self, Walk};
 use crate::context::Error;
 
 const TEMPLATE_SUPPORT: &str = include_str!("../../../../framework/template/TemplateSupport.js");
@@ -90,14 +91,11 @@ fn generate_with(xml: &str, debug: bool) -> Result<String, Error> {
 /// The macro table. The support script evaluates to an object, and the actions script
 /// is a function of that object, so no names are left in the global scope.
 fn load_macros<'js>(ctx: &Ctx<'js>, debug: bool) -> Result<Object<'js>, Error> {
-    let support: Object = super::runtime::eval_source(ctx, TEMPLATE_SUPPORT)?;
-    let options: Object = support.get("options").map_err(js_err)?;
-    options.set("debug", debug).map_err(js_err)?;
-    let build: Function = super::runtime::eval_source(ctx, XML_ACTIONS)?;
-    build
-        .call((support,))
-        .catch(ctx)
-        .map_err(|caught| Error::new(caught.to_string()))
+    let loaded = walker::load_chain(ctx, TEMPLATE_SUPPORT, &[XML_ACTIONS], debug)?;
+    loaded
+        .into_iter()
+        .next_back()
+        .ok_or_else(|| Error::new("no XML actions macros"))
 }
 
 fn reject(node: &MNode) -> Result<(), Error> {
@@ -115,49 +113,22 @@ fn reject(node: &MNode) -> Result<(), Error> {
 }
 
 fn render<'js>(ctx: &Ctx<'js>, macros: &Object<'js>, node: &MNode) -> Result<(String, Object<'js>), Error> {
-    let children = Array::new(ctx.clone()).map_err(js_err)?;
-    let mut combined = String::new();
-    for (index, child) in node.children().iter().enumerate() {
-        let (source, child_obj) = render(ctx, macros, child)?;
-        combined.push_str(&source);
-        children.set(index, child_obj).map_err(js_err)?;
-    }
-    let node_obj = Object::new(ctx.clone()).map_err(js_err)?;
-    node_obj.set("name", node.name()).map_err(js_err)?;
-    node_obj.set("text", node.text().unwrap_or_default()).map_err(js_err)?;
-    node_obj.set("attrs", attrs_object(ctx, node)?).map_err(js_err)?;
-    node_obj.set("children", children).map_err(js_err)?;
-    let name = node.name();
-    if !macros.contains_key(name.as_str()).map_err(js_err)? {
-        return Err(Error::new(format!("no XML action macro for {name}")));
-    }
-    let function: Function = macros.get(name.as_str()).map_err(js_err)?;
-    let source: String = function
-        .call((node_obj.clone(), combined))
-        .catch(ctx)
-        .map_err(|caught| Error::new(caught.to_string()))?;
-    node_obj.set("source", source.clone()).map_err(js_err)?;
-    Ok((source, node_obj))
-}
-
-fn attrs_object<'js>(ctx: &Ctx<'js>, node: &MNode) -> Result<Object<'js>, Error> {
-    let attrs = Object::new(ctx.clone()).map_err(js_err)?;
-    for (key, value) in node.attributes() {
-        attrs.set(key, value).map_err(js_err)?;
-    }
-    Ok(attrs)
-}
-
-fn js_err(err: impl ToString) -> Error {
-    Error::new(err.to_string())
+    let opaque = HashSet::new();
+    let walk = Walk {
+        macros,
+        opaque: &opaque,
+        resolve: None,
+        missing: "XML action macro",
+    };
+    walker::walk(ctx, &walk, node, None)
 }
 
 #[cfg(test)]
 mod tests {
 
-    use moqui_lib::object::Value;
     use super::{generate, generate_with, load_macros, run_actions};
     use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
+    use moqui_lib::object::Value;
 
     use crate::entity::{EntityFacade, EntityValue};
     use crate::script::runtime::{clear_context_stack, eval_condition, set_context_name};
@@ -321,11 +292,10 @@ mod tests {
 
     #[test]
     fn nested_blocks_indent_but_inline_script_text_is_unchanged() {
-        let source = generate(
-            "<actions><if condition=\"a\"><script>var s = `one\ntwo`;</script></if></actions>",
-        )
-        .unwrap();
-        assert!(source.contains("        // begin inline script\n        var s = `one\ntwo`;\n        // end inline script\n"));
+        let source =
+            generate("<actions><if condition=\"a\"><script>var s = `one\ntwo`;</script></if></actions>").unwrap();
+        assert!(source
+            .contains("        // begin inline script\n        var s = `one\ntwo`;\n        // end inline script\n"));
         assert!(!source.contains('\u{1}') && !source.contains('\u{2}'));
     }
 
@@ -343,7 +313,10 @@ mod tests {
             "<actions><expression>foo()</expression><if condition=\"a\"><expression>bar()</expression></if></actions>",
         )
         .unwrap();
-        assert!(source.contains("    foo();\n    if (a) {\n        bar();\n    }\n"), "{source}");
+        assert!(
+            source.contains("    foo();\n    if (a) {\n        bar();\n    }\n"),
+            "{source}"
+        );
     }
 
     #[test]

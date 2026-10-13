@@ -7,5 +7,5 @@
     <subscreens><subscreens-item name="Deep"/></subscreens>
     <pre-actions><script>trace.push('Sub.pre')</script></pre-actions>
     <actions><script>trace.push('Sub.actions')</script></actions>
-    <widgets/>
+    <widgets><subscreens-active/></widgets>
 </screen>

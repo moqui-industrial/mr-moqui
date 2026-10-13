@@ -1,0 +1,15 @@
+<widgets>
+    <render-mode>
+        <text type="html">html only</text>
+        <text>for any mode ${name}</text>
+        <text type="text,csv,xml">text csv xml</text>
+        <text type="qvt">qvt</text>
+    </render-mode>
+    <render-mode><text type="html">html only</text></render-mode>
+    <text type="text,csv">typed text</text>
+    <text type="html">html text</text>
+    <text location="component://x/template/Part.txt" template="false" encode="true"/>
+    <text location="component://x/template/${name}.txt"/>
+    <text template="false" encode="true">a &lt; b</text>
+    <text no-boundary-comment="true">quiet ${name}</text>
+</widgets>
