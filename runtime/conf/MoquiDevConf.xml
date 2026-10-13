@@ -84,8 +84,9 @@
 
     <screen-facade boundary-comments="true">
         <!-- The default conf file has a macro location defined for html already, but this is an example of how to
-            refer to a file to override the default macros. -->
-        <screen-text-output type="html" mime-type="text/html" macro-template-location="template/screen-macro/ScreenHtmlMacros.ftl"/>
+            refer to a file to override the default macros: a copy of ScreenHtml.js at another location replaces
+            the one built into the binary, so it is picked up on the next change of the screen. -->
+        <screen-text-output type="html" mime-type="text/html" macro-template-location="framework/template/screen/ScreenHtml.js"/>
     </screen-facade>
 
     <llm-facade>

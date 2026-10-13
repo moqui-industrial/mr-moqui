@@ -30,8 +30,6 @@ use moqui_core::web::{WebRequest, WebResponse};
 use moqui_lib::error::Error;
 use tokio::net::TcpListener;
 
-const BODY_LIMIT: usize = 1024 * 1024;
-
 struct HttpState {
     factory: Arc<ExecutionContextFactory>,
 }
@@ -60,10 +58,13 @@ pub(crate) async fn listen(
         }
     };
     let _ = ready.send(Ok(address));
+    // Text responses are compressed when the client accepts gzip. Images and other types that are
+    // compressed already are left alone by the layer's default predicate.
     let app = Router::new()
         .route("/health", get(health))
         .route("/metrics", get(metrics))
         .fallback(dispatch_screen)
+        .layer(tower_http::compression::CompressionLayer::new())
         .with_state(Arc::new(HttpState { factory }));
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(shutdown(stop))
@@ -129,15 +130,25 @@ async fn dispatch_screen(
     request: Request,
 ) -> Response {
     let (parts, body) = request.into_parts();
-    let bytes = match axum::body::to_bytes(body, BODY_LIMIT + 1).await {
-        Ok(bytes) => bytes,
-        Err(_) => return plain(413, "request body is larger than 1 MiB"),
-    };
     let mut web = WebRequest::new(parts.method.as_str(), parts.uri.path());
     web.https = forwarded_https(&parts.headers);
     web.peer_ip = peer.ip().to_string();
     web.headers = header_map(&parts.headers);
     web.query = moqui_core::web::form_pairs(parts.uri.query().unwrap_or(""));
+    // The limit is 1 MiB, or `webapp_max_upload` for a multipart body, and it stops the read, not only the handling.
+    let limit = moqui_core::web::body_limit(&web);
+    let declared = parts
+        .headers
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok());
+    if declared.is_some_and(|length| length > limit) {
+        return plain(413, &format!("request body is larger than {limit} bytes"));
+    }
+    let bytes = match axum::body::to_bytes(body, limit.saturating_add(1)).await {
+        Ok(bytes) if bytes.len() <= limit => bytes,
+        _ => return plain(413, &format!("request body is larger than {limit} bytes")),
+    };
     web.body = bytes.to_vec();
     let factory = Arc::clone(&state.factory);
     let job_factory = Arc::clone(&factory);

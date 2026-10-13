@@ -204,6 +204,19 @@ pub(super) struct HostUser {}
 
 #[rquickjs::methods(rename_all = "camelCase")]
 impl HostUser {
+    /// The password policy of `user-facade/password`: `{minLength, minDigits, minOthers}`.
+    #[qjs(get, rename = "passwordRules")]
+    fn password_rules<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            let (length, digits, others) = crate::user::policy_password_rules();
+            let mut map = indexmap::IndexMap::new();
+            map.insert("minLength".to_string(), Value::I64(length));
+            map.insert("minDigits".to_string(), Value::I64(digits));
+            map.insert("minOthers".to_string(), Value::I64(others));
+            host_to_js(&ctx, Value::Map(map))
+        })
+    }
+
     fn login_user(&self, ctx: Ctx<'_>, username: String, password: String) -> rquickjs::Result<bool> {
         host_guard(&ctx, || match crate::user::login_user(&username, &password) {
             Ok(()) => Ok(true),
@@ -354,6 +367,122 @@ impl HostWeb {
     #[qjs(get)]
     fn parameters<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || host_to_js(&ctx, map_value(crate::web::parameters())))
+    }
+
+    /// Messages and errors for the page: what the last response saved, then what this request added.
+    /// Each is `{message, typeString}` with `info` or `danger`.
+    #[qjs(rename = "getPageMessages")]
+    fn get_page_messages<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            let saved = crate::web::saved_for_page();
+            let (messages, errors) = with_ec(&ctx, |ec| {
+                let facade = ec.message();
+                (facade.messages().to_vec(), facade.errors().to_vec())
+            })?;
+            let entry = |text: &String, kind: &str| {
+                let mut map = indexmap::IndexMap::new();
+                map.insert("message".to_string(), Value::string(text.as_str()));
+                map.insert("typeString".to_string(), Value::string(kind));
+                Value::Map(map)
+            };
+            let mut list = Vec::new();
+            list.extend(saved.messages.iter().map(|text| entry(text, "info")));
+            list.extend(saved.errors.iter().map(|text| entry(text, "danger")));
+            list.extend(messages.iter().map(|text| entry(text, "info")));
+            list.extend(errors.iter().map(|text| entry(text, "danger")));
+            host_to_js(&ctx, Value::List(list))
+        })
+    }
+
+    #[qjs(get, rename = "savedMessages")]
+    fn saved_messages<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            let list = crate::web::saved_for_page()
+                .messages
+                .iter()
+                .map(|text| {
+                    let mut map = indexmap::IndexMap::new();
+                    map.insert("message".to_string(), Value::string(text.as_str()));
+                    map.insert("typeString".to_string(), Value::string("info"));
+                    Value::Map(map)
+                })
+                .collect();
+            host_to_js(&ctx, Value::List(list))
+        })
+    }
+
+    #[qjs(get, rename = "savedErrors")]
+    fn saved_errors<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            let list = crate::web::saved_for_page()
+                .errors
+                .iter()
+                .map(|text| Value::string(text.as_str()))
+                .collect();
+            host_to_js(&ctx, Value::List(list))
+        })
+    }
+
+    #[qjs(get, rename = "savedValidationErrors")]
+    fn saved_validation_errors<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || host_to_js(&ctx, Value::List(Vec::new())))
+    }
+
+    #[qjs(get, rename = "errorParameters")]
+    fn error_parameters<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            let map = crate::web::saved_for_page()
+                .error_parameters
+                .into_iter()
+                .map(|(key, value)| (key, Value::string(value)))
+                .collect();
+            host_to_js(&ctx, Value::Map(map))
+        })
+    }
+
+    /// The pages the user got in `html`, newest first, as `{name, url, urlNoParams}`.
+    #[qjs(rename = "getScreenHistory")]
+    fn get_screen_history<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            let base = crate::web::base_url();
+            let base = base.trim_end_matches('/');
+            let history = crate::user::screen_history().unwrap_or_default();
+            let list = history
+                .iter()
+                .map(|path| {
+                    let bare = path.split('?').next().unwrap_or(path);
+                    let name = bare
+                        .rsplit('/')
+                        .find(|part| !part.is_empty())
+                        .map_or_else(|| "Home".to_string(), crate::web::percent_decode);
+                    let mut map = indexmap::IndexMap::new();
+                    map.insert("name".to_string(), Value::string(name));
+                    map.insert("url".to_string(), Value::string(format!("{base}{path}")));
+                    map.insert("urlNoParams".to_string(), Value::string(format!("{base}{bare}")));
+                    map.insert("image".to_string(), Value::string(""));
+                    map.insert("imageType".to_string(), Value::string(""));
+                    Value::Map(map)
+                })
+                .collect();
+            host_to_js(&ctx, Value::List(list))
+        })
+    }
+
+    /// The host the request was for. `true` keeps the port.
+    #[qjs(rename = "getHostName")]
+    fn get_host_name(&self, ctx: Ctx<'_>, with_port: Opt<bool>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(crate::web::host_name(with_port.0.unwrap_or(false))))
+    }
+
+    /// A value that changes when the server starts, for the `?v=` on asset links so a browser refetches them.
+    #[qjs(rename = "getResourceDistinctValue")]
+    fn get_resource_distinct_value(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(crate::web::resource_distinct_value()))
+    }
+
+    #[qjs(get, rename = "multiPartParameters")]
+    fn multi_part_parameters<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || host_to_js(&ctx, map_value(crate::web::multipart_parameters())))
     }
 
     #[qjs(get, rename = "requestParameters")]

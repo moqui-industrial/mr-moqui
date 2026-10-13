@@ -55,6 +55,12 @@ pub(super) fn object_to_js<'js>(ctx: &Ctx<'js>, object: &HostObject) -> rquickjs
     if let Some(inner) = object.downcast::<EntityList>() {
         return Class::instance(ctx.clone(), HostList { inner }).and_then(|class| class.into_js(ctx));
     }
+    if let Some(inner) = object.downcast::<crate::web::error_info::ErrorInfo>() {
+        return Class::instance(ctx.clone(), HostErrorInfo { inner }).and_then(|class| class.into_js(ctx));
+    }
+    if let Some(inner) = object.downcast::<crate::web::multipart::UploadedFile>() {
+        return Class::instance(ctx.clone(), HostUpload { inner }).and_then(|class| class.into_js(ctx));
+    }
     Err(Exception::throw_message(ctx, "cannot convert this object"))
 }
 

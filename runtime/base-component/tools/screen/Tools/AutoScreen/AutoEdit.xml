@@ -30,8 +30,7 @@ along with this software (see the LICENSE.md file). If not, see
     <widgets>
         <!-- NOTE: this template will take care of the active subscreen, if needed; it's not needed for the dynamic menu -->
         <render-mode>
-            <text type="html" location="component://tools/template/AutoScreenMenu.ftl"/>
-            <text type="vuet" location="component://tools/template/AutoScreenMenu.vuet.ftl"/>
+            <text type="html" location="component://tools/template/AutoScreenMenu.html.fancy"/>
             <text type="qvt" location="component://tools/template/AutoScreenMenu.qvt.ftl"/>
         </render-mode>
     </widgets>

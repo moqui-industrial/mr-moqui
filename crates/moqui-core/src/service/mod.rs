@@ -32,6 +32,7 @@ pub(crate) mod semaphore;
 mod validate;
 
 pub use call::{async_call, call, call_future, start_future, sync, ServiceFuture};
+pub(crate) use define::input_hints;
 pub use define::load_definitions;
 pub use define::{check, lint};
 pub use eca::{run_held_service, run_matched_eca, schedule_feed_receive, search_not_up};

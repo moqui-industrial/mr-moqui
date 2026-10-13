@@ -1,0 +1,36 @@
+<widgets>
+    <container type="section" id="Wrap" style="wide ${extra}"><label text="in wrap" type="h4" style="text-strong"/></container>
+    <container-box type="info">
+        <box-header title="Boxed ${name}"/>
+        <box-toolbar><link url="add" text="Add" link-type="anchor"/></box-toolbar>
+        <box-body height="200"><label text="body"/></box-body>
+    </container-box>
+    <container-row style="gap">
+        <row-col xs="12" md="6"><label text="one"/></row-col>
+        <row-col xs="12" md="6" style="end"><label text="two"/></row-col>
+    </container-row>
+    <container-panel id="Pan">
+        <panel-header><label text="head"/></panel-header>
+        <panel-left size="120"><label text="left"/></panel-left>
+        <panel-center><label text="center"/></panel-center>
+    </container-panel>
+    <container-dialog id="Dlg" button-text="Open" icon="fa fa-plus" condition="allowed" width="500"><label text="dialog body"/></container-dialog>
+    <dynamic-container id="Dyn" transition="load"><parameter name="p" value="1"/></dynamic-container>
+    <dynamic-dialog id="DynDlg" button-text="Edit" transition="edit"><parameter name="id" from="rowId"/></dynamic-dialog>
+    <button-menu text="Actions" icon="fa fa-cog" btn-type="info">
+        <link url="one" text="One" link-type="anchor"/>
+        <link url="two" text="Two" link-type="anchor" confirmation="Sure?"/>
+    </button-menu>
+    <tree name="Nodes" transition="treeItems" open-path="${path}"><parameter name="root" value="a"/></tree>
+    <editable id="Ed" transition="save" text="${name}" parameter-name="name"/>
+    <link url="go" text="Go" btn-type="success" icon="fa fa-go" badge="3" tooltip="Go now" target-window="_blank"/>
+    <link url="post" text="Post" confirmation="Really?" link-type="hidden-form-link"/>
+    <link url="http://example.com" url-type="plain" text="Out" link-type="anchor-button"/>
+    <label text="Line ${name}" type="p" condition="name" style="muted" tooltip="tip"/>
+    <image url="/img.png" alt="Logo" width="20" height="20" style="logo" hover="true"/>
+    <subscreens-menu id="Menu"/>
+    <subscreens-menu type="popup" title="Apps"/>
+    <subscreens-panel id="Tabs" dynamic="true"/>
+    <section name="First"><widgets><label text="first"/></widgets></section>
+    <text type="html"><![CDATA[<b>raw</b>]]></text>
+</widgets>

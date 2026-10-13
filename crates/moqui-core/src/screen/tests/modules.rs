@@ -236,11 +236,11 @@ fn an_unknown_element_a_bad_expression_and_a_missing_module_are_clear_errors() {
     .unwrap_err();
     assert!(bad.message().contains("not JavaScript"), "{bad}");
 
-    // html has no module yet: empty widgets render nothing, others say why not
-    let empty = render(write("Empty.xml", ""), "html").unwrap();
+    // qvt has no module yet: empty widgets render nothing, others say why not
+    let empty = render(write("Empty.xml", ""), "qvt").unwrap();
     assert!(empty.body.is_empty());
-    let html = render(write("Html.xml", "<label text=\"a\"/>"), "html").unwrap_err();
-    assert!(html.message().contains("no macro module ScreenHtml.js"), "{html}");
+    let qvt = render(write("Qvt.xml", "<label text=\"a\"/>"), "qvt").unwrap_err();
+    assert!(qvt.message().contains("no macro module ScreenQvt.js"), "{qvt}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -372,13 +372,14 @@ fn every_base_component_screen_generates_in_all_three_modes() {
         };
         let mut names = vec![String::new()];
         names.extend(def.sections.keys().filter(|name| !name.contains("${")).cloned());
-        for mode in ["text", "csv", "xml", "html-print"] {
+        for mode in ["text", "csv", "xml", "html-print", "html"] {
             let macro_location = format!(
                 "framework/template/screen/{}",
                 match mode {
                     "text" => "ScreenText.js",
                     "csv" => "ScreenCsv.js",
                     "html-print" => "ScreenHtmlPrint.js",
+                    "html" => "ScreenHtml.js",
                     _ => "ScreenXml.js",
                 }
             );

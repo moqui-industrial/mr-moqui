@@ -43,6 +43,8 @@ pub struct EntityFind {
     pub(super) require_search_parameters: bool,
     /// Set by `search_form_map` when the input made at least one condition.
     pub(super) has_search_parameters: bool,
+    /// `disableAuthz`: this find is not checked against the user's authorizations.
+    disable_authz: bool,
 }
 
 impl EntityFind {
@@ -60,7 +62,21 @@ impl EntityFind {
             select_fields: Vec::new(),
             require_search_parameters: false,
             has_search_parameters: false,
+            disable_authz: false,
         }
+    }
+
+    /// Run this find without the authorization check, as Java's `EntityFind.disableAuthz()`.
+    #[must_use]
+    pub fn disable_authz(mut self) -> Self {
+        self.disable_authz = true;
+        self
+    }
+
+    fn authz_guard(&self) -> Option<crate::context::AuthzGuard> {
+        self.disable_authz
+            .then(|| crate::context::ExecutionContext::with_current(|ec| ec.disable_authz()))
+            .flatten()
     }
 
     pub fn entity_name(&self) -> &str {
@@ -146,6 +162,7 @@ impl EntityFind {
             return Ok(EntityList::new(Vec::new()));
         }
         // The view frame is what authorizes the read, and the filters come from its record.
+        let _authz = self.authz_guard();
         let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view")?;
         let condition = self.combined();
         let lookup = self.lookup(&condition);
@@ -179,6 +196,7 @@ impl EntityFind {
         if self.require_search_parameters && !self.has_search_parameters {
             return Ok(0);
         }
+        let _authz = self.authz_guard();
         let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view")?;
         let condition = self.combined();
         if let Some(count) = cache::before_count(&self.facade, &self.entity_name, condition.as_ref()) {

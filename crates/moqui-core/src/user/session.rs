@@ -66,7 +66,6 @@ const USER_ACCOUNT: &str = "moqui.security.UserAccount";
 const SAVED: &str = "moqui.saved.parameters";
 const ERROR_PARAMETERS: &str = "moqui.error.parameters";
 const MESSAGE_PUBLIC: &str = "moqui.message.public";
-#[allow(dead_code)] // Stored when a caller puts the key in the attribute map. No setter in this slice.
 const MESSAGE_ERROR: &str = "moqui.message.error";
 const SCREEN_HISTORY: &str = "moqui.screen.history";
 #[allow(dead_code)] // Stored when a caller puts the key in the attribute map. No setter in this slice.
@@ -203,6 +202,7 @@ pub(crate) struct Memory {
     csrf_token: Option<String>,
     anonymous: bool,
     flash: Vec<String>,
+    flash_errors: Vec<String>,
     saved: BTreeMap<String, String>,
     errors: BTreeMap<String, String>,
     screen_history: Vec<String>,
@@ -577,6 +577,40 @@ pub fn add_flash_message(message: &str) {
     });
 }
 
+/// An error message the next page shows, kept apart from the messages.
+pub fn add_flash_error(message: &str) {
+    with_session(|session| {
+        session.flash_errors.push(message.to_string());
+        let encoded = json_string_list(&session.flash_errors);
+        put_json(session, MESSAGE_ERROR, encoded);
+    });
+}
+
+/// What the last response saved for this page: messages, errors and the parameters of a failed submit.
+/// The session forgets them, so a page shows them once.
+#[derive(Clone, Debug, Default)]
+pub struct SavedForPage {
+    pub messages: Vec<String>,
+    pub errors: Vec<String>,
+    pub error_parameters: BTreeMap<String, String>,
+}
+
+pub fn take_saved_for_page() -> SavedForPage {
+    with_session(|session| {
+        let taken = SavedForPage {
+            messages: std::mem::take(&mut session.flash),
+            errors: std::mem::take(&mut session.flash_errors),
+            error_parameters: std::mem::take(&mut session.errors),
+        };
+        for key in [MESSAGE_PUBLIC, MESSAGE_ERROR, ERROR_PARAMETERS] {
+            if session.attributes.remove(key).is_some() && session.bound_id.is_some() {
+                session.dirty_json.insert(key.to_string());
+            }
+        }
+        taken
+    })
+}
+
 #[allow(dead_code)]
 pub fn save_parameter(name: &str, value: &str) {
     with_session(|session| {
@@ -598,7 +632,10 @@ pub fn set_error_parameter(name: &str, value: &str) {
 #[allow(dead_code)]
 pub fn push_screen_history(screen: &str) {
     with_session(|session| {
-        session.screen_history.push(screen.to_string());
+        // Newest first, without repeats, and no more than 40.
+        session.screen_history.retain(|existing| existing != screen);
+        session.screen_history.insert(0, screen.to_string());
+        session.screen_history.truncate(40);
         let encoded = json_string_list(&session.screen_history);
         put_json(session, SCREEN_HISTORY, encoded);
     });
@@ -1511,6 +1548,7 @@ fn project_known(session: &mut Memory) {
     session.saved = attributes_string_map(&session.attributes, SAVED);
     session.errors = attributes_string_map(&session.attributes, ERROR_PARAMETERS);
     session.flash = attributes_string_list(&session.attributes, MESSAGE_PUBLIC);
+    session.flash_errors = attributes_string_list(&session.attributes, MESSAGE_ERROR);
     session.screen_history = attributes_string_list(&session.attributes, SCREEN_HISTORY);
 }
 

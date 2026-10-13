@@ -1,0 +1,83 @@
+<#-- The sign-in page: sign in, single sign-on, reset password, and change password. The tab shown comes from the URL hash and the client. -->
+<#assign showSso = authFlowList && authFlowList.length>
+<nav class="tabs form-signin" data-tab-hash="login"><ul>
+<li><a href="#login">${ec.l10n.localize("Login")}</a></li>
+<#if showSso><li><a href="#sso">${ec.l10n.localize("SSO")}</a></li></#if>
+<li><a href="#reset">${ec.l10n.localize("Reset Password")}</a></li>
+<li><a href="#change">${ec.l10n.localize("Change Password")}</a></li>
+</ul></nav>
+<div class="tab-panels">
+<section id="login" class="tab-panel" data-initial-tab="${initialTab || "login"}">
+<form method="post" action="${sri.buildUrl("login").url}" class="form-signin" id="login_form">
+<input type="hidden" name="initialTab" value="login">
+<input id="login_form_username" name="username" type="text" value="${username || ""}"<#if username && secondFactorRequired> disabled</#if> required autocomplete="username" placeholder="${ec.l10n.localize("Username")}" aria-label="${ec.l10n.localize("Username")}">
+<#if secondFactorRequired>
+<input id="login_form_code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" required placeholder="${ec.l10n.localize("Authentication Code")}" aria-label="${ec.l10n.localize("Authentication Code")}">
+<#else>
+<input type="password" name="password" required autocomplete="current-password" placeholder="${ec.l10n.localize("Password")}" aria-label="${ec.l10n.localize("Password")}">
+</#if>
+<button data-btn="primary" data-size="lg" type="submit">${ec.l10n.localize("Sign in")}</button>
+<#if expiredCredentials><p class="warning">WARNING: Your password has expired</p></#if>
+<#if passwordChangeRequired><p class="warning">WARNING: Password change required</p></#if>
+</form>
+</section>
+<#if showSso>
+<section id="sso" class="tab-panel">
+<#list authFlowList as authFlow>
+<form method="post" action="/sso/login" class="form-signin">
+<input type="hidden" name="authFlowId" value="${authFlow.authFlowId}">
+<button data-btn="primary" data-size="lg" type="submit">${authFlow.description}</button>
+</form>
+</#list>
+</section>
+</#if>
+<section id="reset" class="tab-panel">
+<form method="post" action="${sri.buildUrl("resetPassword").url}" class="form-signin" id="reset_form">
+<p class="muted">${ec.l10n.localize("Enter your username to email a reset password")}</p>
+<input type="hidden" name="moquiSessionToken" value="${ec.web.sessionToken}">
+<input type="hidden" name="initialTab" value="reset">
+<input id="reset_form_username" name="username" type="text" value="${username || ""}"<#if username && secondFactorRequired> disabled</#if> required placeholder="${ec.l10n.localize("Username")}" aria-label="${ec.l10n.localize("Username")}">
+<button data-btn="danger" data-size="lg" type="submit">${ec.l10n.localize("Email Reset Password")}</button>
+</form>
+</section>
+<section id="change" class="tab-panel">
+<form method="post" action="${sri.buildUrl("changePassword").url}" class="form-signin" id="change_form">
+<p class="muted">${ec.l10n.localize("Enter details to change your password")}</p>
+<input type="hidden" name="moquiSessionToken" value="${ec.web.sessionToken}">
+<input type="hidden" name="initialTab" value="change">
+<input id="change_form_username" name="username" type="text" value="${username || ""}"<#if username && secondFactorRequired> disabled</#if> required placeholder="${ec.l10n.localize("Username")}" aria-label="${ec.l10n.localize("Username")}">
+<#if secondFactorRequired>
+<input type="hidden" name="oldPassword" value="ignored">
+<input id="change_form_code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" required placeholder="${ec.l10n.localize("Authentication Code")}" aria-label="${ec.l10n.localize("Authentication Code")}">
+<#else>
+<input type="password" name="oldPassword" required autocomplete="current-password" placeholder="${ec.l10n.localize("Old Password")}" aria-label="${ec.l10n.localize("Old Password")}">
+</#if>
+<input type="password" name="newPassword" required autocomplete="new-password" placeholder="${ec.l10n.localize("New Password")}" aria-label="${ec.l10n.localize("New Password")}">
+<input type="password" name="newPasswordVerify" required autocomplete="new-password" placeholder="${ec.l10n.localize("New Password Verify")}" aria-label="${ec.l10n.localize("New Password Verify")}">
+<button data-btn="danger" data-size="lg" type="submit">${ec.l10n.localize("Change Password")}</button>
+<p class="muted">Password must be at least ${minLength} characters with at least <strong>${minDigits} number${minDigits > 1 ? "s" : ""}</strong><#if minOthers > 0> and at least <strong>${minOthers} punctuation character${minOthers > 1 ? "s" : ""}</strong></#if></p>
+</form>
+</section>
+</div>
+<#if secondFactorRequired>
+<p class="center">${ec.l10n.localize("An authentication code is required for your account, you have these options:")}</p>
+<ul class="form-signin">
+<#list factorTypeDescriptions as factorType>
+<li>${factorType}</li>
+</#list>
+</ul>
+<#list sendableFactors as userAuthcFactor>
+<form method="post" action="${sri.buildUrl("sendOtp").url}" class="form-signin">
+<input type="hidden" name="factorId" value="${userAuthcFactor.factorId}">
+<input type="hidden" name="moquiSessionToken" value="${ec.web.sessionToken}">
+<input type="hidden" name="initialTab" class="initial-tab">
+<button data-btn="primary" type="submit">${ec.l10n.localize("Send code to")} ${userAuthcFactor.factorOption || ""}</button>
+</form>
+</#list>
+</#if>
+<#if ec.web.sessionAttributes.moquiPreAuthcUsername>
+<form method="post" action="${sri.buildUrl("removePreAuth").url}" class="form-signin" id="remove_preauth_form">
+<input type="hidden" name="moquiSessionToken" value="${ec.web.sessionToken}">
+<button data-size="lg" type="submit">${ec.l10n.localize("Change User")}</button>
+</form>
+</#if>

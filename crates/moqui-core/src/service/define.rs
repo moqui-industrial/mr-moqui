@@ -239,6 +239,56 @@ pub(crate) fn is_registered(name: &str) -> bool {
     find(name).is_some()
 }
 
+/// What a form field shows of an input parameter's rules: the classes the macros turn into input attributes.
+pub(crate) struct ParamHints {
+    pub classes: Vec<&'static str>,
+    pub regexp: Option<(String, String)>,
+}
+
+/// The validation hints of input parameter `parameter` of `service`, as `getFieldValidationClasses` reads them.
+pub(crate) fn input_hints(service: &str, parameter: &str) -> Option<ParamHints> {
+    let def = find(service)?;
+    let param = def.in_params.iter().find(|param| param.name == parameter)?;
+    let mut classes = Vec::new();
+    if param.required == Required::True {
+        classes.push("required");
+    }
+    let mut regexp = None;
+    for check in &param.checks {
+        match check {
+            Check::NumberInteger | Check::NumberDecimal if !classes.contains(&"number") => classes.push("number"),
+            Check::TextEmail => classes.push("email"),
+            Check::TextUrl => classes.push("url"),
+            Check::TextDigits => classes.push("digits"),
+            Check::CreditCard { .. } => classes.push("creditcard"),
+            Check::Matches {
+                regexp: pattern,
+                message,
+            } if regexp.is_none() => {
+                regexp = Some((pattern.clone(), message.clone()));
+            }
+            _ => {}
+        }
+    }
+    let java_type = param.java_type.as_str();
+    if [
+        "BigDecimal",
+        "BigInteger",
+        "Long",
+        "Integer",
+        "Double",
+        "Float",
+        "Number",
+    ]
+    .iter()
+    .any(|suffix| java_type.ends_with(suffix))
+        && !classes.contains(&"number")
+    {
+        classes.push("number");
+    }
+    Some(ParamHints { classes, regexp })
+}
+
 /// A service of the entered context's factory. `None` when it is not defined or no context is entered.
 pub(crate) fn find(name: &str) -> Option<ServiceDef> {
     let shared = entered().ok()?;

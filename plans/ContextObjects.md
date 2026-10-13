@@ -247,6 +247,33 @@ renderers in `plans/Architecture-Proposal.md`.
   Java) when the other option sources give nothing: the transition is rendered with the `depends-on` values and the
   parameters, and its JSON (a list, or a map with `options`) is read with `value-field` and `label-field`.
 
+### Added by phase 8 slice 4
+
+The html mode, its page shell, static files, uploads, and the messages a redirect carries.
+
+- Mode runtime: a macro module may export `runtime`, source that each script engine runs once before the first unit of
+  that module (`$mqHtml` for `ScreenHtml.js`). `sri.getFieldValidation(subNode)` (`{classes, regexp, message}` from
+  `validate-service`/`validate-parameter` or `validate-entity`/`validate-field`), `sri.getMenuItems(path?)` (the menu
+  entries of the active screen, or of the screen at `path`: `name`, `title`, `url`, `disabled`, `inPath`, `image`,
+  `imageType`, `hasParameters`; only items the user may view), `sri.getScreenUrlInfo()` (`targetScreen`, `parentScreen`,
+  each with `screenName` and `getDefaultMenuName()`).
+- `ec.web`: `getPageMessages()` (`{message, typeString}` for saved then current messages and errors), `savedMessages`,
+  `savedErrors`, `savedValidationErrors`, `errorParameters` (what a failed submit posted, once), `getScreenHistory()`
+  (`{name, url, urlNoParams}`), `getResourceDistinctValue()`, `getHostName(withPort)`, `multiPartParameters`.
+- `ec.user.passwordRules` (`minLength`, `minDigits`, `minOthers`), `ec.factory.moquiVersion`, and `find.disableAuthz()` on
+  an entity find.
+- Uploaded file object: `name`, `fileName`, `fieldName`, `contentType`, `size`, `getString()`, `write(location)`
+  (`dbresource://` only), `isInMemory()`. A script cannot hold the bytes.
+- Error pages: `errorThrowable` has `message`, `getMessage()`, `getArtifactInfo()` (`getName()`,
+  `getActionDescription()`, `getTypeDescription()`), `getArtifactStack()` (empty), `getStackTrace()` (the message lines),
+  `pathFromLastScreen`, `fullPathNameList`, `resourceLocation`, `lastSd` (null).
+- Host: `web::body_limit(request)`, `web::max_upload()` (`webapp_max_upload`), `webapp_notification_endpoint`,
+  `ResourceRef::{read_bytes, size, file_path}`.
+- Browser library paths the html mode references (vendored by the libs slice, same paths):
+  `/libs/fontawesome/css/font-awesome.min.css` (with `/libs/fontawesome/fonts/`),
+  `/libs/tom-select/tom-select.complete.min.js`, `/libs/tom-select/tom-select.css`, `/libs/sortablejs/Sortable.min.js`.
+  `runtime/base-component/webroot/screen/webroot/README.md` lists them too.
+
 ## Out of scope
 
 - QuickJS operator overloading for decimals. QuickJS-NG ties it to the built-in `BigDecimal` and `BigFloat` classes (`CONFIG_BIGNUM`). It does not extend to a host class, so the build flag does not give a host decimal `+`. The browser cannot share that flag either.

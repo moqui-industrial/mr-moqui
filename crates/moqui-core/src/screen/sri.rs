@@ -31,6 +31,7 @@ use super::definition::{ScreenDef, SectionDef, SectionKind};
 use super::form::{self, FormInstance};
 use super::generate::{Unit, UnitRequest};
 use super::render::{check_condition, Frames, RenderState};
+use super::url::ScreenUrlInfo;
 use crate::context::{Error, ErrorKind, ExecutionContext};
 use crate::{l10n, script, user, web};
 
@@ -572,7 +573,7 @@ pub fn get_field_value(field: &NodeLit, default_value: &str) -> Result<Value, Er
     let mut value = Value::Null;
     if let Some(form) = field.parent.as_deref() {
         if form.name == "form-single" {
-            let errors = user::error_parameters().unwrap_or_default();
+            let errors = web::saved_for_page().error_parameters;
             if errors.get("moquiFormName").map(String::as_str) == Some(form.attr("name")) {
                 if let Some(found) = errors.get(field_name).filter(|text| !text.is_empty()) {
                     return Ok(Value::string(found));
@@ -1461,6 +1462,148 @@ pub fn get_theme_icon_class(state: &RenderState, text: &str) -> Result<Option<St
         }
     }
     Ok(None)
+}
+
+// ---- html helpers ----
+
+/// What the html macros read of a field's validation: input classes and a pattern with its message.
+#[derive(Clone, Debug, Default)]
+pub struct FieldValidation {
+    pub classes: Vec<String>,
+    pub regexp: Option<(String, String)>,
+}
+
+/// `FormInstance.getFieldValidationClasses` and `getFieldValidationRegexpInfo` for a field sub-node (`default-field`
+/// and the like): `validate-service` and `validate-parameter`, else `validate-entity` and `validate-field`.
+///
+/// # Errors
+///
+/// Returns an error when the named entity does not exist.
+pub fn field_validation(sub: &NodeLit) -> Result<FieldValidation, Error> {
+    let field_name = sub.parent.as_ref().map_or("", |field| field.attr("name"));
+    let mut out = FieldValidation::default();
+    let service = sub.attr("validate-service");
+    let entity = sub.attr("validate-entity");
+    if !service.is_empty() {
+        let parameter = match sub.attr("validate-parameter") {
+            "" => field_name,
+            other => other,
+        };
+        if let Some(hints) = crate::service::input_hints(service, parameter) {
+            out.classes = hints.classes.iter().map(|class| (*class).to_string()).collect();
+            out.regexp = hints.regexp;
+        }
+    } else if !entity.is_empty() {
+        let name = match sub.attr("validate-field") {
+            "" => field_name,
+            other => other,
+        };
+        let shape = form::entity_shape(entity)?;
+        if let Some((_, kind, _)) = shape.fields.iter().find(|(field, _, _)| field == name) {
+            if kind.starts_with("number-") || kind.starts_with("currency-") {
+                out.classes.push("number".to_string());
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// One item of a screen's menu: a subscreen with the URL of its minimal path.
+#[derive(Clone, Debug, Default)]
+pub struct MenuEntry {
+    pub name: String,
+    /// The subscreen takes parameters, so a list of applications leaves it out.
+    pub has_parameters: bool,
+    pub title: String,
+    pub url: String,
+    pub disabled: bool,
+    pub in_path: bool,
+    pub image: String,
+    pub image_type: String,
+}
+
+/// `getMenuSubscreensItems` of the active screen with what the macros ask of each item's URL: the
+/// subscreens that appear in the menu, in menu order, that the user may view.
+///
+/// # Errors
+///
+/// Returns an error when a path cannot be resolved or a `disable-when` expression fails.
+pub fn menu_items(state: &RenderState, screen_path: Option<&str>) -> Result<Vec<MenuEntry>, Error> {
+    let root = state
+        .url_info
+        .path_defs
+        .first()
+        .map(|root| root.location.clone())
+        .ok_or_else(|| Error::new("no root screen"))?;
+    // The items of another screen: the path is resolved from the root, and its items are paths below it.
+    let (def, prefix) = match screen_path {
+        Some(path) => {
+            let names = super::url::resolve_screen_path(&[], path);
+            let info = ScreenUrlInfo::resolve(&state.factory, &root, &names, 0)?;
+            // The screen the path names, not the default subscreen the walk goes on to.
+            let named = info.path_defs.get(names.len()).unwrap_or(&info.target_screen);
+            (Arc::clone(named), Some(names))
+        }
+        None => (active_def(state), None),
+    };
+    let mut out = Vec::new();
+    for item in def.subscreens.sorted().into_iter().filter(|item| item.menu_include) {
+        let url = match &prefix {
+            Some(names) => {
+                let mut full = names.clone();
+                full.push(item.name.clone());
+                super::urls::build_url_names(state, full)?
+            }
+            None => super::urls::build_url(state, &item.name)?,
+        };
+        if !url.exists {
+            continue;
+        }
+        let Ok(target) = state.facade.screen_def(&state.factory, &item.location) else {
+            continue;
+        };
+        if !screen_permitted(&target) {
+            continue;
+        }
+        let disabled = match &item.disable_when {
+            Some(expression) => script::eval_condition(expression)?,
+            None => false,
+        };
+        let image = ScreenUrlInfo::resolve(&state.factory, &root, &url.names, 0)
+            .ok()
+            .and_then(|info| info.menu_image)
+            .unwrap_or_default();
+        out.push(MenuEntry {
+            name: item.name.clone(),
+            has_parameters: !target.parameters.is_empty(),
+            title: item.menu_title.clone(),
+            url: url.minimal_path_url_with_params(),
+            disabled,
+            in_path: state.url_info.full_path.starts_with(&url.minimal_names),
+            image: image.0,
+            image_type: image.1,
+        });
+    }
+    Ok(out)
+}
+
+/// Whether the user may view a screen: a screen that requires authentication needs a user and
+/// an authorization record.
+fn screen_permitted(def: &ScreenDef) -> bool {
+    let required = def.authentication == super::definition::Authentication::Required;
+    if required && user::current_username().ok().flatten().is_none() {
+        return false;
+    }
+    ExecutionContext::with_current(|ec| {
+        match ec.push_checked("AT_XML_SCREEN", &def.location, "view", required, false, None) {
+            Ok(()) => {
+                let _ = ec.pop();
+                true
+            }
+            Err(_) => false,
+        }
+    })
+    .unwrap_or(true)
 }
 
 #[cfg(test)]

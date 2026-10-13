@@ -1,0 +1,26 @@
+<#-- The top bar of the applications: logo and title, the menus and crumbs that subscreens add as they render, and the user's tools. -->
+<#assign headerLogoList = sri.getThemeValues("STRT_HEADER_LOGO")>
+<#assign headerTitleList = sri.getThemeValues("STRT_HEADER_TITLE")>
+<#assign screenHistoryList = ec.web.getScreenHistory()>
+<#assign userName = (ec.user.userAccount && ec.user.userAccount.userFullName) || ec.user.username || "">
+<header><nav class="navbar">
+<#if headerLogoList.length><a class="brand" href="${sri.buildUrl("/apps").url}"><img src="${sri.buildUrl(headerLogoList[0]).url}" alt="Home"></a></#if>
+<#if headerTitleList.length><span class="brand-title">${ec.resource.expand(headerTitleList[0], "")}</span></#if>
+<button type="button" class="nav-toggle" data-nav-toggle aria-label="${ec.l10n.localize("Toggle navigation")}"><i class="fa fa-bars"></i></button>
+<div id="navbar-buttons">
+<ul id="header-menus"></ul>
+<div id="navbar-menu-crumbs"></div>
+<a class="current" href="${sri.getScreenUrlInstance().getUrlWithParams()}">${html_title || ec.resource.expand(sri.getScreenUrlInfo().targetScreen.getDefaultMenuName() || "Page", "")}</a>
+<span class="spacer"></span>
+<#list sri.getThemeValues("STRT_HEADER_NAVBAR_ITEM") as navbarItem>
+${raw(ec.resource.expand(navbarItem, ""))}
+</#list>
+<details id="history-menu" class="menu"><summary title="${ec.l10n.localize("History")}"><i class="fa fa-list"></i></summary><ul>
+<#list screenHistoryList.slice(0, 25) as screenHistory>
+<li><a href="${screenHistory.url}"><i class="fa fa-link"></i> ${screenHistory.name}</a></li>
+</#list>
+</ul></details>
+<button type="button" data-theme-toggle data-pref-url="${sri.buildUrl("/apps/setPreference").url}" title="${ec.l10n.localize("Switch Dark/Light")}"><i class="fa fa-adjust"></i></button>
+<a class="logout" data-btn="danger" href="${sri.buildUrl("/Login/logout").url}" title="${ec.l10n.localize("Logout")} ${userName}"><i class="fa fa-power-off"></i></a>
+</div>
+</nav></header>

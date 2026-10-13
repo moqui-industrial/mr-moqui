@@ -28,6 +28,7 @@ mod render;
 mod schema;
 mod screen_test;
 pub(crate) mod sri;
+pub mod static_files;
 mod url;
 pub(crate) mod urls;
 
@@ -73,29 +74,22 @@ pub fn serve(factory: &Arc<ExecutionContextFactory>, request: WebRequest) -> Web
 
 /// Handle one request whose root screen is `root`.
 pub fn serve_at(factory: &Arc<ExecutionContextFactory>, request: WebRequest, root: &str) -> WebResponse {
-    if request.body.len() > 1024 * 1024 {
-        return web::early_error(&request, 413, "request body is larger than 1 MiB");
-    }
-    if request
-        .header("content-type")
-        .unwrap_or("")
-        .to_ascii_lowercase()
-        .split(';')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .starts_with("multipart/")
-    {
-        return web::early_error(&request, 415, "multipart bodies are not available until phase 8");
+    if request.body.len() > web::body_limit(&request) {
+        return web::early_error(
+            &request,
+            413,
+            &format!("request body is larger than {} bytes", web::body_limit(&request)),
+        );
     }
     if request.method.eq_ignore_ascii_case("options") {
         return web::finish_response(&request, WebResponse::new(204, Vec::new()), true);
     }
     let parsed = match web::parse_body(&request) {
         Ok(parsed) => parsed,
-        Err(web::BodyError::TooLarge) => return web::early_error(&request, 413, "request body is larger than 1 MiB"),
-        Err(web::BodyError::Multipart) => {
-            return web::early_error(&request, 415, "multipart bodies are not available until phase 8")
+        Err(web::BodyError::TooLarge) => return web::early_error(&request, 413, "request body is too large"),
+        Err(web::BodyError::Multipart(message)) => return web::early_error(&request, 400, &message),
+        Err(web::BodyError::Executable(name)) => {
+            return web::early_error(&request, 415, &format!("Executable file {name} upload not allowed"))
         }
         Err(web::BodyError::Json(message)) => return web::early_error(&request, 400, &message),
     };
@@ -104,7 +98,16 @@ pub fn serve_at(factory: &Arc<ExecutionContextFactory>, request: WebRequest, roo
         .is_none()
         .then(|| factory.new_context());
     let _entered = context.as_ref().map(|context| context.enter());
-    let response = match handle(factory, &request, root, &parsed.parameters, parsed.json_list.as_deref()) {
+    let mut parameters = parsed.parameters;
+    parameters.extend(parsed.multipart.clone());
+    let response = match handle(
+        factory,
+        &request,
+        root,
+        &parameters,
+        &parsed.multipart,
+        parsed.json_list.as_deref(),
+    ) {
         Ok(response) => response,
         Err(err) => web::json_error(500, err.message()),
     };
@@ -116,6 +119,7 @@ fn handle(
     request: &WebRequest,
     root: &str,
     parameters: &BTreeMap<String, Value>,
+    multipart: &BTreeMap<String, Value>,
     json_list: Option<&[Value]>,
 ) -> Result<WebResponse, Error> {
     let session_cookie = web::session_cookie_of(request);
@@ -136,6 +140,8 @@ fn handle(
         return Ok(web::json_error(500, err.message()));
     }
     let _web = web::install(parameters.clone());
+    web::set_multipart(multipart.clone());
+    web::set_host(request.header("host").unwrap_or(""));
     let (login_error, header_authenticated) = authenticate(request, parameters)?;
     let response = dispatch_request(
         factory,
@@ -186,6 +192,9 @@ fn dispatch_request(
         } else {
             web::status_for(&err)
         };
+        if let Some(page) = error_page(factory, request, root, parameters, status, &err) {
+            return Ok(page);
+        }
         return Ok(web::json_error(status, err.message()));
     }
     if let Err(err) = user::end_request() {
@@ -199,6 +208,72 @@ fn dispatch_request(
         headers,
         body,
     })
+}
+
+/// The html page for a failure, when the client takes html and the path is not an API path: the `error/*`
+/// screen with `errorCode`, `errorType`, `errorMessage`, `errorThrowable` and `showErrorDetail` in its context.
+/// None when the page cannot be made, and the caller sends the JSON error.
+fn error_page(
+    factory: &Arc<ExecutionContextFactory>,
+    request: &WebRequest,
+    root: &str,
+    parameters: &BTreeMap<String, Value>,
+    status: u16,
+    err: &Error,
+) -> Option<WebResponse> {
+    if !request
+        .header("accept")
+        .is_some_and(|accept| accept.contains("text/html"))
+    {
+        return None;
+    }
+    let first = request.path.trim_start_matches('/').split('/').next().unwrap_or("");
+    if ["rest", "rpc", "status", "error", "health", "metrics"].contains(&first) {
+        return None;
+    }
+    let (kind, page) = web::error_info::error_screen(status);
+    let _ = web::take_output();
+    let production = moqui_lib::env::get_prop_or_env("instance_purpose") == "production";
+    let signed_in = user::current_username().ok().flatten().is_some();
+    let message = if production && status == 500 {
+        "An internal error occurred".to_string()
+    } else {
+        err.message().to_string()
+    };
+    let mut context = parameters.clone();
+    context.insert("errorCode".to_string(), Value::I32(i32::from(status)));
+    context.insert("errorType".to_string(), Value::string(kind));
+    context.insert("errorMessage".to_string(), Value::string(message));
+    context.insert(
+        "errorThrowable".to_string(),
+        Value::Object(moqui_lib::object::HostObject::new(web::error_info::ErrorInfo::new(
+            status,
+            err,
+            &request.path,
+        ))),
+    );
+    context.insert("showErrorDetail".to_string(), Value::Bool(!production && signed_in));
+    let path = format!("/{page}");
+    let job = render::Job {
+        request,
+        root,
+        path: &path,
+        method: "GET",
+        parameters: &context,
+        json_list: None,
+        login_error: None,
+        header_authenticated: true,
+        render_mode: Some("html"),
+        enforce_request_checks: false,
+        started: Instant::now(),
+    };
+    if let Err(failure) = render::run_job(factory, &job) {
+        tracing::warn!("could not render the error page {page}: {failure}");
+        let _ = web::take_output();
+        return None;
+    }
+    let (_, headers, body, sent) = web::take_output();
+    sent.then_some(WebResponse { status, headers, body })
 }
 
 fn attach_session(

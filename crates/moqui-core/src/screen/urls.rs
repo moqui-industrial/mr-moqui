@@ -73,6 +73,10 @@ impl UrlInstance {
         }
     }
 
+    pub fn minimal_path_url_with_params(&self) -> String {
+        join_query(self.minimal_path_url(), &self.parameter_string())
+    }
+
     pub fn parameter_string(&self) -> String {
         let mut out = String::new();
         for (key, value) in &self.parameters {
@@ -150,6 +154,15 @@ pub fn build_url(state: &RenderState, subscreen_path: &str) -> Result<UrlInstanc
         subscreen_path.to_string()
     };
     let names = resolve_screen_path(&active_screen_path(state), &expanded);
+    resolve_names(state, names)
+}
+
+/// A URL for path names from the root.
+///
+/// # Errors
+///
+/// Returns an error when the names cannot be resolved for a reason other than a missing screen.
+pub fn build_url_names(state: &RenderState, names: Vec<String>) -> Result<UrlInstance, Error> {
     resolve_names(state, names)
 }
 

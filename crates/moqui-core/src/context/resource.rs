@@ -138,6 +138,40 @@ impl ResourceRef {
         }
     }
 
+    /// The bytes of the file, whatever they hold.
+    pub fn read_bytes(&self) -> Result<Vec<u8>, Error> {
+        match &self.stored {
+            Stored::File(file) => file.read_bytes().map_err(Error::from),
+            Stored::Http(http) => http
+                .fetch()
+                .clone()
+                .map(String::into_bytes)
+                .map_err(|message| Error::new(format!("{message}: {}", self.location))),
+            Stored::Db(snap) => {
+                if !snap.exists || !snap.is_file {
+                    return Err(Error::new(format!("not a file: {}", self.location)));
+                }
+                Ok(snap.bytes.clone())
+            }
+        }
+    }
+
+    /// The size in bytes of a file resource. Other kinds have none.
+    pub fn size(&self) -> Option<u64> {
+        match &self.stored {
+            Stored::File(file) => file.size().ok(),
+            Stored::Db(_) | Stored::Http(_) => None,
+        }
+    }
+
+    /// The path of a file resource, for a check that it stays inside its directory.
+    pub fn file_path(&self) -> Option<&std::path::Path> {
+        match &self.stored {
+            Stored::File(file) => Some(file.path()),
+            Stored::Db(_) | Stored::Http(_) => None,
+        }
+    }
+
     pub fn children(&self) -> Result<Vec<Self>, Error> {
         match &self.stored {
             Stored::File(file) => {

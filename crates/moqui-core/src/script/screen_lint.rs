@@ -1025,7 +1025,37 @@ mod tests {
             "BasicWidgetTemplates.xml was not scanned"
         );
         let bodies: usize = report.files.iter().map(|file| file.dialect_bodies).sum();
-        assert!(bodies >= 60, "{bodies} template bodies");
+        assert!(bodies >= 30, "{bodies} template bodies");
+    }
+
+    /// The page shell, the login pages and the menu templates are files in the dialect. Each one compiles.
+    #[test]
+    fn every_fancy_file_compiles() {
+        fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    collect(&path, out);
+                } else if path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().ends_with(".fancy"))
+                {
+                    out.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        collect(&workspace("runtime"), &mut files);
+        collect(&workspace("framework"), &mut files);
+        assert!(files.len() >= 7, "{files:?}");
+        for file in files {
+            let source = std::fs::read_to_string(&file).unwrap();
+            crate::script::template::check_template(&source)
+                .unwrap_or_else(|err| panic!("{}: {}", file.display(), err.message()));
+        }
     }
 
     #[test]

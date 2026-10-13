@@ -25,6 +25,9 @@ use base64::Engine;
 use indexmap::IndexMap;
 use moqui_lib::object::Value;
 
+pub mod error_info;
+pub mod multipart;
+
 use crate::context::{Error, ErrorKind, ExecutionContext};
 use crate::entity::query_rest;
 
@@ -109,6 +112,12 @@ impl WebResponse {
 
 struct WebSlot {
     parameters: BTreeMap<String, Value>,
+    /// Uploaded files by field name, and `_fileUploadList`.
+    multipart: BTreeMap<String, Value>,
+    /// What the last response saved for this page, taken from the session when first asked for.
+    saved: Option<crate::user::session::SavedForPage>,
+    /// The `Host` header of the request.
+    host: String,
     /// Scheme, host, and context path that links start with. Empty for a path-only link.
     base_url: String,
     sent: bool,
@@ -143,6 +152,9 @@ pub(crate) fn install_with(parameters: BTreeMap<String, Value>, base_url: String
     let previous = WEB.with(|slot| {
         slot.borrow_mut().replace(WebSlot {
             parameters,
+            multipart: BTreeMap::new(),
+            saved: None,
+            host: String::new(),
             base_url,
             sent: false,
             status: 200,
@@ -158,6 +170,73 @@ pub(crate) fn parameters() -> BTreeMap<String, Value> {
         slot.borrow()
             .as_ref()
             .map(|web| web.parameters.clone())
+            .unwrap_or_default()
+    })
+}
+
+/// Keep the uploaded files of this request for `ec.web.multiPartParameters`.
+pub(crate) fn set_multipart(files: BTreeMap<String, Value>) {
+    WEB.with(|slot| {
+        if let Some(web) = slot.borrow_mut().as_mut() {
+            web.multipart = files;
+        }
+    });
+}
+
+/// The messages, errors and failed-submit parameters the last response saved, which this page shows. The
+/// session gives them up the first time they are asked for in a request.
+pub(crate) fn saved_for_page() -> crate::user::session::SavedForPage {
+    let loaded = WEB.with(|slot| slot.borrow().as_ref().and_then(|web| web.saved.clone()));
+    if let Some(saved) = loaded {
+        return saved;
+    }
+    let taken = crate::user::session::take_saved_for_page();
+    WEB.with(|slot| {
+        if let Some(web) = slot.borrow_mut().as_mut() {
+            web.saved = Some(taken.clone());
+        }
+    });
+    taken
+}
+
+/// Lower-case hex of the time this process first asked, so every link made in one run shares it.
+pub(crate) fn resource_distinct_value() -> String {
+    static START: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    START
+        .get_or_init(|| {
+            let millis = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_millis());
+            format!("{millis:x}")
+        })
+        .clone()
+}
+
+pub(crate) fn set_host(host: &str) {
+    WEB.with(|slot| {
+        if let Some(web) = slot.borrow_mut().as_mut() {
+            web.host = host.to_string();
+        }
+    });
+}
+
+/// The host name the request was for, with the port when asked.
+pub(crate) fn host_name(with_port: bool) -> String {
+    let host = WEB.with(|slot| slot.borrow().as_ref().map(|web| web.host.clone()).unwrap_or_default());
+    if with_port {
+        return host;
+    }
+    match host.rsplit_once(':') {
+        Some((name, port)) if port.chars().all(|ch| ch.is_ascii_digit()) => name.to_string(),
+        _ => host,
+    }
+}
+
+pub(crate) fn multipart_parameters() -> BTreeMap<String, Value> {
+    WEB.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map(|web| web.multipart.clone())
             .unwrap_or_default()
     })
 }
@@ -273,6 +352,23 @@ pub(crate) fn send_reset_content(location: &str) {
     });
 }
 
+/// A response with its own headers and bytes, such as a static file. One already sent is left alone.
+pub(crate) fn send_bytes_with_headers(status: u16, headers: Vec<(String, String)>, body: Vec<u8>) {
+    WEB.with(|slot| {
+        let mut web = slot.borrow_mut();
+        let Some(web) = web.as_mut() else {
+            return;
+        };
+        if web.sent {
+            return;
+        }
+        web.sent = true;
+        web.status = status;
+        web.headers.extend(headers);
+        web.body = body;
+    });
+}
+
 fn send_bytes(status: u16, content_type: &str, body: Vec<u8>) {
     WEB.with(|slot| {
         let mut web = slot.borrow_mut();
@@ -287,6 +383,11 @@ fn send_bytes(status: u16, content_type: &str, body: Vec<u8>) {
         web.headers.push(("Content-Type".to_string(), content_type.to_string()));
         web.body = body;
     });
+}
+
+/// The status the response has so far.
+pub(crate) fn output_status() -> u16 {
+    WEB.with(|slot| slot.borrow().as_ref().map_or(200, |web| web.status))
 }
 
 /// Whether a response was already written for this request.
@@ -319,31 +420,114 @@ fn message_errors() -> Vec<String> {
 pub(crate) struct ParsedBody {
     pub parameters: BTreeMap<String, Value>,
     pub json_list: Option<Vec<Value>>,
+    /// Uploaded files by field name: one [`multipart::UploadedFile`] or a list of them, and `_fileUploadList`.
+    pub multipart: BTreeMap<String, Value>,
 }
 
-/// Body larger than 1 MiB, multipart, or JSON that is not an object or a list.
+/// Body larger than its limit, a multipart body that cannot be read or holds a program, or JSON that is not
+/// an object or a list.
 pub(crate) enum BodyError {
     TooLarge,
-    Multipart,
+    Multipart(String),
+    /// A file part that starts like a program, when the web app does not allow one.
+    Executable(String),
     Json(String),
+}
+
+/// The largest request body: 1 MiB, and for a `multipart/form-data` body `webapp_max_upload`.
+pub fn body_limit(request: &WebRequest) -> usize {
+    if is_multipart(request) {
+        max_upload()
+    } else {
+        BODY_LIMIT
+    }
+}
+
+pub(crate) fn is_multipart(request: &WebRequest) -> bool {
+    request
+        .header("content-type")
+        .unwrap_or("")
+        .trim_start()
+        .get(..10)
+        .is_some_and(|start| start.eq_ignore_ascii_case("multipart/"))
+}
+
+const DEFAULT_MAX_UPLOAD: usize = 100 * 1024 * 1024;
+
+/// `webapp_max_upload`: bytes, or a number with a `k`, `m` or `g` suffix. 100 MiB when unset or not a size.
+pub fn max_upload() -> usize {
+    parse_size(&moqui_lib::env::get_prop_or_env("webapp_max_upload")).unwrap_or(DEFAULT_MAX_UPLOAD)
+}
+
+fn parse_size(text: &str) -> Option<usize> {
+    let text = text.trim().to_ascii_lowercase();
+    let (digits, unit) = match text.chars().last()? {
+        'k' => (&text[..text.len() - 1], 1024),
+        'm' => (&text[..text.len() - 1], 1024 * 1024),
+        'g' => (&text[..text.len() - 1], 1024 * 1024 * 1024),
+        _ => (text.as_str(), 1),
+    };
+    digits
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .and_then(|number| number.checked_mul(unit))
+        .filter(|size| *size > 0)
+}
+
+fn upload_executable_allowed() -> bool {
+    moqui_lib::env::get_prop_or_env("webapp_upload_executable_allow") == "true"
 }
 
 /// Query, then form, then a JSON object. A JSON list is not merged into the map.
 pub(crate) fn parse_body(request: &WebRequest) -> Result<ParsedBody, BodyError> {
-    if request.body.len() > BODY_LIMIT {
+    if request.body.len() > body_limit(request) {
         return Err(BodyError::TooLarge);
     }
     let content_type = request.header("content-type").unwrap_or("").to_ascii_lowercase();
     let media = content_type.split(';').next().unwrap_or("").trim();
-    if media.starts_with("multipart/") {
-        return Err(BodyError::Multipart);
-    }
     let mut pairs = request.query.clone();
     let mut json_list = None;
+    let mut multipart_files = BTreeMap::new();
+    if media.starts_with("multipart/") {
+        let parsed = multipart::parse(request.header("content-type").unwrap_or(""), &request.body)
+            .map_err(|err| BodyError::Multipart(err.to_string()))?;
+        pairs.extend(parsed.fields);
+        if !upload_executable_allowed() {
+            if let Some(file) = parsed.files.iter().find(|file| file.is_executable()) {
+                return Err(BodyError::Executable(file.file_name.clone()));
+            }
+        }
+        let mut grouped: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+        let mut all = Vec::new();
+        for file in parsed.files {
+            let name = file.field_name.clone();
+            let value = file.into_value();
+            all.push(value.clone());
+            grouped.entry(name).or_default().push(value);
+        }
+        for (name, mut values) in grouped {
+            multipart_files.insert(
+                name,
+                if values.len() == 1 {
+                    values.remove(0)
+                } else {
+                    Value::List(values)
+                },
+            );
+        }
+        multipart_files.insert("_fileUploadList".to_string(), Value::List(all));
+        return Ok(ParsedBody {
+            parameters: pairs_to_parameters(pairs),
+            json_list,
+            multipart: multipart_files,
+        });
+    }
     if request.body.is_empty() {
         return Ok(ParsedBody {
             parameters: pairs_to_parameters(pairs),
             json_list,
+            multipart: multipart_files,
         });
     }
     if media == "application/x-www-form-urlencoded" || (media.is_empty() && request.body.contains(&b'=')) {
@@ -351,6 +535,7 @@ pub(crate) fn parse_body(request: &WebRequest) -> Result<ParsedBody, BodyError> 
         return Ok(ParsedBody {
             parameters: pairs_to_parameters(pairs),
             json_list,
+            multipart: multipart_files,
         });
     }
     let mut parameters = pairs_to_parameters(pairs);
@@ -373,7 +558,11 @@ pub(crate) fn parse_body(request: &WebRequest) -> Result<ParsedBody, BodyError> 
             Err(err) => return Err(BodyError::Json(err.message().to_string())),
         }
     }
-    Ok(ParsedBody { parameters, json_list })
+    Ok(ParsedBody {
+        parameters,
+        json_list,
+        multipart: multipart_files,
+    })
 }
 
 /// One value stays a string. A name that repeats becomes a list in request order.

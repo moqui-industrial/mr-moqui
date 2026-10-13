@@ -634,6 +634,14 @@ pub(super) fn fill_helpers<'js>(
 pub(super) fn install_ec_extras<'js>(ctx: &Ctx<'js>, ec: &Object<'js>) -> Result<(), Error> {
     caught(ctx, "ec.l10n", ec.set("l10n", l10n_object(ctx)?))?;
     caught(ctx, "ec.context", ec.set("context", context_object(ctx)?))?;
+    // `ec.factory.moquiVersion`, which the footer items of the default theme show.
+    let factory = caught(ctx, "ec.factory", Object::new(ctx.clone()))?;
+    caught(
+        ctx,
+        "ec.factory.moquiVersion",
+        factory.set("moquiVersion", env!("CARGO_PKG_VERSION")),
+    )?;
+    caught(ctx, "ec.factory", ec.set("factory", factory))?;
     caught(ctx, "ec.screen", ec.set("screen", screen_object(ctx)?))
 }
 

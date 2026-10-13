@@ -25,6 +25,10 @@
     <default-property name="webapp_status_ips" value="127.0.0.1"/>
     <default-property name="webapp_require_session_token" value="true"/>
     <default-property name="webapp_upload_executable_allow" value="false"/>
+    <!-- Largest multipart/form-data request body, in bytes or with a k, m or g suffix. Other request bodies stop at 1 MiB. -->
+    <default-property name="webapp_max_upload" value="104857600"/>
+    <!-- Path of the notification WebSocket the html client connects to, such as /notws. Empty means the client does not connect. -->
+    <default-property name="webapp_notification_endpoint" value=""/>
 
     <!--
         webapp_client_ip_header is how Moqui reads the client IP from a trusted proxy (X-Real-IP, CF-Connecting-IP,

@@ -1,0 +1,54 @@
+<widgets>
+    <form-single name="Everything" map="fv" background-submit="true" background-reload-id="Dyn" focus-field="firstName" transition="save" pass-through-parameters="true">
+        <field name="firstName"><default-field title="First"><text-line size="20" maxlength="40" mask="999"/></default-field></field>
+        <field name="email"><default-field><text-line input-type="email" validate-service="x.y.Z" validate-parameter="mail" disabled="false"/></default-field></field>
+        <field name="ac"><default-field><text-line ac-transition="find" ac-min-length="2" ac-show-value="true" ac-use-actual="true"><depends-on field="firstName" parameter="fn"/></text-line></default-field></field>
+        <field name="dflt"><default-field><text-line default-transition="fill"><depends-on field="firstName"/></text-line></default-field></field>
+        <field name="bio"><default-field tooltip="About you"><text-area rows="4" editor-type="html"/></default-field></field>
+        <field name="find"><default-field><text-find default-operator="begins"/></default-field></field>
+        <field name="status"><default-field><drop-down allow-empty="true" show-not="true" current-description="Gone">
+            <option key="A" text="Active"/><option key="${k}"/></drop-down></default-field></field>
+        <field name="multi"><default-field><drop-down allow-multiple="true" combo-box="true"><option key="A"/><option key="B"/></drop-down></default-field></field>
+        <field name="remote"><default-field><drop-down allow-empty="true">
+            <dynamic-options transition="options" server-search="true" min-length="2" label-field="text" value-field="id"><depends-on field="status" parameter="st"/></dynamic-options></drop-down></default-field></field>
+        <field name="kind"><default-field><radio no-current-selected-key="X"><option key="X"/><option key="Y" text="Why"/></radio></default-field></field>
+        <field name="flag"><default-field><check all-checked="false"><option key="Y" text="Yes"/></check></default-field></field>
+        <field name="stamp"><default-field><date-time minute-stepping="10"/></default-field></field>
+        <field name="day"><default-field><date-time type="date" format="MM/dd/yyyy"/></default-field></field>
+        <field name="at"><default-field><date-time type="time" default-value="12:00"/></default-field></field>
+        <field name="between"><default-field><date-find type="date"/></default-field></field>
+        <field name="period"><default-field><date-period allow-empty="false"/></default-field></field>
+        <field name="range"><default-field><range-find size="6"/></default-field></field>
+        <field name="amount"><default-field><display currency-unit-field="uom" style="big"/></default-field></field>
+        <field name="shown"><default-field><display text="Total ${total}" also-hidden="false"/></default-field></field>
+        <field name="dynamicShown"><default-field><display dynamic-transition="lookup"><depends-on field="status" parameter="st"/></display></default-field></field>
+        <field name="enumId"><default-field><display-entity entity-name="moqui.basic.Enumeration" text="${description}"/></default-field></field>
+        <field name="doc"><default-field><file accept="image/*" multiple="true"/></default-field></field>
+        <field name="pw"><default-field><password/></default-field></field>
+        <field name="where"><default-field><lookup size="12"/></default-field></field>
+        <field name="clear"><default-field><reset/></default-field></field>
+        <field name="secret"><default-field><hidden/></default-field></field>
+        <field name="skip"><default-field><ignored/></default-field></field>
+        <field name="hid" hide="true"><default-field><display/></default-field></field>
+        <field name="mix">
+            <conditional-field condition="mode == 'a'"><text-line/></conditional-field>
+            <default-field><display/></default-field>
+        </field>
+        <field name="go"><default-field title="Go Now"><submit confirmation="Sure?" icon="fa fa-check"/></default-field></field>
+        <field name="viaLink"><default-field><link url="open" text="Open" link-type="auto"/></default-field></field>
+        <field-layout>
+            <field-group title="Names" box="true"><field-ref name="firstName"/><field-ref name="email"/></field-group>
+            <field-accordion id="Acc" active="2">
+                <field-group title="One"><field-ref name="ac"/></field-group>
+                <field-group title="Two"><field-ref name="dflt"/></field-group>
+            </field-accordion>
+            <field-row><field-ref name="bio"/><field-ref name="find"/></field-row>
+            <field-row-big title="Big"><field-ref name="status"/><field-ref name="multi"/></field-row-big>
+            <field-col-row style="cols">
+                <field-col md="6" label-cols="3"><field-ref name="remote"/></field-col>
+                <field-col md="6"><field-ref name="kind"/></field-col>
+            </field-col-row>
+            <fields-not-referenced/>
+        </field-layout>
+    </form-single>
+</widgets>

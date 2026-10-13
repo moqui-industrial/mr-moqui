@@ -60,6 +60,10 @@ impl Runner for CtxRunner<'_, '_> {
 
 fn run_unit(ctx: &Ctx<'_>, unit: &Unit) -> Result<(), Error> {
     let engine = current_engine().ok_or_else(|| Error::new("no script engine is running"))?;
+    if !unit.runtime.is_empty() && !engine.runtimes.borrow().contains(&unit.runtime_id) {
+        eval_js::<JsValue>(ctx, &unit.runtime)?;
+        engine.runtimes.borrow_mut().insert(unit.runtime_id);
+    }
     let saved = engine.units.borrow().get(&unit.id).cloned();
     let function = match saved {
         Some(saved) => saved.restore(ctx).map_err(js_error)?,
@@ -258,6 +262,23 @@ fn sri_get_active_screen_def<'js>(ctx: Ctx<'js>) -> rquickjs::Result<Object<'js>
     host_guard(&ctx, || {
         let def = with_render(&ctx, false, |state| Ok(logic::active_def(state)))?;
         screen_def_object(&ctx, &def)
+    })
+}
+
+/// `sri.getScreenUrlInfo()`: the screen the request ended at and the one above it, for the page title.
+fn sri_get_screen_url_info<'js>(ctx: Ctx<'js>) -> rquickjs::Result<Object<'js>> {
+    host_guard(&ctx, || {
+        let (target, parent) = with_render(&ctx, false, |state| {
+            let defs = &state.url_info.path_defs;
+            let parent = defs.len().checked_sub(2).and_then(|index| defs.get(index)).cloned();
+            Ok((Arc::clone(&state.url_info.target_screen), parent))
+        })?;
+        let object = Object::new(ctx.clone())?;
+        object.set("targetScreen", screen_def_object(&ctx, &target)?)?;
+        if let Some(parent) = parent {
+            object.set("parentScreen", screen_def_object(&ctx, &parent)?)?;
+        }
+        Ok(object)
     })
 }
 
@@ -567,6 +588,40 @@ fn sri_get_theme_values(ctx: Ctx<'_>, resource_type: String, theme_id: Opt<Strin
     })
 }
 
+fn sri_get_field_validation<'js>(ctx: Ctx<'js>, sub: JsValue<'js>) -> rquickjs::Result<Object<'js>> {
+    host_guard(&ctx, || {
+        let sub = lit(&ctx, &sub)?;
+        let found = with_render(&ctx, false, |_| logic::field_validation(&sub))?;
+        let object = Object::new(ctx.clone())?;
+        object.set("classes", found.classes.join(" "))?;
+        if let Some((regexp, message)) = found.regexp {
+            object.set("regexp", regexp)?;
+            object.set("message", message)?;
+        }
+        Ok(object)
+    })
+}
+
+fn sri_get_menu_items<'js>(ctx: Ctx<'js>, screen_path: Opt<String>) -> rquickjs::Result<Array<'js>> {
+    host_guard(&ctx, || {
+        let items = with_render(&ctx, false, |state| logic::menu_items(state, screen_path.0.as_deref()))?;
+        let out = Array::new(ctx.clone())?;
+        for (index, item) in items.into_iter().enumerate() {
+            let object = Object::new(ctx.clone())?;
+            object.set("name", item.name)?;
+            object.set("hasParameters", item.has_parameters)?;
+            object.set("title", item.title)?;
+            object.set("url", item.url)?;
+            object.set("disabled", item.disabled)?;
+            object.set("inPath", item.in_path)?;
+            object.set("image", item.image)?;
+            object.set("imageType", item.image_type)?;
+            out.set(index, object)?;
+        }
+        Ok(out)
+    })
+}
+
 fn sri_get_after_screen_writer_text(ctx: Ctx<'_>) -> rquickjs::Result<String> {
     host_guard(&ctx, || {
         with_render(&ctx, false, |state| {
@@ -629,6 +684,7 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("getRenderMode", sri_get_render_mode);
     method!("encodeHtml", sri_encode_html);
     method!("getActiveScreenDef", sri_get_active_screen_def);
+    method!("getScreenUrlInfo", sri_get_screen_url_info);
     method!("pushContext", sri_push_context);
     method!("popContext", sri_pop_context);
     method!("setInContext", sri_set_in_context);
@@ -657,6 +713,8 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("getThemeIconClass", sri_get_theme_icon_class);
     method!("getThemeValues", sri_get_theme_values);
     method!("getSectionIncludedNode", sri_get_section_included_node);
+    method!("getFieldValidation", sri_get_field_validation);
+    method!("getMenuItems", sri_get_menu_items);
     super::urls::install(ctx, &sri)?;
     Ok(sri)
 }

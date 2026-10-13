@@ -292,6 +292,40 @@ Appended slice by slice.
   the service migration; `ec.screen.makeRender()`, `getMimeTypeByMode` and `isRenderModeText` exist so that migration is a
   rewrite of the script, and PDF bytes report that PDF is not available until phase 12.
 - `BasicWidgetTemplates.xml` is in `runtime/base-component/webroot/template/screen/` with its Elvis expressions as `||`.
+- **Slice 4, html.** `ScreenHtml.js` writes the markup of every widget the Java html macros handled (containers, box,
+  panel, native `dialog`, dynamic container and dialog, button menu, tree, links with confirmation and link type, images,
+  labels, editable, subscreen menus and panels, form-single with field layout, groups and accordion, form-list with row
+  forms, header sort, pagination, find dialog, column picker, CSV and print links, and every field widget). The widget
+  markup is in a runtime object that each script engine runs once (a module's `runtime` property, run before the first
+  unit that names it), so a unit holds only the structure of its form and calls `$h.dropDown(...)` and the like. The
+  attributes the client binds are listed in `webroot/js/README.md`. Differences: option text and labels are always
+  encoded; a text-line `ac-transition` is a `select` that Tom Select fills, so `name_ac` is not posted; `lookup` is a text
+  line (the Java macro was commented out); a form-list with `group-by` sub-lists renders every column in the main row; the
+  saved-find and column dialogs show only when the screen has `formSaveFind` and `formSelectColumns`, which no screen has
+  yet; `show-pdf-button` links to the `html-print` page. No unit has a `<script>`.
+- **Page shell.** `Header`, `Footer`, `navbar`, `Messages`, `Login` and `SecondFactor` are `.html.fancy` files, and the
+  `webroot.xml`, `apps.xml`, `Login.xml`, `SecondFactor.xml`, error and `AppList` screens use them. `.ftl` locations are
+  refused when rendered, so the `.ftl` files left are `WebrootVue.qvt.ftl` (qapps) and `AutoScreenMenu.qvt.ftl`, which
+  belong to the qvt slice. The `vuet` text types are gone. The default theme links Font Awesome, `moqui-html.css` and
+  `moqui-html.js` (with `defer`); Tom Select and SortableJS are added to `footer_scripts` and `footer_stylesheets` by the
+  widgets that use them, and the client loads them itself for a fragment that has no footer. The component data files
+  (theme, localization, security) are not read by `moqui load`; the gate loads them by location.
+- **Static files.** The path walk ends at a file under a screen's directory when a name is neither a subscreen nor a
+  transition (`screen/static_files.rs`). A transition named `favicon.ico` would hide the file, so `webroot.xml` has none.
+  Weak `ETag` from the modification time and size, 304, HEAD, a year of `immutable` for `*.min.*` or a `v` parameter and an
+  hour with revalidation otherwise. The host adds tower-http's gzip layer to the whole router; brotli is not enabled, since
+  its feature adds a crate for a saving gzip mostly gives.
+- **Multipart.** axum's `multipart` feature needs `multer`, which is not in the tree, and the request pool takes an owned
+  request, so the host reads the body (up to `webapp_max_upload`, default 100 MiB, while it reads; other bodies stop at
+  1 MiB) and `web/multipart.rs` parses it. Text fields join the parameters. A file is an `UploadedFile` host object
+  (`name`, `contentType`, `size`, `getString()`, `write("dbresource://...")`) in the parameters and in
+  `ec.web.multiPartParameters`, with `_fileUploadList`. A file that starts like a program is a 415 unless
+  `webapp_upload_executable_allow` is `true`.
+- **Messages and forms.** A response that redirects saves its messages and errors in the session, and its request
+  parameters when it had errors (not passwords or the token). The next request that asks gets them once: `ec.web.getPageMessages()`
+  for the shell, `ec.web.errorParameters` and the field values of a form. Pages the user got in `html` go on the screen
+  history, newest first, for `screen-last` and the navbar menu. A failure for a browser (`Accept: text/html`, not an API path) renders
+  `error/*` with `errorCode`, `errorType`, `errorMessage`, `errorThrowable` and `showErrorDetail`.
 
 ## Phase 9 — SearchFacade
 

@@ -45,11 +45,13 @@ mod decimal;
 mod ec_extra;
 mod ec_screen;
 mod entities;
+mod error_info;
 mod facades;
 mod helpers;
 mod screen_host;
 mod search;
 mod services;
+mod upload;
 mod urls;
 mod values;
 
@@ -58,12 +60,14 @@ use convert::*;
 use decimal::*;
 pub use ec_extra::expand_localized;
 use entities::*;
+use error_info::*;
 pub use facades::run_script_location;
 use facades::*;
 use helpers::*;
 pub(crate) use screen_host::with_screen_runner;
 use search::*;
 use services::*;
+use upload::*;
 pub(crate) use values::{
     context_combined, pop_context_frame, put_context_all, value_entity_name, value_field, value_items, value_map,
 };
@@ -120,6 +124,8 @@ struct Engine {
     templates: RefCell<HashMap<String, Persistent<Function<'static>>>>,
     /// Compiled screen units by unit id.
     units: RefCell<HashMap<u64, Persistent<Function<'static>>>>,
+    /// Ids of the mode runtimes this engine has already run.
+    runtimes: RefCell<std::collections::HashSet<u64>>,
     object_utilities: Persistent<Object<'static>>,
     collection_utilities: Persistent<Object<'static>>,
     string_utilities: Persistent<Object<'static>>,
@@ -356,6 +362,7 @@ impl Engine {
             tracked: RefCell::new(HashMap::new()),
             templates: RefCell::new(HashMap::new()),
             units: RefCell::new(HashMap::new()),
+            runtimes: RefCell::new(std::collections::HashSet::new()),
             object_utilities: helpers.object_utilities,
             collection_utilities: helpers.collection_utilities,
             string_utilities: helpers.string_utilities,

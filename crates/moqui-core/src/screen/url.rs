@@ -17,7 +17,8 @@
 //! The walk follows `ScreenUrlInfo.initUrl`. Each path name is a subscreen, a transition, or a
 //! screen with a render-mode extension. After the last name, `default-item` and
 //! `conditional-default` keep descending. Not ported: `ScreenPathAlias` and `SubscreensDefault`
-//! rows, the `//` sparse path, and static file content below a screen.
+//! rows, and the `//` sparse path. A name that is not a subscreen or a transition but is a file under the
+//! screen's directory ends the walk at that file, as in Java ([`static_files`](super::static_files)).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -57,6 +58,8 @@ pub struct ScreenUrlInfo {
     pub reusable: bool,
     /// Parameters from a `?name=value` tail on the path.
     pub inline_parameters: BTreeMap<String, String>,
+    /// The location of a static file under a screen, when the path ends at one.
+    pub file_resource: Option<String>,
 }
 
 impl ScreenUrlInfo {
@@ -119,6 +122,7 @@ impl ScreenUrlInfo {
                 menu_image: None,
                 reusable: true,
                 inline_parameters: BTreeMap::new(),
+                file_resource: None,
             },
         };
         walk.run(root)?;
@@ -207,6 +211,12 @@ impl Walk<'_> {
                     self.info.target_transition_name = Some(name);
                     break;
                 }
+                if let Some(file) =
+                    super::static_files::file_under(self.factory, self.facade, &last.location, &self.info.extra_path)
+                {
+                    self.info.file_resource = Some(file);
+                    break;
+                }
                 if let Some(before) = &before_dot {
                     item = self.screen_item(&last, before);
                     if item.is_some() {
@@ -251,6 +261,7 @@ impl Walk<'_> {
         let mut default_count = 0;
         while self.info.target_render_mode.is_none()
             && self.info.target_transition_name.is_none()
+            && self.info.file_resource.is_none()
             && last.subscreens.default_item.is_some()
         {
             if last.subscreens.always_use_full_path {

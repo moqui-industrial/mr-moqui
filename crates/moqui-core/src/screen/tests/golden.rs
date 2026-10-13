@@ -86,6 +86,16 @@ fn golden_html_print() {
     }
 }
 
+/// Fixtures only the html mode has, for the elements it writes itself.
+const HTML_FIXTURES: &[&str] = &["html-containers", "html-fields", "html-form-list"];
+
+#[test]
+fn golden_html() {
+    for name in FIXTURES.iter().chain(HTML_FIXTURES) {
+        check("html", name, false);
+    }
+}
+
 #[test]
 fn debug_comments_name_each_element() {
     check("text", "links-labels", true);
@@ -93,8 +103,8 @@ fn debug_comments_name_each_element() {
 
 #[test]
 fn every_generated_unit_parses_and_declares_no_global() {
-    for mode in ["text", "csv", "xml", "html-print"] {
-        for name in FIXTURES {
+    for mode in ["text", "csv", "xml", "html-print", "html"] {
+        for name in FIXTURES.iter().chain(if mode == "html" { HTML_FIXTURES } else { &[] }) {
             let xml = std::fs::read_to_string(testdata().join(format!("{name}.xml"))).unwrap();
             let body = generate_xml(mode, &xml, false).unwrap();
             // Names the generated code declares start with $, so a screen field cannot be hidden.

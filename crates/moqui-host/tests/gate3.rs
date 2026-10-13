@@ -45,15 +45,29 @@ const CONF: &str = r#"<moqui-conf>
             <subscreens-item name="System" menu-title="System" location="component://tools/screen/System.xml"/>
             <subscreens-item name="Tools" menu-title="Tools" location="component://tools/screen/Tools.xml"/>
         </screen>
+        <screen location="component://webroot/screen/webroot/apps.xml">
+            <subscreens-item name="System" menu-title="System" location="component://tools/screen/System.xml"/>
+        </screen>
     </screen-facade>
 </moqui-conf>"#;
 
-#[test]
-fn artifact_group_detail_renders_as_text_csv_xml_and_html_print() {
-    let runtime = temp_dir("moqui-gate3-rt");
-    let cluster_dir = temp_dir("moqui-gate3-pg");
-    let _runtime_guard = DirGuard(runtime.clone());
-    let _cluster_guard = DirGuard(cluster_dir.clone());
+/// One embedded Postgres at a time: the tests set process-wide properties while they start.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The seeded server the gate tests share the setup of. Fields drop in order: the server stops before its directories go.
+struct Gate {
+    server: moqui_host::Server,
+    _serial: std::sync::MutexGuard<'static, ()>,
+    _runtime: DirGuard,
+    _cluster: DirGuard,
+}
+
+fn start(label: &str) -> Gate {
+    let serial = SERIAL.lock().unwrap_or_else(|err| err.into_inner());
+    let runtime = temp_dir(&format!("moqui-gate3-rt-{label}"));
+    let cluster_dir = temp_dir(&format!("moqui-gate3-pg-{label}"));
+    let runtime_guard = DirGuard(runtime.clone());
+    let cluster_guard = DirGuard(cluster_dir.clone());
     std::fs::create_dir_all(runtime.join("conf")).unwrap();
     std::fs::create_dir_all(&cluster_dir).unwrap();
     std::fs::write(runtime.join("conf/MoquiDevConf.xml"), CONF).unwrap();
@@ -71,6 +85,15 @@ fn artifact_group_detail_renders_as_text_csv_xml_and_html_print() {
         ..LoadFlags::default()
     };
     load_data(&runtime, &framework, &cluster_dir, &demo_flags).unwrap();
+    // The default theme (style sheets, scripts, logo), the pagination text and the access to the applications list are component data, which a
+    // load from the framework alone does not read.
+    for name in ["WebrootThemeData.xml", "WebrootL10nData.xml", "WebrootSecurityData.xml"] {
+        let flags = LoadFlags {
+            location: Some(base.join("webroot/data").join(name).display().to_string()),
+            ..LoadFlags::default()
+        };
+        load_data(&runtime, &framework, &cluster_dir, &flags).unwrap();
+    }
     // The ADMIN group may view the System app, as the tools component's own security data says, and the
     // artifact group the screen shows has a member, two authorizations and a tarpit to list.
     let grant = runtime.join("system-app.xml");
@@ -98,7 +121,18 @@ fn artifact_group_detail_renders_as_text_csv_xml_and_html_print() {
 
     let bind = SocketAddr::from(([127, 0, 0, 1], 0));
     let server = start_server(&runtime, &framework, &cluster_dir, bind).unwrap();
-    let address = server.address();
+    Gate {
+        server,
+        _serial: serial,
+        _runtime: runtime_guard,
+        _cluster: cluster_guard,
+    }
+}
+
+#[test]
+fn artifact_group_detail_renders_as_text_csv_xml_and_html_print() {
+    let gate = start("modes");
+    let address = gate.server.address();
     let john = basic("john.doe", "moqui");
     let get = |mode: &str| {
         let path = format!("/System/Security/ArtifactGroup/ArtifactGroupDetail.{mode}?artifactGroupId=SYSTEM_APP");
@@ -226,8 +260,326 @@ fn artifact_group_detail_renders_as_text_csv_xml_and_html_print() {
         "{landscape}"
     );
     assert!(landscape.contains("<body class=\"legal-landscape\">"), "{landscape}");
+}
 
-    drop(server);
+#[test]
+fn artifact_group_detail_renders_as_html_with_the_shared_client() {
+    let gate = start("html");
+    let address = gate.server.address();
+    let john = basic("john.doe", "moqui");
+    let path = "/System/Security/ArtifactGroup/ArtifactGroupDetail.html?artifactGroupId=SYSTEM_APP";
+    let (status, headers, html) = exchange(address, &http_request("GET", path, &[("Authorization", &john)], ""));
+    assert_eq!(status, 200, "{html}");
+    assert_eq!(
+        header(&headers, "content-type").as_deref(),
+        Some("text/html;charset=UTF-8")
+    );
+    assert!(!html.contains("Error rendering"), "{html}");
+
+    // the page shell: the shared style sheet, Font Awesome and the client script, with a version parameter
+    assert!(html.starts_with("<!DOCTYPE html>\n<html lang=\"en-US\">"), "{html}");
+    assert!(
+        html.contains("<link rel=\"stylesheet\" href=\"/css/moqui-html.css?v="),
+        "{html}"
+    );
+    assert!(
+        html.contains("<link rel=\"stylesheet\" href=\"/libs/fontawesome/css/font-awesome.min.css?v="),
+        "{html}"
+    );
+    assert!(html.contains("<script src=\"/js/moqui-html.js?v="), "{html}");
+    assert!(
+        html.contains("moqui-html.js?v=") && html.contains("\" defer></script>"),
+        "{html}"
+    );
+    assert!(html.contains("<meta name=\"moquiSessionToken\" content=\""), "{html}");
+    assert!(
+        html.contains("<title>Artifact Groups - Artifact Group Detail</title>"),
+        "{html}"
+    );
+    assert!(html.trim_end().ends_with("</body>\n</html>"), "{html}");
+
+    // the form-single
+    assert!(
+        html.contains("<form name=\"ArtifactGroupForm\" id=\"ArtifactGroupForm\" method=\"post\" action=\"/System/Security/ArtifactGroup/ArtifactGroupDetail/updateArtifactGroup\">"),
+        "{html}"
+    );
+    assert!(
+        html.contains("<div class=\"field\"><label for=\"ArtifactGroupForm_artifactGroupId\">Artifact Group ID</label><div class=\"widget\"><span class=\"display\">SYSTEM_APP</span>"),
+        "{html}"
+    );
+    assert!(
+        html.contains("<input type=\"text\" id=\"ArtifactGroupForm_description\" name=\"description\" value=\"System App (via root screen)\" size=\"40\">"),
+        "{html}"
+    );
+    // the form-lists: row forms outside the table, inputs that point to them, and the rows
+    assert!(
+        html.contains("<table class=\"form-list\" id=\"ArtifactAuthzList_table\">"),
+        "{html}"
+    );
+    assert_eq!(html.matches("<table class=\"form-list\"").count(), 3, "{html}");
+    assert!(
+        html.contains("<form name=\"ArtifactAuthzList_0\" id=\"ArtifactAuthzList_0\" method=\"post\""),
+        "{html}"
+    );
+    assert!(
+        html.contains("<span class=\"display\">SYSTEM_APP_ADMIN</span>"),
+        "{html}"
+    );
+    assert!(
+        html.contains(
+            "<select name=\"authzTypeEnumId\" id=\"ArtifactAuthzList_authzTypeEnumId_0\" form=\"ArtifactAuthzList_0\">"
+        ),
+        "{html}"
+    );
+    assert!(
+        html.contains("<option value=\"AUTHZT_ALWAYS\" selected>Always Allow (overrides Deny)</option>"),
+        "{html}"
+    );
+    // dialogs are native dialog elements, and the forms they hold post the session token
+    assert!(
+        html.contains("<dialog id=\"AddAuthzDialog\" class=\"container-dialog\""),
+        "{html}"
+    );
+    assert!(html.contains("data-dialog=\"AddAuthzDialog\""), "{html}");
+    // link forms saved for the end of the page are markup and not text
+    assert!(
+        html.contains(
+            "<form method=\"post\" action=\"/System/Security/ArtifactGroup/ArtifactGroupDetail/deleteArtifactAuthz\""
+        ),
+        "{html}"
+    );
+    assert!(!html.contains("&lt;form"), "{html}");
+    // menus go to the navbar through an attribute, not a script
+    assert!(html.contains("data-move-to=\"header-menus\""), "{html}");
+    // no jQuery, Bootstrap, Select2, Moment or inline per-widget script
+    let lower = html.to_ascii_lowercase();
+    for word in [
+        "jquery",
+        "bootstrap",
+        "select2",
+        "selectivity",
+        "moment",
+        "datetimepicker",
+        "<script>",
+        "form-control",
+        "$(",
+    ] {
+        assert!(!lower.contains(word), "{word} in {html}");
+    }
+    assert_eq!(html.matches("<script").count(), 1, "{html}");
+}
+
+#[test]
+fn the_login_page_and_the_root_render_as_html_and_a_failed_login_comes_back_with_its_message() {
+    let gate = start("login");
+    let address = gate.server.address();
+    let get = |path: &str, cookie: &str| {
+        let headers: Vec<(&str, &str)> = if cookie.is_empty() {
+            vec![]
+        } else {
+            vec![("Cookie", cookie)]
+        };
+        exchange(address, &http_request("GET", path, &headers, ""))
+    };
+    let (status, headers, login) = get("/Login", "");
+    assert_eq!(status, 200, "{login}");
+    assert_eq!(
+        header(&headers, "content-type").as_deref(),
+        Some("text/html;charset=UTF-8")
+    );
+    assert!(
+        login.contains("<link rel=\"stylesheet\" href=\"/css/moqui-html.css?v="),
+        "{login}"
+    );
+    assert!(
+        login.contains("<form method=\"post\" action=\"/Login/login\" class=\"form-signin\" id=\"login_form\">"),
+        "{login}"
+    );
+    assert!(
+        login.contains("<input type=\"password\" name=\"password\" required"),
+        "{login}"
+    );
+    assert!(
+        login.contains("<nav class=\"tabs form-signin\" data-tab-hash=\"login\">"),
+        "{login}"
+    );
+    let lower = login.to_ascii_lowercase();
+    assert!(!lower.contains("jquery") && !lower.contains("bootstrap"), "{login}");
+    let cookie = cookies_of(&headers);
+
+    // the root goes to the sign-in page when nobody is signed in
+    let (status, headers, _) = get("/", "");
+    assert_eq!(status, 302);
+    assert_eq!(header(&headers, "location").as_deref(), Some("/Login"));
+
+    // a wrong password: the transition redirects back, and the next page shows the message once with the user name kept
+    let body = "username=john.doe&password=wrong";
+    let post = http_request(
+        "POST",
+        "/Login/login",
+        &[
+            ("Cookie", &cookie),
+            ("Content-Type", "application/x-www-form-urlencoded"),
+        ],
+        body,
+    );
+    let (status, headers, text) = exchange(address, &post);
+    assert_eq!(status, 302, "{text}");
+    assert_eq!(header(&headers, "location").as_deref(), Some("/Login"));
+    let cookie = cookies_of(&headers).max(cookie);
+    let (status, _, again) = get("/Login", &cookie);
+    assert_eq!(status, 200, "{again}");
+    assert!(
+        again.contains("<div class=\"alert\" data-type=\"danger\" role=\"alert\">"),
+        "{again}"
+    );
+    assert!(
+        again.contains("name=\"username\" type=\"text\" value=\"john.doe\""),
+        "{again}"
+    );
+    let (_, _, third) = get("/Login", &cookie);
+    assert!(!third.contains("class=\"alert\""), "{third}");
+
+    // the same login as a multipart form: the fields are parameters, and a body over the cap is refused before any screen runs
+    let multipart = |name: &str, extra: &str| {
+        let body = format!(
+            "--B0\r\nContent-Disposition: form-data; name=\"username\"\r\n\r\njohn.doe\r\n--B0\r\nContent-Disposition: form-data; name=\"password\"\r\n\r\nwrong\r\n{extra}--B0--\r\n"
+        );
+        let request = http_request(
+            "POST",
+            "/Login/login",
+            &[
+                ("Cookie", &cookie),
+                ("Content-Type", "multipart/form-data; boundary=B0"),
+            ],
+            &body,
+        );
+        let _ = name;
+        exchange(address, &request)
+    };
+    let (status, headers, text) = multipart("fields", "");
+    assert_eq!(status, 302, "{text}");
+    assert_eq!(header(&headers, "location").as_deref(), Some("/Login"));
+    moqui_lib::env::set_property("webapp_max_upload", "1k");
+    let big = format!(
+        "--B0\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"a.txt\"\r\n\r\n{}\r\n",
+        "x".repeat(2000)
+    );
+    let (status, _, text) = multipart("big", &big);
+    moqui_lib::env::clear_property("webapp_max_upload");
+    assert_eq!(status, 413, "{text}");
+
+    // the applications screen is html for a signed-in user, with the navbar the shell builds
+    let john = basic("john.doe", "moqui");
+    let (status, headers, apps) = exchange(address, &http_request("GET", "/apps", &[("Authorization", &john)], ""));
+    assert_eq!(status, 200, "{apps}");
+    // the page is on the screen history of the session, which the navbar's menu lists
+    let session = cookies_of(&headers);
+    let (_, _, apps_again) = exchange(
+        address,
+        &http_request("GET", "/apps", &[("Authorization", &john), ("Cookie", &session)], ""),
+    );
+    assert!(
+        apps_again.contains("<li><a href=\"/apps/AppList\"><i class=\"fa fa-link\"></i> AppList</a></li>"),
+        "{apps_again}"
+    );
+    assert!(apps.contains("<header><nav class=\"navbar\">"), "{apps}");
+    assert!(apps.contains("<ul id=\"header-menus\"></ul>"), "{apps}");
+    assert!(apps.contains("data-theme-toggle"), "{apps}");
+    assert!(
+        apps.contains("<a href=\"/apps/System\" data-btn=\"primary\" data-size=\"lg\" class=\"app-list-link\">"),
+        "{apps}"
+    );
+    assert!(apps.contains("<div id=\"apps-footer-content\">"), "{apps}");
+}
+
+#[test]
+fn static_files_are_served_with_validators_compression_and_no_way_out() {
+    let gate = start("static");
+    let address = gate.server.address();
+    let get = |path: &str, headers: &[(&str, &str)]| exchange(address, &http_request("GET", path, headers, ""));
+    let (status, headers, css) = get("/css/moqui-html.css", &[]);
+    assert_eq!(status, 200);
+    assert_eq!(
+        header(&headers, "content-type").as_deref(),
+        Some("text/css; charset=UTF-8")
+    );
+    assert_eq!(
+        header(&headers, "cache-control").as_deref(),
+        Some("public, max-age=3600, must-revalidate")
+    );
+    assert!(css.contains("--primary"), "{css}");
+    let tag = header(&headers, "etag").unwrap();
+    let (status, headers304, body) = get("/css/moqui-html.css", &[("If-None-Match", &tag)]);
+    assert_eq!(status, 304);
+    assert!(body.is_empty());
+    assert_eq!(header(&headers304, "etag").as_deref(), Some(tag.as_str()));
+    let (status, _, versioned) = get("/js/moqui-html.js?v=abc", &[]);
+    assert_eq!(status, 200);
+    assert!(versioned.contains("moqui"), "{versioned}");
+    let (_, headers, _) = get("/js/moqui-html.js?v=abc", &[]);
+    assert_eq!(
+        header(&headers, "content-type").as_deref(),
+        Some("text/javascript; charset=UTF-8")
+    );
+    assert_eq!(
+        header(&headers, "cache-control").as_deref(),
+        Some("public, max-age=31536000, immutable")
+    );
+    let (status, headers, _) = get("/favicon.ico", &[]);
+    assert_eq!(status, 200);
+    assert_eq!(header(&headers, "content-type").as_deref(), Some("image/x-icon"));
+    // HEAD has the headers and no body
+    let (status, headers, body) = exchange(address, &http_request("HEAD", "/css/moqui-html.css", &[], ""));
+    assert_eq!(status, 200);
+    assert!(body.is_empty());
+    assert_eq!(header(&headers, "etag").as_deref(), Some(tag.as_str()));
+
+    // gzip when the client takes it
+    let mut stream = TcpStream::connect(address).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+    stream
+        .write_all(http_request("GET", "/css/moqui-html.css", &[("Accept-Encoding", "gzip")], "").as_bytes())
+        .unwrap();
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).unwrap();
+    let split = raw.windows(4).position(|window| window == b"\r\n\r\n").unwrap();
+    let head = String::from_utf8_lossy(&raw[..split]).to_ascii_lowercase();
+    assert!(head.contains("content-encoding: gzip"), "{head}");
+    assert!(raw.len() < css.len(), "{} compressed, {} plain", raw.len(), css.len());
+
+    // nothing outside the directory, no hidden files, no screen or template sources
+    for path in [
+        "/css/../../../../etc/passwd",
+        "/../../etc/passwd",
+        "/css/%2e%2e/%2e%2e/%2e%2e/etc/passwd",
+        "/css/..%2f..%2f..%2fetc%2fpasswd",
+        "/css/..%5c..%5cetc%5cpasswd",
+        "/.git/config",
+        "/Login.html.fancy",
+    ] {
+        let (status, _, body) = get(path, &[]);
+        assert!(status == 404 || status == 400, "{path}: {status} {body}");
+        assert!(!body.contains("root:"), "{path}: {body}");
+        assert!(!body.contains("<screen"), "{path}: {body}");
+    }
+}
+
+fn header(headers: &[(String, String)], name: &str) -> Option<String> {
+    headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.clone())
+}
+
+/// The cookies a response sets as a `Cookie` header value.
+fn cookies_of(headers: &[(String, String)]) -> String {
+    headers
+        .iter()
+        .filter(|(key, _)| key.eq_ignore_ascii_case("set-cookie"))
+        .filter_map(|(_, value)| value.split(';').next().map(str::to_string))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn basic(username: &str, password: &str) -> String {

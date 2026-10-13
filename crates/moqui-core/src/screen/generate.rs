@@ -40,7 +40,7 @@ const TEMPLATE_SUPPORT: &str = include_str!("../../../../framework/template/Temp
 const SCREEN_SUPPORT: &str = include_str!("../../../../framework/template/screen/ScreenSupport.js");
 
 /// The mode modules built into the binary, by file name.
-const MODE_MODULES: [(&str, &str); 4] = [
+const MODE_MODULES: [(&str, &str); 5] = [
     (
         "ScreenText.js",
         include_str!("../../../../framework/template/screen/ScreenText.js"),
@@ -57,6 +57,10 @@ const MODE_MODULES: [(&str, &str); 4] = [
         "ScreenHtmlPrint.js",
         include_str!("../../../../framework/template/screen/ScreenHtmlPrint.js"),
     ),
+    (
+        "ScreenHtml.js",
+        include_str!("../../../../framework/template/screen/ScreenHtml.js"),
+    ),
 ];
 
 const BUILT_IN_DIR: &str = "framework/template/screen/";
@@ -71,6 +75,9 @@ pub struct Unit {
     pub id: u64,
     /// A function expression: the mode's runtime prelude and the body.
     pub source: String,
+    /// Code the mode shares between its units, run once for each engine before the first unit that names it.
+    pub runtime: Arc<str>,
+    pub runtime_id: u64,
 }
 
 /// What a definition keeps for rendering: generated units and assembled forms.
@@ -181,7 +188,7 @@ pub fn unit_for(ctx: &Ctx<'_>, request: &UnitRequest<'_>) -> Result<Option<Arc<U
                         err.message()
                     ))
                 })?;
-                Some(Arc::new(make_unit(&loaded.prelude, body)?))
+                Some(Arc::new(make_unit(&loaded, body)?))
             }
             // A mode with no module yet renders nothing for widgets with nothing in them.
             Err(_) if is_empty_root(&root) => None,
@@ -236,7 +243,7 @@ pub fn unit_for_dynamic_form(
             err.message()
         ))
     })?;
-    let unit = Arc::new(make_unit(&loaded.prelude, body)?);
+    let unit = Arc::new(make_unit(&loaded, body)?);
     request.def.generated.put_unit(key, Some(Arc::clone(&unit)));
     Ok(unit)
 }
@@ -257,12 +264,14 @@ fn describe(request: &UnitRequest<'_>) -> String {
     }
 }
 
-fn make_unit(prelude: &str, body: String) -> Result<Unit, Error> {
-    let source = format!("(function () {{\n\"use strict\";\n{prelude}{body}}})");
+fn make_unit(module: &ModeModule<'_>, body: String) -> Result<Unit, Error> {
+    let source = format!("(function () {{\n\"use strict\";\n{}{body}}})", module.prelude);
     crate::script::check_program(&source).map_err(|err| Error::new(format!("{}\n{source}", err.message())))?;
     Ok(Unit {
         id: NEXT_UNIT.fetch_add(1, Ordering::Relaxed),
         source,
+        runtime: Arc::clone(&module.runtime),
+        runtime_id: module.runtime_id,
     })
 }
 
@@ -304,6 +313,8 @@ pub struct ModeModule<'js> {
     macros: Object<'js>,
     opaque: HashSet<String>,
     prelude: String,
+    runtime: Arc<str>,
+    runtime_id: u64,
 }
 
 fn mode_source(factory: &ExecutionContextFactory, location: &str) -> Result<String, Error> {
@@ -322,7 +333,7 @@ fn mode_source(factory: &ExecutionContextFactory, location: &str) -> Result<Stri
         .map(|(_, source)| (*source).to_string())
         .ok_or_else(|| {
             Error::new(format!(
-                "there is no macro module {file} at {location}; html, qvt, qjs and qvue come in a later slice"
+                "there is no macro module {file} at {location}; qvt, qjs and qvue come in a later slice"
             ))
         })
 }
@@ -340,10 +351,19 @@ fn load_mode_source<'js>(ctx: &Ctx<'js>, source: &str, mode: &str, debug: bool) 
         .get("opaque")
         .map_err(|_| Error::new(format!("macro module for {mode} has no opaque list")))?;
     let prelude: String = module.get("prelude").unwrap_or_default();
+    let runtime: String = module.get("runtime").unwrap_or_default();
+    let runtime_id = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        runtime.hash(&mut hasher);
+        hasher.finish()
+    };
     Ok(ModeModule {
         macros,
         opaque: walker::names_of(&opaque)?,
         prelude,
+        runtime: Arc::from(runtime),
+        runtime_id,
     })
 }
 
@@ -378,6 +398,7 @@ pub fn generate_xml(mode: &str, xml: &str, debug_comments: bool) -> Result<Strin
         "csv" => "ScreenCsv.js",
         "xml" => "ScreenXml.js",
         "html-print" => "ScreenHtmlPrint.js",
+        "html" => "ScreenHtml.js",
         other => return Err(Error::new(format!("no built-in macro module for render mode {other}"))),
     };
     let source = MODE_MODULES
@@ -403,6 +424,7 @@ pub fn generate_unit_source(mode: &str, xml: &str) -> Result<String, Error> {
         "text" => "ScreenText.js",
         "csv" => "ScreenCsv.js",
         "html-print" => "ScreenHtmlPrint.js",
+        "html" => "ScreenHtml.js",
         _ => "ScreenXml.js",
     };
     let source = MODE_MODULES
@@ -414,6 +436,6 @@ pub fn generate_unit_source(mode: &str, xml: &str) -> Result<String, Error> {
     crate::script::walker_context(|ctx| {
         let module = load_mode_source(ctx, source, mode, false)?;
         let body = generate_body(ctx, &module, &root, None, mode)?;
-        Ok(make_unit(&module.prelude, body)?.source)
+        Ok(make_unit(&module, body)?.source)
     })
 }

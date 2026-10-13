@@ -195,6 +195,10 @@ impl HostFind {
         })
     }
 
+    fn disable_authz<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<Class<'js, HostFind>> {
+        host_guard(&ctx, || wrap_find(&ctx, take_find(&ctx, &self.inner)?.disable_authz()))
+    }
+
     fn use_clone<'js>(&self, ctx: Ctx<'js>, _flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostFind>> {
         host_guard(&ctx, || wrap_find(&ctx, take_find(&ctx, &self.inner)?))
     }

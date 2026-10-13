@@ -448,7 +448,10 @@ fn basic_auth_writes_skip_the_session_token_but_a_cookie_session_does_not() {
     assert_eq!(response.status, 401, "{}", response.body_text());
 }
 
+mod files;
+mod forms;
 mod golden;
+mod html;
 mod modules;
 mod print;
 mod render;

@@ -341,6 +341,10 @@ pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> 
     let facade = ScreenFacade::of(factory);
     check_web_settings(&info)?;
     check_authentication(&info)?;
+    if let Some(file) = &info.file_resource {
+        let versioned = !text_of(job.parameters.get("v")).is_empty();
+        return super::static_files::respond(factory, job.request, file, versioned);
+    }
 
     // Parameters live in a context frame for the request, so nothing leaks into the next one.
     let _frame = ContextFrame::push();
@@ -377,7 +381,39 @@ pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> 
     let _active = ActiveGuard::install(Rc::clone(&state));
     let begin = state.url_info.begin_transaction;
     let timeout = state.url_info.transaction_timeout;
-    in_transaction(begin, timeout, || render_screens(&state, &facade))
+    in_transaction(begin, timeout, || render_screens(&state, &facade))?;
+    record_history(job, &state);
+    Ok(())
+}
+
+/// A page the user got in `html` goes on the screen history, newest first, with its query. A fragment
+/// loaded into a page and a render with no socket do not.
+fn record_history(job: &Job<'_>, state: &RenderState) {
+    if !job.enforce_request_checks
+        || state.render_mode != "html"
+        || !job.method.eq_ignore_ascii_case("get")
+        || state.url_info.last_standalone != 0
+        || web::output_status() != 200
+    {
+        return;
+    }
+    let mut path = state.url_info.full_path_url();
+    // The sign-in pages are not places to return to.
+    let first = path.trim_start_matches('/').split('/').next().unwrap_or("");
+    if ["Login", "SecondFactor", "ChangePassword", "error", "rest", "rpc"].contains(&first) {
+        return;
+    }
+    let query: Vec<(String, String)> = job
+        .request
+        .query
+        .iter()
+        .filter(|(name, _)| !matches!(name.as_str(), "moquiSessionToken" | "lastStandalone" | "renderMode"))
+        .cloned()
+        .collect();
+    if !query.is_empty() {
+        path = with_query(path, &query.into_iter().collect());
+    }
+    user::session::push_screen_history(&path);
 }
 
 fn render_screens(state: &RenderState, facade: &ScreenFacade) -> Result<(), Error> {
@@ -756,12 +792,18 @@ fn respond(info: &ScreenUrlInfo, response: &ResponseDef) -> Result<(), Error> {
         if response.save_parameters {
             save_parameters();
         }
+        if has_errors() {
+            save_error_parameters();
+        }
         return Ok(());
     }
     if response.save_parameters {
         save_parameters();
     }
     save_messages();
+    if has_errors() {
+        save_error_parameters();
+    }
     let mut url = script::expand(&response.url)?;
     let mut url_type = response.url_type.clone();
     let mut carried = BTreeMap::new();
@@ -820,9 +862,28 @@ fn save_messages() {
         (facade.messages().to_vec(), facade.errors().to_vec())
     })
     .unwrap_or_default();
-    for message in messages.iter().chain(errors.iter()) {
+    for message in &messages {
         user::session::add_flash_message(message);
     }
+    for message in &errors {
+        user::session::add_flash_error(message);
+    }
+}
+
+/// The request parameters of a failed submit ride the session so the form shows what was typed. A
+/// password or the token is not kept.
+fn save_error_parameters() {
+    for (name, value) in web::parameters() {
+        let lower = name.to_ascii_lowercase();
+        if lower.contains("password") || lower == "moquisessiontoken" || matches!(value, Value::Object(_)) {
+            continue;
+        }
+        user::session::set_error_parameter(&name, &moqui_lib::object::to_plain_string(&value));
+    }
+}
+
+fn has_errors() -> bool {
+    ExecutionContext::with_current(|ec| !ec.message().errors().is_empty()).unwrap_or(false)
 }
 
 fn save_parameters() {

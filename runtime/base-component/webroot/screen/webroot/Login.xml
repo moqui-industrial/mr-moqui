@@ -114,31 +114,17 @@ along with this software (see the LICENSE.md file). If not, see
         // if user already logged in redirect to root
         if (ec.user.userId) sri.sendRedirectAndStopRender('/')
 
-        // jQuery/UI
-        html_scripts.add('/libs/jquery/jquery.min.js')
-        // Bootstrap
-        html_scripts.add('/libs/twitter-bootstrap/js/bootstrap.min.js')
-        // Moqui webroot layout
-        html_stylesheets.add('/css/webroot-layout.css')
     </script></pre-actions>
     <actions>
-        <!-- handle returnTo parameter, and general handling for when the Login screen is reached directly
-            (as opposed to redirect following attempted request to screen that requires authz) -->
+        <!-- handle returnTo parameter. The pages the user got are on the screen history, so a Login reached directly
+            goes back to the page before it without any more here. -->
         <if condition="returnTo"><then>
-            <if condition="WebUtilities.isSameOriginRedirect(returnTo, ec.web.request)"><then>
-                <log message="setting last path to ${returnTo}"/>
-                <script>ec.web.session.setAttribute('moqui.screen.last.path', returnTo)</script>
+            <if condition="WebUtilities.isSameOriginRedirect(returnTo, ec.web.getHostName(true))"><then>
+                <script>ec.web.saveScreenLastInfo(returnTo.replace(/^https?:\/\/[^\/]+/, ''), null)</script>
             </then><else>
                 <log level="warn" message="Ignoring off-site returnTo [${returnTo}]"/>
             </else></if>
-        </then><else>
-            <if condition="!ec.web.session.getAttribute('moqui.screen.last.path')">
-                <set field="referrer" from="ec.web.request.getHeader('Referer')"/>
-                <if condition="referrer &amp;&amp; WebUtilities.isSameOriginRedirect(referrer, ec.web.request)">
-                    <script>ec.web.session.setAttribute('moqui.screen.last.path', referrer)</script>
-                </if>
-            </if>
-        </else></if>
+        </then></if>
 
         <set field="passwordChangeRequired" from="ec.web.sessionAttributes.moquiPasswordChangeRequired || 'false'" type="Boolean"/>
         <set field="expiredCredentials" from="ec.web.sessionAttributes.moquiExpiredCredentials || 'false'" type="Boolean"/>
@@ -154,48 +140,32 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="username" from="ec.web.errorParameters?.username || ''"/>
         </else></if>
 
-        <set field="passwordNode" from="ec.ecfi.confXmlRoot.first('user-facade').first('password')"/>
-        <set field="minLength" from="passwordNode.attribute('min-length')" default-value="8" type="Integer"/>
-        <set field="minDigits" from="passwordNode.attribute('min-digits')" default-value="1" type="Integer"/>
-        <set field="minOthers" from="passwordNode.attribute('min-others')" default-value="1" type="Integer"/>
+        <set field="minLength" from="ec.user.passwordRules.minLength"/>
+        <set field="minDigits" from="ec.user.passwordRules.minDigits"/>
+        <set field="minOthers" from="ec.user.passwordRules.minOthers"/>
     </actions>
     <widgets>
         <!-- NOTE: this screen is not under the apps screen, but uses similar header/footer/etc -->
-        <container id="content" style="Login"><container style="inner"><container style="container-fluid">
-            <section-iterate name="headerSavedMessages" list="ec.web?.savedMessages" entry="message"><widgets>
-                <render-mode><text type="html"><![CDATA[<div class="alert alert-success fade in" role="alert"><button type="button" class="close" data-dismiss="alert"><span aria-hidden="true">&times;</span><span class="sr-only">Close</span></button>]]></text></render-mode>
-                <label text="${message}" type="h4"/>
-                <render-mode><text type="html"><![CDATA[</div>]]></text></render-mode>
-            </widgets></section-iterate>
-            <section-iterate name="headerSavedErrors" list="ec.web?.savedErrors" entry="errorMessage"><widgets>
-                <render-mode><text type="html"><![CDATA[<div class="alert alert-danger fade in" role="alert"><button type="button" class="close" data-dismiss="alert"><span aria-hidden="true">&times;</span><span class="sr-only">Close</span></button>]]></text></render-mode>
-                <label text="${errorMessage}" type="h4"/>
-                <render-mode><text type="html"><![CDATA[</div>]]></text></render-mode>
-            </widgets></section-iterate>
-            <section-iterate name="headerSavedValidationErrors" list="ec.web?.savedValidationErrors" entry="validationError"><widgets>
-                <!-- TODO: put these by fields instead of in header -->
-                <render-mode><text type="html"><![CDATA[<div class="alert alert-danger fade in" role="alert"><button type="button" class="close" data-dismiss="alert"><span aria-hidden="true">&times;</span><span class="sr-only">Close</span></button>]]></text></render-mode>
-                <label text="${validationError.message} (for field ${validationError.field})" type="h4"/>
-                <render-mode><text type="html"><![CDATA[</div>]]></text></render-mode>
-            </widgets></section-iterate>
+        <container id="content" style="Login"><container style="inner">
+            <render-mode><text type="html" location="component://webroot/screen/includes/Messages.html.fancy"/></render-mode>
 
             <section name="NeedsSetupSection" condition="ec.entity.find('moqui.security.UserAccount').disableAuthz().count() > 1"><widgets>
                 <!-- primary scenario, main login screen -->
-                <render-mode><text type="html" template="true" location="component://webroot/screen/webroot/Login.ftl"/></render-mode>
+                <render-mode><text type="html" location="component://webroot/screen/webroot/Login.html.fancy"/></render-mode>
             </widgets><fail-widgets>
                 <!-- if there are no user accounts, other than the _NA_ UserAccount which is in seed data, show form to create admin account -->
                 <render-mode><text type="html"><![CDATA[
-    <div class="text-center">
+    <div class="center">
         <h3>Welcome to your new system</h3>
         <form method="post" action="${sri.buildUrl("createInitialAdminAccount").url}" class="form-signin" id="InitialAdminForm">
-            <p class="text-muted text-center">There are no user accounts, get started by creating an initial administrator account</p>
+            <p class="muted">There are no user accounts, get started by creating an initial administrator account</p>
             <input type="hidden" name="moquiSessionToken" value="${ec.web.sessionToken}">
-            <input type="text" name="username" value="${html(ec.web.errorParameters["username"] ?? "")}" placeholder="Username" required="required" class="form-control top">
-            <input type="password" name="newPassword" placeholder="New Password" required="required" class="form-control middle">
-            <input type="password" name="newPasswordVerify" placeholder="New Password Verify" required="required" class="form-control middle">
-            <input type="text" name="userFullName" value="${html(ec.web.errorParameters["userFullName"] ?? "")}" placeholder="User Full Name" required="required" class="form-control middle">
-            <input type="text" name="emailAddress" value="${html(ec.web.errorParameters["emailAddress"] ?? "")}" placeholder="Email Address" required="required" class="form-control bottom">
-            <button class="btn btn-lg btn-primary btn-block" type="submit">Create Initial Admin Account</button>
+            <input type="text" name="username" value="${html(ec.web.errorParameters.username || "")}" placeholder="Username" required autofocus>
+            <input type="password" name="newPassword" placeholder="New Password" required autocomplete="new-password">
+            <input type="password" name="newPasswordVerify" placeholder="New Password Verify" required autocomplete="new-password">
+            <input type="text" name="userFullName" value="${html(ec.web.errorParameters.userFullName || "")}" placeholder="User Full Name" required>
+            <input type="text" name="emailAddress" value="${html(ec.web.errorParameters.emailAddress || "")}" placeholder="Email Address" required>
+            <button data-btn="primary" data-size="lg" type="submit">Create Initial Admin Account</button>
         </form>
     </div>
                 ]]></text></render-mode>
@@ -209,11 +179,10 @@ along with this software (see the LICENSE.md file). If not, see
                 <form method="post" action="${sri.buildUrl("login").url}" id="TestLoginLink">
                     <input type="hidden" name="username" value="john.doe">
                     <input type="hidden" name="password" value="moqui">
-                    <button class="btn btn-sm btn-primary" type="submit" id="TestLoginLink_button">Test Login (John Doe)</button>
+                    <button data-btn="primary" type="submit" id="TestLoginLink_button" autofocus>Test Login (John Doe)</button>
                 </form>
-                <script>$("#TestLoginLink_button").focus();</script>
                 ]]></text></render-mode></widgets>
             </section>
-        </container></container></container>
+        </container></container>
     </widgets>
 </screen>

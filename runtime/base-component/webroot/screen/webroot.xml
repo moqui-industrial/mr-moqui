@@ -19,6 +19,7 @@ along with this software (see the LICENSE.md file). If not, see
         <!-- No JS or CSS files referenced here, just setup lists for subscreens to add to in pre-actions -->
         <set field="html_scripts" from="new Set()"/>
         <set field="footer_scripts" from="new Set()"/>
+        <set field="footer_stylesheets" from="new Set()"/>
 
         <!-- See WebrootThemeData.xml for CSS references -->
         <set field="html_stylesheets" from="new Set()"/>
@@ -59,17 +60,7 @@ along with this software (see the LICENSE.md file). If not, see
         <default-response type="none"/>
     </transition>
 
-    <!-- Force custom favicon, if set in the "STRT_SHORTCUT_ICON" ScreenThemeResource. -->
-    <transition name="favicon.ico">
-        <actions>
-            <script>
-                iconList = sri.getThemeValues("STRT_SHORTCUT_ICON")
-                if (!iconList || iconList[0] == "") iconList = ["/favicon.ico"]
-                ec.web.sendResourceResponse("component://webroot/screen/webroot" + iconList[0])
-            </script>
-        </actions>
-        <default-response type="none"/>
-    </transition>
+    <!-- /favicon.ico is the file under the webroot directory, served as static content. -->
 
     <subscreens default-item="qapps">
         <subscreens-item name="toolstatic" location="component://tools/screen/toolstatic.xml" menu-include="false"/>
@@ -77,11 +68,11 @@ along with this software (see the LICENSE.md file). If not, see
     </subscreens>
     <widgets>
         <render-mode>
-            <text type="html" location="component://webroot/screen/includes/Header.html.ftl" no-boundary-comment="true"/>
+            <text type="html" location="component://webroot/screen/includes/Header.html.fancy" no-boundary-comment="true"/>
         </render-mode>
         <render-mode><text template="true">${sri.renderSubscreen()}</text></render-mode>
         <render-mode>
-            <text type="html" location="component://webroot/screen/includes/Footer.html.ftl"/>
+            <text type="html" location="component://webroot/screen/includes/Footer.html.fancy"/>
         </render-mode>
     </widgets>
 </screen>

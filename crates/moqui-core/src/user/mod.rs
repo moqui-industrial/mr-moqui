@@ -40,3 +40,8 @@ pub use session::{
     time_zone, verify_session_cookie, visit_id, visitor_id, SessionGuard, SESSION_COOKIE_NAME, VISITOR_COOKIE_NAME,
 };
 pub use visit::record_visit;
+
+/// `(min length, min digits, min others)` of the password policy.
+pub(crate) fn policy_password_rules() -> (i64, i64, i64) {
+    policy::password_rules()
+}

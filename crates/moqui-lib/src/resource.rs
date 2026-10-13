@@ -311,6 +311,12 @@ impl FileResource {
     }
 }
 
+impl FileResource {
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
 impl Resource for FileResource {
     fn location(&self) -> &str {
         &self.location
