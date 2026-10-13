@@ -15,8 +15,8 @@
 //! Entity ECA actions, data-file service elements, and feed receive.
 //!
 //! Security scripts from `Security.eecas.xml` run as Rust checks. Other action
-//! bodies run through `script::run_actions`. Feed receive records that search is
-//! not up and leaves `DataFeedPending` rows in place.
+//! bodies run through `script::run_actions`. Feed receive submits the pending rows a commit
+//! inserted to a service worker (`crate::search::feed`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -97,25 +97,32 @@ pub fn run_held_service(facade: &EntityFacade, service: &HeldService) -> Result<
     super::call::sync(&service.name, &params).map(|_| ()).map_err(to_lib)
 }
 
-/// Record that search is not up for each remembered receive service. Runs inline.
-pub fn schedule_feed_receive(facade: &EntityFacade) -> Result<(), Error> {
-    let services = load_feed::held_feed_services(facade);
-    if services.is_empty() {
-        return Ok(());
-    }
-    for service in &services {
-        let registered = super::define::find(&service.receive_service).is_some();
+/// The service that consumes `DataFeedPending` rows on a worker.
+pub const PROCESS_PENDING_SERVICE: &str = "org.moqui.EntityServices.process#DataFeedPending";
+
+/// After commit, hand the pending rows this transaction inserted to a service worker, which
+/// assembles the documents and calls each feed's receive or delete service.
+///
+/// With no search facade installed, [`search_not_up`] reports it. The worker still runs feeds
+/// whose receive service is not the search index. Rows it cannot deliver stay for the
+/// `IndexDataFeedDocuments` drain. Without an entered context nothing is submitted.
+pub fn schedule_feed_receive(facade: &EntityFacade, pending_ids: Vec<String>) -> Result<(), Error> {
+    let search_up =
+        ExecutionContext::with_current(|ec| crate::search::installed(ec.factory()).is_some()).unwrap_or(false);
+    if !search_up && !load_feed::held_feed_services(facade).is_empty() {
         facade.with_slot(SearchState::default, |state| {
             state.down.store(true, std::sync::atomic::Ordering::Relaxed);
         });
-        tracing::debug!(
-            service = %service.receive_service,
-            registered,
-            search_down = true,
-            "feed receive left search down"
-        );
     }
-    Ok(())
+    if pending_ids.is_empty() || !crate::user::context_entered() {
+        return Ok(());
+    }
+    let mut params = BTreeMap::new();
+    params.insert(
+        "dataFeedPendingIds".to_string(),
+        Value::List(pending_ids.into_iter().map(Value::String).collect()),
+    );
+    super::call::async_call(PROCESS_PENDING_SERVICE, &params).map_err(to_lib)
 }
 
 /// The two `UserSecurityChecks` calls are Rust here. A rule is one of them only when its whole

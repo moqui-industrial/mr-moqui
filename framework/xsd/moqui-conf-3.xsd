@@ -30,7 +30,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:element minOccurs="0" ref="resource-facade"/>
                 <xs:element minOccurs="0" ref="screen-facade"/>
                 <xs:element minOccurs="0" ref="service-facade"/>
-                <xs:element minOccurs="0" ref="elastic-facade"/>
+                <xs:element minOccurs="0" ref="search-facade"/>
                 <xs:element minOccurs="0" ref="llm-facade"/>
                 <xs:element minOccurs="0" ref="entity-facade"/>
                 <xs:element minOccurs="0" ref="database-list"/>
@@ -589,24 +589,37 @@ along with this software (see the LICENSE.md file). If not, see
         </xs:complexType>
     </xs:element>
 
-    <!-- ===================== Elastic Facade Conf Root ===================== -->
+    <!-- ===================== Search Facade Conf Root ===================== -->
 
-    <xs:element name="elastic-facade"><xs:complexType>
+    <xs:element name="search-facade"><xs:complexType>
+        <xs:annotation><xs:documentation>SearchFacade, data documents searched and aggregated through one backend.
+            The postgres backend keeps one table per DataDocument in a search schema; the opensearch backend sends the
+            same queries to an OpenSearch or ElasticSearch 7+ cluster, where OpenSearch Dashboards can also read them.
+        </xs:documentation></xs:annotation>
         <xs:sequence>
-            <xs:element name="cluster" minOccurs="0" maxOccurs="unbounded"><xs:complexType>
-                <xs:attribute name="name" type="xs:string" use="required"/>
+            <xs:element name="postgres" minOccurs="0"><xs:complexType>
+                <xs:annotation><xs:documentation>A Postgres for the postgres backend. With no url, search uses the
+                    entity Postgres, or a dedicated embedded cluster when the entity database is not Postgres.</xs:documentation></xs:annotation>
+                <xs:attribute name="url" type="xs:string"><xs:annotation><xs:documentation>
+                    postgresql://host:port/database</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="user" type="xs:string"/>
+                <xs:attribute name="password" type="xs:string"/>
+                <xs:attribute name="schema" type="xs:string" default="search"/>
+            </xs:complexType></xs:element>
+            <xs:element name="cluster" minOccurs="0"><xs:complexType>
+                <xs:annotation><xs:documentation>The cluster for the opensearch backend.</xs:documentation></xs:annotation>
                 <xs:attribute name="url" type="xs:string" use="required"/>
                 <xs:attribute name="user" type="xs:string"/>
                 <xs:attribute name="password" type="xs:string"/>
                 <xs:attribute name="index-prefix" type="xs:string"><xs:annotation><xs:documentation>
-                    Prefix added to all ES index names just before requests
-                    Must follow ES index name requirements (lower case, etc)
-                    No separator character is added, recommend ending with underscore (_)
+                    Prefix added to all index names just before requests.
+                    Must follow index name requirements (lower case, etc).
+                    No separator character is added, recommend ending with underscore (_).
                 </xs:documentation></xs:annotation></xs:attribute>
-                <xs:attribute name="pool-max" type="xs:positiveInteger"/>
-                <xs:attribute name="queue-size" type="xs:positiveInteger"/>
             </xs:complexType></xs:element>
         </xs:sequence>
+        <xs:attribute name="backend" type="xs:string" default="postgres"><xs:annotation><xs:documentation>
+            postgres or opensearch.</xs:documentation></xs:annotation></xs:attribute>
     </xs:complexType></xs:element>
 
     <!-- ===================== LLM Facade Conf Root ===================== -->

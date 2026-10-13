@@ -14,9 +14,10 @@
 
 //! Process edge. HTTP, PDF, SSH, and SSO are not implemented yet.
 //! `load` reads framework data files. `lint` checks service definitions.
-//! Database drivers live in [`db`].
+//! Database drivers live in [`db`]. The search store and backend are placed by [`search`].
 
 pub mod db;
+pub mod search;
 
 /// Process entry used by the `moqui` binary when it is started with no arguments.
 pub fn run() -> &'static str {
@@ -326,6 +327,14 @@ fn load_with_factory(
 ) -> Result<LoadReport, moqui_lib::error::Error> {
     let facade = crate::db::entity_facade::open_entity_facade(framework_dir, std::sync::Arc::clone(driver), pool())?;
     crate::db::entity_facade::attach(factory, facade.clone());
+    // Feeds index through search when it is up; a load still runs when it is not.
+    let _search = match crate::search::attach_search(factory, &facade, true) {
+        Ok(store) => Some(store),
+        Err(err) => {
+            eprintln!("search is not available during this load: {err}");
+            None
+        }
+    };
     let context = factory.new_context();
     let entered = context.enter();
     let authz = context.disable_authz();

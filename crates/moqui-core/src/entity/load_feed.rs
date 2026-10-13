@@ -38,6 +38,9 @@ use crate::driver::{DbConnection, DbRow};
 use crate::transaction::TransactionManager;
 
 const SKIP_FEED_ENTITY: &str = "moqui.entity.SequenceValueItem";
+const PENDING_ENTITY: &str = "moqui.entity.feed.DataFeedPending";
+/// Most primary documents one related write may reach before the rest are left to a rebuild.
+const MAX_RELATED_DOCS: usize = 10_000;
 const REALTIME_PUSH: &str = "DTFDTP_RT_PUSH";
 const MAX_INFLATE: usize = 16 * 1024 * 1024;
 /// Largest single XML element or JSON value the streaming loader holds at once.
@@ -97,8 +100,13 @@ pub struct LoadResult {
 
 struct Touch {
     thread: ThreadId,
+    /// The transaction frame the write ran in, so a `force-new` commit takes only its own.
+    frame: Option<u64>,
     entity_name: String,
     operation: String,
+    /// The written values. The feed reads keys from them, and a related delete walks back to the
+    /// primary entity from them. `None` falls back to the Postgres `xmin` probe.
+    fields: Option<BTreeMap<String, Value>>,
 }
 
 #[derive(Default)]
@@ -138,6 +146,9 @@ struct DocTarget {
     data_document_id: String,
     entity_name: String,
     primary: bool,
+    primary_entity: String,
+    /// Relationship steps from the primary entity to this one, `(entity, relationship)` each.
+    paths: Vec<Vec<(String, String)>>,
 }
 
 struct FlagGuard<'a> {
@@ -185,15 +196,31 @@ fn with_load_slot<R>(facade: &EntityFacade, body: impl FnOnce(&mut LoadSlot) -> 
 /// Callers discard the returned ids. Matched ids are also stored on the facade.
 /// `operation` is `create`, `update`, or `delete`. Do not call this from inside `with_slot`.
 pub fn match_rules(facade: &EntityFacade, entity_name: &str, operation: &str) -> Vec<String> {
-    let in_tx = facade.transactions_for(entity_name).is_ok_and(|tx| tx.in_transaction());
+    match_rules_with(facade, entity_name, operation, None)
+}
+
+/// [`match_rules`] with the written values, which the data feed uses to find documents.
+pub(crate) fn match_rules_with(
+    facade: &EntityFacade,
+    entity_name: &str,
+    operation: &str,
+    fields: Option<&BTreeMap<String, Value>>,
+) -> Vec<String> {
+    let tx = facade.transactions_for(entity_name).ok();
+    let in_tx = tx.as_ref().is_some_and(TransactionManager::in_transaction);
+    let frame = tx.as_ref().and_then(TransactionManager::frame_token);
+    let keep_fields =
+        !facade.flags().disable_data_feed && entity_name != SKIP_FEED_ENTITY && entity_name != PENDING_ENTITY;
     let framework = facade.framework_dir().to_path_buf();
     with_load_slot(facade, |slot| {
         ensure_rules(slot, &framework);
         if in_tx {
             slot.touches.push(Touch {
                 thread: std::thread::current().id(),
+                frame,
                 entity_name: entity_name.to_string(),
                 operation: operation.to_string(),
+                fields: fields.filter(|_| keep_fields).cloned(),
             });
         }
         if facade.flags().disable_entity_eca {
@@ -254,10 +281,30 @@ pub fn conf_data_locations(facade: &EntityFacade) -> Result<Vec<String>, Error> 
     Ok(locations)
 }
 
-/// Register the commit hook that inserts `DataFeedPending` on the enlisted connection.
+/// Register the hooks for the open frame: before commit, insert `DataFeedPending` on the
+/// enlisted connection; after commit, hand the inserted rows to the feed receive; on rollback,
+/// drop this frame's touches.
 pub fn register_feed_insert(facade: &EntityFacade, tx: &TransactionManager) -> Result<(), Error> {
-    let facade = facade.clone();
-    tx.on_feed_insert(move |conn| insert_pending(&facade, conn))
+    let frame = tx.frame_token();
+    let inserted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let insert_facade = facade.clone();
+    let insert_ids = std::sync::Arc::clone(&inserted);
+    tx.on_feed_insert(move |conn| {
+        let ids = insert_pending(&insert_facade, conn, frame)?;
+        insert_ids.lock().unwrap_or_else(|err| err.into_inner()).extend(ids);
+        Ok(())
+    })?;
+    let commit_facade = facade.clone();
+    tx.on_commit(move || {
+        let ids = std::mem::take(&mut *inserted.lock().unwrap_or_else(|err| err.into_inner()));
+        if let Err(err) = crate::service::schedule_feed_receive(&commit_facade, ids) {
+            tracing::warn!(error = %err, "data feed receive was not scheduled; pending rows stay");
+        }
+    })?;
+    let rollback_facade = facade.clone();
+    tx.on_rollback(move || {
+        let _ = take_frame_touches(&rollback_facade, frame);
+    })
 }
 
 /// Load one XML, CSV, JSON, or zip location, or a directory of those files.
@@ -348,15 +395,19 @@ fn attr_true(node: &MNode, name: &str) -> bool {
     node.attribute(name).is_some_and(|value| value == "true")
 }
 
-fn insert_pending(facade: &EntityFacade, conn: &mut dyn DbConnection) -> Result<(), Error> {
+/// Insert `DataFeedPending` rows for this frame's writes. Returns the inserted row ids.
+fn insert_pending(
+    facade: &EntityFacade,
+    conn: &mut dyn DbConnection,
+    frame: Option<u64>,
+) -> Result<Vec<String>, Error> {
+    let touches = take_frame_touches(facade, frame);
     if facade.sim_active() || facade.flags().disable_data_feed {
-        let _ = take_thread_touches(facade);
-        return Ok(());
+        return Ok(Vec::new());
     }
-    let touches = take_thread_touches(facade);
     let aggs = aggregate_touches(&touches);
     if aggs.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let (feed_sql, feed_params) = select_sql(
         facade,
@@ -366,7 +417,7 @@ fn insert_pending(facade: &EntityFacade, conn: &mut dyn DbConnection) -> Result<
     )?;
     let feed_rows = probe_query(conn, &feed_sql, &feed_params)?;
     if feed_rows.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let mut services = Vec::new();
     let mut feed_ids = Vec::new();
@@ -384,15 +435,70 @@ fn insert_pending(facade: &EntityFacade, conn: &mut dyn DbConnection) -> Result<
     }
     remember_feed_services(facade, services);
     if feed_ids.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let targets = feed_targets(facade, conn, &feed_ids)?;
     if targets.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let insert_sql = pending_insert_sql(facade)?;
+    let mut inserted = Vec::new();
+    // Writes that carry their values: the document id is found from them, and the last write to
+    // a document decides between index and delete.
+    let mut resolved: indexmap::IndexMap<(String, String), (String, &'static str)> = indexmap::IndexMap::new();
+    for touch in &touches {
+        let Some(fields) = &touch.fields else {
+            continue;
+        };
+        for hit in targets.iter().filter(|target| target.entity_name == touch.entity_name) {
+            if hit.primary {
+                let Some(id) = pk_text(facade, &touch.entity_name, fields) else {
+                    continue;
+                };
+                let operation = if touch.operation == "delete" { "delete" } else { "index" };
+                let key = (hit.data_document_id.clone(), id);
+                resolved.shift_remove(&key);
+                resolved.insert(key, (hit.primary_entity.clone(), operation));
+            } else {
+                let row = if touch.operation == "delete" {
+                    fields.clone()
+                } else {
+                    reread(facade, conn, &touch.entity_name, fields)?.unwrap_or_else(|| fields.clone())
+                };
+                for path in &hit.paths {
+                    for id in walk_to_primary(facade, conn, path, vec![row.clone()])? {
+                        let key = (hit.data_document_id.clone(), id);
+                        if !resolved.contains_key(&key) {
+                            resolved.insert(key, (hit.primary_entity.clone(), "index"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for ((document_id, id), (entity_name, operation)) in &resolved {
+        let row_id = random_id();
+        let params = vec![
+            Value::string(&row_id),
+            Value::string(document_id),
+            Value::string(entity_name),
+            Value::string(id),
+            Value::string(*operation),
+        ];
+        probe_execute(conn, &insert_sql, &params)?;
+        inserted.push(row_id);
+    }
+    // Writes recorded without values, which only the Postgres xmin probe can key.
+    let legacy: HashSet<&str> = touches
+        .iter()
+        .filter(|touch| touch.fields.is_none())
+        .map(|touch| touch.entity_name.as_str())
+        .collect();
     let mut seen = HashSet::new();
     for (entity_name, agg) in &aggs {
+        if !legacy.contains(entity_name.as_str()) {
+            continue;
+        }
         let hits: Vec<&DocTarget> = targets
             .iter()
             .filter(|target| &target.entity_name == entity_name)
@@ -421,18 +527,153 @@ fn insert_pending(facade: &EntityFacade, conn: &mut dyn DbConnection) -> Result<
                 if !seen.insert(dedup) {
                     continue;
                 }
+                let row_id = random_id();
                 let params = vec![
-                    Value::string(random_id()),
+                    Value::string(&row_id),
                     Value::string(&hit.data_document_id),
                     Value::string(entity_name),
                     Value::string(&key),
                     Value::string(operation),
                 ];
                 probe_execute(conn, &insert_sql, &params)?;
+                inserted.push(row_id);
             }
         }
     }
-    Ok(())
+    Ok(inserted)
+}
+
+/// Primary key values joined with `::`, or `None` when one is missing.
+fn pk_text(facade: &EntityFacade, entity_name: &str, fields: &BTreeMap<String, Value>) -> Option<String> {
+    let names = facade
+        .with_entity(entity_name, |entity, _, _| {
+            Ok(entity
+                .pk_field_names()
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>())
+        })
+        .ok()?;
+    let mut parts = Vec::with_capacity(names.len());
+    for name in &names {
+        let text = scalar_text(fields.get(name)?)?;
+        if text.is_empty() {
+            return None;
+        }
+        parts.push(text);
+    }
+    (!parts.is_empty()).then(|| parts.join("::"))
+}
+
+/// Every field of the row with these primary key values, read on the enlisted connection.
+fn reread(
+    facade: &EntityFacade,
+    conn: &mut dyn DbConnection,
+    entity_name: &str,
+    fields: &BTreeMap<String, Value>,
+) -> Result<Option<BTreeMap<String, Value>>, Error> {
+    let (names, pk_names) = facade.with_entity(entity_name, |entity, _, _| {
+        Ok((
+            entity.fields.iter().map(|field| field.name.clone()).collect::<Vec<_>>(),
+            entity
+                .pk_field_names()
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        ))
+    })?;
+    let mut conds = Vec::new();
+    for name in &pk_names {
+        match fields.get(name) {
+            Some(value) if !value.is_null() => {
+                conds.push(Condition::equals(FieldRef::new(name.clone()), value.clone()))
+            }
+            _ => return Ok(None),
+        }
+    }
+    let rows = select_rows(facade, conn, entity_name, &names, Condition::and(conds))?;
+    Ok(rows.into_iter().next())
+}
+
+fn select_rows(
+    facade: &EntityFacade,
+    conn: &mut dyn DbConnection,
+    entity_name: &str,
+    names: &[String],
+    condition: Condition,
+) -> Result<Vec<BTreeMap<String, Value>>, Error> {
+    let columns: Vec<&str> = names.iter().map(String::as_str).collect();
+    let (sql, params) = select_sql(facade, entity_name, &columns, Some(condition))?;
+    let rows = probe_query(conn, &sql, &params)?;
+    Ok(rows
+        .iter()
+        .map(|row| {
+            names
+                .iter()
+                .map(|name| (name.clone(), cell_value(row, name).cloned().unwrap_or(Value::Null)))
+                .collect()
+        })
+        .collect())
+}
+
+/// Walk relationship steps back from rows of the last entity to the primary entity's ids.
+fn walk_to_primary(
+    facade: &EntityFacade,
+    conn: &mut dyn DbConnection,
+    path: &[(String, String)],
+    rows: Vec<BTreeMap<String, Value>>,
+) -> Result<Vec<String>, Error> {
+    let mut rows = rows;
+    for (parent, relationship) in path.iter().rev() {
+        let (_, pairs) = super::query_rest::relationship_pairs(facade, parent, relationship)?;
+        let names = facade.with_entity(parent, |entity, _, _| {
+            Ok(entity.fields.iter().map(|field| field.name.clone()).collect::<Vec<_>>())
+        })?;
+        let mut next = Vec::new();
+        let mut seen = HashSet::new();
+        for row in &rows {
+            let mut conds = Vec::with_capacity(pairs.len());
+            for (field, related) in &pairs {
+                match row.get(related) {
+                    Some(value) if !value.is_null() => {
+                        conds.push(Condition::equals(FieldRef::new(field.clone()), value.clone()))
+                    }
+                    _ => {
+                        conds.clear();
+                        break;
+                    }
+                }
+            }
+            if conds.is_empty() {
+                continue;
+            }
+            let key: Vec<String> = conds.iter().map(|cond| format!("{cond:?}")).collect();
+            if !seen.insert(key) {
+                continue;
+            }
+            next.extend(select_rows(facade, conn, parent, &names, Condition::and(conds))?);
+            if next.len() > MAX_RELATED_DOCS {
+                tracing::warn!(
+                    entity = %parent,
+                    limit = MAX_RELATED_DOCS,
+                    "a related write reaches too many documents; rebuild the feed to index the rest"
+                );
+                next.truncate(MAX_RELATED_DOCS);
+                break;
+            }
+        }
+        rows = next;
+    }
+    let primary = path.first().map(|(entity, _)| entity.clone()).unwrap_or_default();
+    let mut ids = Vec::new();
+    for row in &rows {
+        if let Some(id) = pk_text(facade, &primary, row) {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+    }
+    Ok(ids)
 }
 
 fn aggregate_touches(touches: &[Touch]) -> HashMap<String, Agg> {
@@ -455,13 +696,18 @@ fn aggregate_touches(touches: &[Touch]) -> HashMap<String, Agg> {
     aggs
 }
 
-fn take_thread_touches(facade: &EntityFacade) -> Vec<Touch> {
+/// Take this frame's touches. Touches with no frame are taken by thread.
+fn take_frame_touches(facade: &EntityFacade, frame: Option<u64>) -> Vec<Touch> {
     let thread = std::thread::current().id();
     with_load_slot(facade, |slot| {
         let mut kept = Vec::new();
         let mut taken = Vec::new();
         for touch in slot.touches.drain(..) {
-            if touch.thread == thread {
+            let mine = match (frame, touch.frame) {
+                (Some(frame), Some(touched)) => frame == touched,
+                _ => touch.thread == thread,
+            };
+            if mine {
                 taken.push(touch);
             } else {
                 kept.push(touch);
@@ -540,43 +786,66 @@ fn feed_targets(
             tracing::warn!(entity = %primary, document = %document_id, "data document primary entity is not defined");
             continue;
         };
-        push_target(&mut targets, &mut seen, &document_id, &primary_full, true);
+        push_target(
+            &mut targets,
+            &mut seen,
+            &document_id,
+            &primary_full,
+            &primary_full,
+            None,
+        );
         let related = related_entities(
             facade,
             &primary_full,
             paths.get(&document_id).map(Vec::as_slice).unwrap_or(&[]),
         );
-        for name in related {
-            push_target(&mut targets, &mut seen, &document_id, &name, false);
+        for (name, steps) in related {
+            push_target(&mut targets, &mut seen, &document_id, &name, &primary_full, Some(steps));
         }
     }
     Ok(targets)
 }
 
+/// Add a target, or add a path to an existing one. `steps` is `None` for the primary entity.
 fn push_target(
     targets: &mut Vec<DocTarget>,
     seen: &mut HashSet<(String, String)>,
     document_id: &str,
     entity_name: &str,
-    primary: bool,
+    primary_entity: &str,
+    steps: Option<Vec<(String, String)>>,
 ) {
     if seen.insert((document_id.to_string(), entity_name.to_string())) {
         targets.push(DocTarget {
             data_document_id: document_id.to_string(),
             entity_name: entity_name.to_string(),
-            primary,
+            primary: steps.is_none(),
+            primary_entity: primary_entity.to_string(),
+            paths: steps.into_iter().collect(),
         });
+    } else if let Some(steps) = steps {
+        if let Some(target) = targets
+            .iter_mut()
+            .find(|target| target.data_document_id == document_id && target.entity_name == entity_name)
+        {
+            if !target.paths.contains(&steps) {
+                target.paths.push(steps);
+            }
+        }
     }
 }
 
-fn related_entities(facade: &EntityFacade, primary: &str, paths: &[String]) -> Vec<String> {
-    let mut names = Vec::new();
+/// Each entity on a field path below the primary, with the `(entity, relationship)` steps that
+/// reach it.
+fn related_entities(facade: &EntityFacade, primary: &str, paths: &[String]) -> Vec<(String, Vec<(String, String)>)> {
+    let mut names: Vec<(String, Vec<(String, String)>)> = Vec::new();
     for path in paths {
         let parts: Vec<&str> = path.split(':').collect();
         if parts.len() < 2 {
             continue;
         }
         let mut current = primary.to_string();
+        let mut steps: Vec<(String, String)> = Vec::new();
         for rel_name in &parts[..parts.len() - 1] {
             let next = facade
                 .with_entity(&current, |entity, _, _| {
@@ -590,8 +859,10 @@ fn related_entities(facade: &EntityFacade, primary: &str, paths: &[String]) -> V
             let Ok(full) = canonical_name(facade, &next) else {
                 break;
             };
-            if !names.contains(&full) {
-                names.push(full.clone());
+            steps.push((current.clone(), (*rel_name).to_string()));
+            let entry = (full.clone(), steps.clone());
+            if !names.contains(&entry) {
+                names.push(entry);
             }
             current = full;
         }
