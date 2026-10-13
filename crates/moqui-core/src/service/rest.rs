@@ -14,102 +14,96 @@
 
 //! REST API. `*.rest.xml` is walked here. There is no HTTP route. JSON-RPC is not included.
 
-#[cfg(test)]
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::{Arc, RwLock};
 
 use moqui_lib::node::MNode;
-use moqui_lib::object::{is_empty, to_plain_string, Value};
+use moqui_lib::object::{is_empty, Value};
 
 use super::call;
-use crate::context::{Error, ExecutionContext};
+use crate::context::{Error, ErrorKind, ExecutionContext, ExecutionContextFactory};
 use crate::entity::EntityFacade;
 
-#[cfg(test)]
-thread_local! {
-    static EXTRA_FILES: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+/// The REST resources of a factory, read once from its components' `service/*.rest.xml` files.
+struct Roots {
+    resources: BTreeMap<String, Node>,
 }
+
+type Shared = RwLock<Arc<Roots>>;
 
 /// Walk `path` through `*.rest.xml` and run the `<entity>` or `<service>` operation.
 ///
-/// The first element is the root resource `name`. `_method` selects the verb and
-/// defaults to `get`. Component `service/*.rest.xml` files are loaded when an
-/// execution context is entered.
-pub fn run(path: &[&str], parameters: &BTreeMap<String, Value>) -> Result<Value, Error> {
+/// The first element is the root resource `name`. `method` is the HTTP method, in any case, and
+/// comes from the request, never from the parameters. The errors have kinds the web layer maps to
+/// status codes: not found, method not allowed, and authentication required.
+///
+/// # Errors
+///
+/// Returns an error when the path or method is not served, or the operation fails.
+pub fn run(path: &[&str], method: &str, parameters: &BTreeMap<String, Value>) -> Result<Value, Error> {
     if path.is_empty() {
-        return Err(Error::new("Cannot run REST service with no path"));
+        return Err(Error::of_kind(
+            ErrorKind::NotFound,
+            "Cannot run REST service with no path",
+        ));
     }
-    let method = http_method(parameters);
+    let method = method.trim().to_ascii_lowercase();
     let mut params = parameters.clone();
-    params.remove("_method");
-    let roots = load_roots()?;
-    let root = roots.get(path[0]).ok_or_else(|| {
-        Error::new(format!(
-            "Service REST API root resource not found with name {}",
-            path[0]
-        ))
+    let roots = current_roots()?;
+    let root = roots.resources.get(path[0]).ok_or_else(|| {
+        Error::of_kind(
+            ErrorKind::NotFound,
+            format!("Service REST API root resource not found with name {}", path[0]),
+        )
     })?;
     root.visit(path, 0, &method, &mut params)
 }
 
-fn http_method(parameters: &BTreeMap<String, Value>) -> String {
-    parameters
-        .get("_method")
-        .map(to_plain_string)
-        .filter(|text| !text.is_empty())
-        .unwrap_or_else(|| "get".to_string())
-        .to_ascii_lowercase()
+fn current_roots() -> Result<Arc<Roots>, Error> {
+    let factory = ExecutionContext::with_current(|ctx| Arc::clone(ctx.factory()))
+        .ok_or_else(|| Error::new("no execution context is entered"))?;
+    Ok(roots_of(&factory))
 }
 
-fn load_roots() -> Result<BTreeMap<String, Node>, Error> {
-    let mut roots = BTreeMap::new();
-    if let Some(dirs) = component_service_dirs() {
-        for dir in dirs {
-            load_dir(&mut roots, &dir)?;
-        }
-    }
-    #[cfg(test)]
-    {
-        let extras = EXTRA_FILES.with(|slot| slot.borrow().clone());
-        for path in extras {
-            insert_file(&mut roots, &path)?;
-        }
-    }
-    Ok(roots)
+fn roots_of(factory: &Arc<ExecutionContextFactory>) -> Arc<Roots> {
+    let shared = factory.extension::<Shared>(|factory| RwLock::new(Arc::new(load(factory))));
+    let guard = shared.read().unwrap_or_else(|err| err.into_inner());
+    Arc::clone(&guard)
 }
 
-fn component_service_dirs() -> Option<Vec<PathBuf>> {
-    ExecutionContext::with_current(|ctx| {
-        ctx.factory()
-            .components()
-            .iter()
-            .map(|info| info.location.join("service"))
-            .collect()
-    })
+/// Read every component's REST files. A file that does not load is logged and left out, so one bad
+/// file never takes the other resources down. A later file with the same root name replaces an earlier one.
+fn load(factory: &ExecutionContextFactory) -> Roots {
+    let mut resources = BTreeMap::new();
+    for component in factory.components() {
+        let dir = component.location.join("service");
+        load_dir(&mut resources, &dir);
+    }
+    tracing::info!(roots = resources.len(), "loaded REST API resources");
+    Roots { resources }
 }
 
-fn load_dir(roots: &mut BTreeMap<String, Node>, dir: &Path) -> Result<(), Error> {
-    if !dir.is_dir() {
-        return Ok(());
-    }
-    let mut paths = Vec::new();
-    for entry in std::fs::read_dir(dir)
-        .map_err(|err| Error::new(format!("could not read {}", dir.display())).with_source(err))?
-    {
-        let entry = entry.map_err(|err| Error::new(format!("could not read {}", dir.display())).with_source(err))?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name.ends_with(".rest.xml") {
-            paths.push(entry.path());
-        }
-    }
+fn load_dir(resources: &mut BTreeMap<String, Node>, dir: &Path) {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut paths: Vec<PathBuf> = read
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".rest.xml"))
+        })
+        .collect();
     paths.sort();
     for path in paths {
-        insert_file(roots, &path)?;
+        if let Err(err) = insert_file(resources, &path) {
+            tracing::error!(file = %path.display(), error = %err, "REST file did not load");
+        }
     }
-    Ok(())
 }
 
 fn insert_file(roots: &mut BTreeMap<String, Node>, path: &Path) -> Result<(), Error> {
@@ -122,27 +116,26 @@ fn insert_file(roots: &mut BTreeMap<String, Node>, path: &Path) -> Result<(), Er
         )));
     }
     let node = node_from(&root, "true", false)?;
+    if roots.contains_key(&node.name) {
+        tracing::warn!(resource = %node.name, file = %path.display(), "REST root resource replaced by a later file");
+    }
     roots.insert(node.name.clone(), node);
     Ok(())
 }
 
+/// Replace a factory's resources with those in `paths`, for tests that bring their own files.
 #[cfg(test)]
-fn load_file(path: &Path) -> Result<(), Error> {
-    let root = MNode::parse_file(path)?;
-    if root.name() != "resource" {
-        return Err(Error::new(format!(
-            "{} root is {} and not resource",
-            path.display(),
-            root.name()
-        )));
+fn install(factory: &Arc<ExecutionContextFactory>, paths: &[PathBuf]) {
+    let mut resources = BTreeMap::new();
+    for path in paths {
+        insert_file(&mut resources, path).expect("rest file");
     }
-    EXTRA_FILES.with(|slot| slot.borrow_mut().push(path.to_path_buf()));
-    Ok(())
-}
-
-#[cfg(test)]
-fn clear_files() {
-    EXTRA_FILES.with(|slot| slot.borrow_mut().clear());
+    let shared = factory.extension::<Shared>(|_| {
+        RwLock::new(Arc::new(Roots {
+            resources: BTreeMap::new(),
+        }))
+    });
+    *shared.write().unwrap_or_else(|err| err.into_inner()) = Arc::new(Roots { resources });
 }
 
 struct Node {
@@ -296,10 +289,13 @@ impl Node {
                 return id.visit(path, next, method, params);
             }
             let names = self.resources.keys().map(String::as_str).collect::<Vec<_>>().join(", ");
-            return Err(Error::new(format!(
-                "Resource {segment} not valid, index {index} in path {}; resources available are {names}",
-                path.join("/")
-            )));
+            return Err(Error::of_kind(
+                ErrorKind::NotFound,
+                format!(
+                    "Resource {segment} not valid, index {index} in path {}; resources available are {names}",
+                    path.join("/")
+                ),
+            ));
         }
         if !self.methods.contains_key(method) {
             if let Some(id) = &self.id {
@@ -307,10 +303,10 @@ impl Node {
                     return id.visit(path, next, method, params);
                 }
             }
-            return Err(Error::new(format!(
-                "Method {method} not supported at {}",
-                path.join("/")
-            )));
+            return Err(Error::of_kind(
+                ErrorKind::MethodNotAllowed,
+                format!("Method {method} not supported at {}", path.join("/")),
+            ));
         }
         let operation = &self.methods[method];
         match operation {
@@ -411,7 +407,10 @@ fn require_user(mode: &str, what: &str) -> Result<(), Error> {
         "false" | "anonymous-all" | "anonymous-view" => Ok(()),
         _ => {
             if crate::user::current_username()?.is_none() {
-                Err(Error::new(format!("User must be logged in to {what}")))
+                Err(Error::of_kind(
+                    ErrorKind::AuthenticationRequired,
+                    format!("User must be logged in to {what}"),
+                ))
             } else {
                 Ok(())
             }
@@ -452,7 +451,7 @@ mod tests {
 
     use moqui_lib::object::Value;
 
-    use super::{clear_files, load_file, run};
+    use super::{install, run};
     use crate::context::ExecutionContextFactory;
     use crate::entity::EntityFacade;
 
@@ -460,7 +459,6 @@ mod tests {
     fn basic_enum_types_returns_fixture_rows_and_a_service_runs() {
         let _gate = crate::service::define::lock_tests();
         crate::service::define::reset();
-        clear_files();
         let dir = std::env::temp_dir().join(format!("moqui-rest-{}", std::process::id()));
         let _guard = DirGuard(dir.clone());
         std::fs::create_dir_all(dir.join("service")).unwrap();
@@ -469,21 +467,20 @@ mod tests {
         std::fs::write(&service_path, SERVICE_XML).unwrap();
         let failures = crate::service::define::lint(std::slice::from_ref(&service_path)).unwrap();
         assert!(failures.is_empty(), "{failures:?}");
-        load_file(&dir.join("service/moqui.rest.xml")).unwrap();
-
-        let facade = mem::open();
+        let facade = crate::testing::open();
         let ctx = ExecutionContextFactory::test_context();
+        install(ctx.factory(), &[dir.join("service/moqui.rest.xml")]);
         ctx.factory().set_entity(facade.clone());
         let _entered = ctx.enter();
         insert_type(&facade, "DayOfWeek", "Day of Week");
         insert_type(&facade, "GeoType", "Geo Type");
 
-        let listed = run(&["moqui", "basic", "enumTypes"], &BTreeMap::new()).unwrap();
+        let listed = run(&["moqui", "basic", "enumTypes"], "get", &BTreeMap::new()).unwrap();
         assert_eq!(row_count(&listed), 2, "{listed:?}");
         assert_eq!(field(&listed, "DayOfWeek"), Some("Day of Week"));
         assert_eq!(field(&listed, "GeoType"), Some("Geo Type"));
 
-        let one = run(&["moqui", "basic", "enumTypes", "GeoType"], &BTreeMap::new()).unwrap();
+        let one = run(&["moqui", "basic", "enumTypes", "GeoType"], "GET", &BTreeMap::new()).unwrap();
         let Value::Map(one_map) = one else {
             panic!("one result {one:?}");
         };
@@ -491,14 +488,65 @@ mod tests {
         assert_eq!(one_map.get("description").and_then(Value::as_str), Some("Geo Type"));
 
         let mut params = BTreeMap::new();
-        params.insert("_method".to_string(), Value::string("post"));
         params.insert("note".to_string(), Value::string("hello"));
-        let echoed = run(&["moqui", "basic", "echo"], &params).unwrap();
+        let echoed = run(&["moqui", "basic", "echo"], "post", &params).unwrap();
         let Value::Map(echoed_map) = echoed else {
             panic!("service result {echoed:?}");
         };
         assert_eq!(echoed_map.get("echoed").and_then(Value::as_str), Some("hello"));
-        clear_files();
+
+        // The method comes from the request, so a parameter named _method changes nothing.
+        let mut sneaky = BTreeMap::new();
+        sneaky.insert("_method".to_string(), Value::string("post"));
+        let err = run(&["moqui", "basic", "echo"], "get", &sneaky).unwrap_err();
+        assert_eq!(
+            crate::context::ErrorKind::of(&err),
+            crate::context::ErrorKind::MethodNotAllowed,
+            "{err}"
+        );
+        let err = run(&["moqui", "basic", "nothing"], "get", &BTreeMap::new()).unwrap_err();
+        assert_eq!(
+            crate::context::ErrorKind::of(&err),
+            crate::context::ErrorKind::NotFound,
+            "{err}"
+        );
+        let err = run(&["nope"], "get", &BTreeMap::new()).unwrap_err();
+        assert_eq!(
+            crate::context::ErrorKind::of(&err),
+            crate::context::ErrorKind::NotFound,
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_login_is_required_unless_the_resource_waives_it() {
+        let _gate = crate::service::define::lock_tests();
+        crate::service::define::reset();
+        let dir = std::env::temp_dir().join(format!("moqui-rest-auth-{}", std::process::id()));
+        let _guard = DirGuard(dir.clone());
+        std::fs::create_dir_all(dir.join("service")).unwrap();
+        std::fs::write(
+            dir.join("service/secure.rest.xml"),
+            r#"<resource name="secure"><resource name="items">
+                <method type="get"><entity name="moqui.basic.EnumerationType" operation="list"/></method>
+            </resource></resource>"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("service/broken.rest.xml"), "<resource name=").unwrap();
+        let ctx = ExecutionContextFactory::test_context();
+        ctx.factory().set_entity(crate::testing::open());
+        // A broken file beside it does not stop the good one from being served.
+        let mut loaded = BTreeMap::new();
+        super::load_dir(&mut loaded, &dir.join("service"));
+        assert_eq!(loaded.keys().collect::<Vec<_>>(), ["secure"]);
+        install(ctx.factory(), &[dir.join("service/secure.rest.xml")]);
+        let _entered = ctx.enter();
+        let err = run(&["secure", "items"], "get", &BTreeMap::new()).unwrap_err();
+        assert_eq!(
+            crate::context::ErrorKind::of(&err),
+            crate::context::ErrorKind::AuthenticationRequired,
+            "{err}"
+        );
     }
 
     fn insert_type(facade: &EntityFacade, id: &str, description: &str) {
@@ -536,7 +584,6 @@ mod tests {
     impl Drop for DirGuard {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
-            clear_files();
         }
     }
 
@@ -561,572 +608,4 @@ mod tests {
             <actions><script>echoed = note;</script></actions>
         </service>
     </services>"#;
-
-    mod mem {
-        use std::collections::{BTreeMap, BTreeSet};
-        use std::path::PathBuf;
-        use std::sync::{Arc, Mutex};
-        use std::time::Duration;
-
-        use moqui_lib::error::Error;
-        use moqui_lib::object::Value;
-
-        use crate::driver::{DbCancel, DbConnection, DbDriver, DbRow};
-        use crate::entity::{EntityFacade, EntityGroup};
-        use crate::transaction::{PoolConfig, TransactionManager};
-
-        type Row = BTreeMap<String, Value>;
-        type Tables = BTreeMap<String, Vec<Row>>;
-
-        pub(super) fn open() -> EntityFacade {
-            let driver: Arc<dyn DbDriver> = Arc::new(MemDriver {
-                store: Arc::new(Mutex::new(BTreeMap::new())),
-            });
-            let transactions = TransactionManager::new(
-                driver,
-                PoolConfig {
-                    min: 0,
-                    max: 4,
-                    reserve: 2,
-                    acquire_timeout: Duration::from_secs(5),
-                },
-            )
-            .expect("memory pool");
-            let facade = EntityFacade::open(
-                &framework_dir(),
-                "transactional",
-                vec![EntityGroup::new("transactional", "postgres", transactions)],
-            )
-            .expect("entity facade");
-            facade.set_disable_audit_log(true);
-            facade.set_disable_entity_eca(true);
-            facade.set_disable_fk_create(true);
-            facade.set_disable_data_feed(true);
-            facade
-        }
-
-        fn framework_dir() -> PathBuf {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework")
-        }
-
-        struct MemDriver {
-            store: Arc<Mutex<Tables>>,
-        }
-
-        struct MemConn {
-            store: Arc<Mutex<Tables>>,
-            local: Option<Tables>,
-            dirty: BTreeSet<String>,
-        }
-
-        struct NoCancel;
-
-        impl DbCancel for NoCancel {
-            fn cancel(&self) -> Result<(), Error> {
-                Ok(())
-            }
-        }
-
-        impl DbDriver for MemDriver {
-            fn connect(&self) -> Result<Box<dyn DbConnection>, Error> {
-                Ok(Box::new(MemConn {
-                    store: Arc::clone(&self.store),
-                    local: None,
-                    dirty: BTreeSet::new(),
-                }))
-            }
-        }
-
-        impl DbConnection for MemConn {
-            fn execute(&mut self, sql: &str, params: &[Value]) -> Result<u64, Error> {
-                Ok(self.apply(sql, params)?.0)
-            }
-
-            fn query(&mut self, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
-                Ok(self.apply(sql, params)?.1)
-            }
-
-            fn query_once(&mut self, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
-                self.query(sql, params)
-            }
-
-            fn open_stream(&mut self, _sql: &str, _params: &[Value]) -> Result<(), Error> {
-                Ok(())
-            }
-
-            fn next_row(&mut self) -> Result<Option<DbRow>, Error> {
-                Ok(None)
-            }
-
-            fn close_stream(&mut self) -> Result<(), Error> {
-                Ok(())
-            }
-
-            fn stream_open(&self) -> bool {
-                false
-            }
-
-            fn begin(&mut self) -> Result<(), Error> {
-                if self.local.is_none() {
-                    let committed = self.store.lock().unwrap_or_else(|err| err.into_inner()).clone();
-                    self.local = Some(committed);
-                    self.dirty.clear();
-                }
-                Ok(())
-            }
-
-            fn commit(&mut self) -> Result<(), Error> {
-                let Some(local) = self.local.take() else {
-                    return Ok(());
-                };
-                let dirty = std::mem::take(&mut self.dirty);
-                let mut committed = self.store.lock().unwrap_or_else(|err| err.into_inner());
-                for table in dirty {
-                    let rows = local.get(&table).cloned().unwrap_or_default();
-                    committed.insert(table, rows);
-                }
-                Ok(())
-            }
-
-            fn rollback(&mut self) -> Result<(), Error> {
-                self.local = None;
-                self.dirty.clear();
-                Ok(())
-            }
-
-            fn savepoint(&mut self, _name: &str) -> Result<(), Error> {
-                Ok(())
-            }
-
-            fn rollback_to_savepoint(&mut self, _name: &str) -> Result<(), Error> {
-                Ok(())
-            }
-
-            fn release_savepoint(&mut self, _name: &str) -> Result<(), Error> {
-                Ok(())
-            }
-
-            fn canceller(&self) -> Box<dyn DbCancel> {
-                Box::new(NoCancel)
-            }
-        }
-
-        impl MemConn {
-            fn apply(&mut self, sql: &str, params: &[Value]) -> Result<(u64, Vec<DbRow>), Error> {
-                let sql = sql.trim();
-                if sql.eq_ignore_ascii_case("SELECT 1") {
-                    return Ok((
-                        1,
-                        vec![DbRow {
-                            columns: vec![("1".to_string(), Value::I64(1))],
-                        }],
-                    ));
-                }
-                let stmt = parse(sql).map_err(|err| Error::new(format!("{err} sql={sql}")))?;
-                self.exec(stmt, params)
-            }
-
-            fn exec(&mut self, stmt: Stmt, params: &[Value]) -> Result<(u64, Vec<DbRow>), Error> {
-                match stmt {
-                    Stmt::Insert { table, columns } => {
-                        let mut row = BTreeMap::new();
-                        for (index, column) in columns.iter().enumerate() {
-                            let value = params
-                                .get(index)
-                                .cloned()
-                                .ok_or_else(|| Error::new("insert is missing a parameter"))?;
-                            row.insert(column.clone(), value);
-                        }
-                        let mut rows = self.read_table(&table);
-                        rows.push(row);
-                        self.put_table(&table, rows);
-                        Ok((1, Vec::new()))
-                    }
-                    Stmt::Select(query) => self.exec_select(&query, params),
-                }
-            }
-
-            fn exec_select(&mut self, query: &SelectQuery, params: &[Value]) -> Result<(u64, Vec<DbRow>), Error> {
-                let mut matched = Vec::new();
-                for row in self.read_table(&query.table) {
-                    if keep(&query.pred, &row, params)? {
-                        matched.push(row);
-                    }
-                }
-                if query.count {
-                    let count = i64::try_from(matched.len()).unwrap_or(i64::MAX);
-                    return Ok((
-                        1,
-                        vec![DbRow {
-                            columns: vec![("count".to_string(), Value::I64(count))],
-                        }],
-                    ));
-                }
-                let mut idx = pred_slots(&query.pred);
-                let take_n = if query.limit {
-                    Some(as_i64(take_param(params, &mut idx)?)?)
-                } else {
-                    None
-                };
-                let skip = if query.offset {
-                    as_i64(take_param(params, &mut idx)?)?
-                } else {
-                    0
-                };
-                let start = usize::try_from(skip.max(0)).unwrap_or(0);
-                let window: Vec<Row> = match take_n {
-                    Some(limit) => {
-                        let len = usize::try_from(limit.max(0)).unwrap_or(0);
-                        matched.into_iter().skip(start).take(len).collect()
-                    }
-                    None => matched.into_iter().skip(start).collect(),
-                };
-                let projected = window
-                    .iter()
-                    .map(|row| DbRow {
-                        columns: query
-                            .columns
-                            .iter()
-                            .map(|name| (name.clone(), row.get(name).cloned().unwrap_or(Value::Null)))
-                            .collect(),
-                    })
-                    .collect::<Vec<_>>();
-                let count = u64::try_from(projected.len()).unwrap_or(u64::MAX);
-                Ok((count, projected))
-            }
-
-            fn read_table(&self, table: &str) -> Vec<Row> {
-                if let Some(local) = &self.local {
-                    return local.get(table).cloned().unwrap_or_default();
-                }
-                self.store
-                    .lock()
-                    .unwrap_or_else(|err| err.into_inner())
-                    .get(table)
-                    .cloned()
-                    .unwrap_or_default()
-            }
-
-            fn put_table(&mut self, table: &str, rows: Vec<Row>) {
-                if let Some(local) = self.local.as_mut() {
-                    local.insert(table.to_string(), rows);
-                    self.dirty.insert(table.to_string());
-                    return;
-                }
-                self.store
-                    .lock()
-                    .unwrap_or_else(|err| err.into_inner())
-                    .insert(table.to_string(), rows);
-            }
-        }
-
-        fn keep(pred: &Option<Pred>, row: &Row, params: &[Value]) -> Result<bool, Error> {
-            let Some(pred) = pred else {
-                return Ok(true);
-            };
-            let mut idx = 0;
-            eval_pred(pred, row, params, &mut idx)
-        }
-
-        fn pred_slots(pred: &Option<Pred>) -> usize {
-            pred.as_ref().map(count_slots).unwrap_or(0)
-        }
-
-        fn count_slots(pred: &Pred) -> usize {
-            match pred {
-                Pred::Cmp { .. } => 1,
-                Pred::And(parts) | Pred::Or(parts) => parts.iter().map(count_slots).sum(),
-            }
-        }
-
-        fn eval_pred(pred: &Pred, row: &Row, params: &[Value], idx: &mut usize) -> Result<bool, Error> {
-            match pred {
-                Pred::Cmp { field } => {
-                    let param = take_param(params, idx)?;
-                    Ok(row.get(field) == Some(param))
-                }
-                Pred::And(parts) => {
-                    let mut all = true;
-                    for part in parts {
-                        if !eval_pred(part, row, params, idx)? {
-                            all = false;
-                        }
-                    }
-                    Ok(all)
-                }
-                Pred::Or(parts) => {
-                    let mut any = false;
-                    for part in parts {
-                        if eval_pred(part, row, params, idx)? {
-                            any = true;
-                        }
-                    }
-                    Ok(any)
-                }
-            }
-        }
-
-        fn take_param<'a>(params: &'a [Value], idx: &mut usize) -> Result<&'a Value, Error> {
-            let value = params.get(*idx).ok_or_else(|| Error::new("sql parameter missing"))?;
-            *idx += 1;
-            Ok(value)
-        }
-
-        fn as_i64(value: &Value) -> Result<i64, Error> {
-            match value {
-                Value::I64(number) => Ok(*number),
-                Value::I32(number) => Ok(i64::from(*number)),
-                Value::String(text) => text.parse().map_err(|_| Error::new("parameter is not an integer")),
-                _ => Err(Error::new("parameter is not an integer")),
-            }
-        }
-
-        enum Stmt {
-            Insert { table: String, columns: Vec<String> },
-            Select(SelectQuery),
-        }
-
-        struct SelectQuery {
-            count: bool,
-            columns: Vec<String>,
-            table: String,
-            pred: Option<Pred>,
-            limit: bool,
-            offset: bool,
-        }
-
-        enum Pred {
-            Cmp { field: String },
-            And(Vec<Pred>),
-            Or(Vec<Pred>),
-        }
-
-        fn parse(sql: &str) -> Result<Stmt, Error> {
-            let mut cur = Cur { sql, i: 0 };
-            if cur.eat_keyword("INSERT") {
-                return parse_insert(&mut cur);
-            }
-            if cur.eat_keyword("SELECT") {
-                return parse_select(&mut cur);
-            }
-            Err(cur.fail("unsupported sql"))
-        }
-
-        fn parse_insert(cur: &mut Cur) -> Result<Stmt, Error> {
-            cur.expect_keyword("INTO")?;
-            let table = cur.quoted()?;
-            cur.expect_symbol(b'(')?;
-            let mut columns = Vec::new();
-            loop {
-                columns.push(cur.quoted()?);
-                if !cur.eat_symbol(b',') {
-                    break;
-                }
-            }
-            cur.expect_symbol(b')')?;
-            cur.expect_keyword("VALUES")?;
-            cur.expect_symbol(b'(')?;
-            for index in 0..columns.len() {
-                if index > 0 {
-                    cur.expect_symbol(b',')?;
-                }
-                cur.expect_symbol(b'?')?;
-            }
-            cur.expect_symbol(b')')?;
-            cur.expect_end()?;
-            Ok(Stmt::Insert { table, columns })
-        }
-
-        fn parse_select(cur: &mut Cur) -> Result<Stmt, Error> {
-            let count = if cur.eat_keyword("COUNT") {
-                cur.expect_symbol(b'(')?;
-                cur.expect_symbol(b'*')?;
-                cur.expect_symbol(b')')?;
-                true
-            } else {
-                false
-            };
-            let columns = if count { Vec::new() } else { parse_columns(cur)? };
-            cur.expect_keyword("FROM")?;
-            let table = cur.quoted()?;
-            let pred = if cur.eat_keyword("WHERE") {
-                Some(parse_or(cur)?)
-            } else {
-                None
-            };
-            if cur.eat_keyword("ORDER") {
-                return Err(cur.fail("order by is not used by this fixture"));
-            }
-            let limit = if cur.eat_keyword("LIMIT") {
-                cur.expect_symbol(b'?')?;
-                true
-            } else {
-                false
-            };
-            let offset = if cur.eat_keyword("OFFSET") {
-                cur.expect_symbol(b'?')?;
-                true
-            } else {
-                false
-            };
-            cur.expect_end()?;
-            Ok(Stmt::Select(SelectQuery {
-                count,
-                columns,
-                table,
-                pred,
-                limit,
-                offset,
-            }))
-        }
-
-        fn parse_columns(cur: &mut Cur) -> Result<Vec<String>, Error> {
-            let mut columns = Vec::new();
-            loop {
-                if cur.peek_keyword("FROM") {
-                    break;
-                }
-                columns.push(cur.quoted()?);
-                if !cur.eat_symbol(b',') {
-                    break;
-                }
-            }
-            if columns.is_empty() {
-                return Err(cur.fail("select has no columns"));
-            }
-            Ok(columns)
-        }
-
-        fn parse_or(cur: &mut Cur) -> Result<Pred, Error> {
-            let mut parts = vec![parse_and(cur)?];
-            while cur.eat_keyword("OR") {
-                parts.push(parse_and(cur)?);
-            }
-            Ok(fold(parts, false))
-        }
-
-        fn parse_and(cur: &mut Cur) -> Result<Pred, Error> {
-            let mut parts = vec![parse_primary(cur)?];
-            while cur.eat_keyword("AND") {
-                parts.push(parse_primary(cur)?);
-            }
-            Ok(fold(parts, true))
-        }
-
-        fn parse_primary(cur: &mut Cur) -> Result<Pred, Error> {
-            if cur.eat_symbol(b'(') {
-                let pred = parse_or(cur)?;
-                cur.expect_symbol(b')')?;
-                return Ok(pred);
-            }
-            let field = cur.quoted()?;
-            cur.expect_symbol(b'=')?;
-            cur.expect_symbol(b'?')?;
-            Ok(Pred::Cmp { field })
-        }
-
-        fn fold(mut parts: Vec<Pred>, and: bool) -> Pred {
-            if parts.len() == 1 {
-                return parts.remove(0);
-            }
-            if and {
-                Pred::And(parts)
-            } else {
-                Pred::Or(parts)
-            }
-        }
-
-        struct Cur<'a> {
-            sql: &'a str,
-            i: usize,
-        }
-
-        impl Cur<'_> {
-            fn skip(&mut self) {
-                while self.i < self.sql.len() && self.sql.as_bytes()[self.i].is_ascii_whitespace() {
-                    self.i += 1;
-                }
-            }
-
-            fn eat_keyword(&mut self, word: &str) -> bool {
-                self.skip();
-                let rest = &self.sql[self.i..];
-                if rest.len() < word.len() || !rest.starts_with(word) {
-                    return false;
-                }
-                let end = self.i + word.len();
-                if end < self.sql.len() {
-                    let next = self.sql.as_bytes()[end];
-                    if next.is_ascii_alphanumeric() || next == b'_' {
-                        return false;
-                    }
-                }
-                self.i = end;
-                true
-            }
-
-            fn peek_keyword(&mut self, word: &str) -> bool {
-                let saved = self.i;
-                let found = self.eat_keyword(word);
-                self.i = saved;
-                found
-            }
-
-            fn eat_symbol(&mut self, symbol: u8) -> bool {
-                self.skip();
-                if self.i < self.sql.len() && self.sql.as_bytes()[self.i] == symbol {
-                    self.i += 1;
-                    true
-                } else {
-                    false
-                }
-            }
-
-            fn quoted(&mut self) -> Result<String, Error> {
-                if !self.eat_symbol(b'"') {
-                    return Err(self.fail("expected identifier"));
-                }
-                let start = self.i;
-                while self.i < self.sql.len() && self.sql.as_bytes()[self.i] != b'"' {
-                    self.i += 1;
-                }
-                if self.i >= self.sql.len() {
-                    return Err(self.fail("unterminated identifier"));
-                }
-                let name = self.sql[start..self.i].to_string();
-                self.i += 1;
-                Ok(name)
-            }
-
-            fn expect_keyword(&mut self, word: &str) -> Result<(), Error> {
-                if self.eat_keyword(word) {
-                    Ok(())
-                } else {
-                    Err(self.fail(&format!("expected {word}")))
-                }
-            }
-
-            fn expect_symbol(&mut self, symbol: u8) -> Result<(), Error> {
-                if self.eat_symbol(symbol) {
-                    Ok(())
-                } else {
-                    Err(self.fail(&format!("expected {}", char::from(symbol))))
-                }
-            }
-
-            fn expect_end(&mut self) -> Result<(), Error> {
-                self.skip();
-                if self.i == self.sql.len() {
-                    Ok(())
-                } else {
-                    Err(self.fail("unexpected sql"))
-                }
-            }
-
-            fn fail(&self, message: &str) -> Error {
-                let rest: String = self.sql[self.i..].chars().take(160).collect();
-                Error::new(format!("{message} at '{rest}'"))
-            }
-        }
-    }
 }

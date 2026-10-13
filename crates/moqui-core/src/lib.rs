@@ -19,6 +19,8 @@ pub mod driver;
 pub mod entity;
 pub mod script;
 pub mod service;
+#[cfg(test)]
+mod testing;
 pub mod transaction;
 pub mod user;
 

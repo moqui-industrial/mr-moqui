@@ -102,7 +102,7 @@ fn dispatch_load(flags: &LoadFlags) -> Result<LoadReport, moqui_lib::error::Erro
 fn dispatch_lint(path: Option<&str>) -> Result<(), moqui_lib::error::Error> {
     let owned = path.map(std::path::PathBuf::from);
     let paths: Vec<std::path::PathBuf> = owned.into_iter().collect();
-    let failures = moqui_core::service::lint(&paths).map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
+    let failures = moqui_core::service::check(&paths).map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
     for failure in &failures {
         println!("{failure}");
     }
@@ -428,7 +428,7 @@ fn register_services(
     let lint_error = |err: moqui_core::context::Error| moqui_lib::error::Error::new(err.to_string());
     // Explicitly supplied service files must register. A failure there stops the load.
     if !extra.is_empty() {
-        let own = moqui_core::service::lint(extra).map_err(lint_error)?;
+        let own = moqui_core::service::check(extra).map_err(lint_error)?;
         if !own.is_empty() {
             return Err(moqui_lib::error::Error::new(format!(
                 "service definitions failed to register:\n{}",
@@ -687,6 +687,10 @@ mod xmlshim {
             )));
         }
         let shim = shim_dir.display().to_string();
+        // Two loads in one process each add their directory. Read and write under one lock, or the
+        // second write drops the first one's directory and its postmaster cannot find the library.
+        static LIBRARY_PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _lock = LIBRARY_PATH_LOCK.lock().unwrap_or_else(|err| err.into_inner());
         let existing = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
         let library_path = if existing.split(':').any(|part| part == shim) {
             existing

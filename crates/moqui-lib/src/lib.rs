@@ -23,6 +23,7 @@ pub mod env;
 pub mod error;
 #[cfg(feature = "http")]
 pub mod http;
+pub mod json;
 pub mod node;
 pub mod object;
 pub mod resource;

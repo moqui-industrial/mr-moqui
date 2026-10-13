@@ -12,11 +12,11 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! `file`, `runtime`, `component`, and `dbresource` resources. Other schemes are named errors.
+//! `file`, `runtime`, `component`, `dbresource`, and `http` resources. Other schemes are named errors.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use moqui_lib::resource::{FileResource, Resource};
 
@@ -36,6 +36,36 @@ pub struct ResourceRef {
 enum Stored {
     File(FileResource),
     Db(DbSnap),
+    /// Fetched on first use, so `get` itself opens no connection.
+    Http(HttpRef),
+}
+
+/// An `http` or `https` location. The first read or existence check does the GET, and its outcome is kept.
+#[derive(Clone, Debug)]
+struct HttpRef {
+    url: String,
+    /// True when sim mode forbids the call.
+    sim: bool,
+    fetched: Arc<OnceLock<Result<String, String>>>,
+}
+
+impl HttpRef {
+    fn fetch(&self) -> &Result<String, String> {
+        self.fetched.get_or_init(|| {
+            if !moqui_lib::http::sim_allows_http(self.sim, false) {
+                return Err(format!(
+                    "HTTP GET {} denied because sim mode is active",
+                    moqui_lib::http::redacted(&self.url)
+                ));
+            }
+            let client = crate::service::shared_http_client();
+            match client.get(self.url.clone()).send(false) {
+                Ok(response) if (200..300).contains(&response.status()) => Ok(response.body().to_string()),
+                Ok(response) => Err(format!("HTTP GET returned {}", response.status())),
+                Err(err) => Err(err.message().to_string()),
+            }
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -62,6 +92,7 @@ impl ResourceRef {
         match &self.stored {
             Stored::File(file) => file.exists(),
             Stored::Db(snap) => snap.exists,
+            Stored::Http(http) => http.fetch().is_ok(),
         }
     }
 
@@ -69,6 +100,7 @@ impl ResourceRef {
         match &self.stored {
             Stored::File(file) => file.is_file(),
             Stored::Db(snap) => snap.exists && snap.is_file,
+            Stored::Http(http) => http.fetch().is_ok(),
         }
     }
 
@@ -76,12 +108,17 @@ impl ResourceRef {
         match &self.stored {
             Stored::File(file) => file.is_directory(),
             Stored::Db(snap) => snap.exists && !snap.is_file,
+            Stored::Http(_) => false,
         }
     }
 
     pub fn read_text(&self) -> Result<String, Error> {
         match &self.stored {
             Stored::File(file) => file.read_text().map_err(Error::from),
+            Stored::Http(http) => http
+                .fetch()
+                .clone()
+                .map_err(|message| Error::new(format!("{message}: {}", self.location))),
             Stored::Db(snap) => {
                 if !snap.exists || !snap.is_file {
                     return Err(Error::new(format!("not a file: {}", self.location)));
@@ -108,6 +145,7 @@ impl ResourceRef {
                     })
                     .collect())
             }
+            Stored::Http(_) => Ok(Vec::new()),
             Stored::Db(snap) => Ok(snap
                 .children
                 .iter()
@@ -139,6 +177,7 @@ impl ResourceRef {
                     stored: Stored::File(file),
                 }
             }
+            Stored::Http(_) => self.clone(),
             Stored::Db(snap) => {
                 if relative.is_empty() {
                     return self.clone();
@@ -199,7 +238,14 @@ impl ResourceFacade {
         let scheme = scheme_of(location);
         match scheme {
             "content" => Err(Error::new(format!("content resource is not available: {location}"))),
-            "http" | "https" => Err(crate::service::http_resource_error(location)),
+            "http" | "https" => Ok(ResourceRef {
+                location: location.to_string(),
+                stored: Stored::Http(HttpRef {
+                    url: strip_hash(location).to_string(),
+                    sim: self.installed().is_some_and(|facade| facade.sim_active()),
+                    fetched: Arc::new(OnceLock::new()),
+                }),
+            }),
             "dbresource" => self.db_ref(location),
             "file" => Ok(self.file_ref(location)),
             "runtime" => Ok(self.runtime_ref(location)),

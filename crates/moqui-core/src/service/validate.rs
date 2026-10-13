@@ -18,10 +18,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use moqui_lib::object::{
-    basic_convert, decimal_compare, decimal_eq, is_empty, regex_full_match, to_plain_string, Value,
+    basic_convert, convert_checked, decimal_compare, decimal_eq, is_empty, regex_full_match, to_plain_string, Value,
 };
 
-use super::define::{AutoParams, Check, Include, ParamDef, Required, ServiceDef, ServiceKind};
+use super::define::{AllowHtml, AutoParams, Check, Include, ParamDef, Required, ServiceDef, ServiceKind};
 use crate::context::Error;
 use crate::entity::EntityFacade;
 
@@ -45,9 +45,8 @@ pub(crate) fn clean(
         }
         known.insert(param.name.clone());
         if is_blank(params.get(&param.name)) {
-            if let Some(literal) = &param.default_value {
-                let converted = basic_convert(&Value::string(literal), &param.java_type).value;
-                params.insert(param.name.clone(), converted);
+            if let Some(value) = default_for(param, &params)? {
+                params.insert(param.name.clone(), value);
             }
         }
         if param.required == Required::True && is_blank(params.get(&param.name)) {
@@ -59,11 +58,22 @@ pub(crate) fn clean(
         if is_empty(&value) {
             continue;
         }
-        check_param(def, param, &value, facade)?;
-        if !matches!(value, Value::Map(_) | Value::List(_)) {
-            let converted = basic_convert(&value, &param.java_type).value;
-            params.insert(param.name.clone(), converted);
-        }
+        // Convert first, so the checks see the type they were written for.
+        let value = if matches!(value, Value::Map(_) | Value::List(_)) {
+            value
+        } else {
+            convert_checked(&value, &param.java_type).ok_or_else(|| {
+                Error::new(format!(
+                    "parameter {} value {} is not a valid {}",
+                    param.name,
+                    to_plain_string(&value),
+                    short_type(&param.java_type)
+                ))
+            })?
+        };
+        check_html(param, &value)?;
+        check_param(param, &value)?;
+        params.insert(param.name.clone(), value);
     }
     if def.validate_input {
         retain_known(def, &mut params, &known, facade)?;
@@ -121,8 +131,8 @@ fn expand_auto(def: &ServiceDef, auto: &AutoParams, facade: Option<&EntityFacade
                     java_type: java,
                     required: auto.required,
                     default_value: field.default_value.clone(),
-                    entity_name: Some(entity.full_name.clone()),
-                    field_name: Some(field.name.clone()),
+                    default_expr: None,
+                    allow_html: auto.allow_html,
                     checks: Vec::new(),
                     auto: None,
                 });
@@ -132,31 +142,110 @@ fn expand_auto(def: &ServiceDef, auto: &AutoParams, facade: Option<&EntityFacade
         .map_err(Error::from)
 }
 
-fn check_param(def: &ServiceDef, param: &ParamDef, value: &Value, facade: Option<&EntityFacade>) -> Result<(), Error> {
+fn check_param(param: &ParamDef, value: &Value) -> Result<(), Error> {
     for check in &param.checks {
         apply_check(&param.name, check, value)?;
     }
-    if matches!(def.verb.as_str(), "update" | "delete") {
-        if let Some(entity_name) = &param.entity_name {
-            let Some(facade) = facade else {
-                return Err(Error::new("no entity facade is installed"));
-            };
-            let field = param.field_name.clone().unwrap_or_else(|| param.name.clone());
-            let found = facade
-                .find(entity_name)
-                .map_err(Error::from)?
-                .eq(&field, value.clone())
-                .one()
-                .map_err(Error::from)?;
-            if found.is_none() {
-                return Err(Error::new(format!(
-                    "parameter {} was not found on {entity_name}",
-                    param.name
-                )));
-            }
+    Ok(())
+}
+
+fn short_type(java_type: &str) -> &str {
+    java_type.rsplit('.').next().unwrap_or(java_type)
+}
+
+/// The default of a parameter nobody supplied: the `default` expression, or the `default-value`
+/// text expanded against the parameters so far.
+fn default_for(param: &ParamDef, params: &BTreeMap<String, Value>) -> Result<Option<Value>, Error> {
+    if param.default_expr.is_none() && param.default_value.is_none() {
+        return Ok(None);
+    }
+    let _frame = crate::script::ContextFrame::push();
+    for (name, value) in params {
+        crate::script::set_context_name(name, value.clone())?;
+    }
+    if let Some(expression) = &param.default_expr {
+        let value = crate::script::eval_value(expression)?;
+        return Ok((!value.is_null()).then_some(value));
+    }
+    let Some(text) = &param.default_value else {
+        return Ok(None);
+    };
+    let expanded = crate::script::expand(text)?;
+    Ok(Some(Value::string(expanded)))
+}
+
+/// `allow-html`: text with a `<` is rejected unless the parameter allows HTML.
+fn check_html(param: &ParamDef, value: &Value) -> Result<(), Error> {
+    if param.allow_html == AllowHtml::Any {
+        return Ok(());
+    }
+    let strings: Vec<&str> = match value {
+        Value::String(text) => vec![text.as_str()],
+        Value::List(items) => items.iter().filter_map(Value::as_str).collect(),
+        _ => return Ok(()),
+    };
+    for text in strings {
+        if !text.contains('<') {
+            continue;
+        }
+        let allowed = param.allow_html == AllowHtml::Safe && !dangerous_markup(text);
+        if !allowed {
+            return Err(Error::new(format!(
+                "parameter {}: HTML not allowed including less-than (<), greater-than (>), etc symbols",
+                param.name
+            )));
         }
     }
     Ok(())
+}
+
+/// Script-carrying markup: script, frame, and object tags, event attributes, and script URLs.
+fn dangerous_markup(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    if [
+        "<script",
+        "<iframe",
+        "<object",
+        "<embed",
+        "<style",
+        "<link",
+        "<meta",
+        "javascript:",
+        "vbscript:",
+        "data:text/html",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        return true;
+    }
+    has_event_attribute(&lower)
+}
+
+/// ` onclick=` and the like: whitespace or a quote, `on`, letters, then `=`.
+fn has_event_attribute(lower: &str) -> bool {
+    let bytes = lower.as_bytes();
+    let mut index = 0;
+    while index + 3 < bytes.len() {
+        let before = bytes[index];
+        if (before.is_ascii_whitespace() || before == b'"' || before == b'\'' || before == b'/')
+            && bytes[index + 1] == b'o'
+            && bytes[index + 2] == b'n'
+        {
+            let mut end = index + 3;
+            while end < bytes.len() && bytes[end].is_ascii_alphabetic() {
+                end += 1;
+            }
+            while end < bytes.len() && bytes[end].is_ascii_whitespace() {
+                end += 1;
+            }
+            if end < bytes.len() && bytes[end] == b'=' {
+                return true;
+            }
+        }
+        index += 1;
+    }
+    false
 }
 
 fn apply_check(name: &str, check: &Check, value: &Value) -> Result<(), Error> {

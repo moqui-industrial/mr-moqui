@@ -438,6 +438,42 @@ pub fn parse_time(input: &str) -> Option<Time> {
     None
 }
 
+/// Convert like [`basic_convert`], but say when it could not. `None` means `value` is not the
+/// scalar type `java_type` names and cannot become one. A type this module does not convert
+/// (`Object`, `List`, and so on) accepts the value as it is.
+pub fn convert_checked(value: &Value, java_type: &str) -> Option<Value> {
+    if value.is_null() || java_type.is_empty() {
+        return Some(value.clone());
+    }
+    let target = simple_type_name(java_type);
+    if matches_target(value, target) {
+        return Some(value.clone());
+    }
+    match convert_to(value, target) {
+        Some(next) => Some(next),
+        None if is_scalar_target(target) => None,
+        None => Some(value.clone()),
+    }
+}
+
+fn is_scalar_target(target: &str) -> bool {
+    matches!(
+        target,
+        "String"
+            | "Boolean"
+            | "Integer"
+            | "Long"
+            | "Double"
+            | "Float"
+            | "BigDecimal"
+            | "Timestamp"
+            | "Date"
+            | "Time"
+            | "byte[]"
+            | "Blob"
+    )
+}
+
 fn simple_type_name(java_type: &str) -> &str {
     match java_type {
         "byte[]" | "[B" => "byte[]",

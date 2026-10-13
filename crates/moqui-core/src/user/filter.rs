@@ -581,7 +581,7 @@ mod tests {
     }
 
     fn open_mem(framework_dir: &Path) -> EntityFacade {
-        super::super::login::memdb::open_at(framework_dir)
+        crate::testing::open_at(framework_dir)
     }
 
     struct TempDir(PathBuf);

@@ -34,6 +34,8 @@ pub(crate) enum ServiceKind {
     Interface,
     RemoteRest,
     Mail,
+    /// A script service whose language this port does not run, such as Groovy.
+    Unsupported,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,8 +67,27 @@ pub(crate) enum Include {
     All,
 }
 
+/// `allow-html`. The default, `none`, rejects text with a `<`. `safe` rejects dangerous markup and
+/// lets the rest through unchanged: unlike Java it does not rewrite the markup.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum AllowHtml {
+    #[default]
+    None,
+    Safe,
+    Any,
+}
+
+fn allow_html_of(node: &MNode) -> AllowHtml {
+    match node.attribute("allow-html").as_deref() {
+        Some("any") => AllowHtml::Any,
+        Some("safe") => AllowHtml::Safe,
+        _ => AllowHtml::None,
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct AutoParams {
+    pub allow_html: AllowHtml,
     pub entity_name: Option<String>,
     pub include: Include,
     pub exclude: Vec<String>,
@@ -113,9 +134,11 @@ pub(crate) struct ParamDef {
     pub name: String,
     pub java_type: String,
     pub required: Required,
+    /// `default-value`: text with `${}` expanded against the other parameters, then converted.
     pub default_value: Option<String>,
-    pub entity_name: Option<String>,
-    pub field_name: Option<String>,
+    /// `default`: a JavaScript expression over the other parameters.
+    pub default_expr: Option<String>,
+    pub allow_html: AllowHtml,
     pub checks: Vec<Check>,
     pub auto: Option<AutoParams>,
 }
@@ -244,6 +267,23 @@ pub fn lint(paths: &[PathBuf]) -> Result<Vec<String>, Error> {
     Ok(lock().failures.clone())
 }
 
+/// Registration failures for `paths`, or the configured service files when `paths` is empty,
+/// without changing the services that are registered. This is what `moqui lint` runs.
+///
+/// # Errors
+///
+/// Returns an error when a file cannot be read.
+pub fn check(paths: &[PathBuf]) -> Result<Vec<String>, Error> {
+    let configured;
+    let paths = if paths.is_empty() {
+        configured = configured_paths()?;
+        &configured[..]
+    } else {
+        paths
+    };
+    Ok(build(paths)?.failures)
+}
+
 fn install(paths: &[PathBuf]) -> Result<(), Error> {
     let registry = build(paths)?;
     *lock() = registry;
@@ -266,8 +306,9 @@ fn build(paths: &[PathBuf]) -> Result<Registry, Error> {
             &mut pending,
         )?;
     }
-    resolve_implements(&mut services, &mut failures);
+    // Includes first, so a service can implement a name that is only an include alias.
     resolve_includes(&includes, &mut services, &mut failures);
+    resolve_implements(&mut services, &mut failures);
     Ok(Registry { services, failures })
 }
 
@@ -339,10 +380,25 @@ fn load_service(prefix: &str, node: &MNode, services: &mut BTreeMap<String, Serv
         failures.push(format!("service {name} type camel is not included"));
         return;
     }
+    if !matches!(
+        type_name.as_str(),
+        "inline" | "entity-auto" | "script" | "interface" | "remote-rest"
+    ) {
+        failures.push(format!("service {name} has unknown type {type_name}"));
+        return;
+    }
     let mut expression_errors = Vec::new();
     if !expressions_ok(&name, node, &mut expression_errors) {
         failures.extend(expression_errors);
         return;
+    }
+    // The generated script is what runs, so it is what must parse. This reaches every attribute
+    // that becomes JavaScript, not only the ones named in `is_expression_attr`.
+    if let Some(actions) = node.first_named("actions") {
+        if let Err(err) = crate::script::check_actions(&actions.write_string()) {
+            failures.push(format!("service {name} {err}"));
+            return;
+        }
     }
     let location = node.attribute("location").unwrap_or_default();
     let kind = kind_of(&type_name, &location);
@@ -395,12 +451,19 @@ fn load_service(prefix: &str, node: &MNode, services: &mut BTreeMap<String, Serv
 fn kind_of(type_name: &str, location: &str) -> ServiceKind {
     match type_name {
         "entity-auto" => ServiceKind::EntityAuto,
-        "script" if is_groovy_location(location) => ServiceKind::Mail,
+        "script" if is_groovy_location(location) && is_mail_location(location) => ServiceKind::Mail,
+        "script" if is_groovy_location(location) => ServiceKind::Unsupported,
         "script" => ServiceKind::Script,
         "interface" => ServiceKind::Interface,
         "remote-rest" => ServiceKind::RemoteRest,
         _ => ServiceKind::Inline,
     }
+}
+
+/// The framework's email scripts are Groovy until the mail transport lands; they report that mail
+/// is not configured. Any other Groovy script is simply not runnable.
+fn is_mail_location(location: &str) -> bool {
+    location.to_ascii_lowercase().contains("email")
 }
 
 fn is_groovy_location(location: &str) -> bool {
@@ -472,7 +535,7 @@ fn expressions_ok(service: &str, node: &MNode, errors: &mut Vec<String>) -> bool
         }
     }
     for (key, value) in node.attributes() {
-        if is_expression_attr(&key) || value_has_groovy(&value) {
+        if is_expression_attr(&key) {
             if let Err(err) = check_javascript(service, &value) {
                 errors.push(err);
                 ok = false;
@@ -489,11 +552,6 @@ fn expressions_ok(service: &str, node: &MNode, errors: &mut Vec<String>) -> bool
 
 fn is_expression_attr(key: &str) -> bool {
     matches!(key, "from" | "condition" | "default" | "in-map")
-}
-
-/// Gate for attributes that are not expressions. `parse_js` still rejects the marker.
-fn value_has_groovy(text: &str) -> bool {
-    text.contains("?:") || text.contains("?.") || text.contains("->")
 }
 
 fn check_javascript(service: &str, text: &str) -> Result<(), String> {
@@ -518,8 +576,8 @@ fn parse_parameter(node: &MNode) -> ParamDef {
         java_type: node.attribute("type").unwrap_or_else(|| "String".to_string()),
         required: required_of(node, Required::False),
         default_value: node.attribute("default-value"),
-        entity_name: node.attribute("entity-name"),
-        field_name: node.attribute("field-name"),
+        default_expr: node.attribute("default").filter(|text| !text.is_empty()),
+        allow_html: allow_html_of(node),
         checks: parse_checks(node),
         auto: None,
     }
@@ -542,10 +600,11 @@ fn parse_auto(node: &MNode) -> ParamDef {
         java_type: "String".to_string(),
         required,
         default_value: None,
-        entity_name: node.attribute("entity-name"),
-        field_name: None,
+        default_expr: None,
+        allow_html: AllowHtml::None,
         checks: Vec::new(),
         auto: Some(AutoParams {
+            allow_html: allow_html_of(node),
             entity_name: node.attribute("entity-name"),
             include,
             exclude,

@@ -15,26 +15,31 @@
 //! Service facade: definitions, synchronous calls, ECAs, pools, jobs, and REST. JSON-RPC is not part of this port.
 
 pub(crate) mod call;
-mod callback;
 mod define;
+mod eca;
+mod eca_rules;
 mod email_eca;
+mod jobs;
 mod pool;
 mod remote;
 mod rest;
+mod rule_actions;
 mod schedule;
 mod seca;
-mod semaphore;
+mod security_checks;
+pub(crate) mod semaphore;
 mod validate;
 
-pub use call::call;
-pub use callback::{run_held_service, run_matched_eca, schedule_feed_receive, security_checks_run};
-pub use define::lint;
+pub use call::{async_call, call, call_future};
 pub use define::load_definitions;
+pub use define::{check, lint};
+pub use eca::{run_held_service, run_matched_eca, schedule_feed_receive, search_not_up};
 pub use email_eca::run_email_rules;
+pub use jobs::{run_job_now, PassReport};
 pub use pool::{start_pools, ServicePools};
-pub use remote::http_resource_error;
+pub use remote::shared_http_client;
 pub use rest::run;
-pub use schedule::schedule;
 pub use seca::run_seca_rules;
+pub use security_checks::security_checks_run;
 pub use semaphore::acquire;
 pub use validate::validate;

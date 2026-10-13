@@ -59,7 +59,6 @@ fn sequenced_id(value: &EntityValue, field: &str) -> Result<String, Error> {
 mod tests {
     use moqui_lib::object::Value;
 
-    use super::super::login::memdb;
     use super::super::session::{self, current_user_id};
     use super::*;
     use crate::context::ExecutionContextFactory;
@@ -69,7 +68,7 @@ mod tests {
     fn record_visit_persists_a_visit_and_a_visitor() {
         session::reset_session();
         let ctx = ExecutionContextFactory::test_context();
-        let facade = memdb::open();
+        let facade = crate::testing::open();
         ctx.factory().set_entity(facade.clone());
         let _guard = ctx.enter();
         session::set_user("ada", "ada");
