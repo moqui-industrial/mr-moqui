@@ -148,9 +148,11 @@ pub fn get_prop_or_env(name: &str) -> String {
 
 /// Replace `${name}` from [`get_prop_or_env`].
 ///
-/// `name` is an identifier or a dotted property name. Anything else inside `${}`
-/// is left unchanged. A missing name expands to empty. Text with no `${` is returned
-/// as it is.
+/// `name` is an identifier or a dotted property name. The Groovy Elvis form that
+/// `MoquiDefaultConf.xml` uses also works: `${a ?: b}` and `${a ?: 'text'}` give the
+/// first term that is not empty, and terms can chain. Anything else inside `${}`
+/// is left unchanged, since Java evaluates it as Groovy. A missing name expands to
+/// empty. Text with no `${` is returned as it is.
 pub fn expand(value: &str) -> Result<String, Error> {
     if value.is_empty() || !value.contains("${") {
         return Ok(value.to_string());
@@ -162,8 +164,8 @@ pub fn expand(value: &str) -> Result<String, Error> {
         if chars[i] == '$' && i + 1 < chars.len() && chars[i + 1] == '{' {
             if let Some(end) = chars[i + 2..].iter().position(|ch| *ch == '}') {
                 let body: String = chars[i + 2..i + 2 + end].iter().collect();
-                if is_expand_name(&body) {
-                    out.push_str(&get_prop_or_env(&body));
+                if let Some(expanded) = expand_body(&body) {
+                    out.push_str(&expanded);
                     i += end + 3;
                     continue;
                 }
@@ -173,6 +175,32 @@ pub fn expand(value: &str) -> Result<String, Error> {
         i += 1;
     }
     Ok(out)
+}
+
+/// The value of a `${}` body, or `None` when it is not a name or an Elvis chain.
+fn expand_body(body: &str) -> Option<String> {
+    let mut last = String::new();
+    for term in body.split("?:") {
+        let term = term.trim();
+        last = if is_expand_name(term) {
+            get_prop_or_env(term)
+        } else {
+            quoted_literal(term)?.to_string()
+        };
+        if !last.is_empty() {
+            break;
+        }
+    }
+    Some(last)
+}
+
+/// The text of `'text'` or `"text"`. No escapes.
+fn quoted_literal(term: &str) -> Option<&str> {
+    ['\'', '"'].into_iter().find_map(|quote| {
+        term.strip_prefix(quote)?
+            .strip_suffix(quote)
+            .filter(|inner| !inner.contains(quote))
+    })
 }
 
 fn is_expand_name(name: &str) -> bool {
@@ -223,6 +251,21 @@ mod tests {
         assert_eq!(expand("${moqui_version").unwrap(), "${moqui_version");
         clear_property("moqui_version");
         clear_property("nested.name");
+    }
+
+    #[test]
+    fn expand_takes_the_first_term_that_is_not_empty() {
+        set_property("moqui_lib_env_port", "5433");
+        set_property("moqui_lib_env_zone", "America/Denver");
+        assert_eq!(expand("${moqui_lib_env_port?:'3306'}").unwrap(), "5433");
+        assert_eq!(expand("${moqui_lib_env_none_zz?:'3306'}").unwrap(), "3306");
+        assert_eq!(expand("${moqui_lib_env_none_zz ?: moqui_lib_env_zone}").unwrap(), "America/Denver");
+        assert_eq!(expand("${moqui_lib_env_none_zz ?: moqui_lib_env_none_yy ?: \"x\"}").unwrap(), "x");
+        assert_eq!(expand("${moqui_lib_env_none_zz ?: moqui_lib_env_none_yy}").unwrap(), "");
+        assert_eq!(expand("${a ?: 1+2}").unwrap(), "${a ?: 1+2}");
+        assert_eq!(expand("${a ?: 'x}").unwrap(), "${a ?: 'x}");
+        clear_property("moqui_lib_env_port");
+        clear_property("moqui_lib_env_zone");
     }
 
     #[test]

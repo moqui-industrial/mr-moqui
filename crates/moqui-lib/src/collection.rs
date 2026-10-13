@@ -26,12 +26,12 @@ use rust_decimal::RoundingStrategy;
 use crate::error::Error;
 use crate::object::{decimal_add, is_empty, java_equals, parse_timestamp, to_plain_string, Value};
 
+/// The `key` value of each map. A missing key is a null, as in Java, so the values line up
+/// with the maps unless `exclude_null` drops them.
 pub fn get_map_list_values(maps: &[IndexMap<String, Value>], key: &str, exclude_null: bool) -> Vec<Value> {
     let mut values = Vec::with_capacity(maps.len());
     for map in maps {
-        let Some(value) = map.get(key) else {
-            continue;
-        };
+        let value = map.get(key).unwrap_or(&Value::Null);
         if exclude_null && value.is_null() {
             continue;
         }
@@ -692,6 +692,22 @@ mod tests {
             .iter()
             .map(|(key, value)| ((*key).to_string(), value.clone()))
             .collect()
+    }
+
+    #[test]
+    fn map_list_values_keep_alignment() {
+        let maps = vec![
+            row(&[("a", Value::I32(1))]),
+            row(&[("b", Value::I32(2))]),
+            row(&[("a", Value::Null)]),
+            row(&[("a", Value::I32(3))]),
+        ];
+        let all = get_map_list_values(&maps, "a", false);
+        assert_eq!(all.len(), 4);
+        assert!(all[1].is_null() && all[2].is_null());
+        let present = get_map_list_values(&maps, "a", true);
+        assert_eq!(present.len(), 2);
+        assert!(java_equals(&present[1], &Value::I32(3)));
     }
 
     #[test]

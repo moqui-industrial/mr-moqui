@@ -16,7 +16,9 @@
 //!
 //! The letters are the subset screens and reports use: `G y u M L d D E a h H k K m s S Z X x z`,
 //! quoted literals, and `''` for a quote. Any other ASCII letter is an error, so a pattern this
-//! does not understand is reported instead of printed wrong.
+//! does not understand is reported instead of printed wrong. Zone letters follow
+//! `SimpleDateFormat`, which `L10nFacade` uses: `z` is the short name (`PST`), `Z` is `-0800` at
+//! any count, and `X`, `XX`, `XXX` are `-08`, `-0800`, `-08:00`.
 
 use jiff::civil::Weekday;
 use jiff::Zoned;
@@ -135,8 +137,15 @@ fn field(zoned: &Zoned, letter: char, count: usize, pattern: &str, out: &mut Str
                 out.push('0');
             }
         }
-        'Z' => offset(out, zoned.offset().seconds(), count >= 4, false),
-        'X' | 'x' => offset(out, zoned.offset().seconds(), count >= 3, letter == 'X'),
+        'Z' => offset(out, zoned.offset().seconds(), OffsetWidth::Minutes, false),
+        'X' | 'x' => {
+            let width = match count {
+                1 => OffsetWidth::Hours,
+                2 => OffsetWidth::Minutes,
+                _ => OffsetWidth::Colon,
+            };
+            offset(out, zoned.offset().seconds(), width, letter == 'X');
+        }
         'z' => out.push_str(&zone_text(zoned)),
         _ => {
             return Err(Error::new(format!(
@@ -158,8 +167,18 @@ fn pad(out: &mut String, value: i64, width: usize) {
     out.push_str(&text);
 }
 
-/// `+HHMM`, or `+HH:MM` when `colon`. `X` prints `Z` for a zero offset.
-fn offset(out: &mut String, seconds: i32, colon: bool, z_for_zero: bool) {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OffsetWidth {
+    /// `+HH`, for `X`.
+    Hours,
+    /// `+HHMM`, for `Z` at any count and `XX`.
+    Minutes,
+    /// `+HH:MM`, for `XXX`.
+    Colon,
+}
+
+/// A zone offset. `X` prints `Z` for a zero offset.
+fn offset(out: &mut String, seconds: i32, width: OffsetWidth, z_for_zero: bool) {
     if seconds == 0 && z_for_zero {
         out.push('Z');
         return;
@@ -167,21 +186,27 @@ fn offset(out: &mut String, seconds: i32, colon: bool, z_for_zero: bool) {
     out.push(if seconds < 0 { '-' } else { '+' });
     let total = seconds.unsigned_abs() / 60;
     pad(out, i64::from(total / 60), 2);
-    if colon {
-        out.push(':');
-    }
-    pad(out, i64::from(total % 60), 2);
-}
-
-fn zone_text(zoned: &Zoned) -> String {
-    match zoned.time_zone().iana_name() {
-        Some(name) => name.to_string(),
-        None => {
-            let mut text = String::from("GMT");
-            offset(&mut text, zoned.offset().seconds(), true, false);
-            text
+    match width {
+        OffsetWidth::Hours => {}
+        OffsetWidth::Minutes => pad(out, i64::from(total % 60), 2),
+        OffsetWidth::Colon => {
+            out.push(':');
+            pad(out, i64::from(total % 60), 2);
         }
     }
+}
+
+/// The short zone name as `SimpleDateFormat` prints it, such as `PST` or `CET`. A zone whose
+/// tz database abbreviation is only an offset, such as `-03`, prints as `GMT-03:00`.
+fn zone_text(zoned: &Zoned) -> String {
+    let info = zoned.time_zone().to_offset_info(zoned.timestamp());
+    let abbreviation = info.abbreviation();
+    if !abbreviation.is_empty() && abbreviation.chars().all(|ch| ch.is_ascii_alphabetic()) {
+        return abbreviation.to_string();
+    }
+    let mut text = String::from("GMT");
+    offset(&mut text, zoned.offset().seconds(), OffsetWidth::Colon, false);
+    text
 }
 
 fn weekday_name(weekday: Weekday) -> &'static str {
@@ -232,5 +257,17 @@ mod tests {
         assert_eq!(format(&at("UTC"), "X").unwrap(), "Z");
         assert!(format(&zoned, "yyyy ww").is_err());
         assert!(format(&zoned, "'open").is_err());
+    }
+
+    #[test]
+    fn zone_names_and_offset_widths_follow_simple_date_format() {
+        let zoned = at("America/Los_Angeles");
+        assert_eq!(format(&zoned, "z").unwrap(), "PST");
+        assert_eq!(format(&zoned, "X XX XXX").unwrap(), "-08 -0800 -08:00");
+        assert_eq!(format(&zoned, "Z ZZZZ").unwrap(), "-0800 -0800");
+        assert_eq!(format(&at("UTC"), "z").unwrap(), "UTC");
+        assert_eq!(format(&at("Asia/Tokyo"), "z").unwrap(), "JST");
+        assert_eq!(format(&at("Europe/Berlin"), "z").unwrap(), "CET");
+        assert_eq!(format(&at("America/Sao_Paulo"), "z").unwrap(), "GMT-03:00");
     }
 }

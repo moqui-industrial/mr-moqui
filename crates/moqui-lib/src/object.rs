@@ -19,6 +19,8 @@
 //!
 //! A timestamp or date with no zone is read in the zone passed to the parser.
 //! [`basic_convert`] uses UTC, which is the framework default before a user is logged in.
+//! Java reads such text in the user's zone, so framework code with a user parses through
+//! `l10n` with the user's zone rather than through `basic_convert`.
 //! `java.sql` date and time values are civil dates and times. Their plain form is the
 //! UTC epoch millis of that civil value, which matches `getTime` when the JVM zone is UTC.
 
