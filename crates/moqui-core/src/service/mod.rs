@@ -22,6 +22,7 @@ mod email_eca;
 mod jobs;
 mod pool;
 mod remote;
+mod request_pool;
 mod rest;
 mod rule_actions;
 mod schedule;
@@ -37,7 +38,12 @@ pub use eca::{run_held_service, run_matched_eca, schedule_feed_receive, search_n
 pub use email_eca::run_email_rules;
 pub use jobs::{run_job_now, PassReport};
 pub use pool::{start_pools, ServicePools};
+pub(crate) use remote::parse_json;
 pub use remote::shared_http_client;
+pub use request_pool::{caps, check_serve_caps, RequestPool};
+#[cfg(test)]
+pub(crate) use rest::install;
+pub(crate) use rest::openapi_document;
 pub use rest::run;
 pub use seca::run_seca_rules;
 pub use security_checks::security_checks_run;

@@ -157,6 +157,14 @@ pub fn clear_context_stack() {
     STACK.with(|stack| *stack.borrow_mut() = ContextStack::new());
 }
 
+/// Run one script statement in the server runtime. The script is not strict.
+pub fn run_script(source: &str) -> Result<(), Error> {
+    if source.as_bytes().contains(&0) {
+        return Err(Error::new("script source contains a null byte"));
+    }
+    eval_script(source)
+}
+
 /// Evaluate a strict expression. Null, false, and a zero number are false. A decimal is true.
 pub fn eval_condition(expression: &str) -> Result<bool, Error> {
     if expression.as_bytes().contains(&0) {
@@ -618,6 +626,10 @@ fn install_ec(ctx: &Ctx<'_>) -> Result<(), Error> {
     ec.set("message", message).map_err(js_error)?;
     ec.set("logger", logger_object(ctx)?).map_err(js_error)?;
     ec.set("service", service_object(ctx)?).map_err(js_error)?;
+    let user = caught(ctx, "user", Class::instance(ctx.clone(), HostUser {}))?;
+    ec.set("user", user).map_err(js_error)?;
+    let web = caught(ctx, "web", Class::instance(ctx.clone(), HostWeb {}))?;
+    ec.set("web", web).map_err(js_error)?;
     ec.set("cache", cache_object(ctx)?).map_err(js_error)?;
     ec.set("search", search_object(ctx)?).map_err(js_error)?;
     caught(ctx, "globals", ctx.globals().set("ec", ec))?;

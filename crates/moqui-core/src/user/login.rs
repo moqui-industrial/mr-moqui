@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Login against `moqui.security.UserAccount`. The session is memory only.
+//! Login against `moqui.security.UserAccount`. A bound web session rotates on password success.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -27,6 +27,7 @@ use crate::driver::{DbConnection, DbRow};
 use crate::entity::{EntityFacade, EntityValue};
 
 const USER_ACCOUNT: &str = "moqui.security.UserAccount";
+const USER_LOGIN_KEY: &str = "moqui.security.UserLoginKey";
 #[allow(dead_code)] // Used by change_password, which the library reaches only from tests.
 const PASSWORD_HISTORY: &str = "moqui.security.UserPasswordHistory";
 const INVALID_LOGIN: &str = "The username or password is not valid";
@@ -35,6 +36,7 @@ const WEEK_MILLIS: i64 = 7 * 24 * 60 * 60 * 1000;
 /// Check the password and, on success, set the in-memory user.
 ///
 /// Unknown users, an empty username, and an empty password share one message.
+/// A bound web session rotates its id only after this password check succeeds.
 pub fn login_user(username: &str, password: &str) -> Result<(), Error> {
     if username.is_empty() || password.is_empty() {
         return Err(Error::new(INVALID_LOGIN));
@@ -59,7 +61,8 @@ pub fn login_user(username: &str, password: &str) -> Result<(), Error> {
         return Err(Error::new(INVALID_LOGIN));
     }
     post_password(&account, now)?;
-    finish_login(&facade, &account, Some(password), true)
+    finish_login(&facade, &account, Some(password), true)?;
+    session::rotate_on_password_login()
 }
 
 /// Authorization is off while the login code reads and writes the user tables.
@@ -67,7 +70,7 @@ fn without_authz() -> Option<crate::context::AuthzGuard> {
     ExecutionContext::with_current(|ctx| ctx.disable_authz())
 }
 
-/// Set the in-memory user without checking the password.
+/// Set the in-memory user without checking the password. Does not rotate a bound session.
 ///
 /// # Errors
 ///
@@ -85,6 +88,60 @@ pub fn internal_login_user(username: &str) -> Result<(), Error> {
     gate_account(&facade, &account, now)?;
     post_password(&account, now)?;
     finish_login(&facade, &account, None, false)
+}
+
+/// Log in with a `UserLoginKey`. The stored `loginKey` is [`super::password::hash_login_key`].
+///
+/// A `thruDate` in the past is rejected. A null `thruDate` stays valid. Does not rotate the session id.
+///
+/// # Errors
+///
+/// Returns [`INVALID_LOGIN`](Error) when the key is empty, unknown, or expired, or the account cannot log in.
+pub fn login_user_key(key: &str) -> Result<(), Error> {
+    if key.is_empty() {
+        return Err(Error::new(INVALID_LOGIN));
+    }
+    let hashed = password::hash_login_key(key)?;
+    let _authz = without_authz();
+    let facade = entity_facade()?;
+    let Some(row) = facade
+        .find(USER_LOGIN_KEY)?
+        .eq("loginKey", Value::string(&hashed))
+        .one()?
+    else {
+        return Err(Error::new(INVALID_LOGIN));
+    };
+    if let Some(thru) = field_millis(&row, "thruDate") {
+        if now_millis() > thru {
+            return Err(Error::new(INVALID_LOGIN));
+        }
+    }
+    let user_id = text_field(&row, "userId");
+    let Some(account) = find_user_id(&facade, &user_id)? else {
+        return Err(Error::new(INVALID_LOGIN));
+    };
+    internal_login_user(&text_field(&account, "username"))
+}
+
+/// Header login. Uses `api_key` when it is present, otherwise `login_key`.
+///
+/// Does not read a query string. An existing username returns without a lookup.
+///
+/// # Errors
+///
+/// Returns the login error when the chosen key is rejected.
+pub fn apply_header_keys(api_key: Option<&str>, login_key: Option<&str>) -> Result<(), Error> {
+    if session::current_username()?.is_some() {
+        return Ok(());
+    }
+    let Some(key) = present_key(api_key).or_else(|| present_key(login_key)) else {
+        return Ok(());
+    };
+    login_user_key(key)
+}
+
+fn present_key(value: Option<&str>) -> Option<&str> {
+    value.filter(|text| !text.is_empty())
 }
 
 /// Mark the session anonymous when nobody is logged in. Returns true when it did, so the caller
@@ -110,6 +167,8 @@ pub fn logout_anonymous_only() {
 
 /// Clear the in-memory user and anonymous flag. Sets `hasLoggedOut` on the account.
 ///
+/// Guarantee mode flushes the bound session after the user is cleared.
+///
 /// # Errors
 ///
 /// Returns an error when the account row cannot be updated. The session is cleared either way.
@@ -124,7 +183,7 @@ pub fn logout() -> Result<(), Error> {
         Ok(())
     };
     session::clear_login();
-    update
+    update.and(session::flush_after_logout())
 }
 
 /// Replace the password with argon2 and push the old hash into `UserPasswordHistory`.
@@ -379,7 +438,6 @@ fn find_username(facade: &EntityFacade, username: &str) -> Result<Option<EntityV
         .one()?)
 }
 
-#[allow(dead_code)]
 fn find_user_id(facade: &EntityFacade, user_id: &str) -> Result<Option<EntityValue>, Error> {
     Ok(facade.find(USER_ACCOUNT)?.eq("userId", Value::string(user_id)).one()?)
 }
@@ -583,7 +641,7 @@ mod tests {
         assert!(!session::is_anonymous().unwrap());
         assert_eq!(session::locale().unwrap().as_deref(), Some("en"));
         assert_eq!(session::time_zone().unwrap().as_deref(), Some("UTC"));
-        assert_eq!(session::csrf_token().unwrap().len(), 64);
+        assert_eq!(session::csrf_token().unwrap().len(), 40);
         assert_eq!(session::flash_messages().unwrap(), vec!["keep".to_string()]);
 
         logout().unwrap();

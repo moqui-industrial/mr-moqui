@@ -137,6 +137,22 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="visitorId" type="id" is-pk="true"/>
         <field name="createdDate" type="date-time"/>
     </entity>
+    <entity entity-name="HttpSession" package="moqui.server" cache="true" use="nontransactional">
+        <field name="sessionId" type="id" is-pk="true"/>
+        <field name="userId" type="id"/>
+        <field name="visitId" type="id"/>
+        <field name="visitorId" type="id"/>
+        <field name="locale" type="text-short"/>
+        <field name="timeZone" type="text-short"/>
+        <field name="sessionToken" type="text-short"/>
+        <field name="attributes" type="text-very-long"/>
+        <field name="sessionRevision" type="number-integer"/>
+        <field name="lastUpdatedStamp" type="date-time"/>
+        <relationship type="one-nofk" related="moqui.security.UserAccount"/>
+        <relationship type="one-nofk" related="moqui.server.Visit"/>
+        <relationship type="one-nofk" related="moqui.server.Visitor"/>
+        <index name="HTTP_SESSION_USER"><index-field name="userId"/></index>
+    </entity>
 
     <!-- ========================================================= -->
     <!-- moqui.server.instance -->

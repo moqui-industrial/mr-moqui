@@ -12,9 +12,10 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Smaller `ec` facades: cache, message, logger, and resource.
+//! Smaller `ec` facades: cache, message, logger, resource, user, and web.
 
 use super::*;
+use moqui_lib::object::Value;
 
 /// A named framework cache. A cache the conf does not define reads as empty and ignores writes.
 #[derive(Trace, JsLifetime)]
@@ -185,4 +186,123 @@ impl HostMessage {
             count.into_js(&ctx)
         })
     }
+}
+
+/// `ec.user`. `loginUser` records a failure and returns false instead of throwing.
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class]
+pub(super) struct HostUser {}
+
+#[rquickjs::methods(rename_all = "camelCase")]
+impl HostUser {
+    fn login_user(&self, ctx: Ctx<'_>, username: String, password: String) -> rquickjs::Result<bool> {
+        host_guard(&ctx, || match crate::user::login_user(&username, &password) {
+            Ok(()) => Ok(true),
+            Err(err) => {
+                with_ec(&ctx, |ec| ec.message().add_error(err.message().to_string()))?;
+                Ok(false)
+            }
+        })
+    }
+
+    fn logout_user(&self, ctx: Ctx<'_>) -> rquickjs::Result<bool> {
+        host_guard(&ctx, || match crate::user::logout() {
+            Ok(()) => Ok(true),
+            Err(err) => {
+                with_ec(&ctx, |ec| ec.message().add_error(err.message().to_string()))?;
+                Ok(false)
+            }
+        })
+    }
+
+    fn internal_login_user(&self, ctx: Ctx<'_>, username: String) -> rquickjs::Result<bool> {
+        host_guard(&ctx, || match crate::user::internal_login_user(&username) {
+            Ok(()) => Ok(true),
+            Err(err) => {
+                with_ec(&ctx, |ec| ec.message().add_error(err.message().to_string()))?;
+                Ok(false)
+            }
+        })
+    }
+
+    #[qjs(get)]
+    fn username<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || match crate::user::current_username() {
+            Ok(Some(name)) => name.into_js(&ctx),
+            Ok(None) => Null.into_js(&ctx),
+            Err(err) => Err(Exception::throw_message(&ctx, err.message())),
+        })
+    }
+
+    #[qjs(get)]
+    fn user_id<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || match crate::user::current_user_id() {
+            Ok(Some(name)) => name.into_js(&ctx),
+            Ok(None) => Null.into_js(&ctx),
+            Err(err) => Err(Exception::throw_message(&ctx, err.message())),
+        })
+    }
+}
+
+/// `ec.web` for the request installed on this thread.
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class]
+pub(super) struct HostWeb {}
+
+#[rquickjs::methods(rename_all = "camelCase")]
+impl HostWeb {
+    fn send_json_response(&self, ctx: Ctx<'_>, value: JsValue<'_>) -> rquickjs::Result<()> {
+        host_guard(&ctx, || {
+            crate::web::send_json_response(js_to_host(&ctx, &value)?);
+            Ok(())
+        })
+    }
+
+    fn send_json_error(
+        &self,
+        ctx: Ctx<'_>,
+        status: i32,
+        message: String,
+        _extra: Opt<JsValue<'_>>,
+    ) -> rquickjs::Result<()> {
+        host_guard(&ctx, || {
+            let status = u16::try_from(status).unwrap_or(500);
+            crate::web::send_json_error(status, &message);
+            Ok(())
+        })
+    }
+
+    fn send_text_response(&self, ctx: Ctx<'_>, text: String) -> rquickjs::Result<()> {
+        host_guard(&ctx, || {
+            crate::web::send_text_response(&text);
+            Ok(())
+        })
+    }
+
+    #[qjs(get)]
+    fn parameters<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || host_to_js(&ctx, map_value(crate::web::parameters())))
+    }
+
+    #[qjs(get)]
+    fn session_attributes<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            let mut map = indexmap::IndexMap::new();
+            for (key, value) in crate::user::session::session_attributes() {
+                map.insert(key, Value::string(value));
+            }
+            host_to_js(&ctx, Value::Map(map))
+        })
+    }
+
+    #[qjs(get)]
+    fn session_token(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || {
+            crate::user::csrf_token().map_err(|err| Exception::throw_message(&ctx, err.message()))
+        })
+    }
+}
+
+fn map_value(entries: std::collections::BTreeMap<String, Value>) -> Value {
+    Value::Map(entries.into_iter().collect())
 }

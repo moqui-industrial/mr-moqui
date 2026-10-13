@@ -19,6 +19,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
+use indexmap::IndexMap;
+
 use moqui_lib::node::MNode;
 use moqui_lib::object::{is_empty, Value};
 
@@ -125,7 +127,7 @@ fn insert_file(roots: &mut BTreeMap<String, Node>, path: &Path) -> Result<(), Er
 
 /// Replace a factory's resources with those in `paths`, for tests that bring their own files.
 #[cfg(test)]
-fn install(factory: &Arc<ExecutionContextFactory>, paths: &[PathBuf]) {
+pub(crate) fn install(factory: &Arc<ExecutionContextFactory>, paths: &[PathBuf]) {
     let mut resources = BTreeMap::new();
     for path in paths {
         insert_file(&mut resources, path).expect("rest file");
@@ -442,6 +444,99 @@ fn unwrap_frame(frame: moqui_lib::context_stack::Frame) -> Value {
         Ok(cell) => cell.into_inner(),
         Err(frame) => frame.borrow().clone(),
     })
+}
+
+/// OpenAPI 3.1 for one service REST root. The caller strips `.json` and rejects YAML.
+///
+/// # Errors
+///
+/// Returns an error when the root name is missing or that root is not loaded.
+pub(crate) fn openapi_document(segments: &[String]) -> Result<Value, Error> {
+    if segments.is_empty() {
+        return Err(Error::new("No root resource name specified in path"));
+    }
+    let roots = current_roots()?;
+    let root = roots.resources.get(&segments[0]).ok_or_else(|| {
+        Error::new(format!(
+            "Service REST API root resource not found with name {}",
+            segments[0]
+        ))
+    })?;
+    let mut paths = IndexMap::new();
+    collect_paths(root, "", &segments[1..], &mut paths);
+    let mut info = IndexMap::new();
+    info.insert("title".to_string(), Value::string(&segments[0]));
+    info.insert("version".to_string(), Value::string("1.0"));
+    let mut server = IndexMap::new();
+    server.insert("url".to_string(), Value::string("/rest/s1"));
+    let mut doc = IndexMap::new();
+    doc.insert("openapi".to_string(), Value::string("3.1.0"));
+    doc.insert("info".to_string(), Value::Map(info));
+    doc.insert("servers".to_string(), Value::List(vec![Value::Map(server)]));
+    doc.insert("paths".to_string(), Value::Map(paths));
+    Ok(Value::Map(doc))
+}
+
+fn collect_paths(node: &Node, prefix: &str, descend: &[String], paths: &mut IndexMap<String, Value>) {
+    let here = join_path(prefix, node);
+    if let Some((next, rest)) = descend.split_first() {
+        if let Some(child) = node.resources.get(next) {
+            collect_paths(child, &here, rest, paths);
+            return;
+        }
+        if let Some(id) = &node.id {
+            collect_paths(id, &here, rest, paths);
+        }
+        return;
+    }
+    if !node.methods.is_empty() {
+        paths.insert(here.clone(), method_object(&node.methods));
+    }
+    if let Some(id) = &node.id {
+        collect_paths(id, &here, &[], paths);
+    }
+    for child in node.resources.values() {
+        collect_paths(child, &here, &[], paths);
+    }
+}
+
+fn join_path(prefix: &str, node: &Node) -> String {
+    let segment = if node.is_id {
+        format!("{{{}}}", node.name)
+    } else {
+        node.name.clone()
+    };
+    if prefix.is_empty() {
+        format!("/{segment}")
+    } else {
+        format!("{prefix}/{segment}")
+    }
+}
+
+fn method_object(methods: &BTreeMap<String, Operation>) -> Value {
+    let mut map = IndexMap::new();
+    for (verb, operation) in methods {
+        map.insert(verb.clone(), operation_object(operation));
+    }
+    Value::Map(map)
+}
+
+fn operation_object(operation: &Operation) -> Value {
+    let summary = match operation {
+        Operation::Service { name, .. } => name.clone(),
+        Operation::Entity { name, operation, .. } => format!("{operation} {name}"),
+    };
+    let mut success = IndexMap::new();
+    success.insert("description".to_string(), Value::string("Success"));
+    let mut denied = IndexMap::new();
+    denied.insert("description".to_string(), Value::string("Authentication required"));
+    let mut responses = IndexMap::new();
+    responses.insert("200".to_string(), Value::Map(success));
+    responses.insert("401".to_string(), Value::Map(denied));
+    let mut map = IndexMap::new();
+    map.insert("summary".to_string(), Value::string(summary));
+    map.insert("responses".to_string(), Value::Map(responses));
+    Value::Map(map)
 }
 
 #[cfg(test)]

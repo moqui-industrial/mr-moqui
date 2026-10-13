@@ -476,7 +476,12 @@ mod driver {
     }
 
     fn pg(context: &str, err: postgres::Error) -> Error {
-        Error::new(format!("postgres {context}")).with_source(err)
+        // `Display` for a server error is the text "db error". The server message is the useful part.
+        let detail = match err.as_db_error() {
+            Some(db) => db.message().to_string(),
+            None => err.to_string(),
+        };
+        Error::new(format!("postgres {context}: {detail}")).with_source(err)
     }
 
     fn bind(params: &[Value]) -> Result<Vec<Param<'_>>, Error> {

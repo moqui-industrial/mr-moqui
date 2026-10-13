@@ -92,6 +92,7 @@ pub struct ServicePools {
 pub(crate) struct Shared {
     pub(crate) state: Mutex<State>,
     pub(crate) wake: Condvar,
+    pub(crate) tick_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     pub(crate) workers: usize,
     pub(crate) queue_cap: usize,
     /// Jobs allowed to wait beyond the workers, from `service-facade/@job-queue-max`.
@@ -167,6 +168,14 @@ impl ServicePools {
         Self { shared: None }
     }
 
+    /// Called from the scheduler after the state lock is released. Idle pools ignore it.
+    pub(crate) fn set_tick_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
+        let Some(shared) = &self.shared else {
+            return;
+        };
+        *lock_mutex(&shared.tick_hook) = Some(Arc::new(hook));
+    }
+
     /// Test pool. `workers` is at least 1. Same Drop as a booted pool.
     pub fn bounded(workers: usize, queue: usize) -> Self {
         start(Settings::test(workers.max(1), queue)).expect("service worker pool")
@@ -231,7 +240,11 @@ impl ServicePools {
     /// One scheduler pass now, as the scheduler thread runs it on its interval.
     pub fn tick(&self) -> super::jobs::PassReport {
         match &self.shared {
-            Some(shared) => super::jobs::run_scheduled(shared),
+            Some(shared) => {
+                let report = super::jobs::run_scheduled(shared);
+                run_tick_hook(shared);
+                report
+            }
             None => super::jobs::PassReport::default(),
         }
     }
@@ -276,6 +289,16 @@ impl Drop for ServicePools {
             std::mem::take(&mut *guard)
         };
         join_all(handles);
+    }
+}
+
+/// Run the scheduler hook after a pass. The hook is not called under the state lock.
+pub(crate) fn run_tick_hook(shared: &Shared) {
+    let hook = lock_mutex(&shared.tick_hook).clone();
+    if let Some(hook) = hook {
+        if catch_unwind(AssertUnwindSafe(|| hook())).is_err() {
+            tracing::warn!("scheduler tick hook panicked");
+        }
     }
 }
 
@@ -394,6 +417,7 @@ fn start(settings: Settings) -> Result<ServicePools, Error> {
     let shared = Arc::new(Shared {
         state: Mutex::new(State::default()),
         wake: Condvar::new(),
+        tick_hook: Mutex::new(None),
         workers: settings.workers,
         queue_cap: settings.queue,
         job_queue_max: settings.job_queue_max,
