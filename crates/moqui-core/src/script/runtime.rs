@@ -552,6 +552,221 @@ fn js_error(err: impl ToString) -> Error {
     Error::new(err.to_string())
 }
 
+/// Read one name from the thread-local stack. `None` when the name is missing.
+pub fn context_value(name: &str) -> Option<Value> {
+    match stack_get(name) {
+        Lookup::Value(value) => Some(value),
+        Lookup::Missing | Lookup::Context => None,
+    }
+}
+
+/// Evaluate a JavaScript object expression into a map. A non-object is an error.
+///
+/// List and map context values are installed as own properties for the call.
+/// The proxy cannot convert those, and an own property is read first.
+pub fn eval_map(expression: &str) -> Result<std::collections::BTreeMap<String, Value>, Error> {
+    if expression.as_bytes().contains(&0) {
+        return Err(Error::new("script source contains a null byte"));
+    }
+    with_context(|ctx| {
+        let bound = bind_collections(ctx, expression)?;
+        let evaluated = eval_js::<JsValue>(ctx, expression);
+        unbind_collections(ctx, &bound);
+        object_map(ctx, &evaluated?)
+    })
+}
+
+fn bind_collections(ctx: &Ctx<'_>, source: &str) -> Result<Vec<String>, Error> {
+    let mut names = Vec::new();
+    for name in expression_names(source) {
+        if names.iter().any(|existing| existing == &name) || reserved_global(&name) {
+            continue;
+        }
+        let Some(value) = context_value(&name) else {
+            continue;
+        };
+        if !matches!(value, Value::List(_) | Value::Map(_)) {
+            continue;
+        }
+        let owned = global_has_own(ctx, &name).map_err(|err| js_caught(ctx, err))?;
+        if owned {
+            continue;
+        }
+        let js = collection_to_js(ctx, value).map_err(|err| js_caught(ctx, err))?;
+        // `set` walks the prototype proxy, which cannot store a list. Define an own property.
+        let defined = ctx.globals().prop(
+            name.as_str(),
+            rquickjs::object::Property::from(js).writable().configurable(),
+        );
+        if let Err(err) = defined {
+            unbind_collections(ctx, &names);
+            return Err(js_caught(ctx, err));
+        }
+        names.push(name);
+    }
+    Ok(names)
+}
+
+fn unbind_collections(ctx: &Ctx<'_>, names: &[String]) {
+    for name in names {
+        let _ = ctx.globals().remove(name.as_str());
+    }
+}
+
+fn reserved_global(name: &str) -> bool {
+    matches!(
+        name,
+        "Object"
+            | "Array"
+            | "undefined"
+            | "NaN"
+            | "Infinity"
+            | "globalThis"
+            | "Math"
+            | "JSON"
+            | "Number"
+            | "String"
+            | "Boolean"
+    )
+}
+
+fn expression_names(source: &str) -> Vec<String> {
+    let bytes = source.as_bytes();
+    let mut names = Vec::new();
+    let mut index = 0;
+    let mut quote: Option<u8> = None;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if let Some(open) = quote {
+            if byte == b'\\' {
+                index = index.saturating_add(2);
+                continue;
+            }
+            if byte == open {
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'\'' || byte == b'"' || byte == b'`' {
+            quote = Some(byte);
+            index += 1;
+            continue;
+        }
+        if is_name_start(byte) {
+            let start = index;
+            index += 1;
+            while index < bytes.len() && is_name_continue(bytes[index]) {
+                index += 1;
+            }
+            if !name_is_member(source, start) {
+                names.push(source[start..index].to_string());
+            }
+            continue;
+        }
+        index += 1;
+    }
+    names
+}
+
+fn is_name_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_' || byte == b'$'
+}
+
+fn is_name_continue(byte: u8) -> bool {
+    is_name_start(byte) || byte.is_ascii_digit()
+}
+
+fn name_is_member(source: &str, start: usize) -> bool {
+    source[..start].trim_end().ends_with('.')
+}
+
+fn collection_to_js<'js>(ctx: &Ctx<'js>, value: Value) -> rquickjs::Result<JsValue<'js>> {
+    match value {
+        Value::List(items) => {
+            let array = rquickjs::Array::new(ctx.clone())?;
+            for (index, item) in items.into_iter().enumerate() {
+                array.set(index, host_any_to_js(ctx, item)?)?;
+            }
+            Ok(array.into_value())
+        }
+        Value::Map(entries) => {
+            let object = Object::new(ctx.clone())?;
+            for (key, item) in entries {
+                object.set(key, host_any_to_js(ctx, item)?)?;
+            }
+            Ok(object.into_value())
+        }
+        other => host_to_js(ctx, other),
+    }
+}
+
+fn host_any_to_js<'js>(ctx: &Ctx<'js>, value: Value) -> rquickjs::Result<JsValue<'js>> {
+    match value {
+        Value::List(_) | Value::Map(_) => collection_to_js(ctx, value),
+        other => host_to_js(ctx, other),
+    }
+}
+
+fn object_map(ctx: &Ctx<'_>, value: &JsValue<'_>) -> Result<std::collections::BTreeMap<String, Value>, Error> {
+    if !value.is_object() || value.is_array() || value.is_function() {
+        return Err(Error::new("script value is not an object"));
+    }
+    match js_value_to_host(ctx, value)? {
+        Value::Map(map) => Ok(map.into_iter().collect()),
+        _ => Err(Error::new("script value is not an object")),
+    }
+}
+
+fn js_value_to_host(ctx: &Ctx<'_>, value: &JsValue<'_>) -> Result<Value, Error> {
+    if value.is_null() || value.is_undefined() {
+        return Ok(Value::Null);
+    }
+    if let Some(flag) = value.as_bool() {
+        return Ok(Value::Bool(flag));
+    }
+    if let Some(number) = value.as_int() {
+        return Ok(Value::I32(number));
+    }
+    if let Some(number) = value.as_float() {
+        return Ok(Value::F64(number));
+    }
+    if let Some(text) = value.as_string() {
+        let text = text.to_string().map_err(|err| js_caught(ctx, err))?;
+        return Ok(Value::String(text));
+    }
+    if let Some(array) = value.as_array() {
+        let mut items = Vec::with_capacity(array.len());
+        for item in array.iter::<JsValue>() {
+            let item = item.map_err(|err| js_caught(ctx, err))?;
+            items.push(js_value_to_host(ctx, &item)?);
+        }
+        return Ok(Value::List(items));
+    }
+    if value.is_function() {
+        return Err(Error::new("cannot convert this value"));
+    }
+    if let Some(object) = value.as_object() {
+        if let Some(class) = object.as_class::<HostDecimal>() {
+            return Ok(class.borrow().inner.clone());
+        }
+        let mut map = match Value::Map(Default::default()) {
+            Value::Map(map) => map,
+            _ => return Err(Error::new("cannot convert this value")),
+        };
+        for entry in object.props::<String, JsValue>() {
+            let (key, item) = entry.map_err(|err| js_caught(ctx, err))?;
+            map.insert(key, js_value_to_host(ctx, &item)?);
+        }
+        return Ok(Value::Map(map));
+    }
+    Err(Error::new("cannot convert this value"))
+}
+
+fn js_caught(ctx: &Ctx<'_>, err: JsError) -> Error {
+    Error::new(rquickjs::CaughtError::from_error(ctx, err).to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{clear_context_stack, eval_condition, expand, push_context_frame, set_context_name};
