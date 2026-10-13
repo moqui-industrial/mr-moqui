@@ -127,6 +127,7 @@ Versions are what `cargo` locked on 2026-10-11 for the feature set above. "Stati
 | `rust_decimal` | 1.x | MIT | Decimals | Static | OK |
 | `argon2`, `password-hash` | 0.6.0 / 0.6.1 | MIT OR Apache-2.0 | Password hashes | Static | OK |
 | `hmac`, `sha1`, `sha2`, `blake2`, `digest` | RustCrypto | MIT OR Apache-2.0 | Signer and TOTP | Static | OK. Further signer crates stay in RustCrypto or aws-lc. |
+| `rsa` | 0.10.0-rc.18, RustCrypto | MIT OR Apache-2.0 | `SimpleSigner` in `moqui-lib` (`SHA1withRSA` for QZ Tray) | Static | OK. It is the same `rsa` that `russh` and `huskarl` already resolve, so the graph has one. A direct `sha1` 0.11 (MIT OR Apache-2.0, renamed `sha1-digest-011`) feeds it, because `rsa` is on `digest` 0.11 and the other `sha1` is 0.10. RUSTSEC-2023-0071 (Marvin timing in private-key operations) is already ignored in `deny.toml`. The signer uses the randomized signing path, which blinds the private-key operation, and it signs print job strings that the browser already holds. The ignore stays until a patched `rsa` is released. |
 | `totp-rs` | 6.0.0 | MIT | TOTP | Static | OK with `qr` off |
 | `serde`, `serde_json` | 1.x | MIT OR Apache-2.0 | JSON | Static | OK |
 | `csv`, `csv-core` | 1.4.0 / 0.1.13 | Unlicense OR MIT | CSV | Static | OK |
@@ -196,20 +197,21 @@ These are served as their own files from `runtime/base-component/webroot/`. They
 
 | File | License | How it is delivered | Verdict |
 |---|---|---|---|
-| Vue 3.5 (`vue.global.prod.js`) | MIT | Script tag. Server-merged `qvt`, and a server-static shell that can load a merged fragment. | OK |
-| Vue 3.5 runtime (`vue.runtime.global.prod.js`) | MIT | Script tag. A page whose qvt output, including fragments, is entirely server-static. Same package as the row above. | OK |
-| Quasar 2.35 (`quasar.umd.prod.js`), including `QEditor` | MIT | Script tag | OK. This is the replacement for CKEditor. |
-| Font Awesome 4.7 | Font: SIL OFL-1.1. CSS: MIT. Documentation: CC-BY-3.0. | The font and the CSS. Do not ship the docs. | OK. OFL is a font license, not a software copyleft. Stay on 4.7. Font Awesome 5+ changes the `fa fa-*` classes, and the SVG/JS icons are CC-BY-4.0. |
-| Material Icons (Google) | Apache-2.0 | Font and CSS | OK. Pictogrammers' Material Design Icons, if substituted, are Apache-2.0 for the icons and MIT for the code. |
-| Chart.js 4 | MIT | Lazy script | OK |
-| Mermaid, script-tag build | MIT for the package | Lazy script | OK for the MIT package. When the build is pinned, confirm it does not embed elkjs. elkjs is EPL-2.0. If a build needs it, that file stays separate and its source notice ships. It still does not enter the Rust link. |
-| Marked | MIT | Assist panel | OK |
-| DOMPurify | MPL-2.0 OR Apache-2.0 | Assist panel, its own file | OK under Apache-2.0. Record the election. |
-| highlight.js | BSD-3-Clause | Assist panel, language subset | OK |
-| Tom Select | Apache-2.0 | html mode, lazy | OK |
-| SortableJS | MIT | html column picker, lazy | OK |
+| Vue 3.5.44 (`vue.global.prod.js`) | MIT | Script tag. Server-merged `qvt`, and a server-static shell that can load a merged fragment. | OK |
+| Vue 3.5.44 runtime (`vue.runtime.global.prod.js`) | MIT | Script tag. A page whose qvt output, including fragments, is entirely server-static. Same package as the row above. | OK |
+| `@vue/compiler-dom` 3.5.44, Node build, bundled for QuickJS (`vue/compiler-dom.cjs.js`) | MIT, with `@babel/parser` (MIT), `entities` (BSD-2-Clause), `estree-walker` (MIT) and `@vue/*` (MIT) inside the bundle | Read by the server and run in QuickJS. Not sent to browsers. Built by `libs/refresh.mjs` with esbuild 0.28.2 (MIT, build tool only). | OK. Their notices are in `libs/NOTICES.md`. |
+| Quasar 2.35.1 (`quasar.umd.prod.js`), including `QEditor` | MIT | Script tag | OK. This is the replacement for CKEditor. |
+| Font Awesome 4.7.0 (npm `font-awesome`) | Font: SIL OFL-1.1. CSS: MIT. Documentation: CC-BY-3.0. | The font and the CSS. Do not ship the docs. | OK. OFL is a font license, not a software copyleft. Stay on 4.7. Font Awesome 5+ changes the `fa fa-*` classes, and the SVG/JS icons are CC-BY-4.0. |
+| Material Icons (Google) 1.13.14 (npm `material-icons`, filled style only) | Apache-2.0 | Font and CSS | OK. Pictogrammers' Material Design Icons, if substituted, are Apache-2.0 for the icons and MIT for the code. |
+| Chart.js 4.5.1 | MIT | Lazy script | OK |
+| Mermaid 11.17.2, `dist/mermaid.min.js` | MIT for the package | Lazy script | OK for the MIT package. Checked on the pinned build: it does not embed elkjs (the `elk` strings are layout option names). The bundle carries DOMPurify (Apache-2.0 OR MPL-2.0) and the other npm dependencies of mermaid (`d3` ISC and BSD-3-Clause, `cytoscape`, `dayjs`, `katex`, `roughjs`, `stylis`, `uuid` and the rest MIT). `mermaid.init` is gone in 11, use `mermaid.run`. Original note: elkjs is EPL-2.0. If a build needs it, that file stays separate and its source notice ships. It still does not enter the Rust link. |
+| Marked 18.1.1 | MIT | Assist panel. Minified by esbuild from `lib/marked.umd.js`, banner kept. | OK |
+| DOMPurify 3.4.17 (`purify.min.js`) | MPL-2.0 OR Apache-2.0 | Assist panel, its own file | OK under Apache-2.0. Election recorded: we take Apache-2.0, and `libs/NOTICES.md` carries both texts. |
+| highlight.js 11.12.0 | BSD-3-Clause | Assist panel. Core plus bash, css, diff, groovy, java, javascript, json, markdown, plaintext, python, rust, sql, typescript, xml, yaml, bundled by esbuild, and two themes. | OK |
+| Tom Select 2.6.2 (`tom-select.complete.min.js`) | Apache-2.0 | html mode, lazy | OK |
+| SortableJS 1.15.7 | MIT | html column picker, lazy | OK |
 | Mustache.js | MIT | Not used. The fancy renderer is an in-tree compiler of `if`, `list`, and `assign` to one cached JavaScript function. | Not a dependency. |
-| QZ Tray `qz-tray.js` 2.3 | LGPL-2.1-only | Separate script, only when printing is enabled | Acceptable on the browser rule. Do not concatenate it into `moqui-html.js` or a qvt bundle. Ship the LGPL text and a link to the source. |
+| QZ Tray `qz-tray.js` 2.3.0 (npm `qz-tray`, the file header says `@license LGPL-2.1-only`) | LGPL-2.1-only | Separate script, only when printing is enabled (user preference `qz.print.enabled`). Served unmodified from `/libs/qz-tray/qz-tray.js`, never minified, concatenated, or edited, so a customer can replace it. The LGPL text is `libs/licenses/LGPL-2.1.txt` and `libs/NOTICES.md` links the source (`https://github.com/qzind/tray`, tag v2.3.0). Flagged: the only copyleft file in `libs/`. | Acceptable on the browser rule. Do not concatenate it into `moqui-html.js` or a qvt bundle. Ship the LGPL text and a link to the source. |
 | QZ Tray desktop application | LGPL-2.1, and the qz.io builds add a premium signing certificate | Operator installs it | Do not vendor the desktop binary. Same shape as Chromium. |
 | `moqui-html.js`, `MoquiLib`, macro modules | CC0 plus the patent grant | Ours | OK |
 

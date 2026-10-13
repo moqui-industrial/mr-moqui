@@ -341,6 +341,14 @@ impl HostWeb {
         })
     }
 
+    /// The QZ Tray signature of `message`, as `text/plain`. See `apps.xml` transition `qzSign`.
+    fn send_qz_signed_response(&self, ctx: Ctx<'_>, message: String) -> rquickjs::Result<()> {
+        host_guard(&ctx, || {
+            crate::web::send_qz_signed_response(&message);
+            Ok(())
+        })
+    }
+
     fn send_text_response(&self, ctx: Ctx<'_>, text: String) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
             crate::web::send_text_response(&text);

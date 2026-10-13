@@ -320,6 +320,61 @@ pub(crate) fn send_text_response(text: &str) {
     send_bytes(200, "text/plain", text.as_bytes().to_vec());
 }
 
+/// The signer for QZ Tray, from `qz-private-key.pem`. Java reads it once from the classpath at class load. This
+/// looks in `classpath://` (the framework directory), then `classes/` and `conf/` under the runtime directory,
+/// and keeps the first signer that loaded, so a key added later is found without a restart.
+fn qz_signer() -> std::sync::Arc<moqui_lib::signer::SimpleSigner> {
+    use moqui_lib::signer::SimpleSigner;
+    use std::sync::{Arc, Mutex};
+    static SIGNER: Mutex<Option<Arc<SimpleSigner>>> = Mutex::new(None);
+    if let Some(signer) = SIGNER.lock().ok().and_then(|slot| slot.clone()) {
+        return signer;
+    }
+    let mut candidates = Vec::new();
+    if let Ok(path) = crate::context::locate("classpath://qz-private-key.pem") {
+        candidates.push(path);
+    }
+    if let Some(runtime) = ExecutionContext::with_current(|ec| ec.factory().runtime_dir().to_path_buf()) {
+        candidates.push(runtime.join("classes/qz-private-key.pem"));
+        candidates.push(runtime.join("conf/qz-private-key.pem"));
+    }
+    let mut found = Arc::new(SimpleSigner::from_pem(
+        "qz-private-key.pem",
+        "",
+    ));
+    for path in candidates.iter().filter(|path| path.is_file()) {
+        let signer = Arc::new(SimpleSigner::from_file(path));
+        let loaded = signer.is_loaded();
+        found = signer;
+        if loaded {
+            if let Ok(mut slot) = SIGNER.lock() {
+                *slot = Some(Arc::clone(&found));
+            }
+            break;
+        }
+    }
+    found
+}
+
+/// `ec.web.sendQzSignedResponse(message)`: the Base64 `SHA1withRSA` signature of `message` as `text/plain`.
+/// A request with no user gets 401. A key that cannot be read gets 500 with the reason, as Java does.
+pub(crate) fn send_qz_signed_response(message: &str) {
+    match crate::user::current_user_id() {
+        Ok(Some(_)) => {}
+        _ => {
+            send_bytes(401, "text/plain", b"Authentication required".to_vec());
+            return;
+        }
+    }
+    match qz_signer().sign(message) {
+        Ok(signature) => send_bytes(200, "text/plain", signature.into_bytes()),
+        Err(err) => {
+            tracing::error!("Error signing QZ message, sending error response: {}", err.message());
+            send_bytes(500, "text/plain", err.message().as_bytes().to_vec());
+        }
+    }
+}
+
 /// 302 with a `Location` header. A response that was already sent is left as it is.
 pub(crate) fn send_redirect(location: &str) {
     WEB.with(|slot| {

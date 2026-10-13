@@ -4523,14 +4523,18 @@ name = "moqui-lib"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "getrandom 0.3.4",
  "hmac 0.12.1",
  "indexmap 2.14.2",
  "jiff",
+ "rand_core 0.10.1",
  "reqwest",
+ "rsa",
  "rust_decimal",
  "serde",
  "serde_json",
  "sha1 0.10.7",
+ "sha1 0.11.0",
  "sha2 0.10.9",
 ]
 

@@ -29,6 +29,7 @@ pub mod json;
 pub mod node;
 pub mod object;
 pub mod resource;
+pub mod signer;
 pub mod string;
 
 /// Marker so a downstream crate links this one.

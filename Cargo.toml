@@ -59,6 +59,12 @@ hmac = "0.12"
 sha2 = "0.10"
 sha1 = "0.10"
 base64 = "0.22"
+# SimpleSigner (RSA SHA1withRSA, PKCS#1 v1.5). The rsa release candidate is the one russh and huskarl already
+# resolve, so the graph has one rsa. It needs digest 0.11, so its SHA-1 is sha1 0.11 under another name and the
+# SHA-2 variants come from rsa's own re-export. plans/License-Review.md records RUSTSEC-2023-0071.
+rsa = { version = "0.10.0-rc.18", features = ["sha2"] }
+sha1-digest-011 = { package = "sha1", version = "0.11", features = ["oid"] }
+rand_core = "0.10"
 # Name rustls. On 0.13 that is aws-lc, but default-tls must not be inherited:
 # a later release could point default-tls back at native-tls.
 reqwest = { version = "0.13", default-features = false, features = [
