@@ -12,10 +12,26 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Service worker pool. Starting it does nothing until phase 6.
+//! Service worker pool. The factory stores this guard. No threads yet.
 
-use crate::context::Error;
+/// Factory-owned pool guard.
+///
+/// The later worker implementation's Drop stops and joins its own workers when the factory value
+/// drops. [`ServicePools::idle`] stays thread-free.
+pub struct ServicePools {
+    _private: (),
+}
 
-pub fn start_pools() -> Result<(), Error> {
-    Ok(())
+impl ServicePools {
+    /// No workers. test_context stores this. Dropping it must not stop another factory's pool.
+    pub fn idle() -> Self {
+        Self { _private: () }
+    }
+}
+
+/// Read tools.@worker-pool-max and tools.@worker-queue from conf_text later.
+/// This stub ignores the text and returns an idle guard. The factory stores it.
+pub fn start_pools(conf_text: &str) -> Result<ServicePools, crate::context::Error> {
+    let _ = conf_text;
+    Ok(ServicePools::idle())
 }

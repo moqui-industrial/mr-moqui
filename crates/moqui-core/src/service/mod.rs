@@ -30,7 +30,7 @@ pub use call::call;
 pub use callback::{run_held_service, run_matched_eca, schedule_feed_receive};
 pub use define::load_definitions;
 pub use email_eca::run_email_rules;
-pub use pool::start_pools;
+pub use pool::{start_pools, ServicePools};
 pub use remote::http_resource_error;
 pub use rest::run;
 pub use schedule::schedule;
