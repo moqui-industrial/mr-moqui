@@ -278,6 +278,7 @@ impl RestClient {
 enum PendingBody {
     Absent,
     Json(String),
+    Text(String),
     Invalid(Error),
 }
 
@@ -306,6 +307,17 @@ impl Call<'_> {
             Ok(text) => PendingBody::Json(text),
             Err(err) => PendingBody::Invalid(Error::new("could not encode the JSON body").with_source(err)),
         };
+        self
+    }
+
+    /// A text body sent as given, such as newline-delimited JSON. Sets `content-type` unless one is
+    /// already set.
+    pub fn text(mut self, content_type: &str, body: impl Into<String>) -> Self {
+        if !has_content_type(&self.headers) {
+            self.headers
+                .push(("content-type".to_string(), content_type.to_string()));
+        }
+        self.body = PendingBody::Text(body.into());
         self
     }
 
@@ -360,6 +372,7 @@ impl Call<'_> {
                 }
                 Some(text)
             }
+            PendingBody::Text(text) => Some(text),
         };
         Ok(PreparedRequest {
             method: self.method,

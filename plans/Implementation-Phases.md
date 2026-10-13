@@ -133,7 +133,7 @@ Bottom-up inside the phase:
 8. Dynamic view. Data writer. `EntityFacade.rest` (find, create, store, update, delete, path primary keys, relationship steps, dependent levels, master name), tested by calling the facade, with no HTTP server yet.
 9. ECA rules loaded and matched on create, update, and delete. The action bodies run once phase 6 can run them.
 10. Data loader for entity elements: streaming XML, CSV, and JSON, including a zip of those. Roots `entity-facade-xml` and `seed-data`. Type filter, component filter, conf `load-data` locations, nested relationships, `onlyCreate`, `useTryInsert`, dummy foreign keys. Service-named elements are parsed and held until phase 6 runs them. `never-try-insert="true"` on Postgres forces `useTryInsert` off, and the loader uses `createOrUpdate`. When try-insert is on, Postgres uses `INSERT ... ON CONFLICT` and MySQL uses `INSERT ... ON DUPLICATE KEY UPDATE`. An unhandled statement error marks the transaction rollback-only. Codegen emits a savepoint around a `try` whose body contains an entity or service call. `ignore-error="true"` stays a message-level flag. The rule is the Transactions section of `plans/Architecture-Proposal.md`.
-11. Data-document assembly and data-feed rules. Feed dispatch is stored here and calls the receive service once phase 6 can run it. That service does not index until phase 9. `disableEntityEca`, `disableAuditLog`, `disableFkCreate`, and `disableDataFeed` work.
+11. Data-feed rules. Feed dispatch is stored here and calls the receive service once phase 6 can run it. That service does not index until phase 9. `disableEntityEca`, `disableAuditLog`, `disableFkCreate`, and `disableDataFeed` work. Document assembly (the `EntityDataDocument` port) did not land in this phase; it landed with phase 9, with the feed's delete rows and related-entity resolution.
 
 The factory holds one `DbDriver` per entity group. The default framework group is one database. `dbresource://` resolves through this facade. `db://` is not a scheme.
 
@@ -280,6 +280,17 @@ Depends on gate 1. Entity documents and the feed rules already assemble, and the
 - The query-string parser for the subset existing screens emit.
 - One active backend. The OpenSearch backend builds HTTP bodies and sends them through `HttpClient`. The host `search` module starts the process. `/elastic` and `/kibana` proxies, and the log indexes, exist only when that backend is selected.
 - `CountDistinct` is exact on Postgres and may be approximate on OpenSearch.
+
+### Where the code differs from the text above
+
+Phase 9 was checked against `SalesSummary.xml` through `SalesReportServices`, and against `SearchServices.xml` and its callers. The changes to the API are in `plans/SearchFacade.md`.
+
+- **Document assembly.** `entity::document` is the `EntityDataDocument` port: one outer-join query per document from the field paths, rows merged into nested maps (type-one flattened, type-many as lists keyed by the relationship alias), expression fields in JavaScript after the query, query and post-query conditions, `manualDataServiceName`, and batched feed reads that page on the primary key.
+- **Feed.** A write records its values and its transaction frame. Before commit the feed resolves writes to document ids, a related write by walking back along the relationship path, and inserts one pending row per document with `index` or `delete`. After commit `process#DataFeedPending` runs on the pool and calls each real-time feed's receive or delete service. The `process_DataFeedPending_frequent` job retries what is left. The Postgres `xmin` probe remains only for writes recorded without values.
+- **Text** uses the `simple` configuration, not `english`, to match Elastic's `standard` analyzer.
+- **Services.** `SearchServices.xml` bodies are JavaScript on `ec.search`. `search#DataDocuments` reads the Elastic JSON `nestedQueryMap` that unmigrated callers send. A `<script>` body may end with a top-level `return`.
+- **Store placement** is the host `search` module: the entity Postgres `search` schema, a `postgres` url, or a dedicated embedded cluster under `runtime/db/search` when the entity database is not Postgres. The data load attaches search when it can.
+- **OpenSearch** request bodies are built by the compiler in core. Starting the OpenSearch process, the `/elastic` and `/kibana` proxies, and the log indexes wait for the web phases.
 
 `get#InventoryProjectedInfo` is a mantle rewrite onto `aggregate`. `get#PriceHistoryInfo` stays unimplemented because it has no callers. Both are named here so they are not ported as `ElasticFacade` clients. The inventory rewrite happens with mantle, outside this gate.
 

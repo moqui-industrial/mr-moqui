@@ -19,6 +19,7 @@ pub mod driver;
 pub mod entity;
 pub mod screen;
 pub mod script;
+pub mod search;
 pub mod service;
 #[cfg(test)]
 mod testing;

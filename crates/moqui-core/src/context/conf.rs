@@ -62,7 +62,7 @@ fn merge_config_nodes(base: &MNode, over: &MNode) {
     merge_resource_facade(base, over);
     merge_screen_facade(base, over);
     merge_service_facade(base, over);
-    merge_elastic_facade(base, over);
+    merge_search_facade(base, over);
     merge_llm_facade(base, over);
     merge_entity_facade(base, over);
     merge_database_list(base, over);
@@ -230,17 +230,19 @@ fn merge_service_facade(base: &MNode, over: &MNode) {
     append_named(&base_node, &over_node, "jms-service");
 }
 
-fn merge_elastic_facade(base: &MNode, over: &MNode) {
-    if over.first_named("elastic-facade").is_none() {
+/// `search-facade` attributes override; a `postgres` or `cluster` child replaces the base one.
+fn merge_search_facade(base: &MNode, over: &MNode) {
+    let Some(over_node) = over.first_named("search-facade") else {
         return;
-    }
-    if base.first_named("elastic-facade").is_none() {
-        if let Some(over_node) = over.first_named("elastic-facade") {
-            base.append_node(over_node.deep_copy());
+    };
+    match base.first_named("search-facade") {
+        None => base.append_node(over_node.deep_copy()),
+        Some(base_node) => {
+            base_node.copy_attributes_from(&over_node);
+            base_node.merge_single_child(&over_node, "postgres");
+            base_node.merge_single_child(&over_node, "cluster");
         }
-        return;
     }
-    base.merge_child_with_child_key(over, "elastic-facade", "cluster", &["name"], None);
 }
 
 fn merge_llm_facade(base: &MNode, over: &MNode) {

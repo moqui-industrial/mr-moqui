@@ -93,6 +93,10 @@ along with this software (see the LICENSE.md file). If not, see
     <moqui.service.job.ServiceJob jobName="IndexDataFeedDocuments" description="Index DataFeed Documents"
             serviceName="org.moqui.search.SearchServices.index#DataFeedDocuments" topic="IndexDataFeedDocuments"
             transactionTimeout="3600"/>
+    <!-- Service Job: deliver DataFeedPending rows a commit left behind (search down, worker queue full, or a failed receive) -->
+    <moqui.service.job.ServiceJob jobName="process_DataFeedPending_frequent" description="Deliver pending DataFeed documents"
+            serviceName="org.moqui.EntityServices.process#DataFeedPending" cronExpression="0 0/5 * * * ?" paused="N"
+            transactionTimeout="3600"/>
 
     <!-- Service Job: Export and Import Entity Data Snapshot -->
     <moqui.security.user.NotificationTopic topic="ExportEntityDataSnapshot" description="Export Entity Data Snapshot Completed"

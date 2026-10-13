@@ -16,6 +16,7 @@
 
 pub mod cache;
 pub mod crypto;
+pub mod document;
 pub mod field_rw;
 pub mod load_feed;
 pub mod query_rest;

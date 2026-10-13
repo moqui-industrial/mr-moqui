@@ -1182,6 +1182,25 @@ fn related_rows(
     }
 }
 
+/// The related entity's full name and the `(field, related field)` pairs of a relationship.
+pub(crate) fn relationship_pairs(
+    facade: &EntityFacade,
+    entity_name: &str,
+    relationship_name: &str,
+) -> Result<(String, Vec<(String, String)>), Error> {
+    let relationship = facade.with_entity(entity_name, |entity, _, _| {
+        entity.relationship(relationship_name).cloned().ok_or_else(|| {
+            Error::new(format!(
+                "No relationship found with name or alias [{relationship_name}] on entity [{}]",
+                entity.full_name
+            ))
+        })
+    })?;
+    let target = load_snap(facade, &relationship.related)?;
+    let pairs = expand_key_map(&relationship.relationship_type, &relationship.key_map, &target);
+    Ok((target.full_name, pairs))
+}
+
 fn expand_key_map(relationship_type: &str, key_map: &[KeyMap], target: &EntitySnap) -> Vec<(String, String)> {
     let pks: Vec<String> = target
         .fields
@@ -1395,6 +1414,31 @@ fn add_relationship_member(
         "member-relationship join-from-alias",
     )?;
     let relationship_name = req_string(spec, &["relationship"], "member-relationship relationship")?;
+    let optional = map_get(spec, &["join-optional", "joinOptional"]).is_some_and(flag_value);
+    push_relationship_member(
+        facade,
+        members,
+        conditions,
+        &entity_alias,
+        &join_from,
+        &relationship_name,
+        optional,
+    )
+}
+
+/// Join `relationship` from the member `join_from` as `entity_alias`. A key value on the
+/// relationship becomes a condition.
+fn push_relationship_member(
+    facade: &EntityFacade,
+    members: &mut Vec<MemberEntity>,
+    conditions: &mut Vec<Condition>,
+    entity_alias: &str,
+    join_from: &str,
+    relationship_name: &str,
+    optional: bool,
+) -> Result<(), Error> {
+    let entity_alias = entity_alias.to_string();
+    let join_from = join_from.to_string();
     let source = members
         .iter()
         .find(|member| member.entity_alias == join_from)
@@ -1405,7 +1449,7 @@ fn add_relationship_member(
             ))
         })?;
     let relationship = facade.with_entity(&source.entity_name, |entity, _, _| {
-        entity.relationship(&relationship_name).cloned().ok_or_else(|| {
+        entity.relationship(relationship_name).cloned().ok_or_else(|| {
             Error::new(format!(
                 "No relationship found with name or alias [{relationship_name}] on entity [{}:{}]",
                 entity.short_alias.as_deref().unwrap_or(""),
@@ -1425,7 +1469,7 @@ fn add_relationship_member(
         entity_alias: entity_alias.clone(),
         entity_name: target.full_name,
         join_from_alias: Some(join_from),
-        join_optional: map_get(spec, &["join-optional", "joinOptional"]).is_some_and(flag_value),
+        join_optional: optional,
         key_map,
     });
     for key_value in relationship.key_values {
@@ -1607,6 +1651,60 @@ fn run_view(facade: &EntityFacade, built: &BuiltView) -> Result<Vec<BTreeMap<Str
         out.push(field_rw::after_read(facade, &built.view, mapped)?);
     }
     Ok(out)
+}
+
+/// A view built in code: one primary member, then relationship members joined in order.
+pub(crate) struct CodeView {
+    pub(crate) name: String,
+    pub(crate) primary_alias: String,
+    pub(crate) primary_entity: String,
+    /// Entity alias, the alias it joins from, the relationship name, and whether the join is optional.
+    pub(crate) relationships: Vec<(String, String, String, bool)>,
+    pub(crate) aliases: Vec<FieldAlias>,
+}
+
+/// Run a [`CodeView`]. Field names in `condition` and `order` are alias names, or
+/// `entity_alias.field` through [`FieldRef::aliased`].
+pub(crate) fn run_code_view(
+    facade: &EntityFacade,
+    code: &CodeView,
+    condition: Option<Condition>,
+    order: Vec<OrderBy>,
+    page: LimitOffset,
+) -> Result<Vec<BTreeMap<String, Value>>, Error> {
+    let primary = load_snap(facade, &code.primary_entity)?;
+    let mut members = vec![MemberEntity {
+        entity_alias: code.primary_alias.clone(),
+        entity_name: primary.full_name,
+        join_from_alias: None,
+        join_optional: false,
+        key_map: Vec::new(),
+    }];
+    let mut conditions = Vec::new();
+    for (alias, join_from, relationship, optional) in &code.relationships {
+        push_relationship_member(
+            facade,
+            &mut members,
+            &mut conditions,
+            alias,
+            join_from,
+            relationship,
+            *optional,
+        )?;
+    }
+    conditions.extend(condition);
+    let mut view = blank_view(&code.name);
+    view.member_entities = members;
+    view.aliases = code.aliases.clone();
+    run_view(
+        facade,
+        &BuiltView {
+            view,
+            condition: and_all(conditions),
+            order,
+            page,
+        },
+    )
 }
 
 fn parse_order(value: &Value) -> Vec<OrderBy> {

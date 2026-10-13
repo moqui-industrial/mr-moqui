@@ -92,7 +92,10 @@
     <!-- How often (in seconds) to check for scheduled jobs to run, set to 0 to not run scheduled jobs -->
     <default-property name="scheduled_job_check_time" value="60"/>
 
-    <!-- ElasticSearch Client and Proxy Servlet settings -->
+    <!-- SearchFacade backend: postgres (the default, tables in the search schema of the entity Postgres, or a dedicated
+        embedded cluster when the entity database is not Postgres) or opensearch (the cluster settings below) -->
+    <default-property name="search_backend" value="postgres"/>
+    <!-- OpenSearch (or ElasticSearch 7+) cluster for the opensearch backend, and the Proxy Servlet settings -->
     <default-property name="elasticsearch_url" value="http://127.0.0.1:9200"/>
     <default-property name="elasticsearch_user" value=""/>
     <default-property name="elasticsearch_password" value="" is-secret="true"/>
@@ -485,11 +488,12 @@
         <service-file location="classpath://service/org/moqui/search/SearchServices.xml"/>
     </service-facade>
 
-    <elastic-facade>
-        <!-- NOTE: elasticsearch_host1 used from moqui-elasticsearch with elasticsearch_mode=rest for compatibility until moqui-elasticsearch deprecated -->
-        <cluster name="default" url="${elasticsearch_host1 ?: elasticsearch_url}" user="${elasticsearch_user}" password="${elasticsearch_password}"
-                index-prefix="${elasticsearch_index_prefix}" pool-max="64" queue-size="1024"/>
-    </elastic-facade>
+    <!-- One search backend. With no postgres element the postgres backend uses the search schema of the entity Postgres;
+        a postgres element with a url points it at another Postgres. The cluster element is used only by the opensearch backend. -->
+    <search-facade backend="${search_backend}">
+        <cluster url="${elasticsearch_url}" user="${elasticsearch_user}" password="${elasticsearch_password}"
+                index-prefix="${elasticsearch_index_prefix}"/>
+    </search-facade>
 
     <llm-facade enabled="true" default-profile="default">
         <profile name="default" url="${llm_openai_url}" api-key="${llm_openai_api_key}"

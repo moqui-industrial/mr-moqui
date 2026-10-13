@@ -45,6 +45,7 @@ mod decimal;
 mod entities;
 mod facades;
 mod helpers;
+mod search;
 mod services;
 
 use conditions::*;
@@ -54,6 +55,7 @@ use entities::*;
 pub use facades::run_script_location;
 use facades::*;
 use helpers::*;
+use search::*;
 use services::*;
 
 use crate::context::{Error, ExecutionContext};
@@ -629,6 +631,7 @@ fn install_ec(ctx: &Ctx<'_>) -> Result<(), Error> {
     let web = caught(ctx, "web", Class::instance(ctx.clone(), HostWeb {}))?;
     ec.set("web", web).map_err(js_error)?;
     ec.set("cache", cache_object(ctx)?).map_err(js_error)?;
+    ec.set("search", search_object(ctx)?).map_err(js_error)?;
     caught(ctx, "globals", ctx.globals().set("ec", ec))?;
     Ok(())
 }
@@ -643,6 +646,12 @@ fn entity_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     entity.set("find", find).map_err(js_error)?;
     let make = caught(ctx, "entity.makeValue", Function::new(ctx.clone(), entity_make_value))?;
     entity.set("makeValue", make).map_err(js_error)?;
+    let documents = caught(
+        ctx,
+        "entity.getDataDocuments",
+        Function::new(ctx.clone(), entity_get_data_documents),
+    )?;
+    entity.set("getDataDocuments", documents).map_err(js_error)?;
     let factory = Object::new(ctx.clone()).map_err(js_error)?;
     let make_condition = Function::new(ctx.clone(), make_condition).map_err(js_error)?;
     factory.set("makeCondition", make_condition).map_err(js_error)?;

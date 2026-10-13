@@ -495,6 +495,12 @@ impl TransactionManager {
         self.depth() > 0
     }
 
+    /// A token for the active frame, unique per begun transaction and shared by its joins.
+    /// `None` when no frame is active, including when the top frame is suspended.
+    pub fn frame_token(&self) -> Option<u64> {
+        self.with_frames(|frames| active(frames).map(|frame| frame.deadline_token))
+    }
+
     fn complete(&self, mut phase: Phase, commit: bool) -> Result<(), Error> {
         let result = if commit {
             try_commit(&mut phase)

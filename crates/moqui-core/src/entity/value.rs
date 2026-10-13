@@ -177,7 +177,7 @@ impl EntityFacade {
 
     fn write_update(&self, entity_name: &str, values: &BTreeMap<String, Value>) -> Result<(), Error> {
         let plain = self.normalize_values(entity_name, values, true)?;
-        let _rules = load_feed::match_rules(self, entity_name, "update");
+        let _rules = load_feed::match_rules_with(self, entity_name, "update", Some(&plain));
         self.reject_view(entity_name, "update")?;
         let has_columns = self.with_entity(entity_name, |entity, _, _| {
             Ok(!present_columns(entity, &plain, true, true).is_empty())
@@ -232,7 +232,7 @@ impl EntityFacade {
         let seal_operation = if operation == "upsert" { "create" } else { operation };
         // Update already matched in `write_update`, including the no-column return.
         if operation != "update" {
-            let _rules = load_feed::match_rules(self, entity_name, seal_operation);
+            let _rules = load_feed::match_rules_with(self, entity_name, seal_operation, Some(&plain));
         }
         let eca = crate::user::context_entered();
         if eca {

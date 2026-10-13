@@ -93,14 +93,10 @@ pub(crate) fn after_statement(facade: &EntityFacade, tx: &TransactionManager, fe
     if !tx.has_cache_flush() && cache::register_cache_flush(facade, tx).is_err() {
         return;
     }
+    // One registration per frame: the pre-commit insert, the after-commit receive, and the
+    // rollback cleanup are added together, whatever other commit hooks the frame has.
     if feed && !tx.has_feed_insert() {
         let _ = load_feed::register_feed_insert(facade, tx);
-    }
-    if feed && !tx.has_commit_hook() {
-        let facade = facade.clone();
-        let _ = tx.on_commit(move || {
-            let _ = crate::service::schedule_feed_receive(&facade);
-        });
     }
 }
 

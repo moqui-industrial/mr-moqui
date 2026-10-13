@@ -15,8 +15,10 @@
 //! Process edge. PDF, SSH, and SSO are not implemented yet.
 //! `load` reads framework data files. `lint` checks service definitions.
 //! No arguments start the plain HTTP listener. Database drivers live in [`db`].
+//! The search store and backend are placed by [`search`].
 
 pub mod db;
+pub mod search;
 
 #[cfg(feature = "axum")]
 mod http;
@@ -423,6 +425,14 @@ fn load_with_factory(
 ) -> Result<LoadReport, moqui_lib::error::Error> {
     let facade = crate::db::entity_facade::open_entity_facade(framework_dir, std::sync::Arc::clone(driver), pool())?;
     crate::db::entity_facade::attach(factory, facade.clone());
+    // Feeds index through search when it is up; a load still runs when it is not.
+    let _search = match crate::search::attach_search(factory, &facade, true) {
+        Ok(store) => Some(store),
+        Err(err) => {
+            eprintln!("search is not available during this load: {err}");
+            None
+        }
+    };
     let context = factory.new_context();
     let entered = context.enter();
     let authz = context.disable_authz();
@@ -590,6 +600,14 @@ fn boot_server(
         .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
     let facade = crate::db::entity_facade::open_entity_facade(&framework_dir, Arc::clone(&driver), serve_pool())?;
     crate::db::entity_facade::attach(&factory, facade.clone());
+    // Same policy as `load`: indexing runs when search is up, and the server still starts when it is not.
+    let search = match crate::search::attach_search(&factory, &facade, true) {
+        Ok(store) => Some(store),
+        Err(err) => {
+            eprintln!("search is not available: {err}");
+            None
+        }
+    };
     {
         let context = factory.new_context();
         let entered = context.enter();
@@ -611,17 +629,21 @@ fn boot_server(
     Ok(ServeProcess {
         runtime: Some(runtime),
         factory: Some(factory),
+        search,
         facade: Some(facade),
         driver: Some(driver),
         cluster: Some(cluster),
     })
 }
 
-/// Drop order is the axum runtime, the factory (request pool, then clients), the driver, then the cluster.
+/// Drop order is the axum runtime, the factory (request pool, then clients), the search store,
+/// the driver, then the cluster. The search store outlives the factory so a dedicated postmaster
+/// stops after the facade's clients.
 #[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
 struct ServeProcess {
     runtime: Option<tokio::runtime::Runtime>,
     factory: Option<std::sync::Arc<moqui_core::context::ExecutionContextFactory>>,
+    search: Option<crate::search::SearchStore>,
     facade: Option<moqui_core::entity::EntityFacade>,
     driver: Option<std::sync::Arc<dyn moqui_core::driver::DbDriver>>,
     cluster: Option<crate::db::embedded::EmbeddedCluster>,
@@ -632,6 +654,7 @@ impl Drop for ServeProcess {
     fn drop(&mut self) {
         self.runtime.take();
         self.factory.take();
+        self.search.take();
         self.facade.take();
         self.driver.take();
         self.cluster.take();

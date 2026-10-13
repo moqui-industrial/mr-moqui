@@ -42,6 +42,27 @@ along with this software (see the LICENSE.md file). If not, see
         </in-parameters>
     </service>
 
+    <service verb="process" noun="DataFeedPending" authenticate="anonymous-all" no-remember-parameters="true" transaction-timeout="3600">
+        <description>Deliver DataFeedPending rows: assemble each document and call the receive service (or, for a document
+            that no longer assembles, the delete service) of every real-time push DataFeed that has it, then remove the rows
+            that were delivered. A commit runs this for its own rows on a service worker. With no IDs a batch of every
+            pending row is tried, for rows a failed or full worker left behind.</description>
+        <in-parameters>
+            <parameter name="dataFeedPendingIds" type="List"><parameter name="dataFeedPendingId"/></parameter>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="documentsIndexed" type="Integer"/>
+            <parameter name="documentsDeleted" type="Integer"/>
+            <parameter name="rowsLeft" type="Integer"/>
+        </out-parameters>
+        <actions><script><![CDATA[
+            const report = ec.search.processFeedPending(dataFeedPendingIds);
+            documentsIndexed = report.documentsIndexed;
+            documentsDeleted = report.documentsDeleted;
+            rowsLeft = report.rowsLeft;
+        ]]></script></actions>
+    </service>
+
     <service verb="add" noun="ManualDocumentData" type="interface" no-remember-parameters="true">
         <description>Services named in the DataDocument.manualDataServiceName field should implement this interface.</description>
         <in-parameters>

@@ -14,7 +14,7 @@
 
 //! JavaScript parse through `oxc_parser`. Groovy leftovers are rejected by the service loader.
 
-use oxc_parser::Parser;
+use oxc_parser::{ParseOptions, Parser};
 
 use crate::context::Error;
 
@@ -64,10 +64,18 @@ fn parse_expression(source: &str) -> Result<(), Error> {
     }
 }
 
+/// A `<script>` body runs inside the function the action macros emit, so a top-level `return`
+/// ends the script, as it ended a Groovy script.
 fn parse_program(source: &str) -> Result<(), Error> {
     let allocator = std::default::Default::default();
     let source_type = std::default::Default::default();
-    let parsed = Parser::new(&allocator, source, source_type).parse();
+    let options = ParseOptions {
+        allow_return_outside_function: true,
+        ..ParseOptions::default()
+    };
+    let parsed = Parser::new(&allocator, source, source_type)
+        .with_options(options)
+        .parse();
     if parsed.panicked || parsed.diagnostics.has_errors() {
         return Err(Error::new("not JavaScript"));
     }

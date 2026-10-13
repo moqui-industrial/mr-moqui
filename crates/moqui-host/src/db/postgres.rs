@@ -620,6 +620,12 @@ mod driver {
             Ok(Value::F64(f64::from_be_bytes(read_array(raw)?)))
         } else if is_text(ty) {
             decode_text(raw)
+        } else if ty == &Type::JSONB {
+            // Binary jsonb is a version byte, 1, then the JSON text.
+            match raw.split_first() {
+                Some((1, text)) => decode_text(text),
+                _ => Err(bad("bad jsonb")),
+            }
         } else if ty == &Type::BYTEA {
             Ok(Value::Bytes(raw.to_vec()))
         } else if ty == &Type::NUMERIC {
