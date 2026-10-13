@@ -6,7 +6,7 @@ Architecture specification · Rust server · Browser client · Dynamic schemas �
 
 Build a schema-driven binary document system for internal communication using FlatBuffers, with runtime schema reflection, immutable schema versions, and shared message buffers.
 
-This is an internal messaging optimization, not a replacement for Moqui's REST APIs or existing serialization formats. REST APIs must remain supported, including JSON and other currently supported formats. Internal callers may use the binary protocol; public and integration clients must not require FlatBuffers or `.bfbs` reflection.
+FlatBuffers is a first-class request/response format for any Moqui application endpoint, not an allowlist of routes. Service calls, screen transitions, REST APIs, `/actions` and document subscriptions are examples of that universal endpoint contract. Binary callers send and receive FlatBuffers instead of JSON, using the same authoritative operations and precached JavaScript. Existing REST routes, JSON and other supported formats remain available for compatibility; clients choosing those formats do not require `.bfbs` reflection.
 
 The application will support:
 
@@ -37,7 +37,7 @@ The application will support:
 | Document synchronization | Snapshots + revisioned patches                          |
 | Schema synchronization   | Versioned publication and on-demand retrieval           |
 
-The key architectural decision is to separate the stable networking protocol from the dynamically defined document schemas, and keep transport/format adapters separate from application operations.
+The key architectural decision is to separate the stable networking protocol from dynamically defined document and service-parameter schemas, and keep transport/format adapters separate from application operations. Internal service callers natively encode declared inputs as FlatBuffers; service workers expose verified inputs through lazy QuickJS host getters and execute precached JavaScript without first materializing a parameter map or JSON object graph. Declared outputs are encoded natively as FlatBuffers.
 
 FlatBuffers officially supports binary schemas as a runtime intermediate representation. Its Rust reflection support exists, but is still described as experimental, so production qualification of that dependency is a required milestone—not something to assume complete.&#x20;
 
@@ -65,6 +65,10 @@ These requirements determine which implementations are acceptable.
 | Bounded memory         | No unbounded message, subscription or write queues           |
 | Backward compatibility | Version-aware reading and controlled write migration         |
 | Large-scale fan-out    | Encode an update once per payload variant, not per recipient |
+
+### Existing execution model
+
+Follow `plans/Architecture-Proposal.md`, `plans/Crate-Layout.md`, and `plans/ContextObjects.md`. Tokio/Axum in `moqui-host` owns connections, framing and outbound queues. Application operations go through the factory's bounded service worker pool; each worker uses its thread-local `ExecutionContext` and QuickJS runtime, and framework calls remain synchronous. No database or JavaScript business logic runs on Tokio tasks. A connection never retains an execution context, transaction or JavaScript value. Queue saturation produces an explicit overload response.
 
 ### Important limits
 
@@ -152,74 +156,17 @@ Do not introduce a separate distributed schema-registry service initially unless
 
 ## 4. Repository and module design
 
-I would use a Rust workspace with one browser package.
+Use the existing workspace and five-crate cut in `plans/Crate-Layout.md`, not a separate messaging workspace.
 
+```text
+crates/moqui-lib/src/wire/        # codecs, descriptors, reflection, binary verification
+crates/moqui-core/src/document/  # document operations, revisions, schema policy
+crates/moqui-core/src/service/   # service schemas, parameter bindings, cached JS invocation
+crates/moqui-host/src/gateway/   # sockets, routing, fan-out, backpressure, REST adapters
+crates/moqui-host/src/schema/    # restricted flatc process execution
 ```
 
-moqui-wire/
-├── Cargo.toml
-├── crates/
-│   ├── wire/
-│   │   ├── src/
-│   │   │   ├── envelope.rs
-│   │   │   ├── reader.rs
-│   │   │   ├── writer.rs
-│   │   │   └── errors.rs
-│   │   └── build.rs
-│   │
-│   ├── schema/
-│   │   └── src/
-│   │       ├── registry.rs
-│   │       ├── compile.rs
-│   │       ├── reflect.rs
-│   │       ├── validate.rs
-│   │       └── compatibility.rs
-│   │
-│   ├── documents/
-│   │   └── src/
-│   │       ├── snapshot.rs
-│   │       ├── patch.rs
-│   │       ├── revision.rs
-│   │       └── moqui.rs
-│   │
-│   ├── gateway/
-│   │   └── src/
-│   │       ├── connection.rs
-│   │       ├── websocket.rs
-│   │       ├── rest.rs
-│   │       ├── subscriptions.rs
-│   │       ├── fanout.rs
-│   │       └── backpressure.rs
-│   │
-│   └── schema-publisher/
-│       └── src/main.rs
-│
-├── browser/
-│   └── src/
-│       ├── schema-registry.ts
-│       ├── reflected-reader.ts
-│       ├── reflected-writer.ts
-│       ├── validate.ts
-│       ├── websocket.ts
-│       └── document-store.ts
-│
-├── schemas/
-│   ├── envelope.fbs
-│   └── patches.fbs
-│
-├── tests/
-│   ├── fixtures/
-│   ├── cross-language/
-│   └── evolution/
-│
-└── benches/
-    ├── serialization/
-    ├── reflection/
-    └── fanout/
-
-```
-
-These should be logical modules, not independently deployed services by default.
+These are logical modules inside the existing crates, not new independently deployed services. Framework-independent descriptors and readers/writers belong in lib; Moqui metadata resolution, authorization, registry persistence and compatibility policy belong in core. Host supplies compiler process execution. Schema publication is a command of the existing `moqui` binary, not a separate executable. Browser reflection, schema caching and document-store modules live in the existing browser source tree. Keep protocol schemas, cross-language fixtures and benchmarks alongside those modules.
 
 The essential interfaces should be small:
 
@@ -286,8 +233,10 @@ Generate a genuine FlatBuffers schema:
 namespace Moqui;
 
 table Decimal {
-  unscaled:long;
-  scale:int;
+  coefficient_low:ulong;
+  coefficient_high:uint;
+  negative:bool;
+  scale:ubyte;
 }
 
 table OrderItem {
@@ -306,7 +255,7 @@ root_type Order;
 
 ```
 
-This gives every document a real binary layout.
+This gives every document a real binary layout. `Decimal` matches `rust_decimal`: unsigned 96-bit coefficient (`high << 64 | low`), sign, and scale 0–28; TypeScript uses `bigint` for the coefficient.
 
 ### Type mappings
 
@@ -316,7 +265,7 @@ This gives every document a real binary layout.
 | Integer                     | `int`, `long`, etc.                                     |
 | Boolean                     | `bool`                                                  |
 | Floating point              | `float` / `double`                                      |
-| Exact decimal               | `long` with scale, or defined Decimal128 representation |
+| Exact decimal               | `Decimal` table: 96-bit coefficient, sign, scale 0–28   |
 | Date                        | Signed integer days since epoch                         |
 | Timestamp                   | Signed integer microseconds since Unix epoch            |
 | Enum                        | FlatBuffers `enum`, if definitions are stable           |
@@ -351,6 +300,14 @@ I would map them as follows:
 - Document fields unsupported by the runtime type system are rejected during schema publication.
 
 Do not infer permanent type identities from display names or relationship aliases. Those may change while the field's semantic identity stays the same.
+
+### Service invocation schemas
+
+Service XML and its JavaScript XML-action implementation jointly define the service contract. Generate separate immutable input and output schemas from declared service parameters, including nested maps/lists where their structure is declared, and reconcile them with the parameter reads, assignments, result writes and service calls emitted by the JavaScript XML-action macros. Schema generation runs after action expansion, not independently of it. The macros emit contract metadata alongside generated JavaScript; use the existing JavaScript AST validation pass to check that generated accesses agree with that metadata. Carry parameter constraints as validation metadata; do not infer permanent types from observed requests or assume arbitrary JavaScript can be statically typed. Undeclared fields or ambiguous types require an explicit declaration or supported typed-value representation before a specialized binary contract is published. Unspecified nested structures otherwise remain on the existing map/JSON path.
+
+An invocation identifies the service, its input schema and requested output schema, and the request ID. A schema ID alone is not authority to invoke a service. Validate that both schemas belong to the selected service and are accepted by its current policy. Defaults and declared conversions retain existing service semantics; strict wire-type validation does not remove those semantics. Authenticate and authorize through the existing service facade.
+
+Native Rust callers encode from typed Rust values through the schema-driven builder, without an intermediate JSON representation. Browser callers use the dynamic writer. Trusted local callers may retain the existing direct invocation path; binary encoding is not mandatory for every in-process facade call.
 
 ### Stable field IDs
 
@@ -394,7 +351,7 @@ CREATE TABLE document_schema_policy (
 
 ```
 
-Use separate immutable compatibility-policy records or a versioned policy table for accepted historical versions, migrations and rollout state. The two tables above are only the core schema storage.
+Use separate immutable compatibility-policy records or a versioned policy table for accepted historical versions, migrations and rollout state. The two tables above are only the core schema storage. Extend registry identity and policy to include schema kind (document, service input, service output) and owner (document type or service name); service input/output schemas use the same immutable IDs, fingerprints and publication rules.
 
 Store the `.fbs` source as well, for diagnostics, auditability and compatibility checks.
 
@@ -576,6 +533,30 @@ The proposed plan should benchmark this cost early. It may be acceptable for inb
 
 Do not bypass verification merely to hit a throughput number. If necessary, optimize or replace the verification implementation while preserving its safety properties.
 
+### Binary-backed parameters and precached JavaScript
+
+The internal service path is:
+
+```text
+Native/browser FlatBuffers input
+→ bounded worker handoff
+→ structural verification against cached service schema
+→ service validation, authorization and default handling
+→ lazy parameter bindings on the worker's QuickJS context
+→ precached service JavaScript
+→ native FlatBuffers output encoding
+```
+
+Apply framing and message-size limits before enqueueing. Complete structural verification before any field access; expensive verification must not block the socket loop. The worker owns the immutable input buffer and schema throughout execution. Cache descriptors process-wide, but cache JavaScript functions in each worker's own QuickJS runtime; functions and JS values never cross threads. Track dependencies on service XML, imported action macro modules and script bodies. When an XML-action JavaScript implementation changes, regenerate affected actions and contract metadata, reconcile and compile their FlatBuffers schemas, run compatibility checks, and compile the affected service functions. Publish a coherent service generation linking generated JavaScript, input/output schema IDs and binding metadata. Workers switch generations only at safe invocation boundaries; in-flight calls retain their original generation, and a failed rebuild leaves the last valid generation active. Unchanged contracts may reuse immutable schema IDs, but changed layouts receive new IDs. Never execute new JavaScript against stale parameter bindings.
+
+Bind input parameter names through the existing context-stack mechanism, preserving bare-name resolution, enumeration and missing-name behavior. Nested tables and vectors are lazy, read-only host views. Accessors perform declared exact-type reads and expose decimals and timestamps as the existing `rust_decimal` and `jiff` host values, not JavaScript numbers. Strings still require decoding into JavaScript strings, and view wrappers may allocate; this is allocation-reduced access, not completely zero-copy JavaScript execution.
+
+FlatBuffers input is immutable. Assignments write the normal top-map overlay, which takes precedence over binary-backed input. Defaults and validated conversions live in that overlay rather than changing received bytes. Whole-parameter assignment is supported; nested mutation must use an explicit materialized copy rather than silently changing a binary view. Adapters materialize values when an existing facade requires owned maps/lists. `EntityValue`, `EntityList`, and the live context remain their existing Rust-backed host objects, not FlatBuffers tables.
+
+Bindings are scoped to the service call and restored when it returns, including nested service calls and error paths. Clear them during context cleanup. Any view retained by application JavaScript must either own shared references to the verified bytes and descriptor or become explicitly invalid after the call; it must never borrow freed request memory. Bound retained-input memory under the runtime's configured resource budgets.
+
+Validate declared outputs and encode directly from returned Rust/QuickJS values using the native builder, without routing through JSON. Encoding may allocate and traverse the result; FlatBuffers does not make arbitrary JavaScript result objects zero-copy. Binary REST, screen-transition and `/actions` callers use this same binding and encoding path. Existing JSON callers retain their parameter and result contracts through the same authoritative facades.
+
 ## 8. Implementing the dynamic browser reader and writer
 
 The browser package needs two distinct capabilities.
@@ -642,6 +623,10 @@ Postpone rarely needed features such as arbitrary unions, specialized fixed-layo
 
 For large integer values, the browser must use `bigint`, not JavaScript `number`, to avoid precision loss.
 
+### Existing screen compatibility
+
+Binary service calls and document subscriptions do not replace the existing `qvt` package or its plain-data projection. Wire views retain exact types internally; data entering the existing screen model is explicitly projected into its established representation, including decimal strings and ISO-8601 timestamps. The document store owns revision tracking and reactive notifications; patches update store state rather than mutate received FlatBuffers. The browser gains neither server facade access nor implicit decimal arithmetic.
+
 ### Runtime type validation
 
 The browser and server must apply equivalent structural rules, but the Rust server remains authoritative.
@@ -684,7 +669,7 @@ Flags
 
 Schema
 
-4 B
+8 B
 
 Revision
 
@@ -694,11 +679,11 @@ FlatBuffers root buffer
 
 Variable length
 
-Conceptual 14-byte data header. It can be reduced for message classes that do not need revisions. A full request identifier, document identifier or sequence must be included wherever the operation semantics require it.
+Conceptual 18-byte data header, with unsigned 64-bit schema ID and revision encoded little-endian. It can be reduced for message classes that do not need revisions. A full request identifier, document identifier or sequence must be included wherever the operation semantics require it.
 
 The binary payload remains a normal FlatBuffer that can be sliced or viewed without creating a new copy.
 
-Use a stable per-deployment numeric schema ID. Registry IDs must never be reused for different definitions. If multiple independent registries can issue IDs, add a registry namespace or negotiate per-connection IDs.
+Use a stable per-deployment numeric schema ID. Use 64 bits throughout, restricted to 1..=i64::MAX for PostgreSQL `BIGINT`; TypeScript uses `bigint`. Registry IDs must never be reused for different definitions. If multiple independent registries can issue IDs, add a registry namespace or negotiate per-connection IDs.
 
 ### Message types
 
@@ -709,6 +694,8 @@ Use a stable per-deployment numeric schema ID. Registry IDs must never be reused
 | `SCHEMA_GET`        | Browser → server | Request missing immutable descriptor          |
 | `SCHEMA_DEFINITION` | Server → browser | Deliver `.bfbs` + constraints                 |
 | `SCHEMA_READY`      | Browser → server | Confirm validated schema installation         |
+| `SERVICE_CALL`      | Client → server  | Invoke named service with binary input and requested output schema |
+| `SERVICE_RESULT`    | Server → client  | Return binary output correlated to the request ID |
 | `SUBSCRIBE`         | Browser → server | Subscribe to documents or topics              |
 | `SNAPSHOT`          | Server → browser | Complete current document                     |
 | `PATCH`             | Both             | Revisioned document changes                   |
@@ -726,14 +713,22 @@ Do not include a 64-bit revision in all message types just because snapshots and
 
 Use the smallest header that actually enforces the required semantics.
 
-### REST API and format compatibility
+### HTTP endpoint exposure and format compatibility
 
-REST and internal WebSocket messaging are adapters over the same authoritative Moqui services, not separate implementations of business logic.
+Any Moqui application endpoint can expose typed inputs and outputs as FlatBuffers through the shared format adapter. REST, screen transitions, `/actions` and WebSocket messaging are examples, not an exhaustive list. New endpoints inherit this capability rather than implementing a separate binary handler. These adapters invoke the same authoritative Moqui operations, not separate implementations of business logic. Static assets, rendered HTML, file downloads and raw streams retain their native representations; FlatBuffers represents structured operation parameters and results, not an obligatory wrapper around every HTTP byte stream.
+
+Expose immutable input/output descriptors and constraints for each authorized callable contract through the schema retrieval mechanism. Identify contracts by endpoint operation: service name, REST resource/method, screen/transition path, or action identity. Route resolution determines the operation; a supplied schema ID must match its accepted policy and never selects or authorizes another operation. Descriptor retrieval is subject to access policy and must not expose private definitions.
+
+- **REST:** FlatBuffers request bodies bind directly to operation parameters, and responses encode declared results directly. No JSON intermediate is required.
+- **Screen transitions:** Generate contracts from screen parameter declarations and the expanded transition XML-action JavaScript, using the same macro metadata and coherent reload rules as services. Preserve transition validation, messages, errors, redirects, session behavior and transaction semantics. Represent non-data outcomes with a stable typed HTTP result contract while retaining existing HTTP status and redirect behavior.
+- **`/actions`:** Expose FlatBuffers inputs and outputs for the endpoint's existing supported operations. Derive contracts from their definitions and expanded XML-action JavaScript; retain existing dispatch, ordering, transaction and error semantics. If the endpoint accepts multiple actions, its binary contract must explicitly describe that request/result structure rather than invent new batch semantics.
+
+All application HTTP endpoints use the factory's bounded request handoff and the existing operation-specific worker dispatch before executing framework code. Preserve authentication, artifact authorization, CSRF/session-token checks, parameter precedence and error handling. Binary bodies are not an alternate security boundary.
 
 - Preserve existing REST routes, methods, authentication, authorization, response shapes and supported media types. Continue accepting and returning JSON and other existing formats; do not force binary envelopes or schema handshakes on REST clients.
 - Use HTTP `Content-Type` for request decoding and `Accept` for response negotiation, retaining existing defaults. Return `415` for unsupported request media types and `406` when no acceptable response format is available.
-- Allow opt-in FlatBuffers over HTTP for internal callers using an explicitly documented media type and schema identifier. Binary HTTP requests require the same verification and immutable-schema rules as binary WebSocket messages.
-- Decode each format into the shared document-operation model and apply the same semantic validation, authorization, transactional rules, revision checks and idempotency behavior. Preserve existing REST concurrency contracts; map new revision-aware operations explicitly to HTTP preconditions and conflict responses.
+- Support FlatBuffers over HTTP for browser, internal and integration callers using `application/vnd.moqui.flatbuffers` and documented input/output schema identifiers in HTTP metadata. Binary clients select this format through `Content-Type` and `Accept`, receiving FlatBuffers rather than JSON. Binary HTTP requests require the same verification and immutable-schema rules as binary WebSocket messages. Unknown or incompatible schemas receive a deterministic typed error; never silently decode with the latest schema or fall back to JSON.
+- Bind each format to the same authoritative operation and apply the same semantic validation, authorization, transactional rules, revision checks and idempotency behavior. Binary parameters remain lazy views with overlays where supported, rather than eagerly decoding into a shared map. Preserve existing REST concurrency contracts; map new revision-aware operations explicitly to HTTP preconditions and conflict responses.
 - Keep JSON conversion at REST/format boundaries, not in the internal binary fan-out path. JSON parsing and serialization allocate; zero-copy requirements apply to binary structured reads, not every supported API format.
 - Define lossless JSON mappings for exact decimals, 64-bit integers, dates, timestamps, binary values, and absent versus null fields for new document APIs, without changing existing REST contracts.
 - REST writes and internal message writes must publish through the same committed-update path so subscriptions observe changes regardless of entry transport. REST responses use HTTP status codes and the API's error representation, not WebSocket control frames.
@@ -971,7 +966,7 @@ I would require the chosen FlatBuffers implementation to beat a well-optimized J
 | Duplicate request behavior           | Idempotent where operations require it           |
 | Invalid schema writes                | Deterministic rejection                          |
 
-The 10 ms target excludes database commit time. You cannot responsibly assign a database p99 target before profiling actual Moqui transactions, indexing and business rules.
+The 10 ms target excludes database commit time. You cannot responsibly assign a database p99 target before profiling actual Moqui transactions, indexing and business rules. Ingest is not the 100k commits/reads target in `plans/Performance.md`.
 
 ### C. Fan-out
 
@@ -1049,7 +1044,7 @@ For every fixture, benchmark:
 
 Benchmarks must include both successful and malformed payloads.
 
-Add REST compatibility tests for existing JSON and other supported formats, content negotiation, authentication/authorization, errors and revision conflicts. Cross-transport tests must verify that REST writes reach subscribers and that REST reads observe committed internal-message writes. Test lossless JSON/binary round trips for the new document APIs.
+Add binary and JSON compatibility tests for REST, screen transitions and `/actions`, including descriptor retrieval, content negotiation, input/output schema mismatches, authentication/authorization, CSRF, parameter precedence, errors, redirects and revision conflicts. Verify that binary calls reach the same cached JavaScript and authoritative operations without a JSON intermediate. Cross-transport tests must verify that REST writes reach subscribers and that REST reads observe committed internal-message writes. Test lossless JSON/binary round trips for the new document APIs.
 
 Also test a heavy-tailed message-size distribution rather than assuming every message is exactly 1 KiB.
 
@@ -1149,8 +1144,12 @@ Phase 0 — Feasibility spike1–2 weeks
 - Read the same buffer reflectively in TypeScript
 - Create a compatible document from both languages
 - Benchmark the safe verification and dynamic builder paths
+- Generate input/output schemas for one real service, bind verified inputs lazily in QuickJS, execute its precached JavaScript on a service worker, and encode its result natively
+- Test defaults, context assignments, nested read-only parameters, nested calls, cleanup and retained-view lifetime
+- Change an XML-action JavaScript macro and verify regeneration of affected schemas and cached service functions as one coherent generation; test incompatible changes, failed reloads and in-flight calls retaining their original generation
+- Compare verified binary-input → cached JS → binary-output against map-backed invocation with equally cached JS, including a large input whose service reads only a few fields
 
-Exit gate: New runtime-created nested type is encoded and read in both languages without recompilation.
+Exit gate: New runtime-created nested type is encoded and read in both languages without recompilation, and a real service executes from binary-backed parameters without eager parameter-graph materialization or per-call JS compilation. Measure verification, host access, materialization fallbacks and output encoding; do not credit existing script caching or shared fan-out to FlatBuffers.
 
 Phase 1 — Schema compiler and registry2–3 weeks
 
@@ -1158,9 +1157,13 @@ Phase 2 — Production reflection runtime3–5 weeks
 
 Phase 3 — Document synchronization and REST adapters2–3 weeks
 
-- Share document services between REST and internal messaging
+- Implement shared binary input/output exposure for any application endpoint, including authorized descriptor retrieval; exercise REST, screen transitions, `/actions` and a newly registered endpoint
+- Share authoritative operations and lazy binary parameter bindings between HTTP and internal messaging
 - Preserve existing JSON and other format contracts
 - Verify content negotiation and cross-transport consistency
+- Prove browser binary service call → bounded worker handoff → cached QuickJS → database commit → binary result and committed subscriber update
+- Verify exact decimals, timestamps, 64-bit integers, absent/null and defaults across service bindings; reject overload without unbounded queues
+- Keep an existing `qvt` screen working unchanged through its established projection
 
 Phase 4 — Gateway and fan-out3–5 weeks
 
@@ -1225,11 +1228,15 @@ Moqui metadata → Schema publisher → Immutable `.bfbs` registry → Gateway/b
 
 Document data plane
 
-Internal clients/browser runtime ↔ Binary WebSocket or opt-in binary HTTP ↔ Rust gateway ↔ Moqui services
+Internal clients/browser runtime ↔ Binary WebSocket or opt-in binary HTTP ↔ Rust host gateway ↔ Bounded service workers ↔ Synchronous Moqui services
+
+Service execution
+
+Immutable service input schema + verified buffer → Lazy QuickJS parameter bindings → Precached JavaScript → Native FlatBuffers result encoding
 
 REST API plane
 
-REST clients ↔ HTTP (JSON and other supported formats) ↔ REST adapters ↔ Same Moqui services
+Browser/integration clients ↔ HTTP (FlatBuffers, JSON and other supported formats) ↔ REST / screen-transition / `/actions` adapters ↔ Same authoritative Moqui operations
 
 Performance strategy
 
