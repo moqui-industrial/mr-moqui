@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<screen require-authentication="false">
+    <subscreens default-item="A">
+        <conditional-default condition="mode == 'b'" item="B"/>
+        <subscreens-item name="A" location="src/screen/testdata/Elsewhere/PickerA.xml"/>
+        <subscreens-item name="B" location="src/screen/testdata/Elsewhere/PickerB.xml"/>
+    </subscreens>
+    <widgets/>
+</screen>

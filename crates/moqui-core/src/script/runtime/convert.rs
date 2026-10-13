@@ -125,6 +125,12 @@ pub(super) fn collection_to_js<'js>(ctx: &Ctx<'js>, value: Value) -> rquickjs::R
             }
             Ok(array.into_value())
         }
+        Value::Map(mut entries) if entries.len() == 1 && entries.contains_key(SET_KEY) => {
+            let items = entries.swap_remove(SET_KEY).unwrap_or(Value::Null);
+            let array = collection_to_js(ctx, items)?;
+            let constructor: rquickjs::Constructor = ctx.globals().get("Set")?;
+            constructor.construct((array,))
+        }
         Value::Map(entries) => {
             let object = Object::new(ctx.clone())?;
             for (key, item) in entries {
@@ -191,6 +197,16 @@ pub(super) fn js_value_to_host(ctx: &Ctx<'_>, value: &JsValue<'_>) -> Result<Val
         if let Some(class) = object.as_class::<HostList>() {
             return Ok(Value::Object(HostObject(class.borrow().inner.clone())));
         }
+        if is_js_set(object) {
+            // The value's own context, so the lifetimes of the call agree.
+            let own = value.ctx().clone();
+            let array_constructor: Object = own.globals().get("Array").map_err(|err| js_caught(ctx, err))?;
+            let from: rquickjs::Function = array_constructor.get("from").map_err(|err| js_caught(ctx, err))?;
+            let items: JsValue = from.call((value.clone(),)).map_err(|err| js_caught(ctx, err))?;
+            let mut map = indexmap::IndexMap::new();
+            map.insert(SET_KEY.to_string(), js_value_to_host(ctx, &items)?);
+            return Ok(Value::Map(map));
+        }
         let mut map = indexmap::IndexMap::new();
         for entry in object.props::<String, JsValue>() {
             let (key, item) = entry.map_err(|err| js_caught(ctx, err))?;
@@ -199,6 +215,17 @@ pub(super) fn js_value_to_host(ctx: &Ctx<'_>, value: &JsValue<'_>) -> Result<Val
         return Ok(Value::Map(map));
     }
     Err(Error::new("cannot convert this value"))
+}
+
+/// A script `Set` is held on the context stack as a one-key map holding its items, so a Set one
+/// action block makes in a context name is a Set again in the next block.
+const SET_KEY: &str = "__set__";
+
+fn is_js_set(object: &Object<'_>) -> bool {
+    object
+        .get::<_, Object>("constructor")
+        .and_then(|constructor| constructor.get::<_, String>("name"))
+        .is_ok_and(|name| name == "Set")
 }
 
 pub(super) fn js_caught(ctx: &Ctx<'_>, err: JsError) -> Error {

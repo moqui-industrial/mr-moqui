@@ -83,6 +83,15 @@ pub(super) fn resource_expand(ctx: Ctx<'_>, template: String) -> rquickjs::Resul
     })
 }
 
+/// `sri.sendRedirectAndStopRender(url)`: the one `sri` method the framework screens call before
+/// slice 2 adds the rest.
+pub(super) fn sri_send_redirect_and_stop_render(ctx: Ctx<'_>, url: String) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        crate::screen::send_redirect_and_stop_render(&url);
+        Ok(())
+    })
+}
+
 /// `ec.resource.script(location)`: run the file in the script's own names.
 pub(super) fn resource_script(ctx: Ctx<'_>, location: String) -> rquickjs::Result<()> {
     host_guard(&ctx, || {
@@ -225,6 +234,15 @@ impl HostUser {
         })
     }
 
+    /// A `UserPreference` value for the logged-in user, or null.
+    fn get_preference<'js>(&self, ctx: Ctx<'js>, key: String) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || match user_preference(&key) {
+            Ok(Some(value)) => value.into_js(&ctx),
+            Ok(None) => Null.into_js(&ctx),
+            Err(err) => Err(Exception::throw_message(&ctx, err.message())),
+        })
+    }
+
     #[qjs(get)]
     fn username<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || match crate::user::current_username() {
@@ -242,6 +260,29 @@ impl HostUser {
             Err(err) => Err(Exception::throw_message(&ctx, err.message())),
         })
     }
+}
+
+fn user_preference(key: &str) -> Result<Option<String>, crate::context::Error> {
+    let Some(user_id) = crate::user::current_user_id()? else {
+        return Ok(None);
+    };
+    let Some(facade) = crate::context::ExecutionContext::with_current(|ec| ec.factory().entity()).flatten() else {
+        return Ok(None);
+    };
+    let _authz = crate::context::ExecutionContext::with_current(|ec| ec.disable_authz());
+    let found = facade
+        .find("moqui.security.UserPreference")
+        .map_err(crate::context::Error::from)?
+        .eq("userId", Value::string(&user_id))
+        .eq("preferenceKey", Value::string(key))
+        .one()
+        .map_err(crate::context::Error::from)?;
+    Ok(found.and_then(|row| row.get("preferenceValue").map(moqui_lib::object::to_plain_string)))
+}
+
+/// `System.getProperty(name)`: a property or environment value, null when it is not set.
+pub(super) fn system_get_property(name: String) -> Option<String> {
+    Some(moqui_lib::env::get_prop_or_env(&name)).filter(|value| !value.is_empty())
 }
 
 /// `ec.web` for the request installed on this thread.
@@ -275,6 +316,22 @@ impl HostWeb {
     fn send_text_response(&self, ctx: Ctx<'_>, text: String) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
             crate::web::send_text_response(&text);
+            Ok(())
+        })
+    }
+
+    /// Remember the current screen path (or `path`) so a login can go back to it.
+    fn save_screen_last_info(
+        &self,
+        ctx: Ctx<'_>,
+        path: Opt<JsValue<'_>>,
+        _parameters: Opt<JsValue<'_>>,
+    ) -> rquickjs::Result<()> {
+        host_guard(&ctx, || {
+            let given = path
+                .0
+                .and_then(|value| value.as_string().and_then(|text| text.to_string().ok()));
+            crate::screen::save_screen_last_info(given.as_deref());
             Ok(())
         })
     }

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<screen>
+    <actions><script>ec.web.sendJsonResponse({secure: true})</script></actions>
+    <widgets/>
+</screen>

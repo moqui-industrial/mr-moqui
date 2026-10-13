@@ -128,6 +128,24 @@ impl World {
         authz.create(&self.facade).unwrap();
     }
 
+    /// Allow `group` to view the screen at `location`.
+    fn allow_screen(&self, group: &str, location: &str) {
+        let mut member = self.facade.make_value("moqui.security.ArtifactGroupMember").unwrap();
+        member.set("artifactGroupId", Value::string("SCREEN_VIEW"));
+        member.set("artifactName", Value::string(location));
+        member.set("artifactTypeEnumId", Value::string("AT_XML_SCREEN"));
+        member.set("nameIsPattern", Value::string("N"));
+        member.set("inheritAuthz", Value::string("Y"));
+        member.create(&self.facade).unwrap();
+        let mut authz = self.facade.make_value("moqui.security.ArtifactAuthz").unwrap();
+        authz.set("artifactAuthzId", Value::string("SCREEN_VIEW"));
+        authz.set("userGroupId", Value::string(group));
+        authz.set("artifactGroupId", Value::string("SCREEN_VIEW"));
+        authz.set("authzTypeEnumId", Value::string("AUTHZT_ALWAYS"));
+        authz.set("authzActionEnumId", Value::string("AUTHZA_VIEW"));
+        authz.create(&self.facade).unwrap();
+    }
+
     fn enumeration_type(&self) {
         let mut row = self.facade.make_value("moqui.basic.EnumerationType").unwrap();
         row.set("enumTypeId", Value::string("TestType"));
@@ -290,12 +308,9 @@ fn redirect_json_list_security_headers_and_cors() {
     let mut https = request("GET", "/");
     https.https = true;
     let response = serve_at(&world.factory, https, &web);
-    assert_eq!(response.status, 501, "{}", response.body_text());
-    assert!(
-        response.body_text().contains("screen render"),
-        "{}",
-        response.body_text()
-    );
+    // The root's default screen redirects an anonymous user to Login, which a render sends as 302.
+    assert_eq!(response.status, 302, "{}", response.body_text());
+    assert_eq!(header_value(&response, "Location").as_deref(), Some("/Login"));
     assert!(header_value(&response, "Cache-Control").unwrap().contains("no-store"));
     assert!(header_value(&response, "Content-Security-Policy")
         .unwrap()
@@ -431,4 +446,12 @@ fn basic_auth_writes_skip_the_session_token_but_a_cookie_session_does_not() {
     ambient.body = br#"{"enumTypeId":"CookiePost","description":"Cookie POST"}"#.to_vec();
     let response = serve_at(&world.factory, ambient, &root);
     assert_eq!(response.status, 401, "{}", response.body_text());
+}
+
+mod render;
+mod walk;
+
+/// The fixture screen tree under `testdata`, as a root screen location.
+fn fixture_root() -> String {
+    format!("{}/src/screen/testdata/Root.xml", env!("CARGO_MANIFEST_DIR"))
 }

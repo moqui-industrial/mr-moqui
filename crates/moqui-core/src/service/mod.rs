@@ -49,3 +49,9 @@ pub use seca::run_seca_rules;
 pub use security_checks::security_checks_run;
 pub use semaphore::acquire;
 pub use validate::validate;
+
+/// An entity in the default group, to pick the transaction manager for work that has no entity of
+/// its own, such as a screen transition.
+pub(crate) fn semaphore_entity_name() -> &'static str {
+    define::ServiceDef::semaphore_entity()
+}

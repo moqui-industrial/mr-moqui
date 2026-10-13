@@ -112,6 +112,15 @@ impl ResourceRef {
         }
     }
 
+    /// Milliseconds since the epoch for a file resource. Other kinds have none, so a cache over them
+    /// does not invalidate on change.
+    pub fn last_modified(&self) -> Option<i64> {
+        match &self.stored {
+            Stored::File(file) => file.last_modified().ok(),
+            Stored::Db(_) | Stored::Http(_) => None,
+        }
+    }
+
     pub fn read_text(&self) -> Result<String, Error> {
         match &self.stored {
             Stored::File(file) => file.read_text().map_err(Error::from),

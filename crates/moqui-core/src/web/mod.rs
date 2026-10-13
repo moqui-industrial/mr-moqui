@@ -109,6 +109,8 @@ impl WebResponse {
 
 struct WebSlot {
     parameters: BTreeMap<String, Value>,
+    /// Scheme, host, and context path that links start with. Empty for a path-only link.
+    base_url: String,
     sent: bool,
     status: u16,
     headers: Vec<(String, String)>,
@@ -126,9 +128,17 @@ impl Drop for WebGuard {
 
 /// Install the parameter map for this request. A second install replaces the first.
 pub(crate) fn install(parameters: BTreeMap<String, Value>) -> WebGuard {
+    install_with(parameters, String::new())
+}
+
+/// [`install`] with the base URL a screen render builds links from. A `makeRender` with no socket
+/// fills the slot this way: the parameter map and base URL here, the session map on the session,
+/// and the output writer is the slot's body (see [`start_output`] and [`write_output`]).
+pub(crate) fn install_with(parameters: BTreeMap<String, Value>, base_url: String) -> WebGuard {
     WEB.with(|slot| {
         *slot.borrow_mut() = Some(WebSlot {
             parameters,
+            base_url,
             sent: false,
             status: 200,
             headers: Vec::new(),
@@ -145,6 +155,46 @@ pub(crate) fn parameters() -> BTreeMap<String, Value> {
             .map(|web| web.parameters.clone())
             .unwrap_or_default()
     })
+}
+
+pub(crate) fn base_url() -> String {
+    WEB.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map(|web| web.base_url.clone())
+            .unwrap_or_default()
+    })
+}
+
+/// Open the response body for a screen render: status, `Content-Type`, and an empty body that
+/// [`write_output`] appends to. A response something already sent is left alone and `false` returns.
+pub(crate) fn start_output(status: u16, content_type: &str) -> bool {
+    WEB.with(|slot| {
+        let mut web = slot.borrow_mut();
+        let Some(web) = web.as_mut() else {
+            return false;
+        };
+        if web.sent {
+            return false;
+        }
+        web.sent = true;
+        web.status = status;
+        web.headers.push(("Content-Type".to_string(), content_type.to_string()));
+        true
+    })
+}
+
+/// Append text to the open body. Nothing happens before [`start_output`].
+// The macro walker writes through this from slice 2.
+#[allow(dead_code)]
+pub(crate) fn write_output(text: &str) {
+    WEB.with(|slot| {
+        if let Some(web) = slot.borrow_mut().as_mut() {
+            if web.sent {
+                web.body.extend_from_slice(text.as_bytes());
+            }
+        }
+    });
 }
 
 pub(crate) fn add_header(name: impl Into<String>, value: impl Into<String>) {
@@ -199,6 +249,22 @@ pub(crate) fn send_redirect(location: &str) {
         web.sent = true;
         web.status = 302;
         web.headers.push(("Location".to_string(), location.to_string()));
+    });
+}
+
+/// 205 with `X-Redirect-To`, the redirect a client router follows for a standalone render.
+pub(crate) fn send_reset_content(location: &str) {
+    WEB.with(|slot| {
+        let mut web = slot.borrow_mut();
+        let Some(web) = web.as_mut() else {
+            return;
+        };
+        if web.sent {
+            return;
+        }
+        web.sent = true;
+        web.status = 205;
+        web.headers.push(("X-Redirect-To".to_string(), location.to_string()));
     });
 }
 

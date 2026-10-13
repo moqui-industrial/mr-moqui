@@ -211,6 +211,23 @@ impl MNode {
         self.inner.borrow_mut().children.push(child);
     }
 
+    /// Insert `child` before the child at `index`. An index past the end appends.
+    pub fn insert_node(&self, index: usize, child: MNode) {
+        child.inner.borrow_mut().parent = Some(Rc::downgrade(&self.inner));
+        let mut inner = self.inner.borrow_mut();
+        let index = index.min(inner.children.len());
+        inner.children.insert(index, child);
+    }
+
+    /// Position of `child` among this node's children, by identity.
+    pub fn index_of(&self, child: &MNode) -> Option<usize> {
+        self.inner
+            .borrow()
+            .children
+            .iter()
+            .position(|candidate| Rc::ptr_eq(&candidate.inner, &child.inner))
+    }
+
     pub fn replace_child(&self, index: usize, child: MNode) -> Result<(), Error> {
         let inner = self.inner.borrow_mut();
         if index >= inner.children.len() {

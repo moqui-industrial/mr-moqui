@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<screen require-authentication="false">
+    <always-actions><script>trace.push('Deep.always')</script></always-actions>
+    <pre-actions><script>trace.push('Deep.pre')</script></pre-actions>
+    <subscreens default-item="Leaf"/>
+    <actions><script>trace.push('Deep.actions')</script></actions>
+    <widgets/>
+</screen>

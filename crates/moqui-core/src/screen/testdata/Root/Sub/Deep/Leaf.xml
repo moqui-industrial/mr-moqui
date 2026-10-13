@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<screen require-authentication="false">
+    <always-actions><script>trace.push('Leaf.always')</script></always-actions>
+    <pre-actions><script>trace.push('Leaf.pre')</script></pre-actions>
+    <actions><script>trace.push('Leaf.actions'); ec.web.sendJsonResponse(trace)</script></actions>
+    <widgets/>
+</screen>

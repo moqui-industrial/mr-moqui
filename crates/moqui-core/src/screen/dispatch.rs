@@ -12,14 +12,14 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Rust bodies for the `rest.xml` transitions. Screen XML actions stay Groovy until phase 8.
+//! Rust bodies for the `rest.xml` transitions.
 
 use std::collections::BTreeMap;
 use std::time::Instant;
 
 use moqui_lib::object::Value;
 
-use super::TransitionDef;
+use super::definition::TransitionDef;
 use crate::context::{Error, ExecutionContext};
 use crate::entity::{query_rest, EntityFacade};
 use crate::user::{self, login_user, logout};
@@ -39,8 +39,13 @@ pub(crate) struct Call<'a> {
     pub started: Instant,
 }
 
-/// Run the wired transition. `false` means nothing was written, so a `url` response can redirect.
-pub(crate) fn run(call: &Call<'_>) -> Result<bool, Error> {
+/// Run the wired body for a `rest.xml` transition. `None` means the transition is not wired, so
+/// the caller runs its XML actions and response.
+pub(crate) fn run(call: &Call<'_>) -> Result<Option<bool>, Error> {
+    // Only the REST screen has Rust bodies. Another screen's transition of the same name is its own.
+    if !call.transition.screen_location.ends_with("/webroot/rest.xml") {
+        return Ok(None);
+    }
     let name = call.transition.name.as_str();
     let sent = match name {
         "e1" | "v1" => entity_rest(call, false)?,
@@ -67,27 +72,9 @@ pub(crate) fn run(call: &Call<'_>) -> Result<bool, Error> {
         "entity.json" => super::schema::entity_json(call, false)?,
         "master.json" => super::schema::entity_json(call, true)?,
         "service.swagger" => super::schema::service_swagger(call)?,
-        _ if call.transition.response_type == "url" => false,
-        _ => {
-            web::send_json_error(501, &format!("transition {name} is not built"));
-            true
-        }
+        _ => return Ok(None),
     };
-    if !sent && call.transition.response_type == "url" {
-        web::send_redirect(&call.transition.response_url);
-        return Ok(true);
-    }
-    if !sent && !call.transition.response_type.is_empty() && call.transition.response_type != "none" {
-        web::send_json_error(
-            501,
-            &format!(
-                "response type {} is not available until phase 8",
-                call.transition.response_type
-            ),
-        );
-        return Ok(true);
-    }
-    Ok(sent)
+    Ok(Some(sent))
 }
 
 fn entity_rest(call: &Call<'_>, master: bool) -> Result<bool, Error> {

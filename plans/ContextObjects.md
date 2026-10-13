@@ -145,6 +145,16 @@ The macros then read the objects those methods return. A screen URL has `path`, 
 
 `entity-data` is still a TODO in the Java template and adds no method here.
 
+### Added by phase 8 slice 1
+
+The framework screens call these before any widget renders, so they exist ahead of the rest of `sri`.
+
+- `sri.sendRedirectAndStopRender(url)`: 302, or 205 with `X-Redirect-To` in an always-standalone mode, and the screen is not rendered. The rest of `sri` waits for slice 2.
+- `ec.web.saveScreenLastInfo(path, parameters)`: pushes the path, or the screen being rendered, on the screen history. The parameters are not saved yet.
+- `ec.user.getPreference(key)`: the `UserPreference` row for the logged-in user, else null. Preference groups are not read.
+- `System.getProperty(name)`: `get_prop_or_env`, null when empty.
+- A script `Set` kept in a context name round-trips between action blocks. The stack holds it as a one-key map `{"__set__": [items]}` and the next block gets a `Set` back. `html_scripts`, `footer_scripts`, and `html_stylesheets` depend on this.
+
 ## Out of scope
 
 - QuickJS operator overloading for decimals. QuickJS-NG ties it to the built-in `BigDecimal` and `BigFloat` classes (`CONFIG_BIGNUM`). It does not extend to a host class, so the build flag does not give a host decimal `+`. The browser cannot share that flag either.

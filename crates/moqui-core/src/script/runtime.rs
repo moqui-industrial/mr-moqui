@@ -633,6 +633,14 @@ fn install_ec(ctx: &Ctx<'_>) -> Result<(), Error> {
     ec.set("cache", cache_object(ctx)?).map_err(js_error)?;
     ec.set("search", search_object(ctx)?).map_err(js_error)?;
     caught(ctx, "globals", ctx.globals().set("ec", ec))?;
+    let sri = Object::new(ctx.clone()).map_err(js_error)?;
+    let redirect = Function::new(ctx.clone(), sri_send_redirect_and_stop_render).map_err(js_error)?;
+    sri.set("sendRedirectAndStopRender", redirect).map_err(js_error)?;
+    caught(ctx, "globals", ctx.globals().set("sri", sri))?;
+    let system = Object::new(ctx.clone()).map_err(js_error)?;
+    let property = Function::new(ctx.clone(), system_get_property).map_err(js_error)?;
+    system.set("getProperty", property).map_err(js_error)?;
+    caught(ctx, "globals", ctx.globals().set("System", system))?;
     Ok(())
 }
 
