@@ -99,8 +99,8 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="title"/>
         </in-parameters>
         <actions>
-            <set field="attachments" from="[[fileName:fileName, attachmentLocation:screenLocation, screenRenderMode:screenRenderMode]]"/>
-            <if condition="bodyParameters == null"><set field="bodyParameters" from="[:]"/></if>
+            <set field="attachments" from="[{fileName: fileName, attachmentLocation: screenLocation, screenRenderMode: screenRenderMode}]"/>
+            <if condition="bodyParameters == null"><set field="bodyParameters" from="{}"/></if>
             <if condition="title"><set field="bodyParameters.title" from="title"/></if>
 
             <!-- default pageNoLimit=true and lastStandalone=true -->

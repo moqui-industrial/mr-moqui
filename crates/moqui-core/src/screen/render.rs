@@ -608,10 +608,11 @@ fn check_web_settings(info: &ScreenUrlInfo) -> Result<(), Error> {
 }
 
 /// Every screen that renders and requires authentication needs a user. Anonymous access screens
-/// and `require-authentication="false"` screens do not.
+/// and `require-authentication="false"` screens do not. As in Java, an anonymous login (a service such
+/// as `send#EmailTemplate` that is `anonymous-view` rendering an email body) counts.
 fn check_authentication(info: &ScreenUrlInfo) -> Result<(), Error> {
     // The compatibility report looks at screens, not at who may see them.
-    if super::statics::report_active() || user::current_username()?.is_some() {
+    if super::statics::report_active() || user::current_username()?.is_some() || user::is_anonymous()? {
         return Ok(());
     }
     for def in info.render_defs() {

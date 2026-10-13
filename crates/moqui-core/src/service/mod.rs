@@ -41,6 +41,8 @@ pub use email_eca::run_email_rules;
 #[cfg(test)]
 pub(crate) use jobs::send_job_error_notification;
 pub use jobs::{run_job_now, PassReport};
+#[cfg(test)]
+pub(crate) use mail::SinkGuard;
 pub use pool::{start_pools, ServicePools};
 pub(crate) use remote::parse_json;
 pub use remote::shared_http_client;

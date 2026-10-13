@@ -297,8 +297,8 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   `display-entity` in one field replaced the entity text with the id (Java does the same). The `m-*` field wrappers passed `id` to
   `q-input`/`q-select`/`q-file`, which drop it; they now pass `for`, so the native input has the id. `m-static-form-list` reused the row
   components of the last page, and an `m-form` copies its `fields-initial` once, so page 2 showed the rows of page 1.
-- **Deferred.** PDF bytes (phase 12); `ScreenServices.xml` service bodies and mail screen bodies (the screen-mail items in phase 10's
-  deferred list); `vuet` and `/vapps` (dropped); the Assist panel; saved finds and screen documents (nothing reads the user finds yet); in a
+- **Deferred.** PDF bytes (phase 12); `ScreenServices.xml` service bodies (mail screen bodies were done after slice 8, see phase 10's
+  "Screen mail after phase 8"); `vuet` and `/vapps` (dropped); the Assist panel; saved finds and screen documents (nothing reads the user finds yet); in a
   static template, row selection, first/second/last rows, aggregation, the column picker and the csv/text/pdf buttons; precompiled `m-*`
   templates, which `webapp_qvt_static_only=true` waits for; the `lookup` widget (a text line, as the Java macro was commented out). A static
   template is fetched once to read `X-Moqui-Qvt` and then loaded again by a script element (a URL without the query), so it downloads twice.
@@ -498,12 +498,55 @@ In this pass:
 
 Deferred until phase 8, or phase 12 where named:
 
-- A `bodyScreenLocation` with no supplied body returns `screen mail body is not available` and does not open SMTP. `send#ScreenRenderEmail` stays XML and hits that path.
-- Screen attachments, `forEachIn`, and `attachmentCondition`. `screenRenderMode` `xsl-fo` reports that PDF is not available.
-- A notification with `emailNotifications` Y still persists and reaches the socket. The email attempt logs the screen-body error and does not fail the in-app send.
-- The gate 4 check that a screen body renders in `text` and `html`.
 - The markdown call site inside a screen or wiki widget.
 - The embedded SMTP server, the russh cluster sender, and Postgres `NOTIFY`.
+- PDF bytes for an `xsl-fo` attachment (phase 12).
+
+### Screen mail after phase 8
+
+Done once Gate 3 passed. `service/mail.rs` follows `sendEmailTemplate.groovy`; tests are in `service/mail.rs`,
+`service/email_eca.rs` and `notify/tests.rs`, with fixture screens in `service/testdata/mail`.
+
+- **Body.** A template with `bodyScreenLocation` renders that screen with `make_render` (no socket; the render installs its own web slot
+  and restores the one of a request in progress, sends no session map and records no history) in `html` for `body` and in `text` for
+  `bodyText`. The context is a frame with the service parameters, the `bodyParameters` over them, and the script's values (`emailTypeEnumId`,
+  `ccAddresses`, `bccAddresses`, `fromAddress`, `fromName`, `subject`, `webappName`, `webHostName`, `emailMessageId`); the `bodyParameters`
+  are also the render's request parameters. Links start from the conf `webapp` named by `webappName` (default `webroot`), as Java's
+  `makeWebappHost` with no request: `https` and the https host and port when `https-enabled`, else `http`, an empty host is `localhost`
+  (`ExecutionContextFactory::webapp_root_url`). The render runs before the `EmailMessage` row goes to `ES_READY`, as in Java.
+- **`send#ScreenRenderEmail`** works end to end: its two Groovy map literals are JavaScript, and the seed templates' `classpath://screen/...`
+  locations resolve (`ResourceFacade` reads `classpath://` from the framework directory, as `locate` already did). It requires a user, as in
+  Java.
+- **Attachments.** `EmailTemplateAttachment` rows: `attachmentCondition` (JavaScript) skips a row, `screenRenderMode` renders
+  `attachmentLocation` as the root screen or `screenPath` under the root screen as last standalone, `forEachIn` renders one attachment for each
+  entry (a map's fields, or `forEachEntry`, in a pushed frame), the file name is expanded in the context and defaults to the screen name with
+  the mode as extension, the content type is the mode's (`text/csv`, `text/plain`, `text/xml`, `text/html`), and blank output is no attachment.
+  The `attachments` parameter takes `contentText`, `contentBytes`, a screen render, or a location. A row with no mode sends the bytes at its
+  location.
+- **`xsl-fo`.** The attachment is skipped with a logged warning that says `PDF is not available until phase 12`, and the email goes out
+  without it. That is what Java does when the PDF transform throws (`logger.warn`, no attachment, send continues). No error is added.
+- **Failures.** A body or attachment render that fails, or an `attachmentCondition`/`forEachIn` that throws, stops the send: logged, and the
+  message (not error) `Error sending email: ...`, as the Groovy outer catch. A created `EmailMessage` stays in draft.
+- **Notifications.** `emailNotifications` Y (topic user, else topic) sends `send#EmailTemplate` with the wrapped message as `bodyParameters`,
+  so `NotificationEmail.xml` renders. A saved `EmailMessage` id is returned by user (`email_message_id_by_user_id`) and, for a persisted
+  notification, stored with the sent date on its `NotificationMessageUser` row, as Java's `store#NotificationMessageUser`. A failed email
+  is logged, and the caller's messages and errors are restored, so the in-app send still succeeds.
+- **Gate 4 check.** `screen_body_renders_html_and_text_and_sends_with_attachments`: a screen body in both modes, a `JsTemplateLiteral`
+  subject, the MIME text through the test sink (`multipart/mixed` holding `multipart/alternative` with `text/plain` and `text/html`), csv
+  attachments from `forEachIn`, a conditional text attachment, a skipped one, a plain file, an html attachment from the parameter, and the
+  `xsl-fo` one left out. The email-ECA test sends through the same path.
+
+Where it differs from Java:
+
+- A `body` or `bodyText` the caller passes is used and only the missing part is rendered (the Groovy script declares the parameters but
+  always renders both). With no `bodyScreenLocation` and neither part, the send is the error `email has no body`.
+- The text part is rendered only when the screen's `render-modes` allow `text`; Java rendered text unconditionally. Blank output is no part.
+- `EmailTemplate` has no locale field: the body renders in the locale of the user the service runs as, which is Java's behavior too.
+- There is one root screen, so `screenPath` attachments render under it; `webHostName` does not pick a root screen by host. It is still in
+  the context, where `ScreenRenderEmail.xml` and `NotificationEmail.xml` use it for links.
+- A screen render accepts an anonymous login (an `anonymous-view` service such as `send#EmailTemplate`) for a screen that requires
+  authentication, as Java's `getLoggedInAnonymous()` check does; before, only a named user passed (`screen/render.rs`).
+- An `attachments` entry that has no content, screen, or location is logged, as in Java, not added as an error.
 
 ## Phase 11 — LLM, A2A, and the other tools
 

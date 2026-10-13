@@ -13,6 +13,16 @@
  */
 
 //! Outbound SMTP and inbound IMAP/POP3 for the email services whose locations stay Groovy.
+//!
+//! `send#EmailTemplate` follows `sendEmailTemplate.groovy`. A template with `bodyScreenLocation` renders
+//! that screen with `makeRender()` (no socket, its own web slot, so a request in progress is not touched)
+//! in `html` for the body and in `text` for the alternative part, with the service parameters, the
+//! `bodyParameters` and the template values (`fromAddress`, `subject`, `webappName`, `webHostName`,
+//! `emailMessageId` and the rest) in the context, and links built from the conf `webapp` named by
+//! `webappName`. A `body` or `bodyText` the caller passed is used instead of that render. Screen
+//! attachments render the same way. A screen attachment in `xsl-fo` is skipped with a logged warning,
+//! as Java does when the PDF transform fails, and the email is sent without it: PDF is phase 12. A render
+//! that fails stops the send with the message `Error sending email: ...`, as the Groovy outer catch did.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -26,17 +36,15 @@ use indexmap::IndexMap;
 use moqui_lib::error::Error as LibError;
 use moqui_lib::object::{basic_convert, is_empty, to_plain_string, Value};
 
-use crate::context::ExecutionContext;
+use crate::context::{ExecutionContext, ExecutionContextFactory};
 use crate::entity::{EntityFacade, EntityValue};
+use crate::screen::{make_render, ScreenFacade, PDF_UNAVAILABLE};
 use crate::transaction::TransactionAttribute;
 
 const TEMPLATE: &str = "moqui.basic.email.EmailTemplate";
 const SERVER: &str = "moqui.basic.email.EmailServer";
 const MESSAGE: &str = "moqui.basic.email.EmailMessage";
 const ATTACHMENT: &str = "moqui.basic.email.EmailTemplateAttachment";
-const SCREEN_BODY: &str = "screen mail body is not available";
-const SCREEN_ATTACHMENT: &str = "screen mail attachment is not available";
-const PDF: &str = "PDF is not available";
 
 pub(super) fn run(
     name: &str,
@@ -64,6 +72,16 @@ fn send_template(
     let Some(template) = find_one(facade, TEMPLATE, "emailTemplateId", &template_id)? else {
         return fail(format!("No EmailTemplate record found for ID [{template_id}]"));
     };
+    // The script's context: the parameters, then the bodyParameters over them, then the template values.
+    let _frame = crate::script::ContextFrame::push();
+    for (name, value) in parameters {
+        put_context(name, value.clone())?;
+    }
+    if let Some(map) = body_parameters(parameters) {
+        for (name, value) in map {
+            put_context(name, value.clone())?;
+        }
+    }
     let mut cc = param_text(parameters, "ccAddresses");
     let mut bcc = param_text(parameters, "bccAddresses");
     cc = merge_lists(&cc, &field_text(&template, "ccAddresses"));
@@ -72,13 +90,36 @@ fn send_template(
     let supplied_body = param_text(parameters, "body");
     let supplied_text = param_text(parameters, "bodyText");
     let screen = field_text(&template, "bodyScreenLocation");
-    let (body, body_text) = match resolved_body(&supplied_body, &supplied_text, &screen) {
-        Ok(pair) => pair,
-        Err(text) => return fail(text),
+    if screen.is_empty() && supplied_body.is_empty() && supplied_text.is_empty() {
+        return fail("email has no body");
+    }
+    let env = RenderEnv::new(&template, parameters);
+    let email_type = {
+        let given = param_text(parameters, "emailTypeEnumId");
+        if given.is_empty() {
+            field_text(&template, "emailTypeEnumId")
+        } else {
+            given
+        }
     };
+    put_context("emailTypeEnumId", Value::string(&email_type))?;
+    put_context("ccAddresses", Value::string(&cc))?;
+    put_context("bccAddresses", Value::string(&bcc))?;
+    put_context("fromAddress", Value::string(&headers.from_address))?;
+    put_context("fromName", Value::string(&headers.from_name))?;
+    put_context("subject", Value::string(&headers.subject))?;
+    put_context("webappName", Value::string(&env.webapp_name))?;
+    put_context("webHostName", Value::string(&env.web_host_name))?;
     let mut email_message_id = String::new();
     if create_message(parameters) {
         email_message_id = insert_draft(facade, parameters, &template, &headers, &cc, &bcc)?;
+        put_context("emailMessageId", Value::string(&email_message_id))?;
+    }
+    let (body, body_text) = match render_bodies(&env, &screen, supplied_body, supplied_text) {
+        Ok(pair) => pair,
+        Err(err) => return Ok(send_error(&err, &email_message_id, &template_id)),
+    };
+    if !email_message_id.is_empty() {
         update_ready(facade, &email_message_id, &body, &body_text)?;
     }
     let server_id = field_text(&template, "emailServerId");
@@ -124,7 +165,10 @@ fn send_template(
     if !filter_recipients(&mut letter, &field_text(&server, "allowedToDomains"), &email_message_id) {
         return Ok(ids(&email_message_id, ""));
     }
-    letter.attachments = collect_attachments(facade, parameters, &template_id)?;
+    letter.attachments = match collect_attachments(facade, parameters, &template_id, &env) {
+        Ok(attachments) => attachments,
+        Err(err) => return Ok(send_error(&err, &email_message_id, &template_id)),
+    };
     if let Err(err) = deliver(&letter, &server) {
         note_message(format!("Error sending email: {err}"));
         return Ok(ids(&email_message_id, ""));
@@ -234,17 +278,122 @@ fn expand_headers(template: &EntityValue, parameters: Option<&IndexMap<String, V
     })
 }
 
-fn resolved_body(body: &str, body_text: &str, screen: &str) -> Result<(String, String), String> {
-    if !body.is_empty() && !body_text.is_empty() {
-        return Ok((body.to_string(), body_text.to_string()));
+/// What a screen render for this email needs: the factory, the webapp the links are for, and the
+/// `bodyParameters`, which the render also sees as its request parameters.
+struct RenderEnv {
+    factory: Option<Arc<ExecutionContextFactory>>,
+    webapp_name: String,
+    web_host_name: String,
+    base_url: String,
+    parameters: BTreeMap<String, Value>,
+}
+
+impl RenderEnv {
+    fn new(template: &EntityValue, parameters: &BTreeMap<String, Value>) -> Self {
+        let factory = ExecutionContext::with_current(|ctx| Arc::clone(ctx.factory()));
+        let webapp_name = {
+            let named = field_text(template, "webappName");
+            if named.is_empty() {
+                "webroot".to_string()
+            } else {
+                named
+            }
+        };
+        let base_url = factory
+            .as_ref()
+            .map(|factory| factory.webapp_root_url(&webapp_name))
+            .unwrap_or_default();
+        let parameters = body_parameters(parameters)
+            .map(|map| map.iter().map(|(key, value)| (key.clone(), value.clone())).collect())
+            .unwrap_or_default();
+        Self {
+            factory,
+            webapp_name,
+            web_host_name: field_text(template, "webHostName"),
+            base_url,
+            parameters,
+        }
     }
-    if !screen.is_empty() && body.is_empty() && body_text.is_empty() {
-        return Err(SCREEN_BODY.to_string());
+
+    /// Render `location` as the root screen, or `screen_path` under the default root screen (Java's
+    /// `rootScreenFromHost`, which this port has one of) as the last standalone screen, in `mode`.
+    fn render(&self, location: &str, screen_path: &str, mode: &str) -> Result<String, String> {
+        let Some(factory) = &self.factory else {
+            return Err("no execution context to render a screen in".to_string());
+        };
+        let mut parameters = self.parameters.clone();
+        let mut render = make_render(factory).base_url(self.base_url.clone()).render_mode(mode);
+        if screen_path.is_empty() {
+            render = render.root_screen(location);
+        } else {
+            parameters.insert("lastStandalone".to_string(), Value::string("true"));
+            render = render.screen_path(screen_path);
+        }
+        let shown = if screen_path.is_empty() { location } else { screen_path };
+        let output = render
+            .parameters(parameters)
+            .render()
+            .map_err(|err| format!("could not render {shown} as {mode}: {}", err.message()))?;
+        if output.status != 200 {
+            return Err(format!("could not render {shown} as {mode}: status {}", output.status));
+        }
+        Ok(output.body_text())
     }
-    if body.is_empty() && body_text.is_empty() {
-        return Err("email has no body".to_string());
+
+    /// True when the screen at `location` has a `text` render, as `render-modes` says.
+    fn allows_text(&self, location: &str) -> bool {
+        let Some(factory) = &self.factory else {
+            return false;
+        };
+        ScreenFacade::of(factory)
+            .screen_def(factory, location)
+            .map(|def| def.allows_render_mode("text"))
+            .unwrap_or(false)
     }
-    Ok((body.to_string(), body_text.to_string()))
+
+    fn mime_type(&self, mode: &str) -> Option<String> {
+        let factory = self.factory.as_ref()?;
+        ScreenFacade::of(factory).mime_type(mode).map(str::to_string)
+    }
+}
+
+/// The html body and the text alternative. A part the caller passed wins; the other is rendered from
+/// `bodyScreenLocation` (html, and text when the screen has a text render). Blank output is no part.
+fn render_bodies(env: &RenderEnv, screen: &str, body: String, body_text: String) -> Result<(String, String), String> {
+    if screen.is_empty() {
+        return Ok((body, body_text));
+    }
+    let body = if body.is_empty() {
+        blank_to_empty(env.render(screen, "", "html")?)
+    } else {
+        body
+    };
+    let body_text = if body_text.is_empty() && env.allows_text(screen) {
+        blank_to_empty(env.render(screen, "", "text")?)
+    } else {
+        body_text
+    };
+    Ok((body, body_text))
+}
+
+fn blank_to_empty(text: String) -> String {
+    if text.trim().is_empty() {
+        String::new()
+    } else {
+        text
+    }
+}
+
+/// The Groovy script's outer catch: log, add a message (not an error), and send nothing. A created
+/// `EmailMessage` stays as it was.
+fn send_error(err: &str, email_message_id: &str, template_id: &str) -> BTreeMap<String, Value> {
+    tracing::error!(template = %template_id, message = %email_message_id, error = %err, "Error in sendEmailTemplate");
+    note_message(format!("Error sending email: {err}"));
+    ids(email_message_id, "")
+}
+
+fn put_context(name: &str, value: Value) -> Result<(), LibError> {
+    crate::script::set_context_name(name, value).map_err(|err| LibError::new(err.message()))
 }
 
 fn create_message(parameters: &BTreeMap<String, Value>) -> bool {
@@ -436,33 +585,41 @@ fn dns_suffix(entry: &str) -> bool {
     !entry.contains(':') && entry.chars().any(|ch| ch.is_ascii_alphabetic())
 }
 
+/// The `attachments` parameter, then the template's `EmailTemplateAttachment` rows. An error is a
+/// screen render or an expression that failed, which stops the send.
 fn collect_attachments(
     facade: &EntityFacade,
     parameters: &BTreeMap<String, Value>,
     template_id: &str,
-) -> Result<Vec<AttachmentBytes>, LibError> {
+    env: &RenderEnv,
+) -> Result<Vec<AttachmentBytes>, String> {
     let mut out = Vec::new();
     if let Some(Value::List(items)) = parameters.get("attachments") {
         for item in items {
             if let Value::Map(map) = item {
-                push_parameter_attachment(&mut out, map);
+                push_parameter_attachment(&mut out, map, env)?;
             }
         }
     }
     let rows = facade
-        .find(ATTACHMENT)?
-        .eq("emailTemplateId", Value::string(template_id))
-        .list()?;
+        .find(ATTACHMENT)
+        .and_then(|find| find.eq("emailTemplateId", Value::string(template_id)).list())
+        .map_err(|err| err.to_string())?;
     for row in rows.iter() {
-        push_stored_attachment(&mut out, row);
+        push_stored_attachment(&mut out, row, env)?;
     }
     Ok(out)
 }
 
-fn push_parameter_attachment(out: &mut Vec<AttachmentBytes>, map: &IndexMap<String, Value>) {
-    let filename = map_text(map, "fileName");
+fn push_parameter_attachment(
+    out: &mut Vec<AttachmentBytes>,
+    map: &IndexMap<String, Value>,
+    env: &RenderEnv,
+) -> Result<(), String> {
+    let filename = expand_text(&map_text(map, "fileName"))?;
     let mode = map_text(map, "screenRenderMode");
     let location = map_text(map, "attachmentLocation");
+    let screen_path = map_text(map, "screenPath");
     if let Some(text) = map.get("contentText").filter(|value| !is_empty(value)) {
         let mime = fallback_type(&map_text(map, "contentType"), &filename, "text/plain");
         out.push(AttachmentBytes {
@@ -470,7 +627,7 @@ fn push_parameter_attachment(out: &mut Vec<AttachmentBytes>, map: &IndexMap<Stri
             content_type: mime,
             bytes: to_plain_string(text).into_bytes(),
         });
-        return;
+        return Ok(());
     }
     if let Some(Value::Bytes(bytes)) = map.get("contentBytes") {
         let mime = fallback_type(&map_text(map, "contentType"), &filename, "application/octet-stream");
@@ -479,19 +636,21 @@ fn push_parameter_attachment(out: &mut Vec<AttachmentBytes>, map: &IndexMap<Stri
             content_type: mime,
             bytes: bytes.clone(),
         });
-        return;
+        return Ok(());
     }
-    if mode == "xsl-fo" {
-        note_error(PDF);
-        return;
-    }
-    if !mode.is_empty() || !map_text(map, "screenPath").is_empty() {
-        note_error(SCREEN_ATTACHMENT);
-        return;
+    if !mode.is_empty() && (!location.is_empty() || !screen_path.is_empty()) {
+        let screen = ScreenAttachment {
+            filename: &filename,
+            mode: &mode,
+            location: &location,
+            screen_path: &screen_path,
+            content_type: &map_text(map, "contentType"),
+        };
+        return render_attachment(out, &screen, env);
     }
     if location.is_empty() {
-        note_error(format!("attachment info is invalid for {filename}"));
-        return;
+        tracing::error!(file = %filename, "attachment info is invalid: no content, screen or location");
+        return Ok(());
     }
     match read_location(&location) {
         Ok(bytes) => {
@@ -504,26 +663,62 @@ fn push_parameter_attachment(out: &mut Vec<AttachmentBytes>, map: &IndexMap<Stri
         }
         Err(err) => note_error(err),
     }
+    Ok(())
 }
 
-fn push_stored_attachment(out: &mut Vec<AttachmentBytes>, row: &EntityValue) {
+/// One `EmailTemplateAttachment`: skipped when `attachmentCondition` is false; a screen render (one for
+/// each entry of `forEachIn`, the entry's fields in the context) when `screenRenderMode` is set; else the
+/// bytes at `attachmentLocation`.
+fn push_stored_attachment(out: &mut Vec<AttachmentBytes>, row: &EntityValue, env: &RenderEnv) -> Result<(), String> {
     let mode = field_text(row, "screenRenderMode");
     let location = field_text(row, "attachmentLocation");
     let filename = field_text(row, "fileName");
-    if mode == "xsl-fo" {
-        note_error(PDF);
-        return;
+    let condition = field_text(row, "attachmentCondition");
+    if !condition.is_empty() {
+        let holds = crate::script::eval_condition(&condition)
+            .map_err(|err| format!("attachmentCondition of {filename}: {}", err.message()))?;
+        if !holds {
+            return Ok(());
+        }
     }
-    if !mode.is_empty()
-        || !field_text(row, "forEachIn").is_empty()
-        || !field_text(row, "attachmentCondition").is_empty()
-    {
-        note_error(SCREEN_ATTACHMENT);
-        return;
+    if !mode.is_empty() {
+        let screen = ScreenAttachment {
+            filename: &filename,
+            mode: &mode,
+            location: &location,
+            screen_path: &field_text(row, "screenPath"),
+            content_type: "",
+        };
+        let for_each_in = field_text(row, "forEachIn");
+        if for_each_in.is_empty() {
+            return render_attachment(out, &screen, env);
+        }
+        let entries = match crate::script::eval_value(&for_each_in)
+            .map_err(|err| format!("forEachIn of {filename}: {}", err.message()))?
+        {
+            Value::List(items) => items,
+            Value::Null => Vec::new(),
+            other => return Err(format!("forEachIn of {filename} is not a list: {other:?}")),
+        };
+        for entry in entries {
+            let _frame = crate::script::ContextFrame::push();
+            match entry {
+                Value::Map(map) => {
+                    for (name, value) in map {
+                        crate::script::set_context_name(&name, value).map_err(|err| err.message().to_string())?;
+                    }
+                }
+                other => {
+                    crate::script::set_context_name("forEachEntry", other).map_err(|err| err.message().to_string())?;
+                }
+            }
+            render_attachment(out, &screen, env)?;
+        }
+        return Ok(());
     }
     if location.is_empty() {
         note_error(format!("attachment {filename} has no location"));
-        return;
+        return Ok(());
     }
     match read_location(&location) {
         Ok(bytes) => out.push(AttachmentBytes {
@@ -533,6 +728,62 @@ fn push_stored_attachment(out: &mut Vec<AttachmentBytes>, row: &EntityValue) {
         }),
         Err(err) => note_error(err),
     }
+    Ok(())
+}
+
+struct ScreenAttachment<'a> {
+    filename: &'a str,
+    mode: &'a str,
+    location: &'a str,
+    screen_path: &'a str,
+    content_type: &'a str,
+}
+
+/// `renderScreenAttachment`: the file name defaults to the screen's name with the mode as extension and
+/// is expanded in the context; the content type is the caller's or the mode's; blank output is no
+/// attachment. `xsl-fo` is logged and skipped, as Java does when the PDF transform fails.
+fn render_attachment(
+    out: &mut Vec<AttachmentBytes>,
+    screen: &ScreenAttachment<'_>,
+    env: &RenderEnv,
+) -> Result<(), String> {
+    let mut filename = screen.filename.to_string();
+    if filename.is_empty() {
+        let extension = if screen.mode == "xsl-fo" { "pdf" } else { screen.mode };
+        let source = if screen.location.is_empty() {
+            screen.screen_path
+        } else {
+            screen.location
+        };
+        let base = source.rsplit('/').next().unwrap_or(source);
+        let stem = base.rsplit_once('.').map_or(base, |(stem, _)| stem);
+        filename = format!("{stem}.{extension}");
+    }
+    let filename = expand_text(&filename)?;
+    if screen.mode == "xsl-fo" {
+        tracing::warn!(file = %filename, "Error generating PDF from XSL-FO: {PDF_UNAVAILABLE}");
+        return Ok(());
+    }
+    let text = env.render(screen.location, screen.screen_path, screen.mode)?;
+    if text.trim().is_empty() {
+        return Ok(());
+    }
+    let content_type = if screen.content_type.is_empty() {
+        env.mime_type(screen.mode)
+            .unwrap_or_else(|| "application/octet-stream".to_string())
+    } else {
+        screen.content_type.to_string()
+    };
+    out.push(AttachmentBytes {
+        filename,
+        content_type,
+        bytes: text.into_bytes(),
+    });
+    Ok(())
+}
+
+fn expand_text(text: &str) -> Result<String, String> {
+    crate::script::expand(text).map_err(|err| err.message().to_string())
 }
 
 fn read_location(location: &str) -> Result<Vec<u8>, String> {
@@ -776,15 +1027,29 @@ fn push_sink(letter: &Letter) -> bool {
     })
 }
 
+/// The test sink: while installed, a send on this thread is kept here instead of going to SMTP.
 #[cfg(test)]
-struct SinkGuard {
+pub(crate) struct SinkGuard {
     previous: Option<Rc<RefCell<Vec<Letter>>>>,
     current: Rc<RefCell<Vec<Letter>>>,
 }
 
+/// A mail the sink kept, with the MIME text lettre would send.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct SentMail {
+    pub subject: String,
+    pub to: Vec<String>,
+    pub body: String,
+    pub body_text: String,
+    /// File name, content type and bytes.
+    pub attachments: Vec<(String, String, Vec<u8>)>,
+    pub mime: String,
+}
+
 #[cfg(test)]
 impl SinkGuard {
-    fn install() -> Self {
+    pub(crate) fn install() -> Self {
         let current = Rc::new(RefCell::new(Vec::new()));
         let previous = SINK.with(|slot| slot.borrow_mut().replace(Rc::clone(&current)));
         Self { previous, current }
@@ -792,6 +1057,26 @@ impl SinkGuard {
 
     fn messages(&self) -> Vec<Letter> {
         self.current.borrow().clone()
+    }
+
+    pub(crate) fn sent(&self) -> Vec<SentMail> {
+        self.messages()
+            .into_iter()
+            .map(|letter| SentMail {
+                mime: build_lettre(&letter)
+                    .map(|message| String::from_utf8_lossy(&message.formatted()).into_owned())
+                    .unwrap_or_else(|err| format!("not a message: {err}")),
+                subject: letter.subject,
+                to: letter.to,
+                body: letter.body,
+                body_text: letter.body_text,
+                attachments: letter
+                    .attachments
+                    .into_iter()
+                    .map(|part| (part.filename, part.content_type, part.bytes))
+                    .collect(),
+            })
+            .collect()
     }
 }
 
@@ -1696,17 +1981,61 @@ fn stamp_millis(millis: i64) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::collections::BTreeMap;
 
-    use super::{host_allowed, FakeGuard, Inbound, SinkGuard, SCREEN_BODY};
+    use indexmap::IndexMap;
+
+    use super::{host_allowed, FakeGuard, Inbound, SinkGuard};
     use crate::context::ExecutionContextFactory;
     use crate::entity::EntityFacade;
+    use crate::screen::PDF_UNAVAILABLE;
     use crate::service::eca_rules;
     use moqui_lib::object::Value;
 
+    /// The tests set `email_allowed_hosts`, a process property, so they share the property lock.
     fn lock_tests() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: Mutex<()> = Mutex::new(());
-        LOCK.lock().unwrap_or_else(|err| err.into_inner())
+        crate::user::session::cookie_property_lock()
+    }
+
+    fn fixture(name: &str) -> String {
+        format!("{}/src/service/testdata/mail/{name}", env!("CARGO_MANIFEST_DIR"))
+    }
+
+    fn smtp_server(facade: &EntityFacade, context: &crate::context::ExecutionContext, id: &str) {
+        seed(
+            facade,
+            context,
+            "moqui.basic.email.EmailServer",
+            &[
+                ("emailServerId", id),
+                ("smtpHost", "smtp.example.com"),
+                ("smtpPort", "25"),
+            ],
+        );
+    }
+
+    /// `send#ScreenRenderEmail` requires a user, as in Java.
+    fn log_in(facade: &EntityFacade, context: &crate::context::ExecutionContext) {
+        seed(
+            facade,
+            context,
+            "moqui.security.UserAccount",
+            &[
+                ("userId", "EMAILER"),
+                ("username", "emailer"),
+                ("emailAddress", "emailer@example.com"),
+            ],
+        );
+        crate::user::internal_login_user("emailer").expect("login");
+    }
+
+    fn map(pairs: Vec<(&str, Value)>) -> Value {
+        Value::Map(
+            pairs
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value))
+                .collect::<IndexMap<_, _>>(),
+        )
     }
 
     struct HostList;
@@ -1835,31 +2164,281 @@ mod tests {
         assert!(sink.messages().is_empty(), "{errors}");
     }
 
+    /// Gate 4: a screen body renders in html and text and goes out as multipart/alternative, with
+    /// screen attachments (forEachIn, attachmentCondition, csv/text/html), a plain file, and an xsl-fo
+    /// attachment that is skipped because PDF waits for phase 12.
     #[test]
-    fn screen_body_is_not_available_and_the_sink_stays_empty() {
+    fn screen_body_renders_html_and_text_and_sends_with_attachments() {
         let _lock = lock_tests();
         let (facade, context) = entered();
         let _entered = context.enter();
         crate::service::load_definitions().unwrap();
+        smtp_server(&facade, &context, "GATE_SMTP");
         seed(
             &facade,
             &context,
             "moqui.basic.email.EmailTemplate",
             &[
-                ("emailTemplateId", "SCREEN"),
+                ("emailTemplateId", "GATE_BODY"),
+                ("emailServerId", "GATE_SMTP"),
                 ("fromAddress", "from@example.com"),
-                ("subject", "Screen"),
-                ("bodyScreenLocation", "component://tools/screen/Example.xml"),
+                ("subject", "Report for ${name}"),
+                ("bodyScreenLocation", &fixture("MailBody.xml")),
+            ],
+        );
+        let report = fixture("MailReport.xml");
+        let attachments: [&[(&str, &str)]; 5] = [
+            &[
+                ("fileName", "report-${rowName}.csv"),
+                ("attachmentLocation", &report),
+                ("screenRenderMode", "csv"),
+                ("forEachIn", "reportRows"),
+            ],
+            &[
+                ("fileName", "report.txt"),
+                ("attachmentLocation", &report),
+                ("screenRenderMode", "text"),
+                ("attachmentCondition", "includeText"),
+            ],
+            &[
+                ("fileName", "report.xml"),
+                ("attachmentLocation", &report),
+                ("screenRenderMode", "xml"),
+                ("attachmentCondition", "!includeText"),
+            ],
+            &[
+                ("fileName", "report.pdf"),
+                ("attachmentLocation", &report),
+                ("screenRenderMode", "xsl-fo"),
+            ],
+            &[("fileName", "plain.txt"), ("attachmentLocation", &fixture("plain.txt"))],
+        ];
+        for fields in attachments {
+            let mut row = vec![("emailTemplateId", "GATE_BODY")];
+            row.extend_from_slice(fields);
+            seed(&facade, &context, "moqui.basic.email.EmailTemplateAttachment", &row);
+        }
+        let sink = SinkGuard::install();
+        let rows = Value::List(vec![
+            map(vec![("rowName", Value::string("one"))]),
+            map(vec![("rowName", Value::string("two"))]),
+        ]);
+        let mut params = BTreeMap::new();
+        params.insert("emailTemplateId".into(), Value::string("GATE_BODY"));
+        params.insert("toAddresses".into(), Value::string("to@example.com"));
+        params.insert(
+            "bodyParameters".into(),
+            map(vec![
+                ("name", Value::string("Ada")),
+                ("includeText", Value::Bool(true)),
+                ("reportRows", rows),
+            ]),
+        );
+        params.insert(
+            "attachments".into(),
+            Value::List(vec![map(vec![
+                ("fileName", Value::string("inline.html")),
+                ("attachmentLocation", Value::string(&report)),
+                ("screenRenderMode", Value::string("html")),
+            ])]),
+        );
+        let out = crate::service::sync("org.moqui.impl.EmailServices.send#EmailTemplate", &params).expect("send");
+        let errors = context.message().errors().join("\n");
+        let messages = context.message().messages().join("\n");
+        assert!(errors.is_empty(), "{errors}");
+        assert!(!messages.contains("Error sending email"), "{messages}");
+        let sent = sink.sent();
+        assert_eq!(sent.len(), 1, "{messages}");
+        let mail = &sent[0];
+        assert_eq!(mail.subject, "Report for Ada");
+        let email_message_id = out
+            .get("emailMessageId")
+            .and_then(Value::as_str)
+            .expect("emailMessageId");
+        assert!(
+            mail.body.contains(r#"<p class="greeting">Hello Ada</p>"#),
+            "{}",
+            mail.body
+        );
+        assert!(mail.body.contains("Report for Ada via webroot"), "{}", mail.body);
+        assert!(
+            mail.body.contains(&format!("message {email_message_id}")),
+            "{}",
+            mail.body
+        );
+        assert!(
+            mail.body_text.contains("Hello Ada\nSubject: Report for Ada"),
+            "{}",
+            mail.body_text
+        );
+        assert!(!mail.body_text.contains('<'), "{}", mail.body_text);
+
+        let names: Vec<&str> = mail.attachments.iter().map(|(name, _, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "inline.html",
+                "report-one.csv",
+                "report-two.csv",
+                "report.txt",
+                "plain.txt"
+            ]
+        );
+        let part = |name: &str| mail.attachments.iter().find(|(file, _, _)| file == name).unwrap();
+        assert_eq!(part("inline.html").1, "text/html");
+        assert!(String::from_utf8_lossy(&part("inline.html").2).contains("<p>Report all</p>"));
+        assert_eq!(part("report-one.csv").1, "text/csv");
+        assert_eq!(
+            String::from_utf8_lossy(&part("report-one.csv").2).trim(),
+            "name,greeting\none,Ada"
+        );
+        assert!(String::from_utf8_lossy(&part("report-two.csv").2).contains("two,Ada"));
+        assert_eq!(part("report.txt").1, "text/plain");
+        assert_eq!(String::from_utf8_lossy(&part("report.txt").2).trim(), "Report all");
+        assert_eq!(String::from_utf8_lossy(&part("plain.txt").2), "plain attachment text\n");
+
+        assert!(mail.mime.contains("multipart/mixed"), "{}", mail.mime);
+        assert!(mail.mime.contains("multipart/alternative"), "{}", mail.mime);
+        assert!(mail.mime.contains("Content-Type: text/plain"), "{}", mail.mime);
+        assert!(mail.mime.contains("Content-Type: text/html"), "{}", mail.mime);
+        assert!(mail.mime.contains("report-one.csv"), "{}", mail.mime);
+        assert!(!mail.mime.contains("report.pdf"), "{}", mail.mime);
+
+        let _authz = context.disable_authz();
+        let row = facade
+            .find("moqui.basic.email.EmailMessage")
+            .unwrap()
+            .eq("emailMessageId", Value::string(email_message_id))
+            .one()
+            .unwrap()
+            .expect("EmailMessage row");
+        assert_eq!(row.get("statusId").and_then(Value::as_str), Some("ES_SENT"));
+        assert!(row
+            .get("bodyText")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("Hello Ada"));
+        assert!(row
+            .get("body")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("Hello Ada"));
+    }
+
+    #[test]
+    fn screen_render_email_sends_the_rendered_screen_as_an_attachment() {
+        let _lock = lock_tests();
+        let (facade, context) = entered();
+        let _entered = context.enter();
+        crate::service::load_definitions().unwrap();
+        smtp_server(&facade, &context, "SYSTEM");
+        seed(
+            &facade,
+            &context,
+            "moqui.basic.email.EmailTemplate",
+            &[
+                ("emailTemplateId", "SCREEN_RENDER"),
+                ("emailServerId", "SYSTEM"),
+                ("emailTypeEnumId", "EMT_SCREEN_RENDER"),
+                ("bodyScreenLocation", "classpath://screen/ScreenRenderEmail.xml"),
+                ("webappName", "webroot"),
+                ("fromAddress", "reports@example.com"),
+                ("subject", "${title}"),
+            ],
+        );
+        log_in(&facade, &context);
+        let sink = SinkGuard::install();
+        let mut params = BTreeMap::new();
+        params.insert("screenLocation".into(), Value::string(fixture("MailReport.xml")));
+        params.insert("screenRenderMode".into(), Value::string("csv"));
+        params.insert("toAddresses".into(), Value::string("boss@example.com"));
+        params.insert("title".into(), Value::string("Monthly Report"));
+        params.insert("bodyParameters".into(), map(vec![("rowName", Value::string("March"))]));
+        crate::service::sync("org.moqui.impl.EmailServices.send#ScreenRenderEmail", &params).expect("send");
+        let errors = context.message().errors().join("\n");
+        let messages = context.message().messages().join("\n");
+        assert!(errors.is_empty(), "{errors}");
+        let sent = sink.sent();
+        assert_eq!(sent.len(), 1, "{messages}");
+        let mail = &sent[0];
+        assert_eq!(mail.subject, "Monthly Report");
+        assert!(mail.body.contains("<h2>Monthly Report</h2>"), "{}", mail.body);
+        assert!(mail.body.contains("<strong>rowName</strong>: March"), "{}", mail.body);
+        assert!(!mail.body.contains("lastStandalone"), "{}", mail.body);
+        assert!(mail.body_text.contains("Monthly Report"), "{}", mail.body_text);
+        assert!(mail.body_text.contains("rowName: March"), "{}", mail.body_text);
+        assert_eq!(mail.attachments.len(), 1);
+        let (name, content_type, bytes) = &mail.attachments[0];
+        assert_eq!(name, "MailReport.csv");
+        assert_eq!(content_type, "text/csv");
+        assert!(String::from_utf8_lossy(bytes).contains("March"));
+        assert!(mail.mime.contains("multipart/alternative"), "{}", mail.mime);
+    }
+
+    #[test]
+    fn screen_render_email_as_xsl_fo_sends_without_the_pdf() {
+        let _lock = lock_tests();
+        let (facade, context) = entered();
+        let _entered = context.enter();
+        crate::service::load_definitions().unwrap();
+        smtp_server(&facade, &context, "SYSTEM");
+        seed(
+            &facade,
+            &context,
+            "moqui.basic.email.EmailTemplate",
+            &[
+                ("emailTemplateId", "SCREEN_RENDER"),
+                ("emailServerId", "SYSTEM"),
+                ("bodyScreenLocation", "classpath://screen/ScreenRenderEmail.xml"),
+                ("fromAddress", "reports@example.com"),
+                ("subject", "${title}"),
+            ],
+        );
+        log_in(&facade, &context);
+        let sink = SinkGuard::install();
+        let mut params = BTreeMap::new();
+        params.insert("screenLocation".into(), Value::string(fixture("MailReport.xml")));
+        params.insert("screenRenderMode".into(), Value::string("xsl-fo"));
+        params.insert("toAddresses".into(), Value::string("boss@example.com"));
+        params.insert("title".into(), Value::string("Printed"));
+        crate::service::sync("org.moqui.impl.EmailServices.send#ScreenRenderEmail", &params).expect("send");
+        let errors = context.message().errors().join("\n");
+        assert!(errors.is_empty(), "{errors}");
+        assert!(!errors.contains(PDF_UNAVAILABLE), "{errors}");
+        let sent = sink.sent();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].attachments.is_empty());
+        assert!(sent[0].body.contains("Printed"), "{}", sent[0].body);
+    }
+
+    #[test]
+    fn a_body_screen_that_fails_to_render_does_not_send() {
+        let _lock = lock_tests();
+        let (facade, context) = entered();
+        let _entered = context.enter();
+        crate::service::load_definitions().unwrap();
+        smtp_server(&facade, &context, "BROKEN_SMTP");
+        seed(
+            &facade,
+            &context,
+            "moqui.basic.email.EmailTemplate",
+            &[
+                ("emailTemplateId", "BROKEN"),
+                ("emailServerId", "BROKEN_SMTP"),
+                ("fromAddress", "from@example.com"),
+                ("subject", "Broken"),
+                ("bodyScreenLocation", &fixture("NoSuchScreen.xml")),
             ],
         );
         let sink = SinkGuard::install();
-        let mut params = std::collections::BTreeMap::new();
-        params.insert("emailTemplateId".into(), Value::string("SCREEN"));
+        let mut params = BTreeMap::new();
+        params.insert("emailTemplateId".into(), Value::string("BROKEN"));
         params.insert("toAddresses".into(), Value::string("to@example.com"));
         let _ = crate::service::sync("org.moqui.impl.EmailServices.send#EmailTemplate", &params);
-        let errors = context.message().errors().join("\n");
-        assert!(errors.contains(SCREEN_BODY), "{errors}");
-        assert!(sink.messages().is_empty(), "{errors}");
+        let messages = context.message().messages().join("\n");
+        assert!(messages.contains("Error sending email"), "{messages}");
+        assert!(messages.contains("NoSuchScreen.xml"), "{messages}");
+        assert!(sink.sent().is_empty());
     }
 
     #[test]

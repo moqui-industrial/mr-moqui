@@ -53,6 +53,7 @@ pub struct NotificationMessage {
     email_message_save: Option<bool>,
     notification_message_id: Option<String>,
     notify_user_ids: Vec<String>,
+    email_message_id_by_user_id: HashMap<String, String>,
 }
 
 impl NotificationMessage {
@@ -172,6 +173,12 @@ impl NotificationMessage {
         &self.notify_user_ids
     }
 
+    /// The `EmailMessage` id each recipient's email saved in the last [`Self::send`], when the send
+    /// created one (`emailMessageSave`).
+    pub fn email_message_id_by_user_id(&self) -> &HashMap<String, String> {
+        &self.email_message_id_by_user_id
+    }
+
     /// Resolve recipients, persist when required, publish, then try email.
     ///
     /// Email failure is logged. It does not fail this call.
@@ -250,7 +257,8 @@ impl NotificationMessage {
                 body: moqui_lib::json::to_json(&Value::Map(wrapped.clone())),
             },
         )?;
-        send_emails(
+        self.email_message_id_by_user_id = send_emails(
+            &facade,
             topic.as_ref(),
             &resolved.topic_users,
             &resolved.emails,
@@ -258,6 +266,7 @@ impl NotificationMessage {
             self.email_template_id.as_deref(),
             self.email_message_save,
             &wrapped,
+            self.notification_message_id.as_deref(),
         );
         Ok(())
     }
@@ -519,7 +528,14 @@ fn wrapped_message(
     wrapped
 }
 
+/// Java's `NotificationMessageImpl.send` email loop: `send#EmailTemplate` for each recipient who wants
+/// email and has an address, with the wrapped message as `bodyParameters`. A saved `EmailMessage` id is
+/// returned by user and, when the notification was persisted, stored on its `NotificationMessageUser`
+/// row with the sent date. A failed email is logged; the messages and errors of the caller are restored,
+/// so it never fails the in-app send.
+#[allow(clippy::too_many_arguments)]
 fn send_emails(
+    facade: &EntityFacade,
     topic: Option<&EntityValue>,
     topic_users: &[EntityValue],
     emails: &HashMap<String, String>,
@@ -527,13 +543,15 @@ fn send_emails(
     caller_template: Option<&str>,
     caller_save: Option<bool>,
     wrapped: &IndexMap<String, Value>,
-) {
+    notification_message_id: Option<&str>,
+) -> HashMap<String, String> {
+    let mut sent_ids = HashMap::new();
     let Some(template_id) = caller_template
         .filter(|text| !text.is_empty())
         .map(str::to_string)
         .or_else(|| topic.and_then(|row| field_str(row, "emailTemplateId")))
     else {
-        return;
+        return sent_ids;
     };
     let save = caller_save
         .or_else(|| topic.and_then(|row| yn(row, "emailMessageSave")))
@@ -552,12 +570,54 @@ fn send_emails(
         params.insert("bodyParameters".to_string(), Value::Map(wrapped.clone()));
         params.insert("toUserId".to_string(), Value::string(user_id));
         params.insert("createEmailMessage".to_string(), Value::Bool(save));
-        if let Err(err) = crate::service::sync(EMAIL_SERVICE, &params) {
-            tracing::warn!(user_id = %user_id, error = %err, "notification email was not sent");
+        let out = match crate::service::sync(EMAIL_SERVICE, &params) {
+            Ok(out) => out,
+            Err(err) => {
+                tracing::warn!(user_id = %user_id, error = %err, "notification email was not sent");
+                continue;
+            }
+        };
+        let email_message_id = out.get("emailMessageId").map(to_plain_string).unwrap_or_default();
+        if email_message_id.is_empty() {
+            continue;
         }
+        if let Some(id) = notification_message_id.filter(|id| !id.is_empty()) {
+            if let Err(err) = store_email_message_id(facade, id, user_id, &email_message_id) {
+                tracing::warn!(user_id = %user_id, error = %err, "notification email id was not stored");
+            }
+        }
+        sent_ids.insert(user_id.clone(), email_message_id);
     }
     log_new_email_errors(user_errors(&saved));
     restore_messages(saved);
+    sent_ids
+}
+
+/// `store#NotificationMessageUser` with the email id and the sent date: an update of the row the
+/// persist created, or a new row.
+fn store_email_message_id(
+    facade: &EntityFacade,
+    notification_message_id: &str,
+    user_id: &str,
+    email_message_id: &str,
+) -> Result<(), Error> {
+    let _authz = ExecutionContext::with_current(|ctx| ctx.disable_authz());
+    let existing = facade
+        .find(MESSAGE_USER)?
+        .eq("notificationMessageId", Value::string(notification_message_id))
+        .eq("userId", Value::string(user_id))
+        .one()?;
+    let mut row = facade.make_value(MESSAGE_USER)?;
+    row.set("notificationMessageId", Value::string(notification_message_id));
+    row.set("userId", Value::string(user_id));
+    row.set("emailMessageId", Value::string(email_message_id));
+    row.set("sentDate", now_value());
+    if existing.is_some() {
+        row.update(facade)?;
+    } else {
+        row.create(facade)?;
+    }
+    Ok(())
 }
 
 fn wants_email(user_id: &str, topic_users: &[EntityValue], topic: Option<&EntityValue>) -> bool {
