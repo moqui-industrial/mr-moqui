@@ -818,7 +818,7 @@ fn expire_idle(factory: &ExecutionContextFactory) -> Result<(), Error> {
         conn.execute(&sql, &[cutoff])?;
         Ok(())
     })?;
-    cache::on_write(&facade, HTTP_SESSION, "delete").map_err(Error::from)
+    cache::on_write(&facade, HTTP_SESSION, "delete", &BTreeMap::new()).map_err(Error::from)
 }
 
 fn install_from_row(factory: &ExecutionContextFactory, id: &str) -> Result<(), Error> {
@@ -1085,7 +1085,7 @@ fn flush_id(factory: &ExecutionContextFactory, id: &str) -> Result<(), Error> {
             continue;
         }
         store_success(&mut table, id, &merged);
-        cache::on_write(&facade, HTTP_SESSION, "update").map_err(Error::from)?;
+        cache::on_write(&facade, HTTP_SESSION, "update", &session_key(id)).map_err(Error::from)?;
         return Ok(());
     }
     Err(Error::new(format!("HttpSession sessionRevision conflict for {id}")))
@@ -1250,7 +1250,13 @@ fn delete_session_row(facade: &EntityFacade, id: &str) -> Result<(), Error> {
         conn.execute(&sql, &[Value::string(id)])?;
         Ok(())
     })?;
-    cache::on_write(facade, HTTP_SESSION, "delete").map_err(Error::from)
+    cache::on_write(facade, HTTP_SESSION, "delete", &session_key(id)).map_err(Error::from)
+}
+
+fn session_key(id: &str) -> BTreeMap<String, Value> {
+    let mut keys = BTreeMap::new();
+    keys.insert("sessionId".to_string(), Value::string(id));
+    keys
 }
 
 fn with_session_sql<T>(

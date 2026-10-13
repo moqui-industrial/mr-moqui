@@ -17,12 +17,20 @@ along with this software (see the LICENSE.md file). If not, see
     <service verb="send" noun="Email" type="script"
              location="classpath://org/moqui/impl/sendEmailTemplate.groovy" allow-remote="false">
         <implements service="org.moqui.EmailServices.send#EmailTemplate"/>
+        <in-parameters>
+            <parameter name="body" allow-html="any"/>
+            <parameter name="bodyText" allow-html="any"/>
+        </in-parameters>
     </service>
     <service verb="send" noun="EmailTemplate" authenticate="anonymous-view" type="script"
              location="classpath://org/moqui/impl/sendEmailTemplate.groovy" allow-remote="false">
         <description>NOTE: this service is meant for internal use and authentication is not required. Do not export or
             allow this service to be called remotely.</description>
         <implements service="org.moqui.EmailServices.send#EmailTemplate"/>
+        <in-parameters>
+            <parameter name="body" allow-html="any"/>
+            <parameter name="bodyText" allow-html="any"/>
+        </in-parameters>
     </service>
     <service verb="send" noun="EmailMessage" type="script" location="classpath://org/moqui/impl/sendEmailMessage.groovy">
         <in-parameters><parameter name="emailMessageId" required="true"/></in-parameters>

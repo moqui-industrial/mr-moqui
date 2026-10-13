@@ -14,6 +14,7 @@
 
 //! Per-factory service workers. Drop stops and joins only this guard's threads.
 
+use std::any::Any;
 use std::collections::{BTreeMap, VecDeque};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{self, Sender};
@@ -29,6 +30,8 @@ use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
 const DEFAULT_WORKERS: usize = 32;
 const DEFAULT_QUEUE: usize = 65_535;
 const DEFAULT_CHECK_SECONDS: u64 = 60;
+
+type TickHook = Arc<dyn Fn() + Send + Sync>;
 
 thread_local! {
     static IN_WORKER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -92,7 +95,7 @@ pub struct ServicePools {
 pub(crate) struct Shared {
     pub(crate) state: Mutex<State>,
     pub(crate) wake: Condvar,
-    pub(crate) tick_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    pub(crate) tick_hook: Mutex<Vec<TickHook>>,
     pub(crate) workers: usize,
     pub(crate) queue_cap: usize,
     /// Jobs allowed to wait beyond the workers, from `service-facade/@job-queue-max`.
@@ -117,9 +120,18 @@ pub(crate) struct State {
 pub(crate) enum Work {
     Call(CallJob),
     Job(Box<super::jobs::JobRun>),
+    Closure(ClosureJob),
     #[cfg(test)]
     Task(Box<dyn FnOnce() + Send>),
 }
+
+pub(crate) struct ClosureJob {
+    run: ClosureFn,
+    reply: Sender<ClosureOut>,
+}
+
+type ClosureOut = Result<Box<dyn Any + Send>, Error>;
+type ClosureFn = Box<dyn FnOnce() -> ClosureOut + Send>;
 
 pub(crate) struct CallJob {
     name: String,
@@ -169,11 +181,19 @@ impl ServicePools {
     }
 
     /// Called from the scheduler after the state lock is released. Idle pools ignore it.
-    pub(crate) fn set_tick_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
+    pub(crate) fn add_tick_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
         let Some(shared) = &self.shared else {
             return;
         };
-        *lock_mutex(&shared.tick_hook) = Some(Arc::new(hook));
+        lock_mutex(&shared.tick_hook).push(Arc::new(hook));
+    }
+
+    /// Scheduler pass interval. Idle pools report [`DEFAULT_CHECK_SECONDS`].
+    pub(crate) fn check_interval(&self) -> Duration {
+        self.shared
+            .as_ref()
+            .map(|shared| shared.check_interval)
+            .unwrap_or_else(|| Duration::from_secs(DEFAULT_CHECK_SECONDS))
     }
 
     /// Test pool. `workers` is at least 1. Same Drop as a booted pool.
@@ -196,6 +216,40 @@ impl ServicePools {
         parameters: &BTreeMap<String, Value>,
     ) -> Result<BTreeMap<String, Value>, Error> {
         self.running()?.call_future(name, parameters)
+    }
+
+    /// Run `job` on a service worker and wait for it.
+    ///
+    /// An idle pool runs `job` on this thread and does not enter a context. A caller that is
+    /// already a worker uses a reserved thread, the same rule as [`Self::call_future`]. A worker
+    /// enters a fresh execution context before `job`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the pool is stopped, the queue is full, no reserved thread is free,
+    /// the worker panics, or `job` returns an error.
+    pub fn call<T, F>(&self, job: F) -> Result<T, Error>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> Result<T, Error> + Send + 'static,
+    {
+        let Some(shared) = &self.shared else {
+            return job();
+        };
+        let shared = Arc::clone(shared);
+        let run: ClosureFn = Box::new(move || job().map(|value| Box::new(value) as Box<dyn Any + Send>));
+        let rx = if in_worker() {
+            reserve_closure(&shared, run)?
+        } else {
+            queue_closure(&shared, run)?
+        };
+        let boxed = rx
+            .recv()
+            .unwrap_or_else(|_| Err(Error::new("service worker pool is not running")))?;
+        boxed
+            .downcast::<T>()
+            .map(|value| *value)
+            .map_err(|_| Error::new("service worker returned the wrong type"))
     }
 
     /// Start the call and return its pending result. See [`Shared::submit_future`].
@@ -292,10 +346,11 @@ impl Drop for ServicePools {
     }
 }
 
-/// Run the scheduler hook after a pass. The hook is not called under the state lock.
+/// Run each scheduler hook after a pass. Hooks are not called under the state lock.
+/// One panic does not skip the rest.
 pub(crate) fn run_tick_hook(shared: &Shared) {
-    let hook = lock_mutex(&shared.tick_hook).clone();
-    if let Some(hook) = hook {
+    let hooks = lock_mutex(&shared.tick_hook).clone();
+    for hook in hooks {
         if catch_unwind(AssertUnwindSafe(|| hook())).is_err() {
             tracing::warn!("scheduler tick hook panicked");
         }
@@ -417,7 +472,7 @@ fn start(settings: Settings) -> Result<ServicePools, Error> {
     let shared = Arc::new(Shared {
         state: Mutex::new(State::default()),
         wake: Condvar::new(),
-        tick_hook: Mutex::new(None),
+        tick_hook: Mutex::new(Vec::new()),
         workers: settings.workers,
         queue_cap: settings.queue,
         job_queue_max: settings.job_queue_max,
@@ -496,6 +551,7 @@ fn run_work(shared: &Arc<Shared>, work: Work) {
                 super::jobs::run_job(*run);
             }));
         }
+        Work::Closure(job) => run_closure(shared, job),
         other => {
             if let Some(job) = call_job(other) {
                 run_call(job);
@@ -508,7 +564,7 @@ fn run_work(shared: &Arc<Shared>, work: Work) {
 fn call_job(work: Work) -> Option<CallJob> {
     match work {
         Work::Call(job) => Some(job),
-        Work::Job(_) => None,
+        Work::Job(_) | Work::Closure(_) => None,
         #[cfg(test)]
         Work::Task(task) => {
             run_task(task);
@@ -610,21 +666,92 @@ fn fail_pending(shared: &Shared) {
 }
 
 fn fail_one(work: Work) {
-    let Some(job) = stopped_call(work) else {
-        return;
-    };
-    if let Some(reply) = job.reply {
-        let _ = reply.send(Err(Error::new("service worker pool is not running")));
+    let stopped = Error::new("service worker pool is not running");
+    match work {
+        Work::Call(job) => {
+            if let Some(reply) = job.reply {
+                let _ = reply.send(Err(stopped));
+            }
+        }
+        Work::Closure(job) => {
+            let _ = job.reply.send(Err(stopped));
+        }
+        Work::Job(_) => {}
+        #[cfg(test)]
+        Work::Task(_) => {}
     }
 }
 
-fn stopped_call(work: Work) -> Option<CallJob> {
-    match work {
-        Work::Call(job) => Some(job),
-        Work::Job(_) => None,
-        #[cfg(test)]
-        Work::Task(_) => None,
+fn queue_closure(shared: &Arc<Shared>, run: ClosureFn) -> Result<mpsc::Receiver<ClosureOut>, Error> {
+    let (tx, rx) = mpsc::channel();
+    {
+        let mut state = lock_mutex(&shared.state);
+        if state.stop {
+            return Err(Error::new("service worker pool is not running"));
+        }
+        if state.queue.len() >= shared.queue_cap {
+            return Err(Error::new("service worker queue is full"));
+        }
+        state.queue.push_back(Work::Closure(ClosureJob { run, reply: tx }));
     }
+    shared.wake.notify_all();
+    Ok(rx)
+}
+
+fn reserve_closure(shared: &Arc<Shared>, run: ClosureFn) -> Result<mpsc::Receiver<ClosureOut>, Error> {
+    let slot = ReservedSlot::take(shared, shared.workers)?;
+    let factory = caller_factory(shared)?;
+    let (tx, rx) = mpsc::channel();
+    thread::Builder::new()
+        .name("moqui-reserved".to_string())
+        .spawn(move || {
+            let _slot = slot;
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                let _flag = WorkerFlag::enter();
+                let _clear = ClearStack;
+                let ctx = factory.new_context();
+                let _entered = ctx.enter();
+                run()
+            }));
+            let _ = tx.send(closure_outcome(result));
+        })
+        .map_err(|err| Error::new(format!("reserved worker did not start: {err}")))?;
+    Ok(rx)
+}
+
+fn run_closure(shared: &Shared, job: ClosureJob) {
+    let ClosureJob { run, reply } = job;
+    let result = catch_unwind(AssertUnwindSafe(|| enter_and_run(shared, run)));
+    let _ = reply.send(closure_outcome(result));
+}
+
+fn enter_and_run(shared: &Shared, run: ClosureFn) -> ClosureOut {
+    let _flag = WorkerFlag::enter();
+    let _clear = ClearStack;
+    let factory = attached_factory(shared)?;
+    let ctx = factory.new_context();
+    let _entered = ctx.enter();
+    run()
+}
+
+fn closure_outcome(result: Result<ClosureOut, Box<dyn Any + Send>>) -> ClosureOut {
+    match result {
+        Ok(inner) => inner,
+        Err(_) => Err(Error::new("service worker panicked")),
+    }
+}
+
+fn attached_factory(shared: &Shared) -> Result<Arc<ExecutionContextFactory>, Error> {
+    lock_mutex(&shared.factory)
+        .upgrade()
+        .ok_or_else(|| Error::new("service worker pool has no factory"))
+}
+
+fn caller_factory(shared: &Shared) -> Result<Arc<ExecutionContextFactory>, Error> {
+    if let Some(factory) = ExecutionContext::with_current(|ctx| Arc::clone(ctx.factory())) {
+        return Ok(factory);
+    }
+    attached_factory(shared)
 }
 
 fn stop_joined(shared: &Shared, handles: Vec<JoinHandle<()>>) {
@@ -644,4 +771,35 @@ fn join_one(handle: JoinHandle<()>) {
         return;
     }
     let _ = handle.join();
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use super::{ServicePools, DEFAULT_CHECK_SECONDS};
+
+    #[test]
+    fn a_panicking_tick_hook_does_not_skip_the_next() {
+        let pools = ServicePools::bounded(1, 1);
+        let hit = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&hit);
+        pools.add_tick_hook(|| panic!("stand-in tick hook"));
+        pools.add_tick_hook(move || flag.store(true, Ordering::SeqCst));
+        pools.tick();
+        assert!(hit.load(Ordering::SeqCst));
+        assert_eq!(
+            ServicePools::idle().check_interval(),
+            Duration::from_secs(DEFAULT_CHECK_SECONDS)
+        );
+    }
+
+    #[test]
+    fn an_idle_pool_runs_a_closure_inline() {
+        let pools = ServicePools::idle();
+        assert_eq!(pools.call(|| Ok::<_, crate::context::Error>(4)).unwrap(), 4);
+        assert!(pools.call(|| Err::<(), _>(crate::context::Error::new("nope"))).is_err());
+    }
 }

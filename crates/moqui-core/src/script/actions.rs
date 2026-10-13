@@ -155,9 +155,9 @@ fn js_err(err: impl ToString) -> Error {
 #[cfg(test)]
 mod tests {
 
-    use moqui_lib::object::Value;
     use super::{generate, generate_with, load_macros, run_actions};
     use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
+    use moqui_lib::object::Value;
 
     use crate::entity::{EntityFacade, EntityValue};
     use crate::script::runtime::{clear_context_stack, eval_condition, set_context_name};
@@ -321,11 +321,10 @@ mod tests {
 
     #[test]
     fn nested_blocks_indent_but_inline_script_text_is_unchanged() {
-        let source = generate(
-            "<actions><if condition=\"a\"><script>var s = `one\ntwo`;</script></if></actions>",
-        )
-        .unwrap();
-        assert!(source.contains("        // begin inline script\n        var s = `one\ntwo`;\n        // end inline script\n"));
+        let source =
+            generate("<actions><if condition=\"a\"><script>var s = `one\ntwo`;</script></if></actions>").unwrap();
+        assert!(source
+            .contains("        // begin inline script\n        var s = `one\ntwo`;\n        // end inline script\n"));
         assert!(!source.contains('\u{1}') && !source.contains('\u{2}'));
     }
 
@@ -343,7 +342,10 @@ mod tests {
             "<actions><expression>foo()</expression><if condition=\"a\"><expression>bar()</expression></if></actions>",
         )
         .unwrap();
-        assert!(source.contains("    foo();\n    if (a) {\n        bar();\n    }\n"), "{source}");
+        assert!(
+            source.contains("    foo();\n    if (a) {\n        bar();\n    }\n"),
+            "{source}"
+        );
     }
 
     #[test]

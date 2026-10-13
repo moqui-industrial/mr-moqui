@@ -20,6 +20,7 @@ use std::io::Write;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 
 use moqui_lib::env;
@@ -63,6 +64,8 @@ pub struct ExecutionContextFactory {
     /// Idle until [`Self::start_request_pool`]. Drop joins the threads.
     requests: crate::service::RequestPool,
     pub(crate) sessions: std::sync::Mutex<crate::user::session::SessionTable>,
+    /// True after this factory's cluster heartbeat hook is registered.
+    pub(crate) cluster_heartbeat: AtomicBool,
 }
 
 impl ExecutionContextFactory {
@@ -123,8 +126,10 @@ impl ExecutionContextFactory {
             pools,
             requests: crate::service::RequestPool::idle(),
             sessions: std::sync::Mutex::new(crate::user::session::SessionTable::new(flush_mode)),
+            cluster_heartbeat: AtomicBool::new(false),
         });
         factory.pools.attach(&factory);
+        // The host calls cluster::start after the entity facade is installed.
         install_session_flush(&factory);
         Ok(factory)
     }
@@ -430,7 +435,7 @@ fn assert_shareable<T: Send + Sync>() {}
 
 fn install_session_flush(factory: &Arc<ExecutionContextFactory>) {
     let weak = Arc::downgrade(factory);
-    factory.pools.set_tick_hook(move || {
+    factory.pools.add_tick_hook(move || {
         let Some(factory) = weak.upgrade() else {
             return;
         };
@@ -460,11 +465,22 @@ fn apply_default_properties(conf_node: &MNode, env_path: &Path) -> Result<(Vec<S
     let mut names = Vec::new();
     let mut set_by_boot = PropertyRollback::default();
     let mut generated = Vec::new();
+    let mut cert_slot = None;
+    let mut key_slot = None;
     for node in conf_node.children_named("default-property") {
         let Some(name) = node.attribute("name").filter(|name| !name.is_empty()) else {
             continue;
         };
         names.push(name.clone());
+        if name == "cluster_tls_cert" || name == "cluster_tls_key" {
+            let slot = read_tls_slot(&node, &name)?;
+            if name == "cluster_tls_cert" {
+                cert_slot = Some(slot);
+            } else {
+                key_slot = Some(slot);
+            }
+            continue;
+        }
         let secret = is_secret(&name, node.attribute("is-secret").as_deref());
         let resolved = env::get_prop_or_env(&name);
         if !resolved.is_empty() {
@@ -492,8 +508,89 @@ fn apply_default_properties(conf_node: &MNode, env_path: &Path) -> Result<(Vec<S
         set_by_boot.remember(&name);
         log_property(&name, &value, secret, true);
     }
+    install_tls_pair(&mut generated, &mut set_by_boot, cert_slot, key_slot)?;
     append_env_secrets(env_path, &generated)?;
     Ok((names, set_by_boot))
+}
+
+struct TlsSlot {
+    from_env: bool,
+    value: String,
+    secret: bool,
+}
+
+fn read_tls_slot(node: &MNode, name: &str) -> Result<TlsSlot, Error> {
+    let secret = is_secret(name, node.attribute("is-secret").as_deref());
+    let resolved = env::get_prop_or_env(name);
+    if !resolved.is_empty() {
+        return Ok(TlsSlot {
+            from_env: true,
+            value: resolved,
+            secret,
+        });
+    }
+    let raw = node.attribute("value").unwrap_or_default();
+    let value = if raw.is_empty() {
+        String::new()
+    } else {
+        env::expand(&raw)?
+    };
+    Ok(TlsSlot {
+        from_env: false,
+        value,
+        secret,
+    })
+}
+
+fn install_tls_pair(
+    generated: &mut Vec<(String, String)>,
+    set_by_boot: &mut PropertyRollback,
+    cert: Option<TlsSlot>,
+    key: Option<TlsSlot>,
+) -> Result<(), Error> {
+    let (cert, key) = match (cert, key) {
+        (Some(cert), Some(key)) => (cert, key),
+        (None, None) => return Ok(()),
+        _ => return Err(Error::new("cluster_tls_cert and cluster_tls_key must be set together")),
+    };
+    let cert_placeholder = cert.value.ends_with("CHANGEME");
+    let key_placeholder = key.value.ends_with("CHANGEME");
+    if cert_placeholder && key_placeholder {
+        let (cert_b64, key_b64) = crate::cluster::generate_cert_pair()?;
+        remember_generated(generated, set_by_boot, "cluster_tls_cert", cert_b64);
+        remember_generated(generated, set_by_boot, "cluster_tls_key", key_b64);
+        return Ok(());
+    }
+    if cert.value.is_empty() && key.value.is_empty() {
+        return Ok(());
+    }
+    if cert_placeholder || key_placeholder || cert.value.is_empty() || key.value.is_empty() {
+        return Err(Error::new("cluster_tls_cert and cluster_tls_key must be set together"));
+    }
+    apply_configured(set_by_boot, "cluster_tls_cert", &cert);
+    apply_configured(set_by_boot, "cluster_tls_key", &key);
+    Ok(())
+}
+
+fn remember_generated(
+    generated: &mut Vec<(String, String)>,
+    set_by_boot: &mut PropertyRollback,
+    name: &str,
+    value: String,
+) {
+    env::set_property(name, value.clone());
+    set_by_boot.remember(name);
+    generated.push((name.to_string(), value));
+    tracing::info!("Generated secret property {name}");
+}
+
+fn apply_configured(set_by_boot: &mut PropertyRollback, name: &str, slot: &TlsSlot) {
+    log_property(name, &slot.value, slot.secret, !slot.from_env);
+    if slot.from_env {
+        return;
+    }
+    env::set_property(name, slot.value.clone());
+    set_by_boot.remember(name);
 }
 
 fn log_property(name: &str, value: &str, secret: bool, from_default: bool) {
@@ -518,10 +615,7 @@ fn is_secret(name: &str, flag: Option<&str>) -> bool {
 }
 
 fn leave_sentinel(name: &str) -> bool {
-    matches!(
-        name,
-        "entity_ds_crypt_pass_old" | "cluster_tls_cert" | "cluster_tls_key"
-    )
+    name == "entity_ds_crypt_pass_old"
 }
 
 fn ensure_env_readable(path: &Path) -> Result<(), Error> {
@@ -542,7 +636,7 @@ fn generate_secret() -> Result<String, Error> {
     Ok(standard_base64(&bytes))
 }
 
-fn standard_base64(bytes: &[u8]) -> String {
+pub(crate) fn standard_base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     let mut index = 0;
@@ -573,7 +667,7 @@ fn push_base64(out: &mut String, alphabet: &[u8], chunk: u32, count: usize) {
     }
 }
 
-fn append_env_secrets(path: &Path, pairs: &[(String, String)]) -> Result<(), Error> {
+pub(crate) fn append_env_secrets(path: &Path, pairs: &[(String, String)]) -> Result<(), Error> {
     if pairs.is_empty() {
         return Ok(());
     }
@@ -710,6 +804,7 @@ impl ExecutionContextFactory {
             sessions: std::sync::Mutex::new(crate::user::session::SessionTable::new(
                 crate::user::session::FlushMode::Eventual,
             )),
+            cluster_heartbeat: AtomicBool::new(false),
         });
         factory.pools.attach(&factory);
         factory.new_context()

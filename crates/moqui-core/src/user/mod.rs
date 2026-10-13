@@ -30,6 +30,7 @@ pub use login::{
     apply_header_keys, change_password, internal_login_user, login_anonymous, login_user, login_user_key, logout,
     logout_anonymous_only,
 };
+pub(crate) use login::{now_millis, now_value, stamp_value, value_millis};
 pub use password::hash_password;
 pub use period::period_range;
 pub use policy::password_acceptable;

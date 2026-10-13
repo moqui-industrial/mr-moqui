@@ -232,12 +232,29 @@ pub fn gate_write(
     Ok(WriteGate::Handled)
 }
 
-/// Clear this entity's one-cache. The transaction flush is separate and runs at commit.
-pub fn on_write(facade: &EntityFacade, entity_name: &str, operation: &str) -> Result<(), Error> {
+/// Clear this entity's one-cache, then publish `entity-cache-invalidate` for the primary key.
+/// The transaction flush is separate and runs at commit. The local clear stays the whole entity.
+pub fn on_write(
+    facade: &EntityFacade,
+    entity_name: &str,
+    operation: &str,
+    values: &BTreeMap<String, Value>,
+) -> Result<(), Error> {
     let _ = operation;
     let meta = read_meta(facade, entity_name)?;
+    clear_named(facade, &meta.full_name)?;
+    crate::cluster::note_write(facade, entity_name, &meta.pk_fields, values).map_err(Error::from)
+}
+
+/// Clear this entity's one-cache and do not publish. Remote apply uses this.
+pub(crate) fn clear_one_cache(facade: &EntityFacade, entity_name: &str) -> Result<(), Error> {
+    let meta = read_meta(facade, entity_name)?;
+    clear_named(facade, &meta.full_name)
+}
+
+fn clear_named(facade: &EntityFacade, full_name: &str) -> Result<(), Error> {
     facade.with_slot(OneCaches::default, |caches| {
-        if let Some(cache) = caches.lists.get(&meta.full_name) {
+        if let Some(cache) = caches.lists.get(full_name) {
             cache.clear()?;
         }
         Ok(())

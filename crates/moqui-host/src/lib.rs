@@ -20,8 +20,12 @@
 pub mod db;
 pub mod search;
 
+mod cluster_edge;
+
 #[cfg(feature = "axum")]
 mod http;
+#[cfg(feature = "axum")]
+mod notws;
 
 /// No arguments start the HTTP listener and block until it stops.
 ///
@@ -45,25 +49,49 @@ pub fn serve() -> Result<(), moqui_lib::error::Error> {
     }
 }
 
-/// A running plain HTTP listener. Drop stops it, then joins the thread that owns the database.
+/// A running plain HTTP listener and the cluster HTTPS listener.
+/// Drop stops both, then joins the thread that owns the database.
 #[must_use = "dropping the server stops the listener"]
 pub struct Server {
     address: std::net::SocketAddr,
+    cluster_address: std::net::SocketAddr,
+    factory: Option<std::sync::Arc<moqui_core::context::ExecutionContextFactory>>,
+    posts: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     /// Drops the listener shutdown sender. Empty after the first stop.
     stop: Option<Box<dyn FnOnce() + Send>>,
     thread: Option<std::thread::JoinHandle<Result<(), moqui_lib::error::Error>>>,
 }
 
 impl Server {
-    /// The address the listener bound. A port of 0 in the request is replaced with the real port.
+    /// The address the plain HTTP listener bound. A port of 0 in the request is replaced with the real port.
     #[must_use]
     pub fn address(&self) -> std::net::SocketAddr {
         self.address
     }
 
+    /// The cluster HTTPS listener. Empty `cluster_https_port` binds 8443. `0` is ephemeral, and this
+    /// is the address the kernel chose.
+    #[must_use]
+    pub fn cluster_address(&self) -> std::net::SocketAddr {
+        self.cluster_address
+    }
+
+    /// The factory serving this process. Gone once drop has started.
+    #[must_use]
+    pub fn factory(&self) -> &std::sync::Arc<moqui_core::context::ExecutionContextFactory> {
+        self.factory.as_ref().expect("server factory is gone")
+    }
+
+    /// Topics accepted on `POST /cluster/{topic}`, in arrival order.
+    #[must_use]
+    pub fn cluster_posts(&self) -> Vec<String> {
+        self.posts.lock().unwrap_or_else(|err| err.into_inner()).clone()
+    }
+
     /// Block until the listener exits. Ctrl-c is handled on the server thread. This does not drop
     /// the shutdown sender first, so a test that only wants ctrl-c shutdown can call this.
     pub fn wait(mut self) {
+        self.factory.take();
         if let Some(thread) = self.thread.take() {
             join_server(thread);
         }
@@ -72,6 +100,8 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
+        // The serve thread still holds the factory until its cluster listener has stopped.
+        self.factory.take();
         if let Some(stop) = self.stop.take() {
             stop();
         }
@@ -486,8 +516,11 @@ fn start_server_in(
         .spawn(move || serve_thread(runtime_dir, framework_dir, cluster_dir, bind, stop_rx, ready_tx))
         .map_err(|err| moqui_lib::error::Error::new("http server thread did not start").with_source(err))?;
     match ready_rx.recv() {
-        Ok(Ok(address)) => Ok(Server {
-            address,
+        Ok(Ok(bound)) => Ok(Server {
+            address: bound.http,
+            cluster_address: bound.cluster,
+            factory: Some(bound.factory),
+            posts: bound.posts,
             stop: Some(Box::new(move || drop(stop_tx))),
             thread: Some(thread),
         }),
@@ -515,7 +548,7 @@ fn serve_thread(
     cluster_dir: std::path::PathBuf,
     bind: ListenBind,
     stop: tokio::sync::oneshot::Receiver<()>,
-    ready_tx: std::sync::mpsc::Sender<Result<std::net::SocketAddr, String>>,
+    ready_tx: std::sync::mpsc::Sender<Result<http::ListenReport, String>>,
 ) -> Result<(), moqui_lib::error::Error> {
     let mut ready = Ready { tx: Some(ready_tx) };
     let process = match boot_server(&runtime_dir, &framework_dir, &cluster_dir) {
@@ -536,12 +569,18 @@ fn serve_thread(
         .factory
         .clone()
         .ok_or_else(|| moqui_lib::error::Error::new("http server has no factory"))?;
+    let cluster = process
+        .cluster_edge
+        .as_ref()
+        .ok_or_else(|| moqui_lib::error::Error::new("http server has no cluster listener"))?;
+    let cluster_address = cluster.address();
+    let posts = cluster.posts();
     let sender = ready.handoff()?;
     let runtime = process
         .runtime
         .as_ref()
         .ok_or_else(|| moqui_lib::error::Error::new("http server has no runtime"))?;
-    let listened = runtime.block_on(http::listen(factory, address, stop, sender));
+    let listened = runtime.block_on(http::listen(factory, address, cluster_address, posts, stop, sender));
     if let Some(factory) = process.factory.as_ref() {
         if let Err(err) = factory.flush_sessions() {
             let err = moqui_lib::error::Error::new(err.to_string());
@@ -622,12 +661,19 @@ fn boot_server(
     factory
         .start_request_pool()
         .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
+    // Empty cluster_https_port listens on 8443. 0 is ephemeral for tests.
+    moqui_core::notify::install();
+    cluster_edge::install_sender()?;
+    moqui_core::cluster::start(&factory).map_err(moqui_lib::error::Error::from)?;
+    let cluster_edge = cluster_edge::listen(Arc::clone(&factory))?;
+    notws::install_push().map_err(moqui_lib::error::Error::from)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|err| moqui_lib::error::Error::new("could not start the http runtime").with_source(err))?;
     Ok(ServeProcess {
         runtime: Some(runtime),
+        cluster_edge: Some(cluster_edge),
         factory: Some(factory),
         search,
         facade: Some(facade),
@@ -636,12 +682,13 @@ fn boot_server(
     })
 }
 
-/// Drop order is the axum runtime, the factory (request pool, then clients), the search store,
-/// the driver, then the cluster. The search store outlives the factory so a dedicated postmaster
-/// stops after the facade's clients.
+/// Drop order is the axum runtime, the cluster listener (while the request pool is still up),
+/// the factory, the search store, the driver, then the database cluster. The search store outlives
+/// the factory so a dedicated postmaster stops after the facade's clients.
 #[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
 struct ServeProcess {
     runtime: Option<tokio::runtime::Runtime>,
+    cluster_edge: Option<crate::cluster_edge::ClusterEdge>,
     factory: Option<std::sync::Arc<moqui_core::context::ExecutionContextFactory>>,
     search: Option<crate::search::SearchStore>,
     facade: Option<moqui_core::entity::EntityFacade>,
@@ -653,6 +700,7 @@ struct ServeProcess {
 impl Drop for ServeProcess {
     fn drop(&mut self) {
         self.runtime.take();
+        self.cluster_edge.take();
         self.factory.take();
         self.search.take();
         self.facade.take();
@@ -663,7 +711,7 @@ impl Drop for ServeProcess {
 
 #[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
 struct Ready {
-    tx: Option<std::sync::mpsc::Sender<Result<std::net::SocketAddr, String>>>,
+    tx: Option<std::sync::mpsc::Sender<Result<http::ListenReport, String>>>,
 }
 
 #[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
@@ -676,7 +724,7 @@ impl Ready {
 
     fn handoff(
         &mut self,
-    ) -> Result<std::sync::mpsc::Sender<Result<std::net::SocketAddr, String>>, moqui_lib::error::Error> {
+    ) -> Result<std::sync::mpsc::Sender<Result<http::ListenReport, String>>, moqui_lib::error::Error> {
         self.tx
             .take()
             .ok_or_else(|| moqui_lib::error::Error::new("http server ready sender is gone"))

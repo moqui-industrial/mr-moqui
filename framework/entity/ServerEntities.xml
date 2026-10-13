@@ -153,6 +153,13 @@ along with this software (see the LICENSE.md file). If not, see
         <relationship type="one-nofk" related="moqui.server.Visitor"/>
         <index name="HTTP_SESSION_USER"><index-field name="userId"/></index>
     </entity>
+    <entity entity-name="ClusterMember" package="moqui.server" cache="never" use="nontransactional">
+        <field name="instanceId" type="id" is-pk="true"/>
+        <field name="clusterBaseUrl" type="text-medium"/>
+        <field name="heartbeat" type="date-time"/>
+        <field name="sessionKeyFingerprint" type="text-medium"/>
+        <field name="certFingerprint" type="text-medium"/>
+    </entity>
 
     <!-- ========================================================= -->
     <!-- moqui.server.instance -->

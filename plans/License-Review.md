@@ -57,7 +57,10 @@ These are the feature flags the resolve used. The unsafe defaults are called out
 | `mysql` 28 | `default-features = false`, `minimal-rust`, `derive`, `buffer-pool`, `rustls-tls`, `rust_decimal` | `minimal` (system zlib through `flate2`). `native-tls`. `rustls-tls-ring`. `chrono`. `time`. |
 | `tokio-postgres-rustls` 0.14 | `aws-lc-rs`, `webpki-roots` | `ring`. Defaults are empty, so the crypto feature has to be named. |
 | `reqwest` 0.13 | `default-features = false`, `blocking`, `rustls`, `json`, `multipart`, `charset` | `native-tls`, `native-tls-vendored`. On 0.13, `default-tls` is already rustls with aws-lc. Name `rustls` anyway. A later reqwest that flips `default-tls` back to native-tls must not be taken on defaults. |
-| `lettre` 0.11 | `default-features = false`, `smtp-transport`, `builder`, `hostname`, `rustls`, `aws-lc-rs`, `webpki-roots` | Defaults, which include `native-tls`. The feature named `rustls-tls` enables `ring`, so that name stays off. `boring-tls`. |
+| `lettre` 0.11 | `default-features = false`, `smtp-transport`, `builder`, `hostname`, `rustls`, `aws-lc-rs`, `webpki-roots` | Defaults, which include `native-tls`. The feature named `rustls-tls` enables `ring`, so that name stays off. `boring-tls`. `tokio1` stays off, so SMTP is blocking. |
+| `imap` 2.4 | `default-features = false` | `tls`, which is `native-tls` and is the default. 2.4.1 has no rustls feature. `rustls-connector` is a dev-dependency and is not linked. The TCP stream is wrapped with `rustls` in moqui-core. Depends on `chrono` 0.4, `nom` 5, and `imap-proto` 0.10 (MIT OR Apache-2.0). |
+| `rustls` 0.23 | `default-features = false`, `std`, `tls12`, `aws_lc_rs` | `ring`. This direct dependency is the IMAP and POP3 stream. `aws_lc_rs` is the crypto provider passed to `ClientConfig`, not a process-global default. POP3 has no crate: the client is in moqui-core on the same stream. Published POP3 clients are OpenSSL, MPL-2.0, LGPL, or Tokio. |
+| `rcgen` 0.14 | `default-features = false`, `aws_lc_rs` | `ring`, `pem`, `x509-parser`, `fips`. Defaults include `ring` and `pem`. The pair is a self-signed cluster certificate, base64 DER, linked from moqui-core only. `time` is certificate validity only. Moqui clocks stay `jiff`. aws-lc is the crypto provider. No OpenSSL. |
 | `russh` 0.64 | `default-features = false`, `aws-lc-rs`, `flate2`, `rsa` | `ring`, `des`, `dsa`. Defaults are off so a later default cannot turn `ring` on. `rsa` stays because servers still present RSA host keys. `flate2` is SSH compression, on the `miniz_oxide` backend already enabled. |
 | `russh-sftp` 3 | no features | `async-trait`. The crate has no crypto feature. |
 | `huskarl` 0.11 | default features, which are `default-jws-verifier-platform` | `authorization-flow-loopback`, `metrics`, `experimental-oidc-key-binding`. `huskarl-reqwest`, `huskarl-redis`, and `huskarl-google-cloud` are not dependencies. JOSE is `huskarl-crypto-native` (RustCrypto). TLS stays on `aws-lc-rs`. P-521 is not included. |
@@ -110,12 +113,17 @@ Versions are what `cargo` locked on 2026-10-11 for the feature set above. "Stati
 | `tokio`, `hyper` | 1.x / 1.x | MIT | Runtimes inside the host, the blocking clients, and `chromiumoxide` | Static | OK. Core stays Tokio-free; the crates still land in the binary through host and the clients. |
 | `reqwest` | 0.13.5 | MIT OR Apache-2.0 | Blocking HTTP client | Static | OK on the `rustls` feature |
 | `lettre` | 0.11.23 | MIT | Outbound SMTP | Static | OK with the feature row above |
+| `imap` | 2.4.1 | Apache-2.0 OR MIT | Blocking IMAP client. POP3 is in-tree, not a crate. | Static | OK with `default-features = false`. The `tls` feature is `native-tls` and stays off. 2.4.1 has no rustls feature. No `ring` from this crate. |
 | `russh` | 0.64.1 | Apache-2.0 | SSH client and server. No listener yet. | Static | OK with `aws-lc-rs`, `flate2`, and `rsa`. `ring`, `des`, and `dsa` off. Depends on `rsa` 0.10.0-rc.18 and `ssh-key` 0.7.0-rc.11, both MIT OR Apache-2.0. |
 | `russh-sftp` | 3.0.1 | Apache-2.0 | SFTP v3. Does not depend on `russh`. | Static | OK. `async-trait` off. |
 | `huskarl` | 0.11.6 | MIT OR Apache-2.0 | OIDC and OAuth 2 client. No redirect yet. | Static | OK. Default feature is the native JWS verifier. `rsa` 0.10.0-rc.18, shared with `russh`. `huskarl-crypto-webcrypto` is locked for wasm and is absent from the Linux tree. |
-| `chrono` | 0.4.45 | MIT OR Apache-2.0 | SFTP timestamps, via `russh-sftp` | Static | OK. Not a Moqui clock. Time stays `jiff`. |
+| `chrono` | 0.4.45 | MIT OR Apache-2.0 | SFTP timestamps via `russh-sftp`, and IMAP `INTERNALDATE` via `imap` | Static | OK. Not a Moqui clock. Time stays `jiff`. |
 | `chromiumoxide` | 0.9.1 | MIT OR Apache-2.0 | DevTools client for PDF | Static. Does not contain Chromium. | OK with the fetcher off |
 | `rustls` | 0.23.45 | Apache-2.0 OR ISC OR MIT | TLS | Static | OK |
+| `rcgen` | 0.14.10 | MIT OR Apache-2.0 | Self-signed cluster certificate | Static, moqui-core only | OK with `aws_lc_rs`. `ring`, `pem`, `x509-parser`, and `fips` stay off. `x509-parser` is an optional dependency and is not linked. |
+| `time` | 0.3.55 | MIT OR Apache-2.0 | `not_before` and `not_after` for that certificate. `rcgen` turns its default features off. | Static | OK. Not a Moqui clock. Clocks stay `jiff`. Pulls `deranged` 0.5.8, `num-conv` 0.2.2, `powerfmt` 0.2.1, and `time-core` 0.1.9, all MIT OR Apache-2.0. |
+| `yasna` | 0.6.0 | MIT OR Apache-2.0 | DER encoding used by `rcgen` | Static | OK |
+| `rustls-pki-types` | 1.15.1 | MIT OR Apache-2.0 | Certificate DER type used by `rcgen` and `rustls` | Static | OK |
 | `aws-lc-rs` | 1.18.1 | ISC AND (Apache-2.0 OR ISC) | TLS crypto | Static | OK |
 | `aws-lc-sys` | 0.45.0 | ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0) | aws-lc C sources | Static C, compiled at build | OK. The `AND` means every one of those notice obligations applies. None of them is copyleft. |
 | `ring` | 0.17.14 | Apache-2.0 AND ISC | Pulled only by `mysql` → `webpki` 0.22 | Static | OK. Not the chosen TLS provider. |

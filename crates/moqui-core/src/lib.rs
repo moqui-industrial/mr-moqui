@@ -14,9 +14,11 @@
 
 //! Framework. Synchronous and multi-threaded. No listen socket and no database driver.
 
+pub mod cluster;
 pub mod context;
 pub mod driver;
 pub mod entity;
+pub mod notify;
 pub mod screen;
 pub mod script;
 pub mod search;
