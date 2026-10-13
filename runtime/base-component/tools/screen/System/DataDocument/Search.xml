@@ -20,7 +20,7 @@ along with this software (see the LICENSE.md file). If not, see
 
     <actions>
         <if condition="queryString">
-            <service-call name="org.moqui.search.SearchServices.search#DataDocuments" out-map="context" in-map="context + [flattenDocument:false]"/>
+            <service-call name="org.moqui.search.SearchServices.search#DataDocuments" out-map="context" in-map="context + {flattenDocument:false}"/>
         </if>
     </actions>
     <widgets>
@@ -56,7 +56,7 @@ along with this software (see the LICENSE.md file). If not, see
                     <econdition field-name="dataDocumentId" from="_type"/></entity-find>
                 <set field="linksList" from="[]"/>
                 <iterate list="ddLinkList" entry="ddLink"><if condition="!ddLink.linkCondition || ec.resource.condition(ddLink.linkCondition, '')">
-                    <script>linksList.add(ddLink)</script></if></iterate>
+                    <script>linksList.push(ddLink)</script></if></iterate>
             </row-actions>
             <field name="type"><default-field><display text="${dataDocument.documentName} [${_type}]"/></default-field></field>
             <field name="id"><default-field><display text="${_id}"/></default-field></field>
@@ -64,7 +64,7 @@ along with this software (see the LICENSE.md file). If not, see
             <field name="link"><default-field>
                 <section-iterate name="LinksListSection" list="linksList" entry="ddLink"><widgets>
                     <link url="${ec.resource.expand(ddLink.linkUrl, null)}" text="${ec.resource.expand(ddLink.label, null)}"
-                            link-type="anchor" url-type="${ddLink.urlType?:'plain'}"/>
+                            link-type="anchor" url-type="${ddLink.urlType || 'plain'}"/>
                 </widgets></section-iterate>
             </default-field></field>
             <field name="viewDocument"><default-field>

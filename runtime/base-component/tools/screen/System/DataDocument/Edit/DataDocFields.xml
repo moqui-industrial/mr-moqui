@@ -15,7 +15,7 @@ along with this software (see the LICENSE.md file). If not, see
 <screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
         default-menu-title="Fields" default-menu-index="2">
 
-    <parameter name="dataDocumentId" required="true" from="dataDocumentId ?: dataDocumentId_0"/>
+    <parameter name="dataDocumentId" required="true" from="dataDocumentId || dataDocumentId_0"/>
 
     <transition name="createDataDocumentField"><service-call name="org.moqui.impl.EntityServices.create#DataDocumentField"/>
         <default-response url="."/></transition>
@@ -28,21 +28,21 @@ along with this software (see the LICENSE.md file). If not, see
     <widgets>
         <container-row><row-col md="4">
             <section name="FieldTreeSection"><widgets>
-                <label text="Add Fields (from ${org.moqui.util.StringUtilities.camelCaseToPretty(primaryEntityName.substring(primaryEntityName.lastIndexOf('.')+1))})" type="h5"/>
-                <tree name="FieldTree" open-path="${fieldPath?:''}">
+                <label text="Add Fields (from ${StringUtilities.camelCaseToPretty(primaryEntityName.substring(primaryEntityName.lastIndexOf('.')+1))})" type="h5"/>
+                <tree name="FieldTree" open-path="${fieldPath || ''}">
                     <parameter name="dataDocumentId"/>
                     <tree-node name="FieldNode">
                         <actions>
                             <set field="fieldPath" from="(treeNodeId == '#' ? '' : treeNodeId + ':') + nodeList_entry"/>
                         </actions>
-                        <link url="FieldList/createFieldDynamic" text="+ ${org.moqui.util.StringUtilities.camelCaseToPretty(nodeList_entry)}" id="${fieldPath}" dynamic-load-id="FieldListContainer">
+                        <link url="FieldList/createFieldDynamic" text="+ ${StringUtilities.camelCaseToPretty(nodeList_entry)}" id="${fieldPath}" dynamic-load-id="FieldListContainer">
                             <parameter name="fieldPath" from="fieldPath"/></link>
                     </tree-node>
                     <tree-node name="RelationshipNode">
                         <actions>
                             <set field="curPath" from="(treeNodeId == '#' ? '' : treeNodeId + ':') + nodeList_entry"/>
                         </actions>
-                        <label text="${nodeList_entry.contains('.') ? nodeList_entry : org.moqui.util.StringUtilities.camelCaseToPretty(nodeList_entry)}" id="${curPath}"/>
+                        <label text="${nodeList_entry.includes('.') ? nodeList_entry : StringUtilities.camelCaseToPretty(nodeList_entry)}" id="${curPath}"/>
                         <tree-sub-node node-name="FieldNode" list="childFields">
                             <actions>
                                 <set field="curPath" from="(treeNodeId == '#' ? '' : treeNodeId)"/>
@@ -59,8 +59,8 @@ along with this software (see the LICENSE.md file). If not, see
                             <actions>
                                 <set field="childRelationships" from="[]"/>
                                 <set field="curPath" from="(treeNodeId == '#' ? '' : treeNodeId)"/>
-                                <set field="curPathSplit" from="curPath.split(':') as List"/>
-                                <if condition="curPathSplit.size() > 10"><return/></if>
+                                <set field="curPathSplit" from="curPath.split(':')"/>
+                                <if condition="curPathSplit.length > 10"><return/></if>
                                 <entity-find-one entity-name="moqui.entity.document.DataDocument" value-field="dataDocument" cache="true"/>
                                 <set field="curEd" from="ec.entity.getEntityDefinition(dataDocument.primaryEntityName)"/>
                                 <iterate list="curPathSplit" entry="relName">
@@ -69,7 +69,7 @@ along with this software (see the LICENSE.md file). If not, see
                                 </iterate>
                                 <iterate list="curEd?.getRelationshipsInfo(false)" entry="relInfo">
                                     <if condition="relInfo.isAutoReverse"><continue/></if>
-                                    <script>childRelationships.add(relInfo.shortAlias ?: relInfo.relationshipName)</script>
+                                    <script>childRelationships.push(relInfo.shortAlias || relInfo.relationshipName)</script>
                                 </iterate>
                             </actions>
                         </tree-sub-node>
@@ -88,7 +88,7 @@ along with this software (see the LICENSE.md file). If not, see
                             <set field="topLevelRelationships" from="[]"/>
                             <iterate list="primaryEd.getRelationshipsInfo(false)" entry="relInfo">
                                 <if condition="relInfo.isAutoReverse"><continue/></if>
-                                <script>topLevelRelationships.add(relInfo.shortAlias ?: relInfo.relationshipName)</script>
+                                <script>topLevelRelationships.push(relInfo.shortAlias || relInfo.relationshipName)</script>
                             </iterate>
                         </actions>
                     </tree-sub-node>

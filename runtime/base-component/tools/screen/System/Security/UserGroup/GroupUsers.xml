@@ -35,9 +35,9 @@ along with this software (see the LICENSE.md file). If not, see
                 <order-by field-name="username"/>
             </entity-find>
             <script>
-                def outList = []
-                for (def user in userList)
-                    outList.add([value:user.userId, label:"${user.username?:''} ${user.userFullName?:''} [${user.userId}]".toString()])
+                const outList = []
+                for (const user of userList)
+                    outList.push({value: user.userId, label: `${user.username ?? ''} ${user.userFullName ?? ''} [${user.userId}]`})
                 ec.web.sendJsonResponse(outList)
             </script>
         </actions>

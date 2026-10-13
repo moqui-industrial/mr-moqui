@@ -32,7 +32,7 @@ along with this software (see the LICENSE.md file). If not, see
         <default-response url="."/></transition>
 
     <actions>
-        <service-call name="org.moqui.impl.PrintServices.get#PrintJobDetailsFromServer" in-map="[printJobId:printJobId]"
+        <service-call name="org.moqui.impl.PrintServices.get#PrintJobDetailsFromServer" in-map="{printJobId:printJobId}"
                 out-map="serverDetails" ignore-error="true"/>
         <!-- The service call above gets this record, but get it separately in case there was an error -->
         <entity-find-one entity-name="moqui.basic.print.PrintJob" value-field="printJob"/>
@@ -40,10 +40,10 @@ along with this software (see the LICENSE.md file). If not, see
     <widgets>
         <container>
             <link url="downloadDocument" text="Download Document" condition="printJob.document != null"/>
-            <link url="sendPrintJob" text="Send Now" condition="printJob.statusId in ['PtjNotSent', 'PtjSendFailed']"/>
+            <link url="sendPrintJob" text="Send Now" condition="['PtjNotSent', 'PtjSendFailed'].includes(printJob.statusId)"/>
             <link url="holdPrintJob" text="Hold" condition="printJob.statusId == 'PtjPending'"/>
             <link url="releasePrintJob" text="Release" condition="printJob.statusId == 'PtjPendingHeld'"/>
-            <link url="cancelPrintJob" text="Cancel" condition="printJob.statusId in ['PtjPending', 'PtjPendingHeld']"/>
+            <link url="cancelPrintJob" text="Cancel" condition="['PtjPending', 'PtjPendingHeld'].includes(printJob.statusId)"/>
         </container>
 
         <label text="NOTE: This gets the latest data from the print server, if the status was updated on the print server the latest will be shown here and saved." type="p"/>

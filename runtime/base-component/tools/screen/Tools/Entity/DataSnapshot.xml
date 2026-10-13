@@ -20,14 +20,14 @@ along with this software (see the LICENSE.md file). If not, see
         <actions>
             <script><![CDATA[
                 if (!entitiesToInclude) entitiesToInclude = null
-                if (entitiesToInclude != null && !(entitiesToInclude instanceof List)) entitiesToInclude = [entitiesToInclude]
+                if (entitiesToInclude != null && !Array.isArray(entitiesToInclude)) entitiesToInclude = [entitiesToInclude]
                 if (!entitiesToSkip) entitiesToSkip = null
-                if (entitiesToSkip != null && !(entitiesToSkip instanceof List)) entitiesToSkip = [entitiesToSkip]
-                if ("CSV".equals(fileType)) filePerEntity = true
+                if (entitiesToSkip != null && !Array.isArray(entitiesToSkip)) entitiesToSkip = [entitiesToSkip]
+                if (fileType == "CSV") filePerEntity = true
                 jobRunId = ec.service.job("ExportEntityDataSnapshot")
-                    .parameters([fromDate:fromDate, thruDate:thruDate, baseFilename:baseFilename, fileType:fileType,
-                                 filePerEntity:filePerEntity, isoDateTime:isoDateTime, tableColumnNames:tableColumnNames,
-                                 entitiesToSkip:entitiesToSkip, entitiesToInclude:entitiesToInclude]).run()
+                    .parameters({fromDate: fromDate, thruDate: thruDate, baseFilename: baseFilename, fileType: fileType,
+                                 filePerEntity: filePerEntity, isoDateTime: isoDateTime, tableColumnNames: tableColumnNames,
+                                 entitiesToSkip: entitiesToSkip, entitiesToInclude: entitiesToInclude}).run()
             ]]></script>
             <message>Started Export Entity Data Snapshot ${baseFilename} (Job ID ${jobRunId})</message>
         </actions>
@@ -36,7 +36,7 @@ along with this software (see the LICENSE.md file). If not, see
     <transition name="downloadSnapshot" begin-transaction="false" read-only="true" authz-action="update">
         <parameter name="filename"/>
         <actions><script><![CDATA[
-            if (!org.moqui.util.WebUtilities.isSafeSinglePathSegment(filename)) {
+            if (!WebUtilities.isSafeSinglePathSegment(filename)) {
                 ec.web.sendError(404, "Snapshot not found", null)
             } else {
                 ec.web.sendResourceResponse("db/snapshot/" + filename)
@@ -47,7 +47,7 @@ along with this software (see the LICENSE.md file). If not, see
     <transition name="deleteSnapshot" begin-transaction="false" authz-action="update">
         <parameter name="filename"/>
         <actions><script><![CDATA[
-            if (!org.moqui.util.WebUtilities.isSafeSinglePathSegment(filename)) {
+            if (!WebUtilities.isSafeSinglePathSegment(filename)) {
                 ec.message.addError("Snapshot not found")
             } else {
                 ec.resource.getLocationReference("db/snapshot/" + filename).delete()
@@ -57,7 +57,7 @@ along with this software (see the LICENSE.md file). If not, see
     </transition>
     <transition name="importSnapshot" begin-transaction="false" authz-action="update">
         <actions>
-            <if condition="!org.moqui.util.WebUtilities.isSafeSinglePathSegment(zipFilename)">
+            <if condition="!WebUtilities.isSafeSinglePathSegment(zipFilename)">
                 <message error="true">Snapshot not found</message><return/></if>
             <script>jobRunId = ec.service.job("ImportEntityDataSnapshot").parameters(context).run()</script>
             <message>Started Import Entity Data Snapshot ${zipFilename} (Job ID ${jobRunId})</message>
@@ -66,14 +66,14 @@ along with this software (see the LICENSE.md file). If not, see
     </transition>
     <transition name="uploadSnapshot" begin-transaction="false" authz-action="update">
         <actions><script><![CDATA[
-            String filename = org.moqui.util.WebUtilities.lastPathSegment(snapshotFile.getName())
-            if (!filename?.endsWith(".zip") || !org.moqui.util.WebUtilities.isSafeSinglePathSegment(filename)) {
-                ec.message.addError("File ${filename} is not a zip file, should be a zip containing one or more xml data files"); return
+            const filename = WebUtilities.lastPathSegment(snapshotFile.getName())
+            if (!filename?.endsWith(".zip") || !WebUtilities.isSafeSinglePathSegment(filename)) {
+                ec.message.addError(`File ${filename} is not a zip file, should be a zip containing one or more xml data files`); return
             }
-            File targetFile = new File((String) ec.factory.getRuntimePath() + '/db/snapshot/' + filename)
+            const targetFile = new File(String(ec.factory.getRuntimePath()) + '/db/snapshot/' + filename)
             if (!targetFile.parentFile.exists()) targetFile.parentFile.mkdirs()
-            if (targetFile.exists()) { ec.message.addError("File ${filename} already exists"); return }
-            InputStream fileStream = snapshotFile.getInputStream()
+            if (targetFile.exists()) { ec.message.addError(`File ${filename} already exists`); return }
+            const fileStream = snapshotFile.getInputStream()
             try { targetFile.append(fileStream) } finally { fileStream.close() }
         ]]></script></actions>
         <default-response url="."/>
@@ -96,11 +96,11 @@ along with this software (see the LICENSE.md file). If not, see
 
     <actions>
         <script><![CDATA[
-            File snapshotDir = new File((String) ec.factory.getRuntimePath() + '/db/snapshot')
+            const snapshotDir = new File(String(ec.factory.getRuntimePath()) + '/db/snapshot')
             snapshotFiles = snapshotDir.exists() ? snapshotDir.listFiles() : null
             snapshotList = []
-            if (snapshotFiles) for (File sfile in snapshotFiles)
-                if (!sfile.isDirectory() && sfile.getName().endsWith(".zip") && sfile.length() > 0) snapshotList.add(sfile)
+            if (snapshotFiles) for (const sfile of snapshotFiles)
+                if (!sfile.isDirectory() && sfile.getName().endsWith(".zip") && sfile.length() > 0) snapshotList.push(sfile)
         ]]></script>
     </actions>
     <widgets>
@@ -148,8 +148,8 @@ along with this software (see the LICENSE.md file). If not, see
                 <row-col sm="4"><label text="${sfile.name}"/></row-col>
                 <row-col sm="2"><label text="${ec.l10n.format(new java.sql.Timestamp(sfile.lastModified()), null)}"/></row-col>
                 <row-col sm="2"><label text="${ec.l10n.format((sfile.length())/(1024*1024), '#,##0.00')} MiB"/></row-col>
-                <row-col sm="1"><link url="downloadSnapshot" text="Download" parameter-map="[filename:sfile.name]"/></row-col>
-                <row-col sm="1"><link url="deleteSnapshot" text="Delete" parameter-map="[filename:sfile.name]" confirmation="Really delete ${sfile.name}?"/></row-col>
+                <row-col sm="1"><link url="downloadSnapshot" text="Download" parameter-map="{filename:sfile.name}"/></row-col>
+                <row-col sm="1"><link url="deleteSnapshot" text="Delete" parameter-map="{filename:sfile.name}" confirmation="Really delete ${sfile.name}?"/></row-col>
                 <row-col sm="1"><container-dialog id="ImportDialog" button-text="Import">
                     <form-single name="ImportForm" transition="importSnapshot">
                         <field name="zipFilename" from="sfile.name"><default-field><display/></default-field></field>

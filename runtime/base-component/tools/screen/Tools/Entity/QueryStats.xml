@@ -20,9 +20,9 @@ along with this software (see the LICENSE.md file). If not, see
         <default-response url="."/></transition>
 
     <actions>
-        <set field="queryStatsList" from="ec.entity.getQueryStatsList(orderByField?:'-totalTime', entityFilter, sqlFilter)"/>
-        <set field="pageSize" from="pageSize ?: '40'"/>
-        <script>paginateList("queryStatsList", null, context)</script>
+        <set field="queryStatsList" from="ec.entity.getQueryStatsList(orderByField || '-totalTime', entityFilter, sqlFilter)"/>
+        <set field="pageSize" from="pageSize || '40'"/>
+        <script>CollectionUtilities.paginateList("queryStatsList", null, context)</script>
     </actions>
     <widgets>
         <link url="clearQueryStats" text="Clear Stats"/>
@@ -38,7 +38,7 @@ along with this software (see the LICENSE.md file). If not, see
             <row-actions>
                 <set field="artifactInfoList" from="[]"/>
                 <iterate list="artifactCounts" entry="count" key="artifact">
-                    <script>artifactInfoList.add([artifact:artifact, count:count])</script></iterate>
+                    <script>artifactInfoList.push({artifact:artifact, count:count})</script></iterate>
                 <order-map-list list="artifactInfoList"><order-by field-name="-count"/></order-map-list>
             </row-actions>
             <field name="entityName"><header-field show-order-by="true"/><default-field><display/></default-field></field>

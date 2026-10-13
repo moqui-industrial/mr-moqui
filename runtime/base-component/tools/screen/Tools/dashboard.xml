@@ -44,17 +44,17 @@ along with this software (see the LICENSE.md file). If not, see
                 <container-box><box-header title="REST API: Swagger UI"/><box-body>
                     <section-iterate name="RootResourcesSection" list="rootResources" entry="resource"><widgets>
                         <section name="RootResourceChildren" condition="resource.childMethods &gt; 100"><widgets>
-                            <container-dialog id="RootResourceSwaggerDialog" button-text="${resource.displayName ?: resource.name} (${resource.childMethods})">
+                            <container-dialog id="RootResourceSwaggerDialog" button-text="${resource.displayName || resource.name} (${resource.childMethods})">
                                 <section-iterate name="RootResourceSwaggerSection" list="resource.resourceMap.values()" entry="childResource"><widgets>
                                     <container><link url="/toolstatic/lib/swagger-ui/index.html?url=${restUrl}/service.swagger/${resource.name}/${childResource.name}"
-                                                     text="${childResource.displayName ?: childResource.description ?: childResource.name} (${childResource.childMethods})"
+                                                     text="${childResource.displayName || childResource.description || childResource.name} (${childResource.childMethods})"
                                                      url-type="plain" link-type="anchor" target-window="_blank"/></container>
                                 </widgets></section-iterate>
                             </container-dialog>
                         </widgets><fail-widgets>
                             <link url="/toolstatic/lib/swagger-ui/index.html?url=${restUrl}/service.swagger/${resource.name}" url-type="plain"
-                                  target-window="_blank" text="${resource.displayName ?: resource.name} (${resource.childMethods})"
-                                  tooltip="${resource.description ?: ''}"/>
+                                  target-window="_blank" text="${resource.displayName || resource.name} (${resource.childMethods})"
+                                  tooltip="${resource.description || ''}"/>
                         </fail-widgets></section>
                     </widgets></section-iterate>
 

@@ -18,9 +18,9 @@ along with this software (see the LICENSE.md file). If not, see
 
     <parameter name="resourceRoot"/>
     <always-actions>
-        <set field="mantleContentRoot" from="ec.user.getPreference('mantle.content.root') ?: 'dbresource://mantle/content'"/>
-        <set field="mantleContentLargeRoot" from="ec.user.getPreference('mantle.content.large.root') ?: 'dbresource://mantle/content'"/>
-        <set field="resourceRoot" from="resourceRoot ?: mantleContentRoot"/>
+        <set field="mantleContentRoot" from="ec.user.getPreference('mantle.content.root') || 'dbresource://mantle/content'"/>
+        <set field="mantleContentLargeRoot" from="ec.user.getPreference('mantle.content.large.root') || 'dbresource://mantle/content'"/>
+        <set field="resourceRoot" from="resourceRoot || mantleContentRoot"/>
     </always-actions>
 
     <!-- set read-only=true because in spite of setting requestType:'post' some requests come as gets -->
@@ -28,9 +28,9 @@ along with this software (see the LICENSE.md file). If not, see
         <actions>
             <!-- <log level="warn" message="============ resourceRoot=${resourceRoot}, ec.web.parameters=${ec.web.parameters}"/> -->
             <service-call name="org.moqui.impl.ElFinderServices.run#Command" out-map="context"
-                    in-map="context + [otherParameters:ec.web.parameters]"/>
+                    in-map="context + {otherParameters:ec.web.parameters}"/>
             <if condition="fileLocation">
-                <script>ec.web.sendResourceResponse(fileLocation, fileInline ?: false)</script>
+                <script>ec.web.sendResourceResponse(fileLocation, fileInline || false)</script>
                 <else><script>ec.web.sendJsonResponse(responseMap)</script></else>
             </if>
         </actions>
@@ -40,7 +40,7 @@ along with this software (see the LICENSE.md file). If not, see
     <actions>
         <!-- component://webroot and file:runtime stay selectable for browse; write commands are refused when instance_purpose is production -->
         <set field="rootOptions" from="[mantleContentRoot, 'dbresource://', 'component://webroot', 'file:runtime']"/>
-        <if condition="mantleContentLargeRoot != mantleContentRoot"><script>rootOptions.add(mantleContentLargeRoot)</script></if>
+        <if condition="mantleContentLargeRoot != mantleContentRoot"><script>rootOptions.push(mantleContentLargeRoot)</script></if>
     </actions>
     <widgets>
         <form-single name="SelectRoot" transition=".">

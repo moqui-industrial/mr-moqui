@@ -82,13 +82,13 @@ along with this software (see the LICENSE.md file). If not, see
 
         <container-row>
             <row-col lg="2"><link url="." text="Outgoing Produced Queue"
-                    parameter-map="[statusId:'SmsgProduced', isOutgoing:'Y']" link-type="anchor"/></row-col>
+                    parameter-map="{statusId:'SmsgProduced', isOutgoing:'Y'}" link-type="anchor"/></row-col>
             <row-col lg="1"><label text="${ec.l10n.format(outgoingCount, null)}" type="strong"/></row-col>
             <row-col lg="2"><link url="." text="Incoming Received Queue"
-                    parameter-map="[statusId:'SmsgReceived', isOutgoing:'N']" link-type="anchor"/></row-col>
+                    parameter-map="{statusId:'SmsgReceived', isOutgoing:'N'}" link-type="anchor"/></row-col>
             <row-col lg="1"><label text="${ec.l10n.format(incomingCount, null)}" type="strong"/></row-col>
             <row-col lg="2"><link url="." text="Error Queue"
-                    parameter-map="[statusId:'SmsgError', isOutgoing:'']" link-type="anchor"/></row-col>
+                    parameter-map="{statusId:'SmsgError', isOutgoing:''}" link-type="anchor"/></row-col>
             <row-col lg="1"><label text="${ec.l10n.format(errorCount, null)}" type="strong"/></row-col>
         </container-row>
 
@@ -129,25 +129,25 @@ along with this software (see the LICENSE.md file). If not, see
 
             <field name="systemMessageTypeId">
                 <header-field title="Type"><drop-down allow-empty="true">
-                    <entity-options key="${systemMessageTypeId}" text="${description?:''} [${systemMessageTypeId}]">
+                    <entity-options key="${systemMessageTypeId}" text="${description || ''} [${systemMessageTypeId}]">
                         <entity-find entity-name="moqui.service.message.SystemMessageType">
                             <order-by field-name="description,systemMessageTypeId"/></entity-find>
                     </entity-options>
                 </drop-down></header-field>
                 <default-field><display-entity entity-name="moqui.service.message.SystemMessageType"
-                        text="${systemMessageTypeId}: ${description?:''}"/></default-field>
+                        text="${systemMessageTypeId}: ${description || ''}"/></default-field>
             </field>
             <field name="systemMessageRemoteId">
                 <header-field title="Remote">
                     <drop-down allow-empty="true">
-                        <entity-options key="${systemMessageRemoteId}" text="${description?:''} [${systemMessageRemoteId}]">
+                        <entity-options key="${systemMessageRemoteId}" text="${description || ''} [${systemMessageRemoteId}]">
                             <entity-find entity-name="moqui.service.message.SystemMessageRemote">
                                 <order-by field-name="description,systemMessageRemoteId"/></entity-find>
                         </entity-options>
                     </drop-down>
                 </header-field>
                 <default-field><display-entity entity-name="moqui.service.message.SystemMessageRemote"
-                        text="${systemMessageRemoteId}: ${description?:''}"/></default-field>
+                        text="${systemMessageRemoteId}: ${description || ''}"/></default-field>
             </field>
 
 
@@ -193,10 +193,10 @@ along with this software (see the LICENSE.md file). If not, see
             <field name="find">
                 <header-field title="Find"><submit/></header-field>
                 <conditional-field condition="isOutgoing == 'Y' &amp;&amp; (statusId == 'SmsgProduced' || statusId == 'SmsgError')">
-                    <link url="sendMessage" text="Send" parameter-map="[systemMessageId:systemMessageId, isOutgoing:isOutgoing, statusId:statusId]"/>
+                    <link url="sendMessage" text="Send" parameter-map="{systemMessageId:systemMessageId, isOutgoing:isOutgoing, statusId:statusId}"/>
                 </conditional-field>
                 <conditional-field condition="isOutgoing == 'N' &amp;&amp; (statusId == 'SmsgReceived' || statusId == 'SmsgError')">
-                    <link url="consumeMessage" text="Consume" parameter-map="[systemMessageId:systemMessageId, isOutgoing:isOutgoing, statusId:statusId]"/>
+                    <link url="consumeMessage" text="Consume" parameter-map="{systemMessageId:systemMessageId, isOutgoing:isOutgoing, statusId:statusId}"/>
                 </conditional-field>
             </field>
             

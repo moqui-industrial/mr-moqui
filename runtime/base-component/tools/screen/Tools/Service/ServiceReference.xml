@@ -24,18 +24,14 @@ along with this software (see the LICENSE.md file). If not, see
     </transition>
 
     <actions>
-        <set field="pageSize" from="pageSize ?: 40"/>
+        <set field="pageSize" from="pageSize || 40"/>
         <set field="knownServiceNames" from="ec.service.knownServiceNames"/>
-        <set field="filteredServiceNames" from="new ArrayList(knownServiceNames)"/>
+        <set field="filteredServiceNames" from="Array.from(knownServiceNames)"/>
         <script>
         if (serviceName) {
-            Iterator theIterator = filteredServiceNames.iterator()
-            while (theIterator.hasNext()) {
-                String curSn = (String) theIterator.next()
-                if (!curSn.toUpperCase().contains(serviceName.toUpperCase())) theIterator.remove()
-            }
+            filteredServiceNames = filteredServiceNames.filter(curSn => curSn.toUpperCase().includes(serviceName.toUpperCase()))
         }
-        paginateList("filteredServiceNames", null, context)
+        CollectionUtilities.paginateList("filteredServiceNames", null, context)
         </script>
     </actions>
     <widgets>

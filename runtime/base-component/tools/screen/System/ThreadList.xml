@@ -18,25 +18,25 @@ along with this software (see the LICENSE.md file). If not, see
     <transition name="interruptThread" authz-action="all">
         <parameter name="threadName"/>
         <actions><script><![CDATA[
-            boolean found = false
-            for (Thread thread in Thread.getAllStackTraces().keySet()) {
+            let found = false
+            for (const thread of Thread.getAllStackTraces().keySet()) {
                 if (thread.name == threadName) {
                     found = true
                     try {
                         thread.interrupt()
-                        ec.message.addMessage("Interrupted thread ${threadName}", "success")
-                    } catch (Throwable t) {
-                        ec.logger.log(300, "Error interrupting thread ${thread.id}:${thread.name}", t)
-                        ec.message.addMessage("Error interrupting thread ${thread.id}:${thread.name}: ${t.toString()}", "danger")
+                        ec.message.addMessage(`Interrupted thread ${threadName}`, "success")
+                    } catch (t) {
+                        ec.logger.log(300, `Error interrupting thread ${thread.id}:${thread.name}`, t)
+                        ec.message.addMessage(`Error interrupting thread ${thread.id}:${thread.name}: ${t.toString()}`, "danger")
                     }
                 }
             }
-            if (!found) ec.message.addMessage("Could not find thread with name ${threadName}", "warning")
+            if (!found) ec.message.addMessage(`Could not find thread with name ${threadName}`, "warning")
         ]]></script></actions>
         <default-response url="."/>
     </transition>
     <transition name="setWorkerPoolSize" authz-action="all">
-        <actions><script>ec.factory.workerPool.setCorePoolSize(coreSize as int); ec.factory.workerPool.setMaximumPoolSize(maxSize as int)</script></actions>
+        <actions><script>ec.factory.workerPool.setCorePoolSize(parseInt(coreSize, 10)); ec.factory.workerPool.setMaximumPoolSize(parseInt(maxSize, 10))</script></actions>
         <default-response url="."/>
     </transition>
     <transition name="scheduledReInit" authz-action="all">
@@ -50,26 +50,26 @@ along with this software (see the LICENSE.md file). If not, see
         <set field="scheduledRunnableList" from="ec.factory.scheduledRunnableList"/>
         <set field="jobRunner" from="ec.service.getJobRunner()"/>
 
-        <set field="orderByField" from="orderByField ?: 'threadName'"/>
+        <set field="orderByField" from="orderByField || 'threadName'"/>
 
         <set field="threadMXBean" from="java.lang.management.ManagementFactory.getThreadMXBean()"/>
         <set field="deadlockedList" from="threadMXBean.findDeadlockedThreads()"/>
         <set field="threadInfoList" from="threadMXBean.dumpAllThreads(false, false)"/>
         <script>
         threadMapList = []
-        for (java.lang.management.ThreadInfo thread in threadInfoList) {
-            threadMapList.add([threadName:thread.threadName, threadId:thread.threadId, threadState:thread.threadState.name(),
-                    cpuTime:threadMXBean.getThreadCpuTime(thread.threadId), userTime:threadMXBean.getThreadUserTime(thread.threadId),
-                    lockName:thread.lockName, lockOwnerName:thread.lockOwnerName, lockOwnerId:thread.lockOwnerId,
-                    blockedTime:thread.blockedTime, waitedTime:thread.waitedTime,
-                    stackList:Arrays.asList(thread.getStackTrace()).collect({ it.toString() })])
+        for (const thread of threadInfoList) {
+            threadMapList.push({threadName: thread.threadName, threadId: thread.threadId, threadState: thread.threadState.name(),
+                    cpuTime: threadMXBean.getThreadCpuTime(thread.threadId), userTime: threadMXBean.getThreadUserTime(thread.threadId),
+                    lockName: thread.lockName, lockOwnerName: thread.lockOwnerName, lockOwnerId: thread.lockOwnerId,
+                    blockedTime: thread.blockedTime, waitedTime: thread.waitedTime,
+                    stackList: Array.from(thread.getStackTrace()).map(frame => frame.toString())})
         }
-        orderMapList(threadMapList, [orderByField])
+        CollectionUtilities.orderMapList(threadMapList, [orderByField])
         </script>
     </actions>
     <widgets>
         <label text="Threads: ${threadMXBean.getThreadCount()}, Peak: ${threadMXBean.getPeakThreadCount()}"/>
-        <label text="Deadlocked Threads: ${deadlockedList}" style="text-danger" condition="deadlockedList"/>
+        <label text="Deadlocked Threads: ${deadlockedList}" style="text-danger" condition="deadlockedList &amp;&amp; deadlockedList.length"/>
 
         <container>
             <label text="Worker Pool" type="strong"/>

@@ -24,7 +24,7 @@ along with this software (see the LICENSE.md file). If not, see
     <transition name="edit"><default-response url="."/></transition>
     <transition name="update">
         <actions>
-            <if condition="org.moqui.util.WebUtilities.isRestrictedGenericEntity(aen)"><message error="true">Entity ${aen} is not available through this tool</message><return/></if>
+            <if condition="WebUtilities.isRestrictedGenericEntity(aen)"><message error="true">Entity ${aen} is not available through this tool</message><return/></if>
             <service-call name="update#${aen}" in-map="true"/></actions>
         <default-response url="." parameter-map="ec.entity.getEntityDefinition(aen).getPrimaryKeys(context)"/>
     </transition>
@@ -32,15 +32,11 @@ along with this software (see the LICENSE.md file). If not, see
         <actions>
             <entity-find-one entity-name="${aen}" value-field="entityValue"/>
             <script><![CDATA[
-                import org.moqui.context.ExecutionContext
-                import org.moqui.entity.EntityDataWriter
+                const pkMap = entityValue.getPrimaryKeys()
+                if (!filename) filename = (aen.includes(".") ? aen.substring(aen.lastIndexOf(".") + 1) : aen) + "_" +
+                        Object.values(pkMap).join("_") + "." + (fileType == 'JSON' ? 'json' : 'xml')
 
-                Map pkMap = entityValue.getPrimaryKeys()
-                if (!filename) filename = (aen.contains(".") ? aen.substring(aen.lastIndexOf(".") + 1) : aen) + "_" +
-                        pkMap.values().join("_") + "." + (fileType == 'JSON' ? 'json' : 'xml')
-
-                ExecutionContext ec = context.ec
-                EntityDataWriter edw = ec.entity.makeDataWriter().dependentLevels((dependentLevels ?: '2') as int)
+                const edw = ec.entity.makeDataWriter().dependentLevels(parseInt(dependentLevels || '2', 10))
                         .fileType(fileType == 'JSON' ? EntityDataWriter.JSON : EntityDataWriter.XML)
                         .entityName(aen).filterMap(pkMap)
                 if (masterName) edw.master(masterName)
@@ -49,10 +45,10 @@ along with this software (see the LICENSE.md file). If not, see
                     edw.file(filename)
                 } else if (context.output == "browser") {
                     // stream to ec.web.response
-                    def response = ec.web.response
+                    const response = ec.web.response
                     response.setContentType(fileType == 'JSON' ? 'application/json' : 'text/xml')
                     response.setCharacterEncoding("UTF-8")
-                    response.setHeader("Content-Disposition", "attachment; filename=\"${filename}\";")
+                    response.setHeader("Content-Disposition", `attachment; filename="${filename}";`)
                     response.setHeader("Cache-Control", "no-cache, must-revalidate, private")
                     edw.writer(response.getWriter())
                     noResponse = true
@@ -66,32 +62,29 @@ along with this software (see the LICENSE.md file). If not, see
     </transition>
     <transition name="getFormXml" read-only="true">
         <actions><script><![CDATA[
-            import org.moqui.util.MNode
+            let xmlText = '<?xml version="1.0" encoding="UTF-8"?>\n'
 
-            StringBuilder xmlBuilder = new StringBuilder()
-            xmlBuilder.append('<?xml version="1.0" encoding="UTF-8"?>\n')
+            const screenNode = new MNode("screen", {"xmlns:xsi": "http://www.w3.org/2001/XMLSchema-instance", "xsi:noNamespaceSchemaLocation": "http://moqui.org/xsd/xml-screen-3.xsd"})
+            const updateTransNode = screenNode.append("transition", {name: "update"})
+            updateTransNode.append("service-call", {name: `update#${aen}`})
+            updateTransNode.append("default-response", {url: "."})
 
-            MNode screenNode = new MNode("screen", ["xmlns:xsi":"http://www.w3.org/2001/XMLSchema-instance", "xsi:noNamespaceSchemaLocation":"http://moqui.org/xsd/xml-screen-3.xsd"])
-            MNode updateTransNode = screenNode.append("transition", [name:"update"])
-            updateTransNode.append("service-call", [name:"update#${aen}".toString()])
-            updateTransNode.append("default-response", [url:"."])
-
-            MNode actionsNode = screenNode.append("actions", null)
-            actionsNode.append("entity-find-one", ["entity-name":aen, "value-field":"fieldValues"])
-            MNode widgetsNode = screenNode.append("widgets", null)
+            const actionsNode = screenNode.append("actions", null)
+            actionsNode.append("entity-find-one", {"entity-name": aen, "value-field": "fieldValues"})
+            const widgetsNode = screenNode.append("widgets", null)
             widgetsNode.append(sri.getActiveScreenDef().getForm("UpdateMasterEntityValue").getAutoCleanedNode())
-            screenNode.addToSb(xmlBuilder, 0)
+            xmlText += screenNode.toString()
 
-            ec.web.sendTextResponse(xmlBuilder.toString(), "text/xml", "Edit${ec.entity.getEntityDefinition(aen).entityName}.xml")
+            ec.web.sendTextResponse(xmlText, "text/xml", `Edit${ec.entity.getEntityDefinition(aen).entityName}.xml`)
         ]]></script></actions>
         <default-response type="none"/>
     </transition>
 
     <actions>
-        <if condition="org.moqui.util.WebUtilities.isRestrictedGenericEntity(aen)"><message error="true">Entity ${aen} is not available through this tool</message><return/></if>
+        <if condition="WebUtilities.isRestrictedGenericEntity(aen)"><message error="true">Entity ${aen} is not available through this tool</message><return/></if>
         <entity-find-one entity-name="${aen}" value-field="fieldValues"/>
         <set field="entityDefinition" from="ec.entity.getEntityDefinition(aen)"/>
-        <set field="masterNames" from="new TreeSet(entityDefinition.getMasterDefinitionMap().keySet())"/>
+        <set field="masterNames" from="Array.from(entityDefinition.getMasterDefinitionMap().keySet()).sort()"/>
     </actions>
     <widgets>
         <link url="list" text="Entity List" link-type="hidden-form"/>

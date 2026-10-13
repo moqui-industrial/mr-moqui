@@ -17,17 +17,17 @@ along with this software (see the LICENSE.md file). If not, see
     <!-- NOTE: require-authentication=false is required to allow sub-screens to decide, and because the Login screen is below this. -->
     <always-actions>
         <!-- No JS or CSS files referenced here, just setup lists for subscreens to add to in pre-actions -->
-        <set field="html_scripts" from="new LinkedHashSet()"/>
-        <set field="footer_scripts" from="new LinkedHashSet()"/>
+        <set field="html_scripts" from="new Set()"/>
+        <set field="footer_scripts" from="new Set()"/>
 
         <!-- See WebrootThemeData.xml for CSS references -->
-        <set field="html_stylesheets" from="new LinkedHashSet()"/>
+        <set field="html_stylesheets" from="new Set()"/>
     </always-actions>
     <transition name="status">
         <actions>
             <!-- 0:0:0:0:0:0:0:1 and ::1 are IPv6 loopback forms for querying /status -->
-            <set field="allowed_ips" from="System.getProperty('webapp_status_ips')? System.getProperty('webapp_status_ips').replaceAll('\\s', '').split(',')+['127.0.0.1','0:0:0:0:0:0:0:1','::1']: ['127.0.0.1','0:0:0:0:0:0:0:1','::1']"/>
-            <if condition="org.moqui.util.WebUtilities.ipMatches(allowed_ips.join(','), ec.user.getClientIp())"><then>
+            <set field="allowed_ips" from="(System.getProperty('webapp_status_ips') ? System.getProperty('webapp_status_ips').replaceAll(/\s/g, '').split(',') : []).concat(['127.0.0.1','0:0:0:0:0:0:0:1','::1'])"/>
+            <if condition="WebUtilities.ipMatches(allowed_ips.join(','), ec.user.getClientIp())"><then>
                 <script>ec.web.sendJsonResponse(ec.factory.getStatusMap())</script>
             </then><else>
                 <log message="Rejecting /status from ${ec.web.getRequest().getRemoteAddr()}"/>
@@ -37,7 +37,7 @@ along with this software (see the LICENSE.md file). If not, see
     </transition>
     <transition name="menuData" read-only="true" begin-transaction="false">
         <actions><script><![CDATA[
-            List menuDataList = sri.getMenuData(sri.screenUrlInfo.extraPathNameList)
+            const menuDataList = sri.getMenuData(sri.screenUrlInfo.extraPathNameList)
             if (menuDataList != null) ec.web.sendJsonResponse(menuDataList)
             ]]></script></actions>
         <!-- NOTE DEJ 20200806 use save-parameters="true" to re-save parameters otherwise lost from the menuData request under vapps, qapps, etc -->
@@ -50,11 +50,10 @@ along with this software (see the LICENSE.md file). If not, see
         <!-- TODO: get fancier with this, crawl screen tree looking for screens that don't require authc, maybe some sort of setting to allow robots or not -->
         <!-- TODO: also generate sitemap XML with paths we want crawled, based on ? -->
         <actions><script><![CDATA[
-            List disallowList = ['apps', 'vapps', 'qapps', 'rest', 'rpc', 'status', 'menuData', 'llm']
-            def outWriter = new StringWriter()
-            outWriter.append("user-agent: *\n")
-            for (disPath in disallowList) outWriter.append("disallow: /${disPath}\n")
-            ec.web.sendTextResponse(outWriter.toString())
+            const disallowList = ['apps', 'vapps', 'qapps', 'rest', 'rpc', 'status', 'menuData', 'llm']
+            let robotsText = "user-agent: *\n"
+            for (const disPath of disallowList) robotsText += `disallow: /${disPath}\n`
+            ec.web.sendTextResponse(robotsText)
             ]]></script>
         </actions>
         <default-response type="none"/>

@@ -20,13 +20,13 @@ along with this software (see the LICENSE.md file). If not, see
     <transition name="clearCacheElement">
         <actions>
             <script><![CDATA[
-                ec.logger.info("Clearing cache entry with key ${key} from cache ${cacheName}")
-                javax.cache.Cache theCache = ec.cache.getCache(cacheName)
-                Iterator iter = theCache.iterator()
+                ec.logger.info(`Clearing cache entry with key ${key} from cache ${cacheName}`)
+                const theCache = ec.cache.getCache(cacheName)
+                const iter = theCache.iterator()
                 while (iter.hasNext()) {
-                    javax.cache.Cache.Entry entry = iter.next()
-                    if (key == (entry.key as String)) {
-                        cacheValue = theCache.getAndRemove(entry.key)
+                    const entry = iter.next()
+                    if (key == String(entry.key)) {
+                        const cacheValue = theCache.getAndRemove(entry.key)
                         ec.message.addMessage(ec.resource.expand('Cleared ${key} from cache [${cacheName}] had value [${cacheValue}]',''))
                         return
                     }
@@ -41,9 +41,9 @@ along with this software (see the LICENSE.md file). If not, see
         <if condition="!ec.cache.cacheExists(cacheName)">
             <return error="true" message="Cache with name ${cacheName} not found"/></if>
 
-        <set field="pageSize" from="pageSize ?: 40"/>
-        <set field="cacheElementList" from="ec.cache.makeElementInfoList(cacheName, orderByField?:'+key')"/>
-        <script>paginateList("cacheElementList", null, context)</script>
+        <set field="pageSize" from="pageSize || 40"/>
+        <set field="cacheElementList" from="ec.cache.makeElementInfoList(cacheName, orderByField || '+key')"/>
+        <script>CollectionUtilities.paginateList("cacheElementList", null, context)</script>
     </actions>
     <widgets>
         <label text="Elements for Cache [${cacheName}]" type="h3"/>

@@ -26,11 +26,11 @@ along with this software (see the LICENSE.md file). If not, see
         html_scripts.add('/js/CombinedBase.min.js')
 
         // jquery-validate locale specific scripts
-        Map validateScriptsOut = ec.service.sync().name("webroot.LocaleServices.get#ValidateLocaleScripts").call()
+        const validateScriptsOut = ec.service.sync().name("webroot.LocaleServices.get#ValidateLocaleScripts").call()
         if (validateScriptsOut.messagesLocation) html_scripts.add(validateScriptsOut.messagesLocation)
         if (validateScriptsOut.methodsLocation) html_scripts.add(validateScriptsOut.methodsLocation)
 
-        String instancePurpose = System.getProperty("instance_purpose")
+        const instancePurpose = System.getProperty("instance_purpose")
         if (!instancePurpose || instancePurpose == 'production') {
             /* ========== Production Mode ========== */
             footer_scripts.add('/js/CombinedVuet.min.js')

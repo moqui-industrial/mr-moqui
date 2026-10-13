@@ -18,38 +18,27 @@ along with this software (see the LICENSE.md file). If not, see
 
     <transition name="DocumentExport.json" read-only="true" authz-action="update">
         <actions><script><![CDATA[
-            import org.moqui.context.ExecutionContext
-            import org.moqui.impl.entity.EntityDataDocument
-
-            import java.sql.Timestamp
-
-            ExecutionContext ec = context.ec
-            EntityDataDocument edd = ec.entity.getEntityDataDocument()
+            const edd = ec.entity.getEntityDataDocument()
 
             if (!context.dataDocumentIds) {
                 ec.message.addError(ec.l10n.localize("No Data Documents specified, not exporting anything."))
                 return
             }
 
-            List<String> dataDocumentIdList
-            if (dataDocumentIds instanceof String) {
-                dataDocumentIdList = [dataDocumentIds]
-            } else {
-                dataDocumentIdList = dataDocumentIds
-            }
-            boolean prettyPrint = context.prettyPrint as Boolean
-            fromUpdateStamp = fromUpdateStamp ? fromUpdateStamp as Timestamp : null
-            thruUpdateStamp = thruUpdateStamp ? thruUpdateStamp as Timestamp : null
+            const dataDocumentIdList = (typeof dataDocumentIds === 'string') ? [dataDocumentIds] : dataDocumentIds
+            const prettyPrint = String(context.prettyPrint) == 'true'
+            fromUpdateStamp = fromUpdateStamp ? ec.l10n.parseTimestamp(fromUpdateStamp, null) : null
+            thruUpdateStamp = thruUpdateStamp ? ec.l10n.parseTimestamp(thruUpdateStamp, null) : null
 
             noResponse = false
             if (context.output == "file") {
-                edd.writeDocumentsToFile((String) path, dataDocumentIdList, null,
+                edd.writeDocumentsToFile(String(path), dataDocumentIdList, null,
                         fromUpdateStamp, thruUpdateStamp, prettyPrint)
             } else if (context.output == "dir") {
-                edd.writeDocumentsToDirectory((String) path, dataDocumentIdList, null,
+                edd.writeDocumentsToDirectory(String(path), dataDocumentIdList, null,
                         fromUpdateStamp, thruUpdateStamp, prettyPrint)
             } else {
-                def response = ec.web.response
+                const response = ec.web.response
                 response.setContentType("application/json")
                 response.setCharacterEncoding("UTF-8")
                 response.setHeader("Cache-Control", "no-cache, must-revalidate, private")

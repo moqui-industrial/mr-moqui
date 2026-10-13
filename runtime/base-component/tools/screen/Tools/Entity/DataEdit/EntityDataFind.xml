@@ -22,25 +22,25 @@ along with this software (see the LICENSE.md file). If not, see
     <transition name="find"><default-response url="."/></transition>
     <transition name="create">
         <actions>
-            <if condition="org.moqui.util.WebUtilities.isRestrictedGenericEntity(selectedEntity)"><message error="true">Entity ${selectedEntity} is not available through this tool</message><return/></if>
+            <if condition="WebUtilities.isRestrictedGenericEntity(selectedEntity)"><message error="true">Entity ${selectedEntity} is not available through this tool</message><return/></if>
             <service-call name="create#${selectedEntity}" in-map="true"/></actions>
         <default-response url="."/>
     </transition>
     <transition name="listSubmit">
         <actions>
-            <if condition="org.moqui.util.WebUtilities.isRestrictedGenericEntity(selectedEntity)"><message error="true">Entity ${selectedEntity} is not available through this tool</message><return/></if>
-            <if condition="delete">
+            <if condition="WebUtilities.isRestrictedGenericEntity(selectedEntity)"><message error="true">Entity ${selectedEntity} is not available through this tool</message><return/></if>
+            <if condition="context.delete">
                 <service-call name="delete#${selectedEntity}" in-map="true"/>
             </if>
         </actions>
         <conditional-response url=".">
-            <condition><expression>delete</expression></condition>
+            <condition><expression>context.delete</expression></condition>
         </conditional-response>
         <default-response url="../EntityDataEdit" parameter-map="ec.entity.getEntityDefinition(selectedEntity).getPrimaryKeys(context)"/>
     </transition>
 
     <actions>
-        <if condition="org.moqui.util.WebUtilities.isRestrictedGenericEntity(selectedEntity)"><message error="true">Entity ${selectedEntity} is not available through this tool</message><return/></if>
+        <if condition="WebUtilities.isRestrictedGenericEntity(selectedEntity)"><message error="true">Entity ${selectedEntity} is not available through this tool</message><return/></if>
         <set field="entityDefinition" from="ec.entity.getEntityDefinition(selectedEntity)"/>
         <entity-find entity-name="${selectedEntity}" list="entityValueList" offset="0" limit="50" use-clone="true">
             <search-form-inputs/>
@@ -56,7 +56,7 @@ along with this software (see the LICENSE.md file). If not, see
                     <field name="submitButton"><default-field title="Find"><submit/></default-field></field>
                 </form-single>
             </container-dialog>
-            <link url="../EntityDetail" parameter-map="[selectedEntity:selectedEntity]" text="Entity Detail"/>
+            <link url="../EntityDetail" parameter-map="{selectedEntity:selectedEntity}" text="Entity Detail"/>
             <container-dialog id="CreateValueDialog" button-text="New Value">
                 <form-single name="CreateEntityValue" transition="create" dynamic="true">
                     <auto-fields-entity entity-name="${selectedEntity}" field-type="edit"/>

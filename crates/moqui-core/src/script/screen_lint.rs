@@ -1,0 +1,1052 @@
+/*
+ * This software is in the public domain under CC0 1.0 Universal plus a
+ * Grant of Patent License.
+ *
+ * To the extent possible under law, the author(s) have dedicated all
+ * copyright and related and neighboring rights to this software to the
+ * public domain worldwide. This software is distributed without any
+ * warranty.
+ *
+ * You should have received a copy of the CC0 Public Domain Dedication
+ * along with this software (see the LICENSE.md file). If not, see
+ * <http://creativecommons.org/publicdomain/zero/1.0/>.
+ */
+
+//! `moqui lint --screens`: every expression site in screen and form XML must parse as JavaScript,
+//! and the Groovy idioms that survive are classified per file. This is the pre-scan for the screen
+//! trees. FreeMarker bodies of `<text template="true">` are listed and not parsed.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+
+use moqui_lib::node::MNode;
+
+use crate::context::Error;
+
+/// Elements that hold XML actions. The generated script of each must parse.
+const ACTION_CONTAINERS: &[&str] = &["actions", "always-actions", "pre-actions", "row-actions"];
+
+/// Action elements that appear outside a container, such as a transition's `service-call`.
+const LOOSE_ACTIONS: &[&str] = &[
+    "service-call",
+    "entity-find",
+    "entity-find-one",
+    "entity-find-count",
+    "script",
+];
+
+/// Screens that stay Groovy for now, by path suffix and reason. They are listed in the report and not scanned.
+pub const KNOWN_EXCLUSIONS: &[(&str, &str)] = &[
+    (
+        "tools/screen/Tools/Entity/SpeedTest.xml",
+        "JVM benchmark: @CompileStatic methods against the Java cache, entity and REST internals",
+    ),
+    (
+        "tools/screen/Tools/Entity/SqlRunner.xml",
+        "JDBC console: needs a host SQL API (Connection, Statement, ResultSet) that does not exist",
+    ),
+    (
+        "tools/screen/Tools/Entity/SqlScriptRunner.xml",
+        "JDBC console: needs a host SQL API (Connection, Statement, ResultSet) that does not exist",
+    ),
+];
+
+/// Root elements of screen and form XML files.
+const ROOTS: &[&str] = &["screen", "forms", "widget-template", "widget-templates"];
+
+const JS_GLOBALS: &[&str] = &[
+    "Math", "JSON", "Object", "Array", "Number", "String", "Date", "Boolean", "Symbol", "Map", "Set", "Intl",
+    "Reflect", "Promise", "BigInt", "RegExp", "Error",
+];
+
+const COLLECTION_METHODS: &[&str] = &[
+    ".size()",
+    ".isEmpty()",
+    ".contains(",
+    ".containsKey(",
+    ".keySet()",
+    ".entrySet()",
+    ".add(",
+    ".addAll(",
+    ".put(",
+    ".putAll(",
+    ".toList()",
+    ".getAt(",
+    ".equals(",
+];
+
+/// A Groovy idiom and whether the text still runs as JavaScript when it is present.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Idiom {
+    Elvis,
+    EmptyCollectionTruthiness,
+    Range,
+    Closure,
+    GString,
+    GStringDollarName,
+    RegexOperator,
+    DecimalLiteral,
+    BigDecimal,
+    NewType,
+    MapLiteral,
+    ListStar,
+    AsCast,
+    InOperator,
+    Def,
+    StaticClass,
+    QuotedProperty,
+    CollectionMethod,
+    Catch,
+    SafeNavigation,
+}
+
+impl Idiom {
+    pub fn name(self) -> &'static str {
+        match self {
+            Idiom::Elvis => "elvis",
+            Idiom::EmptyCollectionTruthiness => "empty-collection-truthiness",
+            Idiom::Range => "range",
+            Idiom::Closure => "closure",
+            Idiom::GString => "gstring",
+            Idiom::GStringDollarName => "gstring-dollar-name",
+            Idiom::RegexOperator => "regex-operator",
+            Idiom::DecimalLiteral => "decimal-literal",
+            Idiom::BigDecimal => "bigdecimal",
+            Idiom::NewType => "new-type",
+            Idiom::MapLiteral => "map-literal",
+            Idiom::ListStar => "list-star",
+            Idiom::AsCast => "as-cast",
+            Idiom::InOperator => "in-operator",
+            Idiom::Def => "def",
+            Idiom::StaticClass => "static-class",
+            Idiom::QuotedProperty => "quoted-property",
+            Idiom::CollectionMethod => "collection-method",
+            Idiom::Catch => "catch",
+            Idiom::SafeNavigation => "safe-navigation",
+        }
+    }
+
+    /// Optional chaining is JavaScript, so it is counted and never flagged.
+    pub fn is_groovy(self) -> bool {
+        self != Idiom::SafeNavigation
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SiteKind {
+    /// An attribute that is a whole expression.
+    Expression,
+    /// A `${...}` inside plain attribute text, which is a JsTemplateLiteral.
+    Template,
+    /// A `<script>` or `<expression>` body.
+    Script,
+}
+
+#[derive(Clone, Debug)]
+pub struct Site {
+    pub line: u32,
+    pub element: String,
+    pub attribute: String,
+    pub kind: SiteKind,
+    pub text: String,
+    pub error: Option<String>,
+    pub idioms: Vec<(Idiom, String)>,
+}
+
+impl Site {
+    fn flagged(&self) -> bool {
+        self.error.is_some() || self.idioms.iter().any(|(idiom, _)| idiom.is_groovy())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct FtlRef {
+    pub line: u32,
+    pub element: String,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct FileReport {
+    pub path: PathBuf,
+    pub sites: Vec<Site>,
+    pub generated_errors: Vec<(u32, String)>,
+    pub ftl: Vec<FtlRef>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ScreenLintReport {
+    pub files: Vec<FileReport>,
+    /// Path and reason of each file that matched [`KNOWN_EXCLUSIONS`].
+    pub excluded: Vec<(PathBuf, &'static str)>,
+}
+
+impl ScreenLintReport {
+    pub fn site_count(&self) -> usize {
+        self.files.iter().map(|file| file.sites.len()).sum()
+    }
+
+    /// One line per parse failure: a site that is not JavaScript, or an action block whose
+    /// generated script does not parse.
+    pub fn failures(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for file in &self.files {
+            for site in &file.sites {
+                if let Some(error) = &site.error {
+                    out.push(format!(
+                        "{}:{} {}@{}: {error}",
+                        file.path.display(),
+                        site.line,
+                        site.element,
+                        site.attribute
+                    ));
+                }
+            }
+            for (line, error) in &file.generated_errors {
+                out.push(format!("{}:{line} {error}", file.path.display()));
+            }
+        }
+        out
+    }
+
+    /// Sites per idiom, and the number of files holding each.
+    pub fn idiom_totals(&self) -> BTreeMap<Idiom, (usize, usize)> {
+        let mut totals: BTreeMap<Idiom, (usize, BTreeSet<usize>)> = BTreeMap::new();
+        for (index, file) in self.files.iter().enumerate() {
+            for site in &file.sites {
+                let kinds: BTreeSet<Idiom> = site.idioms.iter().map(|(idiom, _)| *idiom).collect();
+                for idiom in kinds {
+                    let entry = totals.entry(idiom).or_default();
+                    entry.0 += 1;
+                    entry.1.insert(index);
+                }
+            }
+        }
+        totals
+            .into_iter()
+            .map(|(idiom, (n, files))| (idiom, (n, files.len())))
+            .collect()
+    }
+
+    /// Sites that still hold a Groovy idiom or fail to parse.
+    pub fn flagged_count(&self) -> usize {
+        self.files
+            .iter()
+            .map(|file| file.sites.iter().filter(|site| site.flagged()).count())
+            .sum()
+    }
+
+    pub fn render(&self) -> String {
+        let mut out = String::new();
+        let failures = self.failures();
+        let ftl: usize = self.files.iter().map(|file| file.ftl.len()).sum();
+        let _ = writeln!(out, "Screen expression lint");
+        let _ = writeln!(
+            out,
+            "files scanned: {} (excluded: {})",
+            self.files.len(),
+            self.excluded.len()
+        );
+        let _ = writeln!(out, "expression sites: {}", self.site_count());
+        let site_failures: usize = self
+            .files
+            .iter()
+            .map(|file| file.sites.iter().filter(|site| site.error.is_some()).count())
+            .sum();
+        let _ = writeln!(
+            out,
+            "parse failures: {} (site: {site_failures}, generated action script: {})",
+            failures.len(),
+            failures.len() - site_failures
+        );
+        let _ = writeln!(out, "sites with a Groovy idiom or failure: {}", self.flagged_count());
+        let _ = writeln!(out, "FreeMarker bodies and template references (not parsed): {ftl}");
+        let _ = writeln!(out, "\nIdiom totals (sites, files)");
+        for (idiom, (sites, files)) in self.idiom_totals() {
+            let _ = writeln!(out, "  {:<30} {sites:>5} {files:>5}", idiom.name());
+        }
+        let _ = writeln!(out, "\nParse failures");
+        for failure in &failures {
+            let _ = writeln!(out, "  {failure}");
+        }
+        let _ = writeln!(out, "\nKnown exclusions (not scanned)");
+        for (path, reason) in &self.excluded {
+            let _ = writeln!(out, "  {}: {reason}", path.display());
+        }
+        let _ = writeln!(out, "\nFreeMarker");
+        for file in &self.files {
+            for item in &file.ftl {
+                let _ = writeln!(
+                    out,
+                    "  {}:{} {} {}",
+                    file.path.display(),
+                    item.line,
+                    item.element,
+                    item.detail
+                );
+            }
+        }
+        let _ = writeln!(out, "\nPer file (flagged sites only; before text)");
+        for file in &self.files {
+            let flagged: Vec<&Site> = file.sites.iter().filter(|site| site.flagged()).collect();
+            if flagged.is_empty() {
+                continue;
+            }
+            let _ = writeln!(
+                out,
+                "\n{} ({} sites, {} flagged)",
+                file.path.display(),
+                file.sites.len(),
+                flagged.len()
+            );
+            for site in flagged {
+                let idioms: Vec<&str> = site.idioms.iter().map(|(idiom, _)| idiom.name()).collect();
+                let _ = writeln!(
+                    out,
+                    "  {}: {}@{} [{}] {}",
+                    site.line,
+                    site.element,
+                    site.attribute,
+                    idioms.join(","),
+                    site.error.as_deref().unwrap_or("")
+                );
+                let _ = writeln!(out, "      before: {}", one_line(&site.text));
+            }
+        }
+        out
+    }
+}
+
+/// Scan the roots. A root that is a file is scanned as is. A directory is walked for XML files.
+/// Under `runtime` style roots only paths with a `screen` directory component count, so service
+/// and data XML is skipped.
+///
+/// # Errors
+///
+/// Returns an error when a directory cannot be read or an XML file does not parse.
+pub fn lint_screens(roots: &[PathBuf]) -> Result<ScreenLintReport, Error> {
+    let mut paths = Vec::new();
+    for root in roots {
+        collect(root, false, &mut paths)?;
+    }
+    paths.sort();
+    paths.dedup();
+    let mut report = ScreenLintReport::default();
+    for path in paths {
+        if let Some((_, reason)) = KNOWN_EXCLUSIONS.iter().find(|(suffix, _)| path.ends_with(suffix)) {
+            report.excluded.push((path, reason));
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).map_err(|err| Error::new(format!("{}: {err}", path.display())))?;
+        let root = MNode::parse_text(&path.display().to_string(), &text)?;
+        if !ROOTS.contains(&root.name().as_str()) {
+            continue;
+        }
+        let mut file = FileReport {
+            path,
+            ..FileReport::default()
+        };
+        scan_node(&root, false, &mut file);
+        report.files.push(file);
+    }
+    Ok(report)
+}
+
+fn collect(path: &Path, in_screen: bool, out: &mut Vec<PathBuf>) -> Result<(), Error> {
+    if path.is_file() {
+        if path.extension().is_some_and(|ext| ext == "xml") {
+            out.push(path.to_path_buf());
+        }
+        return Ok(());
+    }
+    let entries = std::fs::read_dir(path).map_err(|err| Error::new(format!("{}: {err}", path.display())))?;
+    for entry in entries {
+        let entry = entry.map_err(|err| Error::new(err.to_string()))?;
+        let child = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if child.is_dir() {
+            collect(&child, in_screen || name == "screen", out)?;
+        } else if in_screen || path_has_screen(path) {
+            collect(&child, true, out)?;
+        }
+    }
+    Ok(())
+}
+
+fn path_has_screen(path: &Path) -> bool {
+    path.components().any(|part| part.as_os_str() == "screen")
+}
+
+fn scan_node(node: &MNode, in_actions: bool, file: &mut FileReport) {
+    let name = node.name();
+    let action_root = ACTION_CONTAINERS.contains(&name.as_str()) || LOOSE_ACTIONS.contains(&name.as_str());
+    if !in_actions {
+        if action_root {
+            check_generated(node, file);
+        } else if name == "condition" {
+            check_condition(node, file);
+        }
+    }
+    scan_attributes(node, &name, file);
+    scan_body(node, &name, file);
+    for child in node.children() {
+        scan_node(&child, in_actions || action_root || name == "condition", file);
+    }
+}
+
+fn check_generated(node: &MNode, file: &mut FileReport) {
+    if let Err(err) = generated_ok(node) {
+        let mut worst = (node.clone(), err.to_string());
+        narrow(node, &mut worst);
+        file.generated_errors
+            .push((worst.0.line(), format!("{} {}", worst.0.name(), worst.1)));
+    }
+}
+
+/// The deepest descendant that fails by itself, so the report names an element and not a whole block.
+fn narrow(node: &MNode, worst: &mut (MNode, String)) {
+    for child in node.children() {
+        if let Err(err) = generated_ok(&child) {
+            *worst = (child.clone(), err.to_string());
+            narrow(&child, worst);
+            return;
+        }
+    }
+}
+
+fn generated_ok(node: &MNode) -> Result<(), Error> {
+    let name = node.name();
+    let copy = node.deep_copy();
+    let xml = if ACTION_CONTAINERS.contains(&name.as_str()) {
+        copy.set_name("actions");
+        copy.write_string()
+    } else {
+        // The form widgets run an `entity-find` with no `list`. The generator wants a name.
+        if name == "entity-find" && copy.attribute("list").is_none() {
+            copy.set_attribute("list", "_formList");
+        }
+        format!("<actions>{}</actions>", copy.write_string())
+    };
+    super::check_actions(&xml)
+}
+
+fn check_condition(node: &MNode, file: &mut FileReport) {
+    let xml = format!("<actions><if>{}</if></actions>", node.deep_copy().write_string());
+    if let Err(err) = super::check_actions(&xml) {
+        file.generated_errors.push((node.line(), format!("condition {err}")));
+    }
+}
+
+fn is_expression_attr(element: &str, attr: &str) -> bool {
+    match attr {
+        "condition" | "from" | "in-map" | "parameter-map" | "text-map" => true,
+        "list" => matches!(
+            element,
+            "section-iterate"
+                | "iterate"
+                | "form-list"
+                | "tree-sub-node"
+                | "list-options"
+                | "order-map-list"
+                | "filter-map-list"
+        ),
+        "map" => element == "form-single",
+        _ => false,
+    }
+}
+
+fn scan_attributes(node: &MNode, element: &str, file: &mut FileReport) {
+    let line = node.line();
+    for (attr, value) in node.attributes() {
+        if value.trim().is_empty() || attr.contains(':') {
+            continue;
+        }
+        if is_expression_attr(element, &attr) {
+            file.sites
+                .push(site(line, element, &attr, SiteKind::Expression, &value, true));
+            continue;
+        }
+        let text = value.as_str();
+        for embedded in embedded_expressions(text) {
+            file.sites
+                .push(site(line, element, &attr, SiteKind::Template, &embedded, false));
+        }
+        if let Some(at) = dollar_name(text) {
+            let mut found = site(line, element, &attr, SiteKind::Template, text, false);
+            found
+                .idioms
+                .push((Idiom::GStringDollarName, text[at..].chars().take(24).collect()));
+            file.sites.push(found);
+        }
+    }
+}
+
+fn scan_body(node: &MNode, element: &str, file: &mut FileReport) {
+    let line = node.line();
+    if element == "text" {
+        scan_text(node, line, file);
+        return;
+    }
+    let Some(body) = node.text().filter(|text| !text.trim().is_empty()) else {
+        return;
+    };
+    match element {
+        "script" | "expression" => file
+            .sites
+            .push(site(line, element, "text", SiteKind::Script, &body, true)),
+        "message" | "log" => {
+            for embedded in embedded_expressions(&body) {
+                file.sites
+                    .push(site(line, element, "text", SiteKind::Template, &embedded, false));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A `<text>` body is FreeMarker unless `template="false"`. It is listed and not parsed.
+fn scan_text(node: &MNode, line: u32, file: &mut FileReport) {
+    if let Some(location) = node.attribute("location").filter(|location| location.contains(".ftl")) {
+        file.ftl.push(FtlRef {
+            line,
+            element: "text".to_string(),
+            detail: format!("location {location}"),
+        });
+    }
+    let Some(body) = node.text().filter(|text| !text.trim().is_empty()) else {
+        return;
+    };
+    if node.attribute("template").as_deref() == Some("false") {
+        return;
+    }
+    let directives = body.matches("<#").count() + body.matches("<@").count();
+    let interpolations = body.matches("${").count();
+    if directives > 0 || interpolations > 0 {
+        file.ftl.push(FtlRef {
+            line,
+            element: "text".to_string(),
+            detail: format!(
+                "inline body of {} chars, {directives} directives, {interpolations} interpolations",
+                body.len()
+            ),
+        });
+    }
+}
+
+fn site(line: u32, element: &str, attr: &str, kind: SiteKind, text: &str, whole: bool) -> Site {
+    let error = super::parse_js(text).err().map(|err| err.to_string());
+    let mut idioms = classify(text);
+    if whole && kind == SiteKind::Expression {
+        if let Some(sample) = truthiness_candidate(attr, text) {
+            idioms.push((Idiom::EmptyCollectionTruthiness, sample));
+        }
+    }
+    Site {
+        line,
+        element: element.to_string(),
+        attribute: attr.to_string(),
+        kind,
+        text: text.to_string(),
+        error,
+        idioms,
+    }
+}
+
+/// The text of each `${...}` in `text`, with nested braces and strings respected.
+pub(crate) fn embedded_expressions(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut index = 0;
+    while index + 1 < bytes.len() {
+        if bytes[index] == b'$' && bytes[index + 1] == b'{' && (index == 0 || bytes[index - 1] != b'\\') {
+            let start = index + 2;
+            let mut depth = 1;
+            let mut quote = 0u8;
+            let mut end = start;
+            while end < bytes.len() {
+                let byte = bytes[end];
+                if quote != 0 {
+                    if byte == b'\\' {
+                        end += 1;
+                    } else if byte == quote {
+                        quote = 0;
+                    }
+                } else if byte == b'\'' || byte == b'"' {
+                    quote = byte;
+                } else if byte == b'{' {
+                    depth += 1;
+                } else if byte == b'}' {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                end += 1;
+            }
+            if end > bytes.len() {
+                end = bytes.len();
+            }
+            out.push(text[start..end].to_string());
+            index = end;
+        }
+        index += 1;
+    }
+    out
+}
+
+/// Position of a `$name` interpolation, which Groovy expands and a JS template literal does not.
+fn dollar_name(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    (0..bytes.len().saturating_sub(1)).find(|&index| {
+        bytes[index] == b'$'
+            && (bytes[index + 1].is_ascii_alphabetic() || bytes[index + 1] == b'_')
+            && (index == 0 || bytes[index - 1] != b'\\')
+    })
+}
+
+/// A bare condition on a name that reads like a collection. Groovy tests it for empty. JavaScript does not.
+fn truthiness_candidate(attr: &str, text: &str) -> Option<String> {
+    if attr != "condition" {
+        return None;
+    }
+    const SUFFIXES: &[&str] = &[
+        "List", "Map", "Set", "Rows", "Values", "Options", "Ids", "Items", "Entries",
+    ];
+    let masked = mask_strings(text);
+    if masked.contains(".length") || masked.contains("Object.keys") {
+        return None;
+    }
+    for operand in masked.split(['&', '|']) {
+        let operand = operand.trim().trim_start_matches('!').trim();
+        let operand = operand.trim_start_matches('(').trim_end_matches(')').trim();
+        if operand.is_empty()
+            || !operand
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+        {
+            continue;
+        }
+        let last = operand.rsplit('.').next().unwrap_or(operand);
+        if SUFFIXES.iter().any(|suffix| last.ends_with(suffix)) || last.ends_with("list") || last == "list" {
+            return Some(operand.to_string());
+        }
+    }
+    None
+}
+
+/// Replace the characters inside string literals with spaces, keeping the quotes.
+fn mask_strings(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for ch in text.chars() {
+        match quote {
+            Some(open) => {
+                if escaped {
+                    escaped = false;
+                    out.push(' ');
+                } else if ch == '\\' {
+                    escaped = true;
+                    out.push(' ');
+                } else if ch == open {
+                    quote = None;
+                    out.push(ch);
+                } else {
+                    out.push(' ');
+                }
+            }
+            None => {
+                if ch == '\'' || ch == '"' {
+                    quote = Some(ch);
+                }
+                out.push(ch);
+            }
+        }
+    }
+    out
+}
+
+fn has_gstring(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let quote = bytes[index];
+        if quote == b'"' || quote == b'\'' || quote == b'`' {
+            let mut end = index + 1;
+            while end < bytes.len() && bytes[end] != quote {
+                if bytes[end] == b'\\' {
+                    end += 1;
+                }
+                end += 1;
+            }
+            let end = end.min(bytes.len());
+            if quote == b'"' {
+                let inner = &text[index + 1..end];
+                if inner.contains("${") || dollar_name(inner).is_some() {
+                    return true;
+                }
+            }
+            index = end;
+        }
+        index += 1;
+    }
+    false
+}
+
+fn word_at(bytes: &[u8], at: usize, len: usize) -> bool {
+    let before = at == 0 || !is_ident(bytes[at - 1]);
+    let after = at + len >= bytes.len() || !is_ident(bytes[at + len]);
+    before && after
+}
+
+fn is_ident(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$'
+}
+
+fn find_words(masked: &str, word: &str) -> Vec<usize> {
+    let bytes = masked.as_bytes();
+    masked
+        .match_indices(word)
+        .map(|(at, _)| at)
+        .filter(|&at| word_at(bytes, at, word.len()))
+        .collect()
+}
+
+fn snippet(text: &str, at: usize) -> String {
+    let start = text.floor_char_boundary(at.saturating_sub(8));
+    let end = text.ceil_char_boundary((at + 24).min(text.len()));
+    text[start..end].to_string()
+}
+
+/// The Groovy idioms in one expression or script, each with a short sample.
+pub fn classify(text: &str) -> Vec<(Idiom, String)> {
+    let masked = mask_strings(text);
+    let m = masked.as_str();
+    let bytes = m.as_bytes();
+    let mut out: Vec<(Idiom, String)> = Vec::new();
+
+    if let Some(at) = m.find("?:") {
+        out.push(sample(text, Idiom::Elvis, at));
+    }
+    if let Some(at) = m.find("?.") {
+        out.push(sample(text, Idiom::SafeNavigation, at));
+    }
+    if let Some(at) = range_at(bytes) {
+        out.push(sample(text, Idiom::Range, at));
+    }
+    if super::parse::has_closure_call(m) || super::parse::has_groovy_arrow(m) {
+        out.push(sample(
+            text,
+            Idiom::Closure,
+            m.find("->").or_else(|| m.find('{')).unwrap_or(0),
+        ));
+    }
+    if has_gstring(text) {
+        out.push(sample(text, Idiom::GString, text.find('"').unwrap_or(0)));
+    }
+    if let Some(at) = m.find("=~").or_else(|| m.find("~/")) {
+        out.push(sample(text, Idiom::RegexOperator, at));
+    }
+    if let Some(at) = decimal_literal(bytes) {
+        out.push(sample(text, Idiom::DecimalLiteral, at));
+    }
+    for word in ["BigDecimal", "setScale", "toBigDecimal", "BigInteger"] {
+        if let Some(&at) = find_words(m, word).first() {
+            out.push(sample(text, Idiom::BigDecimal, at));
+            break;
+        }
+    }
+    for at in find_words(m, "new") {
+        let rest = m[at + 3..].trim_start();
+        if rest.chars().next().is_some_and(char::is_uppercase) {
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
+                .collect();
+            out.push((Idiom::NewType, name));
+        }
+    }
+    if let Some(at) = map_literal(bytes) {
+        out.push(sample(text, Idiom::MapLiteral, at));
+    }
+    if let Some(at) = m.find("*.") {
+        out.push(sample(text, Idiom::ListStar, at));
+    }
+    for at in find_words(m, "as") {
+        if m[at + 2..].trim_start().chars().next().is_some_and(char::is_alphabetic) && at > 0 {
+            out.push(sample(text, Idiom::AsCast, at));
+            break;
+        }
+    }
+    for at in find_words(m, "in") {
+        if m[at + 2..].trim_start().starts_with('[') {
+            out.push(sample(text, Idiom::InOperator, at));
+            break;
+        }
+    }
+    if let Some(&at) = find_words(m, "def").first() {
+        out.push(sample(text, Idiom::Def, at));
+    }
+    if let Some(&at) = find_words(m, "catch").first() {
+        out.push(sample(text, Idiom::Catch, at));
+    }
+    for (class, at) in static_calls(m) {
+        if !JS_GLOBALS.contains(&class.as_str()) {
+            out.push((Idiom::StaticClass, format!("{class} {}", snippet(text, at))));
+        }
+    }
+    if m.contains(".'") || m.contains(".\"") {
+        out.push(sample(
+            text,
+            Idiom::QuotedProperty,
+            m.find(".'").or_else(|| m.find(".\"")).unwrap_or(0),
+        ));
+    }
+    for method in COLLECTION_METHODS {
+        if let Some(at) = m.find(method) {
+            out.push(sample(text, Idiom::CollectionMethod, at));
+            break;
+        }
+    }
+    out
+}
+
+fn sample(text: &str, idiom: Idiom, at: usize) -> (Idiom, String) {
+    (idiom, snippet(text, at))
+}
+
+fn range_at(bytes: &[u8]) -> Option<usize> {
+    (0..bytes.len().saturating_sub(1)).find(|&index| {
+        bytes[index] == b'.'
+            && bytes[index + 1] == b'.'
+            && (index == 0 || bytes[index - 1] != b'.')
+            && (index + 2 >= bytes.len() || bytes[index + 2] != b'.')
+    })
+}
+
+fn decimal_literal(bytes: &[u8]) -> Option<usize> {
+    for index in 0..bytes.len() {
+        if !bytes[index].is_ascii_digit() || (index > 0 && (is_ident(bytes[index - 1]) || bytes[index - 1] == b'.')) {
+            continue;
+        }
+        let mut end = index;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
+        if end + 1 < bytes.len() && bytes[end] == b'.' && bytes[end + 1].is_ascii_digit() {
+            return Some(index);
+        }
+        if end < bytes.len()
+            && matches!(bytes[end], b'g' | b'G')
+            && (end + 1 >= bytes.len() || !is_ident(bytes[end + 1]))
+        {
+            return Some(index);
+        }
+    }
+    None
+}
+
+fn map_literal(bytes: &[u8]) -> Option<usize> {
+    for index in 0..bytes.len() {
+        if bytes[index] != b'[' {
+            continue;
+        }
+        let mut depth = 0;
+        let mut question = false;
+        for (offset, &byte) in bytes[index + 1..].iter().enumerate() {
+            match byte {
+                b'[' | b'(' | b'{' => depth += 1,
+                b')' | b'}' => depth -= 1,
+                b']' if depth == 0 => break,
+                b']' => depth -= 1,
+                b',' if depth == 0 => break,
+                b'?' if depth == 0 => question = true,
+                b':' if depth == 0 => {
+                    let next = bytes.get(index + 1 + offset + 1).copied();
+                    if !question && next != Some(b':') {
+                        return Some(index);
+                    }
+                    break;
+                }
+                _ => {}
+            }
+            if depth < 0 {
+                break;
+            }
+        }
+    }
+    None
+}
+
+fn static_calls(masked: &str) -> Vec<(String, usize)> {
+    let bytes = masked.as_bytes();
+    let mut out = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index].is_ascii_uppercase()
+            && (index == 0 || (!is_ident(bytes[index - 1]) && bytes[index - 1] != b'.'))
+        {
+            let mut end = index;
+            while end < bytes.len() && is_ident(bytes[end]) {
+                end += 1;
+            }
+            if end < bytes.len() && bytes[end] == b'.' {
+                let call_start = end + 1;
+                let mut call_end = call_start;
+                while call_end < bytes.len() && is_ident(bytes[call_end]) {
+                    call_end += 1;
+                }
+                if call_end > call_start && bytes[call_start].is_ascii_lowercase() {
+                    out.push((masked[index..end].to_string(), index));
+                }
+            }
+            index = end.max(index + 1);
+        } else {
+            index += 1;
+        }
+    }
+    out
+}
+
+fn one_line(text: &str) -> String {
+    let joined: Vec<&str> = text.split_whitespace().collect();
+    let line = joined.join(" ");
+    if line.chars().count() > 300 {
+        let mut clipped: String = line.chars().take(300).collect();
+        clipped.push_str("...");
+        clipped
+    } else {
+        line
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(text: &str) -> Vec<&'static str> {
+        classify(text).into_iter().map(|(idiom, _)| idiom.name()).collect()
+    }
+
+    #[test]
+    fn elvis_and_safe_navigation_are_told_apart() {
+        assert_eq!(names("a ?: 'x'"), vec!["elvis"]);
+        assert_eq!(names("a?.b"), vec!["safe-navigation"]);
+        assert!(names("a ? b : c").is_empty());
+    }
+
+    #[test]
+    fn strings_do_not_trigger_idioms() {
+        assert!(names("'a ?: b => [x:1] new Foo()'").is_empty());
+    }
+
+    #[test]
+    fn ranges_closures_and_maps() {
+        assert_eq!(names("list[1..size-1]"), vec!["range"]);
+        assert!(names("[...a, ...b]").is_empty());
+        assert!(names("items.each { it }").contains(&"closure"));
+        assert!(names("items.map(x => x.id)").is_empty());
+        assert_eq!(names("[a:1, b:2]"), vec!["map-literal"]);
+        assert!(names("rows[ok ? 1 : 2]").is_empty());
+        assert!(names("rows[0]").is_empty());
+    }
+
+    #[test]
+    fn gstrings_regex_decimals_and_types() {
+        assert!(names("\"Hi ${name}\"").contains(&"gstring"));
+        assert!(names("'Hi ${name}'").is_empty());
+        assert_eq!(names("a =~ /x/"), vec!["regex-operator"]);
+        assert!(names("price * 1.5").contains(&"decimal-literal"));
+        assert!(names("x.setScale(2)").contains(&"bigdecimal"));
+        let new_type = classify("new TreeSet(a)");
+        assert_eq!(new_type, vec![(Idiom::NewType, "TreeSet".to_string())]);
+        assert!(names("StringUtilities.camelCaseToPretty(x)").contains(&"static-class"));
+        assert!(names("Math.max(1, 2)").is_empty());
+    }
+
+    #[test]
+    fn in_operator_collection_methods_and_casts() {
+        assert!(names("x in ['A', 'B']").contains(&"in-operator"));
+        assert!(names("'k' in obj").is_empty());
+        assert!(names("list.size() > 0").contains(&"collection-method"));
+        assert!(names("x as String").contains(&"as-cast"));
+        assert!(names("def x = 1").contains(&"def"));
+    }
+
+    #[test]
+    fn embedded_expressions_respect_braces_and_strings() {
+        assert_eq!(embedded_expressions("a ${b} c ${d.e('}')}"), vec!["b", "d.e('}')"]);
+        assert!(embedded_expressions("\\${literal}").is_empty());
+        assert_eq!(dollar_name("cost $price"), Some(5));
+        assert_eq!(dollar_name("cost $5 ${x}"), None);
+    }
+
+    #[test]
+    fn truthiness_candidates_are_bare_collection_names() {
+        assert!(truthiness_candidate("condition", "itemList").is_some());
+        assert!(truthiness_candidate("condition", "!itemList && x == 1").is_some());
+        assert!(truthiness_candidate("condition", "itemList.length > 0").is_none());
+        assert!(truthiness_candidate("from", "itemList").is_none());
+    }
+
+    fn workspace(path: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join(path)
+    }
+
+    fn write_screen(name: &str, body: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("moqui-screen-lint-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(dir.join("screen")).unwrap();
+        let path = dir.join("screen").join("Test.xml");
+        std::fs::write(&path, format!("<screen>{body}</screen>")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn screen_trees_have_no_parse_failures() {
+        let roots = [workspace("framework/screen"), workspace("runtime/base-component")];
+        let report = lint_screens(&roots).unwrap();
+        assert!(report.files.len() > 100, "{} files", report.files.len());
+        assert!(report.site_count() > 1000, "{} sites", report.site_count());
+        assert_eq!(report.failures(), Vec::<String>::new());
+        assert_eq!(report.excluded.len(), KNOWN_EXCLUSIONS.len());
+    }
+
+    #[test]
+    fn groovy_in_a_screen_is_a_failure() {
+        let dir = write_screen(
+            "groovy",
+            r#"<widgets><label text="${a ?: 'x'}"/><link url="." parameter-map="[a:b]"/>
+            <if condition="items"><label text="ok"/></if></widgets>
+            <actions><script>def x = 1</script></actions>"#,
+        );
+        let report = lint_screens(std::slice::from_ref(&dir)).unwrap();
+        let failures = report.failures();
+        assert!(failures.iter().any(|line| line.contains("label@text")), "{failures:?}");
+        assert!(
+            failures.iter().any(|line| line.contains("link@parameter-map")),
+            "{failures:?}"
+        );
+        assert!(failures.iter().any(|line| line.contains("script@text")), "{failures:?}");
+        let totals = report.idiom_totals();
+        assert!(totals.contains_key(&Idiom::Elvis));
+        assert!(totals.contains_key(&Idiom::MapLiteral));
+        assert!(totals.contains_key(&Idiom::Def));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn javascript_in_a_screen_passes_and_ftl_is_only_listed() {
+        let dir = write_screen(
+            "javascript",
+            r#"<widgets><label text="${a || 'x'}" condition="a &amp;&amp; b.length"/>
+            <link url="." parameter-map="{a: b}"/>
+            <render-mode><text type="html"><![CDATA[<#if x>${y}</#if>]]></text></render-mode></widgets>
+            <actions><set field="n" from="parseInt(m, 10)"/><script>const x = [1, 2].map(v => v * 2)</script></actions>"#,
+        );
+        let report = lint_screens(std::slice::from_ref(&dir)).unwrap();
+        assert_eq!(report.failures(), Vec::<String>::new());
+        assert_eq!(report.files[0].ftl.len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}

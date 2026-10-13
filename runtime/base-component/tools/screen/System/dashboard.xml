@@ -23,10 +23,10 @@ along with this software (see the LICENSE.md file). If not, see
 
     <actions>
         <set field="smap" from="ec.factory.getStatusMap(true)"/>
-        <set field="loadPercent" from="(smap.Utilization.LoadPercent as BigDecimal).setScale(1, BigDecimal.ROUND_HALF_UP)"/>
-        <set field="heapPercent" from="(smap.Utilization.HeapPercent as BigDecimal).setScale(1, BigDecimal.ROUND_HALF_UP)"/>
-        <set field="diskPercent" from="(smap.Utilization.DiskPercent as BigDecimal).setScale(1, BigDecimal.ROUND_HALF_UP)"/>
-        <set field="componentInfoList" from="orderMapList(ec.factory.getComponentInfoList(), ['^name'])"/>
+        <set field="loadPercent" from="new BigDecimal(smap.Utilization.LoadPercent).setScale(1, BigDecimal.ROUND_HALF_UP)"/>
+        <set field="heapPercent" from="new BigDecimal(smap.Utilization.HeapPercent).setScale(1, BigDecimal.ROUND_HALF_UP)"/>
+        <set field="diskPercent" from="new BigDecimal(smap.Utilization.DiskPercent).setScale(1, BigDecimal.ROUND_HALF_UP)"/>
+        <set field="componentInfoList" from="CollectionUtilities.orderMapList(ec.factory.getComponentInfoList(), ['^name'])"/>
 
         <set field="runtimeVersionMap" from="ec.factory.versionMap"/>
 
@@ -42,12 +42,12 @@ along with this software (see the LICENSE.md file). If not, see
                     if (esServerInfo) {
                         esServerInfo.clientClusterName = esClient.getClusterName()
                         esServerInfo.clusterLocation = esClient.getClusterLocation()
-                        esServerInfoList.add(esServerInfo)
+                        esServerInfoList.push(esServerInfo)
                     }
-                } catch (Throwable t) {
+                } catch (t) {
                     ec.logger.error("Error getting info for Elastic Client", t)
-                    esServerInfoList.add([clientClusterName:esClient.getClusterName(),
-                        clusterLocation:esClient.getClusterLocation(), name:t.toString(), cluster_name:'ERROR'])
+                    esServerInfoList.push({clientClusterName: esClient.getClusterName(),
+                        clusterLocation: esClient.getClusterLocation(), name: t.toString(), cluster_name: 'ERROR'})
                 }
             ]]></script>
         </iterate>
@@ -111,7 +111,7 @@ along with this software (see the LICENSE.md file). If not, see
             </row-col></container-row>
             <container-row><row-col md="4">
                 <container-row><row-col xs="5"><label text="Heap Memory" type="strong"/></row-col>
-                    <row-col xs="7"><label text="Heap: ${ec.l10n.format(heapPercent, '00.0')}%" style="${heapPercent &lt; 70 ? 'text-success' : (heapPercent &lt; 90 ? 'text-warn' : 'text-danger' )}"/></row-col></container-row>
+                    <row-col xs="7"><label text="Heap: ${ec.l10n.format(heapPercent, '00.0')}%" style="${heapPercent.compare(70) &lt; 0 ? 'text-success' : (heapPercent.compare(90) &lt; 0 ? 'text-warn' : 'text-danger' )}"/></row-col></container-row>
                 <container-row><row-col xs="1"/><row-col xs="4"><label text="Used" type="strong"/></row-col>
                     <row-col xs="7"><label text="${ec.l10n.format(smap.Heap.Used, '#,##0.00')} MiB"/></row-col></container-row>
                 <container-row><row-col xs="1"/><row-col xs="4"><label text="Committed" type="strong"/></row-col>
@@ -126,14 +126,14 @@ along with this software (see the LICENSE.md file). If not, see
                     <row-col xs="7"><label text="${ec.l10n.format(smap.NonHeap.Committed, '#,##0.00')} MiB"/></row-col></container-row>
 
                 <container-row><row-col xs="5"><label text="Disk (runtime)" type="strong"/></row-col>
-                    <row-col xs="7"><label text="Disk: ${ec.l10n.format(diskPercent, '00.0')}%" style="${diskPercent &lt; 70 ? 'text-success' : (diskPercent &lt; 90 ? 'text-warn' : 'text-danger' )}"/></row-col></container-row>
+                    <row-col xs="7"><label text="Disk: ${ec.l10n.format(diskPercent, '00.0')}%" style="${diskPercent.compare(70) &lt; 0 ? 'text-success' : (diskPercent.compare(90) &lt; 0 ? 'text-warn' : 'text-danger' )}"/></row-col></container-row>
                 <container-row><row-col xs="1"/><row-col xs="4"><label text="Usable" type="strong"/></row-col>
                     <row-col xs="7"><label text="${ec.l10n.format(smap.Disk.Usable, '#,##0.00')} MiB"/></row-col></container-row>
                 <container-row><row-col xs="1"/><row-col xs="4"><label text="Total" type="strong"/></row-col>
                     <row-col xs="7"><label text="${ec.l10n.format(smap.Disk.Total, '#,##0.00')} MiB"/></row-col></container-row>
             </row-col><row-col md="4">
                 <container-row><row-col xs="5"><label text="System" type="strong"/></row-col>
-                    <row-col xs="7"><label text="Load: ${ec.l10n.format(loadPercent, '00.0')}%" style="${loadPercent &lt; 70 ? 'text-success' : (loadPercent &lt; 90 ? 'text-warn' : 'text-danger' )}"/></row-col></container-row>
+                    <row-col xs="7"><label text="Load: ${ec.l10n.format(loadPercent, '00.0')}%" style="${loadPercent.compare(70) &lt; 0 ? 'text-success' : (loadPercent.compare(90) &lt; 0 ? 'text-warn' : 'text-danger' )}"/></row-col></container-row>
                 <container-row><row-col xs="1"/><row-col xs="4"><label text="Load" type="strong"/></row-col>
                     <row-col xs="7"><label text="${ec.l10n.format(smap.System.Load, '#,##0.00')} (avg last minute)"/></row-col></container-row>
                 <container-row><row-col xs="1"/><row-col xs="4"><label text="CPU" type="strong"/></row-col>

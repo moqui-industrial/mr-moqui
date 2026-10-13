@@ -22,9 +22,7 @@ along with this software (see the LICENSE.md file). If not, see
         <actions>
             <entity-find-one entity-name="moqui.basic.print.PrintJob" value-field="printJob"/>
             <script>
-                import org.apache.commons.io.IOUtils
-
-                byte[] bytes = printJob.getBytes("document")
+                const bytes = printJob.getBytes("document")
                 if (bytes.length > 0) {
                     fileExtension = null
                     if (printJob.contentType) {
@@ -33,14 +31,14 @@ along with this software (see the LICENSE.md file). If not, see
                         if (printJob.contentType == "application/pdf") fileExtension = "pdf"
                     }
                     if (fileExtension) {
-                        fileName = "${printJob.jobName ?: 'document'}.${fileExtension}".toString()
-                        contentDisposition = "attachment; filename=\"${fileName}\"; filename*=utf-8''${encodeAsciiFilename(fileName)}"
+                        fileName = `${printJob.jobName || 'document'}.${fileExtension}`
+                        contentDisposition = `attachment; filename="${fileName}"; filename*=utf-8''${StringUtilities.encodeAsciiFilename(fileName)}`
                     } else {
                         contentDisposition = "attachment"
                     }
 
                     ec.web.response.setHeader("Content-Disposition", contentDisposition)
-                    IOUtils.write(bytes, ec.web.response.outputStream)
+                    ec.web.response.outputStream.write(bytes)
                 } else {
                     ec.message.addError(ec.resource.expand('No document found in PrintJob [${printJobId}]',''))
                 }
@@ -81,12 +79,12 @@ along with this software (see the LICENSE.md file). If not, see
             <field name="networkPrinterId">
                 <header-field title="Printer">
                     <drop-down allow-empty="true">
-                        <entity-options key="${networkPrinterId}" text="${description ?: printerName} (${serverHost})">
+                        <entity-options key="${networkPrinterId}" text="${description || printerName} (${serverHost})">
                             <entity-find entity-name="moqui.basic.print.NetworkPrinter">
                                 <order-by field-name="description,printerName"/></entity-find></entity-options>
                     </drop-down>
                 </header-field>
-                <default-field><display-entity entity-name="moqui.basic.print.NetworkPrinter" text="${serverHost} - ${description ?: printerName}"/></default-field>
+                <default-field><display-entity entity-name="moqui.basic.print.NetworkPrinter" text="${serverHost} - ${description || printerName}"/></default-field>
             </field>
 
             <field name="username">

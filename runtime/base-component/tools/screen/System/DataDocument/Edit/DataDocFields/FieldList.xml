@@ -15,7 +15,7 @@ along with this software (see the LICENSE.md file). If not, see
 <screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
         default-menu-include="false" standalone="true">
 
-    <parameter name="dataDocumentId" required="true" from="dataDocumentId ?: dataDocumentId_0"/>
+    <parameter name="dataDocumentId" required="true" from="dataDocumentId || dataDocumentId_0"/>
 
     <transition name="createDataDocumentCondition"><service-call name="create#moqui.entity.document.DataDocumentCondition"/>
         <default-response url=".."/></transition>
@@ -37,14 +37,14 @@ along with this software (see the LICENSE.md file). If not, see
         <set field="opOptions" from="['equals', 'not-equals', 'less', 'greater', 'less-equals', 'greater-equals', 'in', 'not-in',
             'between', 'not-between', 'like', 'not-like', 'is-null', 'is-not-null']"/>
         <set field="funcOptions" from="['min', 'max', 'sum', 'avg', 'count', 'count-distinct', 'upper', 'lower']"/>
-        <set field="knownFields" from="new HashSet()"/>
+        <set field="knownFields" from="[]"/>
 
         <!-- here instead of under FieldList form-list because used for validation of condition fields -->
         <entity-find entity-name="moqui.entity.document.DataDocumentField" list="ddFieldList">
             <econdition field-name="dataDocumentId"/><order-by field-name="sequenceNum,fieldPath"/></entity-find>
-        <set field="fieldAliasSet" from="new LinkedHashSet()"/>
+        <set field="fieldAliasSet" from="[]"/>
         <iterate list="ddFieldList" entry="ddf">
-            <script>fieldAliasSet.add(ddf.fieldNameAlias ?: (ddf.fieldPath.contains(':') ? ddf.fieldPath.substring(ddf.fieldPath.lastIndexOf(':')+1) : ddf.fieldPath))</script>
+            <script>const alias = ddf.fieldNameAlias || (ddf.fieldPath.includes(':') ? ddf.fieldPath.substring(ddf.fieldPath.lastIndexOf(':')+1) : ddf.fieldPath); if (!fieldAliasSet.includes(alias)) fieldAliasSet.push(alias)</script>
         </iterate>
     </actions>
     <widgets>
@@ -53,12 +53,12 @@ along with this software (see the LICENSE.md file). If not, see
                 <form-single name="AddCondition" transition="createDataDocumentCondition">
                     <field name="dataDocumentId"><default-field><hidden/></default-field></field>
                     <field name="fieldNameAlias"><default-field title="Field"><drop-down>
-                        <list-options list="fieldAliasSet" key="${entry}" text="${org.moqui.util.StringUtilities.camelCaseToPretty(entry)}"/>
+                        <list-options list="fieldAliasSet" key="${entry}" text="${StringUtilities.camelCaseToPretty(entry)}"/>
                     </drop-down></default-field></field>
                     <field name="operator"><default-field title="Operator"><drop-down><list-options list="opOptions"/></drop-down></default-field></field>
                     <field name="fieldValue"><default-field title="Value"><text-line size="40"/></default-field></field>
                     <field name="toFieldNameAlias"><default-field title="To Field"><drop-down allow-empty="true">
-                        <list-options list="fieldAliasSet" key="${entry}" text="${org.moqui.util.StringUtilities.camelCaseToPretty(entry)}"/>
+                        <list-options list="fieldAliasSet" key="${entry}" text="${StringUtilities.camelCaseToPretty(entry)}"/>
                     </drop-down></default-field></field>
                     <field name="postQuery"><default-field title="PQ"><drop-down><option key="N"/><option key="Y"/></drop-down></default-field></field>
                     <field name="submitButton"><default-field title="Add"><submit/></default-field></field>
@@ -71,12 +71,12 @@ along with this software (see the LICENSE.md file). If not, see
 
                 <field name="dataDocumentId"><default-field><hidden/></default-field></field>
                 <field name="conditionSeqId"><default-field><hidden/></default-field></field>
-                <field name="fieldNameAlias"><default-field title="Field" container-style="${fieldAliasSet.contains(fieldNameAlias) ? 'text-success' : 'text-danger'}">
-                    <display text="${org.moqui.util.StringUtilities.camelCaseToPretty(fieldNameAlias)}"/></default-field></field>
+                <field name="fieldNameAlias"><default-field title="Field" container-style="${fieldAliasSet.includes(fieldNameAlias) ? 'text-success' : 'text-danger'}">
+                    <display text="${StringUtilities.camelCaseToPretty(fieldNameAlias)}"/></default-field></field>
                 <field name="operator"><default-field title="Operator"><drop-down><list-options list="opOptions"/></drop-down></default-field></field>
                 <field name="fieldValue"><default-field title="Value"><text-line size="20"/></default-field></field>
-                <field name="toFieldNameAlias"><default-field title="To Field" container-style="${fieldAliasSet.contains(toFieldNameAlias) ? 'text-success' : 'text-danger'}">
-                    <display text="${org.moqui.util.StringUtilities.camelCaseToPretty(toFieldNameAlias)}"/></default-field></field>
+                <field name="toFieldNameAlias"><default-field title="To Field" container-style="${fieldAliasSet.includes(toFieldNameAlias) ? 'text-success' : 'text-danger'}">
+                    <display text="${StringUtilities.camelCaseToPretty(toFieldNameAlias)}"/></default-field></field>
                 <field name="postQuery"><default-field title="PQ"><drop-down><option key="N"/><option key="Y"/></drop-down></default-field></field>
 
                 <field name="submitButton"><default-field title="Update"><submit/></default-field></field>
@@ -105,19 +105,19 @@ along with this software (see the LICENSE.md file). If not, see
         </box-body><box-body-nopad>
             <form-list name="FieldList" list="ddFieldList" transition="updateDataDocumentField" multi="true">
                 <row-actions>
-                    <set field="curField" from="fieldNameAlias ?: (fieldPath.contains(':') ? fieldPath.substring(fieldPath.lastIndexOf(':')+1) : fieldPath)"/>
-                    <set field="isDup" from="knownFields.contains(curField)"/>
-                    <script>knownFields.add(curField)</script>
+                    <set field="curField" from="fieldNameAlias || (fieldPath.includes(':') ? fieldPath.substring(fieldPath.lastIndexOf(':')+1) : fieldPath)"/>
+                    <set field="isDup" from="knownFields.includes(curField)"/>
+                    <script>knownFields.push(curField)</script>
                 </row-actions>
 
                 <field name="dataDocumentId"><default-field><hidden/></default-field></field>
                 <field name="fieldSeqId"><default-field><hidden/></default-field></field>
                 <field name="sequenceNum"><default-field title="Seq"><text-line size="2"/></default-field></field>
                 <field name="fieldPath"><default-field><display text=" "/>
-                    <link url="." text="${fieldPath.split(':').collect({ it.contains('.') ? it : org.moqui.util.StringUtilities.camelCaseToPretty(it) }).join(' : ')}"
-                            link-type="anchor" parameter-map="[fieldPath:fieldPath]" style="${isDup ? 'text-danger' : ''}"/>
+                    <link url="." text="${fieldPath.split(':').map(part => part.includes('.') ? part : StringUtilities.camelCaseToPretty(part)).join(' : ')}"
+                            link-type="anchor" parameter-map="{fieldPath:fieldPath}" style="${isDup ? 'text-danger' : ''}"/>
                 </default-field></field>
-                <field name="fieldNameAlias" from="org.moqui.util.StringUtilities.camelCaseToPretty(fieldNameAlias)"><default-field title="Alias">
+                <field name="fieldNameAlias" from="StringUtilities.camelCaseToPretty(fieldNameAlias)"><default-field title="Alias">
                     <text-line size="20"/></default-field></field>
                 <field name="sortable"><default-field title="Sortable">
                     <drop-down allow-empty="true"><option key="N"/><option key="Y"/></drop-down></default-field></field>

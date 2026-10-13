@@ -37,7 +37,7 @@ along with this software (see the LICENSE.md file). If not, see
             <link url="serviceReference" text="Service List"/>
             <link url="serviceRun" text="Run Service"/>
         </box-toolbar><box-body>
-            <label type="strong" text="${serviceNode.first('description')?.text ?: ''}" display-if-empty="false"/>
+            <label type="strong" text="${serviceNode.first('description')?.text || ''}" display-if-empty="false"/>
             <!-- <label type="p" text="${serviceNode.attributes}"/> -->
             <label type="p" text="Authenticate: ${sd.authenticate}"/>
             <label type="p" text="Service Type: ${sd.serviceType}${sd.location ? ', Location: ' + sd.location : ''}${sd.method ? ', Method: ' + sd.method : ''}"/>
@@ -48,12 +48,12 @@ along with this software (see the LICENSE.md file). If not, see
             <form-list name="InParameters" list="inParameterNodes" list-entry="parameterNode" skip-form="true">
                 <row-actions><script>ec.context.putAll(parameterNode.attributes)</script></row-actions>
                 <field name="name" from="context.name"><default-field><display/></default-field></field>
-                <field name="type"><default-field><display text="${type?:'String'}"/></default-field></field>
-                <field name="required"><default-field><display text="${required?:'false'}"/></default-field></field>
-                <field name="default"><default-field><display text="${parameterNode.attribute('default') ?: ''} - ${parameterNode.attribute('default-value') ?: ''}"/></default-field></field>
+                <field name="type"><default-field><display text="${type || 'String'}"/></default-field></field>
+                <field name="required"><default-field><display text="${required || 'false'}"/></default-field></field>
+                <field name="default"><default-field><display text="${parameterNode.attribute('default') || ''} - ${parameterNode.attribute('default-value') || ''}"/></default-field></field>
                 <field name="format"><default-field><display/></default-field></field>
-                <field name="description"><default-field><display text="${parameterNode.first('description')?.text ?: ''}"/></default-field></field>
-                <field name="entityField"><default-field><display text="${parameterNode.attribute('entity-name') ?: ''}${parameterNode.attribute('field-name') ? '.' + parameterNode.attribute('field-name') : ''}"/></default-field></field>
+                <field name="description"><default-field><display text="${parameterNode.first('description')?.text || ''}"/></default-field></field>
+                <field name="entityField"><default-field><display text="${parameterNode.attribute('entity-name') || ''}${parameterNode.attribute('field-name') ? '.' + parameterNode.attribute('field-name') : ''}"/></default-field></field>
             </form-list>
         </box-body-nopad></container-box>
 
@@ -61,12 +61,12 @@ along with this software (see the LICENSE.md file). If not, see
             <form-list name="OutParameters" list="outParameterNodes" list-entry="parameterNode" skip-form="true">
                 <row-actions><script>ec.context.putAll(parameterNode.attributes)</script></row-actions>
                 <field name="name" from="context.name"><default-field><display/></default-field></field>
-                <field name="type"><default-field><display text="${type?:'String'}"/></default-field></field>
+                <field name="type"><default-field><display text="${type || 'String'}"/></default-field></field>
                 <field name="required"><default-field><display/></default-field></field>
-                <field name="default"><default-field><display text="${parameterNode.attribute('default') ?: ''} - ${parameterNode.attribute('default-value') ?: ''}"/></default-field></field>
+                <field name="default"><default-field><display text="${parameterNode.attribute('default') || ''} - ${parameterNode.attribute('default-value') || ''}"/></default-field></field>
                 <field name="format"><default-field><display/></default-field></field>
-                <field name="description"><default-field><display text="${parameterNode.first('description')?.text ?: ''}"/></default-field></field>
-                <field name="entityField"><default-field><display text="${parameterNode.attribute('entity-name') ?: ''}${parameterNode.attribute('field-name') ? '.' + parameterNode.attribute('field-name') : ''}"/></default-field></field>
+                <field name="description"><default-field><display text="${parameterNode.first('description')?.text || ''}"/></default-field></field>
+                <field name="entityField"><default-field><display text="${parameterNode.attribute('entity-name') || ''}${parameterNode.attribute('field-name') ? '.' + parameterNode.attribute('field-name') : ''}"/></default-field></field>
             </form-list>
         </box-body-nopad></container-box>
 

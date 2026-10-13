@@ -385,7 +385,14 @@ impl MNode {
             out.push(' ');
             out.push_str(&key);
             out.push_str("=\"");
-            out.push_str(&value);
+            for ch in value.chars() {
+                match ch {
+                    '&' => out.push_str("&amp;"),
+                    '<' => out.push_str("&lt;"),
+                    '"' => out.push_str("&quot;"),
+                    _ => out.push(ch),
+                }
+            }
             out.push('"');
         }
         let text = self.text();

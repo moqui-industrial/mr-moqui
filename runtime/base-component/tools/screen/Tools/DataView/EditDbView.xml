@@ -15,7 +15,7 @@ along with this software (see the LICENSE.md file). If not, see
 <screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
         default-menu-title="Edit Data View Entity" default-menu-index="1">
 
-    <parameter name="dbViewEntityName" required="true" from="dbViewEntityName ?: dbViewEntityName_0"/>
+    <parameter name="dbViewEntityName" required="true" from="dbViewEntityName || dbViewEntityName_0"/>
     <parameter name="dbViewEntityName_0"/>
 
     <transition name="view"><default-response url="../ViewDbView"/></transition>
@@ -45,30 +45,28 @@ along with this software (see the LICENSE.md file). If not, see
 
             <!-- add moqui.entity.view.DbViewEntityAlias record, and moqui.entity.view.DbViewEntityMember/ViewLink if needed -->
             <script>
-                import org.moqui.impl.entity.EntityDefinition
-                import org.moqui.impl.entity.EntityJavaUtil
                 // make sure reverse-one many relationships exist
                 ec.entity.createAllAutoReverseManyRelationships()
 
-                EntityDefinition masterEd = ec.entity.getEntityDefinition(masterEntityName)
+                const masterEd = ec.entity.getEntityDefinition(masterEntityName)
 
-                Map members = [:]
-                int memberIndex = 1
-                Map aliasIndexes = [:]
-                int parameterIndex = 0
+                const members = {}
+                let memberIndex = 1
+                const aliasIndexes = {}
+                let parameterIndex = 0
                 while (ec.web.parameters.get("dbViewEntityName_" + parameterIndex)) {
-                    String field = ec.web.parameters.get("field_" + parameterIndex)
-                    String functionName = ec.web.parameters.get("functionName_" + parameterIndex)
+                    const field = ec.web.parameters.get("field_" + parameterIndex)
+                    const functionName = ec.web.parameters.get("functionName_" + parameterIndex)
                     // ec.logger.log(ec.logger.WARN_INT, "Field field_${parameterIndex}, value: ${field}", null)
                     parameterIndex++
 
                     if (!field) continue
 
-                    String entityName
-                    String fieldName
+                    let entityName
+                    let fieldName
 
-                    String relationshipName = field.substring(0, field.lastIndexOf('.'))
-                    EntityJavaUtil.RelationshipInfo relInfo = masterEd.getRelationshipInfo(relationshipName)
+                    const relationshipName = field.substring(0, field.lastIndexOf('.'))
+                    const relInfo = masterEd.getRelationshipInfo(relationshipName)
                     if (relInfo != null) {
                         entityName = relInfo.relatedEntityName
                         fieldName = field.substring(field.lastIndexOf('.') + 1)
@@ -81,37 +79,35 @@ along with this software (see the LICENSE.md file). If not, see
                     }
 
                     // ec.logger.log(ec.logger.WARN_INT, "relationshipName: ${relationshipName}, entityName: ${entityName}, fieldName: ${fieldName}", null)
-                    def memberValue = (relationshipName == masterDbViewEntityMember.entityName) ?
-                            masterDbViewEntityMember : members.get(entityName)
+                    let memberValue = (relationshipName == masterDbViewEntityMember.entityName) ?
+                            masterDbViewEntityMember : members[entityName]
                     if (!memberValue) {
                         memberValue = ec.entity.makeValue("moqui.entity.view.DbViewEntityMember")
                         memberValue.dbViewEntityName = dbViewEntityName
                         memberValue.entityName = entityName
-                        memberValue.entityAlias = "MEMBER${memberIndex}"
+                        memberValue.entityAlias = `MEMBER${memberIndex}`
                         memberValue.joinFromAlias = "MASTER"
                         memberValue.joinOptional = "Y"
                         memberIndex++
                         memberValue.create()
-                        members.put(entityName, memberValue)
+                        members[entityName] = memberValue
 
                         // added a member, add KeyMap(s)
-                        Map relExpKeyMap = relInfo.keyMap
-                        for (Map.Entry keyMapEntry in relExpKeyMap) {
-                            def keyMapValue = ec.entity.makeValue("moqui.entity.view.DbViewEntityKeyMap")
+                        for (const [keyName, relatedKeyName] of Object.entries(relInfo.keyMap)) {
+                            const keyMapValue = ec.entity.makeValue("moqui.entity.view.DbViewEntityKeyMap")
                             keyMapValue.dbViewEntityName = dbViewEntityName
                             keyMapValue.joinFromAlias = memberValue.joinFromAlias
                             keyMapValue.entityAlias = memberValue.entityAlias
-                            keyMapValue.fieldName = keyMapEntry.getKey()
-                            keyMapValue.relatedFieldName = keyMapEntry.getValue()
+                            keyMapValue.fieldName = keyName
+                            keyMapValue.relatedFieldName = relatedKeyName
                             keyMapValue.create()
                         }
                     }
 
-                    int fieldAliasIndex = aliasIndexes.get(fieldName) ?: 0
-                    fieldAliasIndex++
-                    aliasIndexes.put(fieldName, fieldAliasIndex)
+                    const fieldAliasIndex = (aliasIndexes[fieldName] || 0) + 1
+                    aliasIndexes[fieldName] = fieldAliasIndex
 
-                    def aliasValue = ec.entity.makeValue("moqui.entity.view.DbViewEntityAlias")
+                    const aliasValue = ec.entity.makeValue("moqui.entity.view.DbViewEntityAlias")
                     aliasValue.dbViewEntityName = dbViewEntityName
                     aliasValue.fieldAlias = fieldName + (fieldAliasIndex > 1 ? fieldAliasIndex : '')
                     aliasValue.entityAlias = memberValue.entityAlias
@@ -151,7 +147,7 @@ along with this software (see the LICENSE.md file). If not, see
                 </entity-find-one>
                 <set field="masterEntityList" from="ec.entity.getAllEntitiesInfo('entityName', null, false, true)"/>
                 <set field="masterFieldList"
-                    from="ec.entity.getAllEntityRelatedFields(fieldValues?.entityName, orderByField?:'+entityName', dbViewEntityName)"/>
+                    from="ec.entity.getAllEntityRelatedFields(fieldValues?.entityName, orderByField || '+entityName', dbViewEntityName)"/>
             </actions>
             <widgets>
                 <form-single name="SetMasterEntity" transition="setMasterEntity">

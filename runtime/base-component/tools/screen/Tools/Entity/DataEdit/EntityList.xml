@@ -26,8 +26,8 @@ along with this software (see the LICENSE.md file). If not, see
 
     <transition name="getLiquibaseInitXml" read-only="true">
         <actions><script><![CDATA[
-            def lbRootNode = ec.entity.getEntityDbMeta().liquibaseInitChangelog(filterRegexp)
-            ec.web.sendTextResponse(lbRootNode.toString(), "text/xml", "LiquibaseInit-${new java.sql.Date(System.currentTimeMillis()).toString()}.xml")
+            const lbRootNode = ec.entity.getEntityDbMeta().liquibaseInitChangelog(filterRegexp)
+            ec.web.sendTextResponse(lbRootNode.toString(), "text/xml", `LiquibaseInit-${new Date().toISOString().substring(0, 10)}.xml`)
         ]]></script></actions>
         <default-response type="none"/>
     </transition>
@@ -55,11 +55,11 @@ along with this software (see the LICENSE.md file). If not, see
     </transition>
 
     <actions>
-        <set field="pageSize" from="pageSize ?: 60"/>
+        <set field="pageSize" from="pageSize || 60"/>
         <set field="masterEntitiesOnly" from="viewOption == 'master'"/>
         <set field="excludeViewEntities" from="viewOption == 'exclude-views'"/>
-        <set field="entityList" from="ec.entity.getAllEntitiesInfo(orderByField?:'fullEntityName', filterRegexp, masterEntitiesOnly, excludeViewEntities)"/>
-        <script>paginateList("entityList", null, context)</script>
+        <set field="entityList" from="ec.entity.getAllEntitiesInfo(orderByField || 'fullEntityName', filterRegexp, masterEntitiesOnly, excludeViewEntities)"/>
+        <script>CollectionUtilities.paginateList("entityList", null, context)</script>
     </actions>
     <widgets>
         <link url="checkTables" text="Check/Update All Tables" confirmation="Check and update all tables? NOTE: this will only create missing tables and columns if runtime-add-missing is true"/>
@@ -100,13 +100,13 @@ along with this software (see the LICENSE.md file). If not, see
                 <default-field><display also-hidden="false"/></default-field>
             </field>
             <field name="find"><default-field>
-                <link url="find" text="Find" link-type="anchor" parameter-map="[selectedEntity:fullEntityName]"/>
+                <link url="find" text="Find" link-type="anchor" parameter-map="{selectedEntity:fullEntityName}"/>
             </default-field></field>
             <field name="autoScreen"><default-field>
-                <link url="autoScreen" text="Auto Screen" link-type="anchor" parameter-map="[aen:fullEntityName]"/>
+                <link url="autoScreen" text="Auto Screen" link-type="anchor" parameter-map="{aen:fullEntityName}"/>
             </default-field></field>
             <field name="detail"><default-field>
-                <link url="detail" text="Detail" link-type="anchor" parameter-map="[selectedEntity:fullEntityName]"/>
+                <link url="detail" text="Detail" link-type="anchor" parameter-map="{selectedEntity:fullEntityName}"/>
             </default-field></field>
         </form-list>
     </widgets>

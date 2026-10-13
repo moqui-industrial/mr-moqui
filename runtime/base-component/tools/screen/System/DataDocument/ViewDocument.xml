@@ -20,14 +20,10 @@ along with this software (see the LICENSE.md file). If not, see
     <parameter name="_id" required="true"/>
     
     <actions><script>
-        import groovy.json.JsonOutput
-        import org.moqui.context.ExecutionContext
-
-        ExecutionContext ec = context.ec
-        def elasticClient = ec.factory.elastic.getDefault()
-        sourceMap = elasticClient.get((String) _index, (String) _id)?._source
-        documentString = JsonOutput.prettyPrint(elasticClient.objectToJson(sourceMap))
-        flattenedDocumentMap = flattenNestedMap(sourceMap)
+        const elasticClient = ec.factory.elastic.getDefault()
+        sourceMap = elasticClient.get(String(_index), String(_id))?._source
+        documentString = JSON.stringify(sourceMap, null, 2)
+        flattenedDocumentMap = CollectionUtilities.flattenNestedMap(sourceMap)
     </script></actions>
     <widgets>
         <label text="Flattened Map" type="h4"/>
@@ -35,8 +31,8 @@ along with this software (see the LICENSE.md file). If not, see
         <label text="Document JSON" type="h4"/>
         <label text="${documentString}" encode="true" type="pre" style="pre-plain"/>
         <label text="Document Map" type="h4"/>
-        <section-iterate name="SourceMapSection" list="sourceMap.keySet()" entry="smKey"><widgets>
-            <label text="${smKey}: ${sourceMap.get(smKey)} (${sourceMap.get(smKey)?.class?.name})" type="div"/>
+        <section-iterate name="SourceMapSection" list="Object.keys(sourceMap)" entry="smKey"><widgets>
+            <label text="${smKey}: ${sourceMap[smKey]} (${typeof sourceMap[smKey]})" type="div"/>
         </widgets></section-iterate>
     </widgets>
 </screen>

@@ -51,7 +51,7 @@ along with this software (see the LICENSE.md file). If not, see
             <if condition="ec.web.sessionAttributes.moquiAuthcFactorRequired">
                 <if condition="code"><then>
                     <service-call name="org.moqui.impl.UserServices.validate#ExternalUserAuthcCode"
-                            in-map="[code:code]" out-map="validateOut"/>
+                            in-map="{code:code}" out-map="validateOut"/>
                     <if condition="validateOut.verified"><then>
                         <script>ec.user.internalLoginUser(validateOut.username)</script>
                         <return/>
@@ -85,12 +85,12 @@ along with this software (see the LICENSE.md file). If not, see
         <default-response url="."/>
     </transition>
     <transition name="resetPassword">
-        <parameter name="username" from="ec.web?.sessionAttributes?.moquiPreAuthcUsername ?: username"/>
-        <service-call name="org.moqui.impl.UserServices.reset#Password" in-map="[username:username]"/>
+        <parameter name="username" from="ec.web?.sessionAttributes?.moquiPreAuthcUsername || username"/>
+        <service-call name="org.moqui.impl.UserServices.reset#Password" in-map="{username:username}"/>
         <default-response url="."/>
     </transition>
     <transition name="changePassword">
-        <parameter name="username" from="ec.web?.sessionAttributes?.moquiPreAuthcUsername ?: username"/>
+        <parameter name="username" from="ec.web?.sessionAttributes?.moquiPreAuthcUsername || username"/>
         <service-call name="org.moqui.impl.UserServices.update#Password"/>
         <actions>
             <!-- password change success, login the user -->
@@ -98,7 +98,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <set field="loginSuccess" from="ec.user.internalLoginUser(username)"/></if>
         </actions>
         <conditional-response type="screen-last"><condition><expression>updateSuccessful</expression></condition></conditional-response>
-        <default-response url="." parameter-map="[initialTab:'#change']"/>
+        <default-response url="." parameter-map="{initialTab:'#change'}"/>
     </transition>
     <transition name="createInitialAdminAccount">
         <service-call name="org.moqui.impl.UserServices.create#InitialAdminAccount"/>
@@ -106,7 +106,7 @@ along with this software (see the LICENSE.md file). If not, see
         <error-response url="."/>
     </transition>
     <transition name="sendOtp">
-        <service-call name="org.moqui.impl.UserServices.send#ExternalAuthcCode" in-map="[factorId:factorId]"/>
+        <service-call name="org.moqui.impl.UserServices.send#ExternalAuthcCode" in-map="{factorId:factorId}"/>
         <default-response url="."/>
     </transition>
 
@@ -125,7 +125,7 @@ along with this software (see the LICENSE.md file). If not, see
         <!-- handle returnTo parameter, and general handling for when the Login screen is reached directly
             (as opposed to redirect following attempted request to screen that requires authz) -->
         <if condition="returnTo"><then>
-            <if condition="org.moqui.util.WebUtilities.isSameOriginRedirect(returnTo, ec.web.request)"><then>
+            <if condition="WebUtilities.isSameOriginRedirect(returnTo, ec.web.request)"><then>
                 <log message="setting last path to ${returnTo}"/>
                 <script>ec.web.session.setAttribute('moqui.screen.last.path', returnTo)</script>
             </then><else>
@@ -134,14 +134,14 @@ along with this software (see the LICENSE.md file). If not, see
         </then><else>
             <if condition="!ec.web.session.getAttribute('moqui.screen.last.path')">
                 <set field="referrer" from="ec.web.request.getHeader('Referer')"/>
-                <if condition="referrer &amp;&amp; org.moqui.util.WebUtilities.isSameOriginRedirect(referrer, ec.web.request)">
+                <if condition="referrer &amp;&amp; WebUtilities.isSameOriginRedirect(referrer, ec.web.request)">
                     <script>ec.web.session.setAttribute('moqui.screen.last.path', referrer)</script>
                 </if>
             </if>
         </else></if>
 
-        <set field="passwordChangeRequired" from="ec.web.sessionAttributes.moquiPasswordChangeRequired ?: 'false'" type="Boolean"/>
-        <set field="expiredCredentials" from="ec.web.sessionAttributes.moquiExpiredCredentials ?: 'false'" type="Boolean"/>
+        <set field="passwordChangeRequired" from="ec.web.sessionAttributes.moquiPasswordChangeRequired || 'false'" type="Boolean"/>
+        <set field="expiredCredentials" from="ec.web.sessionAttributes.moquiExpiredCredentials || 'false'" type="Boolean"/>
         <if condition="passwordChangeRequired || expiredCredentials">
             <set field="initialTab" value="#change"/></if>
         <if condition="initialTab &amp;&amp; !initialTab.startsWith('#')"><set field="initialTab" from="'#' + initialTab"/></if>
@@ -151,7 +151,7 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="username" from="ec.web.sessionAttributes.moquiPreAuthcUsername"/>
             <service-call name="org.moqui.impl.UserServices.get#ExternalUserAuthcFactorInfo" out-map="context"/>
         </then><else>
-            <set field="username" from="ec.web.errorParameters?.username ?: ''"/>
+            <set field="username" from="ec.web.errorParameters?.username || ''"/>
         </else></if>
 
         <set field="passwordNode" from="ec.ecfi.confXmlRoot.first('user-facade').first('password')"/>

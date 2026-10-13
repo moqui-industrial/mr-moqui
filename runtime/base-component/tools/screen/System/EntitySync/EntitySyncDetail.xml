@@ -20,7 +20,7 @@ along with this software (see the LICENSE.md file). If not, see
     <transition name="updateEntitySync"><service-call name="update#moqui.entity.sync.EntitySync"/>
         <default-response url="."/></transition>
     <transition name="resetNotStarted">
-        <service-call name="update#moqui.entity.sync.EntitySync" in-map="[entitySyncId:entitySyncId, statusId:'EsNotStarted']"/>
+        <service-call name="update#moqui.entity.sync.EntitySync" in-map="{entitySyncId:entitySyncId, statusId:'EsNotStarted'}"/>
         <default-response url="."/></transition>
 
     <transition name="artifactGroupDetail"><default-response url="../../Security/ArtifactGroup/ArtifactGroupDetail"/></transition>
@@ -108,7 +108,7 @@ along with this software (see the LICENSE.md file). If not, see
                         <form-list name="EntitySyncArtifactList" list="artifactList" transition="updateEntitySyncArtifact">
                             <field name="entitySyncId"><default-field><hidden/></default-field></field>
                             <field name="artifactGroupId"><default-field title="Artifact Group">
-                                <display-entity entity-name="moqui.security.ArtifactGroup" text="${description ?: ''} - "/>
+                                <display-entity entity-name="moqui.security.ArtifactGroup" text="${description || ''} - "/>
                                 <link url="artifactGroupDetail" text="${artifactGroupId}" link-type="anchor"/>
                             </default-field></field>
                             <field name="applEnumId"><default-field title="Appl Type">
@@ -125,7 +125,7 @@ along with this software (see the LICENSE.md file). If not, see
                             <field name="submitButton"><default-field title="Update"><submit/></default-field></field>
                             <field name="deleteLink"><default-field title="">
                                 <link url="deleteEntitySyncArtifact" text="X" confirmation="Really Delete?"
-                                        parameter-map="[entitySyncId:entitySyncId, artifactGroupId:artifactGroupId]"/>
+                                        parameter-map="{entitySyncId:entitySyncId, artifactGroupId:artifactGroupId}"/>
                             </default-field></field>
                         </form-list>
                     </box-body>

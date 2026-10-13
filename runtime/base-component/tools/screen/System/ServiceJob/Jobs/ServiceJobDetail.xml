@@ -54,7 +54,7 @@ along with this software (see the LICENSE.md file). If not, see
         <container-row><row-col md="6">
             <container-box><box-header title="Job Run Info"/><box-toolbar>
                 <link url="runJob" text="Run Job" confirmation="Run job now with current parameters?"/>
-                <link url="jobRunList" text="Job Runs" parameter-map="[jobName:jobName]"/>
+                <link url="jobRunList" text="Job Runs" parameter-map="{jobName:jobName}"/>
             </box-toolbar><box-body>
                 <container-row>
                     <row-col md="2"><label text="Last Run" type="strong"/></row-col>
@@ -64,7 +64,7 @@ along with this software (see the LICENSE.md file). If not, see
                     <container-row>
                         <row-col md="2"><label text="Active Job" type="strong"/></row-col>
                         <row-col md="4"><link url="jobRunDetail" text="${runLock.jobRunId}" link-type="anchor"
-                                parameter-map="[jobRunId:runLock.jobRunId]"/></row-col>
+                                parameter-map="{jobRunId:runLock.jobRunId}"/></row-col>
                         <!-- TODO: add kill/reset button? -->
                     </container-row>
                 </widgets><fail-widgets>
@@ -109,7 +109,7 @@ along with this software (see the LICENSE.md file). If not, see
                     <field name="parameterValue"><default-field title="Value"><text-line size="40"/></default-field></field>
                     <field name="submitButton"><default-field title="Update"><submit/></default-field></field>
                     <field name="deleteLink"><default-field title=""><link url="deleteJobParameter" text="X" confirmation="Delete parameter?"
-                            parameter-map="[jobName:jobName, parameterName:parameterName]"/></default-field></field>
+                            parameter-map="{jobName:jobName, parameterName:parameterName}"/></default-field></field>
                 </form-list>
             </box-body></container-box>
 
@@ -138,7 +138,7 @@ along with this software (see the LICENSE.md file). If not, see
                         <drop-down><option key="Y"/><option key="N"/></drop-down></default-field></field>
                     <field name="submitButton"><default-field title="Update"><submit/></default-field></field>
                     <field name="deleteLink"><default-field title=""><link url="deleteJobUser" text="X" confirmation="Remove user?"
-                            parameter-map="[jobName:jobName, userId:userId]"/></default-field></field>
+                            parameter-map="{jobName:jobName, userId:userId}"/></default-field></field>
                 </form-list>
             </box-body></container-box>
         </row-col></container-row>

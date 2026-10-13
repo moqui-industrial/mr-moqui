@@ -106,7 +106,7 @@ along with this software (see the LICENSE.md file). If not, see
                     <field name="submitButton"><default-field title="Update"><submit/></default-field></field>
                     <field name="deleteLink"><default-field title="">
                         <link url="deleteArtifactGroupMember" text=" " icon="fa fa-trash" confirmation="Really Delete?"
-                                parameter-map="[artifactGroupId:artifactGroupId, artifactName:artifactName, artifactTypeEnumId:artifactTypeEnumId]"/>
+                                parameter-map="{artifactGroupId:artifactGroupId, artifactName:artifactName, artifactTypeEnumId:artifactTypeEnumId}"/>
                     </default-field></field>
                 </form-list>
             </box-body>
@@ -158,7 +158,7 @@ along with this software (see the LICENSE.md file). If not, see
                     <field name="artifactAuthzId"><default-field title="ID"><display/></default-field></field>
                     <field name="artifactGroupId"><default-field><hidden/></default-field></field>
                     <field name="userGroupId"><default-field title="User Group">
-                        <display-entity entity-name="moqui.security.UserGroup" text="${description ?: ''} - "/>
+                        <display-entity entity-name="moqui.security.UserGroup" text="${description || ''} - "/>
                         <link url="userGroupDetail" text="${userGroupId}" link-type="anchor"/>
                     </default-field></field>
                     <field name="authzTypeEnumId"><default-field title="Authz Type">
@@ -190,7 +190,7 @@ along with this software (see the LICENSE.md file). If not, see
                     <field name="submitButton"><default-field title="Update"><submit/></default-field></field>
                     <field name="deleteLink"><default-field title="">
                         <link url="deleteArtifactAuthz" text=" " icon="fa fa-trash" confirmation="Really Delete?"
-                                parameter-map="[artifactAuthzId:artifactAuthzId]"/>
+                                parameter-map="{artifactAuthzId:artifactAuthzId}"/>
                     </default-field></field>
                 </form-list>
             </box-body>
@@ -221,7 +221,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <form-list name="ArtifactTarpitList" list="tarpitList" transition="updateArtifactTarpit">
                     <field name="artifactGroupId"><default-field><hidden/></default-field></field>
                     <field name="userGroupId"><default-field title="User Group">
-                        <display-entity entity-name="moqui.security.UserGroup" text="${description ?: ''} - "/>
+                        <display-entity entity-name="moqui.security.UserGroup" text="${description || ''} - "/>
                         <link url="userGroupDetail" text="${userGroupId}" link-type="anchor"/>
                     </default-field></field>
                     <field name="maxHitsCount"><default-field><text-line size="8"/></default-field></field>
@@ -230,7 +230,7 @@ along with this software (see the LICENSE.md file). If not, see
                     <field name="submitButton"><default-field title="Update"><submit/></default-field></field>
                     <field name="deleteLink"><default-field title="">
                         <link url="deleteArtifactTarpit" text=" " icon="fa fa-trash" confirmation="Really Delete?"
-                                parameter-map="[artifactGroupId:artifactGroupId, userGroupId:userGroupId]"/>
+                                parameter-map="{artifactGroupId:artifactGroupId, userGroupId:userGroupId}"/>
                     </default-field></field>
                 </form-list>
             </box-body>

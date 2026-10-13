@@ -21,12 +21,11 @@ along with this software (see the LICENSE.md file). If not, see
     <transition name="run" begin-transaction="false" authz-action="all">
         <actions>
             <script>
-                org.moqui.context.ExecutionContext ec = context.ec
                 serviceResults = ec.service.sync().name(serviceName).parameters(context).call()
                 if (serviceResults) {
-                    StringBuilder sb = new StringBuilder("Service Run Results:\n")
-                    for (def resultEntry in serviceResults) sb.append("==> ${resultEntry.key}: ${resultEntry.value?.toString()}\n")
-                    ec.logger.info(sb.toString())
+                    let resultsText = "Service Run Results:\n"
+                    for (const [key, value] of Object.entries(serviceResults)) resultsText += `==> ${key}: ${value?.toString()}\n`
+                    ec.logger.info(resultsText)
 
                     // save the results to display on the screen in the next request (after the transition redirect)
                     ec.webImpl?.saveParametersToSession(serviceResults)
@@ -39,7 +38,6 @@ along with this software (see the LICENSE.md file). If not, see
         <!-- Because the run transition doesn't actually return json and make things confusing when calling via rest -->
         <actions>
             <script>
-                org.moqui.context.ExecutionContext ec = context.ec
                 serviceResults = ec.service.sync().name(serviceName).parameters(context).call()
                 if (serviceResults) {
                     ec.web.sendJsonResponse(serviceResults)

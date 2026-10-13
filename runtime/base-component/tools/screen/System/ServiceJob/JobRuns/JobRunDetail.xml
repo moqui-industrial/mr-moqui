@@ -25,9 +25,9 @@ along with this software (see the LICENSE.md file). If not, see
         <set field="queryString" value="thread_name:${serviceJobRun.runThread}"/>
     </actions>
     <widgets>
-        <link url="logViewer" text="View Log" parameter-map="[queryString:('thread_name:' + serviceJobRun?.runThread),
+        <link url="logViewer" text="View Log" parameter-map="{queryString:('thread_name:' + serviceJobRun?.runThread),
                 tsPeriod_from:ec.l10n.format(serviceJobRun?.startTime, 'yyyy-MM-dd HH:mm:ss.SSS'),
-                tsPeriod_thru:ec.l10n.format(serviceJobRun?.endTime, 'yyyy-MM-dd HH:mm:ss.SSS')]"/>
+                tsPeriod_thru:ec.l10n.format(serviceJobRun?.endTime, 'yyyy-MM-dd HH:mm:ss.SSS')}"/>
 
         <form-single name="ServiceJobRunDetail" map="serviceJobRun">
             <auto-fields-entity entity-name="moqui.service.job.ServiceJobRun" field-type="display"/>

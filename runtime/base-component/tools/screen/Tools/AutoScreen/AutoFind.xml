@@ -23,34 +23,31 @@ along with this software (see the LICENSE.md file). If not, see
     <transition name="entityDetail"><default-response url="../../Entity/DataEdit/EntityDetail"/></transition>
 
     <transition name="create"><actions>
-        <if condition="org.moqui.util.WebUtilities.isRestrictedGenericEntity(aen)"><message error="true">Entity ${aen} is not available through this tool</message><return/></if>
+        <if condition="WebUtilities.isRestrictedGenericEntity(aen)"><message error="true">Entity ${aen} is not available through this tool</message><return/></if>
         <service-call name="create#${aen}" in-map="true"/></actions>
         <default-response url="."/></transition>
     <transition name="deleteRecord"><actions>
-        <if condition="org.moqui.util.WebUtilities.isRestrictedGenericEntity(aen)"><message error="true">Entity ${aen} is not available through this tool</message><return/></if>
+        <if condition="WebUtilities.isRestrictedGenericEntity(aen)"><message error="true">Entity ${aen} is not available through this tool</message><return/></if>
         <service-call name="delete#${aen}" in-map="context"/></actions>
         <default-response url="."/></transition>
     <transition name="getFormXml" read-only="true">
         <actions><script><![CDATA[
-            import org.moqui.util.MNode
-
-            StringBuilder xmlBuilder = new StringBuilder()
-            xmlBuilder.append('<?xml version="1.0" encoding="UTF-8"?>\n')
-            MNode screenNode = new MNode("screen", ["xmlns:xsi": "http://www.w3.org/2001/XMLSchema-instance", "xsi:noNamespaceSchemaLocation": "http://moqui.org/xsd/xml-screen-3.xsd"])
-            MNode actionsNode = screenNode.append("actions", null)
-            actionsNode.append("entity-find", ["entity-name":aen, list:"entityValueList"]).append("search-form-inputs", null)
-            MNode widgetsNode = screenNode.append("widgets", null)
+            let xmlText = '<?xml version="1.0" encoding="UTF-8"?>\n'
+            const screenNode = new MNode("screen", {"xmlns:xsi": "http://www.w3.org/2001/XMLSchema-instance", "xsi:noNamespaceSchemaLocation": "http://moqui.org/xsd/xml-screen-3.xsd"})
+            const actionsNode = screenNode.append("actions", null)
+            actionsNode.append("entity-find", {"entity-name": aen, list: "entityValueList"}).append("search-form-inputs", null)
+            const widgetsNode = screenNode.append("widgets", null)
             widgetsNode.append(sri.getActiveScreenDef().getForm("FindEntityValue").getAutoCleanedNode())
             widgetsNode.append(sri.getActiveScreenDef().getForm("CreateEntityValue").getAutoCleanedNode())
             widgetsNode.append(sri.getActiveScreenDef().getForm("ListEntityValue").getAutoCleanedNode())
-            screenNode.addToSb(xmlBuilder, 0)
-            ec.web.sendTextResponse(xmlBuilder.toString(), "text/xml", "Find${ec.entity.getEntityDefinition(aen).entityName}.xml")
+            xmlText += screenNode.toString()
+            ec.web.sendTextResponse(xmlText, "text/xml", `Find${ec.entity.getEntityDefinition(aen).entityName}.xml`)
             ]]></script></actions>
         <default-response type="none"/>
     </transition>
 
     <actions>
-        <if condition="org.moqui.util.WebUtilities.isRestrictedGenericEntity(aen)"><message error="true">Entity ${aen} is not available through this tool</message><return/></if>
+        <if condition="WebUtilities.isRestrictedGenericEntity(aen)"><message error="true">Entity ${aen} is not available through this tool</message><return/></if>
         <set field="aenDef" from="ec.entity.getEntityDefinition(aen)"/>
         <if condition="aenDef == null"><message error="true">Could not find entity with name: ${aen}</message><return/></if>
         <!-- get count of all records, don't require parameters if less than 1M -->
@@ -66,7 +63,7 @@ along with this software (see the LICENSE.md file). If not, see
                     <field name="submitButton"><default-field title="Find"><submit/></default-field></field>
                 </form-single>
             </container-dialog>
-            <link url="entityDetail" parameter-map="[selectedEntity:aen]" text="Entity Detail"/>
+            <link url="entityDetail" parameter-map="{selectedEntity:aen}" text="Entity Detail"/>
             <container-dialog id="CreateValueDialog" button-text="New Value">
                 <form-single name="CreateEntityValue" transition="create" dynamic="true">
                     <auto-fields-entity entity-name="${aen}" field-type="edit"/>

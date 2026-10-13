@@ -53,15 +53,17 @@ pub(crate) fn check_program(source: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// `Parser::parse_expression` stops after the first expression and ignores what follows, so
+/// `a b` and `def x = 1` would pass. A parenthesized program must consume every token.
 fn parse_expression(source: &str) -> Result<(), Error> {
-    // `Allocator` and `SourceType` are arguments of `Parser::new`. They stay inferred so this
-    // crate does not name those dependencies.
+    let wrapped = format!("({source}\n)");
     let allocator = std::default::Default::default();
     let source_type = std::default::Default::default();
-    match Parser::new(&allocator, source, source_type).parse_expression() {
-        Ok(_) => Ok(()),
-        Err(_) => Err(Error::new("not a JavaScript expression")),
+    let parsed = Parser::new(&allocator, &wrapped, source_type).parse();
+    if parsed.panicked || parsed.diagnostics.has_errors() {
+        return Err(Error::new("not a JavaScript expression"));
     }
+    Ok(())
 }
 
 /// A `<script>` body runs inside the function the action macros emit, so a top-level `return`
@@ -96,7 +98,7 @@ fn groovy_hint(text: &str) -> Option<&'static str> {
     None
 }
 
-fn has_groovy_arrow(text: &str) -> bool {
+pub(super) fn has_groovy_arrow(text: &str) -> bool {
     let bytes = text.as_bytes();
     bytes
         .windows(2)
@@ -104,7 +106,7 @@ fn has_groovy_arrow(text: &str) -> bool {
         .any(|(index, pair)| pair == b"->" && (index == 0 || bytes[index - 1] != b'='))
 }
 
-fn has_closure_call(text: &str) -> bool {
+pub(super) fn has_closure_call(text: &str) -> bool {
     const WORDS: &[&str] = &[
         "eachWithIndex",
         "findAll",

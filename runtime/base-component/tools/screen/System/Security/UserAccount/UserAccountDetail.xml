@@ -16,7 +16,7 @@ along with this software (see the LICENSE.md file). If not, see
         xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
         default-menu-index="1">
 
-    <parameter name="userId" required="true" from="userId ?: userId_0"/>
+    <parameter name="userId" required="true" from="userId || userId_0"/>
 
     <transition name="updateUserAccount"><service-call name="org.moqui.impl.UserServices.update#UserAccount"/>
         <default-response url="."/></transition>
@@ -78,7 +78,7 @@ along with this software (see the LICENSE.md file). If not, see
 
     <transition name="releaseTarpitNow">
         <service-call name="update#moqui.security.ArtifactTarpitLock"
-                in-map="[artifactTarpitLockId:artifactTarpitLockId, releaseDateTime:ec.user.nowTimestamp]"/>
+                in-map="{artifactTarpitLockId:artifactTarpitLockId, releaseDateTime:ec.user.nowTimestamp}"/>
         <default-response url="."/></transition>
 
     <actions>
@@ -87,7 +87,7 @@ along with this software (see the LICENSE.md file). If not, see
         <set field="singleUseCodes" from="ec.web.sessionAttributes.remove('singleUseCodes')"/>
         <set field="localeStringList" from="[]"/>
 
-        <iterate list="Locale.getAvailableLocales()" entry="lcl"><script>localeStringList.add([locale:lcl.toString(), name:lcl.getDisplayName(ec.user.locale)])</script></iterate>
+        <iterate list="Locale.getAvailableLocales()" entry="lcl"><script>localeStringList.push({locale:lcl.toString(), name:lcl.getDisplayName(ec.user.locale)})</script></iterate>
         <order-map-list list="localeStringList"><order-by field-name="name"/></order-map-list>
 
         <entity-find entity-name="moqui.security.UserGroupMember" list="ugmList">
@@ -108,12 +108,12 @@ along with this software (see the LICENSE.md file). If not, see
 
         <!-- only show SMS dialog if org.moqui.SmsServices.send#SmsMessage service is NOT from moqui-framework (on classpath) -->
         <set field="sendSmsLoc" from="ec.service.getServiceDefinition('org.moqui.SmsServices.send#SmsMessage')?.serviceNode?.fileLocation"/>
-        <set field="isSmsActive" from="sendSmsLoc &amp;&amp; !sendSmsLoc.contains('classpath')"/>
+        <set field="isSmsActive" from="sendSmsLoc &amp;&amp; !sendSmsLoc.includes('classpath')"/>
     </actions>
     <widgets>
         <container-row>
             <row-col lg="5">
-                <link url="visitList" text="Visits" parameter-map="[userId:userId]"/>
+                <link url="visitList" text="Visits" parameter-map="{userId:userId}"/>
                 <container-dialog id="UpdatePassword" button-text="Change Password">
                     <form-single name="UpdatePasswordForm" transition="updatePassword">
                         <field name="userId"><default-field><hidden/></default-field></field>
@@ -124,13 +124,13 @@ along with this software (see the LICENSE.md file). If not, see
                     </form-single>
                 </container-dialog>
 
-                <link url="enableUserAccount" text="Enable Account" parameter-map="[userId:userId]" condition="userAccount.disabled == 'Y'"/>
-                <link url="disableUserAccount" text="Disable Account" parameter-map="[userId:userId]" condition="userAccount.disabled != 'Y'"/>
-                <link url="resetPassword" text="Reset Password" parameter-map="[userId:userAccount.userId]" condition="userAccount.emailAddress"
+                <link url="enableUserAccount" text="Enable Account" parameter-map="{userId:userId}" condition="userAccount.disabled == 'Y'"/>
+                <link url="disableUserAccount" text="Disable Account" parameter-map="{userId:userId}" condition="userAccount.disabled != 'Y'"/>
+                <link url="resetPassword" text="Reset Password" parameter-map="{userId:userAccount.userId}" condition="userAccount.emailAddress"
                         confirmation="Generate reset password and send by email to ${userAccount.emailAddress}?"/>
                 <link url="loginAs" text="Login As" confirmation="Login as ${userAccount.username}?"
                         condition="ec.user.hasPermission('ADMIN_LOGIN_AS') &amp;&amp; ec.user.username != userAccount.username"
-                        parameter-map="[loginAsUsername:userAccount.username]"/>
+                        parameter-map="{loginAsUsername:userAccount.username}"/>
 
                 <container-dialog id="AuditLogDialog" button-text="Audit Log" width="960">
                     <form-list name="AuditLogList" list="auditLogList" skip-form="true">
@@ -144,10 +144,10 @@ along with this software (see the LICENSE.md file). If not, see
 
                         <field name="changedDate"><default-field title="Date"><display/></default-field></field>
                         <field name="changedByUserId"><default-field title="User">
-                            <display-entity text="${userFullName?:''} [${username?:userId?:''}]" entity-name="moqui.security.UserAccount" key-field-name="userId"/></default-field></field>
+                            <display-entity text="${userFullName || ''} [${username || userId || ''}]" entity-name="moqui.security.UserAccount" key-field-name="userId"/></default-field></field>
                         <field name="pkSecondaryValue"><default-field title="Item"><display/></default-field></field>
                         <field name="changedFieldName"><default-field title="Field">
-                            <display text="${org.moqui.util.StringUtilities.camelCaseToPretty(changedFieldName)}"/></default-field></field>
+                            <display text="${StringUtilities.camelCaseToPretty(changedFieldName)}"/></default-field></field>
                         <field name="oldValueText"><default-field title="From">
                             <display text="${ec.entity.formatFieldString(changedEntityName, changedFieldName, oldValueText)}"/></default-field></field>
                         <field name="newValueText"><default-field title="To">
@@ -163,13 +163,13 @@ along with this software (see the LICENSE.md file). If not, see
                         <field name="userId"><default-field><hidden/></default-field></field>
                         <field name="topic"><default-field><hidden/></default-field></field>
                         <field name="description"><default-field title="Topic"><display/></default-field></field>
-                        <field name="receiveNotifications" from="notTopicUser?.receiveNotifications ?: receiveNotifications ?: 'N'"><default-field title="Receive">
+                        <field name="receiveNotifications" from="notTopicUser?.receiveNotifications || receiveNotifications || 'N'"><default-field title="Receive">
                             <radio><option key="Y"/><option key="N"/></radio>
                         </default-field></field>
-                        <field name="allNotifications" from="notTopicUser?.allNotifications ?: allNotifications ?: 'N'"><default-field title="All">
+                        <field name="allNotifications" from="notTopicUser?.allNotifications || allNotifications || 'N'"><default-field title="All">
                             <radio><option key="Y"/><option key="N"/></radio>
                         </default-field></field>
-                        <field name="emailNotifications" from="notTopicUser?.emailNotifications ?: emailNotifications ?: 'N'">
+                        <field name="emailNotifications" from="notTopicUser?.emailNotifications || emailNotifications || 'N'">
                             <conditional-field condition="emailTemplateId" title="Email"><radio><option key="Y"/><option key="N"/></radio></conditional-field>
                             <default-field title="Email"><display text=""/></default-field>
                         </field>
@@ -188,7 +188,7 @@ along with this software (see the LICENSE.md file). If not, see
                         <drop-down allow-empty="true"><option key="Y"/><option key="N"/></drop-down></default-field></field>
                     <field name="successiveFailedLogins"><default-field title="Failed Logins"><display/></default-field></field>
                     <field name="disabled"><default-field tooltip="Set along with Disabled Date after failed login attempts, auto enabled after configured time if Disabled Date set">
-                        <display text="${disabled ?: 'N'}"/></default-field></field>
+                        <display text="${disabled || 'N'}"/></default-field></field>
                     <field name="disabledDateTime"><default-field title="Disabled Date"><display/></default-field></field>
                     <field name="terminateDate"><default-field tooltip="After this date user may not login and will not receive notifications" red-when="before-now">
                         <date-time/></default-field></field>
@@ -199,7 +199,7 @@ along with this software (see the LICENSE.md file). If not, see
                         <drop-down allow-empty="true"><list-options list="localeStringList" key="${locale}" text="${locale} - ${name}"/></drop-down>
                     </default-field></field>
                     <field name="timeZone"><default-field>
-                        <drop-down allow-empty="true"><list-options list="new TreeSet(TimeZone.getAvailableIDs().collect())"/></drop-down>
+                        <drop-down allow-empty="true"><list-options list="Array.from(TimeZone.getAvailableIDs()).sort()"/></drop-down>
                     </default-field></field>
 
                     <field name="submitButton"><default-field title="Update"><submit/></default-field></field>
@@ -277,13 +277,13 @@ along with this software (see the LICENSE.md file). If not, see
                     </form-list>
                 </box-body-nopad></container-box>
 
-                <section name="SingleUseCodesDisplay" condition="singleUseCodes"><actions>
+                <section name="SingleUseCodesDisplay" condition="singleUseCodes &amp;&amp; singleUseCodes.length"><actions>
                     <set field="singleUseCodes1" from="[]"/><set field="singleUseCodes2" from="[]"/><set field="singleUseCodes3" from="[]"/>
                     <script><![CDATA[
-                        for (int i = 0; i < singleUseCodes.size(); i++) {
-                            if (i%3 == 0) { singleUseCodes1.add(singleUseCodes[i]) }
-                            else if (i%3 == 1) { singleUseCodes2.add(singleUseCodes[i]) }
-                            else if (i%3 == 2) { singleUseCodes3.add(singleUseCodes[i]) }
+                        for (let i = 0; i < singleUseCodes.length; i++) {
+                            if (i%3 == 0) { singleUseCodes1.push(singleUseCodes[i]) }
+                            else if (i%3 == 1) { singleUseCodes2.push(singleUseCodes[i]) }
+                            else if (i%3 == 2) { singleUseCodes3.push(singleUseCodes[i]) }
                         }
                     ]]></script>
                 </actions><widgets>
@@ -358,14 +358,14 @@ along with this software (see the LICENSE.md file). If not, see
                             <field name="thruDate"><default-field><display/></default-field></field>
                             <field name="action">
                                 <conditional-field condition="needsValidation == 'Y' &amp;&amp; factorTypeEnumId == 'UafTotp'">
-                                    <dynamic-dialog id="VerifyTotpDialog" button-text="Verify" transition="VerifyTotp" parameter-map="[userId:userId, factorId:factorId, verify:true]"/></conditional-field>
+                                    <dynamic-dialog id="VerifyTotpDialog" button-text="Verify" transition="VerifyTotp" parameter-map="{userId:userId, factorId:factorId, verify:true}"/></conditional-field>
                                 <conditional-field condition="needsValidation == 'N' &amp;&amp; factorTypeEnumId == 'UafTotp'">
-                                    <dynamic-dialog id="ViewTotpDialog" button-text="View" transition="VerifyTotp" parameter-map="[userId:userId, factorId:factorId, verify:true]"/></conditional-field>
+                                    <dynamic-dialog id="ViewTotpDialog" button-text="View" transition="VerifyTotp" parameter-map="{userId:userId, factorId:factorId, verify:true}"/></conditional-field>
                                 <conditional-field condition="needsValidation == 'Y' &amp;&amp; factorTypeEnumId == 'UafEmail'">
-                                    <dynamic-dialog id="VerifyEmailDialog" button-text="Verify" transition="VerifyEmail" parameter-map="[userId:userId, factorId:factorId]"/></conditional-field>
+                                    <dynamic-dialog id="VerifyEmailDialog" button-text="Verify" transition="VerifyEmail" parameter-map="{userId:userId, factorId:factorId}"/></conditional-field>
                                 <conditional-field condition="needsValidation == 'Y' &amp;&amp; factorTypeEnumId == 'UafSms'">
-                                    <dynamic-dialog id="VerifySmsDialog" button-text="Verify" transition="VerifySms" parameter-map="[userId:userId, factorId:factorId]"/></conditional-field>
-                                <conditional-field condition="needsValidation == 'N' &amp;&amp; factorTypeEnumId in ['UafEmail', 'UafSms']">
+                                    <dynamic-dialog id="VerifySmsDialog" button-text="Verify" transition="VerifySms" parameter-map="{userId:userId, factorId:factorId}"/></conditional-field>
+                                <conditional-field condition="needsValidation == 'N' &amp;&amp; ['UafEmail', 'UafSms'].includes(factorTypeEnumId)">
                                     <label text="${factorOption}"/></conditional-field>
                             </field>
                             <field name="needsValidation"><conditional-field condition="factorTypeEnumId != 'UafSingleUse'"><label text="${needsValidation}"/></conditional-field></field>
@@ -390,13 +390,13 @@ along with this software (see the LICENSE.md file). If not, see
         </container-row>
 
         <label text="Tarpit Locks (Velocity Limits Reached)" type="h5"/>
-        <label text="Showing ${artifactTarpitLockList?.size() ?: ''} most recent, user has a history of ${allTarpitLocksCount} locks"/>
+        <label text="Showing ${artifactTarpitLockList?.length || ''} most recent, user has a history of ${allTarpitLocksCount} locks"/>
         <form-list name="ArtifactTarpitLockList" list="artifactTarpitLockList">
             <field name="artifactTypeEnumId"><default-field><display-entity entity-name="moqui.basic.Enumeration"/></default-field></field>
             <field name="artifactName"><default-field><display/></default-field></field>
             <field name="releaseDateTime"><default-field><display/></default-field></field>
             <field name="releaseNow"><default-field>
-                <link url="releaseTarpitNow" text="Release Now" parameter-map="[artifactTarpitLockId:artifactTarpitLockId]"
+                <link url="releaseTarpitNow" text="Release Now" parameter-map="{artifactTarpitLockId:artifactTarpitLockId}"
                         condition="releaseDateTime &gt; ec.user.nowTimestamp"/>
             </default-field></field>
         </form-list>

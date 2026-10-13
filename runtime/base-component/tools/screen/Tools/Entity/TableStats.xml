@@ -18,25 +18,25 @@ along with this software (see the LICENSE.md file). If not, see
     <transition name="entityDetail"><default-response url="../DataEdit/EntityDetail"/></transition>
 
     <actions>
-        <set field="orderByField" from="orderByField ?: ('empty' == viewOption ? 'tableName' : '-rowCount')"/>
+        <set field="orderByField" from="orderByField || ('empty' == viewOption ? 'tableName' : '-rowCount')"/>
 
         <set field="entityListOrig" from="ec.entity.getAllEntitiesInfo(orderByField, filterRegexp, false, true)"/>
         <set field="entityInfoList" from="[]"/>
         <iterate list="entityListOrig" entry="entityInfo">
             <script><![CDATA[
-                long rowCount = ec.entity.find(entityInfo.fullEntityName).count()
+                const rowCount = ec.entity.find(entityInfo.fullEntityName).count()
                 entityInfo.put("rowCount", rowCount)
                 if ('empty' == viewOption) {
-                    if (rowCount == 0) entityInfoList.add(entityInfo)
+                    if (rowCount == 0) entityInfoList.push(entityInfo)
                 } else if ('non-empty' == viewOption) {
-                    if (rowCount > 0) entityInfoList.add(entityInfo)
+                    if (rowCount > 0) entityInfoList.push(entityInfo)
                 } else {
-                    entityInfoList.add(entityInfo)
+                    entityInfoList.push(entityInfo)
                 }
             ]]></script>
         </iterate>
-        <if condition="orderByField &amp;&amp; orderByField.contains('rowCount')">
-            <script>orderMapList(entityInfoList, [orderByField])</script>
+        <if condition="orderByField &amp;&amp; orderByField.includes('rowCount')">
+            <script>CollectionUtilities.orderMapList(entityInfoList, [orderByField])</script>
         </if>
     </actions>
     <widgets>
@@ -57,7 +57,7 @@ along with this software (see the LICENSE.md file). If not, see
             <field name="fullEntityName">
                 <header-field show-order-by="true"/>
                 <default-field><link text="${fullEntityName}" link-type="anchor"
-                        url="entityDetail" parameter-map="[selectedEntity:fullEntityName]"/></default-field>
+                        url="entityDetail" parameter-map="{selectedEntity:fullEntityName}"/></default-field>
             </field>
             <field name="tableName">
                 <header-field show-order-by="true"/>

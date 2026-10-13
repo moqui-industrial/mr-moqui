@@ -119,7 +119,7 @@ along with this software (see the LICENSE.md file). If not, see
                     <row-actions><entity-find-one entity-name="moqui.security.UserPermission" value-field="userPermission"/></row-actions>
                     <field name="userGroupId"><default-field><hidden/></default-field></field>
                     <field name="userPermissionId"><default-field title="Permission ID">
-                        <display text="${userPermissionId} - ${userPermission?.description ?: '(ad-hoc)'}"/></default-field></field>
+                        <display text="${userPermissionId} - ${userPermission?.description || '(ad-hoc)'}"/></default-field></field>
                     <field name="fromDate"><default-field><display/></default-field></field>
                     <field name="thruDate"><default-field><date-time/></default-field></field>
                     <field name="submitButton"><default-field title="Update"><submit/></default-field></field>
@@ -188,7 +188,7 @@ along with this software (see the LICENSE.md file). If not, see
                     extends="component://tools/screen/System/Security/ArtifactGroup/ArtifactGroupDetail.xml#ArtifactAuthzList">
                 <field name="userGroupId"><default-field><hidden/></default-field></field>
                 <field name="artifactGroupId"><default-field title="Artifact Group">
-                    <display-entity entity-name="moqui.security.ArtifactGroup" text="${description ?: ''} - "/>
+                    <display-entity entity-name="moqui.security.ArtifactGroup" text="${description || ''} - "/>
                     <link url="artifactGroupDetail" text="${artifactGroupId}" link-type="anchor"/>
                 </default-field></field>
             </form-list>
@@ -214,7 +214,7 @@ along with this software (see the LICENSE.md file). If not, see
                     extends="component://tools/screen/System/Security/ArtifactGroup/ArtifactGroupDetail.xml#ArtifactTarpitList">
                 <field name="userGroupId"><default-field><hidden/></default-field></field>
                 <field name="artifactGroupId"><default-field title="Artifact Group">
-                    <display-entity entity-name="moqui.security.ArtifactGroup" text="${description ?: ''} - "/>
+                    <display-entity entity-name="moqui.security.ArtifactGroup" text="${description || ''} - "/>
                     <link url="artifactGroupDetail" text="${artifactGroupId}" link-type="anchor"/>
                 </default-field></field>
             </form-list>

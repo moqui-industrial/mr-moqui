@@ -23,24 +23,22 @@ along with this software (see the LICENSE.md file). If not, see
     <transition name="edit"><default-response url="."/></transition>
     <transition name="update">
         <actions>
-            <if condition="org.moqui.util.WebUtilities.isRestrictedGenericEntity(selectedEntity)"><message error="true">Entity ${selectedEntity} is not available through this tool</message><return/></if>
+            <if condition="WebUtilities.isRestrictedGenericEntity(selectedEntity)"><message error="true">Entity ${selectedEntity} is not available through this tool</message><return/></if>
             <service-call name="update#${selectedEntity}" in-map="true"/></actions>
         <default-response url="." parameter-map="ec.entity.getEntityDefinition(selectedEntity).getPrimaryKeys(context)"/>
     </transition>
 
     <actions>
-        <if condition="org.moqui.util.WebUtilities.isRestrictedGenericEntity(selectedEntity)"><message error="true">Entity ${selectedEntity} is not available through this tool</message><return/></if>
+        <if condition="WebUtilities.isRestrictedGenericEntity(selectedEntity)"><message error="true">Entity ${selectedEntity} is not available through this tool</message><return/></if>
         <set field="entityDefinition" from="ec.entity.getEntityDefinition(selectedEntity)"/>
 
-        <set field="dependentLevels" from="(dependentLevels ?: '0') as int"/>
+        <set field="dependentLevels" from="parseInt(dependentLevels || '0', 10)"/>
         <entity-find-one entity-name="${selectedEntity}" value-field="entityValue"/>
         <set field="relationshipInfoList" from="ec.entity.getEntityDefinition(selectedEntity).getRelationshipsInfo(false)"/>
         <script>
             if (entityValue) {
-                Map plainMap = entityValue.getPlainValueMap(dependentLevels)
-                jb = new groovy.json.JsonBuilder()
-                jb.call(plainMap)
-                plainJsonStr = jb.toPrettyString()
+                const plainMap = entityValue.getPlainValueMap(dependentLevels)
+                plainJsonStr = JSON.stringify(plainMap, null, 2)
             }
         </script>
     </actions>
@@ -64,12 +62,12 @@ along with this software (see the LICENSE.md file). If not, see
             <field name="targetParameterMap">
                 <default-field title="ID Map"><display/></default-field></field>
             <field name="link">
-                <conditional-field condition="relInfo.type == 'many' &amp;&amp; targetParameterMap">
+                <conditional-field condition="relInfo.type == 'many' &amp;&amp; targetParameterMap &amp;&amp; Object.keys(targetParameterMap).length">
                     <link text="Find" url="find" parameter-map="targetParameterMap">
                         <parameter name="selectedEntity" from="relInfo.relatedEntityName"/>
                     </link>
                 </conditional-field>
-                <conditional-field condition="targetParameterMap">
+                <conditional-field condition="targetParameterMap &amp;&amp; Object.keys(targetParameterMap).length">
                     <link text="Edit" url="edit" parameter-map="targetParameterMap">
                         <parameter name="selectedEntity" from="relInfo.relatedEntityName"/>
                     </link>

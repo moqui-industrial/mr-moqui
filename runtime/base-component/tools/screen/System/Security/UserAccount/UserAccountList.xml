@@ -91,7 +91,7 @@ along with this software (see the LICENSE.md file). If not, see
             </field>
             <field name="disabled">
                 <header-field show-order-by="true"><drop-down allow-empty="true"><option key="Y"/><option key="N"/></drop-down></header-field>
-                <default-field><display text="${disabled ?: 'N'} ${disabledDateTime ?: ''}"/></default-field>
+                <default-field><display text="${disabled || 'N'} ${disabledDateTime || ''}"/></default-field>
             </field>
             <field name="locale">
                 <header-field show-order-by="true"><text-find size="6" default-operator="begins"/></header-field>

@@ -50,14 +50,14 @@ along with this software (see the LICENSE.md file). If not, see
             </row-col><row-col md="3">
                 <container-row><row-col xs="4" style="text-right"><label text="User" type="strong"/></row-col>
                     <row-col xs="8"><link url="userAccountDetail" text="UsernameTemplate" text-map="userAccount" link-type="anchor"
-                            parameter-map="[userId:visit.userId]" condition="visit.userId"/></row-col></container-row>
+                            parameter-map="{userId:visit.userId}" condition="visit.userId"/></row-col></container-row>
                 <container-row><row-col xs="4" style="text-right"><label text="User Created" type="strong"/></row-col>
-                    <row-col xs="8"><label text="${visit.userCreated ?: 'N'}"/></row-col></container-row>
+                    <row-col xs="8"><label text="${visit.userCreated || 'N'}"/></row-col></container-row>
                 <container-row><row-col xs="4" style="text-right"><label text="Locale" type="strong"/></row-col>
                     <row-col xs="8"><label text="${visit.initialLocale}"/></row-col></container-row>
 
                 <container-row><row-col xs="4" style="text-right"><label text="Client User" type="strong"/></row-col>
-                    <row-col xs="8"><label text="${visit.clientUser ?: 'Unknown'}"/></row-col></container-row>
+                    <row-col xs="8"><label text="${visit.clientUser || 'Unknown'}"/></row-col></container-row>
                 <container-row><row-col xs="4" style="text-right"><label text="Client Host" type="strong"/></row-col>
                     <row-col xs="8"><label text="${visit.clientHostName}"/></row-col></container-row>
                 <container-row><row-col xs="4" style="text-right"><label text="Client IP" type="strong"/></row-col>
@@ -70,9 +70,9 @@ along with this software (see the LICENSE.md file). If not, see
                 <container-row><row-col xs="4" style="text-right"><label text="Initial Request" type="strong"/></row-col>
                     <row-col xs="8"><label text="${visit.initialRequest}"/></row-col></container-row>
                 <container-row><row-col xs="4" style="text-right"><label text="Referrer" type="strong"/></row-col>
-                    <row-col xs="8"><label text="${visit.initialReferrer ?: 'None'}"/></row-col></container-row>
+                    <row-col xs="8"><label text="${visit.initialReferrer || 'None'}"/></row-col></container-row>
                 <container-row><row-col xs="4" style="text-right"><label text="User Agent" type="strong"/></row-col>
-                    <row-col xs="8"><label text="${visit.initialUserAgent ?: ''}"/></row-col></container-row>
+                    <row-col xs="8"><label text="${visit.initialUserAgent || ''}"/></row-col></container-row>
             </row-col></container-row>
         </box-body></container-box>
         <section name="ClientIpSection" condition="visit.clientIpIspName"><widgets>
@@ -113,7 +113,7 @@ along with this software (see the LICENSE.md file). If not, see
             <field name="artifactName"><header-field show-order-by="true"><text-find/></header-field>
                 <default-field><display/></default-field></field>
             <field name="parameterString"><header-field><text-find/></header-field>
-                <default-field><display text="${parameterString?.replace(',',' , ') ?: 'N/A'}"/></default-field></field>
+                <default-field><display text="${parameterString?.replace(',',' , ') || 'N/A'}"/></default-field></field>
 
             <field name="runningTimeMillis"><header-field title="Time" show-order-by="true"/>
                 <default-field><display text="${ec.l10n.format(runningTimeMillis, '0.00')}ms"/></default-field></field>
@@ -121,7 +121,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <header-field title="Slow" show-order-by="true"><drop-down allow-empty="true"><option key="Y"/><option key="N"/></drop-down></header-field>
                 <default-field><display/></default-field>
             </field>
-            <field name="outputSize"><default-field title="Size"><display text="${outputSize ?: 'Unknown'}"/></default-field></field>
+            <field name="outputSize"><default-field title="Size"><display text="${outputSize || 'Unknown'}"/></default-field></field>
 
             <field name="wasError">
                 <header-field title="Error" show-order-by="true"><drop-down allow-empty="true"><option key="Y"/><option key="N"/></drop-down></header-field>
@@ -132,7 +132,7 @@ along with this software (see the LICENSE.md file). If not, see
 
             <field name="requestUrl"><header-field show-order-by="true"/>
                 <default-field><display/></default-field></field>
-            <field name="referrerUrl"><default-field><display text="${referrerUrl ?: 'N/A'}"/></default-field></field>
+            <field name="referrerUrl"><default-field><display text="${referrerUrl || 'N/A'}"/></default-field></field>
 
             <field name="serverIpAddress"><default-field><display/></default-field></field>
             <field name="serverHostName"><default-field><display/></default-field></field>

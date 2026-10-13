@@ -18,7 +18,7 @@ along with this software (see the LICENSE.md file). If not, see
     <transition name="serviceReference"><default-response url="//tools/ServiceReference"/></transition>
 
     <actions>
-        <set field="levels" from="levels ? levels as int : 2"/>
+        <set field="levels" from="levels ? parseInt(levels, 10) : 2"/>
 
         <set field="entityInfoList" from="ec.entity.getAllEntityInfo(levels, false)"/>
         <set field="entityCount" from="0"/>
@@ -33,7 +33,7 @@ along with this software (see the LICENSE.md file). If not, see
     </actions>
     <widgets>
         <label text="Entity Stats" type="h3"/>
-        <label text="Entities: ${entityCount as int}, View Entities: ${viewEntityCount as int}, EECA rules: ${ec.entity.getEecaRuleCount()}" type="p"/>
+        <label text="Entities: ${parseInt(entityCount, 10)}, View Entities: ${parseInt(viewEntityCount, 10)}, EECA rules: ${ec.entity.getEecaRuleCount()}" type="p"/>
         <form-list name="EntityInfoList" list="entityInfoList" skip-form="true">
             <field name="name"><default-field><display/></default-field></field>
             <field name="entities"><default-field><display/></default-field></field>
@@ -41,10 +41,10 @@ along with this software (see the LICENSE.md file). If not, see
         </form-list>
 
         <label text="Service Stats" type="h3"/>
-        <label text="Services: ${ec.service.getKnownServiceNames().size()}, SECA rules: ${ec.service.getSecaRuleCount()}" type="p"/>
+        <label text="Services: ${Array.from(ec.service.getKnownServiceNames()).length}, SECA rules: ${ec.service.getSecaRuleCount()}" type="p"/>
         <form-list name="ServiceInfoList" list="serviceInfoList" skip-form="true">
             <field name="name"><default-field>
-                <link url="serviceReference" text="${name}" parameter-map="[serviceName:name]" link-type="anchor"/>
+                <link url="serviceReference" text="${name}" parameter-map="{serviceName:name}" link-type="anchor"/>
             </default-field></field>
             <field name="services"><default-field><display/></default-field></field>
         </form-list>
@@ -60,7 +60,7 @@ along with this software (see the LICENSE.md file). If not, see
                     <field name="name" from="screenInfo.getIndentedName()">
                         <default-field><display/></default-field></field>
                     <field name="title">
-                        <default-field><label text="${'- ' * screenInfo.level}* ${screenInfo.ssi?.menuTitle?:'Root'}"/></default-field></field>
+                        <default-field><label text="${'- ' * screenInfo.level}* ${screenInfo.ssi?.menuTitle || 'Root'}"/></default-field></field>
                     <field name="subscreens" from="screenInfo.allSubscreens">
                         <default-field><display/></default-field></field>
                     <field name="subscreensNonPlaceholder" from="screenInfo.allSubscreensNonPlaceholder">

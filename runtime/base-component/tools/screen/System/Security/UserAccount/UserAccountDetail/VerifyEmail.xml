@@ -24,7 +24,7 @@ along with this software (see the LICENSE.md file). If not, see
         <default-response url=".."/>
     </transition>
     <!-- NOTE: use send#AuthcCodeEmail directly to skip username validation for admin use -->
-    <transition name="sendAuthcCodeEmail"><service-call name="org.moqui.impl.UserServices.send#AuthcCodeEmail" in-map="[factorId:factorId]"/>
+    <transition name="sendAuthcCodeEmail"><service-call name="org.moqui.impl.UserServices.send#AuthcCodeEmail" in-map="{factorId:factorId}"/>
         <default-response url=".."/></transition>
 
     <actions>

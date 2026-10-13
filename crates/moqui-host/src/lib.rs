@@ -146,10 +146,10 @@ pub fn load_save(
     db::embedded::load_save(dir.as_ref(), dump.as_ref())
 }
 
-const USAGE: &str = "usage: moqui [save-db <cluster-dir> <dump-file> | load-save <cluster-dir> <dump-file> | load [name=value ...] | lint [file]]";
+const USAGE: &str = "usage: moqui [save-db <cluster-dir> <dump-file> | load-save <cluster-dir> <dump-file> | load [name=value ...] | lint [file] | lint --screens [report-file]]";
 
 /// No arguments start the HTTP server. `save-db` and `load-save` take a cluster directory and a dump file.
-/// `load` takes `name=value` pairs. `lint` takes an optional service file.
+/// `load` takes `name=value` pairs. `lint` takes an optional service file. `lint --screens` checks the screen and form XML and may write a report file.
 ///
 /// # Errors
 ///
@@ -176,6 +176,10 @@ where
         [command, rest @ ..] if command == "load" => {
             let flags = parse_load_args(rest)?;
             dispatch_load(&flags)?;
+            Ok(None)
+        }
+        [command, flag, rest @ ..] if command == "lint" && flag == "--screens" && rest.len() <= 1 => {
+            dispatch_lint_screens(rest.first().map(String::as_str))?;
             Ok(None)
         }
         [command] if command == "lint" => {
@@ -210,6 +214,39 @@ fn dispatch_lint(path: Option<&str>) -> Result<(), moqui_lib::error::Error> {
     }
     Err(moqui_lib::error::Error::new(format!(
         "{} service expression(s) failed lint",
+        failures.len()
+    )))
+}
+
+fn dispatch_lint_screens(report: Option<&str>) -> Result<(), moqui_lib::error::Error> {
+    let runtime = std::env::var_os("MOQUI_RUNTIME").map_or_else(|| std::path::PathBuf::from("runtime"), Into::into);
+    let framework = std::env::var_os("MOQUI_FRAMEWORK").map_or_else(|| runtime.join("../framework"), Into::into);
+    let roots: Vec<std::path::PathBuf> = [
+        framework.join("screen"),
+        runtime.join("base-component"),
+        runtime.join("component"),
+    ]
+    .into_iter()
+    .filter(|path| path.exists())
+    .collect();
+    let screens = moqui_core::script::screen_lint::lint_screens(&roots)
+        .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
+    let text = screens.render();
+    match report {
+        Some(path) => {
+            std::fs::write(path, &text).map_err(|err| moqui_lib::error::Error::new(format!("{path}: {err}")))?
+        }
+        None => print!("{text}"),
+    }
+    let failures = screens.failures();
+    for failure in &failures {
+        println!("{failure}");
+    }
+    if failures.is_empty() {
+        return Ok(());
+    }
+    Err(moqui_lib::error::Error::new(format!(
+        "{} screen expression(s) failed lint",
         failures.len()
     )))
 }

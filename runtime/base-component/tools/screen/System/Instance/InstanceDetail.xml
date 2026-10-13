@@ -61,30 +61,30 @@ along with this software (see the LICENSE.md file). If not, see
         <set field="linkList" from="appInstance.links"/>
         <set field="volumeList" from="appInstance.vols"/>
 
-        <service-call name="org.moqui.impl.InstanceServices.check#AppInstance" in-map="[appInstanceId:appInstanceId]" out-map="context"/>
-        <service-call name="org.moqui.impl.InstanceServices.check#AppDatabase" in-map="[appInstanceId:appInstanceId]" out-map="context"/>
-        <service-call name="org.moqui.impl.InstanceServices.check#MoquiServer" in-map="[appInstanceId:appInstanceId]" out-map="context"/>
+        <service-call name="org.moqui.impl.InstanceServices.check#AppInstance" in-map="{appInstanceId:appInstanceId}" out-map="context"/>
+        <service-call name="org.moqui.impl.InstanceServices.check#AppDatabase" in-map="{appInstanceId:appInstanceId}" out-map="context"/>
+        <service-call name="org.moqui.impl.InstanceServices.check#MoquiServer" in-map="{appInstanceId:appInstanceId}" out-map="context"/>
 
         <set field="gotMoquiStatus" from="false"/>
-        <if condition="moquiStatusMap">
+        <if condition="moquiStatusMap &amp;&amp; Object.keys(moquiStatusMap).length">
             <set field="gotMoquiStatus" from="true"/>
-            <set field="loadPercent" from="(moquiStatusMap?.Utilization?.LoadPercent as BigDecimal).setScale(0, BigDecimal.ROUND_HALF_UP)"/>
-            <set field="heapPercent" from="(moquiStatusMap?.Utilization?.HeapPercent as BigDecimal).setScale(0, BigDecimal.ROUND_HALF_UP)"/>
-            <set field="diskPercent" from="(moquiStatusMap?.Utilization?.DiskPercent as BigDecimal).setScale(0, BigDecimal.ROUND_HALF_UP)"/>
+            <set field="loadPercent" from="new BigDecimal(moquiStatusMap?.Utilization?.LoadPercent).setScale(0, BigDecimal.ROUND_HALF_UP)"/>
+            <set field="heapPercent" from="new BigDecimal(moquiStatusMap?.Utilization?.HeapPercent).setScale(0, BigDecimal.ROUND_HALF_UP)"/>
+            <set field="diskPercent" from="new BigDecimal(moquiStatusMap?.Utilization?.DiskPercent).setScale(0, BigDecimal.ROUND_HALF_UP)"/>
         </if>
     </actions>
     <widgets><container-row><row-col md="7">
         <container-box><box-header title="App Instance ${appInstance.appInstanceId}"/><box-toolbar>
-            <link url="provisionAppInstance" text="Provision App" parameter-map="[appInstanceId:appInstanceId]"
+            <link url="provisionAppInstance" text="Provision App" parameter-map="{appInstanceId:appInstanceId}"
                   condition="!instanceExists &amp;&amp; !databaseExists"/>
 
-            <link url="createAppDatabase" text="Create DB" parameter-map="[appInstanceId:appInstanceId]"
+            <link url="createAppDatabase" text="Create DB" parameter-map="{appInstanceId:appInstanceId}"
                   condition="!userExists &amp;&amp; !databaseExists"/>
 
-            <link url="initAppInstance" text="Init Instance" parameter-map="[appInstanceId:appInstanceId]" condition="!instanceExists"/>
-            <link url="startAppInstance" text="Start Instance" parameter-map="[appInstanceId:appInstanceId]" condition="instanceExists &amp;&amp; !instanceRunning"/>
-            <link url="stopAppInstance" text="Stop Instance" parameter-map="[appInstanceId:appInstanceId]" condition="instanceRunning"/>
-            <link url="removeAppInstance" text="Remove Instance" parameter-map="[appInstanceId:appInstanceId]" condition="instanceExists"
+            <link url="initAppInstance" text="Init Instance" parameter-map="{appInstanceId:appInstanceId}" condition="!instanceExists"/>
+            <link url="startAppInstance" text="Start Instance" parameter-map="{appInstanceId:appInstanceId}" condition="instanceExists &amp;&amp; !instanceRunning"/>
+            <link url="stopAppInstance" text="Stop Instance" parameter-map="{appInstanceId:appInstanceId}" condition="instanceRunning"/>
+            <link url="removeAppInstance" text="Remove Instance" parameter-map="{appInstanceId:appInstanceId}" condition="instanceExists"
                   confirmation="Remove instance for ${appInstanceId}?"/>
         </box-toolbar><box-body>
             <container>
@@ -100,9 +100,9 @@ along with this software (see the LICENSE.md file). If not, see
             <container>
                 <label text="" style="fa fa-heartbeat ${gotMoquiStatus ? 'text-success' : 'text-danger'}" type="i" condition="true" tooltip="Moqui Server Running"/>
                 <label text="Moqui Server ${gotMoquiStatus ? '' : 'Not'} Running" style="${gotMoquiStatus ? 'text-success' : 'text-danger'}" type="strong"/>
-                <label text="Load: ${ec.l10n.format(loadPercent, '00')}%" style="${loadPercent &lt; 70 ? 'text-success' : (loadPercent &lt; 90 ? 'text-warn' : 'text-danger' )}" type="strong" condition="loadPercent"/>
-                <label text="Heap: ${ec.l10n.format(heapPercent, '00')}%" style="${heapPercent &lt; 70 ? 'text-success' : (heapPercent &lt; 90 ? 'text-warn' : 'text-danger' )}" type="strong" condition="heapPercent"/>
-                <label text="Disk: ${ec.l10n.format(diskPercent, '00')}%" style="${diskPercent &lt; 70 ? 'text-success' : (diskPercent &lt; 90 ? 'text-warn' : 'text-danger' )}" type="strong" condition="diskPercent"/>
+                <label text="Load: ${ec.l10n.format(loadPercent, '00')}%" style="${loadPercent.compare(70) &lt; 0 ? 'text-success' : (loadPercent.compare(90) &lt; 0 ? 'text-warn' : 'text-danger' )}" type="strong" condition="loadPercent &amp;&amp; !loadPercent.isZero()"/>
+                <label text="Heap: ${ec.l10n.format(heapPercent, '00')}%" style="${heapPercent.compare(70) &lt; 0 ? 'text-success' : (heapPercent.compare(90) &lt; 0 ? 'text-warn' : 'text-danger' )}" type="strong" condition="heapPercent &amp;&amp; !heapPercent.isZero()"/>
+                <label text="Disk: ${ec.l10n.format(diskPercent, '00')}%" style="${diskPercent.compare(70) &lt; 0 ? 'text-success' : (diskPercent.compare(90) &lt; 0 ? 'text-warn' : 'text-danger' )}" type="strong" condition="diskPercent &amp;&amp; !diskPercent.isZero()"/>
             </container>
 
             <container-dialog id="InstanceDetail" button-text="Instance Detail" width="900">
@@ -172,7 +172,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <field name="envValue"><default-field title="Value"><text-line size="30"/></default-field></field>
                 <field name="submitButton"><default-field title="Update"><submit/></default-field></field>
                 <field name="deleteLink"><default-field title="">
-                    <link url="deleteAppInstanceEnv" text="X" parameter-map="[appInstanceId:appInstanceId, envName:envName]"
+                    <link url="deleteAppInstanceEnv" text="X" parameter-map="{appInstanceId:appInstanceId, envName:envName}"
                           confirmation="Really delete env ${envName}?"/>
                 </default-field></field>
             </form-list>
@@ -195,7 +195,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <field name="volumeName"><default-field title="Volume Name"><text-line size="30"/></default-field></field>
                 <field name="submitButton"><default-field title="Update"><submit/></default-field></field>
                 <field name="deleteLink"><default-field title="">
-                    <link url="deleteAppInstanceVol" text="X" parameter-map="[appInstanceId:appInstanceId, mountPoint:mountPoint]"
+                    <link url="deleteAppInstanceVol" text="X" parameter-map="{appInstanceId:appInstanceId, mountPoint:mountPoint}"
                             confirmation="Really delete volume ${volumeName}?"/>
                 </default-field></field>
             </form-list>
@@ -218,7 +218,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <field name="aliasName"><default-field><text-line size="25"/></default-field></field>
                 <field name="submitButton"><default-field title="Update"><submit/></default-field></field>
                 <field name="deleteLink"><default-field title="">
-                    <link url="deleteAppInstanceLink" text="X" parameter-map="[appInstanceId:appInstanceId, instanceName:instanceName]"
+                    <link url="deleteAppInstanceLink" text="X" parameter-map="{appInstanceId:appInstanceId, instanceName:instanceName}"
                           confirmation="Really delete link for ${instanceName}?"/>
                 </default-field></field>
             </form-list>

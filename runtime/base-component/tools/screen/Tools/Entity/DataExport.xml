@@ -18,10 +18,7 @@ along with this software (see the LICENSE.md file). If not, see
     <transition name="EntityExport" begin-transaction="false" read-only="true" authz-action="update">
         <actions>
             <script><![CDATA[
-                import org.moqui.entity.EntityDataWriter
-                import org.moqui.context.ExecutionContext
-                ExecutionContext ec = context.ec
-                EntityDataWriter edw = ec.entity.makeDataWriter()
+                const edw = ec.entity.makeDataWriter()
 
                 // handle entityNames
                 if (!context.entityNames) {
@@ -29,33 +26,33 @@ along with this software (see the LICENSE.md file). If not, see
                     return
                 }
 
-                if (entityNames instanceof String && entityNames.contains(",")) {
+                if (typeof entityNames === 'string' && entityNames.includes(",")) {
                     if (entityNames.startsWith("[")) entityNames = entityNames.substring(1)
-                    if (entityNames.endsWith("]")) entityNames = entityNames.substring(0, entityNames.length() - 1)
-                    entityNames = entityNames.split(",") as List
+                    if (entityNames.endsWith("]")) entityNames = entityNames.substring(0, entityNames.length - 1)
+                    entityNames = entityNames.split(",")
                 }
 
-                if (entityNames instanceof List) {
-                    for (String entityName in entityNames) {
-                        def entDef = ec.entity.getEntityDefinition(entityName)
+                if (Array.isArray(entityNames)) {
+                    for (const entityName of entityNames) {
+                        const entDef = ec.entity.getEntityDefinition(entityName)
                         if (entDef == null) ec.message.addError(ec.resource.expand('Could not find entity with name ${entityName}',''))
                     }
                     edw.entityNames(entityNames)
                 } else {
-                    def entDef = ec.entity.getEntityDefinition(entityNames)
+                    const entDef = ec.entity.getEntityDefinition(entityNames)
                     if (entDef == null) ec.message.addError(ec.resource.expand('Could not find entity with name ${entityNames}',''))
-                    edw.entityName(entityNames as String)
+                    edw.entityName(String(entityNames))
                 }
 
                 if (ec.message.hasError()) return
 
-                if (dependentLevels) edw.dependentLevels(dependentLevels as int)
+                if (dependentLevels) edw.dependentLevels(parseInt(dependentLevels, 10))
                 if (masterName) edw.master(masterName)
                 if (fromDate) edw.fromDate(ec.l10n.parseTimestamp(fromDate, null))
                 if (thruDate) edw.thruDate(ec.l10n.parseTimestamp(thruDate, null))
-                if (filterMap) edw.filterMap((Map) ec.resource.expression(filterMap, null))
-                if (orderBy) edw.orderBy([(String) orderBy])
-                edw.fileType((String) fileType)
+                if (filterMap) edw.filterMap(ec.resource.expression(filterMap, null))
+                if (orderBy) edw.orderBy([String(orderBy)])
+                edw.fileType(String(fileType))
                 if(fileType == 'CSV') edw.tableColumnNames(useTableColumnNames == 'Yes' ? true : false)
 
                 noResponse = false
@@ -65,14 +62,14 @@ along with this software (see the LICENSE.md file). If not, see
                     edw.directory(path)
                 } else if (context.output == "browser") {
                     // stream to ec.web.response
-                    def response = ec.web.response
+                    const response = ec.web.response
                     response.setCharacterEncoding("UTF-8")
                     response.setHeader("Cache-Control", "no-cache, must-revalidate, private")
 
-                    if (fileType == 'CSV' && entityNames instanceof List && entityNames.size() > 1) {
+                    if (fileType == 'CSV' && Array.isArray(entityNames) && entityNames.length > 1) {
                         // if trying to export more than one entity as CSV, send a .zip file instead
                         response.setContentType('application/zip')
-                        response.setHeader("Content-Disposition", "attachment; filename=\"EntityExport_${ec.l10n.format(ec.user.nowTimestamp, 'yyyyMMdd_HHmm')}.zip\";")
+                        response.setHeader("Content-Disposition", `attachment; filename="EntityExport_${ec.l10n.format(ec.user.nowTimestamp, 'yyyyMMdd_HHmm')}.zip";`)
                         edw.zipDirectory('', response.getOutputStream())
 
                     } else {
@@ -80,7 +77,7 @@ along with this software (see the LICENSE.md file). If not, see
                         else if (fileType == 'CSV') response.setContentType('text/csv')
                         else response.setContentType('text/xml')
 
-                        response.setHeader("Content-Disposition", "attachment; filename=\"EntityExport_${ec.l10n.format(ec.user.nowTimestamp, 'yyyyMMdd_HHmm')}.${fileType == 'JSON' ? 'json' : fileType == 'CSV' ? 'csv' : 'xml'}\";")
+                        response.setHeader("Content-Disposition", `attachment; filename="EntityExport_${ec.l10n.format(ec.user.nowTimestamp, 'yyyyMMdd_HHmm')}.${fileType == 'JSON' ? 'json' : fileType == 'CSV' ? 'csv' : 'xml'}";`)
                         edw.writer(response.getWriter())
                     }
                     noResponse = true

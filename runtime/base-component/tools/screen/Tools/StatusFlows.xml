@@ -22,25 +22,25 @@ along with this software (see the LICENSE.md file). If not, see
                 <econdition field-name="statusFlowId" ignore-if-empty="true"/>
                 <order-by field-name="transitionSequence,fromSequenceNum"/>
             </entity-find>
-            <set field="statusIdSet" from="new HashSet(transitionList*.statusId + transitionList*.toStatusId)"/>
+            <set field="statusIdSet" from="Array.from(new Set([...transitionList.map(item => item.statusId), ...transitionList.map(item => item.toStatusId)]))"/>
             <entity-find entity-name="moqui.basic.StatusItem" list="statusItemList">
                 <econdition field-name="statusId" operator="in" from="statusIdSet"/>
                 <order-by field-name="sequenceNum"/>
             </entity-find>
             <order-map-list list="statusItemList"><order-by field-name="sequenceNum"/></order-map-list>
             <script>
-                def mermaidBuilder = new StringBuilder("stateDiagram-v2\n")
-                for (statusItem in statusItemList) {
-                    mermaidBuilder.append("    ${statusItem.statusId}: ${statusItem.description}")
-                    if (statusItem.sequenceNum) mermaidBuilder.append(" (").append(statusItem.sequenceNum).append(")")
-                    mermaidBuilder.append("\n")
+                let mermaidText = "stateDiagram-v2\n"
+                for (const statusItem of statusItemList) {
+                    mermaidText += `    ${statusItem.statusId}: ${statusItem.description}`
+                    if (statusItem.sequenceNum) mermaidText += ` (${statusItem.sequenceNum})`
+                    mermaidText += "\n"
                 }
-                for (transition in transitionList) {
-                    mermaidBuilder.append("    ${transition.statusId} --> ${transition.toStatusId}: ${transition.transitionName}")
-                    if (transition.transitionSequence) mermaidBuilder.append(" (").append(transition.transitionSequence).append(")")
-                    mermaidBuilder.append("\n")
+                for (const transition of transitionList) {
+                    mermaidText += `    ${transition.statusId} --> ${transition.toStatusId}: ${transition.transitionName}`
+                    if (transition.transitionSequence) mermaidText += ` (${transition.transitionSequence})`
+                    mermaidText += "\n"
                 }
-                mermaidText = mermaidBuilder.toString()
+                context.mermaidText = mermaidText
             </script>
         </if>
     </actions>
@@ -67,7 +67,7 @@ along with this software (see the LICENSE.md file). If not, see
         </form-single>
 
         <section name="MermaidDisplay" condition="mermaidText"><widgets>
-            <label text="Found ${statusItemList.size()} statuses, ${transitionList.size()} transitions" type="p" condition="statusItemList != null"/>
+            <label text="Found ${statusItemList.length} statuses, ${transitionList.length} transitions" type="p" condition="statusItemList != null"/>
             <container-dialog id="MermaidText" button-text="Mermaid JS Text">
                 <label text="${mermaidText}" type="pre"/>
             </container-dialog>

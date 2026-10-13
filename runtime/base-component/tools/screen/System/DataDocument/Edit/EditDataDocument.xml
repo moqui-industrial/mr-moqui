@@ -42,7 +42,7 @@ along with this software (see the LICENSE.md file). If not, see
         <entity-find-one entity-name="moqui.entity.document.DataDocument" value-field="dataDocument"/>
 
         <set field="entityInfoList" from="ec.entity.getAllEntitiesInfo('entityName', null, false, true)"/>
-        <if condition="excludeFilter"><set field="entityInfoList" from="entityInfoList.findAll({ !it.fullEntityName.matches(excludeFilter) })"/></if>
+        <if condition="excludeFilter"><set field="entityInfoList" from="entityInfoList.filter(info => !info.fullEntityName.match(new RegExp('^(?:' + excludeFilter + ')$')))"/></if>
     </actions>
     <widgets>
         <container-row><row-col lg="5">
@@ -61,7 +61,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <field name="documentName"><default-field title="Name"><text-line size="40"/></default-field></field>
                 <field name="primaryEntityName"><default-field title="Primary Entity"><drop-down>
                     <list-options list="entityInfoList" key="${fullEntityName}"
-                            text="${org.moqui.util.StringUtilities.camelCaseToPretty(entityName)}"/>
+                            text="${StringUtilities.camelCaseToPretty(entityName)}"/>
                 </drop-down></default-field></field>
 
                 <field name="documentTitle"><default-field title="Title"><text-line/></default-field></field>
@@ -104,7 +104,7 @@ along with this software (see the LICENSE.md file). If not, see
                         <field name="dataDocumentId"><default-field><hidden/></default-field></field>
                         <field name="dataFeedId"><default-field title="Feed">
                             <drop-down>
-                                <entity-options key="${dataFeedId}" text="${dataFeedId}: ${feedName?:''}">
+                                <entity-options key="${dataFeedId}" text="${dataFeedId}: ${feedName || ''}">
                                     <entity-find entity-name="moqui.entity.feed.DataFeed">
                                         <order-by field-name="feedName"/></entity-find>
                                 </entity-options>
@@ -119,7 +119,7 @@ along with this software (see the LICENSE.md file). If not, see
                         <econdition field-name="dataDocumentId"/><order-by field-name="dataFeedId"/></entity-find>
                     <field name="dataDocumentId"><default-field><hidden/></default-field></field>
                     <field name="dataFeedId"><default-field title="Feed">
-                        <display-entity entity-name="moqui.entity.feed.DataFeed" text="${dataFeedId}: ${feedName?:''}"/></default-field></field>
+                        <display-entity entity-name="moqui.entity.feed.DataFeed" text="${dataFeedId}: ${feedName || ''}"/></default-field></field>
                     <field name="deleteButton"><default-field title="">
                         <link url="deleteDataFeedDocument" text=" " icon="fa fa-trash" confirmation="Really remove?"/></default-field></field>
                 </form-list>

@@ -22,47 +22,44 @@ along with this software (see the LICENSE.md file). If not, see
     <transition name="list"><default-response url="../../MainEntityList"/></transition>
     <transition name="find"><default-response url="../../AutoFind"/></transition>
     <transition name="create"><actions>
-        <if condition="org.moqui.util.WebUtilities.isRestrictedGenericEntity(den)"><message error="true">Entity ${den} is not available through this tool</message><return/></if>
+        <if condition="WebUtilities.isRestrictedGenericEntity(den)"><message error="true">Entity ${den} is not available through this tool</message><return/></if>
         <service-call name="create#${den}" in-map="true"/></actions>
         <default-response url="." parameter-map="ec.entity.getEntityDefinition(aen).getPrimaryKeys(context)"/></transition>
     <transition name="update"><actions>
-        <if condition="org.moqui.util.WebUtilities.isRestrictedGenericEntity(den)"><message error="true">Entity ${den} is not available through this tool</message><return/></if>
+        <if condition="WebUtilities.isRestrictedGenericEntity(den)"><message error="true">Entity ${den} is not available through this tool</message><return/></if>
         <service-call name="update#${den}" in-map="true"/></actions>
         <default-response url="." parameter-map="ec.entity.getEntityDefinition(aen).getPrimaryKeys(context)"/></transition>
     <transition name="deleteRecord"><actions>
-        <if condition="org.moqui.util.WebUtilities.isRestrictedGenericEntity(den)"><message error="true">Entity ${den} is not available through this tool</message><return/></if>
+        <if condition="WebUtilities.isRestrictedGenericEntity(den)"><message error="true">Entity ${den} is not available through this tool</message><return/></if>
         <service-call name="delete#${den}" in-map="context"/></actions>
         <default-response url="." parameter-map="ec.entity.getEntityDefinition(aen).getPrimaryKeys(context)"/></transition>
     <transition name="getFormXml" read-only="true">
         <actions><script><![CDATA[
-            import org.moqui.util.MNode
+            let xmlText = '<?xml version="1.0" encoding="UTF-8"?>\n'
 
-            StringBuilder xmlBuilder = new StringBuilder()
-            xmlBuilder.append('<?xml version="1.0" encoding="UTF-8"?>\n')
+            const screenNode = new MNode("screen", {"xmlns:xsi": "http://www.w3.org/2001/XMLSchema-instance", "xsi:noNamespaceSchemaLocation": "http://moqui.org/xsd/xml-screen-3.xsd"})
+            const createTransNode = screenNode.append("transition", {name: "create"})
+            createTransNode.append("service-call", {name: `create#${den}`})
+            createTransNode.append("default-response", {url: "."})
+            const updateTransNode = screenNode.append("transition", {name: "update"})
+            updateTransNode.append("service-call", {name: `update#${den}`})
+            updateTransNode.append("default-response", {url: "."})
 
-            MNode screenNode = new MNode("screen", ["xmlns:xsi":"http://www.w3.org/2001/XMLSchema-instance", "xsi:noNamespaceSchemaLocation":"http://moqui.org/xsd/xml-screen-3.xsd"])
-            MNode createTransNode = screenNode.append("transition", [name:"create"])
-            createTransNode.append("service-call", [name:"create#${den}".toString()])
-            createTransNode.append("default-response", [url:"."])
-            MNode updateTransNode = screenNode.append("transition", [name:"update"])
-            updateTransNode.append("service-call", [name:"update#${den}".toString()])
-            updateTransNode.append("default-response", [url:"."])
+            const actionsNode = screenNode.append("actions", null)
+            actionsNode.append("entity-find", {"entity-name": den, list: "entityValueList"}).append("search-form-inputs", null)
 
-            MNode actionsNode = screenNode.append("actions", null)
-            actionsNode.append("entity-find", ["entity-name":den, list:"entityValueList"]).append("search-form-inputs", null)
-
-            MNode widgetsNode = screenNode.append("widgets", null)
+            const widgetsNode = screenNode.append("widgets", null)
             widgetsNode.append(sri.getActiveScreenDef().getForm("CreateEntityValue").getAutoCleanedNode())
             widgetsNode.append(sri.getActiveScreenDef().getForm("ListEntityValue").getAutoCleanedNode())
-            screenNode.addToSb(xmlBuilder, 0)
+            xmlText += screenNode.toString()
 
-            ec.web.sendTextResponse(xmlBuilder.toString(), "text/xml", "${ec.entity.getEntityDefinition(aen).entityName}${ec.entity.getEntityDefinition(den).entityName}s.xml")
+            ec.web.sendTextResponse(xmlText, "text/xml", `${ec.entity.getEntityDefinition(aen).entityName}${ec.entity.getEntityDefinition(den).entityName}s.xml`)
         ]]></script></actions>
         <default-response type="none"/>
     </transition>
 
     <actions>
-        <if condition="org.moqui.util.WebUtilities.isRestrictedGenericEntity(aen) || org.moqui.util.WebUtilities.isRestrictedGenericEntity(den)">
+        <if condition="WebUtilities.isRestrictedGenericEntity(aen) || WebUtilities.isRestrictedGenericEntity(den)">
             <message error="true">Entity is not available through this tool</message><return/></if>
         <entity-find entity-name="${den}" list="entityValueList" offset="0" limit="50" cache="false">
             <search-form-inputs/></entity-find>
@@ -88,7 +85,7 @@ along with this software (see the LICENSE.md file). If not, see
             <field name="edit">
                 <conditional-field title="" condition="entityValue != null">
                     <link url="../AutoEditMaster" text="" icon="fa fa-pencil"
-                            parameter-map="entityValue.getPrimaryKeys() + [aen:den, den:null]"/></conditional-field>
+                            parameter-map="entityValue.getPrimaryKeys() + {aen:den, den:null}"/></conditional-field>
                 <default-field title=""><display text=" "/></default-field>
             </field>
             <field name="delete">

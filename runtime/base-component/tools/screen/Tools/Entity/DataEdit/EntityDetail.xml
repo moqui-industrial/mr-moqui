@@ -37,10 +37,9 @@ along with this software (see the LICENSE.md file). If not, see
         <script><![CDATA[
             eecas = ec.entity.eecaRulesByEntityName.get(entityDefinition.fullEntityName)
             secas = []
-            for (verb in org.moqui.impl.service.runner.EntityAutoServiceRunner.verbSet) {
-                serviceName = verb + entityDefinition.fullEntityName
-                rules = ec.service.secaRulesByServiceName.get(serviceName)
-                if (rules) secas.addAll(rules)
+            for (const verb of ['create', 'update', 'delete', 'store']) {
+                const rules = ec.service.secaRulesByServiceName.get(verb + entityDefinition.fullEntityName)
+                if (rules) secas.push(...rules)
             }
         ]]></script>
         <set field="entityDescription" from="entityNode.first('description')?.text"/>
@@ -49,15 +48,15 @@ along with this software (see the LICENSE.md file). If not, see
         <container>
             <link url="list" text="Entity List"/>
             <link url="find" text="Entity Find"/>
-            <link url="autoFind" text="Auto Screen Find" parameter-map="[aen:selectedEntity]"/>
+            <link url="autoFind" text="Auto Screen Find" parameter-map="{aen:selectedEntity}"/>
             <link url="checkTable" text="Check/Update Table" tooltip="Check and update DB table from entity definition"/>
         </container>
         <container><label text="Entity Detail for ${entityDefinition.getPrettyName(null, null)} (${entityDefinition.fullEntityName})" type="h3"/></container>
         <container-row>
             <row-col md="3"><label text="View Entity? ${entityDefinition.isViewEntity}" type="strong"/></row-col>
-            <row-col md="3"><label text="Short Alias: ${entityInfo.shortAlias ?: 'N/A'}" type="strong"/></row-col>
-            <row-col md="3"><label text="Table Name: ${entityInfo.fullTableName ?: 'N/A'}" type="strong"/></row-col>
-            <row-col md="3"><label text="Entity Group: ${entityNode.attribute('group-name') ?: '(default)'}" type="strong"/></row-col>
+            <row-col md="3"><label text="Short Alias: ${entityInfo.shortAlias || 'N/A'}" type="strong"/></row-col>
+            <row-col md="3"><label text="Table Name: ${entityInfo.fullTableName || 'N/A'}" type="strong"/></row-col>
+            <row-col md="3"><label text="Entity Group: ${entityNode.attribute('group-name') || '(default)'}" type="strong"/></row-col>
         </container-row>
         <container-row>
             <row-col md="3"><label text="Needs Encrypt? ${entityInfo.needsEncrypt}" type="strong"/></row-col>
@@ -65,7 +64,7 @@ along with this software (see the LICENSE.md file). If not, see
         </container-row>
         <container-row>
             <row-col md="3"><label text="Needs Audit Log? ${entityInfo.needsAuditLog}" type="strong"/></row-col>
-            <row-col md="3"><label text="Entity Audit Default: ${entityNode.attribute('enable-audit-log') ?: 'false'}" type="strong"/></row-col>
+            <row-col md="3"><label text="Entity Audit Default: ${entityNode.attribute('enable-audit-log') || 'false'}" type="strong"/></row-col>
         </container-row>
         <label text="${entityDescription}" condition="entityDescription"/>
 
@@ -78,7 +77,7 @@ along with this software (see the LICENSE.md file). If not, see
             <field name="encrypt" from="fieldInfo.encrypt"><default-field><display/></default-field></field>
             <field name="localize" from="fieldInfo.enableLocalization"><default-field><display/></default-field></field>
             <field name="default" from="fieldInfo.defaultStr"><default-field><display/></default-field></field>
-            <field name="description" from="fieldInfo.fieldNode.first('description')?.text ?: ''"><default-field><display/></default-field></field>
+            <field name="description" from="fieldInfo.fieldNode.first('description')?.text || ''"><default-field><display/></default-field></field>
         </form-list>
         <form-list name="RelatedEntities" list="relationshipInfoList" list-entry="relInfo">
             <field name="prettyName"><default-field><display/></default-field></field>
@@ -121,7 +120,7 @@ along with this software (see the LICENSE.md file). If not, see
         <label text="${dependents.toString()}" type="pre" encode="true"/>
         <label text="All Descendants:" type="h5"/>
         <section-iterate name="DescendantList" list="dependents.allDescendants" entry="descendantName">
-            <widgets><container><link url="." text="${descendantName}" parameter-map="[selectedEntity:descendantName]" link-type="anchor"/></container></widgets>
+            <widgets><container><link url="." text="${descendantName}" parameter-map="{selectedEntity:descendantName}" link-type="anchor"/></container></widgets>
         </section-iterate>
     </widgets>
 </screen>

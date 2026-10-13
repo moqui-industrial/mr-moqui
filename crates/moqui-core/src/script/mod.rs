@@ -17,6 +17,7 @@
 mod actions;
 mod parse;
 mod runtime;
+pub mod screen_lint;
 
 pub use actions::{check_actions, run_actions};
 pub use parse::parse_js;
@@ -33,6 +34,9 @@ mod tests {
     #[test]
     fn parse_js_accepts_arithmetic_and_actions_return_ok() {
         parse_js("1 + 1").unwrap();
+        parse_js("{a: b, c: [1, 2]}").unwrap();
+        assert!(parse_js("def x = 1").is_err());
+        assert!(parse_js("a b").is_err());
         run_actions("<actions/>").unwrap();
     }
 }

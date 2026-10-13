@@ -37,7 +37,7 @@ along with this software (see the LICENSE.md file). If not, see
     </actions>
     <widgets>
         <container-row><row-col md="6">
-            <link url="systemMessageList" text="Messages" parameter-map="[systemMessageRemoteId:systemMessageRemoteId]"/>
+            <link url="systemMessageList" text="Messages" parameter-map="{systemMessageRemoteId:systemMessageRemoteId}"/>
 
             <form-single name="SystemMessageRemoteForm" map="systemMessageRemote" transition="updateMessageRemote">
                 <field name="systemMessageRemoteId"><default-field title="Message Remote ID"><display/></default-field></field>

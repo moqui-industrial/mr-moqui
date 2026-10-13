@@ -44,10 +44,10 @@ along with this software (see the LICENSE.md file). If not, see
             <if condition="ec.web.sessionAttributes.moquiAuthcFactorRequired"><then>
                 <if condition="code"><then>
                     <service-call name="org.moqui.impl.UserServices.validate#ExternalUserAuthcCode"
-                            in-map="[code:code]" out-map="validateOut"/>
+                            in-map="{code:code}" out-map="validateOut"/>
                     <if condition="validateOut.verified"><then>
                         <script>ec.user.internalLoginUser(validateOut.username)</script>
-                        <script>ec.web.sendJsonResponse([loggedIn:true])</script>
+                        <script>ec.web.sendJsonResponse({loggedIn:true})</script>
                         <return/>
                     </then><else>
                         <message type="danger" public="true">Authentication code is not valid</message>
@@ -58,7 +58,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <service-call name="org.moqui.impl.UserServices.get#ExternalUserAuthcFactorInfo" out-map="factorInfoOut"/>
                 <script>ec.web.sendJsonResponse(factorInfoOut)</script>
             </then><else>
-                <script>ec.web.sendJsonResponse([loggedIn:loggedIn])</script>
+                <script>ec.web.sendJsonResponse({loggedIn:loggedIn})</script>
             </else></if>
         </actions>
         <default-response type="none"/>
@@ -68,7 +68,7 @@ along with this software (see the LICENSE.md file). If not, see
             factorId can be UserAccountEmail IFF user has no active authc factors configured -->
     <transition name="sendOtp" method="post">
         <parameter name="factorId" required="true"/>
-        <service-call name="org.moqui.impl.UserServices.send#ExternalAuthcCode" in-map="[factorId:factorId]"
+        <service-call name="org.moqui.impl.UserServices.send#ExternalAuthcCode" in-map="{factorId:factorId}"
                 web-send-json-response="true"/>
         <default-response type="none"/>
     </transition>
@@ -83,12 +83,12 @@ along with this software (see the LICENSE.md file). If not, see
                 <return/>
             </if>
             <service-call name="org.moqui.impl.UserServices.validate#ExternalUserAuthcCode"
-                    in-map="[code:code]" out-map="validateOut" ignore-error="true"/>
+                    in-map="{code:code}" out-map="validateOut" ignore-error="true"/>
             <if condition="ec.message.hasError() || !validateOut?.verified"><then>
                 <script>ec.web.sendJsonError(403, (ec.message.hasError() ? ec.message.errorsString : ec.l10n.localize("Authentication code is not valid")), null)</script>
             </then><else>
                 <set field="loggedIn" from="ec.user.internalLoginUser(validateOut.username)"/>
-                <script>ec.web.sendJsonResponse([loggedIn:loggedIn])</script>
+                <script>ec.web.sendJsonResponse({loggedIn:loggedIn})</script>
             </else></if>
         </actions>
         <default-response type="none"/>
