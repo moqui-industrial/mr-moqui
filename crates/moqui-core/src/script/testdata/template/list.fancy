@@ -1,0 +1,7 @@
+<#list rows as row>
+${row_index}: ${row.name}<#if row_has_next>,</#if>
+<#list row.tags as tag>
+  - ${tag}
+</#list>
+</#list>
+<#list missing as nothing>never</#list>done

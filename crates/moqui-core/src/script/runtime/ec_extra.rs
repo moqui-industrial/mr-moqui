@@ -161,7 +161,31 @@ pub(super) fn add_resource_functions<'js>(ctx: &Ctx<'js>, resource: &Object<'js>
         "resource.condition",
         Function::new(ctx.clone(), resource_condition),
     )?;
-    caught(ctx, "resource.condition", resource.set("condition", condition))
+    caught(ctx, "resource.condition", resource.set("condition", condition))?;
+    let xsl_fo = caught(
+        ctx,
+        "resource.xslFoTransform",
+        Function::new(ctx.clone(), super::ec_screen::resource_xsl_fo_transform),
+    )?;
+    caught(ctx, "resource.xslFoTransform", resource.set("xslFoTransform", xsl_fo))?;
+    let template = caught(ctx, "resource.template", Function::new(ctx.clone(), resource_template))?;
+    caught(ctx, "resource.template", resource.set("template", template))
+}
+
+/// `ec.resource.template(location, data)`: the file rendered by the renderer for its extension, as
+/// text. A trusted renderer reads the live context and adds `data` in a frame of its own. A
+/// locked-down renderer sees only `data`.
+fn resource_template(ctx: Ctx<'_>, location: String, data: Opt<JsValue<'_>>) -> rquickjs::Result<String> {
+    host_guard(&ctx, || {
+        let data = match data.0 {
+            Some(value) if !value.is_undefined() && !value.is_null() => Some(js_to_host(&ctx, &value)?),
+            _ => None,
+        };
+        let factory = with_ec(&ctx, |ec| Arc::clone(ec.factory()))?;
+        crate::script::template::TemplateRegistry::of(&factory)
+            .render_location(&factory, &location, data.as_ref())
+            .map_err(|err| throw_error(&ctx, &err))
+    })
 }
 
 // ---- ec.l10n ----
@@ -301,6 +325,7 @@ fn screen_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
         Function::new(ctx.clone(), screen_is_render_mode_valid),
     )?;
     caught(ctx, "screen.isRenderModeValid", screen.set("isRenderModeValid", valid))?;
+    super::ec_screen::install(ctx, &screen)?;
     Ok(screen)
 }
 

@@ -155,8 +155,8 @@
     const fieldLit = (widget) => nodeLit(widget.parent.parent, false);
 
     // The statements that render a text element: a file or inline text, with boundary comments when the
-    // screen facade asks for them. Inline text with template true is expanded as a string template. The
-    // fancy template dialect is a later slice.
+    // screen facade asks for them. Inline text with template true is a trusted fancy template, compiled once
+    // and cached by its text. A text file is rendered by the renderer registered for its extension.
     const renderTextCode = (node) => {
         const template = attr(node, "template");
         const label = template || "true";
@@ -181,7 +181,7 @@
         if (inline.trim() !== "") {
             const marker = `render-mode.text[inline][@template=${label}]`;
             const isTemplate = !template || template === "true";
-            const text = isTemplate ? expandNoL10nExpr(inline) : jsString(inline);
+            const text = isTemplate ? `sri.renderInlineText(${jsString(inline)})` : jsString(inline);
             const value = encode && !isTemplate ? `sri.encodeHtml(${text})` : text;
             const begin = boundary ? `if (sri.doBoundaryComments()) sri.write(${jsString(`<!-- BEGIN ${marker} -->`)});` : "";
             const end = boundary ? `if (sri.doBoundaryComments()) sri.write(${jsString(`<!-- END   ${marker} -->`)});` : "";
@@ -195,30 +195,34 @@
     };
 
     // The macros every mode shares: include-screen, render-mode, text and the subscreen and section calls.
-    const anyMacros = (mode) => ({
-        "include-screen": stmt((node) =>
-            `sri.renderIncludeScreen(${jsString(attr(node, "location"))}, ${jsString(attr(node, "share-scope"))});`),
-        "render-mode": stmt((node) => {
-            const texts = childrenNamed(node, "text");
-            if (!texts.length) return "";
-            let chosen = null;
-            texts.forEach((kid) => { if (!attr(kid, "type") || attr(kid, "type") === "any") chosen = kid; });
-            texts.forEach((kid) => { if (attr(kid, "type") && attr(kid, "type").split(",").includes(mode)) chosen = kid; });
-            return chosen ? renderTextCode(chosen) : "";
-        }),
-        "text": stmt((node) => {
-            const type = attr(node, "type");
-            return !type || type.split(",").includes(mode) ? renderTextCode(node) : "";
-        }),
-        // A dynamic form is assembled when it renders: the call runs it, and its code is made then with the
-        // dynamic-form element around the assembled form.
-        "render-dynamic-form": stmt((node) => `sri.renderDynamicForm(${jsString(attr(node, "name"))});`),
-        "subscreens-menu": noop,
-        "subscreens-active": stmt(() => "sri.renderSubscreen();"),
-        "subscreens-panel": stmt(() => "sri.renderSubscreen();"),
-        "section": stmt((node) => `sri.renderSection(${jsString(attr(node, "name"))});`),
-        "section-iterate": stmt((node) => `sri.renderSection(${jsString(attr(node, "name"))});`),
-    });
+    const anyMacros = (mode) => {
+        // A text type list names the mode; xsl-fo is the older name of html-print.
+        const typeMatches = (type) => type.split(",").map((name) => name.trim()).map((name) => name === "xsl-fo" ? "html-print" : name).includes(mode);
+        return {
+            "include-screen": stmt((node) =>
+                `sri.renderIncludeScreen(${jsString(attr(node, "location"))}, ${jsString(attr(node, "share-scope"))});`),
+            "render-mode": stmt((node) => {
+                const texts = childrenNamed(node, "text");
+                if (!texts.length) return "";
+                let chosen = null;
+                texts.forEach((kid) => { if (!attr(kid, "type") || attr(kid, "type") === "any") chosen = kid; });
+                texts.forEach((kid) => { if (attr(kid, "type") && typeMatches(attr(kid, "type"))) chosen = kid; });
+                return chosen ? renderTextCode(chosen) : "";
+            }),
+            "text": stmt((node) => {
+                const type = attr(node, "type");
+                return !type || typeMatches(type) ? renderTextCode(node) : "";
+            }),
+            // A dynamic form is assembled when it renders: the call runs it, and its code is made then with the
+            // dynamic-form element around the assembled form.
+            "render-dynamic-form": stmt((node) => `sri.renderDynamicForm(${jsString(attr(node, "name"))});`),
+            "subscreens-menu": noop,
+            "subscreens-active": stmt(() => "sri.renderSubscreen();"),
+            "subscreens-panel": stmt(() => "sri.renderSubscreen();"),
+            "section": stmt((node) => `sri.renderSection(${jsString(attr(node, "name"))});`),
+            "section-iterate": stmt((node) => `sri.renderSection(${jsString(attr(node, "name"))});`),
+        };
+    };
 
     // The text of a display widget: the expanded text, or the field value, with currency when asked.
     // Shared by the text, csv and xml modes, which differ in how they present the result. The result is

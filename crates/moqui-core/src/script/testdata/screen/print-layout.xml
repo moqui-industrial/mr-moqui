@@ -1,0 +1,36 @@
+<widgets>
+    <container id="c1" style="page-break-before"><label text="First ${who}" condition="who"/></container>
+    <container-box><box-header><label text="Boxed"/></box-header><box-body><label text="inside"/></box-body>
+        <box-body-nopad><label text="nopad"/></box-body-nopad></container-box>
+    <container-row><row-col><label text="col one"/></row-col><row-col><label text="col two"/></row-col></container-row>
+    <container-panel><panel-header><label text="head"/></panel-header><panel-left><label text="left"/></panel-left>
+        <panel-center><label text="center"/></panel-center><panel-right><label text="right"/></panel-right>
+        <panel-footer><label text="foot"/></panel-footer></container-panel>
+    <container-dialog button-text="Open"><label text="not shown"/></container-dialog>
+    <form-single name="LayoutForm" map="item">
+        <field name="a"><default-field title="A"><display/></default-field></field>
+        <field name="b"><default-field><text-line/></default-field></field>
+        <field name="c"><default-field title="C"><date-time type="date"/></default-field></field>
+        <field name="d"><default-field><drop-down no-current-selected-key="N"><option key="N" text="No"/></drop-down></default-field></field>
+        <field name="e"><default-field><hidden/></default-field></field>
+        <field name="g"><default-field><submit/></default-field></field>
+        <field-layout>
+            <field-group title="Group">
+                <field-row><field-ref name="a"/><field-ref name="b"/></field-row>
+                <field-row-big title="Big ${who}"><field-ref name="c"/><field-ref name="d"/></field-row-big>
+            </field-group>
+            <field-accordion><field-ref name="e"/></field-accordion>
+            <field-ref name="missing"/>
+            <fields-not-referenced/>
+        </field-layout>
+    </form-single>
+    <image url="/img/logo.png" url-type="plain" alt="Logo" width="10" height="20" id="logo"/>
+    <image url="logo" alt="Content"/>
+    <link url="go" text="Go ${who}" condition="who" parameter-map="{a: 1}"/>
+    <link url="." text="Plain" url-type="plain" url-noparam="true"/>
+    <link entity-name="moqui.basic.Enumeration" text="${description}"/>
+    <render-mode><text type="html-print">print only</text><text type="html">html only</text></render-mode>
+    <subscreens-active/>
+    <subscreens-menu/>
+    <include-screen location="component://x/Y.xml"/>
+</widgets>

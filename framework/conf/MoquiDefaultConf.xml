@@ -406,6 +406,13 @@
         <template-renderer extension="gstring" class="org.moqui.impl.context.renderer.GStringTemplateRenderer"/>
         <template-renderer extension="html.gstring" class="org.moqui.impl.context.renderer.GStringTemplateRenderer"/>
 
+        <!-- fancy templates: if, list and assign tags plus ${expr}, compiled to a cached JavaScript function. The
+            -locked renderers see only the plain snapshot of the map passed in. See Templating in plans/Architecture-Proposal.md -->
+        <template-renderer extension="fancy" class="fancy"/>
+        <template-renderer extension="html.fancy" class="fancy-html"/>
+        <template-renderer extension="fancy-locked" class="fancy-locked"/>
+        <template-renderer extension="html.fancy-locked" class="fancy-locked-html"/>
+
         <template-renderer extension="md" class="org.moqui.impl.context.renderer.MarkdownTemplateRenderer"/>
         <template-renderer extension="markdown" class="org.moqui.impl.context.renderer.MarkdownTemplateRenderer"/>
         <template-renderer extension="md.ftl" class="org.moqui.impl.context.renderer.FtlMarkdownTemplateRenderer"/>

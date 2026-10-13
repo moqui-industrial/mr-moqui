@@ -20,14 +20,14 @@ along with this software (see the LICENSE.md file). If not, see
             <p>&nbsp;</p>
             <div class="jumbotron">
                 <h1><i class="fa fa-link text-danger"></i> Page Not Found (${errorCode})</h1>
-                <#if errorThrowable??>
+                <#if errorThrowable>
                     <#-- should always be a ScreenResourceNotFoundException -->
-                    <p class="text-danger">Could not find <code>${(errorThrowable.pathFromLastScreen!"")?html}</code>
-                        <#if errorThrowable.lastSd??>under ${errorThrowable.lastSd.getDefaultMenuName()}</#if>.</p>
-                    <p class="text-danger">The full path was: <#list errorThrowable.fullPathNameList as pathName><code>${pathName?html}</code><#if pathName_has_next>/</#if></#list></p>
-                    <#if errorThrowable.resourceLocation??><p class="text-danger">Resource not found at: ${errorThrowable.resourceLocation?html}</p></#if>
+                    <p class="text-danger">Could not find <code>${html(errorThrowable.pathFromLastScreen ?? "")}</code>
+                        <#if errorThrowable.lastSd>under ${errorThrowable.lastSd.getDefaultMenuName()}</#if>.</p>
+                    <p class="text-danger">The full path was: <#list errorThrowable.fullPathNameList as pathName><code>${html(pathName)}</code><#if pathName_has_next>/</#if></#list></p>
+                    <#if errorThrowable.resourceLocation><p class="text-danger">Resource not found at: ${html(errorThrowable.resourceLocation)}</p></#if>
                 <#else>
-                    <p class="text-danger">${errorMessage!""}</p>
+                    <p class="text-danger">${html(errorMessage ?? "")}</p>
                 </#if>
                 <a href="${sri.buildUrl("/").url}" class="btn btn-primary btn-lg" role="button">Go Home</a>
                 <a href="javascript:window.history.back();" class="btn btn-primary btn-lg" role="button">Go Back</a>

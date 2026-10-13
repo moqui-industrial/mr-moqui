@@ -121,6 +121,19 @@ Three implementations are planned. All three run on the `ExecutionContext`'s Qui
 
 **Fancy renderer.** Control flow and iteration, for a template that is mostly text with structure. Inline `<text template="true">` is this case today. `DefaultScreenMacros.any.ftl` compiles the body with FreeMarker's `?interpret`, and bodies such as `framework/screen/ScreenRenderEmail.xml` use `<#if>`, `<#list>`, and `<#assign>`. The dialect is `if`, `list`, and `assign`, compiled to one cached JavaScript function. No Mustache library. Those bodies are rewritten from the FreeMarker tags into that dialect. `ScreenRenderEmail.xml` is the fixture. The trusted renderer sees the same live context as `JsTemplateLiteral`. Each template is compiled once and cached.
 
+The tags are FreeMarker-like but are only these. A tag runs from `<#name` to the first `>` outside brackets and quotes, so a comparison with `>` or `>=` is written in parentheses, as in FreeMarker. `${expr}` ends at the matching `}`. A line that holds only tags and white space writes nothing. `\${` and `\<#` write the text. `<#visit>`, `<#macro>`, `<@call/>` and `?` built-ins are errors that name the line. Expressions are JavaScript and each is parsed when the template compiles. A name that is unset is null, and an interpolated null or undefined writes nothing.
+
+| Tag | Meaning |
+|---|---|
+| `<#if cond>` `<#elseif cond>` `<#else>` `</#if>` | JavaScript condition, so use `x` or `x.length` where FreeMarker had `?has_content` |
+| `<#list items as item>` `</#list>` | Iterates a list, entity list, string (one item), or the values of a map. A null list writes nothing. `item_index` and `item_has_next` are set in the body |
+| `<#assign name = expr>` | A variable local to the template (`var`), so it never changes the context |
+| `<#-- text -->` | Comment |
+| `${expr}` | The value as text. With an escaping renderer the value is HTML or XML escaped (`& < > " '`) |
+| `${html(expr)}`, `${raw(expr)}` | Escape this value in a renderer that does not, or write this value as it is in one that does |
+
+The conf registers renderers by extension with `<template-renderer extension="..." class="...">`: `fancy` is the trusted renderer, `html.fancy` is the trusted renderer with escaping, and `fancy-locked` and `html.fancy-locked` are the locked-down ones. `ec.resource.template(location, data)` renders a file by its extension, and a `<text>` file in a screen does the same, with a trusted renderer for an extension that has none. Inline `<text template="true">` is a trusted template without escaping, so a body writes `${html(value)}` for a value that came from a user.
+
 **Locked-down fancy renderer.** The same compiler, with a different context. It receives the unwrap snapshot from `plans/ContextObjects.md`: plain values, decimals as strings, no `ec`, no `sri`, no live entity value. Format and localize are plain functions and do not take an `ExecutionContext`. This is new. Moqui's sandbox options have been minimal, and untrusted FreeMarker, GString, and script templates have not been accepted. Component-authored and framework templates stay on the trusted renderer. A template that may be edited by someone who is not a component author uses this renderer, selected by its own conf extension. `expand()` does not use it. A stored string that must not run as a script is rendered here, not passed to `expand()`.
 
 Email bodies stay screens, rendered in the `html` and `text` modes. Subject, from address, and the other `ec.resource.expand` call sites use `JsTemplateLiteral`.

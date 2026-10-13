@@ -18,6 +18,7 @@ mod actions;
 mod parse;
 mod runtime;
 pub mod screen_lint;
+pub mod template;
 pub(crate) mod walker;
 
 pub use actions::{check_actions, run_actions};

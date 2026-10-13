@@ -138,9 +138,8 @@ along with this software (see the LICENSE.md file). If not, see
             <container id="footer" style="bg-dark"><render-mode><text type="html"><![CDATA[
                 <#assign footerItemList = sri.getThemeValues("STRT_FOOTER_ITEM")>
                 <div id="apps-footer-content">
-                    <#list footerItemList! as footerItem>
-                        <#assign footerItemTemplate = footerItem?interpret>
-                        <@footerItemTemplate/>
+                    <#list footerItemList as footerItem>
+                        ${raw(sri.renderInlineText(footerItem))}
                     </#list>
                 </div>
             ]]></text></render-mode></container>

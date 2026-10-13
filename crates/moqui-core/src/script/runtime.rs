@@ -43,6 +43,7 @@ mod conditions;
 mod convert;
 mod decimal;
 mod ec_extra;
+mod ec_screen;
 mod entities;
 mod facades;
 mod helpers;
@@ -572,6 +573,24 @@ fn expand_in(ctx: &Ctx<'_>, template: &str) -> Result<String, Error> {
     call_template(ctx, function)
 }
 
+/// Run a compiled fancy template function and return its text. The function is kept per engine.
+pub(crate) fn run_template_function(source: &str) -> Result<String, Error> {
+    with_context(|ctx| run_template_function_here(ctx, source))
+}
+
+/// [`run_template_function`] on the callback's context, for a host call made from a running script.
+pub(crate) fn run_template_function_here(ctx: &Ctx<'_>, source: &str) -> Result<String, Error> {
+    let function = match restore_template(ctx, source)? {
+        Some(function) => function,
+        None => {
+            let function = eval_js::<Function>(ctx, source)?;
+            save_template(ctx, source, &function);
+            function
+        }
+    };
+    call_template(ctx, function)
+}
+
 fn restore_template<'js>(ctx: &Ctx<'js>, template: &str) -> Result<Option<Function<'js>>, Error> {
     let persistent = current_engine().and_then(|engine| engine.templates.borrow().get(template).cloned());
     let Some(persistent) = persistent else {
@@ -664,6 +683,7 @@ fn install_ec(ctx: &Ctx<'_>) -> Result<(), Error> {
     ec.set("search", search_object(ctx)?).map_err(js_error)?;
     ec_extra::install_ec_extras(ctx, &ec)?;
     caught(ctx, "globals", ctx.globals().set("ec", ec))?;
+    ec_screen::install_builder(ctx)?;
     caught(ctx, "globals", ctx.globals().set("sri", screen_host::sri_object(ctx)?))?;
     let system = Object::new(ctx.clone()).map_err(js_error)?;
     let property = Function::new(ctx.clone(), system_get_property).map_err(js_error)?;

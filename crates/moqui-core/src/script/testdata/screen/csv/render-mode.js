@@ -1,8 +1,8 @@
 if (sri.doBoundaryComments()) sri.write("<!-- BEGIN render-mode.text[inline][@template=true] -->");
-sri.write(ec.resource.expandNoL10n("text csv xml"));
+sri.write(sri.renderInlineText("text csv xml"));
 if (sri.doBoundaryComments()) sri.write("<!-- END   render-mode.text[inline][@template=true] -->");
 if (sri.doBoundaryComments()) sri.write("<!-- BEGIN render-mode.text[inline][@template=true] -->");
-sri.write(ec.resource.expandNoL10n("typed text"));
+sri.write(sri.renderInlineText("typed text"));
 if (sri.doBoundaryComments()) sri.write("<!-- END   render-mode.text[inline][@template=true] -->");
 {
     const $location = ec.resource.expandNoL10n("component://x/template/Part.txt");
@@ -19,4 +19,4 @@ if (sri.doBoundaryComments()) sri.write("<!-- END   render-mode.text[inline][@te
 if (sri.doBoundaryComments()) sri.write("<!-- BEGIN render-mode.text[inline][@template=false] -->");
 sri.write(sri.encodeHtml("a < b"));
 if (sri.doBoundaryComments()) sri.write("<!-- END   render-mode.text[inline][@template=false] -->");
-sri.write(ec.resource.expandNoL10n("quiet ${name}"));
+sri.write(sri.renderInlineText("quiet ${name}"));

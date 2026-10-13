@@ -222,6 +222,31 @@ entity's drop-down in `auto-fields-entity` is a text widget.
 - `entity find .orderBy("a,-b,^c")` takes comma separated fields, as Java does.
 - `ScheduledJobRunner.getCronDescription`, `ec.user.getPeriodDescription` and `ec.web.request` are not added.
 
+### Added by phase 8 slice 3
+
+The fancy renderers, the print mode, and the render calls services use. Dialect and registration are Template
+renderers in `plans/Architecture-Proposal.md`.
+
+- The locked-down renderer runs in its own QuickJS runtime on the thread, with no `ec`, `sri`, context stack or host
+  objects. The snapshot is JSON of the map passed in (`unwrap_json`: a decimal is a string, an entity value is its
+  field map, an entity list is a list of maps, a host object is dropped and logged), parsed there and read through a
+  `with` over a `Proxy` that returns null for an unset name. `format(value, pattern)` and `localize(text)` are its only
+  functions besides the language built-ins. A run is cut off after five seconds and 32 MB.
+- `sri.renderInlineText(body)`: a `<text template="true">` body as a trusted fancy template, returning the text. The
+  function is compiled once per body and kept per engine. `sri.renderText(location, template)` picks the renderer by the
+  extension of the location, and a location with no renderer is a trusted fancy template.
+- `sri.once(key)`: true the first time a render sees the key. The print mode writes its document wrapper with it.
+- `ec.resource.template(location, data)`: the file rendered by the renderer for its extension, as text.
+- `ec.resource.xslFoTransform(...)`: throws "PDF is not available until phase 12".
+- `ec.screen.render(options)` with `{screenPath, renderMode, rootScreen, baseLinkUrl, lastStandalone, parameters}`
+  returns `{status, contentType, text}`, and `ec.screen.makeRender()` is the Java builder over it (`webappName`,
+  `rootScreen`, `rootScreenFromHost` (ignored), `screenPath`, `renderMode`, `baseLinkUrl`, `lastStandalone`,
+  `parameters`, `render()` returning text). `ec.screen.getMimeTypeByMode(mode)` and `ec.screen.isRenderModeText(mode)`.
+  A render started inside a render keeps the outer render's output; `xsl-fo` means `html-print` in all of them.
+- `sri.getFieldOptions` runs `dynamic-options` through `ScreenTest` (`screen::ScreenTest`, `ec.screen.makeTest()` in
+  Java) when the other option sources give nothing: the transition is rendered with the `depends-on` values and the
+  parameters, and its JSON (a list, or a map with `options`) is read with `value-field` and `label-field`.
+
 ## Out of scope
 
 - QuickJS operator overloading for decimals. QuickJS-NG ties it to the built-in `BigDecimal` and `BigFloat` classes (`CONFIG_BIGNUM`). It does not extend to a host class, so the build flag does not give a host decimal `+`. The browser cannot share that flag either.

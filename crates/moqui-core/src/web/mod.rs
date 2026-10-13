@@ -117,12 +117,17 @@ struct WebSlot {
     body: Vec<u8>,
 }
 
-/// Clears the thread-local web slot, including when a panic unwinds.
-pub struct WebGuard;
+/// Puts back the thread-local web slot that was there before the install, or clears it when there was
+/// none, including when a panic unwinds. A render started from inside another render keeps the outer
+/// one's slot this way.
+pub struct WebGuard {
+    previous: Option<WebSlot>,
+}
 
 impl Drop for WebGuard {
     fn drop(&mut self) {
-        WEB.with(|slot| *slot.borrow_mut() = None);
+        let previous = self.previous.take();
+        WEB.with(|slot| *slot.borrow_mut() = previous);
     }
 }
 
@@ -135,17 +140,17 @@ pub(crate) fn install(parameters: BTreeMap<String, Value>) -> WebGuard {
 /// fills the slot this way: the parameter map and base URL here, the session map on the session,
 /// and the output writer is the slot's body (see [`start_output`] and [`write_output`]).
 pub(crate) fn install_with(parameters: BTreeMap<String, Value>, base_url: String) -> WebGuard {
-    WEB.with(|slot| {
-        *slot.borrow_mut() = Some(WebSlot {
+    let previous = WEB.with(|slot| {
+        slot.borrow_mut().replace(WebSlot {
             parameters,
             base_url,
             sent: false,
             status: 200,
             headers: Vec::new(),
             body: Vec::new(),
-        });
+        })
     });
-    WebGuard
+    WebGuard { previous }
 }
 
 pub(crate) fn parameters() -> BTreeMap<String, Value> {

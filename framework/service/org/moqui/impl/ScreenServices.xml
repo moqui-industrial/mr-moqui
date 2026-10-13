@@ -34,7 +34,7 @@ along with this software (see the LICENSE.md file). If not, see
 
                 <if condition="shouldRun">
                     <service-call name="org.moqui.impl.ScreenServices.render#ScheduledScreen"
-                            in-map="[screenScheduledId:screenScheduled.screenScheduledId]" async="distribute"/>
+                            in-map="[screenScheduledId:screenScheduled.screenScheduledId]" async="true"/>
                 </if>
             </iterate>
         </actions>

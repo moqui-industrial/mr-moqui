@@ -219,6 +219,14 @@ fn sri_render_text(ctx: Ctx<'_>, location: String, template: Opt<String>) -> rqu
     })
 }
 
+/// `sri.renderInlineText(body)`: a `<text template="true">` body as a trusted fancy template.
+fn sri_render_inline_text(ctx: Ctx<'_>, body: String) -> rquickjs::Result<String> {
+    host_guard(&ctx, || {
+        crate::script::template::render_trusted_here(&ctx, &body, crate::script::template::Escape::None)
+            .map_err(|err| Exception::throw_message(&ctx, err.message()))
+    })
+}
+
 fn sri_do_boundary_comments(ctx: Ctx<'_>) -> rquickjs::Result<bool> {
     host_guard(&ctx, || {
         with_render(&ctx, false, |state| Ok(logic::do_boundary_comments(state)))
@@ -381,7 +389,7 @@ fn sri_get_field_entity_value(ctx: Ctx<'_>, widget: JsValue<'_>) -> rquickjs::Re
 fn sri_get_field_options<'js>(ctx: Ctx<'js>, widget: JsValue<'js>) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let widget = lit(&ctx, &widget)?;
-        let options = with_render(&ctx, true, |_| logic::get_field_options(&widget))?;
+        let options = with_render(&ctx, true, |state| logic::get_field_options(state, &widget))?;
         let pairs = Array::new(ctx.clone())?;
         for (index, (key, text)) in options.into_iter().enumerate() {
             let pair = Array::new(ctx.clone())?;
@@ -567,6 +575,13 @@ fn sri_get_after_screen_writer_text(ctx: Ctx<'_>) -> rquickjs::Result<String> {
     })
 }
 
+/// `sri.once(key)`: true the first time a render sees the key.
+fn sri_once(ctx: Ctx<'_>, key: String) -> rquickjs::Result<bool> {
+    host_guard(&ctx, || {
+        with_render(&ctx, false, |state| Ok(state.once.borrow_mut().insert(key.clone())))
+    })
+}
+
 fn sri_get_script_writer_text(ctx: Ctx<'_>) -> rquickjs::Result<String> {
     host_guard(&ctx, || {
         with_render(&ctx, false, |state| {
@@ -609,6 +624,7 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("renderIncludeScreen", sri_render_include_screen);
     method!("renderDynamicForm", sri_render_dynamic_form);
     method!("renderText", sri_render_text);
+    method!("renderInlineText", sri_render_inline_text);
     method!("doBoundaryComments", sri_do_boundary_comments);
     method!("getRenderMode", sri_get_render_mode);
     method!("encodeHtml", sri_encode_html);
@@ -635,6 +651,7 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("getFormHiddenParameters", sri_get_form_hidden_parameters);
     method!("appendToAfterScreenWriter", sri_append_to_after_screen_writer);
     method!("appendToScriptWriter", sri_append_to_script_writer);
+    method!("once", sri_once);
     method!("getAfterScreenWriterText", sri_get_after_screen_writer_text);
     method!("getScriptWriterText", sri_get_script_writer_text);
     method!("getThemeIconClass", sri_get_theme_icon_class);

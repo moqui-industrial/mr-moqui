@@ -172,7 +172,12 @@ pub struct FileReport {
     pub path: PathBuf,
     pub sites: Vec<Site>,
     pub generated_errors: Vec<(u32, String)>,
+    /// `.ftl` locations. They are listed and not compiled.
     pub ftl: Vec<FtlRef>,
+    /// Inline template bodies that compile in the fancy dialect.
+    pub dialect_bodies: usize,
+    /// Inline template bodies that do not compile, such as leftover FreeMarker.
+    pub template_errors: Vec<(u32, String)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -203,7 +208,7 @@ impl ScreenLintReport {
                     ));
                 }
             }
-            for (line, error) in &file.generated_errors {
+            for (line, error) in file.generated_errors.iter().chain(&file.template_errors) {
                 out.push(format!("{}:{line} {error}", file.path.display()));
             }
         }
@@ -241,6 +246,7 @@ impl ScreenLintReport {
         let mut out = String::new();
         let failures = self.failures();
         let ftl: usize = self.files.iter().map(|file| file.ftl.len()).sum();
+        let dialect: usize = self.files.iter().map(|file| file.dialect_bodies).sum();
         let _ = writeln!(out, "Screen expression lint");
         let _ = writeln!(
             out,
@@ -256,12 +262,13 @@ impl ScreenLintReport {
             .sum();
         let _ = writeln!(
             out,
-            "parse failures: {} (site: {site_failures}, generated action script: {})",
+            "parse failures: {} (site: {site_failures}, generated action script or template body: {})",
             failures.len(),
             failures.len() - site_failures
         );
         let _ = writeln!(out, "sites with a Groovy idiom or failure: {}", self.flagged_count());
-        let _ = writeln!(out, "FreeMarker bodies and template references (not parsed): {ftl}");
+        let _ = writeln!(out, "fancy template bodies compiled: {dialect}");
+        let _ = writeln!(out, "FreeMarker template locations (not compiled): {ftl}");
         let _ = writeln!(out, "\nIdiom totals (sites, files)");
         for (idiom, (sites, files)) in self.idiom_totals() {
             let _ = writeln!(out, "  {:<30} {sites:>5} {files:>5}", idiom.name());
@@ -505,8 +512,14 @@ fn scan_body(node: &MNode, element: &str, file: &mut FileReport) {
     }
 }
 
-/// A `<text>` body is FreeMarker unless `template="false"`. It is listed and not parsed.
+/// Text types of render modes that were dropped. Their bodies are never rendered.
+const DROPPED_TEXT_TYPES: &[&str] = &["vuet", "vue", "js"];
+
+/// A `<text>` body with `template` not `false` is a fancy template and is compiled here. A `.ftl`
+/// location is listed.
 fn scan_text(node: &MNode, line: u32, file: &mut FileReport) {
+    let kinds = node.attribute("type").unwrap_or_default();
+    let dropped = !kinds.is_empty() && kinds.split(',').all(|kind| DROPPED_TEXT_TYPES.contains(&kind.trim()));
     if let Some(location) = node.attribute("location").filter(|location| location.contains(".ftl")) {
         file.ftl.push(FtlRef {
             line,
@@ -517,20 +530,14 @@ fn scan_text(node: &MNode, line: u32, file: &mut FileReport) {
     let Some(body) = node.text().filter(|text| !text.trim().is_empty()) else {
         return;
     };
-    if node.attribute("template").as_deref() == Some("false") {
+    if node.attribute("template").as_deref() == Some("false") || dropped {
         return;
     }
-    let directives = body.matches("<#").count() + body.matches("<@").count();
-    let interpolations = body.matches("${").count();
-    if directives > 0 || interpolations > 0 {
-        file.ftl.push(FtlRef {
-            line,
-            element: "text".to_string(),
-            detail: format!(
-                "inline body of {} chars, {directives} directives, {interpolations} interpolations",
-                body.len()
-            ),
-        });
+    match super::template::check_template(&body) {
+        Ok(()) => file.dialect_bodies += 1,
+        Err(err) => file
+            .template_errors
+            .push((line, format!("text body: {}", err.message()))),
     }
 }
 
@@ -1010,6 +1017,40 @@ mod tests {
         assert!(report.site_count() > 1000, "{} sites", report.site_count());
         assert_eq!(report.failures(), Vec::<String>::new());
         assert_eq!(report.excluded.len(), KNOWN_EXCLUSIONS.len());
+        // The widget templates are scanned, and every template body in the trees compiles in the dialect.
+        assert!(
+            report.files.iter().any(
+                |file| file.path.ends_with("webroot/template/screen/BasicWidgetTemplates.xml") && file.sites.len() > 30
+            ),
+            "BasicWidgetTemplates.xml was not scanned"
+        );
+        let bodies: usize = report.files.iter().map(|file| file.dialect_bodies).sum();
+        assert!(bodies >= 60, "{bodies} template bodies");
+    }
+
+    #[test]
+    fn freemarker_left_in_a_text_body_is_a_failure() {
+        let dir = write_screen(
+            "freemarker",
+            r#"<widgets><render-mode>
+            <text type="html"><![CDATA[<#if x?has_content>${x!""}</#if>]]></text>
+            <text type="html"><![CDATA[<#assign y = 1><@macro/>]]></text>
+            <text type="vuet"><![CDATA[<#visit node>]]></text>
+            <text type="html" template="false"><![CDATA[<#visit node>]]></text>
+            <text type="html"><![CDATA[<#if x>${x}<#else>none</#if>]]></text>
+            </render-mode></widgets>"#,
+        );
+        let report = lint_screens(std::slice::from_ref(&dir)).unwrap();
+        let failures = report.failures();
+        assert_eq!(failures.len(), 2, "{failures:?}");
+        assert!(
+            failures[0].contains("text body") && failures[0].contains("not JavaScript"),
+            "{failures:?}"
+        );
+        assert!(failures[1].contains("macro calls"), "{failures:?}");
+        // The dropped vuet mode and the template="false" text are not compiled; the last one is.
+        assert_eq!(report.files[0].dialect_bodies, 1);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1036,7 +1077,7 @@ mod tests {
     }
 
     #[test]
-    fn javascript_in_a_screen_passes_and_ftl_is_only_listed() {
+    fn javascript_in_a_screen_passes_and_template_bodies_compile() {
         let dir = write_screen(
             "javascript",
             r#"<widgets><label text="${a || 'x'}" condition="a &amp;&amp; b.length"/>
@@ -1046,7 +1087,8 @@ mod tests {
         );
         let report = lint_screens(std::slice::from_ref(&dir)).unwrap();
         assert_eq!(report.failures(), Vec::<String>::new());
-        assert_eq!(report.files[0].ftl.len(), 1);
+        assert_eq!(report.files[0].dialect_bodies, 1);
+        assert!(report.files[0].ftl.is_empty());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

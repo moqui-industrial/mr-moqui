@@ -37,7 +37,7 @@ along with this software (see the LICENSE.md file). If not, see
                         <widgets>
                             <render-mode><text type="html"><![CDATA[
                                 <a href="${currentUrlInstance.url}" class="btn btn-primary app-list-link">
-                                    <#if currentUrlInstance.sui.menuImage?has_content>
+                                    <#if currentUrlInstance.sui.menuImage>
                                         <#if currentUrlInstance.sui.menuImageType == "icon">
                                             <i class="${currentUrlInstance.sui.menuImage}" style="padding-right: 8px;"></i>
                                         <#elseif currentUrlInstance.sui.menuImageType == "url-plain">
@@ -52,7 +52,7 @@ along with this software (see the LICENSE.md file). If not, see
                                 </a>
                             ]]></text><text type="vuet"><![CDATA[
                                 <m-link href="${currentUrlInstance.path}" class="btn btn-primary app-list-link">
-                                    <#if currentUrlInstance.sui.menuImage?has_content>
+                                    <#if currentUrlInstance.sui.menuImage>
                                         <#if currentUrlInstance.sui.menuImageType == "icon">
                                             <i class="${currentUrlInstance.sui.menuImage}" style="padding-right: 8px;"></i>
                                         <#elseif currentUrlInstance.sui.menuImageType == "url-plain">
@@ -67,7 +67,7 @@ along with this software (see the LICENSE.md file). If not, see
                                 </m-link>
                             ]]></text><text type="qvt"><![CDATA[
                                 <div class="q-my-sm"><q-btn outline no-caps to="${currentUrlInstance.path}" style="min-width:250px">
-                                    <#if currentUrlInstance.sui.menuImage?has_content>
+                                    <#if currentUrlInstance.sui.menuImage>
                                         <#if currentUrlInstance.sui.menuImageType == "icon">
                                             <i class="${currentUrlInstance.sui.menuImage}" style="padding-right: 8px;"></i>
                                         <#elseif currentUrlInstance.sui.menuImageType == "url-plain">

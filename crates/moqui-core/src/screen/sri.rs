@@ -16,8 +16,8 @@
 //! [`RenderState`] and the context stack, and run the generated code of a section through a
 //! [`Runner`]. The JavaScript bindings are in `script::runtime`.
 //!
-//! Deferred to the html slices because only their macros call them: `getFieldTransitionValue` and
-//! `dynamic-options` (both call a transition as a test render), `makeFormListSingleMap`,
+//! Deferred to the html slices because only their macros call them: `getFieldTransitionValue`
+//! (calls a transition as a test render), `makeFormListSingleMap`,
 //! `makeFormListMultiMap`, `getFormListHeaderValues`, `getFormFieldValues`, form-list aggregation
 //! (`group-by`, `sub-list`, `show-total`), and saved finds.
 
@@ -510,13 +510,14 @@ pub fn render_include_screen(
     result
 }
 
-/// `sri.renderText(location, template)`. A template is expanded as a string template and written,
-/// and the result is empty. Without a template the file text is returned. The fancy dialect and
-/// FreeMarker are later slices.
+/// `sri.renderText(location, template)`. With template `false` the file text is returned. Otherwise
+/// the renderer registered for the file extension renders it with the live context and the result is
+/// written, and the return is empty. A location whose extension has no renderer is a trusted fancy
+/// template. FreeMarker files are not rendered.
 ///
 /// # Errors
 ///
-/// Returns an error when the file cannot be read, or is a FreeMarker template.
+/// Returns an error when the file cannot be read, is a FreeMarker template, or fails to render.
 pub fn render_text(state: &RenderState, location: &str, template: &str) -> Result<String, Error> {
     if location.is_empty() || location == "null" {
         tracing::warn!(
@@ -525,19 +526,28 @@ pub fn render_text(state: &RenderState, location: &str, template: &str) -> Resul
         );
         return Ok(String::new());
     }
-    let text = state.factory.resource().get(location)?.read_text()?;
     if template == "false" {
-        return Ok(text);
+        return state.factory.resource().get(location)?.read_text();
     }
     if location.ends_with(".ftl") {
         return Err(Error::new(format!(
-            "FreeMarker template {location} is not supported; use a string template"
+            "FreeMarker template {location} is not supported; port it to the fancy dialect"
         )));
     }
+    let registry = script::template::TemplateRegistry::of(&state.factory);
     script::push_context_frame();
-    let expanded = script::expand(&text);
+    let rendered = if registry.renderer_for(location).is_some() {
+        registry.render_location(&state.factory, location, None)
+    } else {
+        state
+            .factory
+            .resource()
+            .get(location)
+            .and_then(|resource| resource.read_text())
+            .and_then(|text| script::template::render_trusted(&text, script::template::Escape::None))
+    };
     script::pop_context_frame();
-    write(state, &expanded?);
+    write(state, &rendered?);
     Ok(String::new())
 }
 
@@ -782,7 +792,7 @@ pub fn get_field_entity_value(widget: &NodeLit) -> Result<String, Error> {
 /// # Errors
 ///
 /// Returns an error when an `entity-find` or `list-options` expression fails.
-pub fn get_field_options(widget: &NodeLit) -> Result<Vec<(String, String)>, Error> {
+pub fn get_field_options(state: &RenderState, widget: &NodeLit) -> Result<Vec<(String, String)>, Error> {
     let field_name = widget.field().map_or("", |field| field.attr("name"));
     let mut options: Vec<(String, String)> = Vec::new();
     let mut put = |key: String, text: String| match options.iter_mut().find(|(existing, _)| *existing == key) {
@@ -834,6 +844,69 @@ pub fn get_field_options(widget: &NodeLit) -> Result<Vec<(String, String)>, Erro
                 put(key, text);
             }
             _ => {}
+        }
+    }
+    if options.is_empty() {
+        if let Some(dynamic) = widget.child("dynamic-options") {
+            options = dynamic_options(state, dynamic)?;
+        }
+    }
+    Ok(options)
+}
+
+/// The options of a `dynamic-options` element, from its transition called as a test render with the
+/// `depends-on` values as parameters. It gives no options while a `depends-on` field is empty, and
+/// none with `server-search`, where the browser asks as the user types. The transition's JSON is a
+/// list of maps, or a map with an `options` list, each with the value and label fields.
+fn dynamic_options(state: &RenderState, node: &NodeLit) -> Result<Vec<(String, String)>, Error> {
+    if node.attr("server-search") == "true" {
+        return Ok(Vec::new());
+    }
+    let field = |name: &str, default: &'static str| {
+        let given = node.attr(name);
+        if given.is_empty() {
+            default.to_string()
+        } else {
+            given.to_string()
+        }
+    };
+    let (label_field, value_field) = (field("label-field", "label"), field("value-field", "value"));
+    let (parameters, has_all_depends) = node_parameters_checked(node)?;
+    if !has_all_depends {
+        return Ok(Vec::new());
+    }
+    let url = super::urls::build_url(state, node.attr("transition"))?;
+    let root = state
+        .url_info
+        .path_defs
+        .first()
+        .map(|def| def.location.clone())
+        .ok_or_else(|| Error::new("no root screen"))?;
+    let parameters: std::collections::BTreeMap<String, Value> = parameters.into_iter().collect();
+    let rendered = super::screen_test::ScreenTest::new(&state.factory)
+        .root_screen(root)
+        .render(&url.path_with_params(), parameters)?;
+    let json = rendered.json_value()?;
+    let list = match &json {
+        Value::List(items) => items.clone(),
+        Value::Map(entries) => match entries.get("options") {
+            Some(Value::List(items)) => items.clone(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    };
+    let mut options: Vec<(String, String)> = Vec::new();
+    for entry in &list {
+        let Value::Map(entry) = entry else {
+            continue;
+        };
+        let value = entry.get(&value_field).map(to_plain_string).unwrap_or_default();
+        let label = entry.get(&label_field).map(to_plain_string).unwrap_or_default();
+        if !value.is_empty() && !label.is_empty() {
+            match options.iter_mut().find(|(key, _)| *key == value) {
+                Some(slot) => slot.1 = label,
+                None => options.push((value, label)),
+            }
         }
     }
     Ok(options)
@@ -1199,6 +1272,16 @@ pub fn form_list_column_char_widths(columns: &[Vec<(String, String)>], line_widt
 ///
 /// Returns an error when an expression fails.
 pub fn node_parameters(parent: &NodeLit) -> Result<IndexMap<String, Value>, Error> {
+    node_parameters_checked(parent).map(|(parameters, _)| parameters)
+}
+
+/// [`node_parameters`] and whether every `depends-on` field has a value in the context or the form map.
+/// With `depends-optional` true an empty field only leaves its parameter out.
+///
+/// # Errors
+///
+/// Returns an error when an expression fails.
+pub fn node_parameters_checked(parent: &NodeLit) -> Result<(IndexMap<String, Value>, bool), Error> {
     let mut parameters = IndexMap::new();
     let map_expr = parent.attr("parameter-map");
     if !map_expr.is_empty() {
@@ -1215,7 +1298,28 @@ pub fn node_parameters(parent: &NodeLit) -> Result<IndexMap<String, Value>, Erro
         };
         parameters.insert(name.to_string(), context_value(from, parameter.attr("value"))?);
     }
-    Ok(parameters)
+    let optional = parent.attr("depends-optional") == "true";
+    let mut has_all = true;
+    for depends in parent.children.iter().filter(|child| child.name == "depends-on") {
+        let field = depends.attr("field");
+        let parameter = if depends.attr("parameter").is_empty() {
+            field
+        } else {
+            depends.attr("parameter")
+        };
+        let mut value = script::context_value(field).unwrap_or(Value::Null);
+        if is_empty(&value) {
+            if let Some(found) = script::context_value("_formMap").and_then(|map| script::value_field(&map, field)) {
+                value = found;
+            }
+        }
+        if is_empty(&value) {
+            has_all = false;
+        } else {
+            parameters.insert(parameter.to_string(), value);
+        }
+    }
+    Ok((parameters, has_all || optional))
 }
 
 /// `sri.getContextValue(from, value)`.

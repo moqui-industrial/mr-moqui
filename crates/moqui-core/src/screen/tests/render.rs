@@ -169,14 +169,24 @@ fn make_render_without_a_socket_sends_status_content_type_and_an_empty_body() {
         ("xml", "text/xml;charset=UTF-8", "<PickerA>\n</PickerA>\n"),
         ("qjs", "application/javascript;charset=UTF-8", ""),
         ("qvt", "text/html;charset=UTF-8", ""),
-        ("html-print", "text/html;charset=UTF-8", ""),
-        ("xsl-fo", "text/html;charset=UTF-8", ""),
     ] {
         let output = as_mode(mode);
         assert_eq!(output.status, 200, "{mode}");
         assert_eq!(output.content_type(), Some(content_type), "{mode}");
         assert_eq!(output.body_text(), body, "{mode}");
     }
+    // The print mode writes an empty document, and xsl-fo is the same mode.
+    let print = as_mode("html-print");
+    assert_eq!(print.content_type(), Some("text/html;charset=UTF-8"));
+    assert!(
+        print.body_text().starts_with("<!DOCTYPE html>"),
+        "{}",
+        print.body_text()
+    );
+    assert!(print
+        .body_text()
+        .ends_with("<body class=\"letter-portrait\">\n</body></html>\n"));
+    assert_eq!(as_mode("xsl-fo").body_text(), print.body_text());
     // The render mode can come from the builder or the renderMode parameter instead of the path.
     let by_builder = make_render(context.factory())
         .root_screen(picker.clone())

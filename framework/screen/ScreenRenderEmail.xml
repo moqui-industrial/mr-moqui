@@ -32,18 +32,18 @@ along with this software (see the LICENSE.md file). If not, see
         </if>
     </actions>
     <widgets><render-mode>
-        <text type="html"><![CDATA[
+        <text type="html,html-print"><![CDATA[
 <html><body>
-    <h2>${title}</h2>
+    <h2>${html(title)}</h2>
 
-    <#if curScreenUrl?has_content>
-        <p><a href="${curScreenUrl}">${curScreenUrl}</a></p>
+    <#if curScreenUrl>
+        <p><a href="${html(curScreenUrl)}">${html(curScreenUrl)}</a></p>
     </#if>
 
     <#list bodyParmKeys as parmName>
-        <#assign parmValue = bodyParameters.get(parmName)!>
-        <#if parmValue?has_content>
-            <div><strong>${parmName}</strong>: ${parmValue}</div>
+        <#assign parmValue = bodyParameters[parmName] ?? ''>
+        <#if parmValue !== ''>
+            <div><strong>${html(parmName)}</strong>: ${html(parmValue)}</div>
         </#if>
     </#list>
 </body></html>
@@ -51,13 +51,13 @@ along with this software (see the LICENSE.md file). If not, see
         <text type="text"><![CDATA[
 ${title}
 
-<#if curScreenUrl?has_content>
+<#if curScreenUrl>
 ${curScreenUrl}
 
 </#if>
 <#list bodyParmKeys as parmName>
-    <#assign parmValue = bodyParameters.get(parmName)!>
-    <#if parmValue?has_content>
+    <#assign parmValue = bodyParameters[parmName] ?? ''>
+    <#if parmValue !== ''>
 ${parmName}: ${parmValue}
     </#if>
 </#list>

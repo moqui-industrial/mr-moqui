@@ -190,11 +190,11 @@ along with this software (see the LICENSE.md file). If not, see
         <form method="post" action="${sri.buildUrl("createInitialAdminAccount").url}" class="form-signin" id="InitialAdminForm">
             <p class="text-muted text-center">There are no user accounts, get started by creating an initial administrator account</p>
             <input type="hidden" name="moquiSessionToken" value="${ec.web.sessionToken}">
-            <input type="text" name="username" value="${(ec.getWeb().getErrorParameters().get("username"))!""}" placeholder="Username" required="required" class="form-control top">
+            <input type="text" name="username" value="${html(ec.web.errorParameters["username"] ?? "")}" placeholder="Username" required="required" class="form-control top">
             <input type="password" name="newPassword" placeholder="New Password" required="required" class="form-control middle">
             <input type="password" name="newPasswordVerify" placeholder="New Password Verify" required="required" class="form-control middle">
-            <input type="text" name="userFullName" value="${(ec.getWeb().getErrorParameters().get("userFullName"))!""}" placeholder="User Full Name" required="required" class="form-control middle">
-            <input type="text" name="emailAddress" value="${(ec.getWeb().getErrorParameters().get("emailAddress"))!""}" placeholder="Email Address" required="required" class="form-control bottom">
+            <input type="text" name="userFullName" value="${html(ec.web.errorParameters["userFullName"] ?? "")}" placeholder="User Full Name" required="required" class="form-control middle">
+            <input type="text" name="emailAddress" value="${html(ec.web.errorParameters["emailAddress"] ?? "")}" placeholder="Email Address" required="required" class="form-control bottom">
             <button class="btn btn-lg btn-primary btn-block" type="submit">Create Initial Admin Account</button>
         </form>
     </div>

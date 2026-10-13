@@ -67,12 +67,13 @@ fn recorded_strings(source: &str) -> Vec<String> {
             if (name === 'getActiveScreenDef') return {{getScreenName: function () {{ return 'S'; }}}};
             if (name === 'doBoundaryComments') return false;
             if (name === 'write') return undefined;
+            if (name === 'makeUrlByType') return {{ url: '', getUrlWithParams: function () {{ return ''; }} }};
             return '';
         }}; }} }});
         var ec = {{ resource: {{ expand: rec, expandNoL10n: rec, expression: rec, condition: rec }},
             l10n: {{ localize: rec, format: rec, formatCurrency: rec, formatCurrencyNoSymbol: rec }} }};
         var StringUtilities = {{ encodeForXmlAttribute: function (s) {{ return s; }} }};
-        var lineCharacters, pageLines, lineWrap, m, l;
+        var lineCharacters, pageLines, lineWrap, m, l, layoutMaster, documentTitle;
         ({source})();
         return JSON.stringify(recorded);
     }})()"#
@@ -90,28 +91,34 @@ fn recorded_strings(source: &str) -> Vec<String> {
 
 /// Each template puts `{}` where a value goes and lists the modes that must write that value out.
 const TEMPLATES: &[(&str, &[&str])] = &[
-    (r#"<label text="{}"/>"#, &["text", "csv"]),
+    (r#"<label text="{}"/>"#, &["text", "csv", "html-print"]),
     (r#"<container-dialog button-text="{}"/>"#, &["text"]),
-    (r#"<image alt="{}"/>"#, &["text"]),
-    (r#"<section name="{}"/>"#, &["text", "csv", "xml"]),
+    (r#"<image alt="{}"/>"#, &["text", "html-print"]),
+    (r#"<section name="{}"/>"#, &["text", "csv", "xml", "html-print"]),
     (
         r#"<section-iterate name="{}" list="rows" entry="row"/>"#,
-        &["text", "csv", "xml"],
+        &["text", "csv", "xml", "html-print"],
     ),
-    (r#"<section-include name="{}" location="{}"/>"#, &["text", "csv"]),
+    (
+        r#"<section-include name="{}" location="{}"/>"#,
+        &["text", "csv", "html-print"],
+    ),
     (
         r#"<include-screen location="{}" share-scope="{}"/>"#,
-        &["text", "csv", "xml"],
+        &["text", "csv", "xml", "html-print"],
     ),
-    (r#"<text location="{}" template="{}"/>"#, &["text", "csv", "xml"]),
-    ("<text>{}</text>", &["text", "csv", "xml"]),
+    (
+        r#"<text location="{}" template="{}"/>"#,
+        &["text", "csv", "xml", "html-print"],
+    ),
+    ("<text>{}</text>", &["text", "csv", "xml", "html-print"]),
     (
         r#"<form-single name="F"><field name="f"><default-field title="{}"><text-line/></default-field></field></form-single>"#,
-        &["text"],
+        &["text", "html-print"],
     ),
     (
         r#"<form-list name="{}" list="rows"><field name="f"><default-field title="{}"><display text="{}"/></default-field></field></form-list>"#,
-        &["text", "csv", "xml"],
+        &["text", "csv", "xml", "html-print"],
     ),
     (
         r#"<form-list name="L" list="rows"><field name="f"><default-field><link link-type="anchor" text="{}" url="u"/></default-field></field></form-list>"#,
@@ -129,7 +136,7 @@ const TEMPLATES: &[(&str, &[&str])] = &[
 
 #[test]
 fn text_with_quotes_backslashes_newlines_and_dollar_braces_survives_every_macro() {
-    for mode in ["text", "csv", "xml"] {
+    for mode in ["text", "csv", "xml", "html-print"] {
         for (template, shown_in) in TEMPLATES {
             for nasty in NASTY {
                 let element = template.replace("{}", &xml_text(nasty));
@@ -365,12 +372,13 @@ fn every_base_component_screen_generates_in_all_three_modes() {
         };
         let mut names = vec![String::new()];
         names.extend(def.sections.keys().filter(|name| !name.contains("${")).cloned());
-        for mode in ["text", "csv", "xml"] {
+        for mode in ["text", "csv", "xml", "html-print"] {
             let macro_location = format!(
                 "framework/template/screen/{}",
                 match mode {
                     "text" => "ScreenText.js",
                     "csv" => "ScreenCsv.js",
+                    "html-print" => "ScreenHtmlPrint.js",
                     _ => "ScreenXml.js",
                 }
             );
@@ -398,16 +406,13 @@ fn every_base_component_screen_generates_in_all_three_modes() {
         }
     }
     assert!(units > 300, "{units} units");
-    // Two kinds are known and listed here so they stay in view. Three Tools screens keep Groovy-only code
-    // (java.sql imports) that the slice 0 migration left, so they do not load at all. And
-    // component://webroot/template/screen/BasicWidgetTemplates.xml was not copied into this repository
-    // (it also holds Groovy Elvis expressions to migrate), so the screens that include its templates fail.
+    // Three Tools screens keep Groovy-only code (java.sql imports) that the slice 0 migration left, so they
+    // do not load at all. They are listed here so they stay in view.
     let known = |failure: &String| {
-        failure.contains("webroot/template/screen/BasicWidgetTemplates.xml")
-            || (failure.contains(": load: ")
-                && ["SqlRunner.xml", "SqlScriptRunner.xml", "SpeedTest.xml"]
-                    .iter()
-                    .any(|file| failure.contains(file)))
+        failure.contains(": load: ")
+            && ["SqlRunner.xml", "SqlScriptRunner.xml", "SpeedTest.xml"]
+                .iter()
+                .any(|file| failure.contains(file))
     };
     let unexpected: Vec<&String> = failures.iter().filter(|failure| !known(failure)).collect();
     assert!(
@@ -420,5 +425,5 @@ fn every_base_component_screen_generates_in_all_three_modes() {
             .collect::<Vec<_>>()
             .join("\n")
     );
-    assert!(failures.len() - unexpected.len() <= 100, "{failures:?}");
+    assert!(failures.len() - unexpected.len() <= 3, "{failures:?}");
 }

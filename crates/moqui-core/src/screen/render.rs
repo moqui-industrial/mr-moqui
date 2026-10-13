@@ -229,6 +229,8 @@ pub struct RenderState {
     pub form_lists: RefCell<Vec<Option<super::sri::FormRows>>>,
     /// Dynamic forms being rendered, by name, which `sri` reads instead of the definition's forms.
     pub dynamic_forms: RefCell<std::collections::HashMap<String, Arc<super::form::FormInstance>>>,
+    /// Keys `sri.once` has seen, so a mode writes its document wrapper only for the outermost screen.
+    pub once: RefCell<std::collections::HashSet<String>>,
 }
 
 impl RenderState {
@@ -270,6 +272,7 @@ impl RenderState {
             script_text: RefCell::new(String::new()),
             form_lists: RefCell::new(Vec::new()),
             dynamic_forms: RefCell::new(std::collections::HashMap::new()),
+            once: RefCell::new(std::collections::HashSet::new()),
         }
     }
 }

@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Gate 3, started: a real framework screen rendered in the text, csv and xml modes through the HTTP
+//! Gate 3, started: a real framework screen rendered in the text, csv, xml and html-print modes through the HTTP
 //! server with the seeded embedded-Postgres data. The later slices add the other modes to this file.
 //!
 //! The fixture is `component://tools/screen/System/Security/ArtifactGroup/ArtifactGroupDetail.xml`.
@@ -49,7 +49,7 @@ const CONF: &str = r#"<moqui-conf>
 </moqui-conf>"#;
 
 #[test]
-fn artifact_group_detail_renders_as_text_csv_and_xml() {
+fn artifact_group_detail_renders_as_text_csv_xml_and_html_print() {
     let runtime = temp_dir("moqui-gate3-rt");
     let cluster_dir = temp_dir("moqui-gate3-pg");
     let _runtime_guard = DirGuard(runtime.clone());
@@ -174,6 +174,58 @@ fn artifact_group_detail_renders_as_text_csv_and_xml() {
          \x20   </ArtifactTarpitList>\n\
          </ArtifactGroupDetail>\n</ArtifactGroup>\n</Security>\n</System>\n</webroot>\n"
     );
+
+    // html-print: one document with print CSS. The form-single is a table of title and value, each form-list
+    // is a table with a repeated header, and .xsl-fo, the older name of the mode, is the same body.
+    let (content_type, print) = get("html-print");
+    assert_eq!(content_type.as_deref(), Some("text/html;charset=UTF-8"));
+    assert!(
+        print.starts_with("<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">"),
+        "{print}"
+    );
+    assert_eq!(print.matches("<!DOCTYPE").count(), 1, "{print}");
+    assert!(
+        print.contains("@page letter-portrait { size: 8.5in 11in; margin: 0.25in; }"),
+        "{print}"
+    );
+    assert!(
+        print.contains("@page a4-landscape { size: 297mm 210mm; margin: 15mm; }"),
+        "{print}"
+    );
+    assert!(print.contains("<body class=\"letter-portrait\">"), "{print}");
+    assert!(print.ends_with("</body></html>\n"), "{print}");
+    assert!(
+        print.contains("<table class=\"field\"><tr><td class=\"field-title\">Artifact Group ID</td><td class=\"field-value\">SYSTEM_APP</td></tr></table>"),
+        "{print}"
+    );
+    assert!(
+        print.contains("<td class=\"field-value\">System App (via root screen)</td>"),
+        "{print}"
+    );
+    assert_eq!(print.matches("<table class=\"form-list\">").count(), 3, "{print}");
+    assert!(
+        print.contains("<th><div style=\"text-align:left\">Artifact Type</div></th>"),
+        "{print}"
+    );
+    assert!(
+        print.contains("<td><div style=\"text-align:left\">component://tools/screen/System.xml</div></td>"),
+        "{print}"
+    );
+    assert!(print.contains("SYSTEM_APP_ADMIN"), "{print}");
+    assert!(print.contains("Always Allow (overrides Deny)"), "{print}");
+    assert!(print.contains("All Users (all users members by default) - <a href=\"/System/Security/ArtifactGroup/ArtifactGroupDetail/userGroupDetail?artifactGroupId=SYSTEM_APP\">ALL_USERS</a>"), "{print}");
+    let (content_type, xsl_fo) = get("xsl-fo");
+    assert_eq!(content_type.as_deref(), Some("text/html;charset=UTF-8"));
+    assert_eq!(xsl_fo, print);
+    // The renderMode parameter takes either name, and the layout comes from layoutMaster.
+    let path = "/System/Security/ArtifactGroup/ArtifactGroupDetail?artifactGroupId=SYSTEM_APP&renderMode=xsl-fo&layoutMaster=legal-landscape";
+    let (status, _, landscape) = exchange(address, &http_request("GET", path, &[("Authorization", &john)], ""));
+    assert_eq!(status, 200, "{landscape}");
+    assert!(
+        landscape.contains("@page { size: 14in 8.5in; margin: 0.25in;"),
+        "{landscape}"
+    );
+    assert!(landscape.contains("<body class=\"legal-landscape\">"), "{landscape}");
 
     drop(server);
 }

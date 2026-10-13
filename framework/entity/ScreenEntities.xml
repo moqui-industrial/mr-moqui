@@ -29,7 +29,7 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="screenScheduledId" type="id" is-pk="true"/>
         <field name="screenPath" type="text-medium"/>
         <field name="formListFindId" type="id"/>
-        <field name="renderMode" type="text-short"><description>Defaults to 'csv', can also use 'xsl-fo' with PDF rendering, 'xlsx' if moqui-poi component in place</description></field>
+        <field name="renderMode" type="text-short"><description>Defaults to 'csv', can also use 'html-print' (or its older name 'xsl-fo'), with PDF rendering once the PDF renderer exists, 'xlsx' if moqui-poi component in place</description></field>
         <field name="noResultsAbort" type="text-indicator">
             <description>Set to Y to abort (not send or write) if there are no results in form-list on screen</description></field>
         <field name="cronExpression" type="text-medium"/>

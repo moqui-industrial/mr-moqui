@@ -28,20 +28,20 @@ along with this software (see the LICENSE.md file). If not, see
     <widgets><render-mode>
         <text type="html"><![CDATA[
 <html><body>
-    <h2>${topicDescription!""} Notification (${type!"info"})</h2>
-    <h4>${title}</h4>
-    <#if linkUrl?has_content><p><#if linkUrl?starts_with("http")><a href="${linkUrl}">${linkUrl}</a><#else>${linkUrl}</#if></p></#if>
-    <p><#if notificationMessageId?has_content>Notification Message ID ${notificationMessageId} </#if>Sent ${ec.l10n.format(sentDate, "")} to topic '${topic}'</p>
+    <h2>${html(topicDescription ?? "")} Notification (${html(type ?? "info")})</h2>
+    <h4>${html(title)}</h4>
+    <#if linkUrl><p><#if linkUrl.startsWith("http")><a href="${html(linkUrl)}">${html(linkUrl)}</a><#else>${html(linkUrl)}</#if></p></#if>
+    <p><#if notificationMessageId>Notification Message ID ${html(notificationMessageId)} </#if>Sent ${html(ec.l10n.format(sentDate, ""))} to topic '${html(topic)}'</p>
 </body></html>
         ]]></text>
         <text type="text"><![CDATA[
-${topicDescription!""} Notification (${type!"info"})
+${topicDescription ?? ""} Notification (${type ?? "info"})
 
 ${title}
 
-${linkUrl!""}
+${linkUrl ?? ""}
 
-<#if notificationMessageId?has_content>Notification Message ID ${notificationMessageId} </#if>Sent ${ec.l10n.format(sentDate, '')} to topic '${topic}'
+<#if notificationMessageId>Notification Message ID ${notificationMessageId} </#if>Sent ${ec.l10n.format(sentDate, '')} to topic '${topic}'
         ]]></text>
     </render-mode></widgets>
 </screen>

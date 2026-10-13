@@ -34,9 +34,9 @@ along with this software (see the LICENSE.md file). If not, see
 
             <script>
                 let groovyTerminal = new Terminal({
-                    cols: ${cols!"100"},
-                    rows: ${rows!"40"},
-                    fontSize: ${fontSize!"12"},
+                    cols: ${cols ?? "100"},
+                    rows: ${rows ?? "40"},
+                    fontSize: ${fontSize ?? "12"},
                     cursorBlink: true,
                     cursorStyle: "bar", // null | 'block' | 'underline' | 'bar'
                     scrollback: 1000,

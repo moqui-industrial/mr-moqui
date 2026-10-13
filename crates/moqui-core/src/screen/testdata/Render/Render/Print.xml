@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Layout elements for the html-print mode: a field-layout, a box, a panel, breaks and a link. -->
+<screen require-authentication="false">
+    <actions><set field="item" from="{itemId: 'I9', name: 'Nine', note: 'x', price: 5}"/><set field="who" value="Ada"/></actions>
+    <widgets>
+        <container style="page-break-before"><label text="First page ${who || 'x'}"/></container>
+        <container-box>
+            <box-header><label text="Boxed"/></box-header>
+            <box-body><label text="inside"/></box-body>
+        </container-box>
+        <container-panel>
+            <panel-header><label text="head"/></panel-header>
+            <panel-left><label text="left"/></panel-left>
+            <panel-center><label text="center"/></panel-center>
+            <panel-footer><label text="foot"/></panel-footer>
+        </container-panel>
+        <form-single name="LayoutForm" map="item">
+            <field name="itemId"><default-field title="Item"><display/></default-field></field>
+            <field name="name"><default-field title="Name"><display/></default-field></field>
+            <field name="note"><default-field title="Note"><display text="n&lt;&amp;&gt;"/></default-field></field>
+            <field name="price"><default-field title="Price"><display/></default-field></field>
+            <field-layout>
+                <field-group title="Group">
+                    <field-row><field-ref name="itemId"/><field-ref name="name"/></field-row>
+                    <field-row-big title="Big"><field-ref name="price"/></field-row-big>
+                </field-group>
+                <fields-not-referenced/>
+            </field-layout>
+        </form-single>
+        <label text="  " />
+        <label text="a &lt; b"/>
+        <link url="go" text="Go &amp; see" url-type="plain"/>
+        <container><label text="tail"/></container>
+    </widgets>
+</screen>

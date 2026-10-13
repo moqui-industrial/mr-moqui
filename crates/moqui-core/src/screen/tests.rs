@@ -450,6 +450,7 @@ fn basic_auth_writes_skip_the_session_token_but_a_cookie_session_does_not() {
 
 mod golden;
 mod modules;
+mod print;
 mod render;
 mod walk;
 mod widgets;

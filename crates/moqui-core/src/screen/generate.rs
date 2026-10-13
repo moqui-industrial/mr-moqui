@@ -40,7 +40,7 @@ const TEMPLATE_SUPPORT: &str = include_str!("../../../../framework/template/Temp
 const SCREEN_SUPPORT: &str = include_str!("../../../../framework/template/screen/ScreenSupport.js");
 
 /// The mode modules built into the binary, by file name.
-const MODE_MODULES: [(&str, &str); 3] = [
+const MODE_MODULES: [(&str, &str); 4] = [
     (
         "ScreenText.js",
         include_str!("../../../../framework/template/screen/ScreenText.js"),
@@ -52,6 +52,10 @@ const MODE_MODULES: [(&str, &str); 3] = [
     (
         "ScreenXml.js",
         include_str!("../../../../framework/template/screen/ScreenXml.js"),
+    ),
+    (
+        "ScreenHtmlPrint.js",
+        include_str!("../../../../framework/template/screen/ScreenHtmlPrint.js"),
     ),
 ];
 
@@ -318,7 +322,7 @@ fn mode_source(factory: &ExecutionContextFactory, location: &str) -> Result<Stri
         .map(|(_, source)| (*source).to_string())
         .ok_or_else(|| {
             Error::new(format!(
-                "there is no macro module {file} at {location}; modes after text, csv and xml come in a later slice"
+                "there is no macro module {file} at {location}; html, qvt, qjs and qvue come in a later slice"
             ))
         })
 }
@@ -373,6 +377,7 @@ pub fn generate_xml(mode: &str, xml: &str, debug_comments: bool) -> Result<Strin
         "text" => "ScreenText.js",
         "csv" => "ScreenCsv.js",
         "xml" => "ScreenXml.js",
+        "html-print" => "ScreenHtmlPrint.js",
         other => return Err(Error::new(format!("no built-in macro module for render mode {other}"))),
     };
     let source = MODE_MODULES
@@ -397,6 +402,7 @@ pub fn generate_unit_source(mode: &str, xml: &str) -> Result<String, Error> {
     let file = match mode {
         "text" => "ScreenText.js",
         "csv" => "ScreenCsv.js",
+        "html-print" => "ScreenHtmlPrint.js",
         _ => "ScreenXml.js",
     };
     let source = MODE_MODULES

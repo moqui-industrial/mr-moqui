@@ -272,6 +272,27 @@ Server-static `qvt` is last, and follows `plans/QvtServerStatic.md`. The attribu
 - A `/vapps` path has no screen.
 - The `html-print` body is HTML and does not include `moqui-html.js`. A request with extension `.xsl-fo` returns that same body.
 
+### Where the code differs from the text above
+
+Appended slice by slice.
+
+- **Slice 3, fancy renderers.** `script/template.rs` compiles the dialect in Rust to one JavaScript function, cached by
+  source text, and the trusted renderer runs it on the script runtime. The locked-down renderer runs the same function in
+  a separate QuickJS runtime (isolation is a runtime, not a scope trick). `fancy`, `html.fancy`, `fancy-locked` and
+  `html.fancy-locked` are registered in `MoquiDefaultConf.xml`. `moqui lint --screens` compiles every template body, so
+  leftover FreeMarker is a lint failure. The 51 bodies that already compiled and the 10 that did not (the error pages,
+  `AppList`, the `apps.xml` footer, `Login` and `GroovyShell`) are in the dialect. The ten `.ftl` locations are listed in
+  the lint report and are slice 4 work (`Header.html`, `Footer.html`, `navbar.html`, `Login`, `SecondFactor`,
+  `AutoScreenMenu`, `WebrootVue.qvt`), except `Header.xsl-fo.ftl`, which `ScreenHtmlPrint.js` replaces.
+- **html-print.** The document wrapper (`@page` rules for the ten paper and orientation names, a page number in the
+  footer, `documentTitle` in the header) is written by the first `widgets` of the render, not by `webroot.xml`, because
+  the mode is always standalone. `layoutMaster` selects the page. `xsl-fo` is `html-print` for the request extension, the
+  `renderMode` parameter, the builder, a screen's `render-modes` and a `<text type>` list.
+- **`ScreenServices.xml`.** Only the `async="distribute"` attribute changed. Service bodies are still Groovy and wait for
+  the service migration; `ec.screen.makeRender()`, `getMimeTypeByMode` and `isRenderModeText` exist so that migration is a
+  rewrite of the script, and PDF bytes report that PDF is not available until phase 12.
+- `BasicWidgetTemplates.xml` is in `runtime/base-component/webroot/template/screen/` with its Elvis expressions as `||`.
+
 ## Phase 9 — SearchFacade
 
 Depends on gate 1. Entity documents and the feed rules already assemble, and the service facade can call the receive service. The HTTP client already exists. The API is `plans/SearchFacade.md`.

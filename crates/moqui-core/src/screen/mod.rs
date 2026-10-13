@@ -23,8 +23,10 @@ mod definition;
 mod dispatch;
 pub(crate) mod form;
 pub(crate) mod generate;
+mod pdf;
 mod render;
 mod schema;
+mod screen_test;
 pub(crate) mod sri;
 mod url;
 pub(crate) mod urls;
@@ -44,10 +46,12 @@ pub use definition::{
     Actions, Authentication, Condition, FormDef, ParameterDef, ResponseDef, ResponseKind, ScreenDef, SectionDef,
     SectionKind, Subscreens, SubscreensItem, TransitionDef, TreeDef, WebSettings, XmlFragment,
 };
+pub use pdf::{PdfRenderer, PDF_UNAVAILABLE};
 pub use render::{
     make_render, save_screen_last_info, send_redirect_and_stop_render, with_current_render, RenderOutput, RenderState,
     ScreenRender,
 };
+pub use screen_test::{ScreenTest, TestRender};
 pub use sri::encode_html;
 pub use url::{parse_last_standalone, resolve_screen_path, ScreenUrlInfo};
 
