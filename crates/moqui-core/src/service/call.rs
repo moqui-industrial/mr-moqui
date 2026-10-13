@@ -30,10 +30,12 @@ pub fn sync(name: &str, parameters: &BTreeMap<String, Value>) -> Result<BTreeMap
     let name = canonical(name);
     let facade = current_facade();
     let def = resolve(&name, facade.as_ref())?;
+    super::seca::run_seca_rules(&def.name, "pre-validate", parameters, None)?;
+    let cleaned = validate::clean(&def, parameters, facade.as_ref())?;
+    super::seca::run_seca_rules(&def.name, "pre-auth", &cleaned, None)?;
     if def.authenticate != Authenticate::Off {
         crate::user::authorize("AT_SERVICE", &def.name, auth_action(&def))?;
     }
-    let cleaned = validate::clean(&def, parameters, facade.as_ref())?;
     let facade = facade.ok_or_else(|| Error::new("no entity facade is installed"))?;
     let guard = semaphore::take(&def, &cleaned, &facade)?;
     let entity_name = if def.kind == ServiceKind::EntityAuto && !def.noun.is_empty() {
@@ -42,9 +44,55 @@ pub fn sync(name: &str, parameters: &BTreeMap<String, Value>) -> Result<BTreeMap
         ServiceDef::semaphore_entity().to_string()
     };
     let tx = facade.transactions_for(&entity_name)?;
-    let produced = tx.run(def.transaction, def.timeout, || execute(&def, &cleaned, &facade))?;
+    let produced = tx.run(def.transaction, def.timeout, || {
+        // on_rollback is not a commit hook. tx-commit is last so a post-service
+        // entity write can still register the feed schedule hook.
+        register_tx_rollback(&tx, &def.name, &cleaned)?;
+        super::seca::run_seca_rules(&def.name, "pre-service", &cleaned, None).map_err(script_err)?;
+        let produced = execute(&def, &cleaned, &facade)?;
+        super::seca::run_seca_rules(&def.name, "post-service", &cleaned, Some(&produced)).map_err(script_err)?;
+        register_tx_commit(&tx, &def.name, &cleaned, &produced)?;
+        Ok(produced)
+    })?;
+    super::seca::run_seca_rules(&def.name, "post-commit", &cleaned, Some(&produced))?;
     drop(guard);
     Ok(project(&def, produced))
+}
+
+fn register_tx_rollback(
+    tx: &crate::transaction::TransactionManager,
+    service: &str,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<(), LibError> {
+    if !tx.in_transaction() {
+        return Ok(());
+    }
+    let service = service.to_string();
+    let parameters = parameters.clone();
+    tx.on_rollback(move || {
+        if let Err(err) = super::seca::run_seca_rules(&service, "tx-rollback", &parameters, None) {
+            tracing::warn!(error = %err, "tx-rollback rules failed");
+        }
+    })
+}
+
+fn register_tx_commit(
+    tx: &crate::transaction::TransactionManager,
+    service: &str,
+    parameters: &BTreeMap<String, Value>,
+    results: &BTreeMap<String, Value>,
+) -> Result<(), LibError> {
+    if !tx.in_transaction() {
+        return Ok(());
+    }
+    let service = service.to_string();
+    let parameters = parameters.clone();
+    let results = results.clone();
+    tx.on_commit(move || {
+        if let Err(err) = super::seca::run_seca_rules(&service, "tx-commit", &parameters, Some(&results)) {
+            tracing::warn!(error = %err, "tx-commit rules failed");
+        }
+    })
 }
 
 pub fn call(name: &str) -> Result<(), Error> {
@@ -602,6 +650,36 @@ mod tests {
             .expect("created row");
         assert_eq!(seed_row.get("testMedium").and_then(Value::as_str), Some("seed"));
         assert_eq!(made_row.get("testMedium").and_then(Value::as_str), Some("made"));
+    }
+
+    #[test]
+    fn post_service_seca_sets_a_context_field() {
+        let _gate = crate::service::define::lock_tests();
+        crate::service::define::reset();
+        let path = write_fixture(
+            "seca",
+            r#"<services>
+                <service verb="mark" noun="Row"/>
+            </services>"#,
+        );
+        crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
+        super::super::seca::load_seca_rules(
+            r#"<secas>
+                <seca service="mark#Row" when="post-service">
+                    <actions><set field="secaMark" value="seen"/></actions>
+                </seca>
+            </secas>"#,
+        )
+        .unwrap();
+        let facade = mem::open(Arc::new(Mutex::new(Vec::new())));
+        let ctx = ExecutionContextFactory::test_context();
+        ctx.factory().set_entity(facade);
+        let _entered = ctx.enter();
+        sync("mark#Row", &BTreeMap::new()).unwrap();
+        assert_eq!(
+            crate::script::context_value("secaMark").and_then(|value| value.as_str().map(str::to_string)),
+            Some("seen".to_string())
+        );
     }
 
     fn write_fixture(name: &str, body: &str) -> PathBuf {
