@@ -115,8 +115,31 @@ fn execute(
         ServiceKind::Script => Err(LibError::new("script runner is not running yet")),
         ServiceKind::RemoteRest => Err(LibError::new(format!("service {} has no REST dispatcher", def.name))),
         ServiceKind::EntityAuto => run_entity(facade, &def.verb, &def.noun, parameters, 0),
-        ServiceKind::Inline => Err(LibError::new("actions not run in this slice")),
+        ServiceKind::Inline => run_inline(def, parameters),
     }
+}
+
+fn run_inline(def: &ServiceDef, parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, LibError> {
+    for (name, value) in parameters {
+        crate::script::set_context_name(name, value.clone()).map_err(script_err)?;
+    }
+    if !def.actions.trim().is_empty() {
+        crate::script::run_actions(&def.actions).map_err(script_err)?;
+    }
+    let mut out = BTreeMap::new();
+    for param in &def.out_params {
+        if param.name.is_empty() || param.required == super::define::Required::Disabled {
+            continue;
+        }
+        if let Some(value) = crate::script::context_value(&param.name) {
+            out.insert(param.name.clone(), value);
+        }
+    }
+    Ok(out)
+}
+
+fn script_err(err: crate::context::Error) -> LibError {
+    LibError::new(err.message())
 }
 
 fn project(def: &ServiceDef, values: BTreeMap<String, Value>) -> BTreeMap<String, Value> {
@@ -526,6 +549,59 @@ mod tests {
         let text = err.to_string();
         assert!(text.contains("semaphore"), "{text}");
         assert!(!text.contains("actions not run"), "{text}");
+    }
+
+    #[test]
+    fn inline_actions_find_and_create_rows() {
+        let _gate = crate::service::define::lock_tests();
+        crate::service::define::reset();
+        let path = write_fixture(
+            "inline",
+            r#"<services>
+                <service verb="copy" noun="Row">
+                    <in-parameters><parameter name="seedId"/></in-parameters>
+                    <out-parameters><parameter name="foundId"/></out-parameters>
+                    <actions>
+                        <entity-find entity-name="moqui.test.TestEntity" list="found">
+                            <econdition field-name="testId" from="seedId"/>
+                        </entity-find>
+                        <entity-make-value entity-name="moqui.test.TestEntity" value-field="made"/>
+                        <script>made.set("testId", "B"); made.set("testMedium", "made"); foundId = found.get(0).get("testId");</script>
+                        <entity-create value-field="made"/>
+                    </actions>
+                </service>
+            </services>"#,
+        );
+        let failures = crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+        let facade = mem::open(Arc::new(Mutex::new(Vec::new())));
+        let ctx = ExecutionContextFactory::test_context();
+        ctx.factory().set_entity(facade.clone());
+        let _entered = ctx.enter();
+        let mut seed = facade.make_value("moqui.test.TestEntity").unwrap();
+        seed.set("testId", Value::string("A"));
+        seed.set("testMedium", Value::string("seed"));
+        seed.create(&facade).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("seedId".into(), Value::string("A"));
+        let out = sync("copy#Row", &params).unwrap();
+        assert_eq!(out.get("foundId").and_then(Value::as_str), Some("A"));
+        let seed_row = facade
+            .find("moqui.test.TestEntity")
+            .unwrap()
+            .eq("testId", Value::string("A"))
+            .one()
+            .unwrap()
+            .expect("seed row");
+        let made_row = facade
+            .find("moqui.test.TestEntity")
+            .unwrap()
+            .eq("testId", Value::string("B"))
+            .one()
+            .unwrap()
+            .expect("created row");
+        assert_eq!(seed_row.get("testMedium").and_then(Value::as_str), Some("seed"));
+        assert_eq!(made_row.get("testMedium").and_then(Value::as_str), Some("made"));
     }
 
     fn write_fixture(name: &str, body: &str) -> PathBuf {

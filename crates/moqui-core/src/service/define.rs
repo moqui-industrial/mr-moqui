@@ -133,6 +133,8 @@ pub(crate) struct ServiceDef {
     pub noun: String,
     pub kind: ServiceKind,
     pub location: String,
+    /// `<actions>` XML, or empty when the service has none.
+    pub actions: String,
     pub authenticate: Authenticate,
     pub authz_action: Option<String>,
     pub validate_input: bool,
@@ -157,6 +159,7 @@ impl ServiceDef {
             noun: noun.to_string(),
             kind: ServiceKind::EntityAuto,
             location: String::new(),
+            actions: String::new(),
             authenticate: Authenticate::Required,
             authz_action: None,
             validate_input: true,
@@ -349,6 +352,10 @@ fn load_service(prefix: &str, node: &MNode, services: &mut BTreeMap<String, Serv
         noun,
         kind,
         location,
+        actions: node
+            .first_named("actions")
+            .map(|node| node.write_string())
+            .unwrap_or_default(),
         authenticate: authenticate_of(node),
         authz_action: node.attribute("authz-action"),
         validate_input: bool_attr(node, "validate", true),
