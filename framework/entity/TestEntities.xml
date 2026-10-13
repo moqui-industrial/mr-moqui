@@ -34,6 +34,13 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="testCurrencyAmount" type="currency-amount"/>
         <field name="testCurrencyPrecise" type="currency-precise"/>
     </entity>
+    <view-entity entity-name="TestEntityCount" package="moqui.test">
+        <description>Aggregates over TestEntity, grouped by testMedium. Exercises function aliases, GROUP BY, and HAVING.</description>
+        <member-entity entity-alias="TE" entity-name="moqui.test.TestEntity"/>
+        <alias name="testMedium" entity-alias="TE"/>
+        <alias name="entityCount" entity-alias="TE" field="testId" function="count"/>
+        <alias name="maxNumber" entity-alias="TE" field="testNumberInteger" function="max"/>
+    </view-entity>
     <entity entity-name="TestFts" package="moqui.test">
         <field name="testFtsId" type="id" is-pk="true"/>
         <field name="note" type="text-medium"/>

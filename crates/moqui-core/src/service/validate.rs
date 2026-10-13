@@ -71,7 +71,7 @@ pub(crate) fn clean(
                 ))
             })?
         };
-        check_html(param, &value)?;
+        let value = clean_html(param, value)?;
         check_param(param, &value)?;
         params.insert(param.name.clone(), value);
     }
@@ -174,78 +174,46 @@ fn default_for(param: &ParamDef, params: &BTreeMap<String, Value>) -> Result<Opt
     Ok(Some(Value::string(expanded)))
 }
 
-/// `allow-html`: text with a `<` is rejected unless the parameter allows HTML.
-fn check_html(param: &ParamDef, value: &Value) -> Result<(), Error> {
+/// `allow-html`. Text with a `<` is rejected unless the parameter allows HTML. With `safe` the
+/// markup is cleaned instead: elements and attributes outside ammonia's default allow-list are
+/// removed, script and style content goes with its element, and links lose unsafe URLs. Text with no
+/// `<` is returned as it came, so plain values are never reformatted.
+fn clean_html(param: &ParamDef, value: Value) -> Result<Value, Error> {
     if param.allow_html == AllowHtml::Any {
-        return Ok(());
+        return Ok(value);
     }
-    let strings: Vec<&str> = match value {
-        Value::String(text) => vec![text.as_str()],
-        Value::List(items) => items.iter().filter_map(Value::as_str).collect(),
-        _ => return Ok(()),
-    };
-    for text in strings {
-        if !text.contains('<') {
-            continue;
-        }
-        let allowed = param.allow_html == AllowHtml::Safe && !dangerous_markup(text);
-        if !allowed {
-            return Err(Error::new(format!(
-                "parameter {}: HTML not allowed including less-than (<), greater-than (>), etc symbols",
-                param.name
-            )));
-        }
+    match value {
+        Value::String(text) => clean_text(param, text).map(Value::String),
+        Value::List(items) => items
+            .into_iter()
+            .map(|item| match item {
+                Value::String(text) => clean_text(param, text).map(Value::String),
+                other => Ok(other),
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::List),
+        other => Ok(other),
     }
-    Ok(())
 }
 
-/// Script-carrying markup: script, frame, and object tags, event attributes, and script URLs.
-fn dangerous_markup(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    if [
-        "<script",
-        "<iframe",
-        "<object",
-        "<embed",
-        "<style",
-        "<link",
-        "<meta",
-        "javascript:",
-        "vbscript:",
-        "data:text/html",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle))
-    {
-        return true;
+fn clean_text(param: &ParamDef, text: String) -> Result<String, Error> {
+    if !text.contains('<') {
+        return Ok(text);
     }
-    has_event_attribute(&lower)
+    if param.allow_html == AllowHtml::Safe {
+        return Ok(safe_html().clean(&text).to_string());
+    }
+    Err(Error::new(format!(
+        "parameter {}: HTML not allowed including less-than (<), greater-than (>), etc symbols",
+        param.name
+    )))
 }
 
-/// ` onclick=` and the like: whitespace or a quote, `on`, letters, then `=`.
-fn has_event_attribute(lower: &str) -> bool {
-    let bytes = lower.as_bytes();
-    let mut index = 0;
-    while index + 3 < bytes.len() {
-        let before = bytes[index];
-        if (before.is_ascii_whitespace() || before == b'"' || before == b'\'' || before == b'/')
-            && bytes[index + 1] == b'o'
-            && bytes[index + 2] == b'n'
-        {
-            let mut end = index + 3;
-            while end < bytes.len() && bytes[end].is_ascii_alphabetic() {
-                end += 1;
-            }
-            while end < bytes.len() && bytes[end].is_ascii_whitespace() {
-                end += 1;
-            }
-            if end < bytes.len() && bytes[end] == b'=' {
-                return true;
-            }
-        }
-        index += 1;
-    }
-    false
+/// The cleaner. ammonia's defaults are a maintained, conservative allow-list, so there is no
+/// list of our own to keep up to date.
+fn safe_html() -> &'static ammonia::Builder<'static> {
+    static CLEANER: std::sync::OnceLock<ammonia::Builder<'static>> = std::sync::OnceLock::new();
+    CLEANER.get_or_init(ammonia::Builder::default)
 }
 
 fn apply_check(name: &str, check: &Check, value: &Value) -> Result<(), Error> {

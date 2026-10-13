@@ -225,8 +225,6 @@ mod tests {
 
     #[test]
     fn data_file_runs_entity_auto_and_inline_service() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let service = write_temp(
             "inline",
             r#"<services>
@@ -243,8 +241,6 @@ mod tests {
                 </service>
             </services>"#,
         );
-        let failures = crate::service::define::lint(std::slice::from_ref(&service)).unwrap();
-        assert!(failures.is_empty(), "{failures:?}");
         let facade = crate::testing::open_with(
             &crate::testing::framework_dir(),
             crate::testing::Options {
@@ -256,6 +252,8 @@ mod tests {
         let context = ExecutionContextFactory::test_context();
         context.factory().set_entity(facade.clone());
         let _entered = context.enter();
+        let failures = crate::service::lint(std::slice::from_ref(&service)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
         let data = write_temp(
             "data",
             r#"<entity-facade-xml>

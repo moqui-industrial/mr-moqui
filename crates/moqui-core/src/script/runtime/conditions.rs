@@ -201,17 +201,16 @@ pub(super) fn make_action_condition<'js>(ctx: Ctx<'js>, args: Rest<JsValue<'js>>
             return Null.into_js(&ctx);
         }
         let to_field = arg(4);
+        let ignore_case = flag(5);
         if !to_field.is_null() && !to_field.is_undefined() {
-            return Err(Exception::throw_message(
-                &ctx,
-                "to-field-name conditions are not supported",
-            ));
-        }
-        if flag(5) {
-            return Err(Exception::throw_message(
-                &ctx,
-                "ignore-case conditions are not supported",
-            ));
+            // Field against field. Case does not apply to a column compared with a column here.
+            let other = js_string(&ctx, &to_field)?;
+            let op = compare_op(&operator).map_err(|err| throw_lib(&ctx, &err))?;
+            let mut condition = Condition::compare_fields(field.as_str(), op, other.as_str());
+            if flag(7) {
+                condition = Condition::or(vec![condition, Condition::is_null(field.as_str())]);
+            }
+            return condition_js(&ctx, Some(condition));
         }
         let from = js_to_host(&ctx, &arg(2))?;
         let operand = if from.is_null() {
@@ -223,9 +222,33 @@ pub(super) fn make_action_condition<'js>(ctx: Ctx<'js>, args: Rest<JsValue<'js>>
             return Null.into_js(&ctx);
         }
         let mut condition = comparison(&field, &operator, operand).map_err(|err| throw_lib(&ctx, &err))?;
+        if ignore_case && ignorable(&condition) {
+            condition = Condition::ignore_case(condition);
+        }
         if flag(7) {
             condition = Condition::or(vec![condition, Condition::is_null(field.as_str())]);
         }
         condition_js(&ctx, Some(condition))
     })
+}
+
+fn compare_op(operator: &str) -> Result<CompareOp, moqui_lib::error::Error> {
+    Ok(match operator {
+        "equals" | "=" => CompareOp::Equals,
+        "not-equals" | "!=" | "<>" => CompareOp::NotEquals,
+        "less" | "<" => CompareOp::Less,
+        "greater" | ">" => CompareOp::Greater,
+        "less-equals" | "<=" => CompareOp::LessEqual,
+        "greater-equals" | ">=" => CompareOp::GreaterEqual,
+        other => {
+            return Err(moqui_lib::error::Error::new(format!(
+                "operator {other} cannot compare two fields"
+            )))
+        }
+    })
+}
+
+/// A comparison with a value can ignore case; a null test has no text to fold.
+fn ignorable(condition: &Condition) -> bool {
+    !matches!(condition, Condition::IsNull(_) | Condition::IsNotNull(_))
 }

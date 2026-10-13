@@ -185,7 +185,9 @@ fn push_params(out: &mut Vec<Value>, condition: &Condition) {
                 out.extend(values.iter().cloned());
             }
         }
-        Condition::IsNull(_) | Condition::IsNotNull(_) => {}
+        Condition::IsNull(_) | Condition::IsNotNull(_) | Condition::CompareFields(..) => {}
+        // The SQL says UPPER(?), and the bound text is upper-cased here to match.
+        Condition::IgnoreCase(inner) => push_params(out, &inner.as_ref().clone().upper_values()),
         Condition::And(list) | Condition::Or(list) => {
             for child in list {
                 if renders(child) {

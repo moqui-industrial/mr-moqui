@@ -27,6 +27,7 @@ mod find;
 mod fk;
 mod meta;
 mod params;
+mod search_form;
 mod sequence;
 mod share;
 mod value;
@@ -35,6 +36,9 @@ pub use dbresource::{DbResourceChild, DbResourceInfo};
 pub use facade::{EntityFacade, EntityFlags, EntityGroup};
 pub use find::{EntityFind, EntityListIterator};
 pub use meta::EntityDbMeta;
+/// The condition tree `EntityFind::condition` takes, so callers need not depend on `moqui-db`.
+pub use moqui_db::sql::{CompareOp, Condition};
+pub use search_form::SearchFormResult;
 pub use sequence::{fill_bank, stagger_step, take_id, SequenceBank};
 pub use value::{EntityList, EntityValue};
 

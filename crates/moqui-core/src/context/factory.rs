@@ -638,12 +638,21 @@ impl ExecutionContextFactory {
 
     /// A test context whose factory owns `pools`, attached so the scheduler can reach the factory.
     pub(crate) fn test_context_with(conf_text: &str, pools: crate::service::ServicePools) -> ExecutionContext {
+        Self::test_context_in(conf_text, pools, PathBuf::from("."))
+    }
+
+    /// A test context whose framework directory is `framework_dir`, so framework files resolve.
+    pub(crate) fn test_context_in(
+        conf_text: &str,
+        pools: crate::service::ServicePools,
+        framework_dir: PathBuf,
+    ) -> ExecutionContext {
         let conf = MNode::parse_text("test", "<moqui-conf/>").expect("conf");
         let entity = Arc::new(RwLock::new(None));
         let runtime_dir = PathBuf::from(".");
         let factory = Arc::new(Self {
             runtime_dir: runtime_dir.clone(),
-            framework_dir: PathBuf::from("."),
+            framework_dir,
             components: Vec::new(),
             resource: ResourceFacade::new(runtime_dir, std::collections::HashMap::new(), entity.clone()),
             cache: CacheFacade::from_conf(&conf).expect("cache"),

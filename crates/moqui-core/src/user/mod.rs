@@ -18,6 +18,7 @@ mod authz;
 mod filter;
 mod login;
 mod password;
+mod period;
 mod policy;
 mod session;
 mod visit;
@@ -27,6 +28,7 @@ pub(crate) use authz::{denied, is_permitted, note_entity_write, AuthInfo, Permit
 pub use filter::apply_entity_filters;
 pub use login::{change_password, internal_login_user, login_anonymous, login_user, logout, logout_anonymous_only};
 pub use password::hash_password;
+pub use period::period_range;
 pub use policy::password_acceptable;
 pub(crate) use session::Memory;
 pub use session::{

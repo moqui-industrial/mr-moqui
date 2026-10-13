@@ -171,28 +171,23 @@ impl HostFind {
         })
     }
 
-    /// Reads go to the entity cache or the database as `EntityFind` decides, so the cache,
-    /// clone, and column-list hints change nothing. A lock or distinct request would change
-    /// the result, so those fail rather than run without it.
+    /// Reads go to the entity cache or the database as `EntityFind` decides, so the cache and
+    /// clone hints change nothing.
     fn use_cache<'js>(&self, ctx: Ctx<'js>, _flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostFind>> {
         host_guard(&ctx, || wrap_find(&ctx, take_find(&ctx, &self.inner)?))
     }
 
     fn for_update<'js>(&self, ctx: Ctx<'js>, flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostFind>> {
         host_guard(&ctx, || {
-            if flag.as_bool() == Some(true) {
-                return Err(not_implemented(&ctx, "forUpdate"));
-            }
-            wrap_find(&ctx, take_find(&ctx, &self.inner)?)
+            let find = take_find(&ctx, &self.inner)?.for_update(flag.as_bool().unwrap_or(true));
+            wrap_find(&ctx, find)
         })
     }
 
     fn distinct<'js>(&self, ctx: Ctx<'js>, flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostFind>> {
         host_guard(&ctx, || {
-            if flag.as_bool() == Some(true) {
-                return Err(not_implemented(&ctx, "distinct"));
-            }
-            wrap_find(&ctx, take_find(&ctx, &self.inner)?)
+            let find = take_find(&ctx, &self.inner)?.distinct(flag.as_bool().unwrap_or(true));
+            wrap_find(&ctx, find)
         })
     }
 
@@ -200,8 +195,11 @@ impl HostFind {
         host_guard(&ctx, || wrap_find(&ctx, take_find(&ctx, &self.inner)?))
     }
 
-    fn select_field<'js>(&self, ctx: Ctx<'js>, _field: String) -> rquickjs::Result<Class<'js, HostFind>> {
-        host_guard(&ctx, || wrap_find(&ctx, take_find(&ctx, &self.inner)?))
+    fn select_field<'js>(&self, ctx: Ctx<'js>, field: String) -> rquickjs::Result<Class<'js, HostFind>> {
+        host_guard(&ctx, || {
+            let find = take_find(&ctx, &self.inner)?.select_field(&field);
+            wrap_find(&ctx, find)
+        })
     }
 
     fn list<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<Class<'js, HostList>> {
@@ -255,16 +253,59 @@ impl HostFind {
         self.list(ctx)
     }
 
-    fn having_condition(&self, ctx: Ctx<'_>, _args: Rest<JsValue<'_>>) -> rquickjs::Result<()> {
-        host_guard(&ctx, || Err(not_implemented(&ctx, "havingCondition")))
+    /// A condition on an aggregate alias of a view-entity. A null condition is skipped.
+    fn having_condition<'js>(&self, ctx: Ctx<'js>, condition: JsValue<'js>) -> rquickjs::Result<Class<'js, HostFind>> {
+        host_guard(&ctx, || {
+            let mut find = take_find(&ctx, &self.inner)?;
+            if let Some(condition) = condition_of(&condition) {
+                find = find.having(condition);
+            }
+            wrap_find(&ctx, find)
+        })
     }
 
-    fn search_form_map(&self, ctx: Ctx<'_>, _args: Rest<JsValue<'_>>) -> rquickjs::Result<()> {
-        host_guard(&ctx, || Err(not_implemented(&ctx, "searchFormMap")))
+    /// `searchFormMap(inputFields, defaultParameters, skipFields, defaultOrderBy, paginate)`.
+    /// The defaults and `orderByField` it applied are put in the context, so the form shows them.
+    fn search_form_map<'js>(&self, ctx: Ctx<'js>, args: Rest<JsValue<'js>>) -> rquickjs::Result<Class<'js, HostFind>> {
+        host_guard(&ctx, || {
+            let map_arg = |index: usize| -> rquickjs::Result<std::collections::BTreeMap<String, Value>> {
+                match args.0.get(index) {
+                    Some(value) if !value.is_null() && !value.is_undefined() => match js_to_host(&ctx, value)? {
+                        Value::Map(entries) => Ok(entries.into_iter().collect()),
+                        _ => Err(Exception::throw_message(&ctx, "searchFormMap needs maps of fields")),
+                    },
+                    _ => Ok(std::collections::BTreeMap::new()),
+                }
+            };
+            let text_arg = |index: usize| -> String {
+                args.0
+                    .get(index)
+                    .and_then(|value| js_to_host(&ctx, value).ok())
+                    .map(|value| moqui_lib::object::to_plain_string(&value))
+                    .unwrap_or_default()
+            };
+            let input = map_arg(0)?;
+            let defaults = map_arg(1)?;
+            let paginate = args.0.get(4).and_then(JsValue::as_bool).unwrap_or(false);
+            let found = take_find(&ctx, &self.inner)?
+                .search_form_map(&input, &defaults, &text_arg(2), &text_arg(3), paginate)
+                .map_err(|err| throw_lib(&ctx, &err))?;
+            for (name, value) in found.context {
+                put_name(&ctx, &name, value)?;
+            }
+            wrap_find(&ctx, found.find)
+        })
     }
 
-    fn require_search_form_parameters(&self, ctx: Ctx<'_>, _args: Rest<JsValue<'_>>) -> rquickjs::Result<()> {
-        host_guard(&ctx, || Err(not_implemented(&ctx, "requireSearchFormParameters")))
+    fn require_search_form_parameters<'js>(
+        &self,
+        ctx: Ctx<'js>,
+        require: Opt<bool>,
+    ) -> rquickjs::Result<Class<'js, HostFind>> {
+        host_guard(&ctx, || {
+            let find = take_find(&ctx, &self.inner)?.require_search_form_parameters(require.0.unwrap_or(true));
+            wrap_find(&ctx, find)
+        })
     }
 }
 
@@ -513,10 +554,8 @@ impl HostEntity {
         for_update: Opt<JsValue<'js>>,
     ) -> rquickjs::Result<Class<'js, HostList>> {
         host_guard(&ctx, || {
-            if for_update.0.as_ref().and_then(JsValue::as_bool) == Some(true) {
-                return Err(not_implemented(&ctx, "forUpdate"));
-            }
-            let mut find = self.related_find(&ctx, &name)?;
+            let lock = for_update.0.as_ref().and_then(JsValue::as_bool) == Some(true);
+            let mut find = self.related_find(&ctx, &name)?.for_update(lock);
             if let Some(Value::Map(entries)) = map.0.as_ref().map(|value| js_to_host(&ctx, value)).transpose()? {
                 for (key, value) in entries {
                     find = find.eq(&key, value);
@@ -544,11 +583,10 @@ impl HostEntity {
         for_update: Opt<JsValue<'js>>,
     ) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || {
-            if for_update.0.as_ref().and_then(JsValue::as_bool) == Some(true) {
-                return Err(not_implemented(&ctx, "forUpdate"));
-            }
+            let lock = for_update.0.as_ref().and_then(JsValue::as_bool) == Some(true);
             let found = self
                 .related_find(&ctx, &name)?
+                .for_update(lock)
                 .one()
                 .map_err(|err| throw_lib(&ctx, &err))?;
             match found {

@@ -69,11 +69,12 @@ mod tests {
 
     #[test]
     fn email_eca_runs_its_action_and_mail_is_not_configured() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
-        crate::service::load_definitions().unwrap();
         let facade = open();
-        let context = ExecutionContextFactory::test_context();
+        let context = ExecutionContextFactory::test_context_in(
+            "",
+            crate::service::ServicePools::idle(),
+            crate::context::framework_dir(),
+        );
         eca_rules::install(
             context.factory(),
             eca_rules::from_xml(
@@ -94,6 +95,7 @@ mod tests {
         );
         context.factory().set_entity(facade);
         let _entered = context.enter();
+        crate::service::load_definitions().unwrap();
         // A failed service-call adds an error and the rule's generated code returns, as in Java.
         run_email_rules(&BTreeMap::new()).unwrap();
         let errors = context.message().errors().join("\n");

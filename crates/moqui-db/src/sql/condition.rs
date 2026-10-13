@@ -29,6 +29,9 @@ use super::ident::{placeholders, quote_ident};
 pub struct FieldRef {
     pub entity_alias: Option<String>,
     pub name: String,
+    /// SQL written in place of the column. Only the view renderer sets it, from the model's own
+    /// aggregate and function aliases, so no input ever reaches it.
+    pub expr: Option<String>,
 }
 
 impl FieldRef {
@@ -36,6 +39,7 @@ impl FieldRef {
         Self {
             entity_alias: None,
             name: name.into(),
+            expr: None,
         }
     }
 
@@ -43,6 +47,16 @@ impl FieldRef {
         Self {
             entity_alias: Some(entity_alias.into()),
             name: name.into(),
+            expr: None,
+        }
+    }
+
+    /// A field that is a SQL expression, such as `SUM("OI"."quantity")`. `name` is its alias.
+    pub fn expression(name: impl Into<String>, expr: impl Into<String>) -> Self {
+        Self {
+            entity_alias: None,
+            name: name.into(),
+            expr: Some(expr.into()),
         }
     }
 }
@@ -128,6 +142,35 @@ pub enum Condition {
     Not(Box<Condition>),
     /// Full text. The SQL comes from the dialect `fts-style` and `fts-config`.
     Matches(FieldRef, Value),
+    /// One field against another: `to-field-name` on an `econdition`.
+    CompareFields(FieldRef, CompareOp, FieldRef),
+    /// A comparison made on `UPPER(field)` and `UPPER(value)`. The inner condition must be one
+    /// comparison against a value, not a join of conditions.
+    IgnoreCase(Box<Condition>),
+}
+
+/// The comparison between two fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompareOp {
+    Equals,
+    NotEquals,
+    Less,
+    Greater,
+    LessEqual,
+    GreaterEqual,
+}
+
+impl CompareOp {
+    fn sql(self) -> &'static str {
+        match self {
+            Self::Equals => "=",
+            Self::NotEquals => "<>",
+            Self::Less => "<",
+            Self::Greater => ">",
+            Self::LessEqual => "<=",
+            Self::GreaterEqual => ">=",
+        }
+    }
 }
 
 impl Condition {
@@ -198,6 +241,95 @@ impl Condition {
     pub fn matches(field: impl Into<FieldRef>, value: Value) -> Self {
         Self::Matches(field.into(), value)
     }
+
+    pub fn compare_fields(left: impl Into<FieldRef>, op: CompareOp, right: impl Into<FieldRef>) -> Self {
+        Self::CompareFields(left.into(), op, right.into())
+    }
+
+    /// `condition` compared without regard to case.
+    pub fn ignore_case(condition: Condition) -> Self {
+        Self::IgnoreCase(Box::new(condition))
+    }
+
+    /// Rewrite every field in the tree. The view renderer uses this to turn alias names into the
+    /// columns or expressions they stand for.
+    #[must_use]
+    pub fn map_fields(self, change: &mut impl FnMut(FieldRef) -> FieldRef) -> Self {
+        match self {
+            Self::Equals(field, value) => Self::Equals(change(field), value),
+            Self::NotEquals(field, value) => Self::NotEquals(change(field), value),
+            Self::Less(field, value) => Self::Less(change(field), value),
+            Self::Greater(field, value) => Self::Greater(change(field), value),
+            Self::LessEqual(field, value) => Self::LessEqual(change(field), value),
+            Self::GreaterEqual(field, value) => Self::GreaterEqual(change(field), value),
+            Self::In(field, values) => Self::In(change(field), values),
+            Self::NotIn(field, values) => Self::NotIn(change(field), values),
+            Self::Between(field, low, high) => Self::Between(change(field), low, high),
+            Self::Like(field, value) => Self::Like(change(field), value),
+            Self::NotLike(field, value) => Self::NotLike(change(field), value),
+            Self::IsNull(field) => Self::IsNull(change(field)),
+            Self::IsNotNull(field) => Self::IsNotNull(change(field)),
+            Self::Matches(field, value) => Self::Matches(change(field), value),
+            Self::CompareFields(left, op, right) => {
+                let left = change(left);
+                Self::CompareFields(left, op, change(right))
+            }
+            Self::And(list) => Self::And(list.into_iter().map(|child| child.map_fields(change)).collect()),
+            Self::Or(list) => Self::Or(list.into_iter().map(|child| child.map_fields(change)).collect()),
+            Self::Not(inner) => Self::Not(Box::new(inner.map_fields(change))),
+            Self::IgnoreCase(inner) => Self::IgnoreCase(Box::new(inner.map_fields(change))),
+        }
+    }
+
+    /// The same condition with every text value upper-cased: what an ignore-case comparison binds.
+    #[must_use]
+    pub fn upper_values(self) -> Self {
+        let upper = |value: Value| match value {
+            Value::String(text) => Value::String(text.to_uppercase()),
+            other => other,
+        };
+        match self {
+            Self::Equals(field, value) => Self::Equals(field, upper(value)),
+            Self::NotEquals(field, value) => Self::NotEquals(field, upper(value)),
+            Self::Less(field, value) => Self::Less(field, upper(value)),
+            Self::Greater(field, value) => Self::Greater(field, upper(value)),
+            Self::LessEqual(field, value) => Self::LessEqual(field, upper(value)),
+            Self::GreaterEqual(field, value) => Self::GreaterEqual(field, upper(value)),
+            Self::Like(field, value) => Self::Like(field, upper(value)),
+            Self::NotLike(field, value) => Self::NotLike(field, upper(value)),
+            Self::In(field, values) => Self::In(field, values.into_iter().map(upper).collect()),
+            Self::NotIn(field, values) => Self::NotIn(field, values.into_iter().map(upper).collect()),
+            Self::Between(field, low, high) => Self::Between(field, upper(low), upper(high)),
+            Self::And(list) => Self::And(list.into_iter().map(Self::upper_values).collect()),
+            Self::Or(list) => Self::Or(list.into_iter().map(Self::upper_values).collect()),
+            Self::Not(inner) => Self::Not(Box::new(inner.upper_values())),
+            Self::IgnoreCase(inner) => Self::IgnoreCase(Box::new(inner.upper_values())),
+            other => other,
+        }
+    }
+
+    /// True when any field in the tree satisfies `test`.
+    pub fn any_field(&self, test: &mut impl FnMut(&FieldRef) -> bool) -> bool {
+        match self {
+            Self::Equals(field, _)
+            | Self::NotEquals(field, _)
+            | Self::Less(field, _)
+            | Self::Greater(field, _)
+            | Self::LessEqual(field, _)
+            | Self::GreaterEqual(field, _)
+            | Self::In(field, _)
+            | Self::NotIn(field, _)
+            | Self::Between(field, _, _)
+            | Self::Like(field, _)
+            | Self::NotLike(field, _)
+            | Self::IsNull(field)
+            | Self::IsNotNull(field)
+            | Self::Matches(field, _) => test(field),
+            Self::CompareFields(left, _, right) => test(left) || test(right),
+            Self::And(list) | Self::Or(list) => list.iter().any(|child| child.any_field(test)),
+            Self::Not(inner) | Self::IgnoreCase(inner) => inner.any_field(test),
+        }
+    }
 }
 
 /// Render a condition. An empty `And` or `Or` returns an empty string.
@@ -233,6 +365,70 @@ fn write_condition(out: &mut String, condition: &Condition, dialect: &Dialect) -
             }
         }
         Condition::Matches(field, _) => write_matches(out, dialect, field)?,
+        Condition::CompareFields(left, op, right) => {
+            write_field(out, dialect, left);
+            out.push(' ');
+            out.push_str(op.sql());
+            out.push(' ');
+            write_field(out, dialect, right);
+        }
+        Condition::IgnoreCase(inner) => write_ignore_case(out, dialect, inner)?,
+    }
+    Ok(())
+}
+
+/// `UPPER(field) op UPPER(?)`. The caller upper-cases the bound values.
+fn write_ignore_case(out: &mut String, dialect: &Dialect, inner: &Condition) -> Result<(), Error> {
+    let upper_field = |out: &mut String, field: &FieldRef| {
+        out.push_str("UPPER(");
+        write_field(out, dialect, field);
+        out.push(')');
+    };
+    let upper_value = |out: &mut String| {
+        out.push_str("UPPER(");
+        out.push_str(dialect.placeholder);
+        out.push(')');
+    };
+    let simple = |out: &mut String, field: &FieldRef, operator: &str| {
+        upper_field(out, field);
+        out.push(' ');
+        out.push_str(operator);
+        out.push(' ');
+        upper_value(out);
+    };
+    match inner {
+        Condition::Equals(field, _) => simple(out, field, "="),
+        Condition::NotEquals(field, _) => simple(out, field, "<>"),
+        Condition::Less(field, _) => simple(out, field, "<"),
+        Condition::Greater(field, _) => simple(out, field, ">"),
+        Condition::LessEqual(field, _) => simple(out, field, "<="),
+        Condition::GreaterEqual(field, _) => simple(out, field, ">="),
+        Condition::Like(field, _) => simple(out, field, "LIKE"),
+        Condition::NotLike(field, _) => simple(out, field, "NOT LIKE"),
+        Condition::Between(field, _, _) => {
+            upper_field(out, field);
+            out.push_str(" BETWEEN ");
+            upper_value(out);
+            out.push_str(" AND ");
+            upper_value(out);
+        }
+        Condition::In(field, values) | Condition::NotIn(field, values) => {
+            let negated = matches!(inner, Condition::NotIn(..));
+            if values.is_empty() {
+                out.push_str(if negated { "1 = 1" } else { "1 = 0" });
+                return Ok(());
+            }
+            upper_field(out, field);
+            out.push_str(if negated { " NOT IN (" } else { " IN (" });
+            for index in 0..values.len() {
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                upper_value(out);
+            }
+            out.push(')');
+        }
+        _ => return Err(Error::new("ignore-case applies to one comparison against a value")),
     }
     Ok(())
 }
@@ -343,6 +539,10 @@ fn is_fts_config(config: &str) -> bool {
 }
 
 pub(crate) fn write_field(out: &mut String, dialect: &Dialect, field: &FieldRef) {
+    if let Some(expr) = &field.expr {
+        out.push_str(expr);
+        return;
+    }
     if let Some(alias) = &field.entity_alias {
         out.push_str(&quote_ident(dialect, alias));
         out.push('.');

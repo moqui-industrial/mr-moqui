@@ -91,12 +91,10 @@ mod tests {
 
     #[test]
     fn call_future_returns_the_out_parameter() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
-        register_echo();
         let ctx = ExecutionContextFactory::test_context();
         ctx.factory().set_entity(crate::testing::open());
         let _entered = ctx.enter();
+        register_echo();
         let pools = ServicePools::bounded(2, 8);
         let mut params = BTreeMap::new();
         params.insert("note".into(), Value::string("hello"));
@@ -119,11 +117,10 @@ mod tests {
 
     #[test]
     fn one_worker_call_future_uses_a_reserved_thread() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
-        register_echo();
         let ctx = ExecutionContextFactory::test_context();
         ctx.factory().set_entity(crate::testing::open());
+        let _entered = ctx.enter();
+        register_echo();
         let factory = Arc::clone(ctx.factory());
         let pools = ServicePools::bounded(1, 1);
         let shared = pools.shared_handle();
@@ -214,16 +211,18 @@ mod tests {
     }
 
     fn jobs_world(workers: usize, queue: usize) -> Jobs {
-        crate::service::define::reset();
         let path = std::env::temp_dir().join(format!("moqui-jobs-{}.xml", std::process::id()));
         std::fs::write(&path, SERVICES).unwrap();
-        let failures = crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
-        assert!(failures.is_empty(), "{failures:?}");
         let pools = ServicePools::bounded(workers, queue);
         let pools_handle = pools.shared_handle();
         let ctx = ExecutionContextFactory::test_context_with("", pools);
         let facade = crate::testing::open();
         ctx.factory().set_entity(facade.clone());
+        {
+            let _entered = ctx.enter();
+            let failures = crate::service::lint(std::slice::from_ref(&path)).unwrap();
+            assert!(failures.is_empty(), "{failures:?}");
+        }
         Jobs {
             ctx,
             facade,
@@ -278,7 +277,6 @@ mod tests {
 
     #[test]
     fn a_due_job_runs_once_and_leaves_its_history() {
-        let _gate = crate::service::define::lock_tests();
         let world = jobs_world(2, 8);
         let _entered = world.ctx.enter();
         let _authz = world.ctx.disable_authz();
@@ -322,7 +320,6 @@ mod tests {
 
     #[test]
     fn paused_and_future_jobs_do_not_run_and_a_held_lock_blocks_a_job() {
-        let _gate = crate::service::define::lock_tests();
         let world = jobs_world(2, 8);
         let _entered = world.ctx.enter();
         let _authz = world.ctx.disable_authz();
@@ -360,7 +357,6 @@ mod tests {
 
     #[test]
     fn a_failed_run_is_recorded_and_not_retried_before_the_minimum_retry_time() {
-        let _gate = crate::service::define::lock_tests();
         let world = jobs_world(2, 8);
         let _entered = world.ctx.enter();
         let _authz = world.ctx.disable_authz();
@@ -379,7 +375,6 @@ mod tests {
 
     #[test]
     fn a_repeat_count_pauses_the_job_after_that_many_runs() {
-        let _gate = crate::service::define::lock_tests();
         let world = jobs_world(2, 8);
         let _entered = world.ctx.enter();
         let _authz = world.ctx.disable_authz();
@@ -404,7 +399,6 @@ mod tests {
 
     #[test]
     fn a_call_that_finds_the_queue_full_is_stored_as_a_job_and_run_later() {
-        let _gate = crate::service::define::lock_tests();
         let world = jobs_world(1, 1);
         let _entered = world.ctx.enter();
         let _authz = world.ctx.disable_authz();
@@ -462,7 +456,6 @@ mod tests {
     fn a_failed_async_call_is_not_silent() {
         // The worker logs the failure; the caller of a fire-and-forget call gets nothing back, so
         // the observable part is that the pool survives and runs the next call.
-        let _gate = crate::service::define::lock_tests();
         let world = jobs_world(1, 8);
         let _entered = world.ctx.enter();
         let _authz = world.ctx.disable_authz();
@@ -508,7 +501,7 @@ mod tests {
             </services>"#,
         )
         .unwrap();
-        let failures = crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
+        let failures = crate::service::lint(std::slice::from_ref(&path)).unwrap();
         assert!(failures.is_empty(), "{failures:?}");
     }
 

@@ -61,32 +61,22 @@ impl Drop for ClearStack {
     }
 }
 
-struct ReservedSlot<'a>(&'a Shared);
+struct ReservedSlot(Arc<Shared>);
 
-impl<'a> ReservedSlot<'a> {
-    fn take(shared: &'a Shared, limit: usize) -> Result<Self, Error> {
+impl ReservedSlot {
+    fn take(shared: &Arc<Shared>, limit: usize) -> Result<Self, Error> {
         let before = shared.reserved.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if before >= limit {
             shared.reserved.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             return Err(Error::new("no reserved service worker is free for a nested call"));
         }
-        Ok(Self(shared))
+        Ok(Self(Arc::clone(shared)))
     }
 }
 
-impl Drop for ReservedSlot<'_> {
+impl Drop for ReservedSlot {
     fn drop(&mut self) {
         self.0.reserved.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-struct JoinOnDrop(Option<JoinHandle<()>>);
-
-impl Drop for JoinOnDrop {
-    fn drop(&mut self) {
-        if let Some(handle) = self.0.take() {
-            join_one(handle);
-        }
     }
 }
 
@@ -199,6 +189,15 @@ impl ServicePools {
         self.running()?.call_future(name, parameters)
     }
 
+    /// Start the call and return its pending result. See [`Shared::submit_future`].
+    pub(crate) fn submit_future(
+        &self,
+        name: &str,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<CallReceiver, Error> {
+        self.running()?.submit_future(name, parameters)
+    }
+
     /// Tell the pool which factory it serves. Boot calls this once the factory is built.
     pub fn attach(&self, factory: &Arc<ExecutionContextFactory>) {
         if let Some(shared) = &self.shared {
@@ -286,6 +285,16 @@ impl Shared {
         name: &str,
         parameters: &BTreeMap<String, Value>,
     ) -> Result<BTreeMap<String, Value>, Error> {
+        receive(&self.submit_future(name, parameters)?)
+    }
+
+    /// Start the call and return the channel its result arrives on. A full queue is an error at
+    /// once. A caller that is itself a worker runs the call on a reserved thread.
+    pub(crate) fn submit_future(
+        self: &Arc<Self>,
+        name: &str,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<CallReceiver, Error> {
         let factory = capture_factory()?;
         if in_worker() {
             return reserved(self, factory, name, parameters);
@@ -304,9 +313,16 @@ impl Shared {
                 .push_back(Work::replied(name.to_string(), parameters.clone(), factory, tx));
         }
         self.wake.notify_all();
-        rx.recv()
-            .unwrap_or_else(|_| Err(Error::new("service worker pool is not running")))
+        Ok(rx)
     }
+}
+
+/// The receiving end of a started service call.
+pub(crate) type CallReceiver = mpsc::Receiver<Result<BTreeMap<String, Value>, Error>>;
+
+pub(crate) fn receive(rx: &CallReceiver) -> Result<BTreeMap<String, Value>, Error> {
+    rx.recv()
+        .unwrap_or_else(|_| Err(Error::new("service worker pool is not running")))
 }
 
 /// Read `tools.@worker-pool-max` and `tools.@worker-queue`, and from `service-facade` the
@@ -521,20 +537,22 @@ fn invoke(
 }
 
 fn reserved(
-    shared: &Shared,
+    shared: &Arc<Shared>,
     factory: Arc<ExecutionContextFactory>,
     name: &str,
     parameters: &BTreeMap<String, Value>,
-) -> Result<BTreeMap<String, Value>, Error> {
+) -> Result<CallReceiver, Error> {
     // A nested wait must not take a thread the pool cannot spare: at most one per worker.
-    let _slot = ReservedSlot::take(shared, shared.workers)?;
+    let slot = ReservedSlot::take(shared, shared.workers)?;
     let (tx, rx) = mpsc::channel();
     let name = name.to_string();
     let parameters = parameters.clone();
     let user_name = crate::user::current_username().ok().flatten();
-    let handle = thread::Builder::new()
+    // The thread ends when the call does; its slot is held until then.
+    thread::Builder::new()
         .name("moqui-reserved".to_string())
         .spawn(move || {
+            let _slot = slot;
             let result = catch_unwind(AssertUnwindSafe(|| {
                 let _flag = WorkerFlag::enter();
                 let _clear = ClearStack;
@@ -543,9 +561,7 @@ fn reserved(
             let _ = tx.send(unwind_result(result));
         })
         .map_err(|err| Error::new(format!("reserved worker did not start: {err}")))?;
-    let _join = JoinOnDrop(Some(handle));
-    rx.recv()
-        .unwrap_or_else(|_| Err(Error::new("service worker pool is not running")))
+    Ok(rx)
 }
 
 fn unwind_result(

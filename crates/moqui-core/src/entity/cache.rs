@@ -26,7 +26,8 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use moqui_db::dialect::Dialect;
 use moqui_db::model::EntityDefinition;
 use moqui_db::sql::{
-    create_table, delete, insert, insert_or_update, select, update, Condition, FieldRef, LimitOffset, OrderBy,
+    create_table, delete, insert, insert_or_update, select, update, CompareOp, Condition, FieldRef, LimitOffset,
+    OrderBy,
 };
 use moqui_lib::cache::{CacheConfig, MCache};
 use moqui_lib::error::Error;
@@ -1066,6 +1067,27 @@ fn eval_condition(condition: &Condition, fields: &BTreeMap<String, Value>) -> bo
         Condition::Or(list) => list.iter().any(|child| eval_condition(child, fields)),
         Condition::Not(inner) => !eval_condition(inner, fields),
         Condition::Matches(_, _) => false,
+        Condition::CompareFields(left, op, right) => {
+            let ordering = cmp_present(&field_value(fields, &left.name), &field_value(fields, &right.name));
+            match (op, ordering) {
+                (CompareOp::Equals, _) => field_value(fields, &left.name) == field_value(fields, &right.name),
+                (CompareOp::NotEquals, ordering) => ordering.is_some_and(|ord| ord != Ordering::Equal),
+                (CompareOp::Less, ordering) => ordering == Some(Ordering::Less),
+                (CompareOp::Greater, ordering) => ordering == Some(Ordering::Greater),
+                (CompareOp::LessEqual, ordering) => ordering.is_some_and(|ord| ord != Ordering::Greater),
+                (CompareOp::GreaterEqual, ordering) => ordering.is_some_and(|ord| ord != Ordering::Less),
+            }
+        }
+        Condition::IgnoreCase(inner) => {
+            let upper: BTreeMap<String, Value> = fields
+                .iter()
+                .map(|(name, value)| match value {
+                    Value::String(text) => (name.clone(), Value::String(text.to_uppercase())),
+                    other => (name.clone(), other.clone()),
+                })
+                .collect();
+            eval_condition(&inner.as_ref().clone().upper_values(), &upper)
+        }
     }
 }
 
@@ -1107,7 +1129,48 @@ fn schema_name_ok(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::WriteGate;
+    use std::collections::BTreeMap;
+
+    use moqui_db::sql::{CompareOp, Condition};
+    use moqui_lib::object::Value;
+
+    use super::{eval_condition, WriteGate};
+
+    fn row(pairs: &[(&str, Value)]) -> BTreeMap<String, Value> {
+        pairs
+            .iter()
+            .map(|(name, value)| ((*name).to_string(), value.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn held_rows_answer_ignore_case_and_field_comparisons() {
+        let fields = row(&[
+            ("name", Value::string("Gamma")),
+            ("low", Value::I32(1)),
+            ("high", Value::I32(5)),
+        ]);
+        let same_case = Condition::ignore_case(Condition::equals("name", Value::string("gAMMA")));
+        assert!(eval_condition(&same_case, &fields));
+        let other = Condition::ignore_case(Condition::like("name", Value::string("GAM%")));
+        assert!(eval_condition(&other, &fields));
+        assert!(!eval_condition(
+            &Condition::ignore_case(Condition::equals("name", Value::string("beta"))),
+            &fields
+        ));
+        assert!(eval_condition(
+            &Condition::compare_fields("low", CompareOp::Less, "high"),
+            &fields
+        ));
+        assert!(!eval_condition(
+            &Condition::compare_fields("low", CompareOp::GreaterEqual, "high"),
+            &fields
+        ));
+        assert!(eval_condition(
+            &Condition::compare_fields("low", CompareOp::NotEquals, "high"),
+            &fields
+        ));
+    }
 
     #[test]
     fn handled_is_a_write_gate() {

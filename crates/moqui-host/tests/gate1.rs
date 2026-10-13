@@ -211,6 +211,142 @@ fn load_disable_flags_leave_entity_ecas_on() {
     assert!(report.enumeration > 0);
 }
 
+/// The SQL the in-memory driver cannot prove: aggregates with GROUP BY and HAVING, DISTINCT, a
+/// locking read, UPPER() comparisons, and a search form.
+#[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+#[test]
+fn sql_features_run_on_postgres() {
+    use moqui_core::entity::{CompareOp, Condition};
+    use moqui_host::db::embedded::EmbeddedCluster;
+
+    let (_runtime, cluster_dir, _guards) = fresh_dirs("sql-features");
+    let framework = framework_dir();
+    moqui_host::xmlshim::provide_libxml2_soname(&cluster_dir).unwrap();
+    let (cluster, driver) = EmbeddedCluster::start(&cluster_dir, 20).unwrap();
+    let driver: Arc<dyn DbDriver> = Arc::new(driver);
+    let facade = open_entity_facade(&framework, driver, pool()).unwrap();
+    facade.check_tables(&["moqui.test.TestEntity"]).unwrap();
+    for (id, medium, number) in [("A", "alpha", 1_i64), ("B", "alpha", 5), ("C", "Beta", 3)] {
+        let mut row = facade.make_value("moqui.test.TestEntity").unwrap();
+        row.set("testId", Value::string(id));
+        row.set("testMedium", Value::string(medium));
+        row.set("testNumberInteger", Value::I64(number));
+        row.create(&facade).unwrap();
+    }
+    let ids = |list: moqui_core::entity::EntityList| -> Vec<String> {
+        let mut ids: Vec<String> = list
+            .values()
+            .iter()
+            .filter_map(|row| row.get("testId").and_then(Value::as_str).map(str::to_string))
+            .collect();
+        ids.sort();
+        ids
+    };
+
+    // Aggregates: one group row per medium, and HAVING names the aggregate.
+    let groups = facade
+        .find("moqui.test.TestEntityCount")
+        .unwrap()
+        .having(Condition::greater("entityCount", Value::I64(1)))
+        .list()
+        .unwrap();
+    assert_eq!(groups.len(), 1);
+    let group = &groups.values()[0];
+    assert_eq!(group.get("testMedium").and_then(Value::as_str), Some("alpha"));
+    assert_eq!(
+        group
+            .get("entityCount")
+            .map(moqui_lib::object::to_plain_string)
+            .as_deref(),
+        Some("2")
+    );
+    assert_eq!(
+        group
+            .get("maxNumber")
+            .map(moqui_lib::object::to_plain_string)
+            .as_deref(),
+        Some("5")
+    );
+    let all_groups = facade
+        .find("moqui.test.TestEntityCount")
+        .unwrap()
+        .order_by("entityCount", true)
+        .list()
+        .unwrap();
+    assert_eq!(all_groups.len(), 2);
+
+    // UPPER() on both sides.
+    let ignoring = facade
+        .find("moqui.test.TestEntity")
+        .unwrap()
+        .condition(Condition::ignore_case(Condition::equals(
+            "testMedium",
+            Value::string("BETA"),
+        )))
+        .list()
+        .unwrap();
+    assert_eq!(ids(ignoring), ["C"]);
+    // Field against field: testNumberInteger = testNumberInteger holds for every row with a number.
+    let same = facade
+        .find("moqui.test.TestEntity")
+        .unwrap()
+        .condition(Condition::compare_fields(
+            "testNumberInteger",
+            CompareOp::Equals,
+            "testNumberInteger",
+        ))
+        .list()
+        .unwrap();
+    assert_eq!(ids(same), ["A", "B", "C"]);
+
+    // DISTINCT over one selected field.
+    let distinct = facade
+        .find("moqui.test.TestEntity")
+        .unwrap()
+        .select_field("testMedium")
+        .distinct(true)
+        .list()
+        .unwrap();
+    assert_eq!(distinct.len(), 2);
+
+    // A locking read needs a transaction and runs inside one.
+    assert!(facade
+        .find("moqui.test.TestEntity")
+        .unwrap()
+        .for_update(true)
+        .list()
+        .is_err());
+    facade.begin("moqui.test.TestEntity", None).unwrap();
+    let locked = facade
+        .find("moqui.test.TestEntity")
+        .unwrap()
+        .eq("testId", Value::string("A"))
+        .for_update(true)
+        .list();
+    facade.rollback("moqui.test.TestEntity").unwrap();
+    assert_eq!(locked.unwrap().len(), 1);
+
+    // A search form: contains, ignoring case, ordered and paged.
+    let mut form = std::collections::BTreeMap::new();
+    form.insert("testMedium".to_string(), Value::string("ALP"));
+    form.insert("testMedium_op".to_string(), Value::string("contains"));
+    form.insert("testMedium_ic".to_string(), Value::string("Y"));
+    form.insert("orderByField".to_string(), Value::string("-testId"));
+    form.insert("pageSize".to_string(), Value::string("1"));
+    let searched = facade
+        .find("moqui.test.TestEntity")
+        .unwrap()
+        .search_form_map(&form, &std::collections::BTreeMap::new(), "", "", false)
+        .unwrap()
+        .find
+        .list()
+        .unwrap();
+    assert_eq!(ids(searched), ["B"], "highest testId of the alpha rows, one per page");
+
+    drop(facade);
+    drop(cluster);
+}
+
 #[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
 fn fresh_dirs(prefix: &str) -> (PathBuf, PathBuf, (DirGuard, DirGuard)) {
     let runtime = temp_dir(&format!("moqui-rt-{prefix}"));

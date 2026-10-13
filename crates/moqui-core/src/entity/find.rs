@@ -14,7 +14,7 @@
 
 //! Entity find. The condition tree is `moqui_db`. A view uses `select_view`.
 
-use moqui_db::sql::{count, select, select_view, Condition, FieldRef, LimitOffset, OrderBy};
+use moqui_db::sql::{count, select_view_with, select_with, Condition, FieldRef, LimitOffset, OrderBy, SelectOptions};
 use moqui_lib::error::Error;
 use moqui_lib::object::{basic_convert, Value};
 
@@ -29,12 +29,20 @@ use crate::transaction::TransactionManager;
 
 /// A find builder. Methods consume `self` so conditions chain.
 pub struct EntityFind {
-    facade: EntityFacade,
+    pub(super) facade: EntityFacade,
     entity_name: String,
-    conditions: Vec<Condition>,
+    pub(super) conditions: Vec<Condition>,
     order: Vec<OrderBy>,
-    limit: Option<i64>,
-    offset: Option<i64>,
+    pub(super) limit: Option<i64>,
+    pub(super) offset: Option<i64>,
+    distinct: bool,
+    for_update: bool,
+    pub(super) having: Vec<Condition>,
+    select_fields: Vec<String>,
+    /// Set by `require_search_form_parameters`: a find with no search parameter returns nothing.
+    pub(super) require_search_parameters: bool,
+    /// Set by `search_form_map` when the input made at least one condition.
+    pub(super) has_search_parameters: bool,
 }
 
 impl EntityFind {
@@ -46,6 +54,12 @@ impl EntityFind {
             order: Vec::new(),
             limit: None,
             offset: None,
+            distinct: false,
+            for_update: false,
+            having: Vec::new(),
+            select_fields: Vec::new(),
+            require_search_parameters: false,
+            has_search_parameters: false,
         }
     }
 
@@ -68,6 +82,13 @@ impl EntityFind {
         self
     }
 
+    /// A find that returns nothing unless `search_form_map` made a condition from the input. Java's
+    /// `requireSearchFormParameters`: a list screen with no search yet shows no rows.
+    pub fn require_search_form_parameters(mut self, require: bool) -> Self {
+        self.require_search_parameters = require;
+        self
+    }
+
     pub fn order_by(mut self, field: &str, descending: bool) -> Self {
         let entry = if descending {
             OrderBy::desc(field)
@@ -76,6 +97,38 @@ impl EntityFind {
         };
         self.order.push(entry);
         self
+    }
+
+    /// `SELECT DISTINCT`. Not cached and not merged with held or sim rows.
+    pub fn distinct(mut self, distinct: bool) -> Self {
+        self.distinct = distinct;
+        self
+    }
+
+    /// Lock the rows read until the transaction ends. The find fails outside a transaction. It
+    /// reads from the database, not from the entity cache or the rows a transaction cache holds.
+    pub fn for_update(mut self, lock: bool) -> Self {
+        self.for_update = lock;
+        self
+    }
+
+    /// A condition on an aggregate of a view-entity (`function` aliases). It goes in `HAVING`.
+    pub fn having(mut self, condition: Condition) -> Self {
+        self.having.push(condition);
+        self
+    }
+
+    /// Read only these fields of an entity. A field the entity does not have is an error. The
+    /// values returned have just these fields. A view-entity always reads its own alias list.
+    pub fn select_field(mut self, field: &str) -> Self {
+        self.select_fields.push(field.to_string());
+        self
+    }
+
+    /// True when the result depends on more than the conditions, order, and paging, so the entity
+    /// cache and the held-row overlay, which key on those alone, must not answer.
+    fn bypasses_cache(&self) -> bool {
+        self.distinct || self.for_update || !self.having.is_empty() || !self.select_fields.is_empty()
     }
 
     pub fn limit(mut self, limit: i64) -> Self {
@@ -89,19 +142,28 @@ impl EntityFind {
     }
 
     pub fn list(self) -> Result<EntityList, Error> {
+        if self.require_search_parameters && !self.has_search_parameters {
+            return Ok(EntityList::new(Vec::new()));
+        }
         // The view frame is what authorizes the read, and the filters come from its record.
         let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view")?;
         let condition = self.combined();
         let lookup = self.lookup(&condition);
-        if let Some(cached) = cache::before_find(&self.facade, &lookup) {
-            return self.localize_list(cached);
+        let bypass = self.bypasses_cache();
+        if !bypass {
+            if let Some(cached) = cache::before_find(&self.facade, &lookup) {
+                return self.localize_list(cached);
+            }
         }
+        self.require_transaction_for_lock()?;
         let plan = self.plan(false)?;
         let rows = query_tx(&plan.tx, &plan.sql, &plan.params)?;
         after_statement(&self.facade, &plan.tx, false);
         let values = self.rows_to_values(&plan, &rows)?;
         let list = EntityList::new(values);
-        cache::after_find(&self.facade, &lookup, &list)?;
+        if !bypass {
+            cache::after_find(&self.facade, &lookup, &list)?;
+        }
         self.localize_list(list)
     }
 
@@ -114,6 +176,9 @@ impl EntityFind {
     }
 
     pub fn count(self) -> Result<i64, Error> {
+        if self.require_search_parameters && !self.has_search_parameters {
+            return Ok(0);
+        }
         let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view")?;
         let condition = self.combined();
         if let Some(count) = cache::before_count(&self.facade, &self.entity_name, condition.as_ref()) {
@@ -142,9 +207,12 @@ impl EntityFind {
         let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view")?;
         let condition = self.combined();
         let lookup = self.lookup(&condition);
-        if let Some(cached) = cache::before_find(&self.facade, &lookup) {
-            return Ok(EntityListIterator::memory(self.facade, self.entity_name, cached));
+        if !self.bypasses_cache() {
+            if let Some(cached) = cache::before_find(&self.facade, &lookup) {
+                return Ok(EntityListIterator::memory(self.facade, self.entity_name, cached));
+            }
         }
+        self.require_transaction_for_lock()?;
         let plan = self.plan(false)?;
         plan.tx
             .with_connection(|conn| conn.open_stream(&plan.sql, &plan.params))?;
@@ -155,6 +223,16 @@ impl EntityFind {
             plan.columns,
             plan.tx,
         ))
+    }
+
+    fn require_transaction_for_lock(&self) -> Result<(), Error> {
+        if self.for_update && !self.facade.transactions_for(&self.entity_name)?.in_transaction() {
+            return Err(Error::new(format!(
+                "find of {} for update needs a transaction in place",
+                self.entity_name
+            )));
+        }
+        Ok(())
     }
 
     fn lookup(&self, condition: &Option<Condition>) -> FindLookup {
@@ -185,6 +263,16 @@ impl EntityFind {
             limit: self.limit,
             offset: self.offset,
         };
+        let having = match self.having.len() {
+            0 => None,
+            1 => Some(self.having[0].clone()),
+            _ => Some(Condition::and(self.having.clone())),
+        };
+        let options = SelectOptions {
+            distinct: self.distinct,
+            for_update: self.for_update,
+            having: having.clone(),
+        };
         self.facade.with_group(&self.entity_name, |entity, dialect, model, tx| {
             let (sql, columns) = if count_only {
                 if entity.is_view {
@@ -193,17 +281,42 @@ impl EntityFind {
                 (count(entity, dialect, condition.as_ref())?, Vec::new())
             } else if entity.is_view {
                 (
-                    select_view(entity, model, dialect, condition.as_ref(), &self.order, page)?,
+                    select_view_with(entity, model, dialect, condition.as_ref(), &self.order, page, &options)?,
                     view_columns(entity, model)?,
                 )
             } else {
-                let fields: Vec<FieldRef> = entity.fields.iter().map(|field| FieldRef::new(&field.name)).collect();
+                for name in &self.select_fields {
+                    if entity.field(name).is_none() {
+                        return Err(Error::new(format!("{} has no field {name}", entity.full_name)));
+                    }
+                }
+                let wanted =
+                    |name: &str| self.select_fields.is_empty() || self.select_fields.iter().any(|field| field == name);
+                let fields: Vec<FieldRef> = entity
+                    .fields
+                    .iter()
+                    .filter(|field| wanted(&field.name))
+                    .map(|field| FieldRef::new(&field.name))
+                    .collect();
+                let mut columns = entity_columns(entity, model);
+                columns.retain(|(name, _)| wanted(name));
                 (
-                    select(entity, dialect, &fields, condition.as_ref(), &self.order, page)?,
-                    entity_columns(entity, model),
+                    select_with(
+                        entity,
+                        dialect,
+                        &fields,
+                        condition.as_ref(),
+                        &self.order,
+                        page,
+                        &options,
+                    )?,
+                    columns,
                 )
             };
             let mut params = condition.as_ref().map(condition_params).unwrap_or_default();
+            if let Some(having) = &having {
+                params.extend(condition_params(having));
+            }
             if !count_only {
                 params.extend(page_params(dialect, page));
             }
@@ -352,5 +465,120 @@ impl EntityListIterator {
 impl Drop for EntityListIterator {
     fn drop(&mut self) {
         let _ = self.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use moqui_db::sql::{CompareOp, Condition};
+    use moqui_lib::object::Value;
+
+    fn seeded() -> (crate::entity::EntityFacade, Arc<Mutex<Vec<String>>>) {
+        let tape = Arc::new(Mutex::new(Vec::new()));
+        let facade = crate::testing::open_with_tape(Arc::clone(&tape));
+        for (id, medium) in [("A", "alpha"), ("B", "beta")] {
+            let mut row = facade.make_value("moqui.test.TestEntity").unwrap();
+            row.set("testId", Value::string(id));
+            row.set("testMedium", Value::string(medium));
+            row.create(&facade).unwrap();
+        }
+        (facade, tape)
+    }
+
+    #[test]
+    fn select_field_reads_only_those_columns_and_rejects_a_missing_one() {
+        let (facade, tape) = seeded();
+        let rows = facade
+            .find("moqui.test.TestEntity")
+            .unwrap()
+            .select_field("testId")
+            .eq("testId", Value::string("A"))
+            .list()
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(
+            rows.values()[0].get("testMedium").is_none(),
+            "only the selected field is read"
+        );
+        let sql = tape.lock().unwrap().last().cloned().unwrap();
+        assert!(sql.starts_with("SELECT \"testId\" FROM"), "{sql}");
+        let err = facade
+            .find("moqui.test.TestEntity")
+            .unwrap()
+            .select_field("nope")
+            .list()
+            .unwrap_err();
+        assert!(err.to_string().contains("no field nope"), "{err}");
+    }
+
+    #[test]
+    fn for_update_needs_a_transaction_and_is_written_inside_one() {
+        let (facade, tape) = seeded();
+        let err = facade
+            .find("moqui.test.TestEntity")
+            .unwrap()
+            .for_update(true)
+            .list()
+            .unwrap_err();
+        assert!(err.to_string().contains("transaction"), "{err}");
+        facade.begin("moqui.test.TestEntity", None).unwrap();
+        let outcome = facade.find("moqui.test.TestEntity").unwrap().for_update(true).list();
+        facade.rollback("moqui.test.TestEntity").unwrap();
+        // The in-memory driver does not read FOR UPDATE; the statement is what counts here.
+        let _ = outcome;
+        assert!(tape.lock().unwrap().iter().any(|sql| sql.ends_with(" FOR UPDATE")));
+    }
+
+    #[test]
+    fn distinct_and_having_reach_the_statement() {
+        let (facade, tape) = seeded();
+        let _ = facade.find("moqui.test.TestEntity").unwrap().distinct(true).list();
+        assert!(tape
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|sql| sql.starts_with("SELECT DISTINCT ")));
+        // A plain entity has no aggregate to apply a having condition to.
+        let err = facade
+            .find("moqui.test.TestEntity")
+            .unwrap()
+            .having(Condition::greater("testId", Value::I32(1)))
+            .list()
+            .unwrap_err();
+        assert!(err.to_string().contains("no aggregate"), "{err}");
+    }
+
+    #[test]
+    fn ignore_case_binds_upper_case_text_and_field_comparisons_reach_the_statement() {
+        let (facade, tape) = seeded();
+        // The in-memory driver cannot read UPPER(); the statement and its bound values are the point.
+        let _ = facade
+            .find("moqui.test.TestEntity")
+            .unwrap()
+            .condition(Condition::ignore_case(Condition::equals(
+                "testMedium",
+                Value::string("Alpha"),
+            )))
+            .list();
+        let _ = facade
+            .find("moqui.test.TestEntity")
+            .unwrap()
+            .condition(Condition::compare_fields("testId", CompareOp::LessEqual, "testMedium"))
+            .list();
+        let tape = tape.lock().unwrap();
+        assert!(
+            tape.iter()
+                .any(|sql| sql.ends_with("WHERE UPPER(\"testMedium\") = UPPER(?)")),
+            "{tape:?}"
+        );
+        assert!(
+            tape.iter()
+                .any(|sql| sql.ends_with("WHERE \"testId\" <= \"testMedium\"")),
+            "{tape:?}"
+        );
+        let params = super::condition_params(&Condition::ignore_case(Condition::equals("x", Value::string("Alpha"))));
+        assert_eq!(params, vec![Value::string("ALPHA")]);
     }
 }

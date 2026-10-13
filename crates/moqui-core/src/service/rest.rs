@@ -457,21 +457,19 @@ mod tests {
 
     #[test]
     fn basic_enum_types_returns_fixture_rows_and_a_service_runs() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let dir = std::env::temp_dir().join(format!("moqui-rest-{}", std::process::id()));
         let _guard = DirGuard(dir.clone());
         std::fs::create_dir_all(dir.join("service")).unwrap();
         std::fs::write(dir.join("service/moqui.rest.xml"), REST_XML).unwrap();
         let service_path = dir.join("service/echo.xml");
         std::fs::write(&service_path, SERVICE_XML).unwrap();
-        let failures = crate::service::define::lint(std::slice::from_ref(&service_path)).unwrap();
-        assert!(failures.is_empty(), "{failures:?}");
         let facade = crate::testing::open();
         let ctx = ExecutionContextFactory::test_context();
         install(ctx.factory(), &[dir.join("service/moqui.rest.xml")]);
         ctx.factory().set_entity(facade.clone());
         let _entered = ctx.enter();
+        let failures = crate::service::lint(std::slice::from_ref(&service_path)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
         insert_type(&facade, "DayOfWeek", "Day of Week");
         insert_type(&facade, "GeoType", "Geo Type");
 
@@ -520,8 +518,6 @@ mod tests {
 
     #[test]
     fn a_login_is_required_unless_the_resource_waives_it() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let dir = std::env::temp_dir().join(format!("moqui-rest-auth-{}", std::process::id()));
         let _guard = DirGuard(dir.clone());
         std::fs::create_dir_all(dir.join("service")).unwrap();

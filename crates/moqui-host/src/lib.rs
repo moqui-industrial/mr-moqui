@@ -600,13 +600,19 @@ fn resolve_framework_location(
     Ok(std::path::PathBuf::from(location))
 }
 
-/// theseus 18.6.0 needs `libxml2.so.2`. This host may only ship `libxml2.so.16`.
-mod xmlshim {
+/// theseus 18.6.0 needs `libxml2.so.2`. This host may only ship `libxml2.so.16`. A caller that starts
+/// an embedded cluster itself calls [`xmlshim::provide_libxml2_soname`] first, as `load_data` does.
+pub mod xmlshim {
     use std::path::{Path, PathBuf};
 
     use moqui_lib::error::Error;
 
-    pub(super) fn provide_libxml2_soname(dir: &Path) -> Result<(), Error> {
+    /// Make `libxml2.so.2` loadable for a cluster started under `dir`, when the host needs it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the shim cannot be built.
+    pub fn provide_libxml2_soname(dir: &Path) -> Result<(), Error> {
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
             provide_linux(dir)?;

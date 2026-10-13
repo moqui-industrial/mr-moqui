@@ -168,6 +168,27 @@ impl HostService {
         })
     }
 
+    /// Start the service on a service worker and return a future for its out parameters.
+    fn call_future<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            flush_current(&ctx, true)?;
+            match crate::service::call::start_future(&self.call.name, &self.call.parameters) {
+                Ok(future) => Class::instance(
+                    ctx.clone(),
+                    HostFuture {
+                        future: std::cell::RefCell::new(future),
+                    },
+                )
+                .and_then(|class| class.into_js(&ctx)),
+                Err(err) => {
+                    let message = err.message().to_string();
+                    with_ec(&ctx, |ec| ec.message().add_error(message))?;
+                    Null.into_js(&ctx)
+                }
+            }
+        })
+    }
+
     /// Run the service. A failure is added to the message facade and the result is null, so the
     /// generated code's `hasError()` check decides, as in the Java call builder.
     fn call<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
@@ -194,6 +215,43 @@ impl HostService {
                     })?;
                     Null.into_js(&ctx)
                 }
+            }
+        })
+    }
+}
+
+/// The pending result of `callFuture`: `get()`, `get(timeoutMs)`, and `isDone()`.
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class]
+pub(super) struct HostFuture {
+    #[qjs(skip_trace)]
+    future: std::cell::RefCell<crate::service::ServiceFuture>,
+}
+
+#[rquickjs::methods(rename_all = "camelCase")]
+impl HostFuture {
+    fn is_done(&self, ctx: Ctx<'_>) -> rquickjs::Result<bool> {
+        host_guard(&ctx, || Ok(self.future.borrow_mut().is_done()))
+    }
+
+    /// The out parameters. With a timeout in milliseconds, a call that is not done in time throws.
+    fn get<'js>(&self, ctx: Ctx<'js>, timeout_ms: Opt<JsValue<'js>>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            let limit = match &timeout_ms.0 {
+                Some(value) if !value.is_null() && !value.is_undefined() => {
+                    let millis = js_i64(&ctx, value)?;
+                    Some(std::time::Duration::from_millis(u64::try_from(millis).unwrap_or(0)))
+                }
+                _ => None,
+            };
+            let outcome = self.future.borrow_mut().get(limit);
+            match outcome {
+                Ok(Some(results)) => host_to_js(&ctx, Value::Map(results.into_iter().collect())),
+                Ok(None) => Err(Exception::throw_message(
+                    &ctx,
+                    "the service call did not finish in time",
+                )),
+                Err(err) => Err(Exception::throw_message(&ctx, err.message())),
             }
         })
     }

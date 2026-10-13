@@ -70,7 +70,7 @@ pub fn async_call(name: &str, parameters: &BTreeMap<String, Value>) -> Result<()
     factory.service_pools().submit(&canonical(name), parameters)
 }
 
-/// Run `name` on a service worker and wait for its out parameters.
+/// Run `name` on a service worker and wait for its out parameters. [`start_future`] returns without waiting.
 ///
 /// # Errors
 ///
@@ -78,6 +78,72 @@ pub fn async_call(name: &str, parameters: &BTreeMap<String, Value>) -> Result<()
 pub fn call_future(name: &str, parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, Error> {
     let factory = super::pool::capture_factory()?;
     factory.service_pools().call_future(&canonical(name), parameters)
+}
+
+/// Start `name` on a service worker and return a handle for its out parameters. Like
+/// [`call_future`], a full queue is an error at once.
+///
+/// # Errors
+///
+/// Returns an error when there is no execution context, the pool is not running, or the queue is full.
+pub fn start_future(name: &str, parameters: &BTreeMap<String, Value>) -> Result<ServiceFuture, Error> {
+    let factory = super::pool::capture_factory()?;
+    let receiver = factory.service_pools().submit_future(&canonical(name), parameters)?;
+    Ok(ServiceFuture { receiver, done: None })
+}
+
+/// A started service call. Java's `Future<Map>` from `callFuture`.
+pub struct ServiceFuture {
+    receiver: super::pool::CallReceiver,
+    done: Option<Result<BTreeMap<String, Value>, Error>>,
+}
+
+impl ServiceFuture {
+    fn settle(&mut self, wait: Option<std::time::Duration>) -> Result<bool, Error> {
+        if self.done.is_some() {
+            return Ok(true);
+        }
+        let received = match wait {
+            None => Some(super::pool::receive(&self.receiver)),
+            Some(limit) if limit.is_zero() => match self.receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Some(Err(Error::new("service worker pool is not running")))
+                }
+            },
+            Some(limit) => match self.receiver.recv_timeout(limit) {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    Some(Err(Error::new("service worker pool is not running")))
+                }
+            },
+        };
+        self.done = received;
+        Ok(self.done.is_some())
+    }
+
+    /// Whether the call has finished, successfully or not.
+    pub fn is_done(&mut self) -> bool {
+        self.settle(Some(std::time::Duration::ZERO)).unwrap_or(false)
+    }
+
+    /// Wait for the out parameters; with a limit, `Ok(None)` means it was not done in time.
+    ///
+    /// # Errors
+    ///
+    /// Returns the service's own error when the call failed.
+    pub fn get(&mut self, limit: Option<std::time::Duration>) -> Result<Option<BTreeMap<String, Value>>, Error> {
+        if !self.settle(limit)? {
+            return Ok(None);
+        }
+        match &self.done {
+            Some(Ok(out)) => Ok(Some(out.clone())),
+            Some(Err(err)) => Err(Error::new(err.message().to_string())),
+            None => Ok(None),
+        }
+    }
 }
 
 /// Run `name` and return its out parameters. `create-entity` is `create#entity`.
@@ -782,8 +848,6 @@ mod tests {
 
     #[test]
     fn entity_auto_store_inserts_then_updates() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let tape = Arc::new(Mutex::new(Vec::new()));
         let facade = crate::testing::open_with_tape(Arc::clone(&tape));
         let ctx = ExecutionContextFactory::test_context();
@@ -813,8 +877,6 @@ mod tests {
 
     #[test]
     fn missing_required_parameter_is_named() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let path = write_fixture(
             "required",
             r#"<services>
@@ -823,7 +885,9 @@ mod tests {
                 </service>
             </services>"#,
         );
-        crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
+        let ctx = ExecutionContextFactory::test_context();
+        let _entered = ctx.enter();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
         let err = sync("need#Value", &BTreeMap::new()).unwrap_err();
         let text = err.to_string();
         assert!(text.contains("amount"), "{text}");
@@ -832,8 +896,6 @@ mod tests {
 
     #[test]
     fn held_fail_semaphore_errors() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let path = write_fixture(
             "semaphore",
             r#"<services>
@@ -842,12 +904,12 @@ mod tests {
                 </service>
             </services>"#,
         );
-        crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
         let tape = Arc::new(Mutex::new(Vec::new()));
         let facade = crate::testing::open_with_tape(tape);
         let ctx = ExecutionContextFactory::test_context();
         ctx.factory().set_entity(facade.clone());
         let _entered = ctx.enter();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
         let _authz = ctx.disable_authz();
         let mut row = facade
             .make_value("moqui.service.semaphore.ServiceParameterSemaphore")
@@ -869,15 +931,13 @@ mod tests {
 
     #[test]
     fn a_stale_semaphore_is_taken_over_and_its_old_owner_cannot_free_the_new_hold() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let path = write_fixture(
             "semaphore-takeover",
             r#"<services><service verb="guard" noun="Row" semaphore="fail"/></services>"#,
         );
-        crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
         let (facade, ctx) = seeded_context(&[]);
         let _entered = ctx.enter();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
         let _authz = ctx.disable_authz();
         let mut quick = crate::service::define::find("guard#Row").expect("registered");
         quick.semaphore_ignore = std::time::Duration::from_millis(1);
@@ -910,8 +970,6 @@ mod tests {
 
     #[test]
     fn inline_actions_find_and_create_rows() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let path = write_fixture(
             "inline",
             r#"<services>
@@ -929,12 +987,12 @@ mod tests {
                 </service>
             </services>"#,
         );
-        let failures = crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
-        assert!(failures.is_empty(), "{failures:?}");
         let facade = crate::testing::open();
         let ctx = ExecutionContextFactory::test_context();
         ctx.factory().set_entity(facade.clone());
         let _entered = ctx.enter();
+        let failures = crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
         let _authz = ctx.disable_authz();
         let mut seed = facade.make_value("moqui.test.TestEntity").unwrap();
         seed.set("testId", Value::string("A"));
@@ -981,8 +1039,6 @@ mod tests {
 
     #[test]
     fn action_outputs_reach_out_parameters_without_script_assignment() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let path = write_fixture(
             "outputs",
             r#"<services>
@@ -1006,10 +1062,10 @@ mod tests {
                 </service>
             </services>"#,
         );
-        let failures = crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
-        assert!(failures.is_empty(), "{failures:?}");
         let (_facade, ctx) = seeded_context(&[("A", "alpha")]);
         let _entered = ctx.enter();
+        let failures = crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
         let _authz = ctx.disable_authz();
         let mut params = BTreeMap::new();
         params.insert("testId".into(), Value::string("A"));
@@ -1028,8 +1084,6 @@ mod tests {
 
     #[test]
     fn service_call_action_passes_parameters_and_merges_out_map() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let path = write_fixture(
             "nested-call",
             r#"<services>
@@ -1057,10 +1111,10 @@ mod tests {
                 </service>
             </services>"#,
         );
-        let failures = crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
-        assert!(failures.is_empty(), "{failures:?}");
         let (_facade, ctx) = seeded_context(&[]);
         let _entered = ctx.enter();
+        let failures = crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
         let _authz = ctx.disable_authz();
         let mut params = BTreeMap::new();
         params.insert("n".into(), Value::I32(21));
@@ -1079,8 +1133,6 @@ mod tests {
 
     #[test]
     fn message_errors_roll_back_but_return_the_results() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let path = write_fixture(
             "message-error",
             r#"<services>
@@ -1095,9 +1147,9 @@ mod tests {
                 </service>
             </services>"#,
         );
-        crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
         let (facade, ctx) = seeded_context(&[]);
         let _entered = ctx.enter();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
         let _authz = ctx.disable_authz();
         let out = sync("halfway#Row", &BTreeMap::new()).expect("the call itself did not fail");
         assert_eq!(out.get("note").and_then(Value::as_str), Some("ran"));
@@ -1108,15 +1160,12 @@ mod tests {
 
     #[test]
     fn post_commit_rules_run_after_a_failure_only_when_they_run_on_error() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let path = write_fixture(
             "post-commit",
             r#"<services>
                 <service verb="shell" noun="Only" type="interface"/>
             </services>"#,
         );
-        crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
         let facade = crate::testing::open();
         let ctx = ExecutionContextFactory::test_context();
         super::super::eca_rules::install(
@@ -1135,6 +1184,7 @@ mod tests {
         );
         ctx.factory().set_entity(facade);
         let _entered = ctx.enter();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
         let _authz = ctx.disable_authz();
         assert!(sync("shell#Only", &BTreeMap::new()).is_err());
         assert_eq!(ctx.message().messages(), ["cleanup"]);
@@ -1142,8 +1192,6 @@ mod tests {
 
     #[test]
     fn parameters_are_converted_then_checked_and_defaults_apply() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let path = write_fixture(
             "validation",
             r#"<services>
@@ -1159,9 +1207,9 @@ mod tests {
                 </service>
             </services>"#,
         );
-        crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
         let (_facade, ctx) = seeded_context(&[]);
         let _entered = ctx.enter();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
         let text = |value: &str| Value::string(value);
         let call = |pairs: &[(&str, Value)]| {
             let params: BTreeMap<String, Value> = pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
@@ -1188,15 +1236,28 @@ mod tests {
         let html = call(&[("label", text("<b>x</b>"))]).unwrap_err();
         assert!(html.to_string().contains("HTML not allowed"), "{html}");
         call(&[("rich", text("<b>x</b>"))]).expect("allow-html any");
-        call(&[("careful", text("<b>x</b>"))]).expect("allow-html safe lets plain markup through");
-        let script = call(&[("careful", text("<img src=x onerror=alert(1)>"))]).unwrap_err();
-        assert!(script.to_string().contains("HTML not allowed"), "{script}");
+        let cleaned = call(&[(
+            "careful",
+            text(r#"<b onclick="x()">hi</b><script>bad()</script> <a href="javascript:evil()">l</a> <img src="http://h/i.png" onerror="x()">"#),
+        )])
+        .expect("safe cleans instead of rejecting");
+        let out = cleaned.get("careful").and_then(Value::as_str).unwrap().to_string();
+        assert!(out.contains("<b>hi</b>"), "{out}");
+        assert!(
+            !out.contains("script") && !out.contains("bad()") && !out.contains("onclick"),
+            "{out}"
+        );
+        assert!(!out.contains("javascript:") && !out.contains("onerror"), "{out}");
+        assert!(out.contains(r#"src="http://h/i.png""#), "{out}");
+        let link = call(&[("careful", text(r#"<a href="https://example.com/">go</a>"#))]).unwrap();
+        let link = link.get("careful").and_then(Value::as_str).unwrap().to_string();
+        assert!(link.contains(r#"rel="noopener noreferrer""#), "{link}");
+        let plain = call(&[("careful", text("a & b, no markup"))]).unwrap();
+        assert_eq!(plain.get("careful").and_then(Value::as_str), Some("a & b, no markup"));
     }
 
     #[test]
     fn an_update_service_with_auto_parameters_accepts_a_changed_field() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let (facade, ctx) = seeded_context(&[("U1", "before")]);
         let _entered = ctx.enter();
         let _authz = ctx.disable_authz();
@@ -1216,8 +1277,6 @@ mod tests {
 
     #[test]
     fn a_script_service_runs_its_javascript_file_and_optional_chaining_loads() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let script = std::env::temp_dir().join(format!("moqui-script-service-{}.js", std::process::id()));
         std::fs::write(&script, "shout = greeting.toUpperCase() + '!';").unwrap();
         let path = write_fixture(
@@ -1239,11 +1298,11 @@ mod tests {
                 script.display()
             ),
         );
-        let failures = crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
-        assert_eq!(failures.len(), 1, "only the Elvis service fails: {failures:?}");
-        assert!(failures[0].contains("groovy#Elvis"), "{failures:?}");
         let (_facade, ctx) = seeded_context(&[]);
         let _entered = ctx.enter();
+        let failures = crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        assert_eq!(failures.len(), 1, "only the Elvis service fails: {failures:?}");
+        assert!(failures[0].contains("groovy#Elvis"), "{failures:?}");
         let _authz = ctx.disable_authz();
         let mut params = BTreeMap::new();
         params.insert("greeting".into(), Value::string("hello"));
@@ -1255,8 +1314,6 @@ mod tests {
 
     #[test]
     fn a_runaway_script_ends_at_the_transaction_deadline() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let path = write_fixture(
             "runaway",
             r#"<services>
@@ -1265,10 +1322,10 @@ mod tests {
                 </service>
             </services>"#,
         );
-        let failures = crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
-        assert!(failures.is_empty(), "{failures:?}");
         let (_facade, ctx) = seeded_context(&[]);
         let _entered = ctx.enter();
+        let failures = crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
         let _authz = ctx.disable_authz();
         let started = std::time::Instant::now();
         let err = sync("spin#Forever", &BTreeMap::new()).expect_err("interrupted");
@@ -1277,15 +1334,12 @@ mod tests {
 
     #[test]
     fn post_service_seca_runs_its_action() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let path = write_fixture(
             "seca",
             r#"<services>
                 <service verb="mark" noun="Row"/>
             </services>"#,
         );
-        crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
         let facade = crate::testing::open();
         let ctx = ExecutionContextFactory::test_context();
         super::super::eca_rules::install(
@@ -1301,6 +1355,7 @@ mod tests {
         );
         ctx.factory().set_entity(facade);
         let _entered = ctx.enter();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
         let _authz = ctx.disable_authz();
         sync("mark#Row", &BTreeMap::new()).unwrap();
         // The rule runs in its own context frame, so its effect is seen through the message facade.
@@ -1309,21 +1364,19 @@ mod tests {
 
     #[test]
     fn remote_rest_in_sim_mode_errors_before_a_socket() {
-        let _gate = crate::service::define::lock_tests();
-        crate::service::define::reset();
         let path = write_fixture(
             "remote",
             r#"<services>
                 <service verb="ping" noun="Remote" type="remote-rest" authenticate="false" location="http://127.0.0.1:1/no-such-remote"/>
             </services>"#,
         );
-        let failures = crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
-        assert!(failures.is_empty(), "{failures:?}");
         let facade = crate::testing::open();
         facade.set_sim_active(true);
         let ctx = ExecutionContextFactory::test_context();
         ctx.factory().set_entity(facade);
         let _entered = ctx.enter();
+        let failures = crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
         let _authz = ctx.disable_authz();
         let err = sync("ping#Remote", &BTreeMap::new()).unwrap_err();
         let text = err.to_string();

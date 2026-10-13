@@ -107,6 +107,9 @@ rquickjs = "0.14"
 # raise the MSRV of lib or core. 0.139.0 declares rust-version 1.94.0.
 # 0.140 and later declare 1.95 or higher.
 oxc_parser = "0.139"
+# HTML cleaning for allow-html="safe" service parameters. MIT OR Apache-2.0. Builder::default() is the
+# conservative maintained allow-list; there is no custom list in this repo.
+ammonia = "4"
 
 # --- moqui-host ---
 # rt-multi-thread is for axum. postgres::Client builds its own current_thread runtime.

@@ -57,7 +57,7 @@ use helpers::*;
 use services::*;
 
 use crate::context::{Error, ExecutionContext};
-use moqui_db::sql::Condition;
+use moqui_db::sql::{CompareOp, Condition};
 
 use crate::entity::{EntityFacade, EntityFind, EntityList, EntityValue};
 use crate::service::call::CallOptions;
@@ -466,6 +466,21 @@ fn context_snapshot<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
     let mut visible = STACK.with(|stack| stack.borrow().combined_map());
     visible.retain(|_, value| !matches!(value, Value::Bytes(_)));
     collection_to_js(ctx, Value::Map(visible))
+}
+
+/// Set a name on the stack from host code, forgetting any list or map the script already read
+/// under that name so its next read sees the new value.
+fn put_name(ctx: &Ctx<'_>, name: &str, value: Value) -> rquickjs::Result<()> {
+    if let Some(engine) = current_engine() {
+        engine.tracked.borrow_mut().remove(name);
+    }
+    STACK.with(|stack| {
+        stack
+            .borrow_mut()
+            .put(name, value)
+            .map(|_| ())
+            .map_err(|err| Exception::throw_message(ctx, err.message()))
+    })
 }
 
 fn stack_get(name: &str) -> Lookup {

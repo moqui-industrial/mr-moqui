@@ -328,6 +328,34 @@ mod tests {
     }
 
     #[test]
+    fn call_future_returns_a_future_the_script_can_wait_on() {
+        let path = std::env::temp_dir().join(format!("moqui-script-future-{}.xml", std::process::id()));
+        std::fs::write(
+            &path,
+            r#"<services>
+                <service verb="echo" noun="Note" authenticate="false" transaction="ignore">
+                    <in-parameters><parameter name="note"/></in-parameters>
+                    <out-parameters><parameter name="note"/></out-parameters>
+                </service>
+            </services>"#,
+        )
+        .unwrap();
+        let ctx =
+            crate::context::ExecutionContextFactory::test_context_with("", crate::service::ServicePools::bounded(2, 8));
+        ctx.factory().set_entity(crate::testing::open());
+        let _entered = ctx.enter();
+        let failures = crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+        let done = eval_condition(
+            "var f = ec.service.async().name('echo#Note').parameter('note', 'hi').callFuture(); \
+             var out = f.get(5000); out.note === 'hi' && f.isDone() && f.get().note === 'hi'",
+        )
+        .unwrap();
+        assert!(done);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn service_async_has_no_distribute_method() {
         clear_context_stack();
         let present =

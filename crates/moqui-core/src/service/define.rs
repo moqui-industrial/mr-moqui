@@ -16,12 +16,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use moqui_lib::node::MNode;
 
-use crate::context::Error;
+use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
 use crate::transaction::TransactionAttribute;
 
 const SEMAPHORE_ENTITY: &str = "moqui.service.semaphore.ServiceParameterSemaphore";
@@ -67,8 +67,8 @@ pub(crate) enum Include {
     All,
 }
 
-/// `allow-html`. The default, `none`, rejects text with a `<`. `safe` rejects dangerous markup and
-/// lets the rest through unchanged: unlike Java it does not rewrite the markup.
+/// `allow-html`. The default, `none`, rejects text with a `<`. `safe` cleans the markup, as Jsoup
+/// does in Java, and `any` leaves it alone.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum AllowHtml {
     #[default]
@@ -205,6 +205,7 @@ impl ServiceDef {
     }
 }
 
+#[derive(Default)]
 struct Registry {
     services: BTreeMap<String, ServiceDef>,
     failures: Vec<String>,
@@ -217,46 +218,49 @@ struct ServiceInclude {
     location: String,
 }
 
-static REGISTRY: Mutex<Registry> = Mutex::new(Registry {
-    services: BTreeMap::new(),
-    failures: Vec::new(),
-});
+type Shared = RwLock<Arc<Registry>>;
 
-#[cfg(test)]
-static TEST_GATE: Mutex<()> = Mutex::new(());
-
-fn lock() -> MutexGuard<'static, Registry> {
-    REGISTRY.lock().unwrap_or_else(|err| err.into_inner())
+/// The entered context's factory and its registry, or an error when no context is entered.
+fn entered() -> Result<Arc<Shared>, Error> {
+    ExecutionContext::with_current(|ctx| registry_of(ctx.factory()))
+        .ok_or_else(|| Error::new("no execution context is entered; service definitions belong to its factory"))
 }
 
-#[cfg(test)]
-pub(crate) fn lock_tests() -> MutexGuard<'static, ()> {
-    TEST_GATE.lock().unwrap_or_else(|err| err.into_inner())
+fn registry_of(factory: &Arc<ExecutionContextFactory>) -> Arc<Shared> {
+    factory.extension::<Shared>(|_| RwLock::new(Arc::new(Registry::default())))
 }
 
-#[cfg(test)]
-pub(crate) fn reset() {
-    *lock() = Registry {
-        services: BTreeMap::new(),
-        failures: Vec::new(),
-    };
+fn snapshot(shared: &Shared) -> Arc<Registry> {
+    Arc::clone(&shared.read().unwrap_or_else(|err| err.into_inner()))
 }
 
 #[cfg(test)]
 pub(crate) fn is_registered(name: &str) -> bool {
-    lock().services.contains_key(name)
+    find(name).is_some()
 }
 
+/// A service of the entered context's factory. `None` when it is not defined or no context is entered.
 pub(crate) fn find(name: &str) -> Option<ServiceDef> {
-    lock().services.get(name).cloned()
+    let shared = entered().ok()?;
+    snapshot(&shared).services.get(name).cloned()
 }
 
+/// Register the configured service files with the entered context's factory.
+///
+/// # Errors
+///
+/// Returns an error when no context is entered or a file cannot be read.
 pub fn load_definitions() -> Result<(), Error> {
     lint(&[])?;
     Ok(())
 }
 
-/// Registration failures for `paths`, or for the configured service files when `paths` is empty.
+/// Register `paths`, or the configured service files when `paths` is empty, with the entered
+/// context's factory, replacing what it had. Returns the registration failures.
+///
+/// # Errors
+///
+/// Returns an error when no context is entered or a file cannot be read.
 pub fn lint(paths: &[PathBuf]) -> Result<Vec<String>, Error> {
     if paths.is_empty() {
         let configured = configured_paths()?;
@@ -264,7 +268,7 @@ pub fn lint(paths: &[PathBuf]) -> Result<Vec<String>, Error> {
     } else {
         install(paths)?;
     }
-    Ok(lock().failures.clone())
+    Ok(snapshot(&*entered()?).failures.clone())
 }
 
 /// Registration failures for `paths`, or the configured service files when `paths` is empty,
@@ -286,7 +290,8 @@ pub fn check(paths: &[PathBuf]) -> Result<Vec<String>, Error> {
 
 fn install(paths: &[PathBuf]) -> Result<(), Error> {
     let registry = build(paths)?;
-    *lock() = registry;
+    let shared = entered()?;
+    *shared.write().unwrap_or_else(|err| err.into_inner()) = Arc::new(registry);
     Ok(())
 }
 
@@ -906,8 +911,8 @@ mod tests {
 
     #[test]
     fn groovy_leftover_fails_that_service_and_keeps_the_neighbor() {
-        let _gate = super::lock_tests();
-        super::reset();
+        let ctx = crate::context::ExecutionContextFactory::test_context();
+        let _entered = ctx.enter();
         let path = write_fixture(
             "groovy",
             r#"<services>
@@ -929,8 +934,8 @@ mod tests {
 
     #[test]
     fn remote_json_rpc_is_not_registered() {
-        let _gate = super::lock_tests();
-        super::reset();
+        let ctx = crate::context::ExecutionContextFactory::test_context();
+        let _entered = ctx.enter();
         let path = write_fixture(
             "rpc",
             r#"<services>
@@ -947,8 +952,12 @@ mod tests {
 
     #[test]
     fn load_definitions_registers_email_services() {
-        let _gate = super::lock_tests();
-        super::reset();
+        let ctx = crate::context::ExecutionContextFactory::test_context_in(
+            "",
+            crate::service::ServicePools::idle(),
+            crate::context::framework_dir(),
+        );
+        let _entered = ctx.enter();
         super::load_definitions().unwrap();
         assert!(
             super::is_registered("org.moqui.EmailServices.send#EmailTemplate"),
@@ -963,7 +972,7 @@ mod tests {
     }
 
     fn explain(needle: &str) -> String {
-        super::lock()
+        super::snapshot(&super::entered().unwrap())
             .failures
             .iter()
             .filter(|line| line.contains(needle))
