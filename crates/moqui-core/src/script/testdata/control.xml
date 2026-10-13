@@ -1,0 +1,16 @@
+<actions>
+    <if condition="ready">
+        <then>
+            <set field="statusId" from="orderStatus"/>
+        </then>
+        <else>
+            <set field="statusId" value="N"/>
+        </else>
+    </if>
+    <while condition="ready">
+        <set field="n" from="n + 1"/>
+    </while>
+    <iterate list="rows" entry="row">
+        <set field="n" from="row"/>
+    </iterate>
+</actions>

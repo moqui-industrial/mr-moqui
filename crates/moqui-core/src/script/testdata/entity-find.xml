@@ -1,0 +1,9 @@
+<actions>
+    <entity-find entity-name="moqui.test.TestEntity" list="found">
+        <econdition field-name="testId" from="seedId"/>
+        <order-by field-name="testId"/>
+    </entity-find>
+    <entity-find-one entity-name="moqui.test.TestEntity" value-field="oneRow">
+        <field-map field-name="testId" from="seedId"/>
+    </entity-find-one>
+</actions>

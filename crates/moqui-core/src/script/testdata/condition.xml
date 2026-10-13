@@ -1,0 +1,16 @@
+<actions>
+    <if>
+        <condition>
+            <and>
+                <expression>ready</expression>
+                <or>
+                    <not><expression>closed</expression></not>
+                    <compare field="statusId" operator="equals" value="Open"/>
+                </or>
+            </and>
+        </condition>
+        <then>
+            <set field="ok" value="Y"/>
+        </then>
+    </if>
+</actions>
