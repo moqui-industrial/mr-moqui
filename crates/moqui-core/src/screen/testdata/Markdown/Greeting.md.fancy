@@ -1,0 +1,7 @@
+## Hello ${who}
+
+<#if who>
+
+- greeted **${who}**
+
+</#if>

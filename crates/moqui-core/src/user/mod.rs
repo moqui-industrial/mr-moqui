@@ -39,8 +39,9 @@ pub use policy::password_acceptable;
 pub(crate) use session::Memory;
 pub use session::{
     bind, csrf_token, current_user_id, current_username, end_request, error_parameters, flash_messages,
-    format_session_cookie, format_visitor_cookie, invalidate, is_anonymous, locale, saved_parameters, screen_history,
-    time_zone, verify_session_cookie, visit_id, visitor_id, SessionGuard, SESSION_COOKIE_NAME, VISITOR_COOKIE_NAME,
+    format_session_cookie, format_visitor_cookie, invalidate, is_anonymous, live_session_user_id, locale,
+    saved_parameters, screen_history, time_zone, verify_session_cookie, visit_id, visitor_id, SessionGuard,
+    SESSION_COOKIE_NAME, VISITOR_COOKIE_NAME,
 };
 pub use visit::record_visit;
 
