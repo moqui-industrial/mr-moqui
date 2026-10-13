@@ -1,11 +1,11 @@
 (function() {
     if (ready) {
-    statusId = orderStatus;
+        statusId = orderStatus;
     } else {
-    statusId = ec.resource.expand("N");
+        statusId = ec.resource.expand("N");
     }
     while (ready) {
-    n = n + 1;
+        n = n + 1;
     }
     if (rows != null) {
         var _row_list = rows;
@@ -14,7 +14,7 @@
         while (row_index < row_len) {
             row = (typeof _row_list.get === "function") ? _row_list.get(row_index) : _row_list[row_index];
             row_has_next = (row_index + 1) < row_len;
-    n = row;
+            n = row;
             row_index = row_index + 1;
         }
     }

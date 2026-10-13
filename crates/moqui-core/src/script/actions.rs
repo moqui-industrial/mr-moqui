@@ -22,7 +22,11 @@ use rquickjs::{Array, CatchResultExt, Ctx, Function, Object};
 
 use crate::context::Error;
 
+const TEMPLATE_SUPPORT: &str = include_str!("../../../../framework/template/TemplateSupport.js");
 const XML_ACTIONS: &str = include_str!("../../../../framework/template/XmlActions.js");
+
+/// Set this to add a comment naming the XML element before each generated statement.
+const DEBUG_ENV: &str = "MOQUI_ACTIONS_DEBUG";
 
 const MAX_CACHED_SCRIPTS: usize = 4096;
 
@@ -70,13 +74,30 @@ fn generated(xml: &str) -> Result<String, Error> {
 }
 
 fn generate(xml: &str) -> Result<String, Error> {
+    generate_with(xml, std::env::var_os(DEBUG_ENV).is_some())
+}
+
+fn generate_with(xml: &str, debug: bool) -> Result<String, Error> {
     let root = MNode::parse_text("actions", xml)?;
     reject(&root)?;
     super::runtime::with_ctx(|ctx| {
-        let macros: Object = super::runtime::eval_source(ctx, XML_ACTIONS)?;
+        let macros = load_macros(ctx, debug)?;
         let (source, _) = render(ctx, &macros, &root)?;
         Ok(source)
     })
+}
+
+/// The macro table. The support script evaluates to an object, and the actions script
+/// is a function of that object, so no names are left in the global scope.
+fn load_macros<'js>(ctx: &Ctx<'js>, debug: bool) -> Result<Object<'js>, Error> {
+    let support: Object = super::runtime::eval_source(ctx, TEMPLATE_SUPPORT)?;
+    let options: Object = support.get("options").map_err(js_err)?;
+    options.set("debug", debug).map_err(js_err)?;
+    let build: Function = super::runtime::eval_source(ctx, XML_ACTIONS)?;
+    build
+        .call((support,))
+        .catch(ctx)
+        .map_err(|caught| Error::new(caught.to_string()))
 }
 
 fn reject(node: &MNode) -> Result<(), Error> {
@@ -135,9 +156,7 @@ fn js_err(err: impl ToString) -> Error {
 mod tests {
 
     use moqui_lib::object::Value;
-    use rquickjs::Object;
-
-    use super::{generate, run_actions, XML_ACTIONS};
+    use super::{generate, generate_with, load_macros, run_actions};
     use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
 
     use crate::entity::{EntityFacade, EntityValue};
@@ -301,6 +320,39 @@ mod tests {
     }
 
     #[test]
+    fn nested_blocks_indent_but_inline_script_text_is_unchanged() {
+        let source = generate(
+            "<actions><if condition=\"a\"><script>var s = `one\ntwo`;</script></if></actions>",
+        )
+        .unwrap();
+        assert!(source.contains("        // begin inline script\n        var s = `one\ntwo`;\n        // end inline script\n"));
+        assert!(!source.contains('\u{1}') && !source.contains('\u{2}'));
+    }
+
+    #[test]
+    fn debug_adds_a_comment_naming_each_element() {
+        let source = generate_with("<actions><set field=\"a\" value=\"b\"/></actions>", true).unwrap();
+        assert!(source.contains("    // <set field=\"a\" value=\"b\">\n    a = ec.resource.expand(\"b\");\n"));
+        let plain = generate_with("<actions><set field=\"a\" value=\"b\"/></actions>", false).unwrap();
+        assert!(!plain.contains("//"));
+    }
+
+    #[test]
+    fn a_bare_expression_statement_ends_before_the_next_statement() {
+        let source = generate(
+            "<actions><expression>foo()</expression><if condition=\"a\"><expression>bar()</expression></if></actions>",
+        )
+        .unwrap();
+        assert!(source.contains("    foo();\n    if (a) {\n        bar();\n    }\n"), "{source}");
+    }
+
+    #[test]
+    fn a_missing_macro_names_the_element() {
+        let err = generate("<actions><no-such-action/></actions>").unwrap_err();
+        assert!(err.to_string().contains("no-such-action"));
+    }
+
+    #[test]
     fn each_concrete_element_has_a_macro() {
         let names = macro_names().unwrap();
         assert_eq!(names, MACROS);
@@ -421,7 +473,7 @@ mod tests {
 
     fn macro_names() -> Result<Vec<String>, Error> {
         crate::script::runtime::with_ctx(|ctx| {
-            let macros: Object = crate::script::runtime::eval_source(ctx, XML_ACTIONS)?;
+            let macros = load_macros(ctx, false)?;
             let mut names = Vec::new();
             for key in macros.keys::<String>() {
                 names.push(key.map_err(|err| Error::new(err.to_string()))?);
