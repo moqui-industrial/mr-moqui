@@ -16,14 +16,14 @@
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::extract::{ConnectInfo, Request, State};
 use axum::response::Response;
 use axum::routing::get;
 use axum::Router;
+use moqui_core::context::ErrorKind;
 use moqui_core::context::ExecutionContextFactory;
 use moqui_core::transaction::PoolStats;
 use moqui_core::web::{WebRequest, WebResponse};
@@ -137,32 +137,35 @@ async fn dispatch_screen(
     web.https = forwarded_https(&parts.headers);
     web.peer_ip = peer.ip().to_string();
     web.headers = header_map(&parts.headers);
-    web.query = query_map(parts.uri.query().unwrap_or(""));
+    web.query = moqui_core::web::form_pairs(parts.uri.query().unwrap_or(""));
     web.body = bytes.to_vec();
     let factory = Arc::clone(&state.factory);
     let job_factory = Arc::clone(&factory);
     let serve_factory = Arc::clone(&factory);
-    // `try_submit` borrows `factory`. The job keeps its own clone so the borrow can end.
-    let submitted = factory
-        .request_pool()
-        .try_submit(job_factory, move || Ok(moqui_core::screen::serve(&serve_factory, web)));
-    let receiver = match submitted {
-        Ok(receiver) => receiver,
-        Err(err) => {
-            let message = err.message();
-            if message.contains("request queue is full") || message.contains("request pool is not running") {
-                return plain(503, "service unavailable");
-            }
-            return plain(500, message);
+    let (done, result) = tokio::sync::oneshot::channel();
+    // The job owns `done`. A worker that panics or a pool that stops drops it, which ends the wait.
+    let submitted = factory.request_pool().try_submit(job_factory, move || {
+        let _ = done.send(moqui_core::screen::serve(&serve_factory, web));
+        Ok(())
+    });
+    if let Err(err) = submitted {
+        if err.kind() == ErrorKind::Unavailable {
+            return plain(503, "service unavailable");
         }
-    };
-    match wait_for(receiver).await {
+        return plain(500, err.message());
+    }
+    match result.await {
         Ok(response) => from_web(response),
-        Err(err) => plain(500, &err),
+        Err(_) => plain(500, "request worker stopped"),
     }
 }
 
+/// `X-Forwarded-Proto` is believed only when `webapp_client_ip_header` marks a reverse proxy in front.
+/// A direct client could otherwise force `Secure` cookies and HSTS.
 fn forwarded_https(headers: &axum::http::HeaderMap) -> bool {
+    if moqui_lib::env::get_prop_or_env("webapp_client_ip_header").is_empty() {
+        return false;
+    }
     headers
         .get("x-forwarded-proto")
         .and_then(|value| value.to_str().ok())
@@ -190,52 +193,6 @@ fn header_map(headers: &axum::http::HeaderMap) -> BTreeMap<String, String> {
         map.insert(name.as_str().to_ascii_lowercase(), values.join(", "));
     }
     map
-}
-
-fn query_map(query: &str) -> BTreeMap<String, String> {
-    let mut map = BTreeMap::new();
-    for part in query.split('&') {
-        if part.is_empty() {
-            continue;
-        }
-        let (key, value) = part.split_once('=').unwrap_or((part, ""));
-        map.insert(percent_decode(key), percent_decode(value));
-    }
-    map
-}
-
-fn percent_decode(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::new();
-    let mut index = 0;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'+' => out.push(b' '),
-            b'%' if index + 2 < bytes.len() => {
-                let hex = &text[index + 1..index + 3];
-                match u8::from_str_radix(hex, 16) {
-                    Ok(byte) => out.push(byte),
-                    Err(_) => out.extend_from_slice(&bytes[index..index + 3]),
-                }
-                index += 3;
-                continue;
-            }
-            byte => out.push(byte),
-        }
-        index += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-async fn wait_for(receiver: Receiver<Result<WebResponse, moqui_core::context::Error>>) -> Result<WebResponse, String> {
-    loop {
-        match receiver.try_recv() {
-            Ok(Ok(response)) => return Ok(response),
-            Ok(Err(err)) => return Err(err.to_string()),
-            Err(TryRecvError::Empty) => tokio::time::sleep(Duration::from_millis(1)).await,
-            Err(TryRecvError::Disconnected) => return Err("request worker stopped".to_string()),
-        }
-    }
 }
 
 fn readiness(factory: &ExecutionContextFactory) -> bool {

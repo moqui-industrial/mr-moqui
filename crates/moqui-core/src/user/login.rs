@@ -61,7 +61,12 @@ pub fn login_user(username: &str, password: &str) -> Result<(), Error> {
         return Err(Error::new(INVALID_LOGIN));
     }
     post_password(&account, now)?;
+    // A request repeating Basic credentials for the user its session already holds keeps its id.
+    let same_user = session::current_username()?.as_deref() == Some(username);
     finish_login(&facade, &account, Some(password), true)?;
+    if same_user {
+        return Ok(());
+    }
     session::rotate_on_password_login()
 }
 
@@ -241,10 +246,14 @@ pub(crate) fn entity_facade() -> Result<EntityFacade, Error> {
 }
 
 pub(crate) fn now_value() -> Value {
-    basic_convert(&Value::I64(now_millis()), "java.sql.Timestamp").value
+    stamp_value(now_millis())
 }
 
-pub(crate) fn now_millis() -> i64 {
+pub(crate) fn stamp_value(millis: i64) -> Value {
+    basic_convert(&Value::I64(millis), "java.sql.Timestamp").value
+}
+
+pub(super) fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()
@@ -586,7 +595,7 @@ fn value_i64(value: &Value) -> Option<i64> {
     }
 }
 
-fn value_millis(value: &Value) -> Option<i64> {
+pub(super) fn value_millis(value: &Value) -> Option<i64> {
     match value {
         Value::Timestamp(timestamp) => Some(timestamp.as_millisecond()),
         other => value_i64(other),

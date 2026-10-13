@@ -32,6 +32,7 @@ use moqui_lib::object::Value;
 use sha2::Sha256;
 
 use super::authz::AuthzCheck;
+use super::login::now_millis;
 use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
 use crate::driver::{DbConnection, DbRow};
 use crate::entity::{cache, EntityFacade, EntityValue};
@@ -104,6 +105,8 @@ pub(crate) enum FlushMode {
 pub struct SessionTable {
     pub(crate) mode: FlushMode,
     sessions: BTreeMap<String, LiveSession>,
+    /// Millis of the last sweep of expired `HttpSession` rows.
+    last_purge: i64,
 }
 
 impl SessionTable {
@@ -111,6 +114,7 @@ impl SessionTable {
         Self {
             mode,
             sessions: BTreeMap::new(),
+            last_purge: 0,
         }
     }
 }
@@ -155,6 +159,12 @@ struct LiveSession {
     invalidated: bool,
     /// Previous id after password rotation. Not flushed and not adopted.
     retired: bool,
+    /// Millis of the last request that bound this session.
+    last_access: i64,
+    /// Millis when `lastUpdatedStamp` was last written or queued for writing.
+    touch_mark: i64,
+    /// Write `lastUpdatedStamp` at the next flush even with no dirty field.
+    touch: bool,
 }
 
 struct Base {
@@ -268,6 +278,7 @@ pub fn bind(
     }
     let presented = presented_id(session_cookie)?;
     let (id, created) = resolve_id(factory, presented.as_deref())?;
+    touch_session(factory, &id);
     install_thread(factory, &id)?;
     if let Err(err) = ensure_visit(factory, visitor_cookie).and_then(|_| forget_user_logged_out_elsewhere()) {
         unbind_current();
@@ -342,6 +353,7 @@ pub(crate) fn flush_mode_from_property() -> Result<FlushMode, Error> {
 /// Write every dirty live session on this factory. The bound thread is synced first.
 pub(crate) fn flush_dirty(factory: &ExecutionContextFactory) -> Result<(), Error> {
     sync_bound(factory);
+    expire_idle(factory)?;
     let ids: Vec<String> = {
         let table = lock_sessions(factory);
         table
@@ -695,17 +707,28 @@ fn resolve_id(factory: &Arc<ExecutionContextFactory>, presented: Option<&str>) -
         snapshot: None,
         invalidated: false,
         retired: false,
+        last_access: now_millis(),
+        touch_mark: 0,
+        touch: false,
     };
     lock_sessions(factory).sessions.insert(id.clone(), live);
     Ok((id, true))
 }
 
 fn adopt_presented(factory: &ExecutionContextFactory, id: &str) -> Result<bool, Error> {
+    let timeout = session_timeout_millis();
+    let now = now_millis();
+    let mut expired = false;
     let retired = {
-        let table = lock_sessions(factory);
+        let mut table = lock_sessions(factory);
         match table.sessions.get(id) {
-            Some(live) if !live.retired => return Ok(true),
-            Some(_) => true,
+            Some(live) if live.retired => true,
+            Some(live) if is_idle(live.last_access, now, timeout) => {
+                expired = true;
+                table.sessions.remove(id);
+                false
+            }
+            Some(_) => return Ok(true),
             None => false,
         }
     };
@@ -715,11 +738,87 @@ fn adopt_presented(factory: &ExecutionContextFactory, id: &str) -> Result<bool, 
     let Some(facade) = factory.entity() else {
         return Ok(false);
     };
-    if read_row(&facade, id)?.is_none() {
+    if expired {
+        delete_session_row(&facade, id)?;
+        return Ok(false);
+    }
+    let Some(row) = read_row(&facade, id)? else {
+        return Ok(false);
+    };
+    let stamp = row.get("lastUpdatedStamp").and_then(super::login::value_millis);
+    if stamp.is_some_and(|stamp| is_idle(stamp, now, timeout)) {
+        delete_session_row(&facade, id)?;
         return Ok(false);
     }
     install_from_row(factory, id)?;
     Ok(true)
+}
+
+/// `webapp_session_timeout` in minutes, 60 when unset. 0 or a negative value never expires.
+fn session_timeout_millis() -> Option<i64> {
+    let raw = moqui_lib::env::get_prop_or_env("webapp_session_timeout");
+    let minutes = raw.trim().parse::<i64>().unwrap_or(60);
+    (minutes > 0).then(|| minutes.saturating_mul(60_000))
+}
+
+fn is_idle(last_access: i64, now: i64, timeout: Option<i64>) -> bool {
+    timeout.is_some_and(|timeout| now.saturating_sub(last_access) > timeout)
+}
+
+/// Record a request on a bound session. `lastUpdatedStamp` is rewritten at most every quarter timeout.
+fn touch_session(factory: &ExecutionContextFactory, id: &str) {
+    let timeout = session_timeout_millis();
+    let now = now_millis();
+    let mut table = lock_sessions(factory);
+    let Some(live) = table.sessions.get_mut(id) else {
+        return;
+    };
+    live.last_access = now;
+    let Some(timeout) = timeout else {
+        return;
+    };
+    if now.saturating_sub(live.touch_mark) > timeout / 4 {
+        live.touch_mark = now;
+        live.touch = true;
+    }
+}
+
+/// Drop idle sessions from memory and, at most once a minute, delete idle `HttpSession` rows.
+fn expire_idle(factory: &ExecutionContextFactory) -> Result<(), Error> {
+    let Some(timeout) = session_timeout_millis() else {
+        return Ok(());
+    };
+    let now = now_millis();
+    let purge = {
+        let mut table = lock_sessions(factory);
+        table
+            .sessions
+            .retain(|_, live| !is_idle(live.last_access, now, Some(timeout)));
+        if now.saturating_sub(table.last_purge) > 60_000 {
+            table.last_purge = now;
+            true
+        } else {
+            false
+        }
+    };
+    if !purge {
+        return Ok(());
+    }
+    let Some(facade) = factory.entity() else {
+        return Ok(());
+    };
+    let cutoff = super::login::stamp_value(now.saturating_sub(timeout));
+    let condition = Condition::less("lastUpdatedStamp", cutoff.clone());
+    let sql = facade
+        .with_entity(HTTP_SESSION, |entity, dialect, _| {
+            sql_delete(entity, dialect, Some(&condition))
+        })
+        .map_err(Error::from)?;
+    with_session_sql(&facade, |conn| {
+        conn.execute(&sql, &[cutoff])?;
+        Ok(())
+    })?;
+    cache::on_write(&facade, HTTP_SESSION, "delete").map_err(Error::from)
 }
 
 fn install_from_row(factory: &ExecutionContextFactory, id: &str) -> Result<(), Error> {
@@ -728,6 +827,7 @@ fn install_from_row(factory: &ExecutionContextFactory, id: &str) -> Result<(), E
         return Err(Error::new("session row disappeared"));
     };
     let base = base_from_row(&row)?;
+    let stamp = row.get("lastUpdatedStamp").and_then(super::login::value_millis);
     let username = base
         .columns
         .user_id
@@ -743,6 +843,9 @@ fn install_from_row(factory: &ExecutionContextFactory, id: &str) -> Result<(), E
         snapshot: Some(snapshot_from_base(&base)),
         invalidated: false,
         retired: false,
+        last_access: stamp.unwrap_or_else(now_millis),
+        touch_mark: stamp.unwrap_or(0),
+        touch: false,
     };
     let mut table = lock_sessions(factory);
     if table.sessions.get(id).is_some_and(|existing| !existing.retired) {
@@ -1003,6 +1106,7 @@ fn store_success(table: &mut SessionTable, id: &str, merged: &Merged) {
     live.dirty_columns.clear();
     live.dirty_json.clear();
     live.invalidated = false;
+    live.touch = false;
 }
 
 fn load_base(facade: &EntityFacade, id: &str, live: &LiveSession, force_sql: bool) -> Result<Base, Error> {
@@ -1253,7 +1357,7 @@ fn retire_old(factory: &ExecutionContextFactory, old_id: &str) {
 }
 
 fn needs_flush(live: &LiveSession) -> bool {
-    !live.retired && (!live.dirty_columns.is_empty() || !live.dirty_json.is_empty())
+    !live.retired && (live.touch || !live.dirty_columns.is_empty() || !live.dirty_json.is_empty())
 }
 
 fn bound_factory() -> Option<Arc<ExecutionContextFactory>> {
@@ -1343,6 +1447,9 @@ fn live_from_thread(view: &ThreadView) -> LiveSession {
         snapshot: None,
         invalidated: false,
         retired: false,
+        last_access: now_millis(),
+        touch_mark: 0,
+        touch: false,
     }
 }
 
@@ -1904,6 +2011,48 @@ mod tests {
             saved_parameters().unwrap().get("color").map(String::as_str),
             Some("blue")
         );
+    }
+
+    #[test]
+    fn an_idle_session_expires_and_its_row_is_deleted() {
+        let (_lock, ctx, facade, _key) = setup();
+        let _entered = ctx.enter();
+        let factory = Arc::clone(ctx.factory());
+        let guard = bind(&factory, None, None, false).unwrap();
+        save_parameter("color", "blue");
+        flush_dirty(&factory).unwrap();
+        let id = guard.session_id();
+        let cookie = guard.session_cookie_header().unwrap();
+        drop(guard);
+        assert!(read_row(&facade, &id).unwrap().is_some());
+
+        // Two hours idle against the 60 minute default.
+        lock_sessions(&factory).sessions.get_mut(&id).unwrap().last_access = now_millis() - 2 * 60 * 60_000;
+        let guard = bind(&factory, Some(cookie_value(&cookie)), None, false).unwrap();
+        assert_ne!(guard.session_id(), id);
+        assert!(saved_parameters().unwrap().is_empty());
+        assert!(read_row(&facade, &id).unwrap().is_none());
+    }
+
+    #[test]
+    fn the_sweep_drops_idle_sessions_and_keeps_active_ones() {
+        let (_lock, ctx, _facade, _key) = setup();
+        let _entered = ctx.enter();
+        let factory = Arc::clone(ctx.factory());
+        let guard = bind(&factory, None, None, false).unwrap();
+        let active = guard.session_id();
+        drop(guard);
+        let stale = random_hex(SESSION_ID_BYTES).unwrap();
+        {
+            let mut table = lock_sessions(&factory);
+            let mut live = table.sessions.get(&active).unwrap().clone();
+            live.last_access = now_millis() - 3 * 60 * 60_000;
+            table.sessions.insert(stale.clone(), live);
+        }
+        expire_idle(&factory).unwrap();
+        let table = lock_sessions(&factory);
+        assert!(table.sessions.contains_key(&active));
+        assert!(!table.sessions.contains_key(&stale));
     }
 
     #[test]

@@ -227,6 +227,8 @@ Depends on gate 1. `EntityFacade.rest` and `RestApi` already run. This phase is 
 
 The response is JSON from the transition. Widget HTML is not part of this gate.
 
+Review follow-ups landed after gate 2: a request authenticated by its own credentials (Basic, `api_key`, `login_key`, `authUsername`) skips the session-token check as in Java; web sessions expire after `webapp_session_timeout` minutes (default 60, 0 never) and idle `HttpSession` rows are purged from the scheduler tick; repeated query or form names become list parameters; `X-Forwarded-Proto` is believed only when `webapp_client_ip_header` marks a proxy; a full request queue is `ErrorKind::Unavailable` (503). Still open: `session.rs` keeps its own small JSON codec because it must preserve number text and key order, and `userInfo` stays commented out in `rest.xml` as in Java.
+
 ## Phase 8 — Screen model and render modes
 
 Depends on the screen URL and transition runner from phase 7, and on the action runner from phase 6.

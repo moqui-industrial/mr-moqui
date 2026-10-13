@@ -31,6 +31,8 @@ pub enum ErrorKind {
     NotFound,
     /// The resource exists but not for this method.
     MethodNotAllowed,
+    /// The service cannot take the work now, such as a full request queue.
+    Unavailable,
 }
 
 impl ErrorKind {

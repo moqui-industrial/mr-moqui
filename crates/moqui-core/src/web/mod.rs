@@ -44,7 +44,8 @@ pub struct WebRequest {
     pub path: String,
     pub https: bool,
     pub headers: BTreeMap<String, String>,
-    pub query: BTreeMap<String, String>,
+    /// Decoded query pairs in request order. A repeated name becomes a list parameter.
+    pub query: Vec<(String, String)>,
     pub body: Vec<u8>,
     pub peer_ip: String,
     pub session_cookie: Option<String>,
@@ -59,7 +60,7 @@ impl WebRequest {
             path: path.into(),
             https: false,
             headers: BTreeMap::new(),
-            query: BTreeMap::new(),
+            query: Vec::new(),
             body: Vec::new(),
             peer_ip: String::new(),
             session_cookie: None,
@@ -217,11 +218,24 @@ fn send_bytes(status: u16, content_type: &str, body: Vec<u8>) {
     });
 }
 
+/// Whether a response was already written for this request.
+pub(crate) fn output_sent() -> bool {
+    WEB.with(|slot| slot.borrow().as_ref().is_some_and(|web| web.sent))
+}
+
+/// Move the status, headers, body, and sent flag out of the slot.
 pub(crate) fn take_output() -> (u16, Vec<(String, String)>, Vec<u8>, bool) {
     WEB.with(|slot| {
-        slot.borrow()
-            .as_ref()
-            .map(|web| (web.status, web.headers.clone(), web.body.clone(), web.sent))
+        slot.borrow_mut()
+            .as_mut()
+            .map(|web| {
+                (
+                    web.status,
+                    std::mem::take(&mut web.headers),
+                    std::mem::take(&mut web.body),
+                    web.sent,
+                )
+            })
             .unwrap_or((200, Vec::new(), Vec::new(), false))
     })
 }
@@ -253,21 +267,22 @@ pub(crate) fn parse_body(request: &WebRequest) -> Result<ParsedBody, BodyError> 
     if media.starts_with("multipart/") {
         return Err(BodyError::Multipart);
     }
-    let mut parameters = BTreeMap::new();
-    for (key, value) in &request.query {
-        parameters.insert(key.clone(), Value::string(value));
-    }
+    let mut pairs = request.query.clone();
     let mut json_list = None;
     if request.body.is_empty() {
-        return Ok(ParsedBody { parameters, json_list });
+        return Ok(ParsedBody {
+            parameters: pairs_to_parameters(pairs),
+            json_list,
+        });
     }
     if media == "application/x-www-form-urlencoded" || (media.is_empty() && request.body.contains(&b'=')) {
-        let text = String::from_utf8_lossy(&request.body);
-        for (key, value) in form_pairs(&text) {
-            parameters.insert(key, Value::string(value));
-        }
-        return Ok(ParsedBody { parameters, json_list });
+        pairs.extend(form_pairs(&String::from_utf8_lossy(&request.body)));
+        return Ok(ParsedBody {
+            parameters: pairs_to_parameters(pairs),
+            json_list,
+        });
     }
+    let mut parameters = pairs_to_parameters(pairs);
     if media == "application/json" || media.ends_with("+json") {
         let text =
             std::str::from_utf8(&request.body).map_err(|_| BodyError::Json("JSON body is not utf-8".to_string()))?;
@@ -290,7 +305,27 @@ pub(crate) fn parse_body(request: &WebRequest) -> Result<ParsedBody, BodyError> 
     Ok(ParsedBody { parameters, json_list })
 }
 
-fn form_pairs(text: &str) -> Vec<(String, String)> {
+/// One value stays a string. A name that repeats becomes a list in request order.
+fn pairs_to_parameters(pairs: Vec<(String, String)>) -> BTreeMap<String, Value> {
+    let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (key, value) in pairs {
+        grouped.entry(key).or_default().push(value);
+    }
+    grouped
+        .into_iter()
+        .map(|(key, mut values)| {
+            let value = if values.len() == 1 {
+                Value::string(values.remove(0))
+            } else {
+                Value::List(values.into_iter().map(Value::string).collect())
+            };
+            (key, value)
+        })
+        .collect()
+}
+
+/// Split `a=1&b=2` into decoded pairs.
+pub fn form_pairs(text: &str) -> Vec<(String, String)> {
     let mut pairs = Vec::new();
     for part in text.split('&') {
         if part.is_empty() {
@@ -302,9 +337,10 @@ fn form_pairs(text: &str) -> Vec<(String, String)> {
     pairs
 }
 
-fn percent_decode(text: &str) -> String {
+/// Decode `+` and `%XX`. A malformed escape is kept as written.
+pub fn percent_decode(text: &str) -> String {
     let bytes = text.as_bytes();
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0;
     while index < bytes.len() {
         match bytes[index] {
@@ -312,12 +348,8 @@ fn percent_decode(text: &str) -> String {
                 out.push(b' ');
                 index += 1;
             }
-            b'%' if index + 2 < bytes.len() => {
-                let hex = &text[index + 1..index + 3];
-                match u8::from_str_radix(hex, 16) {
-                    Ok(byte) => out.push(byte),
-                    Err(_) => out.extend_from_slice(&bytes[index..index + 3]),
-                }
+            b'%' if index + 2 < bytes.len() && hex_pair(bytes[index + 1], bytes[index + 2]).is_some() => {
+                out.push(hex_pair(bytes[index + 1], bytes[index + 2]).unwrap_or(b'%'));
                 index += 3;
             }
             byte => {
@@ -327,6 +359,12 @@ fn percent_decode(text: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_pair(high: u8, low: u8) -> Option<u8> {
+    let high = char::from(high).to_digit(16)?;
+    let low = char::from(low).to_digit(16)?;
+    u8::try_from(high * 16 + low).ok()
 }
 
 /// `Authorization: Basic` user and password. The split is the first colon.
@@ -345,7 +383,9 @@ pub(crate) fn basic_credentials(header: &str) -> Option<(String, String)> {
 /// Cookie value for `name` from a `Cookie` header.
 pub fn cookie_value(header: &str, name: &str) -> Option<String> {
     for part in header.split(';') {
-        let (key, value) = part.trim().split_once('=')?;
+        let Some((key, value)) = part.trim().split_once('=') else {
+            continue;
+        };
         if key.trim() == name {
             return Some(value.trim().to_string());
         }
@@ -487,6 +527,7 @@ pub(crate) fn status_for(err: &Error) -> u16 {
         ErrorKind::Tarpit => return 429,
         ErrorKind::NotFound => return 404,
         ErrorKind::MethodNotAllowed => return 405,
+        ErrorKind::Unavailable => return 503,
         ErrorKind::General => {}
     }
     let message = err.message();
@@ -497,11 +538,7 @@ pub(crate) fn status_for(err: &Error) -> u16 {
     if lower.contains("not authorized") || lower.contains("is not authorized") || lower.contains("tarpit") {
         return 403;
     }
-    if message.contains("No value found")
-        || lower.contains("no entity named")
-        || lower.contains("no entity name")
-        || lower.contains("not valid")
-    {
+    if message.contains("No value found") || lower.contains("no entity named") || lower.contains("no entity name") {
         return 404;
     }
     if lower.contains("not supported") {
@@ -512,4 +549,41 @@ pub(crate) fn status_for(err: &Error) -> u16 {
 
 pub(crate) fn record_login_error(message: &str) {
     ExecutionContext::with_current(|ec| ec.message().add_error(message.to_string()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{cookie_value, form_pairs, pairs_to_parameters, percent_decode};
+    use moqui_lib::object::Value;
+
+    #[test]
+    fn a_repeated_name_becomes_a_list() {
+        let map = pairs_to_parameters(form_pairs("a=1&b=x&a=2&a=3"));
+        assert_eq!(map.get("b"), Some(&Value::string("x")));
+        assert_eq!(
+            map.get("a"),
+            Some(&Value::List(vec![
+                Value::string("1"),
+                Value::string("2"),
+                Value::string("3")
+            ]))
+        );
+    }
+
+    #[test]
+    fn percent_decode_keeps_bad_escapes_and_never_panics() {
+        assert_eq!(percent_decode("a%20b+c"), "a b c");
+        assert_eq!(percent_decode("%a\u{e9}"), "%a\u{e9}");
+        assert_eq!(percent_decode("tail%"), "tail%");
+        assert_eq!(percent_decode("%zz%41"), "%zzA");
+    }
+
+    #[test]
+    fn cookie_value_skips_parts_without_an_equals_sign() {
+        assert_eq!(
+            cookie_value("junk; moqui.session=abc; x=y", "moqui.session").as_deref(),
+            Some("abc")
+        );
+        assert_eq!(cookie_value("a=b", "moqui.session"), None);
+    }
 }

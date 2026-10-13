@@ -107,8 +107,11 @@ pub fn serve_at(factory: &Arc<ExecutionContextFactory>, request: WebRequest, roo
         }
         Err(web::BodyError::Json(message)) => return web::early_error(&request, 400, &message),
     };
-    let context = factory.new_context();
-    let _entered = context.enter();
+    // A request-pool worker already entered a fresh context for this job. Direct callers get one here.
+    let context = crate::context::ExecutionContext::current()
+        .is_none()
+        .then(|| factory.new_context());
+    let _entered = context.as_ref().map(|context| context.enter());
     let response = match handle(factory, &request, root, &parsed.parameters, parsed.json_list.as_deref()) {
         Ok(response) => response,
         Err(err) => web::json_error(500, err.message()),
@@ -132,6 +135,8 @@ struct Located {
     extra: Vec<String>,
     screen_path: String,
     require_user: bool,
+    /// Keeps the artifact frames pushed by the walk until the located transition has run.
+    _frames: Pushed,
 }
 
 fn handle(
@@ -159,8 +164,16 @@ fn handle(
         return Ok(web::json_error(500, err.message()));
     }
     let _web = web::install(parameters.clone());
-    let login_error = authenticate(request, parameters)?;
-    let response = dispatch_request(factory, request, root, parameters, json_list, login_error.as_deref())?;
+    let (login_error, header_authenticated) = authenticate(request, parameters)?;
+    let response = dispatch_request(
+        factory,
+        request,
+        root,
+        parameters,
+        json_list,
+        login_error.as_deref(),
+        header_authenticated,
+    )?;
     let response = attach_session(
         response,
         &guard,
@@ -179,6 +192,7 @@ fn dispatch_request(
     parameters: &BTreeMap<String, Value>,
     json_list: Option<&[Value]>,
     login_error: Option<&str>,
+    header_authenticated: bool,
 ) -> Result<WebResponse, Error> {
     let segments = path_segments(&request.path);
     let located = match walk(factory, root, &segments, true) {
@@ -197,7 +211,7 @@ fn dispatch_request(
         if let Some(name) = missing_parameter(parameters, transition) {
             return Ok(web::json_error(400, &format!("Missing required parameter {name}")));
         }
-        if csrf_rejected(request, parameters, transition)? {
+        if !header_authenticated && csrf_rejected(request, parameters, transition)? {
             return Ok(web::json_error(401, "Session token is missing or is not valid"));
         }
         dispatch::run(&dispatch::Call {
@@ -213,8 +227,7 @@ fn dispatch_request(
         web::send_json_error(501, SCREEN_LATER);
     }
     if let Err(err) = user::end_request() {
-        let (_, _, _, sent) = web::take_output();
-        if !sent {
+        if !web::output_sent() {
             return Ok(web::json_error(500, err.message()));
         }
     }
@@ -257,36 +270,50 @@ fn peek_token() -> Option<String> {
     user::session::peek_csrf_token()
 }
 
-fn authenticate(request: &WebRequest, parameters: &BTreeMap<String, Value>) -> Result<Option<String>, Error> {
+/// The login error, if any, and whether this request logged a user in from its own credentials
+/// (Basic, `api_key`, `login_key`, or `authUsername`). Such a request carries no ambient cookie
+/// authority, so it skips the session-token check as it does in the Java `ScreenRenderImpl`.
+fn authenticate(request: &WebRequest, parameters: &BTreeMap<String, Value>) -> Result<(Option<String>, bool), Error> {
     let mut login_error = None;
+    let mut by_header = false;
     if let Some(header) = request.header("authorization") {
         if let Some((username, password)) = web::basic_credentials(header) {
-            if let Err(err) = login_user(&username, &password) {
-                let message = err.message().to_string();
-                web::record_login_error(&message);
-                login_error = Some(message);
+            match login_user(&username, &password) {
+                Ok(()) => by_header = true,
+                Err(err) => {
+                    let message = err.message().to_string();
+                    web::record_login_error(&message);
+                    login_error = Some(message);
+                }
             }
         }
     }
     if user::current_username()?.is_none() {
+        let keyed = request.header("api_key").is_some_and(|text| !text.is_empty())
+            || request.header("login_key").is_some_and(|text| !text.is_empty());
         if let Err(err) = apply_header_keys(request.header("api_key"), request.header("login_key")) {
             let message = err.message().to_string();
             web::record_login_error(&message);
             login_error = Some(message);
+        } else if keyed && user::current_username()?.is_some() {
+            by_header = true;
         }
     }
     if user::current_username()?.is_none() {
         let username = text_of(parameters.get("authUsername"));
         let password = text_of(parameters.get("authPassword"));
         if !username.is_empty() && !password.is_empty() {
-            if let Err(err) = login_user(&username, &password) {
-                let message = err.message().to_string();
-                web::record_login_error(&message);
-                login_error = Some(message);
+            match login_user(&username, &password) {
+                Ok(()) => by_header = true,
+                Err(err) => {
+                    let message = err.message().to_string();
+                    web::record_login_error(&message);
+                    login_error = Some(message);
+                }
             }
         }
     }
-    Ok(login_error)
+    Ok((login_error, by_header))
 }
 
 fn method_rejected(request: &WebRequest, transition: &TransitionDef) -> Option<WebResponse> {
@@ -337,13 +364,20 @@ fn csrf_rejected(
         return Ok(false);
     }
     let expected = user::csrf_token()?;
+    if expected.is_empty() {
+        return Ok(false);
+    }
     let presented = text_of(parameters.get("moquiSessionToken"));
     let presented = if presented.is_empty() {
         request.header("x-csrf-token").unwrap_or("").to_string()
     } else {
         presented
     };
-    Ok(presented != expected)
+    Ok(!constant_time_eq(presented.as_bytes(), expected.as_bytes()))
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    left.len() == right.len() && left.iter().zip(right).fold(0_u8, |acc, (a, b)| acc | (a ^ b)) == 0
 }
 
 fn walk(factory: &ExecutionContextFactory, root: &str, segments: &[String], push: bool) -> Result<Located, Error> {
@@ -377,6 +411,7 @@ fn walk(factory: &ExecutionContextFactory, root: &str, segments: &[String], push
                 extra: segments[index + 1..].to_vec(),
                 screen_path,
                 require_user,
+                _frames: pushed,
             });
         }
         let child = screen
@@ -405,6 +440,7 @@ fn walk(factory: &ExecutionContextFactory, root: &str, segments: &[String], push
         extra: Vec::new(),
         screen_path,
         require_user,
+        _frames: pushed,
     })
 }
 

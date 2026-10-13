@@ -23,7 +23,7 @@ use std::thread::{self, JoinHandle};
 
 use moqui_lib::node::MNode;
 
-use crate::context::{Error, ExecutionContextFactory};
+use crate::context::{Error, ErrorKind, ExecutionContextFactory};
 use crate::transaction::TransactionManager;
 
 const DEFAULT_REQUEST_WORKERS: u32 = 8;
@@ -130,10 +130,10 @@ impl RequestPool {
         {
             let mut state = lock(&shared.state);
             if state.stop {
-                return Err(Error::new("request pool is not running"));
+                return Err(Error::of_kind(ErrorKind::Unavailable, "request pool is not running"));
             }
             if state.queue.len() >= shared.queue_cap {
-                return Err(Error::new("request queue is full"));
+                return Err(Error::of_kind(ErrorKind::Unavailable, "request queue is full"));
             }
             state.queue.push_back(pack(factory, job, tx));
         }
@@ -155,7 +155,7 @@ impl RequestPool {
         lock(&self.inner)
             .as_ref()
             .cloned()
-            .ok_or_else(|| Error::new("request pool is not running"))
+            .ok_or_else(|| Error::of_kind(ErrorKind::Unavailable, "request pool is not running"))
     }
 }
 

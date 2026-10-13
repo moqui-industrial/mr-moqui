@@ -404,3 +404,31 @@ fn entity_json_has_the_primary_key_and_the_service_document_lists_enum_types() {
     let response = serve_at(&world.factory, yaml, &root);
     assert_eq!(response.status, 404, "{}", response.body_text());
 }
+
+#[test]
+fn basic_auth_writes_skip_the_session_token_but_a_cookie_session_does_not() {
+    let world = World::open("");
+    world.user("admin", None);
+    world.enumeration_type();
+    let root = webroot().to_string_lossy().into_owned();
+
+    let mut stateless = request("POST", "/rest/e1/moqui.basic.EnumerationType");
+    stateless.set_header("authorization", basic("admin"));
+    stateless.set_header("content-type", "application/json");
+    stateless.body = br#"{"enumTypeId":"BasicPost","description":"Basic POST"}"#.to_vec();
+    let response = serve_at(&world.factory, stateless, &root);
+    assert_ne!(response.status, 401, "{}", response.body_text());
+
+    let mut login = request("POST", "/rest/login");
+    login.set_header("content-type", "application/x-www-form-urlencoded");
+    login.body = b"username=admin&password=secret".to_vec();
+    let response = serve_at(&world.factory, login, &root);
+    let cookie = header_value(&response, "Set-Cookie").expect("cookie");
+    let value = cookie.split(';').next().unwrap().split_once('=').unwrap().1.to_string();
+    let mut ambient = request("POST", "/rest/e1/moqui.basic.EnumerationType");
+    ambient.session_cookie = Some(value);
+    ambient.set_header("content-type", "application/json");
+    ambient.body = br#"{"enumTypeId":"CookiePost","description":"Cookie POST"}"#.to_vec();
+    let response = serve_at(&world.factory, ambient, &root);
+    assert_eq!(response.status, 401, "{}", response.body_text());
+}

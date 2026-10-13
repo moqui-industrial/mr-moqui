@@ -153,14 +153,7 @@ fn entity_list(
 fn finish_entity(started: Instant, result: Result<Value, Error>) {
     match result {
         Ok(value) => {
-            if let Some(page) = query_rest::take_page_info() {
-                header_i64("X-Total-Count", page.total);
-                header_i64("X-Page-Index", page.index);
-                header_i64("X-Page-Size", page.size);
-                header_i64("X-Page-Max-Index", page.max_index);
-                header_i64("X-Page-Range-Low", page.range_low);
-                header_i64("X-Page-Range-High", page.range_high);
-            }
+            page_headers();
             note_runtime(started);
             web::send_json_response(value);
         }
@@ -188,17 +181,12 @@ fn service_rest(call: &Call<'_>) -> Result<bool, Error> {
             let errors = message_errors();
             if !errors.is_empty() {
                 let _ = query_rest::take_page_info();
+                // Errors already recorded before the call predate this service, so keep them 500.
+                // Errors the service added are the caller's input, 400.
                 let status = if before > 0 { 500 } else { 400 };
                 web::send_json_error(status, &errors.join("\n"));
             } else {
-                if let Some(page) = query_rest::take_page_info() {
-                    header_i64("X-Total-Count", page.total);
-                    header_i64("X-Page-Index", page.index);
-                    header_i64("X-Page-Size", page.size);
-                    header_i64("X-Page-Max-Index", page.max_index);
-                    header_i64("X-Page-Range-Low", page.range_low);
-                    header_i64("X-Page-Range-High", page.range_high);
-                }
+                page_headers();
                 note_runtime(call.started);
                 web::send_json_response(value);
             }
@@ -301,6 +289,18 @@ fn message_error_count() -> usize {
 
 fn message_errors() -> Vec<String> {
     ExecutionContext::with_current(|ec| ec.message().errors().to_vec()).unwrap_or_default()
+}
+
+/// The `X-Page-*` headers for the page info the last REST find recorded, if any.
+fn page_headers() {
+    if let Some(page) = query_rest::take_page_info() {
+        header_i64("X-Total-Count", page.total);
+        header_i64("X-Page-Index", page.index);
+        header_i64("X-Page-Size", page.size);
+        header_i64("X-Page-Max-Index", page.max_index);
+        header_i64("X-Page-Range-Low", page.range_low);
+        header_i64("X-Page-Range-High", page.range_high);
+    }
 }
 
 fn header_i64(name: &str, value: i64) {

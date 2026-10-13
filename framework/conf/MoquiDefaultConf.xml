@@ -39,6 +39,8 @@
     -->
     <default-property name="webapp_client_ip_header" value=""/>
     <default-property name="webapp_session_flush" value="eventual"/>
+    <!-- Minutes without a request before a web session expires. 0 never expires. -->
+    <default-property name="webapp_session_timeout" value="60"/>
 
     <!--
         user_privileged_groups: UserGroupMember create/update/delete for these groups is allowed only if the
