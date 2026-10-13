@@ -30,13 +30,29 @@ pub fn open_entity_facade(
     driver: Arc<dyn DbDriver>,
     pool: PoolConfig,
 ) -> Result<EntityFacade, Error> {
+    open_entity_facade_dialect(framework_dir, driver, pool, "postgres")
+}
+
+/// Load the framework model onto the `transactional` group using `dialect`.
+///
+/// `dialect` is a `database-list` name such as `postgres` or `mysql`.
+///
+/// # Errors
+///
+/// Returns an error when the conf or the entity model cannot be read, or when `dialect` is not defined.
+pub fn open_entity_facade_dialect(
+    framework_dir: &Path,
+    driver: Arc<dyn DbDriver>,
+    pool: PoolConfig,
+    dialect: &str,
+) -> Result<EntityFacade, Error> {
     let transactions = TransactionManager::new(driver, pool)?;
     let conf = MNode::parse_file(framework_dir.join("conf/MoquiDefaultConf.xml"))?;
     transactions.configure_from_conf(&conf)?;
     let facade = EntityFacade::open(
         framework_dir,
         "transactional",
-        vec![EntityGroup::new("transactional", "postgres", transactions)],
+        vec![EntityGroup::new("transactional", dialect, transactions)],
     )?;
     facade.crypt_from_conf(&conf)?;
     Ok(facade)

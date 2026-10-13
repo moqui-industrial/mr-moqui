@@ -28,6 +28,7 @@ mod validate;
 
 pub use call::call;
 pub use callback::{run_held_service, run_matched_eca, schedule_feed_receive};
+pub use define::lint;
 pub use define::load_definitions;
 pub use email_eca::run_email_rules;
 pub use pool::{start_pools, ServicePools};
