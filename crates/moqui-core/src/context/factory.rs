@@ -51,6 +51,9 @@ pub struct ExecutionContextFactory {
     property_names: Vec<String>,
     /// Entity facade for `dbresource://`. Empty until the host calls [`Self::set_entity`].
     entity: Arc<RwLock<Option<EntityFacade>>>,
+    /// This factory's pool guard. Drops with the factory. Idle has no workers.
+    #[allow(dead_code)] // Later slice reads this to start and stop its own workers.
+    pools: crate::service::ServicePools,
 }
 
 impl ExecutionContextFactory {
@@ -88,7 +91,7 @@ impl ExecutionContextFactory {
         let cache = CacheFacade::from_conf(&conf_node)?;
         set_by_boot.keep();
         let conf_text = conf_node.write_string();
-        crate::service::start_pools()?;
+        let pools = crate::service::start_pools(&conf_text)?;
         tracing::info!(
             runtime = %runtime_dir.display(),
             framework = %framework_dir.display(),
@@ -103,6 +106,7 @@ impl ExecutionContextFactory {
             conf_text,
             property_names,
             entity,
+            pools,
         }))
     }
 
@@ -487,6 +491,7 @@ impl ExecutionContextFactory {
             conf_text: String::new(),
             property_names: Vec::new(),
             entity,
+            pools: crate::service::ServicePools::idle(),
         });
         factory.new_context()
     }
