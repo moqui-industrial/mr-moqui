@@ -288,7 +288,7 @@ fn load_embedded(
     xmlshim::provide_libxml2_soname(cluster_dir)?;
     let (cluster, driver) = EmbeddedCluster::start(cluster_dir, 20)?;
     let driver: Arc<dyn DbDriver> = Arc::new(driver);
-    let result = load_after_cluster(&runtime_dir, &framework_dir, cluster_dir, &driver, flags);
+    let result = load_after_cluster(&runtime_dir, &framework_dir, &driver, flags);
     drop(driver);
     drop(cluster);
     result
@@ -298,13 +298,12 @@ fn load_embedded(
 fn load_after_cluster(
     runtime_dir: &std::path::Path,
     framework_dir: &std::path::Path,
-    cluster_dir: &std::path::Path,
     driver: &std::sync::Arc<dyn moqui_core::driver::DbDriver>,
     flags: &LoadFlags,
 ) -> Result<LoadReport, moqui_lib::error::Error> {
     let factory = moqui_core::context::ExecutionContextFactory::boot_with_framework(runtime_dir, framework_dir)
         .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
-    let outcome = load_with_factory(&factory, framework_dir, cluster_dir, driver, flags);
+    let outcome = load_with_factory(&factory, framework_dir, driver, flags);
     drop(factory);
     outcome
 }
@@ -313,7 +312,6 @@ fn load_after_cluster(
 fn load_with_factory(
     factory: &std::sync::Arc<moqui_core::context::ExecutionContextFactory>,
     framework_dir: &std::path::Path,
-    cluster_dir: &std::path::Path,
     driver: &std::sync::Arc<dyn moqui_core::driver::DbDriver>,
     flags: &LoadFlags,
 ) -> Result<LoadReport, moqui_lib::error::Error> {
@@ -322,7 +320,7 @@ fn load_with_factory(
     let context = factory.new_context();
     let entered = context.enter();
     let authz = context.disable_authz();
-    let outcome = load_in_context(framework_dir, cluster_dir, &facade, flags);
+    let outcome = load_in_context(framework_dir, &facade, flags);
     drop(authz);
     drop(entered);
     drop(context);
@@ -343,7 +341,6 @@ fn pool() -> moqui_core::transaction::PoolConfig {
 #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
 fn load_in_context(
     framework_dir: &std::path::Path,
-    cluster_dir: &std::path::Path,
     facade: &moqui_core::entity::EntityFacade,
     flags: &LoadFlags,
 ) -> Result<LoadReport, moqui_lib::error::Error> {
@@ -369,28 +366,23 @@ fn load_in_context(
         ));
     }
     let options = load_options(flags);
-    let index = relationship_index(framework_dir)?;
     let mut records = 0_u64;
     if let Some(location) = &flags.location {
         eprintln!("load {location}");
         records = records.saturating_add(load_entity_data(facade, location, &options)?.records);
     } else if entity_count(facade, "moqui.basic.Enumeration")? == 0 {
-        records = records.saturating_add(load_definition_seed(
-            framework_dir,
-            cluster_dir,
-            facade,
-            &options,
-            &index,
-        )?);
+        for path in framework_xml_paths(framework_dir)? {
+            let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+            if name.ends_with(".eecas.xml") {
+                continue;
+            }
+            let location = path.display().to_string();
+            eprintln!("load {location}");
+            records = records.saturating_add(load_entity_data(facade, &location, &options)?.records);
+        }
         for location in conf_data_locations()? {
-            records = records.saturating_add(load_conf_location(
-                framework_dir,
-                cluster_dir,
-                facade,
-                &options,
-                &index,
-                &location,
-            )?);
+            eprintln!("load {location}");
+            records = records.saturating_add(load_entity_data(facade, &location, &options)?.records);
         }
     }
     let enumeration = entity_count(facade, "moqui.basic.Enumeration")?;
@@ -439,74 +431,6 @@ fn register_services(
 #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
 fn entity_count(facade: &moqui_core::entity::EntityFacade, name: &str) -> Result<i64, moqui_lib::error::Error> {
     facade.find(name)?.count()
-}
-
-/// `load_entity_data` does not read `<seed-data>` nested in entity definitions. Those rows are the
-/// foreign-key parents of the conf data files, so they are written out and loaded first.
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
-fn load_definition_seed(
-    framework_dir: &std::path::Path,
-    cluster_dir: &std::path::Path,
-    facade: &moqui_core::entity::EntityFacade,
-    options: &moqui_core::entity::load_feed::LoadOptions,
-    index: &RelIndex,
-) -> Result<u64, moqui_lib::error::Error> {
-    use moqui_core::entity::load_feed::load_entity_data;
-    use moqui_lib::node::MNode;
-
-    let dir = cluster_dir.join("seed-xml");
-    std::fs::create_dir_all(&dir)
-        .map_err(|err| moqui_lib::error::Error::new(format!("could not create {}", dir.display())).with_source(err))?;
-    let mut records = 0_u64;
-    for source in framework_xml_paths(framework_dir)? {
-        let root = MNode::parse_file(&source)?;
-        let nodes = seed_records(&root);
-        if nodes.is_empty() {
-            continue;
-        }
-        for node in &nodes {
-            stamp_inherited_keys(node, index);
-        }
-        let path = write_seed_file(&dir, &source, &nodes)?;
-        let location = path.display().to_string();
-        eprintln!("load {location}");
-        records = records.saturating_add(load_entity_data(facade, &location, options)?.records);
-    }
-    Ok(records)
-}
-
-/// A `type="many"` relationship with no `key-map` does not copy the parent primary key in
-/// `load_entity_data`. Stamp that key onto the nested element, then load the written file.
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
-fn load_conf_location(
-    framework_dir: &std::path::Path,
-    cluster_dir: &std::path::Path,
-    facade: &moqui_core::entity::EntityFacade,
-    options: &moqui_core::entity::load_feed::LoadOptions,
-    index: &RelIndex,
-    location: &str,
-) -> Result<u64, moqui_lib::error::Error> {
-    use moqui_core::entity::load_feed::load_entity_data;
-    use moqui_lib::node::MNode;
-
-    let Some(path) = classpath_file(framework_dir, location).filter(|path| path.is_file()) else {
-        eprintln!("load {location}");
-        return Ok(load_entity_data(facade, location, options)?.records);
-    };
-    let root = MNode::parse_file(&path)?;
-    if !stamp_inherited_keys(&root, index) {
-        eprintln!("load {location}");
-        return Ok(load_entity_data(facade, location, options)?.records);
-    }
-    let dir = cluster_dir.join("conf-xml");
-    std::fs::create_dir_all(&dir)
-        .map_err(|err| moqui_lib::error::Error::new(format!("could not create {}", dir.display())).with_source(err))?;
-    let name = path.file_name().unwrap_or_default();
-    let stamped = dir.join(name);
-    write_document(&root, &stamped)?;
-    let stamped_location = stamped.display().to_string();
-    eprintln!("load {stamped_location}");
-    Ok(load_entity_data(facade, &stamped_location, options)?.records)
 }
 
 fn framework_xml_paths(framework_dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>, moqui_lib::error::Error> {
@@ -609,306 +533,6 @@ fn full_entity_name(node: &moqui_lib::node::MNode) -> Option<String> {
         Some(package) if !package.is_empty() => Some(format!("{package}.{name}")),
         _ => Some(name),
     }
-}
-
-fn seed_records(root: &moqui_lib::node::MNode) -> Vec<moqui_lib::node::MNode> {
-    let mut out = Vec::new();
-    collect_seed(root, &mut out);
-    out
-}
-
-fn collect_seed(node: &moqui_lib::node::MNode, out: &mut Vec<moqui_lib::node::MNode>) {
-    if node.name() == "seed-data" {
-        out.extend(node.children());
-        return;
-    }
-    for child in node.children() {
-        collect_seed(&child, out);
-    }
-}
-
-#[derive(Clone)]
-struct RelStamp {
-    names: Vec<String>,
-    pairs: Vec<(String, String)>,
-}
-
-struct RelIndex {
-    by_element: std::collections::BTreeMap<String, Vec<RelStamp>>,
-}
-
-struct EntityFacts {
-    full_name: String,
-    short_name: String,
-    fields: std::collections::BTreeSet<String>,
-    pks: Vec<String>,
-    rels: Vec<RawRel>,
-}
-
-struct RawRel {
-    related: String,
-    alias: Option<String>,
-    pairs: Vec<(String, String)>,
-}
-
-fn relationship_index(framework_dir: &std::path::Path) -> Result<RelIndex, moqui_lib::error::Error> {
-    use moqui_lib::node::MNode;
-
-    let mut facts = Vec::new();
-    for path in framework_xml_paths(framework_dir)? {
-        let root = MNode::parse_file(&path)?;
-        collect_entity_facts(&root, &mut facts);
-    }
-    Ok(RelIndex::from_facts(facts))
-}
-
-fn collect_entity_facts(node: &moqui_lib::node::MNode, facts: &mut Vec<EntityFacts>) {
-    if node.name() == "entity" {
-        if let Some(fact) = entity_facts(node) {
-            facts.push(fact);
-        }
-        return;
-    }
-    if node.name() == "seed-data" {
-        return;
-    }
-    for child in node.children() {
-        collect_entity_facts(&child, facts);
-    }
-}
-
-fn entity_facts(node: &moqui_lib::node::MNode) -> Option<EntityFacts> {
-    let short_name = node.attribute("entity-name")?;
-    if short_name.is_empty() {
-        return None;
-    }
-    let package = node.attribute("package").unwrap_or_default();
-    let full_name = if package.is_empty() {
-        short_name.clone()
-    } else {
-        format!("{package}.{short_name}")
-    };
-    let mut fields = std::collections::BTreeSet::new();
-    let mut pks = Vec::new();
-    let mut rels = Vec::new();
-    for child in node.children() {
-        match child.name().as_str() {
-            "field" => {
-                let Some(name) = child.attribute("name") else {
-                    continue;
-                };
-                if child.attribute("is-pk").as_deref() == Some("true") {
-                    pks.push(name.clone());
-                }
-                fields.insert(name);
-            }
-            "relationship" => {
-                let Some(related) = child.attribute("related") else {
-                    continue;
-                };
-                let mut pairs = Vec::new();
-                for map in child.children_named("key-map") {
-                    let Some(field_name) = map.attribute("field-name") else {
-                        continue;
-                    };
-                    let target = map
-                        .attribute("related")
-                        .filter(|value| !value.is_empty())
-                        .unwrap_or_else(|| field_name.clone());
-                    pairs.push((field_name, target));
-                }
-                rels.push(RawRel {
-                    related,
-                    alias: child.attribute("short-alias"),
-                    pairs,
-                });
-            }
-            _ => {}
-        }
-    }
-    Some(EntityFacts {
-        full_name,
-        short_name,
-        fields,
-        pks,
-        rels,
-    })
-}
-
-impl RelIndex {
-    fn from_facts(facts: Vec<EntityFacts>) -> Self {
-        let mut by_full = std::collections::BTreeMap::new();
-        let mut by_short = std::collections::BTreeMap::new();
-        for (index, fact) in facts.iter().enumerate() {
-            by_full.insert(fact.full_name.clone(), index);
-            by_short.entry(fact.short_name.clone()).or_insert(index);
-        }
-        let mut by_element = std::collections::BTreeMap::new();
-        for fact in &facts {
-            let mut stamps = Vec::new();
-            for rel in &fact.rels {
-                let mut pairs = rel.pairs.clone();
-                if pairs.is_empty() {
-                    let related_index = by_full
-                        .get(&rel.related)
-                        .or_else(|| by_short.get(&rel.related))
-                        .copied();
-                    if let Some(related_index) = related_index {
-                        let related = &facts[related_index];
-                        for pk in &fact.pks {
-                            if related.fields.contains(pk) {
-                                pairs.push((pk.clone(), pk.clone()));
-                            }
-                        }
-                    }
-                }
-                if pairs.is_empty() {
-                    continue;
-                }
-                let mut names = Vec::new();
-                if let Some(alias) = &rel.alias {
-                    names.push(alias.clone());
-                }
-                names.push(rel.related.clone());
-                if let Some(short) = rel.related.rsplit('.').next() {
-                    if !names.iter().any(|name| name == short) {
-                        names.push(short.to_string());
-                    }
-                }
-                stamps.push(RelStamp { names, pairs });
-            }
-            if stamps.is_empty() {
-                continue;
-            }
-            by_element.insert(fact.full_name.clone(), stamps.clone());
-            by_element.entry(fact.short_name.clone()).or_insert(stamps);
-        }
-        Self { by_element }
-    }
-}
-
-fn stamp_inherited_keys(node: &moqui_lib::node::MNode, index: &RelIndex) -> bool {
-    let mut changed = false;
-    let children = node.children();
-    if let Some(rels) = index.by_element.get(&node.name()) {
-        for child in &children {
-            let child_name = child.name();
-            let Some(rel) = rels.iter().find(|rel| rel.names.iter().any(|name| name == &child_name)) else {
-                continue;
-            };
-            for (source, target) in &rel.pairs {
-                if child.attribute(target).is_some() {
-                    continue;
-                }
-                let Some(value) = node.attribute(source) else {
-                    continue;
-                };
-                child.set_attribute(target, value);
-                changed = true;
-            }
-        }
-    }
-    for child in &children {
-        if stamp_inherited_keys(child, index) {
-            changed = true;
-        }
-    }
-    changed
-}
-
-fn classpath_file(framework_dir: &std::path::Path, location: &str) -> Option<std::path::PathBuf> {
-    let rest = location
-        .strip_prefix("classpath://")
-        .or_else(|| location.strip_prefix("classpath:"))?;
-    Some(framework_dir.join(rest.trim_start_matches('/')))
-}
-
-fn write_document(node: &moqui_lib::node::MNode, path: &std::path::Path) -> Result<(), moqui_lib::error::Error> {
-    let mut body = String::new();
-    write_node(node, &mut body, 0);
-    std::fs::write(path, body)
-        .map_err(|err| moqui_lib::error::Error::new(format!("could not write {}", path.display())).with_source(err))
-}
-
-fn write_seed_file(
-    dir: &std::path::Path,
-    source: &std::path::Path,
-    records: &[moqui_lib::node::MNode],
-) -> Result<std::path::PathBuf, moqui_lib::error::Error> {
-    let name = source.file_name().unwrap_or_default();
-    let path = dir.join(name);
-    let mut body = String::from("<seed-data>\n");
-    for record in records {
-        write_node(record, &mut body, 1);
-    }
-    body.push_str("</seed-data>\n");
-    std::fs::write(&path, body)
-        .map_err(|err| moqui_lib::error::Error::new(format!("could not write {}", path.display())).with_source(err))?;
-    Ok(path)
-}
-
-fn write_node(node: &moqui_lib::node::MNode, out: &mut String, indent: usize) {
-    for _ in 0..indent {
-        out.push_str("    ");
-    }
-    out.push('<');
-    out.push_str(&node.name());
-    for (key, value) in node.attributes() {
-        out.push(' ');
-        out.push_str(&key);
-        out.push_str("=\"");
-        out.push_str(&escape_attr(&value));
-        out.push('"');
-    }
-    let children = node.children();
-    let text = node.text().unwrap_or_default();
-    let text = text.trim();
-    if children.is_empty() && text.is_empty() {
-        out.push_str("/>\n");
-        return;
-    }
-    out.push('>');
-    if !text.is_empty() {
-        out.push_str(&escape_text(text));
-    }
-    if !children.is_empty() {
-        out.push('\n');
-        for child in &children {
-            write_node(child, out, indent + 1);
-        }
-        for _ in 0..indent {
-            out.push_str("    ");
-        }
-    }
-    out.push_str("</");
-    out.push_str(&node.name());
-    out.push_str(">\n");
-}
-
-fn escape_attr(value: &str) -> String {
-    let mut out = String::new();
-    for ch in value.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '"' => out.push_str("&quot;"),
-            '<' => out.push_str("&lt;"),
-            _ => out.push(ch),
-        }
-    }
-    out
-}
-
-fn escape_text(value: &str) -> String {
-    let mut out = String::new();
-    for ch in value.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            _ => out.push(ch),
-        }
-    }
-    out
 }
 
 fn configured_service_paths(
@@ -1276,24 +900,6 @@ mod tests {
     #[test]
     fn lint_with_no_path_loads_configured_files() {
         dispatch(["lint"]).unwrap();
-    }
-
-    #[test]
-    fn nested_service_job_parameter_receives_job_name() {
-        use moqui_lib::node::MNode;
-
-        let framework = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
-        let index = super::relationship_index(&framework).unwrap();
-        let root = MNode::parse_file(framework.join("data/MoquiSetupData.xml")).unwrap();
-        assert!(super::stamp_inherited_keys(&root, &index));
-        let job = root
-            .children()
-            .into_iter()
-            .find(|node| node.attribute("jobName").as_deref() == Some("clean_ArtifactData_daily"))
-            .unwrap();
-        let param = job.children().into_iter().next().unwrap();
-        assert_eq!(param.attribute("jobName").as_deref(), Some("clean_ArtifactData_daily"));
-        assert_eq!(param.attribute("parameterName").as_deref(), Some("daysToKeep"));
     }
 
     struct DirGuard(std::path::PathBuf);
