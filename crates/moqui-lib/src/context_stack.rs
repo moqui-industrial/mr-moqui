@@ -158,6 +158,18 @@ impl ContextStack {
         Ok(previous)
     }
 
+    /// Replace `key` in the nearest frame that holds it, so a callee's change to a caller's
+    /// list stays with the caller. Returns false and stores nothing when no frame holds it.
+    pub fn put_existing(&mut self, key: &str, value: Value) -> bool {
+        for frame in self.frames[..=self.index].iter().rev().flatten() {
+            if frame.borrow().contains_key(key) {
+                frame.borrow_mut().insert(key.to_string(), value);
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn remove(&mut self, key: &str) -> Option<Value> {
         self.frames
             .get(self.index)

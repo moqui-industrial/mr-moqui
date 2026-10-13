@@ -834,45 +834,11 @@ fn configured_paths() -> Result<Vec<PathBuf>, Error> {
 
 /// `classpath://` and `component://` locations. Copied from the private entity loader.
 fn resolve_location(location: &str) -> Result<PathBuf, Error> {
-    if let Some(rest) = strip_prefix(location, &["classpath://", "classpath:"]) {
-        return Ok(framework_dir().join(rest.trim_start_matches('/')));
-    }
-    if let Some(rest) = strip_prefix(location, &["component://", "component:"]) {
-        let rest = rest.trim_start_matches('/');
-        let (name, relative) = match rest.split_once('/') {
-            Some((name, relative)) => (name, relative.trim_start_matches('/')),
-            None => (rest, ""),
-        };
-        if name.is_empty() {
-            return Err(Error::new(format!("component location has no name: {location}")));
-        }
-        let root = component_root(name).ok_or_else(|| Error::new(format!("component {name} was not found")))?;
-        return Ok(if relative.is_empty() { root } else { root.join(relative) });
-    }
-    if let Some(rest) = location.strip_prefix("file:") {
-        let rest = rest.strip_prefix("//").unwrap_or(rest);
-        return Ok(PathBuf::from(rest));
-    }
-    Ok(PathBuf::from(location))
-}
-
-fn strip_prefix<'a>(location: &'a str, prefixes: &[&str]) -> Option<&'a str> {
-    prefixes.iter().find_map(|prefix| location.strip_prefix(prefix))
-}
-
-fn component_root(name: &str) -> Option<PathBuf> {
-    let repo = repo_root();
-    [repo.join("runtime/component").join(name), repo.join(name)]
-        .into_iter()
-        .find(|path| path.is_dir())
+    crate::context::locate(location).map_err(|err| Error::new(err.message().to_string()))
 }
 
 fn framework_dir() -> PathBuf {
-    repo_root().join("framework")
-}
-
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+    crate::context::framework_dir()
 }
 
 #[cfg(test)]

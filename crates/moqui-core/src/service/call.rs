@@ -24,9 +24,55 @@ use super::define::{Authenticate, ServiceDef, ServiceKind};
 use super::{semaphore, validate};
 use crate::context::Error;
 use crate::entity::{EntityFacade, EntityValue};
+use crate::transaction::TransactionAttribute;
+
+/// Per-call overrides of the service definition, set by the call builder.
+#[derive(Clone, Debug, Default)]
+pub struct CallOptions {
+    pub disable_authz: bool,
+    pub ignore_transaction: Option<bool>,
+    pub require_new_transaction: Option<bool>,
+    pub use_transaction_cache: Option<bool>,
+    pub timeout: Option<std::time::Duration>,
+}
+
+impl CallOptions {
+    fn attribute(&self, base: TransactionAttribute) -> TransactionAttribute {
+        if self.ignore_transaction == Some(true) {
+            return TransactionAttribute::Ignore;
+        }
+        if base == TransactionAttribute::Ignore {
+            return base;
+        }
+        let base_new = matches!(base, TransactionAttribute::ForceNew | TransactionAttribute::ForceCache);
+        let base_cache = matches!(base, TransactionAttribute::Cache | TransactionAttribute::ForceCache);
+        let new = self.require_new_transaction.unwrap_or(base_new);
+        let cache = self.use_transaction_cache.unwrap_or(base_cache);
+        match (new, cache) {
+            (false, false) => TransactionAttribute::UseOrBegin,
+            (true, false) => TransactionAttribute::ForceNew,
+            (false, true) => TransactionAttribute::Cache,
+            (true, true) => TransactionAttribute::ForceCache,
+        }
+    }
+}
 
 /// Run `name` and return its out parameters. `create-entity` is `create#entity`.
 pub fn sync(name: &str, parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, Error> {
+    sync_with(name, parameters, &CallOptions::default())
+}
+
+/// [`sync`] with per-call overrides of authorization and the transaction attribute.
+pub fn sync_with(
+    name: &str,
+    parameters: &BTreeMap<String, Value>,
+    options: &CallOptions,
+) -> Result<BTreeMap<String, Value>, Error> {
+    let _authz = if options.disable_authz {
+        crate::context::ExecutionContext::with_current(|ctx| ctx.disable_authz())
+    } else {
+        None
+    };
     let name = canonical(name);
     let facade = current_facade();
     let def = resolve(&name, facade.as_ref())?;
@@ -44,7 +90,9 @@ pub fn sync(name: &str, parameters: &BTreeMap<String, Value>) -> Result<BTreeMap
         ServiceDef::semaphore_entity().to_string()
     };
     let tx = facade.transactions_for(&entity_name)?;
-    let produced = tx.run(def.transaction, def.timeout, || {
+    let attribute = options.attribute(def.transaction);
+    let produced = tx.run(attribute, options.timeout.or(def.timeout), || {
+        let _deadline = crate::script::DeadlineGuard::new(tx.time_remaining());
         // on_rollback is not a commit hook. tx-commit is last so a post-service
         // entity write can still register the feed schedule hook.
         register_tx_rollback(&tx, &def.name, &cleaned)?;
@@ -176,6 +224,7 @@ fn execute(
 }
 
 fn run_inline(def: &ServiceDef, parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, LibError> {
+    let _frame = crate::script::ContextFrame::push();
     for (name, value) in parameters {
         crate::script::set_context_name(name, value.clone()).map_err(script_err)?;
     }
@@ -349,6 +398,37 @@ where
         .into_iter()
         .map(|(key, value)| (key.as_ref().to_string(), value.clone()))
         .collect()
+}
+
+/// Target entity and the `(field, value)` conditions that select `record`'s related rows.
+pub(crate) fn related_conditions(
+    facade: &EntityFacade,
+    parent: &str,
+    relationship: &str,
+    record: &EntityValue,
+) -> Result<(String, Vec<(String, Value)>), LibError> {
+    let (entity, pairs, constants) = facade.with_entity(parent, |entity, _, model| {
+        let Some(found) = entity.relationship(relationship) else {
+            return Err(LibError::new(format!("{parent} has no relationship {relationship}")));
+        };
+        let target = model.entity(&found.related_entity_name)?;
+        let fields = snap_fields(target);
+        let pairs = expand_key_map(&found.relationship_type, &found.key_map, &fields);
+        let constants: Vec<(String, String)> = found
+            .key_values
+            .iter()
+            .map(|entry| (entry.related.clone(), entry.value.clone()))
+            .collect();
+        Ok((target.full_name.clone(), pairs, constants))
+    })?;
+    let mut conditions = Vec::new();
+    for (source, target) in pairs {
+        conditions.push((target, record.get(&source).cloned().unwrap_or(Value::Null)));
+    }
+    for (field, value) in constants {
+        conditions.push((field, Value::string(&value)));
+    }
+    Ok((entity, conditions))
 }
 
 struct Link {
@@ -660,8 +740,141 @@ mod tests {
         assert_eq!(made_row.get("testMedium").and_then(Value::as_str), Some("made"));
     }
 
+    fn seeded_context(tape_rows: &[(&str, &str)]) -> (crate::entity::EntityFacade, crate::context::ExecutionContext) {
+        let facade = mem::open(Arc::new(Mutex::new(Vec::new())));
+        let ctx = ExecutionContextFactory::test_context();
+        ctx.factory().set_entity(facade.clone());
+        {
+            let _entered = ctx.enter();
+            for (id, medium) in tape_rows {
+                let mut row = facade.make_value("moqui.test.TestEntity").unwrap();
+                row.set("testId", Value::string(*id));
+                row.set("testMedium", Value::string(*medium));
+                row.create(&facade).unwrap();
+            }
+        }
+        (facade, ctx)
+    }
+
     #[test]
-    fn post_service_seca_sets_a_context_field() {
+    fn action_outputs_reach_out_parameters_without_script_assignment() {
+        let _gate = crate::service::define::lock_tests();
+        crate::service::define::reset();
+        let path = write_fixture(
+            "outputs",
+            r#"<services>
+                <service verb="probe" noun="Row">
+                    <in-parameters><parameter name="testId"/></in-parameters>
+                    <out-parameters>
+                        <parameter name="foundCount" type="Integer"/><parameter name="oneMedium"/>
+                        <parameter name="lastId"/><parameter name="cmp"/>
+                    </out-parameters>
+                    <actions>
+                        <entity-find entity-name="moqui.test.TestEntity" list="found">
+                            <econdition field-name="testId" from="testId"/>
+                        </entity-find>
+                        <entity-find-one entity-name="moqui.test.TestEntity" value-field="oneRow"/>
+                        <set field="foundCount" from="found.length"/>
+                        <set field="oneMedium" from="oneRow.get('testMedium')"/>
+                        <iterate list="found" entry="row"><set field="lastId" from="row.get('testId')"/></iterate>
+                        <if><condition><compare field="foundCount" operator="greater" value="0" type="Integer"/></condition>
+                            <then><set field="cmp" value="yes"/></then></if>
+                    </actions>
+                </service>
+            </services>"#,
+        );
+        let failures = crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+        let (_facade, ctx) = seeded_context(&[("A", "alpha")]);
+        let _entered = ctx.enter();
+        let mut params = BTreeMap::new();
+        params.insert("testId".into(), Value::string("A"));
+        let out = sync("probe#Row", &params).unwrap();
+        assert_eq!(
+            out.get("foundCount").map(moqui_lib::object::to_plain_string).as_deref(),
+            Some("1"),
+            "{out:?}"
+        );
+        assert_eq!(out.get("oneMedium").and_then(Value::as_str), Some("alpha"));
+        assert_eq!(out.get("lastId").and_then(Value::as_str), Some("A"));
+        assert_eq!(out.get("cmp").and_then(Value::as_str), Some("yes"));
+        // The callee's names do not leak into the caller's frame.
+        assert!(crate::script::context_value("foundCount").is_none());
+    }
+
+    #[test]
+    fn service_call_action_passes_parameters_and_merges_out_map() {
+        let _gate = crate::service::define::lock_tests();
+        crate::service::define::reset();
+        let path = write_fixture(
+            "nested-call",
+            r#"<services>
+                <service verb="double" noun="Num">
+                    <in-parameters><parameter name="x" type="Integer"/></in-parameters>
+                    <out-parameters><parameter name="y" type="Integer"/></out-parameters>
+                    <actions><set field="y" from="x + x"/></actions>
+                </service>
+                <service verb="outer" noun="Num">
+                    <in-parameters><parameter name="n" type="Integer"/></in-parameters>
+                    <out-parameters><parameter name="answer" type="Integer"/><parameter name="after"/></out-parameters>
+                    <actions>
+                        <service-call name="double#Num" out-map="res"><field-map field-name="x" from="n"/></service-call>
+                        <set field="answer" from="res.y"/>
+                        <service-call name="nothing#Here" ignore-error="true"/>
+                        <set field="after" value="ran"/>
+                    </actions>
+                </service>
+                <service verb="stops" noun="Num">
+                    <out-parameters><parameter name="after"/></out-parameters>
+                    <actions>
+                        <service-call name="nothing#Here"/>
+                        <set field="after" value="ran"/>
+                    </actions>
+                </service>
+            </services>"#,
+        );
+        let failures = crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+        let (_facade, ctx) = seeded_context(&[]);
+        let _entered = ctx.enter();
+        let mut params = BTreeMap::new();
+        params.insert("n".into(), Value::I32(21));
+        let out = sync("outer#Num", &params).unwrap();
+        assert_eq!(
+            out.get("answer").map(moqui_lib::object::to_plain_string).as_deref(),
+            Some("42"),
+            "{out:?}"
+        );
+        assert_eq!(out.get("after").and_then(Value::as_str), Some("ran"));
+        assert!(ctx.message().errors().is_empty(), "{:?}", ctx.message().errors());
+        let out = sync("stops#Num", &BTreeMap::new()).unwrap();
+        assert!(!out.contains_key("after"), "an unignored error stops the actions");
+        assert!(ctx.message().errors().iter().any(|text| text.contains("nothing#Here")));
+    }
+
+    #[test]
+    fn a_runaway_script_ends_at_the_transaction_deadline() {
+        let _gate = crate::service::define::lock_tests();
+        crate::service::define::reset();
+        let path = write_fixture(
+            "runaway",
+            r#"<services>
+                <service verb="spin" noun="Forever" transaction-timeout="1">
+                    <actions><script>while (true) {}</script></actions>
+                </service>
+            </services>"#,
+        );
+        let failures = crate::service::define::lint(std::slice::from_ref(&path)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+        let (_facade, ctx) = seeded_context(&[]);
+        let _entered = ctx.enter();
+        let started = std::time::Instant::now();
+        let err = sync("spin#Forever", &BTreeMap::new()).expect_err("interrupted");
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "{err}");
+    }
+
+    #[test]
+    fn post_service_seca_runs_its_action() {
         let _gate = crate::service::define::lock_tests();
         crate::service::define::reset();
         let path = write_fixture(
@@ -674,7 +887,7 @@ mod tests {
         super::super::seca::load_seca_rules(
             r#"<secas>
                 <seca service="mark#Row" when="post-service">
-                    <actions><set field="secaMark" value="seen"/></actions>
+                    <actions><script>ec.message.addMessage("seen")</script></actions>
                 </seca>
             </secas>"#,
         )
@@ -684,10 +897,8 @@ mod tests {
         ctx.factory().set_entity(facade);
         let _entered = ctx.enter();
         sync("mark#Row", &BTreeMap::new()).unwrap();
-        assert_eq!(
-            crate::script::context_value("secaMark").and_then(|value| value.as_str().map(str::to_string)),
-            Some("seen".to_string())
-        );
+        // The rule runs in its own context frame, so its effect is seen through the message facade.
+        assert!(ctx.message().messages().iter().any(|text| text == "seen"));
     }
 
     #[test]

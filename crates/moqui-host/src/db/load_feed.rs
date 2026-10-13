@@ -269,7 +269,8 @@ mod tests {
         assert!(form_rule.on_create && form_rule.on_update && form_rule.on_delete);
         let mut form = facade.make_value("moqui.screen.form.DbForm").unwrap();
         form.set("formId", Value::string("FORM1"));
-        form.create(&facade).expect("eca action must not run");
+        form.create(&facade)
+            .unwrap_or_else(|err| panic!("create failed: {err:?}"));
         assert!(match_rules(&facade, "moqui.screen.form.DbForm", "create")
             .iter()
             .any(|id| id == "DbFormCache"));

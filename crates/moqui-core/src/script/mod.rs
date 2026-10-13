@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Script facade. Expressions and XML actions are no-ops until phase 6.
+//! Script facade: server expressions and XML actions on QuickJS.
 
 mod actions;
 mod parse;
@@ -20,8 +20,8 @@ mod runtime;
 
 pub use actions::run_actions;
 pub use parse::parse_js;
-pub use runtime::eval_condition;
 pub use runtime::{clear_context_stack, context_value, eval_map, expand, push_context_frame, set_context_name};
+pub use runtime::{eval_condition, ContextFrame, DeadlineGuard};
 
 #[cfg(test)]
 mod tests {

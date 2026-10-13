@@ -20,6 +20,7 @@ mod component;
 mod conf;
 mod error;
 mod factory;
+mod locate;
 mod message;
 mod resource;
 
@@ -29,6 +30,7 @@ pub use component::ComponentInfo;
 pub use conf::{load_merged_conf, merge_conf};
 pub use error::Error;
 pub use factory::{ContextGuard, ExecutionContext, ExecutionContextFactory};
+pub use locate::{framework_dir, locate};
 pub use message::MessageFacade;
 pub use resource::{ResourceFacade, ResourceRef};
 

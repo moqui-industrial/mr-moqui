@@ -92,8 +92,9 @@ where
 }
 
 fn dispatch_load(flags: &LoadFlags) -> Result<LoadReport, moqui_lib::error::Error> {
-    let runtime = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime");
-    let framework = runtime.join("../framework");
+    // Like Moqui's `moqui.runtime`: an install runs from its own directory unless told otherwise.
+    let runtime = std::env::var_os("MOQUI_RUNTIME").map_or_else(|| std::path::PathBuf::from("runtime"), Into::into);
+    let framework = std::env::var_os("MOQUI_FRAMEWORK").map_or_else(|| runtime.join("../framework"), Into::into);
     let cluster = runtime.join("db/embedded");
     load_data(&runtime, &framework, &cluster, flags)
 }
@@ -102,10 +103,16 @@ fn dispatch_lint(path: Option<&str>) -> Result<(), moqui_lib::error::Error> {
     let owned = path.map(std::path::PathBuf::from);
     let paths: Vec<std::path::PathBuf> = owned.into_iter().collect();
     let failures = moqui_core::service::lint(&paths).map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
-    for failure in failures {
+    for failure in &failures {
         println!("{failure}");
     }
-    Ok(())
+    if failures.is_empty() {
+        return Ok(());
+    }
+    Err(moqui_lib::error::Error::new(format!(
+        "{} service expression(s) failed lint",
+        failures.len()
+    )))
 }
 
 /// `name=value` arguments for [`load_data`], matching `Moqui.loadData`.
@@ -117,7 +124,7 @@ pub struct LoadFlags {
     pub data_types: Option<Vec<String>>,
     pub components: Vec<String>,
     pub location: Option<String>,
-    /// Parsed `timeout` seconds. No public transaction-timeout setter exists, so the load does not apply it.
+    /// `timeout` seconds. Each loaded record runs under this transaction timeout.
     pub timeout_seconds: Option<u64>,
     pub raw: bool,
     pub disable_entity_eca: bool,
@@ -136,8 +143,9 @@ pub struct LoadReport {
     pub user_group_permission: i64,
     /// `moqui.test.TestFts` existed after `check_tables` and before any data file.
     pub test_fts_before_load: bool,
-    /// `timeout` seconds that were parsed. There is no public setter, so they were not applied.
-    pub timeout_seconds_unapplied: Option<u64>,
+    /// How many times `UserSecurityChecks` ran during the load. The security ECAs fire on each
+    /// `UserGroupMember` and `UserGroupPermission` write, so seed data makes this positive.
+    pub security_checks: u64,
 }
 
 /// Parse `name=value` load arguments. This does not open a database.
@@ -223,6 +231,7 @@ fn load_options(flags: &LoadFlags) -> moqui_core::entity::load_feed::LoadOptions
         use_try_insert: flags.raw,
         dummy_fks: false,
         disable_fk_create: flags.raw || flags.disable_fk_create,
+        timeout: flags.timeout_seconds.map(std::time::Duration::from_secs),
     }
 }
 
@@ -236,7 +245,7 @@ fn load_options(flags: &LoadFlags) -> moqui_core::entity::load_feed::LoadOptions
 /// # Errors
 ///
 /// Returns an error when the build has no embedded Postgres, boot fails, a table cannot be created,
-/// or a data file fails. `timeout` is accepted and reported on [`LoadReport::timeout_seconds_unapplied`].
+/// or a data file fails.
 pub fn load_data(
     runtime_dir: impl AsRef<std::path::Path>,
     framework_dir: impl AsRef<std::path::Path>,
@@ -346,9 +355,7 @@ fn load_in_context(
 ) -> Result<LoadReport, moqui_lib::error::Error> {
     use moqui_core::entity::load_feed::{conf_data_locations, load_entity_data};
 
-    if let Some(seconds) = flags.timeout_seconds {
-        eprintln!("timeout={seconds}s was parsed; no public transaction timeout setter exists");
-    }
+    let checks_before = moqui_core::service::security_checks_run();
     apply_facade_flags(facade, flags);
     register_services(framework_dir, &flags.service_files)?;
     let entities = framework_entity_names(framework_dir)?;
@@ -380,7 +387,7 @@ fn load_in_context(
             eprintln!("load {location}");
             records = records.saturating_add(load_entity_data(facade, &location, &options)?.records);
         }
-        for location in conf_data_locations()? {
+        for location in conf_data_locations(facade)? {
             eprintln!("load {location}");
             records = records.saturating_add(load_entity_data(facade, &location, &options)?.records);
         }
@@ -393,7 +400,7 @@ fn load_in_context(
         enumeration,
         user_group_permission,
         test_fts_before_load,
-        timeout_seconds_unapplied: flags.timeout_seconds,
+        security_checks: moqui_core::service::security_checks_run().saturating_sub(checks_before),
     })
 }
 
@@ -418,13 +425,27 @@ fn register_services(
     framework_dir: &std::path::Path,
     extra: &[std::path::PathBuf],
 ) -> Result<(), moqui_lib::error::Error> {
-    moqui_core::service::load_definitions().map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
-    if extra.is_empty() {
-        return Ok(());
+    let lint_error = |err: moqui_core::context::Error| moqui_lib::error::Error::new(err.to_string());
+    // Explicitly supplied service files must register. A failure there stops the load.
+    if !extra.is_empty() {
+        let own = moqui_core::service::lint(extra).map_err(lint_error)?;
+        if !own.is_empty() {
+            return Err(moqui_lib::error::Error::new(format!(
+                "service definitions failed to register:\n{}",
+                own.join("\n")
+            )));
+        }
     }
     let mut paths = configured_service_paths(framework_dir)?;
     paths.extend(extra.iter().cloned());
-    let _failures = moqui_core::service::lint(&paths).map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
+    // Framework services that still hold Groovy are left out and named by `moqui lint`.
+    let skipped = moqui_core::service::lint(&paths).map_err(lint_error)?;
+    if !skipped.is_empty() {
+        eprintln!(
+            "{} service expression(s) are not JavaScript yet; run `moqui lint`",
+            skipped.len()
+        );
+    }
     Ok(())
 }
 
@@ -880,7 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn lint_groovy_leftover_is_not_a_process_error() {
+    fn lint_groovy_leftover_is_a_process_error() {
         let dir = std::env::temp_dir().join(format!("moqui-lint-{}", std::process::id()));
         let _guard = DirGuard(dir.clone());
         std::fs::create_dir_all(&dir).unwrap();
@@ -894,12 +915,28 @@ mod tests {
             </services>"#,
         )
         .unwrap();
+        let err = dispatch(["lint", &path.display().to_string()]).expect_err("lint fails the process");
+        assert!(err.to_string().contains("failed lint"), "{err}");
+    }
+
+    #[test]
+    fn lint_of_a_clean_file_succeeds() {
+        let dir = std::env::temp_dir().join(format!("moqui-lint-clean-{}", std::process::id()));
+        let _guard = DirGuard(dir.clone());
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("clean.xml");
+        std::fs::write(
+            &path,
+            r#"<services><service verb="clean" noun="Fine"><actions><set field="x" from="a || b"/></actions></service></services>"#,
+        )
+        .unwrap();
         dispatch(["lint", &path.display().to_string()]).unwrap();
     }
 
     #[test]
     fn lint_with_no_path_loads_configured_files() {
-        dispatch(["lint"]).unwrap();
+        // Framework services are not all JavaScript yet, so this may fail. It must not panic.
+        let _ = dispatch(["lint"]);
     }
 
     struct DirGuard(std::path::PathBuf);

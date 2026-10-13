@@ -8,10 +8,11 @@
     n = n + 1;
     }
     if (rows != null) {
+        var _row_list = rows;
         var row_index = 0;
-        var row_len = (typeof rows.length === "number") ? rows.length : 0;
+        var row_len = (typeof _row_list.length === "number") ? _row_list.length : 0;
         while (row_index < row_len) {
-            var row = (typeof rows.get === "function") ? rows.get(row_index) : rows[row_index];
+            row = (typeof _row_list.get === "function") ? _row_list.get(row_index) : _row_list[row_index];
             row_has_next = (row_index + 1) < row_len;
     n = row;
             row_index = row_index + 1;

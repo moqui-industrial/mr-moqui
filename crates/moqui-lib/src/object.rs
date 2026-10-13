@@ -53,6 +53,28 @@ pub enum Value {
     Bytes(Vec<u8>),
     List(Vec<Value>),
     Map(IndexMap<String, Value>),
+    /// A shared host object a script holds by reference, such as an entity value.
+    Object(HostObject),
+}
+
+/// Opaque shared handle. Equal only to the same allocation.
+#[derive(Clone)]
+pub struct HostObject(pub std::sync::Arc<dyn std::any::Any + Send + Sync>);
+
+impl HostObject {
+    pub fn new<T: std::any::Any + Send + Sync>(value: T) -> Self {
+        Self(std::sync::Arc::new(value))
+    }
+
+    pub fn downcast<T: std::any::Any + Send + Sync>(&self) -> Option<std::sync::Arc<T>> {
+        std::sync::Arc::clone(&self.0).downcast::<T>().ok()
+    }
+}
+
+impl std::fmt::Debug for HostObject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HostObject")
+    }
 }
 
 impl PartialEq for Value {
@@ -212,6 +234,7 @@ pub fn to_plain_string(value: &Value) -> String {
             }
             out
         }
+        Value::Object(_) => "<object>".to_string(),
         Value::Map(entries) => {
             let mut out = String::from("{");
             for (index, (key, item)) in entries.iter().enumerate() {
@@ -590,6 +613,7 @@ pub fn java_equals(left: &Value, right: &Value) -> bool {
                 && a.iter()
                     .all(|(key, value)| b.get(key).is_some_and(|other| value == other))
         }
+        (Value::Object(a), Value::Object(b)) => std::sync::Arc::ptr_eq(&a.0, &b.0),
         _ => false,
     }
 }

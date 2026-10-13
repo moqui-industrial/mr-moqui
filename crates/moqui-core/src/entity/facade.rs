@@ -81,6 +81,7 @@ pub(crate) struct GroupRuntime {
 
 pub(crate) struct Inner {
     pub(crate) model: SharedModel,
+    pub(crate) framework_dir: std::path::PathBuf,
     pub(crate) default_group: String,
     pub(crate) groups: HashMap<String, GroupRuntime>,
     pub(crate) banks: Mutex<HashMap<String, SequenceBank>>,
@@ -129,6 +130,7 @@ impl EntityFacade {
         Ok(Self {
             inner: Arc::new(Inner {
                 model: SharedModel::new(model),
+                framework_dir: framework_dir.to_path_buf(),
                 default_group: default_group.to_string(),
                 groups: runtimes,
                 banks: Mutex::new(HashMap::new()),
@@ -141,6 +143,11 @@ impl EntityFacade {
                 slots: Mutex::new(HashMap::new()),
             }),
         })
+    }
+
+    /// The framework directory this facade was opened from.
+    pub fn framework_dir(&self) -> &Path {
+        &self.inner.framework_dir
     }
 
     /// Hook-module state. `init` runs once per `T`. Do not call `with_slot` from `body`.

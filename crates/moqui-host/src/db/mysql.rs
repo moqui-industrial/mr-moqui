@@ -702,7 +702,7 @@ mod driver {
             Value::Timestamp(timestamp) => {
                 MysqlValue::Bytes(timestamp.strftime("%Y-%m-%d %H:%M:%S%.6f").to_string().into_bytes())
             }
-            Value::List(_) | Value::Map(_) => {
+            Value::List(_) | Value::Map(_) | Value::Object(_) => {
                 return Err(Error::new("mysql parameters must be scalar values"));
             }
         })

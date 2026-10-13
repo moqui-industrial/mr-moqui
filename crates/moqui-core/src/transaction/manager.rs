@@ -775,6 +775,11 @@ impl TransactionManager {
         }
     }
 
+    /// Time left before the active frame's deadline. `None` with no frame.
+    pub fn time_remaining(&self) -> Option<Duration> {
+        self.with_frames(|frames| active(frames).map(|frame| frame.deadline.saturating_duration_since(Instant::now())))
+    }
+
     fn arm_statement_timeout(&self, pooled: Option<&mut PooledConn>) -> Result<(), Error> {
         if !self.inner.use_statement_timeout.load(Ordering::Relaxed) {
             return Ok(());

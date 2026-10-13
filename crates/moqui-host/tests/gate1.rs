@@ -46,9 +46,12 @@ fn framework_seed_and_fixture_load() {
         "user group permission {}",
         report.user_group_permission
     );
+    // The security ECAs fire on each UserGroupMember and UserGroupPermission write, so
+    // UserSecurityChecks ran, and authorization was disabled so the sealed grants were allowed.
+    assert!(report.security_checks > 0, "security checks {}", report.security_checks);
     println!(
-        "seed enumeration {} user group permission {}",
-        report.enumeration, report.user_group_permission
+        "seed enumeration {} user group permission {} security checks {}",
+        report.enumeration, report.user_group_permission, report.security_checks
     );
 
     let service = runtime.join("copy-row.xml");
@@ -62,8 +65,12 @@ fn framework_seed_and_fixture_load() {
                     <entity-find entity-name="moqui.test.TestEntity" list="found">
                         <econdition field-name="testId" from="seedId"/>
                     </entity-find>
+                    <entity-find-one entity-name="moqui.test.TestEntity" value-field="seed">
+                        <field-map field-name="testId" from="seedId"/>
+                    </entity-find-one>
                     <entity-make-value entity-name="moqui.test.TestEntity" value-field="made"/>
-                    <script>made.set("testId", "B"); made.set("testMedium", "made");</script>
+                    <set field="foundCount" from="found.length"/>
+                    <script>made.set("testId", "B"); made.set("testMedium", "made:" + foundCount + ":" + seed.get("testMedium"));</script>
                     <entity-create value-field="made"/>
                 </actions>
             </service>
@@ -97,10 +104,125 @@ fn framework_seed_and_fixture_load() {
     let (enumeration, permissions, medium_a, medium_b, medium_e) = read_back(&framework, &cluster_dir);
     assert!(enumeration > 0, "enumeration {enumeration}");
     assert!(permissions > 0, "user group permission {permissions}");
+    let extra = read_extra(&framework, &cluster_dir);
+    // ElasticRemote is a sealed permission that only seed-initial grants.
+    assert_eq!(extra.sealed_grant, 1, "sealed ElasticRemote grant");
+    // BTC is in CurrencyData, which is seed-initial only.
+    assert_eq!(extra.initial_uom, 1, "seed-initial Uom BTC");
+    assert!(extra.fts_indexes >= 1, "TestFts has a GIN index over to_tsvector");
     assert_eq!(medium_e.as_deref(), Some("entity"));
     assert_eq!(medium_a.as_deref(), Some("auto"));
-    assert_eq!(medium_b.as_deref(), Some("made"));
+    // One row found by the list, and the seed row read back through entity-find-one.
+    assert_eq!(medium_b.as_deref(), Some("made:1:entity"));
     println!("read back enumeration {enumeration} user group permission {permissions} fixture rows E1 A1 B");
+}
+
+#[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+struct Extra {
+    sealed_grant: i64,
+    initial_uom: i64,
+    fts_indexes: usize,
+}
+
+#[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+fn read_extra(framework: &Path, cluster_dir: &Path) -> Extra {
+    use moqui_host::db::embedded::EmbeddedCluster;
+
+    let (cluster, driver) = EmbeddedCluster::start(cluster_dir, 20).unwrap();
+    let driver: Arc<dyn DbDriver> = Arc::new(driver);
+    let facade = open_entity_facade(framework, Arc::clone(&driver), pool()).unwrap();
+    let sealed_grant = facade
+        .find("moqui.security.UserGroupPermission")
+        .unwrap()
+        .eq("userPermissionId", Value::string("ElasticRemote"))
+        .count()
+        .unwrap();
+    let initial_uom = facade
+        .find("moqui.basic.Uom")
+        .unwrap()
+        .eq("uomId", Value::string("BTC"))
+        .count()
+        .unwrap();
+    drop(facade);
+    let mut conn = driver.connect().unwrap();
+    let indexes = conn
+        .query(
+            "SELECT indexdef FROM pg_indexes \
+             WHERE lower(tablename) IN ('test_fts', 'testfts') AND lower(indexdef) LIKE '%using gin%to_tsvector%'",
+            &[],
+        )
+        .unwrap();
+    drop(conn);
+    drop(driver);
+    drop(cluster);
+    Extra {
+        sealed_grant,
+        initial_uom,
+        fts_indexes: indexes.len(),
+    }
+}
+
+/// `types` picks the data files, and `timeout` is accepted by a load that finishes inside it.
+#[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+#[test]
+fn load_flag_types_selects_data_files() {
+    let (runtime, cluster_dir, _guards) = fresh_dirs("flag-types");
+    let framework = framework_dir();
+    let flags = LoadFlags {
+        data_types: Some(vec!["seed".to_string()]),
+        timeout_seconds: Some(600),
+        ..LoadFlags::default()
+    };
+    let report = load_data(&runtime, &framework, &cluster_dir, &flags).unwrap();
+    assert!(report.enumeration > 0, "enumerations are seed");
+    // CurrencyData is seed-initial, so its BTC unit of measure was not loaded.
+    assert_eq!(read_extra(&framework, &cluster_dir).initial_uom, 0);
+}
+
+/// `raw` turns off entity ECAs, so no security check runs, and the rows still land.
+#[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+#[test]
+fn load_flag_raw_skips_entity_ecas() {
+    let (runtime, cluster_dir, _guards) = fresh_dirs("flag-raw");
+    let framework = framework_dir();
+    let flags = LoadFlags {
+        raw: true,
+        ..LoadFlags::default()
+    };
+    let report = load_data(&runtime, &framework, &cluster_dir, &flags).unwrap();
+    assert_eq!(report.security_checks, 0, "entity ECAs were disabled");
+    assert!(report.enumeration > 0);
+    assert!(report.user_group_permission > 0);
+}
+
+/// The disable flags are independent: audit and feed off, ECAs still run.
+#[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+#[test]
+fn load_disable_flags_leave_entity_ecas_on() {
+    let (runtime, cluster_dir, _guards) = fresh_dirs("flag-disable");
+    let flags = LoadFlags {
+        disable_audit_log: true,
+        disable_data_feed: true,
+        disable_fk_create: true,
+        ..LoadFlags::default()
+    };
+    let report = load_data(&runtime, framework_dir(), &cluster_dir, &flags).unwrap();
+    assert!(report.security_checks > 0, "entity ECAs stayed on");
+    assert!(report.enumeration > 0);
+}
+
+#[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+fn fresh_dirs(prefix: &str) -> (PathBuf, PathBuf, (DirGuard, DirGuard)) {
+    let runtime = temp_dir(&format!("moqui-rt-{prefix}"));
+    let cluster = temp_dir(&format!("moqui-pg-{prefix}"));
+    std::fs::create_dir_all(&runtime).unwrap();
+    std::fs::create_dir_all(&cluster).unwrap();
+    let guards = (DirGuard(runtime.clone()), DirGuard(cluster.clone()));
+    (runtime, cluster, guards)
+}
+
+fn framework_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework")
 }
 
 #[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
@@ -135,18 +257,16 @@ fn medium(facade: &moqui_core::entity::EntityFacade, test_id: &str) -> Option<St
         .and_then(|row| row.get("testMedium").and_then(Value::as_str).map(str::to_string))
 }
 
+/// Ignored by default so a run without MySQL reports it as ignored instead of green.
+/// Run with `--ignored`; set `MOQUI_TEST_MYSQL=user:pass@host:port/database` for a non-default server.
 #[cfg(feature = "mysql")]
 #[test]
+#[ignore = "needs a MySQL server: cargo test --test gate1 -- --ignored"]
 fn mysql_metadata_insert_and_select() {
-    let Some((host, port, user, password, database)) = mysql_target() else {
-        eprintln!("MySQL was not reachable; smoke skipped");
-        return;
-    };
+    let (host, port, user, password, database) =
+        mysql_target().expect("MySQL is not reachable on 127.0.0.1:3306 and MOQUI_TEST_MYSQL is not set");
     let driver = moqui_host::db::mysql::MysqlDriver::new(host, port, user, password, database, false);
-    if driver.connect_mysql().is_err() {
-        eprintln!("MySQL was not reachable; smoke skipped");
-        return;
-    }
+    driver.connect_mysql().expect("MySQL rejected the connection");
     let driver: Arc<dyn DbDriver> = Arc::new(driver);
     let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
     let facade =

@@ -550,7 +550,7 @@ mod driver {
             Value::Date(date) => date.to_string(),
             Value::Time(time) => time.to_string(),
             Value::Bytes(bytes) => format_bytea(bytes),
-            Value::List(_) | Value::Map(_) => {
+            Value::List(_) | Value::Map(_) | Value::Object(_) => {
                 return Err("postgres parameters must be scalar values".into());
             }
         };

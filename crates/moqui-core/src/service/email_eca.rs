@@ -63,7 +63,7 @@ pub fn load_email_rules(xml: &str) -> Result<(), Error> {
 pub fn run_email_rules(fields: &BTreeMap<String, Value>) -> Result<(), Error> {
     let rules = RULES.with(|slot| slot.borrow().clone());
     for rule in rules {
-        super::callback::publish_names(fields)?;
+        let _frame = super::callback::publish_names(fields)?;
         if !super::callback::condition_allows(&rule.condition)? {
             continue;
         }
@@ -86,7 +86,6 @@ mod tests {
     use crate::context::ExecutionContextFactory;
     use crate::driver::{DbCancel, DbConnection, DbDriver, DbRow};
     use crate::entity::{EntityFacade, EntityGroup};
-    use crate::script::context_value;
     use crate::transaction::{PoolConfig, TransactionManager};
 
     #[test]
@@ -99,7 +98,7 @@ mod tests {
                 <emeca rule-name="SendNotice">
                     <condition><expression>true</expression></condition>
                     <actions>
-                        <script>emailEcaRan = "Y";</script>
+                        <script>ec.message.addMessage("emailEcaRan");</script>
                         <service-call name="org.moqui.impl.EmailServices.send#EmailTemplate">
                             <field-map field-name="emailTemplateId" value="T1"/>
                             <field-map field-name="toAddresses" value="a@example.com"/>
@@ -113,13 +112,11 @@ mod tests {
         let context = ExecutionContextFactory::test_context();
         context.factory().set_entity(facade);
         let _entered = context.enter();
-        let err = run_email_rules(&BTreeMap::new()).expect_err("mail send");
-        let text = err.to_string();
-        assert!(text.contains("mail is not configured"), "{text}");
-        assert_eq!(
-            context_value("emailEcaRan").and_then(|value| value.as_str().map(str::to_string)),
-            Some("Y".to_string())
-        );
+        // A failed service-call adds an error and the rule's generated code returns, as in Java.
+        run_email_rules(&BTreeMap::new()).unwrap();
+        let errors = context.message().errors().join("\n");
+        assert!(errors.contains("mail is not configured"), "{errors}");
+        assert!(context.message().messages().iter().any(|text| text == "emailEcaRan"));
     }
 
     fn open() -> EntityFacade {

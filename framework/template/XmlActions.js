@@ -260,8 +260,9 @@
                 lines += "        var call_service_result = " + chain + ";\n";
                 var add = !has(node, "out-map-add-to-existing") || attr(node, "out-map-add-to-existing") === "true";
                 if (add) {
-                    lines += "        if (" + outMap + " != null) { if (call_service_result) Object.assign(" + outMap +
-                        ", call_service_result); } else { " + outMap + " = call_service_result; }\n";
+                    // A context name read is a copy, so the merged map is assigned back.
+                    lines += "        if (call_service_result != null) " + outMap + " = Object.assign({}, " + outMap +
+                        " || {}, call_service_result);\n";
                 } else lines += "        " + outMap + " = call_service_result;\n";
             } else lines += "        " + chain + ";\n";
             if (attr(node, "ignore-error") === "true") {
@@ -342,11 +343,11 @@
             }
             var selected = childrenNamed(node, "select-field");
             for (var s = 0; s < selected.length; s++) chain += ".selectField(" + jsString(attr(selected[s], "field-name")) + ")";
-            return "    var " + attr(node, "value-field") + " = " + chain + ".one();\n";
+            return "    " + attr(node, "value-field") + " = " + chain + ".one();\n";
         },
         "entity-find": function (node) {
             var list = attr(node, "list");
-            var lines = "    var " + list + "_xafind = " + findPrefix(node) + ";\n";
+            var lines = "    var " + list + "_xafind = " + findPrefix(node) + ";\n";  // local temp; the list itself is a context name
             var sfi = child(node, "search-form-inputs");
             if (sfi) lines += searchFormLines(list, sfi);
             var cached = attr(node, "cache") === "true";
@@ -354,17 +355,17 @@
             var limitView = child(node, "limit-view");
             var useIter = child(node, "use-iterator");
             if (limitRange && !cached) {
-                lines += "    var " + list + " = " + list + "_xafind.iterator().getPartialList(" +
-                    attr(limitRange, "start") + ", " + attr(limitRange, "size") + ", true);\n";
+                lines += "    " + list + " = " + list + "_xafind.offset(" + attr(limitRange, "start") + ").limit(" +
+                    attr(limitRange, "size") + ").list();\n";
             } else if (limitView && !cached) {
                 var index = attr(limitView, "view-index");
                 var size = attr(limitView, "view-size");
-                lines += "    var " + list + " = " + list + "_xafind.iterator().getPartialList((" + index + " - 1) * " +
-                    size + ", " + size + ", true);\n";
+                lines += "    " + list + " = " + list + "_xafind.offset((" + index + " - 1) * " + size + ").limit(" +
+                    size + ").list();\n";
             } else if (useIter && !cached) {
-                lines += "    var " + list + " = " + list + "_xafind.iterator();\n";
+                lines += "    " + list + " = " + list + "_xafind.list();\n";
             } else {
-                lines += "    var " + list + " = " + list + "_xafind.list();\n";
+                lines += "    " + list + " = " + list + "_xafind.list();\n";
                 if (cached) {
                     var dates = childrenNamed(node, "date-filter");
                     for (var i = 0; i < dates.length; i++) {
@@ -418,7 +419,7 @@
             var value = attr(node, "value-field");
             var cache = has(node, "cache") ? attr(node, "cache") : "null";
             var forUpdate = has(node, "for-update") ? attr(node, "for-update") : "null";
-            return "    var " + attr(node, "to-value-field") + " = (" + value + " == null) ? null : " + value +
+            return "    " + attr(node, "to-value-field") + " = (" + value + " == null) ? null : " + value +
                 ".findRelatedOne(" + jsString(attr(node, "relationship-name")) + ", " + cache + ", " + forUpdate + ");\n";
         },
         "entity-find-related": function (node) {
@@ -427,12 +428,12 @@
             var order = has(node, "order-by-list") ? attr(node, "order-by-list") : "null";
             var cache = has(node, "cache") ? attr(node, "cache") : "null";
             var forUpdate = has(node, "for-update") ? attr(node, "for-update") : "null";
-            return "    var " + attr(node, "list") + " = (" + value + " == null) ? null : " + value + ".findRelated(" +
+            return "    " + attr(node, "list") + " = (" + value + " == null) ? null : " + value + ".findRelated(" +
                 jsString(attr(node, "relationship-name")) + ", " + map + ", " + order + ", " + cache + ", " + forUpdate + ");\n";
         },
         "entity-make-value": function (node) {
             var field = attr(node, "value-field");
-            var lines = "    var " + field + " = ec.entity.makeValue(" + jsString(attr(node, "entity-name")) + ");\n";
+            var lines = "    " + field + " = ec.entity.makeValue(" + jsString(attr(node, "entity-name")) + ");\n";
             if (has(node, "map") && attr(node, "map") !== "") {
                 lines += "    " + field + ".setFields(" + attr(node, "map") + ", true, null, null);\n";
             }
@@ -475,15 +476,18 @@
             var entry = attr(node, "entry");
             var key = attr(node, "key");
             var body = sourcesOf(node.children);
+            // The list is read from the context once. Each bare read of a list converts it.
+            var local = "_" + entry + "_list";
             if (key) {
                 return "    if (" + list + " != null) {\n" +
+                    "        var " + local + " = " + list + ";\n" +
                     "        var " + entry + "_index = 0;\n" +
-                    "        var _" + entry + "Entries = (typeof " + list + ".entries === \"function\") ? " + list +
-                    ".entries() : Object.entries(" + list + ");\n" +
+                    "        var _" + entry + "Entries = (typeof " + local + ".entries === \"function\") ? Array.from(" + local +
+                    ".entries()) : Object.entries(" + local + ");\n" +
                     "        while (" + entry + "_index < _" + entry + "Entries.length) {\n" +
-                    "            var " + entry + "Entry = _" + entry + "Entries[" + entry + "_index];\n" +
-                    "            " + key + " = " + entry + "Entry[0];\n" +
-                    "            var " + entry + " = " + entry + "Entry[1];\n" +
+                    "            var _" + entry + "Entry = _" + entry + "Entries[" + entry + "_index];\n" +
+                    "            " + key + " = _" + entry + "Entry[0];\n" +
+                    "            " + entry + " = _" + entry + "Entry[1];\n" +
                     "            " + entry + "_has_next = (" + entry + "_index + 1) < _" + entry + "Entries.length;\n" +
                     body +
                     "            " + entry + "_index = " + entry + "_index + 1;\n" +
@@ -491,11 +495,12 @@
                     "    }\n";
             }
             return "    if (" + list + " != null) {\n" +
+                "        var " + local + " = " + list + ";\n" +
                 "        var " + entry + "_index = 0;\n" +
-                "        var " + entry + "_len = (typeof " + list + ".length === \"number\") ? " + list + ".length : 0;\n" +
+                "        var " + entry + "_len = (typeof " + local + ".length === \"number\") ? " + local + ".length : 0;\n" +
                 "        while (" + entry + "_index < " + entry + "_len) {\n" +
-                "            var " + entry + " = (typeof " + list + ".get === \"function\") ? " + list + ".get(" +
-                entry + "_index) : " + list + "[" + entry + "_index];\n" +
+                "            " + entry + " = (typeof " + local + ".get === \"function\") ? " + local + ".get(" +
+                entry + "_index) : " + local + "[" + entry + "_index];\n" +
                 "            " + entry + "_has_next = (" + entry + "_index + 1) < " + entry + "_len;\n" +
                 body +
                 "            " + entry + "_index = " + entry + "_index + 1;\n" +

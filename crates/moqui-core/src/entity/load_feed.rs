@@ -85,6 +85,8 @@ pub struct LoadOptions {
     pub use_try_insert: bool,
     pub dummy_fks: bool,
     pub disable_fk_create: bool,
+    /// Transaction timeout for each record. `None` uses the transaction manager default.
+    pub timeout: Option<std::time::Duration>,
 }
 
 /// How many entity records were written. Held services are not included.
@@ -184,8 +186,9 @@ fn with_load_slot<R>(facade: &EntityFacade, body: impl FnOnce(&mut LoadSlot) -> 
 /// `operation` is `create`, `update`, or `delete`. Do not call this from inside `with_slot`.
 pub fn match_rules(facade: &EntityFacade, entity_name: &str, operation: &str) -> Vec<String> {
     let in_tx = facade.transactions_for(entity_name).is_ok_and(|tx| tx.in_transaction());
+    let framework = facade.framework_dir().to_path_buf();
     with_load_slot(facade, |slot| {
-        ensure_rules(slot);
+        ensure_rules(slot, &framework);
         if in_tx {
             slot.touches.push(Touch {
                 thread: std::thread::current().id(),
@@ -210,8 +213,9 @@ pub fn match_rules(facade: &EntityFacade, entity_name: &str, operation: &str) ->
 
 /// Rules stored for `entity_name`. Loading does not run the actions.
 pub fn eca_rules(facade: &EntityFacade, entity_name: &str) -> Vec<EcaRule> {
+    let framework = facade.framework_dir().to_path_buf();
     with_load_slot(facade, |slot| {
-        ensure_rules(slot);
+        ensure_rules(slot, &framework);
         slot.eca_rules
             .iter()
             .filter(|rule| rule.entity_name == entity_name)
@@ -236,8 +240,8 @@ pub fn held_feed_services(facade: &EntityFacade) -> Vec<HeldFeedService> {
 }
 
 /// `load-data` locations from the framework conf. This does not load those files.
-pub fn conf_data_locations() -> Result<Vec<String>, Error> {
-    let conf = MNode::parse_file(framework_dir().join("conf/MoquiDefaultConf.xml"))?;
+pub fn conf_data_locations(facade: &EntityFacade) -> Result<Vec<String>, Error> {
+    let conf = MNode::parse_file(facade.framework_dir().join("conf/MoquiDefaultConf.xml"))?;
     let facade = conf
         .first_named("entity-facade")
         .ok_or_else(|| Error::new("conf has no entity-facade"))?;
@@ -262,7 +266,7 @@ pub fn load_entity_data(facade: &EntityFacade, location: &str, options: &LoadOpt
         return Ok(LoadResult { records: 0 });
     }
     let _guard = FlagGuard::engage(facade, options);
-    let path = resolve_location(location)?;
+    let path = resolve_location(facade, location)?;
     let records = load_path(facade, location, &path, options, 0)?;
     Ok(LoadResult { records })
 }
@@ -279,12 +283,12 @@ fn rule_matches(rule: &EcaRule, entity_name: &str, operation: &str) -> bool {
     }
 }
 
-fn ensure_rules(slot: &mut LoadSlot) {
+fn ensure_rules(slot: &mut LoadSlot, framework: &Path) {
     if slot.eca_loaded {
         return;
     }
     slot.eca_loaded = true;
-    let dir = framework_dir().join("entity");
+    let dir = framework.join("entity");
     let read = match std::fs::read_dir(&dir) {
         Ok(read) => read,
         Err(err) => {
@@ -781,7 +785,7 @@ fn scalar_text(value: &Value) -> Option<String> {
         Value::Timestamp(timestamp) => Some(timestamp.to_string()),
         Value::Date(date) => Some(date.to_string()),
         Value::Time(time) => Some(time.to_string()),
-        Value::Bytes(_) | Value::List(_) | Value::Map(_) => None,
+        Value::Bytes(_) | Value::List(_) | Value::Map(_) | Value::Object(_) => None,
     }
 }
 
@@ -943,6 +947,13 @@ fn load_xml_reader(
     let mark = input.pos;
     let start = input.take_with(xml_start_tag, "xml root")?;
     if start.name != "seed-data" && start.name != "entity-facade-xml" {
+        // Entity definition files carry seed data under `<entities>`. Any other root is a typo.
+        if start.name != "entities" {
+            return Err(Error::new(format!(
+                "{location} root element {} is not entity-facade-xml, seed-data, or entities",
+                start.name
+            )));
+        }
         return load_definition_document(facade, location, &mut input, mark, start.empty, options);
     }
     input.release_hold();
@@ -1539,7 +1550,7 @@ fn inherit_pk_fields(
 }
 
 fn store_record(facade: &EntityFacade, options: &LoadOptions, record: &Record) -> Result<u64, Error> {
-    let began = facade.begin(&record.entity, None)?;
+    let began = facade.begin(&record.entity, options.timeout)?;
     let result = write_tree(facade, options, record, &BTreeMap::new());
     match result {
         Ok(total) => {
@@ -1816,46 +1827,15 @@ fn component_name(location: &str) -> Option<&str> {
     rest.split('/').next()
 }
 
-fn resolve_location(location: &str) -> Result<PathBuf, Error> {
-    if let Some(rest) = strip_prefix(location, &["classpath://", "classpath:"]) {
-        return Ok(framework_dir().join(rest.trim_start_matches('/')));
-    }
-    if let Some(rest) = strip_prefix(location, &["component://", "component:"]) {
-        let rest = rest.trim_start_matches('/');
-        let (name, relative) = match rest.split_once('/') {
-            Some((name, relative)) => (name, relative.trim_start_matches('/')),
-            None => (rest, ""),
-        };
-        if name.is_empty() {
-            return Err(Error::new(format!("component location has no name: {location}")));
+/// `classpath://` is under the framework directory this facade was opened from. Other schemes
+/// use the entered factory's components.
+fn resolve_location(facade: &EntityFacade, location: &str) -> Result<PathBuf, Error> {
+    for prefix in ["classpath://", "classpath:"] {
+        if let Some(rest) = location.strip_prefix(prefix) {
+            return Ok(facade.framework_dir().join(rest.trim_start_matches('/')));
         }
-        let root = component_root(name).ok_or_else(|| Error::new(format!("component {name} was not found")))?;
-        return Ok(if relative.is_empty() { root } else { root.join(relative) });
     }
-    if let Some(rest) = location.strip_prefix("file:") {
-        let rest = rest.strip_prefix("//").unwrap_or(rest);
-        return Ok(PathBuf::from(rest));
-    }
-    Ok(PathBuf::from(location))
-}
-
-fn strip_prefix<'a>(location: &'a str, prefixes: &[&str]) -> Option<&'a str> {
-    prefixes.iter().find_map(|prefix| location.strip_prefix(prefix))
-}
-
-fn component_root(name: &str) -> Option<PathBuf> {
-    let repo = repo_root();
-    [repo.join("runtime/component").join(name), repo.join(name)]
-        .into_iter()
-        .find(|path| path.is_dir())
-}
-
-fn framework_dir() -> PathBuf {
-    repo_root().join("framework")
-}
-
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+    crate::context::locate(location).map_err(|err| Error::new(err.message().to_string()))
 }
 
 fn extension(path: &Path) -> String {
@@ -3935,7 +3915,7 @@ mod tests {
 
     #[test]
     fn conf_locations_name_the_seed_files() {
-        let locations = conf_data_locations().unwrap();
+        let locations = conf_data_locations(&open_empty()).unwrap();
         assert!(locations.iter().any(|location| location.contains("MoquiSetupData.xml")));
     }
 

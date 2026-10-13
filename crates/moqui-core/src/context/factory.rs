@@ -92,6 +92,7 @@ impl ExecutionContextFactory {
         set_by_boot.keep();
         let conf_text = conf_node.write_string();
         let pools = crate::service::start_pools(&conf_text)?;
+        super::locate::remember(&framework_dir, &components);
         tracing::info!(
             runtime = %runtime_dir.display(),
             framework = %framework_dir.display(),

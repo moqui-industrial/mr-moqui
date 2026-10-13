@@ -18,18 +18,17 @@
 //! that reads the thread-local context stack. `ec` is an own property of
 //! `globalThis` and hosts the calls XML actions emit.
 
-// Stack and template entry points stay `pub` for a later re-export. Until then
-// a lib build does not call them, so their helpers look unused.
-#![allow(dead_code)]
-
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use moqui_lib::context_stack::{ContextStack, Lookup};
-use moqui_lib::object::Value;
+use moqui_lib::object::{HostObject, Value};
 use rquickjs::class::Trace;
 use rquickjs::context::EvalOptions;
 use rquickjs::function::{Opt, Rest, This};
@@ -41,19 +40,54 @@ use rquickjs::{
 };
 
 use crate::context::{Error, ExecutionContext};
-use crate::entity::{EntityFacade, EntityFind, EntityList, EntityValue};
+use moqui_db::sql::Condition;
 
+use crate::entity::{EntityFacade, EntityFind, EntityList, EntityValue};
+use crate::service::call::CallOptions;
+
+const MAX_CACHED_TEMPLATES: usize = 4096;
 const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 const VALUE_OF_MESSAGE: &str =
     "decimal valueOf is not supported; use add, subtract, multiply, divide, eq, compare, or isZero";
 
 thread_local! {
+    static DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
     static STACK: RefCell<ContextStack> = RefCell::new(ContextStack::new());
-    static ENGINE: RefCell<Option<Engine>> = const { RefCell::new(None) };
+    static ENGINES: RefCell<Vec<Rc<Engine>>> = const { RefCell::new(Vec::new()) };
+    static DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Bounds script time on this thread to a transaction's remaining time.
+///
+/// The QuickJS interrupt handler reads the deadline, so a loop that never returns
+/// ends with an error instead of holding the worker. Nested guards keep the earlier deadline.
+pub struct DeadlineGuard {
+    previous: Option<Instant>,
+}
+
+impl DeadlineGuard {
+    pub fn new(remaining: Option<Duration>) -> Self {
+        let previous = DEADLINE.with(Cell::get);
+        if let Some(remaining) = remaining {
+            let next = Instant::now() + remaining;
+            let chosen = previous.map_or(next, |existing| existing.min(next));
+            DEADLINE.with(|deadline| deadline.set(Some(chosen)));
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for DeadlineGuard {
+    fn drop(&mut self) {
+        DEADLINE.with(|deadline| deadline.set(self.previous));
+    }
 }
 
 /// Persistents drop before the context, and the context drops before the runtime.
 struct Engine {
+    /// Lists and maps a running script read by bare name. The script mutates these objects, so
+    /// they are written back to the stack at the end of the run and before a host call.
+    tracked: RefCell<HashMap<String, Persistent<JsValue<'static>>>>,
     templates: RefCell<HashMap<String, Persistent<Function<'static>>>>,
     object_utilities: Persistent<Object<'static>>,
     collection_utilities: Persistent<Object<'static>>,
@@ -138,6 +172,24 @@ pub fn push_context_frame() {
     STACK.with(|stack| stack.borrow_mut().push());
 }
 
+/// A context-stack frame that pops when dropped.
+pub struct ContextFrame;
+
+impl ContextFrame {
+    pub fn push() -> Self {
+        push_context_frame();
+        Self
+    }
+}
+
+impl Drop for ContextFrame {
+    fn drop(&mut self) {
+        STACK.with(|stack| {
+            let _ = stack.borrow_mut().pop();
+        });
+    }
+}
+
 /// Put `value` in the top frame.
 pub fn set_context_name(name: &str, value: Value) -> Result<(), Error> {
     STACK.with(|stack| stack.borrow_mut().put(name, value).map(|_| ()).map_err(Error::from))
@@ -210,36 +262,110 @@ fn expand_here(ctx: &Ctx<'_>, template: &str) -> Result<String, Error> {
     expand_in(ctx, template)
 }
 
+/// A script that runs a service that runs a script needs its own runtime: a `Context::with`
+/// cannot be entered again while it is held. Each nesting level gets one, kept for reuse.
+const MAX_SCRIPT_DEPTH: usize = 16;
+
+struct DepthGuard;
+
+impl Drop for DepthGuard {
+    fn drop(&mut self) {
+        DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
 fn with_context<R>(body: impl FnOnce(&Ctx) -> Result<R, Error>) -> Result<R, Error> {
-    ensure_engine()?;
-    ENGINE.with(|slot| {
-        let engine = slot.borrow();
-        let engine = engine.as_ref().ok_or_else(|| Error::new("quickjs runtime missing"))?;
-        engine.context.with(|ctx| body(&ctx))
+    let depth = DEPTH.with(Cell::get);
+    if depth >= MAX_SCRIPT_DEPTH {
+        return Err(Error::new("scripts are nested too deeply"));
+    }
+    let existing = ENGINES.with(|engines| engines.borrow().get(depth).cloned());
+    let engine = match existing {
+        Some(engine) => engine,
+        None => {
+            let started = Rc::new(Engine::start()?);
+            ENGINES.with(|engines| engines.borrow_mut().push(Rc::clone(&started)));
+            started
+        }
+    };
+    DEPTH.with(|current| current.set(depth + 1));
+    let _guard = DepthGuard;
+    engine.context.with(|ctx| {
+        let result = body(&ctx);
+        let flushed = flush_tracked(&ctx, &engine, true);
+        match (result, flushed) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(err), _) | (Ok(_), Err(err)) => Err(err),
+        }
     })
 }
 
-fn ensure_engine() -> Result<(), Error> {
-    ENGINE.with(|slot| {
-        if slot.borrow().is_some() {
-            return Ok(());
+/// Write each tracked list and map back to the context stack. `clear` also forgets them, so the
+/// next bare read converts the stack's value again.
+fn flush_tracked(ctx: &Ctx<'_>, engine: &Engine, clear: bool) -> Result<(), Error> {
+    let entries: Vec<(String, Persistent<JsValue<'static>>)> = if clear {
+        engine.tracked.borrow_mut().drain().collect()
+    } else {
+        engine
+            .tracked
+            .borrow()
+            .iter()
+            .map(|(name, saved)| (name.clone(), saved.clone()))
+            .collect()
+    };
+    let mut first = None;
+    for (name, saved) in entries {
+        let outcome = saved
+            .restore(ctx)
+            .map_err(|err| js_caught(ctx, err))
+            .and_then(|value| js_value_to_host(ctx, &value));
+        match outcome {
+            Ok(host) => {
+                STACK.with(|stack| {
+                    let mut stack = stack.borrow_mut();
+                    if !stack.put_existing(&name, host.clone()) {
+                        let _ = stack.put(name.clone(), host);
+                    }
+                });
+            }
+            Err(err) => {
+                first.get_or_insert(err);
+            }
         }
-        let engine = Engine::start()?;
-        *slot.borrow_mut() = Some(engine);
-        Ok(())
-    })
+    }
+    match first {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
+}
+
+/// Flush the innermost script's tracked values, for a host call that reads the stack.
+fn flush_current(ctx: &Ctx<'_>, clear: bool) -> rquickjs::Result<()> {
+    match current_engine() {
+        Some(engine) => flush_tracked(ctx, &engine, clear).map_err(|err| Exception::throw_message(ctx, err.message())),
+        None => Ok(()),
+    }
+}
+
+/// The engine of the innermost running script.
+fn current_engine() -> Option<Rc<Engine>> {
+    let depth = DEPTH.with(Cell::get);
+    ENGINES.with(|engines| engines.borrow().get(depth.checked_sub(1)?).cloned())
 }
 
 impl Engine {
     fn start() -> Result<Self, Error> {
         let runtime = Runtime::new().map_err(js_error)?;
         runtime.set_memory_limit(MEMORY_LIMIT);
-        // No public path reaches TransactionManager::poll_deadline: transactions_for
-        // needs an entity name, and the facade does not list groups.
-        runtime.set_interrupt_handler(Some(Box::new(|| false)));
+        runtime.set_interrupt_handler(Some(Box::new(|| {
+            DEADLINE
+                .with(Cell::get)
+                .is_some_and(|deadline| Instant::now() >= deadline)
+        })));
         let context = Context::full(&runtime).map_err(js_error)?;
         let helpers = context.with(|ctx| install_context(&ctx))?;
         Ok(Self {
+            tracked: RefCell::new(HashMap::new()),
             templates: RefCell::new(HashMap::new()),
             object_utilities: helpers.object_utilities,
             collection_utilities: helpers.collection_utilities,
@@ -262,6 +388,7 @@ fn install_context(ctx: &Ctx<'_>) -> Result<Helpers, Error> {
     let string_utilities = Persistent::save(ctx, Object::new(ctx.clone()).map_err(js_error)?);
     // Own property before the proxy. A later set walks the prototype and the proxy refuses objects.
     install_ec(ctx)?;
+    install_helpers(ctx)?;
     install_proxy(ctx)?;
     Ok(Helpers {
         object_utilities,
@@ -286,6 +413,11 @@ fn install_proxy(ctx: &Ctx<'_>) -> Result<(), Error> {
 }
 
 fn proxy_has(target: ProxyTarget<'_>, property: ProxyProperty<'_>) -> rquickjs::Result<bool> {
+    let ctx = target.0.ctx().clone();
+    host_guard(&ctx, || proxy_has_inner(&target, &property))
+}
+
+fn proxy_has_inner(target: &ProxyTarget<'_>, property: &ProxyProperty<'_>) -> rquickjs::Result<bool> {
     if property.is_symbol() {
         return Ok(false);
     }
@@ -300,13 +432,35 @@ fn proxy_get<'js>(
     _receiver: ProxyReceiver<'js>,
 ) -> rquickjs::Result<JsValue<'js>> {
     let ctx = target.0.ctx().clone();
+    host_guard(&ctx, || proxy_get_inner(&ctx, &property))
+}
+
+fn proxy_get_inner<'js>(ctx: &Ctx<'js>, property: &ProxyProperty<'js>) -> rquickjs::Result<JsValue<'js>> {
+    let ctx = ctx.clone();
     if property.is_symbol() {
         return Undefined.into_js(&ctx);
     }
     let name = property.to_string()?;
+    if let Some(engine) = current_engine() {
+        let saved = engine.tracked.borrow().get(&name).cloned();
+        if let Some(saved) = saved {
+            return saved.restore(&ctx);
+        }
+    }
     match stack_get(&name) {
+        Lookup::Value(value @ (Value::List(_) | Value::Map(_))) => {
+            let js = host_to_js(&ctx, value)?;
+            if let Some(engine) = current_engine() {
+                engine
+                    .tracked
+                    .borrow_mut()
+                    .insert(name, Persistent::save(&ctx, js.clone()));
+            }
+            Ok(js)
+        }
         Lookup::Value(value) => host_to_js(&ctx, value),
-        Lookup::Context | Lookup::Missing => match helper_object(&ctx, &name)? {
+        Lookup::Context => context_snapshot(&ctx),
+        Lookup::Missing => match helper_object(&ctx, &name)? {
             Some(helper) => helper.into_js(&ctx),
             None => Null.into_js(&ctx),
         },
@@ -319,12 +473,20 @@ fn proxy_set<'js>(
     value: JsValue<'js>,
     _receiver: ProxyReceiver<'js>,
 ) -> rquickjs::Result<bool> {
+    let ctx = target.0.ctx().clone();
+    host_guard(&ctx, || proxy_set_inner(&ctx, &property, &value))
+}
+
+fn proxy_set_inner<'js>(ctx: &Ctx<'js>, property: &ProxyProperty<'js>, value: &JsValue<'js>) -> rquickjs::Result<bool> {
+    let ctx = ctx.clone();
     if property.is_symbol() {
         return Ok(true);
     }
-    let ctx = target.0.ctx().clone();
     let name = property.to_string()?;
-    let host = js_to_host(&ctx, &value)?;
+    if let Some(engine) = current_engine() {
+        engine.tracked.borrow_mut().remove(&name);
+    }
+    let host = js_to_host(&ctx, value)?;
     STACK.with(|stack| {
         stack
             .borrow_mut()
@@ -341,6 +503,14 @@ fn global_has_own(ctx: &Ctx<'_>, name: &str) -> rquickjs::Result<bool> {
     let prototype: Object = object.get("prototype")?;
     let has_own: Function = prototype.get("hasOwnProperty")?;
     has_own.call((This(globals), name))
+}
+
+/// `context` reads as a plain object of every visible name. A write to it does not reach the stack.
+fn context_snapshot<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+    flush_current(ctx, false)?;
+    let mut visible = STACK.with(|stack| stack.borrow().combined_map());
+    visible.retain(|_, value| !matches!(value, Value::Bytes(_)));
+    collection_to_js(ctx, Value::Map(visible))
 }
 
 fn stack_get(name: &str) -> Lookup {
@@ -360,14 +530,10 @@ fn helper_object<'js>(ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<Option<Obj
     let Some(kind) = helper_kind(name) else {
         return Ok(None);
     };
-    let persistent = ENGINE.with(|slot| {
-        let engine = slot.borrow();
-        let engine = engine.as_ref()?;
-        Some(match kind {
-            HelperKind::Object => engine.object_utilities.clone(),
-            HelperKind::Collection => engine.collection_utilities.clone(),
-            HelperKind::String => engine.string_utilities.clone(),
-        })
+    let persistent = current_engine().map(|engine| match kind {
+        HelperKind::Object => engine.object_utilities.clone(),
+        HelperKind::Collection => engine.collection_utilities.clone(),
+        HelperKind::String => engine.string_utilities.clone(),
     });
     let Some(persistent) = persistent else {
         return Ok(None);
@@ -387,42 +553,55 @@ fn host_to_js<'js>(ctx: &Ctx<'js>, value: Value) -> rquickjs::Result<JsValue<'js
             let class = Class::instance(ctx.clone(), HostDecimal { inner: value })?;
             class.into_js(ctx)
         }
-        Value::Timestamp(_) | Value::Date(_) | Value::Time(_) | Value::Bytes(_) | Value::List(_) | Value::Map(_) => {
-            Err(Exception::throw_message(ctx, "cannot convert this value"))
-        }
+        Value::Timestamp(_) | Value::Date(_) | Value::Time(_) => temporal_text(&value).into_js(ctx),
+        Value::List(_) | Value::Map(_) => collection_to_js(ctx, value),
+        Value::Bytes(_) => Err(Exception::throw_message(
+            ctx,
+            "binary values cannot be read by a script",
+        )),
+        Value::Object(object) => object_to_js(ctx, &object),
     }
 }
+
+/// Dates reach a script as text, as Java `toString` would give. Assigning one back stores the text,
+/// and the entity layer converts it to the field type on write.
+fn temporal_text(value: &Value) -> String {
+    let text = moqui_lib::object::basic_convert(value, "String").value;
+    match text.as_str() {
+        Some(text) => text.to_string(),
+        None => moqui_lib::object::to_plain_string(value),
+    }
+}
+
+fn object_to_js<'js>(ctx: &Ctx<'js>, object: &HostObject) -> rquickjs::Result<JsValue<'js>> {
+    if let Some(inner) = object.downcast::<EntityCell>() {
+        return Class::instance(ctx.clone(), HostEntity { inner }).and_then(|class| class.into_js(ctx));
+    }
+    if let Some(inner) = object.downcast::<EntityList>() {
+        return Class::instance(ctx.clone(), HostList { inner }).and_then(|class| class.into_js(ctx));
+    }
+    Err(Exception::throw_message(ctx, "cannot convert this object"))
+}
+
+/// Largest integer a JavaScript number holds exactly.
+const SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 
 fn i64_to_js<'js>(ctx: &Ctx<'js>, number: i64) -> rquickjs::Result<JsValue<'js>> {
     if let Ok(small) = i32::try_from(number) {
         return small.into_js(ctx);
+    }
+    if number.abs() > SAFE_INTEGER {
+        return Err(Exception::throw_message(
+            ctx,
+            "integer is too large for a script number; it would lose precision",
+        ));
     }
     #[allow(clippy::cast_precision_loss)]
     (number as f64).into_js(ctx)
 }
 
 fn js_to_host(ctx: &Ctx<'_>, value: &JsValue<'_>) -> rquickjs::Result<Value> {
-    if value.is_null() || value.is_undefined() {
-        return Ok(Value::Null);
-    }
-    if let Some(flag) = value.as_bool() {
-        return Ok(Value::Bool(flag));
-    }
-    if let Some(number) = value.as_int() {
-        return Ok(Value::I32(number));
-    }
-    if let Some(number) = value.as_float() {
-        return Ok(Value::F64(number));
-    }
-    if let Some(text) = value.as_string() {
-        return Ok(Value::String(text.to_string()?));
-    }
-    if let Some(object) = value.as_object() {
-        if let Some(class) = object.as_class::<HostDecimal>() {
-            return Ok(class.borrow().inner.clone());
-        }
-    }
-    Err(Exception::throw_message(ctx, "cannot store this value"))
+    js_value_to_host(ctx, value).map_err(|err| Exception::throw_message(ctx, err.message()))
 }
 
 fn js_truthy(value: &JsValue<'_>) -> bool {
@@ -463,12 +642,7 @@ fn expand_in(ctx: &Ctx<'_>, template: &str) -> Result<String, Error> {
 }
 
 fn restore_template<'js>(ctx: &Ctx<'js>, template: &str) -> Result<Option<Function<'js>>, Error> {
-    let persistent = ENGINE.with(|slot| {
-        let engine = slot.borrow();
-        let engine = engine.as_ref()?;
-        let guard = engine.templates.borrow();
-        guard.get(template).cloned()
-    });
+    let persistent = current_engine().and_then(|engine| engine.templates.borrow().get(template).cloned());
     let Some(persistent) = persistent else {
         return Ok(None);
     };
@@ -477,13 +651,13 @@ fn restore_template<'js>(ctx: &Ctx<'js>, template: &str) -> Result<Option<Functi
 
 fn save_template<'js>(ctx: &Ctx<'js>, template: &str, function: &Function<'js>) {
     let saved = Persistent::save(ctx, function.clone());
-    ENGINE.with(|slot| {
-        let engine = slot.borrow();
-        let Some(engine) = engine.as_ref() else {
-            return;
-        };
-        engine.templates.borrow_mut().insert(template.to_string(), saved);
-    });
+    if let Some(engine) = current_engine() {
+        let mut templates = engine.templates.borrow_mut();
+        if templates.len() >= MAX_CACHED_TEMPLATES {
+            templates.clear();
+        }
+        templates.insert(template.to_string(), saved);
+    }
 }
 
 fn call_template(ctx: &Ctx<'_>, function: Function<'_>) -> Result<String, Error> {
@@ -605,6 +779,163 @@ fn install_ec(ctx: &Ctx<'_>) -> Result<(), Error> {
     Ok(())
 }
 
+const HELPERS_JS: &str = r#"
+(function () {
+    function field(item, name) {
+        if (item == null) return null;
+        if (typeof item.get === "function") return item.get(name);
+        return item[name];
+    }
+    globalThis.orderMapList = function (list, fields) {
+        if (list == null) return;
+        var specs = fields.map(function (text) {
+            var name = String(text), desc = false;
+            if (name.charAt(0) === "-") { desc = true; name = name.substring(1); }
+            else if (name.charAt(0) === "+") name = name.substring(1);
+            return { name: name, desc: desc };
+        });
+        list.sort(function (a, b) {
+            for (var i = 0; i < specs.length; i++) {
+                var c = __compareOrder(field(a, specs[i].name), field(b, specs[i].name));
+                if (c !== 0) return specs[i].desc ? -c : c;
+            }
+            return 0;
+        });
+    };
+    globalThis.filterMapList = function (list, values) {
+        if (list == null) return;
+        for (var i = list.length - 1; i >= 0; i--) {
+            for (var key in values) {
+                if (!compare(field(list[i], key), "equals", null, values[key], null, "Object")) {
+                    list.splice(i, 1);
+                    break;
+                }
+            }
+        }
+    };
+    globalThis.filterMapListByDate = function (list, fromName, thruName, valid, ignoreIfEmpty) {
+        if (list == null) return;
+        if (ignoreIfEmpty && (valid == null || valid === "")) return;
+        for (var i = list.length - 1; i >= 0; i--) {
+            if (!__inDateRange(field(list[i], fromName), field(list[i], thruName), valid)) list.splice(i, 1);
+        }
+    };
+})();
+"#;
+
+fn install_helpers(ctx: &Ctx<'_>) -> Result<(), Error> {
+    let globals = ctx.globals();
+    let compare = Function::new(ctx.clone(), js_compare).map_err(js_error)?;
+    globals.set("compare", compare).map_err(js_error)?;
+    let convert = Function::new(ctx.clone(), js_basic_convert).map_err(js_error)?;
+    globals.set("basicConvert", convert).map_err(js_error)?;
+    let order = Function::new(ctx.clone(), js_compare_order).map_err(js_error)?;
+    globals.set("__compareOrder", order).map_err(js_error)?;
+    let in_range = Function::new(ctx.clone(), js_in_date_range).map_err(js_error)?;
+    globals.set("__inDateRange", in_range).map_err(js_error)?;
+    caught(ctx, "helpers", ctx.eval::<(), _>(HELPERS_JS))
+}
+
+/// Java type name of a value, so a string on the other side of a compare converts to it.
+fn java_type_of(value: &Value) -> &'static str {
+    match value {
+        Value::String(_) => "String",
+        Value::Bool(_) => "Boolean",
+        Value::I32(_) => "Integer",
+        Value::I64(_) => "Long",
+        Value::F64(_) => "Double",
+        Value::Decimal(_) => "BigDecimal",
+        Value::Timestamp(_) => "java.sql.Timestamp",
+        Value::Date(_) => "java.sql.Date",
+        Value::Time(_) => "java.sql.Time",
+        _ => "Object",
+    }
+}
+
+fn js_compare<'js>(
+    ctx: Ctx<'js>,
+    field: JsValue<'js>,
+    operator: String,
+    value: JsValue<'js>,
+    to_field: JsValue<'js>,
+    _format: JsValue<'js>,
+    kind: Opt<String>,
+) -> rquickjs::Result<bool> {
+    host_guard(&ctx, || {
+        let field = js_to_host(&ctx, &field)?;
+        let value = js_to_host(&ctx, &value)?;
+        let target = if value.is_null() {
+            js_to_host(&ctx, &to_field)?
+        } else {
+            value
+        };
+        let kind = kind.0.filter(|name| !name.is_empty() && name != "Object");
+        let kind = kind.unwrap_or_else(|| java_type_of(&field).to_string());
+        moqui_lib::object::compare(&field, &operator, &target, &kind).map_err(|err| throw_lib(&ctx, &err))
+    })
+}
+
+fn js_basic_convert<'js>(ctx: Ctx<'js>, value: JsValue<'js>, kind: String) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let host = js_to_host(&ctx, &value)?;
+        host_to_js(&ctx, moqui_lib::object::basic_convert(&host, &kind).value)
+    })
+}
+
+fn js_compare_order<'js>(ctx: Ctx<'js>, left: JsValue<'js>, right: JsValue<'js>) -> rquickjs::Result<i32> {
+    host_guard(&ctx, || {
+        let left = js_to_host(&ctx, &left)?;
+        let right = js_to_host(&ctx, &right)?;
+        let ordering = match moqui_lib::object::compare_obj(&left, &right) {
+            Ok(ordering) => ordering,
+            // A null on the right cannot be ordered, so it sorts after a value.
+            Err(_) if right.is_null() => Ordering::Less,
+            Err(_) => Ordering::Equal,
+        };
+        Ok(match ordering {
+            Ordering::Less => -1,
+            Ordering::Equal => 0,
+            Ordering::Greater => 1,
+        })
+    })
+}
+
+fn timestamp_of(value: &Value) -> Value {
+    moqui_lib::object::basic_convert(value, "java.sql.Timestamp").value
+}
+
+fn now_timestamp() -> Value {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+        .unwrap_or(0);
+    timestamp_of(&Value::I64(millis))
+}
+
+fn js_in_date_range<'js>(
+    ctx: Ctx<'js>,
+    from: JsValue<'js>,
+    thru: JsValue<'js>,
+    valid: JsValue<'js>,
+) -> rquickjs::Result<bool> {
+    host_guard(&ctx, || {
+        let from = timestamp_of(&js_to_host(&ctx, &from)?);
+        let thru = timestamp_of(&js_to_host(&ctx, &thru)?);
+        let valid = js_to_host(&ctx, &valid)?;
+        let valid = if moqui_lib::object::is_empty(&valid) {
+            now_timestamp()
+        } else {
+            timestamp_of(&valid)
+        };
+        let started = from.is_null()
+            || moqui_lib::object::compare_obj(&from, &valid).is_ok_and(|ordering| ordering != Ordering::Greater);
+        let open = thru.is_null()
+            || moqui_lib::object::compare_obj(&thru, &valid).is_ok_and(|ordering| ordering == Ordering::Greater);
+        Ok(started && open)
+    })
+}
+
 fn caught<'js, T>(ctx: &Ctx<'js>, step: &str, result: rquickjs::Result<T>) -> Result<T, Error> {
     result.catch(ctx).map_err(|err| Error::new(format!("{step}: {err}")))
 }
@@ -616,11 +947,11 @@ fn entity_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     let make = caught(ctx, "entity.makeValue", Function::new(ctx.clone(), entity_make_value))?;
     entity.set("makeValue", make).map_err(js_error)?;
     let factory = Object::new(ctx.clone()).map_err(js_error)?;
-    let make_condition = Function::new(ctx.clone(), condition_unimplemented).map_err(js_error)?;
+    let make_condition = Function::new(ctx.clone(), make_condition).map_err(js_error)?;
     factory.set("makeCondition", make_condition).map_err(js_error)?;
-    let make_date = Function::new(ctx.clone(), condition_unimplemented).map_err(js_error)?;
+    let make_date = Function::new(ctx.clone(), make_condition_date).map_err(js_error)?;
     factory.set("makeConditionDate", make_date).map_err(js_error)?;
-    let make_direct = Function::new(ctx.clone(), condition_unimplemented).map_err(js_error)?;
+    let make_direct = Function::new(ctx.clone(), make_action_condition).map_err(js_error)?;
     factory
         .set("makeActionConditionDirect", make_direct)
         .map_err(js_error)?;
@@ -667,18 +998,221 @@ fn entity_make_value<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<Class
     host_guard(&ctx, || {
         let facade = facade_of(&ctx)?;
         let value = facade.make_value(&name).map_err(|err| throw_lib(&ctx, &err))?;
-        Class::instance(
-            ctx.clone(),
-            HostEntity {
-                inner: RefCell::new(value),
-            },
-        )
+        Class::instance(ctx.clone(), HostEntity::new(value))
     })
 }
 
-fn condition_unimplemented(ctx: Ctx<'_>, _args: Rest<JsValue<'_>>) -> rquickjs::Result<()> {
+/// A condition node a script passes to `EntityFind.condition`.
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class]
+struct HostCondition {
+    #[qjs(skip_trace)]
+    inner: Condition,
+}
+
+fn condition_js<'js>(ctx: &Ctx<'js>, condition: Option<Condition>) -> rquickjs::Result<JsValue<'js>> {
+    match condition {
+        Some(inner) => Class::instance(ctx.clone(), HostCondition { inner }).and_then(|class| class.into_js(ctx)),
+        None => Null.into_js(ctx),
+    }
+}
+
+fn condition_of(value: &JsValue<'_>) -> Option<Condition> {
+    let object = value.as_object()?;
+    let class = object.as_class::<HostCondition>()?;
+    let inner = class.borrow().inner.clone();
+    Some(inner)
+}
+
+fn list_values(value: Value) -> Vec<Value> {
+    match value {
+        Value::List(items) => items,
+        Value::String(text) => text.split(',').map(|part| Value::string(part.trim())).collect(),
+        Value::Null => Vec::new(),
+        other => vec![other],
+    }
+}
+
+/// One comparison from an operator name. Equality with null is `IS NULL`, as the Java factory does.
+fn comparison(field: &str, operator: &str, value: Value) -> Result<Condition, moqui_lib::error::Error> {
+    let condition = match operator {
+        "equals" | "=" if value.is_null() => Condition::is_null(field),
+        "equals" | "=" => Condition::equals(field, value),
+        "not-equals" | "!=" | "<>" if value.is_null() => Condition::is_not_null(field),
+        "not-equals" | "!=" | "<>" => Condition::not_equals(field, value),
+        "less" | "<" => Condition::less(field, value),
+        "greater" | ">" => Condition::greater(field, value),
+        "less-equals" | "<=" => Condition::less_equal(field, value),
+        "greater-equals" | ">=" => Condition::greater_equal(field, value),
+        "like" => Condition::like(field, value),
+        "not-like" => Condition::not_like(field, value),
+        "in" => Condition::is_in(field, list_values(value)),
+        "not-in" => Condition::not_in(field, list_values(value)),
+        "between" => {
+            let mut bounds = list_values(value).into_iter();
+            match (bounds.next(), bounds.next()) {
+                (Some(low), Some(high)) => Condition::between(field, low, high),
+                _ => return Err(moqui_lib::error::Error::new("between needs a low and a high value")),
+            }
+        }
+        "is-null" => Condition::is_null(field),
+        "is-not-null" => Condition::is_not_null(field),
+        other => {
+            return Err(moqui_lib::error::Error::new(format!(
+                "unknown condition operator {other}"
+            )))
+        }
+    };
+    Ok(condition)
+}
+
+fn join(conditions: Vec<Condition>, operator: &str) -> Option<Condition> {
+    let mut conditions = conditions;
+    match conditions.len() {
+        0 => None,
+        1 => conditions.pop(),
+        _ if operator.eq_ignore_ascii_case("or") => Some(Condition::or(conditions)),
+        _ => Some(Condition::and(conditions)),
+    }
+}
+
+/// `makeCondition(field, operator, value)`, `makeCondition(listOfConditions, "and"|"or")`,
+/// or `makeCondition(map)` as an AND of equalities.
+fn make_condition<'js>(
+    ctx: Ctx<'js>,
+    first: JsValue<'js>,
+    second: Opt<JsValue<'js>>,
+    third: Opt<JsValue<'js>>,
+) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
-        Err(Exception::throw_message(&ctx, "conditionFactory is not implemented"))
+        let as_text = |value: &Option<JsValue<'js>>| -> rquickjs::Result<String> {
+            match value {
+                Some(value) if value.is_string() => js_string(&ctx, value),
+                _ => Ok(String::new()),
+            }
+        };
+        if let Some(items) = first.as_array() {
+            let mut parts = Vec::new();
+            for item in items.iter::<JsValue>() {
+                if let Some(condition) = condition_of(&item?) {
+                    parts.push(condition);
+                }
+            }
+            let operator = as_text(&second.0)?;
+            return condition_js(&ctx, join(parts, &operator));
+        }
+        if first.is_string() {
+            let field = js_string(&ctx, &first)?;
+            let operator = as_text(&second.0)?;
+            let value = match &third.0 {
+                Some(value) => js_to_host(&ctx, value)?,
+                None => Value::Null,
+            };
+            let condition = comparison(&field, &operator, value).map_err(|err| throw_lib(&ctx, &err))?;
+            return condition_js(&ctx, Some(condition));
+        }
+        if let Some(object) = first.as_object() {
+            let mut parts = Vec::new();
+            for key in object.keys::<String>() {
+                let key = key?;
+                let property: JsValue = object.get(key.as_str())?;
+                let value = js_to_host(&ctx, &property)?;
+                parts.push(comparison(&key, "equals", value).map_err(|err| throw_lib(&ctx, &err))?);
+            }
+            return condition_js(&ctx, join(parts, "and"));
+        }
+        Err(Exception::throw_message(
+            &ctx,
+            "makeCondition needs a field, a list, or a map",
+        ))
+    })
+}
+
+fn truthy_text(value: &str) -> bool {
+    value.eq_ignore_ascii_case("true")
+}
+
+/// From and thru date columns that cover `validDate`, or now: `(from is null or from <= d) and (thru is null or thru > d)`.
+fn make_condition_date<'js>(
+    ctx: Ctx<'js>,
+    from_name: String,
+    thru_name: String,
+    valid: JsValue<'js>,
+    ignore_if_empty: Opt<bool>,
+    ignore: Opt<String>,
+) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        if ignore.0.as_deref().is_some_and(truthy_text) {
+            return Null.into_js(&ctx);
+        }
+        let valid = js_to_host(&ctx, &valid)?;
+        let valid = if moqui_lib::object::is_empty(&valid) {
+            if ignore_if_empty.0.unwrap_or(false) {
+                return Null.into_js(&ctx);
+            }
+            now_timestamp()
+        } else {
+            timestamp_of(&valid)
+        };
+        let started = Condition::or(vec![
+            Condition::is_null(from_name.as_str()),
+            Condition::less_equal(from_name.as_str(), valid.clone()),
+        ]);
+        let open = Condition::or(vec![
+            Condition::is_null(thru_name.as_str()),
+            Condition::greater(thru_name.as_str(), valid),
+        ]);
+        condition_js(&ctx, Some(Condition::and(vec![started, open])))
+    })
+}
+
+/// The condition one `econdition` element describes. A skipped condition is null.
+///
+/// Arguments: field, operator, from, value, to-field, ignore-case, ignore-if-empty, or-null, ignore.
+fn make_action_condition<'js>(ctx: Ctx<'js>, args: Rest<JsValue<'js>>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let arg = |index: usize| {
+            args.0
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| Undefined.into_value(ctx.clone()))
+        };
+        let flag = |index: usize| arg(index).as_bool().unwrap_or(false);
+        let field = js_string(&ctx, &arg(0))?;
+        let operator = js_string(&ctx, &arg(1))?;
+        if arg(8)
+            .as_string()
+            .is_some_and(|text| text.to_string().is_ok_and(|text| truthy_text(&text)))
+        {
+            return Null.into_js(&ctx);
+        }
+        let to_field = arg(4);
+        if !to_field.is_null() && !to_field.is_undefined() {
+            return Err(Exception::throw_message(
+                &ctx,
+                "to-field-name conditions are not supported",
+            ));
+        }
+        if flag(5) {
+            return Err(Exception::throw_message(
+                &ctx,
+                "ignore-case conditions are not supported",
+            ));
+        }
+        let from = js_to_host(&ctx, &arg(2))?;
+        let operand = if from.is_null() {
+            js_to_host(&ctx, &arg(3))?
+        } else {
+            from
+        };
+        if flag(6) && moqui_lib::object::is_empty(&operand) {
+            return Null.into_js(&ctx);
+        }
+        let mut condition = comparison(&field, &operator, operand).map_err(|err| throw_lib(&ctx, &err))?;
+        if flag(7) {
+            condition = Condition::or(vec![condition, Condition::is_null(field.as_str())]);
+        }
+        condition_js(&ctx, Some(condition))
     })
 }
 
@@ -712,11 +1246,11 @@ fn logger_warn(ctx: Ctx<'_>, message: String) -> rquickjs::Result<()> {
 }
 
 fn service_sync<'js>(ctx: Ctx<'js>) -> rquickjs::Result<Class<'js, HostService>> {
-    host_guard(&ctx, || fresh_service(&ctx))
+    host_guard(&ctx, || fresh_service(&ctx, false))
 }
 
 fn service_async<'js>(ctx: Ctx<'js>) -> rquickjs::Result<Class<'js, HostService>> {
-    host_guard(&ctx, || fresh_service(&ctx))
+    host_guard(&ctx, || fresh_service(&ctx, true))
 }
 
 fn facade_of(ctx: &Ctx<'_>) -> rquickjs::Result<EntityFacade> {
@@ -746,11 +1280,16 @@ fn take_find(ctx: &Ctx<'_>, slot: &RefCell<Option<EntityFind>>) -> rquickjs::Res
         .ok_or_else(|| Exception::throw_message(ctx, "entity find was already used"))
 }
 
-fn fresh_service<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Class<'js, HostService>> {
+fn fresh_service<'js>(ctx: &Ctx<'js>, is_async: bool) -> rquickjs::Result<Class<'js, HostService>> {
     Class::instance(
         ctx.clone(),
         HostService {
-            call: ServiceCall { name: String::new() },
+            call: ServiceCall {
+                name: String::new(),
+                parameters: std::collections::BTreeMap::new(),
+                options: CallOptions::default(),
+                is_async,
+            },
         },
     )
 }
@@ -760,13 +1299,7 @@ fn not_implemented(ctx: &Ctx<'_>, what: &str) -> rquickjs::Error {
 }
 
 fn value_to_js<'js>(ctx: &Ctx<'js>, value: &Value) -> rquickjs::Result<JsValue<'js>> {
-    match value {
-        Value::Timestamp(_) | Value::Date(_) | Value::Time(_) | Value::Bytes(_) => {
-            moqui_lib::object::to_plain_string(value).into_js(ctx)
-        }
-        Value::List(_) | Value::Map(_) => Err(Exception::throw_message(ctx, "cannot convert this value")),
-        other => host_to_js(ctx, other.clone()),
-    }
+    host_to_js(ctx, value.clone())
 }
 
 fn js_string(ctx: &Ctx<'_>, value: &JsValue<'_>) -> rquickjs::Result<String> {
@@ -842,11 +1375,19 @@ impl HostFind {
     ) -> rquickjs::Result<Class<'js, HostFind>> {
         host_guard(&ctx, || {
             let mut find = take_find(&ctx, &self.inner)?;
+            if second.0.is_none() {
+                if first.is_null() || first.is_undefined() {
+                    return wrap_find(&ctx, find);
+                }
+                if let Some(condition) = condition_of(&first) {
+                    return wrap_find(&ctx, find.condition(condition));
+                }
+            }
             if let Some(value) = second.0 {
                 let field = js_string(&ctx, &first)?;
                 let host = js_to_host(&ctx, &value)?;
-                find = find.eq(&field, host);
-                return wrap_find(&ctx, find);
+                let condition = comparison(&field, "equals", host).map_err(|err| throw_lib(&ctx, &err))?;
+                return wrap_find(&ctx, find.condition(condition));
             }
             let Some(object) = first.as_object() else {
                 return Err(Exception::throw_message(
@@ -854,11 +1395,22 @@ impl HostFind {
                     "entity condition needs a field and a value",
                 ));
             };
+            // A map such as `context` carries names that are not fields. Only fields apply.
+            let facade = facade_of(&ctx)?;
+            let known: std::collections::BTreeSet<String> = facade
+                .with_entity(find.entity_name(), |entity, _, _| {
+                    Ok(entity.fields.iter().map(|field| field.name.clone()).collect())
+                })
+                .map_err(|err| throw_lib(&ctx, &err))?;
             for key in object.keys::<String>() {
                 let key = key?;
+                if !known.contains(&key) {
+                    continue;
+                }
                 let property: JsValue = object.get(key.as_str())?;
                 let host = js_to_host(&ctx, &property)?;
-                find = find.eq(&key, host);
+                let condition = comparison(&key, "equals", host).map_err(|err| throw_lib(&ctx, &err))?;
+                find = find.condition(condition);
             }
             wrap_find(&ctx, find)
         })
@@ -891,17 +1443,29 @@ impl HostFind {
         })
     }
 
-    /// EntityFind has no cache, lock, distinct, clone, or column list. The chain keeps this find.
+    /// Reads go to the entity cache or the database as `EntityFind` decides, so the cache,
+    /// clone, and column-list hints change nothing. A lock or distinct request would change
+    /// the result, so those fail rather than run without it.
     fn use_cache<'js>(&self, ctx: Ctx<'js>, _flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostFind>> {
         host_guard(&ctx, || wrap_find(&ctx, take_find(&ctx, &self.inner)?))
     }
 
-    fn for_update<'js>(&self, ctx: Ctx<'js>, _flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostFind>> {
-        host_guard(&ctx, || wrap_find(&ctx, take_find(&ctx, &self.inner)?))
+    fn for_update<'js>(&self, ctx: Ctx<'js>, flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostFind>> {
+        host_guard(&ctx, || {
+            if flag.as_bool() == Some(true) {
+                return Err(not_implemented(&ctx, "forUpdate"));
+            }
+            wrap_find(&ctx, take_find(&ctx, &self.inner)?)
+        })
     }
 
-    fn distinct<'js>(&self, ctx: Ctx<'js>, _flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostFind>> {
-        host_guard(&ctx, || wrap_find(&ctx, take_find(&ctx, &self.inner)?))
+    fn distinct<'js>(&self, ctx: Ctx<'js>, flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostFind>> {
+        host_guard(&ctx, || {
+            if flag.as_bool() == Some(true) {
+                return Err(not_implemented(&ctx, "distinct"));
+            }
+            wrap_find(&ctx, take_find(&ctx, &self.inner)?)
+        })
     }
 
     fn use_clone<'js>(&self, ctx: Ctx<'js>, _flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostFind>> {
@@ -917,7 +1481,7 @@ impl HostFind {
             let list = take_find(&ctx, &self.inner)?
                 .list()
                 .map_err(|err| throw_lib(&ctx, &err))?;
-            Class::instance(ctx.clone(), HostList { inner: list })
+            Class::instance(ctx.clone(), HostList { inner: Arc::new(list) })
         })
     }
 
@@ -928,12 +1492,7 @@ impl HostFind {
                 .map_err(|err| throw_lib(&ctx, &err))?;
             match found {
                 Some(value) => {
-                    let class = Class::instance(
-                        ctx.clone(),
-                        HostEntity {
-                            inner: RefCell::new(value),
-                        },
-                    )?;
+                    let class = Class::instance(ctx.clone(), HostEntity::new(value))?;
                     class.into_js(&ctx)
                 }
                 None => Null.into_js(&ctx),
@@ -963,8 +1522,9 @@ impl HostFind {
         })
     }
 
-    fn iterator(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
-        host_guard(&ctx, || Err(not_implemented(&ctx, "iterator")))
+    /// A script reads the whole result. A streaming cursor is the host's `EntityFind::iterator`.
+    fn iterator<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<Class<'js, HostList>> {
+        self.list(ctx)
     }
 
     fn having_condition(&self, ctx: Ctx<'_>, _args: Rest<JsValue<'_>>) -> rquickjs::Result<()> {
@@ -985,7 +1545,7 @@ impl HostFind {
 #[rquickjs::class]
 struct HostList {
     #[qjs(skip_trace)]
-    inner: EntityList,
+    inner: Arc<EntityList>,
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -1006,12 +1566,7 @@ impl HostList {
                 usize::try_from(index).map_err(|_| Exception::throw_message(&ctx, "list index is too large"))?;
             match self.inner.get(index) {
                 Some(value) => {
-                    let class = Class::instance(
-                        ctx.clone(),
-                        HostEntity {
-                            inner: RefCell::new(value.clone()),
-                        },
-                    )?;
+                    let class = Class::instance(ctx.clone(), HostEntity::new(value.clone()))?;
                     class.into_js(&ctx)
                 }
                 None => Null.into_js(&ctx),
@@ -1019,8 +1574,65 @@ impl HostList {
         })
     }
 
-    fn filter_by_date(&self, ctx: Ctx<'_>, _args: Rest<JsValue<'_>>) -> rquickjs::Result<()> {
-        host_guard(&ctx, || Err(not_implemented(&ctx, "filterByDate")))
+    fn get_partial_list<'js>(
+        &self,
+        ctx: Ctx<'js>,
+        offset: i32,
+        size: i32,
+        _count: Opt<bool>,
+    ) -> rquickjs::Result<Class<'js, HostList>> {
+        host_guard(&ctx, || {
+            let start = usize::try_from(offset.max(0)).unwrap_or(0);
+            let take = usize::try_from(size.max(0)).unwrap_or(0);
+            let values = self.inner.values().iter().skip(start).take(take).cloned().collect();
+            Class::instance(
+                ctx.clone(),
+                HostList {
+                    inner: Arc::new(EntityList::new(values)),
+                },
+            )
+        })
+    }
+
+    fn filter_by_date<'js>(
+        &self,
+        ctx: Ctx<'js>,
+        from_name: String,
+        thru_name: String,
+        valid: JsValue<'js>,
+        ignore_if_empty: Opt<bool>,
+    ) -> rquickjs::Result<Class<'js, HostList>> {
+        host_guard(&ctx, || {
+            let valid = js_to_host(&ctx, &valid)?;
+            let empty = moqui_lib::object::is_empty(&valid);
+            let values = if empty && ignore_if_empty.0.unwrap_or(false) {
+                self.inner.values().to_vec()
+            } else {
+                let valid = if empty { now_timestamp() } else { timestamp_of(&valid) };
+                self.inner
+                    .values()
+                    .iter()
+                    .filter(|row| {
+                        let from = timestamp_of(row.get(&from_name).unwrap_or(&Value::Null));
+                        let thru = timestamp_of(row.get(&thru_name).unwrap_or(&Value::Null));
+                        let started = from.is_null()
+                            || moqui_lib::object::compare_obj(&from, &valid)
+                                .is_ok_and(|ordering| ordering != Ordering::Greater);
+                        let open = thru.is_null()
+                            || moqui_lib::object::compare_obj(&thru, &valid)
+                                .is_ok_and(|ordering| ordering == Ordering::Greater);
+                        started && open
+                    })
+                    .cloned()
+                    .collect()
+            };
+            Class::instance(
+                ctx.clone(),
+                HostList {
+                    inner: Arc::new(EntityList::new(values)),
+                },
+            )
+        })
     }
 }
 
@@ -1029,13 +1641,28 @@ impl HostList {
 #[rquickjs::class]
 struct HostEntity {
     #[qjs(skip_trace)]
-    inner: RefCell<EntityValue>,
+    inner: Arc<EntityCell>,
+}
+
+/// An entity value a script and the context stack share by reference.
+type EntityCell = Mutex<EntityValue>;
+
+impl HostEntity {
+    fn new(value: EntityValue) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(value)),
+        }
+    }
+
+    fn val(&self) -> MutexGuard<'_, EntityValue> {
+        self.inner.lock().unwrap_or_else(|err| err.into_inner())
+    }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
 impl HostEntity {
     fn get<'js>(&self, ctx: Ctx<'js>, field: String) -> rquickjs::Result<JsValue<'js>> {
-        host_guard(&ctx, || match self.inner.borrow().get(&field) {
+        host_guard(&ctx, || match self.val().get(&field) {
             Some(value) => value_to_js(&ctx, value),
             None => Null.into_js(&ctx),
         })
@@ -1044,7 +1671,7 @@ impl HostEntity {
     fn set(&self, ctx: Ctx<'_>, field: String, value: JsValue<'_>) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
             let host = js_to_host(&ctx, &value)?;
-            self.inner.borrow_mut().set(field, host);
+            self.val().set(field, host);
             Ok(())
         })
     }
@@ -1065,7 +1692,7 @@ impl HostEntity {
                 return Err(Exception::throw_message(&ctx, "setFields needs an object"));
             };
             let facade = facade_of(&ctx)?;
-            let entity_name = self.inner.borrow().entity_name().to_string();
+            let entity_name = self.val().entity_name().to_string();
             let specs = facade
                 .with_entity(&entity_name, |entity, _, _| {
                     Ok(entity
@@ -1094,7 +1721,7 @@ impl HostEntity {
                 if !set_empty && empty {
                     continue;
                 }
-                self.inner.borrow_mut().set(name, host);
+                self.val().set(name, host);
             }
             Ok(())
         })
@@ -1103,29 +1730,28 @@ impl HostEntity {
     fn create(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
             let facade = facade_of(&ctx)?;
-            self.inner.borrow().create(&facade).map_err(|err| throw_lib(&ctx, &err))
+            self.val().create(&facade).map_err(|err| throw_lib(&ctx, &err))
         })
     }
 
     fn update(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
             let facade = facade_of(&ctx)?;
-            self.inner.borrow().update(&facade).map_err(|err| throw_lib(&ctx, &err))
+            self.val().update(&facade).map_err(|err| throw_lib(&ctx, &err))
         })
     }
 
     fn delete(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
             let facade = facade_of(&ctx)?;
-            self.inner.borrow().delete(&facade).map_err(|err| throw_lib(&ctx, &err))
+            self.val().delete(&facade).map_err(|err| throw_lib(&ctx, &err))
         })
     }
 
     fn create_or_update(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
             let facade = facade_of(&ctx)?;
-            self.inner
-                .borrow()
+            self.val()
                 .create_or_update(&facade)
                 .map_err(|err| throw_lib(&ctx, &err))
         })
@@ -1134,8 +1760,7 @@ impl HostEntity {
     fn set_sequenced_id_primary(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
             let facade = facade_of(&ctx)?;
-            self.inner
-                .borrow_mut()
+            self.val()
                 .set_sequenced_id_primary(&facade)
                 .map_err(|err| throw_lib(&ctx, &err))
         })
@@ -1144,23 +1769,96 @@ impl HostEntity {
     fn set_sequenced_id_secondary(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
             let facade = facade_of(&ctx)?;
-            self.inner
-                .borrow_mut()
+            self.val()
                 .set_sequenced_id_secondary(&facade)
                 .map_err(|err| throw_lib(&ctx, &err))
         })
     }
 
-    fn find_related(&self, ctx: Ctx<'_>, _args: Rest<JsValue<'_>>) -> rquickjs::Result<()> {
-        host_guard(&ctx, || Err(not_implemented(&ctx, "findRelated")))
+    fn find_related<'js>(
+        &self,
+        ctx: Ctx<'js>,
+        name: String,
+        map: Opt<JsValue<'js>>,
+        order: Opt<JsValue<'js>>,
+        _cache: Opt<JsValue<'js>>,
+        for_update: Opt<JsValue<'js>>,
+    ) -> rquickjs::Result<Class<'js, HostList>> {
+        host_guard(&ctx, || {
+            if for_update.0.as_ref().and_then(JsValue::as_bool) == Some(true) {
+                return Err(not_implemented(&ctx, "forUpdate"));
+            }
+            let mut find = self.related_find(&ctx, &name)?;
+            if let Some(Value::Map(entries)) = map.0.as_ref().map(|value| js_to_host(&ctx, value)).transpose()? {
+                for (key, value) in entries {
+                    find = find.eq(&key, value);
+                }
+            }
+            if let Some(Value::List(fields)) = order.0.as_ref().map(|value| js_to_host(&ctx, value)).transpose()? {
+                for field in fields {
+                    let text = moqui_lib::object::to_plain_string(&field);
+                    match text.strip_prefix('-') {
+                        Some(rest) => find = find.order_by(rest, true),
+                        None => find = find.order_by(text.trim_start_matches('+'), false),
+                    }
+                }
+            }
+            let list = find.list().map_err(|err| throw_lib(&ctx, &err))?;
+            Class::instance(ctx.clone(), HostList { inner: Arc::new(list) })
+        })
     }
 
-    fn find_related_one(&self, ctx: Ctx<'_>, _args: Rest<JsValue<'_>>) -> rquickjs::Result<()> {
-        host_guard(&ctx, || Err(not_implemented(&ctx, "findRelatedOne")))
+    fn find_related_one<'js>(
+        &self,
+        ctx: Ctx<'js>,
+        name: String,
+        _cache: Opt<JsValue<'js>>,
+        for_update: Opt<JsValue<'js>>,
+    ) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            if for_update.0.as_ref().and_then(JsValue::as_bool) == Some(true) {
+                return Err(not_implemented(&ctx, "forUpdate"));
+            }
+            let found = self
+                .related_find(&ctx, &name)?
+                .one()
+                .map_err(|err| throw_lib(&ctx, &err))?;
+            match found {
+                Some(value) => {
+                    Class::instance(ctx.clone(), HostEntity::new(value)).and_then(|class| class.into_js(&ctx))
+                }
+                None => Null.into_js(&ctx),
+            }
+        })
     }
 
-    fn delete_related(&self, ctx: Ctx<'_>, _args: Rest<JsValue<'_>>) -> rquickjs::Result<()> {
-        host_guard(&ctx, || Err(not_implemented(&ctx, "deleteRelated")))
+    fn delete_related(&self, ctx: Ctx<'_>, name: String) -> rquickjs::Result<()> {
+        host_guard(&ctx, || {
+            let facade = facade_of(&ctx)?;
+            let list = self
+                .related_find(&ctx, &name)?
+                .list()
+                .map_err(|err| throw_lib(&ctx, &err))?;
+            for value in list.values() {
+                value.delete(&facade).map_err(|err| throw_lib(&ctx, &err))?;
+            }
+            Ok(())
+        })
+    }
+}
+
+impl HostEntity {
+    fn related_find(&self, ctx: &Ctx<'_>, relationship: &str) -> rquickjs::Result<EntityFind> {
+        let facade = facade_of(ctx)?;
+        let record = self.val().clone();
+        let (entity, conditions) =
+            crate::service::call::related_conditions(&facade, record.entity_name(), relationship, &record)
+                .map_err(|err| throw_lib(ctx, &err))?;
+        let mut find = facade.find(&entity).map_err(|err| throw_lib(ctx, &err))?;
+        for (field, value) in conditions {
+            find = find.eq(&field, value);
+        }
+        Ok(find)
     }
 }
 
@@ -1223,9 +1921,12 @@ impl HostMessage {
 #[derive(Clone)]
 struct ServiceCall {
     name: String,
+    parameters: std::collections::BTreeMap<String, Value>,
+    options: CallOptions,
+    is_async: bool,
 }
 
-/// Service call builder. `call` does not touch `ServiceFacade`. There is no `distribute` method.
+/// Service call builder. Each method returns a new builder. There is no `distribute` method.
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class]
 struct HostService {
@@ -1234,13 +1935,14 @@ struct HostService {
 }
 
 impl HostService {
-    fn duplicate<'js>(&self, ctx: &Ctx<'js>) -> rquickjs::Result<Class<'js, HostService>> {
-        Class::instance(
-            ctx.clone(),
-            HostService {
-                call: self.call.clone(),
-            },
-        )
+    fn changed<'js>(
+        &self,
+        ctx: &Ctx<'js>,
+        change: impl FnOnce(&mut ServiceCall) -> rquickjs::Result<()>,
+    ) -> rquickjs::Result<Class<'js, HostService>> {
+        let mut call = self.call.clone();
+        change(&mut call)?;
+        Class::instance(ctx.clone(), HostService { call })
     }
 }
 
@@ -1248,68 +1950,121 @@ impl HostService {
 impl HostService {
     fn name<'js>(&self, ctx: Ctx<'js>, name: String) -> rquickjs::Result<Class<'js, HostService>> {
         host_guard(&ctx, || {
-            let mut call = self.call.clone();
-            call.name = name;
-            Class::instance(ctx.clone(), HostService { call })
+            self.changed(&ctx, |call| {
+                call.name = name;
+                Ok(())
+            })
         })
     }
 
     fn disable_authz<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<Class<'js, HostService>> {
-        host_guard(&ctx, || self.duplicate(&ctx))
+        host_guard(&ctx, || {
+            self.changed(&ctx, |call| {
+                call.options.disable_authz = true;
+                Ok(())
+            })
+        })
     }
 
     fn multi<'js>(&self, ctx: Ctx<'js>, _flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostService>> {
-        host_guard(&ctx, || self.duplicate(&ctx))
+        host_guard(&ctx, || {
+            self.changed(&ctx, |_| Err(not_implemented(&ctx, "multi service call")))
+        })
     }
 
-    fn ignore_transaction<'js>(&self, ctx: Ctx<'js>, _flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostService>> {
-        host_guard(&ctx, || self.duplicate(&ctx))
+    fn ignore_transaction<'js>(&self, ctx: Ctx<'js>, flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostService>> {
+        host_guard(&ctx, || {
+            self.changed(&ctx, |call| {
+                call.options.ignore_transaction = flag.as_bool();
+                Ok(())
+            })
+        })
     }
 
     fn require_new_transaction<'js>(
         &self,
         ctx: Ctx<'js>,
-        _flag: JsValue<'js>,
+        flag: JsValue<'js>,
     ) -> rquickjs::Result<Class<'js, HostService>> {
-        host_guard(&ctx, || self.duplicate(&ctx))
+        host_guard(&ctx, || {
+            self.changed(&ctx, |call| {
+                call.options.require_new_transaction = flag.as_bool();
+                Ok(())
+            })
+        })
     }
 
     fn transaction_timeout<'js>(
         &self,
         ctx: Ctx<'js>,
-        _seconds: JsValue<'js>,
+        seconds: JsValue<'js>,
     ) -> rquickjs::Result<Class<'js, HostService>> {
-        host_guard(&ctx, || self.duplicate(&ctx))
+        host_guard(&ctx, || {
+            let seconds = js_i64(&ctx, &seconds)?;
+            self.changed(&ctx, |call| {
+                call.options.timeout = u64::try_from(seconds).ok().map(std::time::Duration::from_secs);
+                Ok(())
+            })
+        })
     }
 
     fn use_transaction_cache<'js>(
         &self,
         ctx: Ctx<'js>,
-        _flag: JsValue<'js>,
+        flag: JsValue<'js>,
     ) -> rquickjs::Result<Class<'js, HostService>> {
-        host_guard(&ctx, || self.duplicate(&ctx))
+        host_guard(&ctx, || {
+            self.changed(&ctx, |call| {
+                call.options.use_transaction_cache = flag.as_bool();
+                Ok(())
+            })
+        })
     }
 
-    fn parameters<'js>(&self, ctx: Ctx<'js>, _map: JsValue<'js>) -> rquickjs::Result<Class<'js, HostService>> {
-        host_guard(&ctx, || self.duplicate(&ctx))
+    fn parameters<'js>(&self, ctx: Ctx<'js>, map: JsValue<'js>) -> rquickjs::Result<Class<'js, HostService>> {
+        host_guard(&ctx, || {
+            let given = js_to_host(&ctx, &map)?;
+            self.changed(&ctx, |call| {
+                if let Value::Map(entries) = given {
+                    call.parameters.extend(entries);
+                }
+                Ok(())
+            })
+        })
     }
 
     fn parameter<'js>(
         &self,
         ctx: Ctx<'js>,
-        _name: String,
-        _value: JsValue<'js>,
+        name: String,
+        value: JsValue<'js>,
     ) -> rquickjs::Result<Class<'js, HostService>> {
-        host_guard(&ctx, || self.duplicate(&ctx))
+        host_guard(&ctx, || {
+            let value = js_to_host(&ctx, &value)?;
+            self.changed(&ctx, |call| {
+                call.parameters.insert(name, value);
+                Ok(())
+            })
+        })
     }
 
-    fn call(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
+    /// Run the service. A failure is added to the message facade and the result is null, so the
+    /// generated code's `hasError()` check decides, as in the Java call builder.
+    fn call<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || {
-            let _ = &self.call.name;
-            Err(Exception::throw_message(
-                &ctx,
-                "service call is not executed by the XML action host",
-            ))
+            if self.call.is_async {
+                return Err(not_implemented(&ctx, "async service call"));
+            }
+            // The callee may read or change the caller's names, so they are written back first.
+            flush_current(&ctx, true)?;
+            match crate::service::call::sync_with(&self.call.name, &self.call.parameters, &self.call.options) {
+                Ok(results) => host_to_js(&ctx, Value::Map(results.into_iter().collect())),
+                Err(err) => {
+                    let message = err.message().to_string();
+                    with_ec(&ctx, |ec| ec.message().add_error(message))?;
+                    Null.into_js(&ctx)
+                }
+            }
         })
     }
 }
@@ -1327,124 +2082,14 @@ pub fn context_value(name: &str) -> Option<Value> {
 }
 
 /// Evaluate a JavaScript object expression into a map. A non-object is an error.
-///
-/// List and map context values are installed as own properties for the call.
-/// The proxy cannot convert those, and an own property is read first.
 pub fn eval_map(expression: &str) -> Result<std::collections::BTreeMap<String, Value>, Error> {
     if expression.as_bytes().contains(&0) {
         return Err(Error::new("script source contains a null byte"));
     }
     with_context(|ctx| {
-        let bound = bind_collections(ctx, expression)?;
-        let evaluated = eval_js::<JsValue>(ctx, expression);
-        unbind_collections(ctx, &bound);
-        object_map(ctx, &evaluated?)
+        let evaluated = eval_js::<JsValue>(ctx, expression)?;
+        object_map(ctx, &evaluated)
     })
-}
-
-fn bind_collections(ctx: &Ctx<'_>, source: &str) -> Result<Vec<String>, Error> {
-    let mut names = Vec::new();
-    for name in expression_names(source) {
-        if names.iter().any(|existing| existing == &name) || reserved_global(&name) {
-            continue;
-        }
-        let Some(value) = context_value(&name) else {
-            continue;
-        };
-        if !matches!(value, Value::List(_) | Value::Map(_)) {
-            continue;
-        }
-        let owned = global_has_own(ctx, &name).map_err(|err| js_caught(ctx, err))?;
-        if owned {
-            continue;
-        }
-        let js = collection_to_js(ctx, value).map_err(|err| js_caught(ctx, err))?;
-        // `set` walks the prototype proxy, which cannot store a list. Define an own property.
-        let defined = ctx.globals().prop(
-            name.as_str(),
-            rquickjs::object::Property::from(js).writable().configurable(),
-        );
-        if let Err(err) = defined {
-            unbind_collections(ctx, &names);
-            return Err(js_caught(ctx, err));
-        }
-        names.push(name);
-    }
-    Ok(names)
-}
-
-fn unbind_collections(ctx: &Ctx<'_>, names: &[String]) {
-    for name in names {
-        let _ = ctx.globals().remove(name.as_str());
-    }
-}
-
-fn reserved_global(name: &str) -> bool {
-    matches!(
-        name,
-        "Object"
-            | "Array"
-            | "undefined"
-            | "NaN"
-            | "Infinity"
-            | "globalThis"
-            | "Math"
-            | "JSON"
-            | "Number"
-            | "String"
-            | "Boolean"
-    )
-}
-
-fn expression_names(source: &str) -> Vec<String> {
-    let bytes = source.as_bytes();
-    let mut names = Vec::new();
-    let mut index = 0;
-    let mut quote: Option<u8> = None;
-    while index < bytes.len() {
-        let byte = bytes[index];
-        if let Some(open) = quote {
-            if byte == b'\\' {
-                index = index.saturating_add(2);
-                continue;
-            }
-            if byte == open {
-                quote = None;
-            }
-            index += 1;
-            continue;
-        }
-        if byte == b'\'' || byte == b'"' || byte == b'`' {
-            quote = Some(byte);
-            index += 1;
-            continue;
-        }
-        if is_name_start(byte) {
-            let start = index;
-            index += 1;
-            while index < bytes.len() && is_name_continue(bytes[index]) {
-                index += 1;
-            }
-            if !name_is_member(source, start) {
-                names.push(source[start..index].to_string());
-            }
-            continue;
-        }
-        index += 1;
-    }
-    names
-}
-
-fn is_name_start(byte: u8) -> bool {
-    byte.is_ascii_alphabetic() || byte == b'_' || byte == b'$'
-}
-
-fn is_name_continue(byte: u8) -> bool {
-    is_name_start(byte) || byte.is_ascii_digit()
-}
-
-fn name_is_member(source: &str, start: usize) -> bool {
-    source[..start].trim_end().ends_with('.')
 }
 
 fn collection_to_js<'js>(ctx: &Ctx<'js>, value: Value) -> rquickjs::Result<JsValue<'js>> {
@@ -1452,24 +2097,17 @@ fn collection_to_js<'js>(ctx: &Ctx<'js>, value: Value) -> rquickjs::Result<JsVal
         Value::List(items) => {
             let array = rquickjs::Array::new(ctx.clone())?;
             for (index, item) in items.into_iter().enumerate() {
-                array.set(index, host_any_to_js(ctx, item)?)?;
+                array.set(index, host_to_js(ctx, item)?)?;
             }
             Ok(array.into_value())
         }
         Value::Map(entries) => {
             let object = Object::new(ctx.clone())?;
             for (key, item) in entries {
-                object.set(key, host_any_to_js(ctx, item)?)?;
+                object.set(key, host_to_js(ctx, item)?)?;
             }
             Ok(object.into_value())
         }
-        other => host_to_js(ctx, other),
-    }
-}
-
-fn host_any_to_js<'js>(ctx: &Ctx<'js>, value: Value) -> rquickjs::Result<JsValue<'js>> {
-    match value {
-        Value::List(_) | Value::Map(_) => collection_to_js(ctx, value),
         other => host_to_js(ctx, other),
     }
 }
@@ -1495,6 +2133,10 @@ fn js_value_to_host(ctx: &Ctx<'_>, value: &JsValue<'_>) -> Result<Value, Error> 
         return Ok(Value::I32(number));
     }
     if let Some(number) = value.as_float() {
+        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+        if number.fract() == 0.0 && number.abs() <= SAFE_INTEGER as f64 {
+            return Ok(Value::I64(number as i64));
+        }
         return Ok(Value::F64(number));
     }
     if let Some(text) = value.as_string() {
@@ -1516,10 +2158,13 @@ fn js_value_to_host(ctx: &Ctx<'_>, value: &JsValue<'_>) -> Result<Value, Error> 
         if let Some(class) = object.as_class::<HostDecimal>() {
             return Ok(class.borrow().inner.clone());
         }
-        let mut map = match Value::Map(Default::default()) {
-            Value::Map(map) => map,
-            _ => return Err(Error::new("cannot convert this value")),
-        };
+        if let Some(class) = object.as_class::<HostEntity>() {
+            return Ok(Value::Object(HostObject(class.borrow().inner.clone())));
+        }
+        if let Some(class) = object.as_class::<HostList>() {
+            return Ok(Value::Object(HostObject(class.borrow().inner.clone())));
+        }
+        let mut map = indexmap::IndexMap::new();
         for entry in object.props::<String, JsValue>() {
             let (key, item) = entry.map_err(|err| js_caught(ctx, err))?;
             map.insert(key, js_value_to_host(ctx, &item)?);

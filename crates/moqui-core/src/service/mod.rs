@@ -12,9 +12,9 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Service facade. Calls, ECAs, and REST are no-ops until phase 6. JSON-RPC is not part of this port.
+//! Service facade: definitions, synchronous calls, ECAs, pools, jobs, and REST. JSON-RPC is not part of this port.
 
-mod call;
+pub(crate) mod call;
 mod callback;
 mod define;
 mod email_eca;
@@ -27,7 +27,7 @@ mod semaphore;
 mod validate;
 
 pub use call::call;
-pub use callback::{run_held_service, run_matched_eca, schedule_feed_receive};
+pub use callback::{run_held_service, run_matched_eca, schedule_feed_receive, security_checks_run};
 pub use define::lint;
 pub use define::load_definitions;
 pub use email_eca::run_email_rules;

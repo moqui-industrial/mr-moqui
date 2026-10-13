@@ -24,6 +24,8 @@ use crate::context::Error;
 
 const XML_ACTIONS: &str = include_str!("../../../../framework/template/XmlActions.js");
 
+const MAX_CACHED_SCRIPTS: usize = 4096;
+
 thread_local! {
     static SCRIPTS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
 }
@@ -42,7 +44,14 @@ fn generated(xml: &str) -> Result<String, Error> {
         return Ok(source);
     }
     let source = generate(xml)?;
-    SCRIPTS.with(|scripts| scripts.borrow_mut().insert(xml.to_string(), source.clone()));
+    SCRIPTS.with(|scripts| {
+        let mut scripts = scripts.borrow_mut();
+        // Dynamic action text would otherwise grow this without bound.
+        if scripts.len() >= MAX_CACHED_SCRIPTS {
+            scripts.clear();
+        }
+        scripts.insert(xml.to_string(), source.clone());
+    });
     Ok(source)
 }
 
@@ -199,6 +208,31 @@ mod tests {
     fn assert_golden(xml: &str, expected: &str) {
         assert_eq!(generate(xml).unwrap(), expected);
         assert_eq!(generate(xml).unwrap(), expected);
+    }
+
+    #[test]
+    fn list_helpers_and_the_condition_factory_run() {
+        clear_context_stack();
+        run_actions(
+            r#"<actions>
+                <set field="items" from="[{n: 'b', q: 2}, {n: 'c', q: 2}, {n: 'a', q: 1}]"/>
+                <order-map-list list="items"><order-by field-name="n"/></order-map-list>
+                <filter-map-list list="items"><field-map field-name="q" value="2"/></filter-map-list>
+                <set field="names" from="items.map(function (item) { return item.n; }).join(',')"/>
+                <set field="seesNames" from="context.names"/>
+                <set field="made" from="ec.entity.conditionFactory.makeCondition('a', 'greater', 3) != null"/>
+                <set field="skipped" from="ec.entity.conditionFactory.makeActionConditionDirect('a', 'equals', null, null, null, false, true, false, 'false') === null"/>
+                <set field="dated" from="ec.entity.conditionFactory.makeConditionDate('fromDate', 'thruDate', null, false, 'false') != null"/>
+            </actions>"#,
+        )
+        .unwrap();
+        let text =
+            |name: &str| crate::script::context_value(name).map(|value| moqui_lib::object::to_plain_string(&value));
+        assert_eq!(text("names").as_deref(), Some("b,c"));
+        assert_eq!(text("seesNames").as_deref(), Some("b,c"));
+        assert_eq!(text("made").as_deref(), Some("true"));
+        assert_eq!(text("skipped").as_deref(), Some("true"));
+        assert_eq!(text("dated").as_deref(), Some("true"));
     }
 
     #[test]

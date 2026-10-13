@@ -34,7 +34,13 @@ const DEFAULT_PRIVILEGED_GROUPS: &str = "ADMIN,ADMIN_ADV";
 const DEFAULT_SEALED_PERMISSIONS: &str =
     "GROOVY_SHELL_WEB,SQL_RUNNER_WEB,SERVICE_LOAD_RUNNER,ADMIN_LOGIN_AS,ADMIN_PASSWORD,ElasticRemote,KibanaRemote,REST_SCHEMA";
 
+/// How many times `UserSecurityChecks` ran on this thread, for a load report to show the ECAs fired.
+pub fn security_checks_run() -> u64 {
+    SECURITY_CHECKS.with(Cell::get)
+}
+
 thread_local! {
+    static SECURITY_CHECKS: Cell<u64> = const { Cell::new(0) };
     static SEALED_ENTERED: Cell<bool> = const { Cell::new(false) };
     static SEARCH_NOT_UP: Cell<bool> = const { Cell::new(false) };
 }
@@ -76,7 +82,7 @@ pub fn run_matched_eca(
         if !matched.contains(&rule.id) || rule.run_before != before {
             continue;
         }
-        publish_names(values).map_err(to_lib)?;
+        let _frame = publish_names(values).map_err(to_lib)?;
         if !condition_allows(&rule.condition).map_err(to_lib)? {
             continue;
         }
@@ -137,6 +143,7 @@ fn run_rule_actions(facade: &EntityFacade, actions: &str, values: &BTreeMap<Stri
 }
 
 fn assert_privileged_group_membership(facade: &EntityFacade, user_group_id: &str) -> Result<(), Error> {
+    SECURITY_CHECKS.with(|count| count.set(count.get() + 1));
     if user_group_id.is_empty() {
         return Ok(());
     }
@@ -155,6 +162,7 @@ fn assert_privileged_group_membership(facade: &EntityFacade, user_group_id: &str
 }
 
 fn assert_sealed_permission_grant(facade: &EntityFacade, user_permission_id: &str) -> Result<(), Error> {
+    SECURITY_CHECKS.with(|count| count.set(count.get() + 1));
     SEALED_ENTERED.with(|entered| entered.set(true));
     if user_permission_id.is_empty() {
         return Ok(());
@@ -324,12 +332,15 @@ fn to_lib(err: crate::context::Error) -> Error {
     Error::new(err.message())
 }
 
-/// Put each name on the current script frame. There is no public pop.
-pub(crate) fn publish_names(values: &BTreeMap<String, Value>) -> Result<(), crate::context::Error> {
+/// Push a script frame holding `values`. The frame pops when the guard drops.
+pub(crate) fn publish_names(
+    values: &BTreeMap<String, Value>,
+) -> Result<crate::script::ContextFrame, crate::context::Error> {
+    let frame = crate::script::ContextFrame::push();
     for (name, value) in values {
         crate::script::set_context_name(name, value.clone())?;
     }
-    Ok(())
+    Ok(frame)
 }
 
 /// An empty condition passes. XML is parsed so only the expression text is evaluated.
@@ -375,69 +386,16 @@ fn expression_text(xml: &str) -> Result<String, crate::context::Error> {
         .join(" && "))
 }
 
-/// Run action XML. A `<service-call>` is `sync`. Other elements stay in `run_actions`.
+/// Run action XML on the shared action runner. A bare element is wrapped in `<actions>`.
 pub(crate) fn run_stored_actions(actions: &str) -> Result<(), crate::context::Error> {
     let trimmed = actions.trim();
     if trimmed.is_empty() {
         return Ok(());
     }
-    if !trimmed.contains("service-call") {
+    if trimmed.starts_with("<actions") {
         return crate::script::run_actions(trimmed);
     }
-    let root = MNode::parse_text("actions", trimmed)?;
-    let nodes = if root.name() == "service-call" {
-        vec![root]
-    } else {
-        root.children()
-    };
-    for child in nodes {
-        if child.name() == "service-call" {
-            invoke_service(&child)?;
-        } else {
-            let wrapped = format!("<actions>{}</actions>", child.write_string());
-            crate::script::run_actions(&wrapped)?;
-        }
-    }
-    Ok(())
-}
-
-fn invoke_service(node: &MNode) -> Result<(), crate::context::Error> {
-    let name = node.attribute("name").unwrap_or_default();
-    if name.is_empty() {
-        return Err(crate::context::Error::new("service-call has no name"));
-    }
-    let mut params = BTreeMap::new();
-    for field in node.children_named("field-map") {
-        let key = field.attribute("field-name").unwrap_or_default();
-        if key.is_empty() {
-            continue;
-        }
-        let raw = field
-            .attribute("from")
-            .or_else(|| field.attribute("value"))
-            .unwrap_or_default();
-        params.insert(key, parameter_value(&raw));
-    }
-    super::call::sync(&name, &params).map(|_| ())
-}
-
-fn parameter_value(raw: &str) -> Value {
-    let trimmed = raw.trim();
-    if let Some(text) = unquote(trimmed) {
-        return Value::string(text);
-    }
-    if let Some(value) = crate::script::context_value(trimmed) {
-        return value;
-    }
-    Value::string(trimmed)
-}
-
-fn unquote(text: &str) -> Option<String> {
-    let bytes = text.as_bytes();
-    if bytes.len() >= 2 && (bytes[0] == b'\'' || bytes[0] == b'"') && bytes[0] == bytes[bytes.len() - 1] {
-        return Some(text[1..text.len() - 1].to_string());
-    }
-    None
+    crate::script::run_actions(&format!("<actions>{trimmed}</actions>"))
 }
 
 #[cfg(test)]

@@ -69,10 +69,11 @@ pub fn run_seca_rules(
         if !rule.run_on_error && message_has_error() {
             continue;
         }
-        super::callback::publish_names(parameters)?;
-        if let Some(results) = results {
-            super::callback::publish_names(results)?;
-        }
+        let _frame = super::callback::publish_names(parameters)?;
+        let _results_frame = match results {
+            Some(results) => Some(super::callback::publish_names(results)?),
+            None => None,
+        };
         if !super::callback::condition_allows(&rule.condition)? {
             continue;
         }
@@ -129,37 +130,32 @@ mod tests {
     use moqui_lib::object::Value;
 
     use super::{load_seca_rules, run_seca_rules};
-    use crate::script::context_value;
 
     #[test]
     fn seca_for_a_test_service_runs_its_action() {
         load_seca_rules(
             r#"<secas>
                 <seca service="test.example#Run" when="pre-service" priority="8">
-                    <actions><script>secaRan = "late";</script></actions>
+                    <actions><script>ec.message.addMessage("late");</script></actions>
                 </seca>
                 <seca service="test.example#Run" when="pre-service" priority="1">
                     <condition><expression>false</expression></condition>
-                    <actions><script>secaSkipped = "Y";</script></actions>
+                    <actions><script>ec.message.addMessage("skipped");</script></actions>
                 </seca>
                 <seca service="test.example#Run" when="pre-service" priority="2">
-                    <actions><script>secaRan = "early";</script></actions>
+                    <actions><script>ec.message.addMessage("early");</script></actions>
                 </seca>
             </secas>"#,
         )
         .unwrap();
+        let context = crate::context::ExecutionContextFactory::test_context();
+        let _entered = context.enter();
         let mut parameters = BTreeMap::new();
         parameters.insert("note".to_string(), Value::string("go"));
         run_seca_rules("test.example#Run", "pre-service", &parameters, None).unwrap();
-        assert_eq!(
-            context_value("secaRan").and_then(|value| value.as_str().map(str::to_string)),
-            Some("late".to_string())
-        );
-        assert!(context_value("secaSkipped").is_none());
+        // Priority order, and the false condition skips its rule.
+        assert_eq!(context.message().messages(), ["early", "late"]);
         run_seca_rules("test.example#Run", "post-service", &parameters, None).unwrap();
-        assert_eq!(
-            context_value("secaRan").and_then(|value| value.as_str().map(str::to_string)),
-            Some("late".to_string())
-        );
+        assert_eq!(context.message().messages(), ["early", "late"]);
     }
 }

@@ -49,6 +49,10 @@ impl EntityFind {
         }
     }
 
+    pub fn entity_name(&self) -> &str {
+        &self.entity_name
+    }
+
     pub fn eq(mut self, field: &str, value: Value) -> Self {
         self.conditions.push(Condition::equals(field, value));
         self
