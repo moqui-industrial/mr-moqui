@@ -1,0 +1,15 @@
+# Data improvement plan (Not fully verified)
+- Replace `seed`, `seed-initial`, `install` and `demo` load types with explicit ownership and sensitivity.
+- Seed: code-owned, persisted/queryable, protected from ordinary database edits.
+- Configuration: editable settings; secrets: deployment-provisioned references, never exported values.
+- Transactions: business-owned records; PII requires consistent fake replacements or exclusion.
+- Reuse Moqui entity XML, component ordering, loader/writer and existing secret-resolution rules.
+- Dev export: filter sensitive fields before serialization; cover identifiers, nested payloads, history and attachments.
+- Preserve scoped relationships and business invariants; substitute dev endpoints/secrets and exclude sessions/backlogs.
+- Code import: `git diff` last applied revision against incoming code, then parse typed records by entity/primary key.
+- Three-way compare previous code, incoming code and DB; update only when incoming changed and DB matches previous.
+- Unchanged/already-applied records: no write; operator changes: conflict; additions/deletions require absence/match and relationship checks.
+- Compare/write atomically; advance the applied baseline only after commit; redact conflicts and support idempotent retries.
+- Persist a protected seed flag; only the internal importer holding a scoped seed semaphore may mutate seed or its flag.
+- Amend architecture/load gates for merge/seed guards, secret/SSO plans for references, and search/messaging plans for safe rebuild/reset.
+- Deliver classification → merge/guards → dev export/import; test conflicts, concurrency, bypasses, leaks and no production traffic.
