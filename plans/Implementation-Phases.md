@@ -365,6 +365,26 @@ Appended slice by slice.
 - **Tests.** Golden code for `qvt`, `qjs`, `qvue` (`script/testdata/screen/<mode>/`), the rendered templates in `qvt/render/*.qvt` (each compiled with the vendored
   Vue compiler in QuickJS, `screen::vue_check`), menu data with permissions (`tests/menu.rs`), the Node tests of the client (run by `cargo test` when `node` is on the
   path), and `gate3.rs` for `ArtifactGroupDetail` as `.qvt`, `.qjs` and `.qvue`, the `/qapps` shell and `/menuData` over HTTP.
+- **Slice 7, server-static qvt.** `server-static` names `qvt` (list or `all`), or the screen has only subscreens placeholders (or no widgets), and
+  `statics::eligibility_of` finds nothing that needs request data: a `dynamic="true"` form, an `extends` or `auto-fields-*` named by an expression, a form that says
+  its own `server-static` without qvt, a `section-include` or `include-screen` named by an expression or of a screen with forms, `allow-extra-path`, a qvt macro module other
+  than the built-in one, `render-modes` without qvt. Such a screen stays a server merge, with the reason in the report and no static header. The template is `ScreenQvtStatic.js`
+  (unit mode `qvt-static`), run once with no actions: `section` is `v-if`, `section-iterate` is `v-for`, a form-single is an `m-scope` over its map and an `m-form` whose
+  `fields-initial` are expressions over the scope, a form-list is `m-static-form-list`. Text is `v-text` of a localized call, and `${}` text is
+  `ec.resource.expand(pattern, {expr: () => expr})`. The Vue compiler (`prefixIdentifiers`, in QuickJS, read from `libs/vue/compiler-dom.cjs.js`) compiles it when the definition
+  is cached; the response is the script `moqui.qvtStatic[path] = function (Vue) {...}` that a script element loads, `X-Moqui-Qvt: static-template`, `Cache-Control` of
+  `screen-server-static`, a weak `ETag` over the script and the resolved definition (screen XML with `screen-extend`, each form and its extensions, the source files, the macro
+  module), 304. Every screen has the implicit `actions` transition: `GET {screen}/actions` runs `always-actions` from the first screen, `pre-actions` from the third, the root
+  actions and the actions of the sections it reaches, and answers the package; `GET {screen}/actions/{form}` answers a form-list. `display-entity`, `entity-options`,
+  `list-options` and `dynamic-options` without `server-search` are looked up on the server (`list-options` too, which the plan left in the template), and a `set` in a field runs
+  there. Differences from the plan: credential names are stripped at any depth; `include-screen` is written inline in the including template (and its actions run in the
+  package) instead of a child component; tree node JSON is a 501 and form-list aggregation is not done (the report names screens that need them); first/second/last rows, row
+  selection, saved finds, the column picker, the csv, text and pdf buttons, a multi form and `button-menu` are not written in a static template; the non-qvt modes get the cache header
+  when the screen names them, and the automatic subscreens-only case gets it for qvt only (a page of html holds the navbar of the user). `webapp_qvt_static_only=true` loads
+  `vue.runtime.global.prod.js`, and waits for the `m-*` components and the shell to be precompiled before it can be used: they still have string templates.
+  The report is `moqui lint --screens --qvt-static [report-file]` (one block for each screen file: location, mode, verdict, reasons and violations; it does not fail the
+  process) and `screen::statics::static_report` with `full` for the render with the wrapped `ec`. Over this tree 128 screens: 73 clean, 38 with violations, 14 stay a server merge,
+  3 (the Groovy screens) do not load. `ArtifactGroupDetail` is clean, and Gate 3 marks it with a `screen-extend` in its own runtime.
 
 ## Phase 9 — SearchFacade
 

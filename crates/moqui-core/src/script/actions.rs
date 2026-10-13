@@ -40,7 +40,11 @@ pub fn run_actions(actions: &str) -> Result<(), Error> {
         return Err(Error::new("script source contains a null byte"));
     }
     let source = generated(actions)?;
-    super::runtime::eval_script(&source)
+    // Data preparation may do what a browser cannot, so a widget check in progress stands down while the actions run.
+    let previous = super::runtime::set_widget_wrap(false);
+    let result = super::runtime::eval_script(&source);
+    super::runtime::set_widget_wrap(previous);
+    result
 }
 
 /// Generate the script for `xml` and parse it, without running anything. Definition load calls

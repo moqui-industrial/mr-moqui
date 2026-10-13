@@ -217,6 +217,40 @@ pub fn respond(
     Ok(())
 }
 
+/// Write a response made in memory with the validators of a file: `ETag`, a 304 when the request has it, and no body for HEAD. The
+/// caller gives the tag, since it knows what the bytes are made from. Used for the server-static qvt template.
+pub fn respond_bytes(
+    request: &WebRequest,
+    content_type: &str,
+    cache_control: &str,
+    extra_headers: &[(String, String)],
+    etag: &str,
+    bytes: Vec<u8>,
+) {
+    let method = request.method.to_ascii_uppercase();
+    if method != "GET" && method != "HEAD" {
+        web::send_json_error(405, &format!("Method {method} is not supported here"));
+        web::add_header("Allow", "GET, HEAD");
+        return;
+    }
+    let mut headers = vec![
+        ("Content-Type".to_string(), content_type.to_string()),
+        ("Cache-Control".to_string(), cache_control.to_string()),
+        ("Vary".to_string(), "Accept-Encoding".to_string()),
+        ("ETag".to_string(), etag.to_string()),
+    ];
+    headers.extend(extra_headers.iter().cloned());
+    if request
+        .header("if-none-match")
+        .is_some_and(|presented| matches_tag(presented, etag))
+    {
+        web::send_bytes_with_headers(304, headers, Vec::new());
+        return;
+    }
+    headers.push(("Content-Length".to_string(), bytes.len().to_string()));
+    web::send_bytes_with_headers(200, headers, if method == "HEAD" { Vec::new() } else { bytes });
+}
+
 #[cfg(test)]
 mod tests {
     use super::{is_blocked, matches_tag, media_type, safe_segments};

@@ -257,9 +257,34 @@ pub struct TransitionDef {
     pub conditional_responses: Vec<ResponseDef>,
     pub default_response: ResponseDef,
     pub error_response: Option<ResponseDef>,
+    /// The `actions` transition every screen has: the data of a server-static screen as JSON.
+    pub implicit_actions: bool,
 }
 
 impl TransitionDef {
+    /// `ScreenDefinition.ActionsTransitionItem`: it runs the screen's data preparation on demand.
+    fn actions(screen_location: &str) -> Self {
+        Self {
+            name: "actions".to_string(),
+            method: "any".to_string(),
+            screen_location: screen_location.to_string(),
+            begin_transaction: true,
+            read_only: true,
+            require_session_token: Some(false),
+            authz_action: "view".to_string(),
+            parameters: Vec::new(),
+            path_parameters: Vec::new(),
+            condition: None,
+            actions: None,
+            actions_error: None,
+            single_service: None,
+            conditional_responses: Vec::new(),
+            default_response: ResponseDef::none(),
+            error_response: None,
+            implicit_actions: true,
+        }
+    }
+
     /// Names of the `parameter` children marked required.
     pub fn required_parameters(&self) -> Vec<&str> {
         self.parameters
@@ -362,6 +387,7 @@ impl TransitionDef {
             conditional_responses,
             default_response,
             error_response,
+            implicit_actions: false,
         })
     }
 }
@@ -533,6 +559,8 @@ pub struct ScreenDef {
     /// `all`, or the render modes this screen supports.
     pub render_modes: Vec<String>,
     pub server_static: Vec<String>,
+    /// `server_static` is `all` because the widgets are only the subscreens placeholders, not because the screen says so.
+    pub server_static_auto: bool,
     pub web: WebSettings,
     /// `macro-template` by render mode type.
     pub macro_templates: BTreeMap<String, String>,
@@ -552,6 +580,13 @@ pub struct ScreenDef {
     pub sources: Vec<Source>,
     /// Render code and assembled forms made while rendering. They live as long as this definition.
     pub(super) generated: super::generate::Generated,
+}
+
+#[cfg(test)]
+impl ScreenDef {
+    pub(super) fn generated(&self) -> &super::generate::Generated {
+        &self.generated
+    }
 }
 
 impl ScreenDef {
@@ -714,6 +749,10 @@ impl ScreenDef {
             sources.extend(other.sources.iter().cloned());
         }
 
+        if !transitions.iter().any(|item| item.name == "actions") {
+            transitions.push(TransitionDef::actions(location));
+        }
+
         let subscreens = load_subscreens(facade, factory, node, location)?;
         let mut macro_templates = BTreeMap::new();
         for template in node.children_named("macro-template") {
@@ -800,7 +839,8 @@ impl ScreenDef {
         }
 
         let mut server_static = list_attr("server-static");
-        if server_static.is_empty() && is_placeholder(node) {
+        let server_static_auto = server_static.is_empty() && is_placeholder(node);
+        if server_static_auto {
             server_static.push("all".to_string());
         }
 
@@ -834,6 +874,7 @@ impl ScreenDef {
                 .unwrap_or_else(|| "STT_INTERNAL".to_string()),
             render_modes,
             server_static,
+            server_static_auto,
             web,
             macro_templates,
             parameters: parameters_of(node),

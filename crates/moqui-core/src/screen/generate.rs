@@ -33,6 +33,7 @@ use rquickjs::{Array, Ctx, Object};
 use super::cache::ScreenFacade;
 use super::definition::ScreenDef;
 use super::form::{self, FormInstance};
+use super::statics::{Eligibility, StaticTemplate};
 use crate::context::{Error, ExecutionContextFactory};
 use crate::script::walker::{self, Resolve, Walk};
 
@@ -40,7 +41,7 @@ const TEMPLATE_SUPPORT: &str = include_str!("../../../../framework/template/Temp
 const SCREEN_SUPPORT: &str = include_str!("../../../../framework/template/screen/ScreenSupport.js");
 
 /// The mode modules built into the binary, by file name.
-const MODE_MODULES: [(&str, &str); 7] = [
+const MODE_MODULES: [(&str, &str); 8] = [
     (
         "ScreenText.js",
         include_str!("../../../../framework/template/screen/ScreenText.js"),
@@ -66,12 +67,17 @@ const MODE_MODULES: [(&str, &str); 7] = [
         include_str!("../../../../framework/template/screen/ScreenQvt.js"),
     ),
     (
+        "ScreenQvtStatic.js",
+        include_str!("../../../../framework/template/screen/ScreenQvtStatic.js"),
+    ),
+    (
         "ScreenPlain.js",
         include_str!("../../../../framework/template/screen/ScreenPlain.js"),
     ),
 ];
 
 const BUILT_IN_DIR: &str = "framework/template/screen/";
+const MAX_STATIC_TEMPLATES: usize = 64;
 const DEBUG_ENV: &str = "MOQUI_ACTIONS_DEBUG";
 
 static NEXT_UNIT: AtomicU64 = AtomicU64::new(1);
@@ -93,6 +99,9 @@ pub struct Unit {
 pub struct Generated {
     units: Mutex<HashMap<String, Option<Arc<Unit>>>>,
     forms: Mutex<HashMap<String, Arc<FormInstance>>>,
+    /// The server-static templates by request path, and whether the screen can be one, by macro module.
+    statics: Mutex<HashMap<String, Arc<StaticTemplate>>>,
+    eligibility: Mutex<HashMap<String, Arc<Eligibility>>>,
 }
 
 impl std::fmt::Debug for Generated {
@@ -115,6 +124,38 @@ impl Generated {
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .insert(name.to_string(), form);
+    }
+
+    pub(super) fn static_template(&self, key: &str) -> Option<Arc<StaticTemplate>> {
+        self.statics
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .get(key)
+            .cloned()
+    }
+
+    pub(super) fn put_static_template(&self, key: String, template: Arc<StaticTemplate>) {
+        let mut statics = self.statics.lock().unwrap_or_else(|err| err.into_inner());
+        // One for each path the screen was requested by: many odd paths for one screen do not grow without end.
+        if statics.len() >= MAX_STATIC_TEMPLATES {
+            statics.clear();
+        }
+        statics.insert(key, template);
+    }
+
+    pub(super) fn eligibility(&self, key: &str) -> Option<Arc<Eligibility>> {
+        self.eligibility
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .get(key)
+            .cloned()
+    }
+
+    pub(super) fn put_eligibility(&self, key: String, value: Arc<Eligibility>) {
+        self.eligibility
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .insert(key, value);
     }
 
     fn unit(&self, key: &str) -> Option<Option<Arc<Unit>>> {
@@ -175,7 +216,15 @@ pub fn unit_for(ctx: &Ctx<'_>, request: &UnitRequest<'_>) -> Result<Option<Arc<U
                 let loaded = load_mode_source(ctx, &source, request.mode, std::env::var_os(DEBUG_ENV).is_some())?;
                 let resolve = |node: &MNode| -> Result<Option<MNode>, Error> {
                     let name = node.name();
+                    if request.mode == super::statics::UNIT_MODE
+                        && (name == "section-include" || name == "include-screen")
+                    {
+                        return super::statics::inline_include(request, node).map(Some);
+                    }
                     if name != "form-single" && name != "form-list" {
+                        return Ok(None);
+                    }
+                    if node.attribute("mq-assembled").is_some() {
                         return Ok(None);
                     }
                     let form_name = node.attribute("name").unwrap_or_default();
@@ -404,6 +453,7 @@ pub fn generate_xml(mode: &str, xml: &str, debug_comments: bool) -> Result<Strin
         "html-print" => "ScreenHtmlPrint.js",
         "html" => "ScreenHtml.js",
         "qvt" => "ScreenQvt.js",
+        "qvt-static" => "ScreenQvtStatic.js",
         "qjs" | "qvue" => "ScreenPlain.js",
         other => return Err(Error::new(format!("no built-in macro module for render mode {other}"))),
     };
@@ -432,6 +482,7 @@ pub fn generate_unit_source(mode: &str, xml: &str) -> Result<String, Error> {
         "html-print" => "ScreenHtmlPrint.js",
         "html" => "ScreenHtml.js",
         "qvt" => "ScreenQvt.js",
+        "qvt-static" => "ScreenQvtStatic.js",
         "qjs" | "qvue" => "ScreenPlain.js",
         _ => "ScreenXml.js",
     };

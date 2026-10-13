@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The screen is static for qvt and the form says it is not, so the screen stays a server merge. -->
+<screen require-authentication="false" server-static="qvt">
+    <widgets>
+        <form-single name="Out" server-static="html"><field name="a"><default-field><text-line/></default-field></field></form-single>
+    </widgets>
+</screen>

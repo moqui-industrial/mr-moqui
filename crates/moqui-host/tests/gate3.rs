@@ -82,6 +82,13 @@ struct Gate {
 }
 
 fn start(label: &str) -> Gate {
+    start_with(label, false)
+}
+
+/// The component of a deployment that marks the fixture screen server-static for qvt without editing the screen: a `screen-extend` file.
+const STATIC_EXTEND: &str = r#"<screen-extend server-static="qvt"/>"#;
+
+fn start_with(label: &str, static_fixture: bool) -> Gate {
     let serial = SERIAL.lock().unwrap_or_else(|err| err.into_inner());
     let runtime = temp_dir(&format!("moqui-gate3-rt-{label}"));
     let cluster_dir = temp_dir(&format!("moqui-gate3-pg-{label}"));
@@ -96,6 +103,13 @@ fn start(label: &str) -> Gate {
         conf(&companion.display().to_string()),
     )
     .unwrap();
+    if static_fixture {
+        let component = runtime.join("component/gate-static");
+        let extend = component.join("screen-extend/tools/screen/System/Security/ArtifactGroup");
+        std::fs::create_dir_all(&extend).unwrap();
+        std::fs::write(component.join("component.xml"), r#"<component name="gate-static"/>"#).unwrap();
+        std::fs::write(extend.join("ArtifactGroupDetail.xml"), STATIC_EXTEND).unwrap();
+    }
     let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
     let base =
         std::fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component")).unwrap();
@@ -721,6 +735,140 @@ fn artifact_group_detail_renders_as_qvt_and_answers_qjs_and_qvue() {
     }
 }
 
+/// The server-static pair of Gate 3: the template holds no row data, and `/actions` returns the JSON package.
+#[test]
+fn artifact_group_detail_static_qvt_is_a_data_free_template_with_its_data_on_actions() {
+    let gate = start_with("static", true);
+    let address = gate.server.address();
+    let john = basic("john.doe", "moqui");
+    let get = |path: &str, extra: &[(&str, &str)]| {
+        let mut headers = vec![("Authorization", john.as_str())];
+        headers.extend_from_slice(extra);
+        exchange(address, &http_request("GET", path, &headers, ""))
+    };
+    let screen = "/apps/System/Security/ArtifactGroup/ArtifactGroupDetail";
+
+    // the template: a script that registers a render function, cached publicly, with a validator
+    let (status, headers, template) = get(&format!("{screen}.qvt?artifactGroupId=SYSTEM_APP"), &[]);
+    assert_eq!(status, 200, "{template}");
+    assert_eq!(header(&headers, "x-moqui-qvt").as_deref(), Some("static-template"));
+    assert_eq!(
+        header(&headers, "cache-control").as_deref(),
+        Some("max-age=86400, must-revalidate, public")
+    );
+    assert_eq!(
+        header(&headers, "content-type").as_deref(),
+        Some("text/javascript;charset=UTF-8")
+    );
+    let tag = header(&headers, "etag").expect("a validator");
+    assert!(
+        template.contains(&format!(
+            "(m.qvtStatic=m.qvtStatic||{{}})[\"{screen}\"]=function(Vue){{"
+        )),
+        "{template}"
+    );
+    // no row data and no user: the values of the artifact group, its members, the user and the seed are all absent
+    for data in [
+        "SYSTEM_APP",
+        "System App (via root screen)",
+        "john.doe",
+        "John Doe",
+        "Always Allow",
+        "Administrators",
+        "ALL_USERS",
+        "component://tools/screen/System.xml",
+    ] {
+        assert!(!template.contains(data), "{data} in the template");
+    }
+    // the render function reads names from the scope: no with and no new Function
+    for banned in ["with (", "with(", "new Function", "eval("] {
+        assert!(!template.contains(banned), "{banned} in the template");
+    }
+    assert!(
+        template.contains("_resolveComponent(\"m-static-form-list\")"),
+        "{template}"
+    );
+    assert!(template.contains("_ctx.artifactGroup"), "{template}");
+    // links and forms point at the screen's own path, resolved on the server, with no query and no host
+    assert!(
+        template.contains(&format!("action: \"{screen}/updateArtifactGroup\"")),
+        "{template}"
+    );
+    assert!(
+        template.contains(&format!("$mq.url('{screen}/userGroupDetail'")),
+        "{template}"
+    );
+    // a request with no user gets no template
+    let (status, _, _) = exchange(address, &http_request("GET", &format!("{screen}.qvt"), &[], ""));
+    assert_eq!(status, 401);
+    // the same bytes for another request, and 304 for the validator
+    let (_, other_headers, other) = get(&format!("{screen}.qvt?artifactGroupId=OTHER"), &[]);
+    assert_eq!(other, template);
+    assert_eq!(header(&other_headers, "etag").as_deref(), Some(tag.as_str()));
+    let (status, _, body) = get(&format!("{screen}.qvt"), &[("If-None-Match", &tag)]);
+    assert_eq!(status, 304);
+    assert!(body.is_empty());
+
+    // the package: the context after data prep, per user, never cached, without the lists of the form-lists
+    let (status, headers, package) = get(&format!("{screen}/actions?artifactGroupId=SYSTEM_APP"), &[]);
+    assert_eq!(status, 200, "{package}");
+    assert_eq!(header(&headers, "cache-control").as_deref(), Some("private, no-store"));
+    assert_eq!(header(&headers, "content-type").as_deref(), Some("application/json"));
+    let json: serde_json::Value = serde_json::from_str(&package).unwrap();
+    assert_eq!(json["artifactGroup"]["artifactGroupId"], "SYSTEM_APP");
+    assert_eq!(json["artifactGroup"]["description"], "System App (via root screen)");
+    for list in ["memberList", "authzList", "tarpitList"] {
+        assert!(
+            json.get(list).is_none(),
+            "{list} is a form-list's list and is a request of its own: {package}"
+        );
+    }
+    // the options of the drop-downs in the add dialogs were looked up on the server
+    let options = json["mqExtra_CreateArtifactAuthz"]
+        .as_object()
+        .unwrap_or_else(|| panic!("no extras for the dialog form: {package}"));
+    assert!(options.values().any(|value| value.is_array()), "{package}");
+    assert!(!package.contains("currentPassword"), "{package}");
+
+    // a form-list: its rows, with the text of display-entity and the options of its drop-downs
+    let (status, headers, form) = get(
+        &format!("{screen}/actions/ArtifactAuthzList?artifactGroupId=SYSTEM_APP"),
+        &[],
+    );
+    assert_eq!(status, 200, "{form}");
+    assert_eq!(header(&headers, "cache-control").as_deref(), Some("private, no-store"));
+    let json: serde_json::Value = serde_json::from_str(&form).unwrap();
+    let rows = json["authzList"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{form}");
+    let admin = rows
+        .iter()
+        .find(|row| row["artifactAuthzId"] == "SYSTEM_APP_ADMIN")
+        .unwrap();
+    assert_eq!(admin["userGroupId_display"], "Administrators (full access) - ");
+    assert!(admin["entityFilterSetList"].is_array(), "{form}");
+    let key = "mqOpt_ArtifactAuthzList_authzTypeEnumId_0_0";
+    let kinds = json[key].as_array().unwrap_or_else(|| panic!("no {key}: {form}"));
+    assert!(
+        kinds
+            .iter()
+            .any(|option| option["value"] == "AUTHZT_ALWAYS" && option["label"] == "Always Allow (overrides Deny)"),
+        "{form}"
+    );
+    // the other two lists, and a name that is not a form
+    let (status, _, members) = get(
+        &format!("{screen}/actions/ArtifactGroupMemberList?artifactGroupId=SYSTEM_APP"),
+        &[],
+    );
+    assert_eq!(status, 200, "{members}");
+    let members: serde_json::Value = serde_json::from_str(&members).unwrap();
+    assert_eq!(members["memberList"][0]["artifactTypeEnumId_display"], "Screen");
+    let (status, _, _) = get(&format!("{screen}/actions/NoSuchForm?artifactGroupId=SYSTEM_APP"), &[]);
+    assert_eq!(status, 404);
+    // without a session there is no package
+    let (status, _, _) = exchange(address, &http_request("GET", &format!("{screen}/actions"), &[], ""));
+    assert_eq!(status, 401);
+}
+
 #[test]
 fn the_qapps_shell_and_its_menu_data_work_for_a_signed_in_user() {
     let gate = start("qapps");
@@ -787,6 +935,17 @@ fn the_qapps_shell_and_its_menu_data_work_for_a_signed_in_user() {
     assert_eq!(config["darkMode"], false);
     assert_eq!(config["notificationEndpoint"], "");
     assert_eq!(config["qvt"]["handles"][0], "merged-fragment");
+    assert_eq!(config["qvt"]["handles"][1], "static-template");
+    assert_eq!(config["qvt"]["build"], "compiler");
+    // the user snapshot of the browser ec: the account without password columns, and the preferences
+    assert!(
+        config["userAccount"].is_object() && config["preferences"].is_object(),
+        "{config}"
+    );
+    assert!(
+        !shell.contains("currentPassword") && !shell.contains("passwordSalt"),
+        "{shell}"
+    );
     assert!(
         config["sessionToken"].as_str().is_some_and(|token| !token.is_empty()),
         "{config}"

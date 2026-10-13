@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Root of the fixture tree for the server-static qvt tests. It renders the screen below it. -->
+<screen require-authentication="false">
+    <widgets><subscreens-active/></widgets>
+    <subscreens default-item="Items"/>
+</screen>

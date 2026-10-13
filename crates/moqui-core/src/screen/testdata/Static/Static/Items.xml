@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A server-static screen over plain maps: nothing in the template may come from the actions below. -->
+<screen require-authentication="false" server-static="qvt" default-menu-title="Items">
+    <parameter name="pageIndex"/>
+    <transition name="saveItem"><default-response type="none"/></transition>
+    <transition name="viewItem" read-only="true"><default-response type="none"/></transition>
+    <always-actions><set field="alwaysTag" value="always-ran"/></always-actions>
+    <actions>
+        <set field="greeting" value="ZEBRA greeting for Ada Lovelace"/>
+        <set field="item" from="{itemId: 'ZEBRA-I1', name: 'ZEBRA Widget', status: 'ACTIVE', price: 1234.5, currentPassword: 'ZEBRA-HASH', note: 'ZEBRA note'}"/>
+        <set field="tags" from="['ZEBRA-t1', 'ZEBRA-t2']"/>
+        <set field="itemList" from="[{itemId: 'ZEBRA-R1', name: 'ZEBRA row one', price: 12.5, owner: 'ada.lovelace'}, {itemId: 'ZEBRA-R2', name: 'ZEBRA row two', price: 3, owner: 'ada.lovelace'}]"/>
+        <set field="amount" value="1234.50" type="BigDecimal"/>
+        <set field="showExtra" from="true"/>
+    </actions>
+    <widgets>
+        <label text="Hello ${greeting}" type="h4"/>
+        <section name="Main" condition="item != null">
+            <widgets>
+                <form-single name="ItemForm" map="item" transition="saveItem">
+                    <field name="itemId"><default-field><display/></default-field></field>
+                    <field name="name"><default-field title="Item Name"><text-line size="30"/></default-field></field>
+                    <field name="status"><default-field>
+                        <drop-down><option key="NONE" text="None"/><option key="ACTIVE" text="Active"/></drop-down></default-field></field>
+                    <field name="price"><default-field><display format="#,##0.00"/></default-field></field>
+                    <field name="mode">
+                        <conditional-field condition="status == 'ACTIVE'"><display text="is active: ${name}"/></conditional-field>
+                        <default-field><display text="not active"/></default-field>
+                    </field>
+                    <field name="go"><default-field title="Save"><submit/></default-field></field>
+                </form-single>
+            </widgets>
+            <fail-widgets><label text="No item"/></fail-widgets>
+        </section>
+        <section-iterate name="TagSection" list="tags" entry="tag">
+            <widgets><label text="Tag ${tag} of ${item.name}" type="div"/></widgets>
+        </section-iterate>
+        <link url="viewItem" text="View ${item.itemId}" link-type="anchor">
+            <parameter name="itemId" from="item.itemId"/>
+        </link>
+        <form-list name="ItemList" list="itemList" transition="saveItem">
+            <field name="itemId"><header-field show-order-by="true"/><default-field><display/></default-field></field>
+            <field name="name"><default-field><text-line size="30"/></default-field></field>
+            <field name="price" align="right"><default-field><display format="#,##0.00"/></default-field></field>
+            <field name="go"><default-field title="Save"><submit/></default-field></field>
+        </form-list>
+    </widgets>
+</screen>

@@ -338,10 +338,7 @@ fn qz_signer() -> std::sync::Arc<moqui_lib::signer::SimpleSigner> {
         candidates.push(runtime.join("classes/qz-private-key.pem"));
         candidates.push(runtime.join("conf/qz-private-key.pem"));
     }
-    let mut found = Arc::new(SimpleSigner::from_pem(
-        "qz-private-key.pem",
-        "",
-    ));
+    let mut found = Arc::new(SimpleSigner::from_pem("qz-private-key.pem", ""));
     for path in candidates.iter().filter(|path| path.is_file()) {
         let signer = Arc::new(SimpleSigner::from_file(path));
         let loaded = signer.is_loaded();
@@ -448,6 +445,18 @@ pub(crate) fn output_status() -> u16 {
 /// Whether a response was already written for this request.
 pub(crate) fn output_sent() -> bool {
     WEB.with(|slot| slot.borrow().as_ref().is_some_and(|web| web.sent))
+}
+
+/// Forget what was written, so a response can be sent after a body was taken for another use.
+pub(crate) fn clear_output() {
+    WEB.with(|slot| {
+        if let Some(web) = slot.borrow_mut().as_mut() {
+            web.sent = false;
+            web.status = 200;
+            web.headers.clear();
+            web.body.clear();
+        }
+    });
 }
 
 /// Move the status, headers, body, and sent flag out of the slot.
@@ -815,6 +824,36 @@ fn push_unique(headers: &mut Vec<(String, String)>, name: &str, value: &str) {
         return;
     }
     headers.push((name.to_string(), value.to_string()));
+}
+
+/// Names a response never carries: `WebUtilities.stripCredentialParameters`, compared without case.
+const CREDENTIAL_PARAMETER_NAMES: [&str; 13] = [
+    "password",
+    "oldpassword",
+    "newpassword",
+    "newpasswordverify",
+    "currentpassword",
+    "resetpassword",
+    "authpassword",
+    "api_key",
+    "login_key",
+    "passwordsalt",
+    "passwordhashtype",
+    "passwordbase64",
+    "passwordverify",
+];
+
+/// Remove credential parameters from a JSON value, at any depth. Java strips the top level of a parameter map; a
+/// `UserAccount` value in a screen's data holds the same names as columns, so the nested maps lose them too.
+pub(crate) fn strip_credential_parameters(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            map.retain(|key, _| !CREDENTIAL_PARAMETER_NAMES.contains(&key.to_ascii_lowercase().as_str()));
+            map.values_mut().for_each(strip_credential_parameters);
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(strip_credential_parameters),
+        _ => {}
+    }
 }
 
 pub(crate) fn json_error(status: u16, message: &str) -> WebResponse {

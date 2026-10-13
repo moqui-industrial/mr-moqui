@@ -242,6 +242,78 @@ fn resolve_names(state: &RenderState, names: Vec<String>) -> Result<UrlInstance,
     Ok(url)
 }
 
+/// A link target for a server-static template: where it goes and what it is, with no parameters, since the template evaluates those.
+#[derive(Clone, Debug, Default)]
+pub struct StaticUrl {
+    pub path: String,
+    /// The path leads to a screen or transition of this server.
+    pub exists: bool,
+    pub is_transition: bool,
+    /// A screen, not a transition (and not a URL of another kind).
+    pub is_screen: bool,
+    pub read_only: bool,
+    /// The HTTP method of the transition, lower case.
+    pub method: String,
+}
+
+/// The target of a link written into a static template: the name resolved against the screen being rendered.
+///
+/// A screen that is not mounted in the tree has no path from the root. A name that is a transition of the active screen is still
+/// found, so the compatibility report can check a screen file by itself.
+///
+/// # Errors
+///
+/// Returns an error when the names resolve for a reason other than a missing screen.
+pub fn static_url(state: &RenderState, text: &str, url_type: &str) -> Result<StaticUrl, Error> {
+    if text.contains("${") || !matches!(url_type, "transition" | "screen") {
+        return Ok(StaticUrl {
+            path: text.to_string(),
+            read_only: true,
+            ..StaticUrl::default()
+        });
+    }
+    let active = active_screen_path(state);
+    let names = resolve_screen_path(&active, text);
+    let root = state
+        .url_info
+        .path_defs
+        .first()
+        .map(|def| def.location.clone())
+        .ok_or_else(|| Error::new("no root screen"))?;
+    match ScreenUrlInfo::resolve(&state.factory, &root, &names, state.url_info.last_standalone) {
+        Ok(info) => {
+            let transition = info.transition(None);
+            let is_transition = transition.is_some() || info.target_transition_name.is_some();
+            Ok(StaticUrl {
+                path: encode_path(&info.full_path),
+                exists: true,
+                is_transition,
+                is_screen: !is_transition,
+                read_only: transition.map_or(info.target_transition_name.is_none(), |item| item.read_only),
+                method: transition
+                    .map(|item| item.method.to_ascii_lowercase())
+                    .unwrap_or_default(),
+            })
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            let def = sri::active_def(state);
+            let local = names
+                .strip_prefix(active.as_slice())
+                .and_then(|rest| (rest.len() == 1).then(|| rest[0].clone()))
+                .and_then(|name| def.transition(&name, None).cloned());
+            Ok(StaticUrl {
+                path: encode_path(&names),
+                exists: local.is_some(),
+                is_transition: local.is_some(),
+                is_screen: false,
+                read_only: local.as_ref().is_none_or(|item| item.read_only),
+                method: local.map(|item| item.method.to_ascii_lowercase()).unwrap_or_default(),
+            })
+        }
+        Err(err) => Err(err),
+    }
+}
+
 /// `sri.makeUrlByType(url, urlType, parameterParent, expandTransitionUrl)`.
 ///
 /// # Errors

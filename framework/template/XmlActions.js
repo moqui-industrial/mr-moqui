@@ -142,13 +142,14 @@
             defs = `{${parts.join(", ")}}`;
         }
         const paginate = has(node, "paginate") ? attr(node, "paginate") : "true";
+        // A find method gives the next find, so the variable takes it.
         const requireLine = has(node, "require-parameters")
-            ? `${listName}_xafind.requireSearchFormParameters(${expandExpr(attr(node, "require-parameters"))} === "true");`
+            ? `${listName}_xafind = ${listName}_xafind.requireSearchFormParameters(${expandExpr(attr(node, "require-parameters"))} === "true");`
             : "";
         return js`
             if (true) {
                 ${requireLine}
-                ${listName}_xafind.searchFormMap(${input}, ${defs}, ${jsString(attr(node, "skip-fields"))}, ${jsString(attr(node, "default-order-by"))}, ${paginate});
+                ${listName}_xafind = ${listName}_xafind.searchFormMap(${input}, ${defs}, ${jsString(attr(node, "skip-fields"))}, ${jsString(attr(node, "default-order-by"))}, ${paginate});
             }
         `;
     };

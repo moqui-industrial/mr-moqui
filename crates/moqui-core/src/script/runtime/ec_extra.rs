@@ -77,9 +77,14 @@ fn expand_with<'js>(
     } else {
         template.to_string()
     };
-    with_additional(ctx, map, || {
+    let expanded = with_additional(ctx, map, || {
         expand_here(ctx, &text).map_err(|err| Exception::throw_message(ctx, err.message()))
-    })
+    });
+    // A widget check goes on after a violation, with nothing for the text.
+    match expanded {
+        Err(_) if super::WIDGET_WRAP.with(Cell::get) => Ok(String::new()),
+        other => other,
+    }
 }
 
 fn throw_error(ctx: &Ctx<'_>, err: &Error) -> JsError {
@@ -115,10 +120,16 @@ fn resource_expression<'js>(
             return Null.into_js(&ctx);
         }
         flush_current(&ctx, false)?;
-        with_additional(&ctx, &map, || {
-            eval_js::<JsValue>(&ctx, &as_expression(&expression))
-                .map_err(|err| Exception::throw_message(&ctx, err.message()))
-        })
+        let value = with_additional(&ctx, &map, || {
+            with_widget_ec(&ctx, &expression, None, || {
+                eval_js::<JsValue>(&ctx, &as_expression(&expression))
+            })
+            .map_err(|err| Exception::throw_message(&ctx, err.message()))
+        });
+        match value {
+            Err(_) if super::WIDGET_WRAP.with(Cell::get) => Null.into_js(&ctx),
+            other => other,
+        }
     })
 }
 
@@ -133,11 +144,17 @@ fn resource_condition<'js>(
             return Ok(false);
         }
         flush_current(&ctx, false)?;
-        with_additional(&ctx, &map, || {
-            let value = eval_js::<JsValue>(&ctx, &as_expression(&expression))
-                .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
+        let holds = with_additional(&ctx, &map, || {
+            let value = with_widget_ec(&ctx, &expression, None, || {
+                eval_js::<JsValue>(&ctx, &as_expression(&expression))
+            })
+            .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
             Ok(js_truthy(&value))
-        })
+        });
+        match holds {
+            Err(_) if super::WIDGET_WRAP.with(Cell::get) => Ok(false),
+            other => other,
+        }
     })
 }
 

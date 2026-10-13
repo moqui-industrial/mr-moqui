@@ -234,7 +234,7 @@ pub struct RenderState {
 }
 
 impl RenderState {
-    fn new(
+    pub(super) fn new(
         factory: &Arc<ExecutionContextFactory>,
         facade: &Arc<ScreenFacade>,
         info: Arc<ScreenUrlInfo>,
@@ -379,12 +379,38 @@ pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> 
         encoding,
     ));
     let _active = ActiveGuard::install(Rc::clone(&state));
+    // A screen marked server-static for qvt is sent as a template that holds no request data, from the cache.
+    if state.render_mode == "qvt" && super::statics::serve_template(&state, job.request, job.path)? {
+        return Ok(());
+    }
     let begin = state.url_info.begin_transaction;
     let timeout = state.url_info.transaction_timeout;
     in_transaction(begin, timeout, || render_screens(&state, &facade))?;
     add_client_component_headers(&state);
+    add_server_static_header(&state);
     record_history(job, &state);
     Ok(())
+}
+
+/// A screen that says `server-static` for a mode other than the qvt family gets the cache header, as in Java: it is right only for output
+/// that does not vary. The subscreens-only case the schema marks by itself is not sent that way for html, whose page holds the navbar of the user.
+fn add_server_static_header(state: &RenderState) {
+    let def = &state.url_info.target_screen;
+    let mode = state.render_mode.as_str();
+    if matches!(mode, "qvt" | "qjs" | "qvue")
+        || def.server_static_auto
+        || !web::output_sent()
+        || web::output_status() != 200
+    {
+        return;
+    }
+    let marked = def
+        .server_static
+        .iter()
+        .any(|name| name == "all" || canonical_render_mode(name) == mode);
+    if marked {
+        web::add_header("Cache-Control", super::statics::SERVER_STATIC_CACHE_CONTROL);
+    }
 }
 
 /// The qvt family answers a client that builds a component from the text. A merged response is for one user and one
@@ -584,7 +610,8 @@ fn check_web_settings(info: &ScreenUrlInfo) -> Result<(), Error> {
 /// Every screen that renders and requires authentication needs a user. Anonymous access screens
 /// and `require-authentication="false"` screens do not.
 fn check_authentication(info: &ScreenUrlInfo) -> Result<(), Error> {
-    if user::current_username()?.is_some() {
+    // The compatibility report looks at screens, not at who may see them.
+    if super::statics::report_active() || user::current_username()?.is_some() {
         return Ok(());
     }
     for def in info.render_defs() {
@@ -730,6 +757,11 @@ fn run_transition(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>, info: S
         }
     }
 
+    if transition.implicit_actions {
+        return in_transaction(transition.begin_transaction, None, || {
+            super::statics::run_actions_transition(&state)
+        });
+    }
     let wired = dispatch::run(&dispatch::Call {
         request: job.request,
         transition: &transition,

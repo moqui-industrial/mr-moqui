@@ -90,7 +90,16 @@ impl HostUrl {
     }
 
     fn get_disable_link(&self) -> bool {
-        !self.inner.borrow().exists
+        let disabled = !self.inner.borrow().exists;
+        if disabled {
+            // A static template does not write a disabled link, so a report records that the merged page did.
+            crate::screen::statics::record_note(
+                "disable-link",
+                "link",
+                &format!("{} is not a screen or transition", self.inner.borrow().path()),
+            );
+        }
+        disabled
     }
 
     fn clone_url_instance<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<Class<'js, HostUrl>> {

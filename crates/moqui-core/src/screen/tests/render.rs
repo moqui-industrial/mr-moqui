@@ -168,13 +168,18 @@ fn make_render_without_a_socket_sends_status_content_type_and_an_empty_body() {
         ("text", "text/plain;charset=UTF-8", ""),
         ("xml", "text/xml;charset=UTF-8", "<PickerA>\n</PickerA>\n"),
         ("qjs", "application/javascript;charset=UTF-8", ""),
-        ("qvt", "text/html;charset=UTF-8", ""),
     ] {
         let output = as_mode(mode);
         assert_eq!(output.status, 200, "{mode}");
         assert_eq!(output.content_type(), Some(content_type), "{mode}");
         assert_eq!(output.body_text(), body, "{mode}");
     }
+    // A screen with no widgets is server-static for qvt, so qvt is the script of an empty template, with the header that says so.
+    let qvt = as_mode("qvt");
+    assert_eq!(qvt.status, 200);
+    assert_eq!(qvt.content_type(), Some("text/javascript;charset=UTF-8"));
+    assert_eq!(qvt.header("X-Moqui-Qvt"), Some("static-template"));
+    assert!(qvt.body_text().contains("m.qvtStatic"), "{}", qvt.body_text());
     // The print mode writes an empty document, and xsl-fo is the same mode.
     let print = as_mode("html-print");
     assert_eq!(print.content_type(), Some("text/html;charset=UTF-8"));

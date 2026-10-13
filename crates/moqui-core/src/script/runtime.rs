@@ -84,10 +84,75 @@ const VALUE_OF_MESSAGE: &str =
     "decimal valueOf is not supported; use add, subtract, multiply, divide, eq, compare, or isZero";
 
 thread_local! {
+    /// While true, an expression of a widget runs with the `ec` of the server-static browser host: the compatibility report's full check.
+    static WIDGET_WRAP: Cell<bool> = const { Cell::new(false) };
     static DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
     static STACK: RefCell<ContextStack> = RefCell::new(ContextStack::new());
     static ENGINES: RefCell<Vec<Rc<Engine>>> = const { RefCell::new(Vec::new()) };
     static DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Turn the wrapped `ec` for widget expressions on or off. Returns the setting it replaces.
+pub fn set_widget_wrap(on: bool) -> bool {
+    WIDGET_WRAP.with(|cell| cell.replace(on))
+}
+
+/// The `ec` of the browser host as a wrapper over the real one: the members `plans/QvtServerStatic.md` lists are the real members,
+/// and any other area is reported through `deny` and throws.
+const WRAPPED_EC: &str = r#"(function (real, deny) {
+    const pick = (source, names) => {
+        const out = {};
+        names.forEach((name) => { const value = source[name]; out[name] = typeof value === "function" ? value.bind(source) : value; });
+        return out;
+    };
+    const allowed = {
+        l10n: pick(real.l10n, ["localize", "format", "formatCurrency", "formatCurrencyNoSymbol"]),
+        user: pick(real.user, ["userId", "username", "locale", "timeZone", "userAccount", "getPreference"]),
+        resource: pick(real.resource, ["expand", "expandNoL10n"])
+    };
+    return new Proxy(allowed, {
+        get(target, key) {
+            if (typeof key === "symbol") return undefined;
+            if (Object.prototype.hasOwnProperty.call(target, key)) return target[key];
+            deny(String(key));
+            throw new Error("ec." + String(key) + " is not available in a server-static qvt screen");
+        }
+    });
+})"#;
+
+/// Run `body`, a widget expression, with the wrapped `ec` when a widget check is on. A violation is recorded when the expression
+/// touches an area outside the host, and the error is the caller's: `fallback` turns it into a value so a render goes on.
+fn with_widget_ec<'js, R>(
+    ctx: &Ctx<'js>,
+    expression: &str,
+    fallback: Option<R>,
+    body: impl FnOnce() -> Result<R, Error>,
+) -> Result<R, Error> {
+    if !WIDGET_WRAP.with(Cell::get) {
+        return body();
+    }
+    crate::screen::statics::set_expression(expression);
+    let globals = ctx.globals();
+    let real: JsValue = globals.get("ec").map_err(js_error)?;
+    let deny = Function::new(ctx.clone(), |area: String| {
+        crate::screen::statics::record_wrapped(&area)
+    })
+    .map_err(js_error)?;
+    let make: Function = eval_js(ctx, WRAPPED_EC)?;
+    let wrapper: JsValue = make
+        .call((real.clone(), deny))
+        .catch(ctx)
+        .map_err(|caught| Error::new(caught.to_string()))?;
+    globals.set("ec", wrapper).map_err(js_error)?;
+    // The expression may call back into the host (expand inside an expression): that is not checked twice.
+    WIDGET_WRAP.with(|cell| cell.set(false));
+    let result = body();
+    WIDGET_WRAP.with(|cell| cell.set(true));
+    globals.set("ec", real).map_err(js_error)?;
+    match (result, fallback) {
+        (Err(_), Some(value)) => Ok(value),
+        (other, _) => other,
+    }
 }
 
 /// Bounds script time on this thread to a transaction's remaining time.
@@ -200,8 +265,10 @@ pub fn eval_condition(expression: &str) -> Result<bool, Error> {
         return Err(Error::new("script source contains a null byte"));
     }
     with_context(|ctx| {
-        let value = eval_js::<JsValue>(ctx, &as_expression(expression))?;
-        Ok(js_truthy(&value))
+        with_widget_ec(ctx, expression, None, || {
+            let value = eval_js::<JsValue>(ctx, &as_expression(expression))?;
+            Ok(js_truthy(&value))
+        })
     })
 }
 
@@ -573,11 +640,11 @@ where
 
 fn expand_in(ctx: &Ctx<'_>, template: &str) -> Result<String, Error> {
     if let Some(function) = restore_template(ctx, template)? {
-        return call_template(ctx, function);
+        return with_widget_ec(ctx, template, None, || call_template(ctx, function));
     }
     let function = eval_js::<Function>(ctx, &template_source(template))?;
     save_template(ctx, template, &function);
-    call_template(ctx, function)
+    with_widget_ec(ctx, template, None, || call_template(ctx, function))
 }
 
 /// Run a compiled fancy template function and return its text. The function is kept per engine.
@@ -801,8 +868,10 @@ pub fn eval_value(expression: &str) -> Result<Value, Error> {
         return Err(Error::new("script source contains a null byte"));
     }
     with_context(|ctx| {
-        let evaluated = eval_js::<JsValue>(ctx, &as_expression(expression))?;
-        js_value_to_host(ctx, &evaluated)
+        with_widget_ec(ctx, expression, None, || {
+            let evaluated = eval_js::<JsValue>(ctx, &as_expression(expression))?;
+            js_value_to_host(ctx, &evaluated)
+        })
     })
 }
 
@@ -812,8 +881,10 @@ pub fn eval_map(expression: &str) -> Result<std::collections::BTreeMap<String, V
         return Err(Error::new("script source contains a null byte"));
     }
     with_context(|ctx| {
-        let evaluated = eval_js::<JsValue>(ctx, &as_expression(expression))?;
-        object_map(ctx, &evaluated)
+        with_widget_ec(ctx, expression, None, || {
+            let evaluated = eval_js::<JsValue>(ctx, &as_expression(expression))?;
+            object_map(ctx, &evaluated)
+        })
     })
 }
 

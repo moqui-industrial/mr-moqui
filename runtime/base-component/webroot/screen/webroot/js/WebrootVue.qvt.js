@@ -123,12 +123,16 @@
         return markRaw({ template: "<div" + (divId && divId.length > 0 ? ' id="' + divId + '"' : "") + ">" + templateText + "</div>" });
     };
 
-    // How a qvt response is turned into a component, by the X-Moqui-Qvt response header. A merged fragment is a
-    // server-merged template. A static template is a data-free template that fetches the data of its screen: it is
-    // registered here by the code that implements it, and a response of that kind is an error until then.
+    // How a qvt response is turned into a component, by the X-Moqui-Qvt response header. A merged fragment is a server-merged template
+    // (the compiler build of Vue compiles it). A static template is a script that registers a render function, and its handler is
+    // below with the rest of the server-static client. A handler may return the component or a promise of it.
     moqui.qvtHandlers = {
-        "merged-fragment": (text, info) => moqui.mergedFragmentComponent(text, info.divId),
-        "static-template": () => { throw new Error("A server-static qvt template is not supported by this client"); }
+        "merged-fragment": (text, info) => {
+            if (qvt.config && qvt.config.qvt && qvt.config.qvt.build === "runtime") {
+                throw new Error("This page loads the runtime build of Vue and cannot compile a server-merged qvt response");
+            }
+            return moqui.mergedFragmentComponent(text, info.divId);
+        }
     };
 
     const addStyle = (css, scoped) => {
@@ -167,9 +171,12 @@
         const mobile = root.innerWidth <= 600 || (root.Quasar && root.Quasar.Platform.is.mobile);
         if (mobile && (!search || search.indexOf("_uiType") === -1)) search = (search ? search + "&" : "") + "_uiType=mobile";
 
+        const use = { path, extraPath, search, divId };
+        // A server-static template is cached as the means to make a component, since each use fetches its own data.
+        const give = (comp) => callback(comp && comp.mqStatic ? comp.mqStatic(use) : comp);
         const cached = moqui.componentCache.get(path);
         if (cached) {
-            callback(cached);
+            give(cached);
             return { abort() {} };
         }
 
@@ -192,7 +199,7 @@
 
         const done = (comp, cacheable) => {
             if (cacheable) moqui.componentCache.put(path, comp);
-            callback(comp);
+            give(comp);
         };
         moqui.request(url, options).then((result) => {
             if (result.status === 205) {
@@ -226,7 +233,7 @@
                 const handlerName = result.headers.get("X-Moqui-Qvt") || "merged-fragment";
                 const handler = moqui.qvtHandlers[handlerName];
                 if (!handler) throw new Error("Unknown X-Moqui-Qvt response: " + handlerName);
-                done(markRaw(handler(text, { path, url, divId, headers: result.headers, search })), cacheable);
+                return Promise.resolve(handler(text, { path, url, divId, headers: result.headers, search })).then((comp) => done(markRaw(comp), cacheable));
             }
         }).catch((err) => {
             if (err instanceof Error) {
@@ -243,6 +250,314 @@
         if (rootVm()) rootVm().loading = 0;
         moqui.handleAjaxError(err);
     };
+
+    /* ========== server-static screens ========== */
+
+    // A screen sent as a data-free template (plans/QvtServerStatic.md) is a script that registers a render function in moqui.qvtStatic[path],
+    // the server compiled it with Vue's prefixIdentifiers option so it needs no compiler and no eval. The screen's data is fetched from
+    // <path>/actions, and each form-list's rows from <path>/actions/<form>. Expressions in the template read names through a scope chain.
+    moqui.qvtStatic = moqui.qvtStatic || {};
+    moqui.qvtStaticTags = moqui.qvtStaticTags || {};
+
+    const hasOwn = (obj, key) => obj !== null && obj !== undefined && typeof obj === "object" && Object.prototype.hasOwnProperty.call(obj, key);
+    const read = (source) => (typeof source === "function" ? source() : source);
+
+    // A scope: a name is looked up in the extra map, then the map, then the scope around it, as the context stack finds a name. Each of the
+    // three is a map or a function that gives one. $scope is the scope itself, for a name that is not an identifier.
+    qvt.makeScope = (map, parent, extra) => {
+        const scope = new Proxy({}, {
+            get(target, key) {
+                if (typeof key === "symbol") return undefined;
+                if (key === "$scope") return scope;
+                const extras = read(extra);
+                if (hasOwn(extras, key)) return extras[key];
+                const values = read(map);
+                if (hasOwn(values, key)) return values[key];
+                return parent ? parent[key] : undefined;
+            },
+            has(target, key) {
+                if (typeof key !== "string") return false;
+                return key === "$scope" || hasOwn(read(extra), key) || hasOwn(read(map), key) || (parent ? key in parent : false);
+            },
+            set(target, key, value) {
+                const extras = read(extra);
+                const values = read(map);
+                if (hasOwn(extras, key)) extras[key] = value;
+                else if (hasOwn(values, key) || !parent) { if (values && typeof values === "object") values[key] = value; }
+                else parent[key] = value;
+                return true;
+            }
+        });
+        return scope;
+    };
+
+    // The helpers a template calls as $mq: the few things an expression needs that are not in the language.
+    const NUMBER_TEXT = /^[-+]?\d+(\.\d+)?$/;
+    qvt.helpers = {
+        str: (value) => (value === null || value === undefined ? "" : String(value)),
+        dflt: (value, fallback) => (value === null || value === undefined || value === "" ? fallback : value),
+        nul: (value) => (value === undefined || value === "" ? null : value),
+        // The current value of a drop-down, check or radio: a list for several, else the first of a comma list, as the server reads it.
+        cur: (value, multiple, none) => {
+            let text = value === null || value === undefined || value === "" ? (none === undefined || none === null ? "" : String(none)) : value;
+            if (Array.isArray(text)) return multiple ? text.map(String) : text.length ? String(text[0]) : "";
+            text = String(text);
+            if (text.charAt(0) === "[") text = text.substring(1, text.length - 1).replace(/ /g, "");
+            const list = text ? text.split(",") : [];
+            return multiple ? list : list.length ? list[0] : "";
+        },
+        // A value as text with a Java pattern. A decimal arrives as a string, so the pattern says what it is.
+        fmt: (value, pattern, type) => qvt.formatValue(value, pattern, type),
+        merge: (...maps) => {
+            const out = {};
+            maps.forEach((map) => { if (map && typeof map === "object") Object.keys(map).forEach((key) => { out[key] = map[key]; }); });
+            return out;
+        },
+        qs: (params, map) => {
+            const merged = qvt.helpers.merge(map, params);
+            const pairs = [];
+            Object.keys(merged).forEach((key) => {
+                const value = merged[key];
+                if (value === null || value === undefined || value === "" || key === "moquiSessionToken") return;
+                if (Array.isArray(value)) value.forEach((item) => pairs.push(encodeURIComponent(key) + "=" + encodeURIComponent(item)));
+                else pairs.push(encodeURIComponent(key) + "=" + encodeURIComponent(value));
+            });
+            return pairs.join("&");
+        },
+        url: (path, params, map) => {
+            const query = qvt.helpers.qs(params, map);
+            return query ? path + (path.indexOf("?") >= 0 ? "&" : "?") + query : path;
+        },
+        // The style of a field shown only while another field has a value.
+        shown: (expected, actual) => {
+            let wanted = expected;
+            if (typeof wanted === "string" && wanted.indexOf(",") >= 0) wanted = wanted.split(",");
+            const holds = Array.isArray(wanted) ? wanted.map(String).includes(String(actual)) : String(wanted) === String(actual);
+            return { display: holds ? "" : "none" };
+        }
+    };
+
+    qvt.formatValue = (value, pattern, type) => {
+        if (value === null || value === undefined || value === "") return "";
+        let kind = type === "date-time" ? "timestamp" : type;
+        if (!kind && pattern && typeof value === "string") {
+            if (NUMBER_TEXT.test(value.trim()) && /[#0]/.test(pattern) && !/[yMdHhms]/.test(pattern.replace(/'[^']*'/g, ""))) kind = "number";
+            else if (/^\d{4}-\d\d-\d\d/.test(value)) kind = /^\d{4}-\d\d-\d\d$/.test(value) ? "date" : "timestamp";
+            else if (/^\d\d:\d\d/.test(value)) kind = "time";
+        }
+        try {
+            return moqui.l10n.format(value, pattern || undefined, kind);
+        } catch (err) {
+            return String(value);
+        }
+    };
+
+    // The ec of a server-static screen (the table in plans/QvtServerStatic.md). It is a window on the session and the formatter, not
+    // the server's ec: any other member throws, so a screen that needs more than this has to prepare that data in its actions.
+    const unavailable = (name) => new Error("ec." + name + " is not available in a server-static qvt screen; prepare it in the screen actions");
+    qvt.makeEc = (config) => {
+        const settings = config || {};
+        const user = {
+            userId: settings.userId || "", username: settings.username || "", locale: settings.locale || "", timeZone: settings.timeZone || "",
+            userAccount: Object.assign({ partyId: "", emailAddress: "", userFullName: settings.userFullName || "", locale: settings.locale || "", timeZone: settings.timeZone || "" }, settings.userAccount),
+            getPreference: (key) => {
+                const preferences = settings.preferences || {};
+                return Object.prototype.hasOwnProperty.call(preferences, key) ? preferences[key] : null;
+            }
+        };
+        ["currentPassword", "currentPasswordSalt", "passwordSalt", "passwordHashType", "passwordBase64", "passwordHint"].forEach((name) => { delete user.userAccount[name]; });
+        const l10n = {
+            localize: (original) => moqui.l10n.localize(original),
+            format: (value, pattern, type) => qvt.formatValue(value, pattern, type),
+            formatCurrency: (amount, uomId, fractionDigits) => moqui.l10n.formatCurrency(amount, uomId, fractionDigits),
+            formatCurrencyNoSymbol: (amount, uomId, fractionDigits) => moqui.l10n.formatCurrencyNoSymbol(amount, uomId, fractionDigits)
+        };
+        // The text is localized when it is shorter than 256 characters, as the server does. The expressions in it come as a table of
+        // functions made by the compiled template, keyed by the expression text, so nothing here compiles or evaluates code.
+        const expand = (text, expressions, localize) => {
+            if (text === null || text === undefined || text === "") return "";
+            let result = String(text);
+            if (localize && result.length < 256) result = moqui.l10n.localize(result);
+            if (result.indexOf("$") < 0 || result.charAt(result.length - 1) === "$") return result;
+            let out = "";
+            let i = 0;
+            while (i < result.length) {
+                if (result.charAt(i) === "$" && result.charAt(i + 1) === "{") {
+                    let depth = 1;
+                    let j = i + 2;
+                    let quote = "";
+                    while (j < result.length && depth > 0) {
+                        const ch = result.charAt(j);
+                        if (quote) { if (ch === "\\") j++; else if (ch === quote) quote = ""; }
+                        else if (ch === "'" || ch === '"' || ch === "`") quote = ch;
+                        else if (ch === "{") depth++;
+                        else if (ch === "}") depth--;
+                        j++;
+                    }
+                    if (depth === 0) {
+                        const key = result.slice(i + 2, j - 1).trim();
+                        const compute = expressions && expressions[key];
+                        if (typeof compute !== "function") throw new Error("The expression ${" + key + "} is not part of this screen's template, so it cannot be evaluated in the browser");
+                        const value = compute();
+                        out += value === null || value === undefined ? "" : String(value);
+                        i = j;
+                        continue;
+                    }
+                }
+                out += result.charAt(i);
+                i++;
+            }
+            return out;
+        };
+        const members = {
+            l10n, user,
+            resource: { expand: (text, expressions) => expand(text, expressions, true), expandNoL10n: (text, expressions) => expand(text, expressions, false) }
+        };
+        return new Proxy(members, {
+            get(target, key) {
+                if (typeof key === "symbol" || key === "then" || key === "toJSON") return undefined;
+                if (Object.prototype.hasOwnProperty.call(target, key)) return target[key];
+                throw unavailable(String(key));
+            },
+            has: (target, key) => Object.prototype.hasOwnProperty.call(target, key)
+        });
+    };
+
+    // The scope a screen is rendered with: its package, the host, and the instance for the names Vue itself gives a template.
+    const rootScope = (vm, pkg) => {
+        const fallback = new Proxy({}, { get: (target, key) => (typeof key === "string" && key.charAt(0) === "$" ? vm[key] : undefined), has: (target, key) => typeof key === "string" && key.charAt(0) === "$" });
+        const host = { ec: qvt.ec(), $mq: qvt.helpers };
+        return qvt.makeScope(pkg, fallback, host);
+    };
+    qvt.ec = () => {
+        if (!qvt.hostEc) qvt.hostEc = qvt.makeEc(qvt.config || moqui.config || {});
+        return qvt.hostEc;
+    };
+
+    // The component of one use of a static template. Its data is fetched when it is made, so a cached template never shows another request's values.
+    qvt.staticComponent = (key, factory, use) => {
+        const parameters = use && use.search ? moqui.searchToObj(use.search) : {};
+        let render = null;
+        return markRaw({
+            name: "mStaticScreen",
+            data() { return { pkg: null }; },
+            provide() {
+                const scope = rootScope(this, () => this.pkg);
+                this.scopeObj = scope;
+                return { mqScope: scope, mqScreen: { path: key, parameters } };
+            },
+            created() { this.mqCache = []; this.loadPackage(); },
+            methods: {
+                loadPackage() {
+                    moqui.request(key + "/actions", { params: parameters }).then((result) => { this.pkg = result.json && moqui.isPlainObject(result.json) ? result.json : {}; }, moqui.handleLoadError);
+                }
+            },
+            render() {
+                const h = root.Vue.h;
+                if (this.pkg === null) return h("div", { id: use && use.divId ? use.divId : undefined, class: "spinner" }, [h("div")]);
+                if (render === null) render = factory(root.Vue);
+                return h("div", { id: use && use.divId ? use.divId : undefined }, [render.call(this, this.scopeObj, this.mqCache)]);
+            }
+        });
+    };
+
+    // The handler of X-Moqui-Qvt: static-template. The body of the response is the script, which a script element loads (a page whose policy has no
+    // unsafe-eval cannot evaluate fetched text), so the cache and the validator of the response serve the second request.
+    moqui.qvtHandlers["static-template"] = (text, info) => new Promise((resolve, reject) => {
+        const key = info.path;
+        const tag = info.headers && info.headers.get ? info.headers.get("ETag") : null;
+        const made = () => {
+            const factory = moqui.qvtStatic[key];
+            if (typeof factory !== "function") reject(new Error("The server-static template of " + key + " did not register"));
+            else resolve({ mqStatic: (use) => qvt.staticComponent(key, factory, use) });
+        };
+        if (typeof moqui.qvtStatic[key] === "function" && tag && moqui.qvtStaticTags[key] === tag) { made(); return; }
+        const script = root.document.createElement("script");
+        script.src = key + "." + moqui.urlExtensions.qvt;
+        script.onload = () => { if (tag) moqui.qvtStaticTags[key] = tag; script.remove(); made(); };
+        script.onerror = () => { script.remove(); reject(new Error("Could not load the server-static template of " + key)); };
+        root.document.head.appendChild(script);
+    });
+
+    /* ========== scope and static form-list ========== */
+
+    // Gives its slot a scope over the map of a form-single or an entry: names are looked up in extra, then value, then the scope around it.
+    component("m-scope", {
+        name: "mScope",
+        props: { value: null, extra: null },
+        inject: { mqScope: { default: null } },
+        provide() {
+            const scope = qvt.makeScope(() => this.value, this.mqScope, () => this.extra);
+            this.scopeObj = scope;
+            return { mqScope: scope };
+        },
+        render() {
+            const slot = this.$slots.default;
+            return slot ? slot(this.scopeObj) : null;
+        }
+    });
+
+    // A form-list of a static screen. It fetches <screen>/actions/<name>, which answers the list and its page keys, and writes the row slot for
+    // each row with the row on the scope of the screen: the slot's _ctx. Sorting and paging change the request and fetch again.
+    component("m-static-form-list", {
+        name: "mStaticFormList",
+        inject: { mqScope: { default: null }, mqScreen: { default: null } },
+        props: { name: { type: String, required: true }, id: String, action: String, listName: String, multi: Boolean, skipForm: Boolean, skipHeader: Boolean },
+        data() { return { pkg: null, searchObj: {}, loading: false }; },
+        computed: {
+            idVal() { return this.id && this.id.length ? this.id : this.name; },
+            listKey() { return this.listName || this.name; },
+            rows() { const list = this.pkg ? this.pkg[this.listKey] : null; return Array.isArray(list) ? list : []; },
+            paginate() {
+                const pkg = this.pkg;
+                const name = this.listKey;
+                if (!pkg || pkg[name + "Count"] === undefined) return null;
+                const num = (suffix) => Number(pkg[name + suffix]);
+                return { count: num("Count"), pageIndex: num("PageIndex"), pageSize: num("PageSize"), pageMaxIndex: num("PageMaxIndex"), pageRangeLow: num("PageRangeLow"), pageRangeHigh: num("PageRangeHigh") };
+            }
+        },
+        methods: {
+            fetchRows() {
+                const screen = this.mqScreen || { path: this.$root.currentPath, parameters: {} };
+                this.loading = true;
+                const params = Object.assign({}, screen.parameters, this.searchObj);
+                moqui.request(screen.path + "/actions/" + encodeURIComponent(this.name), { params }).then((result) => {
+                    this.loading = false;
+                    this.pkg = result.json && moqui.isPlainObject(result.json) ? result.json : {};
+                }, (err) => { this.loading = false; moqui.handleLoadError(err); });
+            },
+            setPageIndex(index) { this.searchObj = Object.assign({}, this.searchObj, { pageIndex: index }); this.fetchRows(); },
+            sortBy(field) { this.searchObj = Object.assign({}, this.searchObj, { orderByField: field, pageIndex: 0 }); this.fetchRows(); },
+            orderBy(field) {
+                const current = this.searchObj.orderByField || (this.pkg && this.pkg.orderByField) || "";
+                if (current !== field) return "";
+                return field.charAt(0) === "-" ? "desc" : "asc";
+            }
+        },
+        created() { this.searchObj = {}; this.fetchRows(); },
+        render() {
+            const V = root.Vue;
+            const h = V.h;
+            const formScope = qvt.makeScope(() => this.pkg || {}, this.mqScope);
+            const slots = this.$slots;
+            const header = slots.header ? slots.header({ sortBy: this.sortBy, orderBy: this.orderBy, action: this.$root && this.$root.currentLinkPath, orderByField: this.searchObj.orderByField || (this.pkg && this.pkg.orderByField) || "" }) : null;
+            const rowNodes = [];
+            this.rows.forEach((row, rowIndex) => {
+                const scope = qvt.makeScope(() => Object.assign({}, this.rows[rowIndex], { rowIndex, _formMap: this.rows[rowIndex] }), formScope);
+                rowNodes.push(h(V.Fragment, { key: rowIndex }, slots.row ? slots.row(scope) : []));
+            });
+            const nav = h("div", { class: "form-list-nav-row row items-center" }, [
+                h(V.resolveComponent("q-space")),
+                h(V.resolveComponent("m-form-paginate"), { paginate: this.paginate, formList: this }),
+                h(V.resolveComponent("m-form-go-page"), { idVal: this.idVal, formList: this })
+            ]);
+            const table = h("div", { class: "table q-table", id: this.idVal + "_table" }, [
+                this.skipHeader ? null : h("div", { class: "thead" }, [h("div", { class: "tr" }, header)]),
+                h("div", { class: "tbody" }, rowNodes.length || this.loading ? rowNodes : [h("div", { class: "tr" }, [h("div", { class: "td" }, moqui.l10n.localize("No results found"))])])
+            ]);
+            return h("div", { class: "q-my-sm q-table__container q-table__card q-table--horizontal-separator q-table--dense q-table--flat" }, [nav, table]);
+        }
+    });
 
     /* ========== inline components ========== */
 

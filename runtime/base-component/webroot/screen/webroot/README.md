@@ -51,6 +51,12 @@ language pack that matches the user locale, `MoquiLib.js`, `MoquiL10n.js` and `W
 Quasar and `WebrootVue.qvt.css` style sheets of the `DEFAULT_QUASAR` theme (`data/WebrootQuasarThemeData.xml`). Chart.js, Mermaid, Marked, DOMPurify and
 QZ Tray are loaded by the component that needs them, from the paths in the table. The Assist panel is not ported yet.
 
+A screen marked `server-static` for `qvt` is sent as a script (`X-Moqui-Qvt: static-template`) that registers a compiled render function in
+`moqui.qvtStatic[path]`, and the client loads it with a script element, so the page needs no `unsafe-eval` for it. The runtime build of Vue
+is for a page whose every qvt response is of that kind, but the `m-*` components and the shell root still have string templates that only the
+compiler build compiles, so `webapp_qvt_static_only=true` (which loads `vue.runtime.global.prod.js` and says `build: "runtime"` in the settings) waits
+for those templates to be precompiled. `/qapps` loads the compiler build by default.
+
 The Assist client of the Java tree (`js/assist/AssistOpenUiLibrary.js`, not copied here) names the old paths `/libs/Chart.js/Chart.min.js`,
 `/libs/marked/marked.umd.min.js`, `/libs/dompurify/purify.min.js`, `/libs/highlight.js/highlight.min.js` and
 `/libs/highlight.js/styles/github-dark.min.css`. Here they are `chartjs/chart.umd.min.js`, `marked/marked.umd.min.js` (same),

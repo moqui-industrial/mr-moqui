@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Not marked: qvt for this screen is a server merge. -->
+<screen require-authentication="false">
+    <actions><set field="plainValue" value="PLAIN-MERGED-VALUE"/></actions>
+    <widgets><label text="${plainValue}"/></widgets>
+</screen>

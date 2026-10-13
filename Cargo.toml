@@ -113,6 +113,8 @@ rquickjs = "0.14"
 # raise the MSRV of lib or core. 0.139.0 declares rust-version 1.94.0.
 # 0.140 and later declare 1.95 or higher.
 oxc_parser = "0.139"
+# The ESTree JSON of a parsed expression, for the server-static compatibility walk. Already in the tree under oxc_parser.
+oxc_ast = { version = "0.139", features = ["serialize"] }
 # HTML cleaning for allow-html="safe" service parameters. MIT OR Apache-2.0. Builder::default() is the
 # conservative maintained allow-list; there is no custom list in this repo.
 ammonia = "4"

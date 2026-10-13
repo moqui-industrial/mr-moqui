@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A server-static screen over entities: a find with search-form-inputs paging, and display-entity text, options and a set that are looked up on the server. -->
+<screen require-authentication="false" server-static="qvt">
+    <actions>
+        <entity-find-one entity-name="moqui.basic.EnumerationType" value-field="enumType"/>
+    </actions>
+    <widgets>
+        <label text="Total ${enumListCount}"/>
+        <form-single name="TypeForm" map="enumType">
+            <field name="enumTypeId"><default-field><display/></default-field></field>
+            <field name="typeText" from="enumTypeId"><default-field>
+                <set field="shown" from="enumTypeId + '-set'"/>
+                <display-entity entity-name="moqui.basic.EnumerationType" text="Type: ${description}"/>
+            </default-field></field>
+            <field name="pick"><default-field>
+                <drop-down>
+                    <entity-options key="${enumTypeId}" text="${description}">
+                        <entity-find entity-name="moqui.basic.EnumerationType"><order-by field-name="enumTypeId"/></entity-find>
+                    </entity-options>
+                </drop-down>
+            </default-field></field>
+        </form-single>
+        <form-list name="EnumList" list="enumList">
+            <entity-find entity-name="moqui.basic.Enumeration">
+                <search-form-inputs default-order-by="sequenceNum,enumId" paginate="true"/>
+            </entity-find>
+            <row-actions><set field="upper" from="description.toUpperCase()"/></row-actions>
+            <field name="enumId"><header-field show-order-by="true"><text-find/></header-field><default-field><display/></default-field></field>
+            <field name="enumTypeId"><default-field><display-entity entity-name="moqui.basic.EnumerationType"/></default-field></field>
+            <field name="upper"><default-field><display/></default-field></field>
+        </form-list>
+    </widgets>
+</screen>

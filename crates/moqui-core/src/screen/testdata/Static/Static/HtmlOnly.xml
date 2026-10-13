@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Marked for html only: html gets the cache header, qvt stays a server merge. -->
+<screen require-authentication="false" server-static="html">
+    <widgets><label text="html only"/></widgets>
+</screen>

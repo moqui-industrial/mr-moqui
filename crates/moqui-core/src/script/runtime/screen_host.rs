@@ -675,6 +675,49 @@ fn sri_get_section_included_node<'js>(ctx: Ctx<'js>, node: JsValue<'js>) -> rqui
     })
 }
 
+/// `sri.staticUrl(text, urlType)`: where a link of a static template goes, with no parameters.
+fn sri_static_url<'js>(ctx: Ctx<'js>, text: String, url_type: Opt<String>) -> rquickjs::Result<Object<'js>> {
+    host_guard(&ctx, || {
+        let found = with_render(&ctx, false, |state| {
+            crate::screen::urls::static_url(state, &text, url_type.0.as_deref().unwrap_or("transition"))
+        })?;
+        let object = Object::new(ctx.clone())?;
+        object.set("path", found.path)?;
+        object.set("exists", found.exists)?;
+        object.set("isTransition", found.is_transition)?;
+        object.set("isScreen", found.is_screen)?;
+        object.set("readOnly", found.read_only)?;
+        object.set("method", found.method)?;
+        Ok(object)
+    })
+}
+
+/// `sri.staticCheck(json)`: the expressions a static macro wrote, as `[{expr, element, attr}]`. Only a compatibility report looks at them.
+fn sri_static_check(ctx: Ctx<'_>, json: String) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        if let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(&json) {
+            for item in items {
+                let text = |key: &str| {
+                    item.get(key)
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("")
+                        .to_string()
+                };
+                crate::screen::statics::record_ast(&text("expr"), &text("element"), &text("attr"));
+            }
+        }
+        Ok(())
+    })
+}
+
+/// `sri.staticNote(kind, element, detail)`: server-only work a static macro could not write into the template.
+fn sri_static_note(ctx: Ctx<'_>, kind: String, element: String, detail: String) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        crate::screen::statics::record_note(&kind, &element, &detail);
+        Ok(())
+    })
+}
+
 /// Build the global `sri`.
 pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     let sri = caught(ctx, "sri", Object::new(ctx.clone()))?;
@@ -729,6 +772,9 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("getFieldValidation", sri_get_field_validation);
     method!("getMenuItems", sri_get_menu_items);
     method!("getMenuData", sri_get_menu_data);
+    method!("staticUrl", sri_static_url);
+    method!("staticCheck", sri_static_check);
+    method!("staticNote", sri_static_note);
     super::urls::install(ctx, &sri)?;
     Ok(sri)
 }

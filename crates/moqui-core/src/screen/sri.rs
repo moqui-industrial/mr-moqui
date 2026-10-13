@@ -319,7 +319,7 @@ fn render_section_of(state: &RenderState, runner: &dyn Runner, def: &Arc<ScreenD
 }
 
 /// The entries of a section-iterate list: each item, and for a map its key and value.
-fn iteration_entries(value: &Value) -> Vec<(Option<String>, Value)> {
+pub(super) fn iteration_entries(value: &Value) -> Vec<(Option<String>, Value)> {
     match value {
         Value::Map(entries) => entries
             .iter()

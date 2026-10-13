@@ -194,7 +194,12 @@ fn the_qvt_client_passes_its_node_tests() {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/webroot/screen/webroot/js");
     let mut command = std::process::Command::new("node");
     command.arg("--test");
-    for name in ["MoquiLib.test.js", "MoquiL10n.test.js", "WebrootVue.qvt.test.js"] {
+    for name in [
+        "MoquiLib.test.js",
+        "MoquiL10n.test.js",
+        "WebrootVue.qvt.test.js",
+        "WebrootVue.qvt.static.test.js",
+    ] {
         command.arg(dir.join(name));
     }
     let output = match command.output() {

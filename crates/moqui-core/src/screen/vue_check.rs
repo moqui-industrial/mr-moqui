@@ -17,6 +17,8 @@
 //! component. This is the check that "the qvt response is a component the Vue 3 compiler can compile" (Gate 3) runs
 //! for the fixture screens, and the compiler the server-static work compiles with.
 
+use std::cell::RefCell;
+
 use rquickjs::{CatchResultExt, Context, Runtime};
 
 use crate::context::Error;
@@ -51,5 +53,79 @@ pub fn compile_errors(compiler_source: &str, templates: &[String]) -> Result<Vec
             .catch(&ctx)
             .map_err(|err| Error::new(format!("the Vue compiler failed: {err}")))?;
         serde_json::from_str(&json).map_err(|err| Error::new(err.to_string()))
+    })
+}
+
+/// A QuickJS runtime that has the compiler loaded, kept for the thread: loading the bundle costs more than a compile.
+struct Compiler {
+    context: Context,
+    // The context borrows this runtime. Drop order frees the context first.
+    #[allow(dead_code)]
+    runtime: Runtime,
+}
+
+thread_local! {
+    static COMPILER: RefCell<Option<(u64, Compiler)>> = const { RefCell::new(None) };
+}
+
+fn compiler_for(source: &str) -> Result<Compiler, Error> {
+    let runtime = Runtime::new().map_err(|err| Error::new(err.to_string()))?;
+    runtime.set_memory_limit(MEMORY_LIMIT);
+    runtime.set_max_stack_size(STACK_LIMIT);
+    let context = Context::full(&runtime).map_err(|err| Error::new(err.to_string()))?;
+    context.with(|ctx| {
+        ctx.eval::<(), _>(source)
+            .catch(&ctx)
+            .map_err(|err| Error::new(format!("the Vue compiler did not load: {err}")))
+    })?;
+    Ok(Compiler { context, runtime })
+}
+
+fn source_key(source: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    source.len().hash(&mut hasher);
+    source.get(..64).hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Compile a template to a render function, as the server-static qvt does when it caches a screen: `prefixIdentifiers`
+/// output, so the code reads the scope as `_ctx.name` and has no `with`. The result is the body of a function of `Vue`
+/// that returns `render(_ctx, _cache)`.
+///
+/// # Errors
+///
+/// Returns an error when the compiler does not load or reports any error for the template.
+pub fn compile_render(compiler_source: &str, template: &str) -> Result<String, Error> {
+    let key = source_key(compiler_source);
+    COMPILER.with(|slot| {
+        if slot.borrow().as_ref().is_none_or(|(held, _)| *held != key) {
+            *slot.borrow_mut() = Some((key, compiler_for(compiler_source)?));
+        }
+        let guard = slot.borrow();
+        let (_, compiler) = guard.as_ref().ok_or_else(|| Error::new("the Vue compiler did not start"))?;
+        let input = serde_json::to_string(template).map_err(|err| Error::new(err.to_string()))?;
+        let script = format!(
+            "(function () {{ var errors = []; var result = VueCompilerDOM.compile({input}, {{ prefixIdentifiers: true, mode: 'function',
+                onError: function (err) {{ errors.push(err.code + ' ' + err.message + (err.loc ? ' at ' + err.loc.start.line + ':' + err.loc.start.column : '')); }} }});
+                return JSON.stringify({{ code: result.code, errors: errors }}); }})()"
+        );
+        let json: String = compiler.context.with(|ctx| {
+            ctx.eval(script)
+                .catch(&ctx)
+                .map_err(|err| Error::new(format!("the Vue compiler failed: {err}")))
+        })?;
+        let parsed: serde_json::Value = serde_json::from_str(&json).map_err(|err| Error::new(err.to_string()))?;
+        let errors: Vec<String> = parsed["errors"]
+            .as_array()
+            .map(|list| list.iter().filter_map(|item| item.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        if !errors.is_empty() {
+            return Err(Error::new(format!("the Vue compiler rejected the template: {}", errors.join("; "))));
+        }
+        parsed["code"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| Error::new("the Vue compiler gave no code"))
     })
 }

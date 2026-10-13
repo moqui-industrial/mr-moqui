@@ -457,6 +457,7 @@ mod modules;
 mod print;
 mod qvt;
 mod render;
+mod statics;
 mod walk;
 mod widgets;
 

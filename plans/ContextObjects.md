@@ -297,6 +297,28 @@ The qvt mode, its shell and the menu data.
 - Still deferred: `getFieldTransitionValue` (a `dynamic-options` label for a value that has no option is the value), `getUserFormListFinds` and the saved find list,
   `getFormInstance().getFieldValidationJsRules` (the rules come from `getFieldValidation`: number, digits and a pattern).
 
+### Added by phase 8 slice 7
+
+Server-static qvt (`plans/QvtServerStatic.md`).
+
+- `sri.staticUrl(text, urlType)`: where a link of a static template goes, with no parameters: `{path, exists, isTransition, isScreen, readOnly, method}`. The
+  name is resolved against the screen being rendered, and a name that is a transition of the active screen is found when the screen is not mounted. A
+  text with `${` is not resolved.
+- `sri.staticCheck(json)` and `sri.staticNote(kind, element, detail)`: the expressions a static macro wrote (`[{expr, element, attr}]`) and the server-only
+  work it could not write. Both do nothing unless a compatibility report is being made.
+- `ScreenQvtStatic.js` runtime `$mqQvtS` (`$s`): it writes the template. The generated unit reads no request data and runs no action.
+- Server package (`GET {screen}/actions`): the unwrapped context with credential names removed at any depth, the lists and page keys of every form-list removed
+  (`{list}`, `Count`, `PageIndex`, `PageSize`, `PageMaxIndex`, `PageRangeLow`, `PageRangeHigh`), and `mqExtra_{form}` for each form-single: `{field}_display`
+  (display-entity and entity links), the fields its `set` elements made, and the option lists of its drop-downs under `mqOpt_{form}_{field}_{sub}_{widget}`, where the
+  two indexes are the places of the field's sub-node among the field's children and of the widget in the sub-node. `GET {screen}/actions/{form}` answers the same
+  kind of map for a form-list: the list under its name, the page keys, the values of the header fields, the option lists, and each row with `{field}_display` and the
+  fields its `set` elements made.
+- Browser `ec` (`qvt.makeEc`): the table in `plans/QvtServerStatic.md`. `ec.resource.expand(text, table)` and `expandNoL10n` take the table of functions by
+  expression text that the compiled template carries; there is no `eval`. `$mq` is the helper object (`str`, `dflt`, `nul`, `cur`, `fmt`, `merge`, `qs`, `url`,
+  `shown`). `$scope` is the scope chain. The compatibility report's wrapped `ec` has the same members.
+- Report: `screen::statics::static_report`, `static_reports_for_files`, `StaticReport`, `Violation`. `script::set_widget_wrap` turns the wrapped `ec` on for widget
+  expressions (`eval_condition`, `eval_value`, `eval_map`, `expand`, `ec.resource.expand/condition/expression`), and `run_actions` turns it off for the actions.
+
 ## Out of scope
 
 - QuickJS operator overloading for decimals. QuickJS-NG ties it to the built-in `BigDecimal` and `BigFloat` classes (`CONFIG_BIGNUM`). It does not extend to a host class, so the build flag does not give a host decimal `+`. The browser cannot share that flag either.

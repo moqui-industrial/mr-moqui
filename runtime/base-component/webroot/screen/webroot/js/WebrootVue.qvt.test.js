@@ -31,9 +31,11 @@ test("every component has a template that compiles", () => {
 });
 
 test("the components the macros write are all defined", () => {
-    const macros = fs.readFileSync(path.join(__dirname, "../../../../../../framework/template/screen/ScreenQvt.js"), "utf8");
     const used = new Set();
-    for (const match of macros.matchAll(/<(m-[a-z-]+)/g)) used.add(match[1]);
+    for (const file of ["ScreenQvt.js", "ScreenQvtStatic.js"]) {
+        const macros = fs.readFileSync(path.join(__dirname, "../../../../../../framework/template/screen/" + file), "utf8");
+        for (const match of macros.matchAll(/<(m-[a-z-]+)/g)) used.add(match[1]);
+    }
     // m-box-body and the like are written through a string that holds the whole tag
     assert.ok(used.size >= 20, "tags: " + used.size);
     used.forEach((name) => assert.ok(qvt.components[name], name + " is written by ScreenQvt.js but not defined"));
@@ -107,17 +109,10 @@ test("loadComponent picks the handler from X-Moqui-Qvt and caches by Cache-Contr
     assert.equal(sfc.template, "<b>{{n}}</b>");
     assert.equal(sfc.data().n, 2);
     assert.equal(requests[2], "/apps/C.qvue");
-    // a server-static template is not handled by this client yet, and a handler can be added
-    moqui.request = () => answer("<p/>", { "X-Moqui-Qvt": "static-template" });
-    const failed = await new Promise((resolve) => {
-        const info = console.info;
-        console.info = () => {};
-        const error = console.error;
-        console.error = (err) => { console.error = error; console.info = info; resolve(err); };
-        moqui.loadComponent({ path: "/apps/D" }, () => resolve(null), "d");
-    });
-    assert.match(String(failed), /server-static/);
+    // the handler of a server-static template is installed (qvt.static tests run it), and a handler can be replaced
+    assert.equal(typeof moqui.qvtHandlers["static-template"], "function");
     moqui.qvtHandlers["static-template"] = (text) => ({ template: "static:" + text });
+    moqui.request = () => answer("<p/>", { "X-Moqui-Qvt": "static-template" });
     const stat = await load({ path: "/apps/E" });
     assert.equal(stat.template, "static:<p/>");
     moqui.request = original;

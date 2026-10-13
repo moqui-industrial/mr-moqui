@@ -1199,6 +1199,7 @@ dependencies = [
  "itoa",
  "rustversion",
  "ryu",
+ "serde",
  "static_assertions",
 ]
 
@@ -4478,6 +4479,7 @@ dependencies = [
  "md-5 0.10.6",
  "moqui-db",
  "moqui-lib",
+ "oxc_ast",
  "oxc_parser",
  "pbkdf2 0.12.2",
  "rquickjs",
@@ -5311,7 +5313,9 @@ dependencies = [
  "allocator-api2",
  "hashbrown 0.17.1",
  "oxc_data_structures",
+ "oxc_estree",
  "rustc-hash",
+ "serde",
 ]
 
 [[package]]
@@ -5383,6 +5387,11 @@ name = "oxc_estree"
 version = "0.139.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8dc21bd82e5a80409871fcbf5e179b4dfce50c7caafc8fb939ddc083cb4e3118"
+dependencies = [
+ "dragonbox_ecma",
+ "itoa",
+ "oxc_data_structures",
+]
 
 [[package]]
 name = "oxc_index"
@@ -5447,6 +5456,7 @@ dependencies = [
  "oxc_ast_macros",
  "oxc_estree",
  "oxc_str",
+ "serde",
 ]
 
 [[package]]
@@ -5459,6 +5469,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "oxc_allocator",
  "oxc_estree",
+ "serde",
 ]
 
 [[package]]
@@ -5478,6 +5489,7 @@ dependencies = [
  "oxc_span",
  "oxc_str",
  "phf 0.14.0",
+ "serde",
  "unicode-id-start",
 ]
 

@@ -107,6 +107,13 @@ fn golden_qvt() {
 }
 
 #[test]
+fn golden_qvt_static() {
+    for name in FIXTURES.iter().chain(HTML_FIXTURES).chain(QVT_FIXTURES) {
+        check("qvt-static", name, false);
+    }
+}
+
+#[test]
 fn golden_qjs_and_qvue() {
     for mode in ["qjs", "qvue"] {
         for name in FIXTURES {
@@ -122,10 +129,20 @@ fn debug_comments_name_each_element() {
 
 #[test]
 fn every_generated_unit_parses_and_declares_no_global() {
-    for mode in ["text", "csv", "xml", "html-print", "html", "qvt", "qjs", "qvue"] {
+    for mode in [
+        "text",
+        "csv",
+        "xml",
+        "html-print",
+        "html",
+        "qvt",
+        "qvt-static",
+        "qjs",
+        "qvue",
+    ] {
         let extra: &[&str] = match mode {
             "html" => HTML_FIXTURES,
-            "qvt" => &["html-containers", "html-fields", "html-form-list", "qvt-extras"],
+            "qvt" | "qvt-static" => &["html-containers", "html-fields", "html-form-list", "qvt-extras"],
             _ => &[],
         };
         for name in FIXTURES.iter().chain(extra) {

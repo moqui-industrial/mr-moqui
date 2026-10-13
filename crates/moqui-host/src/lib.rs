@@ -18,6 +18,7 @@
 //! The search store and backend are placed by [`search`].
 
 pub mod db;
+pub mod qvt_report;
 pub mod search;
 
 #[cfg(feature = "axum")]
@@ -146,7 +147,7 @@ pub fn load_save(
     db::embedded::load_save(dir.as_ref(), dump.as_ref())
 }
 
-const USAGE: &str = "usage: moqui [save-db <cluster-dir> <dump-file> | load-save <cluster-dir> <dump-file> | load [name=value ...] | lint [file] | lint --screens [report-file]]";
+const USAGE: &str = "usage: moqui [save-db <cluster-dir> <dump-file> | load-save <cluster-dir> <dump-file> | load [name=value ...] | lint [file] | lint --screens [report-file] | lint --screens --qvt-static [report-file]]";
 
 /// No arguments start the HTTP server. `save-db` and `load-save` take a cluster directory and a dump file.
 /// `load` takes `name=value` pairs. `lint` takes an optional service file. `lint --screens` checks the screen and form XML and may write a report file.
@@ -176,6 +177,12 @@ where
         [command, rest @ ..] if command == "load" => {
             let flags = parse_load_args(rest)?;
             dispatch_load(&flags)?;
+            Ok(None)
+        }
+        [command, flag, mode, rest @ ..]
+            if command == "lint" && flag == "--screens" && mode == "--qvt-static" && rest.len() <= 1 =>
+        {
+            dispatch_lint_qvt_static(rest.first().map(String::as_str))?;
             Ok(None)
         }
         [command, flag, rest @ ..] if command == "lint" && flag == "--screens" && rest.len() <= 1 => {
@@ -216,6 +223,22 @@ fn dispatch_lint(path: Option<&str>) -> Result<(), moqui_lib::error::Error> {
         "{} service expression(s) failed lint",
         failures.len()
     )))
+}
+
+/// `lint --screens --qvt-static`: the compatibility report of every screen for server-static qvt. It does not fail the process, since a
+/// report is information and no screen is marked yet.
+fn dispatch_lint_qvt_static(report: Option<&str>) -> Result<(), moqui_lib::error::Error> {
+    let runtime = std::env::var_os("MOQUI_RUNTIME").map_or_else(|| std::path::PathBuf::from("runtime"), Into::into);
+    let framework = std::env::var_os("MOQUI_FRAMEWORK").map_or_else(|| runtime.join("../framework"), Into::into);
+    let reports = qvt_report::qvt_static_reports(&runtime, &framework)?;
+    let text = qvt_report::render_reports(&reports);
+    match report {
+        Some(path) => std::fs::write(path, &text).map_err(|err| moqui_lib::error::Error::new(format!("{path}: {err}"))),
+        None => {
+            print!("{text}");
+            Ok(())
+        }
+    }
 }
 
 fn dispatch_lint_screens(report: Option<&str>) -> Result<(), moqui_lib::error::Error> {

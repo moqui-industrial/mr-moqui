@@ -64,7 +64,8 @@ The client of the `qvt` render mode and of the `/qapps` shell: Vue 3.5 (the buil
 | `MoquiQzComponent.js` | QZ Tray 2.3 printing, loaded after `/libs/qz-tray/qz-tray.js` and only when the user preference `qz.print.enabled` is `true`. |
 | `../css/WebrootVue.qvt.css` | the styles of the shell, the div tables and the widgets |
 
-The tests are `MoquiLib.test.js`, `MoquiL10n.test.js` and `WebrootVue.qvt.test.js` (every component template compiles with the vendored
+The tests are `MoquiLib.test.js`, `MoquiL10n.test.js`, `WebrootVue.qvt.test.js` and `WebrootVue.qvt.static.test.js` (the script and package
+the server answers for `crates/moqui-core` `testdata/Static/Items` run on the real Vue runtime over a fake DOM; every component template compiles with the vendored
 Vue compiler; `loadComponent` is checked with a stub for the request). `cargo test` runs them when `node` is on the path. What needs a
 browser (mounting, Quasar, focus, downloads, the WebSocket) is the Chromium smoke of Gate 3.
 
@@ -90,7 +91,8 @@ inline script and no inline event handler, and the settings are a data block:
 | `notificationEndpoint` | the path of the notification WebSocket, from `webapp_notification_endpoint`. Empty means no socket is opened. |
 | `navPlugins`, `accountPlugins` | theme values `STRT_HEADER_NAVBAR_COMP` and `STRT_HEADER_ACCOUNT_COMP`: URLs of components for the header |
 | `qz` | `{enabled}`: print through QZ Tray |
-| `qvt` | `{build, handles}`: the Vue build this page loaded (`compiler`) and the `X-Moqui-Qvt` responses it handles (`merged-fragment`) |
+| `qvt` | `{build, handles}`: the Vue build this page loaded (`compiler`, or `runtime` with `webapp_qvt_static_only=true`) and the `X-Moqui-Qvt` responses it handles (`merged-fragment`, `static-template`) |
+| `userAccount`, `preferences` | the snapshot of the user for the `ec` of a server-static screen: `{partyId, emailAddress, userFullName}` (no password column) and the user's preferences by key |
 | `labels` | text the shell needs localized |
 | `quasar`, `currencies` | optional: Quasar configuration (brand, notify, loading bar), and `{USD: {symbol, fractionDigits}}` for `formatCurrency` |
 
@@ -107,10 +109,10 @@ screen) with the extra path and query, and gives `callback` a component. It retu
 - `.qjs`: an object expression or `define(...)`. Without a `template` the template is the `.qvt` of the same screen.
 - `.qvt`: the response header `X-Moqui-Qvt` chooses the handler in `moqui.qvtHandlers`:
   `merged-fragment` (the default) wraps the text as the template `<div id="divId">text</div>`, and `<script>` and `<link>` in it become
-  `m-script` and `m-stylesheet`; `static-template` is a data-free template whose handler the server-static work adds, and until then
-  such a response is an error.
+  `m-script` and `m-stylesheet`; `static-template` is the script of a server-static screen (below). A handler may return a promise.
 - A response with `Cache-Control: max-age` is kept by screen path in `moqui.componentCache` (50 entries). A merged response says
-  `private, no-store` and is never kept.
+  `private, no-store` and is never kept. For a static template the cache holds the means to make a component, and each use makes its own, since
+  each use fetches its own data.
 
 ## The components the macros write
 
@@ -126,6 +128,7 @@ macro; `q-btn`, `q-tooltip`, `q-badge`, `q-list`, `q-btn-dropdown`, `q-expansion
 | `m-checkbox-set` | selected rows: `checkbox-count`, `checkbox-parameter`, `checkbox-list-mode`, `checkbox-values` |
 | `m-form-list` | a list drawn by the client from rows it fetches, with sort, pages, selection and sub rows (see below) |
 | `m-form-paginate`, `m-form-go-page`, `m-form-column-config` | page buttons, jump to a page, the column picker |
+| `m-scope`, `m-static-form-list` | written by `ScreenQvtStatic.js` only: a scope over a form-single's map, and the form-list of a server-static screen (see Server-static screens) |
 | `m-text-line`, `m-text-area` | text input. `m-text-area` with `editor-type` `html` is `QEditor`, and `md` is a text area with a Marked preview |
 | `m-drop-down` | `options`, `options-url`, `options-parameters`, `depends-on`, `server-search`, `multiple`, `allow-empty`, `combo`, `submit-on-select`, `options-load-init` |
 | `m-date-time`, `m-date-period` | `QDate` and `QTime` in a popup; period and from-thru |
@@ -151,8 +154,33 @@ The shell gives Quasar a stand-in for `vue-router` (`$router.resolve`, `push`, `
 `moqui.webrootVue` is the root: `setUrl(url, bodyParameters)`, `setParameters(obj)`, `reloadContainer(id)`, `loadContainer(id, url)`,
 `hideContainer(id)`, `addNotify`, `getLinkPath`.
 
+## Server-static screens
+
+`plans/QvtServerStatic.md` is the plan. A screen whose `server-static` names `qvt` (or that has only subscreens placeholders) answers `<path>.qvt` with
+a script and `X-Moqui-Qvt: static-template`, `Cache-Control: max-age=86400, must-revalidate, public` and an `ETag`. The script is
+`(m.qvtStatic = m.qvtStatic || {})[path] = function (Vue) { ...; return function render(_ctx, _cache) { ... } }`, the Vue compiler's
+`prefixIdentifiers` output of a template that holds no request data (no `with`, no `new Function`). The handler loads it with a script element
+(a CSP without `unsafe-eval` allows that and not `fetch` and `new Function`), and the component it makes fetches `<path>/actions` (the
+screen package, `private, no-store`) and shows the render function over it.
+
+- **Scope chain.** Every free name in a template expression is `_ctx.name`. The root `_ctx` is `qvt.makeScope(package, ...)`. `m-scope` (form-single
+  map, with `mqExtra_{form}` on top) and the `row` slot of `m-static-form-list` declare their own `_ctx` (`v-slot="_ctx"`), so the innermost map wins,
+  as the context stack does on the server. A `section-iterate` is a `v-for` whose entry is a local. `$scope` is the scope itself, `ec` the host below.
+- **`ec`.** `qvt.makeEc(config)` is a Proxy: `ec.l10n` (`localize`, `format`, `formatCurrency`, `formatCurrencyNoSymbol`), `ec.user` (`userId`, `username`,
+  `locale`, `timeZone`, `userAccount`, `getPreference`) and `ec.resource.expand` / `expandNoL10n`. Any other member throws
+  `ec.X is not available in a server-static qvt screen`. `expand(pattern, table)` localizes the pattern (under 256 characters) and replaces each `${expr}` with
+  `table[expr]()`, the table of functions the compiled template carries for the expressions of that text, so nothing is evaluated from text.
+  An expression that is not in the table throws.
+- **`$mq`** (`qvt.helpers`): `str`, `dflt`, `nul`, `cur` (current value of a drop-down, check or radio), `fmt` (a value as text with a Java pattern, picking number,
+  date or time from the pattern for a string), `merge`, `url` / `qs` (path and query from a parameter map), `shown` (`visible-when`).
+- **`m-static-form-list`** fetches `<path>/actions/<name>` with the request's parameters and the page and sort it has changed (`setPageIndex`, `sortBy`,
+  `orderBy`), draws `m-form-paginate` and `m-form-go-page`, the `header` slot (`sortBy`, `orderBy`, `action`, `orderByField`) and the `row` slot once for each row with
+  the row on the scope of the screen (`rowIndex` is a name of it).
+
 ## Not here
 
 The Assist panel (`js/assist`, the chat and canvas, `confAssist`) is not ported: it needs the vendored Chart.js, Marked, DOMPurify and highlight.js paths
-of `../README.md` (`chartjs/chart.umd.min.js`, `highlightjs/highlight.min.js`, `highlightjs/styles/github-dark.min.css`) when it is. Server-static
-templates and the browser `ec` host of `plans/QvtServerStatic.md` come with the server-static work.
+of `../README.md` (`chartjs/chart.umd.min.js`, `highlightjs/highlight.min.js`, `highlightjs/styles/github-dark.min.css`) when it is. The `m-*` components
+and the shell root keep string templates, so only the compiler build of Vue runs them: the runtime build waits for those to be precompiled. A static
+form-list does not write row selection, saved finds, the column picker, first/second/last rows, aggregation, or the csv, text and pdf buttons yet (the
+compatibility report says which screens use them).
