@@ -118,6 +118,7 @@ struct Record {
 struct Shape {
     full_name: String,
     fields: HashMap<String, String>,
+    pk_names: Vec<String>,
     relations: HashMap<String, RelInfo>,
 }
 
@@ -881,6 +882,53 @@ fn load_xml_text(facade: &EntityFacade, location: &str, text: &str, options: &Lo
     load_xml_reader(facade, location, std::io::Cursor::new(text.as_bytes()), options)
 }
 
+/// An entity-definition document is type `seed`. Only `<seed-data>` children are records.
+fn load_definition_document<R: BufRead>(
+    facade: &EntityFacade,
+    location: &str,
+    input: &mut Pull<R>,
+    mark: usize,
+    empty: bool,
+    options: &LoadOptions,
+) -> Result<u64, Error> {
+    if skip_type(Some("seed"), &options.data_types) {
+        return Ok(0);
+    }
+    if empty {
+        return Ok(0);
+    }
+    input.read_to_end()?;
+    let document = input.text_from(mark)?;
+    let root = MNode::parse_text(location, &document)?;
+    let mut seeds = Vec::new();
+    collect_named(&root, "seed-data", &mut seeds);
+    let mut total = 0_u64;
+    for seed in seeds {
+        for child in seed.children() {
+            if child.name() == "seed-data" {
+                continue;
+            }
+            match parse_top(facade, location, &child)? {
+                Some(Top::Record(record)) => {
+                    total = total.saturating_add(store_record(facade, options, &record)?);
+                }
+                Some(Top::Service(service)) => hold_service(facade, service)?,
+                None => {}
+            }
+        }
+    }
+    Ok(total)
+}
+
+fn collect_named(node: &MNode, name: &str, out: &mut Vec<MNode>) {
+    if node.name() == name {
+        out.push(node.clone());
+    }
+    for child in node.children() {
+        collect_named(&child, name, out);
+    }
+}
+
 fn load_xml_reader(
     facade: &EntityFacade,
     location: &str,
@@ -890,16 +938,18 @@ fn load_xml_reader(
     let mut input = Pull::new(reader);
     input.skip_bom()?;
     input.consume_match(xml_misc, "xml prologue")?;
+    // Keep the root bytes. `advance` would drop them, and an `<entities>` file is parsed whole.
+    input.hold = true;
+    let mark = input.pos;
     let start = input.take_with(xml_start_tag, "xml root")?;
+    if start.name != "seed-data" && start.name != "entity-facade-xml" {
+        return load_definition_document(facade, location, &mut input, mark, start.empty, options);
+    }
+    input.release_hold();
     let file_type = if start.name == "seed-data" {
         Some("seed".to_string())
-    } else if start.name == "entity-facade-xml" {
-        start.attr("type").filter(|value| !value.is_empty())
     } else {
-        return Err(Error::new(format!(
-            "{location} root {} is not entity-facade-xml or seed-data",
-            start.name
-        )));
+        start.attr("type").filter(|value| !value.is_empty())
     };
     if skip_type(file_type.as_deref(), &options.data_types) {
         return Ok(0);
@@ -1161,29 +1211,24 @@ fn json_documents(root: Json) -> Result<(Option<String>, Vec<Json>), Error> {
 }
 
 fn json_record(facade: &EntityFacade, entity_name: &str, pairs: &[(String, Json)]) -> Result<Record, Error> {
+    json_record_in(facade, entity_name, pairs, &BTreeMap::new())
+}
+
+fn json_record_in(
+    facade: &EntityFacade,
+    entity_name: &str,
+    pairs: &[(String, Json)],
+    ancestor: &BTreeMap<String, Value>,
+) -> Result<Record, Error> {
     let shape = shape_of(facade, entity_name)?;
     let mut fields = BTreeMap::new();
-    let mut children = Vec::new();
+    let mut nested_values = Vec::new();
     for (key, value) in pairs {
         if key == "_entity" || key == "_dataType" {
             continue;
         }
         match value {
-            Json::Object(_) | Json::Array(_) => {
-                let Some(rel) = shape.relations.get(key) else {
-                    if entity_defined(facade, key) {
-                        children.extend(json_children(facade, key, value)?);
-                    } else {
-                        tracing::warn!(entity = %shape.full_name, field = %key, "json nested value is not a relationship");
-                    }
-                    continue;
-                };
-                let mut nested = json_children(facade, &rel.related, value)?;
-                for child in &mut nested {
-                    apply_key_pairs(&fields, rel, &mut child.fields);
-                }
-                children.extend(nested);
-            }
+            Json::Object(_) | Json::Array(_) => nested_values.push((key, value)),
             _ => {
                 if !shape.fields.contains_key(key) {
                     tracing::warn!(entity = %shape.full_name, field = %key, "json field is not on the entity");
@@ -1197,6 +1242,28 @@ fn json_record(facade: &EntityFacade, entity_name: &str, pairs: &[(String, Json)
             }
         }
     }
+    let shared = shared_pks(&shape, &fields, ancestor);
+    let mut children = Vec::new();
+    for (key, value) in nested_values {
+        let Some(rel) = shape.relations.get(key) else {
+            if entity_defined(facade, key) {
+                let mut nested = json_children(facade, key, value, &shared)?;
+                for child in &mut nested {
+                    inherit_pk_fields(facade, &child.entity, &shared, &mut child.fields)?;
+                }
+                children.extend(nested);
+            } else {
+                tracing::warn!(entity = %shape.full_name, field = %key, "json nested value is not a relationship");
+            }
+            continue;
+        };
+        let mut nested = json_children(facade, &rel.related, value, &shared)?;
+        for child in &mut nested {
+            apply_key_pairs(&fields, rel, &mut child.fields);
+            inherit_pk_fields(facade, &child.entity, &shared, &mut child.fields)?;
+        }
+        children.extend(nested);
+    }
     Ok(Record {
         entity: shape.full_name,
         fields,
@@ -1204,16 +1271,21 @@ fn json_record(facade: &EntityFacade, entity_name: &str, pairs: &[(String, Json)
     })
 }
 
-fn json_children(facade: &EntityFacade, entity_name: &str, value: &Json) -> Result<Vec<Record>, Error> {
+fn json_children(
+    facade: &EntityFacade,
+    entity_name: &str,
+    value: &Json,
+    ancestor: &BTreeMap<String, Value>,
+) -> Result<Vec<Record>, Error> {
     match value {
-        Json::Object(pairs) => Ok(vec![json_record(facade, entity_name, pairs)?]),
+        Json::Object(pairs) => Ok(vec![json_record_in(facade, entity_name, pairs, ancestor)?]),
         Json::Array(values) => {
             let mut records = Vec::new();
             for value in values {
                 let Json::Object(pairs) = value else {
                     return Err(Error::new(format!("nested {entity_name} value is not an object")));
                 };
-                records.push(json_record(facade, entity_name, pairs)?);
+                records.push(json_record_in(facade, entity_name, pairs, ancestor)?);
             }
             Ok(records)
         }
@@ -1311,6 +1383,15 @@ fn parse_top(facade: &EntityFacade, location: &str, node: &MNode) -> Result<Opti
 }
 
 fn parse_record(facade: &EntityFacade, entity_name: &str, node: &MNode) -> Result<Record, Error> {
+    parse_record_in(facade, entity_name, node, &BTreeMap::new())
+}
+
+fn parse_record_in(
+    facade: &EntityFacade,
+    entity_name: &str,
+    node: &MNode,
+    ancestor: &BTreeMap<String, Value>,
+) -> Result<Record, Error> {
     let shape = shape_of(facade, entity_name)?;
     let mut fields = BTreeMap::new();
     for (name, value) in node.attributes() {
@@ -1324,25 +1405,35 @@ fn parse_record(facade: &EntityFacade, entity_name: &str, node: &MNode) -> Resul
         let field_type = shape.fields.get(&name).map(String::as_str).unwrap_or("").to_string();
         fields.insert(name, field_text(&field_type, &value));
     }
-    let mut children = Vec::new();
+    let mut pending = Vec::new();
     for child in node.children() {
         let key = element_key(&child.name());
         if shape.fields.contains_key(&key) {
             if let Some(text) = child.text() {
                 let text = text.trim();
                 if !text.is_empty() {
-                    fields.insert(
-                        key.clone(),
-                        field_text(shape.fields.get(&key).map(String::as_str).unwrap_or(""), text),
-                    );
+                    let field_type = shape.fields.get(&key).map(String::as_str).unwrap_or("");
+                    fields.insert(key, field_text(field_type, text));
                 }
             }
-        } else if let Some(rel) = shape.relations.get(&key) {
-            let mut nested = parse_record(facade, &rel.related, &child)?;
+        } else {
+            pending.push(child);
+        }
+    }
+    // Field elements are in `fields` before nested records, so a later element still supplies a primary key.
+    let shared = shared_pks(&shape, &fields, ancestor);
+    let mut children = Vec::new();
+    for child in pending {
+        let key = element_key(&child.name());
+        if let Some(rel) = shape.relations.get(&key) {
+            let mut nested = parse_record_in(facade, &rel.related, &child, &shared)?;
             apply_key_pairs(&fields, rel, &mut nested.fields);
+            inherit_pk_fields(facade, &nested.entity, &shared, &mut nested.fields)?;
             children.push(nested);
         } else if entity_defined(facade, &key) {
-            children.push(parse_record(facade, &key, &child)?);
+            let mut nested = parse_record_in(facade, &key, &child, &shared)?;
+            inherit_pk_fields(facade, &nested.entity, &shared, &mut nested.fields)?;
+            children.push(nested);
         } else {
             tracing::warn!(entity = %shape.full_name, element = %key, "element is not a field or relationship");
         }
@@ -1397,18 +1488,59 @@ fn apply_key_pairs(parent: &BTreeMap<String, Value>, rel: &RelInfo, child: &mut 
     }
 }
 
-fn store_record(facade: &EntityFacade, options: &LoadOptions, record: &Record) -> Result<u64, Error> {
-    let began = facade.begin(&record.entity, None)?;
-    let result = (|| {
-        let mut total = write_record(facade, options, record)?;
-        for child in &record.children {
-            total = total.saturating_add(write_record(facade, options, child)?);
-            for nested in &child.children {
-                total = total.saturating_add(store_children(facade, options, nested)?);
+/// This record's primary keys, then ancestor keys whose names are not already there.
+fn shared_pks(
+    shape: &Shape,
+    fields: &BTreeMap<String, Value>,
+    ancestor: &BTreeMap<String, Value>,
+) -> BTreeMap<String, Value> {
+    let mut shared = BTreeMap::new();
+    for name in &shape.pk_names {
+        if let Some(value) = fields.get(name).filter(|value| !value.is_null()) {
+            shared.insert(name.clone(), value.clone());
+        }
+    }
+    for (name, value) in ancestor {
+        if !value.is_null() {
+            shared.entry(name.clone()).or_insert_with(|| value.clone());
+        }
+    }
+    shared
+}
+
+/// Copy primary-key values the child did not set. A key-map value already in `fields` stays.
+fn inherit_pk_fields(
+    facade: &EntityFacade,
+    entity_name: &str,
+    source: &BTreeMap<String, Value>,
+    fields: &mut BTreeMap<String, Value>,
+) -> Result<(), Error> {
+    if source.is_empty() {
+        return Ok(());
+    }
+    let names = facade.with_entity(entity_name, |entity, _, _| {
+        let mut names = Vec::new();
+        for name in source.keys() {
+            if fields.get(name).is_some_and(|value| !value.is_null()) {
+                continue;
+            }
+            if entity.field(name).is_some() {
+                names.push(name.clone());
             }
         }
-        Ok(total)
-    })();
+        Ok(names)
+    })?;
+    for name in names {
+        if let Some(value) = source.get(&name).filter(|value| !value.is_null()) {
+            fields.insert(name, value.clone());
+        }
+    }
+    Ok(())
+}
+
+fn store_record(facade: &EntityFacade, options: &LoadOptions, record: &Record) -> Result<u64, Error> {
+    let began = facade.begin(&record.entity, None)?;
+    let result = write_tree(facade, options, record, &BTreeMap::new());
     match result {
         Ok(total) => {
             facade.commit(&record.entity)?;
@@ -1423,33 +1555,60 @@ fn store_record(facade: &EntityFacade, options: &LoadOptions, record: &Record) -
     }
 }
 
-fn store_children(facade: &EntityFacade, options: &LoadOptions, record: &Record) -> Result<u64, Error> {
-    let mut total = write_record(facade, options, record)?;
+fn write_tree(
+    facade: &EntityFacade,
+    options: &LoadOptions,
+    record: &Record,
+    ancestor: &BTreeMap<String, Value>,
+) -> Result<u64, Error> {
+    let mut fields = record.fields.clone();
+    inherit_pk_fields(facade, &record.entity, ancestor, &mut fields)?;
+    prepare_fields(facade, &record.entity, &mut fields, options.only_create)?;
+    // `prepare_fields` may have assigned a sequenced primary key. Children need that value.
+    let shared = stored_pks(facade, &record.entity, &fields, ancestor)?;
+    let partial = options.only_create && !pk_complete(facade, &record.entity, &fields)?;
+    if partial {
+        tracing::info!(entity = %record.entity, "onlyCreate skipped a partial primary key");
+    }
+    let exists = !partial && options.only_create && row_exists(facade, &record.entity, &fields)?;
+    let mut total = 0_u64;
+    if !partial && !exists {
+        let try_insert = options.use_try_insert && try_insert_allowed(facade, &record.entity)?;
+        if try_insert {
+            write_upsert(facade, &record.entity, &fields)?;
+        } else if options.only_create {
+            value_from(facade, &record.entity, &fields)?.create(facade)?;
+        } else {
+            value_from(facade, &record.entity, &fields)?.create_or_update(facade)?;
+        }
+        total = 1;
+    }
     for child in &record.children {
-        total = total.saturating_add(store_children(facade, options, child)?);
+        total = total.saturating_add(write_tree(facade, options, child, &shared)?);
     }
     Ok(total)
 }
 
-fn write_record(facade: &EntityFacade, options: &LoadOptions, record: &Record) -> Result<u64, Error> {
-    let mut fields = record.fields.clone();
-    prepare_fields(facade, &record.entity, &mut fields, options.only_create)?;
-    if options.only_create && !pk_complete(facade, &record.entity, &fields)? {
-        tracing::info!(entity = %record.entity, "onlyCreate skipped a partial primary key");
-        return Ok(0);
-    }
-    if options.only_create && row_exists(facade, &record.entity, &fields)? {
-        return Ok(0);
-    }
-    let try_insert = options.use_try_insert && try_insert_allowed(facade, &record.entity)?;
-    if try_insert {
-        write_upsert(facade, &record.entity, &fields)?;
-    } else if options.only_create {
-        value_from(facade, &record.entity, &fields)?.create(facade)?;
-    } else {
-        value_from(facade, &record.entity, &fields)?.create_or_update(facade)?;
-    }
-    Ok(1)
+fn stored_pks(
+    facade: &EntityFacade,
+    entity_name: &str,
+    fields: &BTreeMap<String, Value>,
+    ancestor: &BTreeMap<String, Value>,
+) -> Result<BTreeMap<String, Value>, Error> {
+    facade.with_entity(entity_name, |entity, _, _| {
+        let mut shared = BTreeMap::new();
+        for name in entity.pk_field_names() {
+            if let Some(value) = fields.get(name).filter(|value| !value.is_null()) {
+                shared.insert(name.to_string(), value.clone());
+            }
+        }
+        for (name, value) in ancestor {
+            if !value.is_null() {
+                shared.entry(name.clone()).or_insert_with(|| value.clone());
+            }
+        }
+        Ok(shared)
+    })
 }
 
 fn prepare_fields(
@@ -1578,9 +1737,11 @@ fn shape_of(facade: &EntityFacade, entity_name: &str) -> Result<Shape, Error> {
                 });
             }
         }
+        let pk_names = entity.pk_field_names().into_iter().map(str::to_string).collect();
         Ok(Shape {
             full_name: entity.full_name.clone(),
             fields,
+            pk_names,
             relations,
         })
     })
@@ -1721,6 +1882,8 @@ struct Pull<R> {
     buf: Vec<u8>,
     pos: usize,
     eof: bool,
+    /// When set, consumed bytes stay in `buf` so a non-data root can be parsed whole.
+    hold: bool,
 }
 
 impl<R: BufRead> Pull<R> {
@@ -1730,6 +1893,32 @@ impl<R: BufRead> Pull<R> {
             buf: Vec::new(),
             pos: 0,
             eof: false,
+            hold: false,
+        }
+    }
+
+    fn read_to_end(&mut self) -> Result<(), Error> {
+        while !self.eof {
+            self.fill()?;
+        }
+        Ok(())
+    }
+
+    fn text_from(&self, mark: usize) -> Result<String, Error> {
+        if mark > self.buf.len() {
+            return Err(Error::new("xml root was dropped before it could be parsed"));
+        }
+        let bytes = &self.buf[mark..];
+        std::str::from_utf8(bytes)
+            .map(str::to_string)
+            .map_err(|err| Error::new("data is not utf-8").with_source(err))
+    }
+
+    fn release_hold(&mut self) {
+        self.hold = false;
+        if self.pos >= 8192 {
+            self.buf.drain(..self.pos);
+            self.pos = 0;
         }
     }
 
@@ -1894,7 +2083,7 @@ impl<R: BufRead> Pull<R> {
 
     fn advance(&mut self, n: usize) {
         self.pos += n;
-        if self.pos >= 8192 {
+        if !self.hold && self.pos >= 8192 {
             self.buf.drain(..self.pos);
             self.pos = 0;
         }
@@ -3847,6 +4036,76 @@ mod tests {
         assert_eq!(again.records, 1);
         assert!(!facade.flags().dummy_fks);
         assert!(!facade.flags().disable_fk_create);
+    }
+
+    #[test]
+    fn loader_reads_seed_data_inside_entity_definitions() {
+        let facade = open_empty();
+        let (dir, _guard) = temp_dir();
+        let xml = dir.join("entities.xml");
+        std::fs::write(
+            &xml,
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<entities xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <entity entity-name="One" package="moqui.test">
+    <field name="testId" type="id" is-pk="true"/>
+    <field name="testMedium" type="text-medium"/>
+    <relationship type="one" related="moqui.test.Foo"/>
+    <seed-data>
+      <moqui.test.TestEntity testId="S1" testMedium="one"/>
+    </seed-data>
+  </entity>
+  <entity entity-name="Two" package="moqui.test">
+    <field name="testId" type="id" is-pk="true"/>
+    <seed-data>
+      <moqui.test.TestEntity testId="S2" testMedium="two"/>
+    </seed-data>
+  </entity>
+</entities>"#,
+        )
+        .unwrap();
+        let loaded = load_entity_data(&facade, xml.to_str().unwrap(), &LoadOptions::default()).unwrap();
+        assert_eq!(loaded.records, 2);
+        let demo = LoadOptions {
+            data_types: vec!["demo".to_string()],
+            ..LoadOptions::default()
+        };
+        let skipped = load_entity_data(&facade, xml.to_str().unwrap(), &demo).unwrap();
+        assert_eq!(skipped.records, 0);
+
+        let bare = dir.join("bare.xml");
+        std::fs::write(
+            &bare,
+            r#"<entities><entity entity-name="Only" package="moqui.test"><field name="testId" type="id" is-pk="true"/></entity></entities>"#,
+        )
+        .unwrap();
+        let none = load_entity_data(&facade, bare.to_str().unwrap(), &LoadOptions::default()).unwrap();
+        assert_eq!(none.records, 0);
+    }
+
+    #[test]
+    fn nested_many_relationship_inherits_parent_primary_key() {
+        let facade = open_empty();
+        let xml = r#"<moqui.service.job.ServiceJob jobName="clean_test" serviceName="example" cronExpression="0 0 2 * * ?">
+  <parameters parameterName="daysToKeep" parameterValue="1"/>
+  <parameters jobName="other" parameterName="kept" parameterValue="2"/>
+</moqui.service.job.ServiceJob>"#;
+        let node = MNode::parse_text("job", xml).unwrap();
+        let record = super::parse_record(&facade, "moqui.service.job.ServiceJob", &node).unwrap();
+        assert_eq!(record.children.len(), 2);
+        assert_eq!(record.children[0].entity, "moqui.service.job.ServiceJobParameter");
+        assert_eq!(
+            record.children[0].fields.get("jobName").and_then(Value::as_str),
+            Some("clean_test")
+        );
+        assert_eq!(
+            record.children[0].fields.get("parameterName").and_then(Value::as_str),
+            Some("daysToKeep")
+        );
+        assert_eq!(
+            record.children[1].fields.get("jobName").and_then(Value::as_str),
+            Some("other")
+        );
     }
 
     #[test]
