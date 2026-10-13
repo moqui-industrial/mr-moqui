@@ -938,6 +938,11 @@ fn regex_matches(text: &str, pattern: &str) -> Result<bool, Error> {
     regex_match::is_full_match(text, pattern)
 }
 
+/// True when `pattern` matches the whole `text`.
+pub fn regex_full_match(text: &str, pattern: &str) -> Result<bool, Error> {
+    regex_matches(text, pattern)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
