@@ -82,6 +82,7 @@ pub struct ServicePools {
 pub(crate) struct Shared {
     pub(crate) state: Mutex<State>,
     pub(crate) wake: Condvar,
+    pub(crate) tick_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     workers: usize,
     pub(crate) queue_cap: usize,
     handles: Mutex<Vec<JoinHandle<()>>>,
@@ -152,6 +153,14 @@ impl ServicePools {
     /// No workers. `test_context` stores this.
     pub fn idle() -> Self {
         Self { shared: None }
+    }
+
+    /// Called from the scheduler after the state lock is released. Idle pools ignore it.
+    pub(crate) fn set_tick_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
+        let Some(shared) = &self.shared else {
+            return;
+        };
+        *lock_mutex(&shared.tick_hook) = Some(Arc::new(hook));
     }
 
     /// Test pool. `workers` is at least 1. Same Drop as a booted pool.
@@ -315,6 +324,7 @@ fn start(workers: usize, queue: usize) -> Result<ServicePools, Error> {
     let shared = Arc::new(Shared {
         state: Mutex::new(State::default()),
         wake: Condvar::new(),
+        tick_hook: Mutex::new(None),
         workers,
         queue_cap: queue,
         handles: Mutex::new(Vec::new()),

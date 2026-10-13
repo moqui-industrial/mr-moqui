@@ -21,7 +21,7 @@ mod runtime;
 pub use actions::run_actions;
 pub use parse::parse_js;
 pub use runtime::{clear_context_stack, context_value, eval_map, expand, push_context_frame, set_context_name};
-pub use runtime::{eval_condition, ContextFrame, DeadlineGuard};
+pub use runtime::{eval_condition, run_script, ContextFrame, DeadlineGuard};
 
 #[cfg(test)]
 mod tests {

@@ -14,6 +14,7 @@
 
 //! Run one statement. The span records SQL text and `duration_ms`.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use moqui_lib::error::Error;
@@ -26,6 +27,17 @@ use crate::driver::{DbConnection, DbRow};
 use crate::transaction::TransactionManager;
 
 const SLOW_MS: u64 = 200;
+
+static STATEMENT_COUNT: AtomicU64 = AtomicU64::new(0);
+static STATEMENT_MILLIS: AtomicU64 = AtomicU64::new(0);
+
+/// Statements run through this module, and the sum of their durations in milliseconds.
+pub fn statement_stats() -> (u64, u64) {
+    (
+        STATEMENT_COUNT.load(Ordering::Relaxed),
+        STATEMENT_MILLIS.load(Ordering::Relaxed),
+    )
+}
 
 pub(crate) fn query_tx(tx: &TransactionManager, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
     tx.with_connection(|conn| query_conn(conn, sql, params))
@@ -144,6 +156,8 @@ fn trace<T>(sql: &str, body: impl FnOnce() -> Result<T, Error>) -> Result<T, Err
     let span = tracing::info_span!("sql", sql = %sql, duration_ms = tracing::field::Empty).entered();
     let result = body();
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    STATEMENT_COUNT.fetch_add(1, Ordering::Relaxed);
+    STATEMENT_MILLIS.fetch_add(duration_ms, Ordering::Relaxed);
     span.record("duration_ms", duration_ms);
     if duration_ms >= SLOW_MS {
         tracing::warn!(sql = %sql, duration_ms, "slow statement");

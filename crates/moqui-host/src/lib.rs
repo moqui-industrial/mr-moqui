@@ -12,16 +12,110 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Process edge. HTTP, PDF, SSH, and SSO are not implemented yet.
+//! Process edge. PDF, SSH, and SSO are not implemented yet.
 //! `load` reads framework data files. `lint` checks service definitions.
-//! Database drivers live in [`db`].
+//! No arguments start the plain HTTP listener. Database drivers live in [`db`].
 
 pub mod db;
 
-/// Process entry used by the `moqui` binary when it is started with no arguments.
-pub fn run() -> &'static str {
-    let _ = moqui_core::candidate();
-    "moqui candidate build; server not implemented"
+#[cfg(feature = "axum")]
+mod http;
+
+/// No arguments start the HTTP listener and block until it stops.
+///
+/// # Errors
+///
+/// Returns an error when this build has no HTTP server, the port does not parse, or startup fails.
+pub fn serve() -> Result<(), moqui_lib::error::Error> {
+    #[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+    {
+        let runtime = std::env::var_os("MOQUI_RUNTIME").map_or_else(|| std::path::PathBuf::from("runtime"), Into::into);
+        let framework = std::env::var_os("MOQUI_FRAMEWORK").map_or_else(|| runtime.join("../framework"), Into::into);
+        let cluster = runtime.join("db/embedded");
+        let server = start_server_in(runtime, framework, cluster, ListenBind::Property)?;
+        println!("Listening on {}", server.address());
+        server.wait();
+        Ok(())
+    }
+    #[cfg(not(all(feature = "axum", feature = "embedded-postgres", feature = "postgres")))]
+    {
+        Err(moqui_lib::error::Error::new("http server is not in this build"))
+    }
+}
+
+/// A running plain HTTP listener. Drop stops it, then joins the thread that owns the database.
+#[must_use = "dropping the server stops the listener"]
+pub struct Server {
+    address: std::net::SocketAddr,
+    /// Drops the listener shutdown sender. Empty after the first stop.
+    stop: Option<Box<dyn FnOnce() + Send>>,
+    thread: Option<std::thread::JoinHandle<Result<(), moqui_lib::error::Error>>>,
+}
+
+impl Server {
+    /// The address the listener bound. A port of 0 in the request is replaced with the real port.
+    #[must_use]
+    pub fn address(&self) -> std::net::SocketAddr {
+        self.address
+    }
+
+    /// Block until the listener exits. Ctrl-c is handled on the server thread. This does not drop
+    /// the shutdown sender first, so a test that only wants ctrl-c shutdown can call this.
+    pub fn wait(mut self) {
+        if let Some(thread) = self.thread.take() {
+            join_server(thread);
+        }
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            stop();
+        }
+        if let Some(thread) = self.thread.take() {
+            join_server(thread);
+        }
+    }
+}
+
+/// Start the listener on `bind` against an embedded cluster at `cluster_dir`.
+///
+/// An empty `moqui.basic.Enumeration` table loads framework seed data. The connection pool is
+/// large enough for the request and service caps. Drop the returned server to stop the listener
+/// and the postmaster.
+///
+/// # Errors
+///
+/// Returns an error when this build has no HTTP server, boot fails, or the port cannot be bound.
+pub fn start_server(
+    runtime_dir: impl AsRef<std::path::Path>,
+    framework_dir: impl AsRef<std::path::Path>,
+    cluster_dir: impl AsRef<std::path::Path>,
+    bind: std::net::SocketAddr,
+) -> Result<Server, moqui_lib::error::Error> {
+    #[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+    {
+        start_server_in(
+            runtime_dir.as_ref().to_path_buf(),
+            framework_dir.as_ref().to_path_buf(),
+            cluster_dir.as_ref().to_path_buf(),
+            ListenBind::Address(bind),
+        )
+    }
+    #[cfg(not(all(feature = "axum", feature = "embedded-postgres", feature = "postgres")))]
+    {
+        let _ = (runtime_dir, framework_dir, cluster_dir, bind);
+        Err(moqui_lib::error::Error::new("http server is not in this build"))
+    }
+}
+
+fn join_server(thread: std::thread::JoinHandle<Result<(), moqui_lib::error::Error>>) {
+    match thread.join() {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => eprintln!("http server: {err}"),
+        Err(_) => eprintln!("http server thread panicked"),
+    }
 }
 
 /// `pg_dump --format=custom` of the embedded `moqui` database at `dir`.
@@ -52,7 +146,7 @@ pub fn load_save(
 
 const USAGE: &str = "usage: moqui [save-db <cluster-dir> <dump-file> | load-save <cluster-dir> <dump-file> | load [name=value ...] | lint [file]]";
 
-/// No arguments print [`run`]. `save-db` and `load-save` take a cluster directory and a dump file.
+/// No arguments start the HTTP server. `save-db` and `load-save` take a cluster directory and a dump file.
 /// `load` takes `name=value` pairs. `lint` takes an optional service file.
 ///
 /// # Errors
@@ -65,7 +159,10 @@ where
 {
     let args: Vec<String> = args.into_iter().map(|arg| arg.as_ref().to_string()).collect();
     match args.as_slice() {
-        [] => Ok(Some(run())),
+        [] => {
+            serve()?;
+            Ok(None)
+        }
         [command, dir, file] if command == "save-db" => {
             save_db(dir, file)?;
             Ok(None)
@@ -344,6 +441,231 @@ fn pool() -> moqui_core::transaction::PoolConfig {
         max: 4,
         reserve: 1,
         acquire_timeout: std::time::Duration::from_secs(30),
+    }
+}
+
+/// `(request cap + service cap) * 2` is 80. `max - reserve` must be at least that.
+/// The load path keeps a pool of 4, which is too small to serve.
+#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+fn serve_pool() -> moqui_core::transaction::PoolConfig {
+    moqui_core::transaction::PoolConfig {
+        min: 0,
+        max: 90,
+        reserve: 8,
+        acquire_timeout: std::time::Duration::from_secs(30),
+    }
+}
+
+#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+enum ListenBind {
+    Address(std::net::SocketAddr),
+    Property,
+}
+
+#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+fn start_server_in(
+    runtime_dir: std::path::PathBuf,
+    framework_dir: std::path::PathBuf,
+    cluster_dir: std::path::PathBuf,
+    bind: ListenBind,
+) -> Result<Server, moqui_lib::error::Error> {
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let thread = std::thread::Builder::new()
+        .name("moqui-http".to_string())
+        .spawn(move || serve_thread(runtime_dir, framework_dir, cluster_dir, bind, stop_rx, ready_tx))
+        .map_err(|err| moqui_lib::error::Error::new("http server thread did not start").with_source(err))?;
+    match ready_rx.recv() {
+        Ok(Ok(address)) => Ok(Server {
+            address,
+            stop: Some(Box::new(move || drop(stop_tx))),
+            thread: Some(thread),
+        }),
+        Ok(Err(message)) => Err(thread_failure(thread, &message)),
+        Err(_) => Err(thread_failure(thread, "http server stopped before it bound a port")),
+    }
+}
+
+#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+fn thread_failure(
+    thread: std::thread::JoinHandle<Result<(), moqui_lib::error::Error>>,
+    fallback: &str,
+) -> moqui_lib::error::Error {
+    match thread.join() {
+        Ok(Err(err)) => err,
+        Err(_) => moqui_lib::error::Error::new(format!("http server thread panicked: {fallback}")),
+        Ok(Ok(())) => moqui_lib::error::Error::new(fallback),
+    }
+}
+
+#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+fn serve_thread(
+    runtime_dir: std::path::PathBuf,
+    framework_dir: std::path::PathBuf,
+    cluster_dir: std::path::PathBuf,
+    bind: ListenBind,
+    stop: tokio::sync::oneshot::Receiver<()>,
+    ready_tx: std::sync::mpsc::Sender<Result<std::net::SocketAddr, String>>,
+) -> Result<(), moqui_lib::error::Error> {
+    let mut ready = Ready { tx: Some(ready_tx) };
+    let process = match boot_server(&runtime_dir, &framework_dir, &cluster_dir) {
+        Ok(process) => process,
+        Err(err) => {
+            ready.fail(&err);
+            return Err(err);
+        }
+    };
+    let address = match listen_address(&bind) {
+        Ok(address) => address,
+        Err(err) => {
+            ready.fail(&err);
+            return Err(err);
+        }
+    };
+    let factory = process
+        .factory
+        .clone()
+        .ok_or_else(|| moqui_lib::error::Error::new("http server has no factory"))?;
+    let sender = ready.handoff()?;
+    let runtime = process
+        .runtime
+        .as_ref()
+        .ok_or_else(|| moqui_lib::error::Error::new("http server has no runtime"))?;
+    let listened = runtime.block_on(http::listen(factory, address, stop, sender));
+    if let Some(factory) = process.factory.as_ref() {
+        if let Err(err) = factory.flush_sessions() {
+            let err = moqui_lib::error::Error::new(err.to_string());
+            if listened.is_ok() {
+                return Err(err);
+            }
+            eprintln!("session flush failed: {err}");
+        }
+    }
+    listened
+}
+
+#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+fn listen_address(bind: &ListenBind) -> Result<std::net::SocketAddr, moqui_lib::error::Error> {
+    match bind {
+        ListenBind::Address(address) => Ok(*address),
+        ListenBind::Property => {
+            let port = http::http_port(&moqui_lib::env::get_prop_or_env("webapp_http_port"))?;
+            Ok(std::net::SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, port)))
+        }
+    }
+}
+
+#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+fn boot_server(
+    runtime_dir: &std::path::Path,
+    framework_dir: &std::path::Path,
+    cluster_dir: &std::path::Path,
+) -> Result<ServeProcess, moqui_lib::error::Error> {
+    use std::sync::Arc;
+
+    use moqui_core::driver::DbDriver;
+
+    use crate::db::embedded::EmbeddedCluster;
+
+    std::fs::create_dir_all(runtime_dir).map_err(|err| {
+        moqui_lib::error::Error::new(format!("could not create {}", runtime_dir.display())).with_source(err)
+    })?;
+    std::fs::create_dir_all(cluster_dir).map_err(|err| {
+        moqui_lib::error::Error::new(format!("could not create {}", cluster_dir.display())).with_source(err)
+    })?;
+    let runtime_dir = std::fs::canonicalize(runtime_dir).map_err(|err| {
+        moqui_lib::error::Error::new(format!("could not resolve {}", runtime_dir.display())).with_source(err)
+    })?;
+    let framework_dir = std::fs::canonicalize(framework_dir).map_err(|err| {
+        moqui_lib::error::Error::new(format!("could not resolve {}", framework_dir.display())).with_source(err)
+    })?;
+    let cluster_dir = std::fs::canonicalize(cluster_dir).map_err(|err| {
+        moqui_lib::error::Error::new(format!("could not resolve {}", cluster_dir.display())).with_source(err)
+    })?;
+    // The cluster stays on this thread. Its clients are dropped here, after the axum runtime.
+    xmlshim::provide_libxml2_soname(&cluster_dir)?;
+    let (cluster, driver) = EmbeddedCluster::start(&cluster_dir, 100)?;
+    let driver: Arc<dyn DbDriver> = Arc::new(driver);
+    let factory = moqui_core::context::ExecutionContextFactory::boot_with_framework(&runtime_dir, &framework_dir)
+        .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
+    let facade = crate::db::entity_facade::open_entity_facade(&framework_dir, Arc::clone(&driver), serve_pool())?;
+    crate::db::entity_facade::attach(&factory, facade.clone());
+    {
+        let context = factory.new_context();
+        let entered = context.enter();
+        let authz = context.disable_authz();
+        let loaded = load_in_context(&framework_dir, &facade, &LoadFlags::default());
+        drop(authz);
+        drop(entered);
+        drop(context);
+        loaded?;
+    }
+    moqui_core::service::check_serve_caps(&factory).map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
+    factory
+        .start_request_pool()
+        .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| moqui_lib::error::Error::new("could not start the http runtime").with_source(err))?;
+    Ok(ServeProcess {
+        runtime: Some(runtime),
+        factory: Some(factory),
+        facade: Some(facade),
+        driver: Some(driver),
+        cluster: Some(cluster),
+    })
+}
+
+/// Drop order is the axum runtime, the factory (request pool, then clients), the driver, then the cluster.
+#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+struct ServeProcess {
+    runtime: Option<tokio::runtime::Runtime>,
+    factory: Option<std::sync::Arc<moqui_core::context::ExecutionContextFactory>>,
+    facade: Option<moqui_core::entity::EntityFacade>,
+    driver: Option<std::sync::Arc<dyn moqui_core::driver::DbDriver>>,
+    cluster: Option<crate::db::embedded::EmbeddedCluster>,
+}
+
+#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+impl Drop for ServeProcess {
+    fn drop(&mut self) {
+        self.runtime.take();
+        self.factory.take();
+        self.facade.take();
+        self.driver.take();
+        self.cluster.take();
+    }
+}
+
+#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+struct Ready {
+    tx: Option<std::sync::mpsc::Sender<Result<std::net::SocketAddr, String>>>,
+}
+
+#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+impl Ready {
+    fn fail(&mut self, err: &moqui_lib::error::Error) {
+        if let Some(tx) = self.tx.take() {
+            let _ = tx.send(Err(err.to_string()));
+        }
+    }
+
+    fn handoff(
+        &mut self,
+    ) -> Result<std::sync::mpsc::Sender<Result<std::net::SocketAddr, String>>, moqui_lib::error::Error> {
+        self.tx
+            .take()
+            .ok_or_else(|| moqui_lib::error::Error::new("http server ready sender is gone"))
+    }
+}
+
+#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+impl Drop for Ready {
+    fn drop(&mut self) {
+        if let Some(tx) = self.tx.take() {
+            let _ = tx.send(Err("http server stopped before it bound a port".to_string()));
+        }
     }
 }
 
@@ -818,9 +1140,11 @@ mod tests {
     use super::{dispatch, load_options, parse_load_args, LoadFlags};
 
     #[test]
-    fn no_args_returns_the_candidate_line() {
-        let line = dispatch(std::iter::empty::<&str>()).unwrap();
-        assert_eq!(line, Some("moqui candidate build; server not implemented"));
+    fn no_args_start_the_server_and_are_not_called_here() {
+        // `dispatch([])` calls `serve` and blocks on the listener. A bad command still names the usage.
+        let err = dispatch(["nope"]).unwrap_err();
+        assert!(err.message().contains("usage: moqui"), "{err}");
+        assert!(!err.message().contains("server not implemented"), "{err}");
     }
 
     #[test]

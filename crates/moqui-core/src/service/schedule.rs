@@ -133,6 +133,12 @@ fn schedule_slice(shared: &Shared) -> Option<()> {
     if queued {
         shared.wake.notify_all();
     }
+    let hook = lock_mutex(&shared.tick_hook).clone();
+    if let Some(hook) = hook {
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| hook())).is_err() {
+            tracing::warn!("scheduler tick hook panicked");
+        }
+    }
     Some(())
 }
 

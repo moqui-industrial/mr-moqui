@@ -57,8 +57,10 @@ pub struct ExecutionContextFactory {
     /// Entity facade for `dbresource://`. Empty until the host calls [`Self::set_entity`].
     entity: Arc<RwLock<Option<EntityFacade>>>,
     /// This factory's pool guard. Drops with the factory. Idle has no workers.
-    #[allow(dead_code)] // Later slice reads this to start and stop its own workers.
     pools: crate::service::ServicePools,
+    /// Idle until [`Self::start_request_pool`]. Drop joins the threads.
+    requests: crate::service::RequestPool,
+    pub(crate) sessions: std::sync::Mutex<crate::user::session::SessionTable>,
 }
 
 impl ExecutionContextFactory {
@@ -96,6 +98,7 @@ impl ExecutionContextFactory {
         let cache = CacheFacade::from_conf(&conf_node)?;
         set_by_boot.keep();
         let conf_text = conf_node.write_string();
+        let flush_mode = crate::user::session::flush_mode_from_property()?;
         let pools = crate::service::start_pools(&conf_text)?;
         super::locate::remember(&framework_dir, &components);
         tracing::info!(
@@ -103,7 +106,7 @@ impl ExecutionContextFactory {
             framework = %framework_dir.display(),
             "Initialized execution context factory"
         );
-        Ok(Arc::new(Self {
+        let factory = Arc::new(Self {
             runtime_dir,
             framework_dir,
             components,
@@ -115,7 +118,35 @@ impl ExecutionContextFactory {
             property_names,
             entity,
             pools,
-        }))
+            requests: crate::service::RequestPool::idle(),
+            sessions: std::sync::Mutex::new(crate::user::session::SessionTable::new(flush_mode)),
+        });
+        install_session_flush(&factory);
+        Ok(factory)
+    }
+
+    /// Start the request workers from `tools.@request-pool-max` and `tools.@request-queue`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a worker thread does not start.
+    pub fn start_request_pool(&self) -> Result<(), Error> {
+        self.requests.start_from_conf(&self.conf_text)
+    }
+
+    /// Write dirty `moqui.server.HttpSession` rows. The host calls this on shutdown so an
+    /// `eventual` session is on disk before the entity facade drops.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a session row cannot be written.
+    pub fn flush_sessions(&self) -> Result<(), Error> {
+        crate::user::session::flush_dirty(self)
+    }
+
+    /// The factory request pool. Idle until [`Self::start_request_pool`].
+    pub fn request_pool(&self) -> &crate::service::RequestPool {
+        &self.requests
     }
 
     pub fn new_context(self: &Arc<Self>) -> ExecutionContext {
@@ -361,6 +392,18 @@ impl Drop for ContextGuard<'_> {
 }
 
 fn assert_shareable<T: Send + Sync>() {}
+
+fn install_session_flush(factory: &Arc<ExecutionContextFactory>) {
+    let weak = Arc::downgrade(factory);
+    factory.pools.set_tick_hook(move || {
+        let Some(factory) = weak.upgrade() else {
+            return;
+        };
+        if let Err(err) = crate::user::session::flush_dirty(&factory) {
+            tracing::warn!("session flush failed: {err}");
+        }
+    });
+}
 
 fn canonicalize_dir(path: &Path) -> Result<PathBuf, Error> {
     std::fs::canonicalize(path)
@@ -613,6 +656,10 @@ impl ExecutionContextFactory {
             property_names: Vec::new(),
             entity,
             pools: crate::service::ServicePools::idle(),
+            requests: crate::service::RequestPool::idle(),
+            sessions: std::sync::Mutex::new(crate::user::session::SessionTable::new(
+                crate::user::session::FlushMode::Eventual,
+            )),
         });
         factory.new_context()
     }

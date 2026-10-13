@@ -50,7 +50,6 @@ pub fn simple_hash(password: &str, salt: &str, hash_type: &str, base64_encode: b
 }
 
 /// Login-key hash. Uses `login-key/@encrypt-hash-type`, an empty salt, and hex. Never argon2.
-#[allow(dead_code)] // Login keys arrive with the web layer.
 pub fn hash_login_key(login_key: &str) -> Result<String, Error> {
     simple_hash(login_key, "", &policy::login_key_hash_type(), false)
 }

@@ -184,7 +184,7 @@ fn response_map(body: &str) -> BTreeMap<String, Value> {
     }
 }
 
-fn parse_json(text: &str) -> Result<Value, Error> {
+pub(crate) fn parse_json(text: &str) -> Result<Value, Error> {
     let mut parser = Json {
         text: text.as_bytes(),
         index: 0,

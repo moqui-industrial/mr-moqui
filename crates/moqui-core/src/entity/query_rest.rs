@@ -16,6 +16,7 @@
 //!
 //! Parameters are an in-memory map. There is no HTTP listener.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -103,6 +104,38 @@ pub fn write_data(facade: &EntityFacade, entity_name: &str, records: &[BTreeMap<
 /// `path` is a list or a slash-separated string of elements after the entity name.
 /// One relationship step is applied. `master`, `masterNameInPath`, `dependents`, and
 /// `dependentLevels` follow the Java method.
+/// Pagination numbers for the last entity REST list on this thread.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PageInfo {
+    pub total: i64,
+    pub index: i64,
+    pub size: i64,
+    pub max_index: i64,
+    pub range_low: i64,
+    pub range_high: i64,
+}
+
+thread_local! {
+    static WANT_PAGE: Cell<bool> = const { Cell::new(false) };
+    static PAGE: Cell<Option<PageInfo>> = const { Cell::new(None) };
+}
+
+/// The next list `rest` records page numbers. A one-row find does not.
+pub fn begin_page_info() {
+    WANT_PAGE.with(|slot| slot.set(true));
+    PAGE.with(|slot| slot.set(None));
+}
+
+/// Take the page numbers recorded by the last list, and stop recording.
+pub fn take_page_info() -> Option<PageInfo> {
+    WANT_PAGE.with(|slot| slot.set(false));
+    PAGE.with(|slot| slot.take())
+}
+
+fn want_page_info() -> bool {
+    WANT_PAGE.with(|slot| slot.get())
+}
+
 pub fn rest(
     facade: &EntityFacade,
     operation: &str,
@@ -366,8 +399,8 @@ fn find_rest(facade: &EntityFacade, target: &Resolved, parameters: &BTreeMap<Str
     let plan = search_plan(facade, &snap.full_name, parameters)?;
     let page = rest_page(parameters);
     let mut find = facade.find(&snap.full_name)?;
-    for condition in plan.conditions {
-        find = find.condition(condition);
+    for condition in &plan.conditions {
+        find = find.condition(condition.clone());
     }
     for entry in plan.order {
         find = find.order_by(&entry.field.name, entry.descending);
@@ -390,7 +423,48 @@ fn find_rest(facade: &EntityFacade, target: &Resolved, parameters: &BTreeMap<Str
         )?;
         items.push(node_to_value(&node));
     }
+    if want_page_info() {
+        if let Ok(total) = count_matching(facade, &snap.full_name, &plan.conditions) {
+            PAGE.with(|slot| slot.set(Some(page_numbers(&page, parameters, total))));
+        }
+    }
     Ok(Value::List(items))
+}
+
+fn count_matching(facade: &EntityFacade, entity_name: &str, conditions: &[Condition]) -> Result<i64, Error> {
+    let mut find = facade.find(entity_name)?;
+    for condition in conditions {
+        find = find.condition(condition.clone());
+    }
+    find.count()
+}
+
+fn page_numbers(page: &Page, parameters: &BTreeMap<String, Value>, total: i64) -> PageInfo {
+    let index = parameters
+        .get("pageIndex")
+        .and_then(value_i64)
+        .unwrap_or_else(|| match (page.offset, page.limit) {
+            (Some(offset), Some(limit)) if limit > 0 => offset / limit,
+            _ => 0,
+        })
+        .max(0);
+    let size = page.limit.unwrap_or(total.max(0));
+    let divisor = if size > 0 { size } else { 1 };
+    let max_index = if total <= 0 { 0 } else { (total - 1) / divisor };
+    let range_low = if total <= 0 {
+        0
+    } else {
+        index.saturating_mul(divisor) + 1
+    };
+    let range_high = index.saturating_mul(divisor).saturating_add(size).min(total.max(0));
+    PageInfo {
+        total,
+        index,
+        size,
+        max_index,
+        range_low,
+        range_high,
+    }
 }
 
 struct SearchPlan {
@@ -1788,6 +1862,12 @@ fn write_field_json(out: &mut String, value: &Value, iso: bool) {
         }
     }
     write_json_value(out, value);
+}
+
+pub(crate) fn encode_json(value: &Value) -> String {
+    let mut out = String::new();
+    write_json_value(&mut out, value);
+    out
 }
 
 fn write_json_value(out: &mut String, value: &Value) {

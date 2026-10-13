@@ -19,18 +19,25 @@ mod filter;
 mod login;
 mod password;
 mod policy;
-mod session;
+pub(crate) mod session;
 mod visit;
 
 pub use authz::{authorize, context_entered};
 pub(crate) use authz::{denied, is_permitted, note_entity_write, AuthInfo, Permit};
 pub use filter::apply_entity_filters;
-pub use login::{change_password, internal_login_user, login_anonymous, login_user, logout, logout_anonymous_only};
+pub use login::{
+    apply_header_keys, change_password, internal_login_user, login_anonymous, login_user, login_user_key, logout,
+    logout_anonymous_only,
+};
 pub use password::hash_password;
 pub use policy::password_acceptable;
 pub(crate) use session::Memory;
 pub use session::{
-    csrf_token, current_user_id, current_username, error_parameters, flash_messages, is_anonymous, locale,
-    saved_parameters, screen_history, time_zone, visit_id, visitor_id,
+    bind, csrf_token, current_user_id, current_username, end_request, error_parameters, flash_messages,
+    format_session_cookie, format_visitor_cookie, invalidate, is_anonymous, locale, saved_parameters, screen_history,
+    time_zone, verify_session_cookie, visit_id, visitor_id, SessionGuard, SESSION_COOKIE_NAME, VISITOR_COOKIE_NAME,
 };
 pub use visit::record_visit;
+
+#[cfg(test)]
+pub(crate) use login::memdb;

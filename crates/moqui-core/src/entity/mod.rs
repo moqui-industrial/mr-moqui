@@ -21,20 +21,23 @@ pub mod load_feed;
 pub mod query_rest;
 
 mod dbresource;
-mod exec;
+pub(crate) mod exec;
 mod facade;
 mod find;
 mod fk;
 mod meta;
 mod params;
+mod schema;
 mod sequence;
 mod share;
 mod value;
 
 pub use dbresource::{DbResourceChild, DbResourceInfo};
+pub use exec::statement_stats;
 pub use facade::{EntityFacade, EntityFlags, EntityGroup};
 pub use find::{EntityFind, EntityListIterator};
 pub use meta::EntityDbMeta;
+pub(crate) use schema::document as schema_document;
 pub use sequence::{fill_bank, stagger_step, take_id, SequenceBank};
 pub use value::{EntityList, EntityValue};
 

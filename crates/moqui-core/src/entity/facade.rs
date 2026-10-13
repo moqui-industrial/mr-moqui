@@ -302,6 +302,10 @@ impl EntityFacade {
         query_rest::write_data(self, entity_name, records)
     }
 
+    pub(crate) fn with_model<T>(&self, body: impl FnOnce(&EntityModel) -> T) -> T {
+        body(self.inner.model.model())
+    }
+
     pub(crate) fn with_entity<T>(
         &self,
         name: &str,

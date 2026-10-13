@@ -571,16 +571,17 @@ mod tests {
             ));
         }
         matched.sort_by(|left, right| sort_rows(left, right, &query.order));
+        // Postgres writes `LIMIT ? OFFSET ?`, so the limit parameter is first.
         let mut idx = pred_slots(&query.pred);
-        let skip = if query.offset {
-            as_i64(take_param(params, &mut idx)?)?
-        } else {
-            0
-        };
         let take_n = if query.limit {
             Some(as_i64(take_param(params, &mut idx)?)?)
         } else {
             None
+        };
+        let skip = if query.offset {
+            as_i64(take_param(params, &mut idx)?)?
+        } else {
+            0
         };
         let start = usize::try_from(skip.max(0)).unwrap_or(0);
         let window: Vec<Row> = match take_n {
