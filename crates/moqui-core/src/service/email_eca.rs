@@ -99,7 +99,11 @@ mod tests {
         // A failed service-call adds an error and the rule's generated code returns, as in Java.
         run_email_rules(&BTreeMap::new()).unwrap();
         let errors = context.message().errors().join("\n");
-        assert!(errors.contains("mail is not configured"), "{errors}");
+        assert!(
+            errors.contains("No EmailTemplate record found") || errors.contains("screen mail body is not available"),
+            "{errors}"
+        );
+        assert!(!errors.contains("mail is not configured"), "{errors}");
         assert!(context.message().messages().iter().any(|text| text == "emailEcaRan"));
     }
 

@@ -94,12 +94,23 @@ lettre = { version = "0.11", default-features = false, features = [
     "aws-lc-rs",
     "webpki-roots",
 ] }
+# Blocking IMAP. The default feature tls is native-tls and stays off.
+# 2.4.1 has no rustls feature. rustls-connector is a dev-dependency and is not linked.
+# The TCP stream is wrapped with rustls below.
+imap = { version = "2.4", default-features = false }
+# Direct so IMAP and POP3 can build a ClientConfig on aws-lc. ring stays off.
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "aws_lc_rs"] }
+webpki-roots = "1"
+# Self-signed cluster certificate. ring and pem stay off. aws-lc-rs is the crypto provider.
+# x509-parser and fips stay off. time is certificate validity only; clocks stay jiff.
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }
 # Default feature is chrono. Quartz parsing uses jiff.
 croner = { version = "4", default-features = false, features = ["jiff"] }
 # No std feature on 0.6. Defaults are alloc, getrandom, and password-hash.
 argon2 = { version = "0.6", features = ["password-hash"] }
 csv = "1"
-pulldown-cmark = "0.13"
+# html only. The default set also links getopts for the crate's CLI.
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 totp-rs = { version = "6", default-features = false, features = [
     "std",
     "otpauth",

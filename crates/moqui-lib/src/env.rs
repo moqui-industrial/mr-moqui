@@ -110,6 +110,14 @@ pub fn load_dotenv(text: &str) {
     }
 }
 
+/// Drop parsed dotenv values so the next [`load_dotenv`] or [`load_dotenv_file`] is the only source.
+pub fn clear_dotenv() {
+    let mut guard = DOTENV.lock().unwrap_or_else(|err| err.into_inner());
+    if let Some(map) = guard.as_mut() {
+        map.clear();
+    }
+}
+
 pub fn load_dotenv_file(path: impl AsRef<std::path::Path>) -> Result<(), Error> {
     let path = path.as_ref();
     let text = std::fs::read_to_string(path)

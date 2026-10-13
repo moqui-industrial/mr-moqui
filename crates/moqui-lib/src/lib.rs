@@ -26,6 +26,7 @@ pub mod format;
 #[cfg(feature = "http")]
 pub mod http;
 pub mod json;
+pub mod markdown;
 pub mod node;
 pub mod object;
 pub mod resource;

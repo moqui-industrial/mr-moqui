@@ -253,7 +253,7 @@ pub(crate) fn stamp_value(millis: i64) -> Value {
     basic_convert(&Value::I64(millis), "java.sql.Timestamp").value
 }
 
-pub(super) fn now_millis() -> i64 {
+pub(crate) fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()
@@ -595,7 +595,7 @@ fn value_i64(value: &Value) -> Option<i64> {
     }
 }
 
-pub(super) fn value_millis(value: &Value) -> Option<i64> {
+pub(crate) fn value_millis(value: &Value) -> Option<i64> {
     match value {
         Value::Timestamp(timestamp) => Some(timestamp.as_millisecond()),
         other => value_i64(other),

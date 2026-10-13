@@ -350,6 +350,18 @@ pub fn run_job_now(job_name: &str, extra: &BTreeMap<String, Value>) -> Result<St
     Ok(run_id)
 }
 
+/// Send the ServiceJobError notification. A failure is logged and does not change the job row.
+pub(crate) fn send_job_error_notification(job_name: &str, job_run_id: &str, errors: &str) {
+    if let Err(err) = crate::notify::service_job_error(job_name, errors) {
+        tracing::warn!(
+            job = %job_name,
+            run = %job_run_id,
+            error = %err,
+            "could not send the service job error notification"
+        );
+    }
+}
+
 /// The worker side: run the service and record what happened.
 pub(crate) fn run_job(job: JobRun) {
     let factory = Arc::clone(&job.factory);
@@ -434,8 +446,8 @@ pub(crate) fn run_job(job: JobRun) {
         ],
     );
     if has_error {
-        // Notifications are the notification facade's job; until it exists the error is logged.
         tracing::warn!(job = %job.job_name, run = %job.job_run_id, errors = %errors, "service job ended with errors");
+        send_job_error_notification(&job.job_name, &job.job_run_id, &errors);
     }
     if job.delete_when_done {
         delete_queued(&facade, &job.job_name);

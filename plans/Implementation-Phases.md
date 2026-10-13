@@ -420,6 +420,27 @@ Depends on the service facade. The notification WebSocket also needs the phase 7
 - The cluster sender from `plans/Cluster.md`: the `cluster_tls_cert` / `cluster_tls_key` configuration and the member-row key fingerprints, and HTTPS fan-out of the cache-invalidation topic and the notification topic. The local cache drop stays on the writer. The peer send is one host thread after commit, after the enlisted client is back in the pool. Member heartbeat runs on the scheduler tick. One live member means no fan-out. The same-session WebSocket test stays the single-node case.
 - Markdown for screen and wiki text that asks for it.
 
+### This pass (Phase 8 still open)
+
+Phase 8 owns screen rendering. This pass builds the Phase 10 slices that do not call `ScreenFacade.makeRender()`.
+
+In this pass:
+
+- Outbound SMTP with `lettre` in core, and a test sink. `send#EmailMessage` sends a stored row. `send#EmailTemplate` expands subject and from through `JsTemplateLiteral`, writes the `EmailMessage` row, and sends when `body` and `bodyText` are already parameters. `email_allowed_hosts` and `allowedToDomains` apply. Sim mode returns `emailMessageId` `SIM` and does not connect. An empty SMTP host logs and does not send.
+- `poll#EmailServer` for IMAP and POP3, rustls, no `native-tls`, if a blocking crate passes `plans/License-Review.md`. Each new message runs the email-ECA rules. The seed job stays paused. The poll loop is tested with a fake store.
+- Notification messages and the in-process topic. The host WebSocket `/notws` uses the phase 7 session cookie. A text frame runs on the service pool with its own `ExecutionContext`. Job errors notify topic `ServiceJobError`. Recipient resolution is one query per source, not one query per user.
+- Cluster membership, generated `cluster_tls_cert` / `cluster_tls_key`, key fingerprints, heartbeat on the scheduler tick, and HTTPS fan-out of `entity-cache-invalidate` and `notification-message`. One live member does not fan out. The peer send is `on_commit`, after the enlisted client is back in the pool.
+- `pulldown-cmark` as `moqui_lib::markdown::to_html`. No screen or wiki widget calls it yet.
+
+Deferred until phase 8, or phase 12 where named:
+
+- A `bodyScreenLocation` with no supplied body returns `screen mail body is not available` and does not open SMTP. `send#ScreenRenderEmail` stays XML and hits that path.
+- Screen attachments, `forEachIn`, and `attachmentCondition`. `screenRenderMode` `xsl-fo` reports that PDF is not available.
+- A notification with `emailNotifications` Y still persists and reaches the socket. The email attempt logs the screen-body error and does not fail the in-app send.
+- The gate 4 check that a screen body renders in `text` and `html`.
+- The markdown call site inside a screen or wiki widget.
+- The embedded SMTP server, the russh cluster sender, and Postgres `NOTIFY`.
+
 ## Phase 11 — LLM, A2A, and the other tools
 
 Depends on the HTTP client, the user facade, and the screen facade for screen-search hints. Search-backed tools wait on phase 9. The LLM client sets the sim-allow exception on `RestClient`.

@@ -30,16 +30,29 @@ use moqui_core::web::{WebRequest, WebResponse};
 use moqui_lib::error::Error;
 use tokio::net::TcpListener;
 
-struct HttpState {
-    factory: Arc<ExecutionContextFactory>,
+use crate::notws;
+
+pub(crate) struct HttpState {
+    pub factory: Arc<ExecutionContextFactory>,
+    pub shutdown: tokio::sync::watch::Receiver<bool>,
+}
+
+/// Addresses and handles the test uses after the plain HTTP listener binds.
+pub(crate) struct ListenReport {
+    pub http: SocketAddr,
+    pub cluster: SocketAddr,
+    pub factory: Arc<ExecutionContextFactory>,
+    pub posts: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 /// Bind `bind`, publish the local address, and serve until `stop` is dropped or a ctrl-c arrives.
 pub(crate) async fn listen(
     factory: Arc<ExecutionContextFactory>,
     bind: SocketAddr,
+    cluster: SocketAddr,
+    posts: Arc<std::sync::Mutex<Vec<String>>>,
     stop: tokio::sync::oneshot::Receiver<()>,
-    ready: Sender<Result<SocketAddr, String>>,
+    ready: Sender<Result<ListenReport, String>>,
 ) -> Result<(), Error> {
     let listener = match TcpListener::bind(bind).await {
         Ok(listener) => listener,
@@ -57,23 +70,34 @@ pub(crate) async fn listen(
             return Err(Error::new(message));
         }
     };
-    let _ = ready.send(Ok(address));
     // Text responses are compressed when the client accepts gzip. Images and other types that are
     // compressed already are left alone by the layer's default predicate.
+    let _ = ready.send(Ok(ListenReport {
+        http: address,
+        cluster,
+        factory: Arc::clone(&factory),
+        posts,
+    }));
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let app = Router::new()
         .route("/health", get(health))
         .route("/metrics", get(metrics))
+        .route("/notws", get(notws::upgrade))
         .fallback(dispatch_screen)
         .layer(tower_http::compression::CompressionLayer::new())
-        .with_state(Arc::new(HttpState { factory }));
+        .with_state(Arc::new(HttpState {
+            factory,
+            shutdown: shutdown_rx,
+        }));
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .with_graceful_shutdown(shutdown(stop))
+        .with_graceful_shutdown(shutdown(stop, shutdown_tx))
         .await
         .map_err(|err| Error::new(format!("http listener stopped: {err}")))
 }
 
 /// Ctrl-c ends the binary. A failed handler waits on `stop`, which is how tests shut the listener down.
-async fn shutdown(mut stop: tokio::sync::oneshot::Receiver<()>) {
+/// The watch tells open notification sockets to close so graceful shutdown can finish.
+async fn shutdown(mut stop: tokio::sync::oneshot::Receiver<()>, notify: tokio::sync::watch::Sender<bool>) {
     tokio::select! {
         _ = &mut stop => {}
         result = tokio::signal::ctrl_c() => {
@@ -82,6 +106,7 @@ async fn shutdown(mut stop: tokio::sync::oneshot::Receiver<()>) {
             }
         }
     }
+    let _ = notify.send(true);
 }
 
 /// Empty `webapp_http_port` is 8080.
@@ -251,7 +276,7 @@ fn json(status: u16, body: &str) -> Response {
         .unwrap_or_else(|_| plain(500, "could not build the response"))
 }
 
-fn plain(status: u16, body: &str) -> Response {
+pub(crate) fn plain(status: u16, body: &str) -> Response {
     Response::builder()
         .status(status)
         .header("content-type", "text/plain; charset=utf-8")

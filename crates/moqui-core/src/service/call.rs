@@ -426,7 +426,7 @@ fn execute(
     facade: &EntityFacade,
 ) -> Result<BTreeMap<String, Value>, LibError> {
     match def.kind {
-        ServiceKind::Mail => Err(LibError::new(format!("mail is not configured ({})", def.location))),
+        ServiceKind::Mail => super::mail::run(&def.name, parameters, facade),
         ServiceKind::Interface => Err(LibError::new(format!("interface {} has no runner", def.name))),
         ServiceKind::Unsupported => Err(LibError::new(format!(
             "service {} runs {}, a script language this port does not run",

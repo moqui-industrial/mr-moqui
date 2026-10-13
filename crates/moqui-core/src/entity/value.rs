@@ -238,6 +238,7 @@ impl EntityFacade {
         if eca {
             crate::service::run_matched_eca(self, entity_name, seal_operation, true, &plain)?;
         }
+        let cache_values = plain.clone();
         if cache::gate_write(self, entity_name, operation, &plain)? == WriteGate::Proceed {
             let after_values = eca.then(|| plain.clone());
             let prepared = self.seal_values(entity_name, seal_operation, plain)?;
@@ -267,7 +268,7 @@ impl EntityFacade {
                 crate::service::run_matched_eca(self, entity_name, seal_operation, false, values)?;
             }
         }
-        cache::on_write(self, entity_name, operation)?;
+        cache::on_write(self, entity_name, operation, &cache_values)?;
         after_statement(self, &tx, true);
         Ok(())
     }
