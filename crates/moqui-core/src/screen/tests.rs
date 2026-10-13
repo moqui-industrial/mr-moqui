@@ -452,6 +452,7 @@ mod files;
 mod forms;
 mod golden;
 mod html;
+mod markdown;
 mod menu;
 mod modules;
 mod print;

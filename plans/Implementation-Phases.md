@@ -445,8 +445,10 @@ Every item of Gate 3 has a test, and they pass. The browser items, in `tests/gat
   rendered text, the dialog and the row post work as above; on `GateStaticList` page 2 and the descending sort fetch `/actions/EnumList` and
   redraw. The same run executes the compatibility report and checks the fixture is clean.
 
-Not run in the browser: file downloads (the `Content-Disposition` path of `m-form`), the notification WebSocket (`notificationEndpoint` is empty
-in the gate runtime; `/notws` has its own test), QZ Tray, dynamic containers and trees, `m-form-link` header find forms, the dark-mode toggle, and
+The notification WebSocket is a separate browser test (Phase 10, below): a notification sent through the core API shows as a toast in
+`html` and as a Quasar notify in `/qapps`.
+
+Not run in the browser: file downloads (the `Content-Disposition` path of `m-form`), QZ Tray, dynamic containers and trees, `m-form-link` header find forms, the dark-mode toggle, and
 the Login second factor. The `qjs` and `qvue` companions are checked over HTTP only. The smoke checks content, behavior and the console; it does
 not judge layout.
 
@@ -494,11 +496,10 @@ In this pass:
 - `poll#EmailServer` for IMAP and POP3, rustls, no `native-tls`, if a blocking crate passes `plans/License-Review.md`. Each new message runs the email-ECA rules. The seed job stays paused. The poll loop is tested with a fake store.
 - Notification messages and the in-process topic. The host WebSocket `/notws` uses the phase 7 session cookie. A text frame runs on the service pool with its own `ExecutionContext`. Job errors notify topic `ServiceJobError`. Recipient resolution is one query per source, not one query per user.
 - Cluster membership, generated `cluster_tls_cert` / `cluster_tls_key`, key fingerprints, heartbeat on the scheduler tick, and HTTPS fan-out of `entity-cache-invalidate` and `notification-message`. One live member does not fan out. The peer send is `on_commit`, after the enlisted client is back in the pool.
-- `pulldown-cmark` as `moqui_lib::markdown::to_html`. No screen or wiki widget calls it yet.
+- `pulldown-cmark` as `moqui_lib::markdown::to_html`.
 
-Deferred until phase 8, or phase 12 where named:
+Still deferred (to phase 12 where named):
 
-- The markdown call site inside a screen or wiki widget.
 - The embedded SMTP server, the russh cluster sender, and Postgres `NOTIFY`.
 - PDF bytes for an `xsl-fo` attachment (phase 12).
 
@@ -547,6 +548,32 @@ Where it differs from Java:
 - A screen render accepts an anonymous login (an `anonymous-view` service such as `send#EmailTemplate`) for a screen that requires
   authentication, as Java's `getLoggedInAnonymous()` check does; before, only a named user passed (`screen/render.rs`).
 - An `attachments` entry that has no content, screen, or location is logged, as in Java, not added as an error.
+
+### After Phase 8: markdown and the browser notification client
+
+- **Markdown.** The template registry has the renderer classes `markdown` (`.md`, `.markdown`) and `markdown-fancy` (`.md.fancy`,
+  `.markdown.fancy`, the port of Java's `.md.ftl`), in `MoquiDefaultConf.xml` and in the fallback list of a factory with no conf. So
+  `ec.resource.template` and a screen `<text location>` (`sri.renderText`) render a markdown file, which is how a wiki page is shown.
+  The markdown is CommonMark plus GitHub tables, and raw HTML passes through as with Java's flexmark: a markdown file is a trusted
+  template file, not sanitized. The HTML of a file is kept by location and modified time, as Java's `resource.markdown.location` cache.
+  `ec.resource.expand` does not render markdown, in Java or here. Differences: the flexmark `[TOC]` block is not rendered; in
+  `.md.fancy` the tags, comments, `${}` and escapes are set aside before the markdown pass and put back after it (Java ran markdown
+  over the FreeMarker source, so markdown could escape an expression), a tag alone in a paragraph loses the `<p>`, and `${}` output is
+  HTML escaped as in `.html.fancy`. A `<text>` picks its mode by `type` as in Java: a wiki-style `type="html,qvt"` renders the HTML in
+  both modes (in qvt it is part of the Vue template, as in Java, so the file is trusted there too), and a text mode `<text template="false">`
+  writes the source. The wiki screens are not in this tree (they are in HiveMind); `WikiServices.xml` renders no markdown. Tests: the
+  renderer unit tests in `script/template/tests.rs` and `screen/tests/markdown.rs` (a `.md` and a `.md.fancy` text in html, in qvt
+  compiled by the Vue compiler, and the source in text).
+- **Notification client.** `webapp_notification_endpoint` defaults to `/notws`, the Java endpoint. The html header names it
+  (`meta[name=moqui-notify]`) and the `/qapps` settings carry it only for a signed in user, so a page with no user opens no socket.
+  `moqui-html.js` subscribes to `ALL` when the socket opens, shows a notification with a title and `showAlert` as a toast (with its
+  link), and reopens a closed socket after a growing delay, at most ten times in a row. The qvt client is the Java one: `ALL`, a desktop
+  notification when the browser allows it, else a Quasar notify, and six reopen tries 30 seconds apart. Two server changes came with it:
+  every socket of a session is registered (the first port kept one per session, so a second tab got nothing; Java keys its endpoints by
+  the WebSocket session, one per connection), and the upgrade reads the user from the live session of the node before the `HttpSession`
+  row, because the eventual flush has not written a fresh login when the page opens its socket. Test: `gate3_browser.rs`
+  `a_notification_sent_on_the_server_shows_in_the_html_and_qapps_pages` (the login page has no socket; after sign in a
+  `NotificationMessage` sent through the core API shows in `html` and in `/qapps`, and the console stays clean).
 
 ## Phase 11 — LLM, A2A, and the other tools
 

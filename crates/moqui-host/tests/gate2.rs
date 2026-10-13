@@ -79,6 +79,8 @@ fn rest_enum_types_login_and_session_survive_restart() {
     let grant_report = load_data(&runtime, &framework, &cluster_dir, &grant_flags).unwrap();
     assert!(grant_report.records > 0, "grant records {}", grant_report.records);
 
+    // 0 binds an ephemeral cluster port, so a test run beside another server does not need 8443 free.
+    moqui_lib::env::set_property("cluster_https_port", "0");
     let bind = SocketAddr::from(([127, 0, 0, 1], 0));
     let server = start_server(&runtime, &framework, &cluster_dir, bind).unwrap();
     let address = server.address();

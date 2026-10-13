@@ -133,6 +133,125 @@ fn server_static_qvt_renders_in_chromium_with_its_actions_data() {
     static_list(&mut browser, &base);
 }
 
+#[test]
+fn a_notification_sent_on_the_server_shows_in_the_html_and_qapps_pages() {
+    let gate = start("browser-notify");
+    let base = format!("http://{}", gate.server.address());
+    let mut browser = Browser::launch();
+    // not signed in: the login page names no endpoint and opens no socket
+    browser.navigate(&format!("{base}/Login"));
+    browser.wait_for("moqui-html.js bound the page", "!!window.moqui", WAIT);
+    assert_eq!(
+        browser.eval("!document.querySelector('meta[name=moqui-notify]') && !window.moqui.notificationSocket"),
+        true
+    );
+    assert_clean(&mut browser, "/Login before sign in");
+    sign_in(&mut browser, &base);
+    let user_id = user_id_of(&gate, "john.doe");
+
+    // html: a toast from moqui-html.js
+    browser.navigate(&format!("{base}/apps{FIXTURE}.html?artifactGroupId=SYSTEM_APP"));
+    browser.wait_for(
+        "the notification socket is open",
+        "!!(window.moqui && moqui.notificationSocket && moqui.notificationSocket.readyState === 1)",
+        WAIT,
+    );
+    let shown = notify_until_shown(
+        &mut browser,
+        &gate,
+        &user_id,
+        "Html",
+        "Array.from(document.querySelectorAll('#toasts .alert')).map((el) => el.textContent).find((text) => text.indexOf('Gate note Html') >= 0) || null",
+    );
+    assert!(shown.contains("Gate note Html"), "{shown}");
+    assert_eq!(
+        browser.eval("!!document.querySelector('#toasts .alert[data-type=success] a[href=\"/qapps/System\"]')"),
+        true
+    );
+    assert_clean(&mut browser, "html notification");
+
+    // qvt: a Quasar notify from the WebrootVue client, and the notification history of the shell
+    browser.navigate(&format!("{base}/qapps{FIXTURE}?artifactGroupId=SYSTEM_APP"));
+    browser.wait_for(
+        "the notification socket is open",
+        "!!(window.moqui && moqui.webrootVue && moqui.webrootVue.notificationClient && moqui.webrootVue.notificationClient.webSocket \
+         && moqui.webrootVue.notificationClient.webSocket.readyState === 1)",
+        WAIT,
+    );
+    let shown = notify_until_shown(
+        &mut browser,
+        &gate,
+        &user_id,
+        "Qvt",
+        "Array.from(document.querySelectorAll('.q-notification')).map((el) => el.innerText).find((text) => text.indexOf('Gate note Qvt') >= 0) || null",
+    );
+    assert!(shown.contains("Gate note Qvt"), "{shown}");
+    assert_eq!(
+        browser.eval(
+            "moqui.webrootVue.notifyHistoryList.some((item) => String(item.message).indexOf('Gate note Qvt') >= 0)"
+        ),
+        true
+    );
+    assert_clean(&mut browser, "qvt notification");
+}
+
+/// The user id of a seeded user.
+fn user_id_of(gate: &common::Gate, username: &str) -> String {
+    use moqui_lib::object::Value;
+    let factory = gate.server.factory();
+    let ctx = factory.new_context();
+    let entered = ctx.enter();
+    let authz = ctx.disable_authz();
+    let row = factory
+        .entity()
+        .unwrap()
+        .find("moqui.security.UserAccount")
+        .unwrap()
+        .eq("username", Value::string(username))
+        .one()
+        .unwrap()
+        .unwrap();
+    let user_id = row.get("userId").and_then(Value::as_str).unwrap_or("").to_string();
+    drop(authz);
+    drop(entered);
+    user_id
+}
+
+/// Send a notification to the user through the core API until the page shows it: the socket's subscription is applied on the
+/// service pool after it opens, so the first sends can come before it. Returns the shown text.
+fn notify_until_shown(browser: &mut Browser, gate: &common::Gate, user_id: &str, label: &str, shown: &str) -> String {
+    let deadline = std::time::Instant::now() + WAIT;
+    let mut sent = 0;
+    while std::time::Instant::now() < deadline {
+        sent += 1;
+        let factory = gate.server.factory();
+        let ctx = factory.new_context();
+        let entered = ctx.enter();
+        let authz = ctx.disable_authz();
+        let mut note = moqui_core::notify::NotificationMessage::new();
+        note.topic("GateNotify")
+            .user_id(user_id)
+            .title(format!("Gate note {label} {sent}"))
+            .link("/qapps/System")
+            .notification_type("success")
+            .show_alert(true)
+            .persist(false)
+            .message_json("{\"n\":1}")
+            .send()
+            .unwrap();
+        drop(authz);
+        drop(entered);
+        let until = std::time::Instant::now() + Duration::from_millis(750);
+        while std::time::Instant::now() < until {
+            browser.pump(Duration::from_millis(100));
+            if let Ok(serde_json::Value::String(text)) = browser.try_eval(shown) {
+                return text;
+            }
+        }
+    }
+    panic!("the {label} page did not show a notification after {sent} sends");
+}
+
 /// The authorization row the qvt tests change: its action from the database.
 fn authz_action(gate: &common::Gate) -> String {
     use moqui_lib::object::Value;

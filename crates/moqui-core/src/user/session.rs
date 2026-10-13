@@ -322,6 +322,22 @@ pub fn verify_session_cookie(value: &str) -> Result<Option<String>, Error> {
     }
 }
 
+/// The user of a session this node holds live: `None` when the node has no current copy (the
+/// caller reads the `HttpSession` row), `Some(None)` when the session has no user or was rotated
+/// away. An eventual flush has not written a new login yet, so the live copy comes first. A copy
+/// another node changed is current only for the columns written here.
+pub fn live_session_user_id(factory: &ExecutionContextFactory, session_id: &str) -> Option<Option<String>> {
+    let table = lock_sessions(factory);
+    let live = table.sessions.get(session_id)?;
+    if live.retired {
+        return Some(None);
+    }
+    if live.invalidated && !live.dirty_columns.contains(&Column::UserId) {
+        return None;
+    }
+    Some(live.columns.user_id.clone().filter(|user_id| !user_id.is_empty()))
+}
+
 /// Guarantee mode flushes the bound session. Eventual mode returns without writing.
 pub fn end_request() -> Result<(), Error> {
     flush_bound_if_guarantee()

@@ -9,7 +9,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="moquiSessionToken" content="${ec.web.sessionToken}">
-<#if System.getProperty("webapp_notification_endpoint")><meta name="moqui-notify" content="${System.getProperty("webapp_notification_endpoint")}"></#if>
+<#if ec.user.userId && System.getProperty("webapp_notification_endpoint")><meta name="moqui-notify" content="${System.getProperty("webapp_notification_endpoint")}"></#if>
 <#if html_keywords><meta name="keywords" content="${html_keywords}"></#if>
 <#if html_description><meta name="description" content="${html_description}"></#if>
 <title><#if html_title>${html_title}<#else><#if parentMenuName>${ec.resource.expand(parentMenuName, "")} - </#if><#if defaultMenuName>${ec.resource.expand(defaultMenuName, "")}</#if></#if></title>

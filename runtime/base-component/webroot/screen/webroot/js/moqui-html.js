@@ -520,19 +520,36 @@
         });
     };
 
-    // The notification socket opens only when the page names an endpoint. The server side is a later phase.
+    // A pushed notification with a title and showAlert true is a toast, as the qvt client shows it; its link is the toast's link.
+    const showNotification = (data) => {
+        if (!data || !data.title || data.showAlert !== true) return;
+        notify(data.title, ["success", "warning", "danger"].indexOf(data.type) >= 0 ? data.type : "info");
+        const toast = $("#toasts") && $("#toasts").lastElementChild;
+        if (toast && data.link) {
+            const text = toast.lastChild;
+            const link = el("a", { href: data.link }, data.title);
+            if (text && text.nodeType === 3) toast.replaceChild(link, text);
+        }
+    };
+
+    // The notification socket (/notws by default) opens when the page names an endpoint, which the server does only for a signed in
+    // user. It subscribes to all of the user's topics. A closed socket opens again after a growing delay, up to ten times in a row.
     const connectNotifications = () => {
         const meta = $("meta[name=moqui-notify]");
         if (!meta || !meta.content || !root.WebSocket) return;
         let delay = 2000;
+        let tries = 0;
         const open = () => {
             const socket = new root.WebSocket((root.location.protocol === "https:" ? "wss://" : "ws://") + root.location.host + meta.content);
-            socket.onopen = () => { delay = 2000; };
-            socket.onmessage = (event) => {
-                const data = parseJson(event.data, null);
-                if (data && data.message) notify(data.title ? data.title + ": " + data.message : data.message, data.type);
+            root.moqui.notificationSocket = socket;
+            socket.onopen = () => { delay = 2000; tries = 0; socket.send("subscribe:ALL"); };
+            socket.onmessage = (event) => showNotification(parseJson(event.data, null));
+            socket.onclose = () => {
+                if (tries >= 10) return;
+                tries++;
+                root.setTimeout(open, delay);
+                delay = Math.min(delay * 2, 60000);
             };
-            socket.onclose = () => { root.setTimeout(open, delay); delay = Math.min(delay * 2, 60000); };
         };
         open();
     };

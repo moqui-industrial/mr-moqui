@@ -2383,8 +2383,8 @@
             moqui.appRootPath = this.appRootPath;
             moqui.onSessionToken = (token) => { if (token !== this.moquiSessionToken) this.setSessionToken(token, true); };
             this.$q.dark.set(!!config.darkMode);
-            // Open the socket only when the server names an endpoint.
-            if (config.notificationEndpoint) {
+            // Open the socket only for a signed in user, and when the server names an endpoint (/notws by default).
+            if (config.notificationEndpoint && config.userId) {
                 const wsScheme = root.location.protocol === "https:" ? "wss://" : "ws://";
                 this.notificationClient = new moqui.NotificationClient(wsScheme + this.appHost + this.appRootPath + config.notificationEndpoint);
             }

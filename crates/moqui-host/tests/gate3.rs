@@ -975,7 +975,7 @@ fn the_qapps_shell_and_its_menu_data_work_for_a_signed_in_user() {
     assert_eq!(config["locale"], "en-US");
     assert_eq!(config["quasarLang"], "enUS");
     assert_eq!(config["darkMode"], false);
-    assert_eq!(config["notificationEndpoint"], "");
+    assert_eq!(config["notificationEndpoint"], "/notws");
     assert_eq!(config["qvt"]["handles"][0], "merged-fragment");
     assert_eq!(config["qvt"]["handles"][1], "static-template");
     assert_eq!(config["qvt"]["build"], "compiler");

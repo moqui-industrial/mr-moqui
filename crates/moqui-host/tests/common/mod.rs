@@ -220,6 +220,8 @@ pub fn start_with(label: &str, static_fixture: bool) -> Gate {
     };
     load_data(&runtime, &framework, &cluster_dir, &grant_flags).unwrap();
 
+    // 0 binds an ephemeral cluster port, so a test run beside another server does not need 8443 free.
+    moqui_lib::env::set_property("cluster_https_port", "0");
     let bind = SocketAddr::from(([127, 0, 0, 1], 0));
     let server = start_server(&runtime, &framework, &cluster_dir, bind).unwrap();
     Gate {
