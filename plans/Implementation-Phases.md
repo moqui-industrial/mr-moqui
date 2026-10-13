@@ -274,7 +274,34 @@ Server-static `qvt` is last, and follows `plans/QvtServerStatic.md`. The attribu
 
 ### Where the code differs from the text above
 
-Appended slice by slice.
+A summary of slices 0 to 8 first, then the notes appended slice by slice.
+
+- **Shape.** The plan held: one screen model (slice 1: definitions, cache, `ScreenUrlInfo`, `makeRender()` with no socket), one macro walker
+  (slice 2), and a JavaScript macro module for each mode (`ScreenText.js`, `ScreenCsv.js`, `ScreenXml.js`, `ScreenHtmlPrint.js`, `ScreenHtml.js`,
+  `ScreenQvt.js`, `ScreenPlain.js` for `qjs`/`qvue`, `ScreenQvtStatic.js`). Screen XML expressions were migrated from Groovy to JavaScript and are
+  linted (`moqui lint --screens`, slice 0); 3 Groovy screens still do not load and are named by the lint and the report. Templates are the `fancy`
+  dialect (slice 3), not FreeMarker; a `.ftl` location is refused.
+- **Deviations that stay.** `html-print` writes its own document wrapper; `xsl-fo` is only an alias. The body of a `.qvt` response is a
+  template the client wraps, not a component object (the Java shape). `/qapps` is html and loads `.qvt` from `/apps`. Request text in qvt uses
+  `&#123;` instead of `v-pre`. Server-static `include-screen` is inlined and tree JSON is a 501. The macro-level differences are listed at the top
+  of `ScreenHtml.js` and `ScreenQvt.js`.
+- **Fixed in slice 8 (found by the Gate 3 harness).** A transition's `service-call` (default `out-map="context"`) failed with `cannot put with key
+  'context'`, so every form post through a transition shortcut was a 500: `XmlActions.js` now puts each result on the context by name. A
+  `default-response` to a screen did not carry the target screen's `parameter` values (Java's `UrlInstance.getParameterMap`), so
+  `updateArtifactGroup` redirected to `ArtifactGroupDetail` without `artifactGroupId`. A transition requested with `Accept: application/json`
+  (the qvt `m-form`) got a 302 to the page html; it now gets Java's `sendJsonRedirect` JSON (`screenUrl`, `screenPathList`,
+  `screenParameters`, `messageInfos`, `currentParameters`), and the messages are not also saved for the next page. `entity-find` with
+  `search-form-inputs` did not set `<list>Count`, `PageIndex`, `PageSize`, `PageMaxIndex`, `PageRangeLow` and `PageRangeHigh`, so no
+  form-list in any mode had pages (the find now has `getLimit`, `getOffset` and `copy` for it). `Header.html.fancy` wrote a script or style
+  sheet twice when the theme and the page both named it (every error page loaded `moqui-html.js` twice). In qvt `fields-initial`, a `link` after a
+  `display-entity` in one field replaced the entity text with the id (Java does the same). The `m-*` field wrappers passed `id` to
+  `q-input`/`q-select`/`q-file`, which drop it; they now pass `for`, so the native input has the id. `m-static-form-list` reused the row
+  components of the last page, and an `m-form` copies its `fields-initial` once, so page 2 showed the rows of page 1.
+- **Deferred.** PDF bytes (phase 12); `ScreenServices.xml` service bodies and mail screen bodies (the screen-mail items in phase 10's
+  deferred list); `vuet` and `/vapps` (dropped); the Assist panel; saved finds and screen documents (nothing reads the user finds yet); in a
+  static template, row selection, first/second/last rows, aggregation, the column picker and the csv/text/pdf buttons; precompiled `m-*`
+  templates, which `webapp_qvt_static_only=true` waits for; the `lookup` widget (a text line, as the Java macro was commented out). A static
+  template is fetched once to read `X-Moqui-Qvt` and then loaded again by a script element (a URL without the query), so it downloads twice.
 
 - **Slice 3, fancy renderers.** `script/template.rs` compiles the dialect in Rust to one JavaScript function, cached by
   source text, and the trusted renderer runs it on the script runtime. The locked-down renderer runs the same function in
@@ -309,7 +336,8 @@ Appended slice by slice.
   belong to the qvt slice. The `vuet` text types are gone. The default theme links Font Awesome, `moqui-html.css` and
   `moqui-html.js` (with `defer`); Tom Select and SortableJS are added to `footer_scripts` and `footer_stylesheets` by the
   widgets that use them, and the client loads them itself for a fragment that has no footer. The component data files
-  (theme, localization, security) are not read by `moqui load`; the gate loads them by location.
+  (theme, localization, security) were not read by `moqui load` then; since the Phase 10 merge `moqui load` and the empty-database
+  load read each component's `data` directory, and the gate no longer loads them by location (slice 8).
 - **Static files.** The path walk ends at a file under a screen's directory when a name is neither a subscreen nor a
   transition (`screen/static_files.rs`). A transition named `favicon.ico` would hide the file, so `webroot.xml` has none.
   Weak `ETag` from the modification time and size, 304, HEAD, a year of `immutable` for `*.min.*` or a `v` parameter and an
@@ -385,6 +413,42 @@ Appended slice by slice.
   The report is `moqui lint --screens --qvt-static [report-file]` (one block for each screen file: location, mode, verdict, reasons and violations; it does not fail the
   process) and `screen::statics::static_report` with `full` for the render with the wrapped `ec`. Over this tree 128 screens: 73 clean, 38 with violations, 14 stay a server merge,
   3 (the Groovy screens) do not load. `ArtifactGroupDetail` is clean, and Gate 3 marks it with a `screen-extend` in its own runtime.
+- **Slice 8, the Gate 3 harness.** `tests/gate3.rs` and `tests/gate3_browser.rs` share the seeded server in `tests/common/mod.rs`: one embedded
+  Postgres, the seed load (framework files and each component's `data` directory, so the themes, pagination text and the tools app groups are
+  rows without a by-location load), the demo users, and three screens of the test runtime (`GateCompanion`, `GateWidgets` with click to edit,
+  a background submit with a date, a drop-down and a multiple drop-down, a form-list with the column picker and 186 rows, and Chart.js and
+  Mermaid in qvt text; `GateStaticList`, server-static with the same list). `gate3.rs` adds a form post through `updateArtifactGroup` (the
+  session cookie and the page's token; refused without the token; the JSON answer for `Accept: application/json`), that `html-print` names no
+  `moqui-html.js` and no script, and that the seed load wrote the tools and webroot data. `crates/moqui/tests/lint_cli.rs` runs the binary's
+  `lint --screens` and `lint --screens --qvt-static` and checks both exit 0. The browser smoke is a small Chrome DevTools Protocol client over
+  `tungstenite` (`tests/common/cdp.rs`), not `chromiumoxide` and not `PdfRenderer`: Chromium with `--headless=new`, a temporary profile, a page
+  attached with a flat session, `Runtime.evaluate`, mouse and key events through `Input`, and every `Runtime.exceptionThrown`,
+  `Runtime.consoleAPICalled` error or warning and `Log.entryAdded` error or warning collected as a problem.
+
+### Gate 3 status
+
+Every item of Gate 3 has a test, and they pass. The browser items, in `tests/gate3_browser.rs`, with the console clean on every page:
+
+- `html` (under `/apps`, with the navbar): `moqui-html.js` once, the form values and rows, the menus moved into the navbar, a native dialog opened
+  and closed, a form post through the transition that comes back to the page with the new value; click to edit; a background submit (date,
+  drop-down, the multiple drop-down through Tom Select loaded on use) with its message and no navigation; the column picker with SortableJS
+  loaded on use and the tree in its input; page 2 and a descending sort of the form-list.
+- `html-print`: no `window.moqui`, no script, the three form-list tables. `text`, `csv` and `xml`: fetched by the page with their content types, and
+  the xml parses with `DOMParser`.
+- `qvt` through `/qapps`, server-merged: the shell mounts, the form-single is a `QForm` with its value, the rows show the display-entity text, a
+  container dialog opens with a drop-down whose `QMenu` lists the server's options, a row's `m-drop-down` is changed through its menu and the row's
+  `m-form` posts with the session token (stored in the database); Chart.js and Mermaid are absent on that page and load and draw on the
+  widgets page; `m-editable` saves through `QPopupEdit`; `m-date-time` takes a day from the `QDate` popup; the form posts in the background with
+  its message; the column dialog opens; page 2 of the list.
+- `qvt` server-static (the fixture marked by `screen-extend`): `moqui.qvtStatic[path]` is a function, the script, `/actions` and
+  `/actions/ArtifactAuthzList` were requested, the form value and rows come from the packages, there is no literal `{{`, `${` or `ec.` in the
+  rendered text, the dialog and the row post work as above; on `GateStaticList` page 2 and the descending sort fetch `/actions/EnumList` and
+  redraw. The same run executes the compatibility report and checks the fixture is clean.
+
+Not run in the browser: file downloads (the `Content-Disposition` path of `m-form`), the notification WebSocket (`notificationEndpoint` is empty
+in the gate runtime; `/notws` has its own test), QZ Tray, dynamic containers and trees, `m-form-link` header find forms, the dark-mode toggle, and
+the Login second factor. The `qjs` and `qvue` companions are checked over HTTP only. The smoke checks content, behavior and the console; it does
+not judge layout.
 
 ## Phase 9 — SearchFacade
 

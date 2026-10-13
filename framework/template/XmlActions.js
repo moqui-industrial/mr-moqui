@@ -279,7 +279,14 @@
             if (outMap && !isAsync) {
                 // A context name read is a copy, so the merged map is assigned back.
                 const add = !has(node, "out-map-add-to-existing") || attr(node, "out-map-add-to-existing") === "true";
-                const assign = add
+                // `context` is the stack itself (the default out-map of a transition's service-call): each result goes on it by name, as
+                // Java's context.putAll. A name the script host owns (ec, sri) is not replaced.
+                const assign = outMap === "context"
+                    ? js`
+                        if (call_service_result != null) for (const mq_key of Object.keys(call_service_result))
+                            if (!Object.prototype.hasOwnProperty.call(globalThis, mq_key)) globalThis[mq_key] = call_service_result[mq_key];
+                    `
+                    : add
                     ? `if (call_service_result != null) ${outMap} = Object.assign({}, ${outMap} || {}, call_service_result);`
                     : `${outMap} = call_service_result;`;
                 callLines = js`
@@ -384,12 +391,36 @@
                 ? childrenNamed(node, "date-filter")
                     .map((kid) => `${list} = ${list}.filterByDate(${dateFilterArgs(kid)});`).join("\n")
                 : "";
+            // A paginated search sets the list's Count, PageIndex, PageSize, PageMaxIndex, PageRangeLow and PageRangeHigh, which the
+            // form-list pagination reads (Java's XmlActions entity-find). The count of all rows runs only when the page is full.
+            const paginate = sfi && attr(sfi, "paginate") !== "false" && !limitRange && !limitView;
+            const pageLines = paginate ? js`
+                var ${list}_xalimit = ${list}_xafind.getLimit();
+                var ${list}_xaoffset = ${list}_xafind.getOffset() || 0;
+                var ${list}_xacount = ${list}_xalimit == null ? null : ${list}_xafind.copy();
+            ` : "";
+            const pageAfter = paginate ? js`
+                if (${list}_xalimit == null) {
+                    ${list}Count = ${list}.length;
+                    ${list}PageIndex = 0;
+                    ${list}PageSize = ${list}Count > 20 ? ${list}Count : 20;
+                } else {
+                    ${list}PageSize = ${list}_xalimit;
+                    ${list}PageIndex = ${list}_xalimit > 0 ? Math.floor(${list}_xaoffset / ${list}_xalimit) : 0;
+                    ${list}Count = ${list}.length < ${list}PageSize ? ${list}.length + ${list}PageIndex * ${list}PageSize : ${list}_xacount.count();
+                }
+                ${list}PageMaxIndex = ${list}PageSize > 0 && ${list}Count > 0 ? Math.trunc((${list}Count - 1) / ${list}PageSize) : 0;
+                ${list}PageRangeLow = ${list}PageIndex * ${list}PageSize + 1;
+                ${list}PageRangeHigh = Math.min(${list}PageIndex * ${list}PageSize + ${list}PageSize, ${list}Count);
+            ` : "";
             // The local temp holds the find; the list itself is a context name.
             return js`
                 var ${list}_xafind = ${findPrefix(node)};
                 ${sfi ? searchFormLines(list, sfi) : ""}
+                ${pageLines}
                 ${list} = ${run};
                 ${dateFilters}
+                ${pageAfter}
             `;
         }),
         "econditions": chain((node) => `.condition(${conditionObjectExpr(node)})`),

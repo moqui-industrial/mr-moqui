@@ -1102,6 +1102,14 @@ mod tests {
                         <set field="after" value="ran"/>
                     </actions>
                 </service>
+                <service verb="onto" noun="Context">
+                    <in-parameters><parameter name="n" type="Integer"/></in-parameters>
+                    <out-parameters><parameter name="answer" type="Integer"/></out-parameters>
+                    <actions>
+                        <service-call name="double#Num" out-map="context"><field-map field-name="x" from="n"/></service-call>
+                        <set field="answer" from="y"/>
+                    </actions>
+                </service>
                 <service verb="stops" noun="Num">
                     <out-parameters><parameter name="after"/></out-parameters>
                     <actions>
@@ -1126,6 +1134,13 @@ mod tests {
         );
         assert_eq!(out.get("after").and_then(Value::as_str), Some("ran"));
         assert!(ctx.message().errors().is_empty(), "{:?}", ctx.message().errors());
+        // out-map="context", the default of a transition's service-call: the results go on the stack by name
+        let out = sync("onto#Context", &params).unwrap();
+        assert_eq!(
+            out.get("answer").map(moqui_lib::object::to_plain_string).as_deref(),
+            Some("42"),
+            "{out:?}"
+        );
         let out = sync("stops#Num", &BTreeMap::new()).unwrap();
         assert!(!out.contains_key("after"), "an unignored error stops the actions");
         assert!(ctx.message().errors().iter().any(|text| text.contains("nothing#Here")));

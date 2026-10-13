@@ -753,7 +753,7 @@ fn run_transition(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>, info: S
                 .error_response
                 .as_ref()
                 .unwrap_or(&transition.default_response);
-            return respond(&info, response);
+            return respond(&info, response, wants_json(job, &info));
         }
     }
 
@@ -781,7 +781,17 @@ fn run_transition(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>, info: S
         in_transaction(transition.begin_transaction, None, || run_transition_actions(actions))?;
     }
     let response = pick_response(&transition)?;
-    respond(&info, response)
+    respond(&info, response, wants_json(job, &info))
+}
+
+/// A transition asked for with `.json` or by a client that accepts JSON (the qvt `m-form`) answers a redirect as JSON, as Java's
+/// `sendJsonRedirect`.
+fn wants_json(job: &Job<'_>, info: &ScreenUrlInfo) -> bool {
+    info.target_transition_extension.as_deref() == Some("json")
+        || job
+            .request
+            .header("accept")
+            .is_some_and(|accept| accept.contains("application/json"))
 }
 
 fn run_transition_actions(actions: &Actions) -> Result<(), Error> {
@@ -833,7 +843,7 @@ pub(super) fn parameter_value(parameter: &ParameterDef) -> Result<Option<Value>,
     Ok(script::context_value(&parameter.name).or_else(|| web::parameters().get(&parameter.name).cloned()))
 }
 
-fn respond(info: &ScreenUrlInfo, response: &ResponseDef) -> Result<(), Error> {
+fn respond(info: &ScreenUrlInfo, response: &ResponseDef, json: bool) -> Result<(), Error> {
     if response.save_current_screen {
         user::session::push_screen_history(&info.full_path_url());
     }
@@ -849,7 +859,10 @@ fn respond(info: &ScreenUrlInfo, response: &ResponseDef) -> Result<(), Error> {
     if response.save_parameters {
         save_parameters();
     }
-    save_messages();
+    // A JSON answer carries the messages itself, so they are not kept for the next page as well.
+    if !json {
+        save_messages();
+    }
     if has_errors() {
         save_error_parameters();
     }
@@ -884,6 +897,7 @@ fn respond(info: &ScreenUrlInfo, response: &ResponseDef) -> Result<(), Error> {
             parameters.insert(name, moqui_lib::object::to_plain_string(&value));
         }
     }
+    let mut screen_path = None;
     let location = if url_type == "plain" {
         url
     } else {
@@ -897,11 +911,132 @@ fn respond(info: &ScreenUrlInfo, response: &ResponseDef) -> Result<(), Error> {
             }
         }
         let names = resolve_screen_path(&info.pre_transition_path, &url);
+        // The parameters of the screens on the target path from the context, as Java's `UrlInstance.getParameterMap`: a transition of
+        // a screen with a required parameter redirects back with it.
+        for (name, value) in path_parameters(info, &names)? {
+            parameters.entry(name).or_insert(value);
+        }
         let base = web::base_url();
-        format!("{}{}", base.trim_end_matches('/'), encode_path(&names))
+        let location = format!("{}{}", base.trim_end_matches('/'), encode_path(&names));
+        screen_path = Some(names);
+        location
     };
-    web::send_redirect(&with_query(location, &parameters));
+    if json {
+        send_json_redirect(screen_path, &location, &parameters);
+    } else {
+        web::send_redirect(&with_query(location, &parameters));
+    }
     Ok(())
+}
+
+/// Java's `sendJsonRedirect`: `screenUrl` (the path with its parameters), `screenPathList` and `screenParameters` for a screen, else
+/// `redirectUrl`, with the messages and the current parameters. The errors make it a 500, as for any JSON answer.
+fn send_json_redirect(screen_path: Option<Vec<String>>, location: &str, parameters: &BTreeMap<String, String>) {
+    use moqui_lib::object::Value as V;
+    let mut map = indexmap::IndexMap::new();
+    match screen_path {
+        Some(names) => {
+            map.insert(
+                "screenPathList".to_string(),
+                V::List(names.iter().map(V::string).collect()),
+            );
+            let mut shown = serde_json::Value::Object(
+                parameters
+                    .iter()
+                    .map(|(name, value)| (name.clone(), serde_json::Value::String(value.clone())))
+                    .collect(),
+            );
+            web::strip_credential_parameters(&mut shown);
+            let screen_parameters = shown
+                .as_object()
+                .map(|object| {
+                    object
+                        .iter()
+                        .map(|(name, value)| (name.clone(), V::string(value.as_str().unwrap_or(""))))
+                        .collect()
+                })
+                .unwrap_or_default();
+            map.insert("screenParameters".to_string(), V::Map(screen_parameters));
+            map.insert(
+                "screenUrl".to_string(),
+                V::string(with_query(encode_path(&names), parameters)),
+            );
+        }
+        None => {
+            map.insert(
+                "redirectUrl".to_string(),
+                V::string(with_query(location.to_string(), parameters)),
+            );
+        }
+    }
+    let messages = ExecutionContext::with_current(|ec| ec.message().messages().to_vec()).unwrap_or_default();
+    if !messages.is_empty() {
+        map.insert(
+            "messageInfos".to_string(),
+            V::List(
+                messages
+                    .iter()
+                    .map(|message| {
+                        let mut info = indexmap::IndexMap::new();
+                        info.insert("message".to_string(), V::string(message));
+                        info.insert("type".to_string(), V::string("info"));
+                        V::Map(info)
+                    })
+                    .collect(),
+            ),
+        );
+    }
+    let mut current = serde_json::Value::Object(
+        web::parameters()
+            .into_iter()
+            .filter(|(_, value)| !matches!(value, V::Object(_)))
+            .map(|(name, value)| {
+                (
+                    name,
+                    serde_json::Value::String(moqui_lib::object::to_plain_string(&value)),
+                )
+            })
+            .collect(),
+    );
+    web::strip_credential_parameters(&mut current);
+    if let Some(object) = current.as_object() {
+        map.insert(
+            "currentParameters".to_string(),
+            V::Map(
+                object
+                    .iter()
+                    .filter(|(name, _)| name.as_str() != "moquiSessionToken")
+                    .map(|(name, value)| (name.clone(), V::string(value.as_str().unwrap_or(""))))
+                    .collect(),
+            ),
+        );
+    }
+    web::send_json_response(V::Map(map));
+}
+
+/// The non-empty values of the `parameter` entries of the screens on the path `names`, from the context or the request.
+fn path_parameters(info: &ScreenUrlInfo, names: &[String]) -> Result<BTreeMap<String, String>, Error> {
+    let mut out = BTreeMap::new();
+    let (Some(root), Some(factory)) = (
+        info.path_defs.first(),
+        ExecutionContext::with_current(|ec| Arc::clone(ec.factory())),
+    ) else {
+        return Ok(out);
+    };
+    let target = match ScreenUrlInfo::resolve(&factory, &root.location, names, info.last_standalone) {
+        Ok(target) => target,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(out),
+        Err(err) => return Err(err),
+    };
+    for item in target.parameter_items.values() {
+        if let Some(value) = parameter_value(item)? {
+            let text = moqui_lib::object::to_plain_string(&value);
+            if !text.is_empty() {
+                out.insert(item.name.clone(), text);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Messages ride the session to the next screen, which shows them.
