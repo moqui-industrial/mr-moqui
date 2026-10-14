@@ -1071,7 +1071,7 @@ pub(crate) fn single_threaded() -> bool {
 
 /// Single-threaded, the timer thread does not start. A deadline is then only noticed by
 /// [`TransactionManager::poll_deadline`] and a running statement is not cancelled: statement
-/// timeouts are not enforced (`plans/Wasm.md`).
+/// timeouts are not enforced (`plans/archive/Wasm.md`).
 fn ensure_deadline_timer() {
     if single_threaded() {
         return;

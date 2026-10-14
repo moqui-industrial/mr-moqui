@@ -18,7 +18,7 @@
 //! The trusted renderer runs that function on the script runtime with the live context. The
 //! locked-down renderer runs it in a separate QuickJS context that holds nothing but the plain
 //! snapshot of a map, `format` and `localize`. Tags are listed in Templating in
-//! `plans/Architecture-Proposal.md`.
+//! `plans/archive/Architecture-Proposal.md`.
 
 use std::cell::{Cell, RefCell};
 use std::sync::{Arc, Mutex};

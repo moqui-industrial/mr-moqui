@@ -13,7 +13,7 @@
  */
 
 //! Framework services that are defined but not run yet: LLM and A2A wait for phase 13, and the Docker app instance
-//! provisioning of `InstanceServices` is not ported (Decisions in `plans/Implementation-Phases.md`). `WikiServices`
+//! provisioning of `InstanceServices` is not ported (Decisions in `plans/archive/Implementation-Phases.md`). `WikiServices`
 //! is Groovy throughout and its screens live in HiveMind, outside this tree. `verify#ReCaptcha` calls Google with the
 //! Groovy `RestClient`, which has no script binding here. The definitions keep their parameters; a call fails with a
 //! message that names the service, rather than running nothing.

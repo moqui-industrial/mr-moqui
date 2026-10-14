@@ -68,7 +68,7 @@ These requirements determine which implementations are acceptable.
 
 ### Existing execution model
 
-Follow `plans/Architecture-Proposal.md`, `plans/Crate-Layout.md`, and `plans/ContextObjects.md`. Tokio/Axum in `moqui-host` owns connections, framing and outbound queues. Application operations go through the factory's bounded service worker pool; each worker uses its thread-local `ExecutionContext` and QuickJS runtime, and framework calls remain synchronous. No database or JavaScript business logic runs on Tokio tasks. A connection never retains an execution context, transaction or JavaScript value. Queue saturation produces an explicit overload response.
+Follow `plans/archive/Architecture-Proposal.md`, `plans/archive/Crate-Layout.md`, and `plans/archive/ContextObjects.md`. Tokio/Axum in `moqui-host` owns connections, framing and outbound queues. Application operations go through the factory's bounded service worker pool; each worker uses its thread-local `ExecutionContext` and QuickJS runtime, and framework calls remain synchronous. No database or JavaScript business logic runs on Tokio tasks. A connection never retains an execution context, transaction or JavaScript value. Queue saturation produces an explicit overload response.
 
 ### Important limits
 
@@ -156,7 +156,7 @@ Do not introduce a separate distributed schema-registry service initially unless
 
 ## 4. Repository and module design
 
-Use the existing workspace and five-crate cut in `plans/Crate-Layout.md`, not a separate messaging workspace.
+Use the existing workspace and five-crate cut in `plans/archive/Crate-Layout.md`, not a separate messaging workspace.
 
 ```text
 crates/moqui-lib/src/wire/        # codecs, descriptors, reflection, binary verification
@@ -561,7 +561,7 @@ Validate declared outputs and encode directly from returned Rust/QuickJS values 
 
 ### Shared Rust runtime through Emscripten
 
-Follow `plans/Wasm.md`: compile the portable Rust core with `wasm32-unknown-emscripten`, and use Emscripten-generated JavaScript bindings for browser host integration, following the SQLite WASM pattern. Share the schema-driven FlatBuffers verifier, reader, writer and declarative constraints with the server rather than maintaining a separate TypeScript reflection implementation. TypeScript remains the UI and transport integration layer.
+Follow `plans/archive/Wasm.md`: compile the portable Rust core with `wasm32-unknown-emscripten`, and use Emscripten-generated JavaScript bindings for browser host integration, following the SQLite WASM pattern. Share the schema-driven FlatBuffers verifier, reader, writer and declarative constraints with the server rather than maintaining a separate TypeScript reflection implementation. TypeScript remains the UI and transport integration layer.
 
 Run the module in a dedicated Web Worker so verification, encoding and local framework execution do not block the UI. The flow is:
 

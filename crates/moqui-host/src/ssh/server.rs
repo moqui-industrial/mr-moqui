@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The built-in SSH server (`plans/Ssh.md`): off unless `ssh_port` is set. It listens on `ssh_host` (default
+//! The built-in SSH server (`plans/archive/Ssh.md`): off unless `ssh_port` is set. It listens on `ssh_host` (default
 //! `127.0.0.1`) with the host key `ssh_host_key`, a secret property that is the base64 seed of an Ed25519 key
 //! (generated into `runtime/.env` like the other `CHANGEME` secrets) or an OpenSSH private key.
 //!

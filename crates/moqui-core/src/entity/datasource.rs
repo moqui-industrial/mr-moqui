@@ -16,7 +16,7 @@
 //! `TransactionInternalBitronix` read it: the datasource's own `inline-jdbc` wins, else the
 //! `<database>`'s. The host turns the result into a `DbDriver`, and the pool settings into the core
 //! pool. `h2`, the Java default `entity_ds_db_conf`, and an empty name are the embedded Postgres
-//! cluster (`plans/EmbeddedPostgres.md`); H2 has no driver here.
+//! cluster (`plans/archive/EmbeddedPostgres.md`); H2 has no driver here.
 
 use std::time::Duration;
 

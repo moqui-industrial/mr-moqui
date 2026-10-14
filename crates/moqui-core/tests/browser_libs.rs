@@ -13,7 +13,7 @@
  */
 
 //! The vendored browser libraries under `webroot/libs`: the manifest matches the files, and the Vue
-//! compiler bundle runs in QuickJS (Spike 4 of `plans/QvtServerStatic.md`).
+//! compiler bundle runs in QuickJS (Spike 4 of `plans/archive/QvtServerStatic.md`).
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -111,7 +111,7 @@ fn the_manifest_licenses_are_the_reviewed_set() {
         };
         assert_eq!(
             license, reviewed,
-            "{id}: license changed, review plans/License-Review.md"
+            "{id}: license changed, review plans/archive/License-Review.md"
         );
     }
 }

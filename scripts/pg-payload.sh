@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The theseus Postgres archive that postgresql_embedded bundles (plans/License-Review.md, plans/EmbeddedPostgres.md).
+# The theseus Postgres archive that postgresql_embedded bundles (plans/archive/License-Review.md, plans/archive/EmbeddedPostgres.md).
 #   scripts/pg-payload.sh strip [target]    repack the cached archive without bin/psql (the original stays as .orig), then
 #                                           make cargo bundle it again
 #   scripts/pg-payload.sh check [archive...] fail on bin/psql, a readline library, or an ELF that NEEDs readline

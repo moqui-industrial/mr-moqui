@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The optional SSH cluster channel (`plans/Ssh.md`, `cluster_transport=ssh`). The HTTPS POST of `plans/Cluster.md`
+//! The optional SSH cluster channel (`plans/archive/Ssh.md`, `cluster_transport=ssh`). The HTTPS POST of `plans/archive/Cluster.md`
 //! stays the default; a peer whose `clusterBaseUrl` is `https://` still gets it.
 //!
 //! A member advertises `ssh://host:port`, its SSH server, and records its host key fingerprint on its `ClusterMember`

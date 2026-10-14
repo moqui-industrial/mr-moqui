@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! PDF output for the `html-print` mode. The engine is the host's (`plans/Architecture-Proposal.md`, Tool components
+//! PDF output for the `html-print` mode. The engine is the host's (`plans/archive/Architecture-Proposal.md`, Tool components
 //! and print): one long-lived Chromium. Core has no browser, so the host installs a [`PdfEngine`] at startup. With
 //! none installed, or a build without the `pdf` feature, a request for PDF bytes reports that PDF is not available.
 

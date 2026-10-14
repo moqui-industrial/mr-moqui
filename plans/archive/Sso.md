@@ -2,7 +2,7 @@
 
 OpenID Connect and OAuth 2 login, the `moqui-sso` component in the framework. Built in phase 12.
 
-This follows Sessions and login in `plans/Architecture-Proposal.md`. Password login, the login key, the API key, and artifact authorization stay as they are.
+This follows Sessions and login in `plans/archive/Architecture-Proposal.md`. Password login, the login key, the API key, and artifact authorization stay as they are.
 
 ## Decision
 

@@ -1,6 +1,6 @@
 # Cluster coordination
 
-How instances that share a database find each other, and how cache invalidation and notifications cross the process boundary. Session bytes do not. The session struct and its flush modes are Sessions and login in `plans/Architecture-Proposal.md`.
+How instances that share a database find each other, and how cache invalidation and notifications cross the process boundary. Session bytes do not. The session struct and its flush modes are Sessions and login in `plans/archive/Architecture-Proposal.md`.
 
 This follows that section and the cache row in the same proposal. `moqui-hazelcast` is the Java behavior being replaced. It is an add-on component, not part of the framework tree.
 
@@ -8,7 +8,7 @@ This follows that section and the cache row in the same proposal. `moqui-hazelca
 
 A cluster exists when more than one instance uses the same database. Membership is a table in that database. Each instance upserts its own row on startup and refreshes a heartbeat. Peers are the other rows whose heartbeat is newer than a few intervals. There is no seed list and no multicast.
 
-Peers call each other over HTTPS. The cluster endpoint requires a client certificate. The certificate and its private key are secret configuration, not database rows: `cluster_tls_cert` and `cluster_tls_key` `default-property`s in `MoquiDefaultConf.xml`, the `entity_ds_crypt_pass` pattern, set by config file or environment and generated into `runtime/.env` when left at the `CHANGEME` default (Decision 1 of `plans/MimoReview.md`). Clustered deployments provision the same pair on every instance; the pair is base64 DER on single-line `.env` values. The connection between instances carries a TLS signature, and does not carry the key. The session-cookie HMAC key (`session_cookie_key`) is a different property. The two keys stay distinct.
+Peers call each other over HTTPS. The cluster endpoint requires a client certificate. The certificate and its private key are secret configuration, not database rows: `cluster_tls_cert` and `cluster_tls_key` `default-property`s in `MoquiDefaultConf.xml`, the `entity_ds_crypt_pass` pattern, set by config file or environment and generated into `runtime/.env` when left at the `CHANGEME` default (Decision 1 of `plans/archive/MimoReview.md`). Clustered deployments provision the same pair on every instance; the pair is base64 DER on single-line `.env` values. The connection between instances carries a TLS signature, and does not carry the key. The session-cookie HMAC key (`session_cookie_key`) is a different property. The two keys stay distinct.
 
 The local publish stays a `SimpleTopic`. The local `MCache` drop runs on the writer. The peer message is the cache key, queued at commit and sent by one host thread after the enlisted client is back in the pool. The topic does not carry the entity body or the session map. The receiver applies the message locally and does not send it on. One live member means no fan-out.
 
@@ -36,7 +36,7 @@ The member row is the instance id, the cluster base URL, the heartbeat timestamp
 
 ## Transport
 
-The sender is a small trait. The default implementation is an HTTPS POST to `{base}/cluster/{topic}` with the shared client certificate. The HTTP client keeps that connection pooled. The send runs on one host thread, after commit, and only after the enlisted client has been returned. The message is the cache key and carries an origin id. An invalidation is safe to apply twice. A failed send is retried briefly. The optional senders are a `russh` session with a channel for each topic (`plans/Ssh.md`) and Postgres `NOTIFY` (below). The default remains this POST.
+The sender is a small trait. The default implementation is an HTTPS POST to `{base}/cluster/{topic}` with the shared client certificate. The HTTP client keeps that connection pooled. The send runs on one host thread, after commit, and only after the enlisted client has been returned. The message is the cache key and carries an origin id. An invalidation is safe to apply twice. A failed send is retried briefly. The optional senders are a `russh` session with a channel for each topic (`plans/archive/Ssh.md`) and Postgres `NOTIFY` (below). The default remains this POST.
 
 A notification carries a message id so a retry does not deliver it twice.
 
@@ -68,11 +68,11 @@ As built (`moqui-core/src/cluster`, `moqui-host/src/cluster_edge.rs`):
 
 ## Sessions
 
-The share is the `moqui.server.HttpSession` row through the entity one-cache. A second instance loads that row by id. Guarantee mode bypasses cached clean state with primary reads; it does not rely on invalidation delivery. Invalidation uses the entity-cache topic, which drops the one-cache entry. The receiver does not apply a copy of the attribute map. Session bytes still do not cross the cluster connection. The cookie signature is HMAC-SHA256 over the session id. That key is its own secret property (`session_cookie_key`), generated into `runtime/.env` when left at the `CHANGEME` default. It is not the cluster certificate. A bad MAC is an unknown session. The merge, the reserve connection, and the flush modes are Sessions and login in `plans/Architecture-Proposal.md`.
+The share is the `moqui.server.HttpSession` row through the entity one-cache. A second instance loads that row by id. Guarantee mode bypasses cached clean state with primary reads; it does not rely on invalidation delivery. Invalidation uses the entity-cache topic, which drops the one-cache entry. The receiver does not apply a copy of the attribute map. Session bytes still do not cross the cluster connection. The cookie signature is HMAC-SHA256 over the session id. That key is its own secret property (`session_cookie_key`), generated into `runtime/.env` when left at the `CHANGEME` default. It is not the cluster certificate. A bad MAC is an unknown session. The merge, the reserve connection, and the flush modes are Sessions and login in `plans/archive/Architecture-Proposal.md`.
 
 ## When it lands
 
-The session row is written in phase 7 of `plans/Implementation-Phases.md`, with the web edge. The member heartbeat, the key fingerprints, and the topic fan-out land in phase 10, with notifications. A single-node gate does not need a second instance.
+The session row is written in phase 7 of `plans/archive/Implementation-Phases.md`, with the web edge. The member heartbeat, the key fingerprints, and the topic fan-out land in phase 10, with notifications. A single-node gate does not need a second instance.
 
 ## Out of scope
 

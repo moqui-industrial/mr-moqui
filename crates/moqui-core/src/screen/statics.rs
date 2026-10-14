@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Server-static `qvt` (`plans/QvtServerStatic.md`): which screens it applies to, the cached template, and the `actions`
+//! Server-static `qvt` (`plans/archive/QvtServerStatic.md`): which screens it applies to, the cached template, and the `actions`
 //! transition that answers the data of a screen and of each of its form-lists.
 //!
 //! A server-static screen is sent as a script. The `ScreenQvtStatic.js` units run once, with no actions and no request data,

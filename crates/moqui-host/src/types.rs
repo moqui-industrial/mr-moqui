@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! `moqui types [--out dir]`: TypeScript declarations from the loaded definitions (`plans/TypeGeneration.md`). The
+//! `moqui types [--out dir]`: TypeScript declarations from the loaded definitions (`plans/archive/TypeGeneration.md`). The
 //! definitions load as they do for a server, against an entity model with no database, then
 //! `moqui_core::typegen::generate` writes the files. The default output is `types/` in the runtime directory.
 

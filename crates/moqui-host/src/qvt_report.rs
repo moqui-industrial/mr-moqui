@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! `moqui lint --screens --qvt-static`: the compatibility report of `plans/QvtServerStatic.md` for every screen file below the
+//! `moqui lint --screens --qvt-static`: the compatibility report of `plans/archive/QvtServerStatic.md` for every screen file below the
 //! framework and the components. It needs the entity model (forms take their fields from it) and no database, so the entity facade
 //! here has a driver that has no connection. A screen is checked as if it were marked `server-static="qvt"`: eligibility, the
 //! expressions its static macros write (the `oxc_parser` walk), the work the macros could not write, and the `always-actions` and

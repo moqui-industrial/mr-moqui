@@ -24,6 +24,6 @@ along with this software (see the LICENSE.md file). If not, see
     <widgets>
         <!-- The Groovy shell is not replaced with a script console and there is no eval endpoint (Implementation-Phases,
             phase 11): the shell's websocket and terminal are not part of this port. -->
-        <label text="The Groovy Shell is not available: this port has no Groovy and no script console. Admin access through an SSH server is a later step (plans/Ssh.md)." type="p" style="text-warning"/>
+        <label text="The Groovy Shell is not available: this port has no Groovy and no script console. Admin access through an SSH server is a later step (plans/archive/Ssh.md)." type="p" style="text-warning"/>
     </widgets>
 </screen>

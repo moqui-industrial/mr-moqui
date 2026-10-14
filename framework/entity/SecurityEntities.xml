@@ -563,7 +563,7 @@ along with this software (see the LICENSE.md file). If not, see
         <alias entity-alias="NMU" name="userSentDate" field="sentDate"/>
         <alias entity-alias="NMU" name="viewedDate"/>
     </view-entity>
-    <!-- ========== SSO (the moqui-sso component, in the framework; plans/Sso.md) ========== -->
+    <!-- ========== SSO (the moqui-sso component, in the framework; plans/archive/Sso.md) ========== -->
     <!-- OIDC and OAuth 2 flows run; a SAML flow reports that SAML is not available. -->
     <entity entity-name="AuthFlow" package="moqui.security.sso">
         <field name="authFlowId" type="id" is-pk="true"/>

@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The Postgres `NOTIFY` cluster channel (`cluster_transport=notify`, `plans/Cluster.md`), for members that share the
+//! The Postgres `NOTIFY` cluster channel (`cluster_transport=notify`, `plans/archive/Cluster.md`), for members that share the
 //! entity database and cannot open a connection to each other.
 //!
 //! A notify member advertises `pg-notify:`. The core fan-out posts once to that base URL for all of them, and the

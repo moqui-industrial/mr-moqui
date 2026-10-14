@@ -2,7 +2,7 @@
 
 Status: proposed full-service experiments, not an execution-architecture decision. **Executed source-subset benchmarks and raw results:** [experiments/mantle-execution/README.md](../experiments/mantle-execution/README.md). These prove extracted arithmetic/bridge costs and a reduced durable database path, not full Mantle business throughput.
 
-References: [source audit](MantleUSL-Performance-Audit.md), [architecture](Architecture-Proposal.md), [context contract](ContextObjects.md), [implementation order](Implementation-Phases.md), [type generation](TypeGeneration.md), [deployment/startup requirements](Performance.md).
+References: [source audit](MantleUSL-Performance-Audit.md), [architecture](archive/Architecture-Proposal.md), [context contract](archive/ContextObjects.md), [implementation order](archive/Implementation-Phases.md), [type generation](archive/TypeGeneration.md), [deployment/startup requirements](Performance.md).
 
 ## 1. Questions and claim boundaries
 

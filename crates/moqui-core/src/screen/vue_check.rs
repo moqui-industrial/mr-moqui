@@ -190,7 +190,7 @@ pub fn precompiled_components(compiler_source: &str, scripts: &[&str]) -> Result
         "/* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */\n\n\
          // Generated from the component templates of WebrootVue.qvt.js; do not edit. Make it again with\n\
          //   UPDATE_GOLDEN=1 cargo test -p moqui-core --lib client_components_are_precompiled\n\
-         // qvt.applyRenders uses an entry only while its hash matches the template (plans/QvtServerStatic.md, Page build).\n\
+         // qvt.applyRenders uses an entry only while its hash matches the template (plans/archive/QvtServerStatic.md, Page build).\n\
          (function (moqui) {\n    \"use strict\";\n    moqui.qvtRenders = {\n",
     );
     let templates = component_templates(scripts)?;

@@ -80,7 +80,7 @@ pub enum Executor {
     Threads,
     /// No threads. Async work runs on the calling thread at a drain point with no transaction in
     /// place, `callFuture()` runs at once, and the scheduler does not run. The browser build
-    /// (`plans/Wasm.md`). See [`ExecutionContextFactory::run_pending`].
+    /// (`plans/archive/Wasm.md`). See [`ExecutionContextFactory::run_pending`].
     Inline,
 }
 
@@ -122,7 +122,7 @@ impl ExecutionContextFactory {
     }
 
     /// [`Self::boot_with_framework`] with an executor choice. The browser build passes
-    /// [`Executor::Inline`], which starts no thread (`plans/Wasm.md`).
+    /// [`Executor::Inline`], which starts no thread (`plans/archive/Wasm.md`).
     pub fn boot_with_options(
         runtime_dir: impl AsRef<Path>,
         framework_dir: impl AsRef<Path>,

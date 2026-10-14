@@ -16,7 +16,7 @@
 //! The HTTPS listener and the peer client are installed later. This wave posts through [`Sender`].
 //!
 //! Fan-out is not done on the thread that published: the message goes on a queue, and one sender thread posts it to
-//! the live peers, as `plans/Cluster.md` says. Invalidations waiting together are sent once per entity, since a peer
+//! the live peers, as `plans/archive/Cluster.md` says. Invalidations waiting together are sent once per entity, since a peer
 //! clears the entity's whole cache for one. The peer list is kept and read again on the heartbeat tick.
 
 #[cfg(all(test, feature = "cluster-tls"))]
@@ -285,7 +285,7 @@ struct Member {
 }
 
 /// `instance_id` when it is set, else the id in `runtime/db/instance_id`, else a new one written there. It is not
-/// written to `runtime/.env`, which `plans/Cluster.md` says to copy between members: two members with one id would
+/// written to `runtime/.env`, which `plans/archive/Cluster.md` says to copy between members: two members with one id would
 /// each take the other's member row for its own.
 fn ensure_instance_id(factory: &ExecutionContextFactory) -> Result<String, Error> {
     let current = env::get_prop_or_env("instance_id");

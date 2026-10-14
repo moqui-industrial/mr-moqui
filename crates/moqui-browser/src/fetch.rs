@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Outbound HTTP over the browser's `fetch` (`plans/Wasm.md` W5).
+//! Outbound HTTP over the browser's `fetch` (`plans/archive/Wasm.md` W5).
 //!
 //! `moqui_fetch_send` is a JSPI import (`emlib/moqui_fetch.js`, `__async`): the WASM stack suspends
 //! while `fetch` runs and resumes with the status, or -1 for a transport failure (network, CORS,

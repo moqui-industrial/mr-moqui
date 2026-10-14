@@ -20,7 +20,7 @@ pub fn is_mysql(dialect: &Dialect) -> bool {
     starts_with_ignore(&dialect.name, "mysql")
 }
 
-/// The browser build's local database (`plans/Wasm.md`).
+/// The browser build's local database (`plans/archive/Wasm.md`).
 pub fn is_sqlite(dialect: &Dialect) -> bool {
     starts_with_ignore(&dialect.name, "sqlite")
 }

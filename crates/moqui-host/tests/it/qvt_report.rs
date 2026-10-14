@@ -13,7 +13,7 @@
  */
 
 //! `moqui lint --screens --qvt-static` over the framework, tools and webroot screens: the compatibility report of
-//! `plans/QvtServerStatic.md`. The verdict of the Gate 3 fixture is checked in here. The report changes no default: nothing in the tree is
+//! `plans/archive/QvtServerStatic.md`. The verdict of the Gate 3 fixture is checked in here. The report changes no default: nothing in the tree is
 //! marked server-static for qvt because a report is clean.
 
 use std::path::PathBuf;

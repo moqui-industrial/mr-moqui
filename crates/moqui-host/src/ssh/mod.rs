@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! SSH on `russh` and SFTP on `russh-sftp` (`plans/Ssh.md`): the SFTP client behind `moqui_core::sftp`, and the
+//! SSH on `russh` and SFTP on `russh-sftp` (`plans/archive/Ssh.md`): the SFTP client behind `moqui_core::sftp`, and the
 //! built-in server with its SFTP subsystem and admin shell.
 
 pub mod client;

@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Browser host. `plans/Wasm.md`.
+//! Browser host. `plans/archive/Wasm.md`.
 //!
 //! [`sqlite`] is the local [`moqui_core::driver::DbDriver`]. [`host`] boots a factory on the inline
 //! executor over it. [`fetch`] sends outbound HTTP over `fetch` (JSPI). [`api`] is the JSON request

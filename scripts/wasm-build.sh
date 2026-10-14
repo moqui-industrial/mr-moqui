@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the browser module and stage it with the JS wrappers (plans/Wasm.md).
+# Build the browser module and stage it with the JS wrappers (plans/archive/Wasm.md).
 #   scripts/wasm-build.sh [--release] [out-dir]
 # out-dir defaults to <target>/wasm-pkg/<profile>. It holds moqui_browser.mjs, .wasm, .data,
 # and js/*.js; serve that directory, or run scripts/wasm-smoke.mjs against it.

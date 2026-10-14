@@ -2,7 +2,7 @@
 
 Browser build of the portable framework: `wasm32-unknown-emscripten`, run in one dedicated Web Worker.
 
-This reverses the earlier "no WASM target" decision in `plans/Crate-Layout.md` and `plans/Architecture-Proposal.md`. The goal is the browser-local runtime in `plans/Usability.md`. The server stays the authority, as `plans/Messaging.md` §8 describes. Local state is a cache plus pending requests. A local commit never grants authority to a server write.
+This reverses the earlier "no WASM target" decision in `plans/archive/Crate-Layout.md` and `plans/archive/Architecture-Proposal.md`. The goal is the browser-local runtime in `plans/Usability.md`. The server stays the authority, as `plans/Messaging.md` §8 describes. Local state is a cache plus pending requests. A local commit never grants authority to a server write.
 
 Emscripten is chosen over `wasm32-unknown-unknown` for three reasons. QuickJS (`rquickjs-sys`) and SQLite are C, and emcc builds both. `std::fs` maps onto the Emscripten filesystem, so conf and component loading need no change. Emscripten generates the JavaScript bindings, Asyncify/JSPI, and the OPFS integration, the same way SQLite WASM does ([sqlite.org/wasm](https://sqlite.org/wasm)).
 
