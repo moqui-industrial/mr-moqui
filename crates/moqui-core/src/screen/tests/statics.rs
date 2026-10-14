@@ -767,4 +767,9 @@ fn the_parity_fixture_is_a_template_with_its_data_in_the_packages() {
     assert!(edits.get("itemsForEditLast").is_some(), "{edits}");
     golden("Parity.EditList.json", &serde_json::to_string(&edits).unwrap());
     assert!(html.contains("v-slot:row_first") && html.contains("v-slot:row_last"), "{html}");
+    // row selection: the id field for the checkbox set, a checkbox for each row, and the action form posting through the set
+    assert!(html.contains("selection-id-field=\"itemId\"") && html.contains("mqSel.checkboxStates[rowIndex] = $event.target.checked"), "{html}");
+    assert!(html.contains(":parent-checkbox-set=\"mqSelSet\""), "{html}");
+    let picks = json_of(&render(context.factory(), "/Parity/actions/PickList", &[]));
+    golden("Parity.PickList.json", &serde_json::to_string(&picks).unwrap());
 }

@@ -75,6 +75,16 @@ stubs["q-btn-dropdown"] = { inheritAttrs: false, render() {
 } };
 
 const captured = { lists: {} };
+// the checkbox set records its props and gives its slot the selection state the real one does
+stubs["m-checkbox-set"] = {
+    props: ["checkboxCount", "checkboxParameter", "checkboxListMode", "checkboxValues"],
+    data() { return { checkboxStates: new Array(this.checkboxCount).fill(false), checkboxAllState: false }; },
+    render() {
+        captured.checkboxSet = this;
+        return Vue.h("m-checkbox-set", {}, this.$slots.default({ checkboxStates: this.checkboxStates, checkboxAllState: this.checkboxAllState,
+            setCheckboxAllState: () => {}, clickCheckbox: () => {}, addCheckboxParameters: () => true }));
+    }
+};
 const answers = {};
 const requests = [];
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -321,6 +331,37 @@ test("Parity: the first row is a form of its own over map-first-row, and the las
     assert.ok(table.indexOf("the last row") > table.indexOf("EditList_1"), table);
     assert.match(table, /class='tr first'/);
     assert.match(table, /class='tr last'/);
+});
+
+test("Parity: row selection is a checkbox set over the rows' ids, a checkbox for each row, and the actions posting through it", async () => {
+    setup();
+    const { container } = await mountStatic("", "Parity");
+    const text = html(container);
+    const set = captured.checkboxSet;
+    assert.ok(set, "the list is in a checkbox set");
+    assert.deepEqual(set.checkboxValues, ["E1", "E2"]);
+    assert.equal(set.checkboxParameter, "itemId");
+    assert.equal(set.checkboxCount, 2);
+    const table = text.slice(text.indexOf("<div class='table q-table' id='PickList_table'>"));
+    assert.equal((table.match(/<input type='checkbox'/g) || []).length, 2, table);
+    // the menu of the head holds the action: its dialog and the form-single that posts the selected rows
+    assert.match(table, /<m-container-dialog[^>]*button-text='Archive'/);
+    assert.match(table, /<m-form name='ArchiveForm'/);
+});
+
+test("the checkbox mixin posts the selected ids as name_i with _isMulti, or one list value, and nothing when none is selected", () => {
+    const methods = moqui.checkboxSetMixin.methods;
+    const state = (states, listMode) => ({ checkboxValues: ["a", "b", "c"], checkboxStates: states, checkboxParameter: "id", checkboxListMode: listMode, getCheckboxValueArray: methods.getCheckboxValueArray });
+    const formData = () => { const map = {}; return { map, set: (key, value) => { map[key] = value; } }; };
+    const multi = formData();
+    assert.equal(methods.addCheckboxParameters.call(state([false, true, true], false), multi), true);
+    assert.deepEqual(multi.map, { id_0: "b", id_1: "c", _isMulti: "true" });
+    const list = formData();
+    methods.addCheckboxParameters.call(state([true, false, true], true), list);
+    assert.deepEqual(list.map, { id: "a,c" });
+    const none = formData();
+    assert.equal(methods.addCheckboxParameters.call(state([false, false, false], false), none), false);
+    assert.deepEqual(none.map, {});
 });
 
 test("Parity: a paginated section-iterate shows its page and the page buttons over the package's keys", async () => {

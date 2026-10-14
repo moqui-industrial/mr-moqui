@@ -42,7 +42,9 @@ const FETCH_SPY: &str = r#"(() => {
     window.fetch = (input, init) => original(input, init).then((response) => {
         const url = String((input && input.url) || input);
         const method = (init && init.method) || (input && input.method) || "GET";
-        response.clone().text().then((body) => window.__gate.fetches.push({ url, method, status: response.status, body }));
+        // the fields a form posted, for a check of what a request carried
+        const sent = init && init.body && typeof init.body.entries === "function" ? Array.from(init.body.entries()).map(([key, value]) => key + "=" + value) : [];
+        response.clone().text().then((body) => window.__gate.fetches.push({ url, method, status: response.status, body, sent }));
         return response;
     });
     return true;
@@ -648,7 +650,8 @@ fn static_list(browser: &mut Browser, base: &str) {
         assert!(!text.contains(literal), "{literal} in {text}");
     }
     browser.eval(FETCH_SPY);
-    let first_row = "document.querySelector('#EnumList_table .tbody .tr .td').innerText.trim()";
+    // the first cell of a row is its row-selection checkbox; the enum id is the second
+    let first_row = "document.querySelectorAll('#EnumList_table .tbody .tr')[0].querySelectorAll('.td')[1].innerText.trim()";
     let first = browser.eval(first_row);
     browser.click("page 2", &by_text(".q-pagination button", "2"));
     browser.wait_for(
@@ -669,7 +672,7 @@ fn static_list(browser: &mut Browser, base: &str) {
         "/1 \\/ \\d+ \\(1-20 \\/ \\d+\\)/.test(document.body.innerText) && window.__gate.fetches.some((f) => f.url.indexOf('orderByField=-enumId') >= 0)",
         WAIT,
     );
-    let ids = browser.eval("Array.from(document.querySelectorAll('#EnumList_table .tbody .tr')).map((tr) => tr.querySelector('.td').innerText.trim())");
+    let ids = browser.eval("Array.from(document.querySelectorAll('#EnumList_table .tbody .tr')).map((tr) => tr.querySelectorAll('.td')[1].innerText.trim())");
     let ids: Vec<String> = ids
         .as_array()
         .unwrap()
@@ -731,6 +734,20 @@ fn static_list(browser: &mut Browser, base: &str) {
         "document.querySelectorAll('.q-dialog').length === 0",
         WAIT,
     );
+
+    // row selection: check the first row, open the row actions, and the action posts the selected id as enumId_0
+    let picked = browser.eval("document.querySelectorAll('#EnumList_table .tbody .tr')[0].querySelectorAll('.td')[1].innerText.trim()");
+    browser.click("the first row's checkbox", "document.querySelector('#EnumList_table .tbody input[type=checkbox]')");
+    browser.click("the row actions", "document.querySelector('#EnumList_table .thead .q-btn')");
+    browser.click("Pick", &by_text(".q-menu .q-btn", "Pick"));
+    browser.click("Pick Them", &by_text(".q-dialog .q-btn", "Pick Them"));
+    let post = fetched(browser, "the row action post", "/pickEnums");
+    let sent: Vec<String> = post["sent"].as_array().unwrap().iter().map(|item| item.as_str().unwrap().to_string()).collect();
+    assert!(sent.contains(&format!("enumId_0={}", picked.as_str().unwrap())) && sent.contains(&"_isMulti=true".to_string()), "{sent:?}");
+    browser.press("Escape");
+    browser.wait_for("the dialog closed", "document.querySelectorAll('.q-dialog').length === 0", WAIT);
+    browser.press("Escape");
+    browser.wait_for("the menu closed", "document.querySelectorAll('.q-menu').length === 0", WAIT);
 
     // the column picker: the dialog lists the columns, and Reset to Default posts and reloads the list
     browser.click("Columns", &by_text(".q-btn", "Columns"));

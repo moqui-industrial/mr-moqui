@@ -111,6 +111,7 @@ const WIDGETS: &str = r#"<screen require-authentication="false">
 
 /// A server-static screen with a long list: the static form-list's pages and sort run in the browser against `/actions`.
 const STATIC_LIST: &str = r#"<screen require-authentication="false" server-static="qvt">
+    <transition name="pickEnums"><actions><script>ec.web.sendJsonResponse({picked: enumId_0})</script></actions><default-response type="none"/></transition>
     <actions>
         <entity-find entity-name="moqui.basic.Enumeration" list="enumList">
             <search-form-inputs default-order-by="enumId"/></entity-find>
@@ -118,6 +119,9 @@ const STATIC_LIST: &str = r#"<screen require-authentication="false" server-stati
     <widgets>
         <label text="Enumerations of ${ec.user.username}" type="h4"/>
         <form-list name="EnumList" list="enumList" header-dialog="true" saved-finds="true" show-csv-button="true" select-columns="true">
+            <row-selection id-field="enumId"><action><dialog button-text="Pick"/>
+                <form-single name="PickForm" transition="pickEnums"><field name="go"><default-field title="Pick Them"><submit/></default-field></field></form-single>
+            </action></row-selection>
             <field name="enumId"><header-field title="Enum ID" show-order-by="true"/><default-field><display/></default-field></field>
             <field name="description"><header-field show-order-by="true"><text-find/></header-field><default-field><display/></default-field></field>
         </form-list>

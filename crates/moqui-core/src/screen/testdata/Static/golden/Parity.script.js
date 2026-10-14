@@ -15,6 +15,9 @@ return function render(_ctx, _cache) {
   const _component_m_display = _resolveComponent("m-display")
   const _component_q_btn = _resolveComponent("q-btn")
   const _component_m_static_form_list = _resolveComponent("m-static-form-list")
+  const _component_m_container_dialog = _resolveComponent("m-container-dialog")
+  const _component_q_card_section = _resolveComponent("q-card-section")
+  const _component_q_card = _resolveComponent("q-card")
   const _component_m_form_paginate = _resolveComponent("m-form-paginate")
 
   return (_openBlock(), _createElementBlock(_Fragment, null, [
@@ -409,6 +412,183 @@ return function render(_ctx, _cache) {
       ]),
       _: 1
     }, 8, ["special-rows"]),
+    _createVNode(_component_m_static_form_list, {
+      name: "PickList",
+      id: "PickList",
+      action: "/Parity",
+      "list-name": "itemsForEdit",
+      "skip-form": "",
+      "selection-id-field": "itemId",
+      "selection-list-mode": false
+    }, {
+      header: _withCtx((hs) => [
+        _createElementVNode("div", { class: "th text-left" }, [
+          _createElementVNode("div", null, [
+            _createElementVNode("div", { class: "form-title" }, [
+              _createElementVNode("span", {
+                textContent: _toDisplayString(_ctx.ec.l10n.localize('Item ID'))
+              }, null, 8, ["textContent"])
+            ])
+          ])
+        ]),
+        _createElementVNode("div", { class: "th text-left" }, [
+          _createElementVNode("div", null, [
+            _createElementVNode("div", { class: "form-title" }, [
+              _createElementVNode("span", {
+                textContent: _toDisplayString(_ctx.ec.l10n.localize('Name'))
+              }, null, 8, ["textContent"])
+            ])
+          ])
+        ])
+      ]),
+      row: _withCtx((_ctx) => [
+        _createElementVNode("div", {
+          class: _normalizeClass(["tr", {'text-weight-bold': _ctx._moquiRowType === 'total'}])
+        }, [
+          _createElementVNode("div", { class: "td" }, [
+            (_ctx.$mq.str(_ctx.$scope['itemId']))
+              ? (_openBlock(), _createElementBlock("div", {
+                  key: 0,
+                  class: "q-my-auto"
+                }, [
+                  _createElementVNode("input", {
+                    type: "checkbox",
+                    style: {"transform":"scale(1.3)"},
+                    checked: _ctx.mqSel.checkboxStates[_ctx.rowIndex],
+                    onClick: $event => (_ctx.mqSel.clickCheckbox($event, _ctx.rowIndex)),
+                    onChange: $event => (_ctx.mqSel.checkboxStates[_ctx.rowIndex] = $event.target.checked)
+                  }, null, 40, ["checked", "onClick", "onChange"])
+                ]))
+              : _createCommentVNode("", true)
+          ]),
+          _createElementVNode("div", { class: "td" }, [
+            _createElementVNode("div", { class: "form-group" }, [
+              _createVNode(_component_m_display, {
+                name: "itemId",
+                id: 'PickList_itemId'+'_'+_ctx.rowIndex+'_display'
+              }, {
+                default: _withCtx(() => [
+                  _createElementVNode("span", {
+                    textContent: _toDisplayString(_ctx.$mq.str(_ctx.$scope['itemId']))
+                  }, null, 8, ["textContent"])
+                ]),
+                _: 1
+              }, 8, ["id"]),
+              _createElementVNode("input", {
+                type: "hidden",
+                name: "itemId",
+                value: _ctx.$mq.str(_ctx.$scope['itemId'])
+              }, null, 8, ["value"])
+            ])
+          ]),
+          _createElementVNode("div", { class: "td" }, [
+            _createElementVNode("div", { class: "form-group" }, [
+              _createVNode(_component_m_display, {
+                name: "name",
+                id: 'PickList_name'+'_'+_ctx.rowIndex+'_display'
+              }, {
+                default: _withCtx(() => [
+                  _createElementVNode("span", {
+                    textContent: _toDisplayString(_ctx.$mq.str(_ctx.$scope['name']))
+                  }, null, 8, ["textContent"])
+                ]),
+                _: 1
+              }, 8, ["id"]),
+              _createElementVNode("input", {
+                type: "hidden",
+                name: "name",
+                value: _ctx.$mq.str(_ctx.$scope['name'])
+              }, null, 8, ["value"])
+            ])
+          ])
+        ], 2)
+      ]),
+      selection: _withCtx((mqSelSet) => [
+        _createVNode(_component_q_card, {
+          flat: "",
+          bordered: ""
+        }, {
+          default: _withCtx(() => [
+            _createVNode(_component_q_card_section, {
+              horizontal: "",
+              class: "q-pa-md"
+            }, {
+              default: _withCtx(() => [
+                _createElementVNode("span", { class: "q-my-md" }, [
+                  _createElementVNode("div", { class: "q-ma-sm" }, [
+                    _createVNode(_component_m_container_dialog, {
+                      color: "primary",
+                      "button-text": _ctx.ec.l10n.localize('Archive'),
+                      title: _ctx.ec.l10n.localize('Archive Items')
+                    }, {
+                      default: _withCtx(() => [
+                        _createVNode(_component_m_scope, {
+                          value: (_ctx.fieldValues),
+                          extra: _ctx.$scope['mqExtra_ArchiveForm']
+                        }, {
+                          default: _withCtx((_ctx) => [
+                            _createElementVNode("div", { class: "q-my-md" }, [
+                              _createVNode(_component_m_form, {
+                                name: "ArchiveForm",
+                                id: "ArchiveForm",
+                                action: "/Parity/archiveItems",
+                                "read-only": "",
+                                "fields-initial": {'reason':_ctx.$mq.str(_ctx.$scope['reason']),'moquiFormName':'ArchiveForm'},
+                                "parent-checkbox-set": mqSelSet
+                              }, {
+                                default: _withCtx((formProps) => [
+                                  _createElementVNode("div", { class: "q-ma-sm" }, [
+                                    _createVNode(_component_m_text_line, {
+                                      id: "ArchiveForm_reason",
+                                      type: "text",
+                                      name: "reason",
+                                      size: "20",
+                                      label: _ctx.ec.l10n.localize('Reason'),
+                                      modelValue: formProps.fields.reason,
+                                      "onUpdate:modelValue": $event => ((formProps.fields.reason) = $event),
+                                      fields: formProps.fields
+                                    }, null, 8, ["label", "modelValue", "onUpdate:modelValue", "fields"])
+                                  ]),
+                                  _createElementVNode("div", { class: "q-ma-sm" }, [
+                                    _createVNode(_component_q_btn, {
+                                      dense: "",
+                                      outline: !formProps.hasFieldsChanged,
+                                      "no-caps": "",
+                                      type: "submit",
+                                      name: "go",
+                                      value: "go",
+                                      color: "primary",
+                                      id: "ArchiveForm_go"
+                                    }, {
+                                      default: _withCtx(() => [
+                                        _createElementVNode("span", {
+                                          textContent: _toDisplayString(_ctx.ec.l10n.localize('Archive'))
+                                        }, null, 8, ["textContent"])
+                                      ]),
+                                      _: 1
+                                    }, 8, ["outline"])
+                                  ])
+                                ]),
+                                _: 1
+                              }, 8, ["fields-initial", "parent-checkbox-set"])
+                            ])
+                          ]),
+                          _: 2
+                        }, 1032, ["value", "extra"])
+                      ]),
+                      _: 2
+                    }, 1032, ["button-text", "title"])
+                  ])
+                ])
+              ]),
+              _: 2
+            }, 1024)
+          ]),
+          _: 2
+        }, 1024)
+      ]),
+      _: 1
+    }),
     _createVNode(_component_m_static_form_list, {
       name: "OrderList",
       id: "OrderList",

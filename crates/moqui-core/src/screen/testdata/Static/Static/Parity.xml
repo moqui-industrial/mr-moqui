@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- The XML screen and form features at parity with Java Moqui, written in a server-static template: a condition element, section-iterate paging, text-map, an accordion, a button-menu, an aggregated list, first and last rows. -->
+<!-- The XML screen and form features at parity with Java Moqui, written in a server-static template: a condition element, section-iterate paging, text-map, an accordion, a button-menu, an aggregated list, first and last rows, row selection. -->
 <screen require-authentication="false" server-static="qvt" default-menu-title="Parity">
     <actions>
         <set field="status" value="ACTIVE"/>
@@ -14,6 +14,7 @@
     <transition name="viewProduct" read-only="true"><default-response type="none"/></transition>
     <transition name="saveProduct"><default-response type="none"/></transition>
     <transition name="createItem"><default-response type="none"/></transition>
+    <transition name="archiveItems"><default-response type="none"/></transition>
     <widgets>
         <section name="Holds">
             <condition><and><compare field="status" operator="equals" value="ACTIVE"/><expression>qty &gt; 3</expression></and></condition>
@@ -50,6 +51,19 @@
             </field>
             <field name="secret"><first-row-field><hidden default-value="S1"/></first-row-field><default-field><hidden/></default-field></field>
             <field name="go"><first-row-field><submit text="Create"/></first-row-field><default-field><submit text="Save"/></default-field></field>
+        </form-list>
+        <form-list name="PickList" list="itemsForEdit" skip-form="true">
+            <row-selection id-field="itemId">
+                <action>
+                    <dialog button-text="Archive" title="Archive Items"/>
+                    <form-single name="ArchiveForm" transition="archiveItems">
+                        <field name="reason"><default-field><text-line size="20"/></default-field></field>
+                        <field name="go"><default-field title="Archive"><submit/></default-field></field>
+                    </form-single>
+                </action>
+            </row-selection>
+            <field name="itemId"><default-field><display/></default-field></field>
+            <field name="name"><default-field><display/></default-field></field>
         </form-list>
         <form-list name="OrderList" list="orderLines" skip-form="true">
             <field name="orderId" aggregate="group-by"><default-field><display/></default-field></field>

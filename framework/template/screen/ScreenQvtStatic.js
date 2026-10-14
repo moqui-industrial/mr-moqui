@@ -31,8 +31,8 @@
 //  - display-entity, entity-options, list-options and dynamic-options (without server-search) read keys the package
 //    holds: name_display, and mqOpt_{form}_{field}_{sub}_{widget} for the options of a widget;
 //  - a link that the user may not use is still written (the server refuses the request), and no icon comes from the theme;
-//  - include-screen is written inline; the first-row, second-row and last-row of a form-list and row-selection are not written (a
-//    violation in the report). The find dialog, saved finds, the exports, a multi form and the column picker are written.
+//  - include-screen is written inline. A form-list writes the find dialog, saved finds, the exports, a multi form, the column picker,
+//    row-selection, the first/second/last rows and aggregated sub-rows; their data comes with the form request.
 (function (T, S) {
     "use strict";
 
@@ -234,7 +234,7 @@
         const st = {};
         const saved = [];
         const reset = () => {
-            Object.assign(st, { formName: "", fieldForm: "", owner: "", inForm: false, inRow: false, listName: "", multi: false, accordion: "", accIndex: 0, accActive: "" });
+            Object.assign(st, { formName: "", fieldForm: "", owner: "", inForm: false, inRow: false, listName: "", multi: false, accordion: "", accIndex: 0, accActive: "", selectedForm: false });
             saved.length = 0;
         };
         reset();
@@ -921,6 +921,8 @@
                 ":fields-initial": initial, "v-slot:default": "formProps"
             };
             if (at(n, "body-parameters")) attrs[":body-parameter-names"] = js_(at(n, "body-parameters").split(",").map((item) => item.trim()).filter((item) => item));
+            // a row action of a form-list with row-selection posts the selected rows: the checkbox set is the selection slot's mqSelSet
+            if (st.selectedForm && isForm) attrs[":parent-checkbox-set"] = "mqSelSet";
             w('<m-scope :value="' + e(X(map, n, "map")) + '" :extra="' + e("$scope[" + sq("mqExtra_" + at(n, "name")) + "]") + '" v-slot="_ctx">');
             w(skipStart ? "" : '<div class="q-my-md"><' + tag + A(attrs) + ">");
             return { skipStart, tag };
@@ -1024,6 +1026,11 @@
                 attrs["form-location"] = name;
                 const headerFields = kids(n, "field").filter((f) => { const sub = first(f, "header-field"); return sub && sub.children.filter((x) => x.name !== "set").length; });
                 if (headerFields.length && at(n, "header-dialog") !== "true") attrs[":header-initial"] = "(_ctx, hs) => (" + initialOf(headerFields, "header-field", [["orderByField", "hs.orderByField"]]) + ")";
+            }
+            if (cfg.selection) {
+                attrs["selection-id-field"] = cfg.selection.idField;
+                attrs["selection-parameter"] = cfg.selection.parameter || null;
+                attrs[":selection-list-mode"] = cfg.selection.listMode ? "true" : "false";
             }
             const kinds = Object.keys(cfg.special || {});
             if (kinds.length) {
@@ -1437,6 +1444,33 @@
             });
         };
 
+        // The checkbox of a row of a form-list with row-selection, bound to the checkbox set (mqSel in the row's scope), written when the row has
+        // an id, as Java's.
+        const selectionCell = (selection) => '<div class="td"><div class="q-my-auto"' + A({ "v-if": "$mq.str(" + scopeRef(selection.idField) + ")" }) +
+            '><input type="checkbox" style="transform: scale(1.3)" :checked="mqSel.checkboxStates[rowIndex]" @click="mqSel.clickCheckbox($event, rowIndex)" @change="mqSel.checkboxStates[rowIndex] = $event.target.checked"></div></div>';
+        // The actions of the selected rows, in the menu of the head: each action's form-single, in a dialog when it has one, posting the
+        // selected ids through the checkbox set (Java's formListSelectedRowCard).
+        const selectionSlot = (selection) => {
+            w('<template v-slot:selection="mqSelSet"><q-card flat bordered><q-card-section horizontal class="q-pa-md">');
+            kids(selection.node, "action").forEach((action) => {
+                const dialog = first(action, "dialog");
+                const form = first(action, "form-single");
+                if (dialog) {
+                    const out = { color: quasarColor(at(dialog, "button-type") || "primary") || null, width: at(dialog, "width") || null, "button-class": at(dialog, "button-style") || null };
+                    textAttr(out, "button-text", at(dialog, "button-text"), dialog, true);
+                    textAttr(out, "title", at(dialog, "title") || at(dialog, "button-text"), dialog, true);
+                    w('<span class="q-my-md"><div class="q-ma-sm"><m-container-dialog' + A(out) + ">");
+                }
+                if (form) {
+                    push();
+                    st.selectedForm = true;
+                    formSingle(form);
+                    pop();
+                }
+                if (dialog) w("</m-container-dialog></div></span>");
+            });
+            w("</q-card-section></q-card></template>");
+        };
         // A cell of a first, second or last row: the field's *-row-field widgets. One that holds a hidden widget writes nothing; its value is
         // in the row form's starting values.
         const specialCell = (field, tag) => {
@@ -1478,7 +1512,8 @@
                 const tag = kind + "-row-field";
                 if (allFields.some((f) => { const sub = first(f, tag); return sub && sub.children.length; })) cfg.special[kind] = { tag, transition: at(n, "transition-" + kind + "-row") };
             });
-            if (first(n, "row-selection")) note("row-selection", n, "row-selection of form-list " + name + " is not written");
+            const selection = first(n, "row-selection");
+            cfg.selection = selection ? { idField: at(selection, "id-field"), parameter: at(selection, "parameter"), listMode: at(selection, "list-mode") === "true", node: selection } : null;
             const flags = {
                 headerDialog: at(n, "header-dialog") === "true", savedFinds: at(n, "saved-finds") === "true",
                 csv: at(n, "show-csv-button") === "true", xlsx: at(n, "show-xlsx-button") === "true" && ec.screen.isRenderModeValid("xlsx"),
@@ -1497,6 +1532,7 @@
             if (!skipHeader) navSlot(n, cols, headerFields, flags);
             if (flags.columns) {
                 columnSlots(n, cols, headerFields, flags, cfg);
+                if (cfg.selection) selectionSlot(cfg.selection);
                 w("</m-static-form-list>\n");
                 pop();
                 return;
@@ -1525,6 +1561,7 @@
             st.inRow = true;
             // the show-total row, which the component draws after the rows, is bold as the server-merged one is
             w('<div class="tr" :class="{\'text-weight-bold\': _moquiRowType === \'total\'}">');
+            if (cfg.selection) w(selectionCell(cfg.selection));
             const formOpened = rowFormOpen(n, cfg, kids(n, "field"), opened);
             columnFieldLists.forEach((fields) => {
                 w('<div class="td">');
@@ -1549,13 +1586,14 @@
                 w('<template v-slot:row_' + kind + '="_ctx">');
                 push();
                 Object.assign(st, { inRow: false, inForm: !!transition, fieldForm: name + "_" + kind, owner: "" });
-                w('<div class="tr ' + kind + '">');
+                w('<div class="tr ' + kind + '">' + (cfg.selection ? '<div class="td">&nbsp;</div>' : ""));
                 columnFieldLists.forEach((fields) => { w('<div class="td">'); fields.forEach((field) => specialCell(field, tag)); w("</div>"); });
                 w("</div>");
                 pop();
                 w("</template>");
             });
             if (subLists.length) subSlots(subLists);
+            if (cfg.selection) selectionSlot(cfg.selection);
             w("</m-static-form-list>\n");
             pop();
         };
