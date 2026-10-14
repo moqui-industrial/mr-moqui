@@ -317,6 +317,18 @@ pub fn load_entity_data(facade: &EntityFacade, location: &str, options: &LoadOpt
     Ok(LoadResult { records })
 }
 
+/// Load entity XML text, as `EntityDataLoader.xmlText`. `location` names the text in errors.
+pub fn load_entity_xml_text(
+    facade: &EntityFacade,
+    location: &str,
+    text: &str,
+    options: &LoadOptions,
+) -> Result<LoadResult, Error> {
+    let _guard = FlagGuard::engage(facade, options);
+    let records = load_xml_text(facade, location, text, options)?;
+    Ok(LoadResult { records })
+}
+
 fn rule_matches(rule: &EcaRule, entity_name: &str, operation: &str) -> bool {
     if rule.entity_name != entity_name {
         return false;

@@ -30,6 +30,7 @@ mod schedule;
 mod seca;
 mod security_checks;
 pub(crate) mod semaphore;
+mod system_sync;
 mod validate;
 
 pub use call::{async_call, call, call_future, start_future, sync, ServiceFuture};
@@ -54,6 +55,7 @@ pub use rest::run;
 pub use seca::run_seca_rules;
 pub use security_checks::security_checks_run;
 pub use semaphore::acquire;
+pub(crate) use system_sync::receive_rest_message;
 pub use validate::validate;
 
 /// An entity in the default group, to pick the transaction manager for work that has no entity of

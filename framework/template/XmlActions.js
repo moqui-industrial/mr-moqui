@@ -237,8 +237,9 @@
         const tx = attr(node, "transaction");
         const syncOnly = !isAsync;
         // multi="parameter" would read ec.web. That host is not added.
+        // A name with ${} is expanded, as the Groovy string of the Java template was.
         return joinPresent([
-            `ec.service.${isAsync ? "async()" : "sync()"}.name(${jsString(attr(node, "name"))})`,
+            `ec.service.${isAsync ? "async()" : "sync()"}.name(${literalOrExpand(attr(node, "name"))})`,
             syncOnly && attr(node, "disable-authz") === "true" && ".disableAuthz()",
             syncOnly && attr(node, "multi") === "true" && ".multi(true)",
             syncOnly && has(node, "transaction") && joinPresent([

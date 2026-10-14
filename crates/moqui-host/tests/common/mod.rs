@@ -135,9 +135,18 @@ pub fn start(label: &str) -> Gate {
     start_with(label, false)
 }
 
+/// [`start`] with one more `entity-facade-xml` document loaded after the grants, for the rows a test needs.
+pub fn start_with_data(label: &str, data: &str) -> Gate {
+    start_seeded(label, false, Some(data))
+}
+
 /// Load the seed (the framework files and each component's `data` directory), the demo users, and the grants of the fixture, then serve on an
 /// ephemeral port. With `static_fixture` a `screen-extend` marks the fixture server-static for qvt.
 pub fn start_with(label: &str, static_fixture: bool) -> Gate {
+    start_seeded(label, static_fixture, None)
+}
+
+fn start_seeded(label: &str, static_fixture: bool, data: Option<&str>) -> Gate {
     let serial = SERIAL.lock().unwrap_or_else(|err| err.into_inner());
     let runtime = temp_dir(&format!("moqui-gate3-rt-{label}"));
     let cluster_dir = temp_dir(&format!("moqui-gate3-pg-{label}"));
@@ -219,6 +228,15 @@ pub fn start_with(label: &str, static_fixture: bool) -> Gate {
         ..LoadFlags::default()
     };
     load_data(&runtime, &framework, &cluster_dir, &grant_flags).unwrap();
+    if let Some(data) = data {
+        let extra = runtime.join("test-data.xml");
+        std::fs::write(&extra, data).unwrap();
+        let extra_flags = LoadFlags {
+            location: Some(extra.display().to_string()),
+            ..LoadFlags::default()
+        };
+        load_data(&runtime, &framework, &cluster_dir, &extra_flags).unwrap();
+    }
 
     // 0 binds an ephemeral cluster port, so a test run beside another server does not need 8443 free.
     moqui_lib::env::set_property("cluster_https_port", "0");

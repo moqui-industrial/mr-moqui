@@ -99,6 +99,21 @@ pub fn write_data(facade: &EntityFacade, entity_name: &str, records: &[BTreeMap<
     Ok(())
 }
 
+/// One record as the element `EntityValue.writeXmlText` writes inside an `<entity-facade-xml>` document, with its
+/// dependents to `levels`.
+pub fn xml_element(
+    facade: &EntityFacade,
+    entity_name: &str,
+    fields: &BTreeMap<String, Value>,
+    levels: i64,
+) -> Result<String, Error> {
+    let node = render_record(facade, entity_name, fields, levels, None)?;
+    let element = node.entity_key.replace('#', "-");
+    let mut out = String::new();
+    write_xml_node(&mut out, &node, &element, 1, "", false);
+    Ok(out)
+}
+
 /// `EntityFacade.rest`. Operations are find, create, store, update, and delete.
 ///
 /// `get`/`post`/`put`/`patch`/`delete` map the same way as `EntityFacadeImpl.rest`.
