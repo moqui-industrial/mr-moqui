@@ -225,3 +225,97 @@ fn every_tools_screen_renders_in_html_for_an_admin() {
     );
     assert!(job.contains("Gate job") && job.contains("Not Sent"), "{job}");
 }
+
+/// Users for the SQL runners: one in ADMIN without ADMIN_ADV (the Tools app but not `SQL_RUNNER_WEB`), one in no
+/// group. Both passwords are moqui.
+const SQL_DATA: &str = r#"<entity-facade-xml type="seed">
+    <moqui.security.UserAccount userId="GATE_TOOLS_ONLY" username="gate.tools" userFullName="Gate Tools"
+        currentPassword="16ac58bbfa332c1c55bd98b53e60720bfa90d394" passwordHashType="SHA"/>
+    <moqui.security.UserGroupMember userGroupId="ADMIN" userId="GATE_TOOLS_ONLY" fromDate="1265184000000"/>
+    <moqui.security.UserAccount userId="GATE_PLAIN" username="gate.plain" userFullName="Gate Plain"
+        currentPassword="16ac58bbfa332c1c55bd98b53e60720bfa90d394" passwordHashType="SHA"/>
+    <moqui.basic.Enumeration enumId="GATE_SQL" description="untouched"/>
+</entity-facade-xml>"#;
+
+fn encode(text: &str) -> String {
+    text.bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') {
+                char::from(byte).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect()
+}
+
+/// Submit the SQL runner form of `screen` as the browser does, the statement in the body.
+fn run_sql(address: SocketAddr, auth: &str, screen: &str, sql: &str, limit: &str) -> (u16, String) {
+    let body = format!("groupName=transactional&sql={}&limit={limit}", encode(sql));
+    let request = http_request(
+        "POST",
+        &format!("/Tools/Entity/{screen}.html"),
+        &[
+            ("Authorization", auth),
+            ("Content-Type", "application/x-www-form-urlencoded"),
+        ],
+        &body,
+    );
+    let (status, _, page) = exchange(address, &request);
+    (status, page)
+}
+
+#[test]
+fn the_sql_runners_run_for_an_admin_and_refuse_other_users() {
+    let gate = start_with_data("tools-sql", SQL_DATA);
+    let address = gate.server.address();
+    let john = basic("john.doe", "moqui");
+    const UPDATE: &str = r#"update "Enumeration" set "description" = 'changed' where "enumId" = 'GATE_SQL'"#;
+    const SELECT: &str = r#"select "description" from "Enumeration" where "enumId" = 'GATE_SQL'"#;
+
+    // An admin reads a query to its limit, and no further. (The "Only showing" and "Query altered" messages do not
+    // show: a push of an `ec.resource.expand` with a map loses the push, so these check the rows instead.)
+    let (status, page) = run_sql(
+        address,
+        &john,
+        "SqlRunner",
+        r#"select "enumId" from "Enumeration" order by "enumId""#,
+        "3",
+    );
+    assert_eq!(status, 200, "{page}");
+    assert!(!page.contains("Error rendering"), "{page}");
+    assert_eq!(page.matches("<tr><td").count(), 3, "{page}");
+    let (_, page) = run_sql(address, &john, "SqlRunner", SELECT, "500");
+    assert!(page.contains("untouched"), "{page}");
+    // A failed statement shows its error.
+    let (_, page) = run_sql(address, &john, "SqlRunner", "select * from no_such_table", "500");
+    assert!(
+        page.contains("no_such_table") && page.contains("does not exist"),
+        "{page}"
+    );
+
+    // Without SQL_RUNNER_WEB, with or without the Tools app, neither runner runs a statement.
+    for user in ["gate.tools", "gate.plain"] {
+        let auth = basic(user, "moqui");
+        for screen in ["SqlRunner", "SqlScriptRunner"] {
+            let (status, page) = run_sql(address, &auth, screen, UPDATE, "500");
+            assert!(!page.contains("Query altered"), "{user} {screen}: {status}: {page}");
+            if user == "gate.tools" {
+                assert!(
+                    page.contains("User does not have permission to use the SQL Runner"),
+                    "{user} {screen}: {status}: {page}"
+                );
+            } else {
+                assert_eq!(status, 403, "{user} {screen}: {page}");
+            }
+        }
+    }
+    let (_, page) = run_sql(address, &john, "SqlRunner", SELECT, "500");
+    assert!(page.contains("untouched") && !page.contains("changed"), "{page}");
+
+    // The script runner runs the admin's update.
+    let (_, page) = run_sql(address, &john, "SqlScriptRunner", UPDATE, "500");
+    assert!(!page.contains("Error rendering"), "{page}");
+    let (_, page) = run_sql(address, &john, "SqlRunner", SELECT, "500");
+    assert!(page.contains("changed"), "{page}");
+}

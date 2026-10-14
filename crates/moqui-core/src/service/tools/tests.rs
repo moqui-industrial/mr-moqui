@@ -149,11 +149,19 @@ fn a_screen_document_reports_that_pdf_is_not_available() {
 }
 
 #[test]
-fn llm_a2a_and_instance_services_name_why_they_do_not_run() {
+fn llm_a2a_instance_wiki_and_recaptcha_services_name_why_they_do_not_run() {
     let (_facade, context) = setup();
     let _entered = context.enter();
     let _authz = context.disable_authz();
-    install(&["LlmServices.xml", "A2AServices.xml", "InstanceServices.xml"]);
+    install(&[
+        "LlmServices.xml",
+        "A2AServices.xml",
+        "InstanceServices.xml",
+        // get#WikiPageManualDocumentData implements add#ManualDocumentData.
+        "../EntityServices.xml",
+        "WikiServices.xml",
+        "GoogleServices.xml",
+    ]);
     let err = crate::service::sync("org.moqui.impl.LlmServices.clean#LlmData", &BTreeMap::new()).unwrap_err();
     assert!(
         err.message().starts_with(
@@ -175,4 +183,23 @@ fn llm_a2a_and_instance_services_name_why_they_do_not_run() {
         err.message().contains("Docker app instance provisioning is not ported"),
         "{err}"
     );
+    context.message().clear();
+    let err = crate::service::sync(
+        "org.moqui.impl.WikiServices.get#WikiPageInfo",
+        &params(&[("wikiSpaceId", "X"), ("pagePath", "a")]),
+    )
+    .unwrap_err();
+    assert!(
+        err.message().starts_with(
+            "service org.moqui.impl.WikiServices.get#WikiPageInfo is not available: the wiki services are not ported"
+        ),
+        "{err}"
+    );
+    context.message().clear();
+    let err = crate::service::sync(
+        "org.moqui.impl.GoogleServices.verify#ReCaptcha",
+        &params(&[("reCaptchaToken", "t"), ("reCaptchaSecret", "s")]),
+    )
+    .unwrap_err();
+    assert!(err.message().contains("reCAPTCHA verification is not ported"), "{err}");
 }

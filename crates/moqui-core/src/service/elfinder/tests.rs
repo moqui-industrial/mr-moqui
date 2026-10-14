@@ -113,17 +113,25 @@ fn hashes_are_the_java_hashes() {
     // "root".bytes.encodeBase64() is cm9vdA== in Groovy, and the hash drops the padding.
     assert_eq!(connector.hash("root"), "db_cm9vdA");
     assert_eq!(connector.hash("a/b?c>"), "db_YS9iP2M-");
-    assert_eq!(unhash("db_YS9iP2M-"), "a/b?c>");
-    assert_eq!(unhash("db_cm9vdA.."), "root");
-    assert_eq!(unhash("db_cm9vdA=="), "root");
-    assert_eq!(unhash("db"), "");
-    assert_eq!(unhash("db_!!!"), "");
-    assert_eq!(connector.location(""), "dbresource://mantle/content");
-    assert_eq!(connector.location("db_cm9vdA"), "dbresource://mantle/content");
+    assert_eq!(unhash("db_YS9iP2M-").as_deref(), Some("a/b?c>"));
+    assert_eq!(unhash("db_cm9vdA..").as_deref(), Some("root"));
+    assert_eq!(unhash("db_cm9vdA==").as_deref(), Some("root"));
+    // Anything that is not a hash is no path at all, not the root.
+    assert_eq!(unhash("db"), None);
+    assert_eq!(unhash("db_"), None);
+    assert_eq!(unhash("db_!!!"), None);
+    assert_eq!(unhash("db_gA"), None);
+    assert_eq!(connector.location("").as_deref(), Some("dbresource://mantle/content"));
     assert_eq!(
-        connector.location(&hash("docs/a.txt")),
-        "dbresource://mantle/content/docs/a.txt"
+        connector.location("db_cm9vdA").as_deref(),
+        Some("dbresource://mantle/content")
     );
+    assert_eq!(
+        connector.location(&hash("docs/a.txt")).as_deref(),
+        Some("dbresource://mantle/content/docs/a.txt")
+    );
+    assert_eq!(connector.location("garbage"), None);
+    assert_eq!(connector.location(&hash("docs/../..")), None);
     assert_eq!(connector.relative_to_root("dbresource://mantle/content/docs/"), "docs");
     assert_eq!(safe_entry_name("C:\\temp\\a.txt"), Some("a.txt".to_string()));
     assert_eq!(safe_entry_name("../../a.txt"), Some("a.txt".to_string()));
@@ -234,6 +242,22 @@ fn commands_run_against_a_dbresource_volume() {
     let missing = response(&command(root, "mkdir", &docs, vec![("name", Value::string(".."))]));
     assert_eq!(missing["error"], "No name specified for new directory", "{missing}");
 
+    // A garbled target or the root hash removes nothing, rather than the whole volume.
+    for (target, error) in [
+        ("garbage", "errFileNotFound"),
+        ("db_cm9vdA", "Not allowed on the volume root"),
+    ] {
+        let refused = response(&command(
+            root,
+            "rm",
+            "",
+            vec![("targets[]", Value::List(vec![Value::string(target)]))],
+        ));
+        assert_eq!(refused, serde_json::json!({ "error": error }), "{refused}");
+        let listed = response(&command(root, "ls", &docs, vec![]));
+        assert_eq!(listed["list"], serde_json::json!(["b.txt", "empty.md"]), "{listed}");
+    }
+
     let removed = response(&command(
         root,
         "rm",
@@ -266,7 +290,7 @@ fn commands_run_against_a_dbresource_volume() {
 }
 
 #[test]
-fn a_target_or_a_name_outside_the_volume_stays_inside_it() {
+fn a_target_outside_the_volume_is_an_error_and_a_name_stays_inside_it() {
     let setup = setup();
     let _entered = setup.context.enter();
     let _authz = setup.context.disable_authz();
@@ -286,16 +310,19 @@ fn a_target_or_a_name_outside_the_volume_stays_inside_it() {
         "file:/etc/passwd",
     ] {
         let sent = command(&root, "file", &hash(path), vec![]);
+        assert!(!sent.contains_key("fileLocation"), "{path}");
         assert_eq!(
-            sent.get("fileLocation").map(to_plain_string).as_deref(),
-            Some(root.as_str()),
+            response(&sent),
+            serde_json::json!({"error": "errFileNotFound"}),
             "{path}"
         );
         let got = response(&command(&root, "get", &hash(path), vec![]));
-        assert_eq!(got["content"], "", "{path}: {got}");
+        assert_eq!(got, serde_json::json!({"error": "errFileNotFound"}), "{path}");
     }
     let listed = response(&command(&root, "ls", &hash("sub/../.."), vec![]));
-    assert_eq!(listed["list"], serde_json::json!(["sub"]), "{listed}");
+    assert_eq!(listed, serde_json::json!({"error": "errFileNotFound"}), "{listed}");
+    let listed = response(&command(&root, "ls", "garbage", vec![]));
+    assert_eq!(listed, serde_json::json!({"error": "errFileNotFound"}), "{listed}");
     let got = response(&command(&root, "get", &hash("sub/./inside.txt"), vec![]));
     assert_eq!(got["content"], "inside", "{got}");
 
@@ -309,10 +336,18 @@ fn a_target_or_a_name_outside_the_volume_stays_inside_it() {
     assert_eq!(made["added"][0]["hash"], hash("sub/evil"), "{made}");
     assert!(volume.join("sub/evil").is_dir());
     assert!(!dir.0.join("evil").exists());
-    let uploaded = response(&command(
+    let refused = response(&command(
         &root,
         "upload",
         &hash("../.."),
+        vec![("_fileUploadList", Value::List(vec![upload("../up.txt", b"up")]))],
+    ));
+    assert_eq!(refused, serde_json::json!({"error": "errFileNotFound"}), "{refused}");
+    assert!(!dir.0.join("up.txt").exists());
+    let uploaded = response(&command(
+        &root,
+        "upload",
+        "db_cm9vdA",
         vec![("_fileUploadList", Value::List(vec![upload("../up.txt", b"up")]))],
     ));
     assert_eq!(uploaded["added"][0]["hash"], hash("up.txt"), "{uploaded}");
@@ -326,6 +361,50 @@ fn a_target_or_a_name_outside_the_volume_stays_inside_it() {
     assert_eq!(renamed["added"][0]["hash"], hash("moved.txt"), "{renamed}");
     assert!(volume.join("moved.txt").is_file());
     assert!(!dir.0.join("moved.txt").exists());
+
+    // rm, rename and put with a garbled target or on the root itself are errors that touch nothing.
+    for targets in [
+        vec![Value::string("garbage")],
+        vec![Value::string("db_!!!")],
+        vec![Value::string(hash("../secret.txt"))],
+        vec![Value::string(hash("sub/inside.txt")), Value::string("garbage")],
+    ] {
+        let removed = response(&command(&root, "rm", "", vec![("targets[]", Value::List(targets))]));
+        assert_eq!(removed, serde_json::json!({"error": "errFileNotFound"}), "{removed}");
+    }
+    for target in ["db_cm9vdA", ""] {
+        let removed = response(&command(
+            &root,
+            "rm",
+            "",
+            vec![("targets[]", Value::List(vec![Value::string(target)]))],
+        ));
+        assert_eq!(removed["error"], "Not allowed on the volume root", "{removed}");
+    }
+    let renamed = response(&command(
+        &root,
+        "rename",
+        "db_cm9vdA",
+        vec![("name", Value::string("x"))],
+    ));
+    assert_eq!(renamed["error"], "Not allowed on the volume root", "{renamed}");
+    let renamed = response(&command(&root, "rename", "garbage", vec![("name", Value::string("x"))]));
+    assert_eq!(renamed["error"], "errFileNotFound", "{renamed}");
+    let put = response(&command(
+        &root,
+        "put",
+        "db_cm9vdA",
+        vec![("content", Value::string("x"))],
+    ));
+    assert_eq!(put["error"], "Not allowed on the volume root", "{put}");
+    let put = response(&command(&root, "put", "garbage", vec![("content", Value::string("x"))]));
+    assert_eq!(put["error"], "errFileNotFound", "{put}");
+    assert_eq!(
+        std::fs::read_to_string(volume.join("sub/inside.txt")).unwrap(),
+        "inside"
+    );
+    assert!(volume.join("sub/evil").is_dir());
+    assert!(volume.join("moved.txt").is_file());
 
     // A content:// root is an error that names it.
     let mut parameters = BTreeMap::new();

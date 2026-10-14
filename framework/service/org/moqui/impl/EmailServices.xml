@@ -63,23 +63,23 @@ along with this software (see the LICENSE.md file). If not, see
         </in-parameters>
         <out-parameters><parameter name="emailMessageId"/></out-parameters>
         <actions>
-            <set field="messageId" from="headers.get('message-id')"/>
+            <set field="messageId" from="headers ? headers['message-id'] : null"/>
             <if condition="messageId">
                 <entity-find entity-name="moqui.basic.email.EmailMessage" list="emailMessageList">
                     <econdition field-name="emailServerId" ignore-if-empty="true"/>
                     <econdition field-name="messageId"/>
                 </entity-find>
-                <if condition="emailMessageList">
+                <if condition="emailMessageList.length">
                     <return message="Found duplicate message with Message-ID [${messageId}] from server [${emailServerId}]"/></if>
             </if>
 
-            <set field="body" from="bodyPartList ? bodyPartList[0].contentText : null"/>
+            <set field="body" from="bodyPartList?.length ? bodyPartList[0].contentText : null"/>
             <service-call name="create#moqui.basic.email.EmailMessage" out-map="context"
-                in-map="[sentDate:fields.sentDate, receivedDate:fields.receivedDate, statusId:statusId,
+                in-map="{sentDate:fields.sentDate, receivedDate:fields.receivedDate, statusId:statusId,
                     subject:fields.subject, body:body,
-                    fromAddress:fields.from, toAddresses:fields.toList?.toString(),
-                    ccAddresses:fields.ccList?.toString(), bccAddresses:fields.bccList?.toString(),
-                    messageId:messageId, emailServerId:emailServerId]"/>
+                    fromAddress:fields.from, toAddresses:fields.toList?.join(', '),
+                    ccAddresses:fields.ccList?.join(', '), bccAddresses:fields.bccList?.join(', '),
+                    messageId:messageId, emailServerId:emailServerId}"/>
         </actions>
     </service>
 

@@ -145,14 +145,20 @@ fn the_elfinder_screen_renders_and_its_connector_runs_on_a_dbresource_volume() {
     assert_eq!(status, 200);
     assert_eq!(header(&headers, "Content-Disposition").as_deref(), Some("inline"));
 
-    // A target that climbs out of the volume is the volume root, which is not a file.
-    let (status, _, text) = command(
+    // A target that climbs out of the volume is an elFinder error, not the volume root.
+    let refused = json(
         address,
         &john,
         &[("cmd", "file"), ("target", &hash("docs/../../../etc/passwd"))],
     );
-    assert_eq!(status, 404, "{text}");
-    assert!(text.contains(ROOT), "{text}");
+    assert_eq!(refused, serde_json::json!({"error": "errFileNotFound"}), "{refused}");
+    // rm with a garbled target or the root hash removes nothing.
+    let refused = json(address, &john, &[("cmd", "rm"), ("targets[]", "garbage")]);
+    assert_eq!(refused, serde_json::json!({"error": "errFileNotFound"}), "{refused}");
+    let refused = json(address, &john, &[("cmd", "rm"), ("targets[]", "db_cm9vdA")]);
+    assert_eq!(refused["error"], "Not allowed on the volume root", "{refused}");
+    let listed = json(address, &john, &[("cmd", "ls"), ("target", &hash("docs"))]);
+    assert_eq!(listed["list"], serde_json::json!(["a.txt"]), "{listed}");
 
     let renamed = json(
         address,
