@@ -175,7 +175,8 @@ fn row_selection_multi_forms_find_dialogs_and_the_options_of_a_drop_down() {
 /// is made again and compared. `UPDATE_GOLDEN=1` writes it.
 #[test]
 fn client_components_are_precompiled() {
-    let js = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/webroot/screen/webroot");
+    let js = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../runtime/base-component/webroot/screen/webroot");
     let read = |path: &str| std::fs::read_to_string(js.join(path)).unwrap_or_else(|err| panic!("{path}: {err}"));
     let compiler = read("libs/vue/compiler-dom.cjs.js");
     let made = crate::screen::vue_check::precompiled_components(

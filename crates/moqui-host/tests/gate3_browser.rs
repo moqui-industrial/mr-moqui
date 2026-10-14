@@ -30,7 +30,7 @@ mod common;
 use std::time::Duration;
 
 use common::cdp::{Browser, Problem};
-use common::{start, start_with, FIXTURE};
+use common::{start, start_with, start_with_conf, FIXTURE};
 
 const WAIT: Duration = Duration::from_secs(30);
 
@@ -131,6 +131,51 @@ fn server_static_qvt_renders_in_chromium_with_its_actions_data() {
         ("AUTHZA_VIEW", "View"),
     );
     static_list(&mut browser, &base);
+}
+
+/// With `webapp_qvt_static_only=true` the page loads Vue without its compiler, and a policy of `script-src 'self'` (no `unsafe-eval`, no inline
+/// script) holds: the shell and the components run their precompiled render functions and the static screen its server-compiled one.
+#[test]
+fn server_static_qvt_runs_on_the_runtime_build_under_a_policy_without_eval() {
+    let gate = start_with_conf(
+        "browser-runtime",
+        r#"<webapp-list><webapp name="webroot">
+            <response-header type="screen-render" name="Content-Security-Policy" value="frame-ancestors 'none'; form-action 'self'; script-src 'self'"/>
+        </webapp></webapp-list>"#,
+        &[("webapp_qvt_static_only", "true")],
+    );
+    let base = format!("http://{}", gate.server.address());
+    let mut browser = Browser::launch();
+    // the screen first, so the login goes back to it: every screen this page shows must be server-static, and the app list is not
+    let page = format!("{base}/qapps/GateStaticList");
+    browser.navigate(&page);
+    browser.wait_for(
+        "the login page",
+        "location.pathname === '/Login' && document.readyState === 'complete'",
+        WAIT,
+    );
+    browser.eval(
+        "(() => { const form = document.getElementById('login_form'); form.username.value = 'john.doe'; \
+         form.password.value = 'moqui'; form.requestSubmit(); return true; })()",
+    );
+    browser.wait_event("Page.loadEventFired", WAIT);
+    browser.wait_for(
+        "the list",
+        "/1 \\/ \\d+ \\(1-20 \\/ \\d+\\)/.test(document.body.innerText)",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("!!document.querySelector('script[src*=\"vue.runtime.global.prod.js\"]') && !document.querySelector('script[src*=\"vue.global.prod.js\"]')"),
+        true
+    );
+    // the shell drew its menu and toolbar, and the list its rows
+    let text = browser.eval("document.body.innerText");
+    let text = text.as_str().unwrap();
+    assert!(
+        text.contains("Enumerations of john.doe") && text.contains("Static List"),
+        "{text}"
+    );
+    assert_clean(&mut browser, &page);
 }
 
 #[test]

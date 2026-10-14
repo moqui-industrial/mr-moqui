@@ -195,11 +195,17 @@ pub fn precompiled_components(compiler_source: &str, scripts: &[&str]) -> Result
     );
     let templates = component_templates(scripts)?;
     for (index, (name, template, hash)) in templates.iter().enumerate() {
-        let code = compile_render(compiler_source, template)
-            .map_err(|err| Error::new(format!("component {name}: {err}")))?;
+        let code =
+            compile_render(compiler_source, template).map_err(|err| Error::new(format!("component {name}: {err}")))?;
         let body = code
             .lines()
-            .map(|line| if line.is_empty() { String::new() } else { format!("            {line}") })
+            .map(|line| {
+                if line.is_empty() {
+                    String::new()
+                } else {
+                    format!("            {line}")
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n");
         let name_lit = serde_json::to_string(name).map_err(|err| Error::new(err.to_string()))?;

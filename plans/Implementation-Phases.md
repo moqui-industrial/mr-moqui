@@ -459,7 +459,7 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   package) instead of a child component; a static form-list leaves out sub-list fields and the total row (the report names screens that have them); first/second/last rows, row
   selection and `button-menu` are not written in a static template (the find dialog, saved finds, the csv, xlsx, text and print exports, a multi form and the column picker are); the non-qvt modes get the cache header
   when the screen names them, and the automatic subscreens-only case gets it for qvt only (a page of html holds the navbar of the user). `webapp_qvt_static_only=true` loads
-  `vue.runtime.global.prod.js`, and waits for the `m-*` components and the shell to be precompiled before it can be used: they still have string templates.
+  `vue.runtime.global.prod.js`: the `m-*` components and the shell (`m-qapps-root`) are precompiled into `WebrootVue.qvt.render.js`, and a page of server-static screens runs under `script-src 'self'`.
   The report is `moqui lint --screens --qvt-static [report-file]` (one block for each screen file: location, mode, verdict, reasons and violations; it does not fail the
   process) and `screen::statics::static_report` with `full` for the render with the wrapped `ec`. Over this tree 129 screens (measured 2026-10-14, after the browser host gained `ec.factory.moquiVersion` and
   `StringUtilities.camelCaseToPretty` and the tools screens moved their permission checks, clock and lookups into actions): 100 clean, 15 with violations, 14 stay a server merge, after the static form-list gained the find dialog, saved finds, the exports, a multi form and the column picker. `ArtifactGroupDetail` is clean, and Gate 3 marks it with a `screen-extend` in its own runtime.

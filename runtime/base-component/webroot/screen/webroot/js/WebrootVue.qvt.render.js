@@ -1693,6 +1693,668 @@
               ], 4))
             }
         } },
+        "m-qapps-root": { hash: "eab70574", make: function (Vue) {
+            const { resolveComponent: _resolveComponent, createVNode: _createVNode, createElementVNode: _createElementVNode, withCtx: _withCtx, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, renderList: _renderList, Fragment: _Fragment, createElementBlock: _createElementBlock, normalizeClass: _normalizeClass, resolveDirective: _resolveDirective, withDirectives: _withDirectives, resolveDynamicComponent: _resolveDynamicComponent, createSlots: _createSlots, withModifiers: _withModifiers, vShow: _vShow } = Vue
+
+            return function render(_ctx, _cache) {
+              const _component_q_btn = _resolveComponent("q-btn")
+              const _component_m_link = _resolveComponent("m-link")
+              const _component_q_toolbar_title = _resolveComponent("q-toolbar-title")
+              const _component_q_item_section = _resolveComponent("q-item-section")
+              const _component_q_item = _resolveComponent("q-item")
+              const _component_q_list = _resolveComponent("q-list")
+              const _component_q_menu = _resolveComponent("q-menu")
+              const _component_q_icon = _resolveComponent("q-icon")
+              const _component_q_space = _resolveComponent("q-space")
+              const _component_q_circular_progress = _resolveComponent("q-circular-progress")
+              const _component_q_tooltip = _resolveComponent("q-tooltip")
+              const _component_m_dynamic_dialog = _resolveComponent("m-dynamic-dialog")
+              const _component_q_banner = _resolveComponent("q-banner")
+              const _component_q_card_section = _resolveComponent("q-card-section")
+              const _component_q_separator = _resolveComponent("q-separator")
+              const _component_q_card_actions = _resolveComponent("q-card-actions")
+              const _component_q_card = _resolveComponent("q-card")
+              const _component_q_toolbar = _resolveComponent("q-toolbar")
+              const _component_q_header = _resolveComponent("q-header")
+              const _component_m_menu_nav_item = _resolveComponent("m-menu-nav-item")
+              const _component_m_subscreens_active = _resolveComponent("m-subscreens-active")
+              const _component_q_page = _resolveComponent("q-page")
+              const _component_q_page_container = _resolveComponent("q-page-container")
+              const _component_q_footer = _resolveComponent("q-footer")
+              const _component_q_layout = _resolveComponent("q-layout")
+              const _component_m_text_line = _resolveComponent("m-text-line")
+              const _component_q_form = _resolveComponent("q-form")
+              const _component_m_dialog = _resolveComponent("m-dialog")
+              const _directive_close_popup = _resolveDirective("close-popup")
+
+              return (_openBlock(), _createElementBlock(_Fragment, null, [
+                _createVNode(_component_q_layout, { view: "hHh LpR fFf" }, {
+                  default: _withCtx(() => [
+                    _createVNode(_component_q_header, {
+                      reveal: "",
+                      bordered: "",
+                      class: "bg-black text-white",
+                      id: "top"
+                    }, {
+                      default: _withCtx(() => [
+                        _createVNode(_component_q_toolbar, { style: {"font-size":"15px"} }, {
+                          default: _withCtx(() => [
+                            _createVNode(_component_q_btn, {
+                              dense: "",
+                              flat: "",
+                              icon: "menu",
+                              onClick: $event => (_ctx.toggleLeftOpen())
+                            }, null, 8, ["onClick"]),
+                            (_ctx.shell.logoUrl)
+                              ? (_openBlock(), _createBlock(_component_m_link, {
+                                  key: 0,
+                                  href: "/apps"
+                                }, {
+                                  default: _withCtx(() => [
+                                    _createElementVNode("div", { class: "q-mx-md q-mt-sm" }, [
+                                      _createElementVNode("img", {
+                                        src: _ctx.shell.logoUrl,
+                                        alt: "Home",
+                                        height: "32"
+                                      }, null, 8, ["src"])
+                                    ])
+                                  ]),
+                                  _: 1
+                                }))
+                              : _createCommentVNode("", true),
+                            (_ctx.shell.title)
+                              ? (_openBlock(), _createBlock(_component_q_toolbar_title, { key: 1 }, {
+                                  default: _withCtx(() => [
+                                    _createTextVNode(_toDisplayString(_ctx.shell.title), 1)
+                                  ]),
+                                  _: 1
+                                }))
+                              : _createCommentVNode("", true),
+                            (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.navMenuList, (navMenuItem, menuIndex) => {
+                              return (_openBlock(), _createElementBlock(_Fragment, null, [
+                                (menuIndex < (_ctx.navMenuList.length - 1))
+                                  ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
+                                      (navMenuItem.hasTabMenu)
+                                        ? (_openBlock(), _createBlock(_component_m_link, {
+                                            key: 0,
+                                            href: _ctx.getNavHref(menuIndex),
+                                            class: "gt-xs"
+                                          }, {
+                                            default: _withCtx(() => [
+                                              _createTextVNode(_toDisplayString(navMenuItem.title), 1)
+                                            ]),
+                                            _: 2
+                                          }, 1032, ["href"]))
+                                        : (navMenuItem.subscreens && navMenuItem.subscreens.length)
+                                          ? (_openBlock(), _createElementBlock("div", {
+                                              key: 1,
+                                              class: "cursor-pointer gt-xs"
+                                            }, [
+                                              _createTextVNode(_toDisplayString(navMenuItem.title) + " ", 1),
+                                              _createVNode(_component_q_menu, {
+                                                anchor: "bottom left",
+                                                self: "top left"
+                                              }, {
+                                                default: _withCtx(() => [
+                                                  _createVNode(_component_q_list, {
+                                                    dense: "",
+                                                    style: {"min-width":"200px"}
+                                                  }, {
+                                                    default: _withCtx(() => [
+                                                      (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(navMenuItem.subscreens, (subscreen) => {
+                                                        return _withDirectives((_openBlock(), _createBlock(_component_q_item, {
+                                                          key: subscreen.name,
+                                                          class: _normalizeClass({'bg-primary':subscreen.active, 'text-white':subscreen.active}),
+                                                          clickable: ""
+                                                        }, {
+                                                          default: _withCtx(() => [
+                                                            _createVNode(_component_q_item_section, null, {
+                                                              default: _withCtx(() => [
+                                                                _createVNode(_component_m_link, {
+                                                                  href: subscreen.pathWithParams
+                                                                }, {
+                                                                  default: _withCtx(() => [
+                                                                    (subscreen.image)
+                                                                      ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
+                                                                          (subscreen.imageType === 'icon')
+                                                                            ? (_openBlock(), _createElementBlock("i", {
+                                                                                key: 0,
+                                                                                class: _normalizeClass(subscreen.image),
+                                                                                style: {"padding-right":"4px"}
+                                                                              }, null, 2))
+                                                                            : (_openBlock(), _createElementBlock("img", {
+                                                                                key: 1,
+                                                                                src: subscreen.image,
+                                                                                alt: subscreen.title,
+                                                                                width: "18",
+                                                                                class: "invertible",
+                                                                                style: {"padding-right":"4px"}
+                                                                              }, null, 8, ["src", "alt"]))
+                                                                        ], 64))
+                                                                      : (_openBlock(), _createElementBlock("i", {
+                                                                          key: 1,
+                                                                          class: "fa fa-link",
+                                                                          style: {"padding-right":"8px"}
+                                                                        })),
+                                                                    _createTextVNode(" " + _toDisplayString(subscreen.title), 1)
+                                                                  ]),
+                                                                  _: 2
+                                                                }, 1032, ["href"])
+                                                              ]),
+                                                              _: 2
+                                                            }, 1024)
+                                                          ]),
+                                                          _: 2
+                                                        }, 1032, ["class"])), [
+                                                          [_directive_close_popup]
+                                                        ])
+                                                      }), 128))
+                                                    ]),
+                                                    _: 2
+                                                  }, 1024)
+                                                ]),
+                                                _: 2
+                                              }, 1024)
+                                            ]))
+                                          : (_openBlock(), _createBlock(_component_m_link, {
+                                              key: 2,
+                                              href: _ctx.getNavHref(menuIndex),
+                                              class: "gt-xs"
+                                            }, {
+                                              default: _withCtx(() => [
+                                                _createTextVNode(_toDisplayString(navMenuItem.title), 1)
+                                              ]),
+                                              _: 2
+                                            }, 1032, ["href"])),
+                                      _createVNode(_component_q_icon, {
+                                        size: "1.5em",
+                                        name: "chevron_right",
+                                        color: "grey",
+                                        class: "gt-xs"
+                                      })
+                                    ], 64))
+                                  : _createCommentVNode("", true)
+                              ], 64))
+                            }), 256)),
+                            (_ctx.navMenuList.length > 0)
+                              ? (_openBlock(), _createBlock(_component_m_link, {
+                                  key: 2,
+                                  href: _ctx.getNavHref(_ctx.navMenuList.length - 1),
+                                  class: "gt-xs"
+                                }, {
+                                  default: _withCtx(() => [
+                                    _createTextVNode(_toDisplayString(_ctx.navMenuList[_ctx.navMenuList.length - 1].title), 1)
+                                  ]),
+                                  _: 1
+                                }, 8, ["href"]))
+                              : _createCommentVNode("", true),
+                            _createVNode(_component_q_space),
+                            _createVNode(_component_q_circular_progress, {
+                              indeterminate: "",
+                              size: "20px",
+                              color: "light-blue",
+                              class: _normalizeClass(["q-ma-xs", { hidden: _ctx.loading < 1 }])
+                            }, null, 8, ["class"]),
+                            (_openBlock(), _createBlock(_resolveDynamicComponent(_ctx.qzVue), { ref: "qzVue" }, null, 512)),
+                            _createVNode(_component_q_btn, {
+                              dense: "",
+                              flat: "",
+                              icon: "help_outline",
+                              color: "info",
+                              class: _normalizeClass({hidden:!_ctx.documentMenuList.length})
+                            }, {
+                              default: _withCtx(() => [
+                                _createVNode(_component_q_tooltip, null, {
+                                  default: _withCtx(() => [
+                                    _createTextVNode(_toDisplayString(_ctx.labels.documentation), 1)
+                                  ]),
+                                  _: 1
+                                }),
+                                _createVNode(_component_q_menu, null, {
+                                  default: _withCtx(() => [
+                                    _createVNode(_component_q_list, {
+                                      dense: "",
+                                      class: "q-my-md"
+                                    }, {
+                                      default: _withCtx(() => [
+                                        (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.documentMenuList, (screenDoc) => {
+                                          return (_openBlock(), _createBlock(_component_q_item, {
+                                            key: screenDoc.index
+                                          }, {
+                                            default: _withCtx(() => [
+                                              _createVNode(_component_q_item_section, null, {
+                                                default: _withCtx(() => [
+                                                  _createVNode(_component_m_dynamic_dialog, {
+                                                    url: _ctx.currentPath + '/screenDoc?docIndex=' + screenDoc.index,
+                                                    "button-text": screenDoc.title,
+                                                    title: screenDoc.title
+                                                  }, null, 8, ["url", "button-text", "title"])
+                                                ]),
+                                                _: 2
+                                              }, 1024)
+                                            ]),
+                                            _: 2
+                                          }, 1024))
+                                        }), 128))
+                                      ]),
+                                      _: 1
+                                    })
+                                  ]),
+                                  _: 1
+                                })
+                              ]),
+                              _: 1
+                            }, 8, ["class"]),
+                            (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.navPlugins, (navPlugin) => {
+                              return (_openBlock(), _createBlock(_resolveDynamicComponent(navPlugin)))
+                            }), 256)),
+                            _createVNode(_component_q_btn, {
+                              dense: "",
+                              flat: "",
+                              icon: "notifications"
+                            }, {
+                              default: _withCtx(() => [
+                                _createVNode(_component_q_tooltip, null, {
+                                  default: _withCtx(() => [
+                                    _createTextVNode(_toDisplayString(_ctx.labels.notifyHistory), 1)
+                                  ]),
+                                  _: 1
+                                }),
+                                _createVNode(_component_q_menu, null, {
+                                  default: _withCtx(() => [
+                                    _createVNode(_component_q_list, {
+                                      dense: "",
+                                      style: {"min-width":"300px"}
+                                    }, {
+                                      default: _withCtx(() => [
+                                        (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.notifyHistoryList, (histItem, histIndex) => {
+                                          return (_openBlock(), _createBlock(_component_q_item, { key: histIndex }, {
+                                            default: _withCtx(() => [
+                                              _createVNode(_component_q_item_section, null, {
+                                                default: _withCtx(() => [
+                                                  _createVNode(_component_q_banner, {
+                                                    dense: "",
+                                                    rounded: "",
+                                                    class: _normalizeClass(["text-white", 'bg-' + _ctx.getQuasarColor(histItem.type)])
+                                                  }, _createSlots({
+                                                    default: _withCtx(() => [
+                                                      _createElementVNode("strong", null, _toDisplayString(histItem.time), 1),
+                                                      _createTextVNode(),
+                                                      _createElementVNode("span", null, _toDisplayString(histItem.message), 1)
+                                                    ]),
+                                                    _: 2
+                                                  }, [
+                                                    (histItem.link != null)
+                                                      ? {
+                                                          name: "action",
+                                                          fn: _withCtx(() => [
+                                                            _createVNode(_component_q_btn, {
+                                                              to: histItem.link,
+                                                              flat: "",
+                                                              color: "white",
+                                                              label: "View"
+                                                            }, null, 8, ["to"])
+                                                          ]),
+                                                          key: "0"
+                                                        }
+                                                      : undefined
+                                                  ]), 1032, ["class"])
+                                                ]),
+                                                _: 2
+                                              }, 1024)
+                                            ]),
+                                            _: 2
+                                          }, 1024))
+                                        }), 128))
+                                      ]),
+                                      _: 1
+                                    })
+                                  ]),
+                                  _: 1
+                                })
+                              ]),
+                              _: 1
+                            }),
+                            _createVNode(_component_q_btn, {
+                              dense: "",
+                              flat: "",
+                              icon: "history"
+                            }, {
+                              default: _withCtx(() => [
+                                _createVNode(_component_q_tooltip, null, {
+                                  default: _withCtx(() => [
+                                    _createTextVNode(_toDisplayString(_ctx.labels.screenHistory), 1)
+                                  ]),
+                                  _: 1
+                                }),
+                                _createVNode(_component_q_menu, null, {
+                                  default: _withCtx(() => [
+                                    _createVNode(_component_q_list, {
+                                      dense: "",
+                                      style: {"min-width":"300px"}
+                                    }, {
+                                      default: _withCtx(() => [
+                                        (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.navHistoryList, (histItem) => {
+                                          return _withDirectives((_openBlock(), _createBlock(_component_q_item, {
+                                            key: histItem.pathWithParams,
+                                            clickable: ""
+                                          }, {
+                                            default: _withCtx(() => [
+                                              _createVNode(_component_q_item_section, null, {
+                                                default: _withCtx(() => [
+                                                  _createVNode(_component_m_link, {
+                                                    href: histItem.pathWithParams
+                                                  }, {
+                                                    default: _withCtx(() => [
+                                                      (histItem.image)
+                                                        ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
+                                                            (histItem.imageType === 'icon')
+                                                              ? (_openBlock(), _createElementBlock("i", {
+                                                                  key: 0,
+                                                                  class: _normalizeClass(histItem.image),
+                                                                  style: {"padding-right":"8px"}
+                                                                }, null, 2))
+                                                              : (_openBlock(), _createElementBlock("img", {
+                                                                  key: 1,
+                                                                  src: histItem.image,
+                                                                  alt: histItem.title,
+                                                                  width: "18",
+                                                                  style: {"padding-right":"4px"}
+                                                                }, null, 8, ["src", "alt"]))
+                                                          ], 64))
+                                                        : (_openBlock(), _createElementBlock("i", {
+                                                            key: 1,
+                                                            class: "fa fa-link",
+                                                            style: {"padding-right":"8px"}
+                                                          })),
+                                                      _createTextVNode(" " + _toDisplayString(histItem.title), 1)
+                                                    ]),
+                                                    _: 2
+                                                  }, 1032, ["href"])
+                                                ]),
+                                                _: 2
+                                              }, 1024)
+                                            ]),
+                                            _: 2
+                                          }, 1024)), [
+                                            [_directive_close_popup]
+                                          ])
+                                        }), 128))
+                                      ]),
+                                      _: 1
+                                    })
+                                  ]),
+                                  _: 1
+                                })
+                              ]),
+                              _: 1
+                            }),
+                            _createVNode(_component_q_btn, {
+                              dense: "",
+                              flat: "",
+                              icon: "account_circle"
+                            }, {
+                              default: _withCtx(() => [
+                                _createVNode(_component_q_tooltip, null, {
+                                  default: _withCtx(() => [
+                                    _createTextVNode(_toDisplayString(_ctx.userFullName || _ctx.labels.account), 1)
+                                  ]),
+                                  _: 1
+                                }),
+                                _createVNode(_component_q_menu, null, {
+                                  default: _withCtx(() => [
+                                    _createVNode(_component_q_card, {
+                                      flat: "",
+                                      bordered: ""
+                                    }, {
+                                      default: _withCtx(() => [
+                                        _createVNode(_component_q_card_section, {
+                                          horizontal: "",
+                                          class: "q-pa-md"
+                                        }, {
+                                          default: _withCtx(() => [
+                                            _createVNode(_component_q_card_section, null, {
+                                              default: _withCtx(() => [
+                                                (_ctx.userFullName)
+                                                  ? (_openBlock(), _createElementBlock("div", {
+                                                      key: 0,
+                                                      class: "q-mb-sm text-strong"
+                                                    }, _toDisplayString(_ctx.labels.welcome) + " " + _toDisplayString(_ctx.userFullName), 1))
+                                                  : _createCommentVNode("", true),
+                                                (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.accountPlugins, (accountPlugin, accountIndex) => {
+                                                  return (_openBlock(), _createBlock(_resolveDynamicComponent(accountPlugin), { key: accountIndex }))
+                                                }), 128))
+                                              ]),
+                                              _: 1
+                                            }),
+                                            _createVNode(_component_q_separator, { vertical: "" }),
+                                            _createVNode(_component_q_card_actions, {
+                                              vertical: "",
+                                              class: "justify-around q-px-md"
+                                            }, {
+                                              default: _withCtx(() => [
+                                                _createVNode(_component_q_btn, {
+                                                  flat: "",
+                                                  dense: "",
+                                                  icon: "settings_power",
+                                                  color: "negative",
+                                                  type: "a",
+                                                  href: _ctx.shell.logoutUrl,
+                                                  "data-confirm": _ctx.labels.logout + ' ' + _ctx.userFullName + '?'
+                                                }, {
+                                                  default: _withCtx(() => [
+                                                    _createVNode(_component_q_tooltip, null, {
+                                                      default: _withCtx(() => [
+                                                        _createTextVNode(_toDisplayString(_ctx.labels.logout) + " " + _toDisplayString(_ctx.userFullName), 1)
+                                                      ]),
+                                                      _: 1
+                                                    })
+                                                  ]),
+                                                  _: 1
+                                                }, 8, ["href", "data-confirm"]),
+                                                _createVNode(_component_q_btn, {
+                                                  flat: "",
+                                                  dense: "",
+                                                  onClick: _withModifiers($event => (_ctx.switchDarkLight()), ["prevent"]),
+                                                  icon: "invert_colors"
+                                                }, {
+                                                  default: _withCtx(() => [
+                                                    _createVNode(_component_q_tooltip, null, {
+                                                      default: _withCtx(() => [
+                                                        _createTextVNode(_toDisplayString(_ctx.labels.switchDarkLight), 1)
+                                                      ]),
+                                                      _: 1
+                                                    })
+                                                  ]),
+                                                  _: 1
+                                                }, 8, ["onClick"]),
+                                                _createVNode(_component_q_btn, {
+                                                  flat: "",
+                                                  dense: "",
+                                                  icon: "autorenew",
+                                                  color: "negative",
+                                                  onClick: _ctx.reLoginShowDialog
+                                                }, {
+                                                  default: _withCtx(() => [
+                                                    _createVNode(_component_q_tooltip, null, {
+                                                      default: _withCtx(() => [
+                                                        _createTextVNode("Re-Login")
+                                                      ]),
+                                                      _: 1
+                                                    })
+                                                  ]),
+                                                  _: 1
+                                                }, 8, ["onClick"])
+                                              ]),
+                                              _: 1
+                                            })
+                                          ]),
+                                          _: 1
+                                        })
+                                      ]),
+                                      _: 1
+                                    })
+                                  ]),
+                                  _: 1
+                                })
+                              ]),
+                              _: 1
+                            })
+                          ]),
+                          _: 1
+                        })
+                      ]),
+                      _: 1
+                    }),
+                    _createVNode(_component_q_page_container, null, {
+                      default: _withCtx(() => [
+                        _createElementVNode("div", { class: "shell-row" }, [
+                          _withDirectives(_createElementVNode("div", {
+                            class: _normalizeClass(["app-menu-col", { 'app-menu-overlay': _ctx.$q.screen.lt.md }])
+                          }, [
+                            _createVNode(_component_q_btn, {
+                              dense: "",
+                              flat: "",
+                              icon: "menu",
+                              onClick: $event => (_ctx.toggleLeftOpen()),
+                              class: "lt-sm"
+                            }, null, 8, ["onClick"]),
+                            _createVNode(_component_q_list, {
+                              dense: "",
+                              padding: ""
+                            }, {
+                              default: _withCtx(() => [
+                                _createVNode(_component_m_menu_nav_item, { "menu-index": 0 })
+                              ]),
+                              _: 1
+                            })
+                          ], 2), [
+                            [_vShow, _ctx.leftOpen]
+                          ]),
+                          _createVNode(_component_q_page, { class: "shell-page-col" }, {
+                            default: _withCtx(() => [
+                              _createElementVNode("div", { class: "q-ma-sm" }, [
+                                _createVNode(_component_m_subscreens_active)
+                              ])
+                            ]),
+                            _: 1
+                          })
+                        ])
+                      ]),
+                      _: 1
+                    }),
+                    _createVNode(_component_q_footer, {
+                      reveal: "",
+                      bordered: "",
+                      class: "bg-grey-9 text-white row q-pa-xs",
+                      id: "footer"
+                    }, {
+                      default: _withCtx(() => [
+                        _createElementVNode("div", {
+                          innerHTML: _ctx.shell.footerHtml,
+                          style: {"display":"contents"}
+                        }, null, 8, ["innerHTML"])
+                      ]),
+                      _: 1
+                    })
+                  ]),
+                  _: 1
+                }),
+                _createVNode(_component_m_dialog, {
+                  modelValue: _ctx.reLoginShow,
+                  "onUpdate:modelValue": $event => ((_ctx.reLoginShow) = $event),
+                  width: "400",
+                  title: _ctx.labels.reLogin
+                }, {
+                  default: _withCtx(() => [
+                    (_ctx.reLoginMfaData)
+                      ? (_openBlock(), _createElementBlock("div", { key: 0 }, [
+                          _createElementVNode("div", { style: {"text-align":"center","padding-bottom":"10px"} }, [
+                            _createTextVNode("User "),
+                            _createElementVNode("strong", null, _toDisplayString(_ctx.username), 1),
+                            _createTextVNode(" requires an authentication code, you have these options:")
+                          ]),
+                          _createElementVNode("div", { style: {"text-align":"center","padding-bottom":"10px"} }, _toDisplayString(_ctx.reLoginMfaData.factorTypeDescriptions.join(", ")), 1),
+                          _createVNode(_component_q_form, {
+                            onSubmit: _withModifiers(_ctx.reLoginVerifyOtp, ["prevent"]),
+                            autocapitalize: "off",
+                            autocomplete: "off"
+                          }, {
+                            default: _withCtx(() => [
+                              _createVNode(_component_m_text_line, {
+                                modelValue: _ctx.reLoginOtp,
+                                "onUpdate:modelValue": $event => ((_ctx.reLoginOtp) = $event),
+                                name: "code",
+                                type: "password",
+                                label: _ctx.labels.authenticationCode
+                              }, null, 8, ["modelValue", "onUpdate:modelValue", "label"]),
+                              _createVNode(_component_q_btn, {
+                                outline: "",
+                                "no-caps": "",
+                                color: "primary",
+                                type: "submit",
+                                label: _ctx.labels.signIn
+                              }, null, 8, ["label"])
+                            ]),
+                            _: 1
+                          }, 8, ["onSubmit"]),
+                          (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.reLoginMfaData.sendableFactors, (sendableFactor) => {
+                            return (_openBlock(), _createElementBlock("div", {
+                              key: sendableFactor.factorId,
+                              style: {"padding":"8px"}
+                            }, [
+                              _createVNode(_component_q_btn, {
+                                outline: "",
+                                "no-caps": "",
+                                dense: "",
+                                label: _ctx.labels.sendCodeTo + ' ' + sendableFactor.factorOption,
+                                onClick: _withModifiers($event => (_ctx.reLoginSendOtp(sendableFactor.factorId)), ["prevent"])
+                              }, null, 8, ["label", "onClick"])
+                            ]))
+                          }), 128))
+                        ]))
+                      : (_openBlock(), _createElementBlock("div", { key: 1 }, [
+                          _createElementVNode("div", { style: {"text-align":"center","padding-bottom":"10px"} }, [
+                            _createTextVNode("Please sign in to continue as user "),
+                            _createElementVNode("strong", null, _toDisplayString(_ctx.username), 1)
+                          ]),
+                          _createVNode(_component_q_form, {
+                            onSubmit: _withModifiers(_ctx.reLoginSubmit, ["prevent"]),
+                            autocapitalize: "off",
+                            autocomplete: "off"
+                          }, {
+                            default: _withCtx(() => [
+                              _createVNode(_component_m_text_line, {
+                                modelValue: _ctx.reLoginPassword,
+                                "onUpdate:modelValue": $event => ((_ctx.reLoginPassword) = $event),
+                                name: "password",
+                                type: "password",
+                                label: _ctx.labels.password
+                              }, null, 8, ["modelValue", "onUpdate:modelValue", "label"]),
+                              _createVNode(_component_q_btn, {
+                                outline: "",
+                                "no-caps": "",
+                                color: "primary",
+                                type: "submit",
+                                label: _ctx.labels.signIn
+                              }, null, 8, ["label"]),
+                              _createVNode(_component_q_btn, {
+                                outline: "",
+                                "no-caps": "",
+                                color: "negative",
+                                onClick: _withModifiers(_ctx.reLoginReload, ["prevent"]),
+                                label: _ctx.labels.reloadPage
+                              }, null, 8, ["onClick", "label"])
+                            ]),
+                            _: 1
+                          }, 8, ["onSubmit"])
+                        ]))
+                  ]),
+                  _: 1
+                }, 8, ["modelValue", "onUpdate:modelValue", "title"])
+              ], 64))
+            }
+        } },
         "m-radio": { hash: "e993f4fe", make: function (Vue) {
             const { toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, renderList: _renderList, Fragment: _Fragment, createElementBlock: _createElementBlock, mergeProps: _mergeProps } = Vue
 

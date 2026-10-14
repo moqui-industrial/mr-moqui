@@ -2281,6 +2281,146 @@
 
     // The application component. Its template is the markup of the page shell (WebrootVue.qvt.html.fancy), which Vue takes from
     // the element it mounts on.
+    // The shell of /qapps: the layout, the navigation and the re-login dialog. It is the root's template, kept as a component so it is precompiled
+    // with the others; the text the server knows (the theme's logo, title and footer, the labels in the user's language, the logout URL) comes in
+    // config.shell and config.labels. The footer items of the theme are HTML that is not compiled by Vue.
+    component("m-qapps-root", {
+        template:
+        "<q-layout view=\"hHh LpR fFf\">\n" +
+        "    <q-header reveal bordered class=\"bg-black text-white\" id=\"top\"><q-toolbar style=\"font-size:15px;\">\n" +
+        "        <q-btn dense flat icon=\"menu\" @click=\"toggleLeftOpen()\"></q-btn>\n" +
+        "        <m-link v-if=\"shell.logoUrl\" href=\"/apps\"><div class=\"q-mx-md q-mt-sm\"><img :src=\"shell.logoUrl\" alt=\"Home\" height=\"32\"></div></m-link>\n" +
+        "        <q-toolbar-title v-if=\"shell.title\">{{shell.title}}</q-toolbar-title>\n" +
+        "        <template v-for=\"(navMenuItem, menuIndex) in navMenuList\"><template v-if=\"menuIndex < (navMenuList.length - 1)\">\n" +
+        "            <m-link v-if=\"navMenuItem.hasTabMenu\" :href=\"getNavHref(menuIndex)\" class=\"gt-xs\">{{navMenuItem.title}}</m-link>\n" +
+        "            <div v-else-if=\"navMenuItem.subscreens && navMenuItem.subscreens.length\" class=\"cursor-pointer gt-xs\">\n" +
+        "                {{navMenuItem.title}}\n" +
+        "                <q-menu anchor=\"bottom left\" self=\"top left\"><q-list dense style=\"min-width: 200px\">\n" +
+        "                    <q-item v-for=\"subscreen in navMenuItem.subscreens\" :key=\"subscreen.name\" :class=\"{'bg-primary':subscreen.active, 'text-white':subscreen.active}\" clickable v-close-popup><q-item-section>\n" +
+        "                        <m-link :href=\"subscreen.pathWithParams\">\n" +
+        "                            <template v-if=\"subscreen.image\">\n" +
+        "                                <i v-if=\"subscreen.imageType === 'icon'\" :class=\"subscreen.image\" style=\"padding-right: 4px;\"></i>\n" +
+        "                                <img v-else :src=\"subscreen.image\" :alt=\"subscreen.title\" width=\"18\" class=\"invertible\" style=\"padding-right: 4px;\">\n" +
+        "                            </template>\n" +
+        "                            <i v-else class=\"fa fa-link\" style=\"padding-right: 8px;\"></i>\n" +
+        "                            {{subscreen.title}}\n" +
+        "                        </m-link>\n" +
+        "                    </q-item-section></q-item>\n" +
+        "                </q-list></q-menu>\n" +
+        "            </div>\n" +
+        "            <m-link v-else :href=\"getNavHref(menuIndex)\" class=\"gt-xs\">{{navMenuItem.title}}</m-link>\n" +
+        "            <q-icon size=\"1.5em\" name=\"chevron_right\" color=\"grey\" class=\"gt-xs\"></q-icon>\n" +
+        "        </template></template>\n" +
+        "        <m-link v-if=\"navMenuList.length > 0\" :href=\"getNavHref(navMenuList.length - 1)\" class=\"gt-xs\">{{navMenuList[navMenuList.length - 1].title}}</m-link>\n" +
+        "\n" +
+        "        <q-space></q-space>\n" +
+        "\n" +
+        "        <q-circular-progress indeterminate size=\"20px\" color=\"light-blue\" class=\"q-ma-xs\" :class=\"{ hidden: loading < 1 }\"></q-circular-progress>\n" +
+        "\n" +
+        "        <component :is=\"qzVue\" ref=\"qzVue\"></component>\n" +
+        "\n" +
+        "        <q-btn dense flat icon=\"help_outline\" color=\"info\" :class=\"{hidden:!documentMenuList.length}\">\n" +
+        "            <q-tooltip>{{labels.documentation}}</q-tooltip>\n" +
+        "            <q-menu><q-list dense class=\"q-my-md\">\n" +
+        "                <q-item v-for=\"screenDoc in documentMenuList\" :key=\"screenDoc.index\"><q-item-section>\n" +
+        "                    <m-dynamic-dialog :url=\"currentPath + '/screenDoc?docIndex=' + screenDoc.index\" :button-text=\"screenDoc.title\" :title=\"screenDoc.title\"></m-dynamic-dialog>\n" +
+        "                </q-item-section></q-item>\n" +
+        "            </q-list></q-menu>\n" +
+        "        </q-btn>\n" +
+        "\n" +
+        "        <template v-for=\"navPlugin in navPlugins\"><component :is=\"navPlugin\"></component></template>\n" +
+        "\n" +
+        "        <q-btn dense flat icon=\"notifications\">\n" +
+        "            <q-tooltip>{{labels.notifyHistory}}</q-tooltip>\n" +
+        "            <q-menu><q-list dense style=\"min-width: 300px\">\n" +
+        "                <q-item v-for=\"(histItem, histIndex) in notifyHistoryList\" :key=\"histIndex\"><q-item-section>\n" +
+        "                    <q-banner dense rounded class=\"text-white\" :class=\"'bg-' + getQuasarColor(histItem.type)\">\n" +
+        "                        <strong>{{histItem.time}}</strong> <span>{{histItem.message}}</span>\n" +
+        "                        <template v-if=\"histItem.link != null\" v-slot:action>\n" +
+        "                            <q-btn :to=\"histItem.link\" flat color=\"white\" label=\"View\"></q-btn>\n" +
+        "                        </template>\n" +
+        "                    </q-banner>\n" +
+        "                </q-item-section></q-item>\n" +
+        "            </q-list></q-menu>\n" +
+        "        </q-btn>\n" +
+        "\n" +
+        "        <q-btn dense flat icon=\"history\">\n" +
+        "            <q-tooltip>{{labels.screenHistory}}</q-tooltip>\n" +
+        "            <q-menu><q-list dense style=\"min-width: 300px\">\n" +
+        "                <q-item v-for=\"histItem in navHistoryList\" :key=\"histItem.pathWithParams\" clickable v-close-popup><q-item-section>\n" +
+        "                    <m-link :href=\"histItem.pathWithParams\">\n" +
+        "                        <template v-if=\"histItem.image\">\n" +
+        "                            <i v-if=\"histItem.imageType === 'icon'\" :class=\"histItem.image\" style=\"padding-right: 8px;\"></i>\n" +
+        "                            <img v-else :src=\"histItem.image\" :alt=\"histItem.title\" width=\"18\" style=\"padding-right: 4px;\">\n" +
+        "                        </template>\n" +
+        "                        <i v-else class=\"fa fa-link\" style=\"padding-right: 8px;\"></i>\n" +
+        "                        {{histItem.title}}\n" +
+        "                    </m-link>\n" +
+        "                </q-item-section></q-item>\n" +
+        "            </q-list></q-menu>\n" +
+        "        </q-btn>\n" +
+        "\n" +
+        "        <q-btn dense flat icon=\"account_circle\">\n" +
+        "            <q-tooltip>{{userFullName || labels.account}}</q-tooltip>\n" +
+        "            <q-menu><q-card flat bordered>\n" +
+        "                <q-card-section horizontal class=\"q-pa-md\">\n" +
+        "                    <q-card-section>\n" +
+        "                        <div v-if=\"userFullName\" class=\"q-mb-sm text-strong\">{{labels.welcome}} {{userFullName}}</div>\n" +
+        "                        <template v-for=\"(accountPlugin, accountIndex) in accountPlugins\" :key=\"accountIndex\"><component :is=\"accountPlugin\"></component></template>\n" +
+        "                    </q-card-section>\n" +
+        "                    <q-separator vertical></q-separator>\n" +
+        "                    <q-card-actions vertical class=\"justify-around q-px-md\">\n" +
+        "                        <q-btn flat dense icon=\"settings_power\" color=\"negative\" type=\"a\" :href=\"shell.logoutUrl\" :data-confirm=\"labels.logout + ' ' + userFullName + '?'\">\n" +
+        "                            <q-tooltip>{{labels.logout}} {{userFullName}}</q-tooltip></q-btn>\n" +
+        "                        <q-btn flat dense @click.prevent=\"switchDarkLight()\" icon=\"invert_colors\">\n" +
+        "                            <q-tooltip>{{labels.switchDarkLight}}</q-tooltip></q-btn>\n" +
+        "                        <q-btn flat dense icon=\"autorenew\" color=\"negative\" @click=\"reLoginShowDialog\"><q-tooltip>Re-Login</q-tooltip></q-btn>\n" +
+        "                    </q-card-actions>\n" +
+        "                </q-card-section>\n" +
+        "            </q-card></q-menu>\n" +
+        "        </q-btn>\n" +
+        "    </q-toolbar></q-header>\n" +
+        "\n" +
+        "    <q-page-container>\n" +
+        "        <div class=\"shell-row\">\n" +
+        "            <div v-show=\"leftOpen\" class=\"app-menu-col\" :class=\"{ 'app-menu-overlay': $q.screen.lt.md }\">\n" +
+        "                <q-btn dense flat icon=\"menu\" @click=\"toggleLeftOpen()\" class=\"lt-sm\"></q-btn>\n" +
+        "                <q-list dense padding><m-menu-nav-item :menu-index=\"0\"></m-menu-nav-item></q-list>\n" +
+        "            </div>\n" +
+        "            <q-page class=\"shell-page-col\">\n" +
+        "                <div class=\"q-ma-sm\"><m-subscreens-active></m-subscreens-active></div>\n" +
+        "            </q-page>\n" +
+        "        </div>\n" +
+        "    </q-page-container>\n" +
+        "\n" +
+        "    <q-footer reveal bordered class=\"bg-grey-9 text-white row q-pa-xs\" id=\"footer\">\n" +
+        "        <div v-html=\"shell.footerHtml\" style=\"display:contents;\"></div>\n" +
+        "    </q-footer>\n" +
+        "</q-layout>\n" +
+        "\n" +
+        "<m-dialog v-model=\"reLoginShow\" width=\"400\" :title=\"labels.reLogin\">\n" +
+        "    <div v-if=\"reLoginMfaData\">\n" +
+        "        <div style=\"text-align:center;padding-bottom:10px\">User <strong>{{username}}</strong> requires an authentication code, you have these options:</div>\n" +
+        "        <div style=\"text-align:center;padding-bottom:10px\">{{reLoginMfaData.factorTypeDescriptions.join(\", \")}}</div>\n" +
+        "        <q-form @submit.prevent=\"reLoginVerifyOtp\" autocapitalize=\"off\" autocomplete=\"off\">\n" +
+        "            <m-text-line v-model=\"reLoginOtp\" name=\"code\" type=\"password\" :label=\"labels.authenticationCode\"></m-text-line>\n" +
+        "            <q-btn outline no-caps color=\"primary\" type=\"submit\" :label=\"labels.signIn\"></q-btn>\n" +
+        "        </q-form>\n" +
+        "        <div v-for=\"sendableFactor in reLoginMfaData.sendableFactors\" :key=\"sendableFactor.factorId\" style=\"padding:8px\">\n" +
+        "            <q-btn outline no-caps dense :label=\"labels.sendCodeTo + ' ' + sendableFactor.factorOption\" @click.prevent=\"reLoginSendOtp(sendableFactor.factorId)\"></q-btn>\n" +
+        "        </div>\n" +
+        "    </div>\n" +
+        "    <div v-else>\n" +
+        "        <div style=\"text-align:center;padding-bottom:10px\">Please sign in to continue as user <strong>{{username}}</strong></div>\n" +
+        "        <q-form @submit.prevent=\"reLoginSubmit\" autocapitalize=\"off\" autocomplete=\"off\">\n" +
+        "            <m-text-line v-model=\"reLoginPassword\" name=\"password\" type=\"password\" :label=\"labels.password\"></m-text-line>\n" +
+        "            <q-btn outline no-caps color=\"primary\" type=\"submit\" :label=\"labels.signIn\"></q-btn>\n" +
+        "            <q-btn outline no-caps color=\"negative\" @click.prevent=\"reLoginReload\" :label=\"labels.reloadPage\"></q-btn>\n" +
+        "        </q-form>\n" +
+        "    </div>\n" +
+        "</m-dialog>\n"
+    });
+
     const rootOptions = (config) => ({
         data() {
             return {
@@ -2290,7 +2430,8 @@
                 moquiSessionToken: config.sessionToken || "", appHost: config.appHost || "", appRootPath: config.appRootPath || "", userId: config.userId || "",
                 username: config.username || "", locale: config.locale || "en", userFullName: config.userFullName || "",
                 reLoginShow: false, reLoginPassword: null, reLoginMfaData: null, reLoginOtp: null,
-                notificationClient: null, sessionTokenBc: null, qzVue: null, leftOpen: !!config.leftOpen
+                notificationClient: null, sessionTokenBc: null, qzVue: null, leftOpen: !!config.leftOpen,
+                shell: Object.assign({ logoUrl: "", title: "", logoutUrl: "/Login/logout", footerHtml: "" }, config.shell), labels: Object.assign({}, config.labels)
             };
         },
         methods: {
@@ -2681,6 +2822,10 @@
         }, true);
         const options = rootOptions(config);
         Object.assign(options.methods, qvt.rootMethods);
+        // the shell's render function when it is precompiled, else its template for the compiler build
+        const shell = qvt.components["m-qapps-root"];
+        if (shell.render) options.render = shell.render;
+        else options.template = shell.template;
         const app = root.Vue.createApp(options);
         const quasarOptions = { config: Object.assign({ brand: { info: "#1e7b8e" }, notify: { progress: true, closeBtn: "X", position: "top-right" }, loadingBar: { color: "primary" } }, config.quasar),
             plugins: { Notify: root.Quasar.Notify, LoadingBar: root.Quasar.LoadingBar } };

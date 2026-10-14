@@ -35,9 +35,10 @@ pub const FIXTURE: &str = "/System/Security/ArtifactGroup/ArtifactGroupDetail";
 
 /// The conf of the test runtime. `companion` is the location of a screen with qjs and qvue text of its own, `widgets` and `static_list`
 /// the screens of the browser smoke.
-fn conf(companion: &str, widgets: &str, static_list: &str) -> String {
+fn conf(companion: &str, widgets: &str, static_list: &str, extra: &str) -> String {
     format!(
         r#"<moqui-conf>
+    {extra}
     <screen-facade>
         <screen location="component://webroot/screen/webroot.xml">
             <subscreens-item name="System" menu-title="System" location="component://tools/screen/System.xml"/>
@@ -136,6 +137,7 @@ pub struct Gate {
     pub runtime: PathBuf,
     /// The embedded cluster directory: `data` is the socket directory, `pgpass` the password.
     pub cluster_dir: PathBuf,
+    _properties: PropertyReset,
     _serial: std::sync::MutexGuard<'static, ()>,
     _runtime: DirGuard,
     _cluster: DirGuard,
@@ -147,16 +149,39 @@ pub fn start(label: &str) -> Gate {
 
 /// [`start`] with one more `entity-facade-xml` document loaded after the grants, for the rows a test needs.
 pub fn start_with_data(label: &str, data: &str) -> Gate {
-    start_seeded(label, false, Some(data))
+    start_seeded(label, false, Some(data), "")
 }
 
 /// Load the seed (the framework files and each component's `data` directory), the demo users, and the grants of the fixture, then serve on an
 /// ephemeral port. With `static_fixture` a `screen-extend` marks the fixture server-static for qvt.
 pub fn start_with(label: &str, static_fixture: bool) -> Gate {
-    start_seeded(label, static_fixture, None)
+    start_seeded(label, static_fixture, None, "")
 }
 
-fn start_seeded(label: &str, static_fixture: bool, data: Option<&str>) -> Gate {
+/// [`start`] with more conf in the runtime's `MoquiDevConf.xml`, such as a response header of this server only, and process properties
+/// that hold while the gate does. They are set once the gate has the one-server lock, and cleared when it drops.
+pub fn start_with_conf(label: &str, extra_conf: &str, properties: &[(&str, &str)]) -> Gate {
+    let mut gate = start_seeded(label, false, None, extra_conf);
+    for (name, value) in properties {
+        moqui_lib::env::set_property(name, (*value).to_string());
+    }
+    gate._properties = PropertyReset(properties.iter().map(|(name, _)| (*name).to_string()).collect());
+    gate
+}
+
+/// Clears the properties a gate set, before the gate gives up the lock.
+#[derive(Default)]
+pub struct PropertyReset(Vec<String>);
+
+impl Drop for PropertyReset {
+    fn drop(&mut self) {
+        for name in &self.0 {
+            moqui_lib::env::set_property(name, String::new());
+        }
+    }
+}
+
+fn start_seeded(label: &str, static_fixture: bool, data: Option<&str>, extra_conf: &str) -> Gate {
     let serial = SERIAL.lock().unwrap_or_else(|err| err.into_inner());
     let runtime = temp_dir(&format!("moqui-gate3-rt-{label}"));
     let cluster_dir = temp_dir(&format!("moqui-gate3-pg-{label}"));
@@ -176,6 +201,7 @@ fn start_seeded(label: &str, static_fixture: bool, data: Option<&str>) -> Gate {
             &companion.display().to_string(),
             &widgets.display().to_string(),
             &static_list.display().to_string(),
+            extra_conf,
         ),
     )
     .unwrap();
@@ -256,6 +282,7 @@ fn start_seeded(label: &str, static_fixture: bool, data: Option<&str>) -> Gate {
         server,
         runtime: runtime.clone(),
         cluster_dir: cluster_dir.clone(),
+        _properties: PropertyReset::default(),
         _serial: serial,
         _runtime: runtime_guard,
         _cluster: cluster_guard,

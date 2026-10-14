@@ -951,6 +951,7 @@ fn the_qapps_shell_and_its_menu_data_work_for_a_signed_in_user() {
         "/libs/quasar/lang/en-US.umd.prod.js",
         "/js/MoquiLib.js",
         "/js/MoquiL10n.js",
+        "/js/WebrootVue.qvt.render.js",
         "/js/WebrootVue.qvt.js",
     ] {
         let found = shell[at..]
@@ -958,12 +959,12 @@ fn the_qapps_shell_and_its_menu_data_work_for_a_signed_in_user() {
             .unwrap_or_else(|| panic!("{script} in order in {shell}"));
         at += found;
     }
+    // the shell is the precompiled m-qapps-root component: the page has only the element it mounts on
     assert!(
-        shell.contains("<div id=\"apps-root\" style=\"display:none;\">"),
+        shell.contains("<div id=\"apps-root\" style=\"display:none;\"></div>"),
         "{shell}"
     );
-    assert!(shell.contains("<q-layout view=\"hHh LpR fFf\">"), "{shell}");
-    assert!(shell.contains("<m-subscreens-active></m-subscreens-active>"), "{shell}");
+    assert!(!shell.contains("<q-layout"), "{shell}");
     let marker = "<script type=\"application/json\" id=\"moqui-config\">";
     let start = shell.find(marker).expect("settings block") + marker.len();
     let end = shell[start..].find("</script>").unwrap() + start;
@@ -979,6 +980,16 @@ fn the_qapps_shell_and_its_menu_data_work_for_a_signed_in_user() {
     assert_eq!(config["qvt"]["handles"][0], "merged-fragment");
     assert_eq!(config["qvt"]["handles"][1], "static-template");
     assert_eq!(config["qvt"]["build"], "compiler");
+    // what the shell shows that the server knows: the theme's footer and the logout URL, and its labels in the user's language
+    assert!(
+        config["shell"]["footerHtml"]
+            .as_str()
+            .is_some_and(|html| html.contains("Moqui")),
+        "{config}"
+    );
+    assert_eq!(config["shell"]["logoutUrl"], "/Login/logout");
+    assert_eq!(config["labels"]["screenHistory"], "Screen History");
+    assert_eq!(config["labels"]["signIn"], "Sign in");
     // the user snapshot of the browser ec: the account without password columns, and the preferences
     assert!(
         config["userAccount"].is_object() && config["preferences"].is_object(),
