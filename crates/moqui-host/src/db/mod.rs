@@ -23,3 +23,4 @@ pub mod load_feed;
 pub mod mysql;
 pub mod postgres;
 pub mod query_rest;
+pub mod sim;

@@ -328,6 +328,45 @@ fn open_recording(tape: Arc<Mutex<Tape>>, dialect: &str) -> EntityFacade {
     .unwrap()
 }
 
+#[test]
+fn enter_sim_starts_the_overlay_once_and_stays_on_this_thread() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::cache::{enter_sim, exit_sim, sim_entered};
+
+    let facade = open_fake();
+    let err = enter_sim(&facade).unwrap_err();
+    assert!(err.to_string().contains("not configured"), "{err}");
+    assert!(!facade.sim_active());
+
+    let starts = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&starts);
+    facade.set_sim_starter(Some(Box::new(move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+        TransactionManager::new(
+            Arc::new(FakeDriver),
+            PoolConfig {
+                min: 0,
+                max: 2,
+                reserve: 0,
+                acquire_timeout: Duration::from_secs(5),
+            },
+        )
+    })));
+    enter_sim(&facade).unwrap();
+    enter_sim(&facade).unwrap();
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    assert!(facade.sim_active() && sim_entered());
+    let other = facade.clone();
+    let seen = std::thread::spawn(move || other.sim_active()).join().unwrap();
+    assert!(!seen, "another thread is not in this thread's sim");
+    exit_sim(&facade).unwrap();
+    assert!(facade.sim_active(), "the outer schema is still open");
+    exit_sim(&facade).unwrap();
+    assert!(!facade.sim_active() && !sim_entered());
+    exit_sim(&facade).unwrap();
+}
+
 fn open_fake() -> EntityFacade {
     let driver: Arc<dyn DbDriver> = Arc::new(FakeDriver);
     let transactions = TransactionManager::new(

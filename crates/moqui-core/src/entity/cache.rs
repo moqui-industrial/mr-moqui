@@ -52,6 +52,8 @@ thread_local! {
     /// Held rows by transaction frame token.
     static TX_HOLD: RefCell<HashMap<u64, Vec<Held>>> = RefCell::new(HashMap::new());
     static SIM: RefCell<Vec<SimSession>> = const { RefCell::new(Vec::new()) };
+    /// Sim mode on this thread without a schema, which tests set through `set_sim_active`.
+    static SIM_FLAG: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The find `list` and `iterator` ask the cache about. Owned so a cache can store the key.
@@ -225,7 +227,7 @@ pub fn gate_write(
     values: &BTreeMap<String, Value>,
 ) -> Result<WriteGate, Error> {
     let op = parse_op(operation)?;
-    let sim = sim_live(facade);
+    let sim = sim_session_open();
     let tx = facade.transactions_for(entity_name)?;
     if !sim && !tx.transaction_cache_active() {
         return Ok(WriteGate::Proceed);
@@ -365,11 +367,10 @@ pub fn flush_and_disable(facade: &EntityFacade, tx: &TransactionManager) -> Resu
 /// Open a sim schema on the overlay pool and mark sim active.
 ///
 /// A second call on this thread pushes another schema. Reads and writes use the innermost one.
-/// Fails without changing `sim_active` when no overlay pool is set. Does not start a cluster.
+/// The first call in the process starts the overlay cluster through the facade's sim starter.
+/// Fails without changing `sim_active` when there is no overlay pool and no starter.
 pub fn enter_sim(facade: &EntityFacade) -> Result<(), Error> {
-    let Some(sim) = facade.sim_transactions() else {
-        return Err(Error::new("sim transactions are not configured"));
-    };
+    let sim = facade.sim_transactions_or_start()?;
     let schema = next_schema();
     if !schema_name_ok(&schema) {
         return Err(Error::new("invalid sim schema"));
@@ -383,19 +384,14 @@ pub fn enter_sim(facade: &EntityFacade) -> Result<(), Error> {
             written: HashSet::new(),
         });
     });
-    facade.set_sim_active(true);
     Ok(())
 }
 
-/// Drop this thread's innermost sim schema. `sim_active` stays set while an outer schema remains.
+/// Drop this thread's innermost sim schema. Sim stays active while an outer schema remains.
 ///
 /// No session is a no-op.
 pub fn exit_sim(facade: &EntityFacade) -> Result<(), Error> {
-    let session = SIM.with(|slot| slot.borrow_mut().pop());
-    if !sim_session_open() {
-        facade.set_sim_active(false);
-    }
-    let Some(session) = session else {
+    let Some(session) = SIM.with(|slot| slot.borrow_mut().pop()) else {
         return Ok(());
     };
     let Some(sim) = facade.sim_transactions() else {
@@ -408,6 +404,20 @@ pub fn exit_sim(facade: &EntityFacade) -> Result<(), Error> {
         execute_conn(conn, &format!("DROP SCHEMA IF EXISTS {} CASCADE", session.schema), &[])?;
         Ok(())
     })
+}
+
+/// True when this thread has a sim schema open, as Java's `isTxCacheActive`.
+#[must_use]
+pub fn sim_entered() -> bool {
+    sim_session_open()
+}
+
+pub(super) fn set_sim_flag(value: bool) {
+    SIM_FLAG.with(|flag| flag.set(value));
+}
+
+pub(super) fn sim_flag() -> bool {
+    SIM_FLAG.with(std::cell::Cell::get) || sim_session_open()
 }
 
 fn flush_held(facade: &EntityFacade, token: u64, conn: &mut dyn DbConnection) -> Result<(), Error> {
@@ -617,7 +627,7 @@ fn overlay_rows(
     order: &[OrderBy],
 ) -> Result<Option<Vec<EntityValue>>, Error> {
     let holds = holds_for(facade, &meta.full_name);
-    let sim = if sim_live(facade) {
+    let sim = if sim_session_open() {
         sim_view(&meta.full_name)
     } else {
         SimView::empty()
@@ -990,10 +1000,6 @@ fn holds_for(facade: &EntityFacade, entity: &str) -> Vec<Held> {
             .map(|list| list.iter().filter(|held| held.entity_name == entity).cloned().collect())
             .unwrap_or_default()
     })
-}
-
-fn sim_live(facade: &EntityFacade) -> bool {
-    facade.sim_active() && sim_session_open()
 }
 
 fn sim_session_open() -> bool {

@@ -30,6 +30,7 @@ mod tests {
 
     use super::super::embedded::EmbeddedCluster;
     use super::super::entity_facade::open_entity_facade;
+    use super::super::sim::SimOverlay;
 
     struct DirGuard(PathBuf);
 
@@ -69,6 +70,67 @@ mod tests {
         drop(facade);
         drop(main_cluster);
         drop(overlay_cluster);
+    }
+
+    #[test]
+    fn first_enter_sim_starts_the_overlay_and_stop_removes_it() {
+        let main_dir = temp_cluster_dir("lazy");
+        let _main_guard = DirGuard(main_dir.clone());
+        provide_libxml2_soname(&main_dir);
+        let (main_cluster, main_driver) = EmbeddedCluster::start(&main_dir, 20).unwrap();
+        let main_driver: Arc<dyn DbDriver> = Arc::new(main_driver);
+        let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
+        let facade = open_entity_facade(&framework, Arc::clone(&main_driver), test_pool()).unwrap();
+        facade.check_tables(&["moqui.test.TestEntity"]).unwrap();
+
+        // A directory left by a process that is gone goes away at install.
+        let orphan = main_dir.join("sim-4000000000");
+        std::fs::create_dir_all(orphan.join("data")).unwrap();
+        let overlay = SimOverlay::install(&facade, &main_dir, Some(main_dir.join("install")));
+        assert!(!orphan.exists());
+        assert!(!overlay.started());
+        assert!(facade.sim_transactions().is_none());
+
+        enter_sim(&facade).unwrap();
+        assert!(overlay.started());
+        let sim_dir = overlay.data_dir().unwrap();
+        assert!(sim_dir.starts_with(main_dir.join(format!("sim-{}", std::process::id()))));
+        assert!(
+            !sim_dir.parent().unwrap().join("install").exists(),
+            "the overlay shares the entity install"
+        );
+        let settings = facade
+            .sim_transactions()
+            .unwrap()
+            .with_connection(|conn| {
+                let mut shown = Vec::new();
+                for name in ["synchronous_commit", "shared_buffers", "fsync"] {
+                    let rows = conn.query(&format!("SHOW {name}"), &[])?;
+                    shown.push(rows[0].columns[0].1.as_str().unwrap_or_default().to_string());
+                }
+                Ok(shown)
+            })
+            .unwrap();
+        assert_eq!(settings[0], "off");
+        assert!(
+            settings[1] == "8MB" || settings[1] == "8192kB",
+            "shared_buffers={}",
+            settings[1]
+        );
+        assert_eq!(settings[2], "on");
+
+        create_test(&facade, "LAZY1", "sim");
+        assert!(find_one(&facade, "moqui.test.TestEntity", "testId", "LAZY1").is_some());
+        exit_sim(&facade).unwrap();
+        assert!(find_one(&facade, "moqui.test.TestEntity", "testId", "LAZY1").is_none());
+        // A second sim reuses the running overlay.
+        enter_sim(&facade).unwrap();
+        exit_sim(&facade).unwrap();
+
+        drop(facade);
+        drop(overlay);
+        assert!(!sim_dir.exists(), "{} is still there", sim_dir.display());
+        drop(main_cluster);
     }
 
     fn assert_one_cache(facade: &EntityFacade, driver: &Arc<dyn DbDriver>) {

@@ -887,6 +887,24 @@ fn entity_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     entity.set("find", find).map_err(js_error)?;
     let make = caught(ctx, "entity.makeValue", Function::new(ctx.clone(), entity_make_value))?;
     entity.set("makeValue", make).map_err(js_error)?;
+    let start_sim = caught(
+        ctx,
+        "entity.startTxCacheDb",
+        Function::new(ctx.clone(), entities::entity_start_tx_cache_db),
+    )?;
+    entity.set("startTxCacheDb", start_sim).map_err(js_error)?;
+    let stop_sim = caught(
+        ctx,
+        "entity.stopTxCache",
+        Function::new(ctx.clone(), entities::entity_stop_tx_cache),
+    )?;
+    entity.set("stopTxCache", stop_sim).map_err(js_error)?;
+    let sim_active = caught(
+        ctx,
+        "entity.isTxCacheActive",
+        Function::new(ctx.clone(), entities::entity_is_tx_cache_active),
+    )?;
+    entity.set("isTxCacheActive", sim_active).map_err(js_error)?;
     let documents = caught(
         ctx,
         "entity.getDataDocuments",

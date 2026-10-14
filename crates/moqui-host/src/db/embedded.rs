@@ -46,6 +46,35 @@ mod cluster {
         port: u16,
     }
 
+    /// What a cluster is for. The sim overlay is small and does not wait for its commits to sync.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum ClusterRole {
+        /// The entity cluster, and a dedicated search cluster.
+        Entity,
+        /// The sim overlay: `shared_buffers` 8MB and `synchronous_commit` off.
+        Sim,
+    }
+
+    /// How [`EmbeddedCluster::start_with`] sets up a cluster.
+    #[derive(Clone, Debug)]
+    pub struct StartOptions {
+        pub max_connections: u32,
+        pub role: ClusterRole,
+        /// The theseus install. `None` is `install` under the cluster directory.
+        pub install_dir: Option<PathBuf>,
+    }
+
+    impl StartOptions {
+        #[must_use]
+        pub fn new(max_connections: u32) -> Self {
+            Self {
+                max_connections,
+                role: ClusterRole::Entity,
+                install_dir: None,
+            }
+        }
+    }
+
     impl EmbeddedCluster {
         /// Install, initdb, start, and create the `moqui` database.
         ///
@@ -62,6 +91,15 @@ mod cluster {
         ///
         /// Returns an error when setup, start, the version check, or `CREATE DATABASE` fails.
         pub fn start(dir: impl AsRef<Path>, max_connections: u32) -> Result<(Self, PostgresDriver), Error> {
+            Self::start_with(dir, &StartOptions::new(max_connections))
+        }
+
+        /// [`Self::start`] with the role's settings and, when given, a shared install.
+        ///
+        /// # Errors
+        ///
+        /// As [`Self::start`].
+        pub fn start_with(dir: impl AsRef<Path>, options: &StartOptions) -> Result<(Self, PostgresDriver), Error> {
             let dir = dir.as_ref();
             std::fs::create_dir_all(dir).map_err(|err| Error::new("create embedded dir").with_source(err))?;
             // postgresql_embedded is handed install, data, socket, and password paths verbatim,
@@ -74,11 +112,11 @@ mod cluster {
             check_socket_len(&data_dir)?;
             if let Some(lock) = postmaster_lock(&data_dir)? {
                 if process_live(lock.pid) {
-                    return adopt(&dir, &data_dir, max_connections, lock);
+                    return adopt(&dir, &data_dir, options, lock);
                 }
             }
             ensure_major_can_start(&dir, &data_dir)?;
-            launch(&dir, &data_dir, max_connections, None)
+            launch(&dir, &data_dir, options, None)
         }
 
         /// `pg_dump --format=custom` of the whole `moqui` database, including a `search` schema.
@@ -177,7 +215,7 @@ mod cluster {
     fn adopt(
         dir: &Path,
         data_dir: &Path,
-        max_connections: u32,
+        options: &StartOptions,
         lock: PostmasterLock,
     ) -> Result<(EmbeddedCluster, PostgresDriver), Error> {
         let major = pg_major(data_dir)?.unwrap_or(0);
@@ -188,7 +226,7 @@ mod cluster {
                 data_dir.display()
             )));
         }
-        launch(dir, data_dir, max_connections, Some(lock.port))
+        launch(dir, data_dir, options, Some(lock.port))
     }
 
     fn ensure_major_can_start(dir: &Path, data_dir: &Path) -> Result<(), Error> {
@@ -212,10 +250,10 @@ mod cluster {
     fn launch(
         dir: &Path,
         data_dir: &Path,
-        max_connections: u32,
+        options: &StartOptions,
         adopt_port: Option<u16>,
     ) -> Result<(EmbeddedCluster, PostgresDriver), Error> {
-        let settings = settings(dir, data_dir, max_connections, adopt_port);
+        let settings = settings(dir, data_dir, options, adopt_port);
         let mut server = PostgreSQL::new(settings);
         server
             .setup()
@@ -261,18 +299,32 @@ mod cluster {
         }
     }
 
-    fn settings(dir: &Path, data_dir: &Path, max_connections: u32, adopt_port: Option<u16>) -> Settings {
+    fn settings(dir: &Path, data_dir: &Path, options: &StartOptions, adopt_port: Option<u16>) -> Settings {
+        let StartOptions {
+            max_connections,
+            role,
+            ref install_dir,
+        } = *options;
         let mut settings = Settings::new();
-        settings.installation_dir = dir.join("install");
+        settings.installation_dir = install_dir.clone().unwrap_or_else(|| dir.join("install"));
         settings.password_file = dir.join("pgpass");
         settings.data_dir = data_dir.to_path_buf();
         settings.temporary = false;
         settings.timeout = None;
-        // fsync=on overrides pg_ctl's `-F`.
+        // fsync=on overrides pg_ctl's `-F`. Sim keeps it on too; synchronous_commit is its only relaxation.
+        let buffers = match role {
+            ClusterRole::Entity => "16MB",
+            ClusterRole::Sim => "8MB",
+        };
         settings
             .configuration
-            .insert("shared_buffers".to_string(), "16MB".to_string());
+            .insert("shared_buffers".to_string(), buffers.to_string());
         settings.configuration.insert("fsync".to_string(), "on".to_string());
+        if role == ClusterRole::Sim {
+            settings
+                .configuration
+                .insert("synchronous_commit".to_string(), "off".to_string());
+        }
         settings
             .configuration
             .insert("logging_collector".to_string(), "off".to_string());
@@ -349,7 +401,17 @@ mod cluster {
         Ok(Some(PostmasterLock { pid, port }))
     }
 
-    fn process_live(pid: u32) -> bool {
+    /// True when `data_dir/postmaster.pid` names a live process.
+    pub(crate) fn postmaster_live(data_dir: &Path) -> bool {
+        matches!(postmaster_lock(data_dir), Ok(Some(lock)) if process_live(lock.pid))
+    }
+
+    /// `pg_ctl` of this build's theseus version under `install_dir`.
+    pub(crate) fn pg_ctl_path(install_dir: &Path) -> PathBuf {
+        tool_bin(&install_dir.join(SHIPPED_VERSION).join("bin"), "pg_ctl")
+    }
+
+    pub(crate) fn process_live(pid: u32) -> bool {
         if pid == 0 {
             return false;
         }
@@ -1186,7 +1248,9 @@ mod cluster {
 }
 
 #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
-pub use cluster::{load_save, save_db, EmbeddedCluster};
+pub use cluster::{load_save, save_db, ClusterRole, EmbeddedCluster, StartOptions};
+#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+pub(crate) use cluster::{pg_ctl_path, postmaster_live, process_live};
 
 #[cfg(not(all(feature = "embedded-postgres", feature = "postgres")))]
 pub fn save_db(_dir: &std::path::Path, _dump: &std::path::Path) -> Result<(), moqui_lib::error::Error> {

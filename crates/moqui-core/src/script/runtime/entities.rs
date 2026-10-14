@@ -35,6 +35,43 @@ pub(super) fn entity_make_value<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::R
     })
 }
 
+/// `ec.entity.startTxCacheDb(hold)`: enter sim on this thread, as Java's `TransactionCacheDb`.
+/// Only `hold=true` exists; a second start while one is active is refused, as in Java.
+pub(super) fn entity_start_tx_cache_db(ctx: Ctx<'_>, hold: bool) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        if !hold {
+            return Err(Exception::throw_message(
+                &ctx,
+                "A TX cache DB that flushes to production is no longer supported. Use hold=true, which never writes to production.",
+            ));
+        }
+        if crate::entity::cache::sim_entered() {
+            return Err(Exception::throw_message(
+                &ctx,
+                "A TX cache is already active on this ExecutionContext",
+            ));
+        }
+        let facade = facade_of(&ctx)?;
+        crate::entity::cache::enter_sim(&facade).map_err(|err| throw_lib(&ctx, &err))
+    })
+}
+
+/// `ec.entity.stopTxCache()`: drop this thread's sim schema. No active cache is a no-op.
+pub(super) fn entity_stop_tx_cache(ctx: Ctx<'_>) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        if !crate::entity::cache::sim_entered() {
+            return Ok(());
+        }
+        let facade = facade_of(&ctx)?;
+        crate::entity::cache::exit_sim(&facade).map_err(|err| throw_lib(&ctx, &err))
+    })
+}
+
+/// `ec.entity.isTxCacheActive()`.
+pub(super) fn entity_is_tx_cache_active() -> bool {
+    crate::entity::cache::sim_entered()
+}
+
 /// An entity value as a script sees it.
 pub(super) fn entity_to_js<'js>(ctx: &Ctx<'js>, host: HostEntity) -> rquickjs::Result<JsValue<'js>> {
     Class::instance(ctx.clone(), host).and_then(|class| class.into_js(ctx))
@@ -1201,6 +1238,19 @@ mod tests {
             }"#,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn tx_cache_db_refuses_flush_mode_and_needs_an_overlay() {
+        let context = enumerations();
+        let _entered = context.enter();
+        holds("ec.entity.isTxCacheActive() === false");
+        let flush = run_script("ec.entity.startTxCacheDb(false)").unwrap_err();
+        assert!(flush.to_string().contains("no longer supported"), "{flush}");
+        let none = run_script("ec.entity.startTxCacheDb(true)").unwrap_err();
+        assert!(none.to_string().contains("not configured"), "{none}");
+        holds("ec.entity.isTxCacheActive() === false");
+        run_script("ec.entity.stopTxCache()").unwrap();
     }
 
     #[test]

@@ -755,6 +755,8 @@ fn boot_server(
         .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
     let facade = crate::db::entity_facade::open_entity_facade(&framework_dir, Arc::clone(&driver), serve_pool())?;
     crate::db::entity_facade::attach(&factory, facade.clone());
+    // The overlay starts on the first enter_sim, inside the cluster directory, on the entity install.
+    let sim = crate::db::sim::SimOverlay::install(&facade, &cluster_dir, Some(cluster_dir.join("install")));
     // Same policy as `load`: indexing runs when search is up, and the server still starts when it is not.
     let search = match crate::search::attach_search(&factory, &facade, true) {
         Ok(store) => Some(store),
@@ -812,13 +814,15 @@ fn boot_server(
         search,
         facade: Some(facade),
         driver: Some(driver),
+        sim: Some(sim),
         cluster: Some(cluster),
     })
 }
 
 /// Drop order is the axum runtime, the PDF browser, the SSH server, the cluster listener (while the request pool is still up),
-/// the factory, the search store, the driver, then the database cluster. The search store outlives
-/// the factory so a dedicated postmaster stops after the facade's clients.
+/// the factory, the search store, the facade, the sim overlay, the driver, then the database cluster. The search store
+/// outlives the factory so a dedicated postmaster stops after the facade's clients, and the overlay outlives the facade
+/// for its sim pool.
 #[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
 struct ServeProcess {
     runtime: Option<tokio::runtime::Runtime>,
@@ -829,6 +833,7 @@ struct ServeProcess {
     search: Option<crate::search::SearchStore>,
     facade: Option<moqui_core::entity::EntityFacade>,
     driver: Option<std::sync::Arc<dyn moqui_core::driver::DbDriver>>,
+    sim: Option<std::sync::Arc<crate::db::sim::SimOverlay>>,
     cluster: Option<crate::db::embedded::EmbeddedCluster>,
 }
 
@@ -842,6 +847,7 @@ impl Drop for ServeProcess {
         self.factory.take();
         self.search.take();
         self.facade.take();
+        self.sim.take();
         self.driver.take();
         self.cluster.take();
     }

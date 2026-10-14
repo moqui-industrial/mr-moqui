@@ -17,7 +17,7 @@
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -89,10 +89,14 @@ pub(crate) struct Inner {
     pub(crate) db_ready: AtomicBool,
     locale: RwLock<String>,
     crypt: RwLock<Option<(CryptConfig, Vec<CryptConfig>)>>,
-    sim: AtomicBool,
     sim_tx: RwLock<Option<TransactionManager>>,
+    /// Starts the overlay cluster on the first `enter_sim`. The mutex also serializes that start.
+    sim_starter: Mutex<Option<SimStarter>>,
     slots: Mutex<HashMap<TypeId, Box<dyn Any + Send>>>,
 }
+
+/// Starts the sim overlay and answers its pool. See [`EntityFacade::set_sim_starter`].
+pub type SimStarter = Box<dyn Fn() -> Result<TransactionManager, Error> + Send + Sync>;
 
 /// Entity facade shared by the factory. Clone shares the model, banks, and pools.
 #[derive(Clone)]
@@ -170,7 +174,7 @@ impl EntityFacade {
                 db_ready: AtomicBool::new(false),
                 locale: RwLock::new("en".to_string()),
                 crypt: RwLock::new(None),
-                sim: AtomicBool::new(false),
+                sim_starter: Mutex::new(None),
                 sim_tx: RwLock::new(None),
                 slots: Mutex::new(HashMap::new()),
             }),
@@ -193,16 +197,17 @@ impl EntityFacade {
         body(value)
     }
 
-    /// True while sim mode should keep writes off the main schema. The cache module sets this.
+    /// True while sim mode should keep writes off the main schema on this thread. The cache module
+    /// sets this on `enter_sim`; tests set it without a schema. Another thread's sim does not show here.
     pub fn set_sim_active(&self, value: bool) {
-        self.inner.sim.store(value, Ordering::Relaxed);
+        super::cache::set_sim_flag(value);
     }
 
     pub fn sim_active(&self) -> bool {
-        self.inner.sim.load(Ordering::Relaxed)
+        super::cache::sim_flag()
     }
 
-    /// Overlay pool for sim mode. The host starts that cluster. `None` means sim cannot be entered.
+    /// Overlay pool for sim mode. `None` with no starter means sim cannot be entered.
     pub fn set_sim_transactions(&self, transactions: Option<TransactionManager>) {
         let mut slot = self.inner.sim_tx.write().unwrap_or_else(|err| err.into_inner());
         *slot = transactions;
@@ -210,6 +215,30 @@ impl EntityFacade {
 
     pub fn sim_transactions(&self) -> Option<TransactionManager> {
         self.inner.sim_tx.read().unwrap_or_else(|err| err.into_inner()).clone()
+    }
+
+    /// The host's start of the overlay cluster, run once by the first `enter_sim` that finds no
+    /// overlay pool. Core does not start a cluster itself.
+    pub fn set_sim_starter(&self, starter: Option<SimStarter>) {
+        *self.inner.sim_starter.lock().unwrap_or_else(|err| err.into_inner()) = starter;
+    }
+
+    /// The overlay pool, started through the starter when there is none yet. A failed start is
+    /// returned and tried again on the next call.
+    pub(crate) fn sim_transactions_or_start(&self) -> Result<TransactionManager, Error> {
+        if let Some(sim) = self.sim_transactions() {
+            return Ok(sim);
+        }
+        let starter = self.inner.sim_starter.lock().unwrap_or_else(|err| err.into_inner());
+        if let Some(sim) = self.sim_transactions() {
+            return Ok(sim);
+        }
+        let Some(start) = starter.as_ref() else {
+            return Err(Error::new("sim transactions are not configured"));
+        };
+        let sim = start()?;
+        self.set_sim_transactions(Some(sim.clone()));
+        Ok(sim)
     }
 
     pub fn set_locale(&self, locale: impl Into<String>) {
