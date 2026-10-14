@@ -26,9 +26,14 @@ use crate::transaction::TransactionManager;
 
 /// Loads each entry into the entity named by its type. One transaction for the run, begun in
 /// `init` when none is in place, committed in `complete`, or rolled back when the run had an error.
+///
+/// Java's transaction spans every datasource. Here each entity group with its own transaction
+/// manager has its own frame, so the run begins one on each, and an error rolls back all of them.
+/// Groups that share a manager share that frame. Commit is one manager after another, with no
+/// two-phase commit, as everywhere in this port.
 pub struct EtlLoader {
     facade: EntityFacade,
-    began_transaction: bool,
+    began: Vec<TransactionManager>,
     use_try_insert: bool,
     dummy_fks: bool,
 }
@@ -37,18 +42,27 @@ impl EntityFacade {
     pub fn make_etl_loader(&self) -> EtlLoader {
         EtlLoader {
             facade: self.clone(),
-            began_transaction: false,
+            began: Vec::new(),
             use_try_insert: false,
             dummy_fks: false,
         }
     }
 
-    /// The transaction manager of the default entity group, which the ETL run uses.
-    fn default_transactions(&self) -> Option<TransactionManager> {
-        self.inner
-            .groups
-            .get(&self.inner.default_group)
-            .map(|group| group.transactions.clone())
+    /// The distinct transaction managers of the entity groups, the default group's first.
+    fn group_transactions(&self) -> Vec<TransactionManager> {
+        let mut managers: Vec<TransactionManager> = Vec::new();
+        let default = self.inner.groups.get(&self.inner.default_group);
+        let mut names: Vec<&String> = self.inner.groups.keys().collect();
+        names.sort();
+        for group in default
+            .into_iter()
+            .chain(names.into_iter().filter_map(|name| self.inner.groups.get(name)))
+        {
+            if !managers.iter().any(|known| known.shares_stack(&group.transactions)) {
+                managers.push(group.transactions.clone());
+            }
+        }
+        managers
     }
 }
 
@@ -92,16 +106,16 @@ impl EtlLoader {
 
 impl Loader for EtlLoader {
     fn init(&mut self, timeout: Option<u32>) {
-        let Some(tx) = self.facade.default_transactions() else {
-            return;
-        };
-        if tx.in_transaction() {
-            return;
-        }
         let timeout = timeout.map(|seconds| std::time::Duration::from_secs(u64::from(seconds)));
-        match tx.begin(timeout) {
-            Ok(began) => self.began_transaction = began,
-            Err(err) => tracing::warn!(error = %err, "ETL load could not begin a transaction"),
+        for tx in self.facade.group_transactions() {
+            if tx.in_transaction() {
+                continue;
+            }
+            match tx.begin(timeout) {
+                Ok(true) => self.began.push(tx),
+                Ok(false) => {}
+                Err(err) => tracing::warn!(error = %err, "ETL load could not begin a transaction"),
+            }
         }
     }
 
@@ -124,29 +138,32 @@ impl Loader for EtlLoader {
     }
 
     fn complete(&mut self, etl: &SimpleEtl) {
-        let Some(tx) = self.facade.default_transactions() else {
-            return;
-        };
-        let outcome = if etl.has_error() {
-            if self.began_transaction {
-                tx.rollback()
-            } else if tx.in_transaction() {
-                let cause = etl
-                    .single_error_cause()
-                    .map(|err| Error::new(err.to_string()))
-                    .unwrap_or_else(|| Error::new("ETL error"));
-                tx.set_rollback_only_error("Error in ETL load", cause)
+        let began = std::mem::take(&mut self.began);
+        let mut failed = etl.has_error();
+        for tx in self.facade.group_transactions() {
+            let owned = began.iter().any(|known| known.shares_stack(&tx));
+            let outcome = if failed {
+                if owned {
+                    tx.rollback()
+                } else if tx.in_transaction() {
+                    let cause = etl
+                        .single_error_cause()
+                        .map(|err| Error::new(err.to_string()))
+                        .unwrap_or_else(|| Error::new("ETL error"));
+                    tx.set_rollback_only_error("Error in ETL load", cause)
+                } else {
+                    Ok(())
+                }
+            } else if owned {
+                tx.commit()
             } else {
                 Ok(())
+            };
+            if let Err(err) = outcome {
+                tracing::warn!(error = %err, "ETL load did not complete its transaction");
+                // The groups left are rolled back: what is already committed cannot be.
+                failed = true;
             }
-        } else if self.began_transaction {
-            tx.commit()
-        } else {
-            Ok(())
-        };
-        self.began_transaction = false;
-        if let Err(err) = outcome {
-            tracing::warn!(error = %err, "ETL load did not complete its transaction");
         }
     }
 }
@@ -304,6 +321,52 @@ mod tests {
                 "moqui.basic.EnumerationType",
                 ("enumTypeId", "EtlRolled"),
                 "description"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn error_in_the_run_rolls_back_every_entity_group() {
+        let facade = testing::open_two_groups();
+        let root = MemoryResource::new_root("mem://etl");
+        let file = root.make_file("groups.xml").unwrap();
+        file.write_text(
+            r#"<data>
+                <moqui.basic.EnumerationType enumTypeId="EtlRolled" description="transactional group"/>
+                <moqui.test.TestNoSqlEntity testId="EtlLogged" testMedium="logging group"/>
+                <moqui.basic.EnumerationType enumTypeId="EtlBad" description="fails"/>
+            </data>"#,
+        )
+        .unwrap();
+        let mut etl = SimpleEtl::new(FlatXmlExtractor::new(file), facade.make_etl_loader());
+        etl.add_transformer(|transform: &mut EntryTransform| {
+            if transform.entry().values.get("enumTypeId") == Some(&Value::string("EtlBad")) {
+                return Err(moqui_lib::error::Error::new("bad record"));
+            }
+            Ok(())
+        });
+        etl.process();
+        assert_eq!(etl.load_count(), 2);
+        let logging = facade.transactions_for("moqui.test.TestNoSqlEntity").unwrap();
+        let transactional = facade.transactions_for("moqui.basic.EnumerationType").unwrap();
+        assert!(!logging.shares_stack(&transactional));
+        assert!(!logging.in_transaction() && !transactional.in_transaction());
+        assert_eq!(
+            text(
+                &facade,
+                "moqui.basic.EnumerationType",
+                ("enumTypeId", "EtlRolled"),
+                "description"
+            ),
+            None
+        );
+        assert_eq!(
+            text(
+                &facade,
+                "moqui.test.TestNoSqlEntity",
+                ("testId", "EtlLogged"),
+                "testMedium"
             ),
             None
         );

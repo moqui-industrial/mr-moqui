@@ -153,10 +153,16 @@ impl TransactionManager {
         self.inner.use_lock_track.store(value, Ordering::Relaxed);
     }
 
-    /// True when the active frame holds writes in the transaction cache.
+    /// True when the active frame holds writes in the transaction cache. Only `cache` and
+    /// `force-cache` turn it on, and `use-transaction-cache="false"` keeps it off.
     pub fn transaction_cache_active(&self) -> bool {
         self.absorb_deadline();
         self.with_frames(|frames| active(frames).is_some_and(|frame| frame.cache_hold))
+    }
+
+    /// True when `other` is a clone of this manager, so the two share one frame stack.
+    pub fn shares_stack(&self, other: &TransactionManager) -> bool {
+        self.inner.id == other.inner.id
     }
 
     pub fn stats(&self) -> PoolStats {
@@ -191,7 +197,7 @@ impl TransactionManager {
                 conn: Rc::new(RefCell::new(None)),
                 suspended: false,
                 rollback_only: None,
-                cache_hold: self.inner.use_transaction_cache.load(Ordering::Relaxed),
+                cache_hold: false,
                 fired,
                 deadline_token,
                 cache_flush: Vec::new(),
@@ -371,9 +377,11 @@ impl TransactionManager {
 
     /// Suspends the current frame when it has a client, then begins a frame.
     ///
-    /// Fails when a client is already parked. The park budget is one per thread on this pool.
+    /// The park budget counts this thread's parked clients on this pool, not other threads'.
+    /// See [`Self::park_budget`].
     pub fn force_new(&self, timeout: Option<Duration>) -> Result<bool, Error> {
-        if self.stats().parked >= 1 {
+        let parking = usize::from(self.active_conn().is_ok_and(|slot| slot.borrow().is_some()));
+        if self.parked_in_thread() + parking > self.park_budget() {
             return Err(Error::new("park budget exceeded"));
         }
         if self.stream_open() {
@@ -383,6 +391,29 @@ impl TransactionManager {
             self.suspend()?;
         }
         self.begin(timeout)
+    }
+
+    /// Parked clients one thread may hold on this pool: every ordinary connection but the one the
+    /// innermost frame needs.
+    ///
+    /// The startup caps check, `(request cap + service cap) * 2 <= max - reserve`, covers one parked
+    /// client per thread. A deeper `force-new` draws on what is left. Checkout never waits on a
+    /// parked client, so when the pool is out, that level fails after `pool-time-wait` at most,
+    /// and does not deadlock.
+    pub fn park_budget(&self) -> usize {
+        let config = self.inner.pool.config();
+        config.max.saturating_sub(config.reserve).saturating_sub(1).max(1) as usize
+    }
+
+    /// Clients this thread has parked on this pool. A suspended frame that never checked out
+    /// parks nothing.
+    fn parked_in_thread(&self) -> usize {
+        self.with_frames(|frames| {
+            frames
+                .iter()
+                .filter(|frame| frame.suspended && frame.conn.borrow().is_some())
+                .count()
+        })
     }
 
     pub fn savepoint(&self, name: &str) -> Result<(), Error> {
@@ -491,8 +522,10 @@ impl TransactionManager {
         Ok(())
     }
 
+    /// True when this thread has an active frame, as Java `isTransactionInPlace`. A thread whose
+    /// frames are all suspended, as in an `ignore` body, has no transaction in place.
     pub fn in_transaction(&self) -> bool {
-        self.depth() > 0
+        self.has_active()
     }
 
     /// A token for the active frame, unique per begun transaction and shared by its joins.
@@ -703,8 +736,11 @@ impl TransactionManager {
         } else {
             self.begin(timeout)?
         };
-        // A joined frame keeps the outer transaction's cache setting once this call returns.
-        let outer_hold = if cache { Some(self.set_cache_hold(true)?) } else { None };
+        // As Java `initTransactionCache`: the frame keeps the cache once this call returns, even when
+        // this call joined. Held rows would otherwise flush after later direct writes to the same rows.
+        if cache && self.inner.use_transaction_cache.load(Ordering::Relaxed) {
+            self.set_cache_hold(true)?;
+        }
         let mut guard = UnwindGuard {
             mgr: self,
             began,
@@ -712,9 +748,6 @@ impl TransactionManager {
         };
         let result = body();
         guard.armed = false;
-        if let (false, Some(hold)) = (began, outer_hold) {
-            let _ = self.set_cache_hold(hold);
-        }
         match result {
             Ok(value) => {
                 self.commit()?;
@@ -733,11 +766,11 @@ impl TransactionManager {
         }
     }
 
-    /// Returns the previous setting.
-    fn set_cache_hold(&self, hold: bool) -> Result<bool, Error> {
+    fn set_cache_hold(&self, hold: bool) -> Result<(), Error> {
         self.with_frames(|frames| {
             let frame = active_mut(frames).ok_or_else(|| Error::new("no transaction in place"))?;
-            Ok(std::mem::replace(&mut frame.cache_hold, hold))
+            frame.cache_hold = hold;
+            Ok(())
         })
     }
 

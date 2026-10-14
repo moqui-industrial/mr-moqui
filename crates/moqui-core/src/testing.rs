@@ -67,11 +67,12 @@ pub(crate) fn open_with(framework_dir: &std::path::Path, options: Options) -> En
         store: Arc::new(Mutex::new(BTreeMap::new())),
         tape: options.tape,
     });
+    // Room for two service workers each two force-new levels deep: three ordinary connections apiece.
     let transactions = TransactionManager::new(
         driver,
         PoolConfig {
             min: 0,
-            max: 4,
+            max: 8,
             reserve: 2,
             acquire_timeout: Duration::from_secs(5),
         },
@@ -87,6 +88,40 @@ pub(crate) fn open_with(framework_dir: &std::path::Path, options: Options) -> En
     facade.set_disable_entity_eca(!options.entity_eca);
     facade.set_disable_fk_create(true);
     facade.set_disable_data_feed(!options.data_feed);
+    facade
+}
+
+/// The `transactional` group and the `logging` group, each on its own database and transaction manager.
+pub(crate) fn open_two_groups() -> EntityFacade {
+    let manager = || {
+        let driver: Arc<dyn DbDriver> = Arc::new(MemDriver {
+            store: Arc::new(Mutex::new(BTreeMap::new())),
+            tape: None,
+        });
+        TransactionManager::new(
+            driver,
+            PoolConfig {
+                min: 0,
+                max: 4,
+                reserve: 1,
+                acquire_timeout: Duration::from_secs(5),
+            },
+        )
+        .expect("memory pool")
+    };
+    let facade = EntityFacade::open(
+        &framework_dir(),
+        "transactional",
+        vec![
+            EntityGroup::new("transactional", "postgres", manager()),
+            EntityGroup::new("logging", "postgres", manager()),
+        ],
+    )
+    .expect("entity facade");
+    facade.set_disable_audit_log(true);
+    facade.set_disable_entity_eca(true);
+    facade.set_disable_fk_create(true);
+    facade.set_disable_data_feed(true);
     facade
 }
 

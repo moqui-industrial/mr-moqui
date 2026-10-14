@@ -292,6 +292,77 @@ mod tests {
         drop(cluster);
     }
 
+    /// A held update of a row the outer frame locked stays with that frame. A force-new frame's commit
+    /// flushed it once, on the inner connection, where it waited on the outer frame's own row lock.
+    #[test]
+    fn a_held_update_of_a_locked_row_does_not_block_an_inner_force_new_on_postgres() {
+        use moqui_core::transaction::TransactionAttribute;
+
+        let dir = temp_cluster_dir();
+        let _guard = DirGuard(dir.clone());
+        provide_libxml2_soname(&dir);
+        let (cluster, driver) = EmbeddedCluster::start(&dir, 20).unwrap();
+        let driver: Arc<dyn DbDriver> = Arc::new(driver);
+        let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
+        let facade = open_entity_facade(
+            &framework,
+            driver,
+            PoolConfig {
+                min: 0,
+                max: 4,
+                reserve: 1,
+                acquire_timeout: Duration::from_secs(30),
+            },
+        )
+        .unwrap();
+        facade
+            .check_tables(&["moqui.test.TestEntity", "moqui.test.Foo"])
+            .unwrap();
+        let mut row = facade.make_value("moqui.test.TestEntity").unwrap();
+        row.set("testId", Value::string("R"));
+        row.set("testMedium", Value::string("before"));
+        row.create(&facade).unwrap();
+
+        let tx = facade.transactions_for("moqui.test.TestEntity").unwrap();
+        // A lock wait ends at the deadline instead of hanging the test.
+        let deadline = Some(Duration::from_secs(5));
+        tx.run(TransactionAttribute::Cache, deadline, || {
+            let mut locked = facade
+                .find("moqui.test.TestEntity")?
+                .eq("testId", Value::string("R"))
+                .for_update(true)
+                .one()?
+                .expect("R");
+            locked.set("testMedium", Value::string("held"));
+            locked.update(&facade)?;
+            tx.run(TransactionAttribute::ForceNew, deadline, || {
+                let mut foo = facade.make_value("moqui.test.Foo")?;
+                foo.set("fooId", Value::string("F1"));
+                foo.create(&facade)
+            })
+        })
+        .unwrap();
+
+        let found = facade
+            .find("moqui.test.TestEntity")
+            .unwrap()
+            .eq("testId", Value::string("R"))
+            .one()
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.get("testMedium").and_then(Value::as_str), Some("held"));
+        let foo = facade
+            .find("moqui.test.Foo")
+            .unwrap()
+            .eq("fooId", Value::string("F1"))
+            .one()
+            .unwrap();
+        assert!(foo.is_some());
+
+        drop(facade);
+        drop(cluster);
+    }
+
     fn stream_ids(facade: &moqui_core::entity::EntityFacade) -> Vec<String> {
         let mut iter = facade
             .find("moqui.test.TestEntity")
