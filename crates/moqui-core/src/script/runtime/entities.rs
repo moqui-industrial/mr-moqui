@@ -14,6 +14,9 @@
 
 //! Entity finds, lists, and values as scripts see them.
 
+use rquickjs::class::{PropertyDescriptor, PropertyName};
+use rquickjs::Atom;
+
 use super::*;
 
 pub(super) fn entity_find<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<Class<'js, HostFind>> {
@@ -348,23 +351,114 @@ impl HostFind {
     }
 }
 
-/// A find result. `length` and `get` are what iterate and inline scripts use.
+/// A find result. `length`, an index and `get` are what iterate and inline scripts use, and it is iterable as a
+/// Java `List` is to Groovy. The methods written in JavaScript are added by [`install_entity_prototypes`].
 #[derive(Trace, JsLifetime)]
-#[rquickjs::class]
+#[rquickjs::class(exotic)]
 pub(super) struct HostList {
     #[qjs(skip_trace)]
     pub(super) inner: Arc<EntityList>,
 }
 
-#[rquickjs::methods(rename_all = "camelCase")]
+impl HostList {
+    fn length(&self, ctx: &Ctx<'_>) -> rquickjs::Result<i32> {
+        i32::try_from(self.inner.len()).map_err(|_| Exception::throw_message(ctx, "list is too long"))
+    }
+
+    /// The position a property name stands for, when it is an index in the list.
+    fn index_of(&self, name: &str) -> Option<usize> {
+        let index: usize = name.parse().ok()?;
+        (index < self.inner.len() && index.to_string() == name).then_some(index)
+    }
+
+    fn item<'js>(&self, ctx: &Ctx<'js>, index: usize) -> rquickjs::Result<JsValue<'js>> {
+        match self.inner.get(index) {
+            Some(value) => {
+                Class::instance(ctx.clone(), HostEntity::new(value.clone())).and_then(|class| class.into_js(ctx))
+            }
+            None => Null.into_js(ctx),
+        }
+    }
+}
+
+/// Property access on a list: a prototype method first, then `length` and the index of a value.
+#[rquickjs::exotic]
 impl HostList {
     #[qjs(get)]
-    fn length(&self, ctx: Ctx<'_>) -> rquickjs::Result<i32> {
-        host_guard(&ctx, || {
-            i32::try_from(self.inner.len()).map_err(|_| Exception::throw_message(&ctx, "list is too long"))
+    fn property<'js>(&self, ctx: &Ctx<'js>, atom: Atom<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(ctx, || {
+            if let Some(found) = prototype_member::<HostList>(ctx, &atom)? {
+                return Ok(found);
+            }
+            let Some(name) = atom_name(&atom)? else {
+                return Undefined.into_js(ctx);
+            };
+            if name == "length" {
+                return self.length(ctx)?.into_js(ctx);
+            }
+            match self.index_of(&name) {
+                Some(index) => self.item(ctx, index),
+                None => Undefined.into_js(ctx),
+            }
         })
     }
 
+    /// A list is read-only: an assignment is ignored, as on a frozen array.
+    #[qjs(set)]
+    fn assign<'js>(&self, _atom: Atom<'js>, value: JsValue<'js>) -> bool {
+        keep_assigned(value);
+        false
+    }
+
+    #[qjs(delete)]
+    fn remove<'js>(&self, _atom: Atom<'js>) -> bool {
+        false
+    }
+
+    #[qjs(has)]
+    fn has_member<'js>(&self, ctx: &Ctx<'js>, atom: Atom<'js>) -> Result<bool, JsError> {
+        if prototype_has::<HostList>(ctx, &atom)? {
+            return Ok(true);
+        }
+        Ok(atom_name(&atom)?.is_some_and(|name| name == "length" || self.index_of(&name).is_some()))
+    }
+
+    #[qjs(get_own_property)]
+    fn own_property<'js>(&self, ctx: &Ctx<'js>, atom: Atom<'js>) -> Result<Option<PropertyDescriptor<'js>>, JsError> {
+        let Some(name) = atom_name(&atom)? else {
+            return Ok(None);
+        };
+        if name == "length" {
+            let length = self.length(ctx)?.into_js(ctx)?;
+            return Ok(Some(PropertyDescriptor::new_value(length, false, false, false)));
+        }
+        match self.index_of(&name) {
+            Some(index) => Ok(Some(PropertyDescriptor::new_value(
+                self.item(ctx, index)?,
+                true,
+                true,
+                false,
+            ))),
+            None => Ok(None),
+        }
+    }
+
+    #[qjs(get_own_property_names)]
+    fn own_names<'js>(&self, ctx: &Ctx<'js>) -> Result<Vec<PropertyName<'js>>, JsError> {
+        (0..self.inner.len())
+            .map(|index| {
+                let index = u32::try_from(index).map_err(|_| Exception::throw_message(ctx, "list is too long"))?;
+                Ok(PropertyName {
+                    atom: Atom::from_u32(ctx.clone(), index)?,
+                    is_enumerable: true,
+                })
+            })
+            .collect()
+    }
+}
+
+#[rquickjs::methods(rename_all = "camelCase")]
+impl HostList {
     fn get<'js>(&self, ctx: Ctx<'js>, index: i32) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || {
             if index < 0 {
@@ -372,13 +466,7 @@ impl HostList {
             }
             let index =
                 usize::try_from(index).map_err(|_| Exception::throw_message(&ctx, "list index is too large"))?;
-            match self.inner.get(index) {
-                Some(value) => {
-                    let class = Class::instance(ctx.clone(), HostEntity::new(value.clone()))?;
-                    class.into_js(&ctx)
-                }
-                None => Null.into_js(&ctx),
-            }
+            self.item(&ctx, index)
         })
     }
 
@@ -445,8 +533,10 @@ impl HostList {
 }
 
 /// One entity value. Field storage stays on this object, not on the context stack.
+///
+/// Fields read and write as properties too, as Groovy's map property syntax does over Java `EntityValueBase`.
 #[derive(Trace, JsLifetime)]
-#[rquickjs::class]
+#[rquickjs::class(exotic)]
 pub(super) struct HostEntity {
     #[qjs(skip_trace)]
     pub(super) inner: Arc<EntityCell>,
@@ -465,6 +555,166 @@ impl HostEntity {
     fn val(&self) -> MutexGuard<'_, EntityValue> {
         self.inner.lock().unwrap_or_else(|err| err.into_inner())
     }
+
+    /// What `name` is on the entity of this value, or None when no entity definition can be reached.
+    fn member(&self, name: &str) -> Option<Member> {
+        let facade = ExecutionContext::with_current(|ec| ec.factory().entity()).flatten()?;
+        let value = self.val();
+        facade
+            .with_entity(value.entity_name(), |entity, _, _| {
+                if entity.has_field(name) {
+                    return Ok(Member::Field);
+                }
+                Ok(match entity.relationship(name) {
+                    Some(relationship) if relationship.relationship_type.starts_with("one") => Member::One,
+                    Some(_) => Member::Many,
+                    None => Member::Unknown,
+                })
+            })
+            .ok()
+    }
+
+    /// Whether `name` is a field: one the value holds, or one its entity defines.
+    fn is_field(&self, name: &str) -> bool {
+        self.val().fields().contains_key(name) || matches!(self.member(name), Some(Member::Field))
+    }
+
+    /// Set a field, as `put` in Java: a name that is not a field of the entity is an error. When no entity
+    /// definition can be reached, any name is set.
+    fn set_field(&self, ctx: &Ctx<'_>, field: String, value: &JsValue<'_>) -> rquickjs::Result<()> {
+        let host = js_to_host(ctx, value)?;
+        let known = self.val().fields().contains_key(&field);
+        if !known
+            && self
+                .member(&field)
+                .is_some_and(|member| !matches!(member, Member::Field))
+        {
+            let entity_name = self.val().entity_name().to_string();
+            return Err(Exception::throw_message(
+                ctx,
+                &format!("The field name {field} is not valid for entity {entity_name}"),
+            ));
+        }
+        self.val().set(field, host);
+        Ok(())
+    }
+
+    /// A field value, null for a field the value does not hold, or the related value or list for a relationship
+    /// name, as Java `EntityValueBase.get` resolves a name. Undefined for any other name.
+    fn read_member<'js>(&self, ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<JsValue<'js>> {
+        let held = self.val().get(name).cloned();
+        if let Some(value) = held {
+            return host_to_js(ctx, value);
+        }
+        match self.member(name) {
+            Some(Member::Field) => Null.into_js(ctx),
+            Some(Member::One) => match self
+                .related_find(ctx, name)?
+                .one()
+                .map_err(|err| throw_lib(ctx, &err))?
+            {
+                Some(value) => {
+                    Class::instance(ctx.clone(), HostEntity::new(value)).and_then(|class| class.into_js(ctx))
+                }
+                None => Null.into_js(ctx),
+            },
+            Some(Member::Many) => {
+                let list = self
+                    .related_find(ctx, name)?
+                    .list()
+                    .map_err(|err| throw_lib(ctx, &err))?;
+                Class::instance(ctx.clone(), HostList { inner: Arc::new(list) }).and_then(|class| class.into_js(ctx))
+            }
+            Some(Member::Unknown) | None => Undefined.into_js(ctx),
+        }
+    }
+}
+
+/// What a name that is not a method stands for on an entity value.
+enum Member {
+    Field,
+    One,
+    Many,
+    Unknown,
+}
+
+/// Property access on an entity value. A prototype method wins over a field of the same name; a field name reads and
+/// writes the field; a relationship name reads the related value, or list for a `many` relationship. Any other name
+/// reads as undefined, where Java throws, because the engine and scripts look up names a value does not have
+/// (`toJSON`, `then`, `Symbol.toPrimitive`); writing one is an error, as in Java.
+#[rquickjs::exotic]
+impl HostEntity {
+    #[qjs(get)]
+    fn property<'js>(&self, ctx: &Ctx<'js>, atom: Atom<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(ctx, || {
+            if let Some(found) = prototype_member::<HostEntity>(ctx, &atom)? {
+                return Ok(found);
+            }
+            match atom_name(&atom)? {
+                Some(name) => self.read_member(ctx, &name),
+                None => Undefined.into_js(ctx),
+            }
+        })
+    }
+
+    #[qjs(set)]
+    fn assign<'js>(&self, ctx: &Ctx<'js>, atom: Atom<'js>, value: JsValue<'js>) -> Result<bool, JsError> {
+        let result = host_guard(ctx, || {
+            let Some(name) = atom_name(&atom)? else {
+                return Err(Exception::throw_message(
+                    ctx,
+                    "an entity value field name is not a symbol",
+                ));
+            };
+            self.set_field(ctx, name, &value)?;
+            Ok(true)
+        });
+        keep_assigned(value);
+        result
+    }
+
+    /// A field is not removed from a value, as Java `EntityValueBase` has no remove.
+    #[qjs(delete)]
+    fn remove<'js>(&self, _atom: Atom<'js>) -> bool {
+        false
+    }
+
+    /// `name in value`: a prototype member or a field of the entity.
+    #[qjs(has)]
+    fn has_member<'js>(&self, ctx: &Ctx<'js>, atom: Atom<'js>) -> Result<bool, JsError> {
+        if prototype_has::<HostEntity>(ctx, &atom)? {
+            return Ok(true);
+        }
+        Ok(atom_name(&atom)?.is_some_and(|name| self.is_field(&name)))
+    }
+
+    #[qjs(get_own_property)]
+    fn own_property<'js>(&self, ctx: &Ctx<'js>, atom: Atom<'js>) -> Result<Option<PropertyDescriptor<'js>>, JsError> {
+        let Some(name) = atom_name(&atom)? else {
+            return Ok(None);
+        };
+        if !self.is_field(&name) {
+            return Ok(None);
+        }
+        let held = self.val().get(&name).cloned().unwrap_or(Value::Null);
+        let value = host_to_js(ctx, held)?;
+        Ok(Some(PropertyDescriptor::new_value(value, true, true, true)))
+    }
+
+    /// The fields the value holds, so `Object.keys`, `for...in`, spread and `JSON.stringify` see the field map.
+    #[qjs(get_own_property_names)]
+    fn own_names<'js>(&self, ctx: &Ctx<'js>) -> Result<Vec<PropertyName<'js>>, JsError> {
+        let names: Vec<String> = self.val().fields().keys().cloned().collect();
+        names
+            .iter()
+            .map(|name| {
+                Ok(PropertyName {
+                    atom: Atom::from_str(ctx.clone(), name)?,
+                    is_enumerable: true,
+                })
+            })
+            .collect()
+    }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -477,11 +727,7 @@ impl HostEntity {
     }
 
     fn set(&self, ctx: Ctx<'_>, field: String, value: JsValue<'_>) -> rquickjs::Result<()> {
-        host_guard(&ctx, || {
-            let host = js_to_host(&ctx, &value)?;
-            self.val().set(field, host);
-            Ok(())
-        })
+        host_guard(&ctx, || self.set_field(&ctx, field, &value))
     }
 
     fn set_fields(
@@ -660,5 +906,233 @@ impl HostEntity {
             find = find.eq(&field, value);
         }
         Ok(find)
+    }
+}
+
+/// A member of the class prototype or of `Object.prototype`. An exotic class's own get runs instead of the
+/// prototype lookup, so it looks there itself first.
+fn prototype_member<'js, C: rquickjs::class::JsClass<'js>>(
+    ctx: &Ctx<'js>,
+    atom: &Atom<'js>,
+) -> rquickjs::Result<Option<JsValue<'js>>> {
+    let Some(prototype) = Class::<C>::prototype(ctx)? else {
+        return Ok(None);
+    };
+    let found: JsValue = prototype.get(atom.clone())?;
+    Ok((!found.is_undefined()).then_some(found))
+}
+
+fn prototype_has<'js, C: rquickjs::class::JsClass<'js>>(ctx: &Ctx<'js>, atom: &Atom<'js>) -> Result<bool, JsError> {
+    match Class::<C>::prototype(ctx)? {
+        Some(prototype) => prototype.contains_key(atom.clone()),
+        None => Ok(false),
+    }
+}
+
+/// Hand back the reference to an assigned value that the exotic set took. rquickjs 0.14 wraps the value QuickJS
+/// passes to `set_property` as an owned value, and QuickJS frees it again after the call, so without this each
+/// assignment would free the value twice. Re-check when rquickjs is upgraded: once the wrapper borrows the value,
+/// this would keep one reference too many (a leak, not a crash). The value is not forgotten whole: it holds a
+/// reference to the context too.
+fn keep_assigned(value: JsValue<'_>) {
+    // SAFETY: the context and the value are live for this call; this adds one reference to the value, which the
+    // free QuickJS does after the exotic set takes back.
+    unsafe {
+        rquickjs::qjs::JS_DupValue(value.ctx().as_raw().as_ptr(), value.as_raw());
+    }
+}
+
+/// The text of a property name, or None for a symbol.
+fn atom_name(atom: &Atom<'_>) -> rquickjs::Result<Option<String>> {
+    if atom.to_value()?.is_symbol() {
+        return Ok(None);
+    }
+    atom.to_string().map(Some)
+}
+
+/// Members of an entity list that are simplest in JavaScript: iteration, Groovy's `size()` and `isEmpty()`, and the
+/// array methods the type declarations name. Not enumerable, as the Rust methods are not.
+const LIST_PROTOTYPE_JS: &str = r#"(function (list) {
+    const define = (name, value) => Object.defineProperty(list, name, { value, writable: true, configurable: true });
+    define(Symbol.iterator, function* () { for (let i = 0; i < this.length; i++) yield this.get(i); });
+    define("size", function () { return this.length; });
+    define("isEmpty", function () { return this.length === 0; });
+    define("map", function (callback, self) { return Array.from(this).map(callback, self); });
+    define("filter", function (callback, self) { return Array.from(this).filter(callback, self); });
+    define("forEach", function (callback, self) { Array.from(this).forEach(callback, self); });
+    define("toJSON", function () { return Array.from(this); });
+})"#;
+
+/// Add the JavaScript members of the entity list prototype. Lists made after this share it.
+pub(super) fn install_entity_prototypes(ctx: &Ctx<'_>) -> Result<(), Error> {
+    let list = caught(ctx, "entity list prototype", Class::<HostList>::prototype(ctx))?
+        .ok_or_else(|| Error::new("entity list has no prototype"))?;
+    let fill: Function = eval_js(ctx, LIST_PROTOTYPE_JS)?;
+    caught(ctx, "entity list prototype", fill.call::<_, ()>((list,)))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::context::{ExecutionContext, ExecutionContextFactory};
+    use crate::script::template::{render_trusted, Escape};
+    use crate::script::{clear_context_stack, eval_condition, run_script};
+
+    fn holds(expression: &str) {
+        assert!(eval_condition(expression).unwrap(), "{expression}");
+    }
+
+    /// A context with the in-memory database: types T1 and T2, and enumerations E1 to E3 of T1.
+    fn enumerations() -> ExecutionContext {
+        clear_context_stack();
+        let context = ExecutionContextFactory::test_context();
+        context.factory().set_entity(crate::testing::open());
+        context
+    }
+
+    fn seed() {
+        run_script(
+            r#"for (const [id, text] of [["T1", "Type 1"], ["T2", "Type 2"]]) {
+                const type = ec.entity.makeValue("moqui.basic.EnumerationType");
+                type.enumTypeId = id;
+                type.description = text;
+                type.create();
+            }
+            for (const [id, text, n] of [["E2", "second", 2], ["E1", "first", 1], ["E3", "third", 3]]) {
+                const value = ec.entity.makeValue("moqui.basic.Enumeration");
+                value.enumId = id;
+                value.enumTypeId = "T1";
+                value.description = text;
+                value.sequenceNum = n;
+                value.create();
+            }"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_field_reads_and_writes_as_a_property() {
+        let context = enumerations();
+        let _entered = context.enter();
+        holds(
+            r#"(function () {
+                const value = ec.entity.makeValue("moqui.basic.Enumeration");
+                value.enumId = "X1";
+                value["description"] = "by index";
+                value.sequenceNum = 4;
+                return value.get("enumId") === "X1" && value.description === "by index" && value.sequenceNum === 4
+                    && value.sequenceNum === value.get("sequenceNum");
+            })()"#,
+        );
+        // A field the value does not hold is null, and optional chaining goes through it.
+        holds(
+            r#"(function () {
+                const value = ec.entity.makeValue("moqui.basic.Enumeration");
+                value.set("enumCode", "C");
+                return value.parentEnumId === null && value.parentEnumId?.length === undefined && value.enumCode === "C";
+            })()"#,
+        );
+    }
+
+    #[test]
+    fn an_unknown_name_reads_undefined_and_does_not_write() {
+        let context = enumerations();
+        let _entered = context.enter();
+        holds(r#"ec.entity.makeValue("moqui.basic.Enumeration").noSuchField === undefined"#);
+        holds(r#"ec.entity.makeValue("moqui.basic.Enumeration").get("noSuchField") === null"#);
+        for script in [
+            r#"ec.entity.makeValue("moqui.basic.Enumeration").noSuchField = 1"#,
+            r#"ec.entity.makeValue("moqui.basic.Enumeration").set("noSuchField", 1)"#,
+            r#"ec.entity.makeValue("moqui.basic.Enumeration").update = 1"#,
+        ] {
+            let err = run_script(script).unwrap_err();
+            assert!(
+                err.message()
+                    .contains("is not valid for entity moqui.basic.Enumeration"),
+                "{script}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_method_name_wins_over_a_field_name() {
+        let context = enumerations();
+        let _entered = context.enter();
+        holds(
+            r#"(function () {
+                const value = ec.entity.makeValue("moqui.basic.Enumeration");
+                return typeof value.get === "function" && typeof value.findRelatedOne === "function"
+                    && typeof value.toString === "function" && "update" in value && "enumId" in value
+                    && !("noSuchField" in value) && value[Symbol.iterator] === undefined;
+            })()"#,
+        );
+    }
+
+    #[test]
+    fn a_relationship_name_reads_the_related_value_or_list() {
+        let context = enumerations();
+        let _entered = context.enter();
+        seed();
+        holds(
+            r#"ec.entity.find("moqui.basic.Enumeration").condition("enumId", "E1").one().type.description === "Type 1""#,
+        );
+        holds(
+            r#"ec.entity.find("moqui.basic.Enumeration").condition("enumId", "E1").one()["moqui.basic.EnumerationType"].enumTypeId === "T1""#,
+        );
+        holds(r#"ec.entity.find("moqui.basic.Enumeration").condition("enumId", "E1").one().parent === null"#);
+        holds(r#"ec.entity.find("moqui.basic.Enumeration").condition("enumId", "E1").one().groupMembers.length === 0"#);
+    }
+
+    #[test]
+    fn keys_json_spread_and_for_in_see_the_fields() {
+        let context = enumerations();
+        let _entered = context.enter();
+        holds(
+            r#"(function () {
+                const value = ec.entity.makeValue("moqui.basic.Enumeration");
+                value.enumId = "X1";
+                value.description = "d";
+                const seen = [];
+                for (const key in value) seen.push(key);
+                const copy = { ...value };
+                return Object.keys(value).join() === "description,enumId" && seen.join() === "description,enumId"
+                    && JSON.stringify(value) === '{"description":"d","enumId":"X1"}'
+                    && copy.enumId === "X1" && Object.keys(copy).length === 2
+                    && Object.prototype.hasOwnProperty.call(value, "enumId")
+                    && Object.getOwnPropertyDescriptor(value, "description").value === "d";
+            })()"#,
+        );
+    }
+
+    #[test]
+    fn a_list_indexes_iterates_and_sizes() {
+        let context = enumerations();
+        let _entered = context.enter();
+        seed();
+        holds(
+            r#"(function () {
+                const list = ec.entity.find("moqui.basic.Enumeration").orderBy("sequenceNum").list();
+                const ids = [];
+                for (const value of list) ids.push(value.enumId);
+                return list[0].enumId === "E1" && list[2].description === "third" && list[3] === undefined
+                    && list.length === 3 && list.size() === 3 && !list.isEmpty() && "1" in list && !("3" in list)
+                    && ids.join() === "E1,E2,E3" && list.map((value) => value.sequenceNum).join() === "1,2,3"
+                    && list.filter((value) => value.sequenceNum > 1).length === 2
+                    && JSON.parse(JSON.stringify(list))[1].enumId === "E2" && Object.keys(list).join() === "0,1,2";
+            })()"#,
+        );
+    }
+
+    #[test]
+    fn a_template_loop_reads_fields_by_dot() {
+        let context = enumerations();
+        let _entered = context.enter();
+        seed();
+        run_script(r#"enumList = ec.entity.find("moqui.basic.Enumeration").orderBy("sequenceNum").list()"#).unwrap();
+        let text = render_trusted(
+            "<#list enumList as row>${row.enumId}=${row.description} (${row.type.description});</#list>",
+            Escape::None,
+        )
+        .unwrap();
+        assert_eq!(text, "E1=first (Type 1);E2=second (Type 1);E3=third (Type 1);");
     }
 }

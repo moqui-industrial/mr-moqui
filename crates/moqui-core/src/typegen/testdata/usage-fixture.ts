@@ -12,6 +12,16 @@ if (invoice != null) {
     const status: string | null = invoice.get("statusId");
     invoice.set("amount", "10.00");
     invoice.set("lineCount", 3);
+    // Fields are properties too.
+    const byDot: Decimal | null = invoice.amount;
+    const byIndex: string | null = invoice["statusId"];
+    invoice.statusId = "Paid";
+    invoice.lineCount = 4;
+    // @ts-expect-error not a field of the entity
+    void invoice.noSuchField;
+    // @ts-expect-error a number field does not take a boolean by property
+    invoice.lineCount = true;
+    void [byDot, byIndex];
     // @ts-expect-error not a field of the entity
     invoice.get("noSuchField");
     // @ts-expect-error a decimal field does not take a boolean

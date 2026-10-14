@@ -85,8 +85,17 @@ type MoquiFieldInput<T> = T extends Decimal
           ? boolean | string | null
           : T | null;
 
-/** An entity value host object. Fields are read and written with `get` and `set`, as the QuickJS host exposes them. */
-interface EntityValue<N extends string = string> {
+/**
+ * An entity value host object. Fields are read and written as properties (`value.statusId`, `value["statusId"]`) and
+ * with `get` and `set`, as the QuickJS host exposes them. A method wins over a field of the same name. A relationship
+ * name also reads as a property, the related value or list; use `findRelated`/`findRelatedOne` for a typed result.
+ */
+type EntityValue<N extends string = string> = EntityValueMethods<N> & MoquiFieldProperties<N>;
+/** The fields of entity `N` as properties, except a name a method has. */
+type MoquiFieldProperties<N extends string> = {
+    [K in Exclude<MoquiFieldName<N>, keyof EntityValueMethods<N>>]: MoquiFields<N>[K] | null;
+};
+interface EntityValueMethods<N extends string = string> {
     get<K extends MoquiFieldName<N>>(field: K): MoquiFields<N>[K] | null;
     set<K extends MoquiFieldName<N>>(field: K, value: MoquiFieldInput<MoquiFields<N>[K]>): void;
     setFields(fields: MoquiMap, setIfEmpty?: boolean, namePrefix?: string | null, pks?: boolean | null): void;

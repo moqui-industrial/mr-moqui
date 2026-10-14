@@ -298,6 +298,26 @@ fn entity_values_lists_options_and_display_entity() {
 }
 
 #[test]
+fn entity_value_fields_read_by_property_in_conditions_and_text() {
+    let world = enumeration_world();
+    let context = world.factory.new_context();
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    let text = body(&world.factory, "/DotFields.text", &[("enumTypeId", "TypeB")]);
+    let lines = [
+        "Type B! with 3",
+        "first first",
+        "E2 second of Type B",
+        "E3 third of Type B",
+        "3 3 E3",
+    ];
+    // The condition read a field and a many relationship by property, and the action's assignment by property
+    // changed the value. In the loop: a field by property in the condition, by index, and a relationship name in
+    // the text. Then the list by size, length and index.
+    assert_eq!(text, lines.map(line).concat());
+}
+
+#[test]
 fn a_localized_message_changes_a_label() {
     let world = World::open("");
     let mut row = world.facade.make_value("moqui.basic.LocalizedMessage").unwrap();
