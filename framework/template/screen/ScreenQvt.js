@@ -217,9 +217,10 @@
         const rulesOf = (n, check) => {
             const rules = [];
             if (at(n, "rules")) rules.push(at(n, "rules"));
-            if (check.number) rules.push("value => !value || moqui.isStringNumber(value) || " + sq(L("Please enter a valid number")));
-            if (check.digits) rules.push("value => !value || /^\\d*$/.test(value) || " + sq(L("Please enter only digits")));
-            if (check.v.regexp) rules.push("value => !value || new RegExp(" + js_("^(?:" + check.v.regexp + ")$") + ").test(value) || " + sq(L(check.v.message || "Invalid format")));
+            // getFieldValidationJsRules; a required field is the widget's required prop.
+            const sub = n.parent;
+            const js = at(sub, "validate-service") || at(sub, "validate-entity") ? sri.getFieldValidationJsRules(sub) : [];
+            js.forEach((rule) => { if (rule.expr !== "!!value") rules.push("value => (" + rule.expr + ") || " + sq(rule.message)); });
             return rules.length ? "[" + rules.join(",") + "]" : null;
         };
         // Inputmask patterns (9 digit, a letter, * any) to the tokens Quasar's mask uses.
@@ -396,7 +397,8 @@
             const check = validate(n.parent);
             if (at(n, "ac-transition")) {
                 const remoteInfo = remote(n, at(n, "ac-transition"));
-                const initialText = at(n, "ac-initial-text") ? x(at(n, "ac-initial-text")) : value;
+                const initialText = at(n, "ac-initial-text") ? x(at(n, "ac-initial-text"))
+                    : (sri.getFieldTransitionValue(at(n, "ac-transition"), n, value, "label", false) || value);
                 w("<m-drop-down" + A(Object.assign({
                     name, id, label: label(n), form: owner(), disable: st.disabled || null, "allow-empty": true, "server-search": true,
                     "server-min-length": at(n, "ac-min-length") || null, "server-delay": at(n, "ac-delay") || null, combo: at(n, "ac-use-actual") === "true" ? true : null,
@@ -583,6 +585,9 @@
             let description = options.get(current);
             const optionsHasCurrent = !!description;
             if (!optionsHasCurrent && at(n, "current-description")) description = x(at(n, "current-description"));
+            else if (!optionsHasCurrent && dyn && current && !multiple) {
+                description = sri.getFieldTransitionValue(at(dyn, "transition"), dyn, current, at(dyn, "label-field") || "label", false);
+            }
             const check = validate(n.parent);
             const list = optionList(options);
             if (current && !multiple && !optionsHasCurrent) list.unshift({ value: current, label: description || current });
@@ -600,7 +605,7 @@
                     "depends-optional": at(dyn, "depends-optional") === "true" ? true : null, ":depends-on": js_(remoteInfo.dependsOn),
                     ":options-parameters": js_(remoteInfo.params), "server-search": at(dyn, "server-search") === "true" ? true : null,
                     ":server-delay": at(dyn, "delay") || null, ":server-min-length": at(dyn, "min-length") || null,
-                    "options-load-init": dyn.children.length > 1 || undefined
+                    "options-load-init": (dyn.children || []).length > 1 || undefined
                 });
                 if (!attrs["options-load-init"]) delete attrs["options-load-init"];
                 // the current value of a remote list shows its label when the page is written

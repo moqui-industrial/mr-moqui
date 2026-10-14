@@ -35,6 +35,7 @@ pub(crate) mod sri;
 pub mod static_ast;
 pub mod static_files;
 pub mod statics;
+pub(crate) mod tree;
 mod url;
 pub(crate) mod urls;
 pub mod vue_check;

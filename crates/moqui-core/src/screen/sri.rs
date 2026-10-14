@@ -475,6 +475,17 @@ pub fn render_subscreen(state: &RenderState, runner: &dyn Runner) -> Result<(), 
     let defs = &state.url_info.path_defs;
     let index = state.screen_path_index.get();
     if index + 1 >= defs.len() {
+        // include-child-content: the file under the target screen is the subscreen, rendered as a template.
+        if let Some(file) = &state.url_info.file_resource {
+            let text = crate::script::template::TemplateRegistry::of(&state.factory).render_location_default(
+                &state.factory,
+                file,
+                None,
+                "",
+            )?;
+            write(state, &text);
+            return Ok(());
+        }
         let def = active_def(state);
         write(
             state,
@@ -1753,6 +1764,104 @@ pub fn field_validation(sub: &NodeLit) -> Result<FieldValidation, Error> {
         }
     }
     Ok(out)
+}
+
+/// `getFieldValidationJsRules` for a field sub-node: the browser checks of its `validate-service` parameter, or for a
+/// numeric `validate-entity` field, each `(expression over value, localized message)`.
+///
+/// # Errors
+///
+/// Returns an error when the named entity does not exist.
+pub fn field_validation_js_rules(sub: &NodeLit) -> Result<Vec<(String, String)>, Error> {
+    let field_name = sub.parent.as_ref().map_or("", |field| field.attr("name"));
+    let service = sub.attr("validate-service");
+    let entity = sub.attr("validate-entity");
+    let rules = if !service.is_empty() {
+        let parameter = match sub.attr("validate-parameter") {
+            "" => field_name,
+            other => other,
+        };
+        crate::service::input_js_rules(service, parameter).unwrap_or_default()
+    } else if !entity.is_empty() {
+        let name = match sub.attr("validate-field") {
+            "" => field_name,
+            other => other,
+        };
+        let shape = form::entity_shape(entity)?;
+        match shape.fields.iter().find(|(field, _, _)| field == name) {
+            Some((_, kind, _)) if kind.starts_with("number-") || kind.starts_with("currency-") => {
+                if kind.ends_with("integer") {
+                    vec![(
+                        crate::service::VALIDATE_NUMBER_INT.to_string(),
+                        "Please enter a valid whole number".to_string(),
+                    )]
+                } else {
+                    vec![(
+                        crate::service::VALIDATE_NUMBER.to_string(),
+                        "Please enter a valid number".to_string(),
+                    )]
+                }
+            }
+            _ => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+    Ok(rules
+        .into_iter()
+        .map(|(expr, message)| (expr, l10n::localize(&message).unwrap_or(message)))
+        .collect())
+}
+
+/// `sri.getFieldTransitionValue(transition, node, term, labelField, alwaysGet)`: the label a transition gives for a
+/// value, as the widget's options would show it, by a test render of the transition with `term` and the node's
+/// parameters. None with no term (unless `alwaysGet`) or while a `depends-on` field is empty.
+///
+/// # Errors
+///
+/// Returns an error when the transition cannot be rendered.
+pub fn field_transition_value(
+    state: &RenderState,
+    transition: &str,
+    node: &NodeLit,
+    term: &str,
+    label_field: &str,
+    always_get: bool,
+) -> Result<Option<String>, Error> {
+    if !always_get && term.is_empty() {
+        return Ok(None);
+    }
+    let label_field = if label_field.is_empty() { "label" } else { label_field };
+    let (mut parameters, has_all_depends) = node_parameters_checked(node)?;
+    if !has_all_depends {
+        return Ok(None);
+    }
+    parameters.insert("term".to_string(), Value::string(term));
+    let url = super::urls::build_url(state, transition)?;
+    let root = state
+        .url_info
+        .path_defs
+        .first()
+        .map(|def| def.location.clone())
+        .ok_or_else(|| Error::new("no root screen"))?;
+    let parameters: std::collections::BTreeMap<String, Value> = parameters.into_iter().collect();
+    let rendered = super::screen_test::ScreenTest::new(&state.factory)
+        .root_screen(root)
+        .render(&url.path_with_params(), parameters)?;
+    let first_label = |item: &Value| match item {
+        Value::Map(entry) => entry.get(label_field).map(to_plain_string),
+        other => Some(to_plain_string(other)),
+    };
+    Ok(match rendered.json_value() {
+        Ok(Value::List(items)) => items.first().and_then(first_label),
+        Ok(Value::Map(entries)) => match entries.get("options") {
+            Some(Value::List(items)) if !items.is_empty() => items.first().and_then(first_label),
+            _ => entries.get(label_field).map(to_plain_string),
+        },
+        Ok(Value::Null) => None,
+        Ok(other) => Some(to_plain_string(&other)),
+        Err(_) => Some(rendered.text()),
+    })
 }
 
 /// One item of a screen's menu: a subscreen with the URL of its minimal path.

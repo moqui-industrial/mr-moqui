@@ -801,11 +801,9 @@ pub(crate) const HEADER_SUFFIXES: [&str; 8] = ["", "_op", "_not", "_ic", "_from"
 /// `GET {screen}/actions/{formName}`.
 fn form_package(state: &RenderState, def: &Arc<ScreenDef>, name: &str) -> Result<(), Error> {
     let Some(definition) = def.forms.get(name) else {
-        if def.trees.contains_key(name) {
-            json_error(
-                501,
-                &format!("tree {name}: the node data of a tree is not available yet"),
-            );
+        if let Some(tree) = def.trees.get(name) {
+            let nodes = super::tree::sub_node_json(state, tree, &def.location)?;
+            web::send_json_response(nodes);
         } else {
             json_error(
                 404,

@@ -24,7 +24,8 @@ use super::ScreenFacade;
 use crate::context::{Error, ErrorKind, ExecutionContextFactory};
 use crate::web::{self, WebRequest};
 
-/// Extensions that are sources, not assets. A screen, template or script is never sent as a file.
+/// Extensions that are sources, not assets. A screen, template or script is never sent as a file; under a screen that
+/// says `include-child-content` a template that has a renderer is rendered inside it (see [`is_template`]).
 const BLOCKED_EXTENSIONS: [&str; 9] = [
     "xml",
     "ftl",
@@ -69,7 +70,17 @@ pub fn file_under(
     let base = screen_location.strip_suffix(".xml")?;
     let location = format!("{base}/{}", segments.join("/"));
     let resource = factory.resource().get(&location).ok()?;
-    if !resource.exists() || !resource.is_file() || is_blocked(&location) || facade.is_screen(factory, &location) {
+    if !resource.exists() || !resource.is_file() || facade.is_screen(factory, &location) {
+        return None;
+    }
+    // A template is never a file to send. It is the child content of a screen that says include-child-content, which
+    // renders it inside the screen; under any other screen it is refused, as a source.
+    if is_blocked(&location)
+        && !(is_template(factory, &location)
+            && facade
+                .screen_def(factory, screen_location)
+                .is_ok_and(|def| def.include_child_content))
+    {
         return None;
     }
     // A link in the directory must not lead out of it.
@@ -91,6 +102,22 @@ pub fn file_under(
         }
     }
     Some(location)
+}
+
+/// Whether a file under a screen is a template a renderer of the conf renders (`.md`, `.html.fancy` and the like), as
+/// Java's `getTemplateRendererByLocation`. FreeMarker has no renderer, so a `.ftl` stays refused.
+pub fn is_template(factory: &ExecutionContextFactory, location: &str) -> bool {
+    !location.ends_with(".ftl")
+        && crate::script::template::TemplateRegistry::of(factory)
+            .renderer_for(location)
+            .is_some()
+}
+
+/// Whether a file is text by its media type, so a screen with `include-child-content` includes it; a binary file is sent.
+pub fn is_text(location: &str) -> bool {
+    let name = location.rsplit('/').next().unwrap_or(location);
+    let kind = media_type(name);
+    kind.starts_with("text/") || kind.contains("json") || kind.contains("xml") || kind.contains("javascript")
 }
 
 fn is_blocked(location: &str) -> bool {

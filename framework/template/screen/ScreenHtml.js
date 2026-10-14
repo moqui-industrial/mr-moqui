@@ -391,6 +391,9 @@
             let description = options.get(current);
             const optionsHasCurrent = !!description;
             if (!optionsHasCurrent && at(n, "current-description")) description = x(at(n, "current-description"));
+            else if (!optionsHasCurrent && dyn && current && !multiple) {
+                description = sri.getFieldTransitionValue(at(dyn, "transition"), dyn, current, at(dyn, "label-field") || "label", false);
+            }
             const check = validate(n.parent);
             const enhance = dyn || multiple || combo;
             if (enhance) lib("tom-select");

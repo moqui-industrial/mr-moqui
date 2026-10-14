@@ -553,6 +553,14 @@ fn a_form_builds_its_fields_from_a_service() {
     );
     // a date find from auto-widget-service
     assert!(html.contains("name=\"when_from\""), "{html}");
+    // qvt checks the Integer parameter as a whole number, from getFieldValidationJsRules
+    let mut get = request("GET", "/");
+    get.query.push(("renderMode".into(), "qvt".into()));
+    let qvt = serve_at(&world.factory, get, &root).body_text();
+    assert!(
+        qvt.contains("moqui.isStringInteger(value)") && qvt.contains("Please enter a valid whole number"),
+        "{qvt}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -702,5 +710,144 @@ fn an_aggregated_form_list_groups_rows_with_sub_rows_and_totals() {
         "{qvt}"
     );
     super::qvt::assert_compiles(&["aggregate".to_string()], &[qvt]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `{screen}/actions/{tree}` answers the jstree nodes of a tree: the root's sub-nodes for `treeNodeId=#`, a node's own
+/// for its id and `treeNodeName`, with the children of the nodes on `treeOpenPath`.
+#[test]
+fn a_tree_answers_its_node_data() {
+    let dir = std::env::temp_dir().join(format!("moqui-forms-tree-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.join("Tree.xml").to_string_lossy().into_owned();
+    std::fs::write(
+        &root,
+        r#"<screen require-authentication="false">
+    <transition name="show"><default-response url="."/></transition>
+    <widgets>
+        <tree name="Places">
+            <tree-node name="Country">
+                <actions><set field="cities" from="nodeList_entry.cities"/></actions>
+                <link url="show" text="${nodeList_entry.name}" id="${nodeList_entry.code}"><parameter name="code" from="nodeList_entry.code"/></link>
+                <tree-sub-node node-name="City" list="cities"/>
+            </tree-node>
+            <tree-node name="City">
+                <condition><expression>nodeList_entry.name != 'Hidden'</expression></condition>
+                <label text="${nodeList_entry.name}" id="${treeNodeId}/${nodeList_entry.name}"/>
+            </tree-node>
+            <tree-sub-node node-name="Country" list="countries">
+                <actions><script>countries = [{code: 'FR', name: 'France', cities: [{name: 'Paris'}, {name: 'Hidden'}]}, {code: 'IS', name: 'Iceland', cities: []}]</script></actions>
+            </tree-sub-node>
+        </tree>
+    </widgets>
+</screen>"#,
+    )
+    .unwrap();
+    let world = World::open("");
+    let fetch = |pairs: &[(&str, &str)]| -> serde_json::Value {
+        let mut get = request("GET", "/actions/Places");
+        get.query = pairs
+            .iter()
+            .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+            .collect();
+        let response = serve_at(&world.factory, get, &root);
+        assert_eq!(response.status, 200, "{}", response.body_text());
+        serde_json::from_str(&response.body_text()).unwrap()
+    };
+    let top = fetch(&[("treeNodeId", "#")]);
+    assert_eq!(top[0]["id"], "FR", "{top}");
+    assert_eq!(top[0]["text"], "France");
+    assert_eq!(top[0]["li_attr"]["treeNodeName"], "Country");
+    assert_eq!(top[0]["children"], true, "France has a city to show: {top}");
+    assert_eq!(top[1]["children"], false, "{top}");
+    assert!(
+        top[0]["a_attr"]["href"].as_str().unwrap().ends_with("/show?code=FR"),
+        "{top}"
+    );
+    let opened = fetch(&[("treeNodeId", "#"), ("treeOpenPath", "FR")]);
+    assert_eq!(opened[0]["state"]["opened"], true, "{opened}");
+    assert_eq!(opened[0]["children"][0]["id"], "FR/Paris", "{opened}");
+    assert_eq!(
+        opened[0]["children"].as_array().unwrap().len(),
+        1,
+        "the condition leaves out Hidden: {opened}"
+    );
+    let cities = fetch(&[("treeNodeId", "FR"), ("treeNodeName", "Country")]);
+    // a node's own request has no Country entry in the context, so no cities
+    assert!(cities.as_array().unwrap().is_empty(), "{cities}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A template file under a screen that says `include-child-content` renders inside the screen with the request in its
+/// context; under another screen it is refused. A binary file is still sent.
+#[test]
+fn template_files_under_a_screen_render_as_its_child_content() {
+    let dir = std::env::temp_dir().join(format!("moqui-forms-child-content-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Alone")).unwrap();
+    std::fs::create_dir_all(dir.join("Wrapped")).unwrap();
+    std::fs::write(
+        dir.join("Alone.xml"),
+        r#"<screen require-authentication="false"><widgets><label text="alone screen"/></widgets></screen>"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Alone/Note.html.fancy"), "<p>Note for ${who}</p>").unwrap();
+    std::fs::write(
+        dir.join("Wrapped.xml"),
+        r#"<screen require-authentication="false" include-child-content="true"><widgets><label text="wrapper"/><subscreens-active/></widgets></screen>"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Wrapped/Page.md.fancy"), "# Hello ${who}\n").unwrap();
+    std::fs::write(dir.join("Wrapped/dot.png"), [0x89u8, b'P', b'N', b'G']).unwrap();
+    let world = World::open("");
+    let get = |root: &str, path: &str| {
+        let mut get = request("GET", path);
+        get.query.push(("who".into(), "Ada".into()));
+        serve_at(&world.factory, get, &dir.join(root).to_string_lossy())
+    };
+    // Under a screen that does not include child content a template is a source, and refused.
+    let alone = get("Alone.xml", "/Note.html.fancy");
+    assert_eq!(alone.status, 404, "{}", alone.body_text());
+    let wrapped = get("Wrapped.xml", "/Page.md.fancy").body_text();
+    assert!(
+        wrapped.contains("wrapper") && wrapped.contains("<h1>Hello Ada</h1>"),
+        "{wrapped}"
+    );
+    let image = get("Wrapped.xml", "/dot.png");
+    assert_eq!(image.status, 200);
+    assert_eq!(image.header("content-type"), Some("image/png"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A drop-down with dynamic-options whose current value is not among its options shows the label the transition gives
+/// for it, as `getFieldTransitionValue`.
+#[test]
+fn a_dynamic_drop_down_shows_the_transition_label_of_its_value() {
+    let dir = std::env::temp_dir().join(format!("moqui-forms-transition-value-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.join("Form.xml").to_string_lossy().into_owned();
+    std::fs::write(
+        &root,
+        r#"<screen require-authentication="false">
+    <transition name="kinds" read-only="true"><actions><script>ec.web.sendJsonResponse([{value: term, label: 'Kind ' + term}])</script></actions>
+        <default-response type="none"/></transition>
+    <actions><set field="kind" value="K7"/></actions>
+    <widgets>
+        <form-single name="Pick">
+            <field name="kind"><default-field><drop-down><dynamic-options transition="kinds" server-search="true"/></drop-down></default-field></field>
+        </form-single>
+    </widgets>
+</screen>"#,
+    )
+    .unwrap();
+    let world = World::open("");
+    let mut get = request("GET", "/");
+    get.query.push(("renderMode".into(), "qvt".into()));
+    let qvt = serve_at(&world.factory, get, &root).body_text();
+    assert!(qvt.contains("Kind K7"), "{qvt}");
+    let html = serve_at(&world.factory, request("GET", "/"), &root).body_text();
+    assert!(html.contains(">Kind K7</option>"), "{html}");
     let _ = std::fs::remove_dir_all(&dir);
 }

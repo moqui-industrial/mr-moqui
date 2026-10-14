@@ -366,7 +366,13 @@ pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> 
         return Ok(());
     }
     check_authentication(&info)?;
-    if let Some(file) = &info.file_resource {
+    // Under a screen that says include-child-content a text file or template renders inside the screens, with the
+    // request in the context; a binary file is still sent.
+    let child_content = info.file_resource.as_ref().filter(|file| {
+        info.target_screen.include_child_content
+            && (super::static_files::is_template(factory, file) || super::static_files::is_text(file))
+    });
+    if let Some(file) = info.file_resource.as_ref().filter(|_| child_content.is_none()) {
         let versioned = !text_of(job.parameters.get("v")).is_empty();
         let start_ms = user::now_millis();
         let started = Instant::now();

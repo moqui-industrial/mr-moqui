@@ -648,6 +648,54 @@ fn sri_get_field_validation<'js>(ctx: Ctx<'js>, sub: JsValue<'js>) -> rquickjs::
     })
 }
 
+/// `getFieldValidationJsRules(sub)`: `[{expr, message}]`, the browser checks of a field's validation.
+fn sri_get_field_validation_js_rules<'js>(ctx: Ctx<'js>, sub: JsValue<'js>) -> rquickjs::Result<Array<'js>> {
+    host_guard(&ctx, || {
+        let sub = lit(&ctx, &sub)?;
+        let rules = with_render(&ctx, false, |_| logic::field_validation_js_rules(&sub))?;
+        let out = Array::new(ctx.clone())?;
+        for (index, (expr, message)) in rules.into_iter().enumerate() {
+            let object = Object::new(ctx.clone())?;
+            object.set("expr", expr)?;
+            object.set("message", message)?;
+            out.set(index, object)?;
+        }
+        Ok(out)
+    })
+}
+
+/// `getFieldTransitionValue(transition, node, term, labelField, alwaysGet)`: the label a transition gives for a value.
+fn sri_get_field_transition_value<'js>(
+    ctx: Ctx<'js>,
+    transition: String,
+    node: JsValue<'js>,
+    term: Opt<JsValue<'js>>,
+    label_field: Opt<String>,
+    always_get: Opt<bool>,
+) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let node = lit(&ctx, &node)?;
+        let term = match term.0 {
+            Some(value) if !value.is_null() && !value.is_undefined() => {
+                moqui_lib::object::to_plain_string(&js_to_host(&ctx, &value)?)
+            }
+            _ => String::new(),
+        };
+        let label_field = label_field.0.unwrap_or_default();
+        let found = with_render(&ctx, false, |state| {
+            logic::field_transition_value(
+                state,
+                &transition,
+                &node,
+                &term,
+                &label_field,
+                always_get.0.unwrap_or(false),
+            )
+        })?;
+        host_to_js(&ctx, found.map_or(Value::Null, Value::String))
+    })
+}
+
 fn sri_get_menu_items<'js>(ctx: Ctx<'js>, screen_path: Opt<String>) -> rquickjs::Result<Array<'js>> {
     host_guard(&ctx, || {
         let items = with_render(&ctx, false, |state| logic::menu_items(state, screen_path.0.as_deref()))?;
@@ -820,6 +868,8 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("getThemeValues", sri_get_theme_values);
     method!("getSectionIncludedNode", sri_get_section_included_node);
     method!("getFieldValidation", sri_get_field_validation);
+    method!("getFieldValidationJsRules", sri_get_field_validation_js_rules);
+    method!("getFieldTransitionValue", sri_get_field_transition_value);
     method!("getMenuItems", sri_get_menu_items);
     method!("getMenuData", sri_get_menu_data);
     method!("staticUrl", sri_static_url);

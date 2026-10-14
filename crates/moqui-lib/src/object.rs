@@ -996,7 +996,8 @@ fn like_at(text: &[char], pattern: &[char], ti: usize, pi: usize) -> bool {
     false
 }
 
-fn regex_matches(text: &str, pattern: &str) -> Result<bool, Error> {
+/// Whether all of `text` matches the Java regular expression `pattern`, as `String.matches`.
+pub fn regex_matches(text: &str, pattern: &str) -> Result<bool, Error> {
     regex_match::is_full_match(text, pattern)
 }
 

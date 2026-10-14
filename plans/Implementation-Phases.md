@@ -281,11 +281,11 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
 - **Shape.** The plan held: one screen model (slice 1: definitions, cache, `ScreenUrlInfo`, `makeRender()` with no socket), one macro walker
   (slice 2), and a JavaScript macro module for each mode (`ScreenText.js`, `ScreenCsv.js`, `ScreenXml.js`, `ScreenHtmlPrint.js`, `ScreenHtml.js`,
   `ScreenQvt.js`, `ScreenPlain.js` for `qjs`/`qvue`, `ScreenQvtStatic.js`). Screen XML expressions were migrated from Groovy to JavaScript and are
-  linted (`moqui lint --screens`, slice 0); 3 Groovy screens still do not load and are named by the lint and the report. Templates are the `fancy`
+  linted (`moqui lint --screens`, slice 0); every screen of the tree loads. Templates are the `fancy`
   dialect (slice 3), not FreeMarker; a `.ftl` location is refused.
 - **Deviations that stay.** `html-print` writes its own document wrapper; `xsl-fo` is only an alias. The body of a `.qvt` response is a
   template the client wraps, not a component object (the Java shape). `/qapps` is html and loads `.qvt` from `/apps`. Request text in qvt uses
-  `&#123;` instead of `v-pre`. Server-static `include-screen` is inlined and tree JSON is a 501. The macro-level differences are listed at the top
+  `&#123;` instead of `v-pre`. Server-static `include-screen` is inlined. The macro-level differences are listed at the top
   of `ScreenHtml.js` and `ScreenQvt.js`.
 - **Fixed in slice 8 (found by the Gate 3 harness).** A transition's `service-call` (default `out-map="context"`) failed with `cannot put with key
   'context'`, so every form post through a transition shortcut was a 500: `XmlActions.js` now puts each result on the context by name. A
@@ -304,11 +304,8 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   static template, row selection, first/second/last rows, aggregation, the column picker and the csv/text/pdf buttons; precompiled `m-*`
   templates, which `webapp_qvt_static_only=true` waits for; the `lookup` widget (a text line, as the Java macro was commented out). A static
   template is fetched once to read `X-Moqui-Qvt` and then loaded again by a script element (a URL without the query), so it downloads twice.
-- **Deferred after the Phase 8 and 10 review against Java.** Each is a Java feature no screen in this tree needs yet; the Java reference is
-  in `ScreenRenderImpl` (SRI), `ScreenDefinition` (SD), `ScreenForm` (SF) and `ScreenUrlInfo` (SUI):
-  - tree node JSON (`sendSubNodeJson`, SD:1085-1088), `include-child-content` and template files under a screen (SRI:650-747),
-    transition names that are patterns (SD:509-515), and `section-include` copying only what the section holds (SD:366-390).
-- **Ported after the review.** These came off the list above:
+- **Ported after the Phase 8 and 10 review against Java.** These Java features were deferred by that review and are now done; the Java
+  reference is `ScreenRenderImpl` (SRI), `ScreenDefinition` (SD), `ScreenForm` (SF) and `AggregationUtil`:
   - `auto-fields-service` and `auto-widget-service` build fields from a service's parameters, with `auto-parameters` expanded, an entity
     field's widget when the parameter is one and a widget by the parameter type otherwise; `Tools/Service/ServiceRun.xml` shows its
     parameter form. `setSubFieldValidateAttrs` puts `validate-service` (or `validate-entity` for an implicit entity-auto service) on the
@@ -339,6 +336,19 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
     main fields. The group key is every `group-by` field, where Java takes only the displayed ones. A static template leaves out the
     sub-list fields and the total row, which the `/actions/{form}` package does not carry. The select limited to the displayed and
     hidden fields was done in phase 11.
+  - Tree node data (`screen/tree.rs`, `ScreenTree.sendSubNodeJson`): `{screen}/actions/{tree}` answers the jstree nodes for `treeNodeId`
+    (`#` is the root), `treeNodeName` and `treeOpenPath`, with each `tree-sub-node`'s and `tree-node`'s condition and actions, the
+    node's link URL and its children when it is on the open path. The static report no longer counts a tree as a 501.
+  - Child content: a text file or template under a screen that says `include-child-content="true"` renders inside the screen, as the
+    last subscreen (`sri.renderSubscreen`), with the request in the context; a binary file is still sent. A template under any other
+    screen stays refused, where Java renders it alone: a template is trusted code that sees the live context, so it is not reachable by
+    URL unless the screen asks for it.
+  - A transition name is also a Java regular expression the whole name may match, for a request with a method, first match wins (SD:509).
+  - `section-include` brings the sections, forms and trees inside the included section only, not every one of that screen (SD:366).
+  - `sri.getFieldTransitionValue(transition, node, term, labelField, alwaysGet)`: the label a transition gives for a value, by a test
+    render, used by html and qvt for a `dynamic-options` drop-down whose value has no option and by qvt for a text-line `ac-transition`
+    with no `ac-initial-text`. `sri.getFieldValidationJsRules(sub)` gives qvt the browser checks of the service parameter (required,
+    whole and decimal numbers, digits, letters, email, URL, `matches`, `number-range`) or the numeric entity field, with Java's messages.
 - **Differences that stay.** `disable-when` on a `subscreens-item` blocks the screen below the first level; Java defines `getDisable`
   but reads it nowhere. The `default-display` attribute of an entity field is not read (no entity in this tree or the Java components
   sets it).
@@ -446,13 +456,13 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   actions and the actions of the sections it reaches, and answers the package; `GET {screen}/actions/{form}` answers a form-list. `display-entity`, `entity-options`,
   `list-options` and `dynamic-options` without `server-search` are looked up on the server (`list-options` too, which the plan left in the template), and a `set` in a field runs
   there. Differences from the plan: credential names are stripped at any depth; `include-screen` is written inline in the including template (and its actions run in the
-  package) instead of a child component; tree node JSON is a 501 and form-list aggregation is not done (the report names screens that need them); first/second/last rows, row
+  package) instead of a child component; a static form-list leaves out sub-list fields and the total row (the report names screens that have them); first/second/last rows, row
   selection, saved finds, the column picker, the csv, text and pdf buttons, a multi form and `button-menu` are not written in a static template; the non-qvt modes get the cache header
   when the screen names them, and the automatic subscreens-only case gets it for qvt only (a page of html holds the navbar of the user). `webapp_qvt_static_only=true` loads
   `vue.runtime.global.prod.js`, and waits for the `m-*` components and the shell to be precompiled before it can be used: they still have string templates.
   The report is `moqui lint --screens --qvt-static [report-file]` (one block for each screen file: location, mode, verdict, reasons and violations; it does not fail the
-  process) and `screen::statics::static_report` with `full` for the render with the wrapped `ec`. Over this tree 128 screens: 73 clean, 38 with violations, 14 stay a server merge,
-  3 (the Groovy screens) do not load. `ArtifactGroupDetail` is clean, and Gate 3 marks it with a `screen-extend` in its own runtime.
+  process) and `screen::statics::static_report` with `full` for the render with the wrapped `ec`. Over this tree 128 screens (measured 2026-10-14): 76 clean, 38 with violations, 14 stay a server
+  merge. `ArtifactGroupDetail` is clean, and Gate 3 marks it with a `screen-extend` in its own runtime.
 - **Slice 8, the Gate 3 harness.** `tests/gate3.rs` and `tests/gate3_browser.rs` share the seeded server in `tests/common/mod.rs`: one embedded
   Postgres, the seed load (framework files and each component's `data` directory, so the themes, pagination text and the tools app groups are
   rows without a by-location load), the demo users, and three screens of the test runtime (`GateCompanion`, `GateWidgets` with click to edit,

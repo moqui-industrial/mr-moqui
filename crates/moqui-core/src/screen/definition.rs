@@ -95,7 +95,7 @@ impl Condition {
     }
 
     /// `node` is a `condition` element.
-    fn from_element(node: &MNode, label: &str) -> Result<Option<Self>, Error> {
+    pub(crate) fn from_element(node: &MNode, label: &str) -> Result<Option<Self>, Error> {
         let children = node.children();
         if children.is_empty() {
             return Ok(None);
@@ -684,6 +684,18 @@ impl ScreenDef {
                     .iter()
                     .find(|item| item.name == name && method.is_empty())
             })
+            .or_else(|| {
+                // As Java: a transition name is also a regular expression the whole name may match, first match wins,
+                // for a request that has a method.
+                if method.is_empty() {
+                    return None;
+                }
+                self.transitions.iter().find(|item| {
+                    (item.method == "any" || item.method == method)
+                        && item.name.contains(['[', '(', '*', '+', '?', '|', '\\', '.', '{'])
+                        && moqui_lib::object::regex_matches(name, &item.name).unwrap_or(false)
+                })
+            })
     }
 
     pub fn is_server_static(&self, render_mode: &str) -> bool {
@@ -1174,17 +1186,48 @@ fn pull_section_include(
         )));
     };
     sections.insert(name.clone(), section.clone());
-    for (key, value) in &other.sections {
-        sections.entry(key.clone()).or_insert_with(|| value.clone());
+    // As Java's pullSectionInclude: only the sections, forms and trees inside the included section come along.
+    let mut names: Vec<(String, String)> = Vec::new();
+    for fragment in [&section.widgets, &section.fail_widgets].into_iter().flatten() {
+        collect_named(&fragment.node()?, &mut names);
     }
-    for (key, value) in &other.forms {
-        forms.entry(key.clone()).or_insert_with(|| value.clone());
-    }
-    for (key, value) in &other.trees {
-        trees.entry(key.clone()).or_insert_with(|| value.clone());
+    for (element, key) in names {
+        match element.as_str() {
+            "section" | "section-iterate" | "section-include" => {
+                if let Some(value) = other.sections.get(&key) {
+                    sections.entry(key).or_insert_with(|| value.clone());
+                }
+            }
+            "form-single" | "form-list" => {
+                if let Some(value) = other.forms.get(&key) {
+                    forms.entry(key).or_insert_with(|| value.clone());
+                }
+            }
+            _ => {
+                if let Some(value) = other.trees.get(&key) {
+                    trees.entry(key).or_insert_with(|| value.clone());
+                }
+            }
+        }
     }
     sources.extend(other.sources.iter().cloned());
     Ok(())
+}
+
+/// The sections, forms and trees below `node`, by element and name.
+fn collect_named(node: &MNode, out: &mut Vec<(String, String)>) {
+    for child in node.children() {
+        let element = child.name();
+        if matches!(
+            element.as_str(),
+            "section" | "section-iterate" | "section-include" | "form-single" | "form-list" | "tree"
+        ) {
+            if let Some(name) = child.attribute("name").filter(|name| !name.is_empty()) {
+                out.push((element.clone(), name));
+            }
+        }
+        collect_named(&child, out);
+    }
 }
 
 fn load_subscreens(
@@ -1491,7 +1534,9 @@ mod tests {
             dir.join("Shared.xml"),
             r#"<screen require-authentication="false">
                 <transition name="shared"><default-response type="none"/></transition>
-                <widgets><section name="common"><actions><script>common_actions()</script></actions><widgets><label text="c"/></widgets></section></widgets>
+                <widgets><section name="common"><actions><script>common_actions()</script></actions><widgets><label text="c"/>
+                    <form-single name="SharedIn"><field name="a"><default-field><display/></default-field></field></form-single></widgets></section>
+                    <form-single name="SharedOut"><field name="b"><default-field><display/></default-field></field></form-single></widgets>
             </screen>"#,
         )
         .unwrap();
@@ -1592,6 +1637,8 @@ mod tests {
         }
         // An included section is copied in; a name or location with ${} waits for the render.
         assert!(def.sections.get("common").unwrap().actions.is_some());
+        // Only what the included section holds comes along.
+        assert!(def.forms.contains_key("SharedIn") && !def.forms.contains_key("SharedOut"));
         assert!(matches!(
             def.sections.get("dyn${x}").unwrap().kind,
             SectionKind::Include { .. }
@@ -1629,5 +1676,44 @@ mod tests {
             super::pretty_menu_name("a/FindCustomerOrder.xml"),
             "Find Customer Order"
         );
+    }
+
+    #[test]
+    fn a_transition_name_is_also_a_pattern_for_a_request_with_a_method() {
+        let context = ExecutionContextFactory::test_context();
+        let facade = ScreenFacade::of(context.factory());
+        let node = MNode::parse_text(
+            "T.xml",
+            r#"<screen><transition name="exact"><default-response type="none"/></transition>
+                <transition name="report_(csv|xml)" method="get"><default-response type="none"/></transition></screen>"#,
+        )
+        .unwrap();
+        let def = ScreenDef::build(
+            &facade,
+            context.factory(),
+            &node,
+            "T.xml",
+            0,
+            Extended::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            def.transition("exact", Some("post")).map(|t| t.name.as_str()),
+            Some("exact")
+        );
+        assert_eq!(
+            def.transition("report_csv", Some("GET")).map(|t| t.name.as_str()),
+            Some("report_(csv|xml)")
+        );
+        assert!(
+            def.transition("report_csv", Some("post")).is_none(),
+            "the method must match"
+        );
+        assert!(
+            def.transition("report_csv", None).is_none(),
+            "a lookup with no method takes names only"
+        );
+        assert!(def.transition("report_pdf", Some("get")).is_none());
     }
 }

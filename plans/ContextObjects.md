@@ -202,8 +202,8 @@ template still works.
   `Enumeration.enumCode` of the theme type, which is simpler than Java: user group themes and the `DEFAULT` lookup
   are not read.
 
-`sri`, intentionally deferred to the html slices because only their macros call them: `getFieldTransitionValue` and
-the server-side `dynamic-options` (both run a transition as a test render), `makeFormListSingleMap`,
+`sri`, intentionally deferred to the html slices because only their macros call them: the server-side `dynamic-options`
+(which runs a transition as a test render, as `getFieldTransitionValue` now does), `makeFormListSingleMap`,
 `makeFormListMultiMap`, `getFormListHeaderValues`, `getFormFieldValues`, `startFormListSubRow`, `endFormListSubRow`,
 `getFormInstance().makeFormListRenderInfo()`, and the screen definition's `getMenuSubscreensItems`.
 Form-list `group-by`, `sub-list` and `show-total`, saved finds and `select-columns` are done (`sri.formListSubRowCount`,
@@ -306,8 +306,8 @@ The qvt mode, its shell and the menu data.
   is the render mode for a module that serves more than one (`ScreenPlain.js`).
 - Response headers of the qvt family: `Cache-Control: private, no-store`, and `X-Moqui-Qvt: merged-fragment` for `qvt`.
 - `screen::vue_check::compile_errors(compiler_source, templates)`: the vendored Vue compiler in a QuickJS runtime of its own, for tests and the compatibility report.
-- Still deferred: `getFieldTransitionValue` (a `dynamic-options` label for a value that has no option is the value),
-  `getFormInstance().getFieldValidationJsRules` (the rules come from `getFieldValidation`: number, digits and a pattern).
+- `sri.getFieldTransitionValue(transition, node, term, labelField, alwaysGet)` and `sri.getFieldValidationJsRules(sub)` (`[{expr, message}]`),
+  added after Phase 11 for the `dynamic-options` label and the qvt field rules.
 
 ### Added by phase 8 slice 7
 
