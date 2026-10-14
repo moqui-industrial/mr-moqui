@@ -22,11 +22,16 @@
 mod exports;
 
 /// The module stays loaded after `main` returns (no EXIT_RUNTIME); the exports do the work.
+/// `remote-rest` services and `http` resources go out through `fetch`.
 #[cfg(target_os = "emscripten")]
-fn main() {}
+fn main() {
+    moqui_browser::fetch::install();
+}
 
 #[cfg(not(target_os = "emscripten"))]
 fn main() {
     eprintln!("moqui-browser is a wasm32-unknown-emscripten module; the native build is a stub.");
-    eprintln!("Build it with: . scripts/wasm-env.sh && cargo build -p moqui-browser --target wasm32-unknown-emscripten");
+    eprintln!(
+        "Build it with: . scripts/wasm-env.sh && cargo build -p moqui-browser --target wasm32-unknown-emscripten"
+    );
 }

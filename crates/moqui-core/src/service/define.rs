@@ -927,6 +927,16 @@ fn normalize(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// The `service-file` locations in the framework conf, resolved. [`lint`] with no paths registers
+/// these; a host that registers more passes these first.
+///
+/// # Errors
+///
+/// Returns an error when the conf cannot be read or a location cannot be resolved.
+pub fn configured_service_files() -> Result<Vec<PathBuf>, Error> {
+    configured_paths()
+}
+
 fn configured_paths() -> Result<Vec<PathBuf>, Error> {
     let conf = framework_dir().join("conf/MoquiDefaultConf.xml");
     let root = MNode::parse_file(&conf)?;

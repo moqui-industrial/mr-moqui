@@ -1,0 +1,69 @@
+<!doctype html>
+<!-- WebSocket smoke page (plans/Wasm.md W6), driven by scripts/wasm-ws-smoke.mjs, which serves the
+     package and a /notws mock on the same origin. #result reads WS SMOKE OK or WS SMOKE FAILED. -->
+<meta charset="utf-8">
+<title>moqui-browser websocket smoke</title>
+<pre id="log"></pre>
+<p id="result">running</p>
+<script type="module">
+import { startMoqui } from './moqui-client.js';
+
+const log = document.getElementById('log');
+const say = (line) => { log.textContent += line + '\n'; };
+const moqui = startMoqui();
+let failed = false;
+const check = (label, pass, detail = '') => {
+    if (!pass) failed = true;
+    say(`${pass ? 'ok  ' : 'FAIL'} ${label}${detail ? ': ' + detail : ''}`);
+};
+
+const notes = [];
+const texts = [];
+const binaries = [];
+const states = [];
+moqui.onNotification((event) => notes.push(event.body));
+moqui.onText((event) => texts.push(event.text));
+moqui.onBinary((event) => binaries.push(event));
+moqui.onSocket((event) => states.push(event.state));
+
+/** Wait until `test()` holds, or fail after `ms`. */
+async function until(label, test, ms = 10_000) {
+    const deadline = Date.now() + ms;
+    while (!test() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+    check(label, test());
+}
+
+const init = await moqui.request({ op: 'init', runtime: '/moqui/runtime', framework: '/moqui/framework' });
+check('init', init.ok, init.ok ? '' : init.error);
+
+// The mock pushes one notification when it sees `subscribe:ALL`.
+check('connect', (await moqui.connect('/notws', { subscribe: 'ALL' })).ok);
+await until('notification after subscribe', () => notes.some((body) => body.topic === 'Hello'));
+check('routing stripped', notes.every((body) => body.userIds === undefined));
+
+// Text from the UI, echoed back as a plain text frame.
+check('send text', (await moqui.send('echo:hi')).ok);
+await until('text echo', () => texts.includes('hi'));
+
+// Binary both ways: the mock pushed [1,2,3] on subscribe and echoes what it gets.
+await until('binary push kept in the module', () => binaries.some((frame) => frame.length === 3 && frame.handle > 0));
+check('send bytes', (await moqui.send(new Uint8Array([9, 8, 7, 6]))).ok);
+await until('binary echo', () => binaries.some((frame) => frame.length === 4));
+
+// A frame queued in the module by local code goes out after the request; the mock answers it.
+const queued = await moqui.request({ op: 'wsSend', conn: 'notws', text: 'from-module' });
+check('module queues a frame', queued.ok, queued.ok ? '' : queued.error);
+await until('mock received the module frame', () => notes.some((body) => body.topic === 'Ack'));
+
+// The mock drops the connection; the socket reconnects and subscribes again.
+await moqui.send('drop');
+await until('reconnect and resubscribe', () => notes.filter((body) => body.topic === 'Hello').length >= 2);
+check('socket states', states.includes('closed') && states.filter((state) => state === 'open').length >= 2,
+    states.join(','));
+
+const stats = await moqui.request({ op: 'socketStats' });
+say(`stats ${JSON.stringify(stats.result)}`);
+check('close', (await moqui.close()).ok);
+await until('stopped', () => states.includes('stopped'));
+document.getElementById('result').textContent = failed ? 'WS SMOKE FAILED' : 'WS SMOKE OK';
+</script>

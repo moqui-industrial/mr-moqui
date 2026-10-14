@@ -30,6 +30,23 @@ const EXPORTS: &[&str] = &[
     "moqui_result_ptr",
     "moqui_result_len",
     "moqui_free_handle",
+    "moqui_mount_opfs",
+    "moqui_ws_binary",
+    "moqui_ws_outbox_len",
+    "moqui_ws_drain",
+];
+
+/// Exports that can run framework code, so can reach a suspending import (`fetch`, or any file
+/// operation on the OPFS mount). Each is a JSPI export and returns a Promise in JS. An export that
+/// can reach a suspending import but is missing here traps at the suspension.
+const SUSPENDING: &[&str] = &[
+    "main",
+    "moqui_request",
+    "moqui_init",
+    "moqui_call_service",
+    "moqui_render_screen",
+    "moqui_entity_find",
+    "moqui_mount_opfs",
 ];
 
 fn main() {
@@ -43,11 +60,19 @@ fn main() {
     println!("cargo:rerun-if-changed={}", runtime.display());
     let exported: Vec<String> = EXPORTS.iter().map(|name| format!("_{name}")).collect();
     println!("cargo:rustc-link-arg-bins=-sEXPORTED_FUNCTIONS={}", exported.join(","));
+    println!("cargo:rustc-link-arg-bins=-sJSPI_EXPORTS={}", SUSPENDING.join(","));
+    // The fetch import (src/fetch.rs).
+    let library = manifest.join("emlib/moqui_fetch.js");
+    println!("cargo:rerun-if-changed={}", library.display());
+    println!("cargo:rustc-link-arg-bins=--js-library={}", library.display());
     // Read-only framework and the browser runtime conf, in MEMFS at /moqui. The factory writes
     // runtime/.env there; MEMFS is writable, and nothing in it outlives the page.
     println!(
         "cargo:rustc-link-arg-bins=--preload-file={}@/moqui/framework",
         framework.display()
     );
-    println!("cargo:rustc-link-arg-bins=--preload-file={}@/moqui/runtime", runtime.display());
+    println!(
+        "cargo:rustc-link-arg-bins=--preload-file={}@/moqui/runtime",
+        runtime.display()
+    );
 }

@@ -71,8 +71,12 @@ fn json_requests_boot_load_call_render_and_find() {
     })));
     assert_eq!(echo["textOut1"], json!("hi"), "{echo}");
 
-    ok(call(&json!({ "op": "store", "entity": "moqui.test.TestEntity", "fields": { "testId": "J1", "testMedium": "json" } })));
-    let found = ok(call(&json!({ "op": "find", "entity": "moqui.test.TestEntity", "equals": { "testId": "J1" } })));
+    ok(call(
+        &json!({ "op": "store", "entity": "moqui.test.TestEntity", "fields": { "testId": "J1", "testMedium": "json" } }),
+    ));
+    let found = ok(call(
+        &json!({ "op": "find", "entity": "moqui.test.TestEntity", "equals": { "testId": "J1" } }),
+    ));
     assert_eq!(found[0]["testMedium"], json!("json"), "{found}");
 
     let rendered = ok(call(&json!({
@@ -83,5 +87,27 @@ fn json_requests_boot_load_call_render_and_find() {
     })));
     assert!(rendered["body"].as_str().unwrap().contains("Hello json"), "{rendered}");
     assert!(!call(&json!({ "op": "nope" }))["error"].as_str().unwrap().is_empty());
+
+    // An inbound /notws frame is one request; the notification comes back for the UI.
+    let note = ok(call(&json!({
+        "op": "wsDeliver",
+        "conn": "notws",
+        "text": json!({ "topic": "ApiWs", "notificationMessageId": format!("api-ws-{}", std::process::id()), "title": "t" })
+            .to_string(),
+    })));
+    assert_eq!(note["kind"], json!("notification"), "{note}");
+    assert_eq!(note["body"]["topic"], json!("ApiWs"), "{note}");
+    let other = ok(call(&json!({ "op": "wsDeliver", "conn": "notws", "text": "pong" })));
+    assert_eq!(other, json!({ "kind": "text", "text": "pong" }));
+    ok(call(
+        &json!({ "op": "wsSend", "conn": "notws", "text": "subscribe:ALL" }),
+    ));
+    assert_eq!(
+        crate::ws::take_outbox(),
+        vec![crate::ws::Outbound::Text {
+            conn: "notws".to_string(),
+            text: "subscribe:ALL".to_string(),
+        }]
+    );
     let _ = std::fs::remove_dir_all(&runtime);
 }

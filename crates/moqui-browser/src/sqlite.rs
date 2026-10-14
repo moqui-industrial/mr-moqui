@@ -64,12 +64,47 @@ impl SqliteDriver {
         // Foreign keys are not created on this database (see the sqlite profile), so none to enforce.
         conn.execute_batch("PRAGMA case_sensitive_like = ON;")
             .map_err(sqlite_err)?;
+        // WasmFS fails the rollback journal's unlink at commit (SQLITE_IOERR_DELETE). PERSIST keeps
+        // the journal file and zeroes its header, which also saves an OPFS file create and delete
+        // per commit. Durability is unchanged.
+        #[cfg(target_os = "emscripten")]
+        conn.execute_batch("PRAGMA journal_mode = PERSIST;")
+            .map_err(sqlite_err)?;
         Ok(Self {
-            shared: Arc::new(Mutex::new(Shared {
-                conn,
-                next_id: 1,
-            })),
+            shared: Arc::new(Mutex::new(Shared { conn, next_id: 1 })),
         })
+    }
+
+    /// Run `body` in one SQLite transaction on the shared handle, so its autocommit statements on
+    /// any logical connection (such as DDL on a reserve connection) commit once. A `begin` inside
+    /// becomes a savepoint, as with any open transaction. Committed when `body` returns `Ok`, rolled
+    /// back on `Err`. Inside an open transaction, `body` just runs.
+    ///
+    /// On OPFS every commit is a run of suspended file writes; creating every framework table
+    /// one commit at a time took about 18 s, and one commit is far less.
+    ///
+    /// # Errors
+    ///
+    /// Returns `body`'s error, or an error when the transaction cannot begin or commit.
+    pub fn bulk<T>(&self, body: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
+        let began = {
+            let shared = lock(&self.shared);
+            if shared.conn.is_autocommit() {
+                shared.conn.execute_batch("BEGIN").map_err(sqlite_err)?;
+                true
+            } else {
+                false
+            }
+        };
+        let result = body();
+        if began {
+            let shared = lock(&self.shared);
+            if !shared.conn.is_autocommit() {
+                let end = if result.is_ok() { "COMMIT" } else { "ROLLBACK" };
+                shared.conn.execute_batch(end).map_err(sqlite_err)?;
+            }
+        }
+        result
     }
 
     /// A private in-memory database.
@@ -319,7 +354,11 @@ fn run_query(
 }
 
 fn collect(statement: &mut rusqlite::Statement<'_>, bound: &[SqlValue]) -> Result<Vec<DbRow>, rusqlite::Error> {
-    let names: Vec<String> = statement.column_names().iter().map(|name| (*name).to_string()).collect();
+    let names: Vec<String> = statement
+        .column_names()
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
     let mut rows = statement.query(rusqlite::params_from_iter(bound.iter()))?;
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
@@ -374,11 +413,22 @@ fn lock(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
 }
 
 fn sqlite_err(err: rusqlite::Error) -> Error {
-    Error::new(format!("sqlite: {err}"))
+    Error::new(format!("sqlite: {}", describe(&err)))
 }
 
 fn statement_err(err: rusqlite::Error, sql: &str) -> Error {
-    Error::new(format!("sqlite: {err}")).with_source(Error::new(format!("statement: {sql}")))
+    Error::new(format!("sqlite: {}", describe(&err))).with_source(Error::new(format!("statement: {sql}")))
+}
+
+/// The message, plus the extended result code for an I/O error, which names the failing call
+/// (SQLITE_IOERR_FSYNC and the like).
+fn describe(err: &rusqlite::Error) -> String {
+    match err {
+        rusqlite::Error::SqliteFailure(code, _) if code.code == rusqlite::ErrorCode::SystemIoFailure => {
+            format!("{err} (extended code {})", code.extended_code)
+        }
+        _ => err.to_string(),
+    }
 }
 
 #[cfg(test)]

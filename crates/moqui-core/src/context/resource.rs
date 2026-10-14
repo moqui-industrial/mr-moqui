@@ -55,26 +55,25 @@ impl HttpRef {
     }
 }
 
-#[cfg(feature = "http")]
+/// GET through [`crate::outbound`]. Sim mode denies before anything is sent.
 fn http_get(url: &str, sim: bool) -> Result<String, String> {
-    if !moqui_lib::http::sim_allows_http(sim, false) {
+    if sim {
         return Err(format!(
             "HTTP GET {} denied because sim mode is active",
-            moqui_lib::http::redacted(url)
+            crate::outbound::redacted(url)
         ));
     }
-    let client = crate::service::shared_http_client();
-    match client.get(url.to_string()).send(false) {
-        Ok(response) if (200..300).contains(&response.status()) => Ok(response.body().to_string()),
-        Ok(response) => Err(format!("HTTP GET returned {}", response.status())),
+    let request = crate::outbound::Request {
+        method: crate::outbound::Method::Get,
+        url: url.to_string(),
+        headers: Vec::new(),
+        body: None,
+    };
+    match crate::outbound::send(request) {
+        Ok(response) if (200..300).contains(&response.status) => Ok(response.body),
+        Ok(response) => Err(format!("HTTP GET returned {}", response.status)),
         Err(err) => Err(err.message().to_string()),
     }
-}
-
-/// The `http` feature is off (the browser build). The location still parses; reading it fails.
-#[cfg(not(feature = "http"))]
-fn http_get(url: &str, _sim: bool) -> Result<String, String> {
-    Err(format!("HTTP GET {url} is not built into this host"))
 }
 
 #[derive(Clone, Debug)]

@@ -26,6 +26,10 @@
 //! | `render` | `root`, `path`, `mode` (default `text`), `parameters` | `{status, body}` |
 //! | `find` | `entity`, `equals`, `orderBy`, `limit` | list of records |
 //! | `store` | `entity`, `fields` | `null` |
+//! | `wsDeliver` | `conn`, `text`: one inbound text frame | `{kind: "notification", body}` or `{kind: "text", text}` |
+//! | `wsSend` | `conn`, `text`: queue an outbound text frame | `null` |
+//!
+//! Binary frames and the outbound drain are byte exports, not JSON (`src/exports.rs`, [`crate::ws`]).
 //!
 //! The state is per thread: the browser module has one.
 
@@ -122,6 +126,19 @@ fn dispatch(fields: &Map<String, Json>) -> Result<Json, Error> {
                 browser.store(text(fields, "entity")?, &map(fields, "fields"))?;
                 Ok(Json::Null)
             }
+            "wsDeliver" => {
+                let conn = text(fields, "conn")?;
+                let frame = text(fields, "text")?;
+                // Local listeners may read or write entities, so the frame is one request.
+                match browser.request(true, || crate::ws::deliver_text(conn, frame))? {
+                    crate::ws::Delivered::Notification(body) => Ok(json!({ "kind": "notification", "body": body })),
+                    crate::ws::Delivered::Text(text) => Ok(json!({ "kind": "text", "text": text })),
+                }
+            }
+            "wsSend" => {
+                crate::ws::send_text(text(fields, "conn")?, text(fields, "text")?)?;
+                Ok(Json::Null)
+            }
             other => Err(Error::new(format!("unknown op {other:?}"))),
         }
     })
@@ -154,7 +171,12 @@ fn map(fields: &Map<String, Json>, name: &str) -> BTreeMap<String, Value> {
 }
 
 fn map_json(values: &BTreeMap<String, Value>) -> Json {
-    Json::Object(values.iter().map(|(key, value)| (key.clone(), to_json(&plain(value)))).collect())
+    Json::Object(
+        values
+            .iter()
+            .map(|(key, value)| (key.clone(), to_json(&plain(value))))
+            .collect(),
+    )
 }
 
 /// Entity lists and values a service returns are host objects; JSON needs their fields.
@@ -181,7 +203,13 @@ fn plain(value: &Value) -> Value {
 }
 
 fn entity_map(entity: &EntityValue) -> Value {
-    Value::Map(entity.fields().iter().map(|(key, item)| (key.clone(), plain(item))).collect())
+    Value::Map(
+        entity
+            .fields()
+            .iter()
+            .map(|(key, item)| (key.clone(), plain(item)))
+            .collect(),
+    )
 }
 
 /// The error and its causes, one per line.

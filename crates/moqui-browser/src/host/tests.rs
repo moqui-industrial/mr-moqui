@@ -59,7 +59,10 @@ fn copy_dir(from: &Path, to: &Path) {
 }
 
 fn fields(pairs: &[(&str, Value)]) -> BTreeMap<String, Value> {
-    pairs.iter().map(|(key, value)| ((*key).to_string(), value.clone())).collect()
+    pairs
+        .iter()
+        .map(|(key, value)| ((*key).to_string(), value.clone()))
+        .collect()
 }
 
 #[test]
@@ -82,7 +85,12 @@ fn entity_crud_view_find_and_sequences_on_sqlite() {
         )
         .unwrap();
     let found = browser
-        .find("moqui.test.TestEntity", &fields(&[("testId", Value::string("T1"))]), &[], None)
+        .find(
+            "moqui.test.TestEntity",
+            &fields(&[("testId", Value::string("T1"))]),
+            &[],
+            None,
+        )
         .unwrap();
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].get("testMedium"), Some(&Value::string("hello")));
@@ -90,7 +98,10 @@ fn entity_crud_view_find_and_sequences_on_sqlite() {
     browser
         .store(
             "moqui.test.TestEntity",
-            &fields(&[("testId", Value::string("T1")), ("testMedium", Value::string("changed"))]),
+            &fields(&[
+                ("testId", Value::string("T1")),
+                ("testMedium", Value::string("changed")),
+            ]),
         )
         .unwrap();
     browser
@@ -101,7 +112,9 @@ fn entity_crud_view_find_and_sequences_on_sqlite() {
             row.delete(facade)
         })
         .unwrap();
-    let all = browser.find("moqui.test.TestEntity", &BTreeMap::new(), &[], None).unwrap();
+    let all = browser
+        .find("moqui.test.TestEntity", &BTreeMap::new(), &[], None)
+        .unwrap();
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].get("testMedium"), Some(&Value::string("changed")));
 
@@ -233,6 +246,8 @@ fn a_suspended_write_transaction_and_a_new_one_both_write() {
             tx.commit()
         })
         .unwrap();
-    let all = browser.find("moqui.test.TestEntity", &BTreeMap::new(), &[], None).unwrap();
+    let all = browser
+        .find("moqui.test.TestEntity", &BTreeMap::new(), &[], None)
+        .unwrap();
     assert_eq!(all.len(), 3);
 }

@@ -66,7 +66,10 @@ fn values_round_trip_through_the_entity_conversions() {
         .unwrap();
     assert_eq!(changed, 1);
     let rows = conn
-        .query("SELECT n, amount, stamp, day, at, data FROM t WHERE id = ?", &[Value::string("a")])
+        .query(
+            "SELECT n, amount, stamp, day, at, data FROM t WHERE id = ?",
+            &[Value::string("a")],
+        )
         .unwrap();
     let row = &rows[0];
     assert_eq!(row.get("n"), Some(&Value::I64(7)));
@@ -87,7 +90,10 @@ fn values_round_trip_through_the_entity_conversions() {
     assert_eq!(rows.len(), 1);
     // A decimal parameter compares as a number against a NUMERIC column.
     let rows = conn
-        .query("SELECT id FROM t WHERE amount > ?", &[Value::Decimal(rust_decimal::Decimal::from(9))])
+        .query(
+            "SELECT id FROM t WHERE amount > ?",
+            &[Value::Decimal(rust_decimal::Decimal::from(9))],
+        )
         .unwrap();
     assert_eq!(rows.len(), 1);
 }
@@ -133,10 +139,14 @@ fn savepoints_streams_and_dropped_connections() {
     assert!(conn.savepoint("bad name").is_err());
 
     for index in 0..5 {
-        conn.execute("INSERT INTO t (id, n) VALUES (?, ?)", &[Value::string(format!("s{index}")), Value::I64(index)])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO t (id, n) VALUES (?, ?)",
+            &[Value::string(format!("s{index}")), Value::I64(index)],
+        )
+        .unwrap();
     }
-    conn.open_stream("SELECT n FROM t WHERE n IS NOT NULL ORDER BY n", &[]).unwrap();
+    conn.open_stream("SELECT n FROM t WHERE n IS NOT NULL ORDER BY n", &[])
+        .unwrap();
     assert!(conn.stream_open());
     let mut seen = Vec::new();
     while let Some(row) = conn.next_row().unwrap() {
@@ -152,7 +162,10 @@ fn savepoints_streams_and_dropped_connections() {
         abandoned.execute("INSERT INTO t (id) VALUES ('lost')", &[]).unwrap();
     }
     assert_eq!(count(&mut conn), 6);
-    assert_eq!(conn.query_once("SELECT 1 AS one", &[]).unwrap()[0].get("one"), Some(&Value::I64(1)));
+    assert_eq!(
+        conn.query_once("SELECT 1 AS one", &[]).unwrap()[0].get("one"),
+        Some(&Value::I64(1))
+    );
     assert!(conn.canceller().cancel().is_ok());
     let returned = conn
         .execute("INSERT INTO t (id) VALUES ('r') RETURNING id", &[])

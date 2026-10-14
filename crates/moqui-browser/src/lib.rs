@@ -15,8 +15,12 @@
 //! Browser host. `plans/Wasm.md`.
 //!
 //! [`sqlite`] is the local [`moqui_core::driver::DbDriver`]. [`host`] boots a factory on the inline
-//! executor over it. [`api`] is the JSON request surface the emscripten exports call.
+//! executor over it. [`fetch`] sends outbound HTTP over `fetch` (JSPI). [`api`] is the JSON request
+//! surface the emscripten exports call. [`ws`] carries WebSocket frames between the worker's sockets
+//! and the module.
 
 pub mod api;
+pub mod fetch;
 pub mod host;
 pub mod sqlite;
+pub mod ws;

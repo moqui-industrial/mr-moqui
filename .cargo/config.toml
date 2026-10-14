@@ -14,7 +14,9 @@ POSTGRESQL_VERSION = { value = "=18.6.0", force = true }
 # The browser build (plans/Wasm.md, crates/moqui-browser). Source scripts/wasm-env.sh first.
 # An ES module factory (createMoqui) for a Web Worker or Node. QuickJS needs far more than
 # emscripten's 64KB default stack; a stack overflow check fails at once without it. Memory grows
-# with the entity model and the database. No Asyncify or JSPI until a host call must suspend (W5).
+# with the entity model and the database. JSPI (no Asyncify fallback): an import may suspend the WASM
+# stack on a Promise (fetch, OPFS); the suspending exports are listed in crates/moqui-browser/build.rs.
+# WasmFS is the filesystem, so the OPFS backend can be mounted for durable SQLite files.
 [target.wasm32-unknown-emscripten]
 rustflags = [
     "-C", "link-arg=-sMODULARIZE=1",
@@ -25,4 +27,6 @@ rustflags = [
     "-C", "link-arg=-sINITIAL_MEMORY=64MB",
     "-C", "link-arg=-sSTACK_SIZE=8MB",
     "-C", "link-arg=-sEXPORTED_RUNTIME_METHODS=HEAPU8,FS",
+    "-C", "link-arg=-sJSPI",
+    "-C", "link-arg=-sWASMFS",
 ]

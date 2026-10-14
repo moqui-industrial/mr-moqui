@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- remote-rest through the installed outbound sender (fetch in the browser), and a write followed by
+     a remote call, to show that a failed call rolls the write back. -->
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
+    <service verb="get" noun="Echo" type="remote-rest" location="http://127.0.0.1:${port}/${path}">
+        <in-parameters>
+            <parameter name="port" required="true"/>
+            <parameter name="path" default-value="echo"/>
+            <parameter name="note"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="echo"/>
+            <parameter name="method"/>
+            <parameter name="note"/>
+        </out-parameters>
+    </service>
+
+    <service verb="store" noun="ThenFetch">
+        <in-parameters>
+            <parameter name="testId" required="true"/>
+            <parameter name="port" required="true"/>
+            <parameter name="path" default-value="echo"/>
+        </in-parameters>
+        <out-parameters><parameter name="echo"/></out-parameters>
+        <actions>
+            <entity-make-value entity-name="moqui.test.TestEntity" value-field="row"/>
+            <set field="row.testId" from="testId"/>
+            <set field="row.testMedium" value="written before the fetch"/>
+            <entity-create value-field="row"/>
+            <service-call name="moqui.browser.SmokeServices.get#Echo" in-map="{port, path, note: testId}" out-map="fetched"/>
+            <set field="echo" from="fetched.echo"/>
+        </actions>
+    </service>
+</services>

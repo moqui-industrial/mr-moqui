@@ -1,7 +1,9 @@
 // Headless Chrome smoke for the browser module: js/smoke.html runs the module in a Web Worker.
 //   CARGO_TARGET_DIR=target/browser scripts/wasm-build.sh && node scripts/wasm-chrome-smoke.mjs target/browser/wasm-pkg/debug
 // Serves the package, starts Chrome with a DevTools port, loads the page twice (the second load
-// must restore from OPFS), and polls #result. CHROME overrides the binary.
+// must find the row the first committed to OPFS, with no flush), and polls #result. CHROME overrides
+// the binary. The server also answers the page's remote-rest calls: /echo (JSON), /fail (500), and
+// /slow (answers after 20 s, so the page can cancel it).
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { readFile, mkdtemp, rm } from 'node:fs/promises';
@@ -11,7 +13,22 @@ import path from 'node:path';
 const pkg = path.resolve(process.argv[2] || 'target/wasm-pkg/debug');
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm' };
 const server = createServer(async (req, res) => {
-    const file = path.join(pkg, decodeURIComponent(new URL(req.url, 'http://x').pathname));
+    const url = new URL(req.url, 'http://x');
+    if (url.pathname === '/echo') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ echo: 'ok', method: req.method, note: url.searchParams.get('note') }));
+        return;
+    }
+    if (url.pathname === '/fail') {
+        res.writeHead(500, { 'content-type': 'text/plain' }).end('no');
+        return;
+    }
+    if (url.pathname === '/slow') {
+        const timer = setTimeout(() => res.writeHead(200).end('{}'), 20_000);
+        req.on('close', () => clearTimeout(timer));
+        return;
+    }
+    const file = path.join(pkg, decodeURIComponent(url.pathname));
     try {
         const body = await readFile(file);
         res.writeHead(200, { 'content-type': types[path.extname(file)] || 'application/octet-stream' });
@@ -71,13 +88,14 @@ async function run() {
     const log = await send('Runtime.evaluate', { expression: "document.getElementById('log')?.textContent ?? ''" });
     return { result, log: log?.result?.value ?? '' };
 }
-// Two loads in one profile: the second must restore the row the first flushed to OPFS.
+// Two loads in one profile: the second must find the row the first committed to OPFS.
 const first = await run();
 console.log(first.log + first.result);
 const second = first.result === 'SMOKE OK' ? await run() : { result: 'skipped', log: '' };
 console.log(second.log + second.result);
-const passed = second.result === 'SMOKE OK' && second.log.includes('restored 1 row(s) from OPFS');
-console.log(passed ? 'CHROME SMOKE OK (OPFS restore across reload)' : 'CHROME SMOKE FAILED');
+const passed = first.log.includes('jspi true') && first.log.includes('restored 0 row(s) from OPFS')
+    && second.result === 'SMOKE OK' && second.log.includes('restored 1 row(s) from OPFS');
+console.log(passed ? 'CHROME SMOKE OK (JSPI fetch, rollback, cancel, OPFS durable across reload)' : 'CHROME SMOKE FAILED');
 socket.close();
 const exited = new Promise((resolve) => chrome.on('exit', resolve));
 chrome.kill();

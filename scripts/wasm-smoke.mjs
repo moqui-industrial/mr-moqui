@@ -1,10 +1,19 @@
 // Node smoke test for the browser module (plans/Wasm.md).
-//   CARGO_TARGET_DIR=target/browser scripts/wasm-build.sh && node scripts/wasm-smoke.mjs target/browser/wasm-pkg/debug
+//   CARGO_TARGET_DIR=target/browser scripts/wasm-build.sh
+//   ~/emsdk/node/*/bin/node --experimental-wasm-jspi scripts/wasm-smoke.mjs target/browser/wasm-pkg/debug
+// The module needs JSPI. Node 22 has none; emsdk's Node 24 has it behind --experimental-wasm-jspi.
 // Boots the factory from the preloaded conf, creates the framework tables (a render reads
-// ArtifactAuthz), renders a text screen, loads seed data, calls a service, and does entity CRUD on
-// SQLite in MEMFS.
+// ArtifactAuthz), renders a text screen, loads seed data, calls a service, does entity CRUD on
+// SQLite in the WasmFS memory backend, and runs a remote-rest service through fetch against a local
+// server. OPFS is browser-only: scripts/wasm-chrome-smoke.mjs.
+import { createServer } from 'node:http';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+
+if (!('Suspending' in WebAssembly)) {
+    console.error(`Node ${process.version} has no JSPI. Run with emsdk's Node 24 or later and --experimental-wasm-jspi.`);
+    process.exit(2);
+}
 
 const pkg = path.resolve(process.argv[2] || 'target/wasm-pkg/debug');
 const { default: createMoqui } = await import(pathToFileURL(path.join(pkg, 'moqui_browser.mjs')).href);
@@ -44,7 +53,16 @@ await timed('find', moqui.find({ entity: 'moqui.test.TestEntity', equals: { test
 await timed('update', moqui.request({ op: 'store', entity: 'moqui.test.TestEntity', fields: { testId: 'W1', testMedium: 'changed' } }));
 await timed('find after update', moqui.find({ entity: 'moqui.test.TestEntity', equals: { testId: 'W1' } }),
     (rows) => rows[0].testMedium === 'changed');
+const server = createServer((req, res) => {
+    const url = new URL(req.url, 'http://x');
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ echo: 'ok', method: req.method, note: url.searchParams.get('note') }));
+});
+await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+await timed('remote-rest through fetch', moqui.callService({ name: 'moqui.browser.SmokeServices.get#Echo', parameters: { port: server.address().port, note: 'node' } }),
+    (out) => out.echo === 'ok' && out.note === 'node');
+server.close();
 const size = moqui.module.FS.stat('/moqui/local.sqlite').size;
-console.log(`database file ${size} bytes in MEMFS`);
+console.log(`database file ${size} bytes in memory`);
 console.log(failed ? 'SMOKE FAILED' : 'SMOKE OK');
 process.exit(failed ? 1 : 0);

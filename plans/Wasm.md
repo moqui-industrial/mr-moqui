@@ -99,7 +99,9 @@ Each phase ends with a check that must pass.
 
 **W5. Network adapters.** Add the `fetch` `HttpClient` and WebSocket transport. Check: a `remote-rest` service call against a running host succeeds. Cancellation while suspended rolls back and frees the context.
 
-**W6. Messaging.** Wire the browser side of `plans/Messaging.md` §8 onto this runtime: verified buffers behind handles, schema cache in OPFS, and offline mutations as pending requests submitted on reconnect.
+**W6. WebSocket transport.** Done: sockets in the worker (`js/moqui-ws.js`) with reconnect, backoff, and bounded queues. Frames enter the module between requests through ordinary exports, so the socket needs no JSPI. A `/notws` notification is published on the local `notification-message` topic, then posted to the UI. A binary frame waits behind a handle (`moqui_browser::ws::take_binary`) for the envelope reader. Local code queues outbound frames (`ws::send_text`, `ws::send_bytes`), and the worker sends them after each request. Check: `node scripts/wasm-ws-smoke.mjs <pkg>` (headless Chrome against a same-origin `/notws` mock).
+
+**W6b. Messaging.** Wire the browser side of `plans/Messaging.md` §8 onto this transport: verified buffers behind handles, schema cache in OPFS, and offline mutations as pending requests submitted on reconnect. The binary frame handles are where its reader starts.
 
 **W7 (optional). pthreads.** Serve COOP and COEP headers and run the `threads` executor on Emscripten pthreads. The non-pthread build stays.
 
@@ -113,10 +115,22 @@ Findings that change the text above:
 - `-sSTACK_SIZE=8MB`. Emscripten's 64 KB default trips QuickJS's stack check on the first eval.
 - The SQLite driver shares one handle. A `begin` while another logical connection has a transaction open is a savepoint inside it, so `callFuture()` and reserve transactions never wait on the single writer. A nested commit is undone if the outer transaction rolls back; that includes sequence refills and failed-login counts. Sequence ids stay unique because the refill floor is the in-memory bank.
 - Without cluster-tls, CHANGEME cluster cert slots are left unset instead of failing boot.
-- WasmFS OPFS needs pthreads or JSPI. Until then persistence is a snapshot: restore into MEMFS at `init`, write back on `flush` between requests. Per-commit durability needs a sahpool-style VFS or JSPI (W5).
+- WasmFS OPFS needs pthreads or JSPI. W5 replaced the W4 snapshot with it (below).
 - rusqlite stays on 0.38: servo-net pins it, and two libsqlite3-sys versions cannot both link sqlite3.
 
-Open: no login flow in the browser host (calls run with authz disabled, except renders); Groovy services are skipped; `open_entity_facade` is copied from moqui-host and belongs in core; rustc passes a deprecated `WASM_BIGINT` link flag.
+W5 is in place, on JSPI with no Asyncify build:
+
+- `moqui_core::outbound`: `remote-rest` services and `http` resource locations send through an installed `HttpSender`, else reqwest when the `http` feature is built, else "not built into this host". Sim denial and URL redaction come first. The browser installs a sender over `fetch` (`crates/moqui-browser/src/fetch.rs`, the `__async` import in `emlib/moqui_fetch.js`). The request exports are `JSPI_EXPORTS` (`build.rs`) and return Promises; the worker queue serializes them, and a call that arrives while one is suspended is refused.
+- A worker `cancel` op aborts the fetch in flight. The call fails, its transaction rolls back, and the next call runs. A failed remote call rolls back the write before it.
+- WasmFS with the OPFS backend mounted at `/opfs`; `init` with `persist` puts the database there. Commits are durable with no flush step. WasmFS fails the rollback journal's unlink (`SQLITE_IOERR_DELETE`), so the journal mode is `PERSIST`.
+- Every OPFS file operation suspends. Creating every framework table one autocommit at a time took 18 s on first load, so `check_tables` runs in one SQLite transaction (`SqliteDriver::bulk`): 2.0 s. A reload's check is 22 ms; a single-row store is about 35 ms (1 ms in memory).
+- Release `.wasm` 11.1 MB (4.0 MB gzipped), about 0.2 MB more for WasmFS and the JSPI wrappers.
+- The browser host also registers each runtime component's `service/` files, and a call whose inner service failed (errors in the message facade) is an error, not empty out parameters.
+- Node 22 has no JSPI. `scripts/wasm-smoke.mjs` runs on emsdk's Node 24 with `--experimental-wasm-jspi`.
+
+W6 (the WebSocket transport) is in place. The end-to-end check uses a Node mock of `/notws`, not moqui-host: the host would have to serve the package for the session cookie and the origin check to pass.
+
+Open: no login flow in the browser host (calls run with authz disabled, except renders); Groovy services are skipped; rustc passes a deprecated `WASM_BIGINT` link flag; one worker per origin can hold the OPFS database (a second tab is expected to fail on the sync access handle; not yet tested); the emscripten FS JS API must not touch `/opfs` (those calls are not JSPI exports).
 
 ## Not in scope
 

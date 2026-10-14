@@ -55,6 +55,7 @@ fn pool() -> PoolConfig {
 pub struct Browser {
     factory: Arc<ExecutionContextFactory>,
     facade: EntityFacade,
+    sqlite: Arc<SqliteDriver>,
 }
 
 impl Browser {
@@ -73,13 +74,26 @@ impl Browser {
             },
         )
         .map_err(|err| Error::new(format!("boot: {err}")))?;
-        let driver: Arc<dyn DbDriver> = Arc::new(SqliteDriver::open(db_path)?);
+        let sqlite = Arc::new(SqliteDriver::open(db_path)?);
+        let driver: Arc<dyn DbDriver> = sqlite.clone();
         let facade = open_entity_facade(factory.framework_dir(), driver)?;
         factory.set_entity(facade.clone());
-        let browser = Self { factory, facade };
-        // The configured service files. A file that still holds Groovy is skipped and named here.
+        let browser = Self {
+            factory,
+            facade,
+            sqlite,
+        };
+        // The configured service files, then each runtime component's `service/` tree. A file that
+        // still holds Groovy is skipped and named here.
         let skipped = browser.request(true, || {
-            moqui_core::service::lint(&[]).map_err(|err| Error::new(format!("services: {err}")))
+            let mut paths = moqui_core::service::configured_service_files()
+                .map_err(|err| Error::new(format!("services: {err}")))?;
+            for component in browser.factory.components() {
+                if component.location != browser.factory.framework_dir() {
+                    xml_files(&component.location.join("service"), &mut paths);
+                }
+            }
+            moqui_core::service::lint(&paths).map_err(|err| Error::new(format!("services: {err}")))
         })?;
         if !skipped.is_empty() {
             tracing::warn!(count = skipped.len(), "service definitions not registered");
@@ -118,12 +132,15 @@ impl Browser {
     ///
     /// Returns an error when a table cannot be created.
     pub fn check_tables(&self, names: &[&str]) -> Result<(), Error> {
+        // One commit for every CREATE (see SqliteDriver::bulk).
         self.request(true, || {
-            if names.is_empty() {
-                self.facade.check_all_tables()
-            } else {
-                self.facade.check_tables(names)
-            }
+            self.sqlite.bulk(|| {
+                if names.is_empty() {
+                    self.facade.check_all_tables()
+                } else {
+                    self.facade.check_tables(names)
+                }
+            })
         })
     }
 
@@ -150,9 +167,22 @@ impl Browser {
     /// # Errors
     ///
     /// Returns the error the service raised, or its error messages.
-    pub fn call_service(&self, name: &str, parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, Error> {
+    pub fn call_service(
+        &self,
+        name: &str,
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<BTreeMap<String, Value>, Error> {
         self.request(true, || {
-            moqui_core::service::sync(name, parameters).map_err(|err| Error::new(err.to_string()))
+            let out = moqui_core::service::sync(name, parameters).map_err(|err| Error::new(err.to_string()))?;
+            // A failed inner call leaves its error in the message facade and rolls the outer
+            // transaction back; the caller sees that as a failure, not empty out parameters.
+            let errors = moqui_core::context::ExecutionContext::with_current(|ctx| ctx.message().errors().join("\n"))
+                .unwrap_or_default();
+            if errors.is_empty() {
+                Ok(out)
+            } else {
+                Err(Error::new(errors))
+            }
         })
     }
 
@@ -218,6 +248,22 @@ impl Browser {
             }
             value.create_or_update(&self.facade)
         })
+    }
+}
+
+/// Every `.xml` file under `dir`, sorted, appended to `out`. A missing dir adds nothing.
+fn xml_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut paths: Vec<_> = entries.filter_map(Result::ok).map(|entry| entry.path()).collect();
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            xml_files(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "xml") {
+            out.push(path);
+        }
     }
 }
 

@@ -14,8 +14,9 @@
 
 // Binding over the emscripten module (crates/moqui-browser/src/exports.rs). One request at a
 // time: calls queue here, so a later call never enters the module while an earlier one runs.
-// Today every call is synchronous inside WASM; the queue is what keeps that true once a call can
-// suspend on fetch (Asyncify or JSPI, plans/Wasm.md W5).
+// The request exports are JSPI exports (crates/moqui-browser/build.rs): each returns a Promise and
+// may suspend on fetch or an OPFS file operation; the queue keeps the module from being re-entered
+// while one is suspended (the module also refuses a second call, src/fetch.rs Busy).
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -28,14 +29,14 @@ export async function loadMoqui(createModule, moduleOptions = {}) {
     const module = await createModule(moduleOptions);
     let tail = Promise.resolve();
 
-    function callNow(exportName, fields) {
+    async function callNow(exportName, fields) {
         const bytes = encoder.encode(fields === undefined ? '' : JSON.stringify(fields));
         const ptr = module[`_moqui_alloc`](bytes.length);
         // Read HEAPU8 after every call into WASM: memory growth replaces the buffer.
         module.HEAPU8.set(bytes, ptr);
         let handle;
         try {
-            handle = module[`_${exportName}`](ptr, bytes.length);
+            handle = await module[`_${exportName}`](ptr, bytes.length);
         } finally {
             module[`_moqui_dealloc`](ptr, bytes.length);
         }
@@ -57,6 +58,9 @@ export async function loadMoqui(createModule, moduleOptions = {}) {
 
     return {
         module,
+        /** Call an export now; resolves to the response. Only inside `exclusive`: anywhere else it
+         * could enter a running call. */
+        callNow,
         /** Run `fn` (sync or async) in the request queue, so no module call is in progress. */
         exclusive: (fn) => {
             const next = tail.then(fn);
