@@ -179,7 +179,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <set field="uomConversion" from="uomConversionList[0]"/>
                 <set field="convertedAmount" from="amount"/>
                 <if condition="uomConversion.conversionFactor">
-                    <set field="convertedAmount" from="convertedAmount.multiply(basicConvert(uomConversion.conversionFactor, 'BigDecimal'))"/></if>
+                    <set field="convertedAmount" from="convertedAmount.multiply(uomConversion.conversionFactor)"/></if>
                 <if condition="uomConversion.conversionOffset">
                     <set field="convertedAmount" from="convertedAmount.add(uomConversion.conversionOffset)"/></if>
                 <return/>
@@ -197,7 +197,7 @@ along with this software (see the LICENSE.md file). If not, see
                     <if condition="uomConversion.conversionOffset">
                         <set field="convertedAmount" from="convertedAmount.subtract(uomConversion.conversionOffset)"/></if>
                     <if condition="uomConversion.conversionFactor">
-                        <set field="convertedAmount" from="convertedAmount.divide(basicConvert(uomConversion.conversionFactor, 'BigDecimal'))"/></if>
+                        <set field="convertedAmount" from="convertedAmount.divide(uomConversion.conversionFactor)"/></if>
                     <return/>
                 </if>
             </if>

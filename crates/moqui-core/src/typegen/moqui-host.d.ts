@@ -10,15 +10,17 @@
  * In the unwrapped projection, the locked-down template and the browser a decimal is a string.
  */
 interface Decimal {
-    add(other: Decimal): Decimal;
-    subtract(other: Decimal): Decimal;
-    multiply(other: Decimal): Decimal;
+    add(other: Decimal | number | string): Decimal;
+    subtract(other: Decimal | number | string): Decimal;
+    multiply(other: Decimal | number | string): Decimal;
     /** Scale `max(left, right, 10)`. */
-    divide(other: Decimal): Decimal;
-    eq(other: Decimal): boolean;
+    divide(other: Decimal | number | string): Decimal;
+    eq(other: Decimal | number | string): boolean;
     /** -1, 0 or 1. */
-    compare(other: Decimal): number;
+    compare(other: Decimal | number | string): number;
     isZero(): boolean;
+    /** A JavaScript number, with float rounding. */
+    toNumber(): number;
     toString(): string;
     /** Throws an error that names the method to use. */
     valueOf(): never;

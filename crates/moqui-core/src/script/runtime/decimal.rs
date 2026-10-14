@@ -29,37 +29,53 @@ impl HostDecimal {
         host_guard(&ctx, || Err(Exception::throw_message(&ctx, VALUE_OF_MESSAGE)))
     }
 
+    /// The value as a JavaScript number, for code that wants float math or `Number` APIs and accepts the rounding.
+    fn to_number(&self, ctx: Ctx<'_>) -> rquickjs::Result<f64> {
+        host_guard(&ctx, || {
+            match moqui_lib::object::basic_convert(&self.inner, "Double").value {
+                Value::F64(number) => Ok(number),
+                _ => Err(Exception::throw_message(&ctx, "not a decimal")),
+            }
+        })
+    }
+
     #[qjs(rename = "toString")]
     fn js_string(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
         host_guard(&ctx, || Ok(moqui_lib::object::to_plain_string(&self.inner)))
     }
 
-    fn add<'js>(&self, ctx: Ctx<'js>, other: &HostDecimal) -> rquickjs::Result<HostDecimal> {
-        host_arith(&ctx, &self.inner, &other.inner, Arith::Add)
+    fn add<'js>(&self, ctx: Ctx<'js>, other: JsValue<'js>) -> rquickjs::Result<HostDecimal> {
+        let other = operand(&ctx, &other)?;
+        host_arith(&ctx, &self.inner, &other, Arith::Add)
     }
 
-    fn subtract<'js>(&self, ctx: Ctx<'js>, other: &HostDecimal) -> rquickjs::Result<HostDecimal> {
-        host_arith(&ctx, &self.inner, &other.inner, Arith::Subtract)
+    fn subtract<'js>(&self, ctx: Ctx<'js>, other: JsValue<'js>) -> rquickjs::Result<HostDecimal> {
+        let other = operand(&ctx, &other)?;
+        host_arith(&ctx, &self.inner, &other, Arith::Subtract)
     }
 
-    fn multiply<'js>(&self, ctx: Ctx<'js>, other: &HostDecimal) -> rquickjs::Result<HostDecimal> {
-        host_arith(&ctx, &self.inner, &other.inner, Arith::Multiply)
+    fn multiply<'js>(&self, ctx: Ctx<'js>, other: JsValue<'js>) -> rquickjs::Result<HostDecimal> {
+        let other = operand(&ctx, &other)?;
+        host_arith(&ctx, &self.inner, &other, Arith::Multiply)
     }
 
-    fn divide<'js>(&self, ctx: Ctx<'js>, other: &HostDecimal) -> rquickjs::Result<HostDecimal> {
-        host_arith(&ctx, &self.inner, &other.inner, Arith::Divide)
+    fn divide<'js>(&self, ctx: Ctx<'js>, other: JsValue<'js>) -> rquickjs::Result<HostDecimal> {
+        let other = operand(&ctx, &other)?;
+        host_arith(&ctx, &self.inner, &other, Arith::Divide)
     }
 
     #[qjs(rename = "eq")]
-    fn equal<'js>(&self, ctx: Ctx<'js>, other: &HostDecimal) -> rquickjs::Result<bool> {
+    fn equal<'js>(&self, ctx: Ctx<'js>, other: JsValue<'js>) -> rquickjs::Result<bool> {
+        let other = operand(&ctx, &other)?;
         host_guard(&ctx, || {
-            decimals_equal(&self.inner, &other.inner).map_err(|err| throw_lib(&ctx, &err))
+            decimals_equal(&self.inner, &other).map_err(|err| throw_lib(&ctx, &err))
         })
     }
 
-    fn compare<'js>(&self, ctx: Ctx<'js>, other: &HostDecimal) -> rquickjs::Result<i32> {
+    fn compare<'js>(&self, ctx: Ctx<'js>, other: JsValue<'js>) -> rquickjs::Result<i32> {
+        let other = operand(&ctx, &other)?;
         host_guard(&ctx, || {
-            let ordering = decimals_compare(&self.inner, &other.inner).map_err(|err| throw_lib(&ctx, &err))?;
+            let ordering = decimals_compare(&self.inner, &other).map_err(|err| throw_lib(&ctx, &err))?;
             Ok(match ordering {
                 Ordering::Less => -1,
                 Ordering::Equal => 0,
@@ -75,6 +91,39 @@ impl HostDecimal {
             };
             Ok(moqui_lib::object::decimal_is_zero(number))
         })
+    }
+}
+
+/// The other side of a decimal method: a decimal, or a JavaScript number or numeric string converted as
+/// `basicConvert(x, 'BigDecimal')` does. A number that is not finite, or other text, is an error.
+fn operand<'js>(ctx: &Ctx<'js>, value: &JsValue<'js>) -> rquickjs::Result<Value> {
+    if let Some(object) = value.as_object() {
+        if let Some(decimal) = object.as_class::<HostDecimal>() {
+            return Ok(decimal.borrow().inner.clone());
+        }
+    }
+    host_guard(ctx, || {
+        let host = js_to_host(ctx, value)?;
+        decimal_of(&host).ok_or_else(|| {
+            Exception::throw_message(
+                ctx,
+                &format!(
+                    "a decimal method takes a decimal, a number or a numeric string, not {}",
+                    moqui_lib::object::to_plain_string(&host)
+                ),
+            )
+        })
+    })
+}
+
+/// `value` as a decimal: a decimal, an integer, a finite float, or numeric text.
+pub(super) fn decimal_of(value: &Value) -> Option<Value> {
+    if matches!(value, Value::Bool(_) | Value::Null) {
+        return None;
+    }
+    match moqui_lib::object::basic_convert(value, "BigDecimal").value {
+        decimal @ Value::Decimal(_) => Some(decimal),
+        _ => None,
     }
 }
 

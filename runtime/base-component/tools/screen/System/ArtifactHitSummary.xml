@@ -46,8 +46,8 @@ along with this software (see the LICENSE.md file). If not, see
                 <select-field field-name="totalSquaredTime"/>
             </entity-find>
             <row-actions>
-                <set field="averageTime" from="hitCount ? Number(String(totalTimeMillis)) / hitCount : null"/>
-                <set field="stdDev" from="totalSquaredTime &amp;&amp; hitCount > 1 ? Math.sqrt(Math.abs(Number(String(totalSquaredTime)) - ((Number(String(totalTimeMillis)) ** 2) / hitCount)) / (hitCount - 1)) : null"/>
+                <set field="averageTime" from="hitCount ? toDecimal(totalTimeMillis).toNumber() / hitCount : null"/>
+                <set field="stdDev" from="totalSquaredTime &amp;&amp; hitCount > 1 ? Math.sqrt(Math.abs(toDecimal(totalSquaredTime).toNumber() - ((toDecimal(totalTimeMillis).toNumber() ** 2) / hitCount)) / (hitCount - 1)) : null"/>
             </row-actions>
 
             <field name="artifactType" print-width="20">

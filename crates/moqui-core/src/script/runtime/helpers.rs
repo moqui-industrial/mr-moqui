@@ -66,6 +66,8 @@ pub(super) fn install_helpers(ctx: &Ctx<'_>) -> Result<(), Error> {
     globals.set("compare", compare).map_err(js_error)?;
     let convert = Function::new(ctx.clone(), js_basic_convert).map_err(js_error)?;
     globals.set("basicConvert", convert).map_err(js_error)?;
+    let to_decimal = Function::new(ctx.clone(), js_to_decimal).map_err(js_error)?;
+    globals.set("toDecimal", to_decimal).map_err(js_error)?;
     let order = Function::new(ctx.clone(), js_compare_order).map_err(js_error)?;
     globals.set("__compareOrder", order).map_err(js_error)?;
     let in_range = Function::new(ctx.clone(), js_in_date_range).map_err(js_error)?;
@@ -120,6 +122,23 @@ pub(super) fn js_basic_convert<'js>(
     host_guard(&ctx, || {
         let host = js_to_host(&ctx, &value)?;
         host_to_js(&ctx, moqui_lib::object::basic_convert(&host, &kind).value)
+    })
+}
+
+/// `toDecimal(x)`: a decimal from a decimal, a number or numeric text, else an error.
+pub(super) fn js_to_decimal<'js>(ctx: Ctx<'js>, value: JsValue<'js>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let host = js_to_host(&ctx, &value)?;
+        match super::decimal::decimal_of(&host) {
+            Some(decimal) => host_to_js(&ctx, decimal),
+            None => Err(Exception::throw_message(
+                &ctx,
+                &format!(
+                    "toDecimal takes a decimal, a number or numeric text, not {}",
+                    moqui_lib::object::to_plain_string(&host)
+                ),
+            )),
+        }
     })
 }
 
