@@ -1100,7 +1100,11 @@ fn page_keys(form: &MNode, rows: usize) -> Result<Option<PageKeys>, Error> {
 }
 
 /// For one row, in the row's frame: the text of its `display-entity` fields and the fields its `set` elements make.
-fn row_extras(node: &MNode, form_name: &str, include: &dyn Fn(&MNode) -> bool) -> Result<IndexMap<String, Value>, Error> {
+fn row_extras(
+    node: &MNode,
+    form_name: &str,
+    include: &dyn Fn(&MNode) -> bool,
+) -> Result<IndexMap<String, Value>, Error> {
     row_extras_of(node, form_name, include, &["default-field", "conditional-field"])
 }
 

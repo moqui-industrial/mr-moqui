@@ -366,7 +366,10 @@ pub(super) fn iteration_entries(value: &Value) -> Vec<(Option<String>, Value)> {
 
 /// `CollectionUtilities.paginateList`: the page of `items` named by `pageIndex` and `pageSize`, with
 /// the list's count and page variables put in the context.
-pub(super) fn paginate_items(list_name: &str, items: Vec<(Option<String>, Value)>) -> Result<Vec<(Option<String>, Value)>, Error> {
+pub(super) fn paginate_items(
+    list_name: &str,
+    items: Vec<(Option<String>, Value)>,
+) -> Result<Vec<(Option<String>, Value)>, Error> {
     let mut context = script::context_combined();
     let size = i32::try_from(items.len()).map_err(|_| Error::new("list is too long to paginate"))?;
     moqui_lib::collection::paginate_parameters(size, list_name, &mut context)?;
