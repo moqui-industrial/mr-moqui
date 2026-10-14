@@ -24,13 +24,51 @@ pub(super) fn entity_find<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<
     })
 }
 
-pub(super) fn entity_make_value<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<Class<'js, HostEntity>> {
+pub(super) fn entity_make_value<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let facade = facade_of(&ctx)?;
         let value = facade.make_value(&name).map_err(|err| throw_lib(&ctx, &err))?;
-        Class::instance(ctx.clone(), HostEntity::new(value))
+        entity_to_js(&ctx, HostEntity::new(value))
     })
 }
+
+/// The handler that makes an entity value read and write its fields as properties, as Java's `EntityValue` is a map:
+/// `value.statusId` reads the field and `value.statusId = 'X'` sets it. Methods win over a field of the same name.
+/// `Object.keys` and `JSON.stringify` see the fields.
+pub(super) const ENTITY_PROXY: &str = r#"(function () {
+    const handler = {
+        get(t, k) {
+            if (typeof k !== "string" || k in t) { const v = Reflect.get(t, k); return typeof v === "function" ? v.bind(t) : v; }
+            return t.hasField(k) ? t.get(k) : undefined;
+        },
+        set(t, k, v) {
+            if (typeof k === "string" && !(k in t)) {
+                if (!t.hasField(k)) throw new Error("The field name " + k + " is not valid for entity " + t.getEntityName());
+                t.set(k, v);
+                return true;
+            }
+            return Reflect.set(t, k, v);
+        },
+        has(t, k) { return typeof k === "string" ? t.hasField(k) || k in t : k in t; },
+        deleteProperty(t, k) { if (typeof k === "string" && t.hasField(k)) { t.set(k, null); return true; } return false; },
+        ownKeys(t) { return t.fieldNames(); },
+        getOwnPropertyDescriptor(t, k) {
+            if (typeof k === "string" && t.hasField(k)) return { value: t.get(k), writable: true, enumerable: true, configurable: true };
+            return undefined;
+        },
+    };
+    return (t) => new Proxy(t, handler);
+})()"#;
+
+/// An entity value as a script sees it: the host object behind the field proxy.
+pub(super) fn entity_to_js<'js>(ctx: &Ctx<'js>, host: HostEntity) -> rquickjs::Result<JsValue<'js>> {
+    let instance = Class::instance(ctx.clone(), host)?;
+    let wrap: Function = ctx.globals().get(ENTITY_PROXY_NAME)?;
+    wrap.call((instance,))
+}
+
+/// The global that holds the proxy maker. A name a context variable is not likely to have.
+pub(super) const ENTITY_PROXY_NAME: &str = "__moquiEntityProxy";
 
 pub(super) fn wrap_find<'js>(ctx: &Ctx<'js>, find: EntityFind) -> rquickjs::Result<Class<'js, HostFind>> {
     Class::instance(
@@ -182,10 +220,23 @@ impl HostFind {
         })
     }
 
-    /// Reads go to the entity cache or the database as `EntityFind` decides, so the cache and
-    /// clone hints change nothing.
-    fn use_cache<'js>(&self, ctx: Ctx<'js>, _flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostFind>> {
-        host_guard(&ctx, || wrap_find(&ctx, take_find(&ctx, &self.inner)?))
+    /// `useCache(flag)`: through the entity cache for any entity not marked `never`, as Java's `EntityFind.useCache`. A
+    /// null or undefined flag leaves the entity's own setting.
+    fn use_cache<'js>(&self, ctx: Ctx<'js>, flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostFind>> {
+        host_guard(&ctx, || {
+            let find = take_find(&ctx, &self.inner)?;
+            let find = if flag.is_null() || flag.is_undefined() {
+                find
+            } else {
+                let on = flag.as_bool().unwrap_or_else(|| {
+                    flag.as_string()
+                        .and_then(|text| text.to_string().ok())
+                        .is_some_and(|text| text == "true")
+                });
+                find.use_cache(on)
+            };
+            wrap_find(&ctx, find)
+        })
     }
 
     fn for_update<'js>(&self, ctx: Ctx<'js>, flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostFind>> {
@@ -232,10 +283,7 @@ impl HostFind {
                 .one()
                 .map_err(|err| throw_lib(&ctx, &err))?;
             match found {
-                Some(value) => {
-                    let class = Class::instance(ctx.clone(), HostEntity::new(value))?;
-                    class.into_js(&ctx)
-                }
+                Some(value) => entity_to_js(&ctx, HostEntity::new(value)),
                 None => Null.into_js(&ctx),
             }
         })
@@ -373,10 +421,7 @@ impl HostList {
             let index =
                 usize::try_from(index).map_err(|_| Exception::throw_message(&ctx, "list index is too large"))?;
             match self.inner.get(index) {
-                Some(value) => {
-                    let class = Class::instance(ctx.clone(), HostEntity::new(value.clone()))?;
-                    class.into_js(&ctx)
-                }
+                Some(value) => entity_to_js(&ctx, HostEntity::new(value.clone())),
                 None => Null.into_js(&ctx),
             }
         })
@@ -450,6 +495,8 @@ impl HostList {
 pub(super) struct HostEntity {
     #[qjs(skip_trace)]
     pub(super) inner: Arc<EntityCell>,
+    #[qjs(skip_trace)]
+    pub(super) fields: std::sync::OnceLock<Arc<[String]>>,
 }
 
 /// An entity value a script and the context stack share by reference.
@@ -457,13 +504,35 @@ pub(super) type EntityCell = Mutex<EntityValue>;
 
 impl HostEntity {
     fn new(value: EntityValue) -> Self {
+        Self::of(Arc::new(Mutex::new(value)))
+    }
+
+    pub(super) fn of(inner: Arc<EntityCell>) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(value)),
+            inner,
+            fields: std::sync::OnceLock::new(),
         }
     }
 
     fn val(&self) -> MutexGuard<'_, EntityValue> {
         self.inner.lock().unwrap_or_else(|err| err.into_inner())
+    }
+
+    /// The field names of the value's entity, read once for this object.
+    fn field_list(&self, ctx: &Ctx<'_>) -> rquickjs::Result<Arc<[String]>> {
+        if let Some(found) = self.fields.get() {
+            return Ok(Arc::clone(found));
+        }
+        let facade = facade_of(ctx)?;
+        let entity_name = self.val().entity_name().to_string();
+        let names: Arc<[String]> = facade
+            .with_entity(&entity_name, |entity, _, _| {
+                Ok(entity.fields.iter().map(|field| field.name.clone()).collect::<Vec<_>>())
+            })
+            .map_err(|err| throw_lib(ctx, &err))?
+            .into();
+        let _ = self.fields.set(Arc::clone(&names));
+        Ok(names)
     }
 }
 
@@ -473,6 +542,33 @@ impl HostEntity {
         host_guard(&ctx, || match self.val().get(&field) {
             Some(value) => value_to_js(&ctx, value),
             None => Null.into_js(&ctx),
+        })
+    }
+
+    /// Whether `name` is a field of the entity.
+    fn has_field(&self, ctx: Ctx<'_>, name: String) -> rquickjs::Result<bool> {
+        host_guard(&ctx, || Ok(self.field_list(&ctx)?.contains(&name)))
+    }
+
+    /// The entity's field names in definition order.
+    fn field_names(&self, ctx: Ctx<'_>) -> rquickjs::Result<Vec<String>> {
+        host_guard(&ctx, || Ok(self.field_list(&ctx)?.to_vec()))
+    }
+
+    fn get_entity_name(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(self.val().entity_name().to_string()))
+    }
+
+    /// `getMap()`: the fields as a plain map.
+    fn get_map<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            let map: indexmap::IndexMap<String, Value> = self
+                .val()
+                .fields()
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect();
+            host_to_js(&ctx, Value::Map(map))
         })
     }
 
@@ -625,9 +721,7 @@ impl HostEntity {
                 .one()
                 .map_err(|err| throw_lib(&ctx, &err))?;
             match found {
-                Some(value) => {
-                    Class::instance(ctx.clone(), HostEntity::new(value)).and_then(|class| class.into_js(&ctx))
-                }
+                Some(value) => entity_to_js(&ctx, HostEntity::new(value)),
                 None => Null.into_js(&ctx),
             }
         })

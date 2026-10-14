@@ -345,23 +345,67 @@ impl TemplateRegistry {
             .map(|(_, renderer)| Arc::clone(renderer))
     }
 
+    /// The renderer for `location`, else for `default_extension` used as an extension (Java's `template(location,
+    /// defaultExtension)`, which a screen `<text template>` passes), else none.
+    pub fn renderer_with_default(&self, location: &str, default_extension: &str) -> Option<Arc<dyn TemplateRenderer>> {
+        self.renderer_for(location).or_else(|| {
+            let extension = default_extension.trim().trim_start_matches('.');
+            (!extension.is_empty() && extension != "true").then(|| self.renderer_for(&format!("template.{extension}")))?
+        })
+    }
+
     /// Render a file template. `ec.resource.template`. The prepared text (the HTML of a markdown
     /// file) is kept by location and last-modified time, and the compiled form by its text. A
-    /// location whose extension has no renderer is an error.
+    /// location whose extension has no renderer is its text, as in Java.
     ///
     /// # Errors
     ///
-    /// Returns an error when no renderer matches, the file is missing, or the template fails.
+    /// Returns an error when the file is missing or the template fails.
     pub fn render_location(
         &self,
         factory: &ExecutionContextFactory,
         location: &str,
         data: Option<&Value>,
     ) -> Result<String, Error> {
-        let renderer = self
-            .renderer_for(location)
-            .ok_or_else(|| Error::new(format!("no template renderer for location {location}")))?;
-        let resource = factory.resource().get(location)?;
+        self.render_location_default(factory, location, data, "")
+    }
+
+    /// [`Self::render_location`] with Java's default extension for a location that has no renderer of its own.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::render_location`].
+    pub fn render_location_default(
+        &self,
+        factory: &ExecutionContextFactory,
+        location: &str,
+        data: Option<&Value>,
+        default_extension: &str,
+    ) -> Result<String, Error> {
+        let Some(renderer) = self.renderer_with_default(location, default_extension) else {
+            return self.location_text(factory, location).map(|text| text.to_string());
+        };
+        let text = self.prepared(factory, location, &format!("t:{location}"), |source| renderer.prepare(source))?;
+        renderer.render_prepared(&text, data)
+    }
+
+    /// The text of a file, kept by location and last-modified time as Java's `resource.text.location`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file cannot be read.
+    pub fn location_text(&self, factory: &ExecutionContextFactory, location: &str) -> Result<Arc<str>, Error> {
+        self.prepared(factory, location, &format!("x:{location}"), |source| Ok(source.to_string()))
+    }
+
+    fn prepared(
+        &self,
+        factory: &ExecutionContextFactory,
+        location: &str,
+        key: &str,
+        prepare: impl FnOnce(&str) -> Result<String, Error>,
+    ) -> Result<Arc<str>, Error> {
+        let resource = factory.resource().get(location.split('#').next().unwrap_or(location))?;
         // A file is kept by its modified time. A database or http resource has none, and its text is
         // already in hand, so it is kept by a hash of that text: the markdown is not converted again.
         let (stamp, source) = match resource.last_modified() {
@@ -375,25 +419,22 @@ impl TemplateRegistry {
             .files
             .lock()
             .unwrap_or_else(|err| err.into_inner())
-            .get(location)
+            .get(key)
             .filter(|(kept, _)| *kept == stamp)
             .map(|(_, text)| text);
-        let text = match cached {
-            Some(text) => text,
-            None => {
-                let source = match source {
-                    Some(source) => source,
-                    None => resource.read_text()?,
-                };
-                let text: Arc<str> = renderer.prepare(&source)?.into();
-                self.files
-                    .lock()
-                    .unwrap_or_else(|err| err.into_inner())
-                    .insert(location.to_string(), (stamp, Arc::clone(&text)));
-                text
-            }
+        if let Some(text) = cached {
+            return Ok(text);
+        }
+        let source = match source {
+            Some(source) => source,
+            None => resource.read_text()?,
         };
-        renderer.render_prepared(&text, data)
+        let text: Arc<str> = prepare(&source)?.into();
+        self.files
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .insert(key.to_string(), (stamp, Arc::clone(&text)));
+        Ok(text)
     }
 }
 

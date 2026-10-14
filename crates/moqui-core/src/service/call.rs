@@ -406,6 +406,35 @@ fn split_name(name: &str) -> (String, String) {
     }
 }
 
+/// The authorization action of the service `name`: its `authz-action`, else by its verb. A name with no definition goes
+/// by the verb in the name, as Java's `TransitionItem.resolveAuthzAction`.
+pub(crate) fn service_authz_action(name: &str) -> String {
+    let name = canonical(name);
+    if let Some(def) = super::define::find(&name) {
+        return auth_action(&def).to_string();
+    }
+    let (verb, _) = split_name(&name);
+    let verb = verb.rsplit('.').next().unwrap_or(&verb);
+    verb_action(verb).to_string()
+}
+
+/// The in-parameter names of a defined service, in definition order. None when no service has that name.
+pub(crate) fn service_in_parameter_names(name: &str) -> Option<Vec<String>> {
+    let def = super::define::find(&canonical(name))?;
+    Some(def.in_params.iter().map(|parameter| parameter.name.clone()).collect())
+}
+
+/// The entity of an implicit entity-auto service name such as `create#moqui.basic.Enumeration`, when it has no
+/// definition of its own.
+pub(crate) fn entity_auto_noun(name: &str) -> Option<String> {
+    let name = canonical(name);
+    if super::define::find(&name).is_some() {
+        return None;
+    }
+    let (verb, noun) = split_name(&name);
+    (matches!(verb.as_str(), "create" | "update" | "store" | "delete") && !noun.is_empty()).then_some(noun)
+}
+
 fn auth_action(def: &ServiceDef) -> &str {
     def.authz_action.as_deref().unwrap_or_else(|| verb_action(&def.verb))
 }

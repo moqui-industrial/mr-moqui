@@ -18,6 +18,17 @@
 pub struct MessageFacade {
     messages: Vec<String>,
     errors: Vec<String>,
+    validation_errors: Vec<ValidationError>,
+}
+
+/// `ValidationError`: an error for one field of a form or service. Its text is also in the error list, so whatever
+/// asks whether there are errors sees it, as Java's `hasError` counts validation errors.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ValidationError {
+    pub form: String,
+    pub field: String,
+    pub service: String,
+    pub message: String,
 }
 
 impl MessageFacade {
@@ -43,6 +54,29 @@ impl MessageFacade {
         self.errors.push(error);
     }
 
+    pub fn add_validation_error(&mut self, form: &str, field: &str, service: &str, message: &str) {
+        if message.is_empty() {
+            return;
+        }
+        let text = if field.is_empty() {
+            message.to_string()
+        } else {
+            format!("{message} ({field})")
+        };
+        tracing::error!("{text}");
+        self.errors.push(text);
+        self.validation_errors.push(ValidationError {
+            form: form.to_string(),
+            field: field.to_string(),
+            service: service.to_string(),
+            message: message.to_string(),
+        });
+    }
+
+    pub fn validation_errors(&self) -> &[ValidationError] {
+        &self.validation_errors
+    }
+
     pub fn messages(&self) -> &[String] {
         &self.messages
     }
@@ -54,5 +88,6 @@ impl MessageFacade {
     pub fn clear(&mut self) {
         self.messages.clear();
         self.errors.clear();
+        self.validation_errors.clear();
     }
 }

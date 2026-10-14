@@ -145,9 +145,9 @@ fn traversal_hidden_sources_and_links_out_of_the_directory_are_not_found() {
         "/css",
     ] {
         let response = serve_at(&world.factory, request("GET", path), &site.root);
-        // Other.xml is a screen of the site, so it asks for a login. Nothing else is found at all.
+        // Other.xml is a screen of the site, so it redirects to the login. Nothing else is found at all.
         assert!(
-            response.status == 404 || (path == "/Other.xml" && response.status == 401),
+            response.status == 404 || (path == "/Other.xml" && response.status == 302),
             "{path}: {} {}",
             response.status,
             response.body_text()

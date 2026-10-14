@@ -260,6 +260,19 @@ impl ExecutionContextFactory {
         }
     }
 
+    /// The https host and port of a conf `webapp` whose `https-enabled` is `true`, either empty when the conf leaves
+    /// it out. None when https is not enabled.
+    pub fn webapp_https(&self, webapp_name: &str) -> Option<(String, String)> {
+        let conf = self.conf();
+        let attr = |name: &str| {
+            conf.webapp_attr(webapp_name, name)
+                .map(|raw| moqui_lib::env::expand(&raw).unwrap_or(raw))
+                .map(|value| value.trim().to_string())
+                .unwrap_or_default()
+        };
+        (attr("https-enabled") == "true").then(|| (attr("https-host"), attr("https-port")))
+    }
+
     fn conf(&self) -> &ConfCache {
         self.conf_cache.get_or_init(|| ConfCache::parse(&self.conf_text))
     }

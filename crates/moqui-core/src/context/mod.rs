@@ -33,7 +33,7 @@ pub use error::{Error, ErrorKind};
 pub(crate) use factory::{append_env_secrets, standard_base64};
 pub use factory::{ContextGuard, ExecutionContext, ExecutionContextFactory};
 pub use locate::{framework_dir, locate};
-pub use message::MessageFacade;
+pub use message::{MessageFacade, ValidationError};
 pub use resource::{ResourceFacade, ResourceRef};
 
 #[cfg(test)]

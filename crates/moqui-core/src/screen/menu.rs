@@ -148,7 +148,7 @@ pub fn menu_data(state: &RenderState, path_names: &[String]) -> Result<Option<Va
 
         let mut subscreens: Vec<Value> = Vec::new();
         for item in cur_screen.subscreens.sorted() {
-            if !item.menu_include && &item.name != next_item {
+            if (!item.menu_include && &item.name != next_item) || !item.is_valid_in_current_context() {
                 continue;
             }
             let screen_path = format!("{current_path}/{}", moqui_lib::string::url_encode_if_needed(&item.name));

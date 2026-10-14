@@ -456,20 +456,28 @@ pub fn render_subscreen(state: &RenderState, runner: &dyn Runner) -> Result<(), 
         return Ok(());
     }
     let next = Arc::clone(&defs[index + 1]);
-    if index > 0 {
-        let current = active_def(state);
-        if let Some(name) = state.url_info.full_path.get(index) {
-            if let Some(item) = current.subscreens.get(name) {
-                if let Some(disable) = &item.disable_when {
-                    if script::eval_condition(disable)? {
-                        return Err(Error::of_kind(
-                            ErrorKind::Unauthorized,
-                            format!("The screen {} is not available", next.screen_name),
-                        ));
-                    }
-                }
-            }
-        }
+    let item = state
+        .url_info
+        .full_path
+        .get(index)
+        .and_then(|name| active_def(state).subscreens.get(name).cloned());
+    // An item limited to a user group is there only for its members, at any depth.
+    if item.as_ref().is_some_and(|item| !item.is_valid_in_current_context()) {
+        return Err(Error::of_kind(
+            ErrorKind::Unauthorized,
+            format!("The screen {} is not available", next.screen_name),
+        ));
+    }
+    // `disable-when` blocks the screen below the first level. (Java defines it but reads it nowhere; kept here.)
+    let disabled = match item.as_ref().and_then(|item| item.disable_when.as_ref()) {
+        Some(disable) if index > 0 => script::eval_condition(disable)?,
+        _ => false,
+    };
+    if disabled {
+        return Err(Error::of_kind(
+            ErrorKind::Unauthorized,
+            format!("The screen {} is not available", next.screen_name),
+        ));
     }
     state.screen_path_index.set(index + 1);
     let result = if state.stopped.borrow().contains(&next.location) {
@@ -527,26 +535,19 @@ pub fn render_text(state: &RenderState, location: &str, template: &str) -> Resul
         );
         return Ok(String::new());
     }
+    let registry = script::template::TemplateRegistry::of(&state.factory);
     if template == "false" {
-        return state.factory.resource().get(location)?.read_text();
+        return registry.location_text(&state.factory, location).map(|text| text.to_string());
     }
     if location.ends_with(".ftl") {
         return Err(Error::new(format!(
             "FreeMarker template {location} is not supported; port it to the fancy dialect"
         )));
     }
-    let registry = script::template::TemplateRegistry::of(&state.factory);
+    // As Java's renderText: the renderer of the location's extension, else of the `template` value as an extension,
+    // else the file's text as it is, so a .js or .css file is not run as a template.
     script::push_context_frame();
-    let rendered = if registry.renderer_for(location).is_some() {
-        registry.render_location(&state.factory, location, None)
-    } else {
-        state
-            .factory
-            .resource()
-            .get(location)
-            .and_then(|resource| resource.read_text())
-            .and_then(|text| script::template::render_trusted(&text, script::template::Escape::None))
-    };
+    let rendered = registry.render_location_default(&state.factory, location, None, template);
     script::pop_context_frame();
     write(state, &rendered?);
     Ok(String::new())
@@ -764,7 +765,17 @@ pub fn get_field_entity_value(widget: &NodeLit) -> Result<String, Error> {
     let facade = ExecutionContext::with_current(|ec| ec.factory().entity())
         .flatten()
         .ok_or_else(|| Error::new("no entity facade is installed"))?;
-    let found = facade.find(entity_name)?.eq(&key_field, field_value).one()?;
+    // As Java's getFieldEntityValue: through the entity cache unless the widget says `use-cache="false"`, so a form-list
+    // does not query once per row for the same few values.
+    let use_cache = [widget.attr("use-cache"), widget.attr("entity-use-cache")]
+        .into_iter()
+        .find(|text| !text.is_empty())
+        .is_none_or(|text| text == "true");
+    let found = facade
+        .find(entity_name)?
+        .eq(&key_field, field_value)
+        .use_cache(use_cache)
+        .one()?;
     let Some(found) = found else {
         return default_text(widget);
     };
@@ -1607,7 +1618,12 @@ pub fn menu_items(state: &RenderState, screen_path: Option<&str>) -> Result<Vec<
         None => (active_def(state), None),
     };
     let mut out = Vec::new();
-    for item in def.subscreens.sorted().into_iter().filter(|item| item.menu_include) {
+    for item in def
+        .subscreens
+        .sorted()
+        .into_iter()
+        .filter(|item| item.menu_include && item.is_valid_in_current_context())
+    {
         let url = match &prefix {
             Some(names) => {
                 let mut full = names.clone();

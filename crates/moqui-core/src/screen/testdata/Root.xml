@@ -12,6 +12,7 @@
         <default-response url="Sub"><parameter name="x" value="1"/><parameter name="who" from="'a b'"/></default-response>
     </transition>
     <transition name="goNone"><default-response type="none"/></transition>
+    <transition name="goLast" require-session-token="false"><default-response type="screen-last"/></transition>
     <transition name="goCond">
         <conditional-response url="Home"><condition><expression>flag == 'y'</expression></condition></conditional-response>
         <default-response url="Sub"/>

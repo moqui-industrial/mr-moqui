@@ -535,6 +535,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn set_on_an_entity_value_field_sets_the_field() {
+        let facade = open_facade();
+        let ctx = ExecutionContextFactory::test_context();
+        ctx.factory().set_entity(facade.clone());
+        let _guard = ctx.enter();
+        clear_context_stack();
+        // A value's fields are properties, as on Java's EntityValue map: set, read, keys, and JSON.
+        run_actions(
+            r#"<actions>
+                <entity-make-value entity-name="moqui.test.TestEntity" value-field="made"/>
+                <set field="made.testId" value="SetField"/>
+                <set field="made.testMedium" value="medium"/>
+                <script>made.create(); keys = Object.keys(made).includes('testMedium'); json = JSON.parse(JSON.stringify(made)).testId;
+                    try { made.notAField = 1; refused = 'no' } catch (e) { refused = 'yes' }</script>
+                <entity-find-one entity-name="moqui.test.TestEntity" value-field="found"><field-map field-name="testId" value="SetField"/></entity-find-one>
+                <set field="seenMedium" from="found.testMedium"/>
+                <set field="hasIt" from="'testMedium' in found"/>
+            </actions>"#,
+        )
+        .unwrap();
+        let read = |name: &str| crate::script::runtime::context_value(name).map(|value| moqui_lib::object::to_plain_string(&value));
+        assert_eq!(read("seenMedium"), Some("medium".to_string()));
+        assert_eq!(read("keys"), Some("true".to_string()));
+        assert_eq!(read("json"), Some("SetField".to_string()));
+        assert_eq!(read("refused"), Some("yes".to_string()));
+        assert_eq!(read("hasIt"), Some("true".to_string()));
+        clear_context_stack();
+    }
+
     fn open_facade() -> EntityFacade {
         crate::testing::open()
     }

@@ -68,9 +68,7 @@ const ERROR_PARAMETERS: &str = "moqui.error.parameters";
 const MESSAGE_PUBLIC: &str = "moqui.message.public";
 const MESSAGE_ERROR: &str = "moqui.message.error";
 const SCREEN_HISTORY: &str = "moqui.screen.history";
-#[allow(dead_code)] // Stored when a caller puts the key in the attribute map. No setter in this slice.
 const LAST_PATH: &str = "moqui.screen.last.path";
-#[allow(dead_code)] // Stored when a caller puts the key in the attribute map. No setter in this slice.
 const LAST_PARAMETERS: &str = "moqui.screen.last.parameters";
 const MAX_FLUSH_ATTEMPTS: usize = 5;
 const VISITOR_MAX_AGE: u64 = 31_536_000;
@@ -654,6 +652,53 @@ pub fn push_screen_history(screen: &str) {
         session.screen_history.truncate(40);
         let encoded = json_string_list(&session.screen_history);
         put_json(session, SCREEN_HISTORY, encoded);
+    });
+}
+
+/// The parameters a response saved for the next request, which the session forgets: Java's `WebFacadeImpl` takes
+/// `moqui.saved.parameters` when a request starts and puts them under the request's own parameters.
+pub fn take_saved_parameters() -> BTreeMap<String, String> {
+    with_session(|session| {
+        let taken = std::mem::take(&mut session.saved);
+        if session.attributes.remove(SAVED).is_some() && session.bound_id.is_some() {
+            session.dirty_json.insert(SAVED.to_string());
+        }
+        taken
+    })
+}
+
+/// `WebFacade.saveScreenLastInfo`: the path and parameters a `screen-last` response goes back to, such as the page a user
+/// asked for before signing in.
+pub fn save_screen_last(path: &str, parameters: &BTreeMap<String, String>) {
+    with_session(|session| {
+        put_json(session, LAST_PATH, Json::Text(path.to_string()));
+        put_json(session, LAST_PARAMETERS, json_string_map(parameters));
+    });
+}
+
+/// `getRemoveScreenLastPath`: the saved path, which the session forgets.
+pub fn take_screen_last_path() -> Option<String> {
+    with_session(|session| {
+        let path = attribute_text(session.attributes.get(LAST_PATH));
+        if session.attributes.remove(LAST_PATH).is_some() && session.bound_id.is_some() {
+            session.dirty_json.insert(LAST_PATH.to_string());
+        }
+        path.filter(|text| !text.is_empty())
+    })
+}
+
+/// `removeScreenLastParameters`: drop the saved parameters, first making them the saved parameters a `screen-last`
+/// response carries when `to_saved`.
+pub fn remove_screen_last_parameters(to_saved: bool) {
+    with_session(|session| {
+        if to_saved {
+            session.saved = attributes_string_map(&session.attributes, LAST_PARAMETERS);
+            let encoded = json_string_map(&session.saved);
+            put_json(session, SAVED, encoded);
+        }
+        if session.attributes.remove(LAST_PARAMETERS).is_some() && session.bound_id.is_some() {
+            session.dirty_json.insert(LAST_PARAMETERS.to_string());
+        }
     });
 }
 

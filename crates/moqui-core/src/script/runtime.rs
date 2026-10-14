@@ -451,6 +451,10 @@ fn install_context(ctx: &Ctx<'_>) -> Result<Helpers, Error> {
     let web_utilities = Object::new(ctx.clone()).map_err(js_error)?;
     ec_extra::fill_helpers(ctx, &string_utilities, &collection_utilities, &web_utilities)?;
     // Own property before the proxy. A later set walks the prototype and the proxy refuses objects.
+    let entity_proxy: JsValue = eval_js(ctx, entities::ENTITY_PROXY)?;
+    ctx.globals()
+        .set(entities::ENTITY_PROXY_NAME, entity_proxy)
+        .map_err(js_error)?;
     install_ec(ctx)?;
     install_helpers(ctx)?;
     install_proxy(ctx)?;

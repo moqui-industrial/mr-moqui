@@ -50,7 +50,7 @@ pub(super) fn temporal_text(value: &Value) -> String {
 
 pub(super) fn object_to_js<'js>(ctx: &Ctx<'js>, object: &HostObject) -> rquickjs::Result<JsValue<'js>> {
     if let Some(inner) = object.downcast::<EntityCell>() {
-        return Class::instance(ctx.clone(), HostEntity { inner }).and_then(|class| class.into_js(ctx));
+        return entity_to_js(ctx, HostEntity::of(inner));
     }
     if let Some(inner) = object.downcast::<EntityList>() {
         return Class::instance(ctx.clone(), HostList { inner }).and_then(|class| class.into_js(ctx));
@@ -192,6 +192,14 @@ pub(super) fn js_value_to_host(ctx: &Ctx<'_>, value: &JsValue<'_>) -> Result<Val
     }
     if value.is_function() {
         return Err(Error::new("cannot convert this value"));
+    }
+    // An entity value reaches a script behind its field proxy; the host object is the proxy's target.
+    if let Some(proxy) = value.as_proxy() {
+        if let Ok(target) = proxy.target() {
+            if let Some(class) = target.as_class::<HostEntity>() {
+                return Ok(Value::Object(HostObject(class.borrow().inner.clone())));
+            }
+        }
     }
     if let Some(object) = value.as_object() {
         if let Some(class) = object.as_class::<HostDecimal>() {

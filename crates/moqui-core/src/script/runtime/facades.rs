@@ -199,6 +199,30 @@ impl HostMessage {
         })
     }
 
+    /// `addValidationError(form, field, serviceName, message, throwable)`.
+    fn add_validation_error(
+        &self,
+        ctx: Ctx<'_>,
+        form: Opt<JsValue<'_>>,
+        field: Opt<JsValue<'_>>,
+        service: Opt<JsValue<'_>>,
+        message: Opt<JsValue<'_>>,
+    ) -> rquickjs::Result<()> {
+        host_guard(&ctx, || {
+            let text = |value: Opt<JsValue<'_>>| -> rquickjs::Result<String> {
+                match value.0 {
+                    Some(value) if !value.is_null() && !value.is_undefined() => {
+                        Ok(moqui_lib::object::to_plain_string(&js_to_host(&ctx, &value)?))
+                    }
+                    _ => Ok(String::new()),
+                }
+            };
+            let (form, field, service, message) = (text(form)?, text(field)?, text(service)?, text(message)?);
+            with_ec(&ctx, |ec| ec.message().add_validation_error(&form, &field, &service, &message))?;
+            Ok(())
+        })
+    }
+
     fn add_message(&self, ctx: Ctx<'_>, message: String, _kind: Opt<String>) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
             with_ec(&ctx, |ec| ec.message().add_message(message))?;

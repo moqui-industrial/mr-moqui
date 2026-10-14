@@ -205,9 +205,15 @@ fn login_method_parameter_and_csrf_misses() {
     assert_eq!(response.status, 400, "{}", response.body_text());
     assert!(response.body_text().contains("username"), "{}", response.body_text());
 
+    // A session that came with the request has a token, and a post without it is refused. (A session made by the
+    // request itself has not sent its token yet, so Java does not check one then.)
+    let first = serve_at(&world.factory, request("GET", "/rest/login"), &root);
+    let cookie = header_value(&first, "Set-Cookie").expect("session cookie");
+    let session = cookie.split(';').next().unwrap().split_once('=').unwrap().1.to_string();
     let mut otp = request("POST", "/rest/sendOtp");
     otp.set_header("content-type", "application/x-www-form-urlencoded");
     otp.body = b"factorId=EMAIL".to_vec();
+    otp.session_cookie = Some(session);
     let response = serve_at(&world.factory, otp, &root);
     assert_eq!(response.status, 401, "{}", response.body_text());
 }

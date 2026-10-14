@@ -303,6 +303,20 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   static template, row selection, first/second/last rows, aggregation, the column picker and the csv/text/pdf buttons; precompiled `m-*`
   templates, which `webapp_qvt_static_only=true` waits for; the `lookup` widget (a text line, as the Java macro was commented out). A static
   template is fetched once to read `X-Moqui-Qvt` and then loaded again by a script element (a URL without the query), so it downloads twice.
+- **Deferred after the Phase 8 and 10 review against Java.** Each is a Java feature no screen in this tree needs yet; the Java reference is
+  in `ScreenRenderImpl` (SRI), `ScreenDefinition` (SD), `ScreenForm` (SF) and `ScreenUrlInfo` (SUI):
+  - saved finds: `formListFindId`, `FormListFindUserDefault` and the `formSaveFind` transition (SRI:336-378, SD:1113-1135);
+  - the `formSelectColumns` transition (SD:1135-1165) and `screenDoc` (SD:1168-1193);
+  - the `screen.user.page.size` preference (SRI:391-404);
+  - `auto-fields-service` and `auto-widget-service` (SF:147-176), which `Tools/Service/ServiceRun.xml` needs;
+  - `DbForm` forms and `extends` of one (SF:72-80, 334-350), and `setSubFieldValidateAttrs` (SF:214-276), the client checks from a
+    transition's service;
+  - form-list aggregation (`group-by`, `sub-list`, `show-total`) and a select limited to the displayed and hidden fields (SF:2033-2139);
+  - tree node JSON (`sendSubNodeJson`, SD:1085-1088), `include-child-content` and template files under a screen (SRI:650-747),
+    transition names that are patterns (SD:509-515), and `section-include` copying only what the section holds (SD:366-390).
+- **Differences that stay.** `disable-when` on a `subscreens-item` blocks the screen below the first level; Java defines `getDisable`
+  but reads it nowhere. The `default-display` attribute of an entity field is not read (no entity in this tree or the Java components
+  sets it).
 
 - **Slice 3, fancy renderers.** `script/template.rs` compiles the dialect in Rust to one JavaScript function, cached by
   source text, and the trusted renderer runs it on the script runtime. The locked-down renderer runs the same function in

@@ -190,17 +190,23 @@ pub(super) fn add_resource_functions<'js>(ctx: &Ctx<'js>, resource: &Object<'js>
 }
 
 /// `ec.resource.template(location, data)`: the file rendered by the renderer for its extension, as
-/// text. A trusted renderer reads the live context and adds `data` in a frame of its own. A
-/// locked-down renderer sees only `data`.
+/// text, or the file's text when no renderer has its extension. A trusted renderer reads the live context and adds
+/// `data` in a frame of its own. A locked-down renderer sees only `data`. A string second argument is Java's
+/// `defaultExtension`: the renderer to use when the location's extension has none.
 fn resource_template(ctx: Ctx<'_>, location: String, data: Opt<JsValue<'_>>) -> rquickjs::Result<String> {
     host_guard(&ctx, || {
+        let mut default_extension = String::new();
         let data = match data.0 {
+            Some(value) if value.is_string() => {
+                default_extension = js_string(&ctx, &value)?;
+                None
+            }
             Some(value) if !value.is_undefined() && !value.is_null() => Some(js_to_host(&ctx, &value)?),
             _ => None,
         };
         let factory = with_ec(&ctx, |ec| Arc::clone(ec.factory()))?;
         crate::script::template::TemplateRegistry::of(&factory)
-            .render_location(&factory, &location, data.as_ref())
+            .render_location_default(&factory, &location, data.as_ref(), &default_extension)
             .map_err(|err| throw_error(&ctx, &err))
     })
 }

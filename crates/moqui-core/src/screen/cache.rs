@@ -324,6 +324,10 @@ impl ScreenFacade {
 
     /// Whether every file `def` was read from still has its modified time, checked at most once per interval.
     pub(super) fn is_current(&self, factory: &ExecutionContextFactory, def: &ScreenDef) -> bool {
+        // A write to the SubscreensItem rows since this definition read them makes it stale at once.
+        if def.config_generation != crate::entity::screen_config_generation() {
+            return false;
+        }
         let interval = self.check_interval_ms.load(Ordering::Relaxed);
         if interval < 0 {
             return true;
