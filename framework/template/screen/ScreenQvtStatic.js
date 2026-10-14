@@ -1427,6 +1427,7 @@
         "render-mode": renderModeMacro,
         "text": textMacro,
         "render-dynamic-form": noteMacro("dynamic-form", "form"),
+        "form-list-user-columns": stmt((node, children) => children),
 
         "container": containerMacro,
         "container-box": containerBoxMacro,

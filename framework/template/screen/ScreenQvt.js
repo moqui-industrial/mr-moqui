@@ -32,9 +32,9 @@
 //  - The background-message of a form is text. The Java client evaluated it as a JavaScript string.
 //  - An editor-type html or md text-area is an m-text-area (QEditor, or a textarea with a Marked preview).
 //  - lookup is a text line. The Java macros had it commented out.
-//  - A form-list with group-by sub-lists renders every column in the main row, the saved finds list and the
-//    screen documents are not written (the user finds are not read yet), and the navigation bar sits above the
-//    table of a form-list and not in a table row.
+//  - A form-list with group-by sub-lists renders every column in the main row, and the navigation bar sits above
+//    the table of a form-list and not in a table row. The saved finds are listed in the find dialog; the menu
+//    data has them and the screen documents.
 //  - The mask of a text-line is converted from the Inputmask patterns (9, a, *) to Quasar mask tokens.
 //  - In fields-initial a link does not replace the _display text of a display or display-entity before it in the same field.
 (function (T, S) {
@@ -1105,6 +1105,28 @@
                 const current = sri.getScreenUrlInstance().cloneUrlInstance().removeParameter("pageIndex").removeParameter("moquiFormName").removeParameter("moquiSessionToken").removeParameter("lastStandalone").removeParameter("formListFindId");
                 const params = current.getParameterMap();
                 const saveUrl = sri.buildUrl("formSaveFind").path;
+                // The user's saved finds: a link that applies one, and buttons that update it to the current parameters,
+                // make it the screen's default or no longer, or delete it.
+                const finds = sri.getUserFormListFinds(at(n, "name"));
+                if (finds.length) {
+                    const activeId = ctx("formListFindId") || "";
+                    const defaultId = sri.getUserDefaultFormListFindId() || "";
+                    const base = sri.getScreenUrlInstance().path;
+                    w('<q-list dense class="q-my-sm">');
+                    finds.forEach((find) => {
+                        const id = find.formListFind.formListFindId;
+                        const label = (find.description || id) + (id === defaultId ? " (" + L("Default") + ")" : "");
+                        const fields = Object.assign({ formLocation: at(n, "name"), formListFindId: id }, params);
+                        const button = (name, text, color) => "<q-btn dense flat no-caps" + A({ type: "submit", name, value: name ? "Y" : null, color: color || null, label: text }) + "></q-btn>";
+                        w("<q-item" + A({ active: id === activeId ? true : null }) + "><q-item-section><m-link" + A({ href: base + "?formListFindId=" + encodeURIComponent(id) }) + ">" + t(label) + "</m-link></q-item-section>" +
+                            "<q-item-section side><m-form" + A({ class: "form-inline", action: saveUrl, ":fields-initial": js_(fields) }) + ">" +
+                            (find.isByUserId === "true" && Object.keys(params).length ? button(null, L("Update to Current")) : "") +
+                            (id === defaultId ? button("ClearDefault", L("Clear Default")) : button("MakeDefault", L("Make Default"))) +
+                            (find.isByUserId === "true" ? button("DeleteFind", L("Delete"), "negative") : "") +
+                            "</m-form></q-item-section></q-item>");
+                    });
+                    w("</q-list>");
+                }
                 if (Object.keys(params).length) {
                     w("<m-form" + A({
                         class: "form-inline", id: formId + "_NewFind", action: saveUrl, "v-slot:default": "formProps",

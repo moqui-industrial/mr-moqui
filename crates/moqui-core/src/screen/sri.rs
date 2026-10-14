@@ -1066,6 +1066,95 @@ pub fn render_dynamic_form(state: &RenderState, runner: &dyn Runner, name: &str)
     })
 }
 
+/// `sri.getUserFormListFinds(name)`: the saved finds the user may use for a form of the active screen.
+///
+/// # Errors
+///
+/// Returns an error when the saved find records cannot be read.
+pub fn user_form_list_finds(state: &RenderState, name: &str) -> Result<Vec<Value>, Error> {
+    let def = active_def(state);
+    let Some(form) = def.forms.get(name) else {
+        return Ok(Vec::new());
+    };
+    let location = super::saved_finds::form_location(&def.location, form.list, name);
+    super::saved_finds::user_form_list_finds(&super::saved_finds::saved_find_location(&location, form.dynamic))
+}
+
+/// `sri.getUserDefaultFormListFindId()`: the user's default saved find of the active screen.
+///
+/// # Errors
+///
+/// Returns an error when the record cannot be read.
+pub fn user_default_form_list_find_id(state: &RenderState) -> Result<Option<String>, Error> {
+    super::saved_finds::user_default_find_id(&active_def(state).location)
+}
+
+/// `sri.renderUserColumnsForm(name)`: a form-list whose columns the user chose (`FormConfig`, through the column dialog
+/// or the active saved find) is assembled with those columns, then generated and run as a dynamic form is. Returns
+/// false, rendering nothing, when the user has no columns for it, so the form's own code runs.
+///
+/// # Errors
+///
+/// Returns a security error. Any other error is written as text.
+pub fn render_user_columns_form(state: &RenderState, runner: &dyn Runner, name: &str) -> Result<bool, Error> {
+    let def = active_def(state);
+    let Some(form_def) = def.forms.get(name) else {
+        return Ok(false);
+    };
+    let location = super::saved_finds::form_location(&def.location, form_def.list, name);
+    let saved = super::saved_finds::saved_find_location(&location, form_def.dynamic);
+    let Some(columns) = super::saved_finds::user_columns(&location, &saved)? else {
+        return Ok(false);
+    };
+    let label = format!("form [{name}] in screen [{}]", def.location);
+    let mut rendered = false;
+    guarded(state, &label, || {
+        let base = if form_def.dynamic {
+            form::assemble_dynamic(&state.facade, &state.factory, &def, name)?
+        } else {
+            form::assemble(&state.facade, &state.factory, &def, name)?
+        };
+        let node = base.node()?;
+        let fields: Vec<String> = node
+            .children_named("field")
+            .iter()
+            .filter_map(|field| field.attribute("name"))
+            .collect();
+        node.remove_where(|child| {
+            child.name() == "form-list-column"
+                || (child.name() == "columns" && child.attribute("type").is_none_or(|kind| kind.is_empty()))
+        });
+        let config = moqui_lib::node::MNode::new("columns");
+        for column in &columns {
+            let column_node = config.append("column");
+            for field in column.iter().filter(|field| fields.contains(field)) {
+                column_node.append("field-ref").set_attribute("name", field.clone());
+            }
+        }
+        node.append_node(config);
+        let form = Arc::new(form::FormInstance::from_node(&def, &node)?);
+        let request = UnitRequest {
+            factory: &state.factory,
+            facade: &state.facade,
+            def: &def,
+            section: "",
+            fail: false,
+            mode: &state.render_mode,
+            macro_location: &state.macro_location,
+        };
+        let unit = runner.generate_dynamic(&request, &form)?;
+        let previous = state.dynamic_forms.borrow_mut().insert(name.to_string(), form);
+        let result = runner.run(&unit);
+        match previous {
+            Some(previous) => state.dynamic_forms.borrow_mut().insert(name.to_string(), previous),
+            None => state.dynamic_forms.borrow_mut().remove(name),
+        };
+        rendered = true;
+        result
+    })?;
+    Ok(rendered)
+}
+
 /// `sri.getFormInstance(name)`: the assembled form.
 ///
 /// # Errors

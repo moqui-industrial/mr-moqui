@@ -27,6 +27,7 @@ pub mod info;
 pub(crate) mod menu;
 mod pdf;
 mod render;
+pub(crate) mod saved_finds;
 mod schema;
 mod screen_test;
 pub(crate) mod sri;
@@ -49,8 +50,8 @@ use crate::web::{self, WebRequest, WebResponse};
 
 pub use cache::{canonical_render_mode, ConfScreen, ScreenConf, ScreenFacade, TextOutput};
 pub use definition::{
-    Actions, Authentication, Condition, FormDef, ParameterDef, ResponseDef, ResponseKind, ScreenDef, SectionDef,
-    SectionKind, Subscreens, SubscreensItem, TransitionDef, TreeDef, WebSettings, XmlFragment,
+    Actions, Authentication, Condition, FormDef, Implicit, ParameterDef, ResponseDef, ResponseKind, ScreenDef,
+    SectionDef, SectionKind, Subscreens, SubscreensItem, TransitionDef, TreeDef, WebSettings, XmlFragment,
 };
 pub use pdf::{PdfRenderer, PDF_UNAVAILABLE};
 pub use render::{

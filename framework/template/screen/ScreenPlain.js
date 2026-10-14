@@ -53,7 +53,8 @@
         "section": stmt((node) => `sri.renderSection(${jsString(attr(node, "name"))});`),
         "section-iterate": stmt((node) => `sri.renderSection(${jsString(attr(node, "name"))});`),
         "section-include": stmt((node) => `sri.renderSectionInclude(${S.bareLit(node)});`),
-        "render-dynamic-form": stmt(() => "")
+        "render-dynamic-form": stmt(() => ""),
+        "form-list-user-columns": stmt(() => "")
     });
 
     return { macros, opaque: S.opaqueElements, prelude: "" };

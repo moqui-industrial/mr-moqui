@@ -467,6 +467,7 @@ mod modules;
 mod print;
 mod qvt;
 mod render;
+mod saved_finds;
 mod statics;
 mod walk;
 mod widgets;

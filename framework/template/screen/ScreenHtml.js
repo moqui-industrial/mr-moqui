@@ -28,7 +28,8 @@
 //  - The text-line ac-transition is a select that Tom Select fills from the transition, so the typed text
 //    is not posted as name_ac.
 //  - A form-list with sub-list columns (group-by) renders every column in the main row. The saved finds and
-//    column dialogs show only when the screen has the formSaveFind and formSelectColumns transitions.
+//    column dialogs post to the implicit formSaveFind and formSelectColumns transitions, with the form's name as
+//    formLocation (the server makes the full location of it).
 //  - lookup is a text line. The Java macros had it commented out.
 //  - A show-pdf-button is a link to the html-print version of the page.
 (function (T, S) {
@@ -927,6 +928,28 @@
                 const params = current.getParameterMap();
                 const saveUrl = sri.buildUrl("formSaveFind").url;
                 w("<h4>" + e(L("Saved Finds")) + "</h4>");
+                // The user's saved finds: a link that applies one, and a form that updates it to the current parameters,
+                // makes it the default of the screen or no longer, or deletes it.
+                const finds = sri.getUserFormListFinds(at(n, "name"));
+                if (finds.length) {
+                    const activeId = ec.context.get("formListFindId") || "";
+                    const defaultId = sri.getUserDefaultFormListFindId() || "";
+                    const base = sri.getScreenUrlInstance().url.split("?")[0];
+                    w('<ul class="saved-finds">');
+                    finds.forEach((find) => {
+                        const id = find.formListFind.formListFindId;
+                        const label = (find.description || id) + (id === defaultId ? " (" + L("Default") + ")" : "");
+                        w("<li" + A({ "data-active": id === activeId ? "" : null }) + "><a" + A({ href: base + "?formListFindId=" + encodeURIComponent(id) }) + ">" + e(label) + "</a>" +
+                            "<form" + A({ method: "post", action: saveUrl }) + ">" + hiddenInput("moquiSessionToken", token()) + hiddenInput("formLocation", at(n, "name")) +
+                            hiddenInput("formListFindId", id) + Object.keys(params).map((key) => hiddenInput(key, params[key])).join("") +
+                            (find.isByUserId === "true" && Object.keys(params).length ? '<button type="submit" data-btn="default">' + e(L("Update to Current")) + "</button>" : "") +
+                            (id === defaultId ? '<button type="submit" name="ClearDefault" value="Y" data-btn="default">' + e(L("Clear Default")) + "</button>"
+                                : '<button type="submit" name="MakeDefault" value="Y" data-btn="default">' + e(L("Make Default")) + "</button>") +
+                            (find.isByUserId === "true" ? '<button type="submit" name="DeleteFind" value="Y" data-btn="danger" data-confirm="' + e(L("Delete") + " " + label + "?") + '">' + e(L("Delete")) + "</button>" : "") +
+                            "</form></li>");
+                    });
+                    w("</ul>");
+                }
                 if (Object.keys(params).length) {
                     w("<form" + A({ id: formId + "_NewFind", method: "post", action: saveUrl }) + ">" + hiddenInput("moquiSessionToken", token()) + hiddenInput("formLocation", at(n, "name")) +
                         Object.keys(params).map((key) => hiddenInput(key, params[key])).join("") +

@@ -206,7 +206,8 @@ template still works.
 the server-side `dynamic-options` (both run a transition as a test render), `makeFormListSingleMap`,
 `makeFormListMultiMap`, `getFormListHeaderValues`, `getFormFieldValues`, `startFormListSubRow`, `endFormListSubRow`,
 `getFormInstance().makeFormListRenderInfo()`, and the screen definition's `getMenuSubscreensItems`.
-Form-list `group-by`, `sub-list`, `show-total`, saved finds and `select-columns` are deferred with them.
+Form-list `group-by`, `sub-list` and `show-total` are deferred with them; saved finds and `select-columns` are done
+(`sri.getUserFormListFinds`, `sri.getUserDefaultFormListFindId`, `sri.renderUserColumnsForm`).
 `auto-fields-service`, `auto-widget-service`, `DbForm` forms and `dynamic="true"` forms are assembled (Phase 8 notes in
 `plans/Implementation-Phases.md`). A related entity's drop-down in `auto-fields-entity` is a text widget.
 
@@ -304,7 +305,7 @@ The qvt mode, its shell and the menu data.
   is the render mode for a module that serves more than one (`ScreenPlain.js`).
 - Response headers of the qvt family: `Cache-Control: private, no-store`, and `X-Moqui-Qvt: merged-fragment` for `qvt`.
 - `screen::vue_check::compile_errors(compiler_source, templates)`: the vendored Vue compiler in a QuickJS runtime of its own, for tests and the compatibility report.
-- Still deferred: `getFieldTransitionValue` (a `dynamic-options` label for a value that has no option is the value), `getUserFormListFinds` and the saved find list,
+- Still deferred: `getFieldTransitionValue` (a `dynamic-options` label for a value that has no option is the value),
   `getFormInstance().getFieldValidationJsRules` (the rules come from `getFieldValidation`: number, digits and a pattern).
 
 ### Added by phase 8 slice 7

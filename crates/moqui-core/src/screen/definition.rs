@@ -259,19 +259,37 @@ pub struct TransitionDef {
     pub conditional_responses: Vec<ResponseDef>,
     pub default_response: ResponseDef,
     pub error_response: Option<ResponseDef>,
-    /// The `actions` transition every screen has: the data of a server-static screen as JSON.
-    pub implicit_actions: bool,
+    /// The automatic transitions every screen has, as Java's `ScreenDefinition`: `actions` (the data of a server-static
+    /// screen as JSON), `formSelectColumns`, `formSaveFind` and `screenDoc`. A screen's own transition of the name wins.
+    pub implicit: Implicit,
+}
+
+/// Which automatic transition a [`TransitionDef`] is, if any.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Implicit {
+    None,
+    Actions,
+    FormSelectColumns,
+    FormSaveFind,
+    ScreenDoc,
 }
 
 impl TransitionDef {
-    /// `ScreenDefinition.ActionsTransitionItem`: it runs the screen's data preparation on demand.
-    fn actions(screen_location: &str) -> Self {
+    /// The automatic transitions: `ActionsTransitionItem` runs the screen's data preparation on demand, and the
+    /// saved find, column and screen document ones are `ScreenDefinition`'s other items.
+    fn implicit(screen_location: &str, implicit: Implicit) -> Self {
+        let (name, read_only, begin_transaction) = match implicit {
+            Implicit::FormSelectColumns => ("formSelectColumns", false, true),
+            Implicit::FormSaveFind => ("formSaveFind", false, true),
+            Implicit::ScreenDoc => ("screenDoc", true, false),
+            Implicit::Actions | Implicit::None => ("actions", true, true),
+        };
         Self {
-            name: "actions".to_string(),
+            name: name.to_string(),
             method: "any".to_string(),
             screen_location: screen_location.to_string(),
-            begin_transaction: true,
-            read_only: true,
+            begin_transaction,
+            read_only,
             require_session_token: Some(false),
             authz_action: "view".to_string(),
             authz_explicit: true,
@@ -284,7 +302,7 @@ impl TransitionDef {
             conditional_responses: Vec::new(),
             default_response: ResponseDef::none(),
             error_response: None,
-            implicit_actions: true,
+            implicit,
         }
     }
 
@@ -392,7 +410,7 @@ impl TransitionDef {
             conditional_responses,
             default_response,
             error_response,
-            implicit_actions: false,
+            implicit: Implicit::None,
         })
     }
 }
@@ -801,8 +819,16 @@ impl ScreenDef {
             sources.extend(other.sources.iter().cloned());
         }
 
-        if !transitions.iter().any(|item| item.name == "actions") {
-            transitions.push(TransitionDef::actions(location));
+        for implicit in [
+            Implicit::Actions,
+            Implicit::FormSelectColumns,
+            Implicit::FormSaveFind,
+            Implicit::ScreenDoc,
+        ] {
+            let transition = TransitionDef::implicit(location, implicit);
+            if !transitions.iter().any(|item| item.name == transition.name) {
+                transitions.push(transition);
+            }
         }
 
         // Read before the rows, so a write while they load makes this definition stale.

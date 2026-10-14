@@ -200,6 +200,15 @@ fn sri_render_dynamic_form(ctx: Ctx<'_>, name: String) -> rquickjs::Result<Strin
     .map(|()| String::new())
 }
 
+fn sri_render_user_columns_form(ctx: Ctx<'_>, name: String) -> rquickjs::Result<bool> {
+    host_guard(&ctx, || {
+        let runner = CtxRunner { ctx: &ctx };
+        with_render(&ctx, true, |state| {
+            logic::render_user_columns_form(state, &runner, &name)
+        })
+    })
+}
+
 fn sri_render_include_screen(ctx: Ctx<'_>, location: String, share_scope: Opt<String>) -> rquickjs::Result<String> {
     host_guard(&ctx, || {
         let runner = CtxRunner { ctx: &ctx };
@@ -529,6 +538,22 @@ fn sri_get_form_instance<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<O
     })
 }
 
+/// `sri.getUserFormListFinds(formName)`: the saved finds of the user and the user's groups for a form of the screen.
+fn sri_get_user_form_list_finds<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let finds = with_render(&ctx, false, |state| logic::user_form_list_finds(state, &name))?;
+        host_to_js(&ctx, Value::List(finds))
+    })
+}
+
+/// `sri.getUserDefaultFormListFindId()`: the user's default saved find of the screen, or null.
+fn sri_get_user_default_form_list_find_id<'js>(ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let id = with_render(&ctx, false, logic::user_default_form_list_find_id)?;
+        host_to_js(&ctx, id.map_or(Value::Null, Value::String))
+    })
+}
+
 fn sri_get_form_hidden_parameters<'js>(ctx: Ctx<'js>, form: JsValue<'js>) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let form = lit(&ctx, &form)?;
@@ -730,6 +755,7 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("renderSubscreen", sri_render_subscreen);
     method!("renderIncludeScreen", sri_render_include_screen);
     method!("renderDynamicForm", sri_render_dynamic_form);
+    method!("renderUserColumnsForm", sri_render_user_columns_form);
     method!("renderText", sri_render_text);
     method!("renderInlineText", sri_render_inline_text);
     method!("doBoundaryComments", sri_do_boundary_comments);
@@ -757,6 +783,8 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("getFormNode", sri_get_form_node);
     method!("getFormInstance", sri_get_form_instance);
     method!("getFormHiddenParameters", sri_get_form_hidden_parameters);
+    method!("getUserFormListFinds", sri_get_user_form_list_finds);
+    method!("getUserDefaultFormListFindId", sri_get_user_default_form_list_find_id);
     method!("appendToAfterScreenWriter", sri_append_to_after_screen_writer);
     method!("appendToScriptWriter", sri_append_to_script_writer);
     method!("once", sri_once);

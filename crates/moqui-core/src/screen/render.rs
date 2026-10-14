@@ -516,6 +516,14 @@ fn render_screens(state: &RenderState, facade: &ScreenFacade) -> Result<(), Erro
     let info = &state.url_info;
     let defs = &info.path_defs;
     let last = defs.len().saturating_sub(1);
+    // The saved find of the request or the user's default for the target, before any action reads its parameters.
+    let target_parameters: Vec<String> = info
+        .target_screen
+        .parameters
+        .iter()
+        .map(|parameter| parameter.name.clone())
+        .collect();
+    super::saved_finds::apply_on_render(&info.target_screen.location, &target_parameters, true)?;
     {
         // always-actions for every screen in the path, each under the frames of the screens above it
         let mut frames = Frames::untracked();
@@ -906,12 +914,32 @@ fn run_transition(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>, info: S
     // The REST screen's transitions and the implicit actions transition manage their own transactions. Any other
     // transition runs the always-actions of its path, its actions and its responses' conditions in one, as Java's
     // ScreenRenderImpl does, so a write in an always-action rolls back with the transition.
-    let own_transaction = transition.implicit_actions || transition.screen_location.ends_with("/webroot/rest.xml");
+    let own_transaction =
+        transition.implicit == super::Implicit::Actions || transition.screen_location.ends_with("/webroot/rest.xml");
     let begin = transition.begin_transaction && !own_transaction;
     let step = in_transaction(begin, None, || run_transition_steps(job, &info, &state, &transition))?;
     match step {
         Step::Sent => Ok(()),
         Step::Respond(response) => respond(&info, &response, json),
+    }
+}
+
+/// What `formSelectColumns` goes back to the screen with: the request parameters without the column dialog's own.
+const SELECT_COLUMNS_PARAMETERS: &str = "(() => { const p = Object.assign({}, ec.web.parameters); \
+for (const k of ['columnsTree', 'formLocation', 'ResetColumns', 'SaveColumns', '_uiType', 'moquiSessionToken']) delete p[k]; \
+return p; })()";
+
+/// A redirect to `url` for an automatic transition.
+fn implicit_response(url: &str) -> ResponseDef {
+    ResponseDef {
+        kind: ResponseKind::Url,
+        url: url.to_string(),
+        url_type: "screen-path".to_string(),
+        condition: None,
+        parameters: Vec::new(),
+        parameter_map: None,
+        save_current_screen: false,
+        save_parameters: false,
     }
 }
 
@@ -964,12 +992,49 @@ fn run_transition_steps(
         }
     }
 
-    if transition.implicit_actions {
-        in_transaction(transition.begin_transaction, None, || {
-            super::statics::run_actions_transition(state)
-        })?;
-        hit.count("");
-        return Ok(Step::Sent);
+    match transition.implicit {
+        super::Implicit::Actions => {
+            in_transaction(transition.begin_transaction, None, || {
+                super::statics::run_actions_transition(state)
+            })?;
+            hit.count("");
+            return Ok(Step::Sent);
+        }
+        super::Implicit::FormSaveFind => {
+            hit.count("url");
+            // The screen with only the saved find, which the render applies; else the screen as it was.
+            let shown = super::saved_finds::process_saved_find(&transition.screen_location)?;
+            let mut response = implicit_response(".");
+            if let Some(id) = shown {
+                response.parameters.push(ParameterDef {
+                    name: "formListFindId".to_string(),
+                    required: false,
+                    from: None,
+                    value: Some(id),
+                });
+            }
+            return Ok(Step::Respond(response));
+        }
+        super::Implicit::FormSelectColumns => {
+            super::saved_finds::save_form_config(&transition.screen_location)?;
+            hit.count("url");
+            let mut response = implicit_response(".");
+            response.parameter_map = Some(SELECT_COLUMNS_PARAMETERS.to_string());
+            return Ok(Step::Respond(response));
+        }
+        super::Implicit::ScreenDoc => {
+            match super::saved_finds::screen_document(&transition.screen_location)? {
+                super::saved_finds::ScreenDocument::Text(text) => web::send_bytes_with_headers(
+                    200,
+                    vec![("Content-Type".to_string(), "text/html; charset=UTF-8".to_string())],
+                    text.into_bytes(),
+                ),
+                super::saved_finds::ScreenDocument::Missing(message) => web::send_json_error(404, &message),
+            }
+            hit.count("");
+            return Ok(Step::Sent);
+        }
+        super::Implicit::None => {}
     }
     let wired = dispatch::run(&dispatch::Call {
         request: job.request,

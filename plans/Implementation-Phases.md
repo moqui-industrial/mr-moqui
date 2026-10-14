@@ -300,15 +300,12 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   `q-input`/`q-select`/`q-file`, which drop it; they now pass `for`, so the native input has the id. `m-static-form-list` reused the row
   components of the last page, and an `m-form` copies its `fields-initial` once, so page 2 showed the rows of page 1.
 - **Deferred.** PDF bytes (phase 12); `ScreenServices.xml` service bodies (mail screen bodies were done after slice 8, see phase 10's
-  "Screen mail after phase 8"); `vuet` and `/vapps` (dropped); the Assist panel; saved finds and screen documents (nothing reads the user finds yet); in a
+  "Screen mail after phase 8"); `vuet` and `/vapps` (dropped); the Assist panel; in a
   static template, row selection, first/second/last rows, aggregation, the column picker and the csv/text/pdf buttons; precompiled `m-*`
   templates, which `webapp_qvt_static_only=true` waits for; the `lookup` widget (a text line, as the Java macro was commented out). A static
   template is fetched once to read `X-Moqui-Qvt` and then loaded again by a script element (a URL without the query), so it downloads twice.
 - **Deferred after the Phase 8 and 10 review against Java.** Each is a Java feature no screen in this tree needs yet; the Java reference is
   in `ScreenRenderImpl` (SRI), `ScreenDefinition` (SD), `ScreenForm` (SF) and `ScreenUrlInfo` (SUI):
-  - saved finds: `formListFindId`, `FormListFindUserDefault` and the `formSaveFind` transition (SRI:336-378, SD:1113-1135);
-  - the `formSelectColumns` transition (SD:1135-1165) and `screenDoc` (SD:1168-1193);
-  - the `screen.user.page.size` preference (SRI:391-404);
   - form-list aggregation (`group-by`, `sub-list`, `show-total`) and a select limited to the displayed and hidden fields (SF:2033-2139);
   - tree node JSON (`sendSubNodeJson`, SD:1085-1088), `include-child-content` and template files under a screen (SRI:650-747),
     transition names that are patterns (SD:509-515), and `section-include` copying only what the section holds (SD:366-390).
@@ -321,6 +318,20 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
     `DbForm` modifies for some group (`DbFormLookup`, read as `DbForm` and `DbFormUserGroup`) is assembled for each render with the
     current user's `DbForm` fields merged in. The `DbForm` node is not cached as Java's `dbFormNodeByIdCache` is; the entity reads use
     the entity cache. `formDisplayOnly` is not read.
+  - Saved finds and columns (`screen/saved_finds.rs`). Every screen has the implicit `formSaveFind`, `formSelectColumns` and `screenDoc`
+    transitions (`TransitionDef.implicit`), and a screen's own transition of the name wins. A render applies the request's
+    `formListFindId`, else the user's `FormListFindUserDefault` for the target screen, and `_clear`; the saved find's parameters and
+    `orderByField` apply when the request has none of its own. `pageSize` is kept as the `screen.user.page.size` preference and used
+    when a request has none. `formSaveFind` saves, updates, deletes, makes or clears the default and schedules (`ScreenScheduled`), as
+    `processFormSavedFind`; `formSelectColumns` keeps the column dialog's choice in a `FormConfig` of the user's own (or by `_uiType`),
+    and `ResetColumns` removes it. Form locations are Java's (`{screen}.form_list${name}`, with `#extension` for a dynamic form), so
+    records written by Java apply; the macros post the form name and the server makes the location. A form-list with `select-columns` or
+    `saved-finds` is generated inside `form-list-user-columns`: at render `sri.renderUserColumnsForm` assembles it with the user's columns
+    (the active saved find's `FormConfig`, else the user's, else a group's) when there are any, and the generated code runs otherwise,
+    in every server-merged mode. The find dialog lists the user's saved finds in html and qvt (`sri.getUserFormListFinds`,
+    `sri.getUserDefaultFormListFindId`), and the menu data has them and the target's screen documents. Differences: the
+    `DbFormLookup` and `FormConfigUserGroupView` views are read as their entities; a saved find's description defaults to the username and
+    the server time.
 - **Differences that stay.** `disable-when` on a `subscreens-item` blocks the screen below the first level; Java defines `getDisable`
   but reads it nowhere. The `default-display` attribute of an entity field is not read (no entity in this tree or the Java components
   sets it).
@@ -349,9 +360,8 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   unit that names it), so a unit holds only the structure of its form and calls `$h.dropDown(...)` and the like. The
   attributes the client binds are listed in `webroot/js/README.md`. Differences: option text and labels are always
   encoded; a text-line `ac-transition` is a `select` that Tom Select fills, so `name_ac` is not posted; `lookup` is a text
-  line (the Java macro was commented out); a form-list with `group-by` sub-lists renders every column in the main row; the
-  saved-find and column dialogs show only when the screen has `formSaveFind` and `formSelectColumns`, which no screen has
-  yet; `show-pdf-button` links to the `html-print` page. No unit has a `<script>`.
+  line (the Java macro was commented out); a form-list with `group-by` sub-lists renders every column in the main row;
+  `show-pdf-button` links to the `html-print` page. No unit has a `<script>`.
 - **Page shell.** `Header`, `Footer`, `navbar`, `Messages`, `Login` and `SecondFactor` are `.html.fancy` files, and the
   `webroot.xml`, `apps.xml`, `Login.xml`, `SecondFactor.xml`, error and `AppList` screens use them. `.ftl` locations are
   refused when rendered, so the `.ftl` files left are `WebrootVue.qvt.ftl` (qapps) and `AutoScreenMenu.qvt.ftl`, which
@@ -391,9 +401,7 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   at the top of `ScreenQvt.js`: `text-line` with `ac-transition` is an `m-drop-down` with `server-search` (the Java macro wrote an error),
   a confirmation is a `data-confirm` attribute the shell answers, the `background-message` is text and not evaluated, `editor-type` `html`
   and `md` are `m-text-area` (`QEditor`; a text area with a Marked preview), `lookup` is a text line, the Inputmask `mask` is converted to Quasar's
-  tokens, a form-list with `group-by` sub-lists keeps every column in the main row, the navigation bar of a form-list sits above the table, and
-  the saved finds list and the screen documents are not written (nothing reads the user finds yet). The saved find dialog has the save-new-find form
-  only, and the column dialog is `m-form-column-config`. `ScreenPlain.js` serves `qjs` and `qvue`: the text of the screen's own `render-mode`
+  tokens, a form-list with `group-by` sub-lists keeps every column in the main row, and the navigation bar of a form-list sits above the table. The column dialog is `m-form-column-config`. `ScreenPlain.js` serves `qjs` and `qvue`: the text of the screen's own `render-mode`
   elements and the subscreen and section calls. The mode a unit is made for reaches a module that serves more than one mode as
   `T.options.mode`.
 - **Page shell and host.** `/qapps/**` is `webroot/screen/webroot/qapps.xml` (`allow-extra-path`) and renders `includes/WebrootVue.qvt.html.fancy`

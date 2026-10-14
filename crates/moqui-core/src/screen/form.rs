@@ -59,6 +59,15 @@ impl FormInstance {
         MNode::parse_text("assembled-form", &self.xml).map_err(Error::from)
     }
 
+    /// A form instance of an assembled node that a render changed, such as a form-list with the user's columns.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an expression of the form does not parse.
+    pub(crate) fn from_node(def: &ScreenDef, node: &MNode) -> Result<Self, Error> {
+        Self::of(def, node)
+    }
+
     fn of(def: &ScreenDef, node: &MNode) -> Result<Self, Error> {
         let name = node.attribute("name").unwrap_or_default();
         let list = node.name() == "form-list";
