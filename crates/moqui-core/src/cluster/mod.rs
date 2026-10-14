@@ -51,6 +51,7 @@ const MEMBER_COLUMNS: &[&str] = &[
     "heartbeat",
     "sessionKeyFingerprint",
     "certFingerprint",
+    "sshHostKeyFingerprint",
 ];
 const DEFAULT_PORT: u16 = 8443;
 const RETRIES: u32 = 3;
@@ -154,6 +155,7 @@ pub fn start(factory: &Arc<ExecutionContextFactory>) -> Result<(), Error> {
             heartbeat: millis_value(db_now(&facade)),
             session_fp: fingerprints.session,
             cert_fp: fingerprints.cert,
+            ssh_fp: env::get_prop_or_env(SSH_FINGERPRINT_PROPERTY),
         },
     )?;
     remember_factory(factory);
@@ -275,6 +277,8 @@ struct Member {
     heartbeat: Value,
     session_fp: String,
     cert_fp: String,
+    /// This member's SSH host key, which a peer pins for the `ssh://` cluster channel. Empty without one.
+    ssh_fp: String,
 }
 
 /// `instance_id` when it is set, else the id in `runtime/db/instance_id`, else a new one written there. It is not
@@ -340,12 +344,25 @@ fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
+/// The property the host sets to this member's SSH host key fingerprint, for the member row.
+pub const SSH_FINGERPRINT_PROPERTY: &str = "cluster_ssh_host_key_fingerprint";
+/// The property the host sets to the address its SSH server bound, for the default `ssh://` base URL.
+pub const SSH_ADDRESS_PROPERTY: &str = "cluster_ssh_address";
+
 fn cluster_base_url() -> Result<String, Error> {
     let configured = env::get_prop_or_env("cluster_base_url");
-    let url = if configured.is_empty() {
-        format!("https://127.0.0.1:{}", cluster_port()?)
-    } else {
+    let url = if !configured.is_empty() {
         configured
+    } else if env::get_prop_or_env("cluster_transport") == "ssh" {
+        let address = env::get_prop_or_env(SSH_ADDRESS_PROPERTY);
+        if address.is_empty() {
+            return Err(Error::new(
+                "cluster_transport is ssh but the SSH server is not listening; set ssh_port",
+            ));
+        }
+        format!("ssh://{address}")
+    } else {
+        format!("https://127.0.0.1:{}", cluster_port()?)
     };
     Ok(trim_base(&url))
 }
@@ -673,6 +690,7 @@ struct LoadedMember {
     heartbeat: Option<i64>,
     session_fp: String,
     cert_fp: String,
+    ssh_fp: String,
 }
 
 fn load_members(facade: &EntityFacade) -> Result<Vec<LoadedMember>, Error> {
@@ -694,7 +712,22 @@ fn member_from_row(row: &DbRow) -> LoadedMember {
         heartbeat: row.get("heartbeat").and_then(value_millis),
         session_fp: row_text(row, "sessionKeyFingerprint"),
         cert_fp: row_text(row, "certFingerprint"),
+        ssh_fp: row_text(row, "sshHostKeyFingerprint"),
     }
+}
+
+/// The SSH host key fingerprint the member at `base_url` registered, for a sender that pins it.
+///
+/// # Errors
+///
+/// Returns an error when the member rows cannot be read.
+pub fn peer_ssh_fingerprint(facade: &EntityFacade, base_url: &str) -> Result<Option<String>, Error> {
+    let base = trim_base(base_url);
+    Ok(load_members(facade)?
+        .into_iter()
+        .find(|member| trim_base(&member.base_url) == base)
+        .map(|member| member.ssh_fp)
+        .filter(|fingerprint| !fingerprint.is_empty()))
 }
 
 fn row_text(row: &DbRow, name: &str) -> String {
@@ -721,6 +754,7 @@ fn write_member(facade: &EntityFacade, member: &Member) -> Result<(), Error> {
                     "heartbeat",
                     "sessionKeyFingerprint",
                     "certFingerprint",
+                    "sshHostKeyFingerprint",
                 ],
                 Some(&by_id),
             )?
@@ -735,12 +769,14 @@ fn write_member(facade: &EntityFacade, member: &Member) -> Result<(), Error> {
         member.heartbeat.clone(),
         Value::string(&member.session_fp),
         Value::string(&member.cert_fp),
+        Value::string(&member.ssh_fp),
     ];
     let update_params = vec![
         Value::string(&member.base_url),
         member.heartbeat.clone(),
         Value::string(&member.session_fp),
         Value::string(&member.cert_fp),
+        Value::string(&member.ssh_fp),
         instance.clone(),
     ];
     let tx = facade.transactions_for(MEMBER).map_err(Error::from)?;

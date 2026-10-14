@@ -21,7 +21,7 @@
 //! `exit`. Output is text, and JSON for values.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::Weak;
 
 use moqui_core::context::{Error, ExecutionContext, ExecutionContextFactory};
 use moqui_lib::object::Value;
@@ -71,7 +71,7 @@ pub(super) fn starts_block(line: &str) -> bool {
 }
 
 /// Run one command line as `username`.
-pub(super) async fn run(factory: &Arc<ExecutionContextFactory>, username: &str, line: &str) -> Outcome {
+pub(super) async fn run(factory: &Weak<ExecutionContextFactory>, username: &str, line: &str) -> Outcome {
     let line = line.trim();
     let (command, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
     let rest = rest.trim().to_string();

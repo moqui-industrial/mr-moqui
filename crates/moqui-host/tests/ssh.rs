@@ -131,6 +131,7 @@ fn sftp_and_the_admin_shell_run_on_the_built_in_server() {
     moqui_lib::env::set_property("ssh_port", "0");
     moqui_lib::env::set_property("ssh_host_key", &seed);
     moqui_lib::env::set_property("ssh_sftp_root", "dbresource://sftp");
+    moqui_lib::env::set_property("cluster_transport", "ssh");
     let gate = start_with_data("ssh", &data(&user_key));
     let address = gate.server.ssh_address().expect("the SSH server listens");
     let host = format!("127.0.0.1:{}", address.port());
@@ -372,8 +373,63 @@ fn sftp_and_the_admin_shell_run_on_the_built_in_server() {
         .unwrap();
     assert!(err.message().contains("changed"), "{}", err.message());
     assert!(started.elapsed() < Duration::from_secs(30));
+    // The SSH cluster channel: this member registered ssh://its address with its host key; a peer's post arrives
+    // through the channel and is applied as an HTTPS post would be.
+    let base_url = format!("ssh://{address}");
+    let member = factory
+        .entity()
+        .unwrap()
+        .find("moqui.server.ClusterMember")
+        .unwrap()
+        .disable_authz()
+        .list()
+        .unwrap();
+    let row = member.values().first().expect("the member row");
+    assert_eq!(
+        row.get("clusterBaseUrl").map(to_plain_string).as_deref(),
+        Some(base_url.as_str())
+    );
+    assert_eq!(
+        row.get("sshHostKeyFingerprint").map(to_plain_string),
+        Some(real.clone())
+    );
+    let sender = moqui_host::ssh::cluster::sender(&factory).unwrap();
+    let payload = br#"{"origin_id": "peer-1", "message_id": "m-1", "body": {"entityName": "moqui.basic.Enumeration"}}"#;
+    let before = gate.server.cluster_posts().len();
+    sender.post(&base_url, "entity-cache-invalidate", payload).unwrap();
+    sender.post(&base_url, "entity-cache-invalidate", payload).unwrap();
+    let posts = gate.server.cluster_posts();
+    assert_eq!(posts.len(), before + 2, "{posts:?}");
+    assert_eq!(posts.last().map(String::as_str), Some("entity-cache-invalidate"));
+    // An unknown topic is refused by the peer, and a key that is not the cluster key cannot log in as the cluster.
+    assert!(sender.post(&base_url, "no-such-topic", payload).is_err());
+    let stranger = Arc::new(key(OTHER_SEED));
+    let refused = moqui_host::edge::block_on(async move {
+        struct Accept;
+        impl russh::client::Handler for Accept {
+            type Error = russh::Error;
+            async fn check_server_key(
+                &mut self,
+                _key: &russh::keys::PublicKeyOrCertificate,
+            ) -> Result<bool, Self::Error> {
+                Ok(true)
+            }
+        }
+        let config = Arc::new(russh::client::Config::default());
+        let mut handle = russh::client::connect(config, address, Accept).await.unwrap();
+        let key = russh::keys::PrivateKeyWithHashAlg::new(stranger, None);
+        handle
+            .authenticate_publickey("moqui-cluster", key)
+            .await
+            .unwrap()
+            .success()
+    })
+    .unwrap();
+    assert!(!refused, "a stranger key logged in as the cluster");
+
     drop(authz);
     drop(_entered);
     drop(context);
     moqui_lib::env::set_property("ssh_port", "");
+    moqui_lib::env::set_property("cluster_transport", "");
 }

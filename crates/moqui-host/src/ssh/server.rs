@@ -67,9 +67,11 @@ impl Drop for SshServer {
 }
 
 struct Shared {
-    factory: Arc<ExecutionContextFactory>,
+    factory: std::sync::Weak<ExecutionContextFactory>,
     root: String,
     max_file: usize,
+    /// The cluster topics received, shared with the HTTPS cluster listener.
+    cluster_posts: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 /// The host key from `ssh_host_key`: an OpenSSH private key, or the base64 of a 32-byte Ed25519 seed.
@@ -105,7 +107,10 @@ pub fn host_key(text: &str) -> Result<PrivateKey, Error> {
 pub fn start(
     factory: &Arc<ExecutionContextFactory>,
     runtime_dir: &std::path::Path,
+    cluster_posts: Arc<std::sync::Mutex<Vec<String>>>,
 ) -> Result<Option<SshServer>, Error> {
+    moqui_lib::env::set_property(moqui_core::cluster::SSH_FINGERPRINT_PROPERTY, "");
+    moqui_lib::env::set_property(moqui_core::cluster::SSH_ADDRESS_PROPERTY, "");
     let port_text = moqui_lib::env::get_prop_or_env("ssh_port");
     let port_text = port_text.trim();
     if port_text.is_empty() {
@@ -129,6 +134,7 @@ pub fn start(
     }
     let max_sessions = number_property("ssh_max_sessions", DEFAULT_MAX_SESSIONS);
     let max_file = number_property("ssh_sftp_max_file", DEFAULT_MAX_FILE);
+    let fingerprint = key.public_key().fingerprint(HashAlg::Sha256).to_string();
     let config = Arc::new(russh::server::Config {
         keys: vec![key],
         inactivity_timeout: Some(IDLE),
@@ -146,9 +152,10 @@ pub fn start(
         .map_err(|err| Error::new("the SSH listener has no address").with_source(err))?;
     let (shutdown, watch) = tokio::sync::watch::channel(false);
     let shared = Arc::new(Shared {
-        factory: Arc::clone(factory),
+        factory: Arc::downgrade(factory),
         root,
         max_file,
+        cluster_posts,
     });
     crate::edge::handle().spawn(accept_loop(listener, config, shared, watch, max_sessions));
     *factory
@@ -157,6 +164,9 @@ pub fn start(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(address);
     tracing::info!("SSH server listening on {address}");
+    // For the cluster member row: peers pin this key, and the ssh:// base URL defaults to this address.
+    moqui_lib::env::set_property(moqui_core::cluster::SSH_FINGERPRINT_PROPERTY, fingerprint);
+    moqui_lib::env::set_property(moqui_core::cluster::SSH_ADDRESS_PROPERTY, address.to_string());
     Ok(Some(SshServer { address, shutdown }))
 }
 
@@ -195,6 +205,7 @@ async fn accept_loop(
             shared: Arc::clone(&shared),
             peer,
             username: None,
+            cluster: false,
             can_sftp: false,
             can_shell: false,
             channels: HashMap::new(),
@@ -231,6 +242,8 @@ struct Connection {
     shared: Arc<Shared>,
     peer: SocketAddr,
     username: Option<String>,
+    /// A cluster peer logged in with the cluster key: it may open `cluster <topic>` channels and nothing else.
+    cluster: bool,
     can_sftp: bool,
     can_shell: bool,
     channels: HashMap<ChannelId, Channel<Msg>>,
@@ -290,6 +303,19 @@ impl russh::server::Handler for Connection {
     }
 
     async fn auth_publickey(&mut self, user: &str, public_key: &PublicKey) -> Result<Auth, Self::Error> {
+        if user == super::cluster::CLUSTER_USER {
+            if super::cluster::is_cluster_key(public_key) {
+                tracing::info!("cluster peer connected from {}", self.peer);
+                self.cluster = true;
+                self.username = Some(user.to_string());
+                return Ok(Auth::Accept);
+            }
+            tracing::warn!(
+                "cluster login from {} with a key that is not the cluster key",
+                self.peer
+            );
+            return Ok(Auth::reject());
+        }
         let fingerprint = public_key.fingerprint(HashAlg::Sha256).to_string();
         let username = user.to_string();
         let checked = on_pool(&self.shared.factory, move |factory| {
@@ -356,7 +382,7 @@ impl russh::server::Handler for Connection {
         };
         session.channel_success(channel)?;
         let fs = SftpFs::new(
-            Arc::clone(&self.shared.factory),
+            std::sync::Weak::clone(&self.shared.factory),
             self.shared.root.clone(),
             self.shared.max_file,
         );
@@ -370,6 +396,22 @@ impl russh::server::Handler for Connection {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if self.cluster {
+            let command = String::from_utf8_lossy(data).into_owned();
+            let topic = command
+                .strip_prefix("cluster ")
+                .map(str::trim)
+                .unwrap_or("")
+                .to_string();
+            let Some(open) = self.channels.remove(&channel).filter(|_| !topic.is_empty()) else {
+                return session.channel_failure(channel);
+            };
+            session.channel_success(channel)?;
+            let factory = std::sync::Weak::clone(&self.shared.factory);
+            let posts = Arc::clone(&self.shared.cluster_posts);
+            tokio::spawn(super::cluster::serve_channel(open.into_stream(), factory, posts, topic));
+            return Ok(());
+        }
         let (Some(username), true) = (self.username.clone(), self.can_shell) else {
             return session.channel_failure(channel);
         };
@@ -378,7 +420,7 @@ impl russh::server::Handler for Connection {
         };
         session.channel_success(channel)?;
         let line = String::from_utf8_lossy(data).into_owned();
-        let factory = Arc::clone(&self.shared.factory);
+        let factory = std::sync::Weak::clone(&self.shared.factory);
         let handle = session.handle();
         let newline = if self.ptys.contains(&channel) { "\r\n" } else { "\n" };
         tokio::spawn(async move {
@@ -405,7 +447,7 @@ impl russh::server::Handler for Connection {
             return session.channel_failure(channel);
         };
         session.channel_success(channel)?;
-        let factory = Arc::clone(&self.shared.factory);
+        let factory = std::sync::Weak::clone(&self.shared.factory);
         let handle = session.handle();
         let pty = self.ptys.contains(&channel);
         tokio::spawn(async move {
@@ -475,7 +517,12 @@ fn with_newlines(text: &str, newline: &str) -> String {
 
 /// The interactive loop: a prompt, a line, its output. With a PTY the client does not echo, so this echoes and
 /// handles backspace, ctrl-C (drop the line) and ctrl-D (end on an empty line). Returns the exit status.
-async fn interactive(channel: Channel<Msg>, factory: &Arc<ExecutionContextFactory>, username: &str, pty: bool) -> u32 {
+async fn interactive(
+    channel: Channel<Msg>,
+    factory: &std::sync::Weak<ExecutionContextFactory>,
+    username: &str,
+    pty: bool,
+) -> u32 {
     let newline = if pty { "\r\n" } else { "\n" };
     let mut stream = channel.into_stream();
     let greeting = format!("MR-Moqui admin shell for {username}; type help{newline}{PROMPT}");

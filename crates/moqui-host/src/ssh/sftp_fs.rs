@@ -20,7 +20,7 @@
 //! `dbresource` file is a row. `ssh_sftp_max_file` bytes (default 256 MiB) bound either.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::Weak;
 
 use moqui_core::context::{ExecutionContextFactory, ResourceStat};
 use russh_sftp::protocol::{Attrs, Data, File, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version};
@@ -37,7 +37,7 @@ enum Open {
 
 /// The handler for one `sftp` channel.
 pub(super) struct SftpFs {
-    factory: Arc<ExecutionContextFactory>,
+    factory: Weak<ExecutionContextFactory>,
     root: String,
     max_file: usize,
     handles: HashMap<String, Open>,
@@ -45,7 +45,7 @@ pub(super) struct SftpFs {
 }
 
 impl SftpFs {
-    pub(super) fn new(factory: Arc<ExecutionContextFactory>, root: String, max_file: usize) -> Self {
+    pub(super) fn new(factory: Weak<ExecutionContextFactory>, root: String, max_file: usize) -> Self {
         Self {
             factory,
             root: root.trim_end_matches('/').to_string(),

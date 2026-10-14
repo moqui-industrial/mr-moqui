@@ -16,30 +16,37 @@
 //! built-in server with its SFTP subsystem and admin shell.
 
 pub mod client;
+pub mod cluster;
 pub mod server;
 mod sftp_fs;
 mod shell;
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use moqui_core::context::{Error as CoreError, ExecutionContext, ExecutionContextFactory};
 
 /// Run `job` on a request worker, in a fresh context with authorization off until the job logs a user in, and wait
-/// without blocking the async runtime.
-pub(crate) async fn on_pool<T, F>(factory: &Arc<ExecutionContextFactory>, job: F) -> Result<T, CoreError>
+/// without blocking the async runtime. The SSH tasks hold the factory weakly, so a server that stopped is not kept
+/// alive by them, and its database clients are never dropped on a runtime thread.
+pub(crate) async fn on_pool<T, F>(factory: &Weak<ExecutionContextFactory>, job: F) -> Result<T, CoreError>
 where
     T: Send + 'static,
     F: FnOnce(&ExecutionContextFactory) -> Result<T, CoreError> + Send + 'static,
 {
-    let factory = Arc::clone(factory);
+    let factory = Weak::clone(factory);
     tokio::task::spawn_blocking(move || {
-        let owner = Arc::clone(&factory);
-        let inner = Arc::clone(&factory);
-        let rx = factory.request_pool().try_submit(owner, move || {
-            let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
-            job(&inner)
-        })?;
+        let rx = {
+            let factory = factory
+                .upgrade()
+                .ok_or_else(|| CoreError::new("the server is stopping"))?;
+            let owner = Arc::clone(&factory);
+            let inner = Arc::clone(&factory);
+            factory.request_pool().try_submit(owner, move || {
+                let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+                job(&inner)
+            })?
+        };
         rx.recv().map_err(|_| CoreError::new("request worker stopped"))?
     })
     .await

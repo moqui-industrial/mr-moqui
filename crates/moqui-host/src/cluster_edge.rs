@@ -79,18 +79,31 @@ pub(crate) fn listen_port(raw: &str) -> Result<u16, HostError> {
 }
 
 pub(crate) fn install_sender() -> Result<(), HostError> {
-    let material = load_material()?;
-    let config = client_config(&material)?;
-    let sender = Arc::new(PeerSender {
-        config,
-        live: Mutex::new(HashMap::new()),
-    });
-    moqui_core::cluster::install_sender(sender);
+    moqui_core::cluster::install_sender(https_sender()?);
     Ok(())
 }
 
+/// The HTTPS sender, which the SSH sender also uses for a peer whose base URL is `https://`.
+pub(crate) fn https_sender() -> Result<Arc<dyn Sender>, HostError> {
+    let material = load_material()?;
+    let config = client_config(&material)?;
+    Ok(Arc::new(PeerSender {
+        config,
+        live: Mutex::new(HashMap::new()),
+    }))
+}
+
+/// The shared cluster key `cluster_tls_key`, as DER, for the SSH channel's derived login key.
+pub(crate) fn cluster_key_der() -> Result<Vec<u8>, HostError> {
+    let material = load_material()?;
+    Ok(material.key)
+}
+
 /// Bind the cluster listener. Call after [`moqui_core::cluster::start`] so the member row exists.
-pub(crate) fn listen(factory: Arc<ExecutionContextFactory>) -> Result<ClusterEdge, HostError> {
+pub(crate) fn listen(
+    factory: Arc<ExecutionContextFactory>,
+    posts: Arc<Mutex<Vec<String>>>,
+) -> Result<ClusterEdge, HostError> {
     let material = load_material()?;
     let config = Arc::new(server_config(&material)?);
     let port = listen_port(&moqui_lib::env::get_prop_or_env("cluster_https_port"))?;
@@ -100,7 +113,6 @@ pub(crate) fn listen(factory: Arc<ExecutionContextFactory>) -> Result<ClusterEdg
         .local_addr()
         .map_err(|err| HostError::new(format!("cluster listener has no address: {err}")))?;
     let stop = Arc::new(AtomicBool::new(false));
-    let posts = Arc::new(Mutex::new(Vec::new()));
     let joins: Arc<Mutex<Vec<JoinHandle<()>>>> = Arc::new(Mutex::new(Vec::new()));
     let accept_stop = Arc::clone(&stop);
     let accept_posts = Arc::clone(&posts);
@@ -266,7 +278,21 @@ fn handle_exchange(factory: &Arc<ExecutionContextFactory>, posts: &Mutex<Vec<Str
     let Some(topic) = cluster_topic(request_method(&exchange.start), request_path(&exchange.start)) else {
         return 404;
     };
-    let message = match topic_message(&exchange.body) {
+    apply_topic(factory, posts, topic, &exchange.body)
+}
+
+/// One topic message from a peer, by either transport: checked, counted, and applied on a request worker. The answer
+/// is an HTTP status: 204 applied, 400 a bad body, 404 an unknown topic, 503 busy, 500 failed.
+pub(crate) fn apply_topic(
+    factory: &Arc<ExecutionContextFactory>,
+    posts: &Mutex<Vec<String>>,
+    topic: &str,
+    body: &[u8],
+) -> u16 {
+    if topic != moqui_core::notify::ENTITY_CACHE_INVALIDATE && topic != moqui_core::notify::NOTIFICATION_MESSAGE {
+        return 404;
+    }
+    let message = match topic_message(body) {
         Ok(message) => message,
         Err(err) => {
             tracing::debug!(error = %err, "cluster body was rejected");

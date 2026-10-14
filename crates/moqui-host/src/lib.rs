@@ -100,7 +100,7 @@ impl Server {
         self.factory.as_ref().expect("server factory is gone")
     }
 
-    /// Topics accepted on `POST /cluster/{topic}`, in arrival order.
+    /// Topics accepted from cluster peers (`POST /cluster/{topic}` or the SSH channel), in arrival order.
     #[must_use]
     pub fn cluster_posts(&self) -> Vec<String> {
         self.posts.lock().unwrap_or_else(|err| err.into_inner()).clone()
@@ -763,14 +763,21 @@ fn boot_server(
         .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
     // Empty cluster_https_port listens on 8443. 0 is ephemeral for tests.
     moqui_core::notify::install();
-    cluster_edge::install_sender()?;
+    // The SSH server binds before the member row is written: with cluster_transport=ssh the row carries its address
+    // and host key.
+    let cluster_posts = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sshd = ssh::server::start(&factory, &runtime_dir, Arc::clone(&cluster_posts))?;
+    if moqui_lib::env::get_prop_or_env("cluster_transport") == "ssh" {
+        ssh::cluster::install_sender(&factory)?;
+    } else {
+        cluster_edge::install_sender()?;
+    }
     moqui_core::cluster::start(&factory).map_err(moqui_lib::error::Error::from)?;
-    let cluster_edge = cluster_edge::listen(Arc::clone(&factory))?;
+    let cluster_edge = cluster_edge::listen(Arc::clone(&factory), cluster_posts)?;
     notws::install_push().map_err(moqui_lib::error::Error::from)?;
     let pdf = install_pdf(&runtime_dir);
     ssh::install_client(&runtime_dir);
     sso::install();
-    let sshd = ssh::server::start(&factory, &runtime_dir)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
