@@ -150,6 +150,35 @@ fn a_validation_error_shows_by_its_field_and_a_message_keeps_its_type_after_the_
 }
 
 #[test]
+fn a_saved_validation_error_reaches_the_qvt_m_form_of_its_form() {
+    let site = Site::new("validation-qvt");
+    let world = World::open("");
+    let mut jar = Vec::new();
+    let page = serve_at(&world.factory, request("GET", "/"), &site.root);
+    cookies(&page, &mut jar);
+    let token = token_of(&page.body_text());
+    let posted = serve_at(
+        &world.factory,
+        with_cookies(
+            form_post(
+                "/check",
+                &format!("title=x&moquiFormName=Edit&moquiSessionToken={token}"),
+            ),
+            &jar,
+        ),
+        &site.root,
+    );
+    assert_eq!(posted.status, 302, "{}", posted.body_text());
+    cookies(&posted, &mut jar);
+    let mut get = request("GET", "/");
+    get.query.push(("renderMode".into(), "qvt".into()));
+    let qvt = serve_at(&world.factory, with_cookies(get, &jar), &site.root).body_text();
+    assert!(qvt.contains(":validation-errors-initial="), "{qvt}");
+    assert!(qvt.contains("Title needs a letter"), "{qvt}");
+    assert!(qvt.contains("fieldPretty"), "{qvt}");
+}
+
+#[test]
 fn a_posted_form_redirects_and_the_next_page_shows_its_messages_and_values_once() {
     let site = Site::new("flash");
     let world = World::open("");

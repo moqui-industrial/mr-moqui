@@ -471,6 +471,22 @@ fn qapps_widgets(browser: &mut Browser, base: &str) {
         WAIT,
     );
 
+    // a validation error from the transition is drawn on its Quasar field
+    browser.click("the code", "document.querySelector('[id=\"CodeForm_code\"]')");
+    browser.type_text("abc");
+    field_error_by_its_field(
+        browser,
+        &by_text("button", "Check"),
+        "Array.from(document.querySelectorAll('.q-field--error')).some((el) => el.innerText.indexOf('Code needs a digit') >= 0)",
+        "Array.from(document.querySelectorAll('.q-notification')).some((el) => el.innerText.indexOf('Code needs a digit') >= 0)",
+    );
+    browser.type_text("1");
+    browser.wait_for(
+        "the error cleared by a new value",
+        "document.querySelectorAll('.q-field--error').length === 0",
+        WAIT,
+    );
+
     // the column dialog
     browser.click("the columns button", &by_text("button", "table_chart\nColumns"));
     browser.wait_for(
@@ -494,6 +510,29 @@ fn qapps_widgets(browser: &mut Browser, base: &str) {
     );
     browser.pump(Duration::from_millis(500));
     assert_clean(browser, &page);
+}
+
+/// A background submit whose transition leaves a validation error for `code`: the error shows by the field (`shown` finds it) and is
+/// not also a toast (`toast` finds one). The 500 of the answer is the only problem on the console.
+fn field_error_by_its_field(browser: &mut Browser, submit: &str, shown: &str, toast: &str) {
+    browser.click("the check button", submit);
+    let answer = fetched(browser, "the check post", "/checkCode");
+    assert_eq!(answer["status"], 500, "{answer}");
+    let body: serde_json::Value = serde_json::from_str(answer["body"].as_str().unwrap()).unwrap();
+    assert_eq!(body["validationErrors"][0]["field"], "code", "{answer}");
+    assert_eq!(body["validationErrors"][0]["fieldPretty"], "Code", "{answer}");
+    browser.wait_for("the error by the field", shown, WAIT);
+    browser.pump(Duration::from_millis(300));
+    assert_eq!(
+        browser.eval(toast),
+        serde_json::Value::Bool(false),
+        "the field error is not also a toast"
+    );
+    let problems = browser.take_problems();
+    assert!(
+        problems.iter().all(|problem| format!("{problem:?}").contains("500")),
+        "only the 500 of the answer: {problems:#?}"
+    );
 }
 
 /// The server-static fixture: the template is a script that registers a render function, and the data comes from `/actions`.
@@ -727,6 +766,16 @@ fn html_widgets(browser: &mut Browser, base: &str) {
         browser.eval("location.pathname"),
         "/apps/GateWidgets",
         "a background submit stays on the page"
+    );
+
+    // a validation error from the transition shows by its field, with the markup of the form macros
+    browser.eval("(() => { document.getElementById('CodeForm').code.value = 'abc'; return true; })()");
+    field_error_by_its_field(
+        browser,
+        "document.querySelector('#CodeForm [type=submit]')",
+        "(() => { const box = document.querySelector('#CodeForm [name=\"code\"]').closest('.field'); return box.hasAttribute('data-invalid') \
+         && box.querySelector('.field-error').textContent === 'Code needs a digit'; })()",
+        "Array.from(document.querySelectorAll('#toasts .alert')).some((el) => el.textContent.indexOf('Code needs a digit') >= 0)",
     );
 
     // the column picker: SortableJS is loaded when the dialog's list is bound, and the tree is written to the hidden input

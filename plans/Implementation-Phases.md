@@ -367,7 +367,11 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   `webapp_upload_executable_allow` is `true`.
 - **Messages and forms.** A response that redirects saves its messages and errors in the session, and its request
   parameters when it had errors (not passwords or the token). The next request that asks gets them once: `ec.web.getPageMessages()`
-  for the shell, `ec.web.errorParameters` and the field values of a form. Pages the user got in `html` go on the screen
+  for the shell, `ec.web.errorParameters` and the field values of a form. A validation error of a form's own field is shown by that field in every client, which goes beyond Java (its qvt client only
+  notified): the html page after a redirect, an html background submit (it asks for JSON and draws the same `.field-error` markup), and a qvt
+  `m-form`, whose `fieldErrors` the `m-*` wrappers put on the Quasar field until its value changes (from the JSON answer, or from
+  `validation-errors-initial` after a redirect). An error placed on a field is not also a notification. The `validationErrors` maps carry Java's
+  `formPretty`, `fieldPretty` and `serviceNamePretty`. Pages the user got in `html` go on the screen
   history, newest first, for `screen-last` and the navbar menu. A failure for a browser (`Accept: text/html`, not an API path) renders
   `error/*` with `errorCode`, `errorType`, `errorMessage`, `errorThrowable` and `showErrorDetail`.
 - **Slice 6, qvt server-merged, qjs, qvue.** `ScreenQvt.js` writes the Vue template of the target screen, as the html module does: a runtime

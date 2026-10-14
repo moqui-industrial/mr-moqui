@@ -125,7 +125,7 @@ macro; `q-btn`, `q-tooltip`, `q-badge`, `q-list`, `q-btn-dropdown`, `q-expansion
 
 | Component | For |
 |---|---|
-| `m-form` | form-single and rows of a form-list: `fields-initial`, `v-slot:default="formProps"` (`fields`, `hasFieldsChanged`, `fieldChanged`, checkbox set), submit by `fetch` (JSON answer, or a download), `submit-message`, `submit-reload-id`, `submit-hide-id`, `focus-field`, `exclude-empty-fields`, `parent-checkbox-set` |
+| `m-form` | form-single and rows of a form-list: `fields-initial`, `v-slot:default="formProps"` (`fields`, `hasFieldsChanged`, `fieldChanged`, checkbox set), submit by `fetch` (JSON answer, or a download), `submit-message`, `submit-reload-id`, `submit-hide-id`, `focus-field`, `exclude-empty-fields`, `parent-checkbox-set`, `validation-errors-initial`; the validation errors of its own fields go in `fieldErrors`, which the field wrappers show on the Quasar field |
 | `m-form-link` | a form that goes to a screen: the fields become the query. Slot `fields`, `clearForm` |
 | `m-checkbox-set` | selected rows: `checkbox-count`, `checkbox-parameter`, `checkbox-list-mode`, `checkbox-values` |
 | `m-form-list` | a list drawn by the client from rows it fetches, with sort, pages, selection and sub rows (see below) |

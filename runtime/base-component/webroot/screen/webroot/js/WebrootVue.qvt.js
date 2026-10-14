@@ -93,7 +93,7 @@
             const msg = "Could not connect to server";
             notify(Object.assign({}, moqui.notifyOptsError, { message: msg }));
             addNotify(msg, "negative");
-        } else if (!notified) {
+        } else if (!notified && !(respObj && respObj.fieldErrorsPlaced)) {
             const errMsg = "Error: " + (err.statusText || err.status);
             notify(Object.assign({}, moqui.notifyOptsError, { message: errMsg }));
             addNotify(errMsg, "negative");
@@ -249,6 +249,29 @@
         if (err && err.aborted) { console.warn("load aborted"); return; }
         if (rootVm()) rootVm().loading = 0;
         moqui.handleAjaxError(err);
+    };
+
+    // The validation errors of a form's own fields go to the form (m-form fieldErrors), shown by the field. A copy of the response without
+    // them, and without their text in errors, is what is left to notify. An error for another form or for no field stays in the copy.
+    moqui.placeFieldErrors = (form, resp) => {
+        if (!form || !resp || !moqui.isPlainObject(resp) || !Array.isArray(resp.validationErrors)) return resp;
+        const formName = form.fields ? form.fields.moquiFormName : null;
+        const placed = [];
+        const rest = resp.validationErrors.filter((ve) => {
+            if (!moqui.isPlainObject(ve) || !ve.field || (ve.form && formName && ve.form !== formName)) return true;
+            if (!Object.prototype.hasOwnProperty.call(form.fields, ve.field)) return true;
+            placed.push(ve);
+            return false;
+        });
+        if (!placed.length) return resp;
+        form.setFieldErrors(placed);
+        const placedText = placed.map((ve) => ve.message);
+        const copy = Object.assign({}, resp, { validationErrors: rest, fieldErrorsPlaced: placed.length });
+        if (moqui.isString(resp.errors)) {
+            const lines = resp.errors.split("\n").filter((line) => placedText.indexOf(line) === -1);
+            copy.errors = lines.length ? lines.join("\n") : null;
+        } else if (Array.isArray(resp.errors)) copy.errors = resp.errors.filter((line) => placedText.indexOf(line) === -1);
+        return copy;
     };
 
     /* ========== server-static screens ========== */
@@ -940,9 +963,26 @@
         mixins: [checkboxSetMixin],
         props: { fieldsInitial: Object, action: { type: String, required: true }, method: { type: String, default: "POST" }, readOnly: { type: Boolean, default: false },
             submitMessage: String, submitReloadId: String, submitHideId: String, focusField: String, noValidate: Boolean, excludeEmptyFields: Boolean,
-            parentCheckboxSet: Object, bodyParameterNames: Array },
-        data() { return { fields: Object.assign({}, this.fieldsInitial), fieldsOriginal: Object.assign({}, this.fieldsInitial), buttonClicked: null }; },
+            parentCheckboxSet: Object, bodyParameterNames: Array, validationErrorsInitial: Array },
+        data() {
+            return { fields: Object.assign({}, this.fieldsInitial), fieldsOriginal: Object.assign({}, this.fieldsInitial), buttonClicked: null,
+                fieldErrors: {}, fieldErrorValues: {} };
+        },
         provide() { return { mForm: this }; },
+        watch: {
+            // an error stays by its field until the value changes
+            fields: {
+                deep: true,
+                handler() {
+                    Object.keys(this.fieldErrors).forEach((name) => {
+                        if (this.fields[name] !== this.fieldErrorValues[name]) delete this.fieldErrors[name];
+                    });
+                }
+            }
+        },
+        created() {
+            if (this.validationErrorsInitial && this.validationErrorsInitial.length) moqui.placeFieldErrors(this, { validationErrors: this.validationErrorsInitial });
+        },
         template:
             '<q-form ref="qForm" @submit.prevent="submitForm" @reset.prevent="resetForm" autocapitalize="off" autocomplete="off">' +
                 '<slot :fields="fields" :checkboxAllState="checkboxAllState" :setCheckboxAllState="setCheckboxAllState"' +
@@ -961,7 +1001,18 @@
                 return true;
             },
             fieldChanged(name) { return moqui.fieldChanged(this.fields, this.fieldsOriginal, name); },
+            setFieldErrors(list) {
+                const errors = {};
+                const values = {};
+                list.forEach((ve) => {
+                    errors[ve.field] = errors[ve.field] ? errors[ve.field] + "; " + ve.message : ve.message;
+                    values[ve.field] = this.fields[ve.field];
+                });
+                this.fieldErrors = errors;
+                this.fieldErrorValues = values;
+            },
             submitGo() {
+                this.fieldErrors = {};
                 const formEl = this.$refs.qForm.$el;
                 const button = submitButton(formEl, this.buttonClicked);
                 let btnName = null;
@@ -1022,13 +1073,15 @@
                     });
                 }).catch((err) => {
                     if (!arrived) root_.loading--;
+                    if (err && err.json) err = Object.assign({}, err, { json: moqui.placeFieldErrors(this, err.json) });
                     moqui.handleLoadError(err && err.status !== undefined ? err : { status: 0, error: err, text: "" });
                 });
             },
             handleResponse(resp) {
                 let notified = false;
                 if (resp && moqui.isPlainObject(resp)) {
-                    notified = moqui.notifyMessages(resp.messageInfos, resp.errors);
+                    const rest = moqui.placeFieldErrors(this, resp);
+                    notified = moqui.notifyMessages(rest.messageInfos, rest.errors, rest.validationErrors);
                     if (resp.screenUrl && resp.screenUrl.length > 0) this.$root.setUrl(resp.screenUrl);
                     else if (resp.redirectUrl && resp.redirectUrl.length > 0) root.location.href = resp.redirectUrl;
                 } else console.warn("m-form no response or non-JSON response");
@@ -1407,6 +1460,12 @@
                 const form = this.mForm;
                 if (!form || !this.name || !form.fieldChanged(this.name)) return "";
                 return this.$q.dark.isActive ? "blue-10" : "blue-1";
+            },
+            // the server's validation error for this field, put on the Quasar field; none leaves the rules in charge
+            errorAttrs() {
+                const form = this.mForm;
+                const message = form && this.name && form.fieldErrors ? form.fieldErrors[this.name] : null;
+                return message ? { error: true, errorMessage: message } : {};
             }
         }
     };
@@ -1452,7 +1511,7 @@
         template:
             '<q-input dense outlined stack-label :label="label" :model-value="local" @update:model-value="onInput" :rules="allRules"' +
                     ' :mask="inputMask" fill-mask :for="id" :name="name" :form="form" :disable="disable" :size="sizeVal"' +
-                    ' style="max-width:max-content;" :bg-color="bg">' +
+                    ' style="max-width:max-content;" :bg-color="bg" v-bind="errorAttrs">' +
                 '<template v-slot:prepend v-if="hasDate">' +
                     '<q-icon name="event" class="cursor-pointer">' +
                         '<q-popup-proxy ref="qDateProxy" transition-show="scale" transition-hide="scale">' +
@@ -1620,7 +1679,7 @@
                     ' :input-debounce="serverSearch ? serverDelay : 100" @filter="filterFn" :clearable="allowEmpty||multiple" :disable="disable"' +
                     ' :multiple="multiple" :emit-value="!onSelectGoTo" map-options behavior="menu" :new-value-mode="combo ? \'add-unique\' : undefined"' +
                     ' :rules="[val => allowEmpty||multiple||combo||val===\'\'||(val&&val.length)||\'Please select an option\']"' +
-                    ' stack-label :label="label" :loading="loading" :bg-color="bg" :options="curOptions">' +
+                    ' stack-label :label="label" :loading="loading" :bg-color="bg" :options="curOptions" v-bind="errorAttrs">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
                 '<template v-slot:no-option><q-item><q-item-section class="text-grey">No results</q-item-section></q-item></template>' +
                 '<template v-if="multiple" v-slot:prepend><div>' +
@@ -1770,7 +1829,7 @@
         template:
             '<q-input dense outlined stack-label :label="label" :prefix="prefix" :model-value="local" @update:model-value="onInput" :type="type"' +
                     ' :for="id" :name="name" :size="size" :maxlength="maxlength" :form="form" :loading="loading" :rules="allRules" :disable="disable" :bg-color="bg"' +
-                    ' :mask="mask" :fill-mask="fillMask" :reverse-fill-mask="reverseFillMask" autocapitalize="off" autocomplete="off">' +
+                    ' :mask="mask" :fill-mask="fillMask" :reverse-fill-mask="reverseFillMask" autocapitalize="off" autocomplete="off" v-bind="errorAttrs">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
             '</q-input>',
         computed: {
@@ -1819,13 +1878,13 @@
             '</div>' +
             '<div v-else-if="editorType === \'md\'" class="m-text-area-editor">' +
                 '<q-input type="textarea" dense outlined stack-label :label="label" :model-value="local" @update:model-value="onInput" :name="name" :for="id" :rows="rows"' +
-                    ' :readonly="readonly" :disable="disable" :form="form" :bg-color="bg" autogrow>' +
+                    ' :readonly="readonly" :disable="disable" :form="form" :bg-color="bg" autogrow v-bind="errorAttrs">' +
                     '<template v-slot:after><q-btn dense flat :icon="preview ? \'edit\' : \'visibility\'" @click="togglePreview"><q-tooltip>Preview</q-tooltip></q-btn></template>' +
                 '</q-input>' +
                 '<div v-if="preview" class="q-pa-sm markdown-preview" v-html="previewHtml"></div>' +
             '</div>' +
             '<q-input v-else type="textarea" dense outlined stack-label :label="label" :model-value="local" @update:model-value="onInput" :name="name" :for="id" :rows="rows"' +
-                ' :cols="cols" :readonly="readonly" :autogrow="autogrow" :maxlength="maxlength" :disable="disable" :form="form" :bg-color="bg">' +
+                ' :cols="cols" :readonly="readonly" :autogrow="autogrow" :maxlength="maxlength" :disable="disable" :form="form" :bg-color="bg" v-bind="errorAttrs">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
             '</q-input>',
         methods: {
@@ -1852,7 +1911,7 @@
         template:
             '<q-checkbox v-if="!options.length" size="xs" :model-value="local" @update:model-value="onInput" :true-value="trueValue" :false-value="falseValue"' +
                 ' :label="singleLabel" :name="name" :id="id" :form="form" :disable="disable"></q-checkbox>' +
-            '<m-field v-else-if="!noWrapper" :label="label" :bg-color="bg" :disable="disable">' +
+            '<m-field v-else-if="!noWrapper" :label="label" :bg-color="bg" :disable="disable" v-bind="errorAttrs">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
                 '<q-checkbox v-for="(option, index) in options" :key="option.value" size="xs" :val="option.value" :label="option.label" :model-value="local"' +
                     ' @update:model-value="onInput" :name="name" :id="index > 0 ? id + \'_\' + index : id" :form="form" :disable="disable"></q-checkbox>' +
@@ -1867,7 +1926,7 @@
         props: { modelValue: String, name: String, id: String, label: String, options: { type: Array, default: () => [] }, disable: Boolean, form: String, tooltip: String },
         emits: ["update:modelValue"],
         template:
-            '<m-field :label="label" :bg-color="bg" :disable="disable">' +
+            '<m-field :label="label" :bg-color="bg" :disable="disable" v-bind="errorAttrs">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
                 '<q-radio v-for="(option, index) in options" :key="option.value" size="xs" :val="option.value" :label="option.label" :model-value="local"' +
                     ' @update:model-value="onInput" :name="name" :id="index > 0 ? id + \'_\' + index : id" :form="form" :disable="disable"></q-radio>' +
@@ -1882,7 +1941,7 @@
         emits: ["update:modelValue"],
         template:
             '<q-file dense outlined stack-label :label="label" :model-value="modelValue" @update:model-value="$emit(\'update:modelValue\', $event)" :name="name" :for="id"' +
-                ' :size="size" :multiple="multiple" :accept="accept" :form="form" :disable="disable" :bg-color="bg">' +
+                ' :size="size" :multiple="multiple" :accept="accept" :form="form" :disable="disable" :bg-color="bg" v-bind="errorAttrs">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
             '</q-file>'
     });

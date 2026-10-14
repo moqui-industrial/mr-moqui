@@ -1472,11 +1472,16 @@ fn save_messages() {
     }
 }
 
+/// Java's `ValidationError.getMap()`: the names, their `camelCaseToPretty` forms, and the message.
 fn validation_map(error: &crate::context::ValidationError) -> BTreeMap<String, String> {
+    let pretty = moqui_lib::string::camel_case_to_pretty;
     BTreeMap::from([
         ("form".to_string(), error.form.clone()),
+        ("formPretty".to_string(), pretty(&error.form)),
         ("field".to_string(), error.field.clone()),
+        ("fieldPretty".to_string(), pretty(&error.field)),
         ("serviceName".to_string(), error.service.clone()),
+        ("serviceNamePretty".to_string(), pretty(&error.service)),
         ("message".to_string(), error.message.clone()),
     ])
 }

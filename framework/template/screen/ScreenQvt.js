@@ -377,6 +377,14 @@
 
         const initial = (values) => js_(values);
 
+        // The validation errors a redirect saved for this form, which m-form shows by their fields. None writes no attribute.
+        const savedErrors = (formName) => {
+            const saved = (ec.web && ec.web.savedValidationErrors) || [];
+            const mine = [];
+            for (const ve of saved) if (ve && ve.field && (!ve.form || ve.form === formName)) mine.push(ve);
+            return mine.length ? js_(mine) : null;
+        };
+
         // ---- inputs ----
 
         const colorClass = (check) => null;
@@ -971,7 +979,8 @@
                 "submit-hide-id": isForm ? at(n, "background-hide-id") || null : null,
                 "exclude-empty-fields": at(n, "exclude-empty-fields") === "true" ? true : null,
                 ":parent-checkbox-set": st.selectedForm ? "formProps" : null,
-                "v-slot:default": "formProps", ":fields-initial": initial(singleValues(n, formAttrs))
+                "v-slot:default": "formProps", ":fields-initial": initial(singleValues(n, formAttrs)),
+                ":validation-errors-initial": isForm ? savedErrors(at(n, "name")) : null
             };
             w((skipStart ? "" : '<div class="q-my-md"><' + tag + A(attrs) + ">"));
             return { skipStart, tag };
