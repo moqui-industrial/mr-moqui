@@ -22,6 +22,7 @@ pub mod context_stack;
 pub mod datefmt;
 pub mod env;
 pub mod error;
+pub mod etl;
 pub mod format;
 #[cfg(feature = "http")]
 pub mod http;
@@ -30,6 +31,7 @@ pub mod markdown;
 pub mod node;
 pub mod object;
 pub mod resource;
+pub mod sgml;
 pub mod signer;
 pub mod string;
 

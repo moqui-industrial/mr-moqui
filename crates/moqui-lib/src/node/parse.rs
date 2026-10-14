@@ -51,6 +51,121 @@ pub(crate) fn parse_document(location: Option<&str>, text: &str, root_only: bool
     Ok(root)
 }
 
+struct StartTag {
+    name: String,
+    attributes: IndexMap<String, String>,
+    empty: bool,
+}
+
+/// One step of [`XmlEvents`]. Text is raw character data, whitespace included, as SAX
+/// `characters` gives it. A CDATA section is its own text event.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum XmlEvent {
+    Start {
+        name: String,
+        attributes: Vec<(String, String)>,
+    },
+    Text(String),
+    End(String),
+}
+
+/// Pull reader over the same rules as the tree parser, for a caller that keeps one record at a
+/// time (`FlatXmlExtractor`). An empty element gives a start and then an end.
+pub struct XmlEvents<'a> {
+    parser: Parser<'a>,
+    open: Vec<String>,
+    pending_end: Option<String>,
+    started: bool,
+}
+
+impl<'a> XmlEvents<'a> {
+    pub fn new(location: Option<&str>, text: &'a str) -> Self {
+        Self {
+            parser: Parser {
+                src: text,
+                index: 0,
+                line: 1,
+                column: 1,
+                file: location.filter(|value| !value.is_empty()).map(str::to_string),
+            },
+            open: Vec::new(),
+            pending_end: None,
+            started: false,
+        }
+    }
+
+    /// The next event, or `None` after the root element has closed.
+    pub fn next_event(&mut self) -> Result<Option<XmlEvent>, Error> {
+        if let Some(name) = self.pending_end.take() {
+            return Ok(Some(XmlEvent::End(name)));
+        }
+        let parser = &mut self.parser;
+        if !self.started {
+            self.started = true;
+            parser.skip_bom();
+            parser.skip_misc()?;
+            if parser.eof() {
+                return Err(parser.error("document has no root element"));
+            }
+            if parser.starts_with("<!") {
+                return Err(parser.declaration_error());
+            }
+            if !parser.starts_with("<") || parser.starts_with("</") || parser.starts_with("<?") {
+                return Err(parser.error("document has no root element"));
+            }
+            return self.start();
+        }
+        let Some(top) = self.open.last().cloned() else {
+            parser.skip_misc()?;
+            if !parser.eof() {
+                return Err(parser.error("trailing content after the root element"));
+            }
+            return Ok(None);
+        };
+        loop {
+            if parser.eof() {
+                return Err(parser.error(format!("unclosed element <{top}>")));
+            }
+            if parser.starts_with("</") {
+                parser.read_end_tag(&top)?;
+                self.open.pop();
+                return Ok(Some(XmlEvent::End(top)));
+            }
+            if parser.starts_with("<!--") {
+                parser.skip_comment()?;
+                continue;
+            }
+            if parser.starts_with("<?") {
+                parser.skip_pi()?;
+                continue;
+            }
+            if parser.starts_with("<![CDATA[") {
+                return Ok(Some(XmlEvent::Text(parser.read_cdata()?)));
+            }
+            if parser.starts_with("<!") {
+                return Err(parser.declaration_error());
+            }
+            if parser.starts_with("<") {
+                return self.start();
+            }
+            return Ok(Some(XmlEvent::Text(parser.read_text()?)));
+        }
+    }
+
+    fn start(&mut self) -> Result<Option<XmlEvent>, Error> {
+        let tag = self.parser.read_start_tag()?;
+        if tag.empty {
+            self.pending_end = Some(tag.name.clone());
+        } else {
+            self.open.push(tag.name.clone());
+        }
+        Ok(Some(XmlEvent::Start {
+            name: tag.name,
+            attributes: tag.attributes.into_iter().collect(),
+        }))
+    }
+}
+
 struct Parser<'a> {
     src: &'a str,
     index: usize,
@@ -166,49 +281,12 @@ impl<'a> Parser<'a> {
     fn parse_element(&mut self, parent: Option<Weak<RefCell<NodeInner>>>, root_only: bool) -> Result<MNode, Error> {
         let line = self.line;
         let column = self.column;
-        if !self.starts_with("<") {
-            return Err(self.error("expected an element"));
-        }
-        self.bump();
-        if self.starts_with("!") || self.starts_with("?") || self.starts_with("/") {
-            return Err(self.error("expected an element name"));
-        }
-        let name = self.read_name()?;
-        let mut attributes = IndexMap::new();
-        loop {
-            self.skip_ws();
-            if self.starts_with("/>") {
-                self.bump();
-                self.bump();
-                return Ok(MNode::from_parts(
-                    name,
-                    attributes,
-                    None,
-                    Vec::new(),
-                    parent,
-                    self.file.clone(),
-                    line,
-                    column,
-                ));
-            }
-            if self.starts_with(">") {
-                self.bump();
-                break;
-            }
-            if self.eof() {
-                return Err(self.error(format!("unclosed start tag <{name}>")));
-            }
-            let attr_name = self.read_name()?;
-            self.skip_ws();
-            if !self.starts_with("=") {
-                return Err(self.error(format!("attribute {attr_name} has no value")));
-            }
-            self.bump();
-            self.skip_ws();
-            let attr_value = self.read_attr_value()?;
-            attributes.insert(attr_name, attr_value);
-        }
-        if root_only {
+        let StartTag {
+            name,
+            attributes,
+            empty,
+        } = self.read_start_tag()?;
+        if empty || root_only {
             return Ok(MNode::from_parts(
                 name,
                 attributes,
@@ -227,24 +305,7 @@ impl<'a> Parser<'a> {
                 return Err(self.error(format!("unclosed element <{name}>")));
             }
             if self.starts_with("</") {
-                let end_line = self.line;
-                let end_col = self.column;
-                self.bump();
-                self.bump();
-                let end_name = self.read_name()?;
-                self.skip_ws();
-                if !self.starts_with(">") {
-                    return Err(self.error(format!("unclosed end tag </{end_name}")));
-                }
-                self.bump();
-                if end_name != name {
-                    return Err(Error::at(
-                        format!("end tag </{end_name}> does not match <{name}>"),
-                        self.file.clone(),
-                        end_line,
-                        end_col,
-                    ));
-                }
+                self.read_end_tag(&name)?;
                 break;
             }
             if self.starts_with("<!--") {
@@ -286,6 +347,74 @@ impl<'a> Parser<'a> {
             line,
             column,
         ))
+    }
+
+    /// `<name attr="value" ...>` or `<name .../>`. The cursor is on the `<`.
+    fn read_start_tag(&mut self) -> Result<StartTag, Error> {
+        if !self.starts_with("<") {
+            return Err(self.error("expected an element"));
+        }
+        self.bump();
+        if self.starts_with("!") || self.starts_with("?") || self.starts_with("/") {
+            return Err(self.error("expected an element name"));
+        }
+        let name = self.read_name()?;
+        let mut attributes = IndexMap::new();
+        loop {
+            self.skip_ws();
+            if self.starts_with("/>") {
+                self.bump();
+                self.bump();
+                return Ok(StartTag {
+                    name,
+                    attributes,
+                    empty: true,
+                });
+            }
+            if self.starts_with(">") {
+                self.bump();
+                return Ok(StartTag {
+                    name,
+                    attributes,
+                    empty: false,
+                });
+            }
+            if self.eof() {
+                return Err(self.error(format!("unclosed start tag <{name}>")));
+            }
+            let attr_name = self.read_name()?;
+            self.skip_ws();
+            if !self.starts_with("=") {
+                return Err(self.error(format!("attribute {attr_name} has no value")));
+            }
+            self.bump();
+            self.skip_ws();
+            let attr_value = self.read_attr_value()?;
+            attributes.insert(attr_name, attr_value);
+        }
+    }
+
+    /// `</name>` for the open element `name`. The cursor is on the `<`.
+    fn read_end_tag(&mut self, name: &str) -> Result<(), Error> {
+        let end_line = self.line;
+        let end_col = self.column;
+        self.bump();
+        self.bump();
+        let end_name = self.read_name()?;
+        self.skip_ws();
+        if !self.starts_with(">") {
+            return Err(self.error(format!("unclosed end tag </{end_name}")));
+        }
+        self.bump();
+        if end_name != name {
+            return Err(Error::at(
+                format!("end tag </{end_name}> does not match <{name}>"),
+                self.file.clone(),
+                end_line,
+                end_col,
+            ));
+        }
+        Ok(())
     }
 
     fn declaration_error(&mut self) -> Error {
