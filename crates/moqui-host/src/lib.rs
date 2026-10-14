@@ -24,6 +24,7 @@ pub mod pdf;
 pub mod qvt_report;
 pub mod search;
 pub mod ssh;
+pub mod sso;
 pub mod types;
 
 mod cluster_edge;
@@ -768,6 +769,7 @@ fn boot_server(
     notws::install_push().map_err(moqui_lib::error::Error::from)?;
     let pdf = install_pdf(&runtime_dir);
     ssh::install_client(&runtime_dir);
+    sso::install();
     let sshd = ssh::server::start(&factory, &runtime_dir)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

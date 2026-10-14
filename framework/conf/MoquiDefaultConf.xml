@@ -520,6 +520,7 @@
         <service-file location="classpath://service/org/moqui/impl/WikiServices.xml"/>
         <service-file location="classpath://service/org/moqui/search/SearchServices.xml"/>
         <service-file location="classpath://service/org/moqui/sftp/SftpMessageServices.xml"/>
+        <service-file location="classpath://service/org/moqui/sso/AuthServices.xml"/>
     </service-facade>
 
     <!-- One search backend. With no postgres element the postgres backend uses the search schema of the entity Postgres;

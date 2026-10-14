@@ -496,7 +496,7 @@ fn record_history(job: &Job<'_>, state: &RenderState) {
     let mut path = state.url_info.full_path_url();
     // The sign-in pages are not places to return to.
     let first = path.trim_start_matches('/').split('/').next().unwrap_or("");
-    if ["Login", "SecondFactor", "ChangePassword", "error", "rest", "rpc"].contains(&first) {
+    if ["Login", "SecondFactor", "ChangePassword", "sso", "error", "rest", "rpc"].contains(&first) {
         return;
     }
     let query: Vec<(String, String)> = job

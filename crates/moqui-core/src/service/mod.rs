@@ -36,6 +36,7 @@ mod schedule;
 mod seca;
 mod security_checks;
 pub(crate) mod semaphore;
+mod sso;
 mod system_sync;
 mod tools;
 mod validate;

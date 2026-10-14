@@ -46,6 +46,11 @@ servo = { workspace = true, optional = true }
 russh = { workspace = true }
 russh-sftp = { workspace = true }
 huskarl = { workspace = true }
+http = { workspace = true }
+bytes = { workspace = true }
+form_urlencoded = { workspace = true }
+p256 = { workspace = true }
+reqwest = { workspace = true }
 
 [lints]
 workspace = true

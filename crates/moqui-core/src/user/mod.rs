@@ -35,8 +35,8 @@ pub use factor::{
 pub use filter::apply_entity_filters;
 pub(crate) use login::stamp_value;
 pub use login::{
-    apply_header_keys, change_password, get_login_key, internal_login_user, login_anonymous, login_user,
-    login_user_key, logout, logout_anonymous_only,
+    apply_header_keys, change_password, get_login_key, internal_login_user, login_anonymous, login_external_user,
+    login_user, login_user_key, logout, logout_anonymous_only,
 };
 pub(crate) use login::{now_millis, now_value, value_millis};
 pub(crate) use login::{AUTHC_FACTOR_REQUIRED, PRE_AUTHC_USERNAME};

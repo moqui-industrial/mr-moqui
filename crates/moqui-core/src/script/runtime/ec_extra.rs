@@ -527,43 +527,11 @@ fn web_is_safe_single_path_segment(name: Opt<String>) -> bool {
 /// The second argument is the configured host name. Java passes the request there, which a script
 /// cannot hold, so anything else means the host of the web app's own URL.
 fn web_is_same_origin_redirect(url: Opt<String>, configured_host: Opt<JsValue<'_>>) -> bool {
-    let url = url.0.unwrap_or_default();
-    let url = url.trim();
-    if url.is_empty() || url.contains('\\') || url.chars().any(|ch| (ch as u32) < 32 || ch as u32 == 127) {
-        return false;
-    }
-    let lower = url.to_ascii_lowercase();
-    if lower.starts_with("javascript:")
-        || lower.starts_with("data:")
-        || lower.starts_with("vbscript:")
-        || url.starts_with("//")
-    {
-        return false;
-    }
-    if url.starts_with('/') {
-        return true;
-    }
-    let Some(rest) = lower.strip_prefix("https://").or_else(|| lower.strip_prefix("http://")) else {
-        return false;
-    };
     let configured = configured_host
         .0
         .as_ref()
-        .and_then(|value| value.as_string().and_then(|text| text.to_string().ok()))
-        .unwrap_or_else(|| {
-            let base = crate::web::base_url();
-            let rest = base.split_once("://").map_or("", |(_, rest)| rest);
-            rest.split(['/', ':']).next().unwrap_or("").to_string()
-        });
-    if configured.is_empty() {
-        return false;
-    }
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    if authority.contains('@') {
-        return false;
-    }
-    let host = authority.split(':').next().unwrap_or("");
-    !host.is_empty() && host.eq_ignore_ascii_case(&configured)
+        .and_then(|value| value.as_string().and_then(|text| text.to_string().ok()));
+    crate::web::is_same_origin_redirect(&url.0.unwrap_or_default(), configured.as_deref())
 }
 
 fn web_last_path_segment(name: Opt<String>) -> Option<String> {

@@ -205,7 +205,9 @@ pub(crate) fn auto_fields(
             name: field.name.clone(),
             java_type: java,
             required: auto.required,
-            default_value: field.default_value.clone(),
+            // Java's mergeAutoParameters takes no default: the entity field's `default` is an expression for a
+            // create, and as a parameter default an update would write it over the stored value.
+            default_value: None,
             default_expr: None,
             allow_html: auto.allow_html,
             checks: Vec::new(),

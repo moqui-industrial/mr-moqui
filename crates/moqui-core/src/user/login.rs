@@ -123,6 +123,17 @@ pub fn internal_login_user(username: &str) -> Result<(), Error> {
     finish_login(&facade, &account, None, false)
 }
 
+/// A login an identity provider vouched for (SSO): [`internal_login_user`], then the session id is replaced as after
+/// a password login, so a session id from before the redirect does not carry the new login.
+///
+/// # Errors
+///
+/// Returns an error when the account is unknown, disabled, terminated, or not allowed from this address.
+pub fn login_external_user(username: &str) -> Result<(), Error> {
+    internal_login_user(username)?;
+    session::rotate_on_password_login()
+}
+
 /// Log in with a `UserLoginKey`. The stored `loginKey` is [`super::password::hash_login_key`].
 ///
 /// A `thruDate` in the past is rejected. A null `thruDate` stays valid. Does not rotate the session id.

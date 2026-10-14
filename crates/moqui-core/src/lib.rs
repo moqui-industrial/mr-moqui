@@ -27,6 +27,7 @@ pub mod script;
 pub mod search;
 pub mod service;
 pub mod sftp;
+pub mod sso;
 #[cfg(test)]
 mod testing;
 pub mod transaction;

@@ -71,7 +71,16 @@ along with this software (see the LICENSE.md file). If not, see
         <error-response url="."/>
     </transition>
     <transition name="logout">
-        <actions><script>ec.user.logoutUser()</script></actions>
+        <actions>
+            <!-- after an SSO login, logout#User also ends the session at the identity provider and redirects -->
+            <set field="moquiAuthFlowExternalLogout" from="ec.web.sessionAttributes.moquiAuthFlowExternalLogout"/>
+            <if condition="moquiAuthFlowExternalLogout"><then>
+                <service-call name="org.moqui.sso.AuthServices.logout#User"/>
+            </then><else>
+                <script>ec.user.logoutUser()</script>
+            </else></if>
+        </actions>
+        <conditional-response type="none"><condition><expression>moquiAuthFlowExternalLogout</expression></condition></conditional-response>
         <default-response url="/"/>
         <error-response url="."/>
     </transition>
@@ -125,6 +134,12 @@ along with this software (see the LICENSE.md file). If not, see
                 <log level="warn" message="Ignoring off-site returnTo [${returnTo}]"/>
             </else></if>
         </then></if>
+
+        <!-- the SSO tab: the AuthFlow logins, read with authorization off as anonymous users see them -->
+        <script>
+            authFlowList = ec.entity.find("moqui.security.sso.AuthFlow").disableAuthz().orderBy("sequenceNum").list()
+                .filter((flow) => flow.inbound != 'Y' &amp;&amp; flow.disabled != 'Y')
+        </script>
 
         <set field="passwordChangeRequired" from="ec.web.sessionAttributes.moquiPasswordChangeRequired || 'false'" type="Boolean"/>
         <set field="expiredCredentials" from="ec.web.sessionAttributes.moquiExpiredCredentials || 'false'" type="Boolean"/>

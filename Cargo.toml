@@ -187,6 +187,12 @@ servo = "0.7"
 russh = { version = "0.64", default-features = false, features = ["aws-lc-rs", "flate2", "rsa"] }
 # SFTP v3 subsystem. No dependency on russh; the host feeds it the channel bytes.
 russh-sftp = "3"
+# huskarl's HTTP request and body types, and the form encoding of the SSO callback. Already in the graph under it.
+http = "1"
+bytes = "1"
+form_urlencoded = "1"
+# Apple's client secret JWT (ES256). The same p256 huskarl-crypto-native and russh link.
+p256 = { version = "0.14", default-features = false, features = ["ecdsa", "pkcs8", "pem", "std"] }
 # OIDC and OAuth 2 client. Default feature is the native JWS verifier.
 # Loopback, metrics, and the experimental key-binding feature stay off.
 huskarl = "0.11"

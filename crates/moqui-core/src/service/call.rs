@@ -476,6 +476,7 @@ fn execute(
         ))),
         ServiceKind::SystemSync => super::system_sync::run(&def.name, parameters, facade),
         ServiceKind::ElFinder => super::elfinder::run(&def.name, parameters, facade),
+        ServiceKind::Sso => super::sso::run(&def.name, parameters, facade),
         ServiceKind::Tools => super::tools::run(&def.name, parameters, facade),
         ServiceKind::NotPorted => Err(LibError::new(
             super::not_ported::reason(&def.name).unwrap_or_else(|| format!("service {} is not available", def.name)),

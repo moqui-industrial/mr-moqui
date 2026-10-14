@@ -38,6 +38,8 @@ pub(crate) enum ServiceKind {
     SystemSync,
     /// The elFinder connector service, whose body is Rust, in `elfinder`.
     ElFinder,
+    /// An SSO service of `moqui-sso` whose body is Rust, in `sso`.
+    Sso,
     /// A tools service (print jobs, entity data snapshots, data document notifications) whose body is Rust, in `tools`.
     Tools,
     /// A service defined but not available in this port, in `not_ported`: LLM, A2A, Docker instances.
@@ -500,6 +502,8 @@ fn load_service(prefix: &str, node: &MNode, services: &mut BTreeMap<String, Serv
         ServiceKind::SystemSync
     } else if super::elfinder::runs(&name) {
         ServiceKind::ElFinder
+    } else if super::sso::runs(&name) {
+        ServiceKind::Sso
     } else {
         kind_of(&type_name, &location)
     };
