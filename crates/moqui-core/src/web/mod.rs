@@ -252,7 +252,11 @@ pub(crate) fn set_request_info(request: &WebRequest) {
     );
     for (name, value) in &request.headers {
         // The credentials a header carries are not shown.
-        let shown = if name == "authorization" || name == "cookie" { "(hidden)" } else { value.as_str() };
+        let shown = if name == "authorization" || name == "cookie" {
+            "(hidden)"
+        } else {
+            value.as_str()
+        };
         details.push_str(&format!("Header: {name} = [{shown}]\n"));
     }
     WEB.with(|slot| {
@@ -285,7 +289,10 @@ pub(crate) fn request_details() -> String {
         slot.borrow().as_ref().map_or_else(String::new, |web| {
             let mut text = web.request_details.clone();
             for (name, value) in &web.parameters {
-                text.push_str(&format!("Parameter: {name} = {}\n", moqui_lib::object::to_plain_string(value)));
+                text.push_str(&format!(
+                    "Parameter: {name} = {}\n",
+                    moqui_lib::object::to_plain_string(value)
+                ));
             }
             text
         })

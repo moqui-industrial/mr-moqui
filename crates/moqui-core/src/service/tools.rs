@@ -98,11 +98,13 @@ fn call(name: &str, parameters: &BTreeMap<String, Value>, options: &CallOptions)
 
 /// The document bytes: `serialBlob` or `inputStream` (Java's two forms), as bytes or text.
 fn document_bytes(parameters: &BTreeMap<String, Value>) -> Option<Vec<u8>> {
-    ["serialBlob", "inputStream"].iter().find_map(|name| match parameters.get(*name) {
-        Some(Value::Bytes(bytes)) => Some(bytes.to_vec()),
-        Some(Value::String(text)) => Some(text.as_bytes().to_vec()),
-        _ => None,
-    })
+    ["serialBlob", "inputStream"]
+        .iter()
+        .find_map(|name| match parameters.get(*name) {
+            Some(Value::Bytes(bytes)) => Some(bytes.to_vec()),
+            Some(Value::String(text)) => Some(text.as_bytes().to_vec()),
+            _ => None,
+        })
 }
 
 /// The `print#DocumentInterface` fields of a print job.
@@ -137,7 +139,7 @@ fn print_document(parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<Strin
     let mut job = job_fields(parameters);
     job.insert("statusId".to_string(), Value::string("PtjNotSent"));
     if store {
-        job.insert("document".to_string(), Value::Bytes(bytes.clone().into()));
+        job.insert("document".to_string(), Value::Bytes(bytes.clone()));
     }
     let force_new = CallOptions {
         require_new_transaction: Some(true),
@@ -151,7 +153,7 @@ fn print_document(parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<Strin
     let mut out = BTreeMap::new();
     out.insert("printJobId".to_string(), print_job_id.clone());
     job.insert("printJobId".to_string(), print_job_id);
-    job.insert("document".to_string(), Value::Bytes(bytes.into()));
+    job.insert("document".to_string(), Value::Bytes(bytes));
     let mut send = BTreeMap::new();
     send.insert("printJob".to_string(), Value::Map(job.into_iter().collect()));
     let sent = call(SEND_INTERNAL, &send, &CallOptions::default());
@@ -175,7 +177,7 @@ fn print_resource_document(parameters: &BTreeMap<String, Value>) -> Result<BTree
     };
     let bytes = resource.read_bytes().map_err(|err| LibError::new(err.message()))?;
     let mut print = parameters.clone();
-    print.insert("inputStream".to_string(), Value::Bytes(bytes.into()));
+    print.insert("inputStream".to_string(), Value::Bytes(bytes));
     if let Some(content_type) = moqui_lib::resource::content_type_for_name(&location) {
         print.insert("contentType".to_string(), Value::string(content_type));
     }
@@ -295,7 +297,11 @@ fn send_document_notifications(
                 .disable_authz()
                 .eq("dataDocumentId", Value::string(&doc_type))
                 .list()?;
-            if let Some(link) = links.get(0).and_then(|row| row.get("linkUrl")).filter(|link| !is_empty(link)) {
+            if let Some(link) = links
+                .get(0)
+                .and_then(|row| row.get("linkUrl"))
+                .filter(|link| !is_empty(link))
+            {
                 message.link(to_plain_string(link));
             }
         }
@@ -315,7 +321,11 @@ fn rewrite_encrypted_fields(
     let (full_name, pk_names, encrypt_names) = facade.with_entity(&entity_name, |entity, _, _| {
         Ok((
             entity.full_name.clone(),
-            entity.pk_field_names().iter().map(|name| (*name).to_string()).collect::<Vec<_>>(),
+            entity
+                .pk_field_names()
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect::<Vec<_>>(),
             entity
                 .fields
                 .iter()
@@ -329,8 +339,14 @@ fn rewrite_encrypted_fields(
         tracing::warn!("Not rewriting encrypted fields for entity {entity_name}, has no encrypted fields");
         return Ok(out);
     }
-    let not_null: Vec<Condition> = encrypt_names.iter().map(|name| Condition::is_not_null(name.as_str())).collect();
-    let mut find = facade.find(&full_name)?.disable_authz().condition(Condition::or(not_null));
+    let not_null: Vec<Condition> = encrypt_names
+        .iter()
+        .map(|name| Condition::is_not_null(name.as_str()))
+        .collect();
+    let mut find = facade
+        .find(&full_name)?
+        .disable_authz()
+        .condition(Condition::or(not_null));
     for name in pk_names.iter().chain(encrypt_names.iter()) {
         find = find.select_field(name);
     }
@@ -340,7 +356,10 @@ fn rewrite_encrypted_fields(
         for name in pk_names.iter().chain(encrypt_names.iter()) {
             row.insert(name.clone(), value.get(name).cloned().unwrap_or(Value::Null));
         }
-        if encrypt_names.iter().all(|name| row.get(name).is_none_or(Value::is_null)) {
+        if encrypt_names
+            .iter()
+            .all(|name| row.get(name).is_none_or(Value::is_null))
+        {
             continue;
         }
         let mut rewrite = facade.make_value(&full_name)?;

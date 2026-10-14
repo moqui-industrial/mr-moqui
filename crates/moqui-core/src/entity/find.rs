@@ -292,7 +292,9 @@ impl EntityFind {
                 continue;
             };
             let first_for_pk = pk_names.contains(&field.name)
-                && !kept.iter().any(|known| matches!(known, Condition::Equals(other, _) if other.name == field.name));
+                && !kept
+                    .iter()
+                    .any(|known| matches!(known, Condition::Equals(other, _) if other.name == field.name));
             if first_for_pk && equals_on(&condition, &field.name) {
                 kept.push(condition);
             }
@@ -442,15 +444,7 @@ impl EntityFind {
                     .filter(|field| wanted(&field.name))
                     .map(|field| FieldRef::new(&field.name))
                     .collect();
-                let statement = select_with(
-                    entity,
-                    dialect,
-                    &fields,
-                    condition.as_ref(),
-                    &order,
-                    page,
-                    &options,
-                )?;
+                let statement = select_with(entity, dialect, &fields, condition.as_ref(), &order, page, &options)?;
                 (statement, entity_columns(entity, model))
             };
             if count_only {

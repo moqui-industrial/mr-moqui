@@ -95,7 +95,10 @@ pub fn all_entities_info(
                 let mut row = IndexMap::new();
                 row.insert("entityName".to_string(), text(&entity.entity_name));
                 row.insert("package".to_string(), text(&entity.package_name));
-                row.insert("isView".to_string(), text(if entity.is_view { "true" } else { "false" }));
+                row.insert(
+                    "isView".to_string(),
+                    text(if entity.is_view { "true" } else { "false" }),
+                );
                 row.insert("fullEntityName".to_string(), text(&entity.full_name));
                 row.insert("tableName".to_string(), text(&entity.table_name));
                 row
@@ -115,8 +118,14 @@ fn order_rows(rows: &mut [IndexMap<String, Value>], order_by: &str) {
         return;
     }
     rows.sort_by(|left, right| {
-        let left = left.get(field).map(moqui_lib::object::to_plain_string).unwrap_or_default();
-        let right = right.get(field).map(moqui_lib::object::to_plain_string).unwrap_or_default();
+        let left = left
+            .get(field)
+            .map(moqui_lib::object::to_plain_string)
+            .unwrap_or_default();
+        let right = right
+            .get(field)
+            .map(moqui_lib::object::to_plain_string)
+            .unwrap_or_default();
         if descending {
             right.cmp(&left)
         } else {
@@ -184,8 +193,13 @@ pub fn pretty_name(entity_name: &str, title: Option<&str>, base_name: Option<&st
         }
         parts
     };
-    let base: BTreeSet<String> = base_name.map(|base| split(base).into_iter().collect()).unwrap_or_default();
-    let mut pretty: Vec<String> = split(entity_name).into_iter().filter(|part| !base.contains(part)).collect();
+    let base: BTreeSet<String> = base_name
+        .map(|base| split(base).into_iter().collect())
+        .unwrap_or_default();
+    let mut pretty: Vec<String> = split(entity_name)
+        .into_iter()
+        .filter(|part| !base.contains(part))
+        .collect();
     if let Some(title) = title.filter(|title| !title.is_empty()) {
         let title_text = split(title).join(" ");
         if pretty.is_empty() {
@@ -216,9 +230,10 @@ fn is_dependent(model: &EntityModel, entity: &EntityDefinition, relationship: &R
 }
 
 fn relationship_info(model: &EntityModel, entity: &EntityDefinition, relationship: &Relationship) -> Value {
-    let related_short = model
-        .entity_full(&relationship.related)
-        .map_or_else(|| relationship.related_entity_name.clone(), |related| related.entity_name.clone());
+    let related_short = model.entity_full(&relationship.related).map_or_else(
+        || relationship.related_entity_name.clone(),
+        |related| related.entity_name.clone(),
+    );
     let key_map: IndexMap<String, Value> = relationship
         .key_pairs
         .iter()
@@ -226,8 +241,14 @@ fn relationship_info(model: &EntityModel, entity: &EntityDefinition, relationshi
         .collect();
     let mut row = IndexMap::new();
     row.insert("type".to_string(), text(&relationship.relationship_type));
-    row.insert("isTypeOne".to_string(), Value::Bool(relationship.relationship_type.starts_with("one")));
-    row.insert("title".to_string(), relationship.title.as_deref().map_or(Value::Null, text));
+    row.insert(
+        "isTypeOne".to_string(),
+        Value::Bool(relationship.relationship_type.starts_with("one")),
+    );
+    row.insert(
+        "title".to_string(),
+        relationship.title.as_deref().map_or(Value::Null, text),
+    );
     row.insert("relatedEntityName".to_string(), text(&relationship.related));
     row.insert("relationshipName".to_string(), text(&relationship.name));
     row.insert(
@@ -243,7 +264,10 @@ fn relationship_info(model: &EntityModel, entity: &EntityDefinition, relationshi
         )),
     );
     row.insert("keyMap".to_string(), Value::Map(key_map));
-    row.insert("dependent".to_string(), Value::Bool(is_dependent(model, entity, relationship)));
+    row.insert(
+        "dependent".to_string(),
+        Value::Bool(is_dependent(model, entity, relationship)),
+    );
     row.insert("mutable".to_string(), Value::Bool(relationship.mutable));
     row.insert("isAutoReverse".to_string(), Value::Bool(relationship.is_auto_reverse));
     Value::Map(row)
@@ -269,7 +293,11 @@ fn build_dependents(
     ancestors: &mut Vec<String>,
 ) {
     let indent = "- ".repeat(level + 1);
-    for relationship in entity.relationships.iter().filter(|rel| is_dependent(model, entity, rel)) {
+    for relationship in entity
+        .relationships
+        .iter()
+        .filter(|rel| is_dependent(model, entity, rel))
+    {
         all.insert(relationship.related.clone());
         let pairs: Vec<String> = relationship
             .key_pairs
@@ -308,11 +336,23 @@ pub fn definition_info(facade: &EntityFacade, name: &str) -> Option<IndexMap<Str
         map.insert("packageName".to_string(), text(&entity.package_name));
         map.insert("isViewEntity".to_string(), Value::Bool(entity.is_view));
         map.insert("tableName".to_string(), text(&entity.table_name));
-        map.insert("groupName".to_string(), entity.group.as_deref().map_or(Value::Null, text));
-        map.insert("shortAlias".to_string(), entity.short_alias.as_deref().map_or(Value::Null, text));
+        map.insert(
+            "groupName".to_string(),
+            entity.group.as_deref().map_or(Value::Null, text),
+        );
+        map.insert(
+            "shortAlias".to_string(),
+            entity.short_alias.as_deref().map_or(Value::Null, text),
+        );
         let needs_audit = entity.enable_audit_log.is_some()
-            || entity.fields.iter().any(|field| field.enable_audit_log.as_deref().is_some_and(|flag| flag != "false"));
-        map.insert("needsEncrypt".to_string(), Value::Bool(entity.fields.iter().any(|field| field.encrypt)));
+            || entity
+                .fields
+                .iter()
+                .any(|field| field.enable_audit_log.as_deref().is_some_and(|flag| flag != "false"));
+        map.insert(
+            "needsEncrypt".to_string(),
+            Value::Bool(entity.fields.iter().any(|field| field.encrypt)),
+        );
         map.insert("needsAuditLog".to_string(), Value::Bool(needs_audit));
         map.insert("createOnly".to_string(), Value::Bool(entity.create_only));
         map.insert("cache".to_string(), text(&entity.cache));
@@ -340,7 +380,10 @@ pub fn definition_info(facade: &EntityFacade, name: &str) -> Option<IndexMap<Str
                 );
                 row.insert("encrypt".to_string(), Value::Bool(field.encrypt));
                 row.insert("enableLocalization".to_string(), Value::Bool(field.enable_localization));
-                row.insert("defaultStr".to_string(), field.default_value.as_deref().map_or(Value::Null, text));
+                row.insert(
+                    "defaultStr".to_string(),
+                    field.default_value.as_deref().map_or(Value::Null, text),
+                );
                 row.insert("createOnly".to_string(), Value::Bool(field.create_only));
                 row.insert("notNull".to_string(), Value::Bool(field.not_null));
                 Value::Map(row)
@@ -359,7 +402,13 @@ pub fn definition_info(facade: &EntityFacade, name: &str) -> Option<IndexMap<Str
         );
         map.insert(
             "masterNames".to_string(),
-            Value::List(entity.masters.iter().map(|master| Value::string(&master.name)).collect()),
+            Value::List(
+                entity
+                    .masters
+                    .iter()
+                    .map(|master| Value::string(&master.name))
+                    .collect(),
+            ),
         );
         let (tree, descendants) = dependents(model, entity);
         map.insert("dependentsText".to_string(), Value::string(tree));
@@ -411,7 +460,10 @@ fn is_query(sql: &str) -> bool {
         .take_while(char::is_ascii_alphabetic)
         .collect::<String>()
         .to_ascii_lowercase();
-    matches!(word.as_str(), "select" | "with" | "show" | "values" | "explain" | "table" | "describe" | "desc")
+    matches!(
+        word.as_str(),
+        "select" | "with" | "show" | "values" | "explain" | "table" | "describe" | "desc"
+    )
 }
 
 /// Run one statement on the group's connection, as the SQL runner does with JDBC: in the caller's transaction when
@@ -446,7 +498,9 @@ pub fn run_sql(facade: &EntityFacade, group: &str, sql: &str, limit: usize) -> R
             result.limit_reached = true;
             break;
         }
-        result.records.push(row.columns.into_iter().map(|(_, value)| value).collect());
+        result
+            .records
+            .push(row.columns.into_iter().map(|(_, value)| value).collect());
     }
     Ok(result)
 }
@@ -465,7 +519,10 @@ mod tests {
     #[test]
     fn pretty_names_drop_the_base_parts_and_add_the_title() {
         assert_eq!(super::pretty_name("StatusItem", None, None), "Status Item");
-        assert_eq!(super::pretty_name("StatusItem", Some("PrintJob"), Some("PrintJob")), "Status Item (Print Job)");
+        assert_eq!(
+            super::pretty_name("StatusItem", Some("PrintJob"), Some("PrintJob")),
+            "Status Item (Print Job)"
+        );
         assert_eq!(super::pretty_name("UserGroupMember", None, Some("UserGroup")), "Member");
     }
 

@@ -31,8 +31,9 @@ use common::{basic, exchange, http_request, start_with_data};
 const DATA: &str = r#"<entity-facade-xml type="seed">
     <moqui.security.UserAccount userId="GATE_TOTP_USER" username="gate.totp" userFullName="Gate Totp"/>
     <moqui.basic.print.NetworkPrinter networkPrinterId="GATE_PRINTER" serverHost="localhost" printerName="gate" description="Gate printer"/>
+    <!-- A created date ahead, so the seed job clean_PrintJobData_daily, which runs on the first scheduler pass, keeps it. -->
     <moqui.basic.print.PrintJob printJobId="GATE_PJ" networkPrinterId="GATE_PRINTER" statusId="PtjNotSent" jobName="Gate job"
-        contentType="text/plain" createdDate="2026-01-02 03:04:05"/>
+        contentType="text/plain" createdDate="2999-01-02 03:04:05"/>
     <moqui.service.job.ServiceJobRun jobRunId="GATE_RUN" jobName="clean_ArtifactData_daily" hasError="N"
         startTime="2026-01-02 03:04:05" endTime="2026-01-02 03:04:06"/>
     <moqui.service.message.SystemMessageType systemMessageTypeId="GateSmsg" description="Gate message type"/>
@@ -95,15 +96,22 @@ const DETAILS: &[&str] = &[
 /// The screen paths under `dir`, the subscreen directories walked as the screen facade walks them, with whether the
 /// screen renders in html (`render-modes` leaves it out).
 fn screen_paths(dir: &Path, prefix: &str, out: &mut Vec<(String, bool)>) {
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().path()).collect();
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
     entries.sort();
     for path in entries {
         let name = path.file_stem().unwrap().to_string_lossy().to_string();
         if path.extension().is_some_and(|ext| ext == "xml") {
             let text = std::fs::read_to_string(&path).unwrap();
-            let html = text
-                .split_once("render-modes=\"")
-                .map_or(true, |(_, rest)| rest.split('"').next().unwrap_or("").split(',').any(|mode| mode == "html"));
+            let html = text.split_once("render-modes=\"").is_none_or(|(_, rest)| {
+                rest.split('"')
+                    .next()
+                    .unwrap_or("")
+                    .split(',')
+                    .any(|mode| mode == "html")
+            });
             out.push((format!("{prefix}/{name}"), html));
             let sub = path.with_extension("");
             if sub.is_dir() {
@@ -125,9 +133,10 @@ fn get(address: SocketAddr, auth: &str, path: &str) -> (u16, String) {
 }
 
 fn failure(path: &str, status: u16, page: &str) -> String {
-    let snippet: String = page
-        .find("Error rendering")
-        .map_or_else(|| page.chars().take(400).collect(), |at| page[at..].chars().take(400).collect());
+    let snippet: String = page.find("Error rendering").map_or_else(
+        || page.chars().take(400).collect(),
+        |at| page[at..].chars().take(400).collect(),
+    );
     format!("{path}: {status}: {snippet}")
 }
 
@@ -170,7 +179,12 @@ fn every_tools_screen_renders_in_html_for_an_admin() {
         }
     }
     assert!(checked > 140, "{checked} screens");
-    assert!(failures.is_empty(), "{} of {checked} failed:\n{}", failures.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} of {checked} failed:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 
     // Screens of a later phase or not ported show why.
     let (_, shell) = get(address, &john, "/Tools/GroovyShell");
@@ -179,14 +193,35 @@ fn every_tools_screen_renders_in_html_for_an_admin() {
     assert!(logs.contains("has no log index moqui_logs"), "{logs}");
 
     // The detail screens show their records.
-    let (_, entity) = get(address, &john, "/Tools/Entity/DataEdit/EntityDetail?selectedEntity=moqui.basic.Enumeration");
-    assert!(entity.contains("Entity Detail for Enumeration (moqui.basic.Enumeration)"), "{entity}");
-    assert!(entity.contains("enumTypeId") && entity.contains("moqui.basic.EnumerationType"), "{entity}");
+    let (_, entity) = get(
+        address,
+        &john,
+        "/Tools/Entity/DataEdit/EntityDetail?selectedEntity=moqui.basic.Enumeration",
+    );
+    assert!(
+        entity.contains("Entity Detail for Enumeration (moqui.basic.Enumeration)"),
+        "{entity}"
+    );
+    assert!(
+        entity.contains("enumTypeId") && entity.contains("moqui.basic.EnumerationType"),
+        "{entity}"
+    );
     // The conf caches, the screen definitions, and the entity list caches are listed together.
     let (_, cache) = get(address, &john, "/System/Cache/CacheList?filterRegexp=screen.def");
     assert!(cache.contains("cacheName=screen.definition"), "{cache}");
-    let (_, cache) = get(address, &john, "/System/Cache/CacheList?filterRegexp=list.moqui.basic.Enum");
-    assert!(cache.contains("cacheName=entity.record.list.moqui.basic.Enumeration"), "{cache}");
-    let (_, job) = get(address, &john, "/System/Print/PrintJob/PrintJobDetail?printJobId=GATE_PJ");
+    let (_, cache) = get(
+        address,
+        &john,
+        "/System/Cache/CacheList?filterRegexp=list.moqui.basic.Enum",
+    );
+    assert!(
+        cache.contains("cacheName=entity.record.list.moqui.basic.Enumeration"),
+        "{cache}"
+    );
+    let (_, job) = get(
+        address,
+        &john,
+        "/System/Print/PrintJob/PrintJobDetail?printJobId=GATE_PJ",
+    );
     assert!(job.contains("Gate job") && job.contains("Not Sent"), "{job}");
 }

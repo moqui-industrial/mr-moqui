@@ -134,7 +134,10 @@ mod tests {
     #[test]
     fn a_content_location_is_an_error_that_names_it() {
         let err = super::locate("content://main/WikiSpace/Page.md").unwrap_err();
-        assert_eq!(err.message(), "content resource is not available: content://main/WikiSpace/Page.md");
-        assert!(super::locate("component://tools/screen/Tools.xml").is_ok());
+        assert_eq!(
+            err.message(),
+            "content resource is not available: content://main/WikiSpace/Page.md"
+        );
+        assert!(super::locate("classpath://screen/ScreenRenderEmail.xml").is_ok());
     }
 }

@@ -25,6 +25,9 @@
                 <search-form-inputs default-order-by="sequenceNum,enumId" paginate="true"/>
             </entity-find>
             <row-actions><set field="upper" from="description.toUpperCase()"/></row-actions>
+            <!-- As in Java, the find selects the fields the form shows and its hidden fields. -->
+            <field name="description"><default-field><hidden/></default-field></field>
+            <field name="sequenceNum"><default-field><hidden/></default-field></field>
             <field name="enumId"><header-field show-order-by="true"><text-find/></header-field><default-field><display/></default-field></field>
             <field name="enumTypeId"><default-field><display-entity entity-name="moqui.basic.EnumerationType"/></default-field></field>
             <field name="upper"><default-field><display/></default-field></field>

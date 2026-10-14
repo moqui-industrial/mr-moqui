@@ -940,7 +940,10 @@ mod tests {
     fn manager_lists_and_clears_caches_of_any_type() {
         let manager = MCacheManager::new();
         let text = manager
-            .create::<String, String>("l10n.message", CacheConfig::new().expire_access_ms(5_000).background(false))
+            .create::<String, String>(
+                "l10n.message",
+                CacheConfig::new().expire_access_ms(5_000).background(false),
+            )
             .unwrap();
         let numbers = manager
             .create::<i32, i64>("other", CacheConfig::new().max_entries(10).background(false))
@@ -951,8 +954,14 @@ mod tests {
         numbers.put(3, 4).unwrap();
         let infos = manager.infos().unwrap();
         assert_eq!(infos.len(), 2);
-        assert_eq!((infos[0].name.as_str(), infos[0].size, infos[0].expire_idle_ms), ("l10n.message", 1, 5_000));
-        assert_eq!((infos[1].name.as_str(), infos[1].size, infos[1].max_entries), ("other", 2, 10));
+        assert_eq!(
+            (infos[0].name.as_str(), infos[0].size, infos[0].expire_idle_ms),
+            ("l10n.message", 1, 5_000)
+        );
+        assert_eq!(
+            (infos[1].name.as_str(), infos[1].size, infos[1].max_entries),
+            ("other", 2, 10)
+        );
         assert_eq!(infos[0].stats.hits, 1);
         let entries = text.entry_infos();
         assert_eq!((entries[0].key.as_str(), entries[0].value.as_str()), ("a", "one"));

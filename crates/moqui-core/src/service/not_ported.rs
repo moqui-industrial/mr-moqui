@@ -28,9 +28,13 @@ pub(super) fn runs(name: &str) -> bool {
 /// What a call of `name` reports.
 pub(super) fn reason(name: &str) -> Option<String> {
     if name.starts_with(LLM) {
-        Some(format!("service {name} is not available: LLM is not available until phase 13"))
+        Some(format!(
+            "service {name} is not available: LLM is not available until phase 13"
+        ))
     } else if name.starts_with(A2A) {
-        Some(format!("service {name} is not available: A2A is not available until phase 13"))
+        Some(format!(
+            "service {name} is not available: A2A is not available until phase 13"
+        ))
     } else if name.starts_with(INSTANCE) {
         Some(format!(
             "service {name} is not available: Docker app instance provisioning is not ported"

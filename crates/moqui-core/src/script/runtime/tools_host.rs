@@ -364,7 +364,10 @@ fn factory_of(ctx: &Ctx<'_>) -> rquickjs::Result<Arc<crate::context::ExecutionCo
 
 fn opt_text(value: &Opt<JsValue<'_>>) -> String {
     match value.0.as_ref() {
-        Some(value) if value.is_string() => value.as_string().and_then(|text| text.to_string().ok()).unwrap_or_default(),
+        Some(value) if value.is_string() => value
+            .as_string()
+            .and_then(|text| text.to_string().ok())
+            .unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -410,7 +413,10 @@ fn cache_info_row(info: &moqui_lib::cache::CacheInfo) -> indexmap::IndexMap<Stri
 /// Every cache the admin screen lists: the conf caches, the screen definition cache, and the entity list caches.
 fn all_cache_infos(ctx: &Ctx<'_>) -> rquickjs::Result<Vec<moqui_lib::cache::CacheInfo>> {
     let factory = factory_of(ctx)?;
-    let mut infos = factory.cache().infos().map_err(|err| Exception::throw_message(ctx, err.message()))?;
+    let mut infos = factory
+        .cache()
+        .infos()
+        .map_err(|err| Exception::throw_message(ctx, err.message()))?;
     infos.push(crate::screen::ScreenFacade::of(&factory).cache_info());
     if let Some(facade) = factory.entity() {
         infos.extend(crate::entity::cache::list_cache_infos(&facade));
@@ -501,7 +507,10 @@ fn make_element_info_list<'js>(
 ) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let factory = factory_of(&ctx)?;
-        let found = factory.cache().get(&name).map_err(|err| Exception::throw_message(&ctx, err.message()))?;
+        let found = factory
+            .cache()
+            .get(&name)
+            .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
         let stamp = |millis: i64| jiff::Timestamp::from_millisecond(millis).map_or(Value::Null, Value::Timestamp);
         let mut rows: Vec<_> = found
             .map(|cache| cache.entry_infos())
@@ -511,7 +520,10 @@ fn make_element_info_list<'js>(
                 let mut row = indexmap::IndexMap::new();
                 row.insert("key".to_string(), Value::string(entry.key));
                 row.insert("value".to_string(), Value::string(entry.value));
-                row.insert("hitCount".to_string(), Value::I64(i64::try_from(entry.hit_count).unwrap_or(i64::MAX)));
+                row.insert(
+                    "hitCount".to_string(),
+                    Value::I64(i64::try_from(entry.hit_count).unwrap_or(i64::MAX)),
+                );
                 row.insert("creationTime".to_string(), stamp(entry.created));
                 if entry.updated > 0 {
                     row.insert("lastUpdateTime".to_string(), stamp(entry.updated));
@@ -623,7 +635,13 @@ fn eeca_rule_texts<'js>(ctx: Ctx<'js>, entity_name: String) -> rquickjs::Result<
         let texts = crate::entity::load_feed::eca_rules(&facade, &entity_name)
             .into_iter()
             .map(|rule| {
-                let on = |flag: bool, name: &str| if flag { format!(" {name}=\"true\"") } else { String::new() };
+                let on = |flag: bool, name: &str| {
+                    if flag {
+                        format!(" {name}=\"true\"")
+                    } else {
+                        String::new()
+                    }
+                };
                 format!(
                     "<eeca id=\"{}\" entity=\"{}\"{}{}{}{}>{}{}</eeca>",
                     rule.id,
@@ -675,9 +693,9 @@ fn run_sql_statement<'js>(
         map.insert("limitReached".to_string(), Value::Bool(result.limit_reached));
         map.insert(
             "rowsAffected".to_string(),
-            result
-                .rows_affected
-                .map_or(Value::Null, |count| Value::I64(i64::try_from(count).unwrap_or(i64::MAX))),
+            result.rows_affected.map_or(Value::Null, |count| {
+                Value::I64(i64::try_from(count).unwrap_or(i64::MAX))
+            }),
         );
         host_to_js(&ctx, Value::Map(map))
     })
@@ -763,7 +781,10 @@ fn write_data<'js>(
                 count
             }
         };
-        out.insert("count".to_string(), Value::I64(i64::try_from(count).unwrap_or(i64::MAX)));
+        out.insert(
+            "count".to_string(),
+            Value::I64(i64::try_from(count).unwrap_or(i64::MAX)),
+        );
         host_to_js(&ctx, Value::Map(out))
     })
 }
@@ -777,7 +798,12 @@ fn load_data<'js>(ctx: Ctx<'js>, options: JsValue<'js>) -> rquickjs::Result<JsVa
         let Value::Map(options) = js_to_host(&ctx, &options)? else {
             return Err(Exception::throw_message(&ctx, "the data loader takes an options map"));
         };
-        let text = |name: &str| options.get(name).map(moqui_lib::object::to_plain_string).unwrap_or_default();
+        let text = |name: &str| {
+            options
+                .get(name)
+                .map(moqui_lib::object::to_plain_string)
+                .unwrap_or_default()
+        };
         let flag = |name: &str| matches!(options.get(name), Some(Value::Bool(true))) || text(name) == "true";
         let list = |name: &str| match options.get(name) {
             Some(Value::List(items)) => items.iter().map(moqui_lib::object::to_plain_string).collect(),
@@ -806,7 +832,10 @@ fn load_data<'js>(ctx: Ctx<'js>, options: JsValue<'js>) -> rquickjs::Result<JsVa
         facade.set_disable_data_feed(before.disable_data_feed);
         let (records, messages) = loaded.map_err(|err| throw_lib(&ctx, &err))?;
         let mut out = indexmap::IndexMap::new();
-        out.insert("records".to_string(), Value::I64(i64::try_from(records).unwrap_or(i64::MAX)));
+        out.insert(
+            "records".to_string(),
+            Value::I64(i64::try_from(records).unwrap_or(i64::MAX)),
+        );
         out.insert(
             "messages".to_string(),
             Value::List(messages.into_iter().map(Value::String).collect()),
@@ -825,7 +854,10 @@ fn load_source(
     let location = text("location");
     if !location.is_empty() {
         let result = load_entity_data(facade, &location, options)?;
-        return Ok((result.records, vec![format!("Loaded {} records from {location}", result.records)]));
+        return Ok((
+            result.records,
+            vec![format!("Loaded {} records from {location}", result.records)],
+        ));
     }
     let xml = text("xmlText");
     if !xml.is_empty() {
@@ -838,11 +870,13 @@ fn load_source(
             continue;
         }
         let dir = factory.runtime_dir().join("tmp");
-        std::fs::create_dir_all(&dir)
-            .map_err(|err| moqui_lib::error::Error::new(format!("could not create {}", dir.display())).with_source(err))?;
+        std::fs::create_dir_all(&dir).map_err(|err| {
+            moqui_lib::error::Error::new(format!("could not create {}", dir.display())).with_source(err)
+        })?;
         let path = dir.join(format!("data-load-{}.{extension}", crate::entity::uuid_v4()?));
-        std::fs::write(&path, body)
-            .map_err(|err| moqui_lib::error::Error::new(format!("could not write {}", path.display())).with_source(err))?;
+        std::fs::write(&path, body).map_err(|err| {
+            moqui_lib::error::Error::new(format!("could not write {}", path.display())).with_source(err)
+        })?;
         let result = load_entity_data(facade, &path.display().to_string(), options);
         let _ = std::fs::remove_file(&path);
         let result = result?;
@@ -874,7 +908,9 @@ fn get_all_service_info<'js>(ctx: Ctx<'js>, levels: Opt<JsValue<'js>>) -> rquick
         let levels = opt_count(&levels, 2);
         let mut counts: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
         for name in crate::service::info::known_service_names() {
-            *counts.entry(crate::entity::info::name_prefix(&name, levels)).or_default() += 1;
+            *counts
+                .entry(crate::entity::info::name_prefix(&name, levels))
+                .or_default() += 1;
         }
         let rows = counts
             .into_iter()
@@ -890,7 +926,9 @@ fn get_all_service_info<'js>(ctx: Ctx<'js>, levels: Opt<JsValue<'js>>) -> rquick
 }
 
 fn get_seca_rule_count(ctx: Ctx<'_>) -> rquickjs::Result<i32> {
-    host_guard(&ctx, || Ok(i32::try_from(crate::service::info::seca_rule_count()).unwrap_or(i32::MAX)))
+    host_guard(&ctx, || {
+        Ok(i32::try_from(crate::service::info::seca_rule_count()).unwrap_or(i32::MAX))
+    })
 }
 
 fn seca_rule_texts<'js>(ctx: Ctx<'js>, service: String) -> rquickjs::Result<JsValue<'js>> {
@@ -898,9 +936,11 @@ fn seca_rule_texts<'js>(ctx: Ctx<'js>, service: String) -> rquickjs::Result<JsVa
 }
 
 fn service_definition_info<'js>(ctx: Ctx<'js>, name: Opt<JsValue<'js>>) -> rquickjs::Result<JsValue<'js>> {
-    host_guard(&ctx, || match crate::service::info::service_definition_info(&opt_text(&name)) {
-        Some(info) => host_to_js(&ctx, Value::Map(info)),
-        None => Null.into_js(&ctx),
+    host_guard(&ctx, || {
+        match crate::service::info::service_definition_info(&opt_text(&name)) {
+            Some(info) => host_to_js(&ctx, Value::Map(info)),
+            None => Null.into_js(&ctx),
+        }
     })
 }
 
@@ -1062,9 +1102,11 @@ fn resource_info_value(resource: &crate::context::ResourceRef, children: bool) -
 /// `{location, fileName, exists, directory, file, size, lastModified, children}`, or null for a location no scheme
 /// resolves.
 fn resource_info<'js>(ctx: Ctx<'js>, location: String) -> rquickjs::Result<JsValue<'js>> {
-    host_guard(&ctx, || match with_ec(&ctx, |ec| ec.factory().resource().get(&location))? {
-        Ok(resource) => host_to_js(&ctx, resource_info_value(&resource, true)),
-        Err(_) => Null.into_js(&ctx),
+    host_guard(&ctx, || {
+        match with_ec(&ctx, |ec| ec.factory().resource().get(&location))? {
+            Ok(resource) => host_to_js(&ctx, resource_info_value(&resource, true)),
+            Err(_) => Null.into_js(&ctx),
+        }
     })
 }
 
@@ -1080,7 +1122,9 @@ fn resource_text(ctx: Ctx<'_>, location: String) -> rquickjs::Result<String> {
 fn resource_put_text(ctx: Ctx<'_>, location: String, text: String) -> rquickjs::Result<()> {
     host_guard(&ctx, || {
         if location.starts_with("dbresource:") {
-            let written = with_ec(&ctx, |ec| ec.factory().resource().write_bytes(&location, text.as_bytes()))?;
+            let written = with_ec(&ctx, |ec| {
+                ec.factory().resource().write_bytes(&location, text.as_bytes())
+            })?;
             return written.map_err(|err| Exception::throw_message(&ctx, err.message()));
         }
         let resource = resource_ref(&ctx, &location)?;
@@ -1127,17 +1171,15 @@ fn form_xml(ctx: Ctx<'_>, location: String) -> rquickjs::Result<String> {
 
 /// `ScheduledJobRunner.isLastRunBeforeLastSchedule`: no last run, or the last run is before the latest time the cron
 /// expression came due.
-fn is_last_run_before_last_schedule(
-    ctx: Ctx<'_>,
-    cron: String,
-    last_run: Opt<JsValue<'_>>,
-) -> rquickjs::Result<bool> {
+fn is_last_run_before_last_schedule(ctx: Ctx<'_>, cron: String, last_run: Opt<JsValue<'_>>) -> rquickjs::Result<bool> {
     host_guard(&ctx, || {
         let last = match last_run.0.as_ref() {
-            Some(value) => match moqui_lib::object::basic_convert(&js_to_host(&ctx, value)?, "java.sql.Timestamp").value {
-                Value::Timestamp(stamp) => Some(stamp.as_millisecond()),
-                _ => None,
-            },
+            Some(value) => {
+                match moqui_lib::object::basic_convert(&js_to_host(&ctx, value)?, "java.sql.Timestamp").value {
+                    Value::Timestamp(stamp) => Some(stamp.as_millisecond()),
+                    _ => None,
+                }
+            }
             None => None,
         };
         crate::service::info::is_last_run_before_last_schedule(&cron, last)
@@ -1156,7 +1198,8 @@ fn is_permitted(ctx: Ctx<'_>, name: String, artifact_type: Opt<String>, action: 
 
 fn rest_root_resources<'js>(ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
-        let roots = crate::service::root_resource_infos().map_err(|err| Exception::throw_message(&ctx, err.message()))?;
+        let roots =
+            crate::service::root_resource_infos().map_err(|err| Exception::throw_message(&ctx, err.message()))?;
         host_to_js(&ctx, Value::List(roots))
     })
 }

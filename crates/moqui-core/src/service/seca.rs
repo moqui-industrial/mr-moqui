@@ -111,8 +111,16 @@ impl SecaRule {
             self.service_plain,
             self.when_name,
             self.priority,
-            if self.name_is_pattern { " name-is-pattern=\"true\"" } else { "" },
-            if self.run_on_error { " run-on-error=\"true\"" } else { "" },
+            if self.name_is_pattern {
+                " name-is-pattern=\"true\""
+            } else {
+                ""
+            },
+            if self.run_on_error {
+                " run-on-error=\"true\""
+            } else {
+                ""
+            },
         );
         text.push_str(&self.condition);
         text.push_str(&self.actions);

@@ -97,7 +97,12 @@ fn walk(
         trees: count(def.trees.len()),
         sections: count(def.sections.len()),
         transitions: count(def.transitions.len()),
-        with_actions: count(def.transitions.iter().filter(|transition| transition.actions.is_some()).count()),
+        with_actions: count(
+            def.transitions
+                .iter()
+                .filter(|transition| transition.actions.is_some())
+                .count(),
+        ),
     };
     let is_non_placeholder = own.forms > 0 || own.sections > 0 || own.transitions > 4;
     let mut items: Vec<_> = def.subscreens.items.iter().collect();
@@ -111,7 +116,11 @@ fn walk(
                 continue;
             }
             let Ok(child_def) = facade.screen_def(factory, &child.location) else {
-                tracing::info!("While getting ScreenInfo screen not found for {} at: {}", child.name, child.location);
+                tracing::info!(
+                    "While getting ScreenInfo screen not found for {} at: {}",
+                    child.name,
+                    child.location
+                );
                 continue;
             };
             path.push(child.location.clone());
@@ -137,7 +146,9 @@ fn walk(
         all.with_actions += child.own.with_actions + child.all.with_actions;
     }
     let mut row = IndexMap::new();
-    let name = item.as_ref().map_or_else(|| def.screen_name.clone(), |(name, _, _)| (*name).to_string());
+    let name = item
+        .as_ref()
+        .map_or_else(|| def.screen_name.clone(), |(name, _, _)| (*name).to_string());
     row.insert("name".to_string(), Value::string(&name));
     row.insert("level".to_string(), Value::I64(count(level)));
     row.insert("location".to_string(), Value::string(&def.location));

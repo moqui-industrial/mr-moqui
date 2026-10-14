@@ -36,21 +36,9 @@ const LOOSE_ACTIONS: &[&str] = &[
     "script",
 ];
 
-/// Screens that stay Groovy for now, by path suffix and reason. They are listed in the report and not scanned.
-pub const KNOWN_EXCLUSIONS: &[(&str, &str)] = &[
-    (
-        "tools/screen/Tools/Entity/SpeedTest.xml",
-        "JVM benchmark: @CompileStatic methods against the Java cache, entity and REST internals",
-    ),
-    (
-        "tools/screen/Tools/Entity/SqlRunner.xml",
-        "JDBC console: needs a host SQL API (Connection, Statement, ResultSet) that does not exist",
-    ),
-    (
-        "tools/screen/Tools/Entity/SqlScriptRunner.xml",
-        "JDBC console: needs a host SQL API (Connection, Statement, ResultSet) that does not exist",
-    ),
-];
+/// Screens that stay Groovy for now, by path suffix and reason. They are listed in the report and not scanned. None
+/// are left: the speed test and the SQL runners became JavaScript in phase 11.
+pub const KNOWN_EXCLUSIONS: &[(&str, &str)] = &[];
 
 /// Root elements of screen and form XML files.
 const ROOTS: &[&str] = &["screen", "forms", "widget-template", "widget-templates"];

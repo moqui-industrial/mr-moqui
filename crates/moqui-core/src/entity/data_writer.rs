@@ -276,7 +276,8 @@ impl EntityDataWriter {
     pub fn directory(&self, path: &str) -> Result<u64, Error> {
         let dir = Path::new(path);
         if !dir.exists() {
-            std::fs::create_dir_all(dir).map_err(|err| Error::new(format!("could not create {path}")).with_source(err))?;
+            std::fs::create_dir_all(dir)
+                .map_err(|err| Error::new(format!("could not create {path}")).with_source(err))?;
         }
         if !dir.is_dir() {
             add_error(format!("Path {path} is not a directory."));
@@ -310,7 +311,8 @@ impl EntityDataWriter {
         let mut written = 0;
         for (name, text, count) in self.entity_files()? {
             let base = if self.table_column_names {
-                self.facade.with_entity(&name, |entity, _, _| Ok(entity.table_name.clone()))?
+                self.facade
+                    .with_entity(&name, |entity, _, _| Ok(entity.table_name.clone()))?
             } else {
                 name
             };
@@ -352,7 +354,11 @@ impl EntityDataWriter {
             Ok((
                 entity.has_field("lastUpdatedStamp"),
                 entity.full_name.clone(),
-                entity.masters.iter().map(|master| master.name.clone()).collect::<Vec<_>>(),
+                entity
+                    .masters
+                    .iter()
+                    .map(|master| master.name.clone())
+                    .collect::<Vec<_>>(),
             ))
         })?;
         let mut find = self.facade.find(&full_name)?;
@@ -370,12 +376,20 @@ impl EntityDataWriter {
                 find = find.condition(Condition::less("lastUpdatedStamp", thru.clone()));
             }
         }
-        let rows: Vec<BTreeMap<String, Value>> = find.list()?.values().iter().map(|value| value.fields().clone()).collect();
+        let rows: Vec<BTreeMap<String, Value>> = find
+            .list()?
+            .values()
+            .iter()
+            .map(|value| value.fields().clone())
+            .collect();
         let count = u64::try_from(rows.len()).unwrap_or(u64::MAX);
         if self.file_type == DataFileType::Csv {
             return Ok((self.csv_rows(&full_name, &rows)?, count));
         }
-        let master = self.master.as_deref().filter(|master| masters.iter().any(|known| known == master));
+        let master = self
+            .master
+            .as_deref()
+            .filter(|master| masters.iter().any(|known| known == master));
         let body = data_body(
             &self.facade,
             &full_name,
@@ -456,7 +470,8 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), Error> {
         std::fs::create_dir_all(parent)
             .map_err(|err| Error::new(format!("could not create {}", parent.display())).with_source(err))?;
     }
-    std::fs::write(path, bytes).map_err(|err| Error::new(format!("could not write {}", path.display())).with_source(err))
+    std::fs::write(path, bytes)
+        .map_err(|err| Error::new(format!("could not write {}", path.display())).with_source(err))
 }
 
 fn add_message(text: String) {

@@ -25,7 +25,12 @@ use moqui_lib::object::Value;
 use super::ExecutionContextFactory;
 
 fn map(entries: Vec<(&str, Value)>) -> Value {
-    Value::Map(entries.into_iter().map(|(name, value)| (name.to_string(), value)).collect())
+    Value::Map(
+        entries
+            .into_iter()
+            .map(|(name, value)| (name.to_string(), value))
+            .collect(),
+    )
 }
 
 fn decimal(number: f64, scale: u32) -> Value {
@@ -66,7 +71,9 @@ pub fn status_map(factory: &ExecutionContextFactory, include_sensitive: bool) ->
     let status = proc_status();
     let mib = |name: &str| {
         #[allow(clippy::cast_precision_loss)] // Memory sizes in KiB fit a double.
-        status.get(name).map_or(Value::Null, |kib| decimal(*kib as f64 / 1024.0, 3))
+        status
+            .get(name)
+            .map_or(Value::Null, |kib| decimal(*kib as f64 / 1024.0, 3))
     };
     let now = jiff::Timestamp::now().as_millisecond();
     let started = factory.started_millis();
@@ -89,7 +96,10 @@ pub fn status_map(factory: &ExecutionContextFactory, include_sensitive: bool) ->
         map(vec![
             ("MemoryUsed", mib("VmRSS")),
             ("MemoryPeak", mib("VmHWM")),
-            ("Threads", status.get("Threads").map_or(Value::Null, |count| Value::I64(*count))),
+            (
+                "Threads",
+                status.get("Threads").map_or(Value::Null, |count| Value::I64(*count)),
+            ),
         ]),
     );
     let mut system = vec![
@@ -155,7 +165,10 @@ pub fn component_info_list(factory: &ExecutionContextFactory) -> Vec<IndexMap<St
         .map(|info| {
             let mut row = IndexMap::new();
             row.insert("name".to_string(), Value::string(&info.name));
-            row.insert("location".to_string(), Value::string(info.location.display().to_string()));
+            row.insert(
+                "location".to_string(),
+                Value::string(info.location.display().to_string()),
+            );
             row.insert("version".to_string(), Value::string(&info.version));
             row.insert(
                 "dependsOn".to_string(),
@@ -179,7 +192,10 @@ pub fn thread_list() -> Vec<IndexMap<String, Value>> {
     for entry in entries.flatten() {
         let path = entry.path();
         let id: i64 = entry.file_name().to_string_lossy().parse().unwrap_or(0);
-        let name = std::fs::read_to_string(path.join("comm")).unwrap_or_default().trim().to_string();
+        let name = std::fs::read_to_string(path.join("comm"))
+            .unwrap_or_default()
+            .trim()
+            .to_string();
         let stat = std::fs::read_to_string(path.join("stat")).unwrap_or_default();
         // The fields after the name in parentheses: state is the first, utime and stime the 12th and 13th.
         let after: Vec<&str> = stat
@@ -200,7 +216,10 @@ pub fn thread_list() -> Vec<IndexMap<String, Value>> {
         row.insert("threadName".to_string(), Value::string(name));
         row.insert("threadId".to_string(), Value::I64(id));
         row.insert("threadState".to_string(), Value::string(state));
-        row.insert("cpuTime".to_string(), Value::I64((user + system).saturating_mul(TICK_NANOS)));
+        row.insert(
+            "cpuTime".to_string(),
+            Value::I64((user + system).saturating_mul(TICK_NANOS)),
+        );
         row.insert("userTime".to_string(), Value::I64(user.saturating_mul(TICK_NANOS)));
         rows.push(row);
     }

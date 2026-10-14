@@ -1758,6 +1758,7 @@ fn xml_body(nodes: &[RecordNode], prefix: &str, iso: bool) -> String {
 /// The records of one entity as the data writer writes them between the file's start and end: XML
 /// elements, or JSON objects each followed by a comma, with dependents to `levels` or the `master`
 /// definition. Each top record counts once.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn data_body(
     facade: &EntityFacade,
     entity_name: &str,

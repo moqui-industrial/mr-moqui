@@ -56,7 +56,10 @@ pub fn seca_rule_texts(service: &str) -> Vec<String> {
 /// # Errors
 ///
 /// Returns an error when the cron expression does not parse.
-pub fn is_last_run_before_last_schedule(cron: &str, last_run_millis: Option<i64>) -> Result<bool, crate::context::Error> {
+pub fn is_last_run_before_last_schedule(
+    cron: &str,
+    last_run_millis: Option<i64>,
+) -> Result<bool, crate::context::Error> {
     let cron = super::schedule::parse_cron(cron)?;
     let now = jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::system());
     let Ok(last_schedule) = cron.find_previous_occurrence(&now, true) else {

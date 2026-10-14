@@ -56,7 +56,10 @@ fn run(address: SocketAddr, auth: &str, service: &str, pairs: &[(&str, &str)]) -
     let request = http_request(
         "POST",
         "/Tools/Service/ServiceRun/runJson",
-        &[("Authorization", auth), ("Content-Type", "application/x-www-form-urlencoded")],
+        &[
+            ("Authorization", auth),
+            ("Content-Type", "application/x-www-form-urlencoded"),
+        ],
         &body,
     );
     let (status, _, text) = exchange(address, &request);
@@ -80,11 +83,22 @@ fn tools_services_run_on_postgres() {
         address,
         &john,
         "org.moqui.impl.PrintServices.print#Document",
-        &[("networkPrinterId", "GATE_PRINTER"), ("inputStream", "hello printer"), ("contentType", "text/plain"),
-            ("jobName", "Gate print")],
+        &[
+            ("networkPrinterId", "GATE_PRINTER"),
+            ("inputStream", "hello printer"),
+            ("contentType", "text/plain"),
+            ("jobName", "Gate print"),
+        ],
     );
-    assert!(printed.contains("Network printing is not available until phase 12 (moqui-cups)"), "{printed}");
-    let jobs = page(address, &john, "/System/Print/PrintJob/PrintJobList.html?jobName=Gate%20print");
+    assert!(
+        printed.contains("Network printing is not available until phase 12 (moqui-cups)"),
+        "{printed}"
+    );
+    let jobs = page(
+        address,
+        &john,
+        "/System/Print/PrintJob/PrintJobList.html?jobName=Gate%20print",
+    );
     assert!(jobs.contains("Gate print") && jobs.contains("Send Failed"), "{jobs}");
 
     // A screen document asks for PDF.
@@ -92,15 +106,31 @@ fn tools_services_run_on_postgres() {
         address,
         &john,
         "org.moqui.impl.PrintServices.print#ScreenDocument",
-        &[("networkPrinterId", "GATE_PRINTER"), ("screenLocation", "component://tools/screen/System/dashboard.xml")],
+        &[
+            ("networkPrinterId", "GATE_PRINTER"),
+            ("screenLocation", "component://tools/screen/System/dashboard.xml"),
+        ],
     );
     assert!(pdf.contains("PDF is not available until phase 12"), "{pdf}");
 
     // The clean services compare a time basis with the stamp columns.
-    let (status, cleaned) = run(address, &john, "org.moqui.impl.ServerServices.clean#PrintJobData", &[("daysToKeep", "30")]);
+    let (status, cleaned) = run(
+        address,
+        &john,
+        "org.moqui.impl.ServerServices.clean#PrintJobData",
+        &[("daysToKeep", "30")],
+    );
     assert_eq!(status, 200, "{cleaned}");
-    assert!(cleaned.contains("\"printJobsRemoved\": 1"), "{cleaned}");
-    let (status, cleaned) = run(address, &john, "org.moqui.impl.ServerServices.clean#ArtifactData", &[("daysToKeep", "90")]);
+    // The seed job clean_PrintJobData_daily may have removed the old job first, on the first scheduler pass.
+    assert!(cleaned.contains("\"printJobsRemoved\""), "{cleaned}");
+    let jobs = page(address, &john, "/System/Print/PrintJob/PrintJobList.html");
+    assert!(!jobs.contains("GATE_OLD_PJ") && jobs.contains("Gate print"), "{jobs}");
+    let (status, cleaned) = run(
+        address,
+        &john,
+        "org.moqui.impl.ServerServices.clean#ArtifactData",
+        &[("daysToKeep", "90")],
+    );
     assert_eq!(status, 200, "{cleaned}");
     assert!(cleaned.contains("artifactHitsRemoved"), "{cleaned}");
 
@@ -125,10 +155,16 @@ fn tools_services_run_on_postgres() {
         address,
         &john,
         "org.moqui.impl.EntityServices.export#EntityDataSnapshot",
-        &[("entitiesToInclude", "moqui.basic.Uom"), ("baseFilename", "GateSnapshot")],
+        &[
+            ("entitiesToInclude", "moqui.basic.Uom"),
+            ("baseFilename", "GateSnapshot"),
+        ],
     );
     assert_eq!(status, 200, "{exported}");
-    assert!(exported.contains("\"recordsWritten\"") && !exported.contains("\"recordsWritten\": 0"), "{exported}");
+    assert!(
+        exported.contains("\"recordsWritten\"") && !exported.contains("\"recordsWritten\": 0"),
+        "{exported}"
+    );
     let snapshots = page(address, &john, "/Tools/Entity/DataSnapshot.html");
     assert!(snapshots.contains("GateSnapshot.zip"), "{snapshots}");
     let (status, imported) = run(
@@ -138,24 +174,45 @@ fn tools_services_run_on_postgres() {
         &[("zipFilename", "GateSnapshot.zip")],
     );
     assert_eq!(status, 200, "{imported}");
-    assert!(imported.contains("\"recordsLoaded\"") && !imported.contains("\"recordsLoaded\": 0"), "{imported}");
+    assert!(
+        imported.contains("\"recordsLoaded\"") && !imported.contains("\"recordsLoaded\": 0"),
+        "{imported}"
+    );
 
     // Cache admin: the conversion found above is in the entity list cache, and Clear All empties it.
     let size = |text: &str| -> String {
-        let at = text.find(">entity.record.list.moqui.basic.UomConversion<").unwrap_or_else(|| panic!("{text}"));
+        let at = text
+            .find(">entity.record.list.moqui.basic.UomConversion<")
+            .unwrap_or_else(|| panic!("{text}"));
         let cells: Vec<&str> = text[at..].split("<span").skip(1).take(1).collect();
-        cells.first().and_then(|cell| cell.split('>').nth(1)).and_then(|cell| cell.split('<').next()).unwrap_or("").to_string()
+        cells
+            .first()
+            .and_then(|cell| cell.split('>').nth(1))
+            .and_then(|cell| cell.split('<').next())
+            .unwrap_or("")
+            .to_string()
     };
-    let caches = page(address, &john, "/System/Cache/CacheList.html?filterRegexp=UomConversion");
+    let caches = page(
+        address,
+        &john,
+        "/System/Cache/CacheList.html?filterRegexp=UomConversion",
+    );
     assert_ne!(size(&caches), "0", "{caches}");
     let request = http_request(
         "POST",
         "/System/Cache/CacheList/clearAllCaches",
-        &[("Authorization", &john), ("Content-Type", "application/x-www-form-urlencoded")],
+        &[
+            ("Authorization", &john),
+            ("Content-Type", "application/x-www-form-urlencoded"),
+        ],
         "",
     );
     let (status, _, cleared) = exchange(address, &request);
     assert!(status == 200 || status == 302, "{status}: {cleared}");
-    let caches = page(address, &john, "/System/Cache/CacheList.html?filterRegexp=UomConversion");
+    let caches = page(
+        address,
+        &john,
+        "/System/Cache/CacheList.html?filterRegexp=UomConversion",
+    );
     assert_eq!(size(&caches), "0", "{caches}");
 }
