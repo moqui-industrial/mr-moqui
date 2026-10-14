@@ -748,4 +748,6 @@ fn the_parity_fixture_is_a_template_with_its_data_in_the_packages() {
     assert_eq!(second["lines"][0]["lineId"], "L21", "{second}");
     assert_eq!(second["linesPageRangeLow"], 21, "{second}");
     assert!(html.contains("<m-form-paginate v-if=\"$scope['linesCount']\""), "{html}");
+    // text-map: a name of the text reads the map first
+    assert!(html.contains("$mq.inMap((product),'productName')"), "{html}");
 }

@@ -1,7 +1,8 @@
 (function(){var m=globalThis.moqui=globalThis.moqui||{};(m.qvtStatic=m.qvtStatic||{})["/Parity"]=function(Vue){
-const { toDisplayString: _toDisplayString, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, resolveComponent: _resolveComponent, createBlock: _createBlock, renderList: _renderList, Fragment: _Fragment } = Vue
+const { toDisplayString: _toDisplayString, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, createElementVNode: _createElementVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, createVNode: _createVNode, createBlock: _createBlock, renderList: _renderList, Fragment: _Fragment } = Vue
 
 return function render(_ctx, _cache) {
+  const _component_m_link = _resolveComponent("m-link")
   const _component_m_form_paginate = _resolveComponent("m-form-paginate")
 
   return (_openBlock(), _createElementBlock(_Fragment, null, [
@@ -27,6 +28,20 @@ return function render(_ctx, _cache) {
           class: "text-inline",
           textContent: _toDisplayString(_ctx.ec.l10n.localize('the second fails'))
         }, null, 8, ["textContent"])),
+    _createElementVNode("p", {
+      class: "text-inline",
+      textContent: _toDisplayString(_ctx.ec.resource.expand('Product ${productName} at ${price}',{'productName':()=>(_ctx.$mq.inMap((_ctx.product),'productName')?_ctx.$mq.inMap((_ctx.product),'productName',true):(_ctx.productName)),'price':()=>(_ctx.$mq.inMap((_ctx.product),'price')?_ctx.$mq.inMap((_ctx.product),'price',true):(_ctx.price))}))
+    }, null, 8, ["textContent"]),
+    _createVNode(_component_m_link, {
+      href: _ctx.$mq.url('/Parity/viewProduct',{},null)
+    }, {
+      default: _withCtx(() => [
+        _createElementVNode("span", {
+          textContent: _toDisplayString(_ctx.ec.resource.expand('View ${productName}',{'productName':()=>(_ctx.$mq.inMap((_ctx.product),'productName')?_ctx.$mq.inMap((_ctx.product),'productName',true):(_ctx.productName))}))
+        }, null, 8, ["textContent"])
+      ]),
+      _: 1
+    }, 8, ["href"]),
     (_ctx.$scope['linesCount'])
       ? (_openBlock(), _createBlock(_component_m_form_paginate, {
           key: 4,

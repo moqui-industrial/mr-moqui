@@ -379,6 +379,11 @@
             const query = qvt.helpers.qs(params, map);
             return query ? path + (path.indexOf("?") >= 0 ? "&" : "?") + query : path;
         },
+        // A text-map of a text: whether the map has the name, or with value true the entry itself.
+        inMap: (map, name, value) => {
+            const has = map !== null && map !== undefined && typeof map === "object" && Object.prototype.hasOwnProperty.call(map, name);
+            return value ? (has ? map[name] : undefined) : has;
+        },
         // The compare of an XML condition (moqui_lib::object::compare): both sides converted by the type, then the operator. A package holds a
         // decimal as text, so a numeric type compares numbers; Object compares numbers when both sides are numbers or numeric text, else text.
         compare: (field, operator, value, toField, format, type) => {

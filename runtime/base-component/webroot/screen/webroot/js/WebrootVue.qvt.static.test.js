@@ -258,6 +258,15 @@ test("Parity: a condition element is a v-if over and, or, not, compare and expre
     assert.doesNotMatch(text, /the second holds/);
 });
 
+test("Parity: text-map puts the map's entries before the scope's for the text of a label and a link", async () => {
+    setup();
+    const { container } = await mountStatic("", "Parity");
+    const text = html(container);
+    assert.match(text, /Product Widget X at 9/);
+    assert.match(text, /View Widget X/);
+    assert.doesNotMatch(text, /the context's name/);
+});
+
 test("Parity: a paginated section-iterate shows its page and the page buttons over the package's keys", async () => {
     setup();
     const { container } = await mountStatic("", "Parity");

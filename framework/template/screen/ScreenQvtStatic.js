@@ -160,6 +160,17 @@
         };
         const isDynamic = (text) => text.indexOf("${") >= 0;
 
+        // An expression of a text whose element has text-map: Java expands the text with the map's entries over the context, so a name or a path
+        // that starts at a key of the map reads the map. Any other expression reads the scope. The map expression is evaluated on each read.
+        const PATH = /^([A-Za-z_$][A-Za-z0-9_$]*)((?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)$/;
+        const textMapped = (key, n, attrName) => {
+            const map = attrName === "text" && n && n.attrs ? n.attrs["text-map"] : "";
+            const found = map ? PATH.exec(key) : null;
+            if (!found) return X(key, n, attrName);
+            const mapExpr = X(map, n, "text-map");
+            const rest = found[2] ? found[2].split(".").slice(1).map((part) => "?." + part).join("") : "";
+            return "($mq.inMap(" + mapExpr + "," + sq(found[1]) + ")?$mq.inMap(" + mapExpr + "," + sq(found[1]) + ",true)" + rest + ":" + X(key, n, attrName) + ")";
+        };
         // A string expression for a text with ${} in it. localize says whether the pattern is localized first, as
         // ec.resource.expand does. The table maps each expression text to a function over the scope, so the browser never
         // compiles code, and a localized pattern can use the expressions the original has.
@@ -172,7 +183,7 @@
                 const key = part.expr.trim();
                 if (seen[key]) return;
                 seen[key] = true;
-                entries.push(sq(key) + ":()=>" + X(key, n, attrName));
+                entries.push(sq(key) + ":()=>" + textMapped(key, n, attrName));
             });
             return "ec.resource." + (localize ? "expand" : "expandNoL10n") + "(" + sq(text) + ",{" + entries.join(",") + "})";
         };
@@ -651,7 +662,6 @@
             const unit = at(n, "currency-unit-field");
             const hideSymbol = at(n, "currency-hide-symbol") === "true";
             const currency = (value) => "ec.l10n." + (hideSymbol ? "formatCurrencyNoSymbol" : "formatCurrency") + "(" + value + "," + X(unit, n, "currency-unit-field") + ")";
-            if (at(n, "text-map")) note("text-map", n, "the expressions of text cannot see text-map in a server-static screen");
             if (at(n, "text")) {
                 const text = exp(at(n, "text"), n, "text", true);
                 return unit ? currency(text) : text;
@@ -741,7 +751,6 @@
         };
 
         const labelWidget = (n) => {
-            if (at(n, "text-map")) note("text-map", n, "the expressions of text cannot see text-map in a server-static screen");
             const type = at(n, "type") || "span";
             const out = { class: cls("text-inline", at(n, "style") || null), ":v-text": null };
             plainAttr(out, "id", at(n, "id"), n);
@@ -754,7 +763,6 @@
 
         // The way a link is written: a screen link, a plain link, or a form that posts a transition.
         const link = (n, inField) => {
-            if (at(n, "text-map")) note("text-map", n, "the expressions of text cannot see text-map in a server-static screen");
             const urlType = at(n, "url-type") || "transition";
             const found = urlType === "transition" || urlType === "screen" ? sri.staticUrl(at(n, "url"), urlType) : null;
             const img = first(n, "image");
