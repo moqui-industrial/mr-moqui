@@ -105,7 +105,14 @@ pub fn attach_search(
             if let Some(read_url) = &conf.postgres.read_url {
                 backend = backend.with_read_replica(read_tx(read_url, &conf.postgres)?);
             }
-            moqui_core::search::install(factory, SearchFacade::new(Arc::new(backend), entity.clone()));
+            backend = backend.with_semantic(&conf.semantic)?;
+            let facade = SearchFacade::new(Arc::new(backend), entity.clone());
+            if conf.semantic.enabled && conf.semantic.embedder.as_deref() == Some("hash") {
+                facade.set_embedder(Some(Arc::new(moqui_core::search::semantic::HashEmbedder::new(
+                    conf.semantic.dimensions,
+                ))));
+            }
+            moqui_core::search::install(factory, facade);
             Ok(store)
         }
     }

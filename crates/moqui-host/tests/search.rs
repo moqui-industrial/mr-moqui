@@ -54,6 +54,7 @@ fn postgres_backend_sales_and_party_parity() {
     phrase_parity(&backend);
     extensions_parity(&backend);
     universal_parity(&backend);
+    hybrid_parity(&backend);
     accent(PostgresBackend::open(
         TransactionManager::new(Arc::clone(&driver), pool()).unwrap(),
         Some("search_accent"),
@@ -83,6 +84,7 @@ fn opensearch_backend_sales_and_party_parity() {
     phrase_parity(&backend);
     extensions_parity(&backend);
     universal_parity(&backend);
+    hybrid_parity(&backend);
 }
 
 fn field(kind: FieldKind) -> FieldMapping {
@@ -891,6 +893,60 @@ fn universal_parity(backend: &dyn SearchBackend) {
     for mapping in [&first, &second] {
         backend.drop_index(mapping).unwrap();
     }
+}
+
+/// Hybrid retrieval without an embedder: the lexical, title-prefix, and fuzzy branches fused by
+/// reciprocal rank, with the trusted filter on every branch and in the total.
+fn hybrid_parity(backend: &dyn SearchBackend) {
+    use moqui_core::search::hybrid::{self, HybridOptions};
+    use moqui_core::search::TotalRelation;
+
+    assert!(backend.capabilities().contains(&Capability::Hybrid));
+    let mapping = catalog_mapping();
+    backend.ensure_index(&mapping).unwrap();
+    backend
+        .index_documents(
+            &mapping,
+            &[
+                catalog_item("PUMP1", "Industrial Water Pump", "heavy duty pump for water"),
+                catalog_item("PUMP2", "Water Heater", "the pump is sold separately"),
+                catalog_item("FILTER", "Pump Station Filter", "filter for water pumping"),
+                catalog_item("SPLIT", "Fresh water", "pump house"),
+            ],
+        )
+        .unwrap();
+    let mappings = vec![Arc::new(mapping.clone())];
+    let run = |text: &str, fuzzy_below: u64, filter: Option<Query>| {
+        let mut request = SearchRequest::new(Query::MatchAll);
+        request.filter = filter;
+        let options = HybridOptions {
+            text: text.into(),
+            fuzzy_below,
+            ..HybridOptions::default()
+        };
+        hybrid::search(backend, &mappings, &request, &options, None).unwrap()
+    };
+    let ids = |page: &moqui_core::search::SearchPage| page.hits.iter().map(|hit| hit.id.clone()).collect::<Vec<_>>();
+
+    // A typo: no lexical match, so the fuzzy branch runs and finds it.
+    let page = run("industral water pump", 5, None);
+    assert_eq!(ids(&page), vec!["PUMP1"]);
+    assert_eq!((page.total, page.total_relation), (1, TotalRelation::Eq));
+
+    // A prefix as someone types: the title that starts with it first, then title words.
+    let page = run("wat", 0, None);
+    assert_eq!(ids(&page)[0], "PUMP2", "{:?}", ids(&page));
+    let mut found = ids(&page);
+    found.sort();
+    assert_eq!(found, vec!["PUMP1", "PUMP2", "SPLIT"]);
+    assert_eq!(page.total, 3);
+
+    // The trusted filter applies to every branch and to the total.
+    let page = run("wat", 0, Some(query(r#"{"field": {"name": "itemId", "value": "PUMP2", "negate": true}}"#)));
+    assert!(!ids(&page).contains(&"PUMP2".to_string()), "{:?}", ids(&page));
+    assert_eq!(page.total, 2);
+
+    backend.drop_index(&mapping).unwrap();
 }
 
 /// Accent folding on Postgres: unaccented searches find accented text, in the text vector, the

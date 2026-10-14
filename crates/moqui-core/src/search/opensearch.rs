@@ -679,6 +679,7 @@ impl SearchBackend for OpenSearchBackend {
             Capability::Fuzzy,
             Capability::Autocomplete,
             Capability::WeightedRank,
+            Capability::Hybrid,
         ]
     }
 
@@ -847,7 +848,11 @@ impl SearchBackend for OpenSearchBackend {
                 highlights,
             });
         }
-        Ok(SearchPage { hits, total })
+        Ok(SearchPage {
+            hits,
+            total,
+            total_relation: super::TotalRelation::Eq,
+        })
     }
 
     fn aggregate(

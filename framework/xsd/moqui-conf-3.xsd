@@ -637,6 +637,21 @@ along with this software (see the LICENSE.md file). If not, see
                     No separator character is added, recommend ending with underscore (_).
                 </xs:documentation></xs:annotation></xs:attribute>
             </xs:complexType></xs:element>
+            <xs:element name="semantic" minOccurs="0"><xs:complexType>
+                <xs:annotation><xs:documentation>Semantic and hybrid retrieval on the postgres backend. Off unless enabled;
+                    needs the pgvector extension (not bundled with embedded Postgres) and a local embedder. Enabling it
+                    rebuilds the search tables. The embed#PendingDocuments service fills the embeddings.</xs:documentation></xs:annotation>
+                <xs:attribute name="enabled" type="boolean" default="false"/>
+                <xs:attribute name="dimensions" type="xs:positiveInteger" default="1024"><xs:annotation><xs:documentation>
+                    The embedder's vector size.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="representation" default="halfvec"><xs:simpleType><xs:restriction base="xs:token">
+                    <xs:enumeration value="halfvec"/><xs:enumeration value="vector"/></xs:restriction></xs:simpleType></xs:attribute>
+                <xs:attribute name="max-chars" type="xs:positiveInteger" default="2000"><xs:annotation><xs:documentation>
+                    Characters of document text, title roles first, an embedding is made from.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="embedder" type="xs:string"><xs:annotation><xs:documentation>
+                    hash installs a deterministic word-hash embedder for development and tests; it has no semantic
+                    quality. With none, an application installs its model on the search facade.</xs:documentation></xs:annotation></xs:attribute>
+            </xs:complexType></xs:element>
         </xs:sequence>
         <xs:attribute name="backend" type="xs:string" default="postgres"><xs:annotation><xs:documentation>
             postgres or opensearch.</xs:documentation></xs:annotation></xs:attribute>

@@ -19,6 +19,7 @@
 //! <search-facade backend="postgres"><postgres url="postgresql://host:5432/db" user=".." password=".."/></search-facade>
 //! <search-facade backend="postgres"><postgres url=".." read-url="postgresql://replica:5432/db" read-statement-timeout="30"/></search-facade>
 //! <search-facade backend="opensearch"><cluster url=".." user=".." password=".." index-prefix=".."/></search-facade>
+//! <search-facade><semantic enabled="true" dimensions="1024" representation="halfvec" embedder="hash"/></search-facade>
 //! ```
 
 use moqui_lib::error::Error;
@@ -61,6 +62,7 @@ pub struct SearchConf {
     pub backend: Backend,
     pub postgres: PostgresConf,
     pub cluster: Option<ClusterConf>,
+    pub semantic: super::semantic::SemanticConf,
 }
 
 impl SearchConf {
@@ -80,6 +82,7 @@ impl SearchConf {
                 backend: Backend::Postgres,
                 postgres: PostgresConf::default(),
                 cluster: None,
+                semantic: super::semantic::SemanticConf::default(),
             });
         };
         let backend = match attr(&node, "backend").as_deref() {
@@ -120,6 +123,7 @@ impl SearchConf {
             backend,
             postgres,
             cluster,
+            semantic: super::semantic::SemanticConf::from_conf(&node)?,
         })
     }
 

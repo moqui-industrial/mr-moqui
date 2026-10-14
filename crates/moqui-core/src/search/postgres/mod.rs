@@ -62,8 +62,80 @@ pub struct PostgresBackend {
     text: TextSetup,
     /// True when `text` folds accents (`unaccent`).
     accent: bool,
+    /// Embedding storage, when semantic search is enabled and `pgvector` is installed.
+    vectors: Option<VectorStore>,
     /// Signature of each table known to exist.
     known: Mutex<HashMap<String, String>>,
+}
+
+/// How embeddings are stored: `halfvec` or `vector`, of `dimensions`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VectorStore {
+    pub representation: String,
+    pub dimensions: usize,
+}
+
+impl VectorStore {
+    fn column_type(&self) -> String {
+        format!("{}({})", self.representation, self.dimensions)
+    }
+}
+
+/// `[0.1,0.2,..]`, the text form `pgvector` reads.
+pub fn vector_literal(vector: &[f32]) -> String {
+    let parts: Vec<String> = vector.iter().map(|value| format!("{value}")).collect();
+    format!("[{}]", parts.join(","))
+}
+
+/// The nearest-neighbor statement: per document type, the closest `k` embedded with `model` that
+/// match `filter`, cosine distance on the HNSW index, then the closest `k` of those.
+///
+/// # Errors
+///
+/// Returns an error when the filter does not compile against a document.
+#[allow(clippy::too_many_arguments)]
+pub fn semantic_sql(
+    schema: &str,
+    text: &TextSetup,
+    store: &VectorStore,
+    mappings: &[Arc<DocumentMapping>],
+    vector: &[f32],
+    model: &str,
+    filter: Option<&Query>,
+    k: usize,
+) -> Result<Sql, Error> {
+    let cast = store.column_type();
+    let literal_vector = vector_literal(vector);
+    let mut parts = Vec::new();
+    for mapping in mappings {
+        let compiler = Compiler::with_text(mapping, text);
+        let table = format!("{}.{}", ident(schema), ident(&mapping.physical_name));
+        let mut part = Sql::new(format!(
+            "(SELECT {} AS document_id, {} AS index_name, doc_id, body::text AS body, (1 - (embedding <=> ",
+            literal(&mapping.document_id),
+            literal(&mapping.physical_name)
+        ));
+        part.param(Value::string(&literal_vector))
+            .push(&format!("::{cast}))::float8 AS score FROM {table} WHERE embedding IS NOT NULL AND embedding_model = "));
+        part.param(Value::string(model));
+        if let Some(filter) = filter {
+            part.push(" AND ");
+            part.append(compiler.where_sql(filter)?);
+        }
+        part.push(" ORDER BY embedding <=> ");
+        part.param(Value::string(&literal_vector))
+            .push(&format!("::{cast} LIMIT {k})"));
+        parts.push(part);
+    }
+    let mut out = Sql::new("SELECT * FROM (");
+    for (index, part) in parts.into_iter().enumerate() {
+        if index > 0 {
+            out.push(" UNION ALL ");
+        }
+        out.append(part);
+    }
+    out.push(&format!(") AS s ORDER BY score DESC, document_id ASC, doc_id ASC LIMIT {k}"));
+    Ok(out)
 }
 
 /// Where one read runs.
@@ -112,8 +184,39 @@ impl PostgresBackend {
             trigram,
             text: TextSetup::default(),
             accent: false,
+            vectors: None,
             known: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Store embeddings when `conf` enables semantic search and the `pgvector` extension can be
+    /// created; otherwise a warning, and no semantic capability. Enabling it rebuilds the tables.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the conf is enabled with zero dimensions.
+    pub fn with_semantic(mut self, conf: &crate::search::semantic::SemanticConf) -> Result<Self, Error> {
+        if !conf.enabled {
+            return Ok(self);
+        }
+        if conf.dimensions == 0 {
+            return Err(Error::new("semantic search needs dimensions above 0"));
+        }
+        let created = self
+            .tx
+            .with_reserve(|conn| conn.execute("CREATE EXTENSION IF NOT EXISTS vector", &[]));
+        match created {
+            Ok(_) => {
+                self.vectors = Some(VectorStore {
+                    representation: conf.representation.clone(),
+                    dimensions: conf.dimensions,
+                });
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "pgvector is not available; semantic search is off");
+            }
+        }
+        Ok(self)
     }
 
     /// Use the text search configuration `config` (default `simple`), folding accents when
@@ -222,11 +325,12 @@ impl PostgresBackend {
     /// The registry signature: the stored shape and everything a table derives from text setup.
     fn signature(&self, mapping: &DocumentMapping) -> String {
         let text = format!(
-            "{}|config={}|fold={}|trigram={}",
+            "{}|config={}|fold={}|trigram={}|vectors={}",
             mapping.signature(),
             self.text.config,
             self.text.fold,
-            self.trigram
+            self.trigram,
+            self.vectors.as_ref().map(VectorStore::column_type).unwrap_or_default()
         );
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
         for byte in text.bytes() {
@@ -391,6 +495,16 @@ impl PostgresBackend {
                 indexes.push(format!("CREATE INDEX ON {table} USING gist ({NORM_TITLE} gist_trgm_ops)"));
             }
         }
+        if let Some(store) = &self.vectors {
+            // A partial HNSW index: documents not yet embedded are not in it.
+            columns.push(format!("embedding {}", store.column_type()));
+            columns.push("embedding_model text".to_string());
+            columns.push("embedding_indexed_at timestamptz".to_string());
+            indexes.push(format!(
+                "CREATE INDEX ON {table} USING hnsw (embedding {}_cosine_ops) WHERE embedding IS NOT NULL",
+                store.representation
+            ));
+        }
         if !mapping.display.weights.is_empty() {
             // Weighted fields at their weight, then all the text at D, for cover-density ranking.
             let mut parts: Vec<String> = mapping
@@ -437,14 +551,111 @@ impl SearchBackend for PostgresBackend {
     }
 
     fn capabilities(&self) -> Vec<Capability> {
-        let mut out = vec![Capability::Proximity, Capability::Autocomplete, Capability::WeightedRank];
+        let mut out = vec![
+            Capability::Proximity,
+            Capability::Autocomplete,
+            Capability::WeightedRank,
+            Capability::Hybrid,
+        ];
         if self.trigram {
             out.push(Capability::Fuzzy);
         }
         if self.accent {
             out.push(Capability::Accent);
         }
+        if self.vectors.is_some() {
+            out.push(Capability::Semantic);
+        }
         out
+    }
+
+    fn semantic_search(
+        &self,
+        mappings: &[Arc<DocumentMapping>],
+        vector: &[f32],
+        model: &str,
+        filter: Option<&Query>,
+        k: usize,
+    ) -> Result<Vec<SearchHit>, Error> {
+        let store = self
+            .vectors
+            .as_ref()
+            .ok_or_else(|| super::capability_error(Capability::Semantic, "postgres"))?;
+        let sql = semantic_sql(&self.schema, &self.text, store, mappings, vector, model, filter, k)?;
+        let rows = self.query_on(self.read_route(None), &sql)?;
+        rows.iter()
+            .map(|row| {
+                Ok(SearchHit {
+                    document_id: row.get("document_id").map(to_plain_string).unwrap_or_default(),
+                    id: row.get("doc_id").map(to_plain_string).unwrap_or_default(),
+                    index: row.get("index_name").map(to_plain_string).unwrap_or_default(),
+                    score: row
+                        .get("score")
+                        .map(|value| to_plain_string(value).parse::<f64>().unwrap_or(0.0))
+                        .unwrap_or(0.0),
+                    body: parse_body(row.get("body"))?,
+                    highlights: IndexMap::new(),
+                })
+            })
+            .collect()
+    }
+
+    fn pending_embeddings(
+        &self,
+        mapping: &DocumentMapping,
+        model: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::search::semantic::PendingEmbedding>, Error> {
+        if self.vectors.is_none() {
+            return Ok(Vec::new());
+        }
+        let mut sql = Sql::new(format!(
+            "SELECT doc_id, indexed_at::text AS seen, body::text AS body FROM {} \
+             WHERE embedding IS NULL OR embedding_model IS DISTINCT FROM ",
+            self.table(mapping)
+        ));
+        sql.param(Value::string(model))
+            .push(&format!(" OR embedding_indexed_at < indexed_at ORDER BY indexed_at LIMIT {limit}"));
+        let rows = self.query(&sql)?;
+        rows.iter()
+            .map(|row| {
+                Ok(crate::search::semantic::PendingEmbedding {
+                    id: row.get("doc_id").map(to_plain_string).unwrap_or_default(),
+                    seen: row.get("seen").map(to_plain_string).unwrap_or_default(),
+                    body: parse_body(row.get("body"))?,
+                })
+            })
+            .collect()
+    }
+
+    fn store_embedding(
+        &self,
+        mapping: &DocumentMapping,
+        id: &str,
+        seen: &str,
+        model: &str,
+        vector: &[f32],
+    ) -> Result<bool, Error> {
+        let store = self
+            .vectors
+            .as_ref()
+            .ok_or_else(|| super::capability_error(Capability::Semantic, "postgres"))?;
+        let statement = format!(
+            "UPDATE {} SET embedding = ?::{}, embedding_model = ?, embedding_indexed_at = indexed_at \
+             WHERE doc_id = ? AND indexed_at = ?::timestamptz",
+            self.table(mapping),
+            store.column_type()
+        );
+        let params = [
+            Value::String(vector_literal(vector)),
+            Value::string(model),
+            Value::string(id),
+            Value::string(seen),
+        ];
+        let count = self.tx.run(TransactionAttribute::UseOrBegin, None, || {
+            self.tx.with_connection(|conn| conn.execute(&statement, &params))
+        })?;
+        Ok(count > 0)
     }
 
     fn ensure_index(&self, mapping: &DocumentMapping) -> Result<(), Error> {
@@ -626,7 +837,11 @@ impl SearchBackend for PostgresBackend {
                 });
             }
         }
-        Ok(SearchPage { hits, total })
+        Ok(SearchPage {
+            hits,
+            total,
+            total_relation: super::TotalRelation::Eq,
+        })
     }
 
     fn aggregate(
@@ -964,5 +1179,37 @@ mod tests {
         body.insert("missing".into(), Value::Null);
         let json = body_json(&Value::Map(body));
         assert_eq!(json.to_string(), r#"{"placedDate":"2026-01-05T10:00:00Z"}"#);
+    }
+
+    #[test]
+    fn semantic_sql_ranks_by_cosine_distance_per_type_with_the_filter() {
+        let mut mapping = super::super::logs::log_mapping("moqui_logs").unwrap();
+        mapping.document_id = "TestDoc".into();
+        mapping.physical_name = "test_doc".into();
+        let store = VectorStore {
+            representation: "halfvec".into(),
+            dimensions: 3,
+        };
+        let filter = Query::eq("level", Value::string("WARN"));
+        let sql = semantic_sql(
+            "search",
+            &TextSetup::default(),
+            &store,
+            &[Arc::new(mapping)],
+            &[0.5, 0.25, 0.0],
+            "moqui-hash",
+            Some(&filter),
+            10,
+        )
+        .unwrap();
+        assert_eq!(
+            sql.text,
+            "SELECT * FROM ((SELECT 'TestDoc' AS document_id, 'test_doc' AS index_name, doc_id, body::text AS body, \
+             (1 - (embedding <=> ?::halfvec(3)))::float8 AS score FROM \"search\".\"test_doc\" WHERE embedding IS NOT NULL \
+             AND embedding_model = ? AND COALESCE(\"f_level\" = ?, FALSE) ORDER BY embedding <=> ?::halfvec(3) LIMIT 10)) AS s \
+             ORDER BY score DESC, document_id ASC, doc_id ASC LIMIT 10"
+        );
+        assert_eq!(sql.params[0], Value::string("[0.5,0.25,0]"));
+        assert_eq!(sql.params[1], Value::string("moqui-hash"));
     }
 }

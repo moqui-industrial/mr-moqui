@@ -227,6 +227,24 @@ along with this software (see the LICENSE.md file). If not, see
         ]]></script></actions>
     </service>
 
+    <service verb="embed" noun="PendingDocuments" authenticate="anonymous-all" transaction-timeout="1800">
+        <description>Embed documents that have no current embedding, for semantic and hybrid search. Does nothing unless
+            search-facade/semantic is enabled, pgvector is installed, and an embedder is installed.</description>
+        <in-parameters>
+            <parameter name="indexName"/>
+            <parameter name="documentType"/>
+            <parameter name="batch" type="Integer" default="100"/>
+        </in-parameters>
+        <out-parameters><parameter name="embedded" type="Integer"/></out-parameters>
+        <actions><script><![CDATA[
+            embedded = 0;
+            if (!ec.search.isAvailable() || !ec.search.capabilities().includes("semantic")) return;
+            if (!indexName && !documentType) { ec.message.addError("To embed documents specify indexName or documentType"); return; }
+            const target = documentType ? {documentType: documentType} : {indexName: indexName};
+            embedded = ec.search.embedPending(Object.assign({batch: batch}, target));
+        ]]></script></actions>
+    </service>
+
     <service verb="delete" noun="ElasticIndex">
         <description>Drop the search store of every DataDocument in indexName. The next index call makes it again.</description>
         <in-parameters>

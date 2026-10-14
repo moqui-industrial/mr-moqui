@@ -26,6 +26,7 @@ pub mod es_json;
 pub mod feed;
 pub mod fresh;
 pub mod highlight;
+pub mod hybrid;
 pub mod logs;
 pub mod mapping;
 #[cfg(feature = "http")]
@@ -33,6 +34,7 @@ pub mod opensearch;
 pub mod parse;
 pub mod postgres;
 pub mod query;
+pub mod semantic;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
@@ -115,6 +117,22 @@ pub struct SearchRequest {
     /// A trusted constraint the application adds, such as authorization: it must match too, it
     /// does not score or highlight, and it applies before ranking, paging, totals, and facets.
     pub filter: Option<Query>,
+    /// How candidates are found: the query alone, or fused branches (`search::hybrid`).
+    pub retrieval: Retrieval,
+}
+
+/// How a search finds its candidates.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Retrieval {
+    /// The query, ranked by the backend. The total is exact.
+    #[default]
+    Lexical,
+    /// Nearest neighbors of the text's embedding. Needs [`Capability::Semantic`]. The total is the
+    /// candidate count, not the matching population.
+    Semantic(hybrid::HybridOptions),
+    /// Reciprocal rank fusion of the query, title prefix, fuzzy title, and semantic branches.
+    /// Needs [`Capability::Hybrid`]. The total is exact over the non-semantic branches.
+    Hybrid(hybrid::HybridOptions),
 }
 
 impl SearchRequest {
@@ -138,6 +156,7 @@ impl SearchRequest {
             fresh_by: None,
             rank: Rank::Default,
             filter: None,
+            retrieval: Retrieval::Lexical,
         }
     }
 }
@@ -158,8 +177,28 @@ pub struct SearchHit {
 #[derive(Clone, Debug, Default)]
 pub struct SearchPage {
     pub hits: Vec<SearchHit>,
-    /// Exact count of matching documents, not just this page.
+    /// Count of matching documents, not just this page; what it counts is `total_relation`.
     pub total: u64,
+    pub total_relation: TotalRelation,
+}
+
+/// What [`SearchPage::total`] counts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TotalRelation {
+    /// Every document that matches. Lexical and hybrid searches.
+    #[default]
+    Eq,
+    /// The bounded candidates a semantic search ranked.
+    Candidates,
+}
+
+impl TotalRelation {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Eq => "eq",
+            Self::Candidates => "candidates",
+        }
+    }
 }
 
 /// An opt-in search feature beyond the baseline query and aggregation trees. A backend lists the
@@ -252,6 +291,39 @@ pub trait SearchBackend: Send + Sync {
     fn capabilities(&self) -> Vec<Capability> {
         Vec::new()
     }
+    /// Nearest neighbors of `vector` among documents embedded with `model` that match `filter`,
+    /// closest first, at most `k` over all of `mappings`. The score is cosine similarity.
+    fn semantic_search(
+        &self,
+        _mappings: &[Arc<DocumentMapping>],
+        _vector: &[f32],
+        _model: &str,
+        _filter: Option<&Query>,
+        _k: usize,
+    ) -> Result<Vec<SearchHit>, Error> {
+        Err(capability_error(Capability::Semantic, self.name()))
+    }
+    /// Documents with no embedding of `model`, or one older than the stored body, at most `limit`.
+    fn pending_embeddings(
+        &self,
+        _mapping: &DocumentMapping,
+        _model: &str,
+        _limit: usize,
+    ) -> Result<Vec<semantic::PendingEmbedding>, Error> {
+        Ok(Vec::new())
+    }
+    /// Store an embedding made from the body indexed at `seen`. False, and nothing stored, when
+    /// the document was indexed again since, so a stale vector never replaces a newer body's.
+    fn store_embedding(
+        &self,
+        _mapping: &DocumentMapping,
+        _id: &str,
+        _seen: &str,
+        _model: &str,
+        _vector: &[f32],
+    ) -> Result<bool, Error> {
+        Err(capability_error(Capability::Semantic, self.name()))
+    }
     /// Whether this backend keeps the log indexes (`search::logs`). Only OpenSearch does.
     fn keeps_log_indexes(&self) -> bool {
         false
@@ -263,6 +335,8 @@ pub struct SearchFacade {
     entity: EntityFacade,
     mappings: Mutex<HashMap<String, Arc<DocumentMapping>>>,
     ensured: Mutex<HashSet<String>>,
+    /// The local embedding model, when one is installed.
+    embedder: RwLock<Option<semantic::SharedEmbedder>>,
 }
 
 impl SearchFacade {
@@ -272,7 +346,61 @@ impl SearchFacade {
             entity,
             mappings: Mutex::new(HashMap::new()),
             ensured: Mutex::new(HashSet::new()),
+            embedder: RwLock::new(None),
         }
+    }
+
+    /// Install (or remove) the embedding model semantic search and the embedding worker use.
+    pub fn set_embedder(&self, embedder: Option<semantic::SharedEmbedder>) {
+        *self.embedder.write().unwrap_or_else(std::sync::PoisonError::into_inner) = embedder;
+    }
+
+    pub fn embedder(&self) -> Option<semantic::SharedEmbedder> {
+        self.embedder
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Embed documents of `target` that have no current embedding, at most `batch` per document
+    /// type. Returns how many were stored. Nothing when no embedder is installed or the backend
+    /// has no semantic search.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the model or a store write fails.
+    pub fn embed_pending(&self, target: &Target, batch: usize, max_chars: usize) -> Result<usize, Error> {
+        let Some(embedder) = self.embedder() else {
+            return Ok(0);
+        };
+        if !self.backend.capabilities().contains(&Capability::Semantic) {
+            return Ok(0);
+        }
+        let mut stored = 0;
+        for id in self.target_documents(target)? {
+            let mapping = self.mapping(&id)?;
+            if !self.backend.index_exists(&mapping)? {
+                continue;
+            }
+            let pending = self.backend.pending_embeddings(&mapping, embedder.model(), batch)?;
+            if pending.is_empty() {
+                continue;
+            }
+            let texts: Vec<String> = pending
+                .iter()
+                .map(|item| semantic::embedding_text(&mapping, &item.body, max_chars))
+                .collect();
+            let vectors = embedder.embed(&texts)?;
+            for (item, vector) in pending.iter().zip(vectors) {
+                if self
+                    .backend
+                    .store_embedding(&mapping, &item.id, &item.seen, embedder.model(), &vector)?
+                {
+                    stored += 1;
+                }
+            }
+        }
+        Ok(stored)
     }
 
     pub fn backend(&self) -> &Arc<dyn SearchBackend> {
@@ -323,9 +451,14 @@ impl SearchFacade {
         }
     }
 
-    /// The opt-in features the backend has.
+    /// The opt-in features available: the backend's, less semantic search when no embedder is
+    /// installed.
     pub fn capabilities(&self) -> Vec<Capability> {
-        self.backend.capabilities()
+        let mut out = self.backend.capabilities();
+        if self.embedder().is_none() {
+            out.retain(|capability| *capability != Capability::Semantic);
+        }
+        out
     }
 
     /// An error naming the first of `needs` the backend does not have.
@@ -333,7 +466,7 @@ impl SearchFacade {
         if needs.is_empty() {
             return Ok(());
         }
-        let have = self.backend.capabilities();
+        let have = self.capabilities();
         match needs.iter().find(|need| !have.contains(need)) {
             Some(missing) => Err(capability_error(*missing, self.backend.name())),
             None => Ok(()),
@@ -496,11 +629,28 @@ impl SearchFacade {
         if request.rank == Rank::CoverDensity {
             needs.push(Capability::WeightedRank);
         }
+        match &request.retrieval {
+            Retrieval::Lexical => {}
+            Retrieval::Hybrid(_) => needs.push(Capability::Hybrid),
+            Retrieval::Semantic(_) => needs.push(Capability::Semantic),
+        }
         self.require(&needs)?;
         if let Some(deadline) = request.fresh_by {
             fresh::wait_for_pending(deadline)?;
         }
-        self.backend.search(&mappings, request)
+        match &request.retrieval {
+            Retrieval::Lexical => self.backend.search(&mappings, request),
+            Retrieval::Hybrid(options) => {
+                let embedder = self.embedder();
+                hybrid::search(&*self.backend, &mappings, request, options, embedder.as_deref())
+            }
+            Retrieval::Semantic(options) => {
+                let embedder = self
+                    .embedder()
+                    .ok_or_else(|| capability_error(Capability::Semantic, self.backend.name()))?;
+                hybrid::semantic_search(&*self.backend, &mappings, request, options, &*embedder)
+            }
+        }
     }
 
     /// Aggregate over one document type. `filter` is the top-level constraint and does not score.

@@ -21,7 +21,7 @@
 //! ```text
 //! ec.search.search({indexName, documentType, query, queryString, filter, sort, offset, limit, highlight,
 //!         rank, consistency, freshTimeout})
-//!     -> {hits: [{documentId, id, score, body, highlights}], total}
+//!     -> {hits: [{documentId, id, score, body, highlights}], total, totalRelation}
 //! ec.search.aggregate({documentType, filter, aggs, consistency, freshTimeout}) -> {name: result, ..}
 //! ec.search.parseQuery(text), ec.search.elasticQuery(mapOrJson) -> query tree
 //! ec.search.indexDocuments(documentList) -> count
@@ -32,6 +32,7 @@
 //! ec.search.documentTypes(target) -> document ids; a target is a type name or an options map
 //! ec.search.indexExists({indexName | documentType}) -> boolean
 //! ec.search.isAvailable(), ec.search.backendName()
+//! ec.search.embedPending({indexName | documentType, batch, maxChars}) -> embeddings stored
 //! ec.search.capabilities() -> names: proximity, fuzzy, autocomplete, weightedRank, accent, semantic, hybrid
 //! ec.search.flatten(map) -> map with dotted keys
 //! ec.search.processFeedPending(ids?) -> {documentsIndexed, documentsDeleted, rowsDone, rowsLeft}
@@ -39,7 +40,8 @@
 //! ec.entity.getDataDocuments(dataDocumentId, condition?, fromUpdateStamp?, thruUpdateStamp?) -> list
 //! ```
 //!
-//! `rank: "coverDensity"` ranks with the `searchWeight` field weights. `consistency: "readYourWrites"` waits up to `freshTimeout` milliseconds (default 5000) for this
+//! `retrieval: "hybrid"` or `"semantic"` with `text`, `k`, `weights`, `fuzzyBelow`, and `qualityBoost`
+//! fuses branches (`search::hybrid`). `rank: "coverDensity"` ranks with the `searchWeight` field weights. `consistency: "readYourWrites"` waits up to `freshTimeout` milliseconds (default 5000) for this
 //! session's writes to be indexed and, with a read replica, replayed there; see `search::fresh`.
 
 use super::*;
@@ -68,6 +70,7 @@ pub(super) fn search_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("isAvailable", search_is_available);
     method!("backendName", search_backend_name);
     method!("capabilities", search_capabilities);
+    method!("embedPending", search_embed_pending);
     method!("flatten", search_flatten);
     method!("processFeedPending", search_process_feed_pending);
     method!("rebuildFeed", search_rebuild_feed);
@@ -168,6 +171,7 @@ pub(super) fn search_search<'js>(ctx: Ctx<'js>, args: JsValue<'js>) -> rquickjs:
         request.limit = number(map.get("limit"), 20);
         request.highlight = text_list(map.get("highlight").or_else(|| map.get("highlightFields")));
         request.fresh_by = fresh_by(&map);
+        request.retrieval = retrieval(&ctx, &map)?;
         // A trusted constraint from the service, such as authorization; it does not score.
         request.filter = match map.get("filter") {
             None | Some(Value::Null) => None,
@@ -206,8 +210,45 @@ pub(super) fn search_search<'js>(ctx: Ctx<'js>, args: JsValue<'js>) -> rquickjs:
             "total".to_string(),
             Value::I64(i64::try_from(page.total).unwrap_or(i64::MAX)),
         );
+        out.insert("totalRelation".to_string(), Value::string(page.total_relation.name()));
         host_to_js(&ctx, Value::Map(out))
     })
+}
+
+/// `retrieval: "hybrid" | "semantic"` with `text`, `k`, `weights: {lexical, prefix, fuzzy, semantic}`,
+/// `fuzzyBelow`, and `qualityBoost`. Absent or `"lexical"` is the query alone.
+fn retrieval(ctx: &Ctx<'_>, map: &indexmap::IndexMap<String, Value>) -> rquickjs::Result<search::Retrieval> {
+    let kind = map.get("retrieval").map(moqui_lib::object::to_plain_string).unwrap_or_default();
+    if kind.is_empty() || kind == "lexical" {
+        return Ok(search::Retrieval::Lexical);
+    }
+    let float = |value: Option<&Value>, default: f64| {
+        value
+            .map(moqui_lib::object::to_plain_string)
+            .and_then(|text| text.parse::<f64>().ok())
+            .unwrap_or(default)
+    };
+    let mut options = search::hybrid::HybridOptions {
+        text: map.get("text").map(moqui_lib::object::to_plain_string).unwrap_or_default(),
+        ..Default::default()
+    };
+    options.k = number(map.get("k"), options.k);
+    options.fuzzy_below = u64::try_from(number(map.get("fuzzyBelow"), 5)).unwrap_or(5);
+    options.quality_boost = float(map.get("qualityBoost"), 0.0);
+    if let Some(Value::Map(weights)) = map.get("weights") {
+        options.weights.lexical = float(weights.get("lexical"), options.weights.lexical);
+        options.weights.prefix = float(weights.get("prefix"), options.weights.prefix);
+        options.weights.fuzzy = float(weights.get("fuzzy"), options.weights.fuzzy);
+        options.weights.semantic = float(weights.get("semantic"), options.weights.semantic);
+    }
+    match kind.as_str() {
+        "hybrid" => Ok(search::Retrieval::Hybrid(options)),
+        "semantic" => Ok(search::Retrieval::Semantic(options)),
+        other => Err(Exception::throw_message(
+            ctx,
+            &format!("search retrieval {other} is not lexical, hybrid, or semantic"),
+        )),
+    }
 }
 
 /// The read-your-writes deadline from `consistency` and `freshTimeout`.
@@ -218,6 +259,17 @@ fn fresh_by(map: &indexmap::IndexMap<String, Value>) -> Option<std::time::Instan
     }
     let millis = number(map.get("freshTimeout"), 5000);
     Some(std::time::Instant::now() + std::time::Duration::from_millis(u64::try_from(millis).unwrap_or(5000)))
+}
+
+pub(super) fn search_embed_pending<'js>(ctx: Ctx<'js>, args: JsValue<'js>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let map = options(&ctx, &args)?;
+        let target = target_of(&ctx, &map)?;
+        let batch = number(map.get("batch"), 100);
+        let max_chars = number(map.get("maxChars"), 2000);
+        let stored = lib(&ctx, facade(&ctx)?.embed_pending(&target, batch, max_chars))?;
+        host_to_js(&ctx, Value::I64(i64::try_from(stored).unwrap_or(i64::MAX)))
+    })
 }
 
 pub(super) fn search_capabilities<'js>(ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
