@@ -218,7 +218,10 @@ pub(super) fn search_search<'js>(ctx: Ctx<'js>, args: JsValue<'js>) -> rquickjs:
 /// `retrieval: "hybrid" | "semantic"` with `text`, `k`, `weights: {lexical, prefix, fuzzy, semantic}`,
 /// `fuzzyBelow`, and `qualityBoost`. Absent or `"lexical"` is the query alone.
 fn retrieval(ctx: &Ctx<'_>, map: &indexmap::IndexMap<String, Value>) -> rquickjs::Result<search::Retrieval> {
-    let kind = map.get("retrieval").map(moqui_lib::object::to_plain_string).unwrap_or_default();
+    let kind = map
+        .get("retrieval")
+        .map(moqui_lib::object::to_plain_string)
+        .unwrap_or_default();
     if kind.is_empty() || kind == "lexical" {
         return Ok(search::Retrieval::Lexical);
     }
@@ -229,7 +232,10 @@ fn retrieval(ctx: &Ctx<'_>, map: &indexmap::IndexMap<String, Value>) -> rquickjs
             .unwrap_or(default)
     };
     let mut options = search::hybrid::HybridOptions {
-        text: map.get("text").map(moqui_lib::object::to_plain_string).unwrap_or_default(),
+        text: map
+            .get("text")
+            .map(moqui_lib::object::to_plain_string)
+            .unwrap_or_default(),
         ..Default::default()
     };
     options.k = number(map.get("k"), options.k);
@@ -289,7 +295,10 @@ pub(super) fn search_aggregate<'js>(ctx: Ctx<'js>, args: JsValue<'js>) -> rquick
         let target = target_of(&ctx, &map)?;
         let filter = query_of(&ctx, map.get("filter").or_else(|| map.get("query")))?;
         let aggs = lib(&ctx, Agg::map_from_value(map.get("aggs").unwrap_or(&Value::Null)))?;
-        let results = lib(&ctx, facade(&ctx)?.aggregate_fresh(&target, &filter, &aggs, fresh_by(&map)))?;
+        let results = lib(
+            &ctx,
+            facade(&ctx)?.aggregate_fresh(&target, &filter, &aggs, fresh_by(&map)),
+        )?;
         host_to_js(&ctx, Value::Map(results))
     })
 }

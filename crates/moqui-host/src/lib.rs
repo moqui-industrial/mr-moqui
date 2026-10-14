@@ -289,6 +289,14 @@ fn dispatch_load(flags: &LoadFlags) -> Result<LoadReport, moqui_lib::error::Erro
     load_data(&runtime, &framework, &cluster, flags)
 }
 
+/// Open the log files in `moqui_log_dir` and say where they are.
+fn log_files_attached(runtime_dir: &std::path::Path) {
+    match logging::attach_files(runtime_dir) {
+        Some(dir) => tracing::info!("Writing log files moqui.log and moqui-error.log in {}", dir.display()),
+        None => tracing::info!("Not writing log files, moqui_log_dir is empty or could not be opened"),
+    }
+}
+
 fn dispatch_types(args: &[String]) -> Result<(), moqui_lib::error::Error> {
     logging::install();
     let runtime = std::env::var_os("MOQUI_RUNTIME").map_or_else(|| std::path::PathBuf::from("runtime"), Into::into);
@@ -546,6 +554,7 @@ fn load_embedded(
     );
     let factory = moqui_core::context::ExecutionContextFactory::boot_with_framework(&runtime_dir, &framework_dir)
         .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
+    log_files_attached(&runtime_dir);
     let opened_at = std::time::Instant::now();
     let opened = crate::db::entity_db::transactional_conf(&factory).and_then(|conf| {
         let pool = load_pool(&conf.pool);
@@ -609,6 +618,7 @@ fn load_with_factory(
     let _search = match crate::search::attach_search(factory, &facade, db.is_postgres()) {
         Ok(store) => {
             tracing::info!("Search attached for this load, data feeds will index documents");
+            logging::ship_to_search(factory);
             Some(store)
         }
         Err(err) => {
@@ -626,6 +636,9 @@ fn load_with_factory(
     // The data feed indexes on service workers after each commit; let that work finish before the database closes, so it
     // is not cut off mid-statement. Rows it does not deliver stay pending for the feed job either way.
     wait_for_workers(factory, std::time::Duration::from_secs(120));
+    // The shipper holds the search facade and its connections; it sends what is left (the feed's last events too) and
+    // lets go.
+    logging::stop_shipping();
     drop(facade);
     outcome
 }
@@ -766,6 +779,7 @@ fn serve_thread(
             tracing::info!("Sessions flushed");
         }
     }
+    logging::stop_shipping();
     listened
 }
 
@@ -813,6 +827,7 @@ fn boot_server(
     );
     let factory = moqui_core::context::ExecutionContextFactory::boot_with_framework(&runtime_dir, &framework_dir)
         .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
+    log_files_attached(&runtime_dir);
     let conf = crate::db::entity_db::transactional_conf(&factory)?;
     // `(request cap + service cap) * 2` must fit in `max - reserve`; check_serve_caps below says so.
     let pool = conf.pool.clone();
@@ -848,6 +863,7 @@ fn boot_server(
     let search = match crate::search::attach_search(&factory, &facade, db.is_postgres()) {
         Ok(store) => {
             tracing::info!("Search attached, data feeds and logs can index documents");
+            logging::ship_to_search(&factory);
             Some(store)
         }
         Err(err) => {
@@ -855,8 +871,7 @@ fn boot_server(
             None
         }
     };
-    // On OpenSearch, log events and HTTP requests go to moqui_logs and moqui_http_log.
-    logging::ship_to_search(&factory);
+    // Log events and HTTP requests go to moqui_logs and moqui_http_log through the search backend (shipped above).
     let load_started = std::time::Instant::now();
     {
         let context = factory.new_context();
@@ -956,6 +971,7 @@ struct ServeProcess {
 #[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
 impl Drop for ServeProcess {
     fn drop(&mut self) {
+        logging::stop_shipping();
         self.runtime.take();
         self.pdf.take();
         self.sshd.take();

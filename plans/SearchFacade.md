@@ -74,7 +74,7 @@ Callers:
 | HiveMind quick search, PopCommerce product search | `search#DataDocuments` |
 | PopRestStore product, content, and blog search | Query string. Product search adds the category `Child` query |
 | Tools DataDocument Search | Free query string against an `indexName`. The screen links to the Elastic query-string manual |
-| Tools LogViewer | Raw `query_string` against the `logger` cluster or `default` |
+| Tools LogViewer | Raw `query_string` against the log index: sent as written on OpenSearch, read with the facade grammar on Postgres |
 
 ### Built-in reports
 
@@ -188,7 +188,7 @@ Fuzzy (`~`), boost (`^`), and regex (`/re/`) are errors that name the clause. `s
 
 `search#DataDocuments` also still takes `nestedQueryMap` with Elastic query JSON (a map or JSON text), because `PartyServices.search#Party` and PopRestStore build it and both live outside this repository. The service reads the subset they use into a `Query`: `bool` (`must`, `filter`, `should`, `must_not`, `minimum_should_match`), `term`, `terms`, `match`, `range` (`gt`, `gte`, `lt`, `lte`, epoch millis or ISO), `exists`, `prefix`, `wildcard`, `nested`, and `query_string`. Each path key becomes a `Child`. Other Elastic query types are an error that names them. Callers that are migrated pass a `query` map instead.
 
-The OpenSearch log viewer is the exception. It sends the string through as a `query_string` on the log index. That path is not this parser, and it exists only on the OpenSearch backend.
+The log viewer is the exception on OpenSearch. It sends the string through as a `query_string` on the log index. On Postgres the same string is read by this parser, which covers the viewer's forms: `@timestamp:[a TO b]` ranges, `field:term`, `AND`/`OR`/`NOT`, groups and phrases.
 
 ### Sort, page, highlight
 
@@ -475,13 +475,13 @@ Service parameters named `clusterName` go away. There is one backend. The `logge
 
 ## Dashboards and logs
 
-OpenSearch Dashboards, the `/elastic` and `/kibana` proxies, and the `ElasticRemote` and `KibanaRemote` permissions stay. They do nothing when the backend is Postgres, because there is no cluster to proxy. People who build visualizations on the Mantle indexes keep doing that when they choose the OpenSearch backend. The documents they see are the same documents the facade indexes. The facade is not a report designer, and Postgres is not given a dashboard server.
+OpenSearch Dashboards, the `/elastic` and `/kibana` proxies, and the `ElasticRemote` and `KibanaRemote` permissions stay. They do nothing when the backend is Postgres (the proxies answer 404 through `SearchBackend::has_elastic_api`), because there is no cluster to proxy. People who build visualizations on the Mantle indexes keep doing that when they choose the OpenSearch backend. The documents they see are the same documents the facade indexes. The facade is not a report designer, and Postgres is not given a dashboard server.
 
-Application logs and HTTP request logs are flat indexes, `moqui_logs` and `moqui_http_log`, written by the host. They are not DataDocuments. The log viewer and the two cleanup jobs run when the backend is OpenSearch. When the backend is Postgres, log events stay in the tracing output and the log viewer reports that the search backend has no log index. `Crate-Layout.md` already places the log shipper on the host, beside the OpenSearch process.
+Application logs and HTTP request logs are flat indexes, `moqui_logs` and `moqui_http_log`, written by the host. They are not DataDocuments. Both backends keep them: the host ships to whichever backend `search_backend` selects, through `SearchFacade::index_log_entries`, so switching the backend moves the stream with no host change. On Postgres each log index is a table in the `search` schema like a document, with ids made on arrival (13 hex digits of epoch millis, then 12 random) and the event time in the `@timestamp` column; the log viewer and the two cleanup jobs run on both. `Crate-Layout.md` already places the log shipper on the host, beside the OpenSearch process.
 
-On OpenSearch the facade treats each log index as a flat document type named for the index (`search::logs`), with the fields of `ElasticSearchLogger` and `ElasticRequestLogFilter` and the event time in its own `@timestamp`. So `search`, `delete_matching` retention, and `get_document` work as they do for documents, and `Index("moqui_logs")` names it. The log viewer's string is a `Query::Lucene`, sent as written; the Postgres compiler rejects that variant. The host installs a `tracing` subscriber (stderr lines at `moqui_log_level`) and, on OpenSearch, a shipper thread that bulk-indexes queued events every two seconds without waiting for a refresh. As in Java, DEBUG and TRACE are not shipped, a full queue (16384) drops new entries, and the shipper's own events are not queued. Screen and REST requests go to `moqui_http_log`; proxied requests do not, as Java's filter covered only the webapp.
+On OpenSearch the facade treats each log index as a flat document type named for the index (`search::logs`), with the fields of `ElasticSearchLogger` and `ElasticRequestLogFilter` and the event time in its own `@timestamp`. So `search`, `delete_matching` retention, and `get_document` work as they do for documents, and `Index("moqui_logs")` names it. The log viewer's string is a `Query::Lucene`, sent as written on OpenSearch and read with the query-string grammar on Postgres. The host installs a `tracing` subscriber (lines on stderr at `moqui_log_level`, and in `runtime/log/moqui.log` and `moqui-error.log`, which roll over by size and day; see `moqui_log_dir`, `moqui_log_max_size_mb`, `moqui_log_max_files`). Events are queued from the start, so the boot lines ship once search attaches, and a shipper thread bulk-indexes them every two seconds without waiting for a refresh. A data load and a server both ship, and each sends what is left before it stops. As in Java, DEBUG and TRACE are not shipped, a full queue (16384) drops new entries, and the shipper's own events are not queued. Screen and REST requests go to `moqui_http_log`; proxied requests do not, as Java's filter covered only the webapp.
 
-`/elastic/*` proxies to `elasticsearch_url` with the prefix removed, and `/kibana/*` to `http://${kibana_host}:${kibana_port}` with the prefix kept (Dashboards sets `server.basePath: "/kibana"`). Each needs a login (session, Basic, or `api_key`) and the `ElasticRemote` or `KibanaRemote` permission: 401 with a Basic challenge, else 403, as `MoquiAuthFilter` answers. The client's `Authorization` and `Cookie` headers are not forwarded; `elasticsearch_user` and `elasticsearch_password` are. On Postgres both paths are 404.
+`/elastic/*` proxies to `elasticsearch_url` with the prefix removed, and `/kibana/*` to `http://${kibana_host}:${kibana_port}` with the prefix kept (Dashboards sets `server.basePath: "/kibana"`). Each needs a login (session, Basic, or `api_key`) and the `ElasticRemote` or `KibanaRemote` permission: 401 with a Basic challenge, else 403, as `MoquiAuthFilter` answers. The client's `Authorization` and `Cookie` headers are not forwarded; `elasticsearch_user` and `elasticsearch_password` are. On Postgres both paths are 404, as the backend has no Elastic API.
 
 When the opensearch backend's cluster is this host and nothing answers, the search store starts `runtime/opensearch` (`bin/opensearch` in the foreground with its bundled JDK, as `su` to an owning `opensearch` user when that works) and waits up to `opensearch_start_wait` seconds. Dropping the store sends SIGTERM and then kills it. A `pid` file means the node is run outside the server (`bin/opensearch -d -p pid`), and it is left alone. `opensearch_run=false` never starts one.
 
@@ -499,7 +499,7 @@ When the opensearch backend's cluster is this host and nothing answers, the sear
 | `get#InventoryProjectedInfo` | Mantle rewrite onto `aggregate`. It calls the missing `ElasticSearchUtil`, and the inventory body has nothing to port. The rewrite happens with mantle. |
 | `get#PriceHistoryInfo` | Left unimplemented. It calls the missing `ElasticSearchUtil` and has no callers. |
 | Tools DataDocument Search, ViewDocument | Parsed query string. `get_document`. |
-| Log viewer, `ElasticSearchLogger`, `ElasticRequestLogFilter`, cleanup jobs | OpenSearch backend only. |
+| Log viewer, `ElasticSearchLogger`, `ElasticRequestLogFilter`, cleanup jobs | Both backends, through `index_log_entries`. |
 | `ElasticDatasourceFactory`, `TestNoSqlEntity` | Not ported. |
 | `ec.elastic` / `getElastic()` | `ec.search`: `search`, `aggregate`, `parseQuery`, `elasticQuery`, `indexDocuments`, `deleteDocument`, `deleteMatching`, `getDocument`, `ensureIndex`, `dropIndex`, `indexExists`, `documentTypes`, `isAvailable`, `backendName`, `flatten`, `processFeedPending`, `rebuildFeed`. Each search call takes one options map with `documentType` or `indexName`. |
 

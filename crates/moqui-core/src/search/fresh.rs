@@ -12,7 +12,6 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-
 //! Read-your-writes for a search that asks for it (`SearchRequest::fresh_by`).
 //!
 //! A user's entity writes become `DataFeedPending` rows, and indexing them is eventual. The ids of

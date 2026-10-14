@@ -191,7 +191,8 @@ fn every_tools_screen_renders_in_html_for_an_admin() {
     let (_, shell) = get(address, &john, "/Tools/GroovyShell");
     assert!(shell.contains("The Groovy Shell is not available"), "{shell}");
     let (_, logs) = get(address, &john, "/System/LogViewer");
-    assert!(logs.contains("has no log index moqui_logs"), "{logs}");
+    // The Postgres backend keeps the log indexes, so the viewer renders instead of explaining their absence.
+    assert!(!logs.contains("has no log index"), "{logs}");
 
     // The detail screens show their records.
     let (_, entity) = get(

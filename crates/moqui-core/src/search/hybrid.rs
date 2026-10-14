@@ -12,7 +12,6 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-
 //! Hybrid and semantic retrieval, run by the facade over any backend.
 //!
 //! Hybrid search runs bounded branches, each with the request's trusted filter, and fuses them by
@@ -139,7 +138,9 @@ pub fn search(
         counted.push(prefix);
     }
     if !text.is_empty() && have.contains(&Capability::Fuzzy) && lexical_page.total < options.fuzzy_below {
-        let fuzzy = Query::Fuzzy { terms: text.to_string() };
+        let fuzzy = Query::Fuzzy {
+            terms: text.to_string(),
+        };
         let page = backend.search(mappings, &branch_request(request, fuzzy.clone(), k))?;
         branches.push((options.weights.fuzzy, page.hits));
         counted.push(fuzzy);
@@ -172,14 +173,27 @@ pub fn semantic_search(
     embedder: &dyn Embedder,
 ) -> Result<SearchPage, Error> {
     let k = options.k.max(request.offset + request.limit).max(1);
-    let vector = embedder.embed(&[options.text.trim().to_string()])?.pop().unwrap_or_default();
+    let vector = embedder
+        .embed(&[options.text.trim().to_string()])?
+        .pop()
+        .unwrap_or_default();
     let hits = backend.semantic_search(mappings, &vector, embedder.model(), request.filter.as_ref(), k)?;
     let total = u64::try_from(hits.len()).unwrap_or(u64::MAX);
-    Ok(page_of(hits, request, &Query::MatchAll, total, TotalRelation::Candidates))
+    Ok(page_of(
+        hits,
+        request,
+        &Query::MatchAll,
+        total,
+        TotalRelation::Candidates,
+    ))
 }
 
 /// Reciprocal rank fusion, then the quality boost, best first; ties by document type, then id.
-pub fn fuse(branches: Vec<(f64, Vec<SearchHit>)>, mappings: &[Arc<DocumentMapping>], quality_boost: f64) -> Vec<SearchHit> {
+pub fn fuse(
+    branches: Vec<(f64, Vec<SearchHit>)>,
+    mappings: &[Arc<DocumentMapping>],
+    quality_boost: f64,
+) -> Vec<SearchHit> {
     let mut scores: HashMap<(String, String), (f64, SearchHit)> = HashMap::new();
     for (weight, hits) in branches {
         for (index, hit) in hits.into_iter().enumerate() {
@@ -274,7 +288,10 @@ mod tests {
             &[],
             0.0,
         );
-        let order: Vec<(String, String)> = fused.iter().map(|hit| (hit.document_id.clone(), hit.id.clone())).collect();
+        let order: Vec<(String, String)> = fused
+            .iter()
+            .map(|hit| (hit.document_id.clone(), hit.id.clone()))
+            .collect();
         // A/2: 1/62 + 2/61; A/1: 1/61 + 1/62; B/1 (a different document from A/1): 1/63 + 1/61.
         assert_eq!(
             order,

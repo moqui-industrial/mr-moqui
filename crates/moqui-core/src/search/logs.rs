@@ -12,7 +12,6 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-
 //! The log indexes, `moqui_logs` and `moqui_http_log`. The host writes them; they are not
 //! DataDocuments. They exist only on a backend that keeps them (OpenSearch), where the facade
 //! treats each as a flat document type whose id is the index name, so search,

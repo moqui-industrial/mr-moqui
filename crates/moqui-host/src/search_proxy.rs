@@ -12,7 +12,6 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-
 //! The `/elastic` and `/kibana` proxies, Java's `ElasticSearchProxy` and `KibanaProxy` servlets
 //! behind `MoquiAuthFilter`. They exist only on the OpenSearch backend. A request needs a login
 //! (session, Basic, or `api_key`) and the `ElasticRemote` or `KibanaRemote` permission, as Java's
@@ -57,19 +56,11 @@ enum Target {
     Kibana,
 }
 
-pub(crate) async fn elastic(
-    state: State<Arc<HttpState>>,
-    peer: ConnectInfo<SocketAddr>,
-    request: Request,
-) -> Response {
+pub(crate) async fn elastic(state: State<Arc<HttpState>>, peer: ConnectInfo<SocketAddr>, request: Request) -> Response {
     proxy(state, peer, request, Target::Elastic).await
 }
 
-pub(crate) async fn kibana(
-    state: State<Arc<HttpState>>,
-    peer: ConnectInfo<SocketAddr>,
-    request: Request,
-) -> Response {
+pub(crate) async fn kibana(state: State<Arc<HttpState>>, peer: ConnectInfo<SocketAddr>, request: Request) -> Response {
     proxy(state, peer, request, Target::Kibana).await
 }
 
@@ -79,15 +70,22 @@ async fn proxy(
     request: Request,
     target: Target,
 ) -> Response {
-    let keeps_logs = moqui_core::search::installed(&state.factory)
-        .is_some_and(|facade| facade.backend().keeps_log_indexes());
-    if !keeps_logs {
-        return plain(404, "the search backend is not OpenSearch, so there is nothing to proxy");
+    let has_elastic =
+        moqui_core::search::installed(&state.factory).is_some_and(|facade| facade.backend().has_elastic_api());
+    if !has_elastic {
+        return plain(
+            404,
+            "the search backend is not OpenSearch, so there is nothing to proxy",
+        );
     }
     let (permission, base) = match target {
         Target::Elastic => {
             let url = moqui_lib::env::get_prop_or_env("elasticsearch_url");
-            let url = if url.trim().is_empty() { "http://127.0.0.1:9200".to_string() } else { url };
+            let url = if url.trim().is_empty() {
+                "http://127.0.0.1:9200".to_string()
+            } else {
+                url
+            };
             ("ElasticRemote", url.trim().trim_end_matches('/').to_string())
         }
         Target::Kibana => {
@@ -96,7 +94,11 @@ async fn proxy(
                 return plain(404, "kibana_host is not set, so there is no Dashboards to proxy");
             }
             let port = moqui_lib::env::get_prop_or_env("kibana_port");
-            let port = if port.trim().is_empty() { "5601".to_string() } else { port };
+            let port = if port.trim().is_empty() {
+                "5601".to_string()
+            } else {
+                port
+            };
             ("KibanaRemote", format!("http://{}:{}", host.trim(), port.trim()))
         }
     };

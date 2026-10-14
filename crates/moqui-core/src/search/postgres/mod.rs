@@ -117,8 +117,9 @@ pub fn semantic_sql(
             literal(&mapping.document_id),
             literal(&mapping.physical_name)
         ));
-        part.param(Value::string(&literal_vector))
-            .push(&format!("::{cast}))::float8 AS score FROM {table} WHERE embedding IS NOT NULL AND embedding_model = "));
+        part.param(Value::string(&literal_vector)).push(&format!(
+            "::{cast}))::float8 AS score FROM {table} WHERE embedding IS NOT NULL AND embedding_model = "
+        ));
         part.param(Value::string(model));
         if let Some(filter) = filter {
             part.push(" AND ");
@@ -136,7 +137,9 @@ pub fn semantic_sql(
         }
         out.append(part);
     }
-    out.push(&format!(") AS s ORDER BY score DESC, document_id ASC, doc_id ASC LIMIT {k}"));
+    out.push(&format!(
+        ") AS s ORDER BY score DESC, document_id ASC, doc_id ASC LIMIT {k}"
+    ));
     Ok(out)
 }
 
@@ -474,7 +477,9 @@ impl PostgresBackend {
             columns.push(format!("{col} {sql_type}"));
             match field.kind {
                 FieldKind::Text => {
-                    indexes.push(format!("CREATE INDEX ON {table} USING gin (to_tsvector({config}, {col}))"));
+                    indexes.push(format!(
+                        "CREATE INDEX ON {table} USING gin (to_tsvector({config}, {col}))"
+                    ));
                     if self.trigram {
                         indexes.push(format!("CREATE INDEX ON {table} USING gin ({col} gin_trgm_ops)"));
                     }
@@ -495,7 +500,9 @@ impl PostgresBackend {
             ));
             indexes.push(format!("CREATE INDEX ON {table} ({NORM_TITLE} text_pattern_ops)"));
             if self.trigram {
-                indexes.push(format!("CREATE INDEX ON {table} USING gist ({NORM_TITLE} gist_trgm_ops)"));
+                indexes.push(format!(
+                    "CREATE INDEX ON {table} USING gist ({NORM_TITLE} gist_trgm_ops)"
+                ));
             }
         }
         if let Some(store) = &self.vectors {
@@ -516,7 +523,10 @@ impl PostgresBackend {
                 .iter()
                 .filter(|(name, _)| mapping.root.fields.contains_key(*name))
                 .map(|(name, weight)| {
-                    format!("setweight(to_tsvector({config}, coalesce({}, '')), '{weight}')", column(name))
+                    format!(
+                        "setweight(to_tsvector({config}, coalesce({}, '')), '{weight}')",
+                        column(name)
+                    )
                 })
                 .collect();
             parts.push(format!(
@@ -548,9 +558,28 @@ impl PostgresBackend {
     }
 }
 
+/// 13 hex digits of epoch millis then 12 random ones, so rows sort by arrival and ids do not collide.
+fn generated_doc_id() -> String {
+    let mut bytes = [0_u8; 6];
+    if getrandom::fill(&mut bytes).is_err() {
+        bytes = u64::from(std::process::id()).to_le_bytes()[..6]
+            .try_into()
+            .unwrap_or([0; 6]);
+    }
+    let mut id = format!("{:013x}", Timestamp::now().as_millisecond());
+    for byte in bytes {
+        id.push_str(&format!("{byte:02x}"));
+    }
+    id
+}
+
 impl SearchBackend for PostgresBackend {
     fn name(&self) -> &'static str {
         "postgres"
+    }
+
+    fn keeps_log_indexes(&self) -> bool {
+        true
     }
 
     fn capabilities(&self) -> Vec<Capability> {
@@ -617,8 +646,9 @@ impl SearchBackend for PostgresBackend {
              WHERE embedding IS NULL OR embedding_model IS DISTINCT FROM ",
             self.table(mapping)
         ));
-        sql.param(Value::string(model))
-            .push(&format!(" OR embedding_indexed_at < indexed_at ORDER BY indexed_at LIMIT {limit}"));
+        sql.param(Value::string(model)).push(&format!(
+            " OR embedding_indexed_at < indexed_at ORDER BY indexed_at LIMIT {limit}"
+        ));
         let rows = self.query(&sql)?;
         rows.iter()
             .map(|row| {
@@ -772,7 +802,15 @@ impl SearchBackend for PostgresBackend {
         }
         let now = Timestamp::now();
         let mut rows = Vec::with_capacity(documents.len());
-        for (id, body) in documents {
+        for (given, body) in documents {
+            // A log entry has no id: a time-ordered one is made here, as OpenSearch makes its own.
+            let generated;
+            let id = if given.is_empty() {
+                generated = generated_doc_id();
+                &generated
+            } else {
+                given
+            };
             let json = serde_json::to_string(&body_json(&Value::Map(body.clone())))
                 .map_err(|err| Error::new(format!("document {id} is not JSON: {err}")))?;
             let mut params = vec![Value::string(id), Value::Timestamp(now), Value::String(json)];
@@ -983,7 +1021,11 @@ pub fn search_sql(
         match compiler.rank_query(&request.query) {
             // Cover density over the weighted vector when the document has weights, else all text.
             Some(rank) if request.rank == Rank::CoverDensity => {
-                let vector = if mapping.display.weights.is_empty() { "all_text" } else { RANKED_TEXT };
+                let vector = if mapping.display.weights.is_empty() {
+                    "all_text"
+                } else {
+                    RANKED_TEXT
+                };
                 part.push(&format!("ts_rank_cd({vector}, "));
                 part.append(rank);
                 part.push(")");
@@ -1127,6 +1169,16 @@ pub fn body_json(value: &Value) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn generated_ids_are_unique_and_follow_arrival_order() {
+        let first = super::generated_doc_id();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let second = super::generated_doc_id();
+        assert_eq!(first.len(), 25);
+        assert_ne!(first, second);
+        assert!(first[..13] < second[..13]);
+    }
+
     use super::*;
     use crate::search::mapping::{FieldMapping, ObjectMapping};
     use crate::search::{SortField, Target};
