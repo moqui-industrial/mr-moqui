@@ -16,6 +16,7 @@
 
 mod actions;
 mod bounded;
+pub mod groovy_convert;
 mod parse;
 mod runtime;
 pub mod screen_lint;

@@ -178,10 +178,12 @@ pub fn load_save(
     db::embedded::load_save(dir.as_ref(), dump.as_ref())
 }
 
-const USAGE: &str = "usage: moqui [save-db <cluster-dir> <dump-file> | load-save <cluster-dir> <dump-file> | load [name=value ...] | lint [file] | lint --screens [report-file] | lint --screens --qvt-static [report-file] | types [--out dir]]";
+const USAGE: &str = "usage: moqui [save-db <cluster-dir> <dump-file> | load-save <cluster-dir> <dump-file> | load [name=value ...] | lint [file] | lint --screens [report-file] | lint --screens --qvt-static [report-file] | lint --groovy <dir> ... | convert --groovy [--write] <dir> ... | types [--out dir]]";
 
 /// No arguments start the HTTP server. `save-db` and `load-save` take a cluster directory and a dump file.
 /// `load` takes `name=value` pairs. `lint` takes an optional service file. `lint --screens` checks the screen and form XML and may write a report file.
+/// `lint --groovy` reports the Groovy idioms left in a component tree such as mantle, and `convert --groovy` makes the
+/// mechanical rewrites (map literals, `context + [...]`, Elvis, EDI grammar files), printing them, and writes them with `--write`.
 /// `types` writes TypeScript declarations for the loaded definitions, by default into `types/` in the runtime directory.
 ///
 /// # Errors
@@ -213,6 +215,25 @@ where
         [command, rest @ ..] if command == "load" => {
             let flags = parse_load_args(rest)?;
             dispatch_load(&flags)?;
+            Ok(None)
+        }
+        [command, flag, dirs @ ..] if command == "lint" && flag == "--groovy" && !dirs.is_empty() => {
+            let roots: Vec<std::path::PathBuf> = dirs.iter().map(Into::into).collect();
+            let report = moqui_core::script::screen_lint::lint_groovy(&roots)
+                .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
+            print!("{}", report.render());
+            Ok(None)
+        }
+        [command, flag, rest @ ..] if command == "convert" && flag == "--groovy" => {
+            let write = rest.first().is_some_and(|arg| arg == "--write");
+            let dirs = if write { &rest[1..] } else { rest };
+            if dirs.is_empty() {
+                return Err(moqui_lib::error::Error::new(USAGE));
+            }
+            let roots: Vec<std::path::PathBuf> = dirs.iter().map(Into::into).collect();
+            let report = moqui_core::script::groovy_convert::convert_tree(&roots, write)
+                .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
+            print!("{}", report.render());
             Ok(None)
         }
         [command, flag, mode, rest @ ..]
