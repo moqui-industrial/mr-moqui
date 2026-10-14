@@ -599,7 +599,7 @@ pub(crate) fn option_key(form: &str, field: &str, sub_index: usize, widget_index
     format!("mqOpt_{form}_{field}_{sub_index}_{widget_index}")
 }
 
-fn is_lookup(widget: &MNode) -> bool {
+pub(crate) fn is_lookup(widget: &MNode) -> bool {
     let dynamic = widget
         .first_named("dynamic-options")
         .is_some_and(|node| node.attribute("server-search").as_deref() != Some("true"));
@@ -619,7 +619,7 @@ fn lookup_options(state: &RenderState, widget: &MNode) -> Result<serde_json::Val
     ))
 }
 
-fn sub_nodes(field: &MNode) -> impl Iterator<Item = (usize, MNode)> {
+pub(crate) fn sub_nodes(field: &MNode) -> impl Iterator<Item = (usize, MNode)> {
     field
         .children()
         .into_iter()
@@ -744,7 +744,7 @@ const PAGE_HEADERS: [&str; 6] = [
 ];
 
 /// The names a header field of a form-list reads from the request: its value and the find parameters that go with it.
-const HEADER_SUFFIXES: [&str; 8] = ["", "_op", "_not", "_ic", "_from", "_thru", "_poffset", "_period"];
+pub(crate) const HEADER_SUFFIXES: [&str; 8] = ["", "_op", "_not", "_ic", "_from", "_thru", "_poffset", "_period"];
 
 /// `GET {screen}/actions/{formName}`.
 fn form_package(state: &RenderState, def: &Arc<ScreenDef>, name: &str) -> Result<(), Error> {

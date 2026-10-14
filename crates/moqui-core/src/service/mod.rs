@@ -15,7 +15,7 @@
 //! Service facade: definitions, synchronous calls, ECAs, pools, jobs, and REST. JSON-RPC is not part of this port.
 
 pub(crate) mod call;
-mod define;
+pub(crate) mod define;
 mod eca;
 mod eca_rules;
 mod email_eca;
@@ -55,6 +55,7 @@ pub use seca::run_seca_rules;
 pub use security_checks::security_checks_run;
 pub use semaphore::acquire;
 pub use validate::validate;
+pub(crate) use validate::{auto_entity_name, auto_fields};
 
 /// An entity in the default group, to pick the transaction manager for work that has no entity of
 /// its own, such as a screen transition.

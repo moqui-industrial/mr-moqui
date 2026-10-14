@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Type generation fixture: required and defaulted parameters, auto-parameters, validate="false", an explicit
+     entity-auto service, a disabled parameter, and an auto-parameters whose entity is not loaded. -->
+<services>
+    <service verb="send" noun="Invoice">
+        <in-parameters>
+            <parameter name="invoiceId" required="true"/>
+            <parameter name="copies" type="Integer" required="true" default-value="1"/>
+            <parameter name="note"/>
+            <parameter name="sendDate" type="Timestamp"/>
+            <parameter name="total" type="BigDecimal"/>
+            <parameter name="flags" type="Map"/>
+            <parameter name="hidden" required="disabled"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="sent" type="Boolean"/>
+            <parameter name="total" type="BigDecimal"/>
+            <parameter name="messageList" type="List"/>
+        </out-parameters>
+    </service>
+    <service verb="update" noun="InvoiceStatus">
+        <in-parameters>
+            <auto-parameters entity-name="typegen.test.Invoice" include="pk" required="true"/>
+            <auto-parameters entity-name="typegen.test.Invoice" include="nonpk"><exclude field-name="document"/></auto-parameters>
+        </in-parameters>
+    </service>
+    <service verb="echo" noun="Anything" validate="false">
+        <in-parameters><parameter name="text"/></in-parameters>
+    </service>
+    <service verb="create" noun="typegen.test.Status" type="entity-auto">
+        <in-parameters><parameter name="statusId" required="true"/></in-parameters>
+        <out-parameters><parameter name="statusId"/></out-parameters>
+    </service>
+    <service verb="noop" noun="Nothing"/>
+    <service verb="lookup" noun="Missing">
+        <in-parameters><auto-parameters entity-name="typegen.test.NotAnEntity"/></in-parameters>
+    </service>
+</services>

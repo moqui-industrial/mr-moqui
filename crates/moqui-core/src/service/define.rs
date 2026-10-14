@@ -295,6 +295,26 @@ pub(crate) fn find(name: &str) -> Option<ServiceDef> {
     snapshot(&shared).services.get(name).cloned()
 }
 
+/// Every service registered with the entered context's factory, by name. Type generation reads these.
+///
+/// # Errors
+///
+/// Returns an error when no context is entered.
+pub(crate) fn registered() -> Result<Vec<ServiceDef>, Error> {
+    Ok(snapshot(&*entered()?).services.values().cloned().collect())
+}
+
+/// The services `paths` define, and the registration failures, without registering them.
+///
+/// # Errors
+///
+/// Returns an error when a file cannot be read.
+#[cfg(test)]
+pub(crate) fn definitions_in(paths: &[PathBuf]) -> Result<(Vec<ServiceDef>, Vec<String>), Error> {
+    let registry = build(paths)?;
+    Ok((registry.services.into_values().collect(), registry.failures))
+}
+
 /// Register the configured service files with the entered context's factory.
 ///
 /// # Errors

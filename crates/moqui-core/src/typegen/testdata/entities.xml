@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Type generation fixture: an entity with a decimal, a timestamp, a blob and relationships, a second entity whose
+     short name is not unique, and a view entity. -->
+<entities>
+    <entity entity-name="Invoice" package="typegen.test" short-alias="inv">
+        <field name="invoiceId" type="id" is-pk="true"/>
+        <field name="statusId" type="id"/>
+        <field name="amount" type="currency-amount"/>
+        <field name="invoiceDate" type="date-time"/>
+        <field name="dueDate" type="date"/>
+        <field name="lineCount" type="number-integer"/>
+        <field name="document" type="binary-very-long"/>
+        <relationship type="one" related="typegen.test.Status" short-alias="status"/>
+        <relationship type="many" title="Line" related="typegen.test.InvoiceItem">
+            <key-map field-name="invoiceId"/></relationship>
+    </entity>
+    <entity entity-name="InvoiceItem" package="typegen.test">
+        <field name="invoiceId" type="id" is-pk="true"/>
+        <field name="invoiceItemSeqId" type="id" is-pk="true"/>
+        <field name="quantity" type="number-decimal"/>
+        <field name="description" type="text-medium"/>
+    </entity>
+    <entity entity-name="Status" package="typegen.test">
+        <field name="statusId" type="id" is-pk="true"/>
+        <field name="description" type="text-medium"/>
+    </entity>
+    <entity entity-name="Status" package="typegen.other">
+        <field name="statusId" type="id" is-pk="true"/>
+    </entity>
+    <view-entity entity-name="InvoiceAndStatus" package="typegen.test">
+        <member-entity entity-alias="INV" entity-name="typegen.test.Invoice"/>
+        <member-entity entity-alias="ST" entity-name="typegen.test.Status" join-from-alias="INV">
+            <key-map field-name="statusId"/></member-entity>
+        <alias-all entity-alias="INV"><exclude field="document"/></alias-all>
+        <alias name="statusDescription" entity-alias="ST" field="description"/>
+    </view-entity>
+</entities>

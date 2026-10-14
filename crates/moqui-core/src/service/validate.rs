@@ -99,6 +99,14 @@ fn expand_auto(def: &ServiceDef, auto: &AutoParams, facade: Option<&EntityFacade
     let Some(facade) = facade else {
         return Err(Error::new("no entity facade is installed"));
     };
+    let entity_name = auto_entity_name(def, auto)?;
+    facade
+        .with_entity(&entity_name, |entity, _, model| Ok(auto_fields(auto, entity, model)))
+        .map_err(Error::from)
+}
+
+/// The entity `auto-parameters` reads: its `entity-name`, else the service noun.
+pub(crate) fn auto_entity_name(def: &ServiceDef, auto: &AutoParams) -> Result<String, Error> {
     let entity_name = auto
         .entity_name
         .clone()
@@ -110,36 +118,41 @@ fn expand_auto(def: &ServiceDef, auto: &AutoParams, facade: Option<&EntityFacade
             def.name
         )));
     }
-    facade
-        .with_entity(&entity_name, |entity, _, model| {
-            let mut params = Vec::new();
-            for field in &entity.fields {
-                let take = match auto.include {
-                    Include::Pk => field.is_pk,
-                    Include::NonPk => !field.is_pk,
-                    Include::All => true,
-                };
-                if !take || auto.exclude.iter().any(|name| name == &field.name) {
-                    continue;
-                }
-                let java = model
-                    .dictionary_type(&field.field_type)
-                    .map(|entry| entry.java_type.clone())
-                    .unwrap_or_else(|| "String".to_string());
-                params.push(ParamDef {
-                    name: field.name.clone(),
-                    java_type: java,
-                    required: auto.required,
-                    default_value: field.default_value.clone(),
-                    default_expr: None,
-                    allow_html: auto.allow_html,
-                    checks: Vec::new(),
-                    auto: None,
-                });
-            }
-            Ok(params)
-        })
-        .map_err(Error::from)
+    Ok(entity_name)
+}
+
+/// The parameters `auto-parameters` makes from the fields of `entity`.
+pub(crate) fn auto_fields(
+    auto: &AutoParams,
+    entity: &moqui_db::model::EntityDefinition,
+    model: &moqui_db::model::EntityModel,
+) -> Vec<ParamDef> {
+    let mut params = Vec::new();
+    for field in &entity.fields {
+        let take = match auto.include {
+            Include::Pk => field.is_pk,
+            Include::NonPk => !field.is_pk,
+            Include::All => true,
+        };
+        if !take || auto.exclude.iter().any(|name| name == &field.name) {
+            continue;
+        }
+        let java = model
+            .dictionary_type(&field.field_type)
+            .map(|entry| entry.java_type.clone())
+            .unwrap_or_else(|| "String".to_string());
+        params.push(ParamDef {
+            name: field.name.clone(),
+            java_type: java,
+            required: auto.required,
+            default_value: field.default_value.clone(),
+            default_expr: None,
+            allow_html: auto.allow_html,
+            checks: Vec::new(),
+            auto: None,
+        });
+    }
+    params
 }
 
 fn check_param(param: &ParamDef, value: &Value) -> Result<(), Error> {
