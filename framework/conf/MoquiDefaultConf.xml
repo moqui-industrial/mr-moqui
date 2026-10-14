@@ -365,6 +365,9 @@
         <!-- NOTE: entity tarpit disabled by default for performance and tracking overhead reasons -->
         <artifact-execution type="AT_ENTITY" authz-enabled="true" tarpit-enabled="false"/>
         <artifact-execution type="AT_LLM" authz-enabled="true" tarpit-enabled="true"/>
+        <!-- The Java enabled a type with no entry here; this one is listed because a missing entry is disabled here.
+            The service REST API checks the path of each request (MOQUI_API for /moqui). -->
+        <artifact-execution type="AT_REST_PATH" authz-enabled="true" tarpit-enabled="true"/>
     </artifact-execution-facade>
     <user-facade>
         <password encrypt-hash-type="SHA-256" min-length="8" min-digits="1" min-others="1"

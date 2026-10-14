@@ -371,3 +371,108 @@ fn password_reset_mails_a_reset_password_that_changes_the_password() {
         .row_text("moqui.security.UserPasswordHistory", "userId", "cy", "password")
         .is_empty());
 }
+
+/// A TOTP factor for `username`, as the user would set it up. Returns the secret.
+fn totp_factor(flow: &Flow, username: &str) -> String {
+    flow.as_user(Some(username), || {
+        let parameters = BTreeMap::from([("userId".to_string(), Value::string(username))]);
+        let setup = crate::service::sync("org.moqui.impl.UserServices.setup#UserAuthcFactorTotp", &parameters).unwrap();
+        moqui_lib::object::to_plain_string(setup.get("qrSecret").expect("qrSecret"))
+    })
+}
+
+#[test]
+fn a_code_changes_only_the_password_of_the_pre_authenticated_user() {
+    let flow = Flow::open();
+    flow.user("mal", "mal@example.com");
+    flow.user("vic", "vic@example.com");
+    totp_factor(&flow, "mal");
+    let vic_secret = totp_factor(&flow, "vic");
+    let change = |pre_authc: &str| {
+        flow.as_user(None, || {
+            let _web = crate::web::install(BTreeMap::new());
+            crate::user::session::set_session_attribute(crate::user::PRE_AUTHC_USERNAME, Some(pre_authc));
+            let parameters = BTreeMap::from([
+                ("username".to_string(), Value::string("vic")),
+                // Required by the service, and not vic's password: the code is meant to stand in for it.
+                ("oldPassword".to_string(), Value::string("not-known")),
+                ("code".to_string(), Value::string(current_totp(&vic_secret))),
+                ("newPassword".to_string(), Value::string("Taken3!x")),
+                ("newPasswordVerify".to_string(), Value::string("Taken3!x")),
+            ]);
+            let out = crate::service::sync("org.moqui.impl.UserServices.update#Password", &parameters).unwrap();
+            let messages = crate::context::ExecutionContext::with_current(|ec| {
+                let mut all = ec.message().errors().to_vec();
+                all.extend(ec.message().messages().iter().cloned());
+                ec.message().clear();
+                all
+            })
+            .unwrap();
+            (out, messages)
+        })
+    };
+    // Pre-authenticated as mal, vic's code does not stand in for vic's old password, which is then checked.
+    let (out, messages) = change("mal");
+    assert_ne!(out.get("updateSuccessful"), Some(&Value::Bool(true)), "{out:?}");
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("Password could not be updated")),
+        "{messages:?}"
+    );
+    flow.as_user(None, || {
+        crate::user::login_user("vic", "Taken3!x").unwrap_err();
+    });
+    // Pre-authenticated as vic, the same code does.
+    let (out, messages) = change("vic");
+    assert_eq!(
+        out.get("updateSuccessful"),
+        Some(&Value::Bool(true)),
+        "{out:?} {messages:?}"
+    );
+}
+
+#[test]
+fn wrong_codes_count_as_failed_logins_and_disable_the_account() {
+    let flow = Flow::open();
+    flow.user("ada", "ada@example.com");
+    let secret = totp_factor(&flow, "ada");
+    let failures = || {
+        flow.row_text("moqui.security.UserAccount", "userId", "ada", "successiveFailedLogins")
+            .parse::<i64>()
+            .unwrap_or(0)
+    };
+
+    let mut session = Session::default();
+    // A wrong code with the password, then wrong codes at verifyOtp: each counts.
+    let response = flow.post(
+        "/rest/login",
+        "username=ada&password=Secret1!&code=000000",
+        &mut session,
+    );
+    assert_eq!(response.status, 200, "{}", response.body_text());
+    assert_eq!(failures(), 1);
+    for count in 2..=3 {
+        let response = flow.post("/rest/verifyOtp", "code=000000", &mut session);
+        assert_eq!(response.status, 403, "{}", response.body_text());
+        assert_eq!(failures(), count);
+    }
+    assert_ne!(
+        flow.row_text("moqui.security.UserAccount", "userId", "ada", "disabled"),
+        "Y"
+    );
+    // The fourth failure disables the account, as the fourth wrong password does.
+    let response = flow.post("/rest/verifyOtp", "code=000000", &mut session);
+    assert_eq!(response.status, 403, "{}", response.body_text());
+    assert_eq!(
+        flow.row_text("moqui.security.UserAccount", "userId", "ada", "disabled"),
+        "Y"
+    );
+    // While disabled, the right code is refused and still counted, and the password does not log in.
+    let code = current_totp(&secret);
+    let response = flow.post("/rest/verifyOtp", &format!("code={code}"), &mut session);
+    assert_eq!(response.status, 403, "{}", response.body_text());
+    assert_eq!(failures(), 5);
+    let response = flow.post("/rest/login", "username=ada&password=Secret1!", &mut Session::default());
+    assert_eq!(response.status, 401, "{}", response.body_text());
+}

@@ -24,7 +24,7 @@ mod tests {
 
     use moqui_core::driver::DbDriver;
     use moqui_core::entity::load_feed::{
-        eca_rules, held_feed_services, held_services, load_entity_data, match_rules, LoadOptions,
+        eca_rules, held_feed_services, held_services, load_entity_data, load_entity_xml_text, match_rules, LoadOptions,
     };
     use moqui_core::entity::EntityFacade;
     use moqui_core::transaction::PoolConfig;
@@ -67,6 +67,7 @@ mod tests {
                 "moqui.security.UserGroup",
                 "moqui.security.UserGroupPermission",
                 "moqui.security.UserGroupMember",
+                "moqui.security.UserAccount",
             ])
             .unwrap();
 
@@ -276,6 +277,45 @@ mod tests {
                 .records,
             0
         );
+
+        // A restricted load refuses a sensitive record by entity name, entity short alias, or nested relationship
+        // name, and any service element, before anything of the tree is written.
+        let restricted = LoadOptions {
+            restrict_sensitive_entities: true,
+            ..LoadOptions::default()
+        };
+        for (label, body) in [
+            (
+                "nested",
+                r#"<moqui.security.UserAccount userId="RSTU" username="rstu"><groups userGroupId="ADMIN"/></moqui.security.UserAccount>"#,
+            ),
+            (
+                "root",
+                r#"<moqui.security.UserGroupMember userGroupId="ADMIN" userId="RSTU" fromDate="0"/>"#,
+            ),
+            (
+                "alias",
+                r#"<userGroupPermissions userGroupId="ADMIN" userPermissionId="X" fromDate="0"/>"#,
+            ),
+            (
+                "service",
+                r#"<create-moqui.test.TestEntity testId="RSVC" testMedium="no"/>"#,
+            ),
+        ] {
+            let text = format!(r#"<entity-facade-xml type="seed">{body}</entity-facade-xml>"#);
+            let err = load_entity_xml_text(&facade, "restricted", &text, &restricted).unwrap_err();
+            assert!(err.to_string().contains("is not allowed"), "{label}: {err}");
+        }
+        assert!(row_missing(&facade, "moqui.security.UserAccount", "userId", "RSTU"));
+        assert!(row_missing(&facade, "moqui.test.TestEntity", "testId", "RSVC"));
+        let allowed = load_entity_xml_text(
+            &facade,
+            "restricted",
+            r#"<entity-facade-xml type="seed"><moqui.test.TestEntity testId="RALLOW" testMedium="ok"/></entity-facade-xml>"#,
+            &restricted,
+        )
+        .unwrap();
+        assert_eq!(allowed.records, 1);
 
         let rules = eca_rules(&facade, "moqui.screen.form.DbForm");
         let form_rule = rules.iter().find(|rule| rule.id == "DbFormCache").expect("DbFormCache");

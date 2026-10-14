@@ -401,12 +401,8 @@ fn first_use(key: &str) -> Result<bool, Error> {
     let cache = ExecutionContext::with_current(|ctx| ctx.factory().cache().get(REPLAY_CACHE))
         .ok_or_else(|| Error::new("no execution context is entered"))??
         .ok_or_else(|| Error::new(format!("cache {REPLAY_CACHE} is not configured")))?;
-    let key = key.to_string();
-    if cache.contains_key(&key)? {
-        return Ok(false);
-    }
-    cache.put(key, "true".to_string())?;
-    Ok(true)
+    // One atomic check and store: two requests with the same signature cannot both see it unused.
+    Ok(cache.put_if_absent(key.to_string(), "true".to_string())?)
 }
 
 #[cfg(test)]

@@ -160,7 +160,7 @@ fn insert_file(roots: &mut BTreeMap<String, Node>, path: &Path) -> Result<(), Er
             root.name()
         )));
     }
-    let node = node_from(&root, "true", false)?;
+    let node = node_from(&root, "true", "", false)?;
     if roots.contains_key(&node.name) {
         tracing::warn!(resource = %node.name, file = %path.display(), "REST root resource replaced by a later file");
     }
@@ -190,6 +190,10 @@ struct Node {
     description: Option<String>,
     is_id: bool,
     allow_extra_path: bool,
+    /// The `AT_REST_PATH` artifact name: `/` and each name from the root, an id as `{name}`, as Java `getFullPathName`.
+    full_path: String,
+    /// `require-authentication` of the resource, else of its parent, else `true`.
+    require_authentication: String,
     methods: BTreeMap<String, Operation>,
     resources: BTreeMap<String, Node>,
     id: Option<Box<Node>>,
@@ -208,7 +212,7 @@ enum Operation {
     },
 }
 
-fn node_from(node: &MNode, parent_auth: &str, is_id: bool) -> Result<Node, Error> {
+fn node_from(node: &MNode, parent_auth: &str, parent_path: &str, is_id: bool) -> Result<Node, Error> {
     let name = node.attribute("name").unwrap_or_default();
     if name.is_empty() {
         return Err(Error::new("REST resource is missing a name"));
@@ -216,6 +220,11 @@ fn node_from(node: &MNode, parent_auth: &str, is_id: bool) -> Result<Node, Error
     let auth = node
         .attribute("require-authentication")
         .unwrap_or_else(|| parent_auth.to_string());
+    let full_path = if is_id {
+        format!("{parent_path}/{{{name}}}")
+    } else {
+        format!("{parent_path}/{name}")
+    };
     let mut methods = BTreeMap::new();
     let mut resources = BTreeMap::new();
     let mut id = None;
@@ -229,10 +238,10 @@ fn node_from(node: &MNode, parent_auth: &str, is_id: bool) -> Result<Node, Error
                 methods.insert(verb, operation_from(&child, &auth)?);
             }
             "resource" => {
-                let child_node = node_from(&child, &auth, false)?;
+                let child_node = node_from(&child, &auth, &full_path, false)?;
                 resources.insert(child_node.name.clone(), child_node);
             }
-            "id" => id = Some(Box::new(node_from(&child, &auth, true)?)),
+            "id" => id = Some(Box::new(node_from(&child, &auth, &full_path, true)?)),
             _ => {}
         }
     }
@@ -246,6 +255,8 @@ fn node_from(node: &MNode, parent_auth: &str, is_id: bool) -> Result<Node, Error
             .filter(|text| !text.is_empty()),
         is_id,
         allow_extra_path: is_id && node.attribute("allow-extra-path").as_deref() == Some("true"),
+        full_path,
+        require_authentication: auth,
         methods,
         resources,
         id,
@@ -334,7 +345,13 @@ impl Node {
         params: &mut BTreeMap<String, Value>,
     ) -> Result<Value, Error> {
         let next = index + 1;
-        if path.len() > next {
+        let more = path.len() > next;
+        // The frame for this path, checked only when it is the last and requires authentication, as Java
+        // `visitChildOrRun`. It is popped, and an anonymous login undone, when the guard drops.
+        let mut frame = PathFrame::default();
+        frame.push(self, method, !more && auth_required(&self.require_authentication))?;
+        frame.apply_anonymous(&self.require_authentication)?;
+        if more {
             let segment = path[next];
             if let Some(child) = self.resources.get(segment) {
                 return child.visit(path, next, method, params);
@@ -378,8 +395,96 @@ impl Node {
     }
 }
 
+/// `true` or empty `require-authentication`.
+fn auth_required(mode: &str) -> bool {
+    mode.is_empty() || mode == "true"
+}
+
+/// Java `actionByMethodMap`. A method not in it, which has no operation anyway, is checked as view.
+fn action_from_method(method: &str) -> &'static str {
+    match method {
+        "patch" | "put" => "update",
+        "post" => "create",
+        "delete" => "delete",
+        _ => "view",
+    }
+}
+
+/// The `AT_REST_PATH` frame of one path node, and an anonymous login it made.
+#[derive(Default)]
+struct PathFrame {
+    pushed: bool,
+    anonymous: bool,
+}
+
+impl PathFrame {
+    /// Push the frame, not counted as an artifact hit. A denied push is an authentication error when no one is
+    /// logged in, so the client is asked to log in: the Java sent 403 there.
+    fn push(&mut self, node: &Node, method: &str, requires_authz: bool) -> Result<(), Error> {
+        let outcome = ExecutionContext::with_current(|ec| {
+            ec.push_checked(
+                "AT_REST_PATH",
+                &node.full_path,
+                action_from_method(method),
+                requires_authz,
+                true,
+                None,
+            )?;
+            ec.untrack_hit();
+            Ok::<(), Error>(())
+        });
+        match outcome {
+            Some(Ok(())) => {
+                self.pushed = true;
+                Ok(())
+            }
+            Some(Err(err)) => {
+                if ErrorKind::of(&err) == ErrorKind::Unauthorized && crate::user::current_username()?.is_none() {
+                    return Err(Error::of_kind(
+                        ErrorKind::AuthenticationRequired,
+                        format!("User must be logged in for REST path {}", node.full_path),
+                    ));
+                }
+                Err(err)
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// `anonymous-all` and `anonymous-view` mark the top frame inheritable, and log in the anonymous user when no
+    /// one is logged in.
+    fn apply_anonymous(&mut self, mode: &str) -> Result<(), Error> {
+        let all = match mode {
+            "anonymous-all" => true,
+            "anonymous-view" => false,
+            _ => return Ok(()),
+        };
+        ExecutionContext::with_current(|ec| ec.set_anonymous_authorized(all, ""));
+        if crate::user::login_anonymous()? {
+            self.anonymous = true;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for PathFrame {
+    fn drop(&mut self) {
+        if self.anonymous {
+            crate::user::logout_anonymous_only();
+        }
+        if self.pushed {
+            ExecutionContext::with_current(|ec| {
+                let _ = ec.pop();
+            });
+        }
+    }
+}
+
 fn run_service(name: &str, auth: &str, params: &BTreeMap<String, Value>) -> Result<Value, Error> {
     require_user(auth, &format!("call service {name}"))?;
+    // The method's own `anonymous-*` marks the last path frame, as Java `MethodService.run`.
+    let mut anonymous = PathFrame::default();
+    anonymous.apply_anonymous(auth)?;
     Ok(value_map(call::sync(name, params)?))
 }
 
@@ -391,6 +496,8 @@ fn run_entity(
     params: &BTreeMap<String, Value>,
 ) -> Result<Value, Error> {
     require_user(auth, &format!("operation {operation} on entity {name}"))?;
+    let mut anonymous = PathFrame::default();
+    anonymous.apply_anonymous(auth)?;
     let facade = current_facade()?;
     match operation {
         "list" | "one" => find_entity(&facade, name, master_name, operation, params),
@@ -690,6 +797,133 @@ mod tests {
             crate::context::ErrorKind::AuthenticationRequired,
             "{err}"
         );
+    }
+
+    /// The `AT_REST_PATH` frames: an ALWAYS grant on the root path flows to the service, a user without one is
+    /// refused at the path, and a service that needs no login is still behind the path's authorization.
+    #[test]
+    fn rest_path_authz_gates_and_inherits() {
+        let dir = std::env::temp_dir().join(format!("moqui-rest-path-{}", std::process::id()));
+        let _guard = DirGuard(dir.clone());
+        std::fs::create_dir_all(dir.join("service")).unwrap();
+        std::fs::write(
+            dir.join("service/moqui.rest.xml"),
+            r#"<resource name="moqui"><resource name="basic">
+                <resource name="echo"><method type="post"><service name="gate.ping#Rest"/></method></resource>
+                <resource name="secured"><method type="post"><service name="gate.secure#Rest"/></method></resource>
+            </resource></resource>"#,
+        )
+        .unwrap();
+        let service_path = dir.join("service/gate.xml");
+        std::fs::write(
+            &service_path,
+            r#"<services>
+                <service verb="ping" noun="Rest" authenticate="false">
+                    <out-parameters><parameter name="echoed"/></out-parameters>
+                    <actions><script>echoed = "anonymous";</script></actions>
+                </service>
+                <service verb="secure" noun="Rest">
+                    <out-parameters><parameter name="echoed"/></out-parameters>
+                    <actions><script>echoed = "secured";</script></actions>
+                </service>
+            </services>"#,
+        )
+        .unwrap();
+        let facade = crate::testing::open();
+        let ctx = ExecutionContextFactory::test_context_with_conf(
+            r#"<moqui-conf><artifact-execution-facade>
+                <artifact-execution type="AT_REST_PATH" authz-enabled="true"/>
+                <artifact-execution type="AT_SERVICE" authz-enabled="true"/>
+                <artifact-execution type="AT_ENTITY" authz-enabled="true"/>
+            </artifact-execution-facade></moqui-conf>"#,
+        );
+        install(ctx.factory(), &[dir.join("service/moqui.rest.xml")]);
+        ctx.factory().set_entity(facade.clone());
+        let _entered = ctx.enter();
+        {
+            let _authz = ctx.disable_authz();
+            let failures = crate::service::lint(std::slice::from_ref(&service_path)).unwrap();
+            assert!(failures.is_empty(), "{failures:?}");
+            for (user, group) in [("pathadmin", Some("ADMIN")), ("pathplain", None)] {
+                create(
+                    &facade,
+                    "moqui.security.UserAccount",
+                    &[("userId", user), ("username", user)],
+                );
+                if let Some(group) = group {
+                    let mut member = facade.make_value("moqui.security.UserGroupMember").unwrap();
+                    member.set("userId", Value::string(user));
+                    member.set("userGroupId", Value::string(group));
+                    member.set(
+                        "fromDate",
+                        moqui_lib::object::basic_convert(&Value::I64(1_000), "java.sql.Timestamp").value,
+                    );
+                    member.create(&facade).unwrap();
+                }
+            }
+            create(
+                &facade,
+                "moqui.security.ArtifactGroup",
+                &[("artifactGroupId", "MOQUI_API")],
+            );
+            create(
+                &facade,
+                "moqui.security.ArtifactGroupMember",
+                &[
+                    ("artifactGroupId", "MOQUI_API"),
+                    ("artifactName", "/moqui"),
+                    ("artifactTypeEnumId", "AT_REST_PATH"),
+                    ("nameIsPattern", "N"),
+                    ("inheritAuthz", "Y"),
+                ],
+            );
+            create(
+                &facade,
+                "moqui.security.ArtifactAuthz",
+                &[
+                    ("artifactAuthzId", "MOQUI_API_ADMIN"),
+                    ("userGroupId", "ADMIN"),
+                    ("artifactGroupId", "MOQUI_API"),
+                    ("authzTypeEnumId", "AUTHZT_ALWAYS"),
+                    ("authzActionEnumId", "AUTHZA_ALL"),
+                ],
+            );
+        }
+        let echoed = |value: Value| match value {
+            Value::Map(map) => map.get("echoed").and_then(Value::as_str).unwrap_or("").to_string(),
+            other => panic!("service result {other:?}"),
+        };
+        let kind = |err: &crate::context::Error| crate::context::ErrorKind::of(err);
+        let none = BTreeMap::new();
+
+        // No one logged in: the path asks for a login, also for the service that needs none.
+        let err = run(&["moqui", "basic", "echo"], "post", &none).unwrap_err();
+        assert_eq!(kind(&err), crate::context::ErrorKind::AuthenticationRequired, "{err}");
+
+        // ADMIN has no grant on the service itself; the ALWAYS grant on /moqui is inherited.
+        crate::user::internal_login_user("pathadmin").unwrap();
+        let result = run(&["moqui", "basic", "secured"], "post", &none).unwrap();
+        assert_eq!(echoed(result), "secured");
+        let result = run(&["moqui", "basic", "echo"], "post", &none).unwrap();
+        assert_eq!(echoed(result), "anonymous");
+        crate::user::logout().unwrap();
+
+        // A user outside ADMIN is refused at the path, before the service.
+        crate::user::internal_login_user("pathplain").unwrap();
+        for leaf in ["secured", "echo"] {
+            let err = run(&["moqui", "basic", leaf], "post", &none).unwrap_err();
+            assert_eq!(kind(&err), crate::context::ErrorKind::Unauthorized, "{leaf}: {err}");
+            assert!(err.message().contains("AT_REST_PATH"), "{leaf}: {err}");
+        }
+        crate::user::logout().unwrap();
+    }
+
+    fn create(facade: &EntityFacade, entity: &str, pairs: &[(&str, &str)]) {
+        let mut row = facade.make_value(entity).unwrap();
+        for (name, value) in pairs {
+            row.set(*name, Value::string(*value));
+        }
+        row.create(facade).unwrap();
     }
 
     fn insert_type(facade: &EntityFacade, id: &str, description: &str) {

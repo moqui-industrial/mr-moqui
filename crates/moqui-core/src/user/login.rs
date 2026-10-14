@@ -394,6 +394,9 @@ fn finish_login(facade: &EntityFacade, account: &EntityValue, plain: Option<&str
     if user_id.is_empty() || username.is_empty() {
         return Err(Error::new(INVALID_LOGIN));
     }
+    // After the second-factor check, as Java `loginPostPassword`: a code login reaches here through
+    // `internal_login_user`, which checks the address too.
+    check_ip_allowed(account, &crate::web::current_client_ip())?;
     let mut fields = Vec::new();
     if rehash && legacy_hash(account) {
         if let Some(plain) = plain {
@@ -419,6 +422,35 @@ fn finish_login(facade: &EntityFacade, account: &EntityValue, plain: Option<&str
     session::set_locale(locale.as_deref());
     session::set_time_zone(zone.as_deref());
     link_visit(facade, &user_id)
+}
+
+/// `ipAllowed` of the account and of every group it is in, `ALL_USERS` included: when any is set, the client address
+/// must match one of them. With no address, as for a login outside a request, nothing is checked.
+fn check_ip_allowed(account: &EntityValue, client_ip: &str) -> Result<(), Error> {
+    if client_ip.is_empty() {
+        return Ok(());
+    }
+    let mut allowed = Vec::new();
+    if let Some(pattern) = nonempty(text_field(account, "ipAllowed")) {
+        allowed.push(pattern);
+    }
+    let facade = entity_facade()?;
+    for group in super::preference::user_group_ids(Some(&text_field(account, "userId")))? {
+        let row = facade
+            .find("moqui.security.UserGroup")?
+            .eq("userGroupId", Value::string(&group))
+            .one()?;
+        if let Some(pattern) = row.and_then(|row| nonempty(text_field(&row, "ipAllowed"))) {
+            allowed.push(pattern);
+        }
+    }
+    if allowed.is_empty() || allowed.iter().any(|pattern| crate::web::ip_matches(pattern, client_ip)) {
+        return Ok(());
+    }
+    Err(Error::new(format!(
+        "Authenticate failed for user {} because client IP {client_ip} is not in allowed list for user or group.",
+        text_field(account, "username")
+    )))
 }
 
 /// The visit that began before login now belongs to the user.
@@ -985,6 +1017,56 @@ mod tests {
         login_user("bob", "Secret1!").unwrap();
         assert!(session::current_username().unwrap().is_none());
         assert_eq!(session::session_attribute(PRE_AUTHC_USERNAME).as_deref(), Some("bob"));
+        session::reset_session();
+    }
+
+    #[test]
+    fn ip_allowed_on_the_account_or_a_group_refuses_another_client_ip() {
+        let (ctx, facade) = open_ctx();
+        let _guard = ctx.enter();
+        let _web = crate::web::install(std::collections::BTreeMap::new());
+        let from = |address: &str| {
+            let mut request = crate::web::WebRequest::new("POST", "/Login/login");
+            request.peer_ip = address.to_string();
+            crate::web::set_request_info(&request);
+        };
+        create_user(&facade, "ada", "Secret1!", |value| {
+            value.set("ipAllowed", Value::string("10.1.*.*"));
+        });
+        from("10.1.2.3");
+        login_user("ada", "Secret1!").unwrap();
+        assert_eq!(session::current_username().unwrap().as_deref(), Some("ada"));
+        logout().unwrap();
+        from("192.168.0.4");
+        let refused = login_user("ada", "Secret1!").unwrap_err().to_string();
+        assert!(refused.contains("not in allowed list"), "{refused}");
+        assert!(session::current_username().unwrap().is_none());
+        // Not a failed password: the count is not raised.
+        assert_eq!(i64_field(&load_user(&facade, "ada"), "successiveFailedLogins"), 0);
+        // The internal login after a second-factor code is checked as well.
+        assert!(internal_login_user("ada").is_err());
+
+        // A group the user is in adds its list; any one matching allows.
+        create_user(&facade, "bob", "Secret1!", |_| {});
+        let mut group = facade.make_value("moqui.security.UserGroup").unwrap();
+        group.set("userGroupId", Value::string("OFFICE"));
+        group.set("ipAllowed", Value::string("192.168.0.1-5"));
+        group.create(&facade).unwrap();
+        let mut member = facade.make_value("moqui.security.UserGroupMember").unwrap();
+        member.set("userGroupId", Value::string("OFFICE"));
+        member.set("userId", Value::string("bob"));
+        member.set("fromDate", stamp(1));
+        member.create(&facade).unwrap();
+        login_user("bob", "Secret1!").unwrap();
+        logout().unwrap();
+        from("192.168.0.9");
+        assert!(login_user("bob", "Secret1!").is_err());
+        // The account's own list matches although the group's does not.
+        let mut bob = load_user(&facade, "bob");
+        bob.set("ipAllowed", Value::string("192.168.0.9"));
+        bob.update(&facade).unwrap();
+        login_user("bob", "Secret1!").unwrap();
+        logout().unwrap();
         session::reset_session();
     }
 

@@ -197,9 +197,13 @@ along with this software (see the LICENSE.md file). If not, see
                 <if condition="secondFactorRequired">
                     <!-- NOTE: don't check for missing code here, do that after oldPassword verify so if it verifies we can pre-auth -->
                     <!-- if pre-auth and code specified check code first, otherwise check after oldPassword -->
-                    <if condition="ec.web?.sessionAttributes?.moquiPreAuthcUsername || ec.user.username">
+                    <!-- Hardening beyond the Java, which took any pre-authenticated or logged-in user here: the code
+                        stands in for oldPassword only when that user is the account being changed, so a user
+                        pre-authenticated as one account cannot set another's password with that account's code. -->
+                    <set field="codeUsername" from="ec.web?.sessionAttributes?.moquiPreAuthcUsername || ec.user.username"/>
+                    <if condition="codeUsername &amp;&amp; codeUsername == username">
                         <service-call name="org.moqui.impl.UserServices.validate#UserAuthcFactorCode"
-                                in-map="{userId: userId, code: code}" out-map="validateCodeOut"/>
+                                in-map="{userId: userId, code: code, countFailure: true}" out-map="validateCodeOut"/>
                         <if condition="!validateCodeOut.verified">
                             <return message="Authentication code not valid" public="true" type="danger"/></if>
                         <set field="codeVerified" from="true"/>
@@ -246,7 +250,7 @@ along with this software (see the LICENSE.md file). If not, see
                         </if>
 
                         <service-call name="org.moqui.impl.UserServices.validate#UserAuthcFactorCode"
-                                in-map="{userId: userId, code: code}" out-map="validateCodeOut"/>
+                                in-map="{userId: userId, code: code, countFailure: true}" out-map="validateCodeOut"/>
                         <if condition="!validateCodeOut.verified">
                             <return message="Authentication code not valid" public="true" type="danger"/></if>
                     </if>
@@ -536,6 +540,8 @@ along with this software (see the LICENSE.md file). If not, see
     </service>
     <service verb="get" noun="UserAuthcFactorRequired" authenticate="false">
         <!-- NOTE: has authenticate="false" for use in MoquiShiroRealm during login, not anonymous-view/-all to not open it up that much -->
+        <!-- The login does not call this service: crates/moqui-core/src/user/factor.rs second_factor_required is the same
+            rule in Rust. Change both together. -->
         <description>This service is the definition of when a 2nd factor is required for a user, used in MoquiShiroRealm and elsewhere</description>
         <in-parameters><parameter name="userId" required="true"/></in-parameters>
         <out-parameters><parameter name="secondFactorRequired" type="Boolean"/></out-parameters>
@@ -569,16 +575,21 @@ along with this software (see the LICENSE.md file). If not, see
                 <field-map field-name="username"/></entity-find-one>
             <if condition="userAccount == null"><return error="true" message="User ${username} not found"/></if>
 
+            <!-- countFailure: a wrong code is a failed login, as a wrong password is. -->
             <service-call name="org.moqui.impl.UserServices.validate#UserAuthcFactorCode"
-                    in-map="{userId: userAccount.get('userId'), code: code}" out-map="context"/>
+                    in-map="{userId: userAccount.get('userId'), code: code, countFailure: true}" out-map="context"/>
         </actions>
     </service>
     <service verb="validate" noun="UserAuthcFactorCode">
-        <!-- TODO: Limit the amount of attempts to validate authc code. Similar to Tarpit Locks. -->
         <description>Determine whether a user inputted code is valid based on the current UserAuthcFactor entries for that user.</description>
         <in-parameters>
             <parameter name="userId" required="true"/>
             <parameter name="code" required="true"/>
+            <parameter name="countFailure" type="Boolean" default="false">
+                <description>For a code that stands in for a login (the second factor, a password change): a wrong code
+                    counts toward successiveFailedLogins, and an account disabled by failed logins takes no code, by
+                    the rules of a wrong password. A hardening beyond the Java, which did not limit code attempts.
+                    Off for a user verifying a new factor of their own.</description></parameter>
         </in-parameters>
         <out-parameters>
             <parameter name="verified" type="Boolean"/>
@@ -586,6 +597,18 @@ along with this software (see the LICENSE.md file). If not, see
         </out-parameters>
         <actions>
             <set field="verified" from="false"/>
+
+            <if condition="countFailure">
+                <entity-find-one entity-name="moqui.security.UserAccount" value-field="codeAccount"/>
+                <if condition="codeAccount != null &amp;&amp; codeAccount.get('disabled') == 'Y' &amp;&amp; (!codeAccount.get('disabledDateTime') ||
+                        ec.user.timestampMillis(codeAccount.get('disabledDateTime')) + ec.user.loginRules.disableMinutes * 60000 &gt;
+                        ec.user.timestampMillis(ec.user.nowTimestamp))">
+                    <!-- still disabled: counted and not checked, as a login to a disabled account is -->
+                    <service-call name="org.moqui.impl.UserServices.increment#UserAccountFailedLogins"
+                            in-map="{userId: userId}" transaction="force-new"/>
+                    <return/>
+                </if>
+            </if>
 
             <!-- TOTP codes are checked as the samstevens verifier did: SHA1, 6 digits, 30 seconds, one period of drift. -->
 
@@ -616,6 +639,9 @@ along with this software (see the LICENSE.md file). If not, see
                     </else-if>
                 </if>
             </iterate>
+            <if condition="countFailure &amp;&amp; !verified">
+                <service-call name="org.moqui.impl.UserServices.increment#UserAccountFailedLogins"
+                        in-map="{userId: userId}" transaction="force-new"/></if>
         </actions>
     </service>
 

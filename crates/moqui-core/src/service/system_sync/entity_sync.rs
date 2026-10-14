@@ -38,25 +38,6 @@ const ENTITY_SYNC: &str = "moqui.entity.sync.EntitySync";
 const ARTIFACT_DETAIL: &str = "moqui.entity.sync.EntitySyncArtifactDetail";
 const DAY_MILLIS: i64 = 24 * 60 * 60 * 1000;
 const DEFAULT_DELAY_MILLIS: i64 = 300_000;
-/// The identity-admin and secret-config entities (`WebUtilities.isRestrictedGenericEntity`), by simple name in lower case.
-/// `put#EntitySyncData` refuses them, as the Java data loader does with `restrictSensitiveEntities`.
-const RESTRICTED: &[&str] = &[
-    "userloginkey",
-    "usergroupmember",
-    "usergrouppermission",
-    "userpermission",
-    "artifactauthz",
-    "artifactgroup",
-    "artifactgroupmember",
-    "artifacttarpit",
-    "usergrouppermissions",
-    "userpermissions",
-    "artifactgroups",
-    "userauthcfactor",
-    "userpasswordhistory",
-    "emailserver",
-    "systemmessageremote",
-];
 
 /// `run#EntitySync`.
 pub(super) fn run_sync(
@@ -239,15 +220,14 @@ pub(super) fn internal_run(
     Ok(out)
 }
 
-/// `put#EntitySyncData`.
+/// `put#EntitySyncData`. The load restricts sensitive entities, as the Java `restrictSensitiveEntities(true)` load did,
+/// and checks the resolved entity of every record, root or nested by relationship or short alias, where the Java
+/// checked the root elements only; service elements are refused.
 pub(super) fn put_data(
     parameters: &BTreeMap<String, Value>,
     facade: &EntityFacade,
 ) -> Result<BTreeMap<String, Value>, LibError> {
     let text = param_text(parameters, "entityData");
-    if let Some(name) = restricted_entity(&text)? {
-        return Err(LibError::new(format!("Entity {name} is not allowed in this data load")));
-    }
     let timeout = integer_of(parameters.get("timeout"))
         .and_then(|seconds| u64::try_from(seconds).ok())
         .map(std::time::Duration::from_secs);
@@ -255,6 +235,9 @@ pub(super) fn put_data(
         dummy_fks: flag(parameters.get("dummyFks")),
         use_try_insert: flag(parameters.get("useTryInsert")),
         timeout,
+        // A sync partner is not an admin: the loader refuses identity-admin and secret-config records, root or
+        // nested, and service elements.
+        restrict_sensitive_entities: true,
         ..LoadOptions::default()
     };
     let loaded = load_entity_xml_text(facade, PUT_DATA, &text, &options)?;
@@ -460,22 +443,6 @@ fn non_view_entity_names(facade: &EntityFacade) -> Vec<String> {
             .map(|entity| entity.full_name.clone())
             .collect()
     })
-}
-
-/// The element names of `text` that are restricted entities. Every element is checked, since nested elements are
-/// related records too.
-fn restricted_entity(text: &str) -> Result<Option<String>, LibError> {
-    let root = moqui_lib::node::MNode::parse_text(PUT_DATA, text)?;
-    let mut pending = vec![root];
-    while let Some(node) = pending.pop() {
-        let name = node.name();
-        let simple = name.rsplit(['.', '#']).next().unwrap_or(&name).to_ascii_lowercase();
-        if RESTRICTED.contains(&simple.as_str()) {
-            return Ok(Some(name));
-        }
-        pending.extend(node.children());
-    }
-    Ok(None)
 }
 
 /// A remote call whose failure is a message error, as `callJsonRpc` reported one. The result is empty then.

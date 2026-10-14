@@ -335,6 +335,31 @@ where
         Ok(())
     }
 
+    /// JCache `putIfAbsent`: store `value` only when `key` has no live entry, checked and stored under one write lock,
+    /// so of two racing callers exactly one stores. True when this call stored it. An expired entry counts as absent.
+    pub fn put_if_absent(&self, key: K, value: V) -> Result<bool, Error> {
+        self.ensure_open()?;
+        let now = self.inner.clock.now_millis();
+        let mut expired = false;
+        {
+            let mut entries = write_map(&self.inner.entries);
+            if entries.get(&key).is_some_and(|entry| self.entry_expired(entry, now)) {
+                entries.remove(&key);
+                expired = true;
+            }
+            if entries.contains_key(&key) {
+                return Ok(false);
+            }
+            let seq = self.inner.seq.fetch_add(1, Ordering::Relaxed);
+            entries.insert(key, Entry::new(value, now, seq));
+        }
+        if expired {
+            bump(&self.inner.stats.expires, 1);
+        }
+        bump(&self.inner.stats.puts, 1);
+        Ok(true)
+    }
+
     pub fn contains_key(&self, key: &K) -> Result<bool, Error> {
         self.ensure_open()?;
         let now = self.inner.clock.now_millis();
@@ -815,6 +840,39 @@ mod tests {
         assert_eq!(stats.hits, 1);
         assert_eq!(stats.expires, 1);
         assert_eq!(stats.misses, 1);
+    }
+
+    #[test]
+    fn put_if_absent_stores_once_among_racing_threads_and_again_after_expiry() {
+        let clock = ManualClock::new(0);
+        let cache = MCache::<String, u32>::new(
+            "replay",
+            CacheConfig::new()
+                .expire_creation_ms(100)
+                .clock(Arc::clone(&clock) as Arc<dyn Clock>)
+                .background(false),
+        );
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let stored: u32 = (0..8_u32)
+            .map(|thread| {
+                let cache = cache.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    u32::from(cache.put_if_absent("key".to_string(), thread).unwrap())
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .sum();
+        assert_eq!(stored, 1);
+        let first = cache.get(&"key".to_string()).unwrap();
+        assert!(!cache.put_if_absent("key".to_string(), 99).unwrap());
+        assert_eq!(cache.get(&"key".to_string()).unwrap(), first);
+        clock.set(101);
+        assert!(cache.put_if_absent("key".to_string(), 99).unwrap());
+        assert_eq!(cache.get(&"key".to_string()).unwrap(), Some(99));
     }
 
     #[test]
