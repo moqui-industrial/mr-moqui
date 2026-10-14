@@ -73,7 +73,29 @@ pub struct FieldQuery {
     pub negate: bool,
 }
 
+/// The pseudo-field naming a hit's document type, such as `MantleParty`. A clause on it is
+/// decided per document type when the query compiles: trusted per-type predicates and the
+/// document-type facet use it.
+pub const DOCUMENT_FIELD: &str = "_document";
+
 impl FieldQuery {
+    /// For a clause on [`DOCUMENT_FIELD`], whether `document_id` matches it, `negate` applied.
+    /// `None` for any other field.
+    pub fn document_match(&self, document_id: &str) -> Option<bool> {
+        if self.name != DOCUMENT_FIELD {
+            return None;
+        }
+        let is = |value: &Value| to_plain_string(value) == document_id;
+        let positive = match self.op {
+            FieldOp::Exists => true,
+            FieldOp::Eq => is(&self.value),
+            FieldOp::In => self.values.iter().any(is) || (self.values.is_empty() && is(&self.value)),
+            FieldOp::Prefix => document_id.starts_with(&to_plain_string(&self.value)),
+            FieldOp::Wildcard | FieldOp::Range => false,
+        };
+        Some(positive != self.negate)
+    }
+
     fn new(name: impl Into<String>, op: FieldOp) -> Self {
         Self {
             name: name.into(),

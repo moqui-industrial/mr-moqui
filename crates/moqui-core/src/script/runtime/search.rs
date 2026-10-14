@@ -19,8 +19,8 @@
 //! in `crate::search::query` and `crate::search::agg`; a query may also be a query string.
 //!
 //! ```text
-//! ec.search.search({indexName, documentType, query, queryString, sort, offset, limit, highlight,
-//!         consistency, freshTimeout})
+//! ec.search.search({indexName, documentType, query, queryString, filter, sort, offset, limit, highlight,
+//!         rank, consistency, freshTimeout})
 //!     -> {hits: [{documentId, id, score, body, highlights}], total}
 //! ec.search.aggregate({documentType, filter, aggs, consistency, freshTimeout}) -> {name: result, ..}
 //! ec.search.parseQuery(text), ec.search.elasticQuery(mapOrJson) -> query tree
@@ -168,6 +168,11 @@ pub(super) fn search_search<'js>(ctx: Ctx<'js>, args: JsValue<'js>) -> rquickjs:
         request.limit = number(map.get("limit"), 20);
         request.highlight = text_list(map.get("highlight").or_else(|| map.get("highlightFields")));
         request.fresh_by = fresh_by(&map);
+        // A trusted constraint from the service, such as authorization; it does not score.
+        request.filter = match map.get("filter") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(lib(&ctx, Query::from_value(value))?),
+        };
         request.rank = match map.get("rank").map(moqui_lib::object::to_plain_string).as_deref() {
             None | Some("") | Some("default") => search::Rank::Default,
             Some("coverDensity") => search::Rank::CoverDensity,

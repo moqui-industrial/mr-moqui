@@ -112,6 +112,19 @@ pub struct SearchRequest {
     /// whatever the store has, which on a replica can be behind.
     pub fresh_by: Option<std::time::Instant>,
     pub rank: Rank,
+    /// A trusted constraint the application adds, such as authorization: it must match too, it
+    /// does not score or highlight, and it applies before ranking, paging, totals, and facets.
+    pub filter: Option<Query>,
+}
+
+impl SearchRequest {
+    /// The query and the trusted filter, both required.
+    pub fn matching(&self) -> Query {
+        match &self.filter {
+            Some(filter) => Query::all(vec![self.query.clone(), filter.clone()]),
+            None => self.query.clone(),
+        }
+    }
 }
 
 impl SearchRequest {
@@ -124,6 +137,7 @@ impl SearchRequest {
             highlight: Vec::new(),
             fresh_by: None,
             rank: Rank::Default,
+            filter: None,
         }
     }
 }
@@ -478,7 +492,7 @@ impl SearchFacade {
         if mappings.is_empty() {
             return Ok(SearchPage::default());
         }
-        let mut needs = request.query.capabilities();
+        let mut needs = request.matching().capabilities();
         if request.rank == Rank::CoverDensity {
             needs.push(Capability::WeightedRank);
         }
@@ -516,10 +530,14 @@ impl SearchFacade {
         fresh_by: Option<std::time::Instant>,
     ) -> Result<IndexMap<String, Value>, Error> {
         let ids = self.target_documents(target)?;
+        if let Some(results) = self.document_facets(&ids, filter, aggs, fresh_by)? {
+            return Ok(results);
+        }
         let [id] = ids.as_slice() else {
             return Err(Error::new(format!(
-                "aggregate runs over one document type, not {}",
-                ids.len()
+                "aggregate runs over one document type, not {}; only terms on {} spans types",
+                ids.len(),
+                query::DOCUMENT_FIELD
             )));
         };
         let mapping = self.mapping(id)?;
@@ -531,6 +549,83 @@ impl SearchFacade {
             fresh::wait_for_pending(deadline)?;
         }
         self.backend.aggregate_fresh(&mapping, filter, aggs, fresh_by)
+    }
+
+    /// When every aggregation is a `terms` on `_document` with no sub-aggregations, the count of
+    /// each document type matching `filter`, from exact search totals, so it works over any number
+    /// of types on either backend. `None` for any other tree.
+    fn document_facets(
+        &self,
+        ids: &[String],
+        filter: &Query,
+        aggs: &IndexMap<String, Agg>,
+        fresh_by: Option<std::time::Instant>,
+    ) -> Result<Option<IndexMap<String, Value>>, Error> {
+        let facets: Vec<(&String, &agg::Terms)> = aggs
+            .iter()
+            .filter_map(|(name, agg)| match agg {
+                Agg::Terms(terms) if terms.field == query::DOCUMENT_FIELD && terms.aggs.is_empty() => Some((name, terms)),
+                _ => None,
+            })
+            .collect();
+        if facets.is_empty() || facets.len() != aggs.len() {
+            return Ok(None);
+        }
+        self.require(&filter.capabilities())?;
+        if let Some(deadline) = fresh_by {
+            fresh::wait_for_pending(deadline)?;
+        }
+        let mut counts: Vec<(String, u64)> = Vec::new();
+        for id in ids {
+            let mapping = self.mapping(id)?;
+            if !self.backend.index_exists(&mapping)? {
+                continue;
+            }
+            let mut request = SearchRequest::new(filter.clone());
+            request.limit = 0;
+            request.fresh_by = fresh_by;
+            let total = self.backend.search(&[mapping], &request)?.total;
+            if total > 0 {
+                counts.push((id.clone(), total));
+            }
+        }
+        let mut out = IndexMap::new();
+        for (name, terms) in facets {
+            let mut buckets = counts.clone();
+            match &terms.order {
+                agg::TermsOrder::Key { descending } => {
+                    buckets.sort_by(|a, b| a.0.cmp(&b.0));
+                    if *descending {
+                        buckets.reverse();
+                    }
+                }
+                agg::TermsOrder::Count { descending } => {
+                    buckets.sort_by(|a, b| a.0.cmp(&b.0));
+                    buckets.sort_by(|a, b| if *descending { b.1.cmp(&a.1) } else { a.1.cmp(&b.1) });
+                }
+                agg::TermsOrder::Metric { name, .. } => {
+                    return Err(Error::new(format!(
+                        "terms on {} has no metric {name} to order by",
+                        query::DOCUMENT_FIELD
+                    )));
+                }
+            }
+            buckets.truncate(terms.size);
+            let list = buckets
+                .into_iter()
+                .map(|(id, count)| {
+                    let mut bucket = IndexMap::new();
+                    bucket.insert("key".to_string(), Value::String(id.clone()));
+                    bucket.insert("key_display".to_string(), Value::String(id));
+                    bucket.insert("doc_count".to_string(), Value::I64(i64::try_from(count).unwrap_or(i64::MAX)));
+                    Value::Map(bucket)
+                })
+                .collect();
+            let mut result = IndexMap::new();
+            result.insert("buckets".to_string(), Value::List(list));
+            out.insert(name.clone(), Value::Map(result));
+        }
+        Ok(Some(out))
     }
 
     /// Drop a document's store. The next index call makes it again.

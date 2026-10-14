@@ -221,6 +221,10 @@ impl<'a> Compiler<'a> {
             Query::Fuzzy { terms } => Ok(self.fuzzy(scope, terms)),
             Query::Suggest { text } => Ok(self.suggest(scope, text)),
             Query::Text { terms, fields, kind } => self.text(scope, terms, fields, *kind),
+            Query::Field(field) if matches!(scope, Scope::Root) && field.name == crate::search::query::DOCUMENT_FIELD => {
+                let matched = field.document_match(&self.mapping.document_id).unwrap_or(false);
+                Ok(Sql::new(if matched { "TRUE" } else { "FALSE" }))
+            }
             Query::Field(field) => {
                 let positive = self.field(scope, field)?;
                 if field.negate {

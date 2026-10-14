@@ -735,7 +735,8 @@ pub fn search_sql(
     for mapping in mappings {
         let compiler = Compiler::with_text(mapping, text);
         let table = format!("{}.{}", ident(schema), ident(&mapping.physical_name));
-        let where_sql = compiler.where_sql(&request.query)?;
+        // The trusted filter narrows the rows; only the query scores.
+        let where_sql = compiler.where_sql(&request.matching())?;
         let mut part = Sql::new(format!(
             "SELECT {} AS document_id, {} AS index_name, doc_id, body::text AS body, ",
             literal(&mapping.document_id),

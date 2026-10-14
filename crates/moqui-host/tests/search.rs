@@ -53,6 +53,7 @@ fn postgres_backend_sales_and_party_parity() {
     party_parity(&backend);
     phrase_parity(&backend);
     extensions_parity(&backend);
+    universal_parity(&backend);
     accent(PostgresBackend::open(
         TransactionManager::new(Arc::clone(&driver), pool()).unwrap(),
         Some("search_accent"),
@@ -81,6 +82,7 @@ fn opensearch_backend_sales_and_party_parity() {
     party_parity(&backend);
     phrase_parity(&backend);
     extensions_parity(&backend);
+    universal_parity(&backend);
 }
 
 fn field(kind: FieldKind) -> FieldMapping {
@@ -822,6 +824,75 @@ fn extensions_parity(backend: &dyn SearchBackend) {
     backend.drop_index(&mapping).unwrap();
 }
 
+/// What universal search needs from the facade, across two document types: a trusted per-type
+/// filter that applies before totals, paging, and highlights, and a document-type facet that
+/// counts only what the filter lets through.
+fn universal_parity(backend: &dyn SearchBackend) {
+    let mut first = catalog_mapping();
+    first.document_id = "TestUniA".into();
+    first.physical_name = "test_uni_a".into();
+    let mut second = catalog_mapping();
+    second.document_id = "TestUniB".into();
+    second.physical_name = "test_uni_b".into();
+    for mapping in [&first, &second] {
+        backend.ensure_index(mapping).unwrap();
+    }
+    backend
+        .index_documents(
+            &first,
+            &[
+                catalog_item("A1", "Water Pump", "allowed"),
+                catalog_item("A2", "Water Tank", "allowed"),
+                catalog_item("A3", "Water Secret", "not allowed"),
+            ],
+        )
+        .unwrap();
+    backend
+        .index_documents(&second, &[catalog_item("B1", "Water Hose", "allowed"), catalog_item("B2", "Water Valve", "not allowed")])
+        .unwrap();
+    let both = vec![Arc::new(first.clone()), Arc::new(second.clone())];
+    // A per-type predicate, as a service builds from the user's authorization.
+    let allowed = query(
+        r#"{"bool": {"any": [
+            {"bool": {"all": [{"field": {"name": "_document", "value": "TestUniA"}},
+                              {"field": {"name": "itemId", "op": "in", "values": ["A1", "A2"]}}]}},
+            {"bool": {"all": [{"field": {"name": "_document", "value": "TestUniB"}},
+                              {"field": {"name": "itemId", "value": "B1"}}]}}
+        ]}}"#,
+    );
+    let mut request = SearchRequest::new(parse_query_string("water").unwrap());
+    request.filter = Some(allowed.clone());
+    request.highlight = vec!["title".into(), "description".into()];
+    let page = backend.search(&both, &request).unwrap();
+    let mut ids: Vec<String> = page.hits.iter().map(|hit| hit.id.clone()).collect();
+    ids.sort();
+    assert_eq!(ids, vec!["A1", "A2", "B1"]);
+    assert_eq!(page.total, 3, "the total counts only what the filter allows");
+    let a1 = page.hits.iter().find(|hit| hit.id == "A1").unwrap();
+    assert_eq!(a1.highlights["title"], vec!["<em>Water</em> Pump".to_string()]);
+    assert!(!a1.highlights.contains_key("description"), "the filter does not highlight");
+    request.limit = 1;
+    request.offset = 2;
+    assert_eq!(backend.search(&both, &request).unwrap().total, 3, "paging keeps the filtered total");
+
+    // What the document-type facet counts per type (the facade test is in the feed scenario).
+    let filtered = Query::all(vec![parse_query_string("water").unwrap(), allowed]);
+    for mapping in [&first, &second] {
+        let request = {
+            let mut request = SearchRequest::new(filtered.clone());
+            request.limit = 0;
+            request
+        };
+        let total = backend.search(&[Arc::new((*mapping).clone())], &request).unwrap().total;
+        let expected = if mapping.document_id == "TestUniA" { 2 } else { 1 };
+        assert_eq!(total, expected, "{}", mapping.document_id);
+    }
+
+    for mapping in [&first, &second] {
+        backend.drop_index(mapping).unwrap();
+    }
+}
+
 /// Accent folding on Postgres: unaccented searches find accented text, in the text vector, the
 /// fuzzy title, and the autocomplete title.
 fn accent(backend: PostgresBackend) {
@@ -1176,6 +1247,25 @@ fn feed_scenario(facade: &moqui_core::entity::EntityFacade) {
     let mut ids: Vec<String> = page.hits.into_iter().map(|hit| hit.id).collect();
     ids.sort();
     assert_eq!(ids, vec!["TcGreen", "TestColor"]);
+
+    // The document-type facet over an index with two types, with a trusted filter.
+    let aggs = tree(r#"{"types": {"terms": {"field": "_document", "size": 10}}}"#);
+    let filter = Query::all(vec![
+        parse_query_string("*:emerald* OR *:crim*").unwrap(),
+        query(r#"{"bool": {"none": [{"bool": {"all": [{"field": {"name": "_document", "value": "TestEnum"}}, {"field": {"name": "enumId", "value": "TcRed"}}]}}]}}"#),
+    ]);
+    let facets = search
+        .aggregate(&moqui_core::search::Target::Index("test_enums".into()), &filter, &aggs)
+        .unwrap();
+    let counts: Vec<(String, String)> = buckets(&facets["types"])
+        .iter()
+        .map(|bucket| (to_plain_string(map_at(bucket, "key")), number(map_at(bucket, "doc_count"))))
+        .collect();
+    assert_eq!(
+        counts,
+        vec![("TestEnum".to_string(), "1".to_string()), ("TestEnumType".to_string(), "1".to_string())],
+        "TcGreen and the type; TcRed is filtered out"
+    );
 }
 
 fn pool() -> PoolConfig {

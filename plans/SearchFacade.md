@@ -314,6 +314,8 @@ In the code, `SearchBackend::capabilities()` lists `Capability` values (`proximi
 
 The optional lexical ranking extension may use weighted vectors and `ts_rank_cd` for cover-density ranking; it does not change baseline `ts_rank`. Native GIN cannot directly return the highest text ranks, so broad queries may score large matching populations. Measure relevance and p95 latency instead of promising Elasticsearch-equivalent performance or introducing a custom BM25 layer.
 
+The facade pieces for this are in the code. `SearchRequest.filter` (script `filter`) is a trusted query the service adds. It must match too, it does not score or highlight, and both backends apply it before ranking, paging, and totals: Postgres in the `WHERE` clause only, OpenSearch as `bool.filter`. A `Field` on the pseudo-field `_document` is decided per document type when the query compiles (`TRUE`/`FALSE`, `match_all`/`match_none`), so per-type predicates are `bool.any` of `bool.all[_document = T, ...]`. An `aggregate` over several types accepts only `terms` on `_document` with no sub-aggregations: the facade counts each type's exact matching total under the filter and returns the usual bucket shape. Any other multi-type aggregation is still an error.
+
 Fetch large business details or perform entity-specific relational joins only after authorized top-K, using the original entity keys. Exact totals and true facets require counting/aggregating the full authorized matching population, not only the returned page or bounded RRF candidates. Define that population explicitly for fuzzy/semantic/hybrid modes before claiming exact counts.
 
 ### REST service and UI

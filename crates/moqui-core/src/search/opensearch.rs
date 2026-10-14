@@ -239,6 +239,13 @@ fn compile(mapping: &DocumentMapping, query: &Query, prefix: &str) -> Json {
             json!({"query_string": {"query": text, "fields": names, "default_operator": "AND",
                 "lenient": true, "analyze_wildcard": true}})
         }
+        Query::Field(field) if prefix.is_empty() && field.name == super::query::DOCUMENT_FIELD => {
+            if field.document_match(&mapping.document_id).unwrap_or(false) {
+                json!({"match_all": {}})
+            } else {
+                json!({"match_none": {}})
+            }
+        }
         Query::Field(field) => {
             let positive = field_json(mapping, field, prefix);
             if field.negate {
@@ -318,6 +325,15 @@ fn field_json(mapping: &DocumentMapping, field: &FieldQuery, prefix: &str) -> Js
 /// terms as an optional `multi_match` over the weighted fields, boosted A 4 through D 1, so the
 /// weights change the score and not what matches.
 pub fn request_query(mapping: &DocumentMapping, request: &SearchRequest) -> Json {
+    let query = scored_query(mapping, request);
+    match &request.filter {
+        // The trusted filter narrows without scoring.
+        Some(filter) => json!({"bool": {"must": [query], "filter": [query_json(mapping, filter)]}}),
+        None => query,
+    }
+}
+
+fn scored_query(mapping: &DocumentMapping, request: &SearchRequest) -> Json {
     let query = query_json(mapping, &request.query);
     if request.rank != Rank::CoverDensity || mapping.display.weights.is_empty() {
         return query;
