@@ -301,8 +301,8 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   components of the last page, and an `m-form` copies its `fields-initial` once, so page 2 showed the rows of page 1.
 - **Deferred.** PDF bytes (phase 12); `ScreenServices.xml` service bodies (mail screen bodies were done after slice 8, see phase 10's
   "Screen mail after phase 8"); `vuet` and `/vapps` (dropped); the Assist panel; in a
-  static template, row selection, first/second/last rows, aggregation, the column picker and the csv/text/pdf buttons; precompiled `m-*`
-  templates, which `webapp_qvt_static_only=true` waits for; the `lookup` widget (a text line, as the Java macro was commented out). A static
+  static template, row selection, first/second/last rows and aggregation (the column picker, the exports and precompiled `m-*` templates
+  came after slice 8, see slice 7's notes); the `lookup` widget (a text line, as the Java macro was commented out). A static
   template is fetched once to read `X-Moqui-Qvt` and then loaded again by a script element (a URL without the query), so it downloads twice.
 - **Ported after the Phase 8 and 10 review against Java.** These Java features were deferred by that review and are now done; the Java
   reference is `ScreenRenderImpl` (SRI), `ScreenDefinition` (SD), `ScreenForm` (SF) and `AggregationUtil`:
