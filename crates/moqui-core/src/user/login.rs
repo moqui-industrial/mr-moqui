@@ -32,12 +32,24 @@ const USER_LOGIN_KEY: &str = "moqui.security.UserLoginKey";
 const PASSWORD_HISTORY: &str = "moqui.security.UserPasswordHistory";
 const INVALID_LOGIN: &str = "The username or password is not valid";
 const WEEK_MILLIS: i64 = 7 * 24 * 60 * 60 * 1000;
+const HOUR_MILLIS: f64 = 60.0 * 60.0 * 1000.0;
+/// Session attributes of a login that passed the password and is not finished, the names Java uses.
+pub(crate) const PRE_AUTHC_USERNAME: &str = "moquiPreAuthcUsername";
+pub(crate) const AUTHC_FACTOR_REQUIRED: &str = "moquiAuthcFactorRequired";
+const PASSWORD_CHANGE_REQUIRED: &str = "moquiPasswordChangeRequired";
+const EXPIRED_CREDENTIALS: &str = "moquiExpiredCredentials";
 
 /// Check the password and, on success, set the in-memory user.
 ///
 /// Unknown users, an empty username, and an empty password share one message.
 /// A bound web session rotates its id only after this password check succeeds.
+///
+/// A user who needs a second factor is not logged in. The password was right, so the session
+/// rotates and remembers the user in `moquiPreAuthcUsername` with `moquiAuthcFactorRequired`,
+/// and this returns `Ok` with no current user, as Java's `loginUser` returns false without an
+/// error. The code then comes through `validate#ExternalUserAuthcCode` and [`internal_login_user`].
 pub fn login_user(username: &str, password: &str) -> Result<(), Error> {
+    clear_pre_authc();
     if username.is_empty() || password.is_empty() {
         return Err(Error::new(INVALID_LOGIN));
     }
@@ -61,6 +73,14 @@ pub fn login_user(username: &str, password: &str) -> Result<(), Error> {
         return Err(Error::new(INVALID_LOGIN));
     }
     post_password(&account, now)?;
+    let user_id = text_field(&account, "userId");
+    if !user_id.is_empty() && super::factor::second_factor_required(&user_id)? {
+        rehash_legacy(&facade, &account, password)?;
+        let account_username = text_field(&account, "username");
+        session::set_session_attribute(PRE_AUTHC_USERNAME, Some(&account_username));
+        session::set_session_attribute(AUTHC_FACTOR_REQUIRED, Some("true"));
+        return session::rotate_on_password_login();
+    }
     // A request repeating Basic credentials for the user its session already holds keeps its id.
     let same_user = session::current_username()?.as_deref() == Some(username);
     finish_login(&facade, &account, Some(password), true)?;
@@ -68,6 +88,13 @@ pub fn login_user(username: &str, password: &str) -> Result<(), Error> {
         return Ok(());
     }
     session::rotate_on_password_login()
+}
+
+/// Every login starts by forgetting an earlier pre-authenticated user, so a finished login does
+/// not leave the second-factor state of another attempt behind.
+fn clear_pre_authc() {
+    session::set_session_attribute(PRE_AUTHC_USERNAME, None);
+    session::set_session_attribute(AUTHC_FACTOR_REQUIRED, None);
 }
 
 /// Authorization is off while the login code reads and writes the user tables.
@@ -84,6 +111,7 @@ pub fn internal_login_user(username: &str) -> Result<(), Error> {
     if username.is_empty() {
         return Err(Error::new("No username specified"));
     }
+    clear_pre_authc();
     let _authz = without_authz();
     let facade = entity_facade()?;
     let Some(account) = find_username(&facade, username)? else {
@@ -126,6 +154,52 @@ pub fn login_user_key(key: &str) -> Result<(), Error> {
         return Err(Error::new(INVALID_LOGIN));
     };
     internal_login_user(&text_field(&account, "username"))
+}
+
+/// `getLoginKey`: a new 40 character key for the logged-in user, good for `expire_hours`
+/// (the conf `login-key/@expire-hours` when `None`). The key is returned once. Only its hash is
+/// stored, in a transaction of its own, and the user's expired keys are removed.
+///
+/// This is how an API key is issued. Revoking one is deleting its `UserLoginKey` row or setting
+/// its `thruDate`; [`login_user_key`] rejects either.
+///
+/// # Errors
+///
+/// Returns an error when nobody is logged in or a write fails.
+pub fn get_login_key(expire_hours: Option<f64>) -> Result<String, Error> {
+    let Some(user_id) = session::current_user_id()?.filter(|id| !id.is_empty()) else {
+        return Err(Error::of_kind(
+            crate::context::ErrorKind::AuthenticationRequired,
+            "No active user, cannot get login key",
+        ));
+    };
+    let login_key = super::factor::random_string(40)?;
+    let hashed = password::hash_login_key(&login_key)?;
+    let hours = expire_hours.unwrap_or_else(policy::login_key_expire_hours);
+    let from = now_millis();
+    #[allow(clippy::cast_possible_truncation)] // An expiry past i64 milliseconds is not a real key.
+    let thru = from.saturating_add((hours * HOUR_MILLIS).round() as i64);
+    let _authz = without_authz();
+    let facade = entity_facade()?;
+    let mut row = facade.make_value(USER_LOGIN_KEY)?;
+    row.set("loginKey", Value::string(hashed));
+    row.set("userId", Value::string(&user_id));
+    row.set("fromDate", stamp_value(from));
+    row.set("thruDate", stamp_value(thru));
+    // Java creates the key with requireNewTransaction, so a caller's rollback does not lose it.
+    let tx = facade.transactions_for(USER_LOGIN_KEY)?;
+    tx.run(crate::transaction::TransactionAttribute::ForceNew, None, || {
+        row.create(&facade)
+    })?;
+    let expired = facade
+        .find(USER_LOGIN_KEY)?
+        .eq("userId", Value::string(&user_id))
+        .condition(moqui_db::sql::Condition::less("thruDate", stamp_value(from)))
+        .list()?;
+    for old in expired.iter() {
+        old.delete(&facade)?;
+    }
+    Ok(login_key)
 }
 
 /// Header login. Uses `api_key` when it is present, otherwise `login_key`.
@@ -275,16 +349,43 @@ fn gate_account(facade: &EntityFacade, account: &EntityValue, now: i64) -> Resul
     Ok(())
 }
 
+/// A password that must change fails the login and remembers the user, so the change-password
+/// form can name them, as Java's `internalLoginToken` does.
 fn post_password(account: &EntityValue, now: i64) -> Result<(), Error> {
     if text_field(account, "requirePasswordChange") == "Y" {
+        pre_authc(account, PASSWORD_CHANGE_REQUIRED);
         return Err(Error::new(
             "Authenticate failed because the account requires a password change",
         ));
     }
     if password_expired(account, now) {
+        pre_authc(account, EXPIRED_CREDENTIALS);
         return Err(Error::new("Authenticate failed because the password must be changed"));
     }
     Ok(())
+}
+
+fn pre_authc(account: &EntityValue, flag: &str) {
+    session::set_session_attribute(PRE_AUTHC_USERNAME, Some(&text_field(account, "username")));
+    session::set_session_attribute(flag, Some("true"));
+}
+
+/// A legacy stored hash becomes argon2 once the password has been checked against it.
+fn rehash_legacy(facade: &EntityFacade, account: &EntityValue, plain: &str) -> Result<(), Error> {
+    if !legacy_hash(account) {
+        return Ok(());
+    }
+    let hashed = hash_password(plain)?;
+    update_user(
+        facade,
+        &text_field(account, "userId"),
+        &[
+            ("currentPassword", Value::string(hashed)),
+            ("passwordHashType", Value::string("argon2")),
+            ("passwordSalt", Value::string("")),
+            ("passwordBase64", Value::string("N")),
+        ],
+    )
 }
 
 fn finish_login(facade: &EntityFacade, account: &EntityValue, plain: Option<&str>, rehash: bool) -> Result<(), Error> {
@@ -840,6 +941,94 @@ mod tests {
         assert!(current.to_string().contains("current"), "{current}");
         let reused = change_password("ada", "Secret1!").unwrap_err();
         assert!(reused.to_string().contains("last"), "{reused}");
+        session::reset_session();
+    }
+
+    #[test]
+    fn a_user_with_a_factor_or_a_requiring_group_is_pre_authenticated_not_logged_in() {
+        let (ctx, facade) = open_ctx();
+        let _guard = ctx.enter();
+        create_user(&facade, "ada", "Secret1!", |_| {});
+        let mut factor = facade.make_value("moqui.security.UserAuthcFactor").unwrap();
+        factor.set("factorId", Value::string("ADA_TOTP"));
+        factor.set("userId", Value::string("ada"));
+        factor.set("factorTypeEnumId", Value::string("UafTotp"));
+        factor.set("factorOption", Value::string(super::super::factor::totp_secret()));
+        factor.set("fromDate", stamp(1));
+        factor.create(&facade).unwrap();
+        login_user("ada", "Secret1!").unwrap();
+        assert!(session::current_username().unwrap().is_none());
+        assert_eq!(session::session_attribute(PRE_AUTHC_USERNAME).as_deref(), Some("ada"));
+        assert!(session::session_attribute_flag(AUTHC_FACTOR_REQUIRED));
+        // The password was right, so a legacy hash is replaced as on a full login.
+        assert!(text(&load_user(&facade, "ada"), "currentPassword").starts_with("$argon2id$"));
+        // A wrong password does not pre-authenticate, and clears the earlier attempt.
+        assert_eq!(login_user("ada", "wrong").unwrap_err().to_string(), INVALID_LOGIN);
+        assert_eq!(session::session_attribute(PRE_AUTHC_USERNAME), None);
+        // The factor is the second step: the internal login after a verified code sets the user.
+        internal_login_user("ada").unwrap();
+        assert_eq!(session::current_username().unwrap().as_deref(), Some("ada"));
+        logout().unwrap();
+
+        create_user(&facade, "bob", "Secret1!", |_| {});
+        let mut group = facade.make_value("moqui.security.UserGroup").unwrap();
+        group.set("userGroupId", Value::string("STRICT"));
+        group.set("requireAuthcFactor", Value::string("Y"));
+        group.create(&facade).unwrap();
+        assert!(!super::super::factor::second_factor_required("bob").unwrap());
+        let mut member = facade.make_value("moqui.security.UserGroupMember").unwrap();
+        member.set("userGroupId", Value::string("STRICT"));
+        member.set("userId", Value::string("bob"));
+        member.set("fromDate", stamp(1));
+        member.create(&facade).unwrap();
+        assert!(super::super::factor::second_factor_required("bob").unwrap());
+        login_user("bob", "Secret1!").unwrap();
+        assert!(session::current_username().unwrap().is_none());
+        assert_eq!(session::session_attribute(PRE_AUTHC_USERNAME).as_deref(), Some("bob"));
+        session::reset_session();
+    }
+
+    #[test]
+    fn an_api_key_logs_in_until_it_is_revoked_or_expires() {
+        let (ctx, facade) = open_ctx();
+        let _guard = ctx.enter();
+        assert!(get_login_key(None).is_err(), "a key needs a logged-in user");
+        create_user(&facade, "ada", "Secret1!", |_| {});
+        internal_login_user("ada").unwrap();
+        let key = get_login_key(None).unwrap();
+        assert_eq!(key.len(), 40);
+        // A key that ends now is kept, and is expired a moment later.
+        let short = get_login_key(Some(0.0)).unwrap();
+        logout().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let stored = facade
+            .find(USER_LOGIN_KEY)
+            .unwrap()
+            .eq("userId", Value::string("ada"))
+            .list()
+            .unwrap();
+        assert_eq!(stored.len(), 2);
+        let hashed = password::hash_login_key(&key).unwrap();
+        let row = stored
+            .iter()
+            .find(|row| text(row, "loginKey") == hashed)
+            .expect("only the hash is stored");
+        let thru = field_millis(row, "thruDate").unwrap() - field_millis(row, "fromDate").unwrap();
+        assert_eq!(thru, 144 * 60 * 60 * 1000, "the conf default is six days");
+
+        apply_header_keys(Some(&key), None).unwrap();
+        assert_eq!(session::current_username().unwrap().as_deref(), Some("ada"));
+        logout().unwrap();
+        assert_eq!(login_user_key(&short).unwrap_err().to_string(), INVALID_LOGIN);
+
+        // Revoke: the admin deletes the key's row.
+        row.delete(&facade).unwrap();
+        assert_eq!(
+            apply_header_keys(Some(&key), None).unwrap_err().to_string(),
+            INVALID_LOGIN
+        );
+        assert!(session::current_username().unwrap().is_none());
         session::reset_session();
     }
 

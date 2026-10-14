@@ -64,6 +64,23 @@ pub(crate) fn login_key_hash_type() -> String {
     conf_text("login-key", "encrypt-hash-type", "SHA-256")
 }
 
+/// `login-key/@expire-hours`, 144 (six days) as in the Java conf. A fraction is allowed.
+pub(crate) fn login_key_expire_hours() -> f64 {
+    conf_text_opt("login-key", "expire-hours")
+        .and_then(|text| text.parse().ok())
+        .unwrap_or(144.0)
+}
+
+/// How long an emailed reset password stays usable, `password/@email-expire-hours`.
+pub(crate) fn email_expire_hours() -> i64 {
+    conf_number("password", "email-expire-hours", 48)
+}
+
+/// `password/@email-require-change`: a reset sets `requirePasswordChange`.
+pub(crate) fn email_require_change() -> bool {
+    conf_text("password", "email-require-change", "false") == "true"
+}
+
 pub(crate) fn max_failures() -> i64 {
     conf_number("login", "max-failures", 3)
 }

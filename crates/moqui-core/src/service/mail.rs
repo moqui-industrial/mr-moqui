@@ -1018,13 +1018,35 @@ thread_local! {
 }
 
 fn push_sink(letter: &Letter) -> bool {
-    SINK.with(|slot| {
+    let kept = SINK.with(|slot| {
         let Some(sink) = slot.borrow().clone() else {
             return false;
         };
         sink.borrow_mut().push(letter.clone());
         true
-    })
+    });
+    #[cfg(test)]
+    if !kept {
+        return push_shared_sink(letter);
+    }
+    kept
+}
+
+/// The sink of [`SharedSinkGuard`], for a send on a service worker thread.
+#[cfg(test)]
+static SHARED_SINK: std::sync::Mutex<Option<Arc<std::sync::Mutex<Vec<Letter>>>>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn push_shared_sink(letter: &Letter) -> bool {
+    let shared = SHARED_SINK.lock().unwrap_or_else(|err| err.into_inner()).clone();
+    let Some(shared) = shared else {
+        return false;
+    };
+    shared
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .push(letter.clone());
+    true
 }
 
 /// The test sink: while installed, a send on this thread is kept here instead of going to SMTP.
@@ -1060,23 +1082,73 @@ impl SinkGuard {
     }
 
     pub(crate) fn sent(&self) -> Vec<SentMail> {
-        self.messages()
+        self.messages().into_iter().map(sent_mail).collect()
+    }
+}
+
+#[cfg(test)]
+fn sent_mail(letter: Letter) -> SentMail {
+    SentMail {
+        mime: build_lettre(&letter)
+            .map(|message| String::from_utf8_lossy(&message.formatted()).into_owned())
+            .unwrap_or_else(|err| format!("not a message: {err}")),
+        subject: letter.subject,
+        to: letter.to,
+        body: letter.body,
+        body_text: letter.body_text,
+        attachments: letter
+            .attachments
             .into_iter()
-            .map(|letter| SentMail {
-                mime: build_lettre(&letter)
-                    .map(|message| String::from_utf8_lossy(&message.formatted()).into_owned())
-                    .unwrap_or_else(|err| format!("not a message: {err}")),
-                subject: letter.subject,
-                to: letter.to,
-                body: letter.body,
-                body_text: letter.body_text,
-                attachments: letter
-                    .attachments
-                    .into_iter()
-                    .map(|part| (part.filename, part.content_type, part.bytes))
-                    .collect(),
-            })
+            .map(|part| (part.filename, part.content_type, part.bytes))
+            .collect(),
+    }
+}
+
+/// A test sink for sends on any thread that has no [`SinkGuard`] of its own, so mail an async
+/// service sends from a worker is kept. One is installed at a time; a second waits.
+#[cfg(test)]
+pub(crate) struct SharedSinkGuard {
+    current: Arc<std::sync::Mutex<Vec<Letter>>>,
+    _turn: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl SharedSinkGuard {
+    pub(crate) fn install() -> Self {
+        static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let turn = TURN.lock().unwrap_or_else(|err| err.into_inner());
+        let current = Arc::new(std::sync::Mutex::new(Vec::new()));
+        *SHARED_SINK.lock().unwrap_or_else(|err| err.into_inner()) = Some(Arc::clone(&current));
+        Self { current, _turn: turn }
+    }
+
+    /// The mail kept so far to `address`.
+    pub(crate) fn sent_to(&self, address: &str) -> Vec<SentMail> {
+        let letters = self.current.lock().unwrap_or_else(|err| err.into_inner()).clone();
+        letters
+            .into_iter()
+            .filter(|letter| letter.to.iter().any(|to| to == address))
+            .map(sent_mail)
             .collect()
+    }
+
+    /// Wait up to `timeout` for mail to `address`, as a worker sends it after the caller returns.
+    pub(crate) fn wait_for(&self, address: &str, timeout: Duration) -> Vec<SentMail> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let sent = self.sent_to(address);
+            if !sent.is_empty() || std::time::Instant::now() > deadline {
+                return sent;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for SharedSinkGuard {
+    fn drop(&mut self) {
+        *SHARED_SINK.lock().unwrap_or_else(|err| err.into_inner()) = None;
     }
 }
 

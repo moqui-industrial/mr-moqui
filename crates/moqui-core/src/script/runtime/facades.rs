@@ -217,9 +217,12 @@ impl HostUser {
         })
     }
 
+    /// False with no error when the password was right and a second factor is still needed.
     fn login_user(&self, ctx: Ctx<'_>, username: String, password: String) -> rquickjs::Result<bool> {
         host_guard(&ctx, || match crate::user::login_user(&username, &password) {
-            Ok(()) => Ok(true),
+            Ok(()) => Ok(!crate::user::session::session_attribute_flag(
+                crate::user::AUTHC_FACTOR_REQUIRED,
+            )),
             Err(err) => {
                 with_ec(&ctx, |ec| ec.message().add_error(err.message().to_string()))?;
                 Ok(false)
@@ -247,7 +250,7 @@ impl HostUser {
         })
     }
 
-    /// A `UserPreference` value for the logged-in user, or null.
+    /// The logged-in user's preference: a property, the user's `UserPreference`, or a group's, or null.
     fn get_preference<'js>(&self, ctx: Ctx<'js>, key: String) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || match user_preference(&key) {
             Ok(Some(value)) => value.into_js(&ctx),
@@ -354,21 +357,13 @@ fn user_account_snapshot() -> Result<Option<indexmap::IndexMap<String, Value>>, 
 }
 
 fn user_preference(key: &str) -> Result<Option<String>, crate::context::Error> {
-    let Some(user_id) = crate::user::current_user_id()? else {
+    if crate::context::ExecutionContext::with_current(|ec| ec.factory().entity())
+        .flatten()
+        .is_none()
+    {
         return Ok(None);
-    };
-    let Some(facade) = crate::context::ExecutionContext::with_current(|ec| ec.factory().entity()).flatten() else {
-        return Ok(None);
-    };
-    let _authz = crate::context::ExecutionContext::with_current(|ec| ec.disable_authz());
-    let found = facade
-        .find("moqui.security.UserPreference")
-        .map_err(crate::context::Error::from)?
-        .eq("userId", Value::string(&user_id))
-        .eq("preferenceKey", Value::string(key))
-        .one()
-        .map_err(crate::context::Error::from)?;
-    Ok(found.and_then(|row| row.get("preferenceValue").map(moqui_lib::object::to_plain_string)))
+    }
+    crate::user::get_preference(key)
 }
 
 /// `System.getProperty(name)`: a property or environment value, null when it is not set.
@@ -573,15 +568,10 @@ impl HostWeb {
         host_guard(&ctx, || Ok(crate::web::base_url().trim_end_matches('/').to_string()))
     }
 
+    /// Reads and writes go to the session, with `remove` and `put` as on the Java map.
     #[qjs(get)]
     fn session_attributes<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
-        host_guard(&ctx, || {
-            let mut map = indexmap::IndexMap::new();
-            for (key, value) in crate::user::session::session_attributes() {
-                map.insert(key, Value::string(value));
-            }
-            host_to_js(&ctx, Value::Map(map))
-        })
+        host_guard(&ctx, || super::user_host::session_attributes_js(&ctx))
     }
 
     #[qjs(get)]

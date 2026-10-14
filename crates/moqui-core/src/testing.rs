@@ -738,6 +738,10 @@ fn parse_select(cur: &mut Cur) -> Result<Stmt, Error> {
     } else {
         false
     };
+    // One connection at a time holds the store, so a row lock has nothing more to do.
+    if cur.eat_keyword("FOR") && !cur.eat_keyword("UPDATE") {
+        return Err(cur.fail("unexpected sql"));
+    }
     cur.expect_end()?;
     Ok(Stmt::Select(SelectQuery {
         count,

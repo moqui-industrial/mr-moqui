@@ -319,8 +319,9 @@ fn authenticate(request: &WebRequest, parameters: &BTreeMap<String, Value>) -> R
     let mut by_header = false;
     if let Some(header) = request.header("authorization") {
         if let Some((username, password)) = web::basic_credentials(header) {
+            // A password login that still needs a second factor leaves nobody logged in.
             match login_user(&username, &password) {
-                Ok(()) => by_header = true,
+                Ok(()) => by_header = !user::session::session_attribute_flag(user::AUTHC_FACTOR_REQUIRED),
                 Err(err) => {
                     let message = err.message().to_string();
                     web::record_login_error(&message);
@@ -345,7 +346,7 @@ fn authenticate(request: &WebRequest, parameters: &BTreeMap<String, Value>) -> R
         let password = text_of(parameters.get("authPassword"));
         if !username.is_empty() && !password.is_empty() {
             match login_user(&username, &password) {
-                Ok(()) => by_header = true,
+                Ok(()) => by_header = !user::session::session_attribute_flag(user::AUTHC_FACTOR_REQUIRED),
                 Err(err) => {
                     let message = err.message().to_string();
                     web::record_login_error(&message);

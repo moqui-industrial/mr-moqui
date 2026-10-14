@@ -25,7 +25,6 @@ use crate::entity::{query_rest, EntityFacade};
 use crate::user::{self, login_user, logout};
 use crate::web::{self, WebRequest};
 
-const OTP_LATER: &str = "one-time passwords are not available until phase 11";
 const SM_LATER: &str = "system messages not available until phase 11";
 const ENTITY_AUTH: &str = "Authentication required for entity REST operations";
 
@@ -53,10 +52,8 @@ pub(crate) fn run(call: &Call<'_>) -> Result<Option<bool>, Error> {
         "s1" => service_rest(call)?,
         "login" => login(call)?,
         "logout" => logout_transition()?,
-        "sendOtp" | "verifyOtp" => {
-            web::send_json_error(501, OTP_LATER);
-            true
-        }
+        "sendOtp" => send_otp(call)?,
+        "verifyOtp" => verify_otp(call)?,
         "sm" => {
             web::send_json_error(501, SM_LATER);
             true
@@ -206,24 +203,122 @@ fn service_list(call: &Call<'_>, verb: &str, items: &[Value]) -> Result<Value, E
     Ok(Value::List(out))
 }
 
+const FACTOR_INFO: &str = "org.moqui.impl.UserServices.get#ExternalUserAuthcFactorInfo";
+const VALIDATE_CODE: &str = "org.moqui.impl.UserServices.validate#ExternalUserAuthcCode";
+const SEND_CODE: &str = "org.moqui.impl.UserServices.send#ExternalAuthcCode";
+const CODE_NOT_VALID: &str = "Authentication code is not valid";
+
+/// A user who needs a second factor gets the factor info back instead of a login, unless a valid
+/// `code` came with the password.
 fn login(call: &Call<'_>) -> Result<bool, Error> {
     let username = text_param(call.parameters, "username");
     let password = text_param(call.parameters, "password");
-    match login_user(&username, &password) {
-        Ok(()) if user::session::session_attribute_flag("moquiAuthcFactorRequired") => {
-            web::send_json_error(501, OTP_LATER);
+    if let Err(err) = login_user(&username, &password) {
+        web::record_login_error(err.message());
+        web::send_json_error(401, err.message());
+        return Ok(true);
+    }
+    if !user::session::session_attribute_flag(user::AUTHC_FACTOR_REQUIRED) {
+        let logged_in = user::current_username()?.is_some();
+        send_logged_in(logged_in);
+        return Ok(true);
+    }
+    let code = text_param(call.parameters, "code");
+    if !code.is_empty() {
+        let Some(validated) = call_user_service(VALIDATE_CODE, &[("code", &code)])? else {
+            return Ok(true);
+        };
+        if truthy(validated.get("verified")) {
+            let verified_user = text_param(&validated, "username");
+            user::internal_login_user(&verified_user)?;
+            send_logged_in(true);
+            return Ok(true);
         }
-        Ok(()) => {
-            let mut map = indexmap::IndexMap::new();
-            map.insert("loggedIn".to_string(), Value::Bool(true));
-            web::send_json_response(Value::Map(map));
-        }
-        Err(err) => {
-            web::record_login_error(err.message());
-            web::send_json_error(401, err.message());
-        }
+        add_message(CODE_NOT_VALID);
+    }
+    if let Some(info) = call_user_service(FACTOR_INFO, &[])? {
+        web::send_json_response(Value::Map(info.into_iter().collect()));
     }
     Ok(true)
+}
+
+/// Send a code for one of the pre-authenticated user's factors. The service's out-parameters are
+/// the response, with its errors added as `ec.web.sendJsonResponse` does.
+fn send_otp(call: &Call<'_>) -> Result<bool, Error> {
+    let factor_id = text_param(call.parameters, "factorId");
+    let parameters = BTreeMap::from([("factorId".to_string(), Value::string(factor_id))]);
+    let result = crate::service::sync(SEND_CODE, &parameters).unwrap_or_default();
+    web::send_json_response(Value::Map(result.into_iter().collect()));
+    Ok(true)
+}
+
+/// Finish a login the password started: a valid code logs the pre-authenticated user in.
+fn verify_otp(call: &Call<'_>) -> Result<bool, Error> {
+    let pre_authc = user::session::session_attribute(user::PRE_AUTHC_USERNAME).unwrap_or_default();
+    if pre_authc.is_empty() {
+        web::send_json_error(401, "No user pre-authenticated, cannot send code");
+        return Ok(true);
+    }
+    let code = text_param(call.parameters, "code");
+    let parameters = BTreeMap::from([("code".to_string(), Value::string(code))]);
+    // ignore-error="true": an error is logged and cleared, and the code counts as not valid.
+    let validated = crate::service::sync(VALIDATE_CODE, &parameters);
+    let errors = message_errors();
+    if !errors.is_empty() {
+        tracing::warn!("Ignoring error running service {VALIDATE_CODE}: {}", errors.join("\n"));
+        ExecutionContext::with_current(|ec| ec.message().clear());
+    }
+    let validated = validated.unwrap_or_default();
+    if !truthy(validated.get("verified")) {
+        let message = crate::l10n::localize(CODE_NOT_VALID).unwrap_or_else(|_| CODE_NOT_VALID.to_string());
+        web::send_json_error(403, &message);
+        return Ok(true);
+    }
+    let verified_user = text_param(&validated, "username");
+    let logged_in = match user::internal_login_user(&verified_user) {
+        Ok(()) => true,
+        Err(err) => {
+            web::record_login_error(err.message());
+            false
+        }
+    };
+    send_logged_in(logged_in);
+    Ok(true)
+}
+
+/// Call a user service. Errors it leaves stop the transition with a 401 carrying them, the
+/// response a transition that returns early on an error gives a JSON client here.
+fn call_user_service(name: &str, pairs: &[(&str, &str)]) -> Result<Option<BTreeMap<String, Value>>, Error> {
+    let parameters = pairs
+        .iter()
+        .map(|(key, value)| ((*key).to_string(), Value::string(*value)))
+        .collect();
+    let result = crate::service::sync(name, &parameters);
+    let errors = message_errors();
+    if !errors.is_empty() {
+        web::send_json_error(401, &errors.join("\n"));
+        return Ok(None);
+    }
+    Ok(Some(result?))
+}
+
+fn send_logged_in(logged_in: bool) {
+    let mut map = indexmap::IndexMap::new();
+    map.insert("loggedIn".to_string(), Value::Bool(logged_in));
+    web::send_json_response(Value::Map(map));
+}
+
+fn add_message(text: &str) {
+    let text = crate::l10n::localize(text).unwrap_or_else(|_| text.to_string());
+    ExecutionContext::with_current(|ec| ec.message().add_message(text));
+}
+
+fn truthy(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Bool(flag)) => *flag,
+        Some(Value::String(text)) => text == "true",
+        _ => false,
+    }
 }
 
 fn logout_transition() -> Result<bool, Error> {

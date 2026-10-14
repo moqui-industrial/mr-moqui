@@ -54,6 +54,7 @@ mod search;
 mod services;
 mod upload;
 mod urls;
+mod user_host;
 mod values;
 
 use conditions::*;
@@ -751,6 +752,7 @@ fn install_ec(ctx: &Ctx<'_>) -> Result<(), Error> {
     ec.set("logger", logger_object(ctx)?).map_err(js_error)?;
     ec.set("service", service_object(ctx)?).map_err(js_error)?;
     let user = caught(ctx, "user", Class::instance(ctx.clone(), HostUser {}))?;
+    user_host::install_user_extras(ctx, &user)?;
     ec.set("user", user).map_err(js_error)?;
     let web = caught(ctx, "web", Class::instance(ctx.clone(), HostWeb {}))?;
     ec.set("web", web).map_err(js_error)?;
