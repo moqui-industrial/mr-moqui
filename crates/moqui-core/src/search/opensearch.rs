@@ -41,7 +41,7 @@ use super::mapping::{DocumentMapping, FieldKind, ObjectMapping, Resolved};
 use super::postgres::body_json;
 use super::postgres::compile::parse_date_bound;
 use super::query::{FieldOp, FieldQuery, Query, TextFields, TextMatch};
-use super::{lock, SearchBackend, SearchHit, SearchPage, SearchRequest};
+use super::{lock, Capability, Rank, SearchBackend, SearchHit, SearchPage, SearchRequest};
 use crate::entity::document::Document;
 
 /// The index-time field each stored document carries.
@@ -49,8 +49,29 @@ pub const INDEXED_AT: &str = "_indexed_at";
 const PRECISION_THRESHOLD: u32 = 40_000;
 
 /// A mapping as Elastic JSON: `{_meta, properties}`.
+/// The keyword subfield of the `title` role, lower-cased by [`NORMALIZER`], for autocomplete.
+pub const NORM_SUBFIELD: &str = "norm";
+/// The normalizer [`NORM_SUBFIELD`] uses.
+pub const NORMALIZER: &str = "moqui_fold";
+
+/// Index settings the mapping needs: the title normalizer when there is a title.
+pub fn settings_json(mapping: &DocumentMapping) -> Option<Json> {
+    mapping.display.role("title")?;
+    Some(json!({"analysis": {"normalizer": {NORMALIZER: {"type": "custom", "filter": ["lowercase"]}}}}))
+}
+
 pub fn mapping_json(mapping: &DocumentMapping) -> Json {
     let mut properties = object_properties(&mapping.root);
+    if let Some(Json::Object(title)) = mapping
+        .display
+        .role("title")
+        .and_then(|name| properties.get_mut(name))
+    {
+        let fields = title.entry("fields").or_insert_with(|| json!({}));
+        if let Json::Object(fields) = fields {
+            fields.insert(NORM_SUBFIELD.into(), json!({"type": "keyword", "normalizer": NORMALIZER}));
+        }
+    }
     properties.insert(
         INDEXED_AT.to_string(),
         json!({"type": "date", "format": "strict_date_optional_time||epoch_millis"}),
@@ -154,6 +175,47 @@ fn compile(mapping: &DocumentMapping, query: &Query, prefix: &str) -> Json {
     match query {
         Query::MatchAll => json!({"match_all": {}}),
         Query::Lucene(text) => json!({"query_string": {"query": text, "lenient": true, "analyze_wildcard": true}}),
+        Query::Near { terms, fields, distance } => {
+            let names: Vec<String> = match fields {
+                // Every text field in scope: intervals need one field each.
+                TextFields::All => mapping
+                    .textual_fields()
+                    .into_iter()
+                    .filter(|(name, field)| field.kind == FieldKind::Text && name.starts_with(prefix))
+                    .map(|(name, _)| name)
+                    .collect(),
+                TextFields::Only(names) => names
+                    .iter()
+                    .map(|name| field_name(mapping, &full(prefix, name), false))
+                    .collect(),
+            };
+            let should: Vec<Json> = names
+                .iter()
+                .map(|name| {
+                    json!({"intervals": {name: {"match": {"query": terms, "max_gaps": distance, "ordered": true}}}})
+                })
+                .collect();
+            if should.is_empty() {
+                json!({"match_none": {}})
+            } else {
+                json!({"bool": {"should": should, "minimum_should_match": 1}})
+            }
+        }
+        Query::Fuzzy { terms } => match mapping.display.role("title") {
+            Some(title) if prefix.is_empty() && !terms.trim().is_empty() => {
+                json!({"match": {title: {"query": terms.trim(), "fuzziness": "AUTO", "operator": "and"}}})
+            }
+            _ => json!({"match_none": {}}),
+        },
+        Query::Suggest { text } => match mapping.display.role("title") {
+            Some(_) if !prefix.is_empty() => json!({"match_none": {}}),
+            Some(_) if text.trim().is_empty() => json!({"match_all": {}}),
+            Some(title) => json!({"bool": {"should": [
+                {"prefix": {format!("{title}.{NORM_SUBFIELD}"): {"value": text.trim().to_lowercase(), "boost": 2.0}}},
+                {"match_bool_prefix": {title: {"query": text.trim(), "operator": "and"}}}
+            ], "minimum_should_match": 1}}),
+            None => json!({"match_none": {}}),
+        },
         Query::Text { terms, fields, kind } => {
             let text = match kind {
                 TextMatch::Term => terms.split_whitespace().map(escape).collect::<Vec<_>>().join(" "),
@@ -252,10 +314,58 @@ fn field_json(mapping: &DocumentMapping, field: &FieldQuery, prefix: &str) -> Js
     }
 }
 
+/// The query of a request for one document type. Cover-density ranking adds the positive text
+/// terms as an optional `multi_match` over the weighted fields, boosted A 4 through D 1, so the
+/// weights change the score and not what matches.
+pub fn request_query(mapping: &DocumentMapping, request: &SearchRequest) -> Json {
+    let query = query_json(mapping, &request.query);
+    if request.rank != Rank::CoverDensity || mapping.display.weights.is_empty() {
+        return query;
+    }
+    let mut terms = Vec::new();
+    positive_terms(&request.query, false, &mut terms);
+    if terms.is_empty() {
+        return query;
+    }
+    let fields: Vec<Json> = mapping
+        .display
+        .weights
+        .iter()
+        .map(|(name, weight)| {
+            let boost = match weight {
+                'A' => 4,
+                'B' => 3,
+                'C' => 2,
+                _ => 1,
+            };
+            Json::String(format!("{name}^{boost}"))
+        })
+        .collect();
+    json!({"bool": {"must": [query], "should": [
+        {"multi_match": {"query": terms.join(" "), "fields": fields, "type": "best_fields"}}
+    ]}})
+}
+
+fn positive_terms(query: &Query, negated: bool, out: &mut Vec<String>) {
+    match query {
+        Query::Text { terms, .. } | Query::Near { terms, .. } if !negated => out.push(terms.clone()),
+        Query::Bool { all, any, none, .. } => {
+            for item in all.iter().chain(any) {
+                positive_terms(item, negated, out);
+            }
+            for item in none {
+                positive_terms(item, !negated, out);
+            }
+        }
+        Query::Child { query, .. } => positive_terms(query, negated, out),
+        _ => {}
+    }
+}
+
 /// The `_search` body for a request.
 pub fn search_json(mapping: &DocumentMapping, request: &SearchRequest) -> Json {
     let mut body = Map::new();
-    body.insert("query".into(), query_json(mapping, &request.query));
+    body.insert("query".into(), request_query(mapping, request));
     body.insert("from".into(), Json::from(request.offset));
     body.insert("size".into(), Json::from(request.limit));
     body.insert("track_total_hits".into(), Json::Bool(true));
@@ -502,6 +612,19 @@ impl OpenSearchBackend {
                 }
             }
         }
+        if let Some(needed) = settings_json(mapping) {
+            settings = match settings {
+                Json::Object(mut given) => {
+                    if let Json::Object(needed) = needed {
+                        for (key, value) in needed {
+                            given.entry(key).or_insert(value);
+                        }
+                    }
+                    Json::Object(given)
+                }
+                _ => needed,
+            };
+        }
         let mut body = Map::new();
         body.insert("mappings".into(), mappings);
         if !settings.is_null() {
@@ -532,6 +655,15 @@ enum Body {
 impl SearchBackend for OpenSearchBackend {
     fn keeps_log_indexes(&self) -> bool {
         true
+    }
+
+    fn capabilities(&self) -> Vec<Capability> {
+        vec![
+            Capability::Proximity,
+            Capability::Fuzzy,
+            Capability::Autocomplete,
+            Capability::WeightedRank,
+        ]
     }
 
     fn name(&self) -> &'static str {
@@ -645,7 +777,20 @@ impl SearchBackend for OpenSearchBackend {
             return Ok(SearchPage::default());
         };
         let indexes: Vec<String> = mappings.iter().map(|mapping| self.index_name(mapping)).collect();
-        let body = search_json(first, request);
+        let mut body = search_json(first, request);
+        if mappings.len() > 1 {
+            // Each type's fields and roles differ: its own query, only on its own index.
+            let should: Vec<Json> = mappings
+                .iter()
+                .zip(&indexes)
+                .map(|(mapping, index)| {
+                    json!({"bool": {"filter": [{"term": {"_index": index}}], "must": [request_query(mapping, request)]}})
+                })
+                .collect();
+            if let Json::Object(map) = &mut body {
+                map.insert("query".into(), json!({"bool": {"should": should, "minimum_should_match": 1}}));
+            }
+        }
         let response = self.checked(
             "POST",
             &format!("{}/_search", indexes.join(",")),
@@ -778,6 +923,7 @@ mod tests {
             physical_name: "mantle_sales_order_item".into(),
             root,
             manual_mapping_service: None,
+            display: Default::default(),
         }
     }
 

@@ -115,6 +115,28 @@ pub struct DocumentMapping {
     pub physical_name: String,
     pub root: ObjectMapping,
     pub manual_mapping_service: Option<String>,
+    /// Root fields with a `searchRole` or a `searchWeight`.
+    pub display: DisplayFields,
+}
+
+/// What a search result shows and how its text is weighted: `DataDocumentField.searchRole` and
+/// `searchWeight`, on root fields.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DisplayFields {
+    /// Role (`title`, `subtitle`, `code`, `category`, `quality`) to the root field that has it.
+    pub roles: IndexMap<String, String>,
+    /// Root text field to its weight, `A` (highest) through `D`.
+    pub weights: IndexMap<String, char>,
+}
+
+impl DisplayFields {
+    /// The root field with this role.
+    pub fn role(&self, role: &str) -> Option<&str> {
+        self.roles.get(role).map(String::as_str)
+    }
+
+    /// The roles a field may have.
+    pub const ROLES: [&'static str; 5] = ["title", "subtitle", "code", "category", "quality"];
 }
 
 /// Where a field name in a query lands.
@@ -151,7 +173,8 @@ impl DocumentMapping {
                 sortable: false,
             },
         );
-        add_node(&info.root, &mut root);
+        let mut display = DisplayFields::default();
+        add_node(&info.root, &mut root, Some(&mut display));
         // Primary key fields not aliased explicitly, as the Java mapping adds them.
         for name in &info.primary_pk {
             let aliased = info.root.fields.iter().any(|field| &field.path_element == name);
@@ -171,6 +194,7 @@ impl DocumentMapping {
             physical_name: physical_name(&info.data_document_id),
             root,
             manual_mapping_service: info.manual_mapping_service.clone(),
+            display,
         }
     }
 
@@ -255,6 +279,13 @@ impl DocumentMapping {
         }
         let mut out = String::new();
         write(&self.root, &mut out);
+        // Roles and weights change the derived title and weighted columns.
+        for (role, field) in &self.display.roles {
+            out.push_str(&format!("@{role}={field};"));
+        }
+        for (field, weight) in &self.display.weights {
+            out.push_str(&format!("^{field}={weight};"));
+        }
         out
     }
 
@@ -269,7 +300,9 @@ impl DocumentMapping {
     }
 }
 
-fn add_node(node: &FieldNode, object: &mut ObjectMapping) {
+/// Fields of `node` into `object`. `display` is the document's when `object` is the root, where
+/// roles and weights apply; type-one relationships flatten into the same object.
+fn add_node(node: &FieldNode, object: &mut ObjectMapping, mut display: Option<&mut DisplayFields>) {
     for field in &node.fields {
         let kind = match (&field.field_type, &field.entity_type) {
             (Some(search_type), _) => FieldKind::from_search_type(search_type),
@@ -283,13 +316,30 @@ fn add_node(node: &FieldNode, object: &mut ObjectMapping) {
                 sortable: field.sortable,
             },
         );
+        if let Some(display) = display.as_deref_mut() {
+            if let Some(role) = field.search_role.as_deref().map(str::to_ascii_lowercase) {
+                if DisplayFields::ROLES.contains(&role.as_str()) {
+                    display.roles.insert(role, field.alias.clone());
+                }
+            }
+            let weight = field
+                .search_weight
+                .as_deref()
+                .and_then(|text| text.trim().chars().next())
+                .map(|ch| ch.to_ascii_uppercase());
+            if let Some(weight @ 'A'..='D') = weight {
+                if kind.is_textual() {
+                    display.weights.insert(field.alias.clone(), weight);
+                }
+            }
+        }
     }
     for rel in &node.relationships {
         if rel.type_one {
-            add_node(&rel.node, object);
+            add_node(&rel.node, object, display.as_deref_mut());
         } else {
             let child = object.children.entry(rel.document_alias.clone()).or_default();
-            add_node(&rel.node, child);
+            add_node(&rel.node, child, None);
         }
     }
 }
@@ -360,6 +410,7 @@ mod tests {
             physical_name: "mantle_party".into(),
             root,
             manual_mapping_service: None,
+            display: Default::default(),
         }
     }
 

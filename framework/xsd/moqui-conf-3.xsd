@@ -617,6 +617,14 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:attribute name="read-statement-timeout" type="xs:positiveInteger" default="30"><xs:annotation><xs:documentation>
                     statement_timeout in seconds on replica sessions, so a long search does not hold back replay.
                 </xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="text-config" type="xs:string" default="simple"><xs:annotation><xs:documentation>
+                    The Postgres text search configuration. simple (lower case, no stemming, stop words kept) matches
+                    Elastic's standard analyzer; change it only with tests on the corpus. A change rebuilds the tables.
+                </xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="unaccent" type="boolean" default="false"><xs:annotation><xs:documentation>
+                    Fold accents: a copy of text-config with the unaccent extension before its word dictionaries, and
+                    folded titles for fuzzy and autocomplete. A change rebuilds the tables.
+                </xs:documentation></xs:annotation></xs:attribute>
             </xs:complexType></xs:element>
             <xs:element name="cluster" minOccurs="0"><xs:complexType>
                 <xs:annotation><xs:documentation>The cluster for the opensearch backend.</xs:documentation></xs:annotation>

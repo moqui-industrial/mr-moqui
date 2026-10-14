@@ -42,6 +42,10 @@ pub struct PostgresConf {
     pub read_url: Option<String>,
     /// `statement_timeout` on replica sessions, in seconds. `None` is 30.
     pub read_statement_timeout: Option<u64>,
+    /// The text search configuration. `None` is `simple`.
+    pub text_config: Option<String>,
+    /// Fold accents with the `unaccent` extension.
+    pub unaccent: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -96,6 +100,8 @@ impl SearchConf {
                 schema: attr(&child, "schema"),
                 read_url: attr(&child, "read-url"),
                 read_statement_timeout: attr(&child, "read-statement-timeout").and_then(|text| text.parse().ok()),
+                text_config: attr(&child, "text-config"),
+                unaccent: attr(&child, "unaccent").is_some_and(|text| text == "true"),
             })
             .unwrap_or_default();
         let cluster = match node.first_named("cluster") {

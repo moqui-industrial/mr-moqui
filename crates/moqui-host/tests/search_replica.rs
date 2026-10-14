@@ -137,6 +137,7 @@ fn note_mapping() -> DocumentMapping {
         physical_name: "test_replica_note".into(),
         root,
         manual_mapping_service: None,
+        display: Default::default(),
     }
 }
 

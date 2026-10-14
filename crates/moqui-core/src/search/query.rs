@@ -21,6 +21,9 @@
 //!          value, values: [..], gt, gte, lt, lte, negate: false}}
 //! {bool:  {all: [..], any: [..], none: [..], min_any: 1}}
 //! {child: {path: "classifications", query: {..}}}
+//! {near:  {terms: "water pump", fields: "all" | [..], distance: 3}}     capability proximity
+//! {fuzzy: {terms: "industral"}}                                         capability fuzzy
+//! {suggest: {text: "wat pu"}}                                           capability autocomplete
 //! ```
 
 use indexmap::IndexMap;
@@ -110,12 +113,57 @@ pub enum Query {
         path: String,
         query: Box<Query>,
     },
+    /// The terms in this order within one field value, with at most `distance` other words between
+    /// the first and the last. Scored as text. Needs [`super::Capability::Proximity`].
+    Near {
+        terms: String,
+        fields: TextFields,
+        distance: u32,
+    },
+    /// Typo recovery on the document's `title` role: trigram word similarity on Postgres, edit
+    /// distance on OpenSearch, so the two can differ at the edges. Scored by closeness. Needs
+    /// [`super::Capability::Fuzzy`]; a document with no title matches nothing.
+    Fuzzy { terms: String },
+    /// Autocomplete on the `title` role: the title starts with the text, or each word of the text
+    /// starts a word of the title. A title start scores higher. Needs
+    /// [`super::Capability::Autocomplete`]; a document with no title matches nothing.
+    Suggest { text: String },
     /// A Lucene query string sent to OpenSearch as written. Only a log index search makes one (the
     /// log viewer); it is not the facade grammar, and the Postgres backend rejects it.
     Lucene(String),
 }
 
 impl Query {
+    /// The capabilities this tree needs, each once.
+    pub fn capabilities(&self) -> Vec<super::Capability> {
+        fn walk(query: &Query, out: &mut Vec<super::Capability>) {
+            let need = match query {
+                Query::Near { .. } => Some(super::Capability::Proximity),
+                Query::Fuzzy { .. } => Some(super::Capability::Fuzzy),
+                Query::Suggest { .. } => Some(super::Capability::Autocomplete),
+                Query::Bool { all, any, none, .. } => {
+                    for item in all.iter().chain(any).chain(none) {
+                        walk(item, out);
+                    }
+                    None
+                }
+                Query::Child { query, .. } => {
+                    walk(query, out);
+                    None
+                }
+                _ => None,
+            };
+            if let Some(need) = need {
+                if !out.contains(&need) {
+                    out.push(need);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(self, &mut out);
+        out
+    }
+
     pub fn eq(name: impl Into<String>, value: Value) -> Self {
         let mut field = FieldQuery::new(name, FieldOp::Eq);
         field.value = value;
@@ -312,6 +360,34 @@ impl Query {
                             min_any,
                         })
                     }
+                    "near" => {
+                        let inner = body_map()?;
+                        let terms = match inner.get("terms") {
+                            Some(Value::List(items)) => items.iter().map(to_plain_string).collect::<Vec<_>>().join(" "),
+                            Some(value) => to_plain_string(value),
+                            None => String::new(),
+                        };
+                        let fields = match inner.get("fields") {
+                            None | Some(Value::Null) => TextFields::All,
+                            Some(Value::String(text)) if text == "all" || text == "*" => TextFields::All,
+                            Some(Value::String(text)) => TextFields::Only(vec![text.clone()]),
+                            Some(Value::List(items)) => TextFields::Only(items.iter().map(to_plain_string).collect()),
+                            Some(_) => return Err(Error::new("near fields must be \"all\" or a list of names")),
+                        };
+                        let distance = match inner.get("distance") {
+                            None | Some(Value::Null) => 0,
+                            Some(value) => to_plain_string(value)
+                                .parse::<u32>()
+                                .map_err(|_| Error::new("near distance must be a whole number"))?,
+                        };
+                        Ok(Self::Near { terms, fields, distance })
+                    }
+                    "fuzzy" => Ok(Self::Fuzzy {
+                        terms: string_at(body_map()?, "terms").unwrap_or_default(),
+                    }),
+                    "suggest" => Ok(Self::Suggest {
+                        text: string_at(body_map()?, "text").unwrap_or_default(),
+                    }),
                     "child" => {
                         let inner = body_map()?;
                         let path = string_at(inner, "path").ok_or_else(|| Error::new("child query needs a path"))?;
@@ -338,6 +414,29 @@ impl Query {
                 let mut map = IndexMap::new();
                 map.insert("lucene".to_string(), Value::string(text));
                 Value::Map(map)
+            }
+            Self::Near { terms, fields, distance } => {
+                let mut inner = IndexMap::new();
+                inner.insert("terms".into(), Value::string(terms));
+                inner.insert(
+                    "fields".into(),
+                    match fields {
+                        TextFields::All => Value::string("all"),
+                        TextFields::Only(names) => Value::List(names.iter().map(Value::string).collect()),
+                    },
+                );
+                inner.insert("distance".into(), Value::I64(i64::from(*distance)));
+                wrap("near", inner)
+            }
+            Self::Fuzzy { terms } => {
+                let mut inner = IndexMap::new();
+                inner.insert("terms".into(), Value::string(terms));
+                wrap("fuzzy", inner)
+            }
+            Self::Suggest { text } => {
+                let mut inner = IndexMap::new();
+                inner.insert("text".into(), Value::string(text));
+                wrap("suggest", inner)
             }
             Self::Text { terms, fields, kind } => {
                 let mut inner = IndexMap::new();
@@ -476,5 +575,35 @@ mod tests {
         assert_eq!(effective_min_any(&should, &should, None), 0);
         assert_eq!(effective_min_any(&[], &[], None), 0);
         assert_eq!(effective_min_any(&should, &should, Some(1)), 1);
+    }
+
+    #[test]
+    fn extension_map_forms_round_trip_and_name_their_capabilities() {
+        let json = |text: &str| moqui_lib::json::from_json(&serde_json::from_str(text).unwrap());
+        let near = Query::from_value(&json(r#"{"near": {"terms": ["water", "pump"], "distance": 3}}"#)).unwrap();
+        assert_eq!(
+            near,
+            Query::Near {
+                terms: "water pump".into(),
+                fields: TextFields::All,
+                distance: 3
+            }
+        );
+        let tree = Query::all(vec![
+            near.clone(),
+            Query::from_value(&json(r#"{"fuzzy": {"terms": "industral"}}"#)).unwrap(),
+            Query::exclude(Query::from_value(&json(r#"{"suggest": {"text": "wat"}}"#)).unwrap()),
+            Query::from_value(&json(r#"{"text": {"terms": "x"}}"#)).unwrap(),
+        ]);
+        assert_eq!(Query::from_value(&tree.to_value()).unwrap(), tree);
+        assert_eq!(
+            tree.capabilities(),
+            vec![
+                crate::search::Capability::Proximity,
+                crate::search::Capability::Fuzzy,
+                crate::search::Capability::Autocomplete
+            ]
+        );
+        assert!(Query::MatchAll.capabilities().is_empty());
     }
 }

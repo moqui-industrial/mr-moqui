@@ -88,6 +88,17 @@ impl SortField {
     }
 }
 
+/// How text matches are ranked.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Rank {
+    /// `ts_rank` over all the text, or OpenSearch's own score.
+    #[default]
+    Default,
+    /// Cover density with the `searchWeight` field weights (`ts_rank_cd` on Postgres, field boosts
+    /// on OpenSearch). Needs [`Capability::WeightedRank`].
+    CoverDensity,
+}
+
 #[derive(Clone, Debug)]
 pub struct SearchRequest {
     pub query: Query,
@@ -100,6 +111,7 @@ pub struct SearchRequest {
     /// indexed and for a read replica to replay them; then run on the primary. `None` reads
     /// whatever the store has, which on a replica can be behind.
     pub fresh_by: Option<std::time::Instant>,
+    pub rank: Rank,
 }
 
 impl SearchRequest {
@@ -111,6 +123,7 @@ impl SearchRequest {
             limit: 20,
             highlight: Vec::new(),
             fresh_by: None,
+            rank: Rank::Default,
         }
     }
 }
@@ -133,6 +146,48 @@ pub struct SearchPage {
     pub hits: Vec<SearchHit>,
     /// Exact count of matching documents, not just this page.
     pub total: u64,
+}
+
+/// An opt-in search feature beyond the baseline query and aggregation trees. A backend lists the
+/// ones it has; a request that needs one it lacks is an error naming it, never a quiet fallback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Capability {
+    /// `Query::Near`: terms in order within a number of other words.
+    Proximity,
+    /// `Query::Fuzzy`: typo recovery on a document's title.
+    Fuzzy,
+    /// `Query::Suggest`: title and word prefixes as someone types.
+    Autocomplete,
+    /// `Rank::CoverDensity`: field weights from `searchWeight` and cover-density ranking.
+    WeightedRank,
+    /// Accent folding in the text configuration.
+    Accent,
+    /// Embedding retrieval.
+    Semantic,
+    /// Fusing lexical, fuzzy, and semantic candidates.
+    Hybrid,
+}
+
+impl Capability {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Proximity => "proximity",
+            Self::Fuzzy => "fuzzy",
+            Self::Autocomplete => "autocomplete",
+            Self::WeightedRank => "weightedRank",
+            Self::Accent => "accent",
+            Self::Semantic => "semantic",
+            Self::Hybrid => "hybrid",
+        }
+    }
+}
+
+/// The error for a request that needs `capability` on a backend without it.
+pub fn capability_error(capability: Capability, backend: &str) -> Error {
+    Error::new(format!(
+        "the {backend} search backend does not have the {} capability",
+        capability.name()
+    ))
 }
 
 /// A read replica's state, for `/metrics`.
@@ -178,6 +233,10 @@ pub trait SearchBackend: Send + Sync {
     /// Replica lag and how many reads fell back to the primary, when reads go to a replica.
     fn replica_status(&self) -> Option<ReplicaStatus> {
         None
+    }
+    /// The opt-in features this backend has.
+    fn capabilities(&self) -> Vec<Capability> {
+        Vec::new()
     }
     /// Whether this backend keeps the log indexes (`search::logs`). Only OpenSearch does.
     fn keeps_log_indexes(&self) -> bool {
@@ -247,6 +306,23 @@ impl SearchFacade {
             Target::Documents(ids) => Ok(ids.clone()),
             Target::Index(name) if self.is_log_index(name) => Ok(vec![name.clone()]),
             Target::Index(name) => document::documents_in_index(&self.entity, name),
+        }
+    }
+
+    /// The opt-in features the backend has.
+    pub fn capabilities(&self) -> Vec<Capability> {
+        self.backend.capabilities()
+    }
+
+    /// An error naming the first of `needs` the backend does not have.
+    fn require(&self, needs: &[Capability]) -> Result<(), Error> {
+        if needs.is_empty() {
+            return Ok(());
+        }
+        let have = self.backend.capabilities();
+        match needs.iter().find(|need| !have.contains(need)) {
+            Some(missing) => Err(capability_error(*missing, self.backend.name())),
+            None => Ok(()),
         }
     }
 
@@ -402,6 +478,11 @@ impl SearchFacade {
         if mappings.is_empty() {
             return Ok(SearchPage::default());
         }
+        let mut needs = request.query.capabilities();
+        if request.rank == Rank::CoverDensity {
+            needs.push(Capability::WeightedRank);
+        }
+        self.require(&needs)?;
         if let Some(deadline) = request.fresh_by {
             fresh::wait_for_pending(deadline)?;
         }
@@ -445,6 +526,7 @@ impl SearchFacade {
         if !self.backend.index_exists(&mapping)? {
             return Ok(agg_empty_results(aggs));
         }
+        self.require(&filter.capabilities())?;
         if let Some(deadline) = fresh_by {
             fresh::wait_for_pending(deadline)?;
         }

@@ -81,6 +81,12 @@ fn collect(query: &Query, negated: bool, out: &mut Vec<Term>) {
             kind: *kind,
             words: words(terms).into_iter().map(|(_, word)| word.to_lowercase()).collect(),
         }),
+        // Near marks its words wherever they are; the window is not re-checked here.
+        Query::Near { terms, fields, .. } if !negated => out.push(Term {
+            fields: fields.clone(),
+            kind: TextMatch::Term,
+            words: words(terms).into_iter().map(|(_, word)| word.to_lowercase()).collect(),
+        }),
         Query::Bool { all, any, none, .. } => {
             for item in all.iter().chain(any) {
                 collect(item, negated, out);

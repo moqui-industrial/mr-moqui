@@ -36,8 +36,32 @@ use moqui_lib::object::{basic_convert, parse_timestamp, to_plain_string, Value};
 use crate::search::mapping::{DocumentMapping, FieldKind, FieldMapping, ObjectMapping};
 use crate::search::query::{effective_min_any, FieldOp, FieldQuery, Query, TextFields, TextMatch};
 
-/// The text search configuration. `simple` is the closest to Elastic's `standard` analyzer.
+/// The default text search configuration. `simple` is the closest to Elastic's `standard` analyzer.
 pub const TS_CONFIG: &str = "simple";
+
+/// The text search configuration a store uses, and the function that folds a title for fuzzy and
+/// autocomplete matching.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextSetup {
+    /// A `regconfig` name: `simple`, or the store's accent-folding copy.
+    pub config: String,
+    /// A SQL function of one text argument: `lower`, or the store's lower-and-unaccent wrapper.
+    pub fold: String,
+}
+
+impl Default for TextSetup {
+    fn default() -> Self {
+        Self {
+            config: TS_CONFIG.to_string(),
+            fold: "lower".to_string(),
+        }
+    }
+}
+
+/// The derived title column: the `title` role folded, for fuzzy and autocomplete.
+pub const NORM_TITLE: &str = "norm_title";
+/// The derived weighted vector for cover-density ranking.
+pub const RANKED_TEXT: &str = "ranked_text";
 
 /// SQL text and its parameters, in order.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -143,14 +167,28 @@ pub enum Located {
 pub struct Compiler<'a> {
     pub mapping: &'a DocumentMapping,
     counter: Cell<usize>,
+    text: TextSetup,
 }
 
 impl<'a> Compiler<'a> {
     pub fn new(mapping: &'a DocumentMapping) -> Self {
+        Self::with_text(mapping, &TextSetup::default())
+    }
+
+    /// A compiler for a store made with `text`.
+    pub fn with_text(mapping: &'a DocumentMapping, text: &TextSetup) -> Self {
         Self {
             mapping,
             counter: Cell::new(0),
+            text: text.clone(),
         }
+    }
+
+    /// The root `title` field, when it has a typed text column the derived title is made from.
+    pub fn title_field(&self) -> Option<&'a str> {
+        let name = self.mapping.display.role("title")?;
+        let field = self.mapping.root.fields.get(name)?;
+        field.kind.is_textual().then_some(name)
     }
 
     fn var(&self) -> String {
@@ -179,6 +217,9 @@ impl<'a> Compiler<'a> {
             Query::Lucene(_) => Err(Error::new(
                 "a Lucene query string runs only on the opensearch search backend",
             )),
+            Query::Near { terms, fields, distance } => self.near(scope, terms, fields, *distance),
+            Query::Fuzzy { terms } => Ok(self.fuzzy(scope, terms)),
+            Query::Suggest { text } => Ok(self.suggest(scope, text)),
             Query::Text { terms, fields, kind } => self.text(scope, terms, fields, *kind),
             Query::Field(field) => {
                 let positive = self.field(scope, field)?;
@@ -380,30 +421,185 @@ impl<'a> Compiler<'a> {
             TextFields::All => {
                 let vector = match scope {
                     Scope::Root => "all_text".to_string(),
-                    Scope::Element { var, .. } => {
-                        format!("jsonb_to_tsvector('{TS_CONFIG}', {var}, '[\"string\",\"numeric\"]')")
-                    }
+                    Scope::Element { var, .. } => self.element_vector(var),
                 };
-                Ok(vector_match(&vector, terms, kind))
+                Ok(vector_match(&self.text.config, &vector, terms, kind))
             }
             TextFields::Only(names) => {
                 let mut parts = Vec::new();
                 for name in names {
-                    parts.push(self.on_field(scope, name, |expr, field| Ok(text_leaf(expr, field.kind, terms, kind)))?);
+                    parts.push(self.on_field(scope, name, |expr, field| {
+                        Ok(text_leaf(&self.text.config, expr, field.kind, terms, kind))
+                    })?);
                 }
                 Ok(or_all(parts))
             }
         }
     }
 
+    fn element_vector(&self, var: &str) -> String {
+        format!(
+            "jsonb_to_tsvector({}, {var}, '[\"string\",\"numeric\"]')",
+            literal(&self.text.config)
+        )
+    }
+
+    /// `Near`: a text query for the words (so the GIN index narrows the rows), then one position of
+    /// each word, in order, inside a window of `distance` extra words.
+    fn near(&self, scope: &Scope<'a>, terms: &str, fields: &TextFields, distance: u32) -> Result<Sql, Error> {
+        let list = words(terms);
+        if list.is_empty() {
+            return Ok(Sql::new("TRUE"));
+        }
+        // Each text field on its own: all_text leaves too small a gap between stored values for a
+        // window, so a window there could run from one value into the next.
+        let names: Vec<String> = match fields {
+            TextFields::All => {
+                let (object, prefix) = match scope {
+                    Scope::Root => (&self.mapping.root, String::new()),
+                    Scope::Element { object, prefix, .. } => (*object, prefix.clone()),
+                };
+                let mut names = Vec::new();
+                text_field_names(object, &prefix, &mut names);
+                names
+            }
+            TextFields::Only(names) => names.clone(),
+        };
+        let mut parts = Vec::new();
+        for name in &names {
+            parts.push(self.on_field(scope, name, |expr, field| {
+                if field.kind == FieldKind::Text {
+                    let vector = format!("to_tsvector({}, {expr})", literal(&self.text.config));
+                    Ok(self.near_leaf(&vector, &list, distance))
+                } else {
+                    Ok(Sql::new("FALSE"))
+                }
+            })?);
+        }
+        Ok(or_all(parts))
+    }
+
+    fn near_leaf(&self, vector: &str, list: &[String], distance: u32) -> Sql {
+        let config = literal(&self.text.config);
+        let mut out = Sql::new(format!("({vector} @@ to_tsquery({config}, "));
+        out.param(Value::String(list.join(" & "))).push(")");
+        if list.len() == 1 {
+            out.push(")");
+            return out;
+        }
+        let names: Vec<(String, String)> = list.iter().map(|_| (self.var(), self.var())).collect();
+        out.push(" AND EXISTS (SELECT 1 FROM ");
+        for (index, (lexeme, position)) in names.iter().enumerate() {
+            if index > 0 {
+                out.push(", ");
+            }
+            out.push(&format!(
+                "unnest({vector}) AS {lexeme}, unnest({lexeme}.positions) AS {position}"
+            ));
+        }
+        out.push(" WHERE ");
+        for (index, ((lexeme, position), word)) in names.iter().zip(list).enumerate() {
+            if index > 0 {
+                out.push(" AND ");
+                out.push(&format!("{position} > {}", names[index - 1].1));
+                out.push(" AND ");
+            }
+            // The word as the configuration stores it.
+            out.push(&format!(
+                "{lexeme}.lexeme = (SELECT t.lexeme FROM unnest(to_tsvector({config}, "
+            ));
+            out.param(Value::string(word)).push(")) AS t LIMIT 1)");
+        }
+        let (first, last) = (&names[0].1, &names[names.len() - 1].1);
+        out.push(&format!(
+            " AND {last} - {first} - {} <= {distance}))",
+            list.len() - 1
+        ));
+        out
+    }
+
+    /// `Fuzzy`: the folded title's word similarity to the terms is over `pg_trgm`'s threshold.
+    fn fuzzy(&self, scope: &Scope<'a>, terms: &str) -> Sql {
+        if !matches!(scope, Scope::Root) || self.title_field().is_none() || terms.trim().is_empty() {
+            return Sql::new("FALSE");
+        }
+        let mut out = Sql::new(format!("{}(", self.text.fold));
+        out.param(Value::string(terms.trim()))
+            .push(&format!(") <% {NORM_TITLE}"));
+        out
+    }
+
+    /// `Suggest`: the folded title starts with the text, or each word starts a title word.
+    fn suggest(&self, scope: &Scope<'a>, text: &str) -> Sql {
+        let Some(title) = self.title_field().filter(|_| matches!(scope, Scope::Root)) else {
+            return Sql::new("FALSE");
+        };
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Sql::new("TRUE");
+        }
+        let mut out = Sql::new(format!("({NORM_TITLE} LIKE {}(", self.text.fold));
+        out.param(Value::String(format!("{}%", like_escape(trimmed))))
+            .push(")");
+        if let Some(prefix) = tsquery(&self.text.config, trimmed, TextMatch::Prefix) {
+            out.push(&format!(
+                " OR to_tsvector({}, {}) @@ ",
+                literal(&self.text.config),
+                column(title)
+            ));
+            out.append(prefix);
+        }
+        out.push(")");
+        out
+    }
+
+    /// Score terms beside the text rank: closeness for `Fuzzy`, and a title start over a word start
+    /// for `Suggest`. Root clauses only, and not under a negation.
+    pub fn extra_score(&self, query: &Query) -> Vec<Sql> {
+        let mut out = Vec::new();
+        self.extra_parts(query, false, &mut out);
+        out
+    }
+
+    fn extra_parts(&self, query: &Query, negated: bool, out: &mut Vec<Sql>) {
+        match query {
+            Query::Fuzzy { terms } if !negated && self.title_field().is_some() && !terms.trim().is_empty() => {
+                let mut part = Sql::new(format!("COALESCE(word_similarity({}(", self.text.fold));
+                part.param(Value::string(terms.trim()))
+                    .push(&format!("), {NORM_TITLE}), 0)"));
+                out.push(part);
+            }
+            Query::Suggest { text } if !negated && self.title_field().is_some() && !text.trim().is_empty() => {
+                let mut part = Sql::new(format!(
+                    "(CASE WHEN {NORM_TITLE} LIKE {}(",
+                    self.text.fold
+                ));
+                part.param(Value::String(format!("{}%", like_escape(text.trim()))))
+                    .push(") THEN 1.0 ELSE 0.5 END)");
+                out.push(part);
+            }
+            Query::Bool { all, any, none, .. } => {
+                for item in all.iter().chain(any) {
+                    self.extra_parts(item, negated, out);
+                }
+                for item in none {
+                    self.extra_parts(item, !negated, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn field(&self, scope: &Scope<'a>, query: &FieldQuery) -> Result<Sql, Error> {
-        self.on_field(scope, &query.name, |expr, field| field_leaf(expr, field.kind, query))
+        self.on_field(scope, &query.name, |expr, field| {
+            field_leaf(&self.text.config, expr, field.kind, query)
+        })
     }
 
     /// The query whose `ts_rank` orders hits: the positive text clauses, OR-ed.
     pub fn rank_query(&self, query: &Query) -> Option<Sql> {
         let mut parts = Vec::new();
-        rank_parts(query, false, &mut parts);
+        rank_parts(&self.text.config, query, false, &mut parts);
         if parts.is_empty() {
             return None;
         }
@@ -419,23 +615,43 @@ impl<'a> Compiler<'a> {
     }
 }
 
-fn rank_parts(query: &Query, negated: bool, out: &mut Vec<Sql>) {
+fn rank_parts(config: &str, query: &Query, negated: bool, out: &mut Vec<Sql>) {
     match query {
         Query::Text { terms, kind, .. } if !negated => {
-            if let Some(query) = tsquery(terms, *kind) {
+            if let Some(query) = tsquery(config, terms, *kind) {
                 out.push(query);
+            }
+        }
+        Query::Near { terms, .. } if !negated => {
+            let list = words(terms);
+            if !list.is_empty() {
+                let mut part = Sql::new(format!("to_tsquery({}, ", literal(config)));
+                part.param(Value::String(list.join(" & "))).push(")");
+                out.push(part);
             }
         }
         Query::Bool { all, any, none, .. } => {
             for item in all.iter().chain(any) {
-                rank_parts(item, negated, out);
+                rank_parts(config, item, negated, out);
             }
             for item in none {
-                rank_parts(item, !negated, out);
+                rank_parts(config, item, !negated, out);
             }
         }
-        Query::Child { query, .. } => rank_parts(query, negated, out),
+        Query::Child { query, .. } => rank_parts(config, query, negated, out),
         _ => {}
+    }
+}
+
+/// Full names of the text fields of `object` and its children, `prefix` first.
+fn text_field_names(object: &ObjectMapping, prefix: &str, out: &mut Vec<String>) {
+    for (name, field) in &object.fields {
+        if field.kind == FieldKind::Text {
+            out.push(format!("{prefix}{name}"));
+        }
+    }
+    for (name, child) in &object.children {
+        text_field_names(child, &format!("{prefix}{name}."), out);
     }
 }
 
@@ -480,15 +696,16 @@ fn words(text: &str) -> Vec<String> {
 }
 
 /// A `tsquery` for term, prefix, and phrase text. Contains and wildcard have none.
-fn tsquery(terms: &str, kind: TextMatch) -> Option<Sql> {
+fn tsquery(config: &str, terms: &str, kind: TextMatch) -> Option<Sql> {
+    let config = literal(config);
     match kind {
         TextMatch::Term => {
-            let mut out = Sql::new(format!("plainto_tsquery('{TS_CONFIG}', "));
+            let mut out = Sql::new(format!("plainto_tsquery({config}, "));
             out.param(Value::string(terms)).push(")");
             Some(out)
         }
         TextMatch::Phrase => {
-            let mut out = Sql::new(format!("phraseto_tsquery('{TS_CONFIG}', "));
+            let mut out = Sql::new(format!("phraseto_tsquery({config}, "));
             out.param(Value::string(terms)).push(")");
             Some(out)
         }
@@ -502,7 +719,7 @@ fn tsquery(terms: &str, kind: TextMatch) -> Option<Sql> {
                 .map(|word| format!("{word}:*"))
                 .collect::<Vec<_>>()
                 .join(" & ");
-            let mut out = Sql::new(format!("to_tsquery('{TS_CONFIG}', "));
+            let mut out = Sql::new(format!("to_tsquery({config}, "));
             out.param(Value::String(text)).push(")");
             Some(out)
         }
@@ -541,9 +758,9 @@ fn wildcard_like(text: &str) -> String {
     out
 }
 
-fn vector_match(vector: &str, terms: &str, kind: TextMatch) -> Sql {
+fn vector_match(config: &str, vector: &str, terms: &str, kind: TextMatch) -> Sql {
     match kind {
-        TextMatch::Term | TextMatch::Prefix | TextMatch::Phrase => match tsquery(terms, kind) {
+        TextMatch::Term | TextMatch::Prefix | TextMatch::Phrase => match tsquery(config, terms, kind) {
             Some(query) => {
                 let mut out = Sql::new(format!("{vector} @@ "));
                 out.append(query);
@@ -566,7 +783,7 @@ fn vector_match(vector: &str, terms: &str, kind: TextMatch) -> Sql {
     }
 }
 
-fn text_leaf(expr: &str, kind: FieldKind, terms: &str, matching: TextMatch) -> Sql {
+fn text_leaf(config: &str, expr: &str, kind: FieldKind, terms: &str, matching: TextMatch) -> Sql {
     match kind {
         FieldKind::Text => match matching {
             TextMatch::Contains => {
@@ -574,7 +791,7 @@ fn text_leaf(expr: &str, kind: FieldKind, terms: &str, matching: TextMatch) -> S
                 out.param(Value::String(format!("%{}%", like_escape(terms))));
                 out
             }
-            _ => vector_match(&format!("to_tsvector('{TS_CONFIG}', {expr})"), terms, matching),
+            _ => vector_match(config, &format!("to_tsvector({}, {expr})", literal(config)), terms, matching),
         },
         FieldKind::Keyword => {
             let (op, value) = match matching {
@@ -622,12 +839,12 @@ fn text_leaf(expr: &str, kind: FieldKind, terms: &str, matching: TextMatch) -> S
     }
 }
 
-fn field_leaf(expr: &str, kind: FieldKind, query: &FieldQuery) -> Result<Sql, Error> {
+fn field_leaf(config: &str, expr: &str, kind: FieldKind, query: &FieldQuery) -> Result<Sql, Error> {
     Ok(match query.op {
         FieldOp::Exists => Sql::new(format!("{expr} IS NOT NULL")),
         FieldOp::Eq => {
             if kind == FieldKind::Text {
-                text_leaf(expr, kind, &to_plain_string(&query.value), TextMatch::Term)
+                text_leaf(config, expr, kind, &to_plain_string(&query.value), TextMatch::Term)
             } else {
                 compare(expr, kind, "=", &query.value)
             }
@@ -642,7 +859,7 @@ fn field_leaf(expr: &str, kind: FieldKind, query: &FieldQuery) -> Result<Sql, Er
                 return Ok(or_all(
                     values
                         .into_iter()
-                        .map(|value| text_leaf(expr, kind, &to_plain_string(value), TextMatch::Term))
+                        .map(|value| text_leaf(config, expr, kind, &to_plain_string(value), TextMatch::Term))
                         .collect(),
                 ));
             }
@@ -663,8 +880,8 @@ fn field_leaf(expr: &str, kind: FieldKind, query: &FieldQuery) -> Result<Sql, Er
             out.push(")");
             out
         }
-        FieldOp::Prefix => text_leaf(expr, kind, &to_plain_string(&query.value), TextMatch::Prefix),
-        FieldOp::Wildcard => text_leaf(expr, kind, &to_plain_string(&query.value), TextMatch::Wildcard),
+        FieldOp::Prefix => text_leaf(config, expr, kind, &to_plain_string(&query.value), TextMatch::Prefix),
+        FieldOp::Wildcard => text_leaf(config, expr, kind, &to_plain_string(&query.value), TextMatch::Wildcard),
         FieldOp::Range => {
             let mut parts = Vec::new();
             for (op, bound) in [
@@ -774,6 +991,7 @@ mod tests {
             physical_name: "mantle_party".into(),
             root,
             manual_mapping_service: None,
+            display: Default::default(),
         }
     }
 

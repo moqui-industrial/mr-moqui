@@ -36,12 +36,14 @@ use jiff::Timestamp;
 use moqui_lib::error::Error;
 use moqui_lib::object::{to_plain_string, Value};
 
-use compile::{column, column_type, ident, literal, typed_param, Compiler, Located, Sql, TS_CONFIG};
+use compile::{
+    column, column_type, ident, literal, typed_param, Compiler, Located, Sql, TextSetup, NORM_TITLE, RANKED_TEXT,
+};
 
 use super::highlight::highlights;
 use super::mapping::{DocumentMapping, FieldKind};
 use super::query::Query;
-use super::{lock, Agg, ReplicaStatus, SearchBackend, SearchHit, SearchPage, SearchRequest};
+use super::{lock, Agg, Capability, Rank, ReplicaStatus, SearchBackend, SearchHit, SearchPage, SearchRequest};
 use crate::driver::DbRow;
 use crate::entity::document::Document;
 use crate::transaction::{TransactionAttribute, TransactionManager};
@@ -56,6 +58,10 @@ pub struct PostgresBackend {
     fallbacks: AtomicU64,
     schema: String,
     trigram: bool,
+    /// The text configuration and title fold the tables are made with.
+    text: TextSetup,
+    /// True when `text` folds accents (`unaccent`).
+    accent: bool,
     /// Signature of each table known to exist.
     known: Mutex<HashMap<String, String>>,
 }
@@ -104,8 +110,130 @@ impl PostgresBackend {
             fallbacks: AtomicU64::new(0),
             schema,
             trigram,
+            text: TextSetup::default(),
+            accent: false,
             known: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Use the text search configuration `config` (default `simple`), folding accents when
+    /// `unaccent` is set: a copy of the configuration with `unaccent` before its word dictionaries,
+    /// and a lower-and-unaccent function for titles, both in the store's schema. When the
+    /// `unaccent` extension cannot be created, accents are not folded and a warning says so. A
+    /// change of either rebuilds every table on its next `ensure_index`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `config` does not exist or the configuration cannot be made.
+    pub fn with_analysis(mut self, config: Option<&str>, unaccent: bool) -> Result<Self, Error> {
+        let base = config.unwrap_or(compile::TS_CONFIG).to_string();
+        let quoted = ident(&self.schema);
+        let schema = self.schema.clone();
+        let setup = self.tx.with_reserve(|conn| {
+            let found = conn.query("SELECT 1 FROM pg_ts_config WHERE cfgname = ?", &[Value::string(&base)])?;
+            if found.is_empty() {
+                return Err(Error::new(format!("text search configuration {base} does not exist")));
+            }
+            if !unaccent {
+                return Ok((
+                    TextSetup {
+                        config: base.clone(),
+                        fold: "lower".to_string(),
+                    },
+                    false,
+                ));
+            }
+            if let Err(err) = conn.execute("CREATE EXTENSION IF NOT EXISTS unaccent", &[]) {
+                tracing::warn!(error = %err, "unaccent is not available; search does not fold accents");
+                return Ok((
+                    TextSetup {
+                        config: base.clone(),
+                        fold: "lower".to_string(),
+                    },
+                    false,
+                ));
+            }
+            let rows = conn.query(
+                "SELECT n.nspname AS schema FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace \
+                 WHERE e.extname = 'unaccent'",
+                &[],
+            )?;
+            let ext_schema = rows
+                .first()
+                .and_then(|row| row.get("schema"))
+                .map(to_plain_string)
+                .unwrap_or_else(|| "public".to_string());
+            let ext = ident(&ext_schema);
+            let name = format!("moqui_unaccent_{}", base.replace(|ch: char| !ch.is_ascii_alphanumeric(), "_"));
+            let exists = conn.query(
+                "SELECT 1 FROM pg_ts_config c JOIN pg_namespace n ON n.oid = c.cfgnamespace \
+                 WHERE c.cfgname = ? AND n.nspname = ?",
+                &[Value::string(&name), Value::string(&schema)],
+            )?;
+            if exists.is_empty() {
+                // The dictionaries the base configuration gives words, after unaccent.
+                let dicts = conn.query(
+                    "SELECT d.dictname AS dict FROM pg_ts_config c JOIN pg_ts_config_map m ON m.mapcfg = c.oid \
+                     JOIN pg_ts_dict d ON d.oid = m.mapdict \
+                     WHERE c.cfgname = ? AND m.maptokentype = (SELECT tokid FROM ts_token_type('default') WHERE alias = 'word') \
+                     ORDER BY m.mapseqno",
+                    &[Value::string(&base)],
+                )?;
+                let dicts: Vec<String> = dicts
+                    .iter()
+                    .filter_map(|row| row.get("dict").map(to_plain_string))
+                    .collect();
+                let dicts = if dicts.is_empty() { vec!["simple".to_string()] } else { dicts };
+                conn.execute(
+                    &format!("CREATE TEXT SEARCH CONFIGURATION {quoted}.{} (COPY = {})", ident(&name), ident(&base)),
+                    &[],
+                )?;
+                conn.execute(
+                    &format!(
+                        "ALTER TEXT SEARCH CONFIGURATION {quoted}.{} ALTER MAPPING FOR hword, hword_part, word WITH {ext}.unaccent, {}",
+                        ident(&name),
+                        dicts.iter().map(|dict| ident(dict)).collect::<Vec<_>>().join(", ")
+                    ),
+                    &[],
+                )?;
+            }
+            // unaccent() is only stable; a generated column needs an immutable function.
+            conn.execute(
+                &format!(
+                    "CREATE OR REPLACE FUNCTION {quoted}.moqui_fold(text) RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE \
+                     AS $$ SELECT lower({ext}.unaccent({}::regdictionary, $1)) $$",
+                    literal(&format!("{ext_schema}.unaccent"))
+                ),
+                &[],
+            )?;
+            Ok((
+                TextSetup {
+                    config: format!("{schema}.{name}"),
+                    fold: format!("{quoted}.moqui_fold"),
+                },
+                true,
+            ))
+        })?;
+        self.text = setup.0;
+        self.accent = setup.1;
+        Ok(self)
+    }
+
+    /// The registry signature: the stored shape and everything a table derives from text setup.
+    fn signature(&self, mapping: &DocumentMapping) -> String {
+        let text = format!(
+            "{}|config={}|fold={}|trigram={}",
+            mapping.signature(),
+            self.text.config,
+            self.text.fold,
+            self.trigram
+        );
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in text.bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+        format!("{hash:016x}")
     }
 
     /// Run searches, aggregations, and `get_document` on `read`, a physical replica of this store
@@ -218,12 +346,13 @@ impl PostgresBackend {
 
     fn create_statements(&self, mapping: &DocumentMapping) -> Vec<String> {
         let table = self.table(mapping);
+        let config = literal(&self.text.config);
         let mut columns = vec![
             "doc_id text PRIMARY KEY".to_string(),
             "indexed_at timestamptz NOT NULL".to_string(),
             "body jsonb NOT NULL".to_string(),
             format!(
-                "all_text tsvector GENERATED ALWAYS AS (jsonb_to_tsvector('{TS_CONFIG}', body, '[\"string\",\"numeric\"]')) STORED"
+                "all_text tsvector GENERATED ALWAYS AS (jsonb_to_tsvector({config}, body, '[\"string\",\"numeric\"]')) STORED"
             ),
         ];
         let mut indexes = vec![
@@ -238,9 +367,7 @@ impl PostgresBackend {
             columns.push(format!("{col} {sql_type}"));
             match field.kind {
                 FieldKind::Text => {
-                    indexes.push(format!(
-                        "CREATE INDEX ON {table} USING gin (to_tsvector('{TS_CONFIG}', {col}))"
-                    ));
+                    indexes.push(format!("CREATE INDEX ON {table} USING gin (to_tsvector({config}, {col}))"));
                     if self.trigram {
                         indexes.push(format!("CREATE INDEX ON {table} USING gin ({col} gin_trgm_ops)"));
                     }
@@ -250,6 +377,38 @@ impl PostgresBackend {
                 }
                 FieldKind::Boolean | FieldKind::Binary => {}
             }
+        }
+        let compiler = Compiler::with_text(mapping, &self.text);
+        if let Some(title) = compiler.title_field() {
+            // The folded title for fuzzy (trigram nearest neighbor) and autocomplete (prefix).
+            columns.push(format!(
+                "{NORM_TITLE} text GENERATED ALWAYS AS ({}({})) STORED",
+                self.text.fold,
+                column(title)
+            ));
+            indexes.push(format!("CREATE INDEX ON {table} ({NORM_TITLE} text_pattern_ops)"));
+            if self.trigram {
+                indexes.push(format!("CREATE INDEX ON {table} USING gist ({NORM_TITLE} gist_trgm_ops)"));
+            }
+        }
+        if !mapping.display.weights.is_empty() {
+            // Weighted fields at their weight, then all the text at D, for cover-density ranking.
+            let mut parts: Vec<String> = mapping
+                .display
+                .weights
+                .iter()
+                .filter(|(name, _)| mapping.root.fields.contains_key(*name))
+                .map(|(name, weight)| {
+                    format!("setweight(to_tsvector({config}, coalesce({}, '')), '{weight}')", column(name))
+                })
+                .collect();
+            parts.push(format!(
+                "setweight(jsonb_to_tsvector({config}, body, '[\"string\",\"numeric\"]'), 'D')"
+            ));
+            columns.push(format!(
+                "{RANKED_TEXT} tsvector GENERATED ALWAYS AS ({}) STORED",
+                parts.join(" || ")
+            ));
         }
         let mut out = vec![format!("CREATE TABLE {table} ({})", columns.join(", "))];
         out.extend(indexes);
@@ -277,8 +436,19 @@ impl SearchBackend for PostgresBackend {
         "postgres"
     }
 
+    fn capabilities(&self) -> Vec<Capability> {
+        let mut out = vec![Capability::Proximity, Capability::Autocomplete, Capability::WeightedRank];
+        if self.trigram {
+            out.push(Capability::Fuzzy);
+        }
+        if self.accent {
+            out.push(Capability::Accent);
+        }
+        out
+    }
+
     fn ensure_index(&self, mapping: &DocumentMapping) -> Result<(), Error> {
-        let signature = mapping.signature_hash();
+        let signature = self.signature(mapping);
         let current = self.registered(&mapping.document_id)?;
         if current.as_deref() == Some(signature.as_str()) {
             return Ok(());
@@ -407,7 +577,7 @@ impl SearchBackend for PostgresBackend {
     }
 
     fn delete_matching(&self, mapping: &DocumentMapping, filter: &Query) -> Result<u64, Error> {
-        let compiler = Compiler::new(mapping);
+        let compiler = Compiler::with_text(mapping, &self.text);
         let mut sql = Sql::new(format!("DELETE FROM {} WHERE ", self.table(mapping)));
         sql.append(compiler.where_sql(filter)?);
         self.tx.run(TransactionAttribute::UseOrBegin, None, || {
@@ -426,7 +596,7 @@ impl SearchBackend for PostgresBackend {
     }
 
     fn search(&self, mappings: &[Arc<DocumentMapping>], request: &SearchRequest) -> Result<SearchPage, Error> {
-        let plan = search_sql(&self.schema, mappings, request)?;
+        let plan = search_sql(&self.schema, &self.text, mappings, request)?;
         let route = self.read_route(request.fresh_by);
         let total = self
             .query_on(route, &plan.count)?
@@ -478,7 +648,7 @@ impl SearchBackend for PostgresBackend {
         let table = self.table(mapping);
         let route = self.read_route(fresh_by);
         let mut run = |sql: &Sql| self.query_on(route, sql);
-        agg::aggregate(&table, mapping, filter, aggs, &mut run)
+        agg::aggregate(&table, mapping, &self.text, filter, aggs, &mut run)
     }
 
     fn replica_status(&self) -> Option<ReplicaStatus> {
@@ -529,6 +699,7 @@ pub struct SearchPlan {
 /// its field.
 pub fn search_sql(
     schema: &str,
+    text: &TextSetup,
     mappings: &[Arc<DocumentMapping>],
     request: &SearchRequest,
 ) -> Result<SearchPlan, Error> {
@@ -562,7 +733,7 @@ pub fn search_sql(
     let mut parts = Vec::new();
     let mut counts = Vec::new();
     for mapping in mappings {
-        let compiler = Compiler::new(mapping);
+        let compiler = Compiler::with_text(mapping, text);
         let table = format!("{}.{}", ident(schema), ident(&mapping.physical_name));
         let where_sql = compiler.where_sql(&request.query)?;
         let mut part = Sql::new(format!(
@@ -570,16 +741,29 @@ pub fn search_sql(
             literal(&mapping.document_id),
             literal(&mapping.physical_name)
         ));
+        part.push("(");
         match compiler.rank_query(&request.query) {
+            // Cover density over the weighted vector when the document has weights, else all text.
+            Some(rank) if request.rank == Rank::CoverDensity => {
+                let vector = if mapping.display.weights.is_empty() { "all_text" } else { RANKED_TEXT };
+                part.push(&format!("ts_rank_cd({vector}, "));
+                part.append(rank);
+                part.push(")");
+            }
             Some(rank) => {
                 part.push("ts_rank(all_text, ");
                 part.append(rank);
-                part.push(")::float8 AS score");
+                part.push(")");
             }
             None => {
-                part.push("0::float8 AS score");
+                part.push("0");
             }
         }
+        for extra in compiler.extra_score(&request.query) {
+            part.push(" + ");
+            part.append(extra);
+        }
+        part.push(")::float8 AS score");
         for (index, (sort, kind)) in request.sort.iter().zip(&sort_kinds).enumerate() {
             let expr = sort_expr(&compiler, sort.field.as_str(), sort.descending, *kind);
             part.push(&format!(", {expr} AS s{index}"));
@@ -733,6 +917,7 @@ mod tests {
             physical_name: physical.into(),
             root,
             manual_mapping_service: None,
+            display: Default::default(),
         })
     }
 
@@ -745,7 +930,7 @@ mod tests {
         let mut request = SearchRequest::new(crate::search::parse::parse_query_string("*:jo*").unwrap());
         request.sort = vec![SortField::parse("-userAccounts.username.keyword").unwrap()];
         request.limit = 20;
-        let plan = search_sql("search", &mappings, &request).unwrap();
+        let plan = search_sql("search", &TextSetup::default(), &mappings, &request).unwrap();
         assert!(
             plan.select
                 .text

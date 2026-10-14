@@ -86,6 +86,10 @@ pub struct DocField {
     pub sortable: bool,
     pub function: Option<String>,
     pub is_expression: bool,
+    /// `searchRole`: title, subtitle, code, category, or quality.
+    pub search_role: Option<String>,
+    /// `searchWeight`: A, B, C, or D.
+    pub search_weight: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -418,6 +422,8 @@ fn load_info(facade: &EntityFacade, data_document_id: &str) -> Result<DocumentIn
             sortable: text(row.get("sortable")).as_deref() == Some("Y"),
             function: text(row.get("functionName")),
             is_expression,
+            search_role: text(row.get("searchRole")),
+            search_weight: text(row.get("searchWeight")),
         });
     }
     Ok(DocumentInfo {

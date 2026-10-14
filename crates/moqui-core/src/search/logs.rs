@@ -90,5 +90,6 @@ pub fn log_mapping(name: &str) -> Option<DocumentMapping> {
         physical_name: name.to_string(),
         root,
         manual_mapping_service: None,
+        display: Default::default(),
     })
 }

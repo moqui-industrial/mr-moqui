@@ -30,10 +30,10 @@ use indexmap::IndexMap;
 use moqui_core::driver::DbDriver;
 use moqui_core::entity::document::Document;
 use moqui_core::search::agg::Agg;
-use moqui_core::search::mapping::{DocumentMapping, FieldKind, FieldMapping, ObjectMapping};
+use moqui_core::search::mapping::{DisplayFields, DocumentMapping, FieldKind, FieldMapping, ObjectMapping};
 use moqui_core::search::parse::parse_query_string;
 use moqui_core::search::postgres::PostgresBackend;
-use moqui_core::search::{Query, SearchBackend, SearchRequest, SortField};
+use moqui_core::search::{Capability, Query, Rank, SearchBackend, SearchRequest, SortField};
 use moqui_core::transaction::{PoolConfig, TransactionManager};
 use moqui_host::db::embedded::EmbeddedCluster;
 use moqui_lib::object::{to_plain_string, Value};
@@ -52,6 +52,14 @@ fn postgres_backend_sales_and_party_parity() {
     sales_parity(&backend);
     party_parity(&backend);
     phrase_parity(&backend);
+    extensions_parity(&backend);
+    accent(PostgresBackend::open(
+        TransactionManager::new(Arc::clone(&driver), pool()).unwrap(),
+        Some("search_accent"),
+    )
+    .unwrap()
+    .with_analysis(None, true)
+    .unwrap());
 
     drop(backend);
     drop(cluster);
@@ -72,6 +80,7 @@ fn opensearch_backend_sales_and_party_parity() {
     sales_parity(&backend);
     party_parity(&backend);
     phrase_parity(&backend);
+    extensions_parity(&backend);
 }
 
 fn field(kind: FieldKind) -> FieldMapping {
@@ -157,6 +166,7 @@ fn sales_parity(backend: &dyn SearchBackend) {
         physical_name: "mantle_sales_order_item".into(),
         root,
         manual_mapping_service: None,
+        display: Default::default(),
     };
     backend.ensure_index(&mapping).unwrap();
     // Ensure again with the same shape is a no-op; the data stays.
@@ -468,6 +478,7 @@ fn party_mapping() -> DocumentMapping {
         physical_name: "mantle_party".into(),
         root,
         manual_mapping_service: None,
+        display: Default::default(),
     }
 }
 
@@ -619,6 +630,7 @@ fn party_parity(backend: &dyn SearchBackend) {
         physical_name: "mantle_product".into(),
         root: product_root,
         manual_mapping_service: None,
+        display: Default::default(),
     };
     backend.ensure_index(&product).unwrap();
     backend
@@ -658,6 +670,7 @@ fn phrase_parity(backend: &dyn SearchBackend) {
         physical_name: "test_phrase_note".into(),
         root,
         manual_mapping_service: None,
+        display: Default::default(),
     };
     backend.ensure_index(&mapping).unwrap();
     let note = |id: &str, title: &str, text: &str, lines: &[&str]| {
@@ -715,6 +728,123 @@ fn phrase_parity(backend: &dyn SearchBackend) {
         "Pump Notes has no water before pump"
     );
 
+    backend.drop_index(&mapping).unwrap();
+}
+
+fn catalog_mapping() -> DocumentMapping {
+    let mut root = object(&[("itemId", FieldKind::Keyword)]);
+    for name in ["title", "subtitle", "description"] {
+        root.fields.insert(name.into(), field(FieldKind::Text));
+    }
+    root.children.insert("notes".into(), object(&[("noteText", FieldKind::Text)]));
+    let mut display = DisplayFields::default();
+    display.roles.insert("title".into(), "title".into());
+    display.weights.insert("title".into(), 'A');
+    display.weights.insert("subtitle".into(), 'B');
+    DocumentMapping {
+        document_id: "TestCatalogItem".into(),
+        index_name: None,
+        physical_name: "test_catalog_item".into(),
+        root,
+        manual_mapping_service: None,
+        display,
+    }
+}
+
+fn catalog_item(id: &str, title: &str, description: &str) -> (String, Document) {
+    (
+        id.to_string(),
+        doc(vec![
+            ("itemId", Value::string(id)),
+            ("title", Value::string(title)),
+            ("description", Value::string(description)),
+        ]),
+    )
+}
+
+/// The opt-in lexical extensions both backends have: proximity, fuzzy, autocomplete, and weighted
+/// ranking.
+fn extensions_parity(backend: &dyn SearchBackend) {
+    for need in [Capability::Proximity, Capability::Fuzzy, Capability::Autocomplete, Capability::WeightedRank] {
+        assert!(backend.capabilities().contains(&need), "{} lacks {need:?}", backend.name());
+    }
+    let mapping = catalog_mapping();
+    backend.ensure_index(&mapping).unwrap();
+    let docs = vec![
+        catalog_item("PUMP1", "Industrial Water Pump", "heavy duty pump for water"),
+        catalog_item("PUMP2", "Water Heater", "the pump is sold separately"),
+        catalog_item("FILTER", "Pump Station Filter", "filter for water pumping"),
+        // "water" ends the title and "pump" starts the description.
+        catalog_item("SPLIT", "Fresh water", "pump house"),
+        catalog_item("WINDOW", "Garden Hose", "water one two three four pump"),
+    ];
+    backend.index_documents(&mapping, &docs).unwrap();
+    let mappings = vec![Arc::new(mapping.clone())];
+    let run = |query: Query, rank: Rank| -> Vec<String> {
+        let mut request = SearchRequest::new(query);
+        request.rank = rank;
+        backend.search(&mappings, &request).unwrap().hits.into_iter().map(|hit| hit.id).collect()
+    };
+    let sorted = |mut ids: Vec<String>| {
+        ids.sort();
+        ids
+    };
+    let near = |terms: &str, fields: &str, distance: u32| {
+        query(&format!(r#"{{"near": {{"terms": "{terms}", "fields": {fields}, "distance": {distance}}}}}"#))
+    };
+
+    // Near: in order, at most `distance` other words between, inside one stored value.
+    assert_eq!(sorted(run(near("water pump", "\"all\"", 0), Rank::Default)), vec!["PUMP1"]);
+    assert_eq!(
+        sorted(run(near("water pump", "\"all\"", 3), Rank::Default)),
+        vec!["PUMP1"],
+        "not from one stored value into the next"
+    );
+    assert_eq!(sorted(run(near("water pump", "[\"description\"]", 4), Rank::Default)), vec!["WINDOW"]);
+    assert!(run(near("water pump", "[\"description\"]", 3), Rank::Default).is_empty());
+    assert!(run(near("pump water", "[\"title\"]", 5), Rank::Default).is_empty(), "order matters");
+
+    // Fuzzy: a misspelled title still finds it; other titles do not.
+    assert_eq!(run(query(r#"{"fuzzy": {"terms": "industral water pump"}}"#), Rank::Default), vec!["PUMP1"]);
+
+    // Suggest: a title start, then word starts in titles.
+    let suggested = run(query(r#"{"suggest": {"text": "wat"}}"#), Rank::Default);
+    assert_eq!(sorted(suggested.clone()), vec!["PUMP1", "PUMP2", "SPLIT"]);
+    assert_eq!(suggested[0], "PUMP2", "the title that starts with it is first: {suggested:?}");
+    assert_eq!(run(query(r#"{"suggest": {"text": "pump sta"}}"#), Rank::Default), vec!["FILTER"]);
+
+    // Weighted ranking: a title match (weight A) outranks a description match.
+    let ranked = run(parse_query_string("water").unwrap(), Rank::CoverDensity);
+    assert_eq!(ranked.len(), 5, "{ranked:?}");
+    assert_eq!(ranked.last().map(String::as_str), Some("WINDOW"), "{ranked:?}");
+    assert!(ranked[..3].iter().all(|id| ["PUMP1", "PUMP2", "SPLIT"].contains(&id.as_str())), "{ranked:?}");
+
+    backend.drop_index(&mapping).unwrap();
+}
+
+/// Accent folding on Postgres: unaccented searches find accented text, in the text vector, the
+/// fuzzy title, and the autocomplete title.
+fn accent(backend: PostgresBackend) {
+    assert!(backend.capabilities().contains(&Capability::Accent));
+    let mapping = catalog_mapping();
+    backend.ensure_index(&mapping).unwrap();
+    backend
+        .index_documents(&mapping, &[catalog_item("CAFE", "Café Crème Brûlée", "dessert à la française")])
+        .unwrap();
+    let mappings = vec![Arc::new(mapping.clone())];
+    let ids = |query: Query| -> Vec<String> {
+        backend
+            .search(&mappings, &SearchRequest::new(query))
+            .unwrap()
+            .hits
+            .into_iter()
+            .map(|hit| hit.id)
+            .collect()
+    };
+    assert_eq!(ids(parse_query_string("creme").unwrap()), vec!["CAFE"]);
+    assert_eq!(ids(parse_query_string("francaise").unwrap()), vec!["CAFE"]);
+    assert_eq!(ids(query(r#"{"suggest": {"text": "cafe cr"}}"#)), vec!["CAFE"]);
+    assert_eq!(ids(query(r#"{"fuzzy": {"terms": "cafe creme brulee"}}"#)), vec!["CAFE"]);
     backend.drop_index(&mapping).unwrap();
 }
 

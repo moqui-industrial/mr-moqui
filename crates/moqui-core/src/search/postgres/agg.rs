@@ -30,7 +30,7 @@ use jiff::Timestamp;
 use moqui_lib::error::Error;
 use moqui_lib::object::{compare_obj, to_plain_string, Value};
 
-use super::compile::{literal, Compiler, Located, Sql};
+use super::compile::{literal, Compiler, Located, Sql, TextSetup};
 use crate::driver::DbRow;
 use crate::search::agg::{
     bucket_start, histogram_zone, key_display, next_bucket, zone_name, Agg, DateHistogram, Terms, TermsOrder,
@@ -84,13 +84,14 @@ type Grouped = HashMap<String, Vec<(Value, IndexMap<String, Value>)>>;
 pub fn aggregate(
     table: &str,
     mapping: &DocumentMapping,
+    text: &TextSetup,
     filter: &Query,
     aggs: &IndexMap<String, Agg>,
     run: &mut Runner<'_>,
 ) -> Result<IndexMap<String, Value>, Error> {
-    let compiler = Compiler::new(mapping);
+    let compiler = Compiler::with_text(mapping, text);
     let base = compiler.where_sql(filter)?;
-    let rows = run_level(table, mapping, &base, &[], &[], aggs, run)?;
+    let rows = run_level(table, mapping, text, &base, &[], &[], aggs, run)?;
     let mut root = rows
         .into_iter()
         .next()
@@ -100,16 +101,18 @@ pub fn aggregate(
     Ok(root)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_level(
     table: &str,
     mapping: &DocumentMapping,
+    text: &TextSetup,
     base: &Sql,
     keys: &[KeyDef],
     conds: &[Sql],
     aggs: &IndexMap<String, Agg>,
     run: &mut Runner<'_>,
 ) -> Result<Vec<Row>, Error> {
-    let compiler = Compiler::new(mapping);
+    let compiler = Compiler::with_text(mapping, text);
     let mut items = Vec::new();
     let mut children = Vec::new();
     collect(&compiler, aggs, &[], &[], &mut items, &mut children)?;
@@ -238,7 +241,7 @@ fn run_level(
         child_keys.push(key);
         let mut child_conds: Vec<Sql> = conds.to_vec();
         child_conds.extend(child.conds.iter().cloned());
-        let child_rows = run_level(table, mapping, base, &child_keys, &child_conds, sub_aggs, run)?;
+        let child_rows = run_level(table, mapping, text, base, &child_keys, &child_conds, sub_aggs, run)?;
         let mut grouped: Grouped = HashMap::new();
         for (tuple, content) in child_rows {
             let (own, parent) = tuple
@@ -619,6 +622,7 @@ mod tests {
             physical_name: "mantle_sales_order_item".into(),
             root,
             manual_mapping_service: None,
+            display: Default::default(),
         }
     }
 
@@ -639,7 +643,7 @@ mod tests {
             statements.push(sql.clone());
             Ok(Vec::new())
         };
-        let out = aggregate("\"search\".\"t\"", &sales(), &Query::MatchAll, &aggs, &mut run).unwrap();
+        let out = aggregate("\"search\".\"t\"", &sales(), &TextSetup::default(), &Query::MatchAll, &aggs, &mut run).unwrap();
         assert_eq!(statements.len(), 2);
         assert_eq!(
             statements[0].text,

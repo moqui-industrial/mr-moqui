@@ -99,6 +99,9 @@ pub fn attach_search(
                 embedded_tx(factory.runtime_dir(), &mut store)?
             };
             let mut backend = PostgresBackend::open(tx, conf.postgres.schema.as_deref())?;
+            if conf.postgres.text_config.is_some() || conf.postgres.unaccent {
+                backend = backend.with_analysis(conf.postgres.text_config.as_deref(), conf.postgres.unaccent)?;
+            }
             if let Some(read_url) = &conf.postgres.read_url {
                 backend = backend.with_read_replica(read_tx(read_url, &conf.postgres)?);
             }

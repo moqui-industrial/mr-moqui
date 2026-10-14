@@ -32,13 +32,14 @@
 //! ec.search.documentTypes(target) -> document ids; a target is a type name or an options map
 //! ec.search.indexExists({indexName | documentType}) -> boolean
 //! ec.search.isAvailable(), ec.search.backendName()
+//! ec.search.capabilities() -> names: proximity, fuzzy, autocomplete, weightedRank, accent, semantic, hybrid
 //! ec.search.flatten(map) -> map with dotted keys
 //! ec.search.processFeedPending(ids?) -> {documentsIndexed, documentsDeleted, rowsDone, rowsLeft}
 //! ec.search.rebuildFeed({dataFeedId, dataDocumentId, fromUpdateStamp, thruUpdateStamp, batchSize}) -> count
 //! ec.entity.getDataDocuments(dataDocumentId, condition?, fromUpdateStamp?, thruUpdateStamp?) -> list
 //! ```
 //!
-//! `consistency: "readYourWrites"` waits up to `freshTimeout` milliseconds (default 5000) for this
+//! `rank: "coverDensity"` ranks with the `searchWeight` field weights. `consistency: "readYourWrites"` waits up to `freshTimeout` milliseconds (default 5000) for this
 //! session's writes to be indexed and, with a read replica, replayed there; see `search::fresh`.
 
 use super::*;
@@ -66,6 +67,7 @@ pub(super) fn search_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("documentTypes", search_document_types);
     method!("isAvailable", search_is_available);
     method!("backendName", search_backend_name);
+    method!("capabilities", search_capabilities);
     method!("flatten", search_flatten);
     method!("processFeedPending", search_process_feed_pending);
     method!("rebuildFeed", search_rebuild_feed);
@@ -166,6 +168,16 @@ pub(super) fn search_search<'js>(ctx: Ctx<'js>, args: JsValue<'js>) -> rquickjs:
         request.limit = number(map.get("limit"), 20);
         request.highlight = text_list(map.get("highlight").or_else(|| map.get("highlightFields")));
         request.fresh_by = fresh_by(&map);
+        request.rank = match map.get("rank").map(moqui_lib::object::to_plain_string).as_deref() {
+            None | Some("") | Some("default") => search::Rank::Default,
+            Some("coverDensity") => search::Rank::CoverDensity,
+            Some(other) => {
+                return Err(Exception::throw_message(
+                    &ctx,
+                    &format!("search rank {other} is not default or coverDensity"),
+                ))
+            }
+        };
         let page = lib(&ctx, facade.search(&target, &request))?;
         let mut hits = Vec::with_capacity(page.hits.len());
         for hit in page.hits {
@@ -201,6 +213,17 @@ fn fresh_by(map: &indexmap::IndexMap<String, Value>) -> Option<std::time::Instan
     }
     let millis = number(map.get("freshTimeout"), 5000);
     Some(std::time::Instant::now() + std::time::Duration::from_millis(u64::try_from(millis).unwrap_or(5000)))
+}
+
+pub(super) fn search_capabilities<'js>(ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let names = facade(&ctx)?
+            .capabilities()
+            .into_iter()
+            .map(|capability| Value::string(capability.name()))
+            .collect();
+        host_to_js(&ctx, Value::List(names))
+    })
 }
 
 pub(super) fn search_aggregate<'js>(ctx: Ctx<'js>, args: JsValue<'js>) -> rquickjs::Result<JsValue<'js>> {
