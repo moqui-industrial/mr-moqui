@@ -115,8 +115,9 @@ pub fn semantic_sql(
             literal(&mapping.document_id),
             literal(&mapping.physical_name)
         ));
-        part.param(Value::string(&literal_vector))
-            .push(&format!("::{cast}))::float8 AS score FROM {table} WHERE embedding IS NOT NULL AND embedding_model = "));
+        part.param(Value::string(&literal_vector)).push(&format!(
+            "::{cast}))::float8 AS score FROM {table} WHERE embedding IS NOT NULL AND embedding_model = "
+        ));
         part.param(Value::string(model));
         if let Some(filter) = filter {
             part.push(" AND ");
@@ -134,7 +135,9 @@ pub fn semantic_sql(
         }
         out.append(part);
     }
-    out.push(&format!(") AS s ORDER BY score DESC, document_id ASC, doc_id ASC LIMIT {k}"));
+    out.push(&format!(
+        ") AS s ORDER BY score DESC, document_id ASC, doc_id ASC LIMIT {k}"
+    ));
     Ok(out)
 }
 
@@ -471,7 +474,9 @@ impl PostgresBackend {
             columns.push(format!("{col} {sql_type}"));
             match field.kind {
                 FieldKind::Text => {
-                    indexes.push(format!("CREATE INDEX ON {table} USING gin (to_tsvector({config}, {col}))"));
+                    indexes.push(format!(
+                        "CREATE INDEX ON {table} USING gin (to_tsvector({config}, {col}))"
+                    ));
                     if self.trigram {
                         indexes.push(format!("CREATE INDEX ON {table} USING gin ({col} gin_trgm_ops)"));
                     }
@@ -492,7 +497,9 @@ impl PostgresBackend {
             ));
             indexes.push(format!("CREATE INDEX ON {table} ({NORM_TITLE} text_pattern_ops)"));
             if self.trigram {
-                indexes.push(format!("CREATE INDEX ON {table} USING gist ({NORM_TITLE} gist_trgm_ops)"));
+                indexes.push(format!(
+                    "CREATE INDEX ON {table} USING gist ({NORM_TITLE} gist_trgm_ops)"
+                ));
             }
         }
         if let Some(store) = &self.vectors {
@@ -513,7 +520,10 @@ impl PostgresBackend {
                 .iter()
                 .filter(|(name, _)| mapping.root.fields.contains_key(*name))
                 .map(|(name, weight)| {
-                    format!("setweight(to_tsvector({config}, coalesce({}, '')), '{weight}')", column(name))
+                    format!(
+                        "setweight(to_tsvector({config}, coalesce({}, '')), '{weight}')",
+                        column(name)
+                    )
                 })
                 .collect();
             parts.push(format!(
@@ -549,7 +559,9 @@ impl PostgresBackend {
 fn generated_doc_id() -> String {
     let mut bytes = [0_u8; 6];
     if getrandom::fill(&mut bytes).is_err() {
-        bytes = u64::from(std::process::id()).to_le_bytes()[..6].try_into().unwrap_or([0; 6]);
+        bytes = u64::from(std::process::id()).to_le_bytes()[..6]
+            .try_into()
+            .unwrap_or([0; 6]);
     }
     let mut id = format!("{:013x}", Timestamp::now().as_millisecond());
     for byte in bytes {
@@ -631,8 +643,9 @@ impl SearchBackend for PostgresBackend {
              WHERE embedding IS NULL OR embedding_model IS DISTINCT FROM ",
             self.table(mapping)
         ));
-        sql.param(Value::string(model))
-            .push(&format!(" OR embedding_indexed_at < indexed_at ORDER BY indexed_at LIMIT {limit}"));
+        sql.param(Value::string(model)).push(&format!(
+            " OR embedding_indexed_at < indexed_at ORDER BY indexed_at LIMIT {limit}"
+        ));
         let rows = self.query(&sql)?;
         rows.iter()
             .map(|row| {
@@ -986,7 +999,11 @@ pub fn search_sql(
         match compiler.rank_query(&request.query) {
             // Cover density over the weighted vector when the document has weights, else all text.
             Some(rank) if request.rank == Rank::CoverDensity => {
-                let vector = if mapping.display.weights.is_empty() { "all_text" } else { RANKED_TEXT };
+                let vector = if mapping.display.weights.is_empty() {
+                    "all_text"
+                } else {
+                    RANKED_TEXT
+                };
                 part.push(&format!("ts_rank_cd({vector}, "));
                 part.append(rank);
                 part.push(")");

@@ -145,11 +145,15 @@ pub enum Query {
     /// Typo recovery on the document's `title` role: trigram word similarity on Postgres, edit
     /// distance on OpenSearch, so the two can differ at the edges. Scored by closeness. Needs
     /// [`super::Capability::Fuzzy`]; a document with no title matches nothing.
-    Fuzzy { terms: String },
+    Fuzzy {
+        terms: String,
+    },
     /// Autocomplete on the `title` role: the title starts with the text, or each word of the text
     /// starts a word of the title. A title start scores higher. Needs
     /// [`super::Capability::Autocomplete`]; a document with no title matches nothing.
-    Suggest { text: String },
+    Suggest {
+        text: String,
+    },
     /// A Lucene query string sent to OpenSearch as written. Only a log index search makes one (the
     /// log viewer). The Postgres backend reads it with the facade query-string grammar, which covers
     /// fields, ranges, AND/OR/NOT, groups and phrases, and rejects the rest.
@@ -403,7 +407,11 @@ impl Query {
                                 .parse::<u32>()
                                 .map_err(|_| Error::new("near distance must be a whole number"))?,
                         };
-                        Ok(Self::Near { terms, fields, distance })
+                        Ok(Self::Near {
+                            terms,
+                            fields,
+                            distance,
+                        })
                     }
                     "fuzzy" => Ok(Self::Fuzzy {
                         terms: string_at(body_map()?, "terms").unwrap_or_default(),
@@ -438,7 +446,11 @@ impl Query {
                 map.insert("lucene".to_string(), Value::string(text));
                 Value::Map(map)
             }
-            Self::Near { terms, fields, distance } => {
+            Self::Near {
+                terms,
+                fields,
+                distance,
+            } => {
                 let mut inner = IndexMap::new();
                 inner.insert("terms".into(), Value::string(terms));
                 inner.insert(

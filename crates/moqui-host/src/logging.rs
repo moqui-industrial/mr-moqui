@@ -12,7 +12,6 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-
 //! Server log output, log files, and shipping logs to the search backend's log indexes.
 //!
 //! [`install`] sets the process's `tracing` subscriber: one line per event on stderr, at
@@ -362,7 +361,11 @@ pub fn attach_files(runtime_dir: &Path) -> Option<PathBuf> {
             Ok(sinks) => Some((dir.clone(), sinks)),
             Err(err) => {
                 // stderr, not tracing: this runs under the state lock
-                let _ = writeln!(std::io::stderr(), "could not open log files in {}: {err}", dir.display());
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "could not open log files in {}: {err}",
+                    dir.display()
+                );
                 None
             }
         }
@@ -391,7 +394,11 @@ fn file_dir(runtime_dir: &Path, configured: &str) -> Option<PathBuf> {
         Some(rest) => runtime_dir.join(rest.trim_start_matches('/')),
         None => PathBuf::from(configured),
     };
-    Some(if path.is_absolute() { path } else { runtime_dir.join(path) })
+    Some(if path.is_absolute() {
+        path
+    } else {
+        runtime_dir.join(path)
+    })
 }
 
 /// The time now in epoch millis.
@@ -550,10 +557,17 @@ mod tests {
         }
         let names = rolled(&dir, "moqui");
         assert_eq!(names.len(), 2, "{names:?}");
-        assert!(names.iter().all(|name| name.ends_with(".log") && name.contains(&today())), "{names:?}");
+        assert!(
+            names
+                .iter()
+                .all(|name| name.ends_with(".log") && name.contains(&today())),
+            "{names:?}"
+        );
         let current = std::fs::read_to_string(dir.join("moqui.log")).unwrap();
         assert!(current.contains("line 19"), "{current}");
-        assert!(!std::fs::read_to_string(dir.join(&names[0])).unwrap().contains("line 00"));
+        assert!(!std::fs::read_to_string(dir.join(&names[0]))
+            .unwrap()
+            .contains("line 00"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -580,7 +594,10 @@ mod tests {
         sinks.write(Level::INFO, "info line");
         sinks.write(Level::WARN, "warn line");
         sinks.write(Level::ERROR, "error line");
-        assert_eq!(std::fs::read_to_string(dir.join("moqui.log")).unwrap().lines().count(), 3);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("moqui.log")).unwrap().lines().count(),
+            3
+        );
         assert_eq!(
             std::fs::read_to_string(dir.join("moqui-error.log")).unwrap(),
             "warn line\nerror line\n"
@@ -591,9 +608,18 @@ mod tests {
     #[test]
     fn the_log_dir_is_a_runtime_location_a_path_or_empty() {
         let runtime = Path::new("/srv/moqui/runtime");
-        assert_eq!(file_dir(runtime, "runtime://log"), Some(PathBuf::from("/srv/moqui/runtime/log")));
-        assert_eq!(file_dir(runtime, "/var/log/moqui"), Some(PathBuf::from("/var/log/moqui")));
-        assert_eq!(file_dir(runtime, "logs"), Some(PathBuf::from("/srv/moqui/runtime/logs")));
+        assert_eq!(
+            file_dir(runtime, "runtime://log"),
+            Some(PathBuf::from("/srv/moqui/runtime/log"))
+        );
+        assert_eq!(
+            file_dir(runtime, "/var/log/moqui"),
+            Some(PathBuf::from("/var/log/moqui"))
+        );
+        assert_eq!(
+            file_dir(runtime, "logs"),
+            Some(PathBuf::from("/srv/moqui/runtime/logs"))
+        );
         assert_eq!(file_dir(runtime, "  "), None);
     }
 }

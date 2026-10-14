@@ -62,14 +62,13 @@ pub fn settings_json(mapping: &DocumentMapping) -> Option<Json> {
 
 pub fn mapping_json(mapping: &DocumentMapping) -> Json {
     let mut properties = object_properties(&mapping.root);
-    if let Some(Json::Object(title)) = mapping
-        .display
-        .role("title")
-        .and_then(|name| properties.get_mut(name))
-    {
+    if let Some(Json::Object(title)) = mapping.display.role("title").and_then(|name| properties.get_mut(name)) {
         let fields = title.entry("fields").or_insert_with(|| json!({}));
         if let Json::Object(fields) = fields {
-            fields.insert(NORM_SUBFIELD.into(), json!({"type": "keyword", "normalizer": NORMALIZER}));
+            fields.insert(
+                NORM_SUBFIELD.into(),
+                json!({"type": "keyword", "normalizer": NORMALIZER}),
+            );
         }
     }
     properties.insert(
@@ -175,7 +174,11 @@ fn compile(mapping: &DocumentMapping, query: &Query, prefix: &str) -> Json {
     match query {
         Query::MatchAll => json!({"match_all": {}}),
         Query::Lucene(text) => json!({"query_string": {"query": text, "lenient": true, "analyze_wildcard": true}}),
-        Query::Near { terms, fields, distance } => {
+        Query::Near {
+            terms,
+            fields,
+            distance,
+        } => {
             let names: Vec<String> = match fields {
                 // Every text field in scope: intervals need one field each.
                 TextFields::All => mapping
@@ -657,7 +660,9 @@ impl OpenSearchBackend {
                 .pointer("/error/reason")
                 .and_then(Json::as_str)
                 .map_or_else(|| json.to_string(), str::to_string);
-            return Err(Error::new(format!("OpenSearch PUT {index} returned {status}: {reason}")));
+            return Err(Error::new(format!(
+                "OpenSearch PUT {index} returned {status}: {reason}"
+            )));
         }
         Ok(())
     }
@@ -749,7 +754,11 @@ impl SearchBackend for OpenSearchBackend {
             text.push_str(&source.to_string());
             text.push('\n');
         }
-        let path = if generated_ids { "_bulk" } else { "_bulk?refresh=wait_for" };
+        let path = if generated_ids {
+            "_bulk"
+        } else {
+            "_bulk?refresh=wait_for"
+        };
         let response = self.checked("POST", path, Some(Body::NdJson(text)))?;
         if response.get("errors").and_then(Json::as_bool) == Some(true) {
             let first = response
@@ -809,7 +818,10 @@ impl SearchBackend for OpenSearchBackend {
                 })
                 .collect();
             if let Json::Object(map) = &mut body {
-                map.insert("query".into(), json!({"bool": {"should": should, "minimum_should_match": 1}}));
+                map.insert(
+                    "query".into(),
+                    json!({"bool": {"should": should, "minimum_should_match": 1}}),
+                );
             }
         }
         let response = self.checked(

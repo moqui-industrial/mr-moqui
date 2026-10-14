@@ -12,7 +12,6 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-
 //! The search store starts the OpenSearch in `runtime/opensearch` when the opensearch backend's
 //! cluster is this host and not running, and stops it when dropped. Ignored unless
 //! `OPENSEARCH_START_TEST=1`, with that install present and nothing on port 9200 (and no `pid`
@@ -32,10 +31,17 @@ use moqui_host::db::embedded::EmbeddedCluster;
 #[test]
 #[ignore = "starts runtime/opensearch: OPENSEARCH_START_TEST=1 cargo test -p moqui-host --test opensearch_start -- --ignored"]
 fn the_search_store_starts_and_stops_a_local_opensearch() {
-    assert_eq!(std::env::var("OPENSEARCH_START_TEST").as_deref(), Ok("1"), "set OPENSEARCH_START_TEST=1");
+    assert_eq!(
+        std::env::var("OPENSEARCH_START_TEST").as_deref(),
+        Ok("1"),
+        "set OPENSEARCH_START_TEST=1"
+    );
     let install = std::fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/opensearch"))
         .expect("runtime/opensearch holds an OpenSearch install");
-    assert!(!install.join("pid").exists(), "a node with a pid file is running; stop it first");
+    assert!(
+        !install.join("pid").exists(),
+        "a node with a pid file is running; stop it first"
+    );
     assert!(
         std::net::TcpStream::connect("127.0.0.1:9200").is_err(),
         "something answers on 9200; stop it first"

@@ -12,7 +12,6 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-
 //! The server on the OpenSearch search backend: the `/elastic` proxy behind its login and
 //! permission, log events shipped to `moqui_logs` and read through the log viewer, and HTTP
 //! requests shipped to `moqui_http_log`. Ignored unless `OPENSEARCH_URL` names a running node, such
@@ -51,7 +50,10 @@ fn opensearch_backend_proxies_and_ships_logs() {
     let (status, headers, _) = exchange(address, &http_request("GET", "/elastic/", &[], ""));
     assert_eq!(status, 401);
     assert!(common::header(&headers, "www-authenticate").is_some_and(|value| value.starts_with("Basic")));
-    let (status, _, body) = exchange(address, &http_request("GET", "/elastic/", &[("Authorization", &john)], ""));
+    let (status, _, body) = exchange(
+        address,
+        &http_request("GET", "/elastic/", &[("Authorization", &john)], ""),
+    );
     assert_eq!(status, 200, "{body}");
     assert!(body.contains("cluster_name"), "{body}");
     // kibana_host defaults to this host; with no Dashboards there the proxy answers 502.
@@ -88,6 +90,9 @@ fn opensearch_backend_proxies_and_ships_logs() {
     assert!(body.contains("\"request_path\""), "{body}");
 
     let cleanup = format!("/elastic/{prefix}*");
-    exchange(address, &http_request("DELETE", &cleanup, &[("Authorization", &john)], ""));
+    exchange(
+        address,
+        &http_request("DELETE", &cleanup, &[("Authorization", &john)], ""),
+    );
     drop(gate);
 }

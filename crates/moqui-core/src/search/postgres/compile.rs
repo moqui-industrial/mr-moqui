@@ -216,11 +216,17 @@ impl<'a> Compiler<'a> {
             Query::MatchAll => Ok(Sql::new("TRUE")),
             // The log viewer's string: field:term, ranges, AND/OR/NOT, groups and phrases are in the facade grammar.
             Query::Lucene(text) => self.compile(&crate::search::parse::parse_query_string(text)?, scope),
-            Query::Near { terms, fields, distance } => self.near(scope, terms, fields, *distance),
+            Query::Near {
+                terms,
+                fields,
+                distance,
+            } => self.near(scope, terms, fields, *distance),
             Query::Fuzzy { terms } => Ok(self.fuzzy(scope, terms)),
             Query::Suggest { text } => Ok(self.suggest(scope, text)),
             Query::Text { terms, fields, kind } => self.text(scope, terms, fields, *kind),
-            Query::Field(field) if matches!(scope, Scope::Root) && field.name == crate::search::query::DOCUMENT_FIELD => {
+            Query::Field(field)
+                if matches!(scope, Scope::Root) && field.name == crate::search::query::DOCUMENT_FIELD =>
+            {
                 let matched = field.document_match(&self.mapping.document_id).unwrap_or(false);
                 Ok(Sql::new(if matched { "TRUE" } else { "FALSE" }))
             }
@@ -516,10 +522,7 @@ impl<'a> Compiler<'a> {
             out.param(Value::string(word)).push(")) AS t LIMIT 1)");
         }
         let (first, last) = (&names[0].1, &names[names.len() - 1].1);
-        out.push(&format!(
-            " AND {last} - {first} - {} <= {distance}))",
-            list.len() - 1
-        ));
+        out.push(&format!(" AND {last} - {first} - {} <= {distance}))", list.len() - 1));
         out
     }
 
@@ -544,8 +547,7 @@ impl<'a> Compiler<'a> {
             return Sql::new("TRUE");
         }
         let mut out = Sql::new(format!("({NORM_TITLE} LIKE {}(", self.text.fold));
-        out.param(Value::String(format!("{}%", like_escape(trimmed))))
-            .push(")");
+        out.param(Value::String(format!("{}%", like_escape(trimmed)))).push(")");
         if let Some(prefix) = tsquery(&self.text.config, trimmed, TextMatch::Prefix) {
             out.push(&format!(
                 " OR to_tsvector({}, {}) @@ ",
@@ -575,10 +577,7 @@ impl<'a> Compiler<'a> {
                 out.push(part);
             }
             Query::Suggest { text } if !negated && self.title_field().is_some() && !text.trim().is_empty() => {
-                let mut part = Sql::new(format!(
-                    "(CASE WHEN {NORM_TITLE} LIKE {}(",
-                    self.text.fold
-                ));
+                let mut part = Sql::new(format!("(CASE WHEN {NORM_TITLE} LIKE {}(", self.text.fold));
                 part.param(Value::String(format!("{}%", like_escape(text.trim()))))
                     .push(") THEN 1.0 ELSE 0.5 END)");
                 out.push(part);
@@ -796,7 +795,12 @@ fn text_leaf(config: &str, expr: &str, kind: FieldKind, terms: &str, matching: T
                 out.param(Value::String(format!("%{}%", like_escape(terms))));
                 out
             }
-            _ => vector_match(config, &format!("to_tsvector({}, {expr})", literal(config)), terms, matching),
+            _ => vector_match(
+                config,
+                &format!("to_tsvector({}, {expr})", literal(config)),
+                terms,
+                matching,
+            ),
         },
         FieldKind::Keyword => {
             let (op, value) = match matching {
@@ -1005,10 +1009,14 @@ mod tests {
         let mapping = crate::search::logs::log_mapping("moqui_logs").unwrap();
         let text = "@timestamp:[1760000000000 TO 1760600000000] AND (level:WARN OR \"slow statement\")";
         let lucene = Compiler::new(&mapping).where_sql(&Query::Lucene(text.into())).unwrap();
-        let parsed = Compiler::new(&mapping).where_sql(&parse_query_string(text).unwrap()).unwrap();
+        let parsed = Compiler::new(&mapping)
+            .where_sql(&parse_query_string(text).unwrap())
+            .unwrap();
         assert_eq!(lucene.text, parsed.text);
         assert!(lucene.text.contains("f_@timestamp"), "{}", lucene.text);
-        assert!(Compiler::new(&mapping).where_sql(&Query::Lucene("slow~".into())).is_err());
+        assert!(Compiler::new(&mapping)
+            .where_sql(&Query::Lucene("slow~".into()))
+            .is_err());
     }
 
     #[test]

@@ -12,7 +12,6 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-
 //! The server on the default Postgres search backend: log events shipped to `moqui_logs` through the
 //! SearchFacade and read through the log viewer (with its time-range query string), HTTP requests
 //! shipped to `moqui_http_log`, and the `/elastic` proxy staying closed. This binary sets process
@@ -76,12 +75,18 @@ fn postgres_backend_ships_logs_through_the_search_facade() {
     let target = moqui_core::search::Target::Index("moqui_logs".to_string());
     let cutoff = moqui_lib::object::Value::I64(moqui_host::logging::now_millis() + 60_000);
     let removed = facade
-        .delete_matching(&target, &moqui_core::search::query::Query::range("@timestamp", None, Some(cutoff)))
+        .delete_matching(
+            &target,
+            &moqui_core::search::query::Query::range("@timestamp", None, Some(cutoff)),
+        )
         .expect("retention delete");
     assert!(removed > 0, "retention deleted nothing");
 
     // The proxy to an Elastic server stays closed: this backend has none.
-    let (status, _, _) = exchange(address, &http_request("GET", "/elastic/", &[("Authorization", &john)], ""));
+    let (status, _, _) = exchange(
+        address,
+        &http_request("GET", "/elastic/", &[("Authorization", &john)], ""),
+    );
     assert_eq!(status, 404);
     drop(gate);
 }

@@ -12,7 +12,6 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-
 //! Semantic retrieval: embeddings of document text, made locally, stored beside each document,
 //! and searched by nearest neighbor.
 //!
@@ -147,7 +146,9 @@ impl SemanticConf {
         }
         if let Some(value) = text("representation") {
             if value != "halfvec" && value != "vector" {
-                return Err(Error::new(format!("semantic representation {value} is not halfvec or vector")));
+                return Err(Error::new(format!(
+                    "semantic representation {value} is not halfvec or vector"
+                )));
             }
             conf.representation = value;
         }

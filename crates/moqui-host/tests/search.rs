@@ -55,13 +55,15 @@ fn postgres_backend_sales_and_party_parity() {
     extensions_parity(&backend);
     universal_parity(&backend);
     hybrid_parity(&backend);
-    accent(PostgresBackend::open(
-        TransactionManager::new(Arc::clone(&driver), pool()).unwrap(),
-        Some("search_accent"),
-    )
-    .unwrap()
-    .with_analysis(None, true)
-    .unwrap());
+    accent(
+        PostgresBackend::open(
+            TransactionManager::new(Arc::clone(&driver), pool()).unwrap(),
+            Some("search_accent"),
+        )
+        .unwrap()
+        .with_analysis(None, true)
+        .unwrap(),
+    );
 
     drop(backend);
     drop(cluster);
@@ -667,7 +669,8 @@ fn phrase_parity(backend: &dyn SearchBackend) {
     let mut root = object(&[("noteId", FieldKind::Keyword)]);
     root.fields.insert("title".into(), field(FieldKind::Text));
     root.fields.insert("noteText".into(), field(FieldKind::Text));
-    root.children.insert("lines".into(), object(&[("lineText", FieldKind::Text)]));
+    root.children
+        .insert("lines".into(), object(&[("lineText", FieldKind::Text)]));
     let mapping = DocumentMapping {
         document_id: "TestPhraseNote".into(),
         index_name: None,
@@ -686,7 +689,12 @@ fn phrase_parity(backend: &dyn SearchBackend) {
                 ("noteText", Value::string(text)),
                 (
                     "lines",
-                    list(lines.iter().map(|line| doc(vec![("lineText", Value::string(*line))])).collect()),
+                    list(
+                        lines
+                            .iter()
+                            .map(|line| doc(vec![("lineText", Value::string(*line))]))
+                            .collect(),
+                    ),
                 ),
             ]),
         )
@@ -709,14 +717,33 @@ fn phrase_parity(backend: &dyn SearchBackend) {
         ids
     };
 
-    assert_eq!(ids("noteText:\"water pump\""), vec!["ADJACENT"], "adjacent, in order, any case");
+    assert_eq!(
+        ids("noteText:\"water pump\""),
+        vec!["ADJACENT"],
+        "adjacent, in order, any case"
+    );
     assert_eq!(ids("noteText:\"pump water\""), vec!["REVERSED"], "order matters");
-    assert_eq!(ids("noteText:\"for the pump\""), vec!["SEPARATED"], "stop words are kept");
+    assert_eq!(
+        ids("noteText:\"for the pump\""),
+        vec!["SEPARATED"],
+        "stop words are kept"
+    );
     assert_eq!(ids("noteText:\"the water pump\""), vec!["ADJACENT"]);
-    assert_eq!(ids("\"water pump\""), vec!["ADJACENT"], "every field: not across stored values");
+    assert_eq!(
+        ids("\"water pump\""),
+        vec!["ADJACENT"],
+        "every field: not across stored values"
+    );
     assert_eq!(ids("\"pump house\""), vec!["SPLIT"], "a child value");
-    assert_eq!(ids("lines.lineText:\"water pump\""), Vec::<String>::new(), "not across child elements");
-    assert_eq!(ids("noteText:water AND noteText:pump"), vec!["ADJACENT", "REVERSED", "SEPARATED"]);
+    assert_eq!(
+        ids("lines.lineText:\"water pump\""),
+        Vec::<String>::new(),
+        "not across child elements"
+    );
+    assert_eq!(
+        ids("noteText:water AND noteText:pump"),
+        vec!["ADJACENT", "REVERSED", "SEPARATED"]
+    );
 
     // Highlight marks the phrase where its words are next to each other, not each word alone.
     let mut highlighted = SearchRequest::new(parse_query_string("\"water pump\"").unwrap());
@@ -740,7 +767,8 @@ fn catalog_mapping() -> DocumentMapping {
     for name in ["title", "subtitle", "description"] {
         root.fields.insert(name.into(), field(FieldKind::Text));
     }
-    root.children.insert("notes".into(), object(&[("noteText", FieldKind::Text)]));
+    root.children
+        .insert("notes".into(), object(&[("noteText", FieldKind::Text)]));
     let mut display = DisplayFields::default();
     display.roles.insert("title".into(), "title".into());
     display.weights.insert("title".into(), 'A');
@@ -769,8 +797,17 @@ fn catalog_item(id: &str, title: &str, description: &str) -> (String, Document) 
 /// The opt-in lexical extensions both backends have: proximity, fuzzy, autocomplete, and weighted
 /// ranking.
 fn extensions_parity(backend: &dyn SearchBackend) {
-    for need in [Capability::Proximity, Capability::Fuzzy, Capability::Autocomplete, Capability::WeightedRank] {
-        assert!(backend.capabilities().contains(&need), "{} lacks {need:?}", backend.name());
+    for need in [
+        Capability::Proximity,
+        Capability::Fuzzy,
+        Capability::Autocomplete,
+        Capability::WeightedRank,
+    ] {
+        assert!(
+            backend.capabilities().contains(&need),
+            "{} lacks {need:?}",
+            backend.name()
+        );
     }
     let mapping = catalog_mapping();
     backend.ensure_index(&mapping).unwrap();
@@ -787,41 +824,72 @@ fn extensions_parity(backend: &dyn SearchBackend) {
     let run = |query: Query, rank: Rank| -> Vec<String> {
         let mut request = SearchRequest::new(query);
         request.rank = rank;
-        backend.search(&mappings, &request).unwrap().hits.into_iter().map(|hit| hit.id).collect()
+        backend
+            .search(&mappings, &request)
+            .unwrap()
+            .hits
+            .into_iter()
+            .map(|hit| hit.id)
+            .collect()
     };
     let sorted = |mut ids: Vec<String>| {
         ids.sort();
         ids
     };
     let near = |terms: &str, fields: &str, distance: u32| {
-        query(&format!(r#"{{"near": {{"terms": "{terms}", "fields": {fields}, "distance": {distance}}}}}"#))
+        query(&format!(
+            r#"{{"near": {{"terms": "{terms}", "fields": {fields}, "distance": {distance}}}}}"#
+        ))
     };
 
     // Near: in order, at most `distance` other words between, inside one stored value.
-    assert_eq!(sorted(run(near("water pump", "\"all\"", 0), Rank::Default)), vec!["PUMP1"]);
+    assert_eq!(
+        sorted(run(near("water pump", "\"all\"", 0), Rank::Default)),
+        vec!["PUMP1"]
+    );
     assert_eq!(
         sorted(run(near("water pump", "\"all\"", 3), Rank::Default)),
         vec!["PUMP1"],
         "not from one stored value into the next"
     );
-    assert_eq!(sorted(run(near("water pump", "[\"description\"]", 4), Rank::Default)), vec!["WINDOW"]);
+    assert_eq!(
+        sorted(run(near("water pump", "[\"description\"]", 4), Rank::Default)),
+        vec!["WINDOW"]
+    );
     assert!(run(near("water pump", "[\"description\"]", 3), Rank::Default).is_empty());
-    assert!(run(near("pump water", "[\"title\"]", 5), Rank::Default).is_empty(), "order matters");
+    assert!(
+        run(near("pump water", "[\"title\"]", 5), Rank::Default).is_empty(),
+        "order matters"
+    );
 
     // Fuzzy: a misspelled title still finds it; other titles do not.
-    assert_eq!(run(query(r#"{"fuzzy": {"terms": "industral water pump"}}"#), Rank::Default), vec!["PUMP1"]);
+    assert_eq!(
+        run(query(r#"{"fuzzy": {"terms": "industral water pump"}}"#), Rank::Default),
+        vec!["PUMP1"]
+    );
 
     // Suggest: a title start, then word starts in titles.
     let suggested = run(query(r#"{"suggest": {"text": "wat"}}"#), Rank::Default);
     assert_eq!(sorted(suggested.clone()), vec!["PUMP1", "PUMP2", "SPLIT"]);
-    assert_eq!(suggested[0], "PUMP2", "the title that starts with it is first: {suggested:?}");
-    assert_eq!(run(query(r#"{"suggest": {"text": "pump sta"}}"#), Rank::Default), vec!["FILTER"]);
+    assert_eq!(
+        suggested[0], "PUMP2",
+        "the title that starts with it is first: {suggested:?}"
+    );
+    assert_eq!(
+        run(query(r#"{"suggest": {"text": "pump sta"}}"#), Rank::Default),
+        vec!["FILTER"]
+    );
 
     // Weighted ranking: a title match (weight A) outranks a description match.
     let ranked = run(parse_query_string("water").unwrap(), Rank::CoverDensity);
     assert_eq!(ranked.len(), 5, "{ranked:?}");
     assert_eq!(ranked.last().map(String::as_str), Some("WINDOW"), "{ranked:?}");
-    assert!(ranked[..3].iter().all(|id| ["PUMP1", "PUMP2", "SPLIT"].contains(&id.as_str())), "{ranked:?}");
+    assert!(
+        ranked[..3]
+            .iter()
+            .all(|id| ["PUMP1", "PUMP2", "SPLIT"].contains(&id.as_str())),
+        "{ranked:?}"
+    );
 
     backend.drop_index(&mapping).unwrap();
 }
@@ -850,7 +918,13 @@ fn universal_parity(backend: &dyn SearchBackend) {
         )
         .unwrap();
     backend
-        .index_documents(&second, &[catalog_item("B1", "Water Hose", "allowed"), catalog_item("B2", "Water Valve", "not allowed")])
+        .index_documents(
+            &second,
+            &[
+                catalog_item("B1", "Water Hose", "allowed"),
+                catalog_item("B2", "Water Valve", "not allowed"),
+            ],
+        )
         .unwrap();
     let both = vec![Arc::new(first.clone()), Arc::new(second.clone())];
     // A per-type predicate, as a service builds from the user's authorization.
@@ -872,10 +946,17 @@ fn universal_parity(backend: &dyn SearchBackend) {
     assert_eq!(page.total, 3, "the total counts only what the filter allows");
     let a1 = page.hits.iter().find(|hit| hit.id == "A1").unwrap();
     assert_eq!(a1.highlights["title"], vec!["<em>Water</em> Pump".to_string()]);
-    assert!(!a1.highlights.contains_key("description"), "the filter does not highlight");
+    assert!(
+        !a1.highlights.contains_key("description"),
+        "the filter does not highlight"
+    );
     request.limit = 1;
     request.offset = 2;
-    assert_eq!(backend.search(&both, &request).unwrap().total, 3, "paging keeps the filtered total");
+    assert_eq!(
+        backend.search(&both, &request).unwrap().total,
+        3,
+        "paging keeps the filtered total"
+    );
 
     // What the document-type facet counts per type (the facade test is in the feed scenario).
     let filtered = Query::all(vec![parse_query_string("water").unwrap(), allowed]);
@@ -942,7 +1023,13 @@ fn hybrid_parity(backend: &dyn SearchBackend) {
     assert_eq!(page.total, 3);
 
     // The trusted filter applies to every branch and to the total.
-    let page = run("wat", 0, Some(query(r#"{"field": {"name": "itemId", "value": "PUMP2", "negate": true}}"#)));
+    let page = run(
+        "wat",
+        0,
+        Some(query(
+            r#"{"field": {"name": "itemId", "value": "PUMP2", "negate": true}}"#,
+        )),
+    );
     assert!(!ids(&page).contains(&"PUMP2".to_string()), "{:?}", ids(&page));
     assert_eq!(page.total, 2);
 
@@ -956,7 +1043,10 @@ fn accent(backend: PostgresBackend) {
     let mapping = catalog_mapping();
     backend.ensure_index(&mapping).unwrap();
     backend
-        .index_documents(&mapping, &[catalog_item("CAFE", "Café Crème Brûlée", "dessert à la française")])
+        .index_documents(
+            &mapping,
+            &[catalog_item("CAFE", "Café Crème Brûlée", "dessert à la française")],
+        )
         .unwrap();
     let mappings = vec![Arc::new(mapping.clone())];
     let ids = |query: Query| -> Vec<String> {
@@ -1308,18 +1398,28 @@ fn feed_scenario(facade: &moqui_core::entity::EntityFacade) {
     let aggs = tree(r#"{"types": {"terms": {"field": "_document", "size": 10}}}"#);
     let filter = Query::all(vec![
         parse_query_string("*:emerald* OR *:crim*").unwrap(),
-        query(r#"{"bool": {"none": [{"bool": {"all": [{"field": {"name": "_document", "value": "TestEnum"}}, {"field": {"name": "enumId", "value": "TcRed"}}]}}]}}"#),
+        query(
+            r#"{"bool": {"none": [{"bool": {"all": [{"field": {"name": "_document", "value": "TestEnum"}}, {"field": {"name": "enumId", "value": "TcRed"}}]}}]}}"#,
+        ),
     ]);
     let facets = search
         .aggregate(&moqui_core::search::Target::Index("test_enums".into()), &filter, &aggs)
         .unwrap();
     let counts: Vec<(String, String)> = buckets(&facets["types"])
         .iter()
-        .map(|bucket| (to_plain_string(map_at(bucket, "key")), number(map_at(bucket, "doc_count"))))
+        .map(|bucket| {
+            (
+                to_plain_string(map_at(bucket, "key")),
+                number(map_at(bucket, "doc_count")),
+            )
+        })
         .collect();
     assert_eq!(
         counts,
-        vec![("TestEnum".to_string(), "1".to_string()), ("TestEnumType".to_string(), "1".to_string())],
+        vec![
+            ("TestEnum".to_string(), "1".to_string()),
+            ("TestEnumType".to_string(), "1".to_string())
+        ],
         "TcGreen and the type; TcRed is filtered out"
     );
 }

@@ -239,9 +239,9 @@ impl OpenSearchProcess {
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(err_log));
-        let child = command.spawn().map_err(|err| {
-            Error::new(format!("could not start OpenSearch in {}", dir.display())).with_source(err)
-        })?;
+        let child = command
+            .spawn()
+            .map_err(|err| Error::new(format!("could not start OpenSearch in {}", dir.display())).with_source(err))?;
         eprintln!(
             "Started OpenSearch from {} (pid {}), output in {}",
             dir.display(),

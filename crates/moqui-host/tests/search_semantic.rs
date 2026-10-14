@@ -12,7 +12,6 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-
 //! Semantic storage and retrieval on a Postgres that has `pgvector`, which embedded Postgres does
 //! not bundle. Ignored unless `PGVECTOR_URL` names one (`postgresql://host:port/database`, with
 //! `PGVECTOR_USER` and `PGVECTOR_PASSWORD`; `?sslmode=disable` for a local server). The embedder is
@@ -63,8 +62,14 @@ fn embeddings_are_stored_guarded_and_searched() {
         ..SemanticConf::default()
     };
     let schema = format!("search_semantic_{}", std::process::id());
-    let backend = PostgresBackend::open(tx, Some(&schema)).unwrap().with_semantic(&conf).unwrap();
-    assert!(backend.capabilities().contains(&Capability::Semantic), "pgvector is installed");
+    let backend = PostgresBackend::open(tx, Some(&schema))
+        .unwrap()
+        .with_semantic(&conf)
+        .unwrap();
+    assert!(
+        backend.capabilities().contains(&Capability::Semantic),
+        "pgvector is installed"
+    );
     let embedder = HashEmbedder::new(64);
 
     let mut root = ObjectMapping::default();
@@ -89,7 +94,14 @@ fn embeddings_are_stored_guarded_and_searched() {
         (id.to_string(), body)
     };
     backend
-        .index_documents(&mapping, &[item("A", "water pump"), item("B", "garden hose"), item("C", "water heater")])
+        .index_documents(
+            &mapping,
+            &[
+                item("A", "water pump"),
+                item("B", "garden hose"),
+                item("C", "water heater"),
+            ],
+        )
         .unwrap();
 
     // The worker: every document is pending, then none.
@@ -108,7 +120,10 @@ fn embeddings_are_stored_guarded_and_searched() {
         pending.len()
     };
     assert_eq!(embed_all(), 3);
-    assert!(backend.pending_embeddings(&mapping, embedder.model(), 100).unwrap().is_empty());
+    assert!(backend
+        .pending_embeddings(&mapping, embedder.model(), 100)
+        .unwrap()
+        .is_empty());
 
     // Nearest neighbors, and the filter.
     let mappings = vec![Arc::new(mapping.clone())];
@@ -124,9 +139,14 @@ fn embeddings_are_stored_guarded_and_searched() {
     assert_eq!(hits.iter().map(|hit| hit.id.as_str()).collect::<Vec<_>>(), vec!["C"]);
 
     // The stale guard: a body indexed again after the worker read it keeps the worker's vector out.
-    let stale = backend.pending_embeddings(&mapping, "another-model", 1).unwrap().remove(0);
+    let stale = backend
+        .pending_embeddings(&mapping, "another-model", 1)
+        .unwrap()
+        .remove(0);
     std::thread::sleep(Duration::from_millis(5));
-    backend.index_documents(&mapping, &[item(&stale.id, "changed title")]).unwrap();
+    backend
+        .index_documents(&mapping, &[item(&stale.id, "changed title")])
+        .unwrap();
     assert!(!backend
         .store_embedding(&mapping, &stale.id, &stale.seen, "another-model", &vector)
         .unwrap());

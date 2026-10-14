@@ -1013,7 +1013,8 @@ mod tests {
     /// The browser's `$mq.compare` (WebrootVue.qvt.js) is checked against the same vectors.
     #[test]
     fn compare_vectors() {
-        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/compare-vectors.json")).unwrap();
+        let text =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/compare-vectors.json")).unwrap();
         let vectors: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap();
         for vector in vectors {
             let field = crate::json::from_json(&vector[0]);

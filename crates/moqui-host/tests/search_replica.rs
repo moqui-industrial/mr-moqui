@@ -12,7 +12,6 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-
 //! The Postgres search backend with a `read-url` replica: a streaming standby of an embedded
 //! cluster, made with `pg_basebackup -R` from the same install and started with `pg_ctl`. Reads go
 //! to the standby and can be behind; a read-your-writes search waits for replay, or runs on the
@@ -45,7 +44,10 @@ fn reads_go_to_the_replica_and_fresh_reads_wait_or_use_the_primary() {
     std::fs::create_dir_all(&standby_dir).unwrap();
     moqui_host::xmlshim::provide_libxml2_soname(&primary_dir).unwrap();
     let (cluster, driver) = EmbeddedCluster::start(&primary_dir, 20).unwrap();
-    let password = std::fs::read_to_string(primary_dir.join("pgpass")).unwrap().trim().to_string();
+    let password = std::fs::read_to_string(primary_dir.join("pgpass"))
+        .unwrap()
+        .trim()
+        .to_string();
     let bin = install_bin(&primary_dir);
     let standby_data = standby_dir.join("data");
     let standby = Standby::start(&bin, cluster.data_dir(), &standby_data, &password);
@@ -57,7 +59,9 @@ fn reads_go_to_the_replica_and_fresh_reads_wait_or_use_the_primary() {
         .password(&password)
         .options("-c default_transaction_read_only=on -c statement_timeout=30000");
     let read_tx = TransactionManager::new(Arc::new(read_driver), pool()).unwrap();
-    let backend = PostgresBackend::open(primary_tx, None).unwrap().with_read_replica(read_tx);
+    let backend = PostgresBackend::open(primary_tx, None)
+        .unwrap()
+        .with_read_replica(read_tx);
 
     let mapping = note_mapping();
     backend.ensure_index(&mapping).unwrap();
@@ -97,7 +101,11 @@ fn reads_go_to_the_replica_and_fresh_reads_wait_or_use_the_primary() {
     standby.sql("SELECT pg_wal_replay_pause()");
     backend.index_documents(&mapping, &[note("N3", "third")]).unwrap();
     assert_eq!(ids(&eventual), vec!["N1", "N2"], "the paused replica is behind");
-    assert_eq!(ids(&fresh(300)), vec!["N1", "N2", "N3"], "the fresh read ran on the primary");
+    assert_eq!(
+        ids(&fresh(300)),
+        vec!["N1", "N2", "N3"],
+        "the fresh read ran on the primary"
+    );
     let status = backend.replica_status().unwrap();
     assert_eq!(status.primary_fallbacks, 1);
     assert!(status.lag_seconds.is_some(), "{status:?}");
@@ -114,10 +122,19 @@ fn reads_go_to_the_replica_and_fresh_reads_wait_or_use_the_primary() {
     ))
     .unwrap();
     let result = backend
-        .aggregate_fresh(&mapping, &Query::MatchAll, &aggs, Some(Instant::now() + Duration::from_secs(5)))
+        .aggregate_fresh(
+            &mapping,
+            &Query::MatchAll,
+            &aggs,
+            Some(Instant::now() + Duration::from_secs(5)),
+        )
         .unwrap();
-    let Value::Map(titles) = &result["titles"] else { panic!("{result:?}") };
-    let Some(Value::List(buckets)) = titles.get("buckets") else { panic!("{titles:?}") };
+    let Value::Map(titles) = &result["titles"] else {
+        panic!("{result:?}")
+    };
+    let Some(Value::List(buckets)) = titles.get("buckets") else {
+        panic!("{titles:?}")
+    };
     assert_eq!(buckets.len(), 3);
 
     backend.drop_index(&mapping).unwrap();
@@ -129,8 +146,20 @@ fn reads_go_to_the_replica_and_fresh_reads_wait_or_use_the_primary() {
 
 fn note_mapping() -> DocumentMapping {
     let mut root = ObjectMapping::default();
-    root.fields.insert("noteId".into(), FieldMapping { kind: FieldKind::Keyword, sortable: false });
-    root.fields.insert("noteText".into(), FieldMapping { kind: FieldKind::Text, sortable: false });
+    root.fields.insert(
+        "noteId".into(),
+        FieldMapping {
+            kind: FieldKind::Keyword,
+            sortable: false,
+        },
+    );
+    root.fields.insert(
+        "noteText".into(),
+        FieldMapping {
+            kind: FieldKind::Text,
+            sortable: false,
+        },
+    );
     DocumentMapping {
         document_id: "TestReplicaNote".into(),
         index_name: None,
@@ -188,7 +217,11 @@ impl Standby {
             .args(["-R", "-X", "stream", "-c", "fast"])
             .output()
             .unwrap();
-        assert!(output.status.success(), "pg_basebackup: {}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "pg_basebackup: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let options = format!(
             "-c port={STANDBY_PORT} -c unix_socket_directories='{}' -c listen_addresses='' -c hot_standby=on",
             data.display()
@@ -201,7 +234,11 @@ impl Standby {
             .args(["-w", "start"])
             .output()
             .unwrap();
-        assert!(output.status.success(), "pg_ctl start: {}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "pg_ctl start: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         Self {
             bin: bin.to_path_buf(),
             data: data.to_path_buf(),

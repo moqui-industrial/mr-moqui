@@ -643,7 +643,15 @@ mod tests {
             statements.push(sql.clone());
             Ok(Vec::new())
         };
-        let out = aggregate("\"search\".\"t\"", &sales(), &TextSetup::default(), &Query::MatchAll, &aggs, &mut run).unwrap();
+        let out = aggregate(
+            "\"search\".\"t\"",
+            &sales(),
+            &TextSetup::default(),
+            &Query::MatchAll,
+            &aggs,
+            &mut run,
+        )
+        .unwrap();
         assert_eq!(statements.len(), 2);
         assert_eq!(
             statements[0].text,

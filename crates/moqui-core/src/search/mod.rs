@@ -734,7 +734,9 @@ impl SearchFacade {
         let facets: Vec<(&String, &agg::Terms)> = aggs
             .iter()
             .filter_map(|(name, agg)| match agg {
-                Agg::Terms(terms) if terms.field == query::DOCUMENT_FIELD && terms.aggs.is_empty() => Some((name, terms)),
+                Agg::Terms(terms) if terms.field == query::DOCUMENT_FIELD && terms.aggs.is_empty() => {
+                    Some((name, terms))
+                }
                 _ => None,
             })
             .collect();
@@ -787,7 +789,10 @@ impl SearchFacade {
                     let mut bucket = IndexMap::new();
                     bucket.insert("key".to_string(), Value::String(id.clone()));
                     bucket.insert("key_display".to_string(), Value::String(id));
-                    bucket.insert("doc_count".to_string(), Value::I64(i64::try_from(count).unwrap_or(i64::MAX)));
+                    bucket.insert(
+                        "doc_count".to_string(),
+                        Value::I64(i64::try_from(count).unwrap_or(i64::MAX)),
+                    );
                     Value::Map(bucket)
                 })
                 .collect();
