@@ -149,6 +149,11 @@ pub(crate) struct ParamDef {
     pub allow_html: AllowHtml,
     pub checks: Vec<Check>,
     pub auto: Option<AutoParams>,
+    /// `entity-name` and `field-name`: the entity field a form builds this parameter's widget from.
+    pub entity_name: Option<String>,
+    pub field_name: Option<String>,
+    /// `format`, for the date and number widgets of a form.
+    pub format: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -687,6 +692,9 @@ fn parse_parameter(node: &MNode) -> ParamDef {
         allow_html: allow_html_of(node),
         checks: parse_checks(node),
         auto: None,
+        entity_name: node.attribute("entity-name").filter(|text| !text.is_empty()),
+        field_name: node.attribute("field-name").filter(|text| !text.is_empty()),
+        format: node.attribute("format").filter(|text| !text.is_empty()),
     }
 }
 
@@ -717,6 +725,9 @@ fn parse_auto(node: &MNode) -> ParamDef {
             exclude,
             required,
         }),
+        entity_name: None,
+        field_name: None,
+        format: None,
     }
 }
 

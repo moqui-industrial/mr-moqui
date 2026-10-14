@@ -309,12 +309,18 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   - saved finds: `formListFindId`, `FormListFindUserDefault` and the `formSaveFind` transition (SRI:336-378, SD:1113-1135);
   - the `formSelectColumns` transition (SD:1135-1165) and `screenDoc` (SD:1168-1193);
   - the `screen.user.page.size` preference (SRI:391-404);
-  - `auto-fields-service` and `auto-widget-service` (SF:147-176), which `Tools/Service/ServiceRun.xml` needs;
-  - `DbForm` forms and `extends` of one (SF:72-80, 334-350), and `setSubFieldValidateAttrs` (SF:214-276), the client checks from a
-    transition's service;
   - form-list aggregation (`group-by`, `sub-list`, `show-total`) and a select limited to the displayed and hidden fields (SF:2033-2139);
   - tree node JSON (`sendSubNodeJson`, SD:1085-1088), `include-child-content` and template files under a screen (SRI:650-747),
     transition names that are patterns (SD:509-515), and `section-include` copying only what the section holds (SD:366-390).
+- **Ported after the review.** These came off the list above:
+  - `auto-fields-service` and `auto-widget-service` build fields from a service's parameters, with `auto-parameters` expanded, an entity
+    field's widget when the parameter is one and a widget by the parameter type otherwise; `Tools/Service/ServiceRun.xml` shows its
+    parameter form. `setSubFieldValidateAttrs` puts `validate-service` (or `validate-entity` for an implicit entity-auto service) on the
+    fields of a form whose transition calls one service, so the client checks follow the service.
+  - `extends="DbForm#id"` builds the form from the `DbForm` records (fields, attributes, options and entity options), and a form a
+    `DbForm` modifies for some group (`DbFormLookup`, read as `DbForm` and `DbFormUserGroup`) is assembled for each render with the
+    current user's `DbForm` fields merged in. The `DbForm` node is not cached as Java's `dbFormNodeByIdCache` is; the entity reads use
+    the entity cache. `formDisplayOnly` is not read.
 - **Differences that stay.** `disable-when` on a `subscreens-item` blocks the screen below the first level; Java defines `getDisable`
   but reads it nowhere. The `default-display` attribute of an entity field is not read (no entity in this tree or the Java components
   sets it).

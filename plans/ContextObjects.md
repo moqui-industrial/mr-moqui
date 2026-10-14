@@ -207,8 +207,8 @@ the server-side `dynamic-options` (both run a transition as a test render), `mak
 `makeFormListMultiMap`, `getFormListHeaderValues`, `getFormFieldValues`, `startFormListSubRow`, `endFormListSubRow`,
 `getFormInstance().makeFormListRenderInfo()`, and the screen definition's `getMenuSubscreensItems`.
 Form-list `group-by`, `sub-list`, `show-total`, saved finds and `select-columns` are deferred with them.
-`auto-fields-service`, `auto-widget-service`, `DbForm` forms and `dynamic="true"` forms are not assembled. A related
-entity's drop-down in `auto-fields-entity` is a text widget.
+`auto-fields-service`, `auto-widget-service`, `DbForm` forms and `dynamic="true"` forms are assembled (Phase 8 notes in
+`plans/Implementation-Phases.md`). A related entity's drop-down in `auto-fields-entity` is a text widget.
 
 `ec` and statics, added now:
 

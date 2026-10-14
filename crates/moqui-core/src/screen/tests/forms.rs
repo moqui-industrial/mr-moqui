@@ -482,3 +482,168 @@ fn the_shell_wraps_a_page_and_the_real_error_pages_show_the_error_context() {
         Some("application/json")
     );
 }
+
+/// `auto-fields-service` builds a field for each in-parameter, `auto-widget-service` the widget of one field, and the form's
+/// transition that calls one service puts `validate-service` on the fields that are its parameters.
+#[test]
+fn a_form_builds_its_fields_from_a_service() {
+    let dir = std::env::temp_dir().join(format!("moqui-forms-service-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let services = dir.join("FormServices.xml");
+    std::fs::write(
+        &services,
+        r#"<services>
+    <service verb="save" noun="Widget" authenticate="false">
+        <in-parameters>
+            <parameter name="title" required="true"/>
+            <parameter name="count" type="Integer"/>
+            <parameter name="when" type="Timestamp"/>
+            <parameter name="note"/>
+        </in-parameters>
+    </service>
+</services>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Form.xml"),
+        r#"<screen require-authentication="false">
+    <transition name="save"><service-call name="save#Widget"/><default-response url="."/></transition>
+    <widgets>
+        <form-single name="Auto" transition="save">
+            <auto-fields-service service-name="save#Widget"/>
+            <field name="note"><default-field title="Note"><text-area/></default-field></field>
+            <field name="submitButton"><default-field><submit/></default-field></field>
+        </form-single>
+        <form-single name="Single" transition="save">
+            <field name="when"><default-field><auto-widget-service service-name="save#Widget" field-type="find"/></default-field></field>
+            <field name="title"><default-field><text-line/></default-field></field>
+        </form-single>
+    </widgets>
+</screen>"#,
+    )
+    .unwrap();
+    let world = World::open("");
+    {
+        let ctx = world.factory.new_context();
+        let _entered = ctx.enter();
+        let failures = crate::service::lint(std::slice::from_ref(&services)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+    }
+    let root = dir.join("Form.xml").to_string_lossy().into_owned();
+    let page = serve_at(&world.factory, request("GET", "/"), &root);
+    let html = page.body_text();
+    assert_eq!(page.status, 200, "{html}");
+    assert!(html.contains("name=\"title\""), "{html}");
+    assert!(html.contains("id=\"Auto_count\""), "{html}");
+    assert!(
+        html.contains("<input type=\"datetime-local\" name=\"when\" id=\"Auto_when\""),
+        "{html}"
+    );
+    // validate-service: the required parameter is required, the integer one numeric
+    assert!(html.contains("name=\"title\" value=\"\" required"), "{html}");
+    assert!(
+        html.contains("name=\"count\" value=\"\" data-wide inputmode=\"decimal\""),
+        "{html}"
+    );
+    // the form's own field replaces the service's
+    assert!(
+        html.contains("<textarea") && html.contains("id=\"Auto_note\""),
+        "{html}"
+    );
+    // a date find from auto-widget-service
+    assert!(html.contains("name=\"when_from\""), "{html}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A `DbForm` for `ALL_USERS` that modifies a screen form adds its field when the form renders, and a form that extends
+/// `DbForm#id` is made of the `DbForm` fields.
+#[test]
+fn db_forms_modify_and_extend_a_form() {
+    let dir = std::env::temp_dir().join(format!("moqui-forms-dbform-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.join("Form.xml").to_string_lossy().into_owned();
+    std::fs::write(
+        &root,
+        r#"<screen require-authentication="false">
+    <widgets>
+        <form-single name="Plain">
+            <field name="title"><default-field><text-line/></default-field></field>
+        </form-single>
+        <form-single name="FromDb" extends="DbForm#GATE_BASE"/>
+    </widgets>
+</screen>"#,
+    )
+    .unwrap();
+    let world = World::open("");
+    {
+        let ctx = world.factory.new_context();
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        let row = |entity: &str, fields: &[(&str, &str)]| {
+            let mut value = world.facade.make_value(entity).unwrap();
+            for (name, text) in fields {
+                value.set(*name, moqui_lib::object::Value::string(*text));
+            }
+            value.create(&world.facade).unwrap();
+        };
+        row(
+            "moqui.screen.form.DbForm",
+            &[
+                ("formId", "GATE_MOD"),
+                ("modifyXmlScreenForm", &format!("{root}#Plain")),
+            ],
+        );
+        row(
+            "moqui.screen.form.DbFormUserGroup",
+            &[("formId", "GATE_MOD"), ("userGroupId", "ALL_USERS")],
+        );
+        row(
+            "moqui.screen.form.DbFormField",
+            &[
+                ("formId", "GATE_MOD"),
+                ("fieldName", "extra"),
+                ("fieldTypeEnumId", "DBFFT_text-line"),
+                ("title", "Extra"),
+            ],
+        );
+        row("moqui.screen.form.DbForm", &[("formId", "GATE_BASE")]);
+        row(
+            "moqui.screen.form.DbFormField",
+            &[
+                ("formId", "GATE_BASE"),
+                ("fieldName", "kind"),
+                ("fieldTypeEnumId", "DBFFT_drop-down"),
+                ("title", "Kind"),
+            ],
+        );
+        row(
+            "moqui.screen.form.DbFormFieldOption",
+            &[
+                ("formId", "GATE_BASE"),
+                ("fieldName", "kind"),
+                ("sequenceNum", "1"),
+                ("keyValue", "A"),
+                ("text", "Alpha"),
+            ],
+        );
+        row(
+            "moqui.screen.form.DbFormFieldAttribute",
+            &[
+                ("formId", "GATE_BASE"),
+                ("fieldName", "kind"),
+                ("attributeName", "allow-empty"),
+                ("value", "true"),
+            ],
+        );
+    }
+    let page = serve_at(&world.factory, request("GET", "/"), &root);
+    let html = page.body_text();
+    assert_eq!(page.status, 200, "{html}");
+    assert!(html.contains("id=\"Plain_title\""), "{html}");
+    assert!(html.contains("<label for=\"Plain_extra\">Extra</label>"), "{html}");
+    assert!(html.contains("<label for=\"FromDb_kind\">Kind</label>"), "{html}");
+    assert!(html.contains(">Alpha</option>"), "{html}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

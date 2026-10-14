@@ -275,8 +275,11 @@ pub fn unit_for(ctx: &Ctx<'_>, request: &UnitRequest<'_>) -> Result<Option<Arc<U
                         return Ok(None);
                     }
                     let form_name = node.attribute("name").unwrap_or_default();
-                    if request.def.forms.get(&form_name).is_some_and(|form| form.dynamic) {
-                        // Its fields depend on the context, so the call that renders it assembles it then.
+                    if request.def.forms.get(&form_name).is_some_and(|form| form.dynamic)
+                        || form::has_db_extensions(&request.def.location, &form_name)
+                    {
+                        // Its fields depend on the context or on the user's DbForms, so the call that renders it
+                        // assembles it then.
                         let call = MNode::new("render-dynamic-form");
                         call.set_attribute("name", form_name);
                         return Ok(Some(call));

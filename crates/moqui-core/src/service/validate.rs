@@ -141,7 +141,11 @@ fn text_collection(value: &Value, java_type: &str) -> Option<Value> {
     Some(Value::List(items))
 }
 
-fn expand_params(def: &ServiceDef, params: &[ParamDef], facade: Option<&EntityFacade>) -> Result<Vec<ParamDef>, Error> {
+pub(crate) fn expand_params(
+    def: &ServiceDef,
+    params: &[ParamDef],
+    facade: Option<&EntityFacade>,
+) -> Result<Vec<ParamDef>, Error> {
     let mut out = Vec::new();
     for param in params {
         if param.name.is_empty() {
@@ -210,6 +214,9 @@ pub(crate) fn auto_fields(
             allow_html: auto.allow_html,
             checks: Vec::new(),
             auto: None,
+            entity_name: Some(entity.full_name.clone()),
+            field_name: None,
+            format: None,
         });
     }
     params

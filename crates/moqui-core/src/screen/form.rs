@@ -15,14 +15,16 @@
 //! Forms as the macros see them: the form element with `extends`, `widget-template-include`,
 //! `auto-fields-entity`, and `screen-extend` forms merged in, as `ScreenForm.initForm` does.
 //!
-//! Not ported yet: `auto-fields-service` and `auto-widget-service` (the form is built without
-//! those fields and a warning is logged), `DbForm` forms, `dynamic="true"` re-assembly per render,
-//! and the drop-down an `auto-fields-entity` field gets for a related entity (it gets a text
-//! widget instead). A form is assembled once per definition and kept with it.
+//! `auto-fields-service` and `auto-widget-service` build fields from a service's parameters, and a form whose
+//! `transition` calls one service gets `validate-service` (or `validate-entity`) on its fields, as `setSubFieldValidateAttrs`.
+//! A form is assembled once per definition and kept with it; a `dynamic="true"` form, and a form that a `DbForm` of some
+//! user group modifies (`DbFormLookup`), is assembled for each render, with the user's `DbForm` fields merged in.
+//! `extends="DbForm#formId"` extends a form made of `DbForm` records.
 
 use std::sync::Arc;
 
 use moqui_lib::node::MNode;
+use moqui_lib::object::Value;
 
 use super::cache::ScreenFacade;
 use super::definition::{Actions, ScreenDef};
@@ -182,7 +184,212 @@ pub fn assemble_dynamic(
     name: &str,
 ) -> Result<Arc<FormInstance>, Error> {
     let node = assemble_node(facade, factory, def, name, 0, true)?;
+    for db_form in user_db_forms(&def.location, name)? {
+        merge_form_nodes(&node, &db_form, false, true);
+    }
     Ok(Arc::new(FormInstance::of(def, &node)?))
+}
+
+/// Whether a `DbForm` of any user group modifies the form `name` of the screen at `location` (Java's `hasDbExtensions`).
+/// Such a form is assembled for each render, like a dynamic one.
+pub(crate) fn has_db_extensions(location: &str, name: &str) -> bool {
+    db_form_groups(location, name).is_ok_and(|forms| forms.iter().any(|(_, groups)| !groups.is_empty()))
+}
+
+/// The `DbForm` ids that modify the form, each with the user groups it is for: `DbFormLookup`, read as its two entities.
+fn db_form_groups(location: &str, name: &str) -> Result<Vec<(String, Vec<String>)>, Error> {
+    let Some(facade) = ExecutionContext::with_current(|ec| ec.factory().entity()).flatten() else {
+        return Ok(Vec::new());
+    };
+    let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+    let forms = facade
+        .find("moqui.screen.form.DbForm")?
+        .eq("modifyXmlScreenForm", Value::string(format!("{location}#{name}")))
+        .use_cache(true)
+        .list()?;
+    let mut out = Vec::new();
+    for form in forms.iter() {
+        let form_id = db_text(form, "formId");
+        let groups = facade
+            .find("moqui.screen.form.DbFormUserGroup")?
+            .eq("formId", Value::string(form_id.clone()))
+            .use_cache(true)
+            .list()?;
+        out.push((
+            form_id,
+            groups.iter().map(|group| db_text(group, "userGroupId")).collect(),
+        ));
+    }
+    Ok(out)
+}
+
+/// The `DbForm` nodes that modify this form for the current user's groups, as `getDbFormNodeList`.
+fn user_db_forms(location: &str, name: &str) -> Result<Vec<MNode>, Error> {
+    let forms = db_form_groups(location, name)?;
+    if forms.is_empty() {
+        return Ok(Vec::new());
+    }
+    let user_groups = crate::user::current_user_groups()?;
+    forms
+        .iter()
+        .filter(|(_, groups)| groups.iter().any(|group| user_groups.contains(group)))
+        .map(|(id, _)| db_form_node(id))
+        .collect()
+}
+
+/// Field attributes and sub-field attributes of a `DbFormFieldAttribute`; any other name goes on the widget.
+const DB_FIELD_ATTRIBUTES: &[&str] = &["name", "from", "entry-name", "hide"];
+const DB_SUB_FIELD_ATTRIBUTES: &[&str] = &[
+    "title",
+    "tooltip",
+    "red-when",
+    "validate-service",
+    "validate-parameter",
+    "validate-entity",
+    "validate-field",
+];
+
+fn db_text(value: &crate::entity::EntityValue, field: &str) -> String {
+    value
+        .get(field)
+        .filter(|value| !value.is_null())
+        .map(moqui_lib::object::to_plain_string)
+        .unwrap_or_default()
+}
+
+fn db_number(value: &crate::entity::EntityValue, field: &str) -> i64 {
+    db_text(value, field).parse().unwrap_or(0)
+}
+
+/// `getDbFormNode`: a form-single or form-list built from a `DbForm` and its `DbFormField`, attribute and option records.
+fn db_form_node(form_id: &str) -> Result<MNode, Error> {
+    let facade = ExecutionContext::with_current(|ec| ec.factory().entity())
+        .flatten()
+        .ok_or_else(|| Error::new("no entity facade is installed"))?;
+    let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+    let id = Value::string(form_id);
+    let form = facade
+        .find("moqui.screen.form.DbForm")?
+        .eq("formId", id.clone())
+        .use_cache(true)
+        .one()?
+        .ok_or_else(|| Error::new(format!("Could not find DbForm record with ID [{form_id}]")))?;
+    let node = MNode::new(if db_text(&form, "isListForm") == "Y" {
+        "form-list"
+    } else {
+        "form-single"
+    });
+    let fields = facade
+        .find("moqui.screen.form.DbFormField")?
+        .eq("formId", id.clone())
+        .order_by("layoutSequenceNum", false)
+        .use_cache(true)
+        .list()?;
+    for db_field in fields.iter() {
+        let field_name = db_text(db_field, "fieldName");
+        let field = MNode::new("field");
+        field.set_attribute("name", field_name.clone());
+        let entry = db_text(db_field, "entryName");
+        if !entry.is_empty() {
+            field.set_attribute("from", entry);
+        }
+        let condition = db_text(db_field, "condition");
+        let sub = if condition.is_empty() {
+            field.append("default-field")
+        } else {
+            let sub = field.append("conditional-field");
+            sub.set_attribute("condition", condition);
+            sub
+        };
+        for attribute in ["title", "tooltip"] {
+            let value = db_text(db_field, attribute);
+            if !value.is_empty() {
+                sub.set_attribute(attribute, value);
+            }
+        }
+        let field_type = db_text(db_field, "fieldTypeEnumId");
+        let Some(widget_name) = field_type.get(6..).filter(|name| !name.is_empty()) else {
+            return Err(Error::new(format!(
+                "DbFormField record with formId [{form_id}] and fieldName [{field_name}] has no fieldTypeEnumId"
+            )));
+        };
+        let widget = sub.append(widget_name);
+        let of_field = |entity: &str| -> Result<crate::entity::EntityList, Error> {
+            Ok(facade
+                .find(entity)?
+                .eq("formId", id.clone())
+                .eq("fieldName", Value::string(field_name.clone()))
+                .use_cache(true)
+                .list()?)
+        };
+        for attribute in of_field("moqui.screen.form.DbFormFieldAttribute")?.iter() {
+            let name = db_text(attribute, "attributeName");
+            let value = db_text(attribute, "value");
+            if DB_FIELD_ATTRIBUTES.contains(&name.as_str()) {
+                field.set_attribute(name, value);
+            } else if DB_SUB_FIELD_ATTRIBUTES.contains(&name.as_str()) {
+                sub.set_attribute(name, value);
+            } else {
+                widget.set_attribute(name, value);
+            }
+        }
+        let options = of_field("moqui.screen.form.DbFormFieldOption")?;
+        let entity_options = of_field("moqui.screen.form.DbFormFieldEntOpts")?;
+        let mut combined: Vec<(i64, bool, &crate::entity::EntityValue)> = options
+            .iter()
+            .map(|value| (db_number(value, "sequenceNum"), false, value))
+            .chain(
+                entity_options
+                    .iter()
+                    .map(|value| (db_number(value, "sequenceNum"), true, value)),
+            )
+            .collect();
+        combined.sort_by_key(|(sequence, _, _)| *sequence);
+        for (sequence_num, from_entity, option) in combined {
+            if !from_entity {
+                let node = widget.append("option");
+                node.set_attribute("key", db_text(option, "keyValue"));
+                node.set_attribute("text", db_text(option, "text"));
+                continue;
+            }
+            let options_node = widget.append("entity-options");
+            let option_text = db_text(option, "text");
+            options_node.set_attribute(
+                "text",
+                if option_text.is_empty() {
+                    "${description}".to_string()
+                } else {
+                    option_text
+                },
+            );
+            let find = options_node.append("entity-find");
+            find.set_attribute("entity-name", db_text(option, "entityName"));
+            let of_sequence = |entity: &str| -> Result<Vec<crate::entity::EntityValue>, Error> {
+                Ok(of_field(entity)?
+                    .into_values()
+                    .into_iter()
+                    .filter(|value| db_number(value, "sequenceNum") == sequence_num)
+                    .collect())
+            };
+            for cond in of_sequence("moqui.screen.form.DbFormFieldEntOptsCond")? {
+                let node = find.append("econdition");
+                node.set_attribute("field-name", db_text(&cond, "entityFieldName"));
+                node.set_attribute("value", db_text(&cond, "value"));
+            }
+            let mut orders = of_sequence("moqui.screen.form.DbFormFieldEntOptsOrder")?;
+            orders.sort_by_key(|order| db_number(order, "orderSequenceNum"));
+            for order in orders {
+                find.append("order-by")
+                    .set_attribute("field-name", db_text(&order, "entityFieldName"));
+            }
+        }
+        let layout = db_text(db_field, "layoutSequenceNum");
+        if !layout.is_empty() {
+            field.set_attribute("layoutSequenceNum", layout);
+        }
+        merge_field_node(&node, &field, false);
+    }
+    Ok(node)
 }
 
 fn assemble_node(
@@ -259,10 +466,42 @@ fn assemble_node(
                 }
             }
             "auto-fields-service" => {
-                tracing::warn!(
-                    "form {name} in {}: auto-fields-service is not supported, its fields are left out",
-                    def.location
-                );
+                let mut service_name = sub.attribute("service-name").unwrap_or_default();
+                if dynamic {
+                    service_name = script::expand(&service_name)?;
+                    if service_name.is_empty() || service_name == "null" {
+                        service_name = script::context_value("formLocationExtension")
+                            .map(|value| moqui_lib::object::to_plain_string(&value))
+                            .unwrap_or_default();
+                    }
+                }
+                let excludes: Vec<String> = sub
+                    .children_named("exclude")
+                    .iter()
+                    .filter_map(|exclude| exclude.attribute("parameter-name"))
+                    .collect();
+                let field_type = sub
+                    .attribute("field-type")
+                    .filter(|text| !text.is_empty())
+                    .unwrap_or_else(|| "edit".to_string());
+                if let Some(service) = crate::service::call::service_form_info(&service_name) {
+                    let include = sub
+                        .attribute("include")
+                        .filter(|text| !text.is_empty())
+                        .unwrap_or_else(|| "in".to_string());
+                    add_service_fields(&service, &include, &field_type, &excludes, &assembled);
+                } else if let Some(entity_name) = crate::service::call::entity_auto_noun(&service_name) {
+                    let shape = entity_shape(&entity_name)?;
+                    let displayed = add_entity_fields(&shape, "all", &field_type, &[], &assembled);
+                    if is_list {
+                        column_info.push((entity_name, displayed));
+                    }
+                } else {
+                    return Err(Error::new(format!(
+                        "Cound not find service [{service_name}] or entity noun referred to in auto-fields-service of form [{name}] of screen [{}]",
+                        def.location
+                    )));
+                }
             }
             _ => {}
         }
@@ -270,6 +509,15 @@ fn assemble_node(
     merge_form_nodes(&assembled, &base, false, false);
     for extension in &extensions {
         merge_form_nodes(&assembled, extension, true, true);
+    }
+    for (attribute, sub_name) in [
+        ("transition", "default-field"),
+        ("transition", "conditional-field"),
+        ("transition-first-row", "first-row-field"),
+        ("transition-second-row", "second-row-field"),
+        ("transition-last-row", "last-row-field"),
+    ] {
+        set_sub_field_validate_attrs(def, &assembled, attribute, sub_name);
     }
 
     // A field-layout with fields it does not reference still needs the hidden ones, so they submit.
@@ -309,7 +557,7 @@ fn extends_node(
         return assemble_node(facade, factory, def, form_name, depth + 1, dynamic);
     }
     if location == "moqui.screen.form.DbForm" || location == "DbForm" {
-        return Err(Error::new("form extends of a DbForm is not supported"));
+        return db_form_node(form_name);
     }
     let other = facade.screen_def(factory, location)?;
     // The assembled form is kept with this definition, so a change to the other screen makes this one stale.
@@ -502,11 +750,39 @@ fn expand_field_sub_node(
             add_auto_entity_field(&shape, &field_name, &field_type, field, Some(sub), form);
         }
         "auto-widget-service" => {
-            tracing::warn!(
-                "auto-widget-service is not supported, the widget of field {:?} is left out",
-                field.attribute("name")
-            );
+            let service_name = widget.attribute("service-name").unwrap_or_default();
+            let parameter_name = widget
+                .attribute("parameter-name")
+                .filter(|text| !text.is_empty())
+                .or_else(|| field.attribute("name"))
+                .unwrap_or_default();
+            let field_type = widget
+                .attribute("field-type")
+                .filter(|text| !text.is_empty())
+                .unwrap_or_else(|| "edit".to_string());
             sub.clear_children();
+            if let Some(service) = crate::service::call::service_form_info(&service_name) {
+                let parameter = service
+                    .in_params
+                    .iter()
+                    .find(|parameter| parameter.name == parameter_name)
+                    .ok_or_else(|| {
+                        Error::new(format!(
+                            "Cound not find parameter [{parameter_name}] in service [{service_name}] referred to in auto-widget-service of form [{}]",
+                            form.attribute("name").unwrap_or_default()
+                        ))
+                    })?;
+                let noun = entity_shape(&service.noun).ok();
+                add_auto_service_field(noun.as_ref(), parameter, &field_type, field, sub, form);
+            } else if let Some(entity_name) = crate::service::call::entity_auto_noun(&service_name) {
+                let shape = entity_shape(&entity_name)?;
+                add_auto_entity_field(&shape, &parameter_name, &field_type, field, Some(sub), form);
+            } else {
+                return Err(Error::new(format!(
+                    "Cound not find service [{service_name}] or entity noun referred to in auto-widget-service of form [{}]",
+                    form.attribute("name").unwrap_or_default()
+                )));
+            }
         }
         _ => {}
     }
@@ -731,6 +1007,170 @@ fn add_auto_entity_field(
             if let Some(sub) = sub {
                 sub.append("hidden");
             }
+        }
+        _ => {}
+    }
+}
+
+/// `setSubFieldValidateAttrs`: when the form's transition calls one service, each field that is one of its in-parameters
+/// gets `validate-service` on its sub-fields, or `validate-entity` for an implicit entity-auto service. A sub-field that
+/// already names one keeps it.
+fn set_sub_field_validate_attrs(def: &ScreenDef, form: &MNode, attribute: &str, sub_name: &str) {
+    let Some(transition_name) = form.attribute(attribute).filter(|text| !text.is_empty()) else {
+        return;
+    };
+    let Some(service) = def
+        .transition(&transition_name, None)
+        .and_then(|transition| transition.single_service.clone())
+    else {
+        return;
+    };
+    let (names, key, value) = if let Some(names) = crate::service::call::service_in_parameter_names(&service) {
+        (names, "validate-service", service)
+    } else if let Some(entity_name) = crate::service::call::entity_auto_noun(&service) {
+        let Ok(shape) = entity_shape(&entity_name) else {
+            return;
+        };
+        let names = shape.fields.into_iter().map(|(name, _, _)| name).collect();
+        (names, "validate-entity", entity_name)
+    } else {
+        return;
+    };
+    for field in form.children_named("field") {
+        if !names.contains(&field.attribute("name").unwrap_or_default()) {
+            continue;
+        }
+        for sub in field.children_named(sub_name) {
+            if sub.attribute(key).is_none_or(|text| text.is_empty()) {
+                sub.set_attribute(key, value.clone());
+            }
+        }
+    }
+}
+
+/// `addServiceFields`: a field for each parameter of the service, with `validate-service` on its default field.
+fn add_service_fields(
+    service: &crate::service::call::FormService,
+    include: &str,
+    field_type: &str,
+    excludes: &[String],
+    form: &MNode,
+) {
+    let noun = entity_shape(&service.noun).ok();
+    let mut parameters: Vec<&crate::service::define::ParamDef> = Vec::new();
+    if include == "in" || include == "all" {
+        parameters.extend(&service.in_params);
+    }
+    if include == "out" || include == "all" {
+        parameters.extend(&service.out_params);
+    }
+    for parameter in parameters {
+        if excludes.contains(&parameter.name) || parameter.name == "lastUpdatedStamp" || parameter.name.is_empty() {
+            continue;
+        }
+        let field = MNode::new("field");
+        field.set_attribute("name", parameter.name.clone());
+        let sub = field.append("default-field");
+        sub.set_attribute("validate-service", service.name.clone());
+        sub.set_attribute("validate-parameter", parameter.name.clone());
+        add_auto_service_field(noun.as_ref(), parameter, field_type, &field, &sub, form);
+        merge_field_node(form, &field, false);
+    }
+}
+
+/// `addAutoServiceField`: the widget of an entity field when the parameter is one, else one chosen by the parameter's type.
+fn add_auto_service_field(
+    noun: Option<&EntityShape>,
+    parameter: &crate::service::define::ParamDef,
+    field_type: &str,
+    field: &MNode,
+    sub: &MNode,
+    form: &MNode,
+) {
+    let own = parameter
+        .entity_name
+        .as_deref()
+        .and_then(|name| entity_shape(name).ok());
+    let shape = own.as_ref().or(noun);
+    let field_name = parameter.field_name.clone().unwrap_or_else(|| parameter.name.clone());
+    if let Some(shape) = shape {
+        if shape.fields.iter().any(|(name, _, _)| *name == field_name) {
+            add_auto_entity_field(shape, &field_name, field_type, field, Some(sub), form);
+            return;
+        }
+    }
+    let java = parameter.java_type.as_str();
+    let entity_type = shape.and_then(|shape| {
+        shape
+            .fields
+            .iter()
+            .find(|(name, _, _)| *name == parameter.name)
+            .map(|(_, field_type, _)| field_type.clone())
+    });
+    let date_kind = if java.ends_with("Date") && java != "java.util.Date" {
+        Some("date")
+    } else if java.ends_with("Time") {
+        Some("time")
+    } else if java.ends_with("Timestamp") || java == "java.util.Date" {
+        Some("date-time")
+    } else {
+        None
+    };
+    let numeric = [
+        "BigDecimal",
+        "BigInteger",
+        "Long",
+        "Integer",
+        "Double",
+        "Float",
+        "Number",
+    ]
+    .iter()
+    .any(|suffix| java.ends_with(suffix));
+    let with_format = |node: &MNode| {
+        if let Some(format) = &parameter.format {
+            node.set_attribute("format", format.clone());
+        }
+    };
+    let find_widget = |target: &MNode| {
+        if let Some(kind) = date_kind {
+            let node = target.append("date-find");
+            node.set_attribute("type", kind);
+            with_format(&node);
+        } else if numeric {
+            target.append("range-find");
+        } else {
+            target.append("text-find");
+        }
+    };
+    match field_type {
+        "edit" => {
+            if parameter.name == "lastUpdatedStamp" {
+                sub.append("hidden");
+            } else if let Some(kind) = date_kind {
+                let node = sub.append("date-time");
+                node.set_attribute("type", kind);
+                with_format(&node);
+            } else if matches!(
+                entity_type.as_deref(),
+                Some("text-long" | "text-very-long" | "text-fts")
+            ) {
+                sub.append("text-area");
+            } else {
+                let node = sub.append("text-line");
+                if let Some(default) = &parameter.default_value {
+                    node.set_attribute("default-value", default.clone());
+                }
+            }
+        }
+        "find" => find_widget(sub),
+        "display" => with_format(&sub.append("display")),
+        "find-display" => {
+            find_widget(&field.append("header-field"));
+            with_format(&sub.append("display"));
+        }
+        "hidden" => {
+            sub.append("hidden");
         }
         _ => {}
     }

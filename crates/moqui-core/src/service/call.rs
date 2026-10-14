@@ -443,10 +443,37 @@ pub(crate) fn service_authz_action(name: &str) -> String {
     verb_action(verb).to_string()
 }
 
-/// The in-parameter names of a defined service, in definition order. None when no service has that name.
+/// The in-parameter names of a defined service, in definition order, with `auto-parameters` expanded. None when no
+/// service has that name.
 pub(crate) fn service_in_parameter_names(name: &str) -> Option<Vec<String>> {
+    let form = service_form_info(name)?;
+    Some(form.in_params.into_iter().map(|parameter| parameter.name).collect())
+}
+
+/// A defined service as a form builds fields from it (`auto-fields-service`, `auto-widget-service`): its noun, and its
+/// parameters with `auto-parameters` expanded. None when no service has that name.
+pub(crate) struct FormService {
+    pub name: String,
+    pub noun: String,
+    pub in_params: Vec<super::define::ParamDef>,
+    pub out_params: Vec<super::define::ParamDef>,
+}
+
+pub(crate) fn service_form_info(name: &str) -> Option<FormService> {
     let def = super::define::find(&canonical(name))?;
-    Some(def.in_params.iter().map(|parameter| parameter.name.clone()).collect())
+    let facade = crate::context::ExecutionContext::with_current(|ec| ec.factory().entity()).flatten();
+    let expand = |params: &[super::define::ParamDef]| {
+        super::validate::expand_params(&def, params, facade.as_ref()).unwrap_or_else(|err| {
+            tracing::warn!(service = %def.name, error = %err, "auto-parameters not expanded for a form");
+            params.iter().filter(|param| !param.name.is_empty()).cloned().collect()
+        })
+    };
+    Some(FormService {
+        in_params: expand(&def.in_params),
+        out_params: expand(&def.out_params),
+        name: def.name.clone(),
+        noun: def.noun.clone(),
+    })
 }
 
 /// The entity of an implicit entity-auto service name such as `create#moqui.basic.Enumeration`, when it has no
