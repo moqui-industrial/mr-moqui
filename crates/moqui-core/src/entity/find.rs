@@ -189,7 +189,7 @@ impl EntityFind {
         }
         // The view frame is what authorizes the read, and the filters come from its record.
         let _authz = self.authz_guard();
-        let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view")?;
+        let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view", "list")?;
         let condition = self.combined();
         let lookup = self.lookup(&condition);
         let bypass = self.bypasses_cache();
@@ -223,7 +223,7 @@ impl EntityFind {
             return Ok(0);
         }
         let _authz = self.authz_guard();
-        let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view")?;
+        let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view", "count")?;
         let condition = self.combined();
         if let Some(count) = cache::before_count(&self.facade, &self.entity_name, condition.as_ref()) {
             return Ok(count);
@@ -248,7 +248,7 @@ impl EntityFind {
     /// not asked to mix in rows that are not in the database yet. The cursor path needs an active
     /// transaction: the open stream is that transaction's enlisted connection. Drop closes it.
     pub fn iterator(self) -> Result<EntityListIterator, Error> {
-        let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view")?;
+        let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view", "iterator")?;
         let condition = self.combined();
         let lookup = self.lookup(&condition);
         if !self.bypasses_cache() {

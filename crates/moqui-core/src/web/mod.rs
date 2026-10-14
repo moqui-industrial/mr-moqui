@@ -118,6 +118,9 @@ struct WebSlot {
     saved: Option<crate::user::session::SavedForPage>,
     /// The `Host` header of the request.
     host: String,
+    /// The full URL of the request and its `Referer`, for an artifact hit. Empty with no socket.
+    request_url: String,
+    referrer: String,
     /// Scheme, host, and context path that links start with. Empty for a path-only link.
     base_url: String,
     sent: bool,
@@ -155,6 +158,8 @@ pub(crate) fn install_with(parameters: BTreeMap<String, Value>, base_url: String
             multipart: BTreeMap::new(),
             saved: None,
             host: String::new(),
+            request_url: String::new(),
+            referrer: String::new(),
             base_url,
             sent: false,
             status: 200,
@@ -218,6 +223,40 @@ pub(crate) fn set_host(host: &str) {
             web.host = host.to_string();
         }
     });
+}
+
+/// Remember the full URL of the request and its `Referer`, Java's `getRequestUrl`, for artifact hits.
+pub(crate) fn set_request_info(request: &WebRequest) {
+    let host = request.header("host").unwrap_or("localhost");
+    let scheme = if request.https { "https" } else { "http" };
+    let mut url = format!("{scheme}://{host}{}", request.path);
+    let query: Vec<String> = request
+        .query
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect();
+    if !query.is_empty() {
+        url.push('?');
+        url.push_str(&query.join("&"));
+    }
+    let referrer = request.header("referer").unwrap_or("").to_string();
+    WEB.with(|slot| {
+        if let Some(web) = slot.borrow_mut().as_mut() {
+            web.request_url = url;
+            web.referrer = referrer;
+        }
+    });
+}
+
+/// The URL [`set_request_info`] kept. None with no request, or for a render with no socket.
+pub(crate) fn request_url() -> Option<String> {
+    WEB.with(|slot| slot.borrow().as_ref().map(|web| web.request_url.clone()))
+        .filter(|url| !url.is_empty())
+}
+
+pub(crate) fn referrer_url() -> Option<String> {
+    WEB.with(|slot| slot.borrow().as_ref().map(|web| web.referrer.clone()))
+        .filter(|url| !url.is_empty())
 }
 
 /// The host name the request was for, with the port when asked.
@@ -443,6 +482,11 @@ pub(crate) fn output_status() -> u16 {
 }
 
 /// Whether a response was already written for this request.
+/// The length of the response body so far. None with no web slot.
+pub(crate) fn output_body_len() -> Option<usize> {
+    WEB.with(|slot| slot.borrow().as_ref().map(|web| web.body.len()))
+}
+
 pub(crate) fn output_sent() -> bool {
     WEB.with(|slot| slot.borrow().as_ref().is_some_and(|web| web.sent))
 }

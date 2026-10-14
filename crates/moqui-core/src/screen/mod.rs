@@ -146,6 +146,7 @@ fn handle(
     let _web = web::install(parameters.clone());
     web::set_multipart(multipart.clone());
     web::set_host(request.header("host").unwrap_or(""));
+    web::set_request_info(request);
     let (login_error, header_authenticated) = authenticate(request, parameters)?;
     let response = dispatch_request(
         factory,

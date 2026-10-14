@@ -157,6 +157,10 @@ pub(crate) struct ServiceDef {
     pub verb: String,
     pub noun: String,
     pub kind: ServiceKind,
+    /// The `type` attribute, the sub-type of the service's artifact hits.
+    pub service_type: String,
+    /// `no-remember-parameters`: the hit does not keep the parameters. An implemented service passes it on.
+    pub no_remember_parameters: bool,
     pub location: String,
     /// `<actions>` XML, or empty when the service has none.
     pub actions: String,
@@ -183,6 +187,8 @@ impl ServiceDef {
             verb: verb.to_string(),
             noun: noun.to_string(),
             kind: ServiceKind::EntityAuto,
+            service_type: "entity-implicit".to_string(),
+            no_remember_parameters: false,
             location: String::new(),
             actions: String::new(),
             authenticate: Authenticate::Required,
@@ -488,6 +494,8 @@ fn load_service(prefix: &str, node: &MNode, services: &mut BTreeMap<String, Serv
         verb,
         noun,
         kind,
+        service_type: type_name,
+        no_remember_parameters: bool_attr(node, "no-remember-parameters", false),
         location,
         actions: node
             .first_named("actions")
@@ -803,11 +811,16 @@ fn resolve_one(
             stack.pop();
             return;
         }
-        let (inherited_in, inherited_out) = {
+        let (inherited_in, inherited_out, no_remember) = {
             let target = services.get(&implement.service).expect("implemented service");
-            (target.in_params.clone(), target.out_params.clone())
+            (
+                target.in_params.clone(),
+                target.out_params.clone(),
+                target.no_remember_parameters,
+            )
         };
         let def = services.get_mut(name).expect("service being resolved");
+        def.no_remember_parameters |= no_remember;
         merge_params(&mut def.in_params, inherited_in, implement.required);
         merge_params(&mut def.out_params, inherited_out, implement.required);
     }

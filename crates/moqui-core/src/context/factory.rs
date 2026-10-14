@@ -66,6 +66,8 @@ pub struct ExecutionContextFactory {
     pub(crate) sessions: std::sync::Mutex<crate::user::session::SessionTable>,
     /// True after this factory's cluster heartbeat hook is registered.
     pub(crate) cluster_heartbeat: AtomicBool,
+    /// Artifact hit counts and bins, written by the scheduler tick.
+    hits: super::hits::ArtifactHits,
 }
 
 impl ExecutionContextFactory {
@@ -103,6 +105,7 @@ impl ExecutionContextFactory {
         let cache = CacheFacade::from_conf(&conf_node)?;
         set_by_boot.keep();
         let conf_text = conf_node.write_string();
+        let hits = super::hits::ArtifactHits::from_conf(&conf_text);
         let flush_mode = crate::user::session::flush_mode_from_property()?;
         let pools = crate::service::start_pools(&conf_text)?;
         super::locate::remember(&framework_dir, &components);
@@ -127,10 +130,12 @@ impl ExecutionContextFactory {
             requests: crate::service::RequestPool::idle(),
             sessions: std::sync::Mutex::new(crate::user::session::SessionTable::new(flush_mode)),
             cluster_heartbeat: AtomicBool::new(false),
+            hits,
         });
         factory.pools.attach(&factory);
         // The host calls cluster::start after the entity facade is installed.
         install_session_flush(&factory);
+        install_hit_flush(&factory);
         Ok(factory)
     }
 
@@ -151,6 +156,20 @@ impl ExecutionContextFactory {
     /// Returns an error when a session row cannot be written.
     pub fn flush_sessions(&self) -> Result<(), Error> {
         crate::user::session::flush_dirty(self)
+    }
+
+    /// Write the waiting artifact hits and every hit bin, including the bins still open. The host
+    /// calls this on shutdown, as Java's `destroy` writes the bins.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the rows cannot be written.
+    pub fn flush_artifact_hits(&self) -> Result<(), Error> {
+        super::hits::flush(self, true)
+    }
+
+    pub(crate) fn artifact_hits(&self) -> &super::hits::ArtifactHits {
+        &self.hits
     }
 
     /// The factory request pool. Idle until [`Self::start_request_pool`].
@@ -394,8 +413,54 @@ impl ExecutionContext {
         }
     }
 
+    /// Pop the top frame. A tracked frame is counted as an artifact hit, in memory.
     pub fn pop(&self) -> Result<(), Error> {
-        self.artifacts.borrow_mut().pop()
+        let popped = self.artifacts.borrow_mut().pop()?;
+        if popped.hit.track {
+            self.count_artifact_hit(&super::hits::Hit {
+                artifact_type: &popped.artifact_type,
+                sub_type: popped.hit.sub_type.as_deref(),
+                name: &popped.name,
+                parameters: popped.hit.parameters.as_ref(),
+                start_ms: popped.started_ms,
+                running_ms: popped.running_ms,
+                output_size: None,
+            });
+        }
+        Ok(())
+    }
+
+    /// Set the hit sub-type of the top frame, Java's `actionDetail`, and the parameters it records.
+    /// The parameters are kept only when the type is counted.
+    pub(crate) fn set_hit_detail(
+        &self,
+        sub_type: Option<&str>,
+        parameters: Option<&std::collections::BTreeMap<String, moqui_lib::object::Value>>,
+    ) {
+        let artifact_type = self.artifacts.borrow().top_type();
+        let keep = artifact_type.is_some_and(|name| self.factory.hits.counts(&name));
+        if let Some(hit) = self.artifacts.borrow_mut().top_hit_mut() {
+            hit.sub_type = sub_type.map(str::to_string);
+            hit.parameters = parameters.filter(|_| keep).cloned();
+        }
+    }
+
+    /// Do not count the top frame as a hit, Java's `setTrackArtifactHit(false)`.
+    pub(crate) fn untrack_hit(&self) {
+        if let Some(hit) = self.artifacts.borrow_mut().top_hit_mut() {
+            hit.track = false;
+        }
+    }
+
+    /// Java's `countArtifactHit`, for a hit that is not a frame of the stack, such as a transition.
+    pub(crate) fn count_artifact_hit(&self, hit: &super::hits::Hit<'_>) {
+        self.factory.hits.count(hit, || super::hits::HitContext {
+            visit_id: crate::user::visit_id().ok().flatten(),
+            user_id: crate::user::current_user_id().ok().flatten(),
+            errors: self.messages.borrow().errors().to_vec(),
+            request_url: crate::web::request_url(),
+            referrer_url: crate::web::referrer_url(),
+        });
     }
 
     pub fn disable_authz(&self) -> AuthzGuard {
@@ -470,6 +535,19 @@ fn install_session_flush(factory: &Arc<ExecutionContextFactory>) {
         };
         if let Err(err) = crate::user::session::flush_dirty(&factory) {
             tracing::warn!("session flush failed: {err}");
+        }
+    });
+}
+
+/// The artifact hit flush is reserve-connection work on the scheduler tick, as the session flush.
+fn install_hit_flush(factory: &Arc<ExecutionContextFactory>) {
+    let weak = Arc::downgrade(factory);
+    factory.pools.add_tick_hook(move || {
+        let Some(factory) = weak.upgrade() else {
+            return;
+        };
+        if let Err(err) = super::hits::flush(&factory, false) {
+            tracing::warn!("artifact hit flush failed: {err}");
         }
     });
 }
@@ -834,8 +912,10 @@ impl ExecutionContextFactory {
                 crate::user::session::FlushMode::Eventual,
             )),
             cluster_heartbeat: AtomicBool::new(false),
+            hits: super::hits::ArtifactHits::from_conf(conf_text),
         });
         factory.pools.attach(&factory);
+        install_hit_flush(&factory);
         factory.new_context()
     }
 }

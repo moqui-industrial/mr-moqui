@@ -269,7 +269,10 @@ impl ServiceFrame {
                 requires_authz,
                 true,
                 Some(parameters),
-            )
+            )?;
+            let remembered = (!def.no_remember_parameters).then_some(parameters);
+            ctx.set_hit_detail(Some(&def.service_type), remembered);
+            Ok(())
         });
         if let Some(Err(err)) = outcome {
             return Err(err);

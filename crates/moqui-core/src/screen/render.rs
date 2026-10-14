@@ -343,7 +343,13 @@ pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> 
     check_authentication(&info)?;
     if let Some(file) = &info.file_resource {
         let versioned = !text_of(job.parameters.get("v")).is_empty();
-        return super::static_files::respond(factory, job.request, file, versioned);
+        let start_ms = user::now_millis();
+        let started = Instant::now();
+        super::static_files::respond(factory, job.request, file, versioned)?;
+        if info.target_screen.track_artifact_hit && web::output_status() == 200 {
+            count_content_hit(file, job.parameters, start_ms, started);
+        }
+        return Ok(());
     }
 
     // Parameters live in a context frame for the request, so nothing leaks into the next one.
@@ -390,6 +396,24 @@ pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> 
     add_server_static_header(&state);
     record_history(job, &state);
     Ok(())
+}
+
+/// The `AT_XML_SCREEN_CONTENT` hit of a file sent from under a screen, by its content type.
+fn count_content_hit(location: &str, parameters: &BTreeMap<String, Value>, start_ms: i64, started: Instant) {
+    let name = location.rsplit('/').next().unwrap_or(location);
+    let content_type = super::static_files::media_type(name);
+    let output_size = web::output_body_len().and_then(|len| i64::try_from(len).ok());
+    ExecutionContext::with_current(|ec| {
+        ec.count_artifact_hit(&crate::context::Hit {
+            artifact_type: "AT_XML_SCREEN_CONTENT",
+            sub_type: Some(content_type),
+            name: location,
+            parameters: Some(parameters),
+            start_ms,
+            running_ms: started.elapsed().as_secs_f64() * 1000.0,
+            output_size,
+        });
+    });
 }
 
 /// A screen that says `server-static` for a mode other than the qvt family gets the cache header, as in Java: it is right only for output
@@ -465,7 +489,7 @@ fn render_screens(state: &RenderState, facade: &ScreenFacade) -> Result<(), Erro
     let last = defs.len().saturating_sub(1);
     {
         // always-actions for every screen in the path, each under the frames of the screens above it
-        let mut frames = Frames::default();
+        let mut frames = Frames::untracked();
         for (index, def) in defs.iter().enumerate() {
             frames.enter_screen(def, index == last)?;
             state.screen_path_index.set(index);
@@ -507,7 +531,7 @@ fn render_screens(state: &RenderState, facade: &ScreenFacade) -> Result<(), Erro
             info.render_path_difference
         };
     {
-        let mut frames = Frames::default();
+        let mut frames = Frames::untracked();
         for (index, def) in defs.iter().enumerate() {
             frames.enter_screen(def, index == last)?;
             if index >= first_pre {
@@ -538,6 +562,7 @@ fn render_screens(state: &RenderState, facade: &ScreenFacade) -> Result<(), Erro
     let mut inherited = Frames::default();
     for def in &defs[..info.render_path_difference.min(defs.len())] {
         inherited.push_screen(def, false)?;
+        inherited.hit_detail(Some(&state.content_type), true);
     }
     state.screen_path_index.set(info.render_path_difference);
     render_body(state)
@@ -632,9 +657,19 @@ fn check_authentication(info: &ScreenUrlInfo) -> Result<(), Error> {
 pub(super) struct Frames {
     pushed: usize,
     anonymous: bool,
+    /// The frames are not artifact hits: a check, or the screens that run actions before the render.
+    untracked: bool,
 }
 
 impl Frames {
+    /// Frames that are not counted as artifact hits, Java's `setTrackArtifactHit(false)`.
+    pub(super) fn untracked() -> Self {
+        Self {
+            untracked: true,
+            ..Self::default()
+        }
+    }
+
     pub(super) fn push(
         &mut self,
         artifact_type: &str,
@@ -642,10 +677,26 @@ impl Frames {
         action: &str,
         requires_authz: bool,
     ) -> Result<(), Error> {
-        ExecutionContext::with_current(|ec| ec.push_checked(artifact_type, name, action, requires_authz, false, None))
-            .unwrap_or(Ok(()))?;
+        ExecutionContext::with_current(|ec| {
+            ec.push_checked(artifact_type, name, action, requires_authz, false, None)?;
+            if self.untracked {
+                ec.untrack_hit();
+            }
+            Ok::<(), Error>(())
+        })
+        .unwrap_or(Ok(()))?;
         self.pushed += 1;
         Ok(())
+    }
+
+    /// The hit sub-type of the frame pushed last, and whether it is counted at all.
+    pub(super) fn hit_detail(&self, sub_type: Option<&str>, track: bool) {
+        ExecutionContext::with_current(|ec| {
+            ec.set_hit_detail(sub_type, None);
+            if !track {
+                ec.untrack_hit();
+            }
+        });
     }
 
     pub(super) fn push_screen(&mut self, def: &ScreenDef, requires_authz: bool) -> Result<(), Error> {
@@ -740,6 +791,8 @@ fn run_transition(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>, info: S
         &transition.authz_action,
         screen.authentication == Authentication::Required,
     )?;
+    frames.hit_detail(Some(&state.content_type), true);
+    let hit = TransitionHit::start(&screen, &transition, job.parameters);
 
     set_all_parameters(&info, &transition)?;
     if let Some(condition) = &transition.condition {
@@ -754,14 +807,17 @@ fn run_transition(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>, info: S
                 .error_response
                 .as_ref()
                 .unwrap_or(&transition.default_response);
+            hit.count(response_type(response));
             return respond(&info, response, wants_json(job, &info));
         }
     }
 
     if transition.implicit_actions {
-        return in_transaction(transition.begin_transaction, None, || {
+        in_transaction(transition.begin_transaction, None, || {
             super::statics::run_actions_transition(&state)
-        });
+        })?;
+        hit.count("");
+        return Ok(());
     }
     let wired = dispatch::run(&dispatch::Call {
         request: job.request,
@@ -773,6 +829,7 @@ fn run_transition(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>, info: S
         started: job.started,
     })?;
     if wired.is_some() {
+        hit.count("");
         return Ok(());
     }
     if let Some(message) = &transition.actions_error {
@@ -782,7 +839,57 @@ fn run_transition(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>, info: S
         in_transaction(transition.begin_transaction, None, || run_transition_actions(actions))?;
     }
     let response = pick_response(&transition)?;
+    hit.count(response_type(response));
     respond(&info, response, wants_json(job, &info))
+}
+
+/// The `AT_XML_SCREEN_TRANS` hit Java's `recursiveRunTransition` counts once the actions ran, named
+/// `screen#transition` with the request parameters, besides the hit of the transition's frame.
+struct TransitionHit<'a> {
+    name: String,
+    track: bool,
+    parameters: &'a BTreeMap<String, Value>,
+    start_ms: i64,
+    started: Instant,
+}
+
+impl<'a> TransitionHit<'a> {
+    fn start(screen: &ScreenDef, transition: &TransitionDef, parameters: &'a BTreeMap<String, Value>) -> Self {
+        Self {
+            name: format!("{}#{}", screen.location, transition.name),
+            track: screen.track_artifact_hit,
+            parameters,
+            start_ms: user::now_millis(),
+            started: Instant::now(),
+        }
+    }
+
+    fn count(&self, response_type: &str) {
+        if !self.track {
+            return;
+        }
+        ExecutionContext::with_current(|ec| {
+            ec.count_artifact_hit(&crate::context::Hit {
+                artifact_type: "AT_XML_SCREEN_TRANS",
+                sub_type: Some(response_type),
+                name: &self.name,
+                parameters: Some(self.parameters),
+                start_ms: self.start_ms,
+                running_ms: self.started.elapsed().as_secs_f64() * 1000.0,
+                output_size: None,
+            });
+        });
+    }
+}
+
+/// The response `type`, Java's `ResponseItem.type`.
+fn response_type(response: &ResponseDef) -> &'static str {
+    match response.kind {
+        ResponseKind::None => "none",
+        ResponseKind::Url => "url",
+        ResponseKind::ScreenLast => "screen-last",
+        ResponseKind::ScreenLastNoParam => "screen-last-noparam",
+    }
 }
 
 /// A transition asked for with `.json` or by a client that accepts JSON (the qvt `m-form`) answers a redirect as JSON, as Java's

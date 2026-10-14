@@ -15,8 +15,11 @@
 //! Artifact stack. Push and pop are tracing spans. A checked push decides the frame against the one below it.
 
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::time::Instant;
+
+use moqui_lib::object::Value;
 
 use super::error::Error;
 use crate::user::AuthInfo;
@@ -28,6 +31,36 @@ struct Frame {
     info: AuthInfo,
     entered: tracing::span::EnteredSpan,
     started: Instant,
+    /// Wall-clock start in epoch milliseconds, the hit's `startDateTime`.
+    started_ms: i64,
+    hit: HitDetail,
+}
+
+/// What the hit of a frame records beyond the span fields. Java's `trackArtifactHit`, the
+/// `actionDetail` that is the hit sub-type, and the remembered parameters.
+pub(super) struct HitDetail {
+    pub(super) track: bool,
+    pub(super) sub_type: Option<String>,
+    pub(super) parameters: Option<BTreeMap<String, Value>>,
+}
+
+impl Default for HitDetail {
+    fn default() -> Self {
+        Self {
+            track: true,
+            sub_type: None,
+            parameters: None,
+        }
+    }
+}
+
+/// A frame that was popped, for the hit counter.
+pub(super) struct Popped {
+    pub(super) artifact_type: String,
+    pub(super) name: String,
+    pub(super) started_ms: i64,
+    pub(super) running_ms: f64,
+    pub(super) hit: HitDetail,
 }
 
 #[derive(Default)]
@@ -61,6 +94,8 @@ impl ArtifactStack {
             info,
             entered,
             started: Instant::now(),
+            started_ms: crate::user::now_millis(),
+            hit: HitDetail::default(),
         });
     }
 
@@ -88,12 +123,36 @@ impl ArtifactStack {
         self.frames.last_mut().map(|frame| &mut frame.info)
     }
 
-    pub(super) fn pop(&mut self) -> Result<(), Error> {
+    pub(super) fn top_type(&self) -> Option<String> {
+        self.frames.last().map(|frame| frame.artifact_type.clone())
+    }
+
+    pub(super) fn top_hit_mut(&mut self) -> Option<&mut HitDetail> {
+        self.frames.last_mut().map(|frame| &mut frame.hit)
+    }
+
+    /// Pop the top frame and close its span. What the span recorded is returned for the hit counter.
+    pub(super) fn pop(&mut self) -> Result<Popped, Error> {
         let frame = self.frames.pop().ok_or_else(|| Error::new("artifact stack is empty"))?;
-        let duration_ms = u64::try_from(frame.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let elapsed = frame.started.elapsed();
+        let duration_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
         frame.entered.record("duration_ms", duration_ms);
-        drop(frame);
-        Ok(())
+        let Frame {
+            artifact_type,
+            name,
+            entered,
+            started_ms,
+            hit,
+            ..
+        } = frame;
+        drop(entered);
+        Ok(Popped {
+            artifact_type,
+            name,
+            started_ms,
+            running_ms: elapsed.as_secs_f64() * 1000.0,
+            hit,
+        })
     }
 
     pub(super) fn disable_authz(&self) -> AuthzGuard {

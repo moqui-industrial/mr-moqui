@@ -223,6 +223,7 @@ pub fn render_active_screen(state: &RenderState, runner: &dyn Runner, is_target:
 fn render_def(state: &RenderState, runner: &dyn Runner, def: &Arc<ScreenDef>, is_target: bool) -> Result<(), Error> {
     let mut frames = Frames::default();
     frames.enter_screen(def, is_target)?;
+    frames.hit_detail(Some(&state.content_type), def.track_artifact_hit);
     render_section_of(state, runner, def, "")
 }
 
@@ -1597,6 +1598,8 @@ pub(super) fn screen_permitted(def: &ScreenDef) -> bool {
     ExecutionContext::with_current(|ec| {
         match ec.push_checked("AT_XML_SCREEN", &def.location, "view", required, false, None) {
             Ok(()) => {
+                // A check, not an access: Java's isPermitted, which is not counted as a hit.
+                ec.untrack_hit();
                 let _ = ec.pop();
                 true
             }
