@@ -13,7 +13,7 @@
  */
 
 //! Rust bodies for the system message and entity sync services whose Groovy did not fit a script: the REST sender, the
-//! `/rest/sm` receive, and the entity sync runs. The rest of `SystemMessageServices.xml` and `run#EntitySyncAll` are XML
+//! `/rest/sm` receive, the SFTP send and poll of `moqui-sftp`, and the entity sync runs. The rest of `SystemMessageServices.xml` and `run#EntitySyncAll` are XML
 //! actions. JSON-RPC is not part of this port, so a remote call is REST through [`moqui_lib::http::RestClient`].
 //! This is not the cluster sender: it moves application data between systems an admin configured.
 
@@ -28,12 +28,15 @@ use crate::entity::EntityFacade;
 
 mod entity_sync;
 mod message;
+mod sftp;
 #[cfg(test)]
 mod tests;
 
 pub(crate) use message::receive_rest_message;
 
 const SEND_REST: &str = "org.moqui.impl.SystemMessageServices.send#SystemMessageRest";
+const SEND_SFTP: &str = "org.moqui.sftp.SftpMessageServices.send#SystemMessageSftp";
+const POLL_SFTP: &str = "org.moqui.sftp.SftpMessageServices.poll#SystemMessageSftp";
 const RUN_SYNC: &str = "org.moqui.impl.EntitySyncServices.run#EntitySync";
 const INTERNAL_RUN: &str = "org.moqui.impl.EntitySyncServices.internalRun#EntitySync";
 const PUT_DATA: &str = "org.moqui.impl.EntitySyncServices.put#EntitySyncData";
@@ -44,7 +47,7 @@ const INCLUDE_LIST: &str = "org.moqui.impl.EntitySyncServices.get#EntitySyncIncl
 pub(super) fn runs(name: &str) -> bool {
     matches!(
         name,
-        SEND_REST | RUN_SYNC | INTERNAL_RUN | PUT_DATA | GET_DATA | INCLUDE_LIST
+        SEND_REST | SEND_SFTP | POLL_SFTP | RUN_SYNC | INTERNAL_RUN | PUT_DATA | GET_DATA | INCLUDE_LIST
     )
 }
 
@@ -55,6 +58,8 @@ pub(super) fn run(
 ) -> Result<BTreeMap<String, Value>, LibError> {
     match name {
         SEND_REST => message::send_rest(parameters, facade),
+        SEND_SFTP => sftp::send(parameters, facade),
+        POLL_SFTP => sftp::poll(parameters, facade),
         RUN_SYNC => entity_sync::run_sync(parameters, facade),
         INTERNAL_RUN => entity_sync::internal_run(parameters, facade),
         PUT_DATA => entity_sync::put_data(parameters, facade),

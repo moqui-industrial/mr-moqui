@@ -480,3 +480,200 @@ fn serve_one(listener: &TcpListener, reply: &str) -> String {
     let _ = stream.flush();
     String::from_utf8_lossy(&buf).into_owned()
 }
+
+fn install_sftp(setup: &Setup) {
+    let dir = crate::context::framework_dir().join("service/org/moqui");
+    let files = [
+        dir.join("impl/SystemMessageServices.xml"),
+        dir.join("sftp/SftpMessageServices.xml"),
+        setup.fixture.clone(),
+    ];
+    let failures = crate::service::lint(&files).unwrap();
+    assert!(failures.is_empty(), "{failures:?}");
+}
+
+fn received(facade: &EntityFacade, type_id: &str) -> Vec<(String, String)> {
+    facade
+        .find(MESSAGE)
+        .unwrap()
+        .eq("systemMessageTypeId", Value::string(type_id))
+        .list()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row.get("remoteMessageId").map(to_plain_string).unwrap_or_default(),
+                row.get("messageText").map(to_plain_string).unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_message_goes_out_by_sftp_and_a_poll_receives_moves_and_skips() {
+    let _lock = crate::sftp::tests::sftp_test_lock();
+    let connector = crate::sftp::tests::memory();
+    let setup = setup("sftp");
+    let _entered = setup.context.enter();
+    let _authz = setup.context.disable_authz();
+    install_sftp(&setup);
+    let facade = &setup.facade;
+    seed(
+        facade,
+        "moqui.service.message.SystemMessageType",
+        &[
+            ("systemMessageTypeId", "SftpOut"),
+            (
+                "sendServiceName",
+                "org.moqui.sftp.SftpMessageServices.send#SystemMessageSftp",
+            ),
+            (
+                "sendPath",
+                "/in/${systemMessageTypeId}-${remoteMessageId ?? systemMessageId}-${date}.txt",
+            ),
+        ],
+    );
+    seed(
+        facade,
+        "moqui.service.message.SystemMessageType",
+        &[
+            ("systemMessageTypeId", "SftpIn"),
+            ("consumeServiceName", "consume#SmsgTestNote"),
+            ("receivePath", "/in"),
+            ("receiveFilePattern", "SftpOut-.*\\.txt"),
+            ("receiveResponseEnumId", "MsgRrMove"),
+            ("receiveMovePath", "/in/received/${systemMessageTypeId}"),
+        ],
+    );
+    seed(
+        facade,
+        "moqui.service.message.SystemMessageType",
+        &[
+            ("systemMessageTypeId", "SftpGroovy"),
+            ("sendPath", "/in/${remoteMessageId?:systemMessageId}"),
+        ],
+    );
+    seed(
+        facade,
+        "moqui.service.message.SystemMessageRemote",
+        &[
+            ("systemMessageRemoteId", "SftpServer"),
+            ("sendUrl", "files.example.com:2222"),
+            ("username", "joe"),
+            ("password", "pw"),
+            ("remoteCharset", "ISO-8859-1"),
+            ("sshHostKeyFingerprint", "SHA256:pinned"),
+        ],
+    );
+
+    let out = crate::service::sync(
+        "org.moqui.impl.SystemMessageServices.queue#SystemMessage",
+        &params(&[
+            ("systemMessageTypeId", "SftpOut"),
+            ("systemMessageRemoteId", "SftpServer"),
+            ("messageText", "caf\u{e9} order"),
+        ]),
+    )
+    .unwrap();
+    assert_eq!(errors(&setup.context), "");
+    let sent_id = out.get("systemMessageId").map(to_plain_string).expect("queued id");
+    assert!(
+        wait_until(|| message_field(facade, &sent_id, "statusId") == "SmsgSent"),
+        "status {} errors {}",
+        message_field(facade, &sent_id, "statusId"),
+        message_field(facade, &sent_id, "lastAttemptMessage")
+    );
+    assert_eq!(message_field(facade, &sent_id, "remoteMessageId"), sent_id);
+    let config = connector.seen.lock().unwrap()[0].clone();
+    assert_eq!(
+        (config.host.as_str(), config.port, config.username.as_str()),
+        ("files.example.com", 2222, "joe")
+    );
+    assert_eq!(config.host_key_fingerprint.as_deref(), Some("SHA256:pinned"));
+    let file = {
+        let disk = connector.disk.lock().unwrap();
+        let (name, bytes) = disk.files.iter().next().expect("the sent file");
+        assert_eq!(bytes, b"caf\xe9 order", "written in the remote charset");
+        name.clone()
+    };
+    assert!(file.starts_with(&format!("/in/SftpOut-{sent_id}-")), "{file}");
+
+    // The poll receives the file in a new transaction, the consume runs, and the file moves.
+    let poll = params(&[
+        ("systemMessageTypeId", "SftpIn"),
+        ("systemMessageRemoteId", "SftpServer"),
+    ]);
+    let polled = crate::service::sync("org.moqui.sftp.SftpMessageServices.poll#SystemMessageSftp", &poll).unwrap();
+    assert_eq!(errors(&setup.context), "");
+    assert_eq!(polled.get("fileCount").map(to_plain_string).as_deref(), Some("1"));
+    let name = file.trim_start_matches("/in/").to_string();
+    assert_eq!(
+        received(facade, "SftpIn"),
+        [(name.clone(), "caf\u{e9} order".to_string())]
+    );
+    {
+        let disk = connector.disk.lock().unwrap();
+        assert!(
+            disk.files.contains_key(&format!("/in/received/SftpIn/{name}")),
+            "{:?}",
+            disk.files.keys()
+        );
+        assert!(!disk.files.contains_key(&file));
+    }
+
+    // The same file arriving again is skipped: a message already holds it.
+    connector
+        .disk
+        .lock()
+        .unwrap()
+        .files
+        .insert(file.clone(), b"again".to_vec());
+    connector
+        .disk
+        .lock()
+        .unwrap()
+        .files
+        .insert("/in/other.csv".to_string(), b"no".to_vec());
+    crate::service::sync("org.moqui.sftp.SftpMessageServices.poll#SystemMessageSftp", &poll).unwrap();
+    assert_eq!(received(facade, "SftpIn").len(), 1);
+    assert!(
+        connector.disk.lock().unwrap().files.contains_key(&file),
+        "a skipped file stays"
+    );
+
+    // fileCountLimit takes the first names in order.
+    for n in ["SftpOut-b.txt", "SftpOut-a.txt", "SftpOut-c.txt"] {
+        connector
+            .disk
+            .lock()
+            .unwrap()
+            .files
+            .insert(format!("/in/{n}"), n.as_bytes().to_vec());
+    }
+    let mut limited = poll.clone();
+    limited.insert("fileCountLimit".to_string(), Value::I32(2));
+    let polled = crate::service::sync("org.moqui.sftp.SftpMessageServices.poll#SystemMessageSftp", &limited).unwrap();
+    assert_eq!(polled.get("fileCount").map(to_plain_string).as_deref(), Some("2"));
+    let names: Vec<String> = received(facade, "SftpIn").into_iter().map(|(name, _)| name).collect();
+    assert!(
+        names.contains(&"SftpOut-a.txt".to_string()) && names.contains(&name),
+        "{names:?}"
+    );
+    assert!(!names.contains(&"SftpOut-c.txt".to_string()), "{names:?}");
+
+    // A Groovy ?: in a path says to use ??.
+    let mut groovy = BTreeMap::new();
+    groovy.insert("systemMessageId".to_string(), Value::string(&sent_id));
+    let mut row = facade.make_value(MESSAGE).unwrap();
+    row.set("systemMessageId", Value::string(&sent_id));
+    row.set("systemMessageTypeId", Value::string("SftpGroovy"));
+    row.update(facade).unwrap();
+    setup.context.message().clear();
+    let _ = crate::service::sync("org.moqui.sftp.SftpMessageServices.send#SystemMessageSftp", &groovy);
+    assert!(
+        errors(&setup.context).contains("use ?? instead"),
+        "{}",
+        errors(&setup.context)
+    );
+    crate::sftp::clear_sftp_connector();
+}

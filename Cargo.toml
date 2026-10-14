@@ -83,6 +83,9 @@ reqwest = { version = "0.13", default-features = false, features = [
     "charset",
 ] }
 
+# Charsets for SFTP text (SystemMessageRemote.remoteCharset). Already in the graph under reqwest.
+encoding_rs = "0.8"
+
 # --- moqui-core (no direct tokio, axum, postgres, mysql, or postgresql_embedded) ---
 # Field encryption. pbkdf2 0.12 stays on hmac 0.12 and sha2 0.10.
 # aes, cbc, and des share cipher 0.5. cbc alloc is the Vec padding API.
@@ -143,7 +146,7 @@ ammonia = "4"
 
 # --- moqui-host ---
 # rt-multi-thread is for axum. postgres::Client builds its own current_thread runtime.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "io-util"] }
 # Defaults are tls-native-tls and theseus. bundled embeds the archive; see .cargo/config.toml.
 postgresql_embedded = { version = "0.21", default-features = false, features = [
     "bundled",

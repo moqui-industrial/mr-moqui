@@ -26,6 +26,7 @@ pub mod screen;
 pub mod script;
 pub mod search;
 pub mod service;
+pub mod sftp;
 #[cfg(test)]
 mod testing;
 pub mod transaction;

@@ -16,6 +16,52 @@ declare const StringUtilities: MoquiStringUtilities;
 declare const WebUtilities: MoquiWebUtilities;
 declare const System: { getProperty(name: string): string | null };
 
+/** A directory entry of `SftpClient.ls`. Times are seconds since the epoch. */
+interface SftpFileInfo {
+    name: string;
+    path: string;
+    isFile: boolean;
+    size: number;
+    lastAccess: number;
+    lastModified: number;
+}
+interface SftpReadStream {
+    read(max?: number): Uint8Array;
+    readAllBytes(): Uint8Array;
+    readText(charset?: string | null): string;
+    close(): void;
+}
+interface SftpWriteStream {
+    write(data: string | Uint8Array, charset?: string | null): void;
+    close(): void;
+}
+/** The `moqui-sftp` client (`org.moqui.sftp.SftpClient`). Without a port in `host` the port is 115, as in Java. */
+declare class SftpClient {
+    static readonly SFTP_PORT: 115;
+    static readonly SSH_PORT: 22;
+    constructor(host: string, username: string, port?: number | null);
+    password(password: string): this;
+    publicKeyPkcs8(privateKeyPem: string, publicKey?: string | null): this;
+    preserveAttributes(preserve: boolean): this;
+    /** Pin the server's host key, `SHA256:...`; without it the key is trusted on first use. */
+    hostKeyFingerprint(fingerprint: string): this;
+    connect(): this;
+    isConnected(): boolean;
+    lsFiles(path: string): string[];
+    ls(path: string): SftpFileInfo[];
+    getBinary(path: string): Uint8Array;
+    getText(path: string, charset?: string | null): string;
+    put(path: string, filename: string, data: string | Uint8Array | MoquiUploadedFile | { getLocation(): string },
+        charset?: string | null, createDir?: boolean): this;
+    openStream(path: string): SftpReadStream;
+    putStream(path: string): SftpWriteStream;
+    moveFile(filePath: string, destDirPath: string, createDir?: boolean): string;
+    renameFile(filePath: string, newFileName: string): string;
+    rename(filePath: string, newFilePath: string): string;
+    rm(path: string): this;
+    close(): void;
+}
+
 /** The compare of `<if-compare>` and `<econdition>`: `operator` is a Moqui operator name such as `equals`. */
 declare function compare(
     field: unknown,

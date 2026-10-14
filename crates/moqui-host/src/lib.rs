@@ -23,6 +23,7 @@ pub mod edge;
 pub mod pdf;
 pub mod qvt_report;
 pub mod search;
+pub mod ssh;
 pub mod types;
 
 mod cluster_edge;
@@ -72,6 +73,17 @@ impl Server {
     #[must_use]
     pub fn address(&self) -> std::net::SocketAddr {
         self.address
+    }
+
+    /// The SSH server's address, when `ssh_port` is set.
+    #[must_use]
+    pub fn ssh_address(&self) -> Option<std::net::SocketAddr> {
+        let factory = self.factory.as_ref()?;
+        *factory
+            .extension(|_| ssh::server::SshAddress::default())
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// The cluster HTTPS listener. Empty `cluster_https_port` binds 8443. `0` is ephemeral, and this
@@ -755,6 +767,8 @@ fn boot_server(
     let cluster_edge = cluster_edge::listen(Arc::clone(&factory))?;
     notws::install_push().map_err(moqui_lib::error::Error::from)?;
     let pdf = install_pdf(&runtime_dir);
+    ssh::install_client(&runtime_dir);
+    let sshd = ssh::server::start(&factory, &runtime_dir)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -762,6 +776,7 @@ fn boot_server(
     Ok(ServeProcess {
         runtime: Some(runtime),
         pdf: Some(pdf),
+        sshd,
         cluster_edge: Some(cluster_edge),
         factory: Some(factory),
         search,
@@ -771,13 +786,14 @@ fn boot_server(
     })
 }
 
-/// Drop order is the axum runtime, the PDF browser, the cluster listener (while the request pool is still up),
+/// Drop order is the axum runtime, the PDF browser, the SSH server, the cluster listener (while the request pool is still up),
 /// the factory, the search store, the driver, then the database cluster. The search store outlives
 /// the factory so a dedicated postmaster stops after the facade's clients.
 #[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
 struct ServeProcess {
     runtime: Option<tokio::runtime::Runtime>,
     pdf: Option<PdfSlot>,
+    sshd: Option<ssh::server::SshServer>,
     cluster_edge: Option<crate::cluster_edge::ClusterEdge>,
     factory: Option<std::sync::Arc<moqui_core::context::ExecutionContextFactory>>,
     search: Option<crate::search::SearchStore>,
@@ -791,6 +807,7 @@ impl Drop for ServeProcess {
     fn drop(&mut self) {
         self.runtime.take();
         self.pdf.take();
+        self.sshd.take();
         self.cluster_edge.take();
         self.factory.take();
         self.search.take();

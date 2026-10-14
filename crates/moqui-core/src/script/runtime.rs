@@ -53,6 +53,7 @@ mod helpers;
 mod screen_host;
 mod search;
 mod services;
+mod sftp;
 mod tools_host;
 mod upload;
 mod urls;
@@ -871,6 +872,7 @@ fn install_ec(ctx: &Ctx<'_>) -> Result<(), Error> {
     system.set("getProperty", property).map_err(js_error)?;
     caught(ctx, "globals", ctx.globals().set("System", system))?;
     edi::install(ctx)?;
+    sftp::install(ctx)?;
     Ok(())
 }
 

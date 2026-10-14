@@ -55,7 +55,7 @@
     -->
     <default-property name="user_privileged_groups" value="ADMIN,ADMIN_ADV"/>
     <default-property name="user_sealed_permissions"
-            value="GROOVY_SHELL_WEB,SQL_RUNNER_WEB,SERVICE_LOAD_RUNNER,ADMIN_LOGIN_AS,ADMIN_PASSWORD,ElasticRemote,KibanaRemote,REST_SCHEMA,LlmGateway"/>
+            value="GROOVY_SHELL_WEB,SQL_RUNNER_WEB,SSH_SHELL,SERVICE_LOAD_RUNNER,ADMIN_LOGIN_AS,ADMIN_PASSWORD,ElasticRemote,KibanaRemote,REST_SCHEMA,LlmGateway"/>
 
     <!--
         email_allowed_hosts: comma-separated hostnames/IPs poll#EmailServer and send#Email may connect to.
@@ -72,6 +72,18 @@
     <default-property name="pdf_chromium_path" value=""/>
     <default-property name="pdf_page_limit" value="4"/>
     <default-property name="pdf_timeout" value="60"/>
+
+    <!--
+        The built-in SSH server (SFTP and the admin shell). Off while ssh_port is empty; 0 binds an ephemeral port.
+        ssh_host_key is the base64 of a 32-byte Ed25519 seed (generated into runtime/.env) or an OpenSSH private key.
+        ssh_sftp_root is the resource location SFTP serves (runtime, file, component or dbresource).
+    -->
+    <default-property name="ssh_port" value=""/>
+    <default-property name="ssh_host" value="127.0.0.1"/>
+    <default-property name="ssh_host_key" value="CHANGEME" is-secret="true"/>
+    <default-property name="ssh_sftp_root" value="runtime://sftp"/>
+    <default-property name="ssh_sftp_max_file" value="268435456"/>
+    <default-property name="ssh_max_sessions" value="8"/>
 
     <!-- Properties for the primary (transactional group) datasource -->
     <default-property name="entity_ds_db_conf" value="h2"/>
@@ -507,6 +519,7 @@
         <service-file location="classpath://service/org/moqui/impl/UserServices.xml"/>
         <service-file location="classpath://service/org/moqui/impl/WikiServices.xml"/>
         <service-file location="classpath://service/org/moqui/search/SearchServices.xml"/>
+        <service-file location="classpath://service/org/moqui/sftp/SftpMessageServices.xml"/>
     </service-facade>
 
     <!-- One search backend. With no postgres element the postgres backend uses the search schema of the entity Postgres;
@@ -724,6 +737,7 @@
         <load-data location="classpath://data/LlmTypeData.xml"/>
         <load-data location="classpath://data/UnitData.xml"/>
         <load-data location="classpath://data/MoquiSetupData.xml"/>
+        <load-data location="classpath://data/SftpDemoData.xml"/>
     </entity-facade>
     <database-list>
         <dictionary-type type="id" java-type="java.lang.String" default-sql-type="VARCHAR(40)"/>

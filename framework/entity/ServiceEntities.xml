@@ -330,6 +330,10 @@ along with this software (see the LICENSE.md file). If not, see
             <description>Public Key for key based authentication, generally RSA PEM format</description></field>
         <field name="privateKey" type="text-long" encrypt="true" enable-audit-log="update">
             <description>Private Key for key based authentication, generally RSA PEM PKCS #8 format like OpenSSH</description></field>
+        <field name="sshHostKeyFingerprint" type="text-medium" enable-audit-log="update">
+            <description>SFTP: the SHA-256 fingerprint of the server's host key (SHA256:base64, as ssh-keygen -l prints it). When
+                empty the key is trusted on first use and recorded in runtime/conf/ssh_known_hosts, and a key that changes
+                is refused.</description></field>
         <field name="remotePublicKey" type="text-long" enable-audit-log="update">
             <description>Remote System's Public Key for decryption, signature validation, etc; generally RSA PEM or X.509 Certificate format</description></field>
         <!-- potential future use, restrict receive message: <field name="authorizedIpAddresses" type="text-medium"/> -->

@@ -29,7 +29,7 @@ use crate::entity::{EntityFacade, EntityValue};
 
 const DEFAULT_PRIVILEGED_GROUPS: &str = "ADMIN,ADMIN_ADV";
 const DEFAULT_SEALED_PERMISSIONS: &str =
-    "GROOVY_SHELL_WEB,SQL_RUNNER_WEB,SERVICE_LOAD_RUNNER,ADMIN_LOGIN_AS,ADMIN_PASSWORD,ElasticRemote,KibanaRemote,REST_SCHEMA";
+    "GROOVY_SHELL_WEB,SQL_RUNNER_WEB,SSH_SHELL,SERVICE_LOAD_RUNNER,ADMIN_LOGIN_AS,ADMIN_PASSWORD,ElasticRemote,KibanaRemote,REST_SCHEMA";
 
 /// How many times `UserSecurityChecks` ran on this thread, for a load report to show the ECAs fired.
 pub fn security_checks_run() -> u64 {

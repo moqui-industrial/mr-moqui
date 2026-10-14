@@ -126,6 +126,8 @@ static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// The seeded server the gate tests share the setup of. Fields drop in order: the server stops before its directories go.
 pub struct Gate {
     pub server: moqui_host::Server,
+    /// The runtime directory the server reads, removed when the gate drops.
+    pub runtime: PathBuf,
     _serial: std::sync::MutexGuard<'static, ()>,
     _runtime: DirGuard,
     _cluster: DirGuard,
@@ -244,6 +246,7 @@ fn start_seeded(label: &str, static_fixture: bool, data: Option<&str>) -> Gate {
     let server = start_server(&runtime, &framework, &cluster_dir, bind).unwrap();
     Gate {
         server,
+        runtime: runtime.clone(),
         _serial: serial,
         _runtime: runtime_guard,
         _cluster: cluster_guard,
