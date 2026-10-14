@@ -86,7 +86,7 @@ along with this software (see the LICENSE.md file). If not, see
         </out-parameters>
         <actions><script>
             // Java subtracts days on the user's calendar; this subtracts whole days of milliseconds from now
-            const basisTimestamp = ec.user.timestampMillis(ec.user.nowTimestamp) - daysToKeep * 86400000
+            const basisTimestamp = new Date(ec.user.timestampMillis(ec.user.nowTimestamp) - daysToKeep * 86400000).toISOString()
             const cf = ec.entity.conditionFactory
             artifactHitsRemoved = ec.entity.find("moqui.server.ArtifactHit")
                     .condition(cf.makeCondition("startDateTime", "&lt;", basisTimestamp))
@@ -102,7 +102,7 @@ along with this software (see the LICENSE.md file). If not, see
         <in-parameters><parameter name="daysToKeep" type="Integer" default="7"/></in-parameters>
         <out-parameters><parameter name="printJobsRemoved" type="Long"/></out-parameters>
         <actions><script>
-            const basisTimestamp = ec.user.timestampMillis(ec.user.nowTimestamp) - daysToKeep * 86400000
+            const basisTimestamp = new Date(ec.user.timestampMillis(ec.user.nowTimestamp) - daysToKeep * 86400000).toISOString()
             printJobsRemoved = ec.entity.find("moqui.basic.print.PrintJob")
                     .condition(ec.entity.conditionFactory.makeCondition("createdDate", "&lt;", basisTimestamp))
                     .disableAuthz().deleteAll()

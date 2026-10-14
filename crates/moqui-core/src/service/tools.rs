@@ -353,3 +353,6 @@ fn rewrite_encrypted_fields(
     out.insert("recordsUpdated".to_string(), Value::I64(updated));
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests;

@@ -298,7 +298,7 @@ along with this software (see the LICENSE.md file). If not, see
         </in-parameters>
         <out-parameters><parameter name="recordsLoaded" type="Long"/></out-parameters>
         <actions>
-            <if condition="!org.moqui.util.WebUtilities.isSafeSinglePathSegment(zipFilename)">
+            <if condition="!WebUtilities.isSafeSinglePathSegment(zipFilename)">
                 <return error="true" message="Snapshot file not found"/></if>
             <script><![CDATA[
                 const edl = ec.entity.makeDataLoader().dummyFks(dummyFks).useTryInsert(useTryInsert)
