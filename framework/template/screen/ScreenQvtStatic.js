@@ -1060,14 +1060,42 @@
             "check": (n) => checkOrRadio(n, "checkbox"), "radio": (n) => checkOrRadio(n, "radio"), "display": displayWidget, "display-entity": displayEntity,
             "image": image, "label": labelWidget, "link": (n) => link(n, true), "editable": editable
         };
+        // An XML condition element as one expression, as XmlActions.js writes it for an if: and, or and not join their parts, an expression
+        // is its text, and a compare is $mq.compare, the browser's copy of the server's compare. The value of a compare with ${} is expanded.
+        const xmlCondExpr = (n) => {
+            const parts = (kidsOf, joiner) => (kidsOf.length ? "(" + kidsOf.map(xmlCondExpr).join(joiner) + ")" : "true");
+            switch (n.name) {
+                case "and": return parts(n.children || [], " && ");
+                case "or": return parts(n.children || [], " || ");
+                case "not": return "!(" + ((n.children || []).length ? xmlCondExpr(n.children[0]) : "true") + ")";
+                case "expression": return "(" + ((n.text || "").trim() || "true") + ")";
+                case "compare": {
+                    const value = n.attrs && n.attrs.value !== undefined && n.attrs.value !== null ? String(n.attrs.value) : null;
+                    const valueExpr = value === null ? "null" : isDynamic(value) ? exp(value, n, "value", false) : sq(value);
+                    return "$mq.compare(" + (at(n, "field") || "null") + "," + sq(at(n, "operator") || "equals") + "," + valueExpr + "," +
+                        (at(n, "to-field") || "null") + "," + (at(n, "format") ? sq(at(n, "format")) : "null") + "," + sq(at(n, "type") || "Object") + ")";
+                }
+                default: throw new Error(n.name + " is not a condition element");
+            }
+        };
+        // The condition element of a section or a section-iterate, or "" (with a note) when it does not compile.
+        const xmlCondition = (element, owner) => {
+            try {
+                const kidsOf = element.children || [];
+                return kidsOf.length ? kidsOf.map(xmlCondExpr).join(" && ") : "";
+            } catch (err) {
+                note("condition", owner, "section " + at(owner, "name") + ": " + err.message);
+                return "";
+            }
+        };
+
         // The elements of a field's sub-node that are not field widgets: a container, a section, a loop. These are the same elements the
         // macros write for a screen, written here from the literal because a form is read whole.
         const sectionCondition = (n) => {
             if (at(n, "condition")) return at(n, "condition");
             const element = first(n, "condition");
             if (!element) return "";
-            if (element.children.length === 1 && element.children[0].name === "expression") return (element.children[0].text || "").trim();
-            return null;
+            return xmlCondition(element, n);
         };
         const nodesOf = (n, name) => { const part = first(n, name); return part ? part.children : []; };
         const renderNode = (n) => {
@@ -1432,7 +1460,7 @@
             reset, push, pop, e, A, cls, at, X, exp, st, sq, w, note, vIf, vFor, withCondition, urlOf, textOf,
             containerDialog, dynamicDialog, dynamicContainer, tree, subscreensPanel, subscreensTabs, image, label: labelWidget,
             link: (n, inField) => link(n, inField), editable, formSingle, formList, rowOpen, colOpen, fieldGroup, fieldGroupClose, quasarColor,
-            split, js: js_, widgetFns, imageTag
+            split, js: js_, widgetFns, imageTag, xmlCondition
         };
         Object.defineProperty(globalThis, "$mqQvtS", { value: h, configurable: true });
     };
@@ -1445,13 +1473,14 @@
     const call = (name, node, withChildren) => `$s.${name}(${wlit(node, withChildren)});\n`;
     const write = (text) => `sri.write(${lit(text)});\n`;
 
-    // The condition of a section: the attribute, or an expression element inside a condition element. null is a condition that is not an expression.
-    const conditionOf = (node) => {
-        if (attr(node, "condition")) return attr(node, "condition");
+    // The condition of a section as code for the unit: the attribute, an expression element alone, or the condition element compiled at
+    // render time by $s.xmlCondition (and, or, not, compare, expression). "" is no condition.
+    const conditionCode = (node) => {
+        if (attr(node, "condition")) return lit(attr(node, "condition"));
         const element = child(node, "condition");
         if (!element) return "";
-        if (element.children.length === 1 && element.children[0].name === "expression") return (element.children[0].text || "").trim();
-        return null;
+        if (element.children.length === 1 && element.children[0].name === "expression" && !element.children[0].children.length) return lit((element.children[0].text || "").trim());
+        return `$s.xmlCondition(${wlit(element)}, ${wlit(node, false)})`;
     };
 
     const widgetsMacro = stmt((node, children) => children);
@@ -1459,30 +1488,28 @@
     const sectionMacro = stmt((node) => {
         const widgets = child(node, "widgets");
         const fail = child(node, "fail-widgets");
-        const condition = conditionOf(node);
+        const condition = conditionCode(node);
         const body = widgets ? widgets.source || "" : "";
-        if (condition === null) {
-            return `sri.staticNote("condition", "section", ${lit("section " + attr(node, "name") + " has an XML condition that cannot be a v-if")});\n${body}`;
-        }
         if (!condition) return body;
-        return `sri.write($s.vIf(${wlit(node, false)}, ${lit(condition)}));\n${body}sri.write("</template>");\n` +
-            (fail ? `sri.write("<template v-else>");\n${fail.source || ""}sri.write("</template>");\n` : "");
+        return `{\nconst $cond = ${condition};\nif ($cond) sri.write($s.vIf(${wlit(node, false)}, $cond));\n${body}if ($cond) {\nsri.write("</template>");\n` +
+            (fail ? `sri.write("<template v-else>");\n${fail.source || ""}sri.write("</template>");\n` : "") + "}\n}\n";
     });
 
     const sectionIterateMacro = stmt((node) => {
         const widgets = child(node, "widgets");
         const fail = child(node, "fail-widgets");
-        const condition = conditionOf(node);
+        const condition = conditionCode(node);
         let code = "";
         if (attr(node, "paginate") === "true") code += `sri.staticNote("section-paginate", "section-iterate", ${lit("paginate of section-iterate " + attr(node, "name") + " is not written")});\n`;
         code += `sri.write($s.vFor(${wlit(node, false)}));\n`;
-        if (condition) code += `sri.write($s.vIf(${wlit(node, false)}, ${lit(condition)}));\n`;
+        if (condition) code += `const $cond = ${condition};\nif ($cond) sri.write($s.vIf(${wlit(node, false)}, $cond));\n`;
         code += widgets ? widgets.source || "" : "";
         if (condition) {
+            code += `if ($cond) {\n`;
             if (fail) code += `sri.write("</template><template v-else>");\n${fail.source || ""}`;
-            code += `sri.write("</template>");\n`;
+            code += `sri.write("</template>");\n}\n`;
         }
-        return code + `sri.write("</template>");\n`;
+        return "{\n" + code + `sri.write("</template>");\n}\n`;
     });
 
     const containerMacro = stmt((node, children) => `$s.containerOpen(${wlit(node, false)});\n${children}sri.write(${lit(`</${attr(node, "type") || "div"}>\n`)});\n`);

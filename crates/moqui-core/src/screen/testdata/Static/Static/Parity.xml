@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The XML screen and form features at parity with Java Moqui, written in a server-static template: a condition element. -->
+<screen require-authentication="false" server-static="qvt" default-menu-title="Parity">
+    <actions>
+        <set field="status" value="ACTIVE"/>
+        <set field="qty" from="5"/>
+    </actions>
+    <widgets>
+        <section name="Holds">
+            <condition><and><compare field="status" operator="equals" value="ACTIVE"/><expression>qty &gt; 3</expression></and></condition>
+            <widgets><label text="the condition holds" type="p"/></widgets>
+            <fail-widgets><label text="the condition fails" type="p"/></fail-widgets>
+        </section>
+        <section name="Fails">
+            <condition><or><compare field="qty" operator="greater" value="10" type="Long"/><not><expression>status</expression></not></or></condition>
+            <widgets><label text="the second holds" type="p"/></widgets>
+            <fail-widgets><label text="the second fails" type="p"/></fail-widgets>
+        </section>
+    </widgets>
+</screen>

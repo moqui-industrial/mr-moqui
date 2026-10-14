@@ -1,0 +1,20 @@
+[
+  ["5", "less", "10", "BigDecimal", true],
+  ["5", "less", "10", "String", false],
+  ["12.50", "greater", "3", "BigDecimal", true],
+  [3, "greater-equals", "3", "Long", true],
+  [2, "less-equals", 1, "Long", false],
+  ["abc", "contains", "b", "String", true],
+  ["abc", "not-contains", "z", "String", true],
+  ["", "empty", null, "Object", true],
+  [null, "empty", null, "Object", true],
+  ["x", "not-empty", null, "Object", true],
+  ["A-12", "matches", "A-\\d+", "String", true],
+  ["A-12x", "matches", "A-\\d+", "String", false],
+  ["A-12x", "not-matches", "A-\\d+", "String", true],
+  ["Y", "equals", "Y", "String", true],
+  ["Y", "not-equals", "N", "String", true],
+  ["true", "equals", true, "Boolean", true],
+  ["ORDER_PLACED", "equals", "ORDER_PLACED", "Object", true],
+  [7, "equals", "7", "Long", true]
+]

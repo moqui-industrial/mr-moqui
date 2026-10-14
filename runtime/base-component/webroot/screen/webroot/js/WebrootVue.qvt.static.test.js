@@ -95,15 +95,26 @@ const setup = () => {
     answers["/Items/actions/ItemMulti"] = multiPkg;
 };
 
-const registerScript = () => {
-    delete moqui.qvtStatic["/Items"];
-    vm.runInThisContext(scriptText);
-    return moqui.qvtStatic["/Items"];
+const registerScript = (key, text) => {
+    const at = key || "/Items";
+    delete moqui.qvtStatic[at];
+    vm.runInThisContext(text || scriptText);
+    return moqui.qvtStatic[at];
 };
 
-const mountStatic = async (search) => {
-    const factory = registerScript();
-    const comp = qvt.staticComponent("/Items", factory, { path: "/Items", search: search || "", divId: "ItemsDiv" });
+// The fixture of a key: its script, package and form answers are the goldens of the Rust tests.
+const fixture = (name) => {
+    const text = goldenText(name + ".script.js");
+    answers["/" + name + "/actions"] = JSON.parse(goldenText(name + ".package.json"));
+    fs.readdirSync(golden).filter((file) => file.startsWith(name + ".") && file.endsWith(".json") && file !== name + ".package.json")
+        .forEach((file) => { answers["/" + name + "/actions/" + file.slice(name.length + 1, -5)] = JSON.parse(goldenText(file)); });
+    return text;
+};
+
+const mountStatic = async (search, name) => {
+    const key = "/" + (name || "Items");
+    const factory = registerScript(key, name ? fixture(name) : scriptText);
+    const comp = qvt.staticComponent(key, factory, { path: key, search: search || "", divId: (name || "Items") + "Div" });
     const app = renderer.createApp(comp);
     Object.keys(qvt.components).forEach((name) => { if (!stubs[name]) app.component(name, qvt.components[name]); });
     Object.keys(stubs).forEach((name) => app.component(name, stubs[name]));
@@ -228,6 +239,23 @@ test("the show-total row of the form request is drawn after the rows, in bold", 
     assert.match(text, /<div class='tr text-weight-bold'><m-form name='ItemList_2' fields='[^']*"price_display":"15.50"/);
     // the data rows stay two: the total is not a row of the list
     assert.equal(formPkg.itemList.length, 2);
+});
+
+test("$mq.compare gives what the server's compare does for the same vectors", () => {
+    const vectors = JSON.parse(fs.readFileSync(path.join(__dirname, "../../../../../../crates/moqui-lib/testdata/compare-vectors.json"), "utf8"));
+    vectors.forEach(([field, operator, to, type, expected]) => {
+        assert.equal(qvt.helpers.compare(field, operator, to, null, null, type), expected, JSON.stringify([field, operator, to, type]));
+    });
+});
+
+test("Parity: a condition element is a v-if over and, or, not, compare and expression, with its fail-widgets", async () => {
+    setup();
+    const { container } = await mountStatic("", "Parity");
+    const text = html(container);
+    assert.match(text, /the condition holds/);
+    assert.doesNotMatch(text, /the condition fails/);
+    assert.match(text, /the second fails/);
+    assert.doesNotMatch(text, /the second holds/);
 });
 
 test("the restricted ec has the table of members and throws on anything else", () => {

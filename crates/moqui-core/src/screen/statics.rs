@@ -1207,8 +1207,19 @@ fn section_node(section: &SectionDef) -> Result<MNode, Error> {
     out.set_attribute("name", section.name.clone());
     match &section.condition {
         Some(Condition::Expression(expression)) => out.set_attribute("condition", expression.clone()),
-        Some(Condition::Wrapped(_)) => {
-            out.append("condition").append("wrapped");
+        // The XML condition is kept inside the actions it was wrapped in: <actions><if><condition>...</condition>.
+        Some(Condition::Wrapped(actions)) => {
+            let wrapped = MNode::parse_text("condition", &actions.xml)?;
+            let condition = wrapped
+                .first_named("if")
+                .and_then(|found| found.first_named("condition"))
+                .map(|found| found.deep_copy());
+            match condition {
+                Some(condition) => out.append_node(condition),
+                None => {
+                    out.append("condition").append("wrapped");
+                }
+            }
         }
         None => {}
     }

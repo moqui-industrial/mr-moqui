@@ -720,3 +720,24 @@ fn a_template_the_compiler_rejects_leaves_a_clean_merged_render_and_is_not_built
     assert_eq!(header(&second, "X-Moqui-Qvt"), "merged-fragment");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The Parity fixture: the XML screen and form features at parity with Java Moqui, as a template, its package and its form requests.
+#[test]
+fn the_parity_fixture_is_a_template_with_its_data_in_the_packages() {
+    let context = ExecutionContextFactory::test_context();
+    let output = render(context.factory(), "/Parity.qvt", &[]);
+    assert_eq!(output.status, 200, "{}", output.body_text());
+    assert_eq!(header(&output, "X-Moqui-Qvt"), "static-template");
+    let html = html_of(context.factory(), "Parity", "/Parity");
+    // a condition element is one v-if: and, or, not, compare and expression, with its fail-widgets as the v-else
+    assert!(
+        html.contains("$mq.compare(status,'equals','ACTIVE',null,null,'Object') &amp;&amp; (qty &gt; 3)"),
+        "{html}"
+    );
+    assert!(html.contains("<template v-else>"), "{html}");
+    golden("Parity.script.js", &output.body_text());
+    golden("Parity.template.html", &html);
+    let package = render(context.factory(), "/Parity/actions", &[]);
+    assert_eq!(package.status, 200, "{}", package.body_text());
+    golden("Parity.package.json", &package.body_text());
+}

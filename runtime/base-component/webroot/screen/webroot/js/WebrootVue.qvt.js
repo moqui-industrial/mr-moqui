@@ -379,6 +379,49 @@
             const query = qvt.helpers.qs(params, map);
             return query ? path + (path.indexOf("?") >= 0 ? "&" : "?") + query : path;
         },
+        // The compare of an XML condition (moqui_lib::object::compare): both sides converted by the type, then the operator. A package holds a
+        // decimal as text, so a numeric type compares numbers; Object compares numbers when both sides are numbers or numeric text, else text.
+        compare: (field, operator, value, toField, format, type) => {
+            const empty = (v) => v === null || v === undefined || v === "" || (Array.isArray(v) && !v.length) || (moqui.isPlainObject(v) && !Object.keys(v).length);
+            let target = value === null || value === undefined ? toField : value;
+            const kind = String(type || "Object");
+            const numeric = /^(BigDecimal|Long|Integer|Double|Float|Number|java\.math\.BigDecimal|java\.lang\.(Long|Integer|Double))$/.test(kind);
+            const isNum = (v) => typeof v === "number" || (typeof v === "string" && NUMBER_TEXT.test(v.trim()));
+            const conv = (v) => {
+                if (v === null || v === undefined || (typeof v === "string" && v === "" && kind !== "String")) return null;
+                if (numeric) return Number(v);
+                if (kind === "Boolean") return v === true || String(v) === "true";
+                if (kind === "String") return String(v);
+                return v;
+            };
+            let left = conv(field);
+            let right = empty(target) ? (target === undefined ? null : target) : conv(target);
+            if (kind === "Object" && isNum(left) && isNum(right)) { left = Number(left); right = Number(right); }
+            const text = (v) => (v === null || v === undefined ? "" : String(v));
+            const order = () => {
+                if (left === null) return right === null ? 0 : 1;
+                if (right === null) throw new Error("cannot compare a value to null");
+                if (typeof left === "number" && typeof right === "number") return left < right ? -1 : left > right ? 1 : 0;
+                const a = text(left);
+                const b = text(right);
+                return a < b ? -1 : a > b ? 1 : 0;
+            };
+            const full = (pattern) => new RegExp("^(?:" + text(pattern) + ")$");
+            switch (operator || "equals") {
+                case "less": return order() < 0;
+                case "greater": return order() > 0;
+                case "less-equals": return order() <= 0;
+                case "greater-equals": return order() >= 0;
+                case "contains": return text(left).indexOf(text(right)) >= 0;
+                case "not-contains": return text(left).indexOf(text(right)) < 0;
+                case "empty": return empty(field);
+                case "not-empty": return !empty(field);
+                case "matches": return full(right).test(text(left));
+                case "not-matches": return !full(right).test(text(left));
+                case "not-equals": return !(left === right || (left !== null && right !== null && typeof left === typeof right && String(left) === String(right)));
+                default: return left === right || (left !== null && right !== null && typeof left === typeof right && String(left) === String(right));
+            }
+        },
         // The style of a field shown only while another field has a value.
         shown: (expected, actual) => {
             let wanted = expected;

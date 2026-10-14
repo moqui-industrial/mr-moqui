@@ -1,0 +1,5 @@
+<template v-if="(($mq.compare(status,'equals','ACTIVE',null,null,'Object') &amp;&amp; (qty &gt; 3)))"><p class="text-inline" v-text="ec.l10n.localize('the condition holds')"></p>
+</template><template v-else><p class="text-inline" v-text="ec.l10n.localize('the condition fails')"></p>
+</template><template v-if="(($mq.compare(qty,'greater','10',null,null,'Long') || !((status))))"><p class="text-inline" v-text="ec.l10n.localize('the second holds')"></p>
+</template><template v-else><p class="text-inline" v-text="ec.l10n.localize('the second fails')"></p>
+</template>
