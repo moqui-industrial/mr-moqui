@@ -673,6 +673,10 @@ impl SearchBackend for OpenSearchBackend {
         true
     }
 
+    fn has_elastic_api(&self) -> bool {
+        true
+    }
+
     fn capabilities(&self) -> Vec<Capability> {
         vec![
             Capability::Proximity,

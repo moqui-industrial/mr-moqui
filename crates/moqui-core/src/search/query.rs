@@ -151,7 +151,8 @@ pub enum Query {
     /// [`super::Capability::Autocomplete`]; a document with no title matches nothing.
     Suggest { text: String },
     /// A Lucene query string sent to OpenSearch as written. Only a log index search makes one (the
-    /// log viewer); it is not the facade grammar, and the Postgres backend rejects it.
+    /// log viewer). The Postgres backend reads it with the facade query-string grammar, which covers
+    /// fields, ranges, AND/OR/NOT, groups and phrases, and rejects the rest.
     Lucene(String),
 }
 

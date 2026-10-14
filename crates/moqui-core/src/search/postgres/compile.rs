@@ -214,9 +214,8 @@ impl<'a> Compiler<'a> {
     fn compile(&self, query: &Query, scope: &Scope<'a>) -> Result<Sql, Error> {
         match query {
             Query::MatchAll => Ok(Sql::new("TRUE")),
-            Query::Lucene(_) => Err(Error::new(
-                "a Lucene query string runs only on the opensearch search backend",
-            )),
+            // The log viewer's string: field:term, ranges, AND/OR/NOT, groups and phrases are in the facade grammar.
+            Query::Lucene(text) => self.compile(&crate::search::parse::parse_query_string(text)?, scope),
             Query::Near { terms, fields, distance } => self.near(scope, terms, fields, *distance),
             Query::Fuzzy { terms } => Ok(self.fuzzy(scope, terms)),
             Query::Suggest { text } => Ok(self.suggest(scope, text)),
@@ -340,6 +339,8 @@ impl<'a> Compiler<'a> {
                             },
                         }
                     }
+                    // A log index has its own `@timestamp`, the event time; the shipper's index time is later.
+                    "@timestamp" if self.mapping.root.fields.contains_key(name) => {}
                     "@timestamp" | "_timestamp" | "indexed_at" => {
                         return Located::Field {
                             arrays: Vec::new(),
@@ -997,6 +998,17 @@ mod tests {
             manual_mapping_service: None,
             display: Default::default(),
         }
+    }
+
+    #[test]
+    fn a_log_viewer_lucene_string_compiles_as_the_facade_grammar() {
+        let mapping = crate::search::logs::log_mapping("moqui_logs").unwrap();
+        let text = "@timestamp:[1760000000000 TO 1760600000000] AND (level:WARN OR \"slow statement\")";
+        let lucene = Compiler::new(&mapping).where_sql(&Query::Lucene(text.into())).unwrap();
+        let parsed = Compiler::new(&mapping).where_sql(&parse_query_string(text).unwrap()).unwrap();
+        assert_eq!(lucene.text, parsed.text);
+        assert!(lucene.text.contains("f_@timestamp"), "{}", lucene.text);
+        assert!(Compiler::new(&mapping).where_sql(&Query::Lucene("slow~".into())).is_err());
     }
 
     #[test]

@@ -324,8 +324,13 @@ pub trait SearchBackend: Send + Sync {
     ) -> Result<bool, Error> {
         Err(capability_error(Capability::Semantic, self.name()))
     }
-    /// Whether this backend keeps the log indexes (`search::logs`). Only OpenSearch does.
+    /// Whether this backend keeps the log indexes (`search::logs`). OpenSearch and Postgres do.
     fn keeps_log_indexes(&self) -> bool {
+        false
+    }
+
+    /// True when this backend is an Elastic-compatible server the `/elastic` and `/kibana` proxies can reach.
+    fn has_elastic_api(&self) -> bool {
         false
     }
 }
@@ -499,6 +504,21 @@ impl SearchFacade {
         let mapping = self.ensure_cached(index)?;
         let documents: Vec<(String, Document)> = entries.into_iter().map(|body| (String::new(), body)).collect();
         self.backend.index_documents(&mapping, &documents)
+    }
+
+    /// Create the log indexes now, so the log viewer finds them before the first entry is written.
+    /// Does nothing on a backend that keeps no log indexes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a store cannot be made.
+    pub fn ensure_log_indexes(&self) -> Result<(), Error> {
+        for index in [logs::APP_LOG, logs::HTTP_LOG] {
+            if self.is_log_index(index) {
+                self.ensure_cached(index)?;
+            }
+        }
+        Ok(())
     }
 
     /// `ensure_index`: create or rebuild the store from the current definition.

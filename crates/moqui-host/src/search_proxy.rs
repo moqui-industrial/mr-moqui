@@ -79,9 +79,9 @@ async fn proxy(
     request: Request,
     target: Target,
 ) -> Response {
-    let keeps_logs = moqui_core::search::installed(&state.factory)
-        .is_some_and(|facade| facade.backend().keeps_log_indexes());
-    if !keeps_logs {
+    let has_elastic = moqui_core::search::installed(&state.factory)
+        .is_some_and(|facade| facade.backend().has_elastic_api());
+    if !has_elastic {
         return plain(404, "the search backend is not OpenSearch, so there is nothing to proxy");
     }
     let (permission, base) = match target {

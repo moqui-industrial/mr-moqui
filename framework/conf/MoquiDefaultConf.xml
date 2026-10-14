@@ -146,6 +146,12 @@
     <default-property name="opensearch_start_wait" value="120"/>
     <!-- Server log output on stderr: trace, debug, info, warn, or error -->
     <default-property name="moqui_log_level" value="info"/>
+    <!-- Log files: moqui.log (all events) and moqui-error.log (warn and error) in moqui_log_dir, a path or runtime:// location;
+        empty writes no files. A file rolls over to moqui.yyyy-MM-dd.N.log (UTC) at moqui_log_max_size_mb or when the day changes,
+        and only the newest moqui_log_max_files rolled files of each kind are kept. -->
+    <default-property name="moqui_log_dir" value="runtime://log"/>
+    <default-property name="moqui_log_max_size_mb" value="100"/>
+    <default-property name="moqui_log_max_files" value="30"/>
 
     <!-- LLM Client settings (env vars / Java properties; see ReleaseNotes.md). url may be an origin
          (default path /v1/chat/completions is appended) or a full chat/completions URL (Azure).
