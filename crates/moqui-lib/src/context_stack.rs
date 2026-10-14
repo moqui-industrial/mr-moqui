@@ -67,6 +67,15 @@ impl ContextStack {
         }
     }
 
+    /// The entries of the top frame only, the map the last [`Self::push`] began.
+    pub fn top_entries(&self) -> IndexMap<String, Value> {
+        self.frames
+            .last()
+            .and_then(Option::as_ref)
+            .map(|frame| frame.borrow().clone())
+            .unwrap_or_default()
+    }
+
     /// The shared map. Lookups do not read it.
     pub fn shared_map(&self) -> Frame {
         Rc::clone(&self.shared)

@@ -66,6 +66,8 @@ pub struct PostgresBackend {
     vectors: Option<VectorStore>,
     /// Signature of each table known to exist.
     known: Mutex<HashMap<String, String>>,
+    /// One `ensure_index` at a time in this process; the advisory lock covers other processes.
+    ensuring: Mutex<()>,
 }
 
 /// How embeddings are stored: `halfvec` or `vector`, of `dimensions`.
@@ -186,6 +188,7 @@ impl PostgresBackend {
             accent: false,
             vectors: None,
             known: Mutex::new(HashMap::new()),
+            ensuring: Mutex::new(()),
         })
     }
 
@@ -660,6 +663,12 @@ impl SearchBackend for PostgresBackend {
 
     fn ensure_index(&self, mapping: &DocumentMapping) -> Result<(), Error> {
         let signature = self.signature(mapping);
+        if self.registered(&mapping.document_id)?.as_deref() == Some(signature.as_str()) {
+            return Ok(());
+        }
+        // Feed workers index documents of one type at once; only one makes the table.
+        let _ensuring = lock(&self.ensuring);
+        lock(&self.known).remove(&mapping.document_id);
         let current = self.registered(&mapping.document_id)?;
         if current.as_deref() == Some(signature.as_str()) {
             return Ok(());
@@ -667,9 +676,22 @@ impl SearchBackend for PostgresBackend {
         let table = self.table(mapping);
         let registry = format!("{}.document_index", ident(&self.schema));
         let statements = self.create_statements(mapping);
+        let advisory = format!("{}.{}", self.schema, mapping.physical_name);
+        // True when this call made the table; false when another made it first.
         self.tx.with_reserve(|conn| {
             conn.begin()?;
             let result = (|| {
+                // Another process may be making it: wait for it, then look again.
+                conn.query("SELECT pg_advisory_xact_lock(hashtext(?))", &[Value::string(&advisory)])?;
+                let rows = conn.query(
+                    &format!("SELECT signature FROM {registry} WHERE document_id = ?"),
+                    &[Value::string(&mapping.document_id)],
+                )?;
+                if rows.first().and_then(|row| row.get("signature")).map(to_plain_string).as_deref()
+                    == Some(signature.as_str())
+                {
+                    return Ok(false);
+                }
                 if current.is_some() {
                     tracing::warn!(
                         document = %mapping.document_id,
@@ -693,10 +715,10 @@ impl SearchBackend for PostgresBackend {
                         Value::string(&signature),
                     ],
                 )?;
-                Ok(())
+                Ok(true)
             })();
             match result {
-                Ok(()) => conn.commit(),
+                Ok(made) => conn.commit().map(|()| made),
                 Err(err) => {
                     let _ = conn.rollback();
                     Err(err)

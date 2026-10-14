@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use moqui_lib::error::Error;
 use moqui_lib::node::MNode;
-use moqui_lib::object::Value;
+use moqui_lib::object::{HostObject, Value};
 
 use super::rule_actions::{condition_allows, publish_names, run_stored_actions};
 use super::security_checks::{assert_privileged_group_membership, assert_sealed_permission_grant, map_text};
@@ -45,29 +45,112 @@ pub fn search_not_up(facade: &EntityFacade) -> bool {
 }
 
 /// Run matched ECA rules. `before` selects run-before rules. Ids come from the last match.
+///
+/// As Java's `EntityEcaRule.runIfMatches`: the rule's context has the field values, `entityValue` (a value
+/// scripts and called services share, so a field they set on it is set on the write for a run-before rule),
+/// `originalValue` (the row before an update or delete, with `get-original-value`, before rules only), and
+/// `eecaOperation`. `get-entire-entity` fills unset fields from the row for an update or delete. With
+/// `set-results`, non-primary-key fields the actions set in the rule's context are set on the values. A rule
+/// is skipped while the message facade has errors unless it has `run-on-error`.
 pub fn run_matched_eca(
     facade: &EntityFacade,
     entity_name: &str,
     operation: &str,
     before: bool,
-    values: &BTreeMap<String, Value>,
+    values: &mut BTreeMap<String, Value>,
 ) -> Result<(), Error> {
     tracing::debug!(entity = entity_name, operation, before, "running matched entity eca");
     let matched: BTreeSet<String> = load_feed::matched_eca_ids(facade).into_iter().collect();
     if matched.is_empty() {
         return Ok(());
     }
+    let update_or_delete = operation == "update" || operation == "delete";
     for rule in load_feed::eca_rules(facade, entity_name) {
         if !matched.contains(&rule.id) || rule.run_before != before {
             continue;
         }
-        let _frame = publish_names(values).map_err(to_lib)?;
-        if !condition_allows(&rule.condition).map_err(to_lib)? {
+        if !rule.run_on_error && has_message_error() {
             continue;
         }
-        run_rule_actions(facade, &rule.actions, values)?;
+        // Name the rule in a failure: an action error alone does not say where it came from.
+        let in_rule = |err: Error| {
+            Error::new(format!(
+                "entity ECA {} on {operation} of {entity_name}: {}",
+                rule.id,
+                err.message()
+            ))
+        };
+        let db_row = if update_or_delete && (rule.get_entire_entity || (before && rule.get_original_value)) {
+            let keys = facade.pk_map(entity_name, values).map_err(in_rule)?;
+            facade.find_by_pk(entity_name, &keys).map_err(in_rule)?
+        } else {
+            None
+        };
+        if rule.get_entire_entity {
+            if let Some(row) = &db_row {
+                for (name, value) in row.fields() {
+                    values.entry(name.clone()).or_insert_with(|| value.clone());
+                }
+            }
+        }
+        let original = match (&db_row, before && rule.get_original_value) {
+            (Some(row), true) => entity_object(row.clone()),
+            _ => Value::Null,
+        };
+        let mut current = facade.make_value(entity_name).map_err(in_rule)?;
+        for (name, value) in values.iter() {
+            current.set(name.clone(), value.clone());
+        }
+        let cell: std::sync::Arc<std::sync::Mutex<crate::entity::EntityValue>> =
+            std::sync::Arc::new(std::sync::Mutex::new(current));
+
+        let _frame = publish_names(values).map_err(to_lib).map_err(in_rule)?;
+        let put = |name: &str, value: Value| crate::script::set_context_name(name, value).map_err(to_lib).map_err(in_rule);
+        put("entityValue", Value::Object(HostObject(cell.clone())))?;
+        put("originalValue", original)?;
+        put("eecaOperation", Value::string(operation))?;
+        if !condition_allows(&rule.condition).map_err(to_lib).map_err(in_rule)? {
+            continue;
+        }
+        run_rule_actions(facade, &rule.actions, values).map_err(in_rule)?;
+        if before {
+            // Fields set on `entityValue` are fields of the write, as the Java value is the one written.
+            let shared = cell.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (name, value) in shared.fields() {
+                if values.get(name) != Some(value) {
+                    values.insert(name.clone(), value.clone());
+                }
+            }
+        }
+        if rule.set_results {
+            let set = crate::script::top_context_entries();
+            let fields = facade
+                .with_entity(entity_name, |entity, _, _| {
+                    Ok(entity
+                        .fields
+                        .iter()
+                        .filter(|field| !field.is_pk)
+                        .map(|field| field.name.clone())
+                        .collect::<Vec<_>>())
+                })
+                .map_err(in_rule)?;
+            for name in fields {
+                if let Some(value) = set.get(&name) {
+                    values.insert(name, value.clone());
+                }
+            }
+        }
     }
     Ok(())
+}
+
+/// A value scripts see as an entity value.
+fn entity_object(value: crate::entity::EntityValue) -> Value {
+    Value::Object(HostObject(std::sync::Arc::new(std::sync::Mutex::new(value))))
+}
+
+fn has_message_error() -> bool {
+    ExecutionContext::with_current(|ctx| !ctx.message().errors().is_empty()).unwrap_or(false)
 }
 
 /// Run one data-file service element through [`crate::service::call::sync`].

@@ -202,6 +202,26 @@ The facades are already complete. This gate proves them together.
 
 After the gate, loading `mantle-udm` entity XML is the first migration check. It is not part of the gate. Expressions in mantle services stay Groovy until that component is migrated, which is outside this repository.
 
+Checked 2026-10-14 with `mantle-udm`, `mantle-usl` (both unmigrated), and `ironstone-boss` in `runtime/component`:
+
+- The model loads every component's `entity` directory after the framework's, `extend-entity` included, and creates all 571 tables.
+- Each component's entity files load as data (their `seed-data`) before its `data` directory, as `EntityDataLoaderImpl` gathers them.
+- `moqui load disableEntityEca=true` loads the seed, seed-initial, and install data: 7579 records. With rules on, the load stops at the first rule whose service is still Groovy (`GlAccountSetFlags`, then `set#GlAccountFlags`), and the error names the rule.
+- `types=all` adds the demo data, which stops at a data-file call of `init#PartyAccountingConfiguration`. The error names the Groovy that kept the service from registering.
+
+The framework changes this took are all Java behavior the port lacked:
+
+- Component entity directories, and their `*.eecas.xml`.
+- Services found by file path (`a.b.C.verb#noun` is `service/a/b/C.xml` in any component), and data-file service elements in the combined camel-case form.
+- For entity ECA rules: `entityValue` (shared with called services, so a run-before rule's changes are written), `originalValue`, `get-entire-entity`, `set-results`, and `run-on-error`.
+- For nested records: `storeEntity`'s `fromDate` of now and its secondary sequenced id.
+- Locale grouping in number text (`118,500`), and a row that names itself in a foreign key.
+- After each data file, message errors are logged and cleared.
+- The load uses the conf's pool, because the feed's service workers need the room `check_serve_caps` checks.
+- Postgres search tables are made under a lock, because feed workers race to make them.
+
+`tests/component_load.rs` covers these with a fixture component.
+
 ## Phase 7 — Web layer and `rest.xml`
 
 Depends on gate 1. `EntityFacade.rest` and `RestApi` already run. This phase is the HTTP edge and enough of the screen facade to reach a transition.

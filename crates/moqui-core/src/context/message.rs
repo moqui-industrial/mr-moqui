@@ -95,6 +95,12 @@ impl MessageFacade {
         &self.errors
     }
 
+    /// Java `clearErrors`: the errors and validation errors, not the messages.
+    pub fn clear_errors(&mut self) {
+        self.errors.clear();
+        self.validation_errors.clear();
+    }
+
     pub fn clear(&mut self) {
         self.messages.clear();
         self.message_types.clear();

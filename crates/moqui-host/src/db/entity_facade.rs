@@ -48,6 +48,42 @@ pub fn open_entity_facade_dialect(
     EntityFacade::open_with_driver(framework_dir, driver, pool, dialect, &["transactional"])
 }
 
+/// [`open_entity_facade_dialect`] with the `entity` directories of the components
+/// ([`component_entity_dirs`]): their entities, extends, and entity ECA rules join the framework's.
+///
+/// # Errors
+///
+/// Returns an error when the conf or the entity model cannot be read, or when `dialect` is not defined.
+pub fn open_entity_facade_components(
+    framework_dir: &Path,
+    component_entity_dirs: &[std::path::PathBuf],
+    driver: Arc<dyn DbDriver>,
+    pool: PoolConfig,
+    dialect: &str,
+) -> Result<EntityFacade, Error> {
+    EntityFacade::open_with_driver_components(
+        framework_dir,
+        component_entity_dirs,
+        driver,
+        pool,
+        dialect,
+        &["transactional"],
+    )
+}
+
+/// The `entity` directory of each component the factory found, in its load order, the framework
+/// left out (its directory is always read).
+pub fn component_entity_dirs(factory: &ExecutionContextFactory) -> Vec<std::path::PathBuf> {
+    let framework = std::fs::canonicalize(factory.framework_dir()).unwrap_or_else(|_| factory.framework_dir().to_path_buf());
+    factory
+        .components()
+        .iter()
+        .filter(|info| std::fs::canonicalize(&info.location).unwrap_or_else(|_| info.location.clone()) != framework)
+        .map(|info| info.location.join("entity"))
+        .filter(|dir| dir.is_dir())
+        .collect()
+}
+
 /// Install the facade so `dbresource://` reads and writes through it.
 pub fn attach(factory: &ExecutionContextFactory, facade: EntityFacade) {
     factory.set_entity(facade);

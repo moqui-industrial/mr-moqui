@@ -281,6 +281,11 @@ impl Drop for IsolatedContext {
 }
 
 /// Put `value` in the top frame.
+/// The names set in the top context frame, as an entity ECA rule's `set-results` reads them.
+pub fn top_context_entries() -> indexmap::IndexMap<String, Value> {
+    STACK.with(|stack| stack.borrow().top_entries())
+}
+
 pub fn set_context_name(name: &str, value: Value) -> Result<(), Error> {
     STACK.with(|stack| stack.borrow_mut().put(name, value).map(|_| ()).map_err(Error::from))
 }

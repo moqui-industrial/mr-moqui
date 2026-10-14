@@ -236,6 +236,7 @@ where
         }
         [command, rest @ ..] if command == "load" => {
             let flags = parse_load_args(rest)?;
+            logging::install();
             dispatch_load(&flags)?;
             Ok(None)
         }
@@ -564,8 +565,9 @@ fn load_with_factory(
     pool: moqui_core::transaction::PoolConfig,
     flags: &LoadFlags,
 ) -> Result<LoadReport, moqui_lib::error::Error> {
-    let facade = crate::db::entity_facade::open_entity_facade_dialect(
+    let facade = crate::db::entity_facade::open_entity_facade_components(
         framework_dir,
+        &crate::db::entity_facade::component_entity_dirs(factory),
         std::sync::Arc::clone(&db.driver),
         pool,
         &db.conf.dialect,
@@ -590,13 +592,13 @@ fn load_with_factory(
     outcome
 }
 
-/// A load is one thread and a few workers: four connections of the conf's pool, one of them reserve.
+/// A load's pool is the conf's, opened lazily (`min` 0). Its data feed runs on the service workers, each of which can
+/// hold a connection and park another for a `force-new` call, so the load needs the same room the server checks for
+/// at startup (`check_serve_caps`); a small fixed pool ran out on Mantle's demo data.
 #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
 fn load_pool(conf: &moqui_core::transaction::PoolConfig) -> moqui_core::transaction::PoolConfig {
     moqui_core::transaction::PoolConfig {
         min: 0,
-        max: 4,
-        reserve: 1,
         ..conf.clone()
     }
 }
@@ -745,8 +747,9 @@ fn boot_server(
     let pool = conf.pool.clone();
     let install = crate::db::embedded::shared_install_dir(&runtime_dir.join("db"), &cluster_dir);
     let db = crate::db::entity_db::open(conf, &cluster_dir, &install, pool.max)?;
-    let facade = crate::db::entity_facade::open_entity_facade_dialect(
+    let facade = crate::db::entity_facade::open_entity_facade_components(
         &framework_dir,
+        &crate::db::entity_facade::component_entity_dirs(&factory),
         Arc::clone(&db.driver),
         pool,
         &db.conf.dialect,
@@ -910,7 +913,7 @@ fn load_in_context(
     let checks_before = moqui_core::service::security_checks_run();
     apply_facade_flags(facade, flags);
     register_services(framework_dir, &flags.service_files)?;
-    let entities = framework_entity_names(framework_dir)?;
+    let entities = entity_names(framework_dir, &facade.entity_dirs())?;
     if !entities.iter().any(|name| name == "moqui.test.TestFts") {
         return Err(moqui_lib::error::Error::new(
             "framework entity list has no moqui.test.TestFts",
@@ -929,6 +932,7 @@ fn load_in_context(
     if let Some(location) = &flags.location {
         eprintln!("load {location}");
         records = records.saturating_add(load_entity_data(facade, location, &options)?.records);
+            report_message_errors(location);
     } else if entity_count(facade, "moqui.basic.Enumeration")? == 0
         || flags.data_types.is_some()
         || !flags.components.is_empty()
@@ -941,16 +945,19 @@ fn load_in_context(
             let location = path.display().to_string();
             eprintln!("load {location}");
             records = records.saturating_add(load_entity_data(facade, &location, &options)?.records);
+            report_message_errors(&location);
         }
         for location in conf_data_locations(facade)? {
             eprintln!("load {location}");
             records = records.saturating_add(load_entity_data(facade, &location, &options)?.records);
+            report_message_errors(&location);
         }
         // The `data` directory of each component, as `EntityDataLoaderImpl` reads them (theme, localization and
         // security data). The data types of each file select what loads, like the framework files.
         for location in component_data {
             eprintln!("load {location}");
             records = records.saturating_add(load_entity_data(facade, location, &options)?.records);
+            report_message_errors(location);
         }
     }
     let enumeration = entity_count(facade, "moqui.basic.Enumeration")?;
@@ -965,19 +972,53 @@ fn load_in_context(
     })
 }
 
+/// As `EntityDataLoaderImpl` after each file: errors left in the message facade (an ECA action's failed service call,
+/// for one) are logged and cleared, so they are seen and do not stop the rules of the next file.
+fn report_message_errors(location: &str) {
+    moqui_core::context::ExecutionContext::with_current(|ctx| {
+        let mut message = ctx.message();
+        if !message.errors().is_empty() {
+            eprintln!("Error messages loading {location}: {}", message.errors().join("; "));
+            message.clear_errors();
+        }
+    });
+}
+
 fn same_dir(left: &std::path::Path, right: &std::path::Path) -> bool {
     left == right || matches!((std::fs::canonicalize(left), std::fs::canonicalize(right)), (Ok(a), Ok(b)) if a == b)
 }
 
-/// `component://name/data/file` for each `.xml`, `.csv` and `.json` file in the `data` directory of each component, by file name.
-/// The framework is not here: its files come from the conf. Only the components in `flags.components` when it names some.
+/// For each component, as `EntityDataLoaderImpl` gathers them: when seed data loads, `component://name/entity/file` for each
+/// entity definition file (their `seed-data` blocks; not `*.eecas.xml`), then `component://name/data/file` for each `.xml`,
+/// `.csv` and `.json` file in the `data` directory, each by file name. The framework is not here: its files come from the
+/// conf. Only the components in `flags.components` when it names some.
 fn component_data_locations(factory: &moqui_core::context::ExecutionContextFactory, flags: &LoadFlags) -> Vec<String> {
+    let seed = flags
+        .data_types
+        .as_ref()
+        .is_none_or(|types| types.is_empty() || types.iter().any(|kind| kind == "seed" || kind == "all"));
     let mut locations = Vec::new();
     for info in factory.components() {
         if same_dir(&info.location, factory.framework_dir())
             || (!flags.components.is_empty() && !flags.components.contains(&info.name))
         {
             continue;
+        }
+        if seed {
+            if let Ok(read) = std::fs::read_dir(info.location.join("entity")) {
+                let mut names: Vec<String> = read
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.path().is_file())
+                    .filter_map(|entry| entry.file_name().into_string().ok())
+                    .filter(|name| name.ends_with(".xml") && !name.ends_with(".eecas.xml"))
+                    .collect();
+                names.sort();
+                locations.extend(
+                    names
+                        .into_iter()
+                        .map(|name| format!("component://{}/entity/{name}", info.name)),
+                );
+            }
         }
         let Ok(read) = std::fs::read_dir(info.location.join("data")) else {
             continue;
@@ -1097,12 +1138,29 @@ fn push_unique(
     }
 }
 
-fn framework_entity_names(framework_dir: &std::path::Path) -> Result<Vec<String>, moqui_lib::error::Error> {
+/// The transactional entities of the framework conf's files, then of each component `entity` directory
+/// in `entity_dirs` after the framework's own (the first).
+fn entity_names(
+    framework_dir: &std::path::Path,
+    entity_dirs: &[std::path::PathBuf],
+) -> Result<Vec<String>, moqui_lib::error::Error> {
     use moqui_lib::node::MNode;
 
     let mut names = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
-    for path in framework_xml_paths(framework_dir)? {
+    let mut paths = framework_xml_paths(framework_dir)?;
+    for dir in entity_dirs.iter().skip(1) {
+        let read = std::fs::read_dir(dir)
+            .map_err(|err| moqui_lib::error::Error::new(format!("could not read {}", dir.display())).with_source(err))?;
+        let mut found: Vec<std::path::PathBuf> = read
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("xml"))
+            .collect();
+        found.sort();
+        paths.extend(found);
+    }
+    for path in paths {
         let root = MNode::parse_file(&path)?;
         collect_entities(&root, &mut names, &mut seen);
     }

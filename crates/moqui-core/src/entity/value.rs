@@ -239,8 +239,14 @@ impl EntityFacade {
             let _rules = load_feed::match_rules_with(self, entity_name, seal_operation, Some(&plain));
         }
         let eca = crate::user::context_entered();
+        let mut plain = plain;
         if eca {
-            crate::service::run_matched_eca(self, entity_name, seal_operation, true, &plain)?;
+            let before = plain.clone();
+            crate::service::run_matched_eca(self, entity_name, seal_operation, true, &mut plain)?;
+            // A run-before rule may have set fields (`entityValue` or `set-results`): convert them as a write would.
+            if plain != before {
+                plain = self.normalize_values(entity_name, &plain, operation == "update")?;
+            }
         }
         let cache_values = plain.clone();
         if cache::gate_write(self, entity_name, operation, &plain)? == WriteGate::Proceed {
@@ -268,8 +274,8 @@ impl EntityFacade {
                 Ok((sql, params))
             })?;
             execute_tx(&tx, &sql, &params)?;
-            if let Some(values) = after_values.as_ref() {
-                crate::service::run_matched_eca(self, entity_name, seal_operation, false, values)?;
+            if let Some(mut values) = after_values {
+                crate::service::run_matched_eca(self, entity_name, seal_operation, false, &mut values)?;
             }
         }
         cache::on_write(self, entity_name, operation, &cache_values)?;
@@ -300,7 +306,7 @@ impl EntityFacade {
         find.one()
     }
 
-    fn pk_map(&self, entity_name: &str, values: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, Error> {
+    pub(crate) fn pk_map(&self, entity_name: &str, values: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, Error> {
         self.with_entity(entity_name, |entity, _, _| pk_values(entity, values))
     }
 
