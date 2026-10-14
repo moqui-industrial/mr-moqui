@@ -18,8 +18,9 @@
 //! resolves it to. Any other scheme, `content://` included, is an error that names the location.
 //!
 //! A target is the path under the root in URL-safe Base64 with no padding, after a 3 character volume ID, as Java
-//! hashes it, so the client's hashes stay valid. A path with a `..` segment, a backslash turned slash, or a part with a
-//! colon resolves to the root.
+//! hashes it, so the client's hashes stay valid. A hash that does not decode, or a path with a `..` segment, a backslash
+//! turned slash, or a part with a colon, is an elFinder error response, never the root. `rm`, `rename` and `put` refuse
+//! the root itself.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -37,6 +38,10 @@ use crate::entity::EntityFacade;
 use crate::web::multipart::UploadedFile;
 
 const RUN_COMMAND: &str = "org.moqui.impl.ElFinderServices.run#Command";
+/// The error for a target that does not decode or that leaves the volume.
+const INVALID_TARGET: &str = "errFileNotFound";
+/// The error for a destructive command on the volume root.
+const ROOT_REFUSED: &str = "Not allowed on the volume root";
 
 /// Decodes a hash with or without its padding.
 const HASH_DECODE: GeneralPurpose = GeneralPurpose::new(
@@ -79,7 +84,7 @@ pub(super) fn run(
         _ => IndexMap::new(),
     };
     tracing::info!(
-        "elFinder cmd={cmd}, target={target}:{}:{}",
+        "elFinder cmd={cmd}, target={target}:{:?}:{:?}",
         unhash(&target),
         connector.location(&target)
     );
@@ -120,18 +125,20 @@ impl Connector<'_> {
         format!("{}{}", self.volume_id, URL_SAFE_NO_PAD.encode(path.as_bytes()))
     }
 
-    fn location(&self, hashed: &str) -> String {
+    /// The location a hash names. An empty hash is the root. `None` for a hash that does not decode or a path that
+    /// leaves the volume.
+    fn location(&self, hashed: &str) -> Option<String> {
         if hashed.is_empty() {
-            return self.resource_root.clone();
+            return Some(self.resource_root.clone());
         }
-        self.join_under_root(&unhash(hashed))
+        self.join_under_root(&unhash(hashed)?)
     }
 
-    /// Join a relative path onto the root. A parent segment or a part with a colon gives the root.
-    fn join_under_root(&self, path: &str) -> String {
+    /// Join a relative path onto the root. A parent segment or a part with a colon is `None`.
+    fn join_under_root(&self, path: &str) -> Option<String> {
         let root = &self.resource_root;
         if path.is_empty() || path == "/" || path == "root" {
-            return root.clone();
+            return Some(root.clone());
         }
         let normalized = path.replace('\\', "/");
         let mut safe = Vec::new();
@@ -141,14 +148,18 @@ impl Connector<'_> {
             }
             if part == ".." || part.contains(':') {
                 tracing::warn!("ElFinder path rejected under {root}: {path}");
-                return root.clone();
+                return None;
             }
             safe.push(part);
         }
         if safe.is_empty() {
-            return root.clone();
+            return Some(root.clone());
         }
-        format!("{root}{}{}", if root.ends_with('/') { "" } else { "/" }, safe.join("/"))
+        Some(format!(
+            "{root}{}{}",
+            if root.ends_with('/') { "" } else { "/" },
+            safe.join("/")
+        ))
     }
 
     fn relative_to_root(&self, location: &str) -> String {
@@ -321,9 +332,9 @@ impl Connector<'_> {
         self.info(&self.entry(location)?)
     }
 
-    fn files(&self, target: &str, tree: bool) -> Result<Vec<Value>, LibError> {
+    fn files(&self, location: &str, tree: bool) -> Result<Vec<Value>, LibError> {
         let mut files = Vec::new();
-        let current = self.entry(&self.location(target))?;
+        let current = self.entry(location)?;
         if self.is_directory(&current)? || self.is_root(&current.location) {
             files.push(self.info(&current)?);
         }
@@ -377,10 +388,10 @@ impl Connector<'_> {
         Ok(tree)
     }
 
-    fn options(&self, target: &str) -> Value {
+    fn options(&self, location: &str) -> Value {
         let mut options = IndexMap::new();
         options.insert("seperator".to_string(), Value::string("/"));
-        options.insert("path".to_string(), Value::string(self.location(target)));
+        options.insert("path".to_string(), Value::string(location));
         let mut disabled = vec![
             "tmb",
             "size",
@@ -542,9 +553,19 @@ impl Connector<'_> {
                 false
             }
         };
+        // An empty target is the root. rm reads only targets[], each resolved below.
+        let location = match self.location(&target) {
+            Some(location) => location,
+            None if cmd == "rm" => String::new(),
+            None => {
+                fail(&mut response, INVALID_TARGET);
+                out.insert("responseMap".to_string(), Value::Map(response));
+                return Ok(out);
+            }
+        };
         match cmd {
             "file" => {
-                out.insert("fileLocation".to_string(), Value::string(self.location(&target)));
+                out.insert("fileLocation".to_string(), Value::string(&location));
                 out.insert("fileInline".to_string(), Value::Bool(other_text("download") != "1"));
             }
             "open" => {
@@ -561,29 +582,29 @@ impl Connector<'_> {
                     fail(&mut response, "File not found");
                 } else {
                     response.insert("uplMaxSize".to_string(), Value::string("32M"));
-                    response.insert("cwd".to_string(), self.location_info(&self.location(&target))?);
-                    response.insert("files".to_string(), Value::List(self.files(&target, tree)?));
-                    response.insert("options".to_string(), self.options(&target));
+                    response.insert("cwd".to_string(), self.location_info(&location)?);
+                    response.insert("files".to_string(), Value::List(self.files(&location, tree)?));
+                    response.insert("options".to_string(), self.options(&location));
                 }
             }
             "tree" => {
                 if target.is_empty() {
                     fail(&mut response, "errOpen");
                 } else {
-                    let entry = self.entry(&self.location(&target))?;
+                    let entry = self.entry(&location)?;
                     let mut tree = vec![self.info(&entry)?];
                     tree.extend(self.tree(&entry, 0)?);
                     response.insert("tree".to_string(), Value::List(tree));
                 }
             }
             "parents" => {
-                response.insert("tree".to_string(), Value::List(self.parents(&self.location(&target))?));
+                response.insert("tree".to_string(), Value::List(self.parents(&location)?));
             }
             "ls" => {
                 if target.is_empty() {
                     fail(&mut response, "errOpen");
                 } else {
-                    let dir = self.entry(&self.location(&target))?;
+                    let dir = self.entry(&location)?;
                     let list = self
                         .children(&dir)?
                         .iter()
@@ -606,7 +627,7 @@ impl Connector<'_> {
                     fail(&mut response, &format!("No name specified for new {what}"));
                     break 'make;
                 };
-                let dir = self.entry(&self.location(&target))?;
+                let dir = self.entry(&location)?;
                 let made = if cmd == "mkdir" {
                     self.make_directory(&dir, &name)?
                 } else {
@@ -626,9 +647,21 @@ impl Connector<'_> {
                     Value::List(items) => items.iter().map(to_plain_string).collect(),
                     other => vec![to_plain_string(&other)],
                 };
-                let mut removed = Vec::new();
+                // Every target resolves, and none is the root, before anything is deleted.
+                let mut locations = Vec::new();
                 for current in targets {
-                    let location = self.location(&current);
+                    let Some(location) = self.location(&current) else {
+                        fail(&mut response, INVALID_TARGET);
+                        break 'rm;
+                    };
+                    if self.is_root(&location) {
+                        fail(&mut response, ROOT_REFUSED);
+                        break 'rm;
+                    }
+                    locations.push(location);
+                }
+                let mut removed = Vec::new();
+                for location in locations {
                     tracing::info!("ElFinder rm {location}");
                     removed.extend(self.delete(&location)?);
                 }
@@ -647,7 +680,10 @@ impl Connector<'_> {
                     fail(&mut response, "No name specified for new directory");
                     break 'rename;
                 };
-                let location = self.location(&target);
+                if self.is_root(&location) {
+                    fail(&mut response, ROOT_REFUSED);
+                    break 'rename;
+                }
                 let new_location = format!("{}{name}", location.rfind('/').map_or("", |slash| &location[..=slash]));
                 self.move_to(&self.entry(&location)?, &new_location)?;
                 response.insert(
@@ -664,7 +700,7 @@ impl Connector<'_> {
                     fail(&mut response, "errOpen");
                     break 'upload;
                 }
-                let dir = self.entry(&self.location(&target))?;
+                let dir = self.entry(&location)?;
                 let mut added = Vec::new();
                 for file in uploads(other) {
                     let Some(name) = safe_entry_name(&file.file_name) else {
@@ -672,20 +708,28 @@ impl Connector<'_> {
                     };
                     tracing::info!("ElFinder upload {name} to {}", dir.location);
                     let entry = self.child(&dir, &name);
+                    if self.is_root(&entry.location) {
+                        fail(&mut response, ROOT_REFUSED);
+                        break 'upload;
+                    }
                     self.put_bytes(&entry, &file.bytes)?;
                     added.push(self.info(&entry)?);
                 }
                 response.insert("added".to_string(), Value::List(added));
             }
             "get" => {
-                let entry = self.entry(&self.location(&target))?;
+                let entry = self.entry(&location)?;
                 response.insert("content".to_string(), Value::string(self.read_text(&entry)?));
             }
             "put" => 'put: {
                 if write_refused(&mut response) {
                     break 'put;
                 }
-                let entry = self.entry(&self.location(&target))?;
+                if self.is_root(&location) {
+                    fail(&mut response, ROOT_REFUSED);
+                    break 'put;
+                }
+                let entry = self.entry(&location)?;
                 self.put_bytes(&entry, other_text("content").as_bytes())?;
                 response.insert("changed".to_string(), Value::List(vec![self.info(&entry)?]));
             }
@@ -701,17 +745,13 @@ fn writes_restricted(instance_purpose: &str, resource_root: &str) -> bool {
         && !(resource_root.starts_with("dbresource://") || resource_root.starts_with("content://"))
 }
 
-/// The path a hash names. Anything that is not a hash is the empty path, the root.
-fn unhash(hashed: &str) -> String {
+/// The path a hash names, or `None` for anything that is not a hash of a UTF-8 path.
+fn unhash(hashed: &str) -> Option<String> {
     // NOTE: assumes a volume ID prefix with 3 characters
-    let Some(encoded) = hashed.get(3..) else {
-        return String::new();
-    };
+    let encoded = hashed.get(3..).filter(|encoded| !encoded.is_empty())?;
     let encoded = encoded.replace('.', "=").replace('+', "-").replace('/', "_");
-    HASH_DECODE
-        .decode(encoded.as_bytes())
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-        .unwrap_or_default()
+    let bytes = HASH_DECODE.decode(encoded.as_bytes()).ok()?;
+    String::from_utf8(bytes).ok()
 }
 
 /// The last part of a client-given name, or `None` for an empty name, `.`, `..`, or a name with a colon.

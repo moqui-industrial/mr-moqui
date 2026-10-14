@@ -129,14 +129,27 @@ pub fn run_script_location(location: &str) -> Result<(), Error> {
     eval_script(&source)
 }
 
+/// `ec.logger.log(level, message, thrown)`: the level is a name or one of Java's `LoggerFacade` numbers, `ERROR_INT`
+/// 200 and `WARN_INT` 300 among them. `OFF_INT` 0 and `"off"` log nothing.
 pub(super) fn logger_log(
     ctx: Ctx<'_>,
-    level: String,
+    level: JsValue<'_>,
     message: String,
     _extra: Opt<JsValue<'_>>,
 ) -> rquickjs::Result<()> {
     host_guard(&ctx, || {
+        let level = match level.as_number() {
+            Some(0.0) => "off".to_string(),
+            Some(number) if number <= 300.0 || number >= f64::from(i32::MAX) => "warn".to_string(),
+            Some(_) => "info".to_string(),
+            None => level
+                .as_string()
+                .map(|text| text.to_string())
+                .transpose()?
+                .unwrap_or_default(),
+        };
         match level.as_str() {
+            "off" => {}
             "warn" | "warning" | "error" => tracing::warn!("{message}"),
             _ => tracing::info!("{message}"),
         }

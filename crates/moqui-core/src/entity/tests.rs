@@ -871,3 +871,152 @@ fn foobar_select_view_joins_member_entities() {
     assert!(sql.contains("Bar"), "{sql}");
     assert!(!sql.contains("member-relationship"), "{sql}");
 }
+
+/// What the SQL runner asked of the connection: rows taken from the cursor, and whether it began, closed, or read
+/// a query whole.
+#[derive(Default)]
+struct CursorTape {
+    fetched: usize,
+    begun: bool,
+    closed: bool,
+    read_whole: bool,
+}
+
+struct CursorDriver {
+    tape: Arc<Mutex<CursorTape>>,
+}
+
+/// Serves 100 rows through the cursor.
+struct CursorConn {
+    tape: Arc<Mutex<CursorTape>>,
+}
+
+impl DbConnection for CursorConn {
+    fn execute(&mut self, _sql: &str, _params: &[Value]) -> Result<u64, Error> {
+        Ok(0)
+    }
+
+    fn query(&mut self, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
+        self.query_once(sql, params)
+    }
+
+    fn query_once(&mut self, sql: &str, _params: &[Value]) -> Result<Vec<DbRow>, Error> {
+        // SELECT 1 is the pool's check of a new connection.
+        if sql != "SELECT 1" {
+            self.tape.lock().unwrap_or_else(|err| err.into_inner()).read_whole = true;
+        }
+        Ok(Vec::new())
+    }
+
+    fn open_stream(&mut self, _sql: &str, _params: &[Value]) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn next_row(&mut self) -> Result<Option<DbRow>, Error> {
+        let mut tape = self.tape.lock().unwrap_or_else(|err| err.into_inner());
+        if tape.fetched >= 100 {
+            return Ok(None);
+        }
+        tape.fetched += 1;
+        let number = i64::try_from(tape.fetched).unwrap_or_default();
+        Ok(Some(DbRow {
+            columns: vec![("n".to_string(), Value::I64(number))],
+        }))
+    }
+
+    fn close_stream(&mut self) -> Result<(), Error> {
+        self.tape.lock().unwrap_or_else(|err| err.into_inner()).closed = true;
+        Ok(())
+    }
+
+    fn stream_open(&self) -> bool {
+        false
+    }
+
+    fn begin(&mut self) -> Result<(), Error> {
+        self.tape.lock().unwrap_or_else(|err| err.into_inner()).begun = true;
+        Ok(())
+    }
+
+    fn commit(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn rollback(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn savepoint(&mut self, _name: &str) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn rollback_to_savepoint(&mut self, _name: &str) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn release_savepoint(&mut self, _name: &str) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn canceller(&self) -> Box<dyn DbCancel> {
+        Box::new(NoCancel)
+    }
+}
+
+impl DbDriver for CursorDriver {
+    fn connect(&self) -> Result<Box<dyn DbConnection>, Error> {
+        Ok(Box::new(CursorConn {
+            tape: Arc::clone(&self.tape),
+        }))
+    }
+}
+
+#[test]
+fn the_sql_runner_reads_a_query_through_a_cursor_to_one_row_past_the_limit() {
+    let tape = Arc::new(Mutex::new(CursorTape::default()));
+    let driver: Arc<dyn DbDriver> = Arc::new(CursorDriver {
+        tape: Arc::clone(&tape),
+    });
+    let transactions = TransactionManager::new(
+        driver,
+        PoolConfig {
+            min: 0,
+            max: 2,
+            reserve: 1,
+            acquire_timeout: Duration::from_secs(5),
+        },
+    )
+    .unwrap();
+    let facade = EntityFacade::open(
+        &framework_dir(),
+        "transactional",
+        vec![EntityGroup::new("transactional", "postgres", transactions)],
+    )
+    .unwrap();
+
+    let result = super::info::run_sql(&facade, "transactional", "select n from numbers;", 5).unwrap();
+    assert_eq!(result.columns, vec!["n".to_string()]);
+    assert_eq!(result.records.len(), 5);
+    assert_eq!(result.records[4], vec![Value::I64(5)]);
+    assert!(result.limit_reached);
+    {
+        let mut tape = tape.lock().unwrap_or_else(|err| err.into_inner());
+        assert_eq!(tape.fetched, 6, "the cursor is read to one row past the limit");
+        assert!(tape.begun && tape.closed && !tape.read_whole);
+        *tape = CursorTape::default();
+    }
+
+    // At or under the limit, every row and no limit reached.
+    let result = super::info::run_sql(&facade, "transactional", "SELECT n FROM numbers", 0).unwrap();
+    assert_eq!(result.records.len(), 100);
+    assert!(!result.limit_reached);
+    tape.lock().unwrap_or_else(|err| err.into_inner()).fetched = 0;
+    let result = super::info::run_sql(&facade, "transactional", "select n from numbers", 100).unwrap();
+    assert_eq!(result.records.len(), 100);
+    assert!(!result.limit_reached);
+
+    // A SHOW is read whole: a Postgres cursor does not take one.
+    let result = super::info::run_sql(&facade, "transactional", "show search_path", 5).unwrap();
+    assert!(result.records.is_empty());
+    assert!(tape.lock().unwrap_or_else(|err| err.into_inner()).read_whole);
+}

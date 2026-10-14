@@ -360,6 +360,109 @@ impl HostFind {
     }
 }
 
+/// The exotic methods `#[rquickjs::class(exotic)]` calls, in the module it names `__impl_exotic_<Class>__`, written
+/// here rather than by `#[rquickjs::exotic]` because that macro drops the receiver of a set. A set whose receiver is
+/// another object, as `Object.create(value).x = 1` reaches the value through the prototype chain, defines the
+/// property on the receiver, as an ordinary object's set does, rather than writing the field. Re-check when rquickjs
+/// is upgraded.
+macro_rules! exotic_module {
+    ($module:ident, $class:ident) => {
+        #[allow(non_snake_case)]
+        mod $module {
+            use super::*;
+            use rquickjs::class::JsCell;
+
+            pub(crate) struct ExoticImpl;
+
+            impl ExoticImpl {
+                pub fn exotic_get_property<'js>(
+                    this: &JsCell<'js, $class>,
+                    ctx: &Ctx<'js>,
+                    atom: Atom<'js>,
+                    _receiver: JsValue<'js>,
+                ) -> rquickjs::Result<JsValue<'js>> {
+                    this.borrow().property(ctx, atom)
+                }
+
+                pub fn exotic_set_property<'js>(
+                    this: &JsCell<'js, $class>,
+                    ctx: &Ctx<'js>,
+                    atom: Atom<'js>,
+                    receiver: JsValue<'js>,
+                    value: JsValue<'js>,
+                ) -> rquickjs::Result<bool> {
+                    if is_receiver(this, &receiver) {
+                        this.borrow().assign(ctx, atom, value)
+                    } else {
+                        define_on_receiver(atom, &receiver, value)
+                    }
+                }
+
+                pub fn exotic_delete_property<'js>(
+                    this: &JsCell<'js, $class>,
+                    _ctx: &Ctx<'js>,
+                    atom: Atom<'js>,
+                ) -> rquickjs::Result<bool> {
+                    Ok(this.borrow().remove(atom))
+                }
+
+                pub fn exotic_has_property<'js>(
+                    this: &JsCell<'js, $class>,
+                    ctx: &Ctx<'js>,
+                    atom: Atom<'js>,
+                ) -> rquickjs::Result<bool> {
+                    this.borrow().has_member(ctx, atom)
+                }
+
+                pub fn exotic_get_own_property<'js>(
+                    this: &JsCell<'js, $class>,
+                    ctx: &Ctx<'js>,
+                    atom: Atom<'js>,
+                ) -> rquickjs::Result<Option<PropertyDescriptor<'js>>> {
+                    this.borrow().own_property(ctx, atom)
+                }
+
+                pub fn exotic_get_own_property_names<'js>(
+                    this: &JsCell<'js, $class>,
+                    ctx: &Ctx<'js>,
+                ) -> rquickjs::Result<Vec<PropertyName<'js>>> {
+                    this.borrow().own_names(ctx)
+                }
+            }
+        }
+    };
+}
+
+/// True when a set's receiver is the exotic object itself, not an object that has it on its prototype chain.
+fn is_receiver<'js, C: rquickjs::class::JsClass<'js>>(
+    this: &rquickjs::class::JsCell<'js, C>,
+    receiver: &JsValue<'js>,
+) -> bool {
+    receiver
+        .as_object()
+        .and_then(Class::<C>::from_object)
+        .is_some_and(|class| std::ptr::eq(class.get_cell(), this))
+}
+
+/// The ordinary set of a property that is not on the receiver: a new own data property of the receiver. A receiver
+/// that is not an object takes no property.
+fn define_on_receiver<'js>(atom: Atom<'js>, receiver: &JsValue<'js>, value: JsValue<'js>) -> rquickjs::Result<bool> {
+    let result = match receiver.as_object() {
+        Some(object) => object
+            .prop(
+                atom,
+                rquickjs::object::Property::from(value.clone())
+                    .writable()
+                    .enumerable()
+                    .configurable(),
+            )
+            .map(|()| true),
+        None => Ok(false),
+    };
+    keep_assigned(value);
+    result
+}
+
 /// A find result. `length`, an index and `get` are what iterate and inline scripts use, and it is iterable as a
 /// Java `List` is to Groovy. The methods written in JavaScript are added by [`install_entity_prototypes`].
 #[derive(Trace, JsLifetime)]
@@ -390,10 +493,10 @@ impl HostList {
     }
 }
 
+exotic_module!(__impl_exotic_HostList__, HostList);
+
 /// Property access on a list: a prototype method first, then `length` and the index of a value.
-#[rquickjs::exotic]
 impl HostList {
-    #[qjs(get)]
     fn property<'js>(&self, ctx: &Ctx<'js>, atom: Atom<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(ctx, || {
             if let Some(found) = prototype_member::<HostList>(ctx, &atom)? {
@@ -413,18 +516,15 @@ impl HostList {
     }
 
     /// A list is read-only: an assignment is ignored, as on a frozen array.
-    #[qjs(set)]
-    fn assign<'js>(&self, _atom: Atom<'js>, value: JsValue<'js>) -> bool {
+    fn assign<'js>(&self, _ctx: &Ctx<'js>, _atom: Atom<'js>, value: JsValue<'js>) -> Result<bool, JsError> {
         keep_assigned(value);
-        false
+        Ok(false)
     }
 
-    #[qjs(delete)]
     fn remove<'js>(&self, _atom: Atom<'js>) -> bool {
         false
     }
 
-    #[qjs(has)]
     fn has_member<'js>(&self, ctx: &Ctx<'js>, atom: Atom<'js>) -> Result<bool, JsError> {
         if prototype_has::<HostList>(ctx, &atom)? {
             return Ok(true);
@@ -432,7 +532,6 @@ impl HostList {
         Ok(atom_name(&atom)?.is_some_and(|name| name == "length" || self.index_of(&name).is_some()))
     }
 
-    #[qjs(get_own_property)]
     fn own_property<'js>(&self, ctx: &Ctx<'js>, atom: Atom<'js>) -> Result<Option<PropertyDescriptor<'js>>, JsError> {
         let Some(name) = atom_name(&atom)? else {
             return Ok(None);
@@ -452,7 +551,6 @@ impl HostList {
         }
     }
 
-    #[qjs(get_own_property_names)]
     fn own_names<'js>(&self, ctx: &Ctx<'js>) -> Result<Vec<PropertyName<'js>>, JsError> {
         (0..self.inner.len())
             .map(|index| {
@@ -639,6 +737,8 @@ impl HostEntity {
     }
 }
 
+exotic_module!(__impl_exotic_HostEntity__, HostEntity);
+
 /// What a name that is not a method stands for on an entity value.
 enum Member {
     Field,
@@ -651,9 +751,7 @@ enum Member {
 /// writes the field; a relationship name reads the related value, or list for a `many` relationship. Any other name
 /// reads as undefined, where Java throws, because the engine and scripts look up names a value does not have
 /// (`toJSON`, `then`, `Symbol.toPrimitive`); writing one is an error, as in Java.
-#[rquickjs::exotic]
 impl HostEntity {
-    #[qjs(get)]
     fn property<'js>(&self, ctx: &Ctx<'js>, atom: Atom<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(ctx, || {
             if let Some(found) = prototype_member::<HostEntity>(ctx, &atom)? {
@@ -666,7 +764,6 @@ impl HostEntity {
         })
     }
 
-    #[qjs(set)]
     fn assign<'js>(&self, ctx: &Ctx<'js>, atom: Atom<'js>, value: JsValue<'js>) -> Result<bool, JsError> {
         let result = host_guard(ctx, || {
             let Some(name) = atom_name(&atom)? else {
@@ -683,13 +780,11 @@ impl HostEntity {
     }
 
     /// A field is not removed from a value, as Java `EntityValueBase` has no remove.
-    #[qjs(delete)]
     fn remove<'js>(&self, _atom: Atom<'js>) -> bool {
         false
     }
 
     /// `name in value`: a prototype member or a field of the entity.
-    #[qjs(has)]
     fn has_member<'js>(&self, ctx: &Ctx<'js>, atom: Atom<'js>) -> Result<bool, JsError> {
         if prototype_has::<HostEntity>(ctx, &atom)? {
             return Ok(true);
@@ -697,7 +792,6 @@ impl HostEntity {
         Ok(atom_name(&atom)?.is_some_and(|name| self.is_field(&name)))
     }
 
-    #[qjs(get_own_property)]
     fn own_property<'js>(&self, ctx: &Ctx<'js>, atom: Atom<'js>) -> Result<Option<PropertyDescriptor<'js>>, JsError> {
         let Some(name) = atom_name(&atom)? else {
             return Ok(None);
@@ -711,7 +805,6 @@ impl HostEntity {
     }
 
     /// The fields the value holds, so `Object.keys`, `for...in`, spread and `JSON.stringify` see the field map.
-    #[qjs(get_own_property_names)]
     fn own_names<'js>(&self, ctx: &Ctx<'js>) -> Result<Vec<PropertyName<'js>>, JsError> {
         let names: Vec<String> = self.val().fields().keys().cloned().collect();
         names
@@ -1081,6 +1174,39 @@ mod tests {
                 "{script}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn a_set_through_the_prototype_chain_defines_the_property_on_the_receiver() {
+        let context = enumerations();
+        let _entered = context.enter();
+        seed();
+        holds(
+            r#"(function () {
+                const value = ec.entity.makeValue("moqui.basic.Enumeration");
+                value.enumId = "X1";
+                const child = Object.create(value);
+                child.enumId = "C1";
+                child.noSuchField = 2;
+                const other = {};
+                Reflect.set(value, "description", "other", other);
+                return value.enumId === "X1" && value.get("enumId") === "X1" && child.enumId === "C1"
+                    && Object.keys(child).join() === "enumId,noSuchField" && child.noSuchField === 2
+                    && value.description === null && other.description === "other"
+                    && Reflect.set(value, "enumId", "X2", value) && value.enumId === "X2";
+            })()"#,
+        );
+        holds(
+            r#"(function () {
+                const list = ec.entity.find("moqui.basic.Enumeration").orderBy("sequenceNum").list();
+                const child = Object.create(list);
+                child.extra = "e";
+                child[0] = "zero";
+                list.extra = "ignored";
+                return child.extra === "e" && child[0] === "zero" && list[0].enumId === "E1"
+                    && list.extra === undefined && child.length === 3;
+            })()"#,
+        );
     }
 
     #[test]

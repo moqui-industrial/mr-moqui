@@ -24,6 +24,7 @@ use moqui_lib::error::Error;
 use moqui_lib::object::Value;
 
 use super::facade::EntityFacade;
+use crate::transaction::TransactionAttribute;
 
 /// `(?i).*filter.*`, as the Java list filters write it. The matcher has no inline flags, so the case is folded on both
 /// sides when the filter has no escape. A filter that is not a pattern the matcher reads is a plain substring.
@@ -452,22 +453,34 @@ pub struct SqlResult {
     pub rows_affected: Option<u64>,
 }
 
-/// A statement whose first word reads rows: `SELECT`, `WITH`, `SHOW`, `VALUES`, `EXPLAIN`, `TABLE`.
-fn is_query(sql: &str) -> bool {
-    let word: String = sql
-        .trim_start()
+fn first_word(sql: &str) -> String {
+    sql.trim_start()
         .chars()
         .take_while(char::is_ascii_alphabetic)
         .collect::<String>()
-        .to_ascii_lowercase();
+        .to_ascii_lowercase()
+}
+
+/// A statement whose first word reads rows: `SELECT`, `WITH`, `SHOW`, `VALUES`, `EXPLAIN`, `TABLE`.
+fn is_query(sql: &str) -> bool {
     matches!(
-        word.as_str(),
+        first_word(sql).as_str(),
         "select" | "with" | "show" | "values" | "explain" | "table" | "describe" | "desc"
     )
 }
 
+/// A query a cursor can read, Postgres `DECLARE ... CURSOR FOR` taking only these. `SHOW`, `EXPLAIN` and `DESCRIBE`
+/// give a few rows and are read whole.
+fn is_streamable(sql: &str) -> bool {
+    matches!(first_word(sql).as_str(), "select" | "with" | "values" | "table")
+}
+
+/// How long the transaction a query is read in may run: the screen begins none, so Java's statement has no timeout.
+const QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3600);
+
 /// Run one statement on the group's connection, as the SQL runner does with JDBC: in the caller's transaction when
-/// there is one, otherwise on its own connection. A query reads at most `limit` rows when `limit` is above 0. JDBC
+/// there is one, otherwise on its own connection. A query reads at most `limit` rows when `limit` is above 0, through
+/// a cursor in the caller's transaction or one begun for it, and stops at the row past the limit. JDBC
 /// tells a query from an update after it runs; here the first word of the statement does. A query with no rows has
 /// no column names, since the driver gives names by row.
 ///
@@ -488,20 +501,53 @@ pub fn run_sql(facade: &EntityFacade, group: &str, sql: &str, limit: usize) -> R
             ..SqlResult::default()
         });
     }
-    let rows = runtime.transactions.with_connection(|conn| conn.query_once(sql, &[]))?;
     let mut result = SqlResult::default();
-    if let Some(first) = rows.first() {
-        result.columns = first.columns.iter().map(|(name, _)| name.clone()).collect();
-    }
-    for row in rows {
+    let mut add = |row: crate::driver::DbRow| {
         if limit > 0 && result.records.len() >= limit {
             result.limit_reached = true;
-            break;
+            return false;
+        }
+        if result.columns.is_empty() {
+            result.columns = row.columns.iter().map(|(name, _)| name.clone()).collect();
         }
         result
             .records
             .push(row.columns.into_iter().map(|(_, value)| value).collect());
+        true
+    };
+    let tx = &runtime.transactions;
+    if !is_streamable(sql) {
+        for row in tx.with_connection(|conn| conn.query_once(sql, &[]))? {
+            if !add(row) {
+                break;
+            }
+        }
+        return Ok(result);
     }
+    tx.run(TransactionAttribute::UseOrBegin, Some(QUERY_TIMEOUT), || {
+        tx.with_connection(|conn| {
+            // A find's cursor already open on the caller's connection keeps it; this query is read whole.
+            if conn.stream_open() {
+                for row in conn.query_once(sql, &[])? {
+                    if !add(row) {
+                        break;
+                    }
+                }
+                return Ok(());
+            }
+            conn.open_stream(sql, &[])?;
+            let read = (|| {
+                while let Some(row) = conn.next_row()? {
+                    if !add(row) {
+                        break;
+                    }
+                }
+                Ok(())
+            })();
+            let closed = conn.close_stream();
+            read.and(closed)
+        })
+    })?;
     Ok(result)
 }
 
