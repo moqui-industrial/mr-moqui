@@ -477,6 +477,7 @@ fn install_context(ctx: &Ctx<'_>) -> Result<Helpers, Error> {
     // Own property before the proxy. A later set walks the prototype and the proxy refuses objects.
     install_ec(ctx)?;
     install_helpers(ctx)?;
+    install_entity_prototypes(ctx)?;
     install_proxy(ctx)?;
     Ok(Helpers {
         object_utilities: Persistent::save(ctx, object_utilities),

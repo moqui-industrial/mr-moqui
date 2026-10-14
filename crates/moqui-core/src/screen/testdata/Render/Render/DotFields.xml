@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Entity value fields read by property, in conditions and in text, for the render tests. -->
+<screen require-authentication="false">
+    <actions>
+        <entity-find-one entity-name="moqui.basic.EnumerationType" value-field="enumType"/>
+        <entity-find entity-name="moqui.basic.Enumeration" list="enumList">
+            <econdition field-name="enumTypeId" from="enumType.enumTypeId"/>
+            <order-by field-name="sequenceNum"/>
+        </entity-find>
+        <script>enumType.description = enumType.description + "!"</script>
+    </actions>
+    <widgets>
+        <section name="TypeB" condition="enumType.enumTypeId == 'TypeB' &amp;&amp; enumType.enums.length == 3">
+            <widgets><label text="${enumType.description} with ${enumType.enums.size()}"/></widgets>
+            <fail-widgets><label text="not TypeB"/></fail-widgets>
+        </section>
+        <section-iterate name="Each" list="enumList" entry="enumValue">
+            <widgets>
+                <section name="Late" condition="enumValue.sequenceNum &gt; 1">
+                    <widgets><label text="${enumValue.enumId} ${enumValue['description']} of ${enumValue.type.description}"/></widgets>
+                    <fail-widgets><label text="first ${enumValue.description}"/></fail-widgets>
+                </section>
+            </widgets>
+        </section-iterate>
+        <label text="${enumList.size()} ${enumList.length} ${enumList[2].enumId}"/>
+    </widgets>
+</screen>
