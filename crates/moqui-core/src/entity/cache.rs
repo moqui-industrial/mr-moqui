@@ -12,11 +12,13 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Entity one-cache, the per-thread transaction cache, and the sim overlay.
+//! Entity one-cache, the per-frame transaction cache, and the sim overlay.
 //!
-//! A find is stored only when the entity `cache` attribute is `true`. An open
-//! transaction holds writes in memory until the commit flush. Sim writes go to
-//! the overlay pool and stay off the main schema.
+//! A find is stored only when the entity `cache` attribute is `true`. A transaction frame with the
+//! cache on (`cache` and `force-cache`) holds writes in memory until its commit flush. Each frame
+//! has its own held rows, as Java has one cache per suspended level: a suspended frame's rows are
+//! not read, flushed, or dropped by the frame above it. Sim writes go to the overlay pool and stay
+//! off the main schema.
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -47,7 +49,8 @@ const PK_SEP: char = '\u{1f}';
 static SIM_SEQ: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {
-    static TX_HOLD: RefCell<Vec<Held>> = const { RefCell::new(Vec::new()) };
+    /// Held rows by transaction frame token.
+    static TX_HOLD: RefCell<HashMap<u64, Vec<Held>>> = RefCell::new(HashMap::new());
     static SIM: RefCell<Vec<SimSession>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -131,7 +134,7 @@ struct OneCaches {
     lists: HashMap<String, MCache<String, EntityList>>,
 }
 
-/// Look up a cached list, or rows held by this thread's transaction or sim overlay.
+/// Look up a cached list, or rows held by the active transaction frame or the sim overlay.
 ///
 /// `Some` skips SQL. Plaintext only: `after_find` stored decrypted rows, and held rows were
 /// normalized before `gate_write`.
@@ -222,13 +225,21 @@ pub fn gate_write(
         return Ok(WriteGate::Handled);
     }
     tx.with_connection(|_| Ok(()))?;
-    push_hold(Held {
-        entity_name: prepared.full_name,
-        operation: op,
-        plain: values.clone(),
-        sealed: prepared.sealed,
-        pk: prepared.pk,
-    })?;
+    let token = tx.frame_token().ok_or_else(|| Error::new("no transaction in place"))?;
+    // The flush goes on the frame before the first held row, so no held row is left without one.
+    if !tx.has_cache_flush() {
+        register_cache_flush(facade, &tx)?;
+    }
+    push_hold(
+        token,
+        Held {
+            entity_name: prepared.full_name,
+            operation: op,
+            plain: values.clone(),
+            sealed: prepared.sealed,
+            pk: prepared.pk,
+        },
+    )?;
     Ok(WriteGate::Handled)
 }
 
@@ -293,13 +304,16 @@ pub fn clear_all_list_caches(facade: &EntityFacade) -> Result<(), Error> {
 
 /// Register the commit flush and the rollback drop for this frame.
 ///
-/// The closure reads the thread-local list when it runs, so later writes in the frame are included.
-/// It uses the enlisted connection directly.
+/// Both touch only this frame's held rows. The flush reads them when it runs, so later writes in
+/// the frame are included. It uses the enlisted connection directly.
 pub fn register_cache_flush(facade: &EntityFacade, tx: &TransactionManager) -> Result<(), Error> {
+    let Some(token) = tx.frame_token() else {
+        return Err(Error::new("no transaction in place"));
+    };
     let facade = facade.clone();
-    tx.on_cache_flush(move |conn| flush_held(&facade, conn))?;
-    tx.on_rollback(|| {
-        TX_HOLD.with(|slot| slot.borrow_mut().clear());
+    tx.on_cache_flush(move |conn| flush_held(&facade, token, conn))?;
+    tx.on_rollback(move || {
+        TX_HOLD.with(|slot| slot.borrow_mut().remove(&token));
     })?;
     Ok(())
 }
@@ -352,8 +366,10 @@ pub fn exit_sim(facade: &EntityFacade) -> Result<(), Error> {
     })
 }
 
-fn flush_held(facade: &EntityFacade, conn: &mut dyn DbConnection) -> Result<(), Error> {
-    let held_rows = TX_HOLD.with(|slot| std::mem::take(&mut *slot.borrow_mut()));
+fn flush_held(facade: &EntityFacade, token: u64, conn: &mut dyn DbConnection) -> Result<(), Error> {
+    let held_rows = TX_HOLD
+        .with(|slot| slot.borrow_mut().remove(&token))
+        .unwrap_or_default();
     for row in held_rows {
         let statement = facade.with_group(&row.entity_name, |entity, dialect, _, _| {
             statement_for(entity, dialect, row.operation, &row.sealed)
@@ -365,9 +381,10 @@ fn flush_held(facade: &EntityFacade, conn: &mut dyn DbConnection) -> Result<(), 
     Ok(())
 }
 
-fn push_hold(held: Held) -> Result<(), Error> {
+fn push_hold(token: u64, held: Held) -> Result<(), Error> {
     TX_HOLD.with(|slot| {
-        let mut list = slot.borrow_mut();
+        let mut map = slot.borrow_mut();
+        let list = map.entry(token).or_default();
         let mut first = None;
         let mut last = None;
         for existing in list.iter() {
@@ -555,7 +572,7 @@ fn overlay_rows(
     condition: Option<&Condition>,
     order: &[OrderBy],
 ) -> Result<Option<Vec<EntityValue>>, Error> {
-    let holds = holds_for(&meta.full_name);
+    let holds = holds_for(facade, &meta.full_name);
     let sim = if sim_live(facade) {
         sim_view(&meta.full_name)
     } else {
@@ -914,13 +931,19 @@ fn row_key(entity: &str, pk: &str) -> String {
     format!("{entity}{PK_SEP}{pk}")
 }
 
-fn holds_for(entity: &str) -> Vec<Held> {
+/// The active frame's held rows of `entity`. A suspended frame's rows are not visible.
+fn holds_for(facade: &EntityFacade, entity: &str) -> Vec<Held> {
+    if TX_HOLD.with(|slot| slot.borrow().is_empty()) {
+        return Vec::new();
+    }
+    let Some(token) = facade.transactions_for(entity).ok().and_then(|tx| tx.frame_token()) else {
+        return Vec::new();
+    };
     TX_HOLD.with(|slot| {
         slot.borrow()
-            .iter()
-            .filter(|held| held.entity_name == entity)
-            .cloned()
-            .collect()
+            .get(&token)
+            .map(|list| list.iter().filter(|held| held.entity_name == entity).cloned().collect())
+            .unwrap_or_default()
     })
 }
 
@@ -1219,11 +1242,16 @@ fn schema_name_ok(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
 
     use moqui_db::sql::{CompareOp, Condition};
+    use moqui_lib::error::Error;
     use moqui_lib::object::Value;
 
     use super::{eval_condition, WriteGate};
+    use crate::entity::EntityFacade;
+    use crate::testing;
+    use crate::transaction::{TransactionAttribute, TransactionManager};
 
     fn row(pairs: &[(&str, Value)]) -> BTreeMap<String, Value> {
         pairs
@@ -1265,5 +1293,155 @@ mod tests {
     fn handled_is_a_write_gate() {
         assert_eq!(WriteGate::Handled, WriteGate::Handled);
         assert_ne!(WriteGate::Proceed, WriteGate::Handled);
+    }
+
+    const TEST: &str = "moqui.test.TestEntity";
+    const TYPE: &str = "moqui.basic.EnumerationType";
+
+    fn put(facade: &EntityFacade, entity: &str, key: &str, id: &str) {
+        let mut value = facade.make_value(entity).unwrap();
+        value.set(key, Value::string(id));
+        value.create(facade).unwrap();
+    }
+
+    fn found(facade: &EntityFacade, entity: &str, key: &str, id: &str) -> bool {
+        facade
+            .find(entity)
+            .unwrap()
+            .eq(key, Value::string(id))
+            .one()
+            .unwrap()
+            .is_some()
+    }
+
+    fn run<T>(
+        tx: &TransactionManager,
+        attr: TransactionAttribute,
+        body: impl FnOnce() -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        tx.run(attr, None, body)
+    }
+
+    fn statements(tape: &Arc<Mutex<Vec<String>>>, needle: &str) -> usize {
+        tape.lock().unwrap().iter().filter(|sql| sql.contains(needle)).count()
+    }
+
+    #[test]
+    fn a_failed_inner_force_new_leaves_the_outer_held_rows() {
+        let facade = testing::open();
+        let tx = facade.transactions_for(TEST).unwrap();
+        run(&tx, TransactionAttribute::Cache, || {
+            put(&facade, TEST, "testId", "X");
+            let inner = run(&tx, TransactionAttribute::ForceNew, || -> Result<(), Error> {
+                put(&facade, TYPE, "enumTypeId", "Y");
+                Err(Error::new("inner fails"))
+            });
+            assert!(inner.is_err());
+            assert!(found(&facade, TEST, "testId", "X"));
+            Ok(())
+        })
+        .unwrap();
+        assert!(found(&facade, TEST, "testId", "X"));
+        assert!(!found(&facade, TYPE, "enumTypeId", "Y"));
+    }
+
+    #[test]
+    fn an_inner_force_new_commit_does_not_flush_the_outer_held_rows() {
+        let facade = testing::open();
+        let tx = facade.transactions_for(TEST).unwrap();
+        let outer = run(&tx, TransactionAttribute::Cache, || -> Result<(), Error> {
+            put(&facade, TEST, "testId", "X");
+            run(&tx, TransactionAttribute::ForceCache, || {
+                assert!(
+                    !found(&facade, TEST, "testId", "X"),
+                    "a suspended frame's rows are not read"
+                );
+                put(&facade, TYPE, "enumTypeId", "Y");
+                Ok(())
+            })?;
+            assert!(found(&facade, TEST, "testId", "X"));
+            Err(Error::new("outer fails"))
+        });
+        assert!(outer.is_err());
+        assert!(!found(&facade, TEST, "testId", "X"));
+        assert!(found(&facade, TYPE, "enumTypeId", "Y"));
+    }
+
+    /// On a database, the inner flush of the outer update would wait on the outer row lock forever.
+    #[test]
+    fn a_held_update_of_a_locked_row_stays_with_its_frame() {
+        let tape = Arc::new(Mutex::new(Vec::new()));
+        let facade = testing::open_with_tape(Arc::clone(&tape));
+        put(&facade, TEST, "testId", "R");
+        let tx = facade.transactions_for(TEST).unwrap();
+        run(&tx, TransactionAttribute::Cache, || {
+            let mut locked = facade
+                .find(TEST)?
+                .eq("testId", Value::string("R"))
+                .for_update(true)
+                .one()?
+                .expect("R");
+            locked.set("testMedium", Value::string("held"));
+            locked.update(&facade)?;
+            run(&tx, TransactionAttribute::ForceNew, || {
+                put(&facade, TYPE, "enumTypeId", "Y");
+                Ok(())
+            })?;
+            assert_eq!(
+                statements(&tape, "UPDATE \"TestEntity\""),
+                0,
+                "{:?}",
+                tape.lock().unwrap()
+            );
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(statements(&tape, "UPDATE \"TestEntity\""), 1);
+        let row = facade
+            .find(TEST)
+            .unwrap()
+            .eq("testId", Value::string("R"))
+            .one()
+            .unwrap();
+        assert_eq!(
+            row.and_then(|row| row.get("testMedium").cloned()),
+            Some(Value::string("held"))
+        );
+    }
+
+    #[test]
+    fn the_cache_attribute_holds_until_commit_and_conf_false_turns_it_off() {
+        let tape = Arc::new(Mutex::new(Vec::new()));
+        let facade = testing::open_with_tape(Arc::clone(&tape));
+        let tx = facade.transactions_for(TEST).unwrap();
+        run(&tx, TransactionAttribute::UseOrBegin, || {
+            put(&facade, TEST, "testId", "Plain");
+            assert_eq!(statements(&tape, "INSERT"), 1, "use-or-begin writes through");
+            Ok(())
+        })
+        .unwrap();
+        run(&tx, TransactionAttribute::Cache, || {
+            put(&facade, TEST, "testId", "Held");
+            assert_eq!(statements(&tape, "INSERT"), 1, "cache holds the insert");
+            assert!(found(&facade, TEST, "testId", "Held"));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(statements(&tape, "INSERT"), 2);
+        assert!(found(&facade, TEST, "testId", "Held"));
+
+        tx.set_use_transaction_cache(false);
+        run(&tx, TransactionAttribute::Cache, || {
+            assert!(!tx.transaction_cache_active());
+            put(&facade, TEST, "testId", "Off");
+            assert_eq!(
+                statements(&tape, "INSERT"),
+                3,
+                "use-transaction-cache false writes through"
+            );
+            Ok(())
+        })
+        .unwrap();
+        assert!(found(&facade, TEST, "testId", "Off"));
     }
 }

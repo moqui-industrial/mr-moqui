@@ -301,7 +301,7 @@ fn joined_begin_commit_does_not_commit_the_client() {
 }
 
 #[test]
-fn force_new_parks_one_client_and_rejects_a_second() {
+fn force_new_parks_the_client_and_nests_to_the_thread_budget() {
     let (mgr, driver) = harness(small());
     let _clean = Clean(&mgr);
     assert!(mgr.begin(None).expect("outer"));
@@ -320,11 +320,80 @@ fn force_new_parks_one_client_and_rejects_a_second() {
     assert_eq!(driver.connects(), 2);
     mgr.commit().expect("outer commit");
 
+    // max 8 less reserve 2 is 6 ordinary connections: 5 parked and the innermost one.
+    assert_eq!(mgr.park_budget(), 5);
     assert!(mgr.begin(None).expect("again"));
-    mgr.with_connection(|_| Ok(())).expect("hold");
-    assert!(mgr.force_new(None).is_ok());
-    let err = mgr.force_new(None).expect_err("second park");
+    for level in 1..=5 {
+        mgr.with_connection(|_| Ok(())).expect("hold");
+        assert!(mgr.force_new(None).expect("nested park"));
+        assert_eq!(mgr.stats().parked, level);
+    }
+    // A frame that has not checked out parks nothing.
+    assert!(mgr.force_new(None).expect("empty frame"));
+    assert_eq!(mgr.stats().parked, 5);
+    mgr.with_connection(|_| Ok(())).expect("innermost");
+    let err = mgr.force_new(None).expect_err("over budget");
     assert!(err.to_string().contains("park budget"), "{err}");
+    for _ in 0..7 {
+        mgr.commit().expect("unwind");
+    }
+    assert!(!mgr.in_transaction());
+    assert_eq!(mgr.stats().parked, 0);
+}
+
+#[test]
+fn force_new_on_two_threads_at_once() {
+    let (mgr, _) = harness(small());
+    let parked = std::sync::Barrier::new(2);
+    std::thread::scope(|scope| {
+        for _ in 0..2 {
+            scope.spawn(|| {
+                let _clean = Clean(&mgr);
+                assert!(mgr.begin(None).expect("outer"));
+                mgr.with_connection(|_| Ok(())).expect("outer conn");
+                assert!(mgr.force_new(None).expect("force"));
+                // Both threads have a client parked before either begins a second level.
+                parked.wait();
+                mgr.with_connection(|_| Ok(())).expect("inner conn");
+                assert!(mgr
+                    .force_new(None)
+                    .expect("second level while the other thread is parked"));
+                mgr.with_connection(|_| Ok(())).expect("innermost conn");
+                parked.wait();
+                for _ in 0..3 {
+                    mgr.commit().expect("commit");
+                }
+            });
+        }
+    });
+    assert_eq!(mgr.stats().parked, 0);
+    assert_eq!(mgr.stats().checked_out, 0);
+}
+
+#[test]
+fn run_force_new_nests_three_levels_and_resumes_each() {
+    let (mgr, driver) = harness(small());
+    let _clean = Clean(&mgr);
+    let ids = mgr
+        .run(TransactionAttribute::UseOrBegin, None, || {
+            let outer = mgr.with_connection(conn_id)?;
+            let (middle, inner) = mgr.run(TransactionAttribute::ForceNew, None, || {
+                let middle = mgr.with_connection(conn_id)?;
+                let inner = mgr.run(TransactionAttribute::ForceNew, None, || {
+                    assert_eq!(mgr.stats().parked, 2);
+                    mgr.with_connection(conn_id)
+                })?;
+                assert_eq!(mgr.with_connection(conn_id)?, middle);
+                Ok((middle, inner))
+            })?;
+            assert_eq!(mgr.with_connection(conn_id)?, outer);
+            Ok([outer, middle, inner])
+        })
+        .expect("nested");
+    assert_ne!(ids[0], ids[1]);
+    assert_ne!(ids[1], ids[2]);
+    assert_eq!(driver.event_count("commit:"), 3);
+    assert_eq!(mgr.stats().parked, 0);
 }
 
 #[test]
@@ -575,7 +644,7 @@ fn run_ignore_suspends_and_cache_follows_the_attribute() {
     assert!(mgr.begin(None).expect("begin"));
     let enlisted = mgr.with_connection(conn_id).expect("enlist");
     mgr.run(TransactionAttribute::Ignore, None, || {
-        assert!(mgr.in_transaction());
+        assert!(!mgr.in_transaction());
         assert!(!mgr.transaction_cache_active());
         Ok(())
     })
@@ -583,7 +652,6 @@ fn run_ignore_suspends_and_cache_follows_the_attribute() {
     assert_eq!(mgr.with_connection(conn_id).expect("resumed"), enlisted);
     mgr.commit().expect("commit");
 
-    mgr.set_use_transaction_cache(false);
     mgr.run(TransactionAttribute::UseOrBegin, None, || {
         assert!(!mgr.transaction_cache_active());
         Ok(())
@@ -594,6 +662,19 @@ fn run_ignore_suspends_and_cache_follows_the_attribute() {
         Ok(())
     })
     .expect("cache");
+    mgr.run(TransactionAttribute::ForceCache, None, || {
+        assert!(mgr.transaction_cache_active());
+        Ok(())
+    })
+    .expect("force cache");
+
+    // use-transaction-cache="false" keeps it off even for the cache attribute.
+    mgr.set_use_transaction_cache(false);
+    mgr.run(TransactionAttribute::Cache, None, || {
+        assert!(!mgr.transaction_cache_active());
+        Ok(())
+    })
+    .expect("cache off");
     assert!(!mgr.in_transaction());
     assert!(driver.event_count("commit:") >= 1);
 }
@@ -615,18 +696,28 @@ fn run_rolls_back_a_begun_frame_when_the_body_panics() {
 }
 
 #[test]
-fn cache_attribute_on_a_joined_frame_restores_the_outer_setting() {
+fn cache_attribute_on_a_joined_frame_keeps_the_cache_for_that_frame() {
     let (mgr, _) = harness(small());
     let _clean = Clean(&mgr);
-    mgr.set_use_transaction_cache(false);
     assert!(mgr.begin(None).expect("begin"));
+    assert!(!mgr.transaction_cache_active());
     mgr.run(TransactionAttribute::Cache, None, || {
+        assert!(mgr.transaction_cache_active());
+        // A force-new frame has its own setting.
+        mgr.run(TransactionAttribute::ForceNew, None, || {
+            assert!(!mgr.transaction_cache_active());
+            Ok(())
+        })?;
         assert!(mgr.transaction_cache_active());
         Ok(())
     })
     .expect("cache");
-    assert!(!mgr.transaction_cache_active());
+    // As Java initTransactionCache: the cache stays on until this frame ends.
+    assert!(mgr.transaction_cache_active());
     mgr.commit().expect("commit");
+    assert!(mgr.begin(None).expect("next"));
+    assert!(!mgr.transaction_cache_active());
+    mgr.commit().expect("next commit");
 }
 
 #[test]

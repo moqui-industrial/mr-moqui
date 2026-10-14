@@ -474,15 +474,23 @@ fn iterator_streams_committed_rows_and_hides_a_held_delete() {
         tape.opened = false;
         tape.served = false;
     }
-    facade.begin("moqui.test.TestEntity", None).unwrap();
-    let mut doomed = facade.make_value("moqui.test.TestEntity").unwrap();
-    doomed.set("testId", Value::string("T1"));
-    doomed.delete(&facade).unwrap();
-    let mut held = facade.find("moqui.test.TestEntity").unwrap().iterator().unwrap();
-    assert!(held.next_value().unwrap().is_none());
-    drop(held);
-    assert!(!tape.lock().unwrap_or_else(|err| err.into_inner()).opened);
-    facade.rollback("moqui.test.TestEntity").unwrap();
+    // The transaction cache is on only for the cache attribute.
+    let tx = facade.transactions_for("moqui.test.TestEntity").unwrap();
+    let outcome = tx.run(
+        crate::transaction::TransactionAttribute::Cache,
+        None,
+        || -> Result<(), Error> {
+            let mut doomed = facade.make_value("moqui.test.TestEntity").unwrap();
+            doomed.set("testId", Value::string("T1"));
+            doomed.delete(&facade).unwrap();
+            let mut held = facade.find("moqui.test.TestEntity").unwrap().iterator().unwrap();
+            assert!(held.next_value().unwrap().is_none());
+            drop(held);
+            assert!(!tape.lock().unwrap_or_else(|err| err.into_inner()).opened);
+            Err(Error::new("roll back"))
+        },
+    );
+    assert!(outcome.is_err());
 }
 
 #[test]

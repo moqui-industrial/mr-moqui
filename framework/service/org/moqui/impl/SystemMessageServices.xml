@@ -132,10 +132,7 @@ along with this software (see the LICENSE.md file). If not, see
     <!-- TODO: this service called async by an anonymous-all scheduled job so needs anonymous-all here too, but should
         find a way to restrict it when not called through the scheduled service so no anonymous-all service exists to do
         this, tighten security on it a bit -->
-    <!-- transaction="ignore": every write here is force-new, so the service's own transaction only held reads, and without
-        it the send service (and the direct local receive under it) may begin its own force-new transaction within the
-        park budget of one suspended transaction per thread. -->
-    <service verb="send" noun="ProducedSystemMessage" authenticate="anonymous-all" transaction="ignore">
+    <service verb="send" noun="ProducedSystemMessage" authenticate="anonymous-all">
         <description>Calls the send service (SystemMessageType.sendServiceName). Sets the SystemMessage status to
             SmsgSending while sending, then to SmsgSent if successful or back to original status if not. If the initial
             status is not SmsgProduced or SmsgError returns an error (generally means message already sent). If you
@@ -265,10 +262,7 @@ along with this software (see the LICENSE.md file). If not, see
     <!-- TODO: this service called async by an anonymous-all scheduled job so needs anonymous-all here too, but should
         find a way to restrict it when not called through the scheduled service so no anonymous-all service exists to do
         this, tighten security on it a bit -->
-    <!-- transaction="ignore" for the same reason as send#ProducedSystemMessage: the consume service then has the park budget
-        of one force-new transaction of its own. -->
-    <service verb="consume" noun="ReceivedSystemMessage" authenticate="anonymous-all" allow-remote="false" transaction="ignore"
-            transaction-timeout="1800">
+    <service verb="consume" noun="ReceivedSystemMessage" authenticate="anonymous-all" allow-remote="false" transaction-timeout="1800">
         <description>
             Calls the consume service (SystemMessageType.consumeServiceName). Sets the SystemMessage status to
             SmsgConsuming while consuming, then to SmsgConsumed if successful or back to original status if not. If the initial

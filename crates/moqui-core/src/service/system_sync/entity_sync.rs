@@ -87,12 +87,10 @@ pub(super) fn run_sync(
         return Ok(BTreeMap::new());
     }
 
-    // Validations done, mark it running and get started. The Java wrote this update here, in this service's transaction,
-    // so no other transaction saw it before the update after the run replaced the status. It is written once, below:
-    // a write held in this frame now would be flushed by the commit of the force-new run, on that run's connection,
-    // where it would wait on this frame's own row lock.
+    // Validations done, save that it is running and get started.
     sync.set("lastStartDate", stamp(start));
     sync.set("statusId", Value::string("EsRunning"));
+    sync.update(facade)?;
 
     // The main work is in a separate transaction so it is independent of updating the status.
     let fields: IndexMap<String, Value> = sync.fields().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -187,23 +185,8 @@ pub(super) fn internal_run(
         // Get remotely, store locally.
         results.extend(remote_or_error(&sync, "get", get_in, facade.sim_active()));
         if truthy(results.get("recordCount")) {
-            // put#EntitySyncData is transaction="ignore", which in Java runs in this transaction. Here ignore suspends
-            // it, and this run is already the one force-new of its thread, so the body runs here directly with the
-            // service's defaults.
-            let put_in = pairs([
-                ("entityData", results.get("entityData").cloned().unwrap_or(Value::Null)),
-                ("timeout", Value::I64(600)),
-                ("dummyFks", Value::Bool(true)),
-                ("useTryInsert", Value::Bool(false)),
-            ]);
-            match put_data(&put_in, facade) {
-                Ok(stored) => results.extend(stored),
-                // As a failed service-call would: the error stays and this transaction rolls back.
-                Err(err) => {
-                    add_error(err.message());
-                    return Ok(BTreeMap::new());
-                }
-            }
+            let put_in = pairs([("entityData", results.get("entityData").cloned().unwrap_or(Value::Null))]);
+            results.extend(call_service(PUT_DATA, put_in));
         } else {
             // No records to store, so no local call.
             results.insert("recordsStored".to_string(), Value::I64(0));
