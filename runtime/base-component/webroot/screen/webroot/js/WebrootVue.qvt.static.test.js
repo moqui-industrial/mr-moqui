@@ -220,6 +220,16 @@ test("the column picker lays out the user's columns from the package, and its di
     assert.match(text, /<m-form name='ItemList_0' fields='\{"itemId":"ZEBRA-R1","itemId_display":"ZEBRA-R1","name":"ZEBRA row one"/);
 });
 
+test("the show-total row of the form request is drawn after the rows, in bold", async () => {
+    setup();
+    assert.ok(formPkg.itemListTotal, "the form request answers the total row");
+    const { container } = await mountStatic("");
+    const text = html(container);
+    assert.match(text, /<div class='tr text-weight-bold'><m-form name='ItemList_2' fields='[^']*"price_display":"15.50"/);
+    // the data rows stay two: the total is not a row of the list
+    assert.equal(formPkg.itemList.length, 2);
+});
+
 test("the restricted ec has the table of members and throws on anything else", () => {
     setup();
     const ec = qvt.makeEc(moqui.config);

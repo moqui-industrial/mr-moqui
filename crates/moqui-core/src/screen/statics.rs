@@ -855,14 +855,20 @@ fn form_package(state: &RenderState, def: &Arc<ScreenDef>, name: &str) -> Result
     }
     sri::close_form_list(state, handle);
     resolved?;
-    // The show-total row is a footer, not a row, and the package leaves it out as Java's does.
-    rows.retain(|row| row.get("_moquiRowType").and_then(Value::as_str) != Some("total"));
+    // The show-total row is not a row of the list: it is answered as {list}Total, which the static form-list draws after the rows.
+    let total = rows
+        .iter()
+        .position(|row| row.get("_moquiRowType").and_then(Value::as_str) == Some("total"))
+        .map(|index| rows.remove(index));
 
     let mut body = serde_json::Map::new();
     body.insert(
         instance.list_name.clone(),
         serde_json::Value::Array(rows.iter().map(unwrap_map).collect()),
     );
+    if let Some(total) = &total {
+        body.insert(format!("{}Total", instance.list_name), unwrap_map(total));
+    }
     let mut headers = Vec::new();
     if let Some(pages) = page_keys(&node, rows.len())? {
         for (suffix, header, number) in pages.numbers() {

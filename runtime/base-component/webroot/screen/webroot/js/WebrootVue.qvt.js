@@ -560,7 +560,13 @@
         computed: {
             idVal() { return this.id && this.id.length ? this.id : this.name; },
             listKey() { return this.listName || this.name; },
-            rows() { const list = this.pkg ? this.pkg[this.listKey] : null; return Array.isArray(list) ? list : []; },
+            // the rows drawn: the list, and the show-total row the form request answers as {list}Total after it
+            rows() {
+                const list = this.pkg ? this.pkg[this.listKey] : null;
+                const total = this.pkg ? this.pkg[this.listKey + "Total"] : null;
+                const rows = Array.isArray(list) ? list : [];
+                return moqui.isPlainObject(total) ? rows.concat([Object.assign({ _moquiRowType: "total" }, total)]) : rows;
+            },
             paginate() {
                 const pkg = this.pkg;
                 const name = this.listKey;
@@ -681,10 +687,11 @@
             // In columns mode a row is a tr of a td for each column, each holding the rc_ slot of its fields, in a row form the component makes.
             const cellsOf = (scope) => columns.map((column) => h("div", { class: "td" }, column.map((field) => (slots["rc_" + field] ? slots["rc_" + field](scope) : null))));
             const columnsRow = (rowIndex, multiProps) => {
-                if (multiProps || this.skipForm) return h("div", { class: "tr", key: this.generation + "_" + rowIndex }, cellsOf(this.rowScope(rowIndex, formScope, multiProps, null)));
+                const rowClass = this.rows[rowIndex] && this.rows[rowIndex]._moquiRowType === "total" ? "tr text-weight-bold" : "tr";
+                if (multiProps || this.skipForm) return h("div", { class: rowClass, key: this.generation + "_" + rowIndex }, cellsOf(this.rowScope(rowIndex, formScope, multiProps, null)));
                 const initial = Object.assign({}, this.rowInitial ? this.rowInitial(this.rowScope(rowIndex, formScope, null, null)) : {},
                     { moquiFormName: this.name, pageIndex: String((this.pkg && this.pkg.pageIndex) || 0) });
-                return h("div", { class: "tr", key: this.generation + "_" + rowIndex }, [h(V.resolveComponent("m-form"), { name: this.idVal + "_" + rowIndex, id: this.idVal + "_" + rowIndex, action: this.action, fieldsInitial: initial },
+                return h("div", { class: rowClass, key: this.generation + "_" + rowIndex }, [h(V.resolveComponent("m-form"), { name: this.idVal + "_" + rowIndex, id: this.idVal + "_" + rowIndex, action: this.action, fieldsInitial: initial },
                     { default: (formProps) => cellsOf(this.rowScope(rowIndex, formScope, null, formProps)) })]);
             };
             const rowsOf = (multiProps) => this.rows.map((row, rowIndex) => (columnsMode ? columnsRow(rowIndex, multiProps) :

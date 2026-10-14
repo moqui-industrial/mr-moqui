@@ -347,7 +347,9 @@ return function render(_ctx, _cache) {
         ])
       ]),
       row: _withCtx((_ctx) => [
-        _createElementVNode("div", { class: "tr" }, [
+        _createElementVNode("div", {
+          class: _normalizeClass(["tr", {'text-weight-bold': _ctx._moquiRowType === 'total'}])
+        }, [
           _createElementVNode("div", { class: "td" }, [
             _createElementVNode("div", { class: "form-group" }, [
               _createVNode(_component_m_display, {
@@ -395,7 +397,7 @@ return function render(_ctx, _cache) {
               }, 8, ["outline", "id"])
             ])
           ])
-        ])
+        ], 2)
       ]),
       _: 1
     }, 8, ["row-initial"])

@@ -1341,7 +1341,6 @@
                 if (allFields.some((f) => { const sub = first(f, tag); return sub && sub.children.length; })) note("form-list-row", n, "the " + tag + " row of form-list " + name + " is not written");
             });
             if (first(n, "row-selection")) note("row-selection", n, "row-selection of form-list " + name + " is not written");
-            if (kids(n, "field").some((f) => at(f, "show-total"))) note("form-list-total", n, "show-total of form-list " + name + " is not written");
             const flags = {
                 headerDialog: at(n, "header-dialog") === "true", savedFinds: at(n, "saved-finds") === "true",
                 csv: at(n, "show-csv-button") === "true", xlsx: at(n, "show-xlsx-button") === "true" && ec.screen.isRenderModeValid("xlsx"),
@@ -1382,7 +1381,8 @@
             w('<template v-slot:row="_ctx">');
             push();
             st.inRow = true;
-            w('<div class="tr">');
+            // the show-total row, which the component draws after the rows, is bold as the server-merged one is
+            w('<div class="tr" :class="{\'text-weight-bold\': _moquiRowType === \'total\'}">');
             const formOpened = rowFormOpen(n, cfg, kids(n, "field"), opened);
             columnFieldLists.forEach((fields) => {
                 w('<div class="td">');
