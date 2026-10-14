@@ -166,7 +166,16 @@ pub fn sync_with(
     let facade = current_facade();
     let def = resolve(&name, facade.as_ref())?;
     super::seca::run_seca_rules(&def.name, "pre-validate", parameters, None)?;
-    let cleaned = validate::clean(&def, parameters, facade.as_ref())?;
+    // Input that fails its checks is validation errors in the message facade and no run, as in Java: the caller sees
+    // the errors (a screen shows them by their fields) instead of a failed call.
+    let cleaned = match validate::clean(&def, parameters, facade.as_ref()) {
+        Ok(cleaned) => cleaned,
+        Err(err) if err.kind() == crate::context::ErrorKind::Validation => {
+            tracing::warn!(service = %def.name, "not run, input failed validation: {}", err.message());
+            return Ok(BTreeMap::new());
+        }
+        Err(err) => return Err(err),
+    };
     super::seca::run_seca_rules(&def.name, "pre-auth", &cleaned, None)?;
     // A call with credentials logs in first, as Java does with authUsername and authPassword.
     if let Some((username, password)) = auth_credentials(parameters) {
@@ -873,7 +882,7 @@ mod tests {
     use moqui_lib::object::{basic_convert, Value};
 
     use super::sync;
-    use crate::context::ExecutionContextFactory;
+    use crate::context::{ExecutionContext, ExecutionContextFactory};
 
     #[test]
     fn entity_auto_store_inserts_then_updates() {
@@ -917,10 +926,18 @@ mod tests {
         let ctx = ExecutionContextFactory::test_context();
         let _entered = ctx.enter();
         crate::service::lint(std::slice::from_ref(&path)).unwrap();
-        let err = sync("need#Value", &BTreeMap::new()).unwrap_err();
-        let text = err.to_string();
-        assert!(text.contains("amount"), "{text}");
-        assert!(text.contains("required"), "{text}");
+        // As Java: the service does not run, the call returns nothing, and the error is a validation error on the
+        // field, which a form shows beside it.
+        let out = sync("need#Value", &BTreeMap::new()).unwrap();
+        assert!(out.is_empty(), "{out:?}");
+        let (errors, validation) = ExecutionContext::with_current(|ec| {
+            let messages = ec.message();
+            (messages.errors().to_vec(), messages.validation_errors().to_vec())
+        })
+        .unwrap();
+        assert!(errors.iter().any(|text| text.contains("amount") && text.contains("required")), "{errors:?}");
+        assert_eq!(validation.len(), 1);
+        assert_eq!((validation[0].field.as_str(), validation[0].service.as_str()), ("amount", "need#Value"));
     }
 
     #[test]

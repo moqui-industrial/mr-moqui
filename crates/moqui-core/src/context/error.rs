@@ -33,6 +33,9 @@ pub enum ErrorKind {
     MethodNotAllowed,
     /// The service cannot take the work now, such as a full request queue.
     Unavailable,
+    /// Input that does not pass a service's parameter checks. The checks that failed are validation errors in the
+    /// message facade.
+    Validation,
 }
 
 impl ErrorKind {

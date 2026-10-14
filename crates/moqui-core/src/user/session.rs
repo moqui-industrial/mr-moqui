@@ -67,6 +67,10 @@ const SAVED: &str = "moqui.saved.parameters";
 const ERROR_PARAMETERS: &str = "moqui.error.parameters";
 const MESSAGE_PUBLIC: &str = "moqui.message.public";
 const MESSAGE_ERROR: &str = "moqui.message.error";
+/// The type of each saved message (`info`, `success`, `warning`, `danger`), in the order of the messages.
+const MESSAGE_TYPES: &str = "moqui.message.types";
+/// The validation errors a failed submit left, each `{form, field, serviceName, message}`.
+const MESSAGE_VALIDATION: &str = "moqui.message.validationErrors";
 const SCREEN_HISTORY: &str = "moqui.screen.history";
 const LAST_PATH: &str = "moqui.screen.last.path";
 const LAST_PARAMETERS: &str = "moqui.screen.last.parameters";
@@ -584,10 +588,31 @@ pub fn set_time_zone(time_zone: Option<&str>) {
 
 #[allow(dead_code)]
 pub fn add_flash_message(message: &str) {
+    add_flash_message_typed(message, "info");
+}
+
+/// A message the next page shows, with its type as Java's `MessageInfo`.
+pub fn add_flash_message_typed(message: &str, kind: &str) {
     with_session(|session| {
         session.flash.push(message.to_string());
+        let mut types = attributes_string_list(&session.attributes, MESSAGE_TYPES);
+        types.resize(session.flash.len() - 1, "info".to_string());
+        types.push(if kind.is_empty() { "info" } else { kind }.to_string());
         let encoded = json_string_list(&session.flash);
         put_json(session, MESSAGE_PUBLIC, encoded);
+        put_json(session, MESSAGE_TYPES, json_string_list(&types));
+    });
+}
+
+/// A validation error the next page shows beside its field.
+pub fn add_flash_validation_error(error: &BTreeMap<String, String>) {
+    with_session(|session| {
+        let mut list = match session.attributes.get(MESSAGE_VALIDATION) {
+            Some(Json::List(items)) => items.clone(),
+            _ => Vec::new(),
+        };
+        list.push(json_string_map(error));
+        put_json(session, MESSAGE_VALIDATION, Json::List(list));
     });
 }
 
@@ -605,18 +630,43 @@ pub fn add_flash_error(message: &str) {
 #[derive(Clone, Debug, Default)]
 pub struct SavedForPage {
     pub messages: Vec<String>,
+    /// The type of each of `messages`.
+    pub message_types: Vec<String>,
     pub errors: Vec<String>,
+    pub validation_errors: Vec<BTreeMap<String, String>>,
     pub error_parameters: BTreeMap<String, String>,
 }
 
 pub fn take_saved_for_page() -> SavedForPage {
     with_session(|session| {
+        let messages = std::mem::take(&mut session.flash);
+        let mut message_types = attributes_string_list(&session.attributes, MESSAGE_TYPES);
+        message_types.resize(messages.len(), "info".to_string());
+        let validation_errors = match session.attributes.get(MESSAGE_VALIDATION) {
+            Some(Json::List(items)) => items
+                .iter()
+                .filter_map(|item| match item {
+                    Json::Map(map) => Some(
+                        map.iter()
+                            .filter_map(|(key, value)| match value {
+                                Json::Text(text) => Some((key.clone(), text.clone())),
+                                _ => None,
+                            })
+                            .collect(),
+                    ),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
         let taken = SavedForPage {
-            messages: std::mem::take(&mut session.flash),
+            messages,
+            message_types,
             errors: std::mem::take(&mut session.flash_errors),
+            validation_errors,
             error_parameters: std::mem::take(&mut session.errors),
         };
-        for key in [MESSAGE_PUBLIC, MESSAGE_ERROR, ERROR_PARAMETERS] {
+        for key in [MESSAGE_PUBLIC, MESSAGE_ERROR, MESSAGE_TYPES, MESSAGE_VALIDATION, ERROR_PARAMETERS] {
             if session.attributes.remove(key).is_some() && session.bound_id.is_some() {
                 session.dirty_json.insert(key.to_string());
             }

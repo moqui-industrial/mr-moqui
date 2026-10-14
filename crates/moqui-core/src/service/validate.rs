@@ -39,46 +39,74 @@ pub(crate) fn clean(
     let declared = expand_params(def, &def.in_params, facade)?;
     let mut params = input.clone();
     let mut known = BTreeSet::new();
+    // As Java, every parameter is checked and each that fails is a validation error for its field, so a form shows
+    // them all beside their fields; the service does not run when there is one.
+    let mut failed: Vec<(String, String)> = Vec::new();
     for param in &declared {
         if param.name.is_empty() || param.required == Required::Disabled {
             continue;
         }
         known.insert(param.name.clone());
-        if is_blank(params.get(&param.name)) {
-            if let Some(value) = default_for(param, &params)? {
+        match clean_param(param, &params) {
+            Ok(Some(value)) => {
                 params.insert(param.name.clone(), value);
             }
+            Ok(None) => {}
+            Err(err) => failed.push((param.name.clone(), err.message().to_string())),
         }
-        if param.required == Required::True && is_blank(params.get(&param.name)) {
-            return Err(Error::new(format!("parameter {} is required", param.name)));
-        }
-        let Some(value) = params.get(&param.name).cloned() else {
-            continue;
-        };
-        if is_empty(&value) {
-            continue;
-        }
-        // Convert first, so the checks see the type they were written for.
-        let value = if matches!(value, Value::Map(_) | Value::List(_)) {
-            value
-        } else {
-            convert_checked(&value, &param.java_type).ok_or_else(|| {
-                Error::new(format!(
-                    "parameter {} value {} is not a valid {}",
-                    param.name,
-                    to_plain_string(&value),
-                    short_type(&param.java_type)
-                ))
-            })?
-        };
-        let value = clean_html(param, value)?;
-        check_param(param, &value)?;
-        params.insert(param.name.clone(), value);
+    }
+    if !failed.is_empty() {
+        let joined = failed.iter().map(|(_, message)| message.as_str()).collect::<Vec<_>>().join("; ");
+        crate::context::ExecutionContext::with_current(|ec| {
+            let mut messages = ec.message();
+            for (field, message) in &failed {
+                let text = message.strip_prefix("parameter ").unwrap_or(message);
+                messages.add_validation_error("", field, &def.name, text);
+            }
+        });
+        return Err(Error::of_kind(crate::context::ErrorKind::Validation, joined));
     }
     if def.validate_input {
         retain_known(def, &mut params, &known, facade)?;
     }
     Ok(params)
+}
+
+/// One parameter: its default when blank, the required check, conversion to its type, HTML cleaning, and the
+/// declared checks. The value to store, if any.
+fn clean_param(param: &ParamDef, params: &BTreeMap<String, Value>) -> Result<Option<Value>, Error> {
+    let mut defaulted = None;
+    if is_blank(params.get(&param.name)) {
+        if let Some(value) = default_for(param, params)? {
+            defaulted = Some(value);
+        }
+    }
+    let current = defaulted.clone().or_else(|| params.get(&param.name).cloned());
+    if param.required == Required::True && is_blank(current.as_ref()) {
+        return Err(Error::new(format!("parameter {} is required", param.name)));
+    }
+    let Some(value) = current else {
+        return Ok(None);
+    };
+    if is_empty(&value) {
+        return Ok(defaulted);
+    }
+    // Convert first, so the checks see the type they were written for.
+    let value = if matches!(value, Value::Map(_) | Value::List(_)) {
+        value
+    } else {
+        convert_checked(&value, &param.java_type).ok_or_else(|| {
+            Error::new(format!(
+                "parameter {} value {} is not a valid {}",
+                param.name,
+                to_plain_string(&value),
+                short_type(&param.java_type)
+            ))
+        })?
+    };
+    let value = clean_html(param, value)?;
+    check_param(param, &value)?;
+    Ok(Some(value))
 }
 
 fn expand_params(def: &ServiceDef, params: &[ParamDef], facade: Option<&EntityFacade>) -> Result<Vec<ParamDef>, Error> {

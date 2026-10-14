@@ -50,6 +50,14 @@ impl Site {
         ]]></script></actions>
         <default-response type="none"/>
     </transition>
+    <transition name="check">
+        <actions><script><![CDATA[
+            ec.message.addMessage('Check this', 'warning')
+            ec.message.addValidationError('Edit', 'title', 'save#Thing', 'Title needs a letter')
+        ]]></script></actions>
+        <default-response url="."/>
+        <error-response url="."/>
+    </transition>
     <transition name="ajax" require-session-token="false">
         <actions><script>ec.web.sendJsonResponse({ok: true})</script></actions>
         <default-response type="none"/>
@@ -107,6 +115,29 @@ fn form_post(path: &str, body: &str) -> WebRequest {
     post.set_header("content-type", "application/x-www-form-urlencoded");
     post.body = body.as_bytes().to_vec();
     post
+}
+
+#[test]
+fn a_validation_error_shows_by_its_field_and_a_message_keeps_its_type_after_the_redirect() {
+    let site = Site::new("validation");
+    let world = World::open("");
+    let mut jar = Vec::new();
+    let page = serve_at(&world.factory, request("GET", "/"), &site.root);
+    cookies(&page, &mut jar);
+    let token = token_of(&page.body_text());
+    let posted = serve_at(
+        &world.factory,
+        with_cookies(form_post("/check", &format!("title=x&moquiFormName=Edit&moquiSessionToken={token}")), &jar),
+        &site.root,
+    );
+    assert_eq!(posted.status, 302, "{}", posted.body_text());
+    cookies(&posted, &mut jar);
+    let html = serve_at(&world.factory, with_cookies(request("GET", "/"), &jar), &site.root).body_text();
+    assert!(html.contains("data-type=\"warning\""), "{html}");
+    assert!(html.contains("Check this"), "{html}");
+    // The field's own error is under the field, not a line at the top of the page.
+    assert!(html.contains("<div class=\"field-error\" role=\"alert\">Title needs a letter</div>"), "{html}");
+    assert!(!html.contains("data-type=\"danger\""), "{html}");
 }
 
 #[test]
@@ -298,7 +329,7 @@ fn a_multipart_form_gives_parameters_and_the_uploaded_file() {
 }
 
 #[test]
-fn the_upload_cap_is_webapp_max_upload_and_other_bodies_stop_at_1_mib() {
+fn the_upload_cap_is_webapp_max_upload_and_other_bodies_stop_at_webapp_max_body() {
     let site = Site::new("cap");
     let world = World::open("");
     moqui_lib::env::set_property("webapp_max_upload", "2k");
@@ -312,11 +343,14 @@ fn the_upload_cap_is_webapp_max_upload_and_other_bodies_stop_at_1_mib() {
     moqui_lib::env::clear_property("webapp_max_upload");
     assert_eq!(response.status, 413, "{}", response.body_text());
 
-    // a form post is still limited to 1 MiB even when uploads may be larger
+    // a form post has its own cap, webapp_max_body (default 10 MiB), even when uploads may be larger
+    moqui_lib::env::set_property("webapp_max_body", "1m");
     let mut large = request("POST", "/save");
     large.set_header("content-type", "application/x-www-form-urlencoded");
     large.body = vec![b'a'; 1024 * 1024 + 1];
-    assert_eq!(serve_at(&world.factory, large, &site.root).status, 413);
+    let status = serve_at(&world.factory, large, &site.root).status;
+    moqui_lib::env::clear_property("webapp_max_body");
+    assert_eq!(status, 413);
 }
 
 #[test]

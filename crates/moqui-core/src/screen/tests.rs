@@ -305,11 +305,13 @@ fn redirect_json_list_security_headers_and_cors() {
     let _ = std::fs::remove_file(&path);
 
     let web = webroot().to_string_lossy().into_owned();
+    // A JSON array that is not a list of objects is `_requestBodyJsonList`, as in Java, not a refused body: the
+    // request goes on, here to the REST screen's own check that there is a user.
     let mut bad_json = request("POST", "/rest/e1/moqui.basic.EnumerationType");
     bad_json.set_header("content-type", "application/json");
     bad_json.body = b"[1]".to_vec();
     let response = serve_at(&world.factory, bad_json, &web);
-    assert_eq!(response.status, 400, "{}", response.body_text());
+    assert_eq!(response.status, 401, "{}", response.body_text());
 
     let mut https = request("GET", "/");
     https.https = true;

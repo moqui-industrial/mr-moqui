@@ -31,7 +31,8 @@ pub mod multipart;
 use crate::context::{Error, ErrorKind, ExecutionContext};
 use crate::entity::query_rest;
 
-const BODY_LIMIT: usize = 1024 * 1024;
+/// The cap on a request body that is not multipart, unless `webapp_max_body` says otherwise.
+const DEFAULT_MAX_BODY: usize = 10 * 1024 * 1024;
 const PREFLIGHT_HEADERS: &str = "Accept,Accept-Encoding,Content-Type,Content-Encoding,Origin,X-Requested-With,Access-Control-Request-Method,Access-Control-Request-Headers,api_key,login_key,X-HTTP-Method-Override,moquiSessionToken,SessionToken,X-CSRF-Token,Authorization,A2A-Version";
 const EXPOSE_HEADERS: &str =
     "Access-Control-Allow-Origin,Access-Control-Allow-Credentials,X-CSRF-Token,moquiSessionToken";
@@ -318,16 +319,48 @@ pub(crate) fn add_header(name: impl Into<String>, value: impl Into<String>) {
     });
 }
 
-/// `application/json`. A map gains `errors` and status 500 when the message facade has one.
+/// `application/json`.
+///
+/// As Java's `sendJsonResponseInternal`: a string is JSON text already and is sent as it is. Otherwise the messages
+/// are added as `messages` (or make the whole response when there is none), the errors as `errors` unless the map
+/// has its own or is a JSON-RPC answer, and any error makes the status 500.
 pub(crate) fn send_json_response(value: Value) {
-    let mut status = 200;
+    if let Value::String(text) = value {
+        send_bytes(200, "application/json", text.into_bytes());
+        return;
+    }
+    let messages = ExecutionContext::with_current(|ec| ec.message().messages().to_vec()).unwrap_or_default();
     let mut value = value;
-    if let Value::Map(map) = &mut value {
-        let errors = message_errors();
-        if !errors.is_empty() {
-            status = 500;
-            map.insert("errors".to_string(), Value::string(errors.join("\n")));
+    if !messages.is_empty() {
+        match &mut value {
+            Value::Null => {
+                value = Value::Map(indexmap::IndexMap::from([(
+                    "messages".to_string(),
+                    Value::string(messages.join("\n")),
+                )]));
+            }
+            Value::Map(map) if !map.contains_key("messages") => {
+                map.insert("messages".to_string(), Value::string(messages.join("\n")));
+            }
+            _ => {}
         }
+    }
+    let errors = message_errors();
+    let status = if errors.is_empty() {
+        200
+    } else {
+        match &mut value {
+            Value::Map(map) if !map.contains_key("errors") && !map.contains_key("jsonrpc") => {
+                map.insert("errors".to_string(), Value::string(errors.join("\n")));
+            }
+            Value::Map(_) => {}
+            _ => tracing::error!("Error found when sending JSON, the JSON is not a map so no errors were added: {}", errors.join("; ")),
+        }
+        500
+    };
+    if value.is_null() {
+        send_bytes(status, "application/json", Vec::new());
+        return;
     }
     send_bytes(status, "application/json", query_rest::encode_json(&value).into_bytes());
 }
@@ -540,14 +573,12 @@ pub(crate) struct ParsedBody {
     pub multipart: BTreeMap<String, Value>,
 }
 
-/// Body larger than its limit, a multipart body that cannot be read or holds a program, or JSON that is not
-/// an object or a list.
+/// Body larger than its limit, or a multipart body that cannot be read or holds a program.
 pub(crate) enum BodyError {
     TooLarge,
     Multipart(String),
     /// A file part that starts like a program, when the web app does not allow one.
     Executable(String),
-    Json(String),
 }
 
 /// The largest request body: 1 MiB, and for a `multipart/form-data` body `webapp_max_upload`.
@@ -555,7 +586,7 @@ pub fn body_limit(request: &WebRequest) -> usize {
     if is_multipart(request) {
         max_upload()
     } else {
-        BODY_LIMIT
+        parse_size(&moqui_lib::env::get_prop_or_env("webapp_max_body")).unwrap_or(DEFAULT_MAX_BODY)
     }
 }
 
@@ -655,23 +686,33 @@ pub(crate) fn parse_body(request: &WebRequest) -> Result<ParsedBody, BodyError> 
         });
     }
     let mut parameters = pairs_to_parameters(pairs);
-    if media == "application/json" || media.ends_with("+json") {
-        let text =
-            std::str::from_utf8(&request.body).map_err(|_| BodyError::Json("JSON body is not utf-8".to_string()))?;
-        match crate::service::parse_json(text) {
+    // As Java's WebFacadeImpl: a body that is not a form is `_requestBodyText`, and a JSON one is read as well. An
+    // object's fields are parameters, an array is `_requestBodyJsonList`, and JSON that does not parse is
+    // `_requestBodyJsonParseError` for the screen or service to answer, not a refused request.
+    let text = String::from_utf8_lossy(&request.body).into_owned();
+    parameters.insert("_requestBodyText".to_string(), Value::String(text.clone()));
+    if media == "application/json" || media == "text/json" || media.ends_with("+json") {
+        match crate::service::parse_json(&text) {
             Ok(Value::Map(map)) => {
                 for (key, value) in map {
                     parameters.insert(key, value);
                 }
             }
             Ok(Value::List(items)) => {
-                if items.iter().any(|item| !matches!(item, Value::Map(_))) {
-                    return Err(BodyError::Json("JSON list elements must be objects".to_string()));
+                // The REST batch form takes a list of objects.
+                if items.iter().all(|item| matches!(item, Value::Map(_))) {
+                    json_list = Some(items.clone());
                 }
-                json_list = Some(items);
+                parameters.insert("_requestBodyJsonList".to_string(), Value::List(items));
             }
-            Ok(_) => return Err(BodyError::Json("JSON body must be an object or a list".to_string())),
-            Err(err) => return Err(BodyError::Json(err.message().to_string())),
+            Ok(_) => {}
+            Err(err) => {
+                tracing::warn!("Error parsing HTTP request body JSON: {}", err.message());
+                parameters.insert(
+                    "_requestBodyJsonParseError".to_string(),
+                    Value::string(err.message()),
+                );
+            }
         }
     }
     Ok(ParsedBody {
@@ -967,6 +1008,7 @@ pub(crate) fn status_for(err: &Error) -> u16 {
         ErrorKind::NotFound => return 404,
         ErrorKind::MethodNotAllowed => return 405,
         ErrorKind::Unavailable => return 503,
+        ErrorKind::Validation => return 400,
         ErrorKind::General => {}
     }
     let message = err.message();
@@ -994,6 +1036,27 @@ pub(crate) fn record_login_error(message: &str) {
 mod tests {
     use super::{cookie_value, form_pairs, origin_allowed_for, pairs_to_parameters, percent_decode};
     use moqui_lib::object::Value;
+
+    #[test]
+    fn a_json_body_is_its_fields_a_list_or_a_parse_error_and_always_the_body_text() {
+        let body = |text: &str| {
+            let mut request = super::WebRequest::new("POST", "/x");
+            request.set_header("content-type", "application/json");
+            request.body = text.as_bytes().to_vec();
+            match super::parse_body(&request) {
+                Ok(parsed) => parsed,
+                Err(_) => panic!("body refused"),
+            }
+        };
+        let object = body(r#"{"a": 1}"#);
+        assert_eq!(object.parameters.get("a"), Some(&Value::I64(1)));
+        assert_eq!(object.parameters.get("_requestBodyText"), Some(&Value::string(r#"{"a": 1}"#)));
+        let list = body("[1, 2]");
+        assert!(matches!(list.parameters.get("_requestBodyJsonList"), Some(Value::List(items)) if items.len() == 2));
+        assert!(list.json_list.is_none());
+        let broken = body("{not json");
+        assert!(broken.parameters.contains_key("_requestBodyJsonParseError"));
+    }
 
     #[test]
     fn an_origin_is_allowed_as_java_allows_it() {

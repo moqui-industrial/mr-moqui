@@ -1227,19 +1227,40 @@ fn send_json_redirect(screen_path: Option<Vec<String>>, location: &str, paramete
             );
         }
     }
-    let messages = ExecutionContext::with_current(|ec| ec.message().messages().to_vec()).unwrap_or_default();
+    let (messages, validation) = ExecutionContext::with_current(|ec| {
+        let facade = ec.message();
+        let messages: Vec<(String, String)> = facade
+            .messages()
+            .iter()
+            .enumerate()
+            .map(|(index, text)| (text.clone(), facade.message_type(index).to_string()))
+            .collect();
+        (messages, facade.validation_errors().to_vec())
+    })
+    .unwrap_or_default();
     if !messages.is_empty() {
         map.insert(
             "messageInfos".to_string(),
             V::List(
                 messages
                     .iter()
-                    .map(|message| {
+                    .map(|(message, kind)| {
                         let mut info = indexmap::IndexMap::new();
                         info.insert("message".to_string(), V::string(message));
-                        info.insert("type".to_string(), V::string("info"));
+                        info.insert("type".to_string(), V::string(kind));
                         V::Map(info)
                     })
+                    .collect(),
+            ),
+        );
+    }
+    if !validation.is_empty() {
+        map.insert(
+            "validationErrors".to_string(),
+            V::List(
+                validation
+                    .iter()
+                    .map(|error| V::Map(validation_map(error).into_iter().map(|(key, value)| (key, V::string(value))).collect()))
                     .collect(),
             ),
         );
@@ -1297,19 +1318,44 @@ fn path_parameters(info: &ScreenUrlInfo, names: &[String]) -> Result<BTreeMap<St
     Ok(out)
 }
 
-/// Messages ride the session to the next screen, which shows them.
+/// Messages ride the session to the next screen, which shows them, as Java's `saveMessagesToSession`: each message
+/// with its type, the errors, and the validation errors for the fields of the form that was submitted.
 fn save_messages() {
-    let (messages, errors) = ExecutionContext::with_current(|ec| {
+    let (messages, errors, validation) = ExecutionContext::with_current(|ec| {
         let facade = ec.message();
-        (facade.messages().to_vec(), facade.errors().to_vec())
+        let messages: Vec<(String, String)> = facade
+            .messages()
+            .iter()
+            .enumerate()
+            .map(|(index, text)| (text.clone(), facade.message_type(index).to_string()))
+            .collect();
+        (messages, facade.errors().to_vec(), facade.validation_errors().to_vec())
     })
     .unwrap_or_default();
-    for message in &messages {
-        user::session::add_flash_message(message);
+    for (message, kind) in &messages {
+        user::session::add_flash_message_typed(message, kind);
     }
-    for message in &errors {
+    // A validation error with a field is shown by that field; its text is not also an error line at the top.
+    let as_text: Vec<String> = validation
+        .iter()
+        .filter(|error| !error.field.is_empty())
+        .map(|error| error.message.clone())
+        .collect();
+    for message in errors.iter().filter(|message| !as_text.contains(message)) {
         user::session::add_flash_error(message);
     }
+    for error in &validation {
+        user::session::add_flash_validation_error(&validation_map(error));
+    }
+}
+
+fn validation_map(error: &crate::context::ValidationError) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("form".to_string(), error.form.clone()),
+        ("field".to_string(), error.field.clone()),
+        ("serviceName".to_string(), error.service.clone()),
+        ("message".to_string(), error.message.clone()),
+    ])
 }
 
 /// The request parameters of a failed submit ride the session so the form shows what was typed. A

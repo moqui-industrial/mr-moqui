@@ -223,16 +223,19 @@ impl HostMessage {
         })
     }
 
-    fn add_message(&self, ctx: Ctx<'_>, message: String, _kind: Opt<String>) -> rquickjs::Result<()> {
+    /// `addMessage(message, type)`: `info`, `success`, `warning` or `danger`.
+    fn add_message(&self, ctx: Ctx<'_>, message: String, kind: Opt<String>) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
-            with_ec(&ctx, |ec| ec.message().add_message(message))?;
+            let kind = kind.0.unwrap_or_default();
+            with_ec(&ctx, |ec| ec.message().add_message_typed(message, &kind))?;
             Ok(())
         })
     }
 
-    fn add_public(&self, ctx: Ctx<'_>, message: String, _kind: Opt<String>) -> rquickjs::Result<()> {
+    fn add_public(&self, ctx: Ctx<'_>, message: String, kind: Opt<String>) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
-            with_ec(&ctx, |ec| ec.message().add_message(message))?;
+            let kind = kind.0.unwrap_or_default();
+            with_ec(&ctx, |ec| ec.message().add_message_typed(message, &kind))?;
             Ok(())
         })
     }
@@ -516,18 +519,30 @@ impl HostWeb {
             let saved = crate::web::saved_for_page();
             let (messages, errors) = with_ec(&ctx, |ec| {
                 let facade = ec.message();
-                (facade.messages().to_vec(), facade.errors().to_vec())
+                let messages: Vec<(String, String)> = facade
+                    .messages()
+                    .iter()
+                    .enumerate()
+                    .map(|(index, text)| (text.clone(), facade.message_type(index).to_string()))
+                    .collect();
+                (messages, facade.errors().to_vec())
             })?;
-            let entry = |text: &String, kind: &str| {
+            let entry = |text: &str, kind: &str| {
                 let mut map = indexmap::IndexMap::new();
-                map.insert("message".to_string(), Value::string(text.as_str()));
+                map.insert("message".to_string(), Value::string(text));
                 map.insert("typeString".to_string(), Value::string(kind));
                 Value::Map(map)
             };
             let mut list = Vec::new();
-            list.extend(saved.messages.iter().map(|text| entry(text, "info")));
+            list.extend(
+                saved
+                    .messages
+                    .iter()
+                    .zip(saved.message_types.iter())
+                    .map(|(text, kind)| entry(text, kind)),
+            );
             list.extend(saved.errors.iter().map(|text| entry(text, "danger")));
-            list.extend(messages.iter().map(|text| entry(text, "info")));
+            list.extend(messages.iter().map(|(text, kind)| entry(text, kind)));
             list.extend(errors.iter().map(|text| entry(text, "danger")));
             host_to_js(&ctx, Value::List(list))
         })
@@ -536,13 +551,15 @@ impl HostWeb {
     #[qjs(get, rename = "savedMessages")]
     fn saved_messages<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || {
-            let list = crate::web::saved_for_page()
+            let saved = crate::web::saved_for_page();
+            let list = saved
                 .messages
                 .iter()
-                .map(|text| {
+                .zip(saved.message_types.iter())
+                .map(|(text, kind)| {
                     let mut map = indexmap::IndexMap::new();
                     map.insert("message".to_string(), Value::string(text.as_str()));
-                    map.insert("typeString".to_string(), Value::string("info"));
+                    map.insert("typeString".to_string(), Value::string(kind.as_str()));
                     Value::Map(map)
                 })
                 .collect();
@@ -562,9 +579,17 @@ impl HostWeb {
         })
     }
 
+    /// The validation errors of the submit that led here: `{form, field, serviceName, message}` each.
     #[qjs(get, rename = "savedValidationErrors")]
     fn saved_validation_errors<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
-        host_guard(&ctx, || host_to_js(&ctx, Value::List(Vec::new())))
+        host_guard(&ctx, || {
+            let list = crate::web::saved_for_page()
+                .validation_errors
+                .into_iter()
+                .map(|error| Value::Map(error.into_iter().map(|(key, value)| (key, Value::string(value))).collect()))
+                .collect();
+            host_to_js(&ctx, Value::List(list))
+        })
     }
 
     #[qjs(get, rename = "errorParameters")]

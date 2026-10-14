@@ -360,7 +360,7 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   its feature adds a crate for a saving gzip mostly gives.
 - **Multipart.** axum's `multipart` feature needs `multer`, which is not in the tree, and the request pool takes an owned
   request, so the host reads the body (up to `webapp_max_upload`, default 100 MiB, while it reads; other bodies stop at
-  1 MiB) and `web/multipart.rs` parses it. Text fields join the parameters. A file is an `UploadedFile` host object
+  `webapp_max_body`, default 10 MiB) and `web/multipart.rs` parses it. Text fields join the parameters. A file is an `UploadedFile` host object
   (`name`, `contentType`, `size`, `getString()`, `write("dbresource://...")`) in the parameters and in
   `ec.web.multiPartParameters`, with `_fileUploadList`. A file that starts like a program is a 415 unless
   `webapp_upload_executable_allow` is `true`.

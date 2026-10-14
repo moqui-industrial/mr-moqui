@@ -95,7 +95,6 @@ pub fn serve_at(factory: &Arc<ExecutionContextFactory>, request: WebRequest, roo
         Err(web::BodyError::Executable(name)) => {
             return web::early_error(&request, 415, &format!("Executable file {name} upload not allowed"))
         }
-        Err(web::BodyError::Json(message)) => return web::early_error(&request, 400, &message),
     };
     // A request-pool worker already entered a fresh context for this job. Direct callers get one here.
     let context = crate::context::ExecutionContext::current()
