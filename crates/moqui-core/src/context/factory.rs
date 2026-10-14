@@ -129,21 +129,38 @@ impl ExecutionContextFactory {
         options: BootOptions,
     ) -> Result<Arc<Self>, Error> {
         assert_shareable::<Self>();
+        let boot_started = std::time::Instant::now();
         let runtime_dir = canonicalize_dir(runtime_dir.as_ref())?;
         let framework_dir = canonicalize_dir(framework_dir.as_ref())?;
+        tracing::info!(
+            "Initializing Moqui Framework version {}\n - runtime directory: {}\n - framework directory: {}",
+            env!("CARGO_PKG_VERSION"),
+            runtime_dir.display(),
+            framework_dir.display()
+        );
         if !framework_dir.join("component.xml").is_file() {
             return Err(Error::new(format!(
                 "framework directory {} has no component.xml",
                 framework_dir.display()
             )));
         }
+        let phase = std::time::Instant::now();
         let conf_node = conf::load_merged_conf(&framework_dir, &runtime_dir)?;
+        tracing::info!("Merged configuration in {}ms", phase.elapsed().as_millis());
         let env_path = runtime_dir.join(".env");
         let (property_names, mut set_by_boot) = apply_default_properties(&conf_node, &env_path)?;
+        let phase = std::time::Instant::now();
         let components = component::discover(&runtime_dir, &framework_dir, &conf_node)?;
+        tracing::info!(
+            "Discovered {} components in {}ms",
+            components.len(),
+            phase.elapsed().as_millis()
+        );
         let entity = Arc::new(RwLock::new(None));
         let resource = ResourceFacade::new(runtime_dir.clone(), component_roots(&components), Arc::clone(&entity));
+        tracing::info!("Resource Facade initialized");
         let cache = CacheFacade::from_conf(&conf_node)?;
+        tracing::info!("Cache Facade initialized");
         set_by_boot.keep();
         let conf_text = conf_node.write_string();
         let hits = super::hits::ArtifactHits::from_conf(&conf_text);
@@ -156,7 +173,8 @@ impl ExecutionContextFactory {
         tracing::info!(
             runtime = %runtime_dir.display(),
             framework = %framework_dir.display(),
-            "Initialized execution context factory"
+            "Execution Context Factory initialized in {:.3} seconds",
+            boot_started.elapsed().as_secs_f64()
         );
         let factory = Arc::new(Self {
             runtime_dir,

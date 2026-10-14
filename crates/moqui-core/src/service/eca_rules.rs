@@ -55,6 +55,8 @@ fn load(factory: &ExecutionContextFactory) -> EcaRules {
     let mut seca_by_id: HashMap<String, Arc<SecaRule>> = HashMap::new();
     let mut seca: Vec<Arc<SecaRule>> = Vec::new();
     let mut email = Vec::new();
+    let (mut seca_files, mut email_files, mut no_id) = (0_usize, 0_usize, 0_usize);
+    let started = std::time::Instant::now();
     for component in factory.components() {
         let dir = component.location.join("service");
         let Ok(read) = std::fs::read_dir(&dir) else {
@@ -76,16 +78,21 @@ fn load(factory: &ExecutionContextFactory) -> EcaRules {
                 }
             };
             if is_seca {
+                seca_files += 1;
                 for node in root.children_named("seca") {
                     let rule = Arc::new(seca_rule_from(&node));
                     match node.attribute("id").filter(|id| !id.is_empty()) {
                         Some(id) => {
                             seca_by_id.insert(id, rule);
                         }
-                        None => seca.push(rule),
+                        None => {
+                            no_id += 1;
+                            seca.push(rule);
+                        }
                     }
                 }
             } else {
+                email_files += 1;
                 for node in root.children_named("emeca") {
                     email.push(Arc::new(email_rule_from(&node)));
                 }
@@ -94,7 +101,16 @@ fn load(factory: &ExecutionContextFactory) -> EcaRules {
     }
     seca.extend(seca_by_id.into_values());
     seca.sort_by_key(|rule| rule.priority);
-    tracing::info!(seca = seca.len(), email = email.len(), "loaded service ECA rules");
+    tracing::info!(
+        "Loaded {} Service ECA rules from {seca_files} .secas.xml files, {no_id} rules have no id, {} SECA rules active in {}ms",
+        seca.len(),
+        seca.len(),
+        started.elapsed().as_millis()
+    );
+    tracing::info!(
+        "Loaded [{}] Email ECA rules from {email_files} .emecas.xml files",
+        email.len()
+    );
     EcaRules { seca, email }
 }
 

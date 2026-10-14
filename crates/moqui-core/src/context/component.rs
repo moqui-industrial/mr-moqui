@@ -183,7 +183,7 @@ impl ComponentSet {
             self.items[slot] = info;
             return Ok(());
         }
-        tracing::info!(component = %info.name, location = %info.location.display(), "Added component");
+        tracing::info!("Added component {:<18} at {}", info.name, info.location.display());
         self.index.insert(info.name.clone(), self.items.len());
         self.items.push(info);
         Ok(())

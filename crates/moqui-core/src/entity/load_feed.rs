@@ -14,8 +14,10 @@
 
 //! Entity ECA match, the entity data loader, and the `DataFeedPending` insert.
 //!
-//! ECA action bodies and data-file service elements are stored and not run.
-//! Feed receive and delete service names are stored and not called. Nothing is indexed.
+//! Matching ECA rules run their conditions and actions (`service::run_matched_eca`), and data-file
+//! service elements are called through `service::run_data_file_service` and also recorded here.
+//! Feed receive and delete service names are recorded, and `service::schedule_feed_receive` hands
+//! the pending rows to a service worker after commit. Documents are indexed only when search is attached.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read};
@@ -70,17 +72,17 @@ pub struct EcaRule {
     pub actions: String,
 }
 
-/// A data-file service element. The service is not called.
+/// A data-file service element. It is called as it is read, and kept here for [`data_file_services`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HeldService {
+pub struct DataFileService {
     pub name: String,
     pub location: String,
     pub parameters: BTreeMap<String, String>,
 }
 
-/// A real-time feed's receive and delete service names. Neither service is called.
+/// A real-time feed's receive and delete service names, recorded as feed rows are inserted. A service worker calls them after commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HeldFeedService {
+pub struct FeedServiceNames {
     pub data_feed_id: String,
     pub receive_service: String,
     pub delete_service: String,
@@ -123,7 +125,7 @@ pub const RESTRICTED_ENTITIES: &[&str] = &[
     "systemmessageremote",
 ];
 
-/// How many entity records were written. Held services are not included.
+/// How many entity records were written. Data-file service calls are not included.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LoadResult {
     pub records: u64,
@@ -146,8 +148,8 @@ struct LoadSlot {
     eca_rules: Vec<EcaRule>,
     last_matched: Vec<String>,
     touches: Vec<Touch>,
-    services: Vec<HeldService>,
-    feed_services: Vec<HeldFeedService>,
+    services: Vec<DataFileService>,
+    feed_services: Vec<FeedServiceNames>,
 }
 
 struct Record {
@@ -269,7 +271,7 @@ pub(crate) fn match_rules_with(
     })
 }
 
-/// Rules stored for `entity_name`. Loading does not run the actions.
+/// Rules stored for `entity_name`. This lookup does not run them; `service::run_matched_eca` does.
 pub fn eca_rules(facade: &EntityFacade, entity_name: &str) -> Vec<EcaRule> {
     let dirs = facade.entity_dirs();
     with_load_slot(facade, |slot| {
@@ -296,13 +298,13 @@ pub fn matched_eca_ids(facade: &EntityFacade) -> Vec<String> {
     with_load_slot(facade, |slot| slot.last_matched.clone())
 }
 
-/// Service elements parsed by the loader and not called.
-pub fn held_services(facade: &EntityFacade) -> Vec<HeldService> {
+/// Service elements the loader has read, in order. They were called as they were read.
+pub fn data_file_services(facade: &EntityFacade) -> Vec<DataFileService> {
     with_load_slot(facade, |slot| slot.services.clone())
 }
 
-/// Receive and delete service names seen while inserting feed rows. They are not called.
-pub fn held_feed_services(facade: &EntityFacade) -> Vec<HeldFeedService> {
+/// Receive and delete service names seen while inserting feed rows. A service worker calls them after commit, not the loader.
+pub fn feed_service_names(facade: &EntityFacade) -> Vec<FeedServiceNames> {
     with_load_slot(facade, |slot| slot.feed_services.clone())
 }
 
@@ -388,6 +390,7 @@ fn ensure_rules(slot: &mut LoadSlot, dirs: &[PathBuf]) {
     }
     slot.eca_loaded = true;
     // The framework's rules, then each component's, as Java loads `*.eecas.xml` from every entity directory.
+    let mut files = 0;
     for dir in dirs {
         let read = match std::fs::read_dir(dir) {
             Ok(read) => read,
@@ -406,6 +409,7 @@ fn ensure_rules(slot: &mut LoadSlot, dirs: &[PathBuf]) {
             })
             .collect();
         paths.sort();
+        files += paths.len();
         for path in paths {
             match MNode::parse_file(&path) {
                 Ok(root) => ingest_eecas(&root, slot),
@@ -413,6 +417,11 @@ fn ensure_rules(slot: &mut LoadSlot, dirs: &[PathBuf]) {
             }
         }
     }
+    tracing::info!(
+        "Loaded {} Entity ECA rules from {files} .eecas.xml files, {} rules have no id",
+        slot.eca_rules.len(),
+        slot.eca_rules.iter().filter(|rule| rule.id.is_empty()).count()
+    );
 }
 
 fn ingest_eecas(root: &MNode, slot: &mut LoadSlot) {
@@ -484,7 +493,7 @@ fn insert_pending(
         if data_feed_id.is_empty() {
             continue;
         }
-        services.push(HeldFeedService {
+        services.push(FeedServiceNames {
             data_feed_id: data_feed_id.clone(),
             receive_service: cell_string(row, "feedReceiveServiceName"),
             delete_service: cell_string(row, "feedDeleteServiceName"),
@@ -776,7 +785,7 @@ fn take_frame_touches(facade: &EntityFacade, frame: Option<u64>) -> Vec<Touch> {
     })
 }
 
-fn remember_feed_services(facade: &EntityFacade, services: Vec<HeldFeedService>) {
+fn remember_feed_services(facade: &EntityFacade, services: Vec<FeedServiceNames>) {
     if services.is_empty() {
         return;
     }
@@ -1244,7 +1253,7 @@ fn load_definition_document<R: BufRead>(
                 Some(Top::Record(record)) => {
                     total = total.saturating_add(store_record(facade, options, &record)?);
                 }
-                Some(Top::Service(service)) => hold_service(facade, options, service)?,
+                Some(Top::Service(service)) => call_data_file_service(facade, options, service)?,
                 None => {}
             }
         }
@@ -1310,7 +1319,7 @@ fn load_xml_reader(
         let node = MNode::parse_text(location, &element)?;
         match parse_top(facade, location, &node)? {
             Some(Top::Record(record)) => total = total.saturating_add(store_record(facade, options, &record)?),
-            Some(Top::Service(service)) => hold_service(facade, options, service)?,
+            Some(Top::Service(service)) => call_data_file_service(facade, options, service)?,
             None => {}
         }
     }
@@ -1406,10 +1415,10 @@ fn load_csv_reader(
                     parameters.insert(name.clone(), text.to_string());
                 }
             }
-            hold_service(
+            call_data_file_service(
                 facade,
                 options,
-                HeldService {
+                DataFileService {
                     name: entity_name.clone(),
                     location: location.to_string(),
                     parameters,
@@ -1510,10 +1519,10 @@ fn load_json_document(facade: &EntityFacade, location: &str, value: Json, option
         let record = json_record(facade, &entity_name, &pairs)?;
         store_record(facade, options, &record)
     } else if entity_name.contains('#') {
-        hold_service(
+        call_data_file_service(
             facade,
             options,
-            HeldService {
+            DataFileService {
                 name: entity_name,
                 location: location.to_string(),
                 parameters: json_service_parameters(&pairs)?,
@@ -1702,7 +1711,7 @@ fn parse_json_number(text: &str) -> Value {
 
 enum Top {
     Record(Record),
-    Service(HeldService),
+    Service(DataFileService),
 }
 
 fn parse_top(facade: &EntityFacade, location: &str, node: &MNode) -> Result<Option<Top>, Error> {
@@ -1710,7 +1719,7 @@ fn parse_top(facade: &EntityFacade, location: &str, node: &MNode) -> Result<Opti
     if entity_defined(facade, &key) {
         Ok(Some(Top::Record(parse_record(facade, &key, node)?)))
     } else if let Some(name) = crate::service::define::defined_name(&key).or_else(|| key.contains('#').then(|| key.clone())) {
-        Ok(Some(Top::Service(HeldService {
+        Ok(Some(Top::Service(DataFileService {
             name,
             location: location.to_string(),
             parameters: service_parameters(node),
@@ -2126,16 +2135,21 @@ fn value_from(
     Ok(value)
 }
 
-fn hold_service(facade: &EntityFacade, options: &LoadOptions, service: HeldService) -> Result<(), Error> {
+fn call_data_file_service(facade: &EntityFacade, options: &LoadOptions, service: DataFileService) -> Result<(), Error> {
     // A restricted load takes records only: a service element could write anything.
     if options.restrict_sensitive_entities {
+        tracing::warn!(
+            "Refusing service {} from {}: restricted data loads take records only",
+            service.name,
+            service.location
+        );
         return Err(Error::new(format!(
             "Service {} is not allowed in this data load",
             service.name
         )));
     }
     with_load_slot(facade, |slot| slot.services.push(service.clone()));
-    crate::service::run_held_service(facade, &service)
+    crate::service::run_data_file_service(facade, &service)
 }
 
 fn shape_of(facade: &EntityFacade, entity_name: &str) -> Result<Shape, Error> {
@@ -3364,7 +3378,16 @@ fn load_zip_bytes(
                 meta.name
             )));
         }
-        total = total.saturating_add(load_entry_bytes(facade, location, &meta.name, &plain, options, depth)?);
+        let started = std::time::Instant::now();
+        let records = load_entry_bytes(facade, location, &meta.name, &plain, options, depth)?;
+        if !matches!(extension(Path::new(&meta.name)).as_str(), "zip") {
+            tracing::info!(
+                "Loaded {records} records from {} in zip file {location} in {:.2}s",
+                meta.name,
+                started.elapsed().as_secs_f64()
+            );
+        }
+        total = total.saturating_add(records);
     }
     Ok(total)
 }
@@ -4008,7 +4031,7 @@ mod tests {
     use moqui_lib::object::Value;
 
     use super::{
-        conf_data_locations, eca_rules, held_feed_services, held_services, load_entity_data, match_rules,
+        conf_data_locations, data_file_services, eca_rules, feed_service_names, load_entity_data, match_rules,
         matched_eca_ids, register_feed_insert, LoadOptions,
     };
     use crate::driver::{DbCancel, DbConnection, DbDriver, DbRow};
@@ -4353,7 +4376,7 @@ mod tests {
         .unwrap();
         let loaded = load_entity_data(&facade, xml.to_str().unwrap(), &LoadOptions::default()).unwrap();
         assert_eq!(loaded.records, 1);
-        let held = held_services(&facade);
+        let held = data_file_services(&facade);
         assert!(held
             .iter()
             .any(|service| service.name == "create#moqui.test.TestEntity"));
@@ -4665,7 +4688,7 @@ mod tests {
         assert_eq!(inserts[0][3], Value::string("F1"));
         assert_eq!(inserts[0][4], Value::string("index"));
         drop(inserts);
-        let held = held_feed_services(&facade);
+        let held = feed_service_names(&facade);
         assert!(held
             .iter()
             .any(|service| service.receive_service == "index#DataDocuments"));

@@ -24,7 +24,8 @@ mod tests {
 
     use moqui_core::driver::DbDriver;
     use moqui_core::entity::load_feed::{
-        eca_rules, held_feed_services, held_services, load_entity_data, load_entity_xml_text, match_rules, LoadOptions,
+        data_file_services, eca_rules, feed_service_names, load_entity_data, load_entity_xml_text, match_rules,
+        LoadOptions,
     };
     use moqui_core::entity::EntityFacade;
     use moqui_core::transaction::PoolConfig;
@@ -99,7 +100,7 @@ mod tests {
             text_of(&facade, "moqui.test.TestEntity", "testId", "XML1", "testMedium"),
             Some("from-xml".to_string())
         );
-        let held = held_services(&facade);
+        let held = data_file_services(&facade);
         assert!(held
             .iter()
             .any(|service| service.name == "create#moqui.test.TestEntity"));
@@ -378,7 +379,7 @@ mod tests {
             pending,
             vec![("DOC1".to_string(), "moqui.test.Foo".to_string(), "index".to_string())]
         );
-        let services = held_feed_services(&facade);
+        let services = feed_service_names(&facade);
         assert!(services
             .iter()
             .any(|service| service.receive_service == "org.moqui.search.SearchServices.index#DataDocuments"));

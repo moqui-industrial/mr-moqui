@@ -20,10 +20,10 @@
 pub mod db;
 pub mod edge;
 pub mod ipp;
+pub mod logging;
 #[cfg(feature = "pdf")]
 pub mod pdf;
 pub mod qvt_report;
-pub mod logging;
 pub mod search;
 pub mod ssh;
 pub mod sso;
@@ -35,9 +35,9 @@ mod cluster_notify;
 #[cfg(feature = "axum")]
 mod http;
 #[cfg(feature = "axum")]
-mod search_proxy;
-#[cfg(feature = "axum")]
 mod notws;
+#[cfg(feature = "axum")]
+mod search_proxy;
 
 /// No arguments start the HTTP listener and block until it stops.
 ///
@@ -236,7 +236,6 @@ where
         }
         [command, rest @ ..] if command == "load" => {
             let flags = parse_load_args(rest)?;
-            logging::install();
             dispatch_load(&flags)?;
             Ok(None)
         }
@@ -282,6 +281,7 @@ where
 }
 
 fn dispatch_load(flags: &LoadFlags) -> Result<LoadReport, moqui_lib::error::Error> {
+    logging::install();
     // Like Moqui's `moqui.runtime`: an install runs from its own directory unless told otherwise.
     let runtime = std::env::var_os("MOQUI_RUNTIME").map_or_else(|| std::path::PathBuf::from("runtime"), Into::into);
     let framework = std::env::var_os("MOQUI_FRAMEWORK").map_or_else(|| runtime.join("../framework"), Into::into);
@@ -290,6 +290,7 @@ fn dispatch_load(flags: &LoadFlags) -> Result<LoadReport, moqui_lib::error::Erro
 }
 
 fn dispatch_types(args: &[String]) -> Result<(), moqui_lib::error::Error> {
+    logging::install();
     let runtime = std::env::var_os("MOQUI_RUNTIME").map_or_else(|| std::path::PathBuf::from("runtime"), Into::into);
     let framework = std::env::var_os("MOQUI_FRAMEWORK").map_or_else(|| runtime.join("../framework"), Into::into);
     let out = types::parse_types_args(args, &runtime)?;
@@ -537,13 +538,32 @@ fn load_embedded(
     })?;
     // The factory boots first: its default properties name the datasource. It is dropped, and its
     // worker pool joined, before the database closes.
+    let started = std::time::Instant::now();
+    tracing::info!(
+        "Loading data, runtime directory {}, framework directory {}",
+        runtime_dir.display(),
+        framework_dir.display()
+    );
     let factory = moqui_core::context::ExecutionContextFactory::boot_with_framework(&runtime_dir, &framework_dir)
         .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
+    let opened_at = std::time::Instant::now();
     let opened = crate::db::entity_db::transactional_conf(&factory).and_then(|conf| {
         let pool = load_pool(&conf.pool);
         let install = crate::db::embedded::shared_install_dir(&runtime_dir.join("db"), cluster_dir);
+        tracing::info!(
+            "Opening DataSource transactional, database {}, max pool {}, cluster directory {}",
+            conf.dialect,
+            pool.max,
+            cluster_dir.display()
+        );
         crate::db::entity_db::open(conf, cluster_dir, &install, pool.max).map(|db| (db, pool))
     });
+    if opened.is_ok() {
+        tracing::info!(
+            "DataSource transactional opened in {:.3} seconds",
+            opened_at.elapsed().as_secs_f64()
+        );
+    }
     let (db, pool) = match opened {
         Ok(opened) => opened,
         Err(err) => {
@@ -554,6 +574,13 @@ fn load_embedded(
     let outcome = load_with_factory(&factory, &framework_dir, &db, pool, flags);
     drop(factory);
     drop(db);
+    if let Ok(report) = &outcome {
+        tracing::info!(
+            "Loaded [{}] records in {} seconds.",
+            report.records,
+            started.elapsed().as_secs()
+        );
+    }
     outcome
 }
 
@@ -565,6 +592,7 @@ fn load_with_factory(
     pool: moqui_core::transaction::PoolConfig,
     flags: &LoadFlags,
 ) -> Result<LoadReport, moqui_lib::error::Error> {
+    let entity_started = std::time::Instant::now();
     let facade = crate::db::entity_facade::open_entity_facade_components(
         framework_dir,
         &crate::db::entity_facade::component_entity_dirs(factory),
@@ -573,11 +601,18 @@ fn load_with_factory(
         &db.conf.dialect,
     )?;
     crate::db::entity_facade::attach(factory, facade.clone());
+    tracing::info!(
+        "Entity Facade initialized in {:.3} seconds",
+        entity_started.elapsed().as_secs_f64()
+    );
     // Feeds index through search when it is up; a load still runs when it is not.
     let _search = match crate::search::attach_search(factory, &facade, db.is_postgres()) {
-        Ok(store) => Some(store),
+        Ok(store) => {
+            tracing::info!("Search attached for this load, data feeds will index documents");
+            Some(store)
+        }
         Err(err) => {
-            eprintln!("search is not available during this load: {err}");
+            tracing::warn!("Search is not available during this load, data feeds will not index documents: {err}");
             None
         }
     };
@@ -688,17 +723,22 @@ fn serve_thread(
         .as_ref()
         .ok_or_else(|| moqui_lib::error::Error::new("http server has no runtime"))?;
     let listened = runtime.block_on(http::listen(factory, address, cluster_address, posts, stop, sender));
+    tracing::info!("HTTP listener stopped, shutting down");
     if let Some(factory) = process.factory.as_ref() {
         // Hits and the open bins are only in memory until written, as Java's destroy writes the bins.
         if let Err(err) = factory.flush_artifact_hits() {
-            eprintln!("artifact hit flush failed: {err}");
+            tracing::warn!("Artifact hit flush failed: {err}");
+        } else {
+            tracing::info!("ArtifactHitBins stored");
         }
         if let Err(err) = factory.flush_sessions() {
             let err = moqui_lib::error::Error::new(err.to_string());
             if listened.is_ok() {
                 return Err(err);
             }
-            eprintln!("session flush failed: {err}");
+            tracing::warn!("Session flush failed: {err}");
+        } else {
+            tracing::info!("Sessions flushed");
         }
     }
     listened
@@ -723,6 +763,7 @@ fn boot_server(
 ) -> Result<ServeProcess, moqui_lib::error::Error> {
     use std::sync::Arc;
 
+    let boot_started = std::time::Instant::now();
     std::fs::create_dir_all(runtime_dir).map_err(|err| {
         moqui_lib::error::Error::new(format!("could not create {}", runtime_dir.display())).with_source(err)
     })?;
@@ -740,13 +781,30 @@ fn boot_server(
     })?;
     // The factory boots first: its default properties name the datasource. The database stays on
     // this thread, and its clients are dropped here, after the axum runtime.
+    tracing::info!(
+        "Initializing Moqui Framework, runtime directory {}, framework directory {}",
+        runtime_dir.display(),
+        framework_dir.display()
+    );
     let factory = moqui_core::context::ExecutionContextFactory::boot_with_framework(&runtime_dir, &framework_dir)
         .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
     let conf = crate::db::entity_db::transactional_conf(&factory)?;
     // `(request cap + service cap) * 2` must fit in `max - reserve`; check_serve_caps below says so.
     let pool = conf.pool.clone();
     let install = crate::db::embedded::shared_install_dir(&runtime_dir.join("db"), &cluster_dir);
+    let db_started = std::time::Instant::now();
+    tracing::info!(
+        "Opening DataSource transactional, database {}, max pool {}, cluster directory {}",
+        conf.dialect,
+        pool.max,
+        cluster_dir.display()
+    );
     let db = crate::db::entity_db::open(conf, &cluster_dir, &install, pool.max)?;
+    tracing::info!(
+        "DataSource transactional opened in {:.3} seconds",
+        db_started.elapsed().as_secs_f64()
+    );
+    let entity_started = std::time::Instant::now();
     let facade = crate::db::entity_facade::open_entity_facade_components(
         &framework_dir,
         &crate::db::entity_facade::component_entity_dirs(&factory),
@@ -755,18 +813,26 @@ fn boot_server(
         &db.conf.dialect,
     )?;
     crate::db::entity_facade::attach(&factory, facade.clone());
+    tracing::info!(
+        "Entity Facade initialized in {:.3} seconds",
+        entity_started.elapsed().as_secs_f64()
+    );
     // The overlay starts on the first enter_sim, inside the cluster directory, on the shared install.
     let sim = crate::db::sim::SimOverlay::install(&facade, &cluster_dir, Some(install));
     // Same policy as `load`: indexing runs when search is up, and the server still starts when it is not.
     let search = match crate::search::attach_search(&factory, &facade, db.is_postgres()) {
-        Ok(store) => Some(store),
+        Ok(store) => {
+            tracing::info!("Search attached, data feeds and logs can index documents");
+            Some(store)
+        }
         Err(err) => {
-            eprintln!("search is not available: {err}");
+            tracing::warn!("Search is not available, the server starts without indexing: {err}");
             None
         }
     };
     // On OpenSearch, log events and HTTP requests go to moqui_logs and moqui_http_log.
     logging::ship_to_search(&factory);
+    let load_started = std::time::Instant::now();
     {
         let context = factory.new_context();
         let entered = context.enter();
@@ -782,30 +848,54 @@ fn boot_server(
         drop(context);
         loaded?;
     }
+    tracing::info!(
+        "Table check and empty-db load finished in {:.3} seconds",
+        load_started.elapsed().as_secs_f64()
+    );
     moqui_core::service::check_serve_caps(&factory).map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
     factory
         .start_request_pool()
         .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
+    tracing::info!("Request pool started");
     // Empty cluster_https_port listens on 8443. 0 is ephemeral for tests.
     moqui_core::notify::install();
     // The SSH server binds before the member row is written: with cluster_transport=ssh the row carries its address
     // and host key.
     let cluster_posts = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sshd = ssh::server::start(&factory, &runtime_dir, Arc::clone(&cluster_posts))?;
+    if sshd.is_some() {
+        tracing::info!("SSH server started");
+    } else {
+        tracing::info!("Not starting the SSH server, it is not configured");
+    }
     // One sender for every transport: a peer's base URL picks HTTPS, SSH, or Postgres NOTIFY.
     cluster_notify::install_sender(&factory, db.is_postgres())?;
     let notify_listener = cluster_notify::listen_if_configured(&factory, &db, Arc::clone(&cluster_posts))?;
     moqui_core::cluster::start(&factory).map_err(moqui_lib::error::Error::from)?;
+    tracing::info!(
+        "Cluster notify {}",
+        if notify_listener.is_some() {
+            "listener started"
+        } else {
+            "listener not started, not configured"
+        }
+    );
     let cluster_edge = cluster_edge::listen(Arc::clone(&factory), cluster_posts)?;
     notws::install_push().map_err(moqui_lib::error::Error::from)?;
+    tracing::info!("Cluster, cluster edge listener and notification WebSocket push initialized");
     let pdf = install_pdf(&runtime_dir);
     ssh::install_client(&runtime_dir);
     sso::install();
     ipp::install();
+    tracing::info!("PDF, SSH client, SSO and IPP integrations installed");
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|err| moqui_lib::error::Error::new("could not start the http runtime").with_source(err))?;
+    tracing::info!(
+        "Moqui Framework initialized in {:.3} seconds",
+        boot_started.elapsed().as_secs_f64()
+    );
     Ok(ServeProcess {
         runtime: Some(runtime),
         pdf: Some(pdf),
@@ -908,11 +998,21 @@ fn load_in_context(
     flags: &LoadFlags,
     component_data: &[String],
 ) -> Result<LoadReport, moqui_lib::error::Error> {
-    use moqui_core::entity::load_feed::{conf_data_locations, load_entity_data};
+    use moqui_core::entity::load_feed::conf_data_locations;
 
     let checks_before = moqui_core::service::security_checks_run();
     apply_facade_flags(facade, flags);
+    let services_started = std::time::Instant::now();
     register_services(framework_dir, &flags.service_files)?;
+    tracing::info!(
+        "Service definitions registered in {:.3} seconds",
+        services_started.elapsed().as_secs_f64()
+    );
+    // The ECA rules load on first use; reading the count here puts them in the log at a known point.
+    tracing::info!(
+        "{} Service ECA rules are active",
+        moqui_core::service::info::seca_rule_count()
+    );
     let entities = entity_names(framework_dir, &facade.entity_dirs())?;
     if !entities.iter().any(|name| name == "moqui.test.TestFts") {
         return Err(moqui_lib::error::Error::new(
@@ -920,6 +1020,10 @@ fn load_in_context(
         ));
     }
     let refs: Vec<&str> = entities.iter().map(String::as_str).collect();
+    tracing::info!(
+        "Checking tables for {} framework entities in group transactional",
+        refs.len()
+    );
     facade.check_tables(&refs)?;
     let test_fts_before_load = facade.table_exists("moqui.test.TestFts")?;
     if !test_fts_before_load {
@@ -929,40 +1033,57 @@ fn load_in_context(
     }
     let options = load_options(flags);
     let mut records = 0_u64;
+    let load_started = std::time::Instant::now();
+    let types = flags
+        .data_types
+        .as_ref()
+        .map_or_else(|| "seed,seed-initial,install".to_string(), |types| types.join(","));
+    let existing = entity_count(facade, "moqui.basic.Enumeration")?;
     if let Some(location) = &flags.location {
-        eprintln!("load {location}");
-        records = records.saturating_add(load_entity_data(facade, location, &options)?.records);
-            report_message_errors(location);
-    } else if entity_count(facade, "moqui.basic.Enumeration")? == 0
-        || flags.data_types.is_some()
-        || !flags.components.is_empty()
-    {
-        for path in framework_xml_paths(framework_dir)? {
-            let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
-            if name.ends_with(".eecas.xml") {
-                continue;
-            }
-            let location = path.display().to_string();
-            eprintln!("load {location}");
-            records = records.saturating_add(load_entity_data(facade, &location, &options)?.records);
-            report_message_errors(&location);
+        tracing::info!("Loading entity data from location {location}, data types: {types}");
+        records = records.saturating_add(load_one(facade, location, &options)?);
+    } else if existing == 0 || flags.data_types.is_some() || !flags.components.is_empty() {
+        if existing == 0 {
+            tracing::info!("Found 0 Enumeration records, loading empty-db-load data types ({types})");
+        } else {
+            tracing::info!("Found {existing} Enumeration records, loading requested data types ({types})");
         }
-        for location in conf_data_locations(facade)? {
-            eprintln!("load {location}");
-            records = records.saturating_add(load_entity_data(facade, &location, &options)?.records);
-            report_message_errors(&location);
+        let framework_files: Vec<String> = framework_xml_paths(framework_dir)?
+            .into_iter()
+            .filter(|path| {
+                !path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("")
+                    .ends_with(".eecas.xml")
+            })
+            .map(|path| path.display().to_string())
+            .collect();
+        let conf_files = conf_data_locations(facade)?;
+        let mut listing = String::from("Loading entity data from the following locations:");
+        for location in framework_files.iter().chain(&conf_files).chain(component_data) {
+            listing.push_str("\n - ");
+            listing.push_str(location);
         }
-        // The `data` directory of each component, as `EntityDataLoaderImpl` reads them (theme, localization and
-        // security data). The data types of each file select what loads, like the framework files.
-        for location in component_data {
-            eprintln!("load {location}");
-            records = records.saturating_add(load_entity_data(facade, location, &options)?.records);
-            report_message_errors(location);
+        tracing::info!("{listing}");
+        tracing::info!("Loading data types: {types}");
+        for location in framework_files.iter().chain(&conf_files).chain(component_data) {
+            records = records.saturating_add(load_one(facade, location, &options)?);
         }
+    } else {
+        tracing::info!(
+            "Found {existing} Enumeration records, NOT loading empty-db-load data types (all); use the load command with types or components to load more"
+        );
     }
+    tracing::info!(
+        "Data load of {records} records finished in {:.3} seconds",
+        load_started.elapsed().as_secs_f64()
+    );
     let enumeration = entity_count(facade, "moqui.basic.Enumeration")?;
     let user_group_permission = entity_count(facade, "moqui.security.UserGroupPermission")?;
-    eprintln!("loaded {records} records; enumeration {enumeration}; user group permission {user_group_permission}");
+    tracing::info!(
+        "Loaded {records} records; enumeration {enumeration}; user group permission {user_group_permission}"
+    );
     Ok(LoadReport {
         records,
         enumeration,
@@ -978,10 +1099,28 @@ fn report_message_errors(location: &str) {
     moqui_core::context::ExecutionContext::with_current(|ctx| {
         let mut message = ctx.message();
         if !message.errors().is_empty() {
-            eprintln!("Error messages loading {location}: {}", message.errors().join("; "));
+            tracing::error!("Error messages loading entity data from {location}: {}", message.errors().join("; "));
             message.clear_errors();
         }
     });
+}
+
+/// One data location: logs the start and "Loaded N records ... in N.NNs" like `EntityDataLoaderImpl`.
+#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+fn load_one(
+    facade: &moqui_core::entity::EntityFacade,
+    location: &str,
+    options: &moqui_core::entity::load_feed::LoadOptions,
+) -> Result<u64, moqui_lib::error::Error> {
+    let started = std::time::Instant::now();
+    tracing::info!("Loading entity data from {location}");
+    let records = moqui_core::entity::load_feed::load_entity_data(facade, location, options)?.records;
+    report_message_errors(location);
+    tracing::info!(
+        "Loaded {records} records from {location} in {:.2}s",
+        started.elapsed().as_secs_f64()
+    );
+    Ok(records)
 }
 
 fn same_dir(left: &std::path::Path, right: &std::path::Path) -> bool {
