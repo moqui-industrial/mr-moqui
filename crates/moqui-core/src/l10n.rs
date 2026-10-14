@@ -28,23 +28,25 @@ const LOCALIZED_MESSAGE: &str = "moqui.basic.LocalizedMessage";
 const MAX_ORIGINAL: usize = 255;
 const DEFAULT_LOCALE: &str = "en_US";
 
-/// The session locale such as `en_US`.
+/// The session locale such as `en_US`, else the request's `Accept-Language`, else `en_US` (Java's `UserFacade.getLocale`
+/// falls back to the request locale the same way).
 pub fn locale() -> String {
     crate::user::locale()
         .ok()
         .flatten()
         .filter(|text| !text.is_empty())
+        .or_else(crate::web::request_locale)
         .map(|text| text.replace('-', "_"))
         .unwrap_or_else(|| DEFAULT_LOCALE.to_string())
 }
 
-/// The session time zone, UTC when unset or unknown.
+/// The session time zone, else the server's (Java's default zone), else UTC.
 pub fn time_zone() -> TimeZone {
     crate::user::time_zone()
         .ok()
         .flatten()
         .and_then(|name| TimeZone::get(&name).ok())
-        .unwrap_or(TimeZone::UTC)
+        .unwrap_or_else(|| TimeZone::try_system().unwrap_or(TimeZone::UTC))
 }
 
 /// The text of `original` in the session locale. A message longer than 255 characters is an
@@ -97,16 +99,22 @@ fn lookup(original: &str, locale: &str) -> (String, bool) {
         return (original.to_string(), false);
     };
     let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+    // A lookup that fails (no database yet, a lost connection) is not a missing message: the result is not cached.
+    let failed = std::cell::Cell::new(false);
     let find = |text: &str, locale: &str| -> Option<String> {
-        facade
-            .find(LOCALIZED_MESSAGE)
-            .ok()?
-            .eq("original", Value::string(text))
-            .eq("locale", Value::string(locale))
-            .one()
-            .ok()
-            .flatten()
-            .and_then(|row| row.get("localized").map(to_plain_string))
+        let found = facade.find(LOCALIZED_MESSAGE).and_then(|find| {
+            find.eq("original", Value::string(text))
+                .eq("locale", Value::string(locale))
+                .use_cache(true)
+                .one()
+        });
+        match found {
+            Ok(row) => row.and_then(|row| row.get("localized").map(to_plain_string)),
+            Err(_) => {
+                failed.set(true);
+                None
+            }
+        }
     };
     let chain = |text: &str| -> Option<String> {
         find(text, locale)
@@ -116,6 +124,9 @@ fn lookup(original: &str, locale: &str) -> (String, bool) {
     if let Some(found) = chain(original) {
         return (found, true);
     }
+    if failed.get() {
+        return (original.to_string(), false);
+    }
     // Words that precede a `##` suffix are the message when the full text has no row.
     let close_curly = original.rfind('}');
     if let Some(hash) = original
@@ -123,9 +134,10 @@ fn lookup(original: &str, locale: &str) -> (String, bool) {
         .filter(|hash| *hash > 0 && close_curly.is_none_or(|close| *hash > close))
     {
         let base = &original[..hash];
-        return (chain(base).unwrap_or_else(|| base.to_string()), true);
+        let text = chain(base).unwrap_or_else(|| base.to_string());
+        return (text, !failed.get());
     }
-    (original.to_string(), true)
+    (original.to_string(), !failed.get())
 }
 
 fn decimal_of(value: &Value) -> Option<Decimal> {
@@ -134,7 +146,8 @@ fn decimal_of(value: &Value) -> Option<Decimal> {
         Value::I32(number) => Some(Decimal::from(*number)),
         Value::I64(number) => Some(Decimal::from(*number)),
         Value::F64(number) => format!("{number}").parse().ok(),
-        Value::String(text) => text.trim().replace(',', "").parse().ok(),
+        // Text as the user's locale writes numbers, as Java's BigDecimalValidator with the locale.
+        Value::String(text) => format::parse_decimal(text, &locale()),
         _ => None,
     }
 }
@@ -196,6 +209,17 @@ fn iso_currency(code: &str) -> Option<(&'static str, usize)> {
     })
 }
 
+/// ISO 4217 minor units of the currencies that do not have two, for a code with no symbol of ours: Java's
+/// `Currency.getDefaultFractionDigits`.
+fn iso_minor_digits(code: &str) -> usize {
+    match code {
+        "BHD" | "IQD" | "JOD" | "KWD" | "LYD" | "OMR" | "TND" => 3,
+        "BIF" | "CLP" | "DJF" | "GNF" | "ISK" | "JPY" | "KMF" | "KRW" | "PYG" | "RWF" | "UGX" | "UYI" | "VND"
+        | "VUV" | "XAF" | "XOF" | "XPF" => 0,
+        _ => 2,
+    }
+}
+
 fn currency_info(uom_id: Option<&str>) -> CurrencyInfo {
     let mut info = CurrencyInfo {
         symbol: String::new(),
@@ -207,9 +231,11 @@ fn currency_info(uom_id: Option<&str>) -> CurrencyInfo {
     let mut symbol = None;
     if let Some(facade) = ExecutionContext::with_current(|ec| ec.factory().entity()).flatten() {
         let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+        // From the entity cache: a form-list formats a currency on every row.
         let row = facade.find("moqui.basic.Uom").ok().and_then(|find| {
             find.eq("uomId", Value::string(uom_id))
                 .eq("uomTypeEnumId", Value::string("UT_CURRENCY_MEASURE"))
+                .use_cache(true)
                 .one()
                 .ok()
                 .flatten()
@@ -225,7 +251,7 @@ fn currency_info(uom_id: Option<&str>) -> CurrencyInfo {
     let iso = iso_currency(uom_id);
     info.symbol = symbol.unwrap_or_else(|| iso.map_or_else(|| uom_id.to_string(), |(symbol, _)| symbol.to_string()));
     if info.fraction_digits.is_none() {
-        info.fraction_digits = iso.map(|(_, digits)| digits);
+        info.fraction_digits = Some(iso.map_or_else(|| iso_minor_digits(uom_id), |(_, digits)| digits));
     }
     info
 }
@@ -253,10 +279,104 @@ pub fn format_currency(
     Ok(format::format_currency(number, symbol, digits, &locale()))
 }
 
-/// `ec.l10n.parseTimestamp(input, format)` in the session time zone. None for text that is not a
-/// time stamp.
+/// A time stamp in the session time zone from the usual forms (epoch milliseconds, ISO, `yyyy-MM-dd HH:mm:ss`). None
+/// for text that is not a time stamp.
 pub fn parse_timestamp(input: &str) -> Option<Value> {
     moqui_lib::object::parse_timestamp(input, &time_zone()).map(Value::Timestamp)
+}
+
+/// `ec.l10n.parseTimestamp(input, format)`: by the Java pattern first, in the session time zone unless the text has an
+/// offset, then the usual forms, as Java's L10nFacade.
+pub fn parse_timestamp_format(input: &str, format: Option<&str>) -> Option<Value> {
+    if input.trim().is_empty() {
+        return None;
+    }
+    if let Some(pattern) = format.filter(|pattern| !pattern.is_empty()) {
+        if let Some(stamp) = moqui_lib::datefmt::parse(input, pattern).and_then(|parsed| parsed_timestamp(&parsed)) {
+            return Some(Value::Timestamp(stamp));
+        }
+    }
+    parse_timestamp(input)
+}
+
+fn parsed_timestamp(parsed: &moqui_lib::datefmt::ParsedDate) -> Option<jiff::Timestamp> {
+    let nanos = parsed.millisecond.unwrap_or(0).checked_mul(1_000_000)?;
+    let civil = jiff::civil::DateTime::new(
+        parsed.year.unwrap_or(1970),
+        parsed.month.unwrap_or(1),
+        parsed.day.unwrap_or(1),
+        parsed.hour.unwrap_or(0),
+        parsed.minute.unwrap_or(0),
+        parsed.second.unwrap_or(0),
+        nanos,
+    )
+    .ok()?;
+    match parsed.offset_seconds {
+        Some(seconds) => jiff::tz::Offset::from_seconds(seconds).ok()?.to_timestamp(civil).ok(),
+        None => civil.to_zoned(time_zone()).ok().map(|zoned| zoned.timestamp()),
+    }
+}
+
+/// `ec.l10n.parseDate(input, format)`: the pattern (default `yyyy-MM-dd`), then `MM/dd/yyyy` and ISO, then the usual
+/// forms. A date has no time zone, as in Java.
+pub fn parse_date_format(input: &str, format: Option<&str>) -> Option<Value> {
+    let format = format.filter(|pattern| !pattern.is_empty()).unwrap_or("yyyy-MM-dd");
+    for pattern in [format, "MM/dd/yyyy", "yyyy-MM-dd'T'HH:mm:ssZ"] {
+        if let Some(parsed) = moqui_lib::datefmt::parse(input, pattern) {
+            if let Ok(date) = jiff::civil::Date::new(
+                parsed.year.unwrap_or(1970),
+                parsed.month.unwrap_or(1),
+                parsed.day.unwrap_or(1),
+            ) {
+                return Some(Value::Date(date));
+            }
+        }
+    }
+    moqui_lib::object::parse_date(input).map(Value::Date)
+}
+
+/// `ec.l10n.parseTime(input, format)`: the pattern (default `HH:mm:ss.SSS`), then `HH:mm:ss`, `HH:mm`, `h:mm a` and
+/// `h:mm:ss a`, then the usual forms.
+pub fn parse_time_format(input: &str, format: Option<&str>) -> Option<Value> {
+    let format = format.filter(|pattern| !pattern.is_empty()).unwrap_or("HH:mm:ss.SSS");
+    for pattern in [format, "HH:mm:ss", "HH:mm", "h:mm a", "h:mm:ss a"] {
+        if let Some(parsed) = moqui_lib::datefmt::parse(input, pattern) {
+            let nanos = parsed.millisecond.unwrap_or(0).saturating_mul(1_000_000);
+            if let Ok(time) = jiff::civil::Time::new(
+                parsed.hour.unwrap_or(0),
+                parsed.minute.unwrap_or(0),
+                parsed.second.unwrap_or(0),
+                nanos,
+            ) {
+                return Some(Value::Time(time));
+            }
+        }
+    }
+    moqui_lib::object::parse_time(input).map(Value::Time)
+}
+
+/// `ec.l10n.parseNumber(input, format)`: a number as the session locale writes it. None for text that is not one.
+pub fn parse_number(input: &str) -> Option<Value> {
+    format::parse_decimal(input, &locale()).map(Value::Decimal)
+}
+
+/// `ec.l10n.roundCurrency(amount, uomId, precise)`: rounded half up to the currency's fraction digits (one more when
+/// `precise`), from its `Uom` row, else ISO 4217, as Java does.
+///
+/// # Errors
+///
+/// Returns an error for an amount that is not a number.
+pub fn round_currency(amount: &Value, uom_id: &str, precise: bool) -> Result<Value, Error> {
+    if amount.is_null() {
+        return Ok(Value::Null);
+    }
+    let number = decimal_of(amount)
+        .ok_or_else(|| Error::new(format!("cannot round {} as currency", to_plain_string(amount))))?;
+    let digits = currency_info(Some(uom_id)).fraction_digits.unwrap_or(2) + usize::from(precise);
+    let digits = u32::try_from(digits).unwrap_or(2);
+    Ok(Value::Decimal(
+        number.round_dp_with_strategy(digits, format::RoundingStrategy::MidpointAwayFromZero),
+    ))
 }
 
 #[cfg(test)]
@@ -311,6 +431,8 @@ mod tests {
     fn format_covers_numbers_dates_and_currency() {
         let context = entity_context();
         let _entered = context.enter();
+        // With no session zone the server's is used, as Java's JVM default, so the test names one.
+        crate::user::session::set_time_zone(Some("UTC"));
         let amount = Value::Decimal("1234.125".parse().unwrap());
         assert_eq!(format_value(&amount, None).unwrap(), "1,234.125");
         assert_eq!(format_value(&amount, Some("#,##0.00")).unwrap(), "1,234.12");
@@ -328,5 +450,46 @@ mod tests {
             format_currency(&Value::I32(1234), Some("JPY"), None, false).unwrap(),
             "\u{a5}1,234"
         );
+    }
+
+    #[test]
+    fn parse_by_pattern_number_by_locale_and_round_by_the_currency() {
+        use std::str::FromStr;
+        let context = ExecutionContextFactory::test_context();
+        let _entered = context.enter();
+        crate::user::session::set_time_zone(Some("America/New_York"));
+        // The pattern's offset wins; without one the session zone.
+        let with_offset = super::parse_timestamp_format("2024-03-05T10:20:30.000-0800", Some("yyyy-MM-dd'T'HH:mm:ss.SSSZ"));
+        let Some(Value::Timestamp(stamp)) = with_offset else { panic!("{with_offset:?}") };
+        assert_eq!(stamp.to_string(), "2024-03-05T18:20:30Z");
+        let local = super::parse_timestamp_format("20240305 0930", Some("yyyyMMdd HHmm"));
+        let Some(Value::Timestamp(stamp)) = local else { panic!("{local:?}") };
+        assert_eq!(stamp.to_string(), "2024-03-05T14:30:00Z");
+        assert!(matches!(super::parse_date_format("03/05/2024", None), Some(Value::Date(_))));
+
+        crate::user::session::set_locale(Some("de_DE"));
+        assert_eq!(
+            super::parse_number("1.234,5"),
+            Some(Value::Decimal(moqui_lib::format::Decimal::from_str("1234.5").unwrap()))
+        );
+        crate::user::session::set_locale(None);
+        let amount = Value::Decimal(moqui_lib::format::Decimal::from_str("1.23456").unwrap());
+        assert_eq!(moqui_lib::object::to_plain_string(&super::round_currency(&amount, "BHD", false).unwrap()), "1.235");
+        assert_eq!(moqui_lib::object::to_plain_string(&super::round_currency(&amount, "USD", false).unwrap()), "1.23");
+        let half = Value::Decimal(moqui_lib::format::Decimal::from_str("2.125").unwrap());
+        assert_eq!(moqui_lib::object::to_plain_string(&super::round_currency(&half, "USD", false).unwrap()), "2.13");
+        crate::user::session::set_time_zone(None);
+    }
+
+    #[test]
+    fn the_request_locale_is_the_fallback_when_the_session_has_none() {
+        let context = ExecutionContextFactory::test_context();
+        let _entered = context.enter();
+        let _web = crate::web::install(Default::default());
+        crate::web::set_request_locale(Some("fr-CA,fr;q=0.8,en;q=0.5"));
+        assert_eq!(super::locale(), "fr_CA");
+        crate::user::session::set_locale(Some("de"));
+        assert_eq!(super::locale(), "de");
+        crate::user::session::set_locale(None);
     }
 }

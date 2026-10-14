@@ -157,6 +157,46 @@ fn locked_down_format_and_localize_are_plain_functions() {
 }
 
 #[test]
+fn a_locked_down_template_cannot_change_what_the_next_one_runs() {
+    let empty = Value::Map(Default::default());
+    // Each of these would change the shared context for later renders if it held.
+    render_locked_with(
+        "${String.prototype.replace = function () { return 'x' }}${JSON.parse = null}${globalThis.leak = 'kept'}\
+         ${Array.prototype.join = null}${Object.getPrototypeOf([][Symbol.iterator]()).next = null}",
+        Escape::None,
+        &empty,
+    )
+    .unwrap();
+    let mut entries = indexmap::IndexMap::new();
+    entries.insert("v".to_string(), Value::string("<b>"));
+    let out = render_locked_with(
+        "${v}|${globalThis.leak == null}|<#list ['a', 'b'] as x>${x}</#list>",
+        Escape::Html,
+        &Value::Map(entries),
+    )
+    .unwrap();
+    assert_eq!(out, "&lt;b&gt;|true|ab");
+}
+
+#[test]
+fn locked_down_format_reads_a_decimal_text_by_a_number_pattern_and_a_date_by_a_date_pattern() {
+    use std::str::FromStr;
+    let mut entries = indexmap::IndexMap::new();
+    entries.insert("qty".to_string(), Value::Decimal(moqui_lib::format::Decimal::from_str("100").unwrap()));
+    entries.insert(
+        "day".to_string(),
+        Value::Date(moqui_lib::object::parse_date("2024-03-05").unwrap()),
+    );
+    let out = render_locked_with(
+        "${format(qty, '#,##0.00')} ${format(day, 'yyyy-MM-dd')}",
+        Escape::None,
+        &Value::Map(entries),
+    )
+    .unwrap();
+    assert_eq!(out, "100.00 2024-03-05");
+}
+
+#[test]
 fn locked_down_stops_a_runaway_loop() {
     let started = std::time::Instant::now();
     let err = render_locked_with(
@@ -259,4 +299,13 @@ fn markdown_fancy_converts_markdown_then_runs_the_template() {
     renderer.check(source).unwrap();
     assert!(renderer.check("<#if x>\n\nno end\n").is_err());
     assert!(markdown_fancy_source("${unclosed").is_err());
+}
+
+#[test]
+fn assign_reads_the_context_value_before_it_and_its_own_value_after() {
+    crate::script::clear_context_stack();
+    crate::script::set_context_name("n", Value::I32(5)).unwrap();
+    let out = render_trusted("${n}<#assign n = n + 1>${n}", Escape::None).unwrap();
+    assert_eq!(out, "56");
+    crate::script::clear_context_stack();
 }

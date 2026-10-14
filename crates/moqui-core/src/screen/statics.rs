@@ -20,7 +20,7 @@
 //! `unsafe-eval`. The script puts the render function in `moqui.qvtStatic[path]`, the client loads it with a script
 //! element and fills it from `GET {screen}/actions` and `GET {screen}/actions/{formName}`.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use indexmap::IndexMap;
 use moqui_lib::node::MNode;
@@ -239,7 +239,20 @@ fn identity(def: &ScreenDef) -> u64 {
     fnv(STATIC_MODULE_SOURCE.as_bytes(), hash)
 }
 
-fn compiler_source(factory: &ExecutionContextFactory) -> Result<String, Error> {
+/// The compiler's text, read once for the factory.
+struct CompilerText(Mutex<Option<Arc<str>>>);
+
+fn compiler_source(factory: &ExecutionContextFactory) -> Result<Arc<str>, Error> {
+    let kept = factory.extension(|_| CompilerText(Mutex::new(None)));
+    if let Some(text) = kept.0.lock().unwrap_or_else(|err| err.into_inner()).as_ref() {
+        return Ok(Arc::clone(text));
+    }
+    let text: Arc<str> = read_compiler_source(factory)?.into();
+    *kept.0.lock().unwrap_or_else(|err| err.into_inner()) = Some(Arc::clone(&text));
+    Ok(text)
+}
+
+fn read_compiler_source(factory: &ExecutionContextFactory) -> Result<String, Error> {
     let found = factory
         .resource()
         .get(COMPILER_LOCATION)
@@ -266,40 +279,78 @@ fn wrap_script(key: &str, code: &str) -> String {
     )
 }
 
-/// The template for the request path `key`: made once for each definition, then kept with it.
+/// The template for the request path `key`: made once for each definition, then kept with it. A failure is kept too, so
+/// a screen that cannot be a static template is not built again on every request until its definition changes.
 fn template_for(state: &RenderState, runner: &dyn Runner, key: &str) -> Result<Arc<StaticTemplate>, Error> {
     let def = Arc::clone(&state.url_info.target_screen);
     if let Some(found) = def.generated.static_template(key) {
         return Ok(found);
     }
+    if let Some(reason) = def.generated.static_failure(key) {
+        return Err(Error::new(reason));
+    }
+    let _building = def.generated.static_build_lock();
+    if let Some(found) = def.generated.static_template(key) {
+        return Ok(found);
+    }
+    match build_template(state, runner, &def, key) {
+        Ok(made) => {
+            def.generated.put_static_template(key.to_string(), Arc::clone(&made));
+            Ok(made)
+        }
+        Err(err) if is_security(&err) => Err(err),
+        Err(err) => {
+            def.generated.put_static_failure(key.to_string(), err.message().to_string());
+            Err(err)
+        }
+    }
+}
+
+fn is_security(err: &Error) -> bool {
+    matches!(
+        err.kind(),
+        ErrorKind::AuthenticationRequired | ErrorKind::Unauthorized | ErrorKind::Tarpit
+    )
+}
+
+fn build_template(
+    state: &RenderState,
+    runner: &dyn Runner,
+    def: &Arc<ScreenDef>,
+    key: &str,
+) -> Result<Arc<StaticTemplate>, Error> {
     state
         .screen_path_index
         .set(state.url_info.path_defs.len().saturating_sub(1));
     let request = UnitRequest {
         factory: &state.factory,
         facade: &state.facade,
-        def: &def,
+        def,
         section: "",
         fail: false,
         mode: UNIT_MODE,
         macro_location: STATIC_MODULE,
     };
-    let html = match runner.generate(&request)? {
-        Some(unit) => {
-            runner.run(&unit)?;
-            let (_, _, body, _) = web::take_output();
-            web::clear_output();
-            String::from_utf8(body).map_err(|err| Error::new(err.to_string()))?
+    // The template is written into the web slot, which holds this request's response: set that aside, and put it back
+    // whether the template is made or not, so a failure leaves nothing behind for the merged render that follows.
+    let stash = web::stash_output();
+    let written = (|| -> Result<String, Error> {
+        match runner.generate(&request)? {
+            Some(unit) => {
+                runner.run(&unit)?;
+                let (_, _, body, _) = web::take_output();
+                String::from_utf8(body).map_err(|err| Error::new(err.to_string()))
+            }
+            None => Ok(String::new()),
         }
-        None => String::new(),
-    };
+    })();
+    web::restore_output(stash);
+    let html = written?;
     let code = super::vue_check::compile_render(&compiler_source(&state.factory)?, &html)
         .map_err(|err| Error::new(format!("{}: {}", def.location, err.message())))?;
     let script = wrap_script(key, &code);
-    let etag = format!("W/\"{:x}\"", fnv(script.as_bytes(), identity(&def)));
-    let made = Arc::new(StaticTemplate { html, script, etag });
-    def.generated.put_static_template(key.to_string(), Arc::clone(&made));
-    Ok(made)
+    let etag = format!("W/\"{:x}\"", fnv(script.as_bytes(), identity(def)));
+    Ok(Arc::new(StaticTemplate { html, script, etag }))
 }
 
 /// The key of a template: the request path, as the client names it, without the render mode extension or the query.
@@ -365,7 +416,7 @@ pub(crate) fn serve_template(state: &RenderState, request: &WebRequest, path: &s
             SERVER_STATIC_CACHE_CONTROL,
             &[("X-Moqui-Qvt".to_string(), "static-template".to_string())],
             &template.etag,
-            template.script.clone().into_bytes(),
+            template.script.as_bytes().to_vec(),
         );
     }
     Ok(true)

@@ -221,9 +221,209 @@ fn weekday_name(weekday: Weekday) -> &'static str {
     }
 }
 
+/// The fields a Java date pattern read from text. A field the pattern does not have is `None`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ParsedDate {
+    pub year: Option<i16>,
+    pub month: Option<i8>,
+    pub day: Option<i8>,
+    pub hour: Option<i8>,
+    pub minute: Option<i8>,
+    pub second: Option<i8>,
+    /// From `S`, which Java reads as a count of milliseconds.
+    pub millisecond: Option<i32>,
+    /// From `Z`, `X` or a `UTC`/`GMT` `z`, in seconds east of UTC.
+    pub offset_seconds: Option<i32>,
+}
+
+enum PatternPart {
+    Literal(String),
+    Field(char, usize),
+}
+
+fn pattern_parts(pattern: &str) -> Option<Vec<PatternPart>> {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut parts = Vec::new();
+    let mut index = 0;
+    while index < chars.len() {
+        let ch = chars[index];
+        if ch == '\'' {
+            if chars.get(index + 1) == Some(&'\'') {
+                parts.push(PatternPart::Literal("'".to_string()));
+                index += 2;
+                continue;
+            }
+            let mut text = String::new();
+            let mut end = index + 1;
+            loop {
+                match chars.get(end) {
+                    None => return None,
+                    Some('\'') if chars.get(end + 1) == Some(&'\'') => {
+                        text.push('\'');
+                        end += 2;
+                    }
+                    Some('\'') => break,
+                    Some(other) => {
+                        text.push(*other);
+                        end += 1;
+                    }
+                }
+            }
+            parts.push(PatternPart::Literal(text));
+            index = end + 1;
+        } else if ch.is_ascii_alphabetic() {
+            let mut count = 1;
+            while chars.get(index + count) == Some(&ch) {
+                count += 1;
+            }
+            parts.push(PatternPart::Field(ch, count));
+            index += count;
+        } else {
+            parts.push(PatternPart::Literal(ch.to_string()));
+            index += 1;
+        }
+    }
+    Some(parts)
+}
+
+/// Read `input` with a Java `SimpleDateFormat` pattern, as `L10nFacade.parseTimestamp(input, format)` does through the
+/// commons validator: the whole text must match. A numeric field right before another field takes exactly as many
+/// digits as its letters (`yyyyMMdd`); otherwise it takes the digits that are there. `yy` is 1970 to 2069. Month
+/// names are English. None when the text does not match.
+pub fn parse(input: &str, pattern: &str) -> Option<ParsedDate> {
+    let parts = pattern_parts(pattern)?;
+    let text: Vec<char> = input.trim().chars().collect();
+    let mut at = 0;
+    let mut out = ParsedDate::default();
+    let mut pm = None;
+    for (index, part) in parts.iter().enumerate() {
+        match part {
+            PatternPart::Literal(literal) => {
+                for expected in literal.chars() {
+                    if text.get(at) != Some(&expected) {
+                        return None;
+                    }
+                    at += 1;
+                }
+            }
+            PatternPart::Field(letter, count) => {
+                let abutting = matches!(parts.get(index + 1), Some(PatternPart::Field(..)));
+                match letter {
+                    'M' | 'L' if *count >= 3 => {
+                        let rest: String = text[at..].iter().collect::<String>().to_ascii_lowercase();
+                        let (month, length) = MONTHS.iter().enumerate().find_map(|(number, name)| {
+                            let name = name.to_ascii_lowercase();
+                            if rest.starts_with(&name) {
+                                Some((number, name.len()))
+                            } else if rest.starts_with(&name[..3]) {
+                                Some((number, 3))
+                            } else {
+                                None
+                            }
+                        })?;
+                        out.month = Some(i8::try_from(month + 1).ok()?);
+                        at += length;
+                    }
+                    'E' => {
+                        while text.get(at).is_some_and(char::is_ascii_alphabetic) {
+                            at += 1;
+                        }
+                    }
+                    'a' => {
+                        let marker: String = text.get(at..at + 2)?.iter().collect::<String>().to_ascii_uppercase();
+                        pm = Some(match marker.as_str() {
+                            "AM" => false,
+                            "PM" => true,
+                            _ => return None,
+                        });
+                        at += 2;
+                    }
+                    'Z' | 'X' | 'x' => {
+                        if *letter == 'X' && text.get(at) == Some(&'Z') {
+                            out.offset_seconds = Some(0);
+                            at += 1;
+                            continue;
+                        }
+                        let sign = match text.get(at)? {
+                            '+' => 1,
+                            '-' => -1,
+                            _ => return None,
+                        };
+                        at += 1;
+                        let hours = take_digits(&text, &mut at, Some(2))?;
+                        if text.get(at) == Some(&':') {
+                            at += 1;
+                        }
+                        let minutes = if text.get(at).is_some_and(char::is_ascii_digit) {
+                            take_digits(&text, &mut at, Some(2))?
+                        } else {
+                            0
+                        };
+                        out.offset_seconds = Some(sign * i32::try_from(hours * 3600 + minutes * 60).ok()?);
+                    }
+                    'z' => {
+                        let start = at;
+                        while text.get(at).is_some_and(char::is_ascii_alphabetic) {
+                            at += 1;
+                        }
+                        let name: String = text[start..at].iter().collect();
+                        if matches!(name.as_str(), "UTC" | "GMT" | "Z") {
+                            out.offset_seconds = Some(0);
+                        }
+                    }
+                    'y' | 'u' | 'M' | 'L' | 'd' | 'H' | 'k' | 'K' | 'h' | 'm' | 's' | 'S' => {
+                        let width = abutting.then_some(*count);
+                        let start = at;
+                        let value = take_digits(&text, &mut at, width)?;
+                        match letter {
+                            'y' | 'u' => {
+                                let year = if *count == 2 && at - start == 2 {
+                                    if value < 70 { 2000 + value } else { 1900 + value }
+                                } else {
+                                    value
+                                };
+                                out.year = Some(i16::try_from(year).ok()?);
+                            }
+                            'M' | 'L' => out.month = Some(i8::try_from(value).ok()?),
+                            'd' => out.day = Some(i8::try_from(value).ok()?),
+                            'H' => out.hour = Some(i8::try_from(value).ok()?),
+                            'k' => out.hour = Some(i8::try_from(value % 24).ok()?),
+                            'K' | 'h' => out.hour = Some(i8::try_from(value % 12).ok()?),
+                            'm' => out.minute = Some(i8::try_from(value).ok()?),
+                            's' => out.second = Some(i8::try_from(value).ok()?),
+                            _ => out.millisecond = Some(i32::try_from(value).ok()?),
+                        }
+                    }
+                    _ => return None,
+                }
+            }
+        }
+    }
+    if at != text.len() {
+        return None;
+    }
+    if pm == Some(true) {
+        out.hour = Some(out.hour.unwrap_or(0) % 12 + 12);
+    }
+    Some(out)
+}
+
+/// Digits at `at`: exactly `width` of them, or as many as there are (at least one).
+fn take_digits(text: &[char], at: &mut usize, width: Option<usize>) -> Option<i64> {
+    let start = *at;
+    let limit = width.map_or(text.len(), |width| (start + width).min(text.len()));
+    while *at < limit && text[*at].is_ascii_digit() {
+        *at += 1;
+    }
+    if *at == start || width.is_some_and(|width| *at - start != width) {
+        return None;
+    }
+    text[start..*at].iter().collect::<String>().parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::format;
+    use super::{format, parse};
     use jiff::civil::date;
     use jiff::tz::TimeZone;
 
@@ -269,5 +469,23 @@ mod tests {
         assert_eq!(format(&at("Asia/Tokyo"), "z").unwrap(), "JST");
         assert_eq!(format(&at("Europe/Berlin"), "z").unwrap(), "CET");
         assert_eq!(format(&at("America/Sao_Paulo"), "z").unwrap(), "GMT-03:00");
+    }
+
+    #[test]
+    fn the_patterns_the_components_parse_with_read_their_fields() {
+        let full = parse("2024-03-05T10:20:30.123-0800", "yyyy-MM-dd'T'HH:mm:ss.SSSZ").unwrap();
+        assert_eq!(
+            (full.year, full.month, full.day, full.hour, full.minute, full.second, full.millisecond, full.offset_seconds),
+            (Some(2024), Some(3), Some(5), Some(10), Some(20), Some(30), Some(123), Some(-8 * 3600))
+        );
+        let abutting = parse("20240305 1020", "yyyyMMdd HHmm").unwrap();
+        assert_eq!((abutting.year, abutting.month, abutting.day, abutting.hour), (Some(2024), Some(3), Some(5), Some(10)));
+        let us = parse("3/5/2024 1:2:03 PM", "M/d/yyyy h:m:ss a").unwrap();
+        assert_eq!((us.month, us.day, us.hour, us.minute), (Some(3), Some(5), Some(13), Some(2)));
+        let named = parse("05 Mar 24", "dd MMM yy").unwrap();
+        assert_eq!((named.year, named.month), (Some(2024), Some(3)));
+        // The whole text must match, and a short abutting field does not.
+        assert!(parse("2024-03-05 junk", "yyyy-MM-dd").is_none());
+        assert!(parse("202403", "yyyyMMdd").is_none());
     }
 }

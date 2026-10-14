@@ -103,6 +103,10 @@ pub struct Generated {
     eligibility: Mutex<HashMap<String, Arc<Eligibility>>>,
     /// Files read while rendering, such as a form another screen's form extends. A change to one makes the definition stale.
     dependencies: Mutex<Vec<super::definition::Source>>,
+    /// Why a server-static template could not be made, by request path, so it is not tried again until the screen changes.
+    static_failures: Mutex<HashMap<String, String>>,
+    /// Held while a server-static template is made, so concurrent first requests make it once.
+    static_build: Mutex<()>,
 }
 
 impl Default for Generated {
@@ -113,6 +117,8 @@ impl Default for Generated {
             statics: Mutex::new(crate::script::BoundedMap::new(MAX_STATIC_TEMPLATES)),
             eligibility: Mutex::default(),
             dependencies: Mutex::default(),
+            static_failures: Mutex::default(),
+            static_build: Mutex::default(),
         }
     }
 }
@@ -163,6 +169,21 @@ impl Generated {
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .insert(key, template);
+    }
+
+    pub(super) fn static_failure(&self, key: &str) -> Option<String> {
+        self.static_failures.lock().unwrap_or_else(|err| err.into_inner()).get(key).cloned()
+    }
+
+    pub(super) fn put_static_failure(&self, key: String, reason: String) {
+        let mut failures = self.static_failures.lock().unwrap_or_else(|err| err.into_inner());
+        if failures.len() < MAX_STATIC_TEMPLATES {
+            failures.insert(key, reason);
+        }
+    }
+
+    pub(super) fn static_build_lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.static_build.lock().unwrap_or_else(|err| err.into_inner())
     }
 
     pub(super) fn eligibility(&self, key: &str) -> Option<Arc<Eligibility>> {

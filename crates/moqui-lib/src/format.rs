@@ -301,6 +301,28 @@ fn render(value: Decimal, positive: &Layout, negative: Option<&Layout>, locale: 
     out
 }
 
+/// A number written for `locale`, as Java's `BigDecimalValidator` reads it: the locale's grouping separator (or a
+/// space) is dropped and its decimal separator is the point. A leading `-` or `+` is the sign. None for text that is
+/// not a number.
+pub fn parse_decimal(text: &str, locale: &str) -> Option<Decimal> {
+    let (grouping, decimal) = separators(locale);
+    let mut plain = String::with_capacity(text.len());
+    for ch in text.trim().chars() {
+        if grouping.contains(ch) || matches!(ch, '\u{a0}' | '\u{202f}' | ' ') && !decimal.contains(ch) {
+            continue;
+        }
+        if decimal.contains(ch) {
+            plain.push('.');
+        } else {
+            plain.push(ch);
+        }
+    }
+    if plain.is_empty() || plain.matches('.').count() > 1 {
+        return None;
+    }
+    plain.parse().ok()
+}
+
 /// A number as text. With no `pattern` it has grouping, at least one integer digit and up to 12
 /// fraction digits, which is what `L10nFacade.format` does for a number with no format.
 ///

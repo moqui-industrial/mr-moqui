@@ -510,7 +510,17 @@ fn compile_body(source: &str, escape: Escape) -> Result<String, Error> {
 
 fn compile(source: &str, escape: Escape, scope: Scope) -> Result<String, Error> {
     let body = compile_body(source, escape)?;
-    let live = format!("(function(){{\n{PRELUDE}{body}return $o.join(\"\");\n}})");
+    // An `<#assign>` is a `var` of the function, and a `var` is hoisted: without this, the name reads `undefined`
+    // before the assign instead of the context's value. The live form starts each assigned name from the context.
+    let mut declared = String::new();
+    for token in tokenize(source)? {
+        if let Token::Assign(name, _) = token {
+            if !declared.contains(&format!("var {name} ")) {
+                declared.push_str(&format!("var {name} = globalThis.{name};\n"));
+            }
+        }
+    }
+    let live = format!("(function(){{\n{PRELUDE}{declared}{body}return $o.join(\"\");\n}})");
     // `with` is not legal in the strict parse, so the snapshot form is checked as the live form.
     super::check_program(&live).map_err(|err| Error::new(format!("template does not compile: {}", err.message())))?;
     let text = match scope {
@@ -833,6 +843,9 @@ pub fn unwrap_json(value: &Value) -> serde_json::Value {
     use serde_json::Value as Json;
     match value {
         Value::Decimal(number) => Json::String(number.to_string()),
+        // A date and a time are their own text, as Java's `toString`, so the template formats them with no zone.
+        Value::Date(date) => Json::String(date.strftime("%Y-%m-%d").to_string()),
+        Value::Time(time) => Json::String(time.strftime("%H:%M:%S").to_string()),
         Value::List(items) => Json::Array(items.iter().map(unwrap_json).collect()),
         Value::Map(entries) => Json::Object(
             entries
@@ -870,6 +883,33 @@ globalThis.$scope = (data) => new Proxy(JSON.parse(data), {
 });
 "#;
 
+/// Freeze the global object, every object reachable from it, and the built-ins that no global names (the iterator,
+/// generator and async function prototypes, `%TypedArray%`).
+const SANDBOX_LOCKDOWN: &str = r#"
+(() => {
+    const seen = new Set();
+    const freeze = (o) => {
+        if (o === null || (typeof o !== "object" && typeof o !== "function") || seen.has(o)) return;
+        seen.add(o);
+        Object.freeze(o);
+        for (const key of Reflect.ownKeys(o)) {
+            const d = Object.getOwnPropertyDescriptor(o, key);
+            if (!d) continue;
+            if ("value" in d) freeze(d.value);
+            if (d.get) freeze(d.get);
+            if (d.set) freeze(d.set);
+        }
+        freeze(Object.getPrototypeOf(o));
+    };
+    const hidden = [
+        [][Symbol.iterator](), new Map().entries(), new Set().values(), ""[Symbol.iterator](), /a/[Symbol.matchAll]("a"),
+        function* () {}, async function () {}, async function* () {}, (function* () {})(), Int8Array,
+    ];
+    freeze(globalThis);
+    for (const item of hidden) freeze(item);
+})();
+"#;
+
 struct Sandbox {
     functions: RefCell<super::bounded::BoundedMap<String, Persistent<Function<'static>>>>,
     context: Context,
@@ -904,6 +944,12 @@ impl Sandbox {
                 .map_err(js_error)?;
             ctx.eval::<(), _>(SANDBOX_PRELUDE)
                 .catch(&ctx)
+                .map_err(|err| Error::new(err.to_string()))?;
+            // The context is shared by every locked-down render on this thread, so nothing a template does may last:
+            // the globals and every built-in object are frozen, and a template cannot change `$esc`'s String methods,
+            // JSON, or the functions the next template calls.
+            ctx.eval::<(), _>(SANDBOX_LOCKDOWN)
+                .catch(&ctx)
                 .map_err(|err| Error::new(err.to_string()))
         })?;
         Ok(Self {
@@ -921,13 +967,26 @@ fn js_error(err: impl ToString) -> Error {
 fn locked_format(ctx: Ctx<'_>, value: JsValue<'_>, pattern: Opt<String>) -> rquickjs::Result<String> {
     let host = if let Some(text) = value.as_string() {
         let text = text.to_string()?;
-        let wants_pattern = pattern.0.as_deref().is_some_and(|pattern| !pattern.is_empty());
-        if wants_pattern {
-            crate::l10n::parse_timestamp(&text)
-                .or_else(|| text.parse::<moqui_lib::format::Decimal>().ok().map(Value::Decimal))
-                .unwrap_or(Value::String(text))
-        } else {
-            Value::String(text)
+        // The snapshot sends decimals and dates as text, so the pattern says which it is: a date pattern reads a
+        // date or time stamp, a number pattern a number. (Digits alone are also epoch milliseconds to the date
+        // parser, so trying it first would print a quantity as a date.)
+        match pattern.0.as_deref().filter(|pattern| !pattern.is_empty()) {
+            // A date alone (`yyyy-MM-dd`) is a date, formatted with no time zone shift, as Java formats a Date.
+            Some(pattern) if is_date_pattern(pattern) => {
+                let trimmed = text.trim();
+                let date_only = trimmed.len() == 10 && trimmed.as_bytes()[4] == b'-' && trimmed.as_bytes()[7] == b'-';
+                date_only
+                    .then(|| moqui_lib::object::parse_date(trimmed).map(Value::Date))
+                    .flatten()
+                    .or_else(|| crate::l10n::parse_timestamp(&text))
+                    .unwrap_or(Value::String(text))
+            }
+            Some(_) => text
+                .trim()
+                .parse::<moqui_lib::format::Decimal>()
+                .map(Value::Decimal)
+                .unwrap_or(Value::String(text)),
+            None => Value::String(text),
         }
     } else if let Some(number) = value.as_int() {
         Value::I64(i64::from(number))
@@ -939,6 +998,19 @@ fn locked_format(ctx: Ctx<'_>, value: JsValue<'_>, pattern: Opt<String>) -> rqui
         Value::Null
     };
     crate::l10n::format_value(&host, pattern.0.as_deref()).map_err(|err| Exception::throw_message(&ctx, err.message()))
+}
+
+/// A Java date pattern has a letter of a date or time field outside quotes; a number pattern has none.
+fn is_date_pattern(pattern: &str) -> bool {
+    let mut quoted = false;
+    for ch in pattern.chars() {
+        if ch == '\'' {
+            quoted = !quoted;
+        } else if !quoted && "GyYMLwWDdFEuaHkKhmsSzZX".contains(ch) {
+            return true;
+        }
+    }
+    false
 }
 
 fn locked_localize(ctx: Ctx<'_>, text: String) -> rquickjs::Result<String> {

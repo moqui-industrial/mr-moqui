@@ -213,10 +213,15 @@ fn resource_template(ctx: Ctx<'_>, location: String, data: Opt<JsValue<'_>>) -> 
 
 // ---- ec.l10n ----
 
-fn l10n_localize(ctx: Ctx<'_>, original: JsValue<'_>) -> rquickjs::Result<String> {
+/// `localize(original, locale)`: in the given locale, else the session's.
+fn l10n_localize(ctx: Ctx<'_>, original: JsValue<'_>, locale: Opt<JsValue<'_>>) -> rquickjs::Result<String> {
     host_guard(&ctx, || {
         let text = moqui_lib::object::to_plain_string(&js_to_host(&ctx, &original)?);
-        l10n::localize(&text).map_err(|err| throw_error(&ctx, &Error::new(err.message())))
+        let localized = match optional_text(&ctx, &locale)?.filter(|locale| !locale.is_empty()) {
+            Some(locale) => l10n::localize_in(&text, &locale.replace('-', "_")),
+            None => l10n::localize(&text),
+        };
+        localized.map_err(|err| throw_error(&ctx, &Error::new(err.message())))
     })
 }
 
@@ -277,10 +282,66 @@ fn l10n_format_currency_no_symbol(
     host_guard(&ctx, || currency(&ctx, &amount, &uom_id, &digits, true))
 }
 
-fn l10n_parse_timestamp<'js>(ctx: Ctx<'js>, input: String, _format: Opt<String>) -> rquickjs::Result<JsValue<'js>> {
-    host_guard(&ctx, || match l10n::parse_timestamp(&input) {
-        Some(value) => host_to_js(&ctx, value),
-        None => Null.into_js(&ctx),
+/// The optional text argument of an `ec.l10n` call: null or missing is none.
+fn optional_text(ctx: &Ctx<'_>, value: &Opt<JsValue<'_>>) -> rquickjs::Result<Option<String>> {
+    match value.0.as_ref() {
+        Some(found) if !found.is_null() && !found.is_undefined() => {
+            Ok(Some(moqui_lib::object::to_plain_string(&js_to_host(ctx, found)?)))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn parsed_or_null<'js>(ctx: &Ctx<'js>, value: Option<Value>) -> rquickjs::Result<JsValue<'js>> {
+    match value {
+        Some(value) => host_to_js(ctx, value),
+        None => Null.into_js(ctx),
+    }
+}
+
+fn l10n_parse_timestamp<'js>(ctx: Ctx<'js>, input: JsValue<'js>, format: Opt<JsValue<'js>>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let input = moqui_lib::object::to_plain_string(&js_to_host(&ctx, &input)?);
+        let format = optional_text(&ctx, &format)?;
+        parsed_or_null(&ctx, l10n::parse_timestamp_format(&input, format.as_deref()))
+    })
+}
+
+fn l10n_parse_date<'js>(ctx: Ctx<'js>, input: JsValue<'js>, format: Opt<JsValue<'js>>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let input = moqui_lib::object::to_plain_string(&js_to_host(&ctx, &input)?);
+        let format = optional_text(&ctx, &format)?;
+        parsed_or_null(&ctx, l10n::parse_date_format(&input, format.as_deref()))
+    })
+}
+
+fn l10n_parse_time<'js>(ctx: Ctx<'js>, input: JsValue<'js>, format: Opt<JsValue<'js>>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let input = moqui_lib::object::to_plain_string(&js_to_host(&ctx, &input)?);
+        let format = optional_text(&ctx, &format)?;
+        parsed_or_null(&ctx, l10n::parse_time_format(&input, format.as_deref()))
+    })
+}
+
+fn l10n_parse_number<'js>(ctx: Ctx<'js>, input: JsValue<'js>, _format: Opt<JsValue<'js>>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let input = moqui_lib::object::to_plain_string(&js_to_host(&ctx, &input)?);
+        parsed_or_null(&ctx, l10n::parse_number(&input))
+    })
+}
+
+fn l10n_round_currency<'js>(
+    ctx: Ctx<'js>,
+    amount: JsValue<'js>,
+    uom_id: Opt<JsValue<'js>>,
+    precise: Opt<JsValue<'js>>,
+) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let amount = js_to_host(&ctx, &amount)?;
+        let uom = optional_text(&ctx, &uom_id)?.unwrap_or_else(|| "USD".to_string());
+        let precise = precise.0.as_ref().and_then(JsValue::as_bool).unwrap_or(false);
+        let rounded = l10n::round_currency(&amount, &uom, precise).map_err(|err| throw_error(&ctx, &err))?;
+        host_to_js(&ctx, rounded)
     })
 }
 
@@ -297,6 +358,13 @@ fn l10n_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("formatCurrency", l10n_format_currency);
     method!("formatCurrencyNoSymbol", l10n_format_currency_no_symbol);
     method!("parseTimestamp", l10n_parse_timestamp);
+    method!("parseDate", l10n_parse_date);
+    method!("parseTime", l10n_parse_time);
+    method!("parseNumber", l10n_parse_number);
+    method!("roundCurrency", l10n_round_currency);
+    // `formatNumber(n, format)` and `formatValue` are `format` for a number, as in Java.
+    method!("formatNumber", l10n_format);
+    method!("formatValue", l10n_format);
     Ok(l10n)
 }
 

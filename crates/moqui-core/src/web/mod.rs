@@ -118,6 +118,8 @@ struct WebSlot {
     saved: Option<crate::user::session::SavedForPage>,
     /// The `Host` header of the request.
     host: String,
+    /// The first locale of the request's `Accept-Language`, as Java's `request.getLocale()`.
+    locale: Option<String>,
     /// Scheme, host, and context path that links start with. Empty for a path-only link.
     base_url: String,
     sent: bool,
@@ -155,6 +157,7 @@ pub(crate) fn install_with(parameters: BTreeMap<String, Value>, base_url: String
             multipart: BTreeMap::new(),
             saved: None,
             host: String::new(),
+            locale: None,
             base_url,
             sent: false,
             status: 200,
@@ -223,6 +226,27 @@ pub(crate) fn set_host(host: &str) {
             web.host = host.to_string();
         }
     });
+}
+
+/// Keep the request's preferred locale from its `Accept-Language` header, such as `de-DE,de;q=0.9` as `de_DE`.
+pub(crate) fn set_request_locale(accept_language: Option<&str>) {
+    let locale = accept_language.and_then(|header| {
+        header
+            .split(',')
+            .map(|part| part.split(';').next().unwrap_or("").trim())
+            .find(|tag| !tag.is_empty() && *tag != "*")
+            .map(|tag| tag.replace('-', "_"))
+    });
+    WEB.with(|slot| {
+        if let Some(web) = slot.borrow_mut().as_mut() {
+            web.locale = locale;
+        }
+    });
+}
+
+/// The request's preferred locale, when a request is in progress and named one.
+pub(crate) fn request_locale() -> Option<String> {
+    WEB.with(|slot| slot.borrow().as_ref().and_then(|web| web.locale.clone()))
 }
 
 /// The host name the request was for, with the port when asked.
@@ -460,6 +484,29 @@ pub(crate) fn clear_output() {
             web.status = 200;
             web.headers.clear();
             web.body.clear();
+        }
+    });
+}
+
+/// What a request had written, set aside while something else uses the slot's output.
+pub(crate) struct OutputStash((u16, Vec<(String, String)>, Vec<u8>, bool));
+
+/// Take what was written so far and leave the slot empty, for output that is not the response.
+pub(crate) fn stash_output() -> OutputStash {
+    let taken = take_output();
+    clear_output();
+    OutputStash(taken)
+}
+
+/// Put back what [`stash_output`] took, dropping anything written since.
+pub(crate) fn restore_output(stash: OutputStash) {
+    let (status, headers, body, sent) = stash.0;
+    WEB.with(|slot| {
+        if let Some(web) = slot.borrow_mut().as_mut() {
+            web.status = status;
+            web.headers = headers;
+            web.body = body;
+            web.sent = sent;
         }
     });
 }

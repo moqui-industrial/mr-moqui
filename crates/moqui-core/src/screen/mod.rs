@@ -157,6 +157,7 @@ fn handle(
     let _web = web::install(parameters.clone());
     web::set_multipart(multipart.clone());
     web::set_host(request.header("host").unwrap_or(""));
+    web::set_request_locale(request.header("accept-language"));
     let (login_error, header_authenticated) = authenticate(request, parameters)?;
     // A session that did not come with the request was made for it, and its token was never sent to the client.
     let new_session = presented.as_deref() != Some(guard.session_id().as_str());
