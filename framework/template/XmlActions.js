@@ -239,12 +239,13 @@
         const inMap = attr(node, "in-map");
         const tx = attr(node, "transaction");
         const syncOnly = !isAsync;
-        // multi="parameter" would read ec.web. That host is not added.
+        // multi="parameter" (the transition shortcut's default) is a multi call when the request says _isMulti, as a multi form-list posts.
         // A name with ${} is expanded, as the Groovy string of the Java template was.
         return joinPresent([
             `ec.service.${isAsync ? "async()" : "sync()"}.name(${literalOrExpand(attr(node, "name"))})`,
             syncOnly && attr(node, "disable-authz") === "true" && ".disableAuthz()",
             syncOnly && attr(node, "multi") === "true" && ".multi(true)",
+            syncOnly && attr(node, "multi") === "parameter" && ".multi(!!(ec.web && ec.web.parameters && ec.web.parameters._isMulti === 'true'))",
             syncOnly && has(node, "transaction") && joinPresent([
                 tx === "ignore" && ".ignoreTransaction(true)",
                 (tx === "force-new" || tx === "force-cache") && ".requireNewTransaction(true)",

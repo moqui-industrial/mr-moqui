@@ -951,10 +951,6 @@ fn with_ec<T>(ctx: &Ctx<'_>, body: impl FnOnce(&ExecutionContext) -> T) -> rquic
     ExecutionContext::with_current(body).ok_or_else(|| Exception::throw_message(ctx, "no execution context is entered"))
 }
 
-fn not_implemented(ctx: &Ctx<'_>, what: &str) -> rquickjs::Error {
-    Exception::throw_message(ctx, &format!("{what} is not implemented"))
-}
-
 fn js_error(err: impl ToString) -> Error {
     Error::new(err.to_string())
 }

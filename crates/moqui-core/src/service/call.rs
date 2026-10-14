@@ -34,6 +34,8 @@ pub struct CallOptions {
     pub require_new_transaction: Option<bool>,
     pub use_transaction_cache: Option<bool>,
     pub timeout: Option<std::time::Duration>,
+    /// `multi(true)`: one call for each row of `name_N` parameters, as a multi form-list posts them.
+    pub multi: bool,
 }
 
 impl CallOptions {
@@ -156,6 +158,89 @@ impl ServiceFuture {
 /// Run `name` and return its out parameters. `create-entity` is `create#entity`.
 pub fn sync(name: &str, parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, Error> {
     sync_with(name, parameters, &CallOptions::default())
+}
+
+/// The multi call of Java's `ServiceCallSyncImpl`: for each row `N` (from 0, until a row has none of the in-parameters
+/// as `name_N`), the service is called with that row's values, then the plain parameters and the results so far for the
+/// rest. With `_useRowSubmit` (or `_useRowSubmit_N`) only rows with `_rowSubmit_N` run. All rows run in one transaction,
+/// which an error rolls back; the first error stops the rows. The results of the rows are merged.
+///
+/// # Errors
+///
+/// Returns an error when a call fails other than with error messages.
+pub fn sync_multi(
+    name: &str,
+    parameters: &BTreeMap<String, Value>,
+    options: &CallOptions,
+) -> Result<BTreeMap<String, Value>, Error> {
+    let name = canonical(name);
+    let in_names: Vec<String> = match service_in_parameter_names(&name) {
+        Some(names) => names,
+        None => match entity_auto_noun(&name) {
+            Some(entity) => current_facade()
+                .and_then(|facade| {
+                    facade
+                        .with_entity(&entity, |def, _, _| {
+                            Ok(def.field_names().into_iter().map(str::to_string).collect())
+                        })
+                        .ok()
+                })
+                .unwrap_or_default(),
+            None => Vec::new(),
+        },
+    };
+    let facade = current_facade().ok_or_else(|| Error::new("no entity facade is installed"))?;
+    let entity = entity_auto_noun(&name).unwrap_or_else(|| ServiceDef::semaphore_entity().to_string());
+    let tx = facade.transactions_for(&entity)?;
+    let single = CallOptions {
+        multi: false,
+        ..options.clone()
+    };
+    let flag = |key: &str| parameters.get(key).map(moqui_lib::object::to_plain_string).as_deref() == Some("true");
+    let mut result: BTreeMap<String, Value> = BTreeMap::new();
+    let outcome = tx.run(TransactionAttribute::UseOrBegin, None, || {
+        for index in 0.. {
+            let mut row: BTreeMap<String, Value> = BTreeMap::new();
+            for parameter in &in_names {
+                if let Some(value) = parameters.get(&format!("{parameter}_{index}")) {
+                    row.insert(parameter.clone(), value.clone());
+                }
+            }
+            if row.is_empty() {
+                break;
+            }
+            if (flag("_useRowSubmit") || flag(&format!("_useRowSubmit_{index}")))
+                && !flag(&format!("_rowSubmit_{index}"))
+            {
+                continue;
+            }
+            for parameter in &in_names {
+                if row.get(parameter).is_some_and(|value| !is_empty(value)) {
+                    continue;
+                }
+                if let Some(value) = parameters.get(parameter).filter(|value| !is_empty(value)) {
+                    row.insert(parameter.clone(), value.clone());
+                } else if let Some(value) = result.get(parameter).filter(|value| !is_empty(value)) {
+                    row.insert(parameter.clone(), value.clone());
+                }
+            }
+            let produced = sync_with(&name, &row, &single)?;
+            result.extend(produced);
+            if message_has_error() {
+                break;
+            }
+        }
+        if message_has_error() && tx.in_transaction() {
+            tx.set_rollback_only(format!("Error message found running service {name} in multi mode"))?;
+        }
+        Ok(())
+    });
+    match outcome {
+        Ok(()) => Ok(result),
+        // The rows' errors are messages; the rollback they cause is not a failure of the call.
+        Err(_) if message_has_error() => Ok(result),
+        Err(err) => Err(err.into()),
+    }
 }
 
 /// [`sync`] with per-call overrides of authorization and the transaction attribute.

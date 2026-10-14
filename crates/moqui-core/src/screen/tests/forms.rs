@@ -851,3 +851,63 @@ fn a_dynamic_drop_down_shows_the_transition_label_of_its_value() {
     assert!(html.contains(">Kind K7</option>"), "{html}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A multi form-list posts `name_N` for each row with `_isMulti=true`; the transition's service-call shortcut (whose `multi`
+/// defaults to `parameter`) then calls the service once for each row.
+#[test]
+fn a_multi_form_post_calls_the_transition_service_for_each_row() {
+    let dir = std::env::temp_dir().join(format!("moqui-forms-multi-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let services = dir.join("RowServices.xml");
+    std::fs::write(
+        &services,
+        r#"<services>
+    <service verb="save" noun="Row" authenticate="false">
+        <in-parameters><parameter name="testId"/><parameter name="testMedium"/></in-parameters>
+        <actions><entity-make-value entity-name="moqui.test.TestEntity" value-field="made" map="context"/><entity-create value-field="made"/></actions>
+    </service>
+</services>"#,
+    )
+    .unwrap();
+    let root = dir.join("Rows.xml").to_string_lossy().into_owned();
+    std::fs::write(
+        &root,
+        r#"<screen require-authentication="false">
+    <transition name="saveRows" require-session-token="false"><service-call name="save#Row"/><default-response type="none"/></transition>
+    <widgets><label text="rows"/></widgets>
+</screen>"#,
+    )
+    .unwrap();
+    let world = World::open("");
+    {
+        let ctx = world.factory.new_context();
+        let _entered = ctx.enter();
+        let failures = crate::service::lint(std::slice::from_ref(&services)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+    }
+    let posted = serve_at(
+        &world.factory,
+        form_post(
+            "/saveRows",
+            "testId_0=R0&testMedium_0=first&testId_1=R1&testMedium_1=second&_isMulti=true",
+        ),
+        &root,
+    );
+    assert!(posted.status < 400, "{}", posted.body_text());
+    let medium = |id: &str| {
+        let ctx = world.factory.new_context();
+        let _entered = ctx.enter();
+        world
+            .facade
+            .find("moqui.test.TestEntity")
+            .unwrap()
+            .eq("testId", moqui_lib::object::Value::string(id))
+            .one()
+            .unwrap()
+            .and_then(|row| row.get("testMedium").map(moqui_lib::object::to_plain_string))
+    };
+    assert_eq!(medium("R0").as_deref(), Some("first"));
+    assert_eq!(medium("R1").as_deref(), Some("second"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

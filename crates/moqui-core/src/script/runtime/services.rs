@@ -86,9 +86,13 @@ impl HostService {
         })
     }
 
-    fn multi<'js>(&self, ctx: Ctx<'js>, _flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostService>> {
+    /// `multi(true)`: one call for each row of `name_N` parameters, in one transaction, as Java's multi form submit.
+    fn multi<'js>(&self, ctx: Ctx<'js>, flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostService>> {
         host_guard(&ctx, || {
-            self.changed(&ctx, |_| Err(not_implemented(&ctx, "multi service call")))
+            self.changed(&ctx, |call| {
+                call.options.multi = flag.as_bool().unwrap_or(false);
+                Ok(())
+            })
         })
     }
 
@@ -202,7 +206,12 @@ impl HostService {
                 }
                 return Null.into_js(&ctx);
             }
-            match crate::service::call::sync_with(&self.call.name, &self.call.parameters, &self.call.options) {
+            let called = if self.call.options.multi {
+                crate::service::call::sync_multi(&self.call.name, &self.call.parameters, &self.call.options)
+            } else {
+                crate::service::call::sync_with(&self.call.name, &self.call.parameters, &self.call.options)
+            };
+            match called {
                 Ok(results) => host_to_js(&ctx, Value::Map(results.into_iter().collect())),
                 Err(err) => {
                     let message = err.message().to_string();
