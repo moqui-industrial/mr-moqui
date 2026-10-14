@@ -952,6 +952,22 @@ fn distinct_and_for_update_are_written_and_cannot_be_combined() {
     )
     .unwrap();
     assert!(sql.sql.ends_with(" LIMIT ? OFFSET ? FOR UPDATE"), "{}", sql.sql);
+    // An empty for-update (SQLite) writes no lock text.
+    let unlocked = Dialect {
+        for_update: Some(String::new()),
+        ..postgres.clone()
+    };
+    let sql = select_with(
+        order,
+        &unlocked,
+        &[],
+        Some(&Condition::equals("orderId", Value::string("1"))),
+        &[],
+        LimitOffset::default(),
+        &locking,
+    )
+    .unwrap();
+    assert!(!sql.sql.contains("FOR UPDATE") && !sql.sql.ends_with(' '), "{}", sql.sql);
     let both = SelectOptions {
         distinct: true,
         for_update: true,

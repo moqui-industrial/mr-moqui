@@ -1,0 +1,69 @@
+<!doctype html>
+<!-- Browser smoke page: the module in a Worker through moqui-client.js. Serve the staged package
+     directory (scripts/wasm-build.sh) and open this page; #result reads SMOKE OK or SMOKE FAILED.
+     The database is on OPFS (WasmFS, per commit), so a second load reports the stored row with no
+     flush step. remote-rest calls go to /echo, /fail, and /slow on the serving origin, which
+     scripts/wasm-chrome-smoke.mjs answers. -->
+<meta charset="utf-8">
+<title>moqui-browser smoke</title>
+<pre id="log"></pre>
+<p id="result">running</p>
+<script type="module">
+import { startMoqui } from './moqui-client.js';
+
+const log = document.getElementById('log');
+const say = (line) => { log.textContent += line + '\n'; };
+say(`jspi ${'Suspending' in WebAssembly}`);
+const moqui = startMoqui();
+let failed = false;
+async function step(label, fields, test = () => true) {
+    const response = await moqui.request(fields);
+    const pass = response.ok && test(response.result);
+    if (!pass) failed = true;
+    say(`${pass ? 'ok  ' : 'FAIL'} ${label}: ${response.ok ? JSON.stringify(response.result).slice(0, 120) : response.error}`);
+    return response;
+}
+async function rows(testId) {
+    const found = await moqui.request({ op: 'find', entity: 'moqui.test.TestEntity', equals: { testId } });
+    return found.ok ? found.result.length : `error ${found.error}`;
+}
+const port = location.port;
+// Ids unique to this load: the rows from an earlier load are still there.
+const run = Date.now().toString(36);
+const started = performance.now();
+await step('init', { op: 'init', runtime: '/moqui/runtime', framework: '/moqui/framework', persist: 'moqui-smoke.sqlite' });
+say(`init ${Math.round(performance.now() - started)} ms`);
+let at = performance.now();
+await step('checkTables', { op: 'checkTables' });
+say(`checkTables ${Math.round(performance.now() - at)} ms`);
+// A second load of this page finds the row the first one committed; nothing was flushed.
+say(`restored ${await rows('C1')} row(s) from OPFS`);
+await step('render', { op: 'render', root: '/moqui/runtime/screen/Hello.xml', path: '', parameters: { name: 'chrome' } },
+    (result) => result.body.includes('Hello chrome from Moqui in WASM'));
+at = performance.now();
+await step('store', { op: 'store', entity: 'moqui.test.TestEntity', fields: { testId: 'C1', testMedium: 'chrome' } });
+say(`store ${Math.round(performance.now() - at)} ms`);
+await step('find', { op: 'find', entity: 'moqui.test.TestEntity', equals: { testId: 'C1' } },
+    (found) => found.length === 1 && found[0].testMedium === 'chrome');
+// remote-rest through fetch, suspended under JSPI.
+await step('remote-rest get#Echo', { op: 'callService', name: 'moqui.browser.SmokeServices.get#Echo', parameters: { port, note: 'hi' } },
+    (out) => out.echo === 'ok' && out.method === 'GET' && out.note === 'hi');
+await step('store then fetch', { op: 'callService', name: 'moqui.browser.SmokeServices.store#ThenFetch', parameters: { testId: `R0-${run}`, port } },
+    (out) => out.echo === 'ok');
+// A failed remote call rolls back the write before it.
+const refused = await moqui.request({ op: 'callService', name: 'moqui.browser.SmokeServices.store#ThenFetch', parameters: { testId: `R1-${run}`, port, path: 'fail' } });
+const rolledBack = !refused.ok && (await rows(`R1-${run}`)) === 0;
+if (!rolledBack) failed = true;
+say(`${rolledBack ? 'ok  ' : 'FAIL'} failed fetch rolls back: ${refused.ok ? 'call succeeded' : refused.error.split('\n')[0]}`);
+// Cancel while suspended on fetch: the call fails, its write rolls back, and the next call runs.
+const slow = moqui.request({ op: 'callService', name: 'moqui.browser.SmokeServices.store#ThenFetch', parameters: { testId: `X1-${run}`, port, path: 'slow' } });
+await new Promise((resolve) => setTimeout(resolve, 300));
+await moqui.request({ op: 'cancel', reason: 'cancelled by the smoke page' });
+const cancelled = await slow;
+const cancelOk = !cancelled.ok && /cancelled by the smoke page/.test(cancelled.error) && (await rows(`X1-${run}`)) === 0;
+if (!cancelOk) failed = true;
+say(`${cancelOk ? 'ok  ' : 'FAIL'} cancel while suspended: ${cancelled.ok ? 'call succeeded' : cancelled.error.split('\n')[0]}`);
+await step('a call after the cancel', { op: 'find', entity: 'moqui.test.TestEntity', equals: { testId: `R0-${run}` } },
+    (found) => found.length === 1);
+document.getElementById('result').textContent = failed ? 'SMOKE FAILED' : 'SMOKE OK';
+</script>

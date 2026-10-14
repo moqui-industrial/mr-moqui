@@ -32,11 +32,12 @@ pub use cache::CacheFacade;
 pub use component::ComponentInfo;
 pub use conf::{load_merged_conf, merge_conf};
 pub use error::{Error, ErrorKind};
-pub(crate) use factory::{append_env_secrets, standard_base64};
-pub use factory::{ContextGuard, ExecutionContext, ExecutionContextFactory};
+#[cfg(feature = "cluster-tls")]
+pub(crate) use factory::standard_base64;
+pub use factory::{BootOptions, ContextGuard, ExecutionContext, ExecutionContextFactory, Executor};
 pub(crate) use hits::Hit;
 pub use locate::{framework_dir, locate};
-pub use message::MessageFacade;
+pub use message::{MessageFacade, ValidationError};
 pub use resource::{ResourceFacade, ResourceRef};
 
 #[cfg(test)]

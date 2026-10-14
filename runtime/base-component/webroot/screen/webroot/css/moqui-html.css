@@ -167,6 +167,8 @@ dialog > .body { padding: 12px 14px; }
 .alert[data-type="success"] { border-left-color: var(--success); }
 .alert[data-type="warning"] { border-left-color: var(--warning); }
 .alert[data-type="danger"] { border-left-color: var(--danger); }
+.field-error { margin-top: 2px; color: var(--danger); font-size: .9em; }
+.field[data-invalid] input, .field[data-invalid] select, .field[data-invalid] textarea { border-color: var(--danger); }
 #toasts { position: fixed; z-index: 100; top: 56px; right: 12px; display: flex; flex-direction: column; gap: 8px; max-width: min(24em, 92vw); }
 #toasts .alert { margin: 0; box-shadow: 0 4px 14px rgba(0, 0, 0, .3); }
 
@@ -207,7 +209,9 @@ details.panel > .body { padding: 8px 10px; }
 .form-signin input { display: block; width: 100%; font-size: 1.15em; margin-bottom: 6px; padding: 8px 10px; }
 .form-signin button { width: 100%; margin: 4px 0; }
 .form-signin ul { padding-left: 24px; }
-.Login .tabs ul { justify-content: center; }
+.Login .tabs ul { justify-content: center; flex-wrap: nowrap; overflow-x: auto; padding: 0; }
+.Login .tabs li { flex: 1 0 auto; text-align: center; }
+.Login .tabs li > a { padding: 6px 8px; white-space: nowrap; }
 .Login { padding-top: 24px; }
 
 /* ---------- form-list ---------- */

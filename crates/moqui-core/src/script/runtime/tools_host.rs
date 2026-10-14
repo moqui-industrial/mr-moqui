@@ -410,14 +410,14 @@ fn cache_info_row(info: &moqui_lib::cache::CacheInfo) -> indexmap::IndexMap<Stri
     row
 }
 
-/// Every cache the admin screen lists: the conf caches, the screen definition cache, and the entity list caches.
+/// Every cache the admin screen lists: the conf caches, the screen caches, and the entity list caches.
 fn all_cache_infos(ctx: &Ctx<'_>) -> rquickjs::Result<Vec<moqui_lib::cache::CacheInfo>> {
     let factory = factory_of(ctx)?;
     let mut infos = factory
         .cache()
         .infos()
         .map_err(|err| Exception::throw_message(ctx, err.message()))?;
-    infos.push(crate::screen::ScreenFacade::of(&factory).cache_info());
+    infos.extend(crate::screen::ScreenFacade::of(&factory).cache_infos());
     if let Some(facade) = factory.entity() {
         infos.extend(crate::entity::cache::list_cache_infos(&facade));
     }
@@ -449,9 +449,7 @@ pub(super) fn clear_other_cache(name: &str) -> Result<bool, moqui_lib::error::Er
     let Some(factory) = ExecutionContext::with_current(|ec| Arc::clone(ec.factory())) else {
         return Ok(false);
     };
-    let screens = crate::screen::ScreenFacade::of(&factory);
-    if screens.cache_info().name == name {
-        screens.clear();
+    if crate::screen::ScreenFacade::of(&factory).clear_named(name) {
         return Ok(true);
     }
     match factory.entity() {
@@ -519,7 +517,7 @@ fn make_element_info_list<'js>(
             .map(|entry| {
                 let mut row = indexmap::IndexMap::new();
                 row.insert("key".to_string(), Value::string(entry.key));
-                row.insert("value".to_string(), Value::string(entry.value));
+                row.insert("value".to_string(), entry.value);
                 row.insert(
                     "hitCount".to_string(),
                     Value::I64(i64::try_from(entry.hit_count).unwrap_or(i64::MAX)),

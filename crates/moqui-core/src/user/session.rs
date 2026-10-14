@@ -67,10 +67,12 @@ const SAVED: &str = "moqui.saved.parameters";
 const ERROR_PARAMETERS: &str = "moqui.error.parameters";
 const MESSAGE_PUBLIC: &str = "moqui.message.public";
 const MESSAGE_ERROR: &str = "moqui.message.error";
+/// The type of each saved message (`info`, `success`, `warning`, `danger`), in the order of the messages.
+const MESSAGE_TYPES: &str = "moqui.message.types";
+/// The validation errors a failed submit left, each `{form, field, serviceName, message}`.
+const MESSAGE_VALIDATION: &str = "moqui.message.validationErrors";
 const SCREEN_HISTORY: &str = "moqui.screen.history";
-#[allow(dead_code)] // Stored when a caller puts the key in the attribute map. No setter in this slice.
 const LAST_PATH: &str = "moqui.screen.last.path";
-#[allow(dead_code)] // Stored when a caller puts the key in the attribute map. No setter in this slice.
 const LAST_PARAMETERS: &str = "moqui.screen.last.parameters";
 const MAX_FLUSH_ATTEMPTS: usize = 5;
 const VISITOR_MAX_AGE: u64 = 31_536_000;
@@ -586,10 +588,31 @@ pub fn set_time_zone(time_zone: Option<&str>) {
 
 #[allow(dead_code)]
 pub fn add_flash_message(message: &str) {
+    add_flash_message_typed(message, "info");
+}
+
+/// A message the next page shows, with its type as Java's `MessageInfo`.
+pub fn add_flash_message_typed(message: &str, kind: &str) {
     with_session(|session| {
         session.flash.push(message.to_string());
+        let mut types = attributes_string_list(&session.attributes, MESSAGE_TYPES);
+        types.resize(session.flash.len() - 1, "info".to_string());
+        types.push(if kind.is_empty() { "info" } else { kind }.to_string());
         let encoded = json_string_list(&session.flash);
         put_json(session, MESSAGE_PUBLIC, encoded);
+        put_json(session, MESSAGE_TYPES, json_string_list(&types));
+    });
+}
+
+/// A validation error the next page shows beside its field.
+pub fn add_flash_validation_error(error: &BTreeMap<String, String>) {
+    with_session(|session| {
+        let mut list = match session.attributes.get(MESSAGE_VALIDATION) {
+            Some(Json::List(items)) => items.clone(),
+            _ => Vec::new(),
+        };
+        list.push(json_string_map(error));
+        put_json(session, MESSAGE_VALIDATION, Json::List(list));
     });
 }
 
@@ -607,18 +630,43 @@ pub fn add_flash_error(message: &str) {
 #[derive(Clone, Debug, Default)]
 pub struct SavedForPage {
     pub messages: Vec<String>,
+    /// The type of each of `messages`.
+    pub message_types: Vec<String>,
     pub errors: Vec<String>,
+    pub validation_errors: Vec<BTreeMap<String, String>>,
     pub error_parameters: BTreeMap<String, String>,
 }
 
 pub fn take_saved_for_page() -> SavedForPage {
     with_session(|session| {
+        let messages = std::mem::take(&mut session.flash);
+        let mut message_types = attributes_string_list(&session.attributes, MESSAGE_TYPES);
+        message_types.resize(messages.len(), "info".to_string());
+        let validation_errors = match session.attributes.get(MESSAGE_VALIDATION) {
+            Some(Json::List(items)) => items
+                .iter()
+                .filter_map(|item| match item {
+                    Json::Map(map) => Some(
+                        map.iter()
+                            .filter_map(|(key, value)| match value {
+                                Json::Text(text) => Some((key.clone(), text.clone())),
+                                _ => None,
+                            })
+                            .collect(),
+                    ),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
         let taken = SavedForPage {
-            messages: std::mem::take(&mut session.flash),
+            messages,
+            message_types,
             errors: std::mem::take(&mut session.flash_errors),
+            validation_errors,
             error_parameters: std::mem::take(&mut session.errors),
         };
-        for key in [MESSAGE_PUBLIC, MESSAGE_ERROR, ERROR_PARAMETERS] {
+        for key in [MESSAGE_PUBLIC, MESSAGE_ERROR, MESSAGE_TYPES, MESSAGE_VALIDATION, ERROR_PARAMETERS] {
             if session.attributes.remove(key).is_some() && session.bound_id.is_some() {
                 session.dirty_json.insert(key.to_string());
             }
@@ -654,6 +702,53 @@ pub fn push_screen_history(screen: &str) {
         session.screen_history.truncate(40);
         let encoded = json_string_list(&session.screen_history);
         put_json(session, SCREEN_HISTORY, encoded);
+    });
+}
+
+/// The parameters a response saved for the next request, which the session forgets: Java's `WebFacadeImpl` takes
+/// `moqui.saved.parameters` when a request starts and puts them under the request's own parameters.
+pub fn take_saved_parameters() -> BTreeMap<String, String> {
+    with_session(|session| {
+        let taken = std::mem::take(&mut session.saved);
+        if session.attributes.remove(SAVED).is_some() && session.bound_id.is_some() {
+            session.dirty_json.insert(SAVED.to_string());
+        }
+        taken
+    })
+}
+
+/// `WebFacade.saveScreenLastInfo`: the path and parameters a `screen-last` response goes back to, such as the page a user
+/// asked for before signing in.
+pub fn save_screen_last(path: &str, parameters: &BTreeMap<String, String>) {
+    with_session(|session| {
+        put_json(session, LAST_PATH, Json::Text(path.to_string()));
+        put_json(session, LAST_PARAMETERS, json_string_map(parameters));
+    });
+}
+
+/// `getRemoveScreenLastPath`: the saved path, which the session forgets.
+pub fn take_screen_last_path() -> Option<String> {
+    with_session(|session| {
+        let path = attribute_text(session.attributes.get(LAST_PATH));
+        if session.attributes.remove(LAST_PATH).is_some() && session.bound_id.is_some() {
+            session.dirty_json.insert(LAST_PATH.to_string());
+        }
+        path.filter(|text| !text.is_empty())
+    })
+}
+
+/// `removeScreenLastParameters`: drop the saved parameters, first making them the saved parameters a `screen-last`
+/// response carries when `to_saved`.
+pub fn remove_screen_last_parameters(to_saved: bool) {
+    with_session(|session| {
+        if to_saved {
+            session.saved = attributes_string_map(&session.attributes, LAST_PARAMETERS);
+            let encoded = json_string_map(&session.saved);
+            put_json(session, SAVED, encoded);
+        }
+        if session.attributes.remove(LAST_PARAMETERS).is_some() && session.bound_id.is_some() {
+            session.dirty_json.insert(LAST_PARAMETERS.to_string());
+        }
     });
 }
 

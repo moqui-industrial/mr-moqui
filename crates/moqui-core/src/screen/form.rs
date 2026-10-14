@@ -312,6 +312,8 @@ fn extends_node(
         return Err(Error::new("form extends of a DbForm is not supported"));
     }
     let other = facade.screen_def(factory, location)?;
+    // The assembled form is kept with this definition, so a change to the other screen makes this one stale.
+    def.generated.add_dependencies(&other.sources);
     assemble_node(facade, factory, &other, form_name, depth + 1, dynamic)
 }
 
@@ -536,15 +538,16 @@ pub(super) fn entity_shape(entity_name: &str) -> Result<EntityShape, Error> {
                 .collect();
             let mut one_relations = Vec::new();
             for relationship in &entity.relationships {
+                // The expanded keys, so a relationship with no key-map (the related entity's primary key of the
+                // same name) counts, as in Java.
                 if relationship.relationship_type != "one"
                     || relationship.is_auto_reverse
-                    || relationship.key_map.len() != 1
+                    || relationship.key_pairs.len() != 1
                 {
                     continue;
                 }
-                let key = &relationship.key_map[0];
-                let related_key = key.related.clone().unwrap_or_else(|| key.field_name.clone());
-                one_relations.push((key.field_name.clone(), relationship.related.clone(), related_key));
+                let (field, related_key) = relationship.key_pairs[0].clone();
+                one_relations.push((field, relationship.related.clone(), related_key));
             }
             let description_field = entity
                 .fields
@@ -635,10 +638,15 @@ fn add_auto_entity_field(
         }
     };
     let display_entity = |target: &MNode, relation: &(String, String, String)| {
-        let text = if shape.description_field.is_empty() {
+        // The text is over the related entity's value, so it is that entity's description field (Java's
+        // `getDefaultDescriptionField` of the related definition), not the form entity's.
+        let description = entity_shape(&relation.1)
+            .map(|related| related.description_field)
+            .unwrap_or_default();
+        let text = if description.is_empty() {
             format!("[${{{}}}]", relation.2)
         } else {
-            format!("${{{} ?: ''}} [${{{}}}]", shape.description_field, relation.2)
+            format!("${{{description} || ''}} [${{{}}}]", relation.2)
         };
         let node = target.append("display-entity");
         node.set_attribute("entity-name", relation.1.clone());

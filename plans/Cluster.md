@@ -40,11 +40,27 @@ The sender is a small trait. The default implementation is an HTTPS POST to `{ba
 
 A notification carries a message id so a retry does not deliver it twice.
 
+As built (`moqui-core/src/cluster`, `moqui-host/src/cluster_edge.rs`):
+
+- The publishing thread only queues the message (up to 10,000; past that a message is dropped and counted). One
+  sender thread takes what is waiting, sends one invalidation for each entity (a peer clears the entity's whole
+  cache for one), and posts each message to every live peer, trying three times with 100 ms and 500 ms waits. A peer
+  whose post failed every try is skipped for five seconds.
+- The live peers are kept, and read again on the heartbeat tick. A member that joins is posted to from the next tick
+  of each other member.
+- Heartbeats and the liveness check use the database's clock (`SELECT CURRENT_TIMESTAMP`), so members whose clocks
+  differ still see each other. A member row with no heartbeat for ten liveness windows is deleted.
+- The listener binds `cluster_bind_address`, default `0.0.0.0`, on `cluster_https_port` (8443). `cluster_base_url` is
+  how the others reach this member; its default `https://127.0.0.1:8443` is for one host only, and a cluster where a
+  live member has a loopback base URL logs an error.
+- A generated `instance_id` is written to `runtime/db/instance_id`, not to `runtime/.env`, so copying `.env` between
+  members does not give two members one id. An `instance_id` property still wins.
+
 Postgres `NOTIFY` can be another sender later, for peers that share the database and cannot open HTTPS to each other. It is not the default, and it is not specified further.
 
 ## Sessions
 
-The share is the `moqui.server.HttpSession` row through the entity one-cache. A second instance loads that row by id. Invalidation uses the entity-cache topic, which drops the one-cache entry. The receiver does not apply a copy of the attribute map. Session bytes still do not cross the cluster connection. The cookie signature is HMAC-SHA256 over the session id. That key is its own secret property (`session_cookie_key`), generated into `runtime/.env` when left at the `CHANGEME` default. It is not the cluster certificate. A bad MAC is an unknown session. The merge, the reserve connection, and the flush modes are Sessions and login in `plans/Architecture-Proposal.md`.
+The share is the `moqui.server.HttpSession` row through the entity one-cache. A second instance loads that row by id. Guarantee mode bypasses cached clean state with primary reads; it does not rely on invalidation delivery. Invalidation uses the entity-cache topic, which drops the one-cache entry. The receiver does not apply a copy of the attribute map. Session bytes still do not cross the cluster connection. The cookie signature is HMAC-SHA256 over the session id. That key is its own secret property (`session_cookie_key`), generated into `runtime/.env` when left at the `CHANGEME` default. It is not the cluster certificate. A bad MAC is an unknown session. The merge, the reserve connection, and the flush modes are Sessions and login in `plans/Architecture-Proposal.md`.
 
 ## When it lands
 

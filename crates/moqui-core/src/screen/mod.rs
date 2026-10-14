@@ -96,7 +96,6 @@ pub fn serve_at(factory: &Arc<ExecutionContextFactory>, request: WebRequest, roo
         Err(web::BodyError::Executable(name)) => {
             return web::early_error(&request, 415, &format!("Executable file {name} upload not allowed"))
         }
-        Err(web::BodyError::Json(message)) => return web::early_error(&request, 400, &message),
     };
     // A request-pool worker already entered a fresh context for this job. Direct callers get one here.
     let context = crate::context::ExecutionContext::current()
@@ -144,11 +143,25 @@ fn handle(
     if let Err(err) = user::session::remember_client_ip(&web::client_ip(request)) {
         return Ok(web::json_error(500, err.message()));
     }
+    // What the last response saved for this request sits under the request's own parameters.
+    let saved = user::session::take_saved_parameters();
+    let merged;
+    let parameters = if saved.is_empty() {
+        parameters
+    } else {
+        let mut all: BTreeMap<String, Value> = saved.into_iter().map(|(name, value)| (name, Value::String(value))).collect();
+        all.extend(parameters.iter().map(|(name, value)| (name.clone(), value.clone())));
+        merged = all;
+        &merged
+    };
     let _web = web::install(parameters.clone());
     web::set_multipart(multipart.clone());
     web::set_host(request.header("host").unwrap_or(""));
     web::set_request_info(request);
+    web::set_request_locale(request.header("accept-language"));
     let (login_error, header_authenticated) = authenticate(request, parameters)?;
+    // A session that did not come with the request was made for it, and its token was never sent to the client.
+    let new_session = presented.as_deref() != Some(guard.session_id().as_str());
     let response = dispatch_request(
         factory,
         request,
@@ -156,7 +169,7 @@ fn handle(
         parameters,
         json_list,
         login_error.as_deref(),
-        header_authenticated,
+        (header_authenticated, new_session),
     )?;
     let response = attach_session(
         response,
@@ -176,7 +189,7 @@ fn dispatch_request(
     parameters: &BTreeMap<String, Value>,
     json_list: Option<&[Value]>,
     login_error: Option<&str>,
-    header_authenticated: bool,
+    (header_authenticated, new_session): (bool, bool),
 ) -> Result<WebResponse, Error> {
     let job = render::Job {
         request,
@@ -189,6 +202,7 @@ fn dispatch_request(
         header_authenticated,
         render_mode: None,
         enforce_request_checks: true,
+        new_session,
         started: Instant::now(),
     };
     if let Err(err) = render::run_job(factory, &job) {
@@ -271,6 +285,7 @@ fn error_page(
         header_authenticated: true,
         render_mode: Some("html"),
         enforce_request_checks: false,
+        new_session: false,
         started: Instant::now(),
     };
     if let Err(failure) = render::run_job(factory, &job) {

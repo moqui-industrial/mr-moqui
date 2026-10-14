@@ -314,28 +314,31 @@ fn a_text_location_uses_the_renderer_of_its_extension_and_ftl_is_refused() {
     std::fs::write(dir.join("Part.txt.fancy"), "<#if who>Hi ${who}</#if>").unwrap();
     std::fs::write(dir.join("Old.ftl"), "<#if who>Hi ${who}</#if>").unwrap();
     std::fs::write(dir.join("Other.txt"), "plain ${1 + 1}").unwrap();
-    let screen = |name: &str, location: &str| {
+    let screen = |name: &str, location: &str, template: &str| {
         let path = dir.join(name);
         std::fs::write(
             &path,
             format!(
                 r#"<screen require-authentication="false"><actions><set field="who" value="Ada"/></actions><widgets>
-                <text location="{}"/></widgets></screen>"#,
+                <text location="{}"{template}/></widgets></screen>"#,
                 dir.join(location).display()
             ),
         )
         .unwrap();
         path.to_string_lossy().into_owned()
     };
-    let text = |name: &str, location: &str| {
+    let text_as = |name: &str, location: &str, template: &str| {
         make_render(context.factory())
-            .root_screen(screen(name, location))
+            .root_screen(screen(name, location, template))
             .render_mode("text")
             .render()
     };
+    let text = |name: &str, location: &str| text_as(name, location, "");
     assert_eq!(text("A.xml", "Part.txt.fancy").unwrap().body_text(), "Hi Ada");
-    // No renderer for the extension: a trusted fancy template, as the text was a string template before.
-    assert_eq!(text("B.xml", "Other.txt").unwrap().body_text(), "plain 2");
+    // No renderer for the extension: the file's text, as Java writes it, so a .js file's `${` is not run.
+    assert_eq!(text("B.xml", "Other.txt").unwrap().body_text(), "plain ${1 + 1}");
+    // A `template` that names an extension picks that renderer, Java's default extension.
+    assert_eq!(text_as("B2.xml", "Other.txt", r#" template="fancy""#).unwrap().body_text(), "plain 2");
     let err = text("C.xml", "Old.ftl").unwrap_err();
     assert!(
         err.message().contains("FreeMarker template") && err.message().contains("fancy"),

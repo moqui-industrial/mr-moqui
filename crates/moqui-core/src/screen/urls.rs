@@ -15,8 +15,7 @@
 //! URL instances for `sri.buildUrl` and `sri.makeUrlByType`: a screen path or a transition resolved
 //! against the screen being rendered, with its parameters.
 //!
-//! Not ported: the transition-as-alias expansion, parameters taken from the single service a
-//! transition calls, `ScreenPathAlias`, and `content` URLs.
+//! Not ported: the transition-as-alias expansion, `ScreenPathAlias`, and `content` URLs.
 
 use indexmap::IndexMap;
 use moqui_lib::object::{is_empty, to_plain_string, Value};
@@ -45,6 +44,9 @@ pub struct UrlInstance {
     pub is_transition: bool,
     /// The HTTP method of the transition, lower case, empty for a screen.
     pub transition_method: String,
+    /// The screens of the resolved path and the transition it ends on, for `getDisableLink`.
+    pub path_defs: Vec<std::sync::Arc<super::definition::ScreenDef>>,
+    pub transition: Option<super::definition::TransitionDef>,
 }
 
 impl UrlInstance {
@@ -106,6 +108,57 @@ impl UrlInstance {
             url.push_str(extension);
         }
         join_query(url, &self.parameter_string())
+    }
+
+    /// `getDisableLink`: the path is not a screen or transition, the transition's condition does not hold, or the user may
+    /// not use it (Java's `UrlInstance.getDisableLink`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the transition's condition fails to run.
+    pub fn disable_link(&self) -> Result<bool, Error> {
+        if !self.exists {
+            return Ok(true);
+        }
+        if let Some(condition) = self.transition.as_ref().and_then(|transition| transition.condition.as_ref()) {
+            if !super::render::check_condition(condition)? {
+                return Ok(true);
+            }
+        }
+        Ok(!self.permitted())
+    }
+
+    /// `isPermitted`: each screen of the path with its parents on the artifact stack, and the transition with its action.
+    fn permitted(&self) -> bool {
+        if self.path_defs.is_empty() {
+            return true;
+        }
+        let last = self.path_defs.len() - 1;
+        let mut frames = super::render::Frames::default();
+        for (index, def) in self.path_defs.iter().enumerate() {
+            if index == last && self.transition.is_none() {
+                return sri::screen_permitted(def);
+            }
+            if frames.push_screen(def, false).is_err() {
+                return false;
+            }
+        }
+        let Some(transition) = &self.transition else {
+            return true;
+        };
+        let target = &self.path_defs[last];
+        let required = target.authentication == super::definition::Authentication::Required;
+        if required && crate::user::current_username().ok().flatten().is_none() {
+            return false;
+        }
+        frames
+            .push(
+                "AT_XML_SCREEN_TRANS",
+                &format!("{}/{}", target.location, transition.name),
+                &super::render::transition_authz_action(transition),
+                required,
+            )
+            .is_ok()
     }
 
     pub fn add_parameter(&mut self, name: &str, value: &Value) {
@@ -219,6 +272,7 @@ fn resolve_names(state: &RenderState, names: Vec<String>) -> Result<UrlInstance,
                     }
                 }
             }
+            url.path_defs.clone_from(&info.path_defs);
             if let Some(transition) = info.transition(None) {
                 url.is_transition = true;
                 url.transition_method = transition.method.to_ascii_lowercase();
@@ -231,6 +285,22 @@ fn resolve_names(state: &RenderState, names: Vec<String>) -> Result<UrlInstance,
                         }
                     }
                 }
+                // The in-parameters of the transition's one service from the context, so a link to a transition such
+                // as `deleteItem` in a form-list row carries that row's keys (Java's `UrlInstance.getParameterMap`).
+                if let Some(service) = &transition.single_service {
+                    for name in service_parameter_names(service) {
+                        let value = script::context_value(&name)
+                            .filter(|value| !is_empty(value))
+                            .or_else(|| web::parameter(&name));
+                        if let Some(value) = value {
+                            let text = to_plain_string(&value);
+                            if !text.is_empty() {
+                                url.parameters.insert(name, text);
+                            }
+                        }
+                    }
+                }
+                url.transition = Some(transition.clone());
             } else if info.target_transition_name.is_some() {
                 url.is_transition = true;
                 url.read_only = false;
@@ -240,6 +310,17 @@ fn resolve_names(state: &RenderState, names: Vec<String>) -> Result<UrlInstance,
         Err(err) => return Err(err),
     }
     Ok(url)
+}
+
+/// The in-parameter names of a service, or the primary key fields of the entity of an implicit entity-auto service.
+fn service_parameter_names(service: &str) -> Vec<String> {
+    if let Some(names) = crate::service::call::service_in_parameter_names(service) {
+        return names;
+    }
+    crate::service::call::entity_auto_noun(service)
+        .and_then(|entity| super::form::entity_shape(&entity).ok())
+        .map(|shape| shape.pk_fields)
+        .unwrap_or_default()
 }
 
 /// A link target for a server-static template: where it goes and what it is, with no parameters, since the template evaluates those.

@@ -43,12 +43,22 @@ fn sockets() -> &'static Mutex<HashMap<u64, Arc<Slot>>> {
     SOCKETS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Notifications waiting for one socket. A client that falls this far behind is closed rather than letting its queue
+/// grow without end; the client reopens the socket and the notifications are in its list.
+const SOCKET_QUEUE: usize = 256;
+/// A ping goes out this often, so a dead peer is noticed and proxies keep the connection.
+const PING_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+/// Java's `/notws` endpoint timeout: an hour with nothing from the client closes the socket.
+const DEFAULT_IDLE: std::time::Duration = std::time::Duration::from_secs(3600);
+
 struct Slot {
     id: u64,
     user_id: String,
     session_id: String,
     topics: Mutex<HashSet<String>>,
-    tx: tokio::sync::mpsc::UnboundedSender<Push>,
+    tx: tokio::sync::mpsc::Sender<Push>,
+    /// Set when the queue overflowed, so the socket loop closes the socket.
+    overflow: tokio::sync::Notify,
 }
 
 struct Push {
@@ -72,6 +82,12 @@ pub(crate) fn install_push() -> Result<(), CoreError> {
 }
 
 pub(crate) async fn upgrade(ws: WebSocketUpgrade, headers: HeaderMap, State(state): State<Arc<HttpState>>) -> Response {
+    // A page of another site cannot open a socket that carries this site's cookie, as Java's modifyHandshake.
+    let header = |name: axum::http::header::HeaderName| headers.get(name).and_then(|value| value.to_str().ok());
+    if !moqui_core::web::origin_allowed_for(header(axum::http::header::ORIGIN), header(axum::http::header::HOST)) {
+        tracing::warn!(origin = ?header(axum::http::header::ORIGIN), "notification socket refused for its origin");
+        return plain(403, "origin not allowed");
+    }
     let Some(cookie) = session_cookie(&headers) else {
         return plain(401, "unauthorized");
     };
@@ -143,7 +159,7 @@ async fn run_socket(
     user_id: String,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(SOCKET_QUEUE);
     let id = NEXT_SOCKET.fetch_add(1, Ordering::Relaxed);
     let slot = Arc::new(Slot {
         id,
@@ -151,6 +167,7 @@ async fn run_socket(
         session_id,
         topics: Mutex::new(HashSet::new()),
         tx,
+        overflow: tokio::sync::Notify::new(),
     });
     register(&slot);
     tracing::debug!(session_id = %slot.session_id, user_id = %slot.user_id, "notification socket open");
@@ -158,6 +175,10 @@ async fn run_socket(
         unregister(id);
         return;
     }
+    let idle = idle_timeout();
+    let mut last_heard = tokio::time::Instant::now();
+    let mut ping = tokio::time::interval(PING_EVERY);
+    ping.tick().await;
     loop {
         tokio::select! {
             biased;
@@ -166,8 +187,19 @@ async fn run_socket(
                     break;
                 }
             }
+            () = slot.overflow.notified() => {
+                tracing::warn!(session_id = %slot.session_id, "notification socket closed: the client fell behind");
+                let _ = socket
+                    .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                        code: 1008,
+                        reason: "too many notifications waiting".into(),
+                    })))
+                    .await;
+                break;
+            }
             incoming = socket.recv() => {
-                if !handle_incoming(&mut socket, &factory, &slot, incoming).await {
+                last_heard = tokio::time::Instant::now();
+                if !handle_incoming(&mut socket, &slot, incoming).await {
                     break;
                 }
             }
@@ -178,7 +210,17 @@ async fn run_socket(
                 if socket.send(Message::Text(push.text.into())).await.is_err() {
                     break;
                 }
-                mark_after_send(&factory, &slot.user_id, &push.message_id).await;
+                // Marking it sent is a database write; it does not hold up the next notification.
+                mark_after_send(&factory, &slot.user_id, push.message_id);
+            }
+            _ = ping.tick() => {
+                if last_heard.elapsed() >= idle {
+                    tracing::debug!(session_id = %slot.session_id, "notification socket idle, closed");
+                    break;
+                }
+                if socket.send(Message::Ping(Vec::new().into())).await.is_err() {
+                    break;
+                }
             }
         }
     }
@@ -186,38 +228,28 @@ async fn run_socket(
     unregister(id);
 }
 
-async fn handle_incoming(
-    socket: &mut WebSocket,
-    factory: &Arc<ExecutionContextFactory>,
-    slot: &Arc<Slot>,
-    incoming: Option<Result<Message, axum::Error>>,
-) -> bool {
+/// `webapp_notification_idle_seconds`, else an hour.
+fn idle_timeout() -> std::time::Duration {
+    moqui_lib::env::get_prop_or_env("webapp_notification_idle_seconds")
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|seconds| *seconds > 0)
+        .map_or(DEFAULT_IDLE, std::time::Duration::from_secs)
+}
+
+async fn handle_incoming(socket: &mut WebSocket, slot: &Arc<Slot>, incoming: Option<Result<Message, axum::Error>>) -> bool {
     match incoming {
         Some(Ok(Message::Text(text))) => {
-            apply_frame(factory, slot, &text).await;
+            // A topic change is a set update on this socket; it needs no execution context or worker.
+            if let Some(command) = parse_command(&text) {
+                apply_command(slot, command);
+            }
             true
         }
         Some(Ok(Message::Ping(payload))) => socket.send(Message::Pong(payload)).await.is_ok(),
         Some(Ok(Message::Close(_))) | Some(Err(_)) | None => false,
         Some(Ok(_)) => true,
-    }
-}
-
-async fn apply_frame(factory: &Arc<ExecutionContextFactory>, slot: &Arc<Slot>, text: &str) {
-    let Some(command) = parse_command(text) else {
-        return;
-    };
-    let slot = Arc::clone(slot);
-    let factory = Arc::clone(factory);
-    let ran = tokio::task::spawn_blocking(move || {
-        factory.service_pools().call(move || {
-            apply_command(&slot, command);
-            Ok(())
-        })
-    })
-    .await;
-    if let Err(err) = flatten_call(ran) {
-        tracing::warn!(error = %err, "notification topic update failed");
     }
 }
 
@@ -256,22 +288,23 @@ fn apply_command(slot: &Slot, command: TopicCommand) {
     }
 }
 
-async fn mark_after_send(factory: &Arc<ExecutionContextFactory>, user_id: &str, message_id: &str) {
+fn mark_after_send(factory: &Arc<ExecutionContextFactory>, user_id: &str, message_id: String) {
     if message_id.is_empty() {
         return;
     }
     let factory = Arc::clone(factory);
     let user_id = user_id.to_string();
-    let message_id = message_id.to_string();
-    let ran = tokio::task::spawn_blocking(move || {
-        factory
-            .service_pools()
-            .call(move || moqui_core::notify::mark_sent(&message_id, &user_id))
-    })
-    .await;
-    if let Err(err) = flatten_call(ran) {
-        tracing::warn!(error = %err, "could not mark notification sent");
-    }
+    tokio::spawn(async move {
+        let ran = tokio::task::spawn_blocking(move || {
+            factory
+                .service_pools()
+                .call(move || moqui_core::notify::mark_sent(&message_id, &user_id))
+        })
+        .await;
+        if let Err(err) = flatten_call(ran) {
+            tracing::warn!(error = %err, "could not mark notification sent");
+        }
+    });
 }
 
 fn flatten_call(ran: Result<Result<(), CoreError>, tokio::task::JoinError>) -> Result<(), CoreError> {
@@ -288,7 +321,12 @@ fn deliver_notice(message: &TopicMessage) {
 }
 
 fn fan_out_notice(message: &TopicMessage) {
-    let text = message.body.to_string();
+    // The client gets Java's wrapped message: the recipients are for routing here only.
+    let mut client_body = message.body.clone();
+    if let Some(object) = client_body.as_object_mut() {
+        object.remove(moqui_core::notify::ROUTE_USER_IDS);
+    }
+    let text = client_body.to_string();
     let topic = json_str(&message.body, "topic");
     let message_id = json_str(&message.body, "notificationMessageId");
     let users = json_users(&message.body);
@@ -308,8 +346,13 @@ fn fan_out_notice(message: &TopicMessage) {
             text: text.clone(),
             message_id: message_id.clone(),
         };
-        if slot.tx.send(push).is_err() {
-            unregister(slot.id);
+        match slot.tx.try_send(push) {
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                unregister(slot.id);
+                slot.overflow.notify_one();
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => unregister(slot.id),
         }
     }
 }
@@ -322,7 +365,7 @@ fn json_str(body: &serde_json::Value, field: &str) -> String {
 }
 
 fn json_users(body: &serde_json::Value) -> Vec<String> {
-    body.get("userIds")
+    body.get(moqui_core::notify::ROUTE_USER_IDS)
         .and_then(serde_json::Value::as_array)
         .map(|items| {
             items

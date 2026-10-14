@@ -279,6 +279,8 @@ fn a_section_is_generated_once_per_mode_and_again_when_its_file_changes() {
     let context = world.factory.new_context();
     let _entered = context.enter();
     let _authz = context.disable_authz();
+    // This test edits the file and renders at once, so the files are checked on every lookup.
+    crate::screen::ScreenFacade::of(&world.factory).set_check_interval(Some(std::time::Duration::ZERO));
     let dir = std::env::temp_dir().join(format!("moqui-macro-cache-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("Cached.xml");

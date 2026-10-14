@@ -93,7 +93,7 @@ fn notws_push_and_one_cluster_invalidation() {
     drain(&mut other);
     let mut extra = open_socket(http, &cookie_all);
     extra.send(Message::Text("subscribe:ALL".into())).unwrap();
-    // the subscription of the extra socket is applied on the service pool, so send until it arrives
+    // the subscription of the extra socket arrives with the next frame the server reads, so send until it is in
     let deadline = Instant::now() + Duration::from_secs(8);
     let mut saw_extra = false;
     while Instant::now() < deadline && !saw_extra {
@@ -102,7 +102,8 @@ fn notws_push_and_one_cluster_invalidation() {
     }
     assert!(saw_extra, "the second socket of the session got nothing");
     let frame = read_until(&mut all, ONLY_TOPIC, Duration::from_secs(3));
-    assert!(frame.contains(&user_id), "{frame}");
+    // The client gets Java's wrapped message: who else it went to is not in it.
+    assert!(!frame.contains("userIds") && !frame.contains(&user_id), "{frame}");
     assert_absent(&mut other, ONLY_TOPIC, Duration::from_millis(400));
     drop(all);
     drop(other);
@@ -111,11 +112,24 @@ fn notws_push_and_one_cluster_invalidation() {
     let (session_fp, cert_fp) = member_fingerprints(&factory);
     let port = server.cluster_address().port();
     insert_peer(&factory, &session_fp, &cert_fp, port);
+    // A member that joins is seen on the next heartbeat tick, which reads the member list again.
+    factory.service_pools().tick();
     let before = server.cluster_posts().len();
     create_test_entity(&factory);
+    // The post goes from the cluster sender thread after commit, not from the committing thread.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && server.cluster_posts().len() == before {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(100));
     let posts = server.cluster_posts();
     let added = &posts[before..];
-    assert_eq!(added, ["entity-cache-invalidate"], "posts {posts:?} before {before}");
+    // The tick that found the peer also wrote rows of its own, which go out as invalidations too; each entity is
+    // posted once (see the cluster tests), and nothing but invalidations was posted.
+    assert!(
+        !added.is_empty() && added.iter().all(|topic| topic == "entity-cache-invalidate"),
+        "posts {posts:?} before {before}"
+    );
 }
 
 fn prove_both_subscribed(factory: &Arc<ExecutionContextFactory>, user_id: &str, all: &mut Ws, other: &mut Ws) {

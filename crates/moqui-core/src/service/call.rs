@@ -166,7 +166,16 @@ pub fn sync_with(
     let facade = current_facade();
     let def = resolve(&name, facade.as_ref())?;
     super::seca::run_seca_rules(&def.name, "pre-validate", parameters, None)?;
-    let cleaned = validate::clean(&def, parameters, facade.as_ref())?;
+    // Input that fails its checks is validation errors in the message facade and no run, as in Java: the caller sees
+    // the errors (a screen shows them by their fields) instead of a failed call.
+    let cleaned = match validate::clean(&def, parameters, facade.as_ref()) {
+        Ok(cleaned) => cleaned,
+        Err(err) if err.kind() == crate::context::ErrorKind::Validation => {
+            tracing::warn!(service = %def.name, "not run, input failed validation: {}", err.message());
+            return Ok(BTreeMap::new());
+        }
+        Err(err) => return Err(err),
+    };
     super::seca::run_seca_rules(&def.name, "pre-auth", &cleaned, None)?;
     // A call with credentials logs in first, as Java does with authUsername and authPassword.
     if let Some((username, password)) = auth_credentials(parameters) {
@@ -409,6 +418,35 @@ fn split_name(name: &str) -> (String, String) {
     }
 }
 
+/// The authorization action of the service `name`: its `authz-action`, else by its verb. A name with no definition goes
+/// by the verb in the name, as Java's `TransitionItem.resolveAuthzAction`.
+pub(crate) fn service_authz_action(name: &str) -> String {
+    let name = canonical(name);
+    if let Some(def) = super::define::find(&name) {
+        return auth_action(&def).to_string();
+    }
+    let (verb, _) = split_name(&name);
+    let verb = verb.rsplit('.').next().unwrap_or(&verb);
+    verb_action(verb).to_string()
+}
+
+/// The in-parameter names of a defined service, in definition order. None when no service has that name.
+pub(crate) fn service_in_parameter_names(name: &str) -> Option<Vec<String>> {
+    let def = super::define::find(&canonical(name))?;
+    Some(def.in_params.iter().map(|parameter| parameter.name.clone()).collect())
+}
+
+/// The entity of an implicit entity-auto service name such as `create#moqui.basic.Enumeration`, when it has no
+/// definition of its own.
+pub(crate) fn entity_auto_noun(name: &str) -> Option<String> {
+    let name = canonical(name);
+    if super::define::find(&name).is_some() {
+        return None;
+    }
+    let (verb, noun) = split_name(&name);
+    (matches!(verb.as_str(), "create" | "update" | "store" | "delete") && !noun.is_empty()).then_some(noun)
+}
+
 fn auth_action(def: &ServiceDef) -> &str {
     def.authz_action.as_deref().unwrap_or_else(|| verb_action(&def.verb))
 }
@@ -429,7 +467,13 @@ fn execute(
     facade: &EntityFacade,
 ) -> Result<BTreeMap<String, Value>, LibError> {
     match def.kind {
+        #[cfg(feature = "mail")]
         ServiceKind::Mail => super::mail::run(&def.name, parameters, facade),
+        #[cfg(not(feature = "mail"))]
+        ServiceKind::Mail => Err(LibError::new(format!(
+            "service {}: mail is not built into this host",
+            def.name
+        ))),
         ServiceKind::SystemSync => super::system_sync::run(&def.name, parameters, facade),
         ServiceKind::ElFinder => super::elfinder::run(&def.name, parameters, facade),
         ServiceKind::Tools => super::tools::run(&def.name, parameters, facade),
@@ -863,7 +907,7 @@ mod tests {
     use moqui_lib::object::{basic_convert, Value};
 
     use super::sync;
-    use crate::context::ExecutionContextFactory;
+    use crate::context::{ExecutionContext, ExecutionContextFactory};
 
     #[test]
     fn entity_auto_store_inserts_then_updates() {
@@ -907,10 +951,26 @@ mod tests {
         let ctx = ExecutionContextFactory::test_context();
         let _entered = ctx.enter();
         crate::service::lint(std::slice::from_ref(&path)).unwrap();
-        let err = sync("need#Value", &BTreeMap::new()).unwrap_err();
-        let text = err.to_string();
-        assert!(text.contains("amount"), "{text}");
-        assert!(text.contains("required"), "{text}");
+        // As Java: the service does not run, the call returns nothing, and the error is a validation error on the
+        // field, which a form shows beside it.
+        let out = sync("need#Value", &BTreeMap::new()).unwrap();
+        assert!(out.is_empty(), "{out:?}");
+        let (errors, validation) = ExecutionContext::with_current(|ec| {
+            let messages = ec.message();
+            (messages.errors().to_vec(), messages.validation_errors().to_vec())
+        })
+        .unwrap();
+        assert!(
+            errors
+                .iter()
+                .any(|text| text.contains("amount") && text.contains("required")),
+            "{errors:?}"
+        );
+        assert_eq!(validation.len(), 1);
+        assert_eq!(
+            (validation[0].field.as_str(), validation[0].service.as_str()),
+            ("amount", "need#Value")
+        );
     }
 
     #[test]

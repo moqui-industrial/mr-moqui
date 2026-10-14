@@ -57,7 +57,7 @@ pub struct Dialect {
     pub fk_style: Option<String>,
     pub default_test_query: Option<String>,
     pub result_fetch_size: Option<i32>,
-    /// Text written in place of `FOR UPDATE`.
+    /// Text written in place of `FOR UPDATE`. Empty writes nothing.
     pub for_update: Option<String>,
     pub use_foreign_key_indexes: bool,
     /// `<database-type type>` to `sql-type`. A missing type is left for the dictionary default.
@@ -168,7 +168,8 @@ fn parse_database(node: &MNode) -> Result<Dialect, Error> {
         fk_style: optional(node, "fk-style"),
         default_test_query: optional(node, "default-test-query"),
         result_fetch_size: optional_int(node, "result-fetch-size")?,
-        for_update: optional(node, "for-update"),
+        // Present and empty means no row lock text at all (SQLite). Absent means `FOR UPDATE`.
+        for_update: node.attribute("for-update").map(|value| value.trim().to_string()),
         use_foreign_key_indexes: !matches!(optional(node, "use-foreign-key-indexes").as_deref(), Some("false")),
         sql_types,
         name_replaces,
@@ -247,7 +248,7 @@ mod tests {
         let names: Vec<&str> = dialects.iter().map(|(name, _)| name).collect();
         assert_eq!(
             names,
-            ["db2", "db2i", "derby", "h2", "hsql", "mssql", "mysql", "mysql8", "oracle", "postgres"]
+            ["db2", "db2i", "derby", "h2", "hsql", "mssql", "mysql", "mysql8", "oracle", "postgres", "sqlite"]
         );
         assert_eq!(dialects.len(), names.len());
         for (name, dialect) in dialects.iter() {
@@ -332,6 +333,12 @@ mod tests {
         assert_eq!(profile(&dialects, "db2").offset_style.as_deref(), Some("limit"));
         assert_eq!(profile(&dialects, "mssql").offset_style.as_deref(), Some("fetch"));
         assert_eq!(profile(&dialects, "hsql").sql_type("binary-very-long"), Some("OBJECT"));
+
+        let sqlite = profile(&dialects, "sqlite");
+        assert_eq!(sqlite.for_update.as_deref(), Some(""));
+        assert_eq!(sqlite.offset_style.as_deref(), Some("limit"));
+        assert_eq!(sqlite.sql_type("date-time"), Some("TEXT"));
+        assert!(postgres.for_update.is_none());
     }
 
     #[test]

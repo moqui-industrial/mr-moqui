@@ -45,6 +45,8 @@ use crate::web::{self, WebRequest};
 
 const DEFAULT_ENCODING: &str = "UTF-8";
 const DEFAULT_MODE: &str = "html";
+/// The conf webapp a screen request belongs to.
+const WEBAPP: &str = "webroot";
 
 /// The result of a [`ScreenRender`]: what the host would send.
 #[derive(Clone, Debug)]
@@ -173,6 +175,7 @@ impl ScreenRender {
             header_authenticated: true,
             render_mode: self.render_mode.as_deref(),
             enforce_request_checks: false,
+            new_session: false,
             started: Instant::now(),
         };
         run_job(&self.factory, &job)?;
@@ -198,6 +201,8 @@ pub(crate) struct Job<'a> {
     pub render_mode: Option<&'a str>,
     /// False for a render with no socket: no session-token check.
     pub enforce_request_checks: bool,
+    /// The session began with this request, so its token cannot have been sent yet (Java's `moqui.session.token.created`).
+    pub new_session: bool,
     pub started: Instant,
 }
 
@@ -231,6 +236,9 @@ pub struct RenderState {
     pub dynamic_forms: RefCell<std::collections::HashMap<String, Arc<super::form::FormInstance>>>,
     /// Keys `sri.once` has seen, so a mode writes its document wrapper only for the outermost screen.
     pub once: RefCell<std::collections::HashSet<String>>,
+    /// The theme of this render and its resource values by type, found once as Java's `curThemeId`.
+    pub theme_id: RefCell<Option<String>>,
+    pub theme_values: RefCell<std::collections::HashMap<String, Vec<String>>>,
 }
 
 impl RenderState {
@@ -273,6 +281,8 @@ impl RenderState {
             form_lists: RefCell::new(Vec::new()),
             dynamic_forms: RefCell::new(std::collections::HashMap::new()),
             once: RefCell::new(std::collections::HashSet::new()),
+            theme_id: RefCell::new(None),
+            theme_values: RefCell::new(std::collections::HashMap::new()),
         }
     }
 }
@@ -325,13 +335,25 @@ pub fn send_redirect_and_stop_render(url: &str) {
     }
 }
 
-/// `ec.web.saveScreenLastInfo`: remember `path`, or the screen being rendered, for a later
-/// `screen-last` response such as the one after login.
+/// `ec.web.saveScreenLastInfo`: remember `path`, or the screen being rendered, with the request parameters, for a
+/// later `screen-last` response such as the one after login.
 pub fn save_screen_last_info(path: Option<&str>) {
     let current = with_current_render(|state| state.url_info.full_path_url());
     if let Some(path) = path.map(str::to_string).or(current) {
-        user::session::push_screen_history(&path);
+        user::session::save_screen_last(&path, &plain_request_parameters());
     }
+}
+
+/// The request parameters as text, without passwords, the session token, or uploaded files.
+fn plain_request_parameters() -> BTreeMap<String, String> {
+    web::parameters()
+        .into_iter()
+        .filter(|(name, value)| {
+            let lower = name.to_ascii_lowercase();
+            !lower.contains("password") && lower != "moquisessiontoken" && !matches!(value, Value::Object(_))
+        })
+        .map(|(name, value)| (name, moqui_lib::object::to_plain_string(&value)))
+        .collect()
 }
 
 /// Resolve and run one job. Anything written is in the thread's web slot.
@@ -340,6 +362,9 @@ pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> 
     let info = ScreenUrlInfo::parse(factory, job.root, job.path, last_standalone)?;
     let facade = ScreenFacade::of(factory);
     check_web_settings(&info)?;
+    if job.enforce_request_checks && (redirect_to_https(factory, job, &info) || redirect_to_login(job, &info)?) {
+        return Ok(());
+    }
     check_authentication(&info)?;
     if let Some(file) = &info.file_resource {
         let versioned = !text_of(job.parameters.get("v")).is_empty();
@@ -453,13 +478,17 @@ fn add_client_component_headers(state: &RenderState) {
     }
 }
 
-/// A page the user got in `html` goes on the screen history, newest first, with its query. A fragment
-/// loaded into a page and a render with no socket do not.
+/// A screen the user got goes on the screen history, newest first, with its query, as Java's `saveScreenHistory`: not a
+/// standalone screen, one that says `history="false"`, a fragment asked for with a negative `lastStandalone`, or a
+/// render with no socket. A qvt screen the `/qapps` shell loads counts, as Java counted the vapps fetches.
 fn record_history(job: &Job<'_>, state: &RenderState) {
+    let target = &state.url_info.target_screen;
     if !job.enforce_request_checks
-        || state.render_mode != "html"
         || !job.method.eq_ignore_ascii_case("get")
-        || state.url_info.last_standalone != 0
+        || state.url_info.last_standalone < 0
+        || target.standalone
+        || !target.history
+        || matches!(state.render_mode.as_str(), "qjs" | "qvue")
         || web::output_status() != 200
     {
         return;
@@ -558,9 +587,22 @@ fn render_screens(state: &RenderState, facade: &ScreenFacade) -> Result<(), Erro
             }
         }
     }
-    // The screens above the render start stay on the artifact stack so the screens below inherit.
+    // The screens above the render start stay on the artifact stack so the screens below inherit. Each must be a
+    // subscreens item the user may have, as Java's doActualRender checks `isValidInCurrentContext`.
     let mut inherited = Frames::default();
-    for def in &defs[..info.render_path_difference.min(defs.len())] {
+    for (index, def) in defs[..info.render_path_difference.min(defs.len())].iter().enumerate() {
+        if index > 0 {
+            let item = info
+                .full_path
+                .get(index - 1)
+                .and_then(|name| defs[index - 1].subscreens.get(name));
+            if item.is_some_and(|item| !item.is_valid_in_current_context()) {
+                return Err(Error::of_kind(
+                    ErrorKind::Unauthorized,
+                    format!("The screen {} is not available", def.screen_name),
+                ));
+            }
+        }
         inherited.push_screen(def, false)?;
         inherited.hit_detail(Some(&state.content_type), true);
     }
@@ -630,6 +672,82 @@ fn check_web_settings(info: &ScreenUrlInfo) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+/// A screen to render that does not say `require-encryption="false"`, asked for over http when the webapp has https
+/// enabled, redirects to the same URL over https (Java's `checkWebappSettings`).
+fn redirect_to_https(factory: &ExecutionContextFactory, job: &Job<'_>, info: &ScreenUrlInfo) -> bool {
+    if job.request.https || !info.render_defs().iter().any(|def| def.web.require_encryption) {
+        return false;
+    }
+    let Some((host, port)) = factory.webapp_https(WEBAPP) else {
+        return false;
+    };
+    let host = if host.is_empty() {
+        host_without_port(job.request.header("host").unwrap_or("localhost")).to_string()
+    } else {
+        host
+    };
+    let authority = if port.is_empty() || port == "443" {
+        host
+    } else {
+        format!("{host}:{port}")
+    };
+    let mut location = format!("https://{authority}{}", job.request.path.split('?').next().unwrap_or(""));
+    let query: BTreeMap<String, String> = job.request.query.iter().cloned().collect();
+    location = with_query(location, &query);
+    save_messages();
+    web::send_redirect(&location);
+    true
+}
+
+/// `example.com:8080` is `example.com`, and `[::1]:8080` is `[::1]`.
+fn host_without_port(host: &str) -> &str {
+    if host.starts_with('[') {
+        return host.find(']').map_or(host, |end| &host[..=end]);
+    }
+    host.split(':').next().unwrap_or(host)
+}
+
+/// A browser page that needs a user, asked for with none, saves itself as the screen to come back to and redirects
+/// to the last `login-path` of the path, `/Login` by default (Java's `checkWebappSettings`). A fragment, which a client
+/// fetches with `lastStandalone`, and a transition get the 401 instead.
+fn redirect_to_login(job: &Job<'_>, info: &ScreenUrlInfo) -> Result<bool, Error> {
+    if info.file_resource.is_some()
+        || super::statics::report_active()
+        || user::current_username()?.is_some()
+        || user::is_anonymous()?
+        || !info
+            .render_defs()
+            .iter()
+            .any(|def| def.authentication == Authentication::Required)
+    {
+        return Ok(false);
+    }
+    let path = job.path.split(['?', '#']).next().unwrap_or("");
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    user::session::save_screen_last(&path, &plain_request_parameters());
+    save_messages();
+    if info.last_standalone != 0 || info.target_transition_name.is_some() {
+        return Ok(false);
+    }
+    let login_path = info
+        .path_defs
+        .iter()
+        .filter_map(|def| def.login_path.clone())
+        .next_back()
+        .unwrap_or_else(|| "/Login".to_string());
+    let location = format!(
+        "{}/{}",
+        web::base_url().trim_end_matches('/'),
+        login_path.trim_start_matches('/')
+    );
+    web::send_redirect(&location);
+    Ok(true)
 }
 
 /// Every screen that renders and requires authentication needs a user. Anonymous access screens
@@ -737,6 +855,12 @@ impl Drop for Frames {
     }
 }
 
+/// What the transition run decided: the response was already sent, or this response holds.
+enum Step {
+    Sent,
+    Respond(ResponseDef),
+}
+
 fn run_transition(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>, info: ScreenUrlInfo) -> Result<(), Error> {
     let Some(transition) = info.transition(Some(job.method)).cloned() else {
         let name = info.target_transition_name.clone().unwrap_or_default();
@@ -751,13 +875,15 @@ fn run_transition(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>, info: S
         web::add_header("Allow", allow.join(", "));
         return Ok(());
     };
-    if let Some(name) = missing_parameter(job.parameters, &transition) {
-        web::send_json_error(400, &format!("Missing required parameter {name}"));
-        return Ok(());
-    }
-    if job.enforce_request_checks && !job.header_authenticated && csrf_rejected(job, &transition)? {
-        web::send_json_error(401, "Session token is missing or is not valid");
-        return Ok(());
+    if job.enforce_request_checks {
+        if let Some(reason) = insecure_transition(factory, job, &transition) {
+            web::send_json_error(400, reason);
+            return Ok(());
+        }
+        if !job.header_authenticated && !job.new_session && csrf_rejected(job, &transition)? {
+            web::send_json_error(401, "Session token is missing or is not valid");
+            return Ok(());
+        }
     }
 
     let info = Arc::new(info);
@@ -773,7 +899,25 @@ fn run_transition(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>, info: S
         encoding,
     ));
     let _active = ActiveGuard::install(Rc::clone(&state));
+    let json = wants_json(job, &info);
+    // The REST screen's transitions and the implicit actions transition manage their own transactions. Any other
+    // transition runs the always-actions of its path, its actions and its responses' conditions in one, as Java's
+    // ScreenRenderImpl does, so a write in an always-action rolls back with the transition.
+    let own_transaction = transition.implicit_actions || transition.screen_location.ends_with("/webroot/rest.xml");
+    let begin = transition.begin_transaction && !own_transaction;
+    let step = in_transaction(begin, None, || run_transition_steps(job, &info, &state, &transition))?;
+    match step {
+        Step::Sent => Ok(()),
+        Step::Respond(response) => respond(&info, &response, json),
+    }
+}
 
+fn run_transition_steps(
+    job: &Job<'_>,
+    info: &Arc<ScreenUrlInfo>,
+    state: &Rc<RenderState>,
+    transition: &TransitionDef,
+) -> Result<Step, Error> {
     // Screens above the transition are only on the stack, so they inherit but are not decided.
     let mut frames = Frames::default();
     for (index, def) in info.path_defs.iter().enumerate() {
@@ -788,13 +932,18 @@ fn run_transition(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>, info: S
     frames.push(
         "AT_XML_SCREEN_TRANS",
         &format!("{}/{}", screen.location, transition.name),
-        &transition.authz_action,
+        &transition_authz_action(transition),
         screen.authentication == Authentication::Required,
     )?;
     frames.hit_detail(Some(&state.content_type), true);
-    let hit = TransitionHit::start(&screen, &transition, job.parameters);
+    let hit = TransitionHit::start(&screen, transition, job.parameters);
 
-    set_all_parameters(&info, &transition)?;
+    set_all_parameters(info, transition)?;
+    // After the path parameters and `from` values are in, it is too late to supply a required parameter.
+    if let Some(name) = missing_parameter(transition) {
+        web::send_json_error(400, &format!("Missing required parameter {name}"));
+        return Ok(Step::Sent);
+    }
     if let Some(condition) = &transition.condition {
         if !check_condition(condition)? {
             ExecutionContext::with_current(|ec| {
@@ -808,20 +957,20 @@ fn run_transition(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>, info: S
                 .as_ref()
                 .unwrap_or(&transition.default_response);
             hit.count(response_type(response));
-            return respond(&info, response, wants_json(job, &info));
+            return Ok(Step::Respond(response.clone()));
         }
     }
 
     if transition.implicit_actions {
         in_transaction(transition.begin_transaction, None, || {
-            super::statics::run_actions_transition(&state)
+            super::statics::run_actions_transition(state)
         })?;
         hit.count("");
-        return Ok(());
+        return Ok(Step::Sent);
     }
     let wired = dispatch::run(&dispatch::Call {
         request: job.request,
-        transition: &transition,
+        transition,
         extra: &info.extra_path,
         parameters: job.parameters,
         json_list: job.json_list,
@@ -830,17 +979,84 @@ fn run_transition(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>, info: S
     })?;
     if wired.is_some() {
         hit.count("");
-        return Ok(());
+        return Ok(Step::Sent);
     }
     if let Some(message) = &transition.actions_error {
         return Err(Error::new(message.clone()));
     }
+    reject_html_for_entity_auto(transition);
     if let Some(actions) = &transition.actions {
-        in_transaction(transition.begin_transaction, None, || run_transition_actions(actions))?;
+        if !has_errors() {
+            run_transition_actions(actions)?;
+        }
     }
-    let response = pick_response(&transition)?;
+    let response = pick_response(transition)?;
     hit.count(response_type(response));
-    respond(&info, response, wants_json(job, &info))
+    Ok(Step::Respond(response.clone()))
+}
+
+/// The authorization action of a transition: its `authz-action`, else that of its single service (the service's own, else
+/// by its verb), else view for a read-only transition and update otherwise (Java's `resolveAuthzAction`).
+pub(super) fn transition_authz_action(transition: &TransitionDef) -> String {
+    if !transition.authz_explicit {
+        if let Some(service) = &transition.single_service {
+            return crate::service::call::service_authz_action(service);
+        }
+    }
+    transition.authz_action.clone()
+}
+
+/// A transition that writes is refused from a request that is not encrypted when https is on, or that carries its
+/// parameters in the URL, where they are not protected (Java's ScreenRenderImpl). A read-only one is not.
+fn insecure_transition(factory: &ExecutionContextFactory, job: &Job<'_>, transition: &TransitionDef) -> Option<&'static str> {
+    if transition.read_only || (transition.actions.is_none() && transition.actions_error.is_none()) {
+        return None;
+    }
+    if !job.request.https && factory.webapp_https(WEBAPP).is_some() {
+        return Some(
+            "Cannot run screen transition with actions from a non-secure request; use https or declare the transition read-only",
+        );
+    }
+    let query = job
+        .request
+        .query
+        .iter()
+        .any(|(name, _)| !matches!(name.as_str(), "lastStandalone" | "renderMode"));
+    if query {
+        return Some(
+            "Cannot run screen transition with actions with URL parameters; send them in the body of a form or declare the transition read-only",
+        );
+    }
+    None
+}
+
+/// An implicit entity-auto service filters its input for HTML as a defined service does by default: a field value with
+/// `<` is a validation error (Java's TransitionItem.run). A service with a parameter that allows HTML is the way around it.
+fn reject_html_for_entity_auto(transition: &TransitionDef) {
+    let Some(service) = &transition.single_service else {
+        return;
+    };
+    let Some(entity_name) = crate::service::call::entity_auto_noun(service) else {
+        return;
+    };
+    let Ok(shape) = super::form::entity_shape(&entity_name) else {
+        return;
+    };
+    for (field, _, _) in &shape.fields {
+        if let Some(Value::String(text)) = script::context_value(field) {
+            if text.contains('<') {
+                ExecutionContext::with_current(|ec| {
+                    ec.message().add_validation_error(
+                        "",
+                        field,
+                        service,
+                        &crate::l10n::localize("HTML not allowed including less-than (<), greater-than (>), etc symbols")
+                            .unwrap_or_else(|_| "HTML not allowed".to_string()),
+                    );
+                });
+            }
+        }
+    }
 }
 
 /// The `AT_XML_SCREEN_TRANS` hit Java's `recursiveRunTransition` counts once the actions ran, named
@@ -906,25 +1122,25 @@ fn run_transition_actions(actions: &Actions) -> Result<(), Error> {
     script::run_actions(&actions.xml)
 }
 
-/// The error response when there are errors, else the first conditional response that holds,
-/// else the default response.
+/// The error response when there are errors, else the last conditional response that holds (Java checks them all
+/// and keeps the last), else the default response.
 fn pick_response(transition: &TransitionDef) -> Result<&ResponseDef, Error> {
-    let has_error = ExecutionContext::with_current(|ec| !ec.message().errors().is_empty()).unwrap_or(false);
-    if has_error {
+    if has_errors() {
         if let Some(response) = &transition.error_response {
             return Ok(response);
         }
     }
+    let mut chosen = None;
     for response in &transition.conditional_responses {
         let holds = match &response.condition {
             Some(condition) => check_condition(condition)?,
             None => true,
         };
         if holds {
-            return Ok(response);
+            chosen = Some(response);
         }
     }
-    Ok(&transition.default_response)
+    Ok(chosen.unwrap_or(&transition.default_response))
 }
 
 /// Bind the extra path names to the transition's `path-parameter` names, then evaluate the
@@ -948,7 +1164,7 @@ pub(super) fn parameter_value(parameter: &ParameterDef) -> Result<Option<Value>,
     if let Some(value) = &parameter.value {
         return Ok(Some(Value::string(script::expand(value)?)));
     }
-    Ok(script::context_value(&parameter.name).or_else(|| web::parameters().get(&parameter.name).cloned()))
+    Ok(script::context_value(&parameter.name).or_else(|| web::parameter(&parameter.name)))
 }
 
 fn respond(info: &ScreenUrlInfo, response: &ResponseDef, json: bool) -> Result<(), Error> {
@@ -981,14 +1197,40 @@ fn respond(info: &ScreenUrlInfo, response: &ResponseDef, json: bool) -> Result<(
         response.kind,
         ResponseKind::ScreenLast | ResponseKind::ScreenLastNoParam
     ) {
+        let with_parameters = response.kind == ResponseKind::ScreenLast;
         url_type = "screen-path".to_string();
-        // The newest history entry, else the root, so a login never ends up stuck on itself.
-        url = user::screen_history()
-            .ok()
-            .and_then(|history| history.first().cloned())
-            .filter(|path| path.starts_with('/'))
-            .unwrap_or_else(|| "/".to_string());
-        if response.kind == ResponseKind::ScreenLast {
+        if let Some(saved) = user::session::take_screen_last_path() {
+            // The saved screen, such as the page asked for before login, as long as it is on this site.
+            if saved.starts_with("http://") || saved.starts_with("https://") {
+                if same_origin(&saved) {
+                    url_type = "plain".to_string();
+                    url = saved;
+                } else {
+                    tracing::warn!("Ignoring off-site screen-last path [{saved}], redirecting to /");
+                    url = "/".to_string();
+                }
+            } else if saved.starts_with('/') && !saved.starts_with("//") {
+                url = saved;
+            } else {
+                url = "/".to_string();
+            }
+            user::session::remove_screen_last_parameters(with_parameters);
+        } else {
+            // The newest history entry, with its query or without, else the root, so a login never ends up stuck on itself.
+            url = user::screen_history()
+                .ok()
+                .and_then(|history| history.first().cloned())
+                .filter(|path| path.starts_with('/') && !path.starts_with("//"))
+                .map(|path| {
+                    if with_parameters {
+                        path
+                    } else {
+                        path.split('?').next().unwrap_or("/").to_string()
+                    }
+                })
+                .unwrap_or_else(|| "/".to_string());
+        }
+        if with_parameters {
             for (name, value) in user::saved_parameters().unwrap_or_default() {
                 carried.insert(name, value);
             }
@@ -1018,6 +1260,13 @@ fn respond(info: &ScreenUrlInfo, response: &ResponseDef, json: bool) -> Result<(
                     .or_insert_with(|| moqui_lib::object::to_plain_string(value));
             }
         }
+        // A query in the url, such as on a history entry, becomes parameters of the redirect.
+        if let Some((path, query)) = url.clone().split_once('?') {
+            for (name, value) in web::form_pairs(query) {
+                parameters.entry(name).or_insert(value);
+            }
+            url = path.to_string();
+        }
         let names = resolve_screen_path(&info.pre_transition_path, &url);
         // The parameters of the screens on the target path from the context, as Java's `UrlInstance.getParameterMap`: a transition of
         // a screen with a required parameter redirects back with it.
@@ -1035,6 +1284,14 @@ fn respond(info: &ScreenUrlInfo, response: &ResponseDef, json: bool) -> Result<(
         web::send_redirect(&with_query(location, &parameters));
     }
     Ok(())
+}
+
+/// Whether an absolute url names the host this request came to, as Java's `isSameOriginRedirect`.
+fn same_origin(url: &str) -> bool {
+    let after = url.split_once("://").map_or("", |(_, rest)| rest);
+    let authority = after.split(['/', '?', '#']).next().unwrap_or("");
+    let host = web::host_name(true);
+    !host.is_empty() && authority.eq_ignore_ascii_case(&host)
 }
 
 /// Java's `sendJsonRedirect`: `screenUrl` (the path with its parameters), `screenPathList` and `screenParameters` for a screen, else
@@ -1077,19 +1334,40 @@ fn send_json_redirect(screen_path: Option<Vec<String>>, location: &str, paramete
             );
         }
     }
-    let messages = ExecutionContext::with_current(|ec| ec.message().messages().to_vec()).unwrap_or_default();
+    let (messages, validation) = ExecutionContext::with_current(|ec| {
+        let facade = ec.message();
+        let messages: Vec<(String, String)> = facade
+            .messages()
+            .iter()
+            .enumerate()
+            .map(|(index, text)| (text.clone(), facade.message_type(index).to_string()))
+            .collect();
+        (messages, facade.validation_errors().to_vec())
+    })
+    .unwrap_or_default();
     if !messages.is_empty() {
         map.insert(
             "messageInfos".to_string(),
             V::List(
                 messages
                     .iter()
-                    .map(|message| {
+                    .map(|(message, kind)| {
                         let mut info = indexmap::IndexMap::new();
                         info.insert("message".to_string(), V::string(message));
-                        info.insert("type".to_string(), V::string("info"));
+                        info.insert("type".to_string(), V::string(kind));
                         V::Map(info)
                     })
+                    .collect(),
+            ),
+        );
+    }
+    if !validation.is_empty() {
+        map.insert(
+            "validationErrors".to_string(),
+            V::List(
+                validation
+                    .iter()
+                    .map(|error| V::Map(validation_map(error).into_iter().map(|(key, value)| (key, V::string(value))).collect()))
                     .collect(),
             ),
         );
@@ -1147,19 +1425,44 @@ fn path_parameters(info: &ScreenUrlInfo, names: &[String]) -> Result<BTreeMap<St
     Ok(out)
 }
 
-/// Messages ride the session to the next screen, which shows them.
+/// Messages ride the session to the next screen, which shows them, as Java's `saveMessagesToSession`: each message
+/// with its type, the errors, and the validation errors for the fields of the form that was submitted.
 fn save_messages() {
-    let (messages, errors) = ExecutionContext::with_current(|ec| {
+    let (messages, errors, validation) = ExecutionContext::with_current(|ec| {
         let facade = ec.message();
-        (facade.messages().to_vec(), facade.errors().to_vec())
+        let messages: Vec<(String, String)> = facade
+            .messages()
+            .iter()
+            .enumerate()
+            .map(|(index, text)| (text.clone(), facade.message_type(index).to_string()))
+            .collect();
+        (messages, facade.errors().to_vec(), facade.validation_errors().to_vec())
     })
     .unwrap_or_default();
-    for message in &messages {
-        user::session::add_flash_message(message);
+    for (message, kind) in &messages {
+        user::session::add_flash_message_typed(message, kind);
     }
-    for message in &errors {
+    // A validation error with a field is shown by that field; its text is not also an error line at the top.
+    let as_text: Vec<String> = validation
+        .iter()
+        .filter(|error| !error.field.is_empty())
+        .map(|error| error.message.clone())
+        .collect();
+    for message in errors.iter().filter(|message| !as_text.contains(message)) {
         user::session::add_flash_error(message);
     }
+    for error in &validation {
+        user::session::add_flash_validation_error(&validation_map(error));
+    }
+}
+
+fn validation_map(error: &crate::context::ValidationError) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("form".to_string(), error.form.clone()),
+        ("field".to_string(), error.field.clone()),
+        ("serviceName".to_string(), error.service.clone()),
+        ("message".to_string(), error.message.clone()),
+    ])
 }
 
 /// The request parameters of a failed submit ride the session so the form shows what was typed. A
@@ -1235,7 +1538,7 @@ pub(crate) fn check_condition(condition: &Condition) -> Result<bool, Error> {
 
 /// Run `body`, in a transaction when `begin` is set. The transaction joins one already in place.
 /// Errors the actions left in the message facade roll it back without failing the call.
-fn in_transaction(begin: bool, timeout: Option<i64>, body: impl FnOnce() -> Result<(), Error>) -> Result<(), Error> {
+fn in_transaction<T>(begin: bool, timeout: Option<i64>, body: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
     let facade = if begin {
         ExecutionContext::with_current(|ec| ec.factory().entity()).flatten()
     } else {
@@ -1249,27 +1552,28 @@ fn in_transaction(begin: bool, timeout: Option<i64>, body: impl FnOnce() -> Resu
         .and_then(|seconds| u64::try_from(seconds).ok())
         .map(std::time::Duration::from_secs);
     let mut rolled_back = false;
+    let mut kept = None;
     let outcome = tx.run(crate::transaction::TransactionAttribute::UseOrBegin, timeout, || {
         let _deadline = script::DeadlineGuard::new(tx.time_remaining());
-        body()?;
-        let has_error = ExecutionContext::with_current(|ec| !ec.message().errors().is_empty()).unwrap_or(false);
-        if has_error {
+        kept = Some(body()?);
+        if has_errors() {
             rolled_back = true;
             tx.set_rollback_only("Errors running screen actions")?;
         }
         Ok(())
     });
     match outcome {
-        Err(err) if rolled_back && err.to_string().contains("rollback-only") => Ok(()),
-        other => other.map_err(Error::from),
+        Err(err) if rolled_back && err.to_string().contains("rollback-only") => {}
+        other => other.map_err(Error::from)?,
     }
+    kept.ok_or_else(|| Error::new("the transaction body did not finish"))
 }
 
-fn missing_parameter(parameters: &BTreeMap<String, Value>, transition: &TransitionDef) -> Option<String> {
+fn missing_parameter(transition: &TransitionDef) -> Option<String> {
     transition
         .required_parameters()
         .into_iter()
-        .find(|name| is_empty(parameters.get(*name)))
+        .find(|name| is_empty(script::context_value(name).or_else(|| web::parameter(name)).as_ref()))
         .map(str::to_string)
 }
 
@@ -1288,6 +1592,10 @@ fn csrf_rejected(job: &Job<'_>, transition: &TransitionDef) -> Result<bool, Erro
     ) {
         return Ok(false);
     }
+    // Only a transition that runs something can change data, as Java's `hasActionsOrSingleService`.
+    if transition.actions.is_none() && transition.actions_error.is_none() {
+        return Ok(false);
+    }
     let required = match transition.require_session_token {
         Some(flag) => flag,
         None => web::require_session_token(),
@@ -1301,7 +1609,11 @@ fn csrf_rejected(job: &Job<'_>, transition: &TransitionDef) -> Result<bool, Erro
     }
     let presented = text_of(job.parameters.get("moquiSessionToken"));
     let presented = if presented.is_empty() {
-        job.request.header("x-csrf-token").unwrap_or("").to_string()
+        ["moquisessiontoken", "sessiontoken", "x-csrf-token"]
+            .iter()
+            .find_map(|name| job.request.header(name).filter(|text| !text.is_empty()))
+            .unwrap_or("")
+            .to_string()
     } else {
         presented
     };

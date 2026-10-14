@@ -160,7 +160,7 @@ async fn dispatch_screen(
     web.peer_ip = peer.ip().to_string();
     web.headers = header_map(&parts.headers);
     web.query = moqui_core::web::form_pairs(parts.uri.query().unwrap_or(""));
-    // The limit is 1 MiB, or `webapp_max_upload` for a multipart body, and it stops the read, not only the handling.
+    // The limit is `webapp_max_body` (10 MiB), or `webapp_max_upload` for a multipart body, and it stops the read.
     let limit = moqui_core::web::body_limit(&web);
     let declared = parts
         .headers

@@ -19,7 +19,7 @@
 //! `SELECT ... FOR UPDATE`. A bare locking read on a missing row would take a gap lock.
 //! `seqNum` stays the last reserved id. There is no native sequence.
 
-use moqui_db::sql::{is_mysql, quote_ident};
+use moqui_db::sql::{is_mysql, is_sqlite, quote_ident};
 use moqui_lib::error::Error;
 use moqui_lib::object::{basic_convert, Value};
 
@@ -135,6 +135,8 @@ fn seq_sql(entity: &moqui_db::model::EntityDefinition, dialect: &moqui_db::diale
     let name_col = quote_ident(dialect, "seqName");
     let num_col = quote_ident(dialect, "seqNum");
     let mysql = is_mysql(dialect);
+    // SQLite has the same upsert and RETURNING, but its two-argument max() is GREATEST.
+    let greatest = if is_sqlite(dialect) { "max" } else { "GREATEST" };
     Ok(SeqSql {
         mysql,
         lock_sql: format!("SELECT {num_col} FROM {table} WHERE {name_col} = ? FOR UPDATE"),
@@ -142,7 +144,7 @@ fn seq_sql(entity: &moqui_db::model::EntityDefinition, dialect: &moqui_db::diale
             "INSERT INTO {table} ({name_col}, {num_col}) VALUES (?, ?) ON DUPLICATE KEY UPDATE {num_col} = GREATEST({num_col} + ?, ?)"
         ),
         upsert_sql: format!(
-            "INSERT INTO {table} ({name_col}, {num_col}) VALUES (?, ?) ON CONFLICT ({name_col}) DO UPDATE SET {num_col} = GREATEST({table}.{num_col} + ?, ?) RETURNING {num_col}"
+            "INSERT INTO {table} ({name_col}, {num_col}) VALUES (?, ?) ON CONFLICT ({name_col}) DO UPDATE SET {num_col} = {greatest}({table}.{num_col} + ?, ?) RETURNING {num_col}"
         ),
     })
 }

@@ -6,7 +6,7 @@ This follows `plans/Architecture-Proposal.md`. It replaces the Gradle source set
 
 ## Decision
 
-Five crates, one workspace, and two data directories.
+Six crates, one workspace, and two data directories.
 
 ```
 mr-moqui/
@@ -16,6 +16,7 @@ mr-moqui/
     moqui-db/                # entity model, SQL text, dialects; no ExecutionContext and no driver
     moqui-core/              # the framework; synchronous, multi-threaded
     moqui-host/              # process edge: HTTP server, drivers, process spawn
+    moqui-browser/           # browser host: wasm32-unknown-emscripten worker, SQLite, fetch
     moqui/                   # binary: CLI and process entry
   framework/                 # framework component: XML, XSD, templates, default conf
   runtime/                   # instance directory: conf, webroot, tools, logs
@@ -25,6 +26,7 @@ Dependency direction is one way:
 
 ```
 moqui (bin) → moqui-host → moqui-core → moqui-db → moqui-lib
+moqui-browser → moqui-core (default-features = false) → moqui-db → moqui-lib
 ```
 
 `moqui-core` is the main framework crate. `moqui-host` is the crate that sits on top of it. `moqui-db` holds the entity model and the SQL text, and does not know the facades. `moqui-lib` sits at the bottom and does not know the framework exists. `moqui-core` also depends on `moqui-lib` directly, the same way `moqui-host` depends on both `moqui-core` and `moqui-lib`.
@@ -54,7 +56,7 @@ Everything else stays in `moqui-core`, including the facades, XML Actions, scree
 
 ## Threads, and why the host is separate
 
-There is no WASM target. `wasm32-wasip1` and a browser build are out of scope. The constraints that target imposed (no threads, and waiting calls as futures) are not worth it. Moqui uses threads in many places: the request, async service calls, scheduled jobs, and other background workers. Those stay threads. The execution model in `plans/Architecture-Proposal.md` is the rule: one `ExecutionContext` per thread, blocking calls. Entity, screen, and HTTP APIs return values. The one wait handle is service-facade `callFuture()`, a oneshot from a worker-pool thread.
+Moqui uses threads in many places: the request, async service calls, scheduled jobs, and other background workers. On the server those stay threads. The browser build (`wasm32-unknown-emscripten`, `plans/Wasm.md`) runs one worker and selects the `inline` executor at factory start, so it starts none of those threads. `wasm32-wasip1` is not a target. The execution model in `plans/Architecture-Proposal.md` is the rule: one `ExecutionContext` per thread, blocking calls. Entity, screen, and HTTP APIs return values. The one wait handle is service-facade `callFuture()`, a oneshot from a worker-pool thread.
 
 `moqui-core` uses `std::thread`. The factory starts the worker threads. The scheduler lives in core. It sleeps, and on a tick it submits due jobs to the service worker pool. It does not run the job body. An async service call, and `callFuture()`, run on that pool (bounded, with a bounded queue) and get another context. Core may use `std::fs` and `std::time`.
 
@@ -183,6 +185,10 @@ Other current classes, placed by the same rule:
 
 Core can load components, parse XML, expand actions and screens, run JavaScript, and, through `moqui-db`, evaluate entity conditions and render SQL, with no database driver and no listen socket. Opening a connection, accepting a request, and spawning an external process are host. That is what keeps a core unit test free of those.
 
+## moqui-core features
+
+`mail` (lettre, imap, mail-parser, rustls), `http` (`moqui-lib/http`, reqwest), and `cluster-tls` (rcgen) are default features. They gate outbound and inbound mail, the remote REST runner and http resource locations, and the generated cluster certificate. `moqui-host` uses the defaults. `moqui-browser` turns them off, so no aws-lc, reqwest, or socket code reaches the browser build. These are features, not a crate split, because that code calls many core internals. `plans/Wasm.md`.
+
 ## Databases
 
 The entity engine is database-agnostic in the same way the Java framework is. `moqui-db` owns the dialect and the SQL text. `moqui-host` owns connections. Adding a database is a dialect profile in `moqui-db` plus a `DbDriver` in `moqui-host`. It is not a fork of the entity facade.
@@ -282,5 +288,5 @@ Tests that start a factory, load `framework/`, and hit HTTP live under `crates/m
 - Per-facade crates (`moqui-entity`, `moqui-service`, `moqui-screen`).
 - A `start` or `execWar` source tree.
 - A port of the JSR-107 cache API, Shiro, the Bitronix XA journal, Jackrabbit, H2, JCS, or the servlet types. `MCache` is ported. The transaction manager is Moqui's own, against `DbDriver`, with Bitronix's behavior as the reference.
-- A WASM target, a `moqui-js` crate, a crate per database, or a drivers-without-HTTP crate.
+- A `moqui-js` crate, a crate per database, or a drivers-without-HTTP crate.
 - The tool components (`moqui-poi`, `moqui-image`, `moqui-cups`, `moqui-sftp`). Whether any of them move into this repository is a later decision, limited by binary size. The SSO relying party is framework code, in `plans/Sso.md`. `moqui-fop` is not ported. PDF is the host `pdf` module.

@@ -58,6 +58,7 @@ These are the feature flags the resolve used. The unsafe defaults are called out
 | `tokio-postgres-rustls` 0.14 | `aws-lc-rs`, `webpki-roots` | `ring`. Defaults are empty, so the crypto feature has to be named. |
 | `reqwest` 0.13 | `default-features = false`, `blocking`, `rustls`, `json`, `multipart`, `charset` | `native-tls`, `native-tls-vendored`. On 0.13, `default-tls` is already rustls with aws-lc. Name `rustls` anyway. A later reqwest that flips `default-tls` back to native-tls must not be taken on defaults. |
 | `lettre` 0.11 | `default-features = false`, `smtp-transport`, `builder`, `hostname`, `rustls`, `aws-lc-rs`, `webpki-roots` | Defaults, which include `native-tls`. The feature named `rustls-tls` enables `ring`, so that name stays off. `boring-tls`. `tokio1` stays off, so SMTP is blocking. |
+| `mail-parser` 0.11 | `default-features = false` | `full_encoding`/`encoding_rs`, `serde`, `rkyv`. |
 | `imap` 2.4 | `default-features = false` | `tls`, which is `native-tls` and is the default. 2.4.1 has no rustls feature. `rustls-connector` is a dev-dependency and is not linked. The TCP stream is wrapped with `rustls` in moqui-core. Depends on `chrono` 0.4, `nom` 5, and `imap-proto` 0.10 (MIT OR Apache-2.0). |
 | `rustls` 0.23 | `default-features = false`, `std`, `tls12`, `aws_lc_rs` | `ring`. This direct dependency is the IMAP and POP3 stream. `aws_lc_rs` is the crypto provider passed to `ClientConfig`, not a process-global default. POP3 has no crate: the client is in moqui-core on the same stream. Published POP3 clients are OpenSSL, MPL-2.0, LGPL, or Tokio. |
 | `rcgen` 0.14 | `default-features = false`, `aws_lc_rs` | `ring`, `pem`, `x509-parser`, `fips`. Defaults include `ring` and `pem`. The pair is a self-signed cluster certificate, base64 DER, linked from moqui-core only. `time` is certificate validity only. Moqui clocks stay `jiff`. aws-lc is the crypto provider. No OpenSSL. |
@@ -71,6 +72,8 @@ These are the feature flags the resolve used. The unsafe defaults are called out
 | `croner` 4 | `default-features = false`, `jiff` | The default `chrono` feature. |
 | `totp-rs` 6 | `default-features = false`, `std`, `otpauth`, `gen_secret` | `qr` |
 | `rquickjs` 0.14 | defaults | |
+| `rquickjs` 0.14 on `wasm32-unknown-emscripten` | defaults plus `bindgen` (moqui-core target dependency) | No bindings ship for this target, so `rquickjs-sys` generates them at build with `bindgen` (BSD-3-Clause, build only, not linked) against the emsdk sysroot. |
+| `rusqlite` 0.38 | `bundled` (moqui-browser only) | `0.40`: `servo-net` (behind `pdf-servo`) pins 0.38, and two `libsqlite3-sys` versions cannot both link `sqlite3`. No `bundled-sqlcipher`, `loadable_extension`, or `serde_json` feature. |
 | `pulldown-cmark` | the Rust crate | `comrak` is BSD-2-Clause and is an acceptable alternate. Re-check it if a C regex backend is turned on. |
 | `pdf-servo` | absent from the default graph | The `servo` crate 0.7.0 is MPL-2.0. See below. |
 
@@ -114,6 +117,7 @@ Versions are what `cargo` locked on 2026-10-11 for the feature set above. "Stati
 | `reqwest` | 0.13.5 | MIT OR Apache-2.0 | Blocking HTTP client | Static | OK on the `rustls` feature |
 | `lettre` | 0.11.23 | MIT | Outbound SMTP | Static | OK with the feature row above |
 | `imap` | 2.4.1 | Apache-2.0 OR MIT | Blocking IMAP client. POP3 is in-tree, not a crate. | Static | OK with `default-features = false`. The `tls` feature is `native-tls` and stays off. 2.4.1 has no rustls feature. No `ring` from this crate. |
+| `mail-parser` | 0.11.9 | Apache-2.0 OR MIT | Inbound MIME for `poll#EmailServer`: nested multiparts, RFC 2047 words, charsets, folded headers | Static | OK with `default-features = false`. Its one dependency is `hashify` 0.2 (Apache-2.0 OR MIT), a proc-macro that is not linked. `full_encoding` (`encoding_rs`, multi-byte CJK charsets) stays off; the single-byte charsets are built in. |
 | `russh` | 0.64.1 | Apache-2.0 | SSH client and server. No listener yet. | Static | OK with `aws-lc-rs`, `flate2`, and `rsa`. `ring`, `des`, and `dsa` off. Depends on `rsa` 0.10.0-rc.18 and `ssh-key` 0.7.0-rc.11, both MIT OR Apache-2.0. |
 | `russh-sftp` | 3.0.1 | Apache-2.0 | SFTP v3. Does not depend on `russh`. | Static | OK. `async-trait` off. |
 | `huskarl` | 0.11.6 | MIT OR Apache-2.0 | OIDC and OAuth 2 client. No redirect yet. | Static | OK. Default feature is the native JWS verifier. `rsa` 0.10.0-rc.18, shared with `russh`. `huskarl-crypto-webcrypto` is locked for wasm and is absent from the Linux tree. |
@@ -146,6 +150,8 @@ Versions are what `cargo` locked on 2026-10-11 for the feature set above. "Stati
 | `flate2`, `miniz_oxide` | 1.1.10 / 0.9.1 | MIT OR Apache-2.0 / MIT OR Zlib OR Apache-2.0 | Compression. Pure Rust. `flate2` is on `rust_backend`. | Static | OK. `zlib-rs` and `libz-sys` are not enabled. |
 | `ammonia` | 4.2.3 | MIT OR Apache-2.0 | HTML cleaning for `allow-html="safe"`, with its default allow-list | Static. Pulls `html5ever` 0.40 and `markup5ever` (MIT OR Apache-2.0), `url`, `maplit`, `tendril`, `string_cache`, `phf`. Also pulls `cssparser` 0.38 and `dtoa-short` 0.3.5, both **MPL-2.0**. | OK with a narrow exception. MPL-2.0 is file-level copyleft: we do not modify those crates, so the duty is to keep their license notice and offer their source, which the crates.io release is. `deny.toml` allows MPL-2.0 for those two crates by name and no other. |
 | `servo` | 0.7.0 | MPL-2.0 | In-process PDF alternate | Would be static | Hold. Off by default. |
+| `rusqlite` | 0.38.0 | MIT | SQLite `DbDriver` of the browser build (`crates/moqui-browser`, `plans/Wasm.md`) | Static in the emscripten module. Natively it is only in `moqui-browser` tests and stub; the `moqui` binary does not link it. Pulls `hashlink` 0.11, `fallible-iterator` 0.3, `fallible-streaming-iterator` 0.1 (MIT OR Apache-2.0 / MIT). | OK |
+| `libsqlite3-sys` | 0.36.0 | MIT; the bundled SQLite amalgamation is public domain | Compiles SQLite with the target C compiler (emcc for the browser) | Static, same scope as `rusqlite` | OK. Public domain needs no notice; keep the MIT notice for the crate. |
 
 `cc`, `cmake`, `pkg-config`, and `find-msvc-tools` run at build to compile aws-lc and are not linked into the binary. Proc-macro crates (`serde_derive`, `sqlx-macros`, `tokio-macros`, and the rest) run at compile time and are not linked either. The code they expand is.
 

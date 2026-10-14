@@ -64,16 +64,15 @@ fn run_unit(ctx: &Ctx<'_>, unit: &Unit) -> Result<(), Error> {
         eval_js::<JsValue>(ctx, &unit.runtime)?;
         engine.runtimes.borrow_mut().insert(unit.runtime_id);
     }
-    let saved = engine.units.borrow().get(&unit.id).cloned();
+    let saved = engine.units.borrow_mut().get(&unit.id);
     let function = match saved {
         Some(saved) => saved.restore(ctx).map_err(js_error)?,
         None => {
             let function = eval_js::<Function>(ctx, &unit.source)?;
-            let mut units = engine.units.borrow_mut();
-            if units.len() >= MAX_CACHED_TEMPLATES {
-                units.clear();
-            }
-            units.insert(unit.id, Persistent::save(ctx, function.clone()));
+            engine
+                .units
+                .borrow_mut()
+                .insert(unit.id, Persistent::save(ctx, function.clone()));
             function
         }
     };

@@ -90,14 +90,15 @@ pub(super) fn send_rest(
         .filter(|text| !text.is_empty())
         .unwrap_or_else(|| "text/plain".to_string());
     let body = field(&message, "messageText");
-    let mut call = super::super::shared_http_client()
-        .post(url)
-        .text(&content_type, body.clone());
+    let mut headers = vec![("content-type".to_string(), content_type)];
     let auth = field(&remote, "messageAuthEnumId");
     match auth.as_str() {
         "" | "SmatLogin" => {
             let credentials = format!("{}:{}", field(&remote, "username"), field(&remote, "password"));
-            call = call.header("Authorization", format!("Basic {}", STANDARD.encode(credentials)));
+            headers.push((
+                "Authorization".to_string(),
+                format!("Basic {}", STANDARD.encode(credentials)),
+            ));
         }
         "SmatHmacSha256" | "SmatHmacSha256Timestamp" => {
             let header_name = field(&remote, "authHeaderName");
@@ -113,7 +114,7 @@ pub(super) fn send_rest(
             } else {
                 timestamp_header(&secret, &body, super::now_millis() / 1000)
             };
-            call = call.header(header_name, value);
+            headers.push((header_name, value));
         }
         "SmatNone" => {}
         other => {
@@ -124,18 +125,29 @@ pub(super) fn send_rest(
         }
     }
 
-    let response = call.send(facade.sim_active())?;
-    let status = response.status();
+    if facade.sim_active() {
+        return Err(LibError::new(format!(
+            "HTTP POST {} denied because sim mode is active",
+            crate::outbound::redacted(&url)
+        )));
+    }
+    let response = crate::outbound::send(crate::outbound::Request {
+        method: crate::outbound::Method::Post,
+        url,
+        headers,
+        body: Some(body),
+    })?;
+    let status = response.status;
     if !(200..300).contains(&status) {
         add_error(format!(
             "System message {message_id} send error response ({status}): {}",
-            response.body()
+            response.body
         ));
         return Ok(BTreeMap::new());
     }
     // A body that is not JSON is still a successful send.
     let mut out = BTreeMap::new();
-    if let Ok(Value::Map(reply)) = super::super::parse_json(response.body()) {
+    if let Ok(Value::Map(reply)) = super::super::parse_json(&response.body) {
         match reply.get("systemMessageIdList") {
             Some(Value::List(ids)) if !ids.is_empty() => {
                 out.insert("remoteMessageId".to_string(), ids[0].clone());
@@ -402,7 +414,7 @@ fn first_use(key: &str) -> Result<bool, Error> {
         .ok_or_else(|| Error::new("no execution context is entered"))??
         .ok_or_else(|| Error::new(format!("cache {REPLAY_CACHE} is not configured")))?;
     // One atomic check and store: two requests with the same signature cannot both see it unused.
-    Ok(cache.put_if_absent(key.to_string(), "true".to_string())?)
+    Ok(cache.put_if_absent(key.to_string(), Value::Bool(true))?)
 }
 
 #[cfg(test)]

@@ -326,11 +326,8 @@ pub fn run_job_now(job_name: &str, extra: &BTreeMap<String, Value>) -> Result<St
         crate::user::current_user_id().ok().flatten(),
         &parameters,
     )?;
-    let shared = factory
-        .service_pools()
-        .shared
-        .clone()
-        .ok_or_else(|| Error::new("service worker pool is not running"))?;
+    let pools = factory.service_pools();
+    let shared = pools.shared.clone();
     let run = JobRun {
         job_name: job_name.to_string(),
         service_name: text(&job, "serviceName"),
@@ -344,7 +341,16 @@ pub fn run_job_now(job_name: &str, extra: &BTreeMap<String, Value>) -> Result<St
         last_run_time: Value::Null,
         delete_when_done: false,
         user_name: crate::user::current_username().ok().flatten(),
-        factory,
+        factory: Arc::clone(&factory),
+    };
+    // The inline executor runs it at the next drain point.
+    let run = match pools.submit_inline_job(Box::new(run)) {
+        Ok(()) => return Ok(run_id),
+        Err(run) => *run,
+    };
+    let Some(shared) = shared else {
+        delete_run(&facade, &run_id);
+        return Err(Error::new("service worker pool is not running"));
     };
     if !shared.submit_job(run) {
         delete_run(&facade, &run_id);

@@ -9,7 +9,7 @@
 - Make OpenSearch optional from day one by planning a search interface that can be satisfied by Postgres full-text search and JSON operators.
 - Preserve the ExecutionContext / facade shape that makes Moqui’s artifact model work.
 
-## Significant redesigns
+## Significant Redesigns
 
 Most of MR-Moqui is a port of the Java framework as it exists when the port begins. These are the places that change on purpose.
 
@@ -19,10 +19,54 @@ Most of MR-Moqui is a port of the Java framework as it exists when the port begi
 4. **JavaScript for scripts and templates.** Scripts, XML action and screen macros, and text templates are JavaScript, initially on QuickJS. `ec.resource.expand()` is a template literal. Structured text uses a second renderer: `if`, `list`, and `assign`, compiled to one cached JavaScript function. A locked-down variant of that renderer is the sandbox for less-trusted templates. Plan: [`plans/Architecture-Proposal.md`](plans/Architecture-Proposal.md) (Templating).
 5. **Print HTML is its own render mode.** Server-side page layout is `html-print` (print CSS and `@page`). The old `xsl-fo` name selects that mode. One long-lived external Chromium process prints it to PDF, through `chromiumoxide`. An off-by-default Servo build is the in-process alternate where a child process is forbidden. Plan: [`plans/Architecture-Proposal.md`](plans/Architecture-Proposal.md) (Tool components and print).
 6. **Cluster coordination uses the shared database.** Instances find each other in a member table. Cache invalidation and notifications fan out over HTTPS, and that endpoint requires a client certificate whose key material is deployment configuration (member rows hold only key fingerprints). Service jobs stay on the database. There is no Hazelcast, Redis, or session-byte replication. Plan: [`plans/Cluster.md`](plans/Cluster.md).
-7. **Sessions live in the database.** The session is `moqui.server.HttpSession`, cached through the entity one-cache and invalidated on the existing cluster topic. A flush overlays dirty fields onto the latest row and retries on `sessionRevision`. The default flush is eventually consistent. Guarantee mode flushes at login, logout, and the end of the request, so a load balancer without stickiness can fail over. Plan: [`plans/Architecture-Proposal.md`](plans/Architecture-Proposal.md) (Sessions and login) and [`plans/Cluster.md`](plans/Cluster.md).
+7. **Sessions live in the database.** The session is `moqui.server.HttpSession`, cached through the entity one-cache and invalidated on the existing cluster topic. A flush overlays dirty fields onto the latest row and retries on `sessionRevision`. The default flush is eventually consistent. Guarantee mode reads the primary and flushes at login, logout, and the end of the request, so a load balancer without stickiness can fail over. Plan: [`plans/Architecture-Proposal.md`](plans/Architecture-Proposal.md) (Sessions and login) and [`plans/Cluster.md`](plans/Cluster.md).
 8. **Keys are configuration, and unset secrets are generated.** Secret key values (field encryption, session-cookie signing, the cluster certificate pair, later the SSH host key) are `default-property`s in the `entity_ds_crypt_pass` pattern: a `CHANGEME` value in `MoquiDefaultConf.xml` set by config file or environment, never database rows. A `runtime/.env` file in the root of the runtime directory is loaded at startup like environment variables and supports any conf property. A secret still at its `CHANGEME` default is generated with the OS CSPRNG and saved to `runtime/.env`, instead of running on the shipped default. Plan: [`plans/MimoReview.md`](plans/MimoReview.md) (Decisions 1–3).
 
-## Build order
+## Build, Test, and Run
+
+Very basic instructions from a fresh checkout. A Run & Deploy guide will come later.
+
+Prerequisites: Rust 1.94 or newer (`rustc --version`). The first build downloads the
+embedded-Postgres 18.6.0 archive. Node.js is optional; the JS client tests run under
+`cargo test` only when `node` is on the path.
+
+```sh
+# Development build, binary at target/debug/moqui
+cargo build -p moqui
+
+# Production build, binary at target/release/moqui
+cargo build --release -p moqui
+
+# Tests (whole workspace) and lints
+cargo test
+cargo lint
+```
+
+Run from the repo root (paths default to `MOQUI_RUNTIME=runtime`,
+`MOQUI_FRAMEWORK=<runtime>/../framework`, embedded cluster in `runtime/db/embedded`):
+
+```sh
+cargo run -p moqui
+# or: ./target/debug/moqui
+```
+
+With no arguments the binary starts the HTTP server (port `8080` by default, cluster
+HTTPS on `8443`) using `framework/conf/MoquiDefaultConf.xml` merged with
+`runtime/conf/MoquiDevConf.xml` when present. Optional data load before or after
+starting (no arguments loads the default `seed`, `seed-initial`, `install` set):
+
+```sh
+./target/debug/moqui load
+```
+
+For production packaging, deploy the release binary together with the `framework/`
+and `runtime/` directories and run `./target/release/moqui` from the directory that
+holds them (or point `MOQUI_RUNTIME` / `MOQUI_FRAMEWORK` at them). The production
+settings live in `runtime/conf/MoquiProductionConf.xml`, but right now the server
+only auto-loads `MoquiDevConf.xml`, so for a production copy put the production
+contents in place of `runtime/conf/MoquiDevConf.xml`.
+
+## Implementation Order
 
 The port is bottom-up. The entity facade and the service facade are finished before the first gate, a data file load. Plan: [`plans/Implementation-Phases.md`](plans/Implementation-Phases.md).
 

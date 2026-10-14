@@ -245,6 +245,8 @@ pub struct TransitionDef {
     /// `None` uses the webapp default.
     pub require_session_token: Option<bool>,
     pub authz_action: String,
+    /// The transition names its `authz-action`; else a single service's action is used when it runs.
+    pub authz_explicit: bool,
     pub parameters: Vec<ParameterDef>,
     pub path_parameters: Vec<String>,
     pub condition: Option<Condition>,
@@ -272,6 +274,7 @@ impl TransitionDef {
             read_only: true,
             require_session_token: Some(false),
             authz_action: "view".to_string(),
+            authz_explicit: true,
             parameters: Vec::new(),
             path_parameters: Vec::new(),
             condition: None,
@@ -347,6 +350,7 @@ impl TransitionDef {
         };
         let runs_something = has_actions;
         let read_only = !runs_something || node.attribute("read-only").as_deref() == Some("true");
+        let authz_explicit = node.attribute("authz-action").is_some_and(|text| !text.is_empty());
         let authz_action = match node.attribute("authz-action").filter(|text| !text.is_empty()) {
             Some(action) => action,
             None if read_only => "view".to_string(),
@@ -373,6 +377,7 @@ impl TransitionDef {
             read_only,
             require_session_token: flag(node.attribute("require-session-token")),
             authz_action,
+            authz_explicit,
             parameters: parameters_of(node),
             path_parameters: node
                 .children_named("path-parameter")
@@ -402,6 +407,18 @@ pub struct SubscreensItem {
     pub no_sub_path: bool,
     /// A JavaScript expression run when the menu is built.
     pub disable_when: Option<String>,
+    /// From a `SubscreensItem` row: only members of this group see the item.
+    pub user_group_id: Option<String>,
+}
+
+impl SubscreensItem {
+    /// `isValidInCurrentContext`: an item limited to a user group is there only for its members.
+    pub fn is_valid_in_current_context(&self) -> bool {
+        match self.user_group_id.as_deref() {
+            None | Some("") | Some("ALL_USERS") => true,
+            Some(group) => crate::user::current_user_groups().is_ok_and(|groups| groups.contains(group)),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -412,6 +429,8 @@ pub struct Subscreens {
     pub conditional_defaults: Vec<(String, String)>,
     /// In the order the sources add them. A later source replaces an item of the same name.
     pub items: Vec<SubscreensItem>,
+    /// Indexes of `items` in menu order, sorted once.
+    order: std::sync::OnceLock<Vec<usize>>,
 }
 
 impl Subscreens {
@@ -421,20 +440,25 @@ impl Subscreens {
 
     /// Menu order: items with an index first by index, then by upper-case title.
     pub fn sorted(&self) -> Vec<&SubscreensItem> {
-        let mut items: Vec<&SubscreensItem> = self.items.iter().collect();
-        items.sort_by(|left, right| {
-            let by_index = match (left.menu_index, right.menu_index) {
-                (None, Some(_)) => std::cmp::Ordering::Less,
-                (Some(_), None) => std::cmp::Ordering::Greater,
-                (Some(a), Some(b)) => a.cmp(&b),
-                (None, None) => std::cmp::Ordering::Equal,
-            };
-            by_index.then_with(|| left.menu_title.to_uppercase().cmp(&right.menu_title.to_uppercase()))
+        let order = self.order.get_or_init(|| {
+            let titles: Vec<String> = self.items.iter().map(|item| item.menu_title.to_uppercase()).collect();
+            let mut order: Vec<usize> = (0..self.items.len()).collect();
+            order.sort_by(|&left, &right| {
+                let by_index = match (self.items[left].menu_index, self.items[right].menu_index) {
+                    (None, Some(_)) => std::cmp::Ordering::Less,
+                    (Some(_), None) => std::cmp::Ordering::Greater,
+                    (Some(a), Some(b)) => a.cmp(&b),
+                    (None, None) => std::cmp::Ordering::Equal,
+                };
+                by_index.then_with(|| titles[left].cmp(&titles[right]))
+            });
+            order
         });
-        items
+        order.iter().map(|&index| &self.items[index]).collect()
     }
 
     fn put(&mut self, item: SubscreensItem) {
+        self.order = std::sync::OnceLock::new();
         match self.items.iter_mut().find(|existing| existing.name == item.name) {
             Some(existing) => *existing = item,
             None => self.items.push(item),
@@ -536,6 +560,30 @@ pub struct Source {
     pub modified: Option<i64>,
 }
 
+impl Source {
+    /// The location with its modified time now. A directory counts, so a file added to it is seen.
+    pub(super) fn of(factory: &ExecutionContextFactory, location: &str) -> Self {
+        let modified = factory
+            .resource()
+            .get(location)
+            .ok()
+            .filter(|resource| resource.exists())
+            .and_then(|resource| resource.last_modified());
+        Self {
+            location: location.to_string(),
+            modified,
+        }
+    }
+
+    /// Whether the location still has the modified time it had when read.
+    pub(super) fn is_current(&self, factory: &ExecutionContextFactory) -> bool {
+        match factory.resource().get(&self.location) {
+            Ok(resource) => resource.exists() && resource.last_modified() == self.modified,
+            Err(_) => false,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ScreenDef {
     pub location: String,
@@ -578,6 +626,10 @@ pub struct ScreenDef {
     /// The merged screen XML, after `screen-extend`.
     pub source: XmlFragment,
     pub sources: Vec<Source>,
+    /// When the sources were last found current, in epoch milliseconds.
+    pub(super) checked_at: std::sync::atomic::AtomicI64,
+    /// The screen configuration data generation the `SubscreensItem` rows were read at.
+    pub(super) config_generation: u64,
     /// Render code and assembled forms made while rendering. They live as long as this definition.
     pub(super) generated: super::generate::Generated,
 }
@@ -753,7 +805,9 @@ impl ScreenDef {
             transitions.push(TransitionDef::actions(location));
         }
 
-        let subscreens = load_subscreens(facade, factory, node, location)?;
+        // Read before the rows, so a write while they load makes this definition stale.
+        let config_generation = crate::entity::screen_config_generation();
+        let subscreens = load_subscreens(facade, factory, node, location, &mut sources)?;
         let mut macro_templates = BTreeMap::new();
         for template in node.children_named("macro-template") {
             if let (Some(kind), Some(from)) = (template.attribute("type"), template.attribute("location")) {
@@ -889,6 +943,8 @@ impl ScreenDef {
             has_tab_menu,
             source: XmlFragment::of(node),
             sources,
+            checked_at: std::sync::atomic::AtomicI64::new(super::cache::now_millis()),
+            config_generation,
             generated: super::generate::Generated::default(),
         })
     }
@@ -1110,6 +1166,7 @@ fn load_subscreens(
     factory: &ExecutionContextFactory,
     node: &MNode,
     location: &str,
+    sources: &mut Vec<Source>,
 ) -> Result<Subscreens, Error> {
     let mut subscreens = Subscreens::default();
     let element = node.first_named("subscreens");
@@ -1117,6 +1174,8 @@ fn load_subscreens(
     let base = location.strip_suffix(".xml").unwrap_or(location);
     let directory = factory.resource().get(base)?;
     if directory.is_directory() {
+        // The directory's own time changes when a file is added or removed; each file's when its menu title does.
+        sources.push(Source::of(factory, base));
         let mut entries = directory.children()?;
         entries.sort_by(|left, right| left.location().cmp(right.location()));
         for entry in entries {
@@ -1134,6 +1193,7 @@ fn load_subscreens(
                 continue;
             }
             let item_location = format!("{base}/{file}");
+            sources.push(Source::of(factory, entry.location()));
             subscreens.put(SubscreensItem {
                 name: name.to_string(),
                 menu_title: root
@@ -1147,6 +1207,7 @@ fn load_subscreens(
                 location: item_location,
                 no_sub_path: false,
                 disable_when: None,
+                user_group_id: None,
             });
         }
     }
@@ -1170,7 +1231,7 @@ fn load_subscreens(
             subscreens.conditional_defaults.push((condition, name));
         }
         for item in element.children_named("subscreens-item") {
-            if let Some(item) = subscreens_item_of(factory, base, &item) {
+            if let Some(item) = subscreens_item_of(factory, base, &item, sources) {
                 subscreens.put(item);
             }
         }
@@ -1178,7 +1239,7 @@ fn load_subscreens(
     // Conf `screen-facade/screen` adds and overrides items for a screen by location.
     if let Some(conf) = facade.conf().screens.get(location) {
         for item in &conf.items {
-            if let Some(item) = subscreens_item_of(factory, base, &item.node()) {
+            if let Some(item) = subscreens_item_of(factory, base, &item.node(), sources) {
                 subscreens.put(item);
             }
         }
@@ -1186,10 +1247,76 @@ fn load_subscreens(
             subscreens.default_item = Some(default.clone());
         }
     }
+    // `moqui.screen.SubscreensItem` rows add and replace items last, as Java: this is how a component mounts its app
+    // under `apps` from its data. The user group is checked when the item is used, not here, since the definition is
+    // shared by every user.
+    if let Some(entity) = factory.entity() {
+        let _authz = crate::context::ExecutionContext::with_current(crate::context::ExecutionContext::disable_authz);
+        let rows = entity
+            .find("moqui.screen.SubscreensItem")
+            .and_then(|find| {
+                find.eq("screenLocation", moqui_lib::object::Value::string(location))
+                    .use_cache(true)
+                    .list()
+            });
+        match rows {
+            Ok(rows) => {
+                for row in rows.values() {
+                    let text = |name: &str| {
+                        row.get(name)
+                            .map(moqui_lib::object::to_plain_string)
+                            .filter(|text| !text.is_empty())
+                    };
+                    let Some(name) = text("subscreenName") else {
+                        continue;
+                    };
+                    let item_location = text("subscreenLocation").unwrap_or_else(|| format!("{base}/{name}.xml"));
+                    let menu_title = text("menuTitle").unwrap_or_else(|| {
+                        sources.push(Source::of(factory, &item_location));
+                        target_menu_title(factory, &item_location)
+                    });
+                    if text("makeDefault").as_deref() == Some("Y") {
+                        subscreens.default_item = Some(name.clone());
+                    }
+                    subscreens.put(SubscreensItem {
+                        menu_index: text("menuIndex").and_then(|index| index.trim().parse().ok()),
+                        menu_include: text("menuInclude").as_deref() == Some("Y"),
+                        no_sub_path: text("noSubPath").as_deref() == Some("Y"),
+                        disable_when: None,
+                        user_group_id: text("userGroupId"),
+                        name,
+                        location: item_location,
+                        menu_title,
+                    });
+                }
+            }
+            // A database without the screen tables (a bare test factory) has no rows to add.
+            Err(err) => tracing::debug!("no SubscreensItem rows for {location}: {err}"),
+        }
+    }
     Ok(subscreens)
 }
 
-fn subscreens_item_of(factory: &ExecutionContextFactory, base: &str, item: &MNode) -> Option<SubscreensItem> {
+/// The `default-menu-title` of the screen at `location`, else its pretty file name.
+fn target_menu_title(factory: &ExecutionContextFactory, location: &str) -> String {
+    factory
+        .resource()
+        .get(location)
+        .ok()
+        .filter(|resource| resource.exists() && resource.is_file())
+        .and_then(|resource| resource.read_text().ok())
+        .and_then(|text| MNode::parse_root_only(location, &text).ok())
+        .and_then(|root| root.attribute("default-menu-title"))
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| pretty_menu_name(location))
+}
+
+fn subscreens_item_of(
+    factory: &ExecutionContextFactory,
+    base: &str,
+    item: &MNode,
+    sources: &mut Vec<Source>,
+) -> Option<SubscreensItem> {
     let name = item.attribute("name").filter(|text| !text.is_empty())?;
     // An empty location means the file named like the item under the screen's directory.
     let location = item
@@ -1200,7 +1327,8 @@ fn subscreens_item_of(factory: &ExecutionContextFactory, base: &str, item: &MNod
         .attribute("menu-title")
         .filter(|text| !text.is_empty())
         .unwrap_or_else(|| {
-            // The target's own default-menu-title, else the pretty file name.
+            // The target's own default-menu-title, else the pretty file name. The title is read again when the target changes.
+            sources.push(Source::of(factory, &location));
             factory
                 .resource()
                 .get(&location)
@@ -1223,6 +1351,7 @@ fn subscreens_item_of(factory: &ExecutionContextFactory, base: &str, item: &MNod
             != Some("false"),
         no_sub_path: item.attribute("no-sub-path").as_deref() == Some("true"),
         disable_when: item.attribute("disable-when").filter(|text| !text.is_empty()),
+        user_group_id: None,
         location,
     })
 }

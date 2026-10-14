@@ -57,6 +57,9 @@ thread_local! {
 /// The find `list` and `iterator` ask the cache about. Owned so a cache can store the key.
 pub struct FindLookup {
     pub entity_name: String,
+    /// `useCache` on the find: `Some(true)` caches any entity not marked `cache="never"`, `Some(false)` none; `None` follows
+    /// the entity's `cache` attribute (Java's `shouldUseCache`).
+    pub use_cache: Option<bool>,
     pub condition: Option<Condition>,
     pub order: Vec<OrderBy>,
     pub limit: Option<i64>,
@@ -101,7 +104,18 @@ struct ReadMeta {
     full_name: String,
     is_view: bool,
     cache: bool,
+    cache_never: bool,
     pk_fields: Vec<String>,
+}
+
+impl ReadMeta {
+    fn caches(&self, lookup: &FindLookup) -> bool {
+        match lookup.use_cache {
+            Some(true) => !self.cache_never,
+            Some(false) => false,
+            None => self.cache,
+        }
+    }
 }
 
 struct MemRow {
@@ -158,7 +172,7 @@ pub fn before_find(facade: &EntityFacade, lookup: &FindLookup) -> Option<EntityL
             }
         }
     }
-    if meta.cache {
+    if meta.caches(lookup) {
         return cache_get(facade, &meta.full_name, lookup);
     }
     None
@@ -191,7 +205,7 @@ pub fn before_count(facade: &EntityFacade, entity_name: &str, condition: Option<
 /// Store a find result when the entity cache attribute is `true`. Rows are already plaintext.
 pub fn after_find(facade: &EntityFacade, lookup: &FindLookup, rows: &EntityList) -> Result<(), Error> {
     let meta = read_meta(facade, &lookup.entity_name)?;
-    if !meta.cache {
+    if !meta.caches(lookup) {
         return Ok(());
     }
     let key = lookup_key(lookup);
@@ -243,6 +257,20 @@ pub fn gate_write(
     Ok(WriteGate::Handled)
 }
 
+/// Counts writes to the screen configuration entities (`SubscreensItem`, `SubscreensDefault`), here or from a cluster
+/// peer, so a screen definition read before the last one is loaded again.
+static SCREEN_CONFIG_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) fn screen_config_generation() -> u64 {
+    SCREEN_CONFIG_GENERATION.load(std::sync::atomic::Ordering::Acquire)
+}
+
+fn note_screen_config(full_name: &str) {
+    if full_name.starts_with("moqui.screen.Subscreens") {
+        SCREEN_CONFIG_GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
 /// Clear this entity's one-cache, then publish `entity-cache-invalidate` for the primary key.
 /// The transaction flush is separate and runs at commit. The local clear stays the whole entity.
 pub fn on_write(
@@ -254,12 +282,14 @@ pub fn on_write(
     let _ = operation;
     let meta = read_meta(facade, entity_name)?;
     clear_named(facade, &meta.full_name)?;
+    note_screen_config(&meta.full_name);
     crate::cluster::note_write(facade, entity_name, &meta.pk_fields, values).map_err(Error::from)
 }
 
 /// Clear this entity's one-cache and do not publish. Remote apply uses this.
 pub(crate) fn clear_one_cache(facade: &EntityFacade, entity_name: &str) -> Result<(), Error> {
     let meta = read_meta(facade, entity_name)?;
+    note_screen_config(&meta.full_name);
     clear_named(facade, &meta.full_name)
 }
 
@@ -884,6 +914,7 @@ fn read_meta(facade: &EntityFacade, entity_name: &str) -> Result<ReadMeta, Error
             full_name: entity.full_name.clone(),
             is_view: entity.is_view,
             cache: entity.cache == "true",
+            cache_never: entity.cache == "never",
             pk_fields: entity.pk_field_names().into_iter().map(str::to_string).collect(),
         })
     })

@@ -27,12 +27,17 @@ pub(super) fn entity_find<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<
     })
 }
 
-pub(super) fn entity_make_value<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<Class<'js, HostEntity>> {
+pub(super) fn entity_make_value<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let facade = facade_of(&ctx)?;
         let value = facade.make_value(&name).map_err(|err| throw_lib(&ctx, &err))?;
-        Class::instance(ctx.clone(), HostEntity::new(value))
+        entity_to_js(&ctx, HostEntity::new(value))
     })
+}
+
+/// An entity value as a script sees it.
+pub(super) fn entity_to_js<'js>(ctx: &Ctx<'js>, host: HostEntity) -> rquickjs::Result<JsValue<'js>> {
+    Class::instance(ctx.clone(), host).and_then(|class| class.into_js(ctx))
 }
 
 pub(super) fn wrap_find<'js>(ctx: &Ctx<'js>, find: EntityFind) -> rquickjs::Result<Class<'js, HostFind>> {
@@ -185,10 +190,23 @@ impl HostFind {
         })
     }
 
-    /// Reads go to the entity cache or the database as `EntityFind` decides, so the cache and
-    /// clone hints change nothing.
-    fn use_cache<'js>(&self, ctx: Ctx<'js>, _flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostFind>> {
-        host_guard(&ctx, || wrap_find(&ctx, take_find(&ctx, &self.inner)?))
+    /// `useCache(flag)`: through the entity cache for any entity not marked `never`, as Java's `EntityFind.useCache`. A
+    /// null or undefined flag leaves the entity's own setting.
+    fn use_cache<'js>(&self, ctx: Ctx<'js>, flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostFind>> {
+        host_guard(&ctx, || {
+            let find = take_find(&ctx, &self.inner)?;
+            let find = if flag.is_null() || flag.is_undefined() {
+                find
+            } else {
+                let on = flag.as_bool().unwrap_or_else(|| {
+                    flag.as_string()
+                        .and_then(|text| text.to_string().ok())
+                        .is_some_and(|text| text == "true")
+                });
+                find.use_cache(on)
+            };
+            wrap_find(&ctx, find)
+        })
     }
 
     fn for_update<'js>(&self, ctx: Ctx<'js>, flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostFind>> {
@@ -243,10 +261,7 @@ impl HostFind {
                 .one()
                 .map_err(|err| throw_lib(&ctx, &err))?;
             match found {
-                Some(value) => {
-                    let class = Class::instance(ctx.clone(), HostEntity::new(value))?;
-                    class.into_js(&ctx)
-                }
+                Some(value) => entity_to_js(&ctx, HostEntity::new(value)),
                 None => Null.into_js(&ctx),
             }
         })
@@ -486,7 +501,7 @@ impl HostList {
     fn item<'js>(&self, ctx: &Ctx<'js>, index: usize) -> rquickjs::Result<JsValue<'js>> {
         match self.inner.get(index) {
             Some(value) => {
-                Class::instance(ctx.clone(), HostEntity::new(value.clone())).and_then(|class| class.into_js(ctx))
+                entity_to_js(ctx, HostEntity::new(value.clone()))
             }
             None => Null.into_js(ctx),
         }
@@ -654,9 +669,11 @@ pub(super) type EntityCell = Mutex<EntityValue>;
 
 impl HostEntity {
     fn new(value: EntityValue) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(value)),
-        }
+        Self::of(Arc::new(Mutex::new(value)))
+    }
+
+    pub(super) fn of(inner: Arc<EntityCell>) -> Self {
+        Self { inner }
     }
 
     fn val(&self) -> MutexGuard<'_, EntityValue> {
@@ -721,7 +738,7 @@ impl HostEntity {
                 .map_err(|err| throw_lib(ctx, &err))?
             {
                 Some(value) => {
-                    Class::instance(ctx.clone(), HostEntity::new(value)).and_then(|class| class.into_js(ctx))
+                    entity_to_js(ctx, HostEntity::new(value))
                 }
                 None => Null.into_js(ctx),
             },
@@ -825,6 +842,23 @@ impl HostEntity {
         host_guard(&ctx, || match self.val().get(&field) {
             Some(value) => value_to_js(&ctx, value),
             None => Null.into_js(&ctx),
+        })
+    }
+
+    fn get_entity_name(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(self.val().entity_name().to_string()))
+    }
+
+    /// `getMap()`: the fields as a plain map.
+    fn get_map<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            let map: indexmap::IndexMap<String, Value> = self
+                .val()
+                .fields()
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect();
+            host_to_js(&ctx, Value::Map(map))
         })
     }
 
@@ -994,9 +1028,7 @@ impl HostEntity {
                 .one()
                 .map_err(|err| throw_lib(&ctx, &err))?;
             match found {
-                Some(value) => {
-                    Class::instance(ctx.clone(), HostEntity::new(value)).and_then(|class| class.into_js(&ctx))
-                }
+                Some(value) => entity_to_js(&ctx, HostEntity::new(value)),
                 None => Null.into_js(&ctx),
             }
         })

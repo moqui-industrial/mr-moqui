@@ -124,7 +124,7 @@ fn resource_expression<'js>(
         flush_current(&ctx, false)?;
         let value = with_additional(&ctx, &map, || {
             with_widget_ec(&ctx, &expression, None, || {
-                eval_js::<JsValue>(&ctx, &as_expression(&expression))
+                eval_compiled::<JsValue>(&ctx, &as_expression(&expression), true)
             })
             .map_err(|err| Exception::throw_message(&ctx, err.message()))
         });
@@ -148,7 +148,7 @@ fn resource_condition<'js>(
         flush_current(&ctx, false)?;
         let holds = with_additional(&ctx, &map, || {
             let value = with_widget_ec(&ctx, &expression, None, || {
-                eval_js::<JsValue>(&ctx, &as_expression(&expression))
+                eval_compiled::<JsValue>(&ctx, &as_expression(&expression), true)
             })
             .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
             Ok(js_truthy(&value))
@@ -192,27 +192,38 @@ pub(super) fn add_resource_functions<'js>(ctx: &Ctx<'js>, resource: &Object<'js>
 }
 
 /// `ec.resource.template(location, data)`: the file rendered by the renderer for its extension, as
-/// text. A trusted renderer reads the live context and adds `data` in a frame of its own. A
-/// locked-down renderer sees only `data`.
+/// text, or the file's text when no renderer has its extension. A trusted renderer reads the live context and adds
+/// `data` in a frame of its own. A locked-down renderer sees only `data`. A string second argument is Java's
+/// `defaultExtension`: the renderer to use when the location's extension has none.
 fn resource_template(ctx: Ctx<'_>, location: String, data: Opt<JsValue<'_>>) -> rquickjs::Result<String> {
     host_guard(&ctx, || {
+        let mut default_extension = String::new();
         let data = match data.0 {
+            Some(value) if value.is_string() => {
+                default_extension = js_string(&ctx, &value)?;
+                None
+            }
             Some(value) if !value.is_undefined() && !value.is_null() => Some(js_to_host(&ctx, &value)?),
             _ => None,
         };
         let factory = with_ec(&ctx, |ec| Arc::clone(ec.factory()))?;
         crate::script::template::TemplateRegistry::of(&factory)
-            .render_location(&factory, &location, data.as_ref())
+            .render_location_default(&factory, &location, data.as_ref(), &default_extension)
             .map_err(|err| throw_error(&ctx, &err))
     })
 }
 
 // ---- ec.l10n ----
 
-fn l10n_localize(ctx: Ctx<'_>, original: JsValue<'_>) -> rquickjs::Result<String> {
+/// `localize(original, locale)`: in the given locale, else the session's.
+fn l10n_localize(ctx: Ctx<'_>, original: JsValue<'_>, locale: Opt<JsValue<'_>>) -> rquickjs::Result<String> {
     host_guard(&ctx, || {
         let text = moqui_lib::object::to_plain_string(&js_to_host(&ctx, &original)?);
-        l10n::localize(&text).map_err(|err| throw_error(&ctx, &Error::new(err.message())))
+        let localized = match optional_text(&ctx, &locale)?.filter(|locale| !locale.is_empty()) {
+            Some(locale) => l10n::localize_in(&text, &locale.replace('-', "_")),
+            None => l10n::localize(&text),
+        };
+        localized.map_err(|err| throw_error(&ctx, &Error::new(err.message())))
     })
 }
 
@@ -273,10 +284,66 @@ fn l10n_format_currency_no_symbol(
     host_guard(&ctx, || currency(&ctx, &amount, &uom_id, &digits, true))
 }
 
-fn l10n_parse_timestamp<'js>(ctx: Ctx<'js>, input: String, _format: Opt<String>) -> rquickjs::Result<JsValue<'js>> {
-    host_guard(&ctx, || match l10n::parse_timestamp(&input) {
-        Some(value) => host_to_js(&ctx, value),
-        None => Null.into_js(&ctx),
+/// The optional text argument of an `ec.l10n` call: null or missing is none.
+fn optional_text(ctx: &Ctx<'_>, value: &Opt<JsValue<'_>>) -> rquickjs::Result<Option<String>> {
+    match value.0.as_ref() {
+        Some(found) if !found.is_null() && !found.is_undefined() => {
+            Ok(Some(moqui_lib::object::to_plain_string(&js_to_host(ctx, found)?)))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn parsed_or_null<'js>(ctx: &Ctx<'js>, value: Option<Value>) -> rquickjs::Result<JsValue<'js>> {
+    match value {
+        Some(value) => host_to_js(ctx, value),
+        None => Null.into_js(ctx),
+    }
+}
+
+fn l10n_parse_timestamp<'js>(ctx: Ctx<'js>, input: JsValue<'js>, format: Opt<JsValue<'js>>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let input = moqui_lib::object::to_plain_string(&js_to_host(&ctx, &input)?);
+        let format = optional_text(&ctx, &format)?;
+        parsed_or_null(&ctx, l10n::parse_timestamp_format(&input, format.as_deref()))
+    })
+}
+
+fn l10n_parse_date<'js>(ctx: Ctx<'js>, input: JsValue<'js>, format: Opt<JsValue<'js>>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let input = moqui_lib::object::to_plain_string(&js_to_host(&ctx, &input)?);
+        let format = optional_text(&ctx, &format)?;
+        parsed_or_null(&ctx, l10n::parse_date_format(&input, format.as_deref()))
+    })
+}
+
+fn l10n_parse_time<'js>(ctx: Ctx<'js>, input: JsValue<'js>, format: Opt<JsValue<'js>>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let input = moqui_lib::object::to_plain_string(&js_to_host(&ctx, &input)?);
+        let format = optional_text(&ctx, &format)?;
+        parsed_or_null(&ctx, l10n::parse_time_format(&input, format.as_deref()))
+    })
+}
+
+fn l10n_parse_number<'js>(ctx: Ctx<'js>, input: JsValue<'js>, _format: Opt<JsValue<'js>>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let input = moqui_lib::object::to_plain_string(&js_to_host(&ctx, &input)?);
+        parsed_or_null(&ctx, l10n::parse_number(&input))
+    })
+}
+
+fn l10n_round_currency<'js>(
+    ctx: Ctx<'js>,
+    amount: JsValue<'js>,
+    uom_id: Opt<JsValue<'js>>,
+    precise: Opt<JsValue<'js>>,
+) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let amount = js_to_host(&ctx, &amount)?;
+        let uom = optional_text(&ctx, &uom_id)?.unwrap_or_else(|| "USD".to_string());
+        let precise = precise.0.as_ref().and_then(JsValue::as_bool).unwrap_or(false);
+        let rounded = l10n::round_currency(&amount, &uom, precise).map_err(|err| throw_error(&ctx, &err))?;
+        host_to_js(&ctx, rounded)
     })
 }
 
@@ -293,6 +360,13 @@ fn l10n_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("formatCurrency", l10n_format_currency);
     method!("formatCurrencyNoSymbol", l10n_format_currency_no_symbol);
     method!("parseTimestamp", l10n_parse_timestamp);
+    method!("parseDate", l10n_parse_date);
+    method!("parseTime", l10n_parse_time);
+    method!("parseNumber", l10n_parse_number);
+    method!("roundCurrency", l10n_round_currency);
+    // `formatNumber(n, format)` and `formatValue` are `format` for a number, as in Java.
+    method!("formatNumber", l10n_format);
+    method!("formatValue", l10n_format);
     Ok(l10n)
 }
 

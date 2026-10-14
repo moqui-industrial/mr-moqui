@@ -21,6 +21,7 @@ pub mod edi;
 pub mod entity;
 pub mod l10n;
 pub mod notify;
+pub mod outbound;
 pub mod screen;
 pub mod script;
 pub mod search;

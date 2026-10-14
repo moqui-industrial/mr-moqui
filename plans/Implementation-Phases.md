@@ -146,6 +146,7 @@ Depends on phase 4. The permission and user tables exist. Entity and service ope
 
 - Passwords with `argon2` 0.6 (`password-hash` feature). `loginUser`, `logoutUser`, anonymous login, `internalLoginUser`. Shiro is not carried forward. A stored hash whose `passwordHashType` is not argon2 is verified with that algorithm and, on success, rehashed to argon2. An empty type uses the conf default, SHA-256. The legacy construction is Shiro `SimpleHash`: `MessageDigest` of the password plus salt, hex unless `passwordBase64` is `Y`. The name `SHA` is Java's SHA-1. `passwordHashType` and `passwordBase64` stay. Login-key hashes stay on their own conf type.
 - Server-side session state: user, visit, visitor, locale, time zone, CSRF token, flash messages, saved and error parameters, screen history. These fields live in memory in this phase. `moqui.server.HttpSession` and the flush are phase 7, as Sessions and login in `plans/Architecture-Proposal.md` describes. The signed cookie that carries the session id is phase 7. Tests call `loginUser` on the facade directly.
+- QuickJS expression runtime and context bindings for authorization filters, with the safety limits described in phase 6. Expression errors fail closed; phase 6 reuses this runtime.
 - Artifact authorization against artifact groups, permissions, and authz records, including tarpit. Entity finds and writes, and service calls, consult it. `disableAuthz` still short-circuits, which is how load and internal work run.
 - A matching `ArtifactAuthzFilter` also adds `EntityFilter` conditions to the find, the Java `filterFindForUser` path. View-entity finds map the filter field through the member alias. `EntityFilterSet.applyCond` is a JavaScript expression, evaluated when the find is built, with the same bare-name rules as other server expressions. Mantle's `MANTLE_USER_ORG` and `MANTLE_ACTIVE_ORG` sets are the oracle. A phase 5 test finds through a view-entity with one filter applied and one `applyCond` that skips the set.
 - Password policy from `user-facade`: minimum length, minimum digits, history limit, change interval, `max-failures`, and `disable-minutes`. A failure increments the counter on the reserve connection. The account disables for `disable-minutes` after `max-failures`. The checks run on login and on password change. Password reset and second factor stay phase 11.
@@ -303,6 +304,20 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   static template, row selection, first/second/last rows, aggregation, the column picker and the csv/text/pdf buttons; precompiled `m-*`
   templates, which `webapp_qvt_static_only=true` waits for; the `lookup` widget (a text line, as the Java macro was commented out). A static
   template is fetched once to read `X-Moqui-Qvt` and then loaded again by a script element (a URL without the query), so it downloads twice.
+- **Deferred after the Phase 8 and 10 review against Java.** Each is a Java feature no screen in this tree needs yet; the Java reference is
+  in `ScreenRenderImpl` (SRI), `ScreenDefinition` (SD), `ScreenForm` (SF) and `ScreenUrlInfo` (SUI):
+  - saved finds: `formListFindId`, `FormListFindUserDefault` and the `formSaveFind` transition (SRI:336-378, SD:1113-1135);
+  - the `formSelectColumns` transition (SD:1135-1165) and `screenDoc` (SD:1168-1193);
+  - the `screen.user.page.size` preference (SRI:391-404);
+  - `auto-fields-service` and `auto-widget-service` (SF:147-176), which `Tools/Service/ServiceRun.xml` needs;
+  - `DbForm` forms and `extends` of one (SF:72-80, 334-350), and `setSubFieldValidateAttrs` (SF:214-276), the client checks from a
+    transition's service;
+  - form-list aggregation (`group-by`, `sub-list`, `show-total`) and a select limited to the displayed and hidden fields (SF:2033-2139);
+  - tree node JSON (`sendSubNodeJson`, SD:1085-1088), `include-child-content` and template files under a screen (SRI:650-747),
+    transition names that are patterns (SD:509-515), and `section-include` copying only what the section holds (SD:366-390).
+- **Differences that stay.** `disable-when` on a `subscreens-item` blocks the screen below the first level; Java defines `getDisable`
+  but reads it nowhere. The `default-display` attribute of an entity field is not read (no entity in this tree or the Java components
+  sets it).
 
 - **Slice 3, fancy renderers.** `script/template.rs` compiles the dialect in Rust to one JavaScript function, cached by
   source text, and the trusted renderer runs it on the script runtime. The locked-down renderer runs the same function in
@@ -346,7 +361,7 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   its feature adds a crate for a saving gzip mostly gives.
 - **Multipart.** axum's `multipart` feature needs `multer`, which is not in the tree, and the request pool takes an owned
   request, so the host reads the body (up to `webapp_max_upload`, default 100 MiB, while it reads; other bodies stop at
-  1 MiB) and `web/multipart.rs` parses it. Text fields join the parameters. A file is an `UploadedFile` host object
+  `webapp_max_body`, default 10 MiB) and `web/multipart.rs` parses it. Text fields join the parameters. A file is an `UploadedFile` host object
   (`name`, `contentType`, `size`, `getString()`, `write("dbresource://...")`) in the parameters and in
   `ec.web.multiPartParameters`, with `_fileUploadList`. A file that starts like a program is a 415 unless
   `webapp_upload_executable_allow` is `true`.

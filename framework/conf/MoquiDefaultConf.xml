@@ -1050,6 +1050,39 @@
             <inline-jdbc pool-maxsize="90"><xa-properties serverName="${entity_ds_host}" portNumber="${entity_ds_port?:'5432'}"
                     databaseName="${entity_ds_database}" user="${entity_ds_user}" password="${entity_ds_password}"/></inline-jdbc>
         </database>
+        <!--
+        * SQLite: the browser build's local database (crates/moqui-browser, plans/Wasm.md). Not a server datasource.
+        * Column types pick SQLite affinities. Date, time, and date-time are TEXT in a fixed UTC format the driver writes,
+          so they sort and compare as text. Decimals have NUMERIC affinity, exact to about 15 significant digits.
+        * for-update is empty: SQLite has no row locks; a write transaction holds the database.
+        * Foreign keys are not created (SQLite cannot add one to an existing table).
+        -->
+        <database name="sqlite" fts-style="none" join-style="ansi-no-parenthesis" offset-style="limit" for-update=""
+                default-test-query="SELECT 1">
+            <database-type type="id" sql-type="TEXT"/>
+            <database-type type="id-long" sql-type="TEXT"/>
+
+            <database-type type="date" sql-type="TEXT"/>
+            <database-type type="time" sql-type="TEXT"/>
+            <database-type type="date-time" sql-type="TEXT"/>
+
+            <database-type type="number-integer" sql-type="INTEGER"/>
+            <database-type type="number-decimal" sql-type="NUMERIC"/>
+            <database-type type="number-float" sql-type="REAL"/>
+
+            <database-type type="currency-amount" sql-type="NUMERIC"/>
+            <database-type type="currency-precise" sql-type="NUMERIC"/>
+
+            <database-type type="text-indicator" sql-type="TEXT"/>
+            <database-type type="text-short" sql-type="TEXT"/>
+            <database-type type="text-medium" sql-type="TEXT"/>
+            <database-type type="text-intermediate" sql-type="TEXT"/>
+            <database-type type="text-long" sql-type="TEXT"/>
+            <database-type type="text-very-long" sql-type="TEXT"/>
+            <database-type type="text-fts" sql-type="TEXT"/>
+
+            <database-type type="binary-very-long" sql-type="BLOB"/>
+        </database>
     </database-list>
 
     <repository-list>

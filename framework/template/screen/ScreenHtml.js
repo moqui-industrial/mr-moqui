@@ -760,6 +760,8 @@
 
         const formOpen = (n, upload) => {
             st.formName = at(n, "name");
+            // Read again for each form: the runtime outlives a render.
+            st.validationErrors = undefined;
             st.owner = at(n, "owner-form");
             st.skipForm = false;
             const skipStart = at(n, "skip-start") === "true" || !!st.owner;
@@ -792,28 +794,39 @@
             reset();
         };
 
+        // The validation error the last submit left for a field of this form, as Java's form macros show it.
+        const fieldError = (name) => {
+            if (st.validationErrors === undefined) st.validationErrors = (ec.web && ec.web.savedValidationErrors) || [];
+            const found = st.validationErrors.find((v) => v.field === name && (!v.form || v.form === st.formName));
+            return found ? found.message : null;
+        };
         // A form-single field: the label and a box for the widgets. Returns what to close.
         const fieldOpen = (name, title, isSubmit, containerStyle, big) => {
             st.fieldForm = st.fieldForm || xn(st.formName);
             const forId = st.fieldForm + "_" + name + entry() + sec();
             const style = cls(containerStyle || null);
             const lc = st.labelCols ? " style=\"--lc:" + e(st.labelCols) + '"' : "";
+            const error = isSubmit ? null : fieldError(name);
+            const invalid = error ? " data-invalid" : "";
             if (big) {
-                w('<div class="big-item"><div class="field"' + lc + ">" + (title && !isSubmit ? '<label for="' + e(forId) + '">' + e(title) + "</label>" : "") + "<div" + A({ class: cls("widget", style) }) + ">");
-                return 1;
+                w('<div class="big-item"><div class="field"' + invalid + lc + ">" + (title && !isSubmit ? '<label for="' + e(forId) + '">' + e(title) + "</label>" : "") + "<div" + A({ class: cls("widget", style) }) + ">");
+                return { error };
             }
             if (isSubmit) {
                 w('<div class="field" data-submit' + lc + '><span class="label"></span><div' + A({ class: cls("widget", style) }) + ">");
-                return 1;
+                return { error };
             }
             if (title) {
-                w('<div class="field"' + lc + '><label for="' + e(forId) + '">' + e(title) + "</label><div" + A({ class: cls("widget", style) }) + ">");
-                return 1;
+                w('<div class="field"' + invalid + lc + '><label for="' + e(forId) + '">' + e(title) + "</label><div" + A({ class: cls("widget", style) }) + ">");
+                return { error };
             }
+            if (error) w('<div class="field-error" role="alert">' + e(error) + "</div>");
             return 0;
         };
         const fieldClose = (opened, big) => {
-            if (opened) w(big ? "</div></div></div>\n" : "</div></div>\n");
+            if (!opened) return;
+            if (opened.error) w('<div class="field-error" role="alert">' + e(opened.error) + "</div>");
+            w(big ? "</div></div></div>\n" : "</div></div>\n");
         };
 
         const rowOpen = (kind, style) => w("<div" + A({ class: cls(kind, xn(style) || null) }) + ">");

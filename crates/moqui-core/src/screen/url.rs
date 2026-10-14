@@ -27,7 +27,7 @@ use super::cache::{canonical_render_mode, ScreenFacade};
 use super::definition::{ParameterDef, ScreenDef, TransitionDef};
 use crate::context::{Error, ErrorKind, ExecutionContextFactory};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ScreenUrlInfo {
     /// Every screen from the root to the target, including defaults.
     pub path_defs: Vec<Arc<ScreenDef>>,
@@ -97,6 +97,11 @@ impl ScreenUrlInfo {
         last_standalone: i32,
     ) -> Result<Self, Error> {
         let facade = ScreenFacade::of(factory);
+        // A path that took no conditional default resolves the same way every time, as Java's `screen.url` cache.
+        let key = format!("{root_location}\u{1}{}\u{1}{last_standalone}", segments.join("/"));
+        if let Some(cached) = facade.cached_url(factory, &key) {
+            return Ok((*cached).clone());
+        }
         let root = facade.screen_def(factory, root_location)?;
         let mut walk = Walk {
             facade: &facade,
@@ -126,6 +131,9 @@ impl ScreenUrlInfo {
             },
         };
         walk.run(root)?;
+        if walk.info.reusable {
+            facade.put_url(key, Arc::new(walk.info.clone()));
+        }
         Ok(walk.info)
     }
 
@@ -267,7 +275,7 @@ impl Walk<'_> {
             if last.subscreens.always_use_full_path {
                 self.info.always_use_full_path = true;
             }
-            let mut chosen = None;
+            let mut chosen = self.subscreens_default(&last)?;
             for (condition, item) in &last.subscreens.conditional_defaults {
                 self.info.reusable = false;
                 if crate::script::eval_condition(condition)? {
@@ -350,6 +358,41 @@ impl Walk<'_> {
         self.facade
             .is_screen(self.factory, &item.location)
             .then(|| item.clone())
+    }
+
+    /// The `moqui.screen.SubscreensDefault` rows of a screen, in order, the last whose condition holds (Java's
+    /// ScreenUrlInfo). A conditional row makes the path one that cannot be cached.
+    fn subscreens_default(&mut self, screen: &ScreenDef) -> Result<Option<String>, Error> {
+        let Some(entity) = self.factory.entity() else {
+            return Ok(None);
+        };
+        let _authz = crate::context::ExecutionContext::with_current(crate::context::ExecutionContext::disable_authz);
+        let rows = match entity.find("moqui.screen.SubscreensDefault").and_then(|find| {
+            find.eq("screenLocation", moqui_lib::object::Value::string(&screen.location))
+                .order_by("defaultSeqId", false)
+                .use_cache(true)
+                .list()
+        }) {
+            Ok(rows) => rows,
+            // A database without the screen tables has no rows.
+            Err(_) => return Ok(None),
+        };
+        let mut chosen = None;
+        for row in rows.values() {
+            let text = |name: &str| row.get(name).map(moqui_lib::object::to_plain_string).unwrap_or_default();
+            let condition = text("conditionExpression");
+            if !condition.is_empty() {
+                self.info.reusable = false;
+                if !crate::script::eval_condition(&condition)? {
+                    continue;
+                }
+            }
+            let name = text("subscreenName");
+            if !name.is_empty() {
+                chosen = Some(name);
+            }
+        }
+        Ok(chosen)
     }
 
     fn has_child(&self, screen: &ScreenDef, name: &str) -> bool {

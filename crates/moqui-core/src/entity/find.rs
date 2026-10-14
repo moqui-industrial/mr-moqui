@@ -51,6 +51,8 @@ pub struct EntityFind {
     pub(super) has_search_parameters: bool,
     /// `disableAuthz`: this find is not checked against the user's authorizations.
     disable_authz: bool,
+    /// `useCache`: `None` follows the entity's `cache` attribute.
+    use_cache: Option<bool>,
 }
 
 impl EntityFind {
@@ -70,7 +72,16 @@ impl EntityFind {
             require_search_parameters: false,
             has_search_parameters: false,
             disable_authz: false,
+            use_cache: None,
         }
+    }
+
+    /// `useCache(flag)`: true reads through the entity cache even for an entity whose `cache` is not `true` (but not one
+    /// marked `never`), false reads the database, as Java's `EntityFind.useCache`.
+    #[must_use]
+    pub fn use_cache(mut self, flag: bool) -> Self {
+        self.use_cache = Some(flag);
+        self
     }
 
     /// Run this find without the authorization check, as Java's `EntityFind.disableAuthz()`.
@@ -366,6 +377,7 @@ impl EntityFind {
     fn lookup(&self, condition: &Option<Condition>) -> FindLookup {
         FindLookup {
             entity_name: self.entity_name.clone(),
+            use_cache: self.use_cache,
             condition: condition.clone(),
             order: self.order.clone(),
             limit: self.limit,

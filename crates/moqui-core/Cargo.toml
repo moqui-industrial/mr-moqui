@@ -13,7 +13,7 @@ publish.workspace = true
 # lettre SMTP is blocking (tokio1 off). imap is blocking (native-tls off).
 
 [dependencies]
-moqui-lib = { workspace = true, features = ["http"] }
+moqui-lib = { workspace = true }
 moqui-db = { workspace = true }
 csv = { workspace = true }
 tracing = { workspace = true }
@@ -36,12 +36,29 @@ croner = { workspace = true }
 indexmap = { workspace = true }
 jiff = { workspace = true }
 serde_json = { workspace = true }
-lettre = { workspace = true }
-imap = { workspace = true }
-rustls = { workspace = true }
-webpki-roots = { workspace = true }
-rcgen = { workspace = true }
+lettre = { workspace = true, optional = true }
+imap = { workspace = true, optional = true }
+mail-parser = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+webpki-roots = { workspace = true, optional = true }
+rcgen = { workspace = true, optional = true }
 totp-rs = { workspace = true }
+
+# No prebuilt QuickJS bindings ship for this target. bindgen needs libclang and the emsdk sysroot;
+# scripts/wasm-env.sh sets both.
+[target.'cfg(target_os = "emscripten")'.dependencies]
+rquickjs = { workspace = true, features = ["bindgen"] }
+
+# Default on. The browser build (crates/moqui-browser, plans/Wasm.md) turns all three off so no
+# socket, TLS (aws-lc), or blocking-HTTP code is linked.
+[features]
+default = ["mail", "http", "cluster-tls"]
+# Outbound SMTP, IMAP and POP3 poll, inbound MIME.
+mail = ["dep:lettre", "dep:imap", "dep:mail-parser", "dep:rustls", "dep:webpki-roots"]
+# remote-rest services, http resource locations, and the OpenSearch backend (blocking reqwest).
+http = ["moqui-lib/http"]
+# Generated self-signed cluster certificate.
+cluster-tls = ["dep:rcgen"]
 
 [lints]
 workspace = true

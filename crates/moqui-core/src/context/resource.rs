@@ -51,20 +51,28 @@ struct HttpRef {
 
 impl HttpRef {
     fn fetch(&self) -> &Result<String, String> {
-        self.fetched.get_or_init(|| {
-            if !moqui_lib::http::sim_allows_http(self.sim, false) {
-                return Err(format!(
-                    "HTTP GET {} denied because sim mode is active",
-                    moqui_lib::http::redacted(&self.url)
-                ));
-            }
-            let client = crate::service::shared_http_client();
-            match client.get(self.url.clone()).send(false) {
-                Ok(response) if (200..300).contains(&response.status()) => Ok(response.body().to_string()),
-                Ok(response) => Err(format!("HTTP GET returned {}", response.status())),
-                Err(err) => Err(err.message().to_string()),
-            }
-        })
+        self.fetched.get_or_init(|| http_get(&self.url, self.sim))
+    }
+}
+
+/// GET through [`crate::outbound`]. Sim mode denies before anything is sent.
+fn http_get(url: &str, sim: bool) -> Result<String, String> {
+    if sim {
+        return Err(format!(
+            "HTTP GET {} denied because sim mode is active",
+            crate::outbound::redacted(url)
+        ));
+    }
+    let request = crate::outbound::Request {
+        method: crate::outbound::Method::Get,
+        url: url.to_string(),
+        headers: Vec::new(),
+        body: None,
+    };
+    match crate::outbound::send(request) {
+        Ok(response) if (200..300).contains(&response.status) => Ok(response.body),
+        Ok(response) => Err(format!("HTTP GET returned {}", response.status)),
+        Err(err) => Err(err.message().to_string()),
     }
 }
 

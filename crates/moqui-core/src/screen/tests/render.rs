@@ -22,7 +22,7 @@ use moqui_lib::object::Value;
 
 use super::{fixture_root, request, World};
 use crate::context::{Error, ErrorKind, ExecutionContextFactory};
-use crate::screen::{make_render, serve_at, RenderOutput, ScreenFacade};
+use crate::screen::{make_render, serve_at, RenderOutput, ScreenFacade, ScreenUrlInfo};
 
 /// Render `path` in text mode unless the path names a mode. The screens render the screens below
 /// them, and html has no macro module until a later slice.
@@ -245,8 +245,16 @@ fn a_screen_that_requires_authentication_is_401_for_nobody_and_200_for_a_user() 
     let anonymous = render(&world.factory, "/Secure").unwrap_err();
     assert_eq!(anonymous.kind(), ErrorKind::AuthenticationRequired);
 
+    // A page in a browser goes to the login, as Java's checkWebappSettings; a fragment the client fetches gets the 401.
     let response = serve_at(&world.factory, request("GET", "/Secure.text"), &fixture_root());
-    assert_eq!(response.status, 401, "{}", response.body_text());
+    assert_eq!(response.status, 302, "{}", response.body_text());
+    assert_eq!(location_of_response(&response), Some("/Login".to_string()));
+    let fragment = serve_at(
+        &world.factory,
+        with_query(request("GET", "/Secure.text"), "lastStandalone", "true"),
+        &fixture_root(),
+    );
+    assert_eq!(fragment.status, 401, "{}", fragment.body_text());
 
     world.user("admin", None);
     let ec = world.factory.new_context();
@@ -293,15 +301,47 @@ fn a_signed_in_user_without_an_allow_record_is_403_on_a_screen() {
     assert_eq!(response.status, 200, "{}", response.body_text());
     assert!(response.body_text().contains("secure"), "{}", response.body_text());
 
-    let mut nobody = request("GET", "/Secure.text");
+    let mut nobody = with_query(request("GET", "/Secure.text"), "lastStandalone", "-1");
     nobody.peer_ip = "127.0.0.1".to_string();
     assert_eq!(serve_at(&world.factory, nobody, &root).status, 401);
+}
+
+#[test]
+fn a_page_asked_for_before_login_is_where_screen_last_goes_back_to() {
+    let world = World::open("");
+    let root = fixture_root();
+    let response = serve_at(&world.factory, with_query(request("GET", "/Secure"), "tab", "two"), &root);
+    assert_eq!(response.status, 302, "{}", response.body_text());
+    let cookie = super::header_value(&response, "Set-Cookie").expect("session cookie");
+    let session = cookie.split(';').next().unwrap().split_once('=').unwrap().1.to_string();
+
+    let mut back = request("POST", "/goLast");
+    back.session_cookie = Some(session.clone());
+    let response = serve_at(&world.factory, back, &root);
+    assert_eq!(response.status, 302, "{}", response.body_text());
+    assert_eq!(location_of_response(&response), Some("/Secure?tab=two".to_string()));
+
+    // The saved path is used once; after it the newest history entry, else the root.
+    let mut again = request("POST", "/goLast");
+    again.session_cookie = Some(session);
+    let response = serve_at(&world.factory, again, &root);
+    assert_eq!(location_of_response(&response), Some("/".to_string()));
+}
+
+fn with_query(mut request: crate::web::WebRequest, name: &str, value: &str) -> crate::web::WebRequest {
+    request.query.push((name.to_string(), value.to_string()));
+    request
+}
+
+fn location_of_response(response: &crate::web::WebResponse) -> Option<String> {
+    super::header_value(response, "Location")
 }
 
 #[test]
 fn a_cached_definition_is_reused_and_reloaded_when_its_file_changes() {
     let context = ExecutionContextFactory::test_context();
     let facade = ScreenFacade::of(context.factory());
+    facade.set_check_interval(Some(Duration::ZERO));
     let dir = std::env::temp_dir().join(format!("moqui-screen-cache-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("Cached.xml");
@@ -344,6 +384,49 @@ fn a_cached_definition_is_reused_and_reloaded_when_its_file_changes() {
     file.set_modified(SystemTime::now() + Duration::from_secs(60)).unwrap();
     drop(file);
     assert!(facade.screen_def(context.factory(), &location).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn files_are_checked_once_per_interval_and_a_new_subscreen_file_is_seen() {
+    let context = ExecutionContextFactory::test_context();
+    let factory = context.factory();
+    let facade = ScreenFacade::of(factory);
+    facade.set_check_interval(Some(Duration::from_secs(3600)));
+    let dir = std::env::temp_dir().join(format!("moqui-screen-interval-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Top")).unwrap();
+    let top = dir.join("Top.xml");
+    std::fs::write(&top, r#"<screen require-authentication="false" default-menu-title="One"><widgets/></screen>"#).unwrap();
+    std::fs::write(dir.join("Top/A.xml"), r#"<screen require-authentication="false"><widgets/></screen>"#).unwrap();
+    let location = top.to_string_lossy().into_owned();
+    let bump = |path: &std::path::Path, seconds: u64| {
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(SystemTime::now() + Duration::from_secs(seconds)).unwrap();
+    };
+
+    let first = facade.screen_def(factory, &location).unwrap();
+    assert!(first.subscreens.get("A").is_some() && first.subscreens.get("B").is_none());
+    // Inside the interval the edit is not looked for, as a Java screen.location hit.
+    std::fs::write(&top, r#"<screen require-authentication="false" default-menu-title="Two"><widgets/></screen>"#).unwrap();
+    bump(&top, 30);
+    assert!(std::sync::Arc::ptr_eq(&first, &facade.screen_def(factory, &location).unwrap()));
+    let path = ScreenUrlInfo::resolve(factory, &location, &["A".to_string()], 0).unwrap();
+    let again = ScreenUrlInfo::resolve(factory, &location, &["A".to_string()], 0).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&path.target_screen, &again.target_screen));
+
+    // Past the interval the edit and a file added to the subscreen directory are both seen, and the resolved path follows.
+    facade.set_check_interval(Some(Duration::ZERO));
+    std::fs::write(dir.join("Top/B.xml"), r#"<screen require-authentication="false"><widgets/></screen>"#).unwrap();
+    let directory = std::fs::File::open(dir.join("Top")).unwrap();
+    directory.set_modified(SystemTime::now() + Duration::from_secs(40)).unwrap();
+    let changed = facade.screen_def(factory, &location).unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&first, &changed));
+    assert_eq!(changed.default_menu_title, "Two");
+    assert!(changed.subscreens.get("B").is_some());
+    let fresh = ScreenUrlInfo::resolve(factory, &location, &["B".to_string()], 0).unwrap();
+    assert!(fresh.target_screen.location.ends_with("Top/B.xml"));
+    assert!(std::sync::Arc::ptr_eq(&fresh.path_defs[0], &changed));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -487,4 +570,254 @@ fn a_transition_that_does_not_compile_fails_when_it_runs_not_when_the_screen_loa
         .unwrap_err();
     assert_eq!(err.kind(), ErrorKind::General);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Timing for a form-list page: `cargo test -p moqui-core --release render_bench -- --ignored --nocapture`.
+#[test]
+#[ignore = "timing, run by hand"]
+fn render_bench_form_list_page() {
+    let context = ExecutionContextFactory::test_context();
+    let factory = context.factory();
+    let dir = std::env::temp_dir().join(format!("moqui-render-bench-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Bench/Apps")).unwrap();
+    std::fs::write(
+        dir.join("Bench.xml"),
+        r#"<screen require-authentication="false"><widgets><subscreens-active/></widgets></screen>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Bench/Apps.xml"),
+        r#"<screen require-authentication="false"><widgets><subscreens-menu/><subscreens-active/></widgets></screen>"#,
+    )
+    .unwrap();
+    for name in ["One", "Two", "Three"] {
+        std::fs::write(
+            dir.join(format!("Bench/Apps/{name}.xml")),
+            r#"<screen require-authentication="false"><widgets><label text="x"/></widgets></screen>"#,
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        dir.join("Bench/Apps/List.xml"),
+        r##"<screen require-authentication="false">
+            <transition name="edit"><default-response url="."/></transition>
+            <actions><script>rows = []; for (let i = 0; i &lt; 200; i++) rows.push({id: 'R' + i, name: 'Name ' + i, amount: i * 1.5})</script></actions>
+            <widgets><form-list name="Rows" list="rows">
+                <row-actions><set field="label" from="name + '!'"/></row-actions>
+                <field name="id"><default-field><link url="edit" text="${id}" parameter-map="({id: id})"/></default-field></field>
+                <field name="name"><default-field><display text="${label}"/></default-field></field>
+                <field name="amount"><default-field><display format="#,##0.00"/></default-field></field>
+            </form-list></widgets></screen>"##,
+    )
+    .unwrap();
+    let root = dir.join("Bench.xml").to_string_lossy().into_owned();
+    let render = || {
+        make_render(factory)
+            .root_screen(root.clone())
+            .screen_path("/Apps/List")
+            .render()
+            .unwrap()
+    };
+    let warm = render();
+    assert!(warm.body_text().contains("Name 199!"), "{}", warm.body_text());
+    let runs = 30;
+    let started = std::time::Instant::now();
+    for _ in 0..runs {
+        render();
+    }
+    let each = started.elapsed() / runs;
+    println!("render_bench: {runs} renders of a 200-row form-list, {each:?} each");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_transition_runs_its_path_in_one_transaction_and_keeps_the_last_response_that_holds() {
+    let world = World::open("");
+    let dir = std::env::temp_dir().join(format!("moqui-screen-transition-tx-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Tx")).unwrap();
+    std::fs::write(
+        dir.join("Tx.xml"),
+        r#"<screen require-authentication="false">
+            <always-actions><if condition="mark"><then>
+                <script>const made = ec.entity.makeValue('moqui.basic.EnumerationType'); made.set('enumTypeId', mark);
+                    made.set('description', 'from always-actions'); made.create()</script>
+            </then></if></always-actions>
+            <transition name="fail"><actions><message error="true">no</message></actions><default-response url="."/></transition>
+            <transition name="fine"><actions><set field="ran" value="y"/></actions>
+                <conditional-response url="First"><condition><expression>true</expression></condition></conditional-response>
+                <conditional-response url="Second"><condition><expression>ran == 'y'</expression></condition></conditional-response>
+                <default-response url="Default"/></transition>
+            <transition name="byPath"><path-parameter name="itemId"/><parameter name="itemId" required="true"/>
+                <actions><set field="seen" from="itemId"/></actions><default-response url="Default"/></transition>
+            <widgets/></screen>"#,
+    )
+    .unwrap();
+    for name in ["First", "Second", "Default"] {
+        std::fs::write(dir.join(format!("Tx/{name}.xml")), r#"<screen require-authentication="false"><widgets/></screen>"#).unwrap();
+    }
+    let root = dir.join("Tx.xml").to_string_lossy().into_owned();
+    let post = |path: &str, mark: &str| {
+        make_render(&world.factory)
+            .root_screen(root.clone())
+            .screen_path(path)
+            .method("POST")
+            .parameters(BTreeMap::from([("mark".to_string(), Value::string(mark))]))
+            .render()
+            .unwrap()
+    };
+    let exists = |id: &str| {
+        world
+            .facade
+            .find("moqui.basic.EnumerationType")
+            .unwrap()
+            .eq("enumTypeId", Value::string(id))
+            .one()
+            .unwrap()
+            .is_some()
+    };
+
+    // The always-action's write rolls back with the transition that left an error, and stays with one that did not.
+    post("/fail", "RolledBack");
+    assert!(!exists("RolledBack"));
+    let fine = post("/fine", "Kept");
+    assert!(exists("Kept"));
+    // Both conditional responses hold; Java keeps the last one.
+    assert_eq!(location_of(&fine), Some("/Second"));
+
+    // A required parameter that the path supplies is not missing.
+    let by_path = post("/byPath/A1", "");
+    assert_eq!(location_of(&by_path), Some("/Default"), "{}", by_path.body_text());
+    let missing = post("/byPath", "");
+    assert_eq!(missing.status, 400, "{}", missing.body_text());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_auto_display_field_shows_the_related_entity_description() {
+    let world = World::open("");
+    world.enumeration_type();
+    let mut row = world.facade.make_value("moqui.basic.Enumeration").unwrap();
+    row.set("enumId", Value::string("TestOne"));
+    row.set("enumTypeId", Value::string("TestType"));
+    row.set("description", Value::string("One"));
+    row.create(&world.facade).unwrap();
+    let dir = std::env::temp_dir().join(format!("moqui-screen-auto-display-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Auto.xml"),
+        r#"<screen require-authentication="false"><widgets>
+            <form-list name="Enums" list="enums">
+                <entity-find entity-name="moqui.basic.Enumeration" list="enums"><econdition field-name="enumId" value="TestOne"/></entity-find>
+                <auto-fields-entity entity-name="moqui.basic.Enumeration" field-type="display" include="all"/>
+            </form-list></widgets></screen>"#,
+    )
+    .unwrap();
+    let output = make_render(&world.factory)
+        .root_screen(dir.join("Auto.xml").to_string_lossy().into_owned())
+        .screen_path("/")
+        .render_mode("text")
+        .render()
+        .unwrap();
+    let text = output.body_text();
+    // The type's own description with its key, from the related EnumerationType, not the Enumeration's description.
+    assert!(text.contains("Test [TestType]"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn subscreens_item_rows_mount_screens_and_a_user_group_limits_them() {
+    let world = World::open("");
+    let dir = std::env::temp_dir().join(format!("moqui-screen-subscreens-rows-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Base")).unwrap();
+    std::fs::write(
+        dir.join("Base.xml"),
+        r#"<screen require-authentication="false"><subscreens default-item="Own"/><widgets><subscreens-active/></widgets></screen>"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("Base/Own.xml"), r#"<screen require-authentication="false"><widgets><label text="own"/></widgets></screen>"#).unwrap();
+    std::fs::write(dir.join("App.xml"), r#"<screen require-authentication="false"><widgets><label text="mounted app"/></widgets></screen>"#).unwrap();
+    let root = dir.join("Base.xml").to_string_lossy().into_owned();
+    let render_path = |path: &str| {
+        make_render(&world.factory)
+            .root_screen(root.clone())
+            .screen_path(path)
+            .render_mode("text")
+            .render()
+    };
+    // Loaded before the rows exist.
+    assert!(render_path("/").unwrap().body_text().contains("own"));
+    let row = |name: &str, group: &str, default: &str| {
+        let mut row = world.facade.make_value("moqui.screen.SubscreensItem").unwrap();
+        row.set("screenLocation", Value::string(&root));
+        row.set("subscreenName", Value::string(name));
+        row.set("userGroupId", Value::string(group));
+        row.set("subscreenLocation", Value::string(dir.join("App.xml").to_string_lossy()));
+        row.set("menuInclude", Value::string("Y"));
+        row.set("makeDefault", Value::string(default));
+        row.create(&world.facade).unwrap();
+    };
+    row("Mounted", "ALL_USERS", "Y");
+    row("Admins", "ADMIN", "N");
+
+    // The write makes the cached definition stale at once: the row's item is there and is now the default.
+    assert!(render_path("/Mounted").unwrap().body_text().contains("mounted app"));
+    assert!(render_path("/").unwrap().body_text().contains("mounted app"));
+    // A user who is not in the row's group does not get the screen.
+    let denied = render_path("/Admins").unwrap_err();
+    assert_eq!(denied.kind(), ErrorKind::Unauthorized, "{denied}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_transition_link_carries_its_service_keys_and_a_failed_condition_disables_it() {
+    let world = World::open("");
+    world.enumeration_type();
+    let dir = std::env::temp_dir().join(format!("moqui-screen-link-keys-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Links.xml"),
+        r#"<screen require-authentication="false">
+            <transition name="deleteType"><service-call name="delete#moqui.basic.EnumerationType"/><default-response url="."/></transition>
+            <transition name="never"><condition><expression>false</expression></condition><actions><set field="x" value="1"/></actions>
+                <default-response url="."/></transition>
+            <widgets>
+                <form-list name="Types" list="types">
+                    <entity-find entity-name="moqui.basic.EnumerationType" list="types"/>
+                    <field name="enumTypeId"><default-field><display/></default-field></field>
+                    <field name="remove"><default-field><link url="deleteType" text="Remove" link-type="anchor"/></default-field></field>
+                </form-list>
+                <link url="never" text="Never" link-type="anchor"/>
+            </widgets></screen>"#,
+    )
+    .unwrap();
+    let output = make_render(&world.factory)
+        .root_screen(dir.join("Links.xml").to_string_lossy().into_owned())
+        .screen_path("/")
+        .render()
+        .unwrap();
+    let html = output.body_text();
+    assert!(html.contains("deleteType?enumTypeId=TestType"), "{html}");
+    // A disabled link is written without its target.
+    assert!(!html.contains("/never"), "{html}");
+    assert!(html.contains("Never"), "{html}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_transition_that_writes_refuses_parameters_in_the_url() {
+    let world = World::open("");
+    let mut posted = request("POST", "/okTx");
+    posted.query.push(("x".to_string(), "1".to_string()));
+    let response = serve_at(&world.factory, posted, &fixture_root());
+    assert_eq!(response.status, 400, "{}", response.body_text());
+    assert!(response.body_text().contains("URL parameters"), "{}", response.body_text());
+    // A read-only transition takes them.
+    let mut read = request("GET", "/goUrl");
+    read.query.push(("x".to_string(), "1".to_string()));
+    assert_eq!(serve_at(&world.factory, read, &fixture_root()).status, 302);
 }

@@ -15,6 +15,7 @@ members = [
     "crates/moqui-db",
     "crates/moqui-core",
     "crates/moqui-host",
+    "crates/moqui-browser",
     "crates/moqui",
 ]
 
@@ -44,7 +45,8 @@ panic = "unwind"
 [workspace.dependencies]
 moqui-lib = { path = "crates/moqui-lib" }
 moqui-db = { path = "crates/moqui-db" }
-moqui-core = { path = "crates/moqui-core" }
+# default-features off so moqui-browser can leave out mail, http, and cluster-tls; moqui-host names them.
+moqui-core = { path = "crates/moqui-core", default-features = false }
 moqui-host = { path = "crates/moqui-host" }
 
 # --- moqui-lib ---
@@ -98,6 +100,9 @@ lettre = { version = "0.11", default-features = false, features = [
 # 2.4.1 has no rustls feature. rustls-connector is a dev-dependency and is not linked.
 # The TCP stream is wrapped with rustls below.
 imap = { version = "2.4", default-features = false }
+# Inbound MIME for poll#EmailServer: nested multiparts, RFC 2047 words, charsets, folded headers. Defaults are
+# empty; the single-byte charsets are built in, and `full_encoding` (encoding_rs for multi-byte CJK) stays off.
+mail-parser = { version = "0.11", default-features = false }
 # Direct so IMAP and POP3 can build a ClientConfig on aws-lc. ring stays off.
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "aws_lc_rs"] }
 webpki-roots = "1"
@@ -175,3 +180,9 @@ russh-sftp = "3"
 # OIDC and OAuth 2 client. Default feature is the native JWS verifier.
 # Loopback, metrics, and the experimental key-binding feature stay off.
 huskarl = "0.11"
+
+# --- moqui-browser ---
+# The browser's local database (plans/Wasm.md). bundled compiles the SQLite amalgamation with the
+# target C compiler, which is emcc for wasm32-unknown-emscripten. SQLite is public domain.
+# 0.38, not 0.40: servo-net (pdf-servo) pins it, and two libsqlite3-sys cannot link sqlite3 in one graph.
+rusqlite = { version = "0.38", features = ["bundled"] }

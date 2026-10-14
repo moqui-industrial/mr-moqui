@@ -12,10 +12,12 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! One `MCache` per `<cache name>`. No second cache implementation.
+//! One `MCache` per `<cache name>`. No second cache implementation. Values are host values, so a
+//! script that puts a map gets a map back, as with Java's object caches.
 
 use moqui_lib::cache::{CacheConfig, CacheInfo, MCache, MCacheManager};
 use moqui_lib::node::MNode;
+use moqui_lib::object::Value;
 
 use super::error::Error;
 
@@ -41,7 +43,14 @@ impl CacheFacade {
             if let Some(millis) = expire_millis(&node, &name, "expire-time-live")? {
                 config = config.expire_creation_ms(millis);
             }
-            manager.create::<String, String>(name, config)?;
+            if let Some(max) = node
+                .attribute("max-elements")
+                .and_then(|text| text.trim().parse::<usize>().ok())
+                .filter(|max| *max > 0)
+            {
+                config = config.max_entries(max);
+            }
+            manager.create::<String, Value>(name, config)?;
             count += 1;
         }
         tracing::info!("Initialized {count} caches");
@@ -52,7 +61,7 @@ impl CacheFacade {
         self.manager.cache_names().map_err(Error::from)
     }
 
-    pub fn get(&self, name: &str) -> Result<Option<MCache<String, String>>, Error> {
+    pub fn get(&self, name: &str) -> Result<Option<MCache<String, Value>>, Error> {
         self.manager.get(name).map_err(Error::from)
     }
 

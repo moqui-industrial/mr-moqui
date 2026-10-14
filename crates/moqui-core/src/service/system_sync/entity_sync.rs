@@ -465,23 +465,36 @@ fn call_remote(
             .map(|(name, value)| (name.clone(), value.clone()))
             .collect(),
     ));
-    let mut call = crate::service::shared_http_client().post(url.as_str()).json(&body);
+    let shown = crate::outbound::redacted(&url);
+    if sim {
+        return Err(LibError::new(format!(
+            "HTTP POST {shown} denied because sim mode is active"
+        )));
+    }
+    let mut headers = vec![("content-type".to_string(), "application/json".to_string())];
     let username = map_text(sync, "targetUsername");
     if !username.is_empty() {
         let credentials = format!("{username}:{}", map_text(sync, "targetPassword"));
-        call = call.header("Authorization", format!("Basic {}", STANDARD.encode(credentials)));
+        headers.push((
+            "Authorization".to_string(),
+            format!("Basic {}", STANDARD.encode(credentials)),
+        ));
     }
-    let response = call.send(sim)?;
-    let status = response.status();
-    let reply = crate::service::parse_json(response.body()).ok();
+    let response = crate::outbound::send(crate::outbound::Request {
+        method: crate::outbound::Method::Post,
+        url,
+        headers,
+        body: Some(body.to_string()),
+    })?;
+    let status = response.status;
+    let reply = crate::service::parse_json(&response.body).ok();
     if !(200..300).contains(&status) {
         let errors = match &reply {
             Some(Value::Map(map)) => text_of(map.get("errors")),
             _ => String::new(),
         };
         return Err(LibError::new(format!(
-            "Remote EntitySync {operation} at {} failed ({status}): {errors}",
-            moqui_lib::http::redacted(&url)
+            "Remote EntitySync {operation} at {shown} failed ({status}): {errors}"
         )));
     }
     match reply {

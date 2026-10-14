@@ -18,7 +18,9 @@
 use std::collections::{HashMap, HashSet};
 
 use moqui_db::dialect::Dialect;
-use moqui_db::sql::{add_column, create_fk_index, create_foreign_key, create_index, create_table, quote_ident};
+use moqui_db::sql::{
+    add_column, create_fk_index, create_foreign_key, create_index, create_table, is_sqlite, quote_ident,
+};
 use moqui_lib::error::Error;
 use moqui_lib::object::Value;
 
@@ -246,6 +248,10 @@ fn ensure_fts(facade: &EntityFacade, conn: &mut dyn DbConnection, name: &str) ->
 fn ensure_fks(facade: &EntityFacade, conn: &mut dyn DbConnection, name: &str, lenient: bool) -> Result<(), Error> {
     let statements = facade.with_entity(name, |entity, dialect, model| {
         let mut statements = Vec::new();
+        // SQLite cannot add a foreign key to an existing table, and the browser copy is not the authority.
+        if is_sqlite(dialect) {
+            return Ok(statements);
+        }
         for relationship in &entity.relationships {
             if relationship.is_auto_reverse || relationship.relationship_type != "one" {
                 continue;
@@ -295,6 +301,13 @@ fn column_names(conn: &mut dyn DbConnection, dialect: &Dialect, table: &str) -> 
 }
 
 fn table_probe(dialect: &Dialect, table: &str) -> Probe {
+    if is_sqlite(dialect) {
+        return Probe {
+            sql: "SELECT name FROM sqlite_master WHERE type = 'table' AND lower(name) = lower(?)".to_string(),
+            params: vec![Value::string(table)],
+            table: table.to_string(),
+        };
+    }
     Probe {
         sql: format!(
             "SELECT table_name FROM information_schema.tables WHERE table_schema = {} AND lower(table_name) = lower(?)",
@@ -306,6 +319,13 @@ fn table_probe(dialect: &Dialect, table: &str) -> Probe {
 }
 
 fn column_probe(dialect: &Dialect, table: &str) -> Probe {
+    if is_sqlite(dialect) {
+        return Probe {
+            sql: "SELECT name FROM pragma_table_info(?)".to_string(),
+            params: vec![Value::string(table)],
+            table: table.to_string(),
+        };
+    }
     Probe {
         sql: format!(
             "SELECT column_name FROM information_schema.columns WHERE table_schema = {} AND lower(table_name) = lower(?)",

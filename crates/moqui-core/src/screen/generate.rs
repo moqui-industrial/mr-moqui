@@ -95,13 +95,32 @@ pub struct Unit {
 }
 
 /// What a definition keeps for rendering: generated units and assembled forms.
-#[derive(Default)]
 pub struct Generated {
     units: Mutex<HashMap<String, Option<Arc<Unit>>>>,
     forms: Mutex<HashMap<String, Arc<FormInstance>>>,
     /// The server-static templates by request path, and whether the screen can be one, by macro module.
-    statics: Mutex<HashMap<String, Arc<StaticTemplate>>>,
+    statics: Mutex<crate::script::BoundedMap<String, Arc<StaticTemplate>>>,
     eligibility: Mutex<HashMap<String, Arc<Eligibility>>>,
+    /// Files read while rendering, such as a form another screen's form extends. A change to one makes the definition stale.
+    dependencies: Mutex<Vec<super::definition::Source>>,
+    /// Why a server-static template could not be made, by request path, so it is not tried again until the screen changes.
+    static_failures: Mutex<HashMap<String, String>>,
+    /// Held while a server-static template is made, so concurrent first requests make it once.
+    static_build: Mutex<()>,
+}
+
+impl Default for Generated {
+    fn default() -> Self {
+        Self {
+            units: Mutex::default(),
+            forms: Mutex::default(),
+            statics: Mutex::new(crate::script::BoundedMap::new(MAX_STATIC_TEMPLATES)),
+            eligibility: Mutex::default(),
+            dependencies: Mutex::default(),
+            static_failures: Mutex::default(),
+            static_build: Mutex::default(),
+        }
+    }
 }
 
 impl std::fmt::Debug for Generated {
@@ -111,6 +130,20 @@ impl std::fmt::Debug for Generated {
 }
 
 impl Generated {
+    pub(super) fn dependencies(&self) -> Vec<super::definition::Source> {
+        self.dependencies.lock().unwrap_or_else(|err| err.into_inner()).clone()
+    }
+
+    /// Record the sources of another definition this one's generated code was made from.
+    pub(super) fn add_dependencies(&self, sources: &[super::definition::Source]) {
+        let mut dependencies = self.dependencies.lock().unwrap_or_else(|err| err.into_inner());
+        for source in sources {
+            if !dependencies.iter().any(|known| known.location == source.location) {
+                dependencies.push(source.clone());
+            }
+        }
+    }
+
     pub(super) fn form(&self, name: &str) -> Option<Arc<FormInstance>> {
         self.forms
             .lock()
@@ -127,20 +160,30 @@ impl Generated {
     }
 
     pub(super) fn static_template(&self, key: &str) -> Option<Arc<StaticTemplate>> {
-        self.statics
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .get(key)
-            .cloned()
+        self.statics.lock().unwrap_or_else(|err| err.into_inner()).get(key)
     }
 
     pub(super) fn put_static_template(&self, key: String, template: Arc<StaticTemplate>) {
-        let mut statics = self.statics.lock().unwrap_or_else(|err| err.into_inner());
         // One for each path the screen was requested by: many odd paths for one screen do not grow without end.
-        if statics.len() >= MAX_STATIC_TEMPLATES {
-            statics.clear();
+        self.statics
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .insert(key, template);
+    }
+
+    pub(super) fn static_failure(&self, key: &str) -> Option<String> {
+        self.static_failures.lock().unwrap_or_else(|err| err.into_inner()).get(key).cloned()
+    }
+
+    pub(super) fn put_static_failure(&self, key: String, reason: String) {
+        let mut failures = self.static_failures.lock().unwrap_or_else(|err| err.into_inner());
+        if failures.len() < MAX_STATIC_TEMPLATES {
+            failures.insert(key, reason);
         }
-        statics.insert(key, template);
+    }
+
+    pub(super) fn static_build_lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.static_build.lock().unwrap_or_else(|err| err.into_inner())
     }
 
     pub(super) fn eligibility(&self, key: &str) -> Option<Arc<Eligibility>> {

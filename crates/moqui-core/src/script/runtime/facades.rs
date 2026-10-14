@@ -34,7 +34,7 @@ impl HostCache {
         &self,
         ctx: &Ctx<'_>,
         fallback: T,
-        body: impl FnOnce(&moqui_lib::cache::MCache<String, String>) -> Result<T, moqui_lib::error::Error>,
+        body: impl FnOnce(&moqui_lib::cache::MCache<String, Value>) -> Result<T, moqui_lib::error::Error>,
     ) -> rquickjs::Result<T> {
         let found = with_ec(ctx, |ec| ec.factory().cache().get(&self.name))?;
         match found {
@@ -51,7 +51,7 @@ impl HostCache {
         host_guard(&ctx, || {
             let found = self.with_cache(&ctx, None, |cache| cache.get(&key))?;
             match found {
-                Some(text) => text.into_js(&ctx),
+                Some(value) => host_to_js(&ctx, value),
                 None => Null.into_js(&ctx),
             }
         })
@@ -59,8 +59,8 @@ impl HostCache {
 
     fn put(&self, ctx: Ctx<'_>, key: String, value: JsValue<'_>) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
-            let text = moqui_lib::object::to_plain_string(&js_to_host(&ctx, &value)?);
-            self.with_cache(&ctx, (), |cache| cache.put(key, text))
+            let value = js_to_host(&ctx, &value)?;
+            self.with_cache(&ctx, (), |cache| cache.put(key, value))
         })
     }
 
@@ -102,21 +102,65 @@ pub(super) fn sri_send_redirect_and_stop_render(ctx: Ctx<'_>, url: String) -> rq
     })
 }
 
-/// `ec.resource.script(location)`: run the file in the script's own names.
-pub(super) fn resource_script(ctx: Ctx<'_>, location: String) -> rquickjs::Result<()> {
+/// `ec.resource.script(location)`: run the file in the script's own names and return its value, as Java does.
+pub(super) fn resource_script<'js>(ctx: Ctx<'js>, location: String) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let source = read_script(&location).map_err(|err| Exception::throw_message(&ctx, err.message()))?;
-        let mut options = EvalOptions::default();
-        options.strict = false;
-        options.global = true;
-        ctx.eval_with_options::<JsValue, _>(source, options).map(|_| ())
+        eval_compiled::<JsValue>(&ctx, &source, false).map_err(|err| Exception::throw_message(&ctx, err.message()))
     })
 }
 
-pub(super) fn read_script(location: &str) -> Result<String, Error> {
+/// A script file's text by location, with the modified time it had and when that was last checked.
+struct ScriptText {
+    path: std::path::PathBuf,
+    modified: Option<std::time::SystemTime>,
+    checked: Instant,
+    text: Arc<str>,
+}
+
+/// How long a script file's text is used before its modified time is looked at again.
+const SCRIPT_CHECK: Duration = Duration::from_secs(2);
+
+fn script_texts() -> &'static Mutex<HashMap<String, ScriptText>> {
+    static TEXTS: std::sync::OnceLock<Mutex<HashMap<String, ScriptText>>> = std::sync::OnceLock::new();
+    TEXTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn modified_of(path: &std::path::Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|meta| meta.modified()).ok()
+}
+
+/// The text of a script file, kept by location as Java's `resource.script*.location` caches and read again when the file
+/// changes. The compiled form is kept by the runtime by text.
+pub(super) fn read_script(location: &str) -> Result<Arc<str>, Error> {
+    let production = moqui_lib::env::get_prop_or_env("instance_purpose") == "production";
+    {
+        let mut texts = script_texts().lock().unwrap_or_else(|err| err.into_inner());
+        if let Some(found) = texts.get_mut(location) {
+            if production || found.checked.elapsed() < SCRIPT_CHECK {
+                return Ok(Arc::clone(&found.text));
+            }
+            if modified_of(&found.path) == found.modified {
+                found.checked = Instant::now();
+                return Ok(Arc::clone(&found.text));
+            }
+        }
+    }
     let path = crate::context::locate(location)?;
-    std::fs::read_to_string(&path)
-        .map_err(|err| Error::new(format!("could not read script {location}")).with_source(err))
+    let modified = modified_of(&path);
+    let text: Arc<str> = std::fs::read_to_string(&path)
+        .map_err(|err| Error::new(format!("could not read script {location}")).with_source(err))?
+        .into();
+    script_texts().lock().unwrap_or_else(|err| err.into_inner()).insert(
+        location.to_string(),
+        ScriptText {
+            path,
+            modified,
+            checked: Instant::now(),
+            text: Arc::clone(&text),
+        },
+    );
+    Ok(text)
 }
 
 /// Run a script file as a service body does: in the current context frame, with bare names.
@@ -178,16 +222,43 @@ impl HostMessage {
         })
     }
 
-    fn add_message(&self, ctx: Ctx<'_>, message: String, _kind: Opt<String>) -> rquickjs::Result<()> {
+    /// `addValidationError(form, field, serviceName, message, throwable)`.
+    fn add_validation_error(
+        &self,
+        ctx: Ctx<'_>,
+        form: Opt<JsValue<'_>>,
+        field: Opt<JsValue<'_>>,
+        service: Opt<JsValue<'_>>,
+        message: Opt<JsValue<'_>>,
+    ) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
-            with_ec(&ctx, |ec| ec.message().add_message(message))?;
+            let text = |value: Opt<JsValue<'_>>| -> rquickjs::Result<String> {
+                match value.0 {
+                    Some(value) if !value.is_null() && !value.is_undefined() => {
+                        Ok(moqui_lib::object::to_plain_string(&js_to_host(&ctx, &value)?))
+                    }
+                    _ => Ok(String::new()),
+                }
+            };
+            let (form, field, service, message) = (text(form)?, text(field)?, text(service)?, text(message)?);
+            with_ec(&ctx, |ec| ec.message().add_validation_error(&form, &field, &service, &message))?;
             Ok(())
         })
     }
 
-    fn add_public(&self, ctx: Ctx<'_>, message: String, _kind: Opt<String>) -> rquickjs::Result<()> {
+    /// `addMessage(message, type)`: `info`, `success`, `warning` or `danger`.
+    fn add_message(&self, ctx: Ctx<'_>, message: String, kind: Opt<String>) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
-            with_ec(&ctx, |ec| ec.message().add_message(message))?;
+            let kind = kind.0.unwrap_or_default();
+            with_ec(&ctx, |ec| ec.message().add_message_typed(message, &kind))?;
+            Ok(())
+        })
+    }
+
+    fn add_public(&self, ctx: Ctx<'_>, message: String, kind: Opt<String>) -> rquickjs::Result<()> {
+        host_guard(&ctx, || {
+            let kind = kind.0.unwrap_or_default();
+            with_ec(&ctx, |ec| ec.message().add_message_typed(message, &kind))?;
             Ok(())
         })
     }
@@ -473,18 +544,30 @@ impl HostWeb {
             let saved = crate::web::saved_for_page();
             let (messages, errors) = with_ec(&ctx, |ec| {
                 let facade = ec.message();
-                (facade.messages().to_vec(), facade.errors().to_vec())
+                let messages: Vec<(String, String)> = facade
+                    .messages()
+                    .iter()
+                    .enumerate()
+                    .map(|(index, text)| (text.clone(), facade.message_type(index).to_string()))
+                    .collect();
+                (messages, facade.errors().to_vec())
             })?;
-            let entry = |text: &String, kind: &str| {
+            let entry = |text: &str, kind: &str| {
                 let mut map = indexmap::IndexMap::new();
-                map.insert("message".to_string(), Value::string(text.as_str()));
+                map.insert("message".to_string(), Value::string(text));
                 map.insert("typeString".to_string(), Value::string(kind));
                 Value::Map(map)
             };
             let mut list = Vec::new();
-            list.extend(saved.messages.iter().map(|text| entry(text, "info")));
+            list.extend(
+                saved
+                    .messages
+                    .iter()
+                    .zip(saved.message_types.iter())
+                    .map(|(text, kind)| entry(text, kind)),
+            );
             list.extend(saved.errors.iter().map(|text| entry(text, "danger")));
-            list.extend(messages.iter().map(|text| entry(text, "info")));
+            list.extend(messages.iter().map(|(text, kind)| entry(text, kind)));
             list.extend(errors.iter().map(|text| entry(text, "danger")));
             host_to_js(&ctx, Value::List(list))
         })
@@ -493,13 +576,15 @@ impl HostWeb {
     #[qjs(get, rename = "savedMessages")]
     fn saved_messages<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || {
-            let list = crate::web::saved_for_page()
+            let saved = crate::web::saved_for_page();
+            let list = saved
                 .messages
                 .iter()
-                .map(|text| {
+                .zip(saved.message_types.iter())
+                .map(|(text, kind)| {
                     let mut map = indexmap::IndexMap::new();
                     map.insert("message".to_string(), Value::string(text.as_str()));
-                    map.insert("typeString".to_string(), Value::string("info"));
+                    map.insert("typeString".to_string(), Value::string(kind.as_str()));
                     Value::Map(map)
                 })
                 .collect();
@@ -519,9 +604,17 @@ impl HostWeb {
         })
     }
 
+    /// The validation errors of the submit that led here: `{form, field, serviceName, message}` each.
     #[qjs(get, rename = "savedValidationErrors")]
     fn saved_validation_errors<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
-        host_guard(&ctx, || host_to_js(&ctx, Value::List(Vec::new())))
+        host_guard(&ctx, || {
+            let list = crate::web::saved_for_page()
+                .validation_errors
+                .into_iter()
+                .map(|error| Value::Map(error.into_iter().map(|(key, value)| (key, Value::string(value))).collect()))
+                .collect();
+            host_to_js(&ctx, Value::List(list))
+        })
     }
 
     #[qjs(get, rename = "errorParameters")]

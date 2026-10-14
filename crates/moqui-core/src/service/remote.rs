@@ -12,29 +12,25 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Remote REST runner. `http` and `https` resource gets stay unavailable.
+//! Remote REST runner. The request goes out through [`crate::outbound`].
 
 use std::collections::BTreeMap;
-use std::sync::OnceLock;
 
-use moqui_lib::http::{redacted, sim_allows_http, Method, RestClient};
 use moqui_lib::json::{from_json, to_json};
 use moqui_lib::object::{to_plain_string, Value};
 
 use crate::context::{Error, ExecutionContext};
+use crate::outbound::{self, redacted, Method};
 
-/// One client for every remote call, so connections and TLS state are reused.
-fn client() -> &'static RestClient {
-    static CLIENT: OnceLock<RestClient> = OnceLock::new();
-    CLIENT.get_or_init(RestClient::new)
+/// The reqwest client every outbound call shares when the `http` feature is built, so connections
+/// and TLS state are reused.
+#[cfg(feature = "http")]
+pub fn shared_http_client() -> &'static moqui_lib::http::RestClient {
+    static CLIENT: std::sync::OnceLock<moqui_lib::http::RestClient> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(moqui_lib::http::RestClient::new)
 }
 
-/// The client every outbound call shares. Resource gets for `http://` locations use it too.
-pub fn shared_http_client() -> &'static RestClient {
-    client()
-}
-
-/// Call a `remote-rest` location. `sim` denies before [`RestClient`] sends anything.
+/// Call a `remote-rest` location. `sim` denies before anything is sent.
 ///
 /// `method` overrides `verb`. The method is the one named when it is an HTTP method this client
 /// sends (GET, POST, PUT, PATCH, DELETE) and POST otherwise. `allow_in_sim` stays false. Only GET
@@ -59,32 +55,39 @@ pub fn run_remote_rest(
         url = with_query(&url, parameters);
     }
     let shown = redacted(&url);
-    if !sim_allows_http(sim, false) {
+    if sim {
         return Err(Error::new(format!(
             "HTTP {http_method} {shown} denied because sim mode is active"
         )));
     }
-    let call = client().request(http_method, url);
-    let response = if http_method == Method::Get || parameters.is_empty() {
-        call.send(false)?
-    } else {
+    let mut request = outbound::Request {
+        method: http_method,
+        url,
+        headers: Vec::new(),
+        body: None,
+    };
+    if http_method != Method::Get && !parameters.is_empty() {
         let body = to_json(&Value::Map(
             parameters
                 .iter()
                 .map(|(name, value)| (name.clone(), value.clone()))
                 .collect(),
         ));
-        call.json(&body).send(false)?
-    };
-    let status = response.status();
+        request
+            .headers
+            .push(("content-type".to_string(), "application/json".to_string()));
+        request.body = Some(body.to_string());
+    }
+    let response = outbound::send(request)?;
+    let status = response.status;
     if !(200..300).contains(&status) {
         // The remote's body can hold anything, so it goes to the log and not into the message.
-        tracing::warn!(service = service_name, status, url = %shown, body = %clip(response.body()), "remote REST error");
+        tracing::warn!(service = service_name, status, url = %shown, body = %clip(&response.body), "remote REST error");
         let message = format!("Remote service error {status}");
         let _ = ExecutionContext::with_current(|ctx| ctx.message().add_error(message.clone()));
         return Err(Error::new(message));
     }
-    Ok(response_map(response.body()))
+    Ok(response_map(&response.body))
 }
 
 fn clip(text: &str) -> String {
@@ -171,17 +174,16 @@ fn response_map(body: &str) -> BTreeMap<String, Value> {
     }
 }
 
-pub(crate) fn parse_json(text: &str) -> Result<Value, Error> {
-    let json = serde_json::from_str::<serde_json::Value>(text).map_err(|err| Error::new(format!("JSON: {err}")))?;
-    Ok(from_json(&json))
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    #[cfg(feature = "http")]
     use std::io::{Read, Write};
+    #[cfg(feature = "http")]
     use std::net::{TcpListener, TcpStream};
+    #[cfg(feature = "http")]
     use std::thread;
+    #[cfg(feature = "http")]
     use std::time::{Duration, Instant};
 
     use moqui_lib::object::Value;
@@ -213,7 +215,7 @@ mod tests {
 
     #[test]
     fn verbs_pick_the_http_method_and_unknown_ones_post() {
-        use moqui_lib::http::Method;
+        use crate::outbound::Method;
         assert_eq!(super::choose_method(None, "get"), Method::Get);
         assert_eq!(super::choose_method(None, "delete"), Method::Delete);
         assert_eq!(super::choose_method(Some("PUT"), "send"), Method::Put);
@@ -221,6 +223,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "http")]
     fn a_non_get_call_sends_typed_json() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("addr").port();
@@ -247,6 +250,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "http")]
     fn an_http_resource_is_fetched_when_read_and_not_when_resolved() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("addr").port();
@@ -287,6 +291,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "http")]
     fn remote_rest_reads_the_stub_body() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("addr").port();
@@ -308,6 +313,7 @@ mod tests {
         assert_eq!(result.get("ok").and_then(Value::as_str), Some("yes"));
     }
 
+    #[cfg(feature = "http")]
     fn serve_one(listener: TcpListener) -> String {
         listener.set_nonblocking(true).expect("nonblocking");
         let started = Instant::now();
@@ -336,6 +342,7 @@ mod tests {
         request
     }
 
+    #[cfg(feature = "http")]
     fn read_headers(stream: &mut TcpStream) -> String {
         let mut buf = Vec::new();
         let mut tmp = [0_u8; 1024];
@@ -346,5 +353,156 @@ mod tests {
             }
         }
         String::from_utf8_lossy(&buf).into_owned()
+    }
+
+    /// The `http` feature is off (the browser build): the call goes to the installed sender.
+    #[cfg(not(feature = "http"))]
+    mod installed_sender {
+        use std::collections::BTreeMap;
+        use std::sync::{Arc, Mutex, MutexGuard};
+
+        use moqui_lib::error::Error;
+        use moqui_lib::object::Value;
+
+        use super::run_remote_rest;
+        use crate::outbound::{self, HttpSender, Method, Request, Response};
+
+        /// The sender slot is process-wide, so these tests take turns.
+        fn exclusive() -> MutexGuard<'static, ()> {
+            static LOCK: Mutex<()> = Mutex::new(());
+            LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        }
+
+        struct Fake {
+            seen: Mutex<Vec<Request>>,
+            reply: Result<Response, String>,
+        }
+
+        impl HttpSender for Fake {
+            fn send(&self, request: Request) -> Result<Response, Error> {
+                self.seen.lock().unwrap().push(request);
+                self.reply.clone().map_err(Error::new)
+            }
+        }
+
+        fn install(reply: Result<Response, String>) -> Arc<Fake> {
+            let fake = Arc::new(Fake {
+                seen: Mutex::new(Vec::new()),
+                reply,
+            });
+            outbound::install_http_sender(fake.clone());
+            fake
+        }
+
+        fn ok(body: &str) -> Result<Response, String> {
+            Ok(Response {
+                status: 200,
+                body: body.to_string(),
+            })
+        }
+
+        #[test]
+        fn without_a_sender_the_call_is_not_built_into_this_host() {
+            let _turn = exclusive();
+            outbound::clear_http_sender();
+            let err = run_remote_rest(
+                "example.get#Item",
+                "http://example.test/items",
+                None,
+                "get",
+                &BTreeMap::new(),
+                false,
+            )
+            .expect_err("no transport");
+            assert!(err.to_string().contains("not built into this host"), "{err}");
+        }
+
+        #[test]
+        fn a_post_goes_to_the_sender_as_json_and_the_reply_is_the_result() {
+            let _turn = exclusive();
+            let fake = install(ok(r#"{"ok":"yes"}"#));
+            let mut parameters = BTreeMap::new();
+            parameters.insert("count".to_string(), Value::I32(3));
+            let result = run_remote_rest(
+                "example.put#Item",
+                "https://example.test/items/${count}",
+                Some("PUT"),
+                "put",
+                &parameters,
+                false,
+            )
+            .expect("fake reply");
+            outbound::clear_http_sender();
+            assert_eq!(result.get("ok").and_then(Value::as_str), Some("yes"));
+            let seen = fake.seen.lock().unwrap();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].method, Method::Put);
+            assert_eq!(seen[0].url, "https://example.test/items/3");
+            assert_eq!(seen[0].body.as_deref(), Some(r#"{"count":3}"#));
+            assert!(seen[0]
+                .headers
+                .iter()
+                .any(|(name, value)| name == "content-type" && value == "application/json"));
+        }
+
+        #[test]
+        fn sim_denies_before_the_sender_and_errors_pass_through() {
+            let _turn = exclusive();
+            let fake = install(Err("network down".to_string()));
+            let denied = run_remote_rest(
+                "example.get#Item",
+                "http://example.test/a?key=secret",
+                None,
+                "get",
+                &BTreeMap::new(),
+                true,
+            )
+            .expect_err("sim denies");
+            assert!(denied.to_string().contains("sim mode is active"), "{denied}");
+            assert!(!denied.to_string().contains("secret"), "{denied}");
+            assert!(fake.seen.lock().unwrap().is_empty());
+            let failed = run_remote_rest(
+                "example.get#Item",
+                "http://example.test/a",
+                None,
+                "get",
+                &BTreeMap::new(),
+                false,
+            )
+            .expect_err("transport error");
+            assert!(failed.to_string().contains("network down"), "{failed}");
+            let status = install(Ok(Response {
+                status: 503,
+                body: "busy".to_string(),
+            }));
+            let refused = run_remote_rest(
+                "example.get#Item",
+                "http://example.test/a",
+                None,
+                "get",
+                &BTreeMap::new(),
+                false,
+            )
+            .expect_err("error status");
+            outbound::clear_http_sender();
+            assert!(refused.to_string().contains("Remote service error 503"), "{refused}");
+            assert_eq!(status.seen.lock().unwrap().len(), 1);
+        }
+
+        #[test]
+        fn an_http_resource_reads_through_the_sender() {
+            let _turn = exclusive();
+            let fake = install(ok("plain body"));
+            let ctx = crate::context::ExecutionContextFactory::test_context();
+            let resource = ctx
+                .factory()
+                .resource()
+                .get("http://example.test/doc.txt")
+                .expect("resolves");
+            let text = resource.read_text();
+            outbound::clear_http_sender();
+            assert_eq!(text.expect("read"), "plain body");
+            assert_eq!(fake.seen.lock().unwrap()[0].method, Method::Get);
+        }
     }
 }

@@ -31,7 +31,8 @@ pub mod multipart;
 use crate::context::{Error, ErrorKind, ExecutionContext};
 use crate::entity::query_rest;
 
-const BODY_LIMIT: usize = 1024 * 1024;
+/// The cap on a request body that is not multipart, unless `webapp_max_body` says otherwise.
+const DEFAULT_MAX_BODY: usize = 10 * 1024 * 1024;
 const PREFLIGHT_HEADERS: &str = "Accept,Accept-Encoding,Content-Type,Content-Encoding,Origin,X-Requested-With,Access-Control-Request-Method,Access-Control-Request-Headers,api_key,login_key,X-HTTP-Method-Override,moquiSessionToken,SessionToken,X-CSRF-Token,Authorization,A2A-Version";
 const EXPOSE_HEADERS: &str =
     "Access-Control-Allow-Origin,Access-Control-Allow-Credentials,X-CSRF-Token,moquiSessionToken";
@@ -127,6 +128,8 @@ struct WebSlot {
     query_names: Vec<String>,
     /// [`client_ip`] of the request, for the login `ipAllowed` check.
     client_ip: String,
+    /// The first locale of the request's `Accept-Language`, as Java's `request.getLocale()`.
+    locale: Option<String>,
     /// Scheme, host, and context path that links start with. Empty for a path-only link.
     base_url: String,
     sent: bool,
@@ -169,6 +172,7 @@ pub(crate) fn install_with(parameters: BTreeMap<String, Value>, base_url: String
             request_details: String::new(),
             query_names: Vec::new(),
             client_ip: String::new(),
+            locale: None,
             base_url,
             sent: false,
             status: 200,
@@ -177,6 +181,11 @@ pub(crate) fn install_with(parameters: BTreeMap<String, Value>, base_url: String
         })
     });
     WebGuard { previous }
+}
+
+/// One request parameter, without copying the others.
+pub(crate) fn parameter(name: &str) -> Option<Value> {
+    WEB.with(|slot| slot.borrow().as_ref().and_then(|web| web.parameters.get(name).cloned()))
 }
 
 pub(crate) fn parameters() -> BTreeMap<String, Value> {
@@ -323,6 +332,27 @@ pub(crate) fn referrer_url() -> Option<String> {
         .filter(|url| !url.is_empty())
 }
 
+/// Keep the request's preferred locale from its `Accept-Language` header, such as `de-DE,de;q=0.9` as `de_DE`.
+pub(crate) fn set_request_locale(accept_language: Option<&str>) {
+    let locale = accept_language.and_then(|header| {
+        header
+            .split(',')
+            .map(|part| part.split(';').next().unwrap_or("").trim())
+            .find(|tag| !tag.is_empty() && *tag != "*")
+            .map(|tag| tag.replace('-', "_"))
+    });
+    WEB.with(|slot| {
+        if let Some(web) = slot.borrow_mut().as_mut() {
+            web.locale = locale;
+        }
+    });
+}
+
+/// The request's preferred locale, when a request is in progress and named one.
+pub(crate) fn request_locale() -> Option<String> {
+    WEB.with(|slot| slot.borrow().as_ref().and_then(|web| web.locale.clone()))
+}
+
 /// The host name the request was for, with the port when asked.
 pub(crate) fn host_name(with_port: bool) -> String {
     let host = WEB.with(|slot| slot.borrow().as_ref().map(|web| web.host.clone()).unwrap_or_default());
@@ -392,16 +422,48 @@ pub(crate) fn add_header(name: impl Into<String>, value: impl Into<String>) {
     });
 }
 
-/// `application/json`. A map gains `errors` and status 500 when the message facade has one.
+/// `application/json`.
+///
+/// As Java's `sendJsonResponseInternal`: a string is JSON text already and is sent as it is. Otherwise the messages
+/// are added as `messages` (or make the whole response when there is none), the errors as `errors` unless the map
+/// has its own or is a JSON-RPC answer, and any error makes the status 500.
 pub(crate) fn send_json_response(value: Value) {
-    let mut status = 200;
+    if let Value::String(text) = value {
+        send_bytes(200, "application/json", text.into_bytes());
+        return;
+    }
+    let messages = ExecutionContext::with_current(|ec| ec.message().messages().to_vec()).unwrap_or_default();
     let mut value = value;
-    if let Value::Map(map) = &mut value {
-        let errors = message_errors();
-        if !errors.is_empty() {
-            status = 500;
-            map.insert("errors".to_string(), Value::string(errors.join("\n")));
+    if !messages.is_empty() {
+        match &mut value {
+            Value::Null => {
+                value = Value::Map(indexmap::IndexMap::from([(
+                    "messages".to_string(),
+                    Value::string(messages.join("\n")),
+                )]));
+            }
+            Value::Map(map) if !map.contains_key("messages") => {
+                map.insert("messages".to_string(), Value::string(messages.join("\n")));
+            }
+            _ => {}
         }
+    }
+    let errors = message_errors();
+    let status = if errors.is_empty() {
+        200
+    } else {
+        match &mut value {
+            Value::Map(map) if !map.contains_key("errors") && !map.contains_key("jsonrpc") => {
+                map.insert("errors".to_string(), Value::string(errors.join("\n")));
+            }
+            Value::Map(_) => {}
+            _ => tracing::error!("Error found when sending JSON, the JSON is not a map so no errors were added: {}", errors.join("; ")),
+        }
+        500
+    };
+    if value.is_null() {
+        send_bytes(status, "application/json", Vec::new());
+        return;
     }
     send_bytes(status, "application/json", query_rest::encode_json(&value).into_bytes());
 }
@@ -627,6 +689,29 @@ pub(crate) fn clear_output() {
     });
 }
 
+/// What a request had written, set aside while something else uses the slot's output.
+pub(crate) struct OutputStash((u16, Vec<(String, String)>, Vec<u8>, bool));
+
+/// Take what was written so far and leave the slot empty, for output that is not the response.
+pub(crate) fn stash_output() -> OutputStash {
+    let taken = take_output();
+    clear_output();
+    OutputStash(taken)
+}
+
+/// Put back what [`stash_output`] took, dropping anything written since.
+pub(crate) fn restore_output(stash: OutputStash) {
+    let (status, headers, body, sent) = stash.0;
+    WEB.with(|slot| {
+        if let Some(web) = slot.borrow_mut().as_mut() {
+            web.status = status;
+            web.headers = headers;
+            web.body = body;
+            web.sent = sent;
+        }
+    });
+}
+
 /// Move the status, headers, body, and sent flag out of the slot.
 pub(crate) fn take_output() -> (u16, Vec<(String, String)>, Vec<u8>, bool) {
     WEB.with(|slot| {
@@ -656,14 +741,12 @@ pub(crate) struct ParsedBody {
     pub multipart: BTreeMap<String, Value>,
 }
 
-/// Body larger than its limit, a multipart body that cannot be read or holds a program, or JSON that is not
-/// an object or a list.
+/// Body larger than its limit, or a multipart body that cannot be read or holds a program.
 pub(crate) enum BodyError {
     TooLarge,
     Multipart(String),
     /// A file part that starts like a program, when the web app does not allow one.
     Executable(String),
-    Json(String),
 }
 
 /// The largest request body: 1 MiB, and for a `multipart/form-data` body `webapp_max_upload`.
@@ -671,7 +754,7 @@ pub fn body_limit(request: &WebRequest) -> usize {
     if is_multipart(request) {
         max_upload()
     } else {
-        BODY_LIMIT
+        parse_size(&moqui_lib::env::get_prop_or_env("webapp_max_body")).unwrap_or(DEFAULT_MAX_BODY)
     }
 }
 
@@ -771,23 +854,33 @@ pub(crate) fn parse_body(request: &WebRequest) -> Result<ParsedBody, BodyError> 
         });
     }
     let mut parameters = pairs_to_parameters(pairs);
-    if media == "application/json" || media.ends_with("+json") {
-        let text =
-            std::str::from_utf8(&request.body).map_err(|_| BodyError::Json("JSON body is not utf-8".to_string()))?;
-        match crate::service::parse_json(text) {
+    // As Java's WebFacadeImpl: a body that is not a form is `_requestBodyText`, and a JSON one is read as well. An
+    // object's fields are parameters, an array is `_requestBodyJsonList`, and JSON that does not parse is
+    // `_requestBodyJsonParseError` for the screen or service to answer, not a refused request.
+    let text = String::from_utf8_lossy(&request.body).into_owned();
+    parameters.insert("_requestBodyText".to_string(), Value::String(text.clone()));
+    if media == "application/json" || media == "text/json" || media.ends_with("+json") {
+        match crate::service::parse_json(&text) {
             Ok(Value::Map(map)) => {
                 for (key, value) in map {
                     parameters.insert(key, value);
                 }
             }
             Ok(Value::List(items)) => {
-                if items.iter().any(|item| !matches!(item, Value::Map(_))) {
-                    return Err(BodyError::Json("JSON list elements must be objects".to_string()));
+                // The REST batch form takes a list of objects.
+                if items.iter().all(|item| matches!(item, Value::Map(_))) {
+                    json_list = Some(items.clone());
                 }
-                json_list = Some(items);
+                parameters.insert("_requestBodyJsonList".to_string(), Value::List(items));
             }
-            Ok(_) => return Err(BodyError::Json("JSON body must be an object or a list".to_string())),
-            Err(err) => return Err(BodyError::Json(err.message().to_string())),
+            Ok(_) => {}
+            Err(err) => {
+                tracing::warn!("Error parsing HTTP request body JSON: {}", err.message());
+                parameters.insert(
+                    "_requestBodyJsonParseError".to_string(),
+                    Value::string(err.message()),
+                );
+            }
         }
     }
     Ok(ParsedBody {
@@ -983,8 +1076,41 @@ fn allow_origins() -> Vec<String> {
         .collect()
 }
 
-fn origin_allowed(origin: &str) -> bool {
-    allow_origins().iter().any(|allowed| allowed == origin)
+/// Java's `WebUtilities.webSocketOriginAllowed`, which CORS follows too: no Origin, `*`, the request's own host, an
+/// allowed origin or domain, or a subdomain of an allowed domain on a dot boundary (`moqui.org` allows `www.moqui.org`,
+/// not `foo-moqui.org`). Case-insensitive.
+pub fn origin_allowed_for(origin: Option<&str>, host: Option<&str>) -> bool {
+    let Some(origin) = origin.map(str::trim).filter(|text| !text.is_empty()) else {
+        return true;
+    };
+    let origin = origin.to_ascii_lowercase();
+    let allow: Vec<String> = allow_origins().iter().map(|text| text.to_ascii_lowercase()).collect();
+    if allow.iter().any(|entry| entry == "*") {
+        return true;
+    }
+    let origin_domain = origin_host(&origin);
+    if allow.iter().any(|entry| *entry == origin || *entry == origin_domain) {
+        return true;
+    }
+    if host.is_some_and(|host| !origin_domain.is_empty() && origin_host(host) == origin_domain) {
+        return true;
+    }
+    allow.iter().any(|entry| {
+        let domain = origin_host(entry);
+        !domain.is_empty()
+            && (origin_domain == domain || (domain.contains('.') && origin_domain.ends_with(&format!(".{domain}"))))
+    })
+}
+
+/// The host of an origin or `Host` value, without scheme, path or port.
+fn origin_host(text: &str) -> String {
+    let text = text.trim().to_ascii_lowercase();
+    let text = text.split_once("://").map_or(text.as_str(), |(_, rest)| rest);
+    let text = text.split('/').next().unwrap_or("");
+    if let Some(bracketed) = text.strip_prefix('[') {
+        return format!("[{}]", bracketed.split(']').next().unwrap_or(""));
+    }
+    text.split(':').next().unwrap_or("").to_string()
 }
 
 /// Screen-render headers, and CORS when the origin is allowed.
@@ -1006,7 +1132,7 @@ pub fn finish_response(request: &WebRequest, mut response: WebResponse, prefligh
     }
     if handle_cors() {
         if let Some(origin) = request.header("origin").filter(|text| !text.is_empty()) {
-            if origin_allowed(origin) {
+            if origin_allowed_for(Some(origin), request.header("host")) {
                 apply_cors(&mut response.headers, origin, preflight);
             }
         }
@@ -1096,6 +1222,7 @@ pub(crate) fn status_for(err: &Error) -> u16 {
         ErrorKind::NotFound => return 404,
         ErrorKind::MethodNotAllowed => return 405,
         ErrorKind::Unavailable => return 503,
+        ErrorKind::Validation => return 400,
         ErrorKind::General => {}
     }
     let message = err.message();
@@ -1121,8 +1248,43 @@ pub(crate) fn record_login_error(message: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{cookie_value, form_pairs, pairs_to_parameters, percent_decode};
+    use super::{cookie_value, form_pairs, origin_allowed_for, pairs_to_parameters, percent_decode};
     use moqui_lib::object::Value;
+
+    #[test]
+    fn a_json_body_is_its_fields_a_list_or_a_parse_error_and_always_the_body_text() {
+        let body = |text: &str| {
+            let mut request = super::WebRequest::new("POST", "/x");
+            request.set_header("content-type", "application/json");
+            request.body = text.as_bytes().to_vec();
+            match super::parse_body(&request) {
+                Ok(parsed) => parsed,
+                Err(_) => panic!("body refused"),
+            }
+        };
+        let object = body(r#"{"a": 1}"#);
+        assert_eq!(object.parameters.get("a"), Some(&Value::I64(1)));
+        assert_eq!(object.parameters.get("_requestBodyText"), Some(&Value::string(r#"{"a": 1}"#)));
+        let list = body("[1, 2]");
+        assert!(matches!(list.parameters.get("_requestBodyJsonList"), Some(Value::List(items)) if items.len() == 2));
+        assert!(list.json_list.is_none());
+        let broken = body("{not json");
+        assert!(broken.parameters.contains_key("_requestBodyJsonParseError"));
+    }
+
+    #[test]
+    fn an_origin_is_allowed_as_java_allows_it() {
+        let _lock = crate::user::session::cookie_property_lock();
+        moqui_lib::env::set_property("webapp_allow_origins", "moqui.org, https://app.example:8443");
+        // No Origin (not a browser), the request's own host, an allowed origin, and a subdomain on a dot boundary.
+        assert!(origin_allowed_for(None, Some("site.test")));
+        assert!(origin_allowed_for(Some("https://site.test"), Some("site.test:8080")));
+        assert!(origin_allowed_for(Some("https://app.example:8443"), Some("other")));
+        assert!(origin_allowed_for(Some("https://www.MOQUI.org"), Some("other")));
+        assert!(!origin_allowed_for(Some("https://foo-moqui.org"), Some("other")));
+        assert!(!origin_allowed_for(Some("https://evil.test"), Some("site.test")));
+        moqui_lib::env::clear_property("webapp_allow_origins");
+    }
 
     #[test]
     fn a_repeated_name_becomes_a_list() {

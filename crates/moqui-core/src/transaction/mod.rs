@@ -24,7 +24,9 @@
 mod manager;
 mod pool;
 
-pub use manager::{TransactionAttribute, TransactionManager};
+#[cfg(test)]
+pub(crate) use manager::single_threaded;
+pub use manager::{thread_in_transaction, TransactionAttribute, TransactionManager};
 pub use pool::{Pool, PoolConfig, PoolStats};
 
 #[cfg(test)]

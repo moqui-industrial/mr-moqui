@@ -538,6 +538,7 @@ fn write_screen(dir: &std::path::Path, field: &str) -> String {
 fn the_cached_template_follows_the_resolved_definition() {
     let context = ExecutionContextFactory::test_context();
     let factory = context.factory();
+    crate::screen::ScreenFacade::of(factory).set_check_interval(Some(std::time::Duration::ZERO));
     let dir = std::env::temp_dir().join(format!("moqui-static-identity-{}", std::process::id()));
     let root = write_screen(&dir, "alpha");
     let first = make_render(factory)
@@ -667,5 +668,45 @@ fn include_screen_and_section_include_are_written_inline_with_their_actions_in_t
     let json = json_of(&package);
     assert_eq!(json["partValue"], "PART-ZEBRA-VALUE", "{json}");
     assert_eq!(json["sectionValue"], "SECTION-ZEBRA", "{json}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_template_the_compiler_rejects_leaves_a_clean_merged_render_and_is_not_built_again() {
+    let context = ExecutionContextFactory::test_context();
+    let factory = context.factory();
+    let dir = std::env::temp_dir().join(format!("moqui-static-broken-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Root")).unwrap();
+    std::fs::write(
+        dir.join("Root.xml"),
+        r#"<screen require-authentication="false"><widgets><subscreens-active/></widgets></screen>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Root/Broken.xml"),
+        r#"<screen require-authentication="false" server-static="qvt"><widgets>
+            <label text="before"/><render-mode><text type="qvt"><![CDATA[<div><span>not closed</div>]]></text></render-mode>
+        </widgets></screen>"#,
+    )
+    .unwrap();
+    let root = dir.join("Root.xml").to_string_lossy().into_owned();
+    let render = || {
+        make_render(factory)
+            .root_screen(root.clone())
+            .screen_path("/Broken.qvt")
+            .render()
+            .unwrap()
+    };
+    let first = render();
+    assert_eq!(header(&first, "X-Moqui-Qvt"), "merged-fragment", "{}", first.body_text());
+    // Only the merged render's text: the template that was written before the compiler refused it is gone.
+    assert_eq!(first.body_text().matches("before").count(), 1, "{}", first.body_text());
+    let def = ScreenFacade::of(factory)
+        .screen_def(factory, &dir.join("Root/Broken.xml").to_string_lossy())
+        .unwrap();
+    assert!(def.generated().static_failure("/Broken").is_some());
+    let second = render();
+    assert_eq!(header(&second, "X-Moqui-Qvt"), "merged-fragment");
     let _ = std::fs::remove_dir_all(&dir);
 }
