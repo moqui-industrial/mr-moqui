@@ -329,6 +329,27 @@ Server-static qvt (`plans/QvtServerStatic.md`).
 - Report: `screen::statics::static_report`, `static_reports_for_files`, `StaticReport`, `Violation`. `script::set_widget_wrap` turns the wrapped `ec` on for widget
   expressions (`eval_condition`, `eval_value`, `eval_map`, `expand`, `ec.resource.expand/condition/expression`), and `run_actions` turns it off for the actions.
 
+### Added by phase 11 (tools)
+
+The calls the tools screens and services make (`script/runtime/tools_host.rs`). They are outside the Server host methods list.
+
+- `ec.cache`: `cacheExists`, `clearAllCaches`, `getAllCachesInfo(orderBy, filterRegexp)`, `makeElementInfoList(name, orderBy)`. The list is the conf caches,
+  `screen.definition`, and the entity list caches (`entity.record.list.{entity}`); `getCache(name).clear()` clears any of them.
+- `ec.entity`: `isEntityDefined`, `getAllEntityNames`, `getAllEntitiesInfo`, `getAllEntityInfo`, `getAllEntityNamesWithMaster`, `getAllEntityRelatedFields`,
+  `getEntityDefinition(name)` (names, `entityInfo`, fields, relationships, dependents, and the Java getters), `getDatasourceGroupNames`, `getEecaRuleCount`,
+  `eecaRulesByEntityName.get`, `runSqlStatement(group, sql, limit)` (the SQL runners), `makeDataWriter()` (`file`, `directory`, `zipFile`, `zipDirectory`,
+  `text`), `makeDataLoader()`, `formatFieldString`. `getQueryStatsList` is empty: query statistics are off by default in Java and not kept here.
+- `ec.service`: `getKnownServiceNames`, `getAllServiceInfo`, `getSecaRuleCount`, `secaRulesByServiceName.get`, `getServiceDefinition(name)` (with
+  `serviceNode`), `getJobRunner()`, `jobWorkerPool`, `isLastRunBeforeLastSchedule(cron, lastRunTime)`, `restApi.getFreshRootResources()`.
+- `ec.screen`: `getAllRootScreenLocations`, `getScreenInfoList(root, levels)`, `getFormNode(location)`. `ec.factory`: `getStatusMap`, `getComponentInfoList`,
+  `getRuntimePath`, `getThreadList`, `workerPool`, `versionMap`. `ec.resource.getLocationReference(location)` and `getLocationText`. `ec.web`:
+  `getRequestDetails`, `secureRequestParameters` (the parameters not in the URL query string). `ec.user.getPeriodRange`, `ec.message.messageInfos`,
+  `ec.l10n.getAvailableLocales`, `getAvailableTimeZones`, `ec.context.putAll`, `ec.artifactExecution.isPermitted(name, type, action)`.
+- Helpers: `CollectionUtilities.paginateList` and `orderMapList`, `StringUtilities.camelCaseToPretty`, `prettyToCamelCase`, `encodeAsciiFilename`,
+  `WebUtilities.isRestrictedGenericEntity`. An entity value has `getPrimaryKeys()`. `deleteAll()` returns the count.
+- The stack holds data, so a method does not survive a `set`. A tools object is a map with a `__wrap` name; reading it back from the stack gives it its methods
+  again (`globalThis.__moquiWrap`). A method of any other object is left out when the object goes on the stack, as the unwrapped projection leaves out a function.
+
 ## Out of scope
 
 - QuickJS operator overloading for decimals. QuickJS-NG ties it to the built-in `BigDecimal` and `BigFloat` classes (`CONFIG_BIGNUM`). It does not extend to a host class, so the build flag does not give a host decimal `+`. The browser cannot share that flag either.

@@ -18,85 +18,36 @@ along with this software (see the LICENSE.md file). If not, see
     <actions>
         <if condition="!ec.user.hasPermission('SQL_RUNNER_WEB')">
             <return error="true" message="User does not have permission to use the SQL Runner"/></if>
-        <if condition="!sri.getScreenUrlInfo().isPermitted(ec, null, org.moqui.context.ArtifactExecutionInfo.AUTHZA_ALL)">
+        <if condition="!ec.artifactExecution.isPermitted(sri.getActiveScreenDef().getLocation(), 'AT_XML_SCREEN', 'all')">
             <return error="true" message="User must be authorized for all actions on this screen"/></if>
 
         <script><![CDATA[
-            import java.sql.Connection
-            import java.sql.ResultSet
-            import java.sql.SQLWarning
-            import org.moqui.context.ExecutionContext
+            outerColumnsList = []
+            outerRecordsList = []
 
-            ExecutionContext ec = context.ec
-
-            def rs = null
-            outerColumnsList = new ArrayList<ArrayList<String>>()
-            outerRecordsList = new ArrayList<ArrayList<ArrayList>>()
-
-            int limitInt = (limit?:"500") as int
+            const limitInt = parseInt(limit || "500", 10)
 
             // make sure SQL comes in secure parameter (body, etc no URL)
-            sql = ec.web.secureRequestParameters.get("sql")
+            sql = ec.web.secureRequestParameters.sql
             if (sql && groupName) {
                 messageList = []
-                Connection con = ec.entity.getConnection(groupName)
+                // JDBC runs a script of several statements and returns each result; here each statement runs by itself
                 try {
-                    stmt = con.createStatement()
-
-                    for(int i=0; i< 100; i++) {
-                        // try get 100 ResultSets, avoid infinite loop
-                        boolean isResultSet = i == 0 ? stmt.execute(sql as String) : stmt.getMoreResults()
-                        // ec.logger.info("$isResultSet")
-
-                        SQLWarning w = stmt.getWarnings()
-                        for (int j = 0; j < 100 && w != null; j++) {
-                            ec.logger.warn(w.getMessage() as String)
-                            w = w.getNextWarning()
-                        }
-
-                        stmt.clearWarnings()
-
-                        if (isResultSet) {
-                            columns = new ArrayList<String>()
-                            records = new ArrayList<ArrayList>()
-                            outerColumnsList.add(columns)
-                            outerRecordsList.add(records)
-                            rs = stmt.getResultSet()
-                            if (rs != null) {
-                                rsmd = rs.getMetaData()
-                                columnCount = rsmd.getColumnCount()
-                                for (i = 1; i <= columnCount; i++) columns.add(rsmd.getColumnName(i))
-
-                                limitReached = false
-                                while (rs.next()) {
-                                    if (limitInt > 0 && records.size() >= limitInt) {
-                                        limitReached = true
-                                        break
-                                    }
-                                    record = new ArrayList<Object>(columnCount)
-                                    for (i = 1; i <= columnCount; i++) record.add(rs.getObject(i))
-                                    records.add(record)
-                                }
-                                rs.close()
-
-                                if (limitReached) {
-                                    messageList.add(ec.resource.expand('Only showing first ${limit} rows.',''))
-                                } else {
-                                    messageList.add(ec.resource.expand('Showing all ${records.size()} results.',''))
-                                }
-                            }
-                        } else if ((rowsAffected = stmt.getUpdateCount()) != -1){
-                            messageList.add(ec.resource.expand('Query altered ${rowsAffected} rows.',''))
+                    const result = ec.entity.runSqlStatement(String(groupName), String(sql), limitInt)
+                    if (result.rowsAffected != null) {
+                        messageList.push(ec.resource.expand('Query altered ${rowsAffected} rows.', '', {rowsAffected: result.rowsAffected}))
+                    } else {
+                        outerColumnsList.push(result.columns)
+                        outerRecordsList.push(result.records)
+                        if (result.limitReached) {
+                            messageList.push(ec.resource.expand('Only showing first ${limit} rows.', '', {limit: limitInt}))
                         } else {
-                            break
+                            messageList.push(ec.resource.expand('Showing all ${count} results.', '', {count: result.records.length}))
                         }
                     }
-                } catch (Exception e) {
-                    messageList.add(e.toString())
+                } catch (e) {
+                    messageList.push(String(e))
                     ec.logger.log(200, "Error running SQL query in SqlRunner", e)
-                } finally {
-                    if (stmt != null) { try { stmt.close() } catch (Exception e) { /* Ignore */ } }
-                    if (con != null) { try { con.close() } catch (Exception e) { /* Ignore */ } }
                 }
             }
         ]]></script>
@@ -115,17 +66,18 @@ along with this software (see the LICENSE.md file). If not, see
 
         <label text="Query Results" type="h4"/>
         <render-mode><text type="html,vuet,qvt"><![CDATA[
-            <#if outerColumnsList?has_content>
+            <#if outerColumnsList && outerColumnsList.length>
                 <#list outerColumnsList as columns>
-                    <#assign records = outerRecordsList[columns?index] />
+                    <#assign columnsIndex = outerColumnsList.indexOf(columns)>
+                    <#assign records = outerRecordsList[columnsIndex]>
                     <div style="margin-bottom: 2em;">
-                    <h3>Result Set ${columns?index + 1}</h3>
-                    <#if columns?has_content>
+                    <h3>Result Set ${columnsIndex + 1}</h3>
+                    <#if columns.length || records.length>
                         <table class="table table-striped table-hover">
-                            <tr class="header-row"><#list columns as column><td style="padding-right: 1em;">${column}</td></#list></tr>
-                            <#if records?has_content><#list records as record>
-                                <tr><#list record as curField><td style="padding-right: 1em;">${ec.l10n.format(curField, '')!"&nbsp;"}</td></#list></tr>
-                            </#list></#if>
+                            <tr class="header-row"><#list columns as column><td style="padding-right: 1em;">${html(column)}</td></#list></tr>
+                            <#list records as record>
+                                <tr><#list record as curField><td style="padding-right: 1em;">${curField == null ? "&nbsp;" : html(ec.l10n.format(curField, ''))}</td></#list></tr>
+                            </#list>
                         </table>
                     </#if>
                     </div>

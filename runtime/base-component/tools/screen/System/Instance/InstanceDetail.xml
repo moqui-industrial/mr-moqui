@@ -106,10 +106,10 @@ along with this software (see the LICENSE.md file). If not, see
             </container>
 
             <container-dialog id="InstanceDetail" button-text="Instance Detail" width="900">
-                <label text="${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(inspectMap))}" type="pre" style="pre-plain"/>
+                <label text="${JSON.stringify(inspectMap, null, 2)}" type="pre" style="pre-plain"/>
             </container-dialog>
             <container-dialog id="MoquiServerDetail" button-text="Moqui Server Detail">
-                <label text="${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(moquiStatusMap))}" type="pre" style="pre-plain"/>
+                <label text="${JSON.stringify(moquiStatusMap, null, 2)}" type="pre" style="pre-plain"/>
             </container-dialog>
             <container-dialog id="InstanceLog" button-text="Instance Log" width="900">
                 <label text="${instanceLog}" type="pre" style="pre-plain"/>

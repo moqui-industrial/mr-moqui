@@ -31,17 +31,17 @@ along with this software (see the LICENSE.md file). If not, see
             <if condition="term">
                 <entity-find-one entity-name="moqui.basic.Geo" value-field="termGeo">
                     <field-map field-name="geoId" from="term"/></entity-find-one>
-                <if condition="termGeo != null"><script>resultList.add([geoId:termGeo.geoId, label:(termGeo.geoCodeAlpha2 ? termGeo.geoCodeAlpha2 + ' - ' : '') + termGeo.geoName,
-                        geoName:termGeo.geoName, geoCodeAlpha2:termGeo.geoCodeAlpha2])</script></if>
+                <if condition="termGeo != null"><script>resultList.push({geoId: termGeo.geoId, label: (termGeo.geoCodeAlpha2 ? termGeo.geoCodeAlpha2 + ' - ' : '') + termGeo.geoName,
+                        geoName: termGeo.geoName, geoCodeAlpha2: termGeo.geoCodeAlpha2})</script></if>
             </if>
-            <if condition="geoId &amp;&amp; !resultList">
+            <if condition="geoId &amp;&amp; !resultList.length">
                 <entity-find entity-name="moqui.basic.GeoAssocAndToDetail" list="geoList">
                     <econdition field-name="geoId"/><econdition field-name="geoAssocTypeEnumId"/>
                     <econdition field-name="geoTypeEnumId" ignore-if-empty="true"/>
                     <order-by field-name="geoName"/>
                 </entity-find>
-                <script>for (geo in geoList) resultList.add([geoId:geo.toGeoId, label:(geo.geoCodeAlpha2 ? geo.geoCodeAlpha2 + ' - ' : '') + geo.geoName,
-                        geoName:geo.geoName, geoCodeAlpha2:geo.geoCodeAlpha2])</script>
+                <script>for (const geo of geoList) resultList.push({geoId: geo.toGeoId, label: (geo.geoCodeAlpha2 ? geo.geoCodeAlpha2 + ' - ' : '') + geo.geoName,
+                        geoName: geo.geoName, geoCodeAlpha2: geo.geoCodeAlpha2})</script>
             </if>
         </actions>
     </service>
@@ -103,38 +103,27 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="enumIdSet" type="Set"/>
         </out-parameters>
         <actions><script><![CDATA[
-            import groovy.transform.CompileStatic
-            import org.moqui.context.ExecutionContext
-            import org.moqui.entity.EntityList
-            import org.moqui.entity.EntityValue
-            import org.moqui.impl.entity.EntityListImpl
-
-            ExecutionContext ec = context.ec
-            enumerationList = new EntityListImpl(ec.entity)
-            enumIdSet = new TreeSet()
+            enumerationList = []
+            const enumIds = new Set()
 
             if (includeParent) {
-                EntityValue parentEnum = ec.entity.find("moqui.basic.Enumeration").condition("enumId", parentEnumId).useCache(true).one()
-                enumerationList.add(0, parentEnum)
-                enumIdSet.add(parentEnumId)
+                const parentEnum = ec.entity.find("moqui.basic.Enumeration").condition("enumId", parentEnumId).useCache(true).one()
+                enumerationList.push(parentEnum)
+                enumIds.add(parentEnumId)
             }
 
-            findChildren(parentEnumId, enumerationList, enumIdSet, includeNested, ec)
-            enumerationList.orderByFields([orderByField])
-
-            @CompileStatic
-            void findChildren(String parentEnumId, EntityList enumerationList, Set enumIdSet, Boolean includeNested, ExecutionContext ec) {
-                EntityList curList = ec.entity.find("moqui.basic.Enumeration").condition("parentEnumId", parentEnumId).useCache(true).list()
-                if (curList.size() == 0) return
-                int curListSize = curList.size()
-                for (int i = 0; i < curListSize; i++) {
-                    EntityValue curEnum = curList.get(i)
-                    enumerationList.add(curEnum)
-                    enumIdSet.add(curEnum.enumId)
+            function findChildren(parentEnumId) {
+                for (const curEnum of ec.entity.find("moqui.basic.Enumeration").condition("parentEnumId", parentEnumId).useCache(true).list()) {
+                    enumerationList.push(curEnum)
+                    enumIds.add(curEnum.enumId)
                     // recurse to find nested
-                    if (includeNested) findChildren((String) curEnum.enumId, enumerationList, enumIdSet, true, ec)
+                    if (includeNested) findChildren(curEnum.enumId)
                 }
             }
+            findChildren(parentEnumId)
+            orderMapList(enumerationList, [orderByField])
+            // a TreeSet in Java: sorted
+            enumIdSet = [...enumIds].sort()
             ]]></script></actions>
     </service>
     <service verb="get" noun="EnumsByTypeForDropDown" allow-remote="true">
@@ -147,8 +136,8 @@ along with this software (see the LICENSE.md file). If not, see
                     <econdition field-name="enumTypeId"/>
                     <order-by field-name="sequenceNum,description"/>
                 </entity-find>
-                <script>for (def enumEntry in enumList)
-                    resultList.add([enumId:enumEntry.enumId, label:"${enumEntry.description} [${enumEntry.enumId}]"])</script>
+                <script>for (const enumEntry of enumList)
+                    resultList.push({enumId: enumEntry.enumId, label: `${enumEntry.description} [${enumEntry.enumId}]`})</script>
             </if>
         </actions>
     </service>
@@ -186,37 +175,37 @@ along with this software (see the LICENSE.md file). If not, see
                 <econdition field-name="uomId"/><econdition field-name="toUomId"/>
                 <order-by field-name="-fromDate"/><order-by field-name="-uomConversionId"/>
             </entity-find>
-            <if condition="uomConversionList">
-                <set field="uomConversion" from="uomConversionList.first"/>
+            <if condition="uomConversionList.length">
+                <set field="uomConversion" from="uomConversionList[0]"/>
                 <set field="convertedAmount" from="amount"/>
                 <if condition="uomConversion.conversionFactor">
-                    <set field="convertedAmount" from="(convertedAmount * uomConversion.conversionFactor) as BigDecimal"/></if>
+                    <set field="convertedAmount" from="convertedAmount.multiply(basicConvert(uomConversion.conversionFactor, 'BigDecimal'))"/></if>
                 <if condition="uomConversion.conversionOffset">
-                    <set field="convertedAmount" from="(convertedAmount + uomConversion.conversionOffset) as BigDecimal"/></if>
+                    <set field="convertedAmount" from="convertedAmount.add(uomConversion.conversionOffset)"/></if>
                 <return/>
             </if>
-            <if condition="!uomConversionList">
+            <if condition="!uomConversionList.length">
                 <!-- try going backwards -->
                 <entity-find entity-name="moqui.basic.UomConversion" list="uomConversionList">
                     <date-filter valid-date="effectiveDate"/>
                     <econdition field-name="uomId" from="toUomId"/><econdition field-name="toUomId" from="uomId"/>
                     <order-by field-name="-fromDate"/><order-by field-name="-uomConversionId"/>
                 </entity-find>
-                <if condition="uomConversionList">
-                    <set field="uomConversion" from="uomConversionList.first"/>
+                <if condition="uomConversionList.length">
+                    <set field="uomConversion" from="uomConversionList[0]"/>
                     <set field="convertedAmount" from="amount"/>
                     <if condition="uomConversion.conversionOffset">
-                        <set field="convertedAmount" from="(convertedAmount - uomConversion.conversionOffset) as BigDecimal"/></if>
+                        <set field="convertedAmount" from="convertedAmount.subtract(uomConversion.conversionOffset)"/></if>
                     <if condition="uomConversion.conversionFactor">
-                        <set field="convertedAmount" from="(convertedAmount / uomConversion.conversionFactor) as BigDecimal"/></if>
+                        <set field="convertedAmount" from="convertedAmount.divide(basicConvert(uomConversion.conversionFactor, 'BigDecimal'))"/></if>
                     <return/>
                 </if>
             </if>
-            <if condition="!uomConversionList">
+            <if condition="!uomConversionList.length">
                 <entity-find-one entity-name="moqui.basic.Uom" value-field="uom"/>
                 <entity-find-one entity-name="moqui.basic.Uom" value-field="toUom">
                     <field-map field-name="uomId" from="toUomId"/></entity-find-one>
-                <return error="true" message="Could not convert from ${uom?.description ?: uomId} to ${toUom?.description ?: toUomId}, no UOM Conversion found."/>
+                <return error="true" message="Could not convert from ${uom?.description || uomId} to ${toUom?.description || toUomId}, no UOM Conversion found."/>
             </if>
         </actions>
     </service>

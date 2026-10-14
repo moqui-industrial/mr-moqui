@@ -61,6 +61,8 @@ pub(crate) fn clean(
         // Convert first, so the checks see the type they were written for.
         let value = if matches!(value, Value::Map(_) | Value::List(_)) {
             value
+        } else if let Some(items) = text_collection(&value, &param.java_type) {
+            items
         } else {
             convert_checked(&value, &param.java_type).ok_or_else(|| {
                 Error::new(format!(
@@ -79,6 +81,32 @@ pub(crate) fn clean(
         retain_known(def, &mut params, &known, facade)?;
     }
     Ok(params)
+}
+
+/// `ParameterInfo` for a `List` or `Set` parameter given as text: square brackets stripped, then split on commas, or
+/// the one string. A set keeps the first of each value.
+fn text_collection(value: &Value, java_type: &str) -> Option<Value> {
+    let Value::String(text) = value else {
+        return None;
+    };
+    let simple = java_type.rsplit('.').next().unwrap_or(java_type);
+    let set = match simple {
+        "List" | "ArrayList" | "Collection" => false,
+        "Set" | "HashSet" | "TreeSet" | "LinkedHashSet" => true,
+        _ => return None,
+    };
+    let inner = text
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(text);
+    let mut items: Vec<Value> = Vec::new();
+    for part in inner.split(',') {
+        let item = Value::string(part);
+        if !set || !items.contains(&item) {
+            items.push(item);
+        }
+    }
+    Some(Value::List(items))
 }
 
 fn expand_params(def: &ServiceDef, params: &[ParamDef], facade: Option<&EntityFacade>) -> Result<Vec<ParamDef>, Error> {

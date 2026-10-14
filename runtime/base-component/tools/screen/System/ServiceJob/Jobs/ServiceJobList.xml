@@ -34,7 +34,7 @@ along with this software (see the LICENSE.md file). If not, see
     </actions>
     <widgets>
         <section name="JobRunnerInfo" condition="jobRunner"><widgets>
-            <label text="Last job runner execute: &lt;strong&gt;${new Timestamp(jobRunner.getLastExecuteTime())}&lt;/strong&gt;, runner executes: ${jobRunner.getExecuteCount()}, total jobs run: ${jobRunner.getTotalJobsRun()}, last active: ${jobRunner.getLastJobsActive()}, last paused: ${jobRunner.getLastJobsPaused()}" encode="false"/>
+            <label text="Last job runner execute: &lt;strong&gt;${jobRunner.lastExecuteTime}&lt;/strong&gt;, runner executes: ${jobRunner.executeCount}, total jobs run: ${jobRunner.totalJobsRun}, last active: ${jobRunner.lastJobsActive}, last paused: ${jobRunner.lastJobsPaused}" encode="false"/>
         </widgets><fail-widgets>
             <label text="No Service Job Runner active (generally because scheduled-job-check-time is set to 0)"/>
         </fail-widgets></section>

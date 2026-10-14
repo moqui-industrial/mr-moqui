@@ -220,6 +220,14 @@ impl HostFind {
         })
     }
 
+    /// The shown and hidden fields of a form-list, for its `entity-find` (generated code only).
+    fn select_form_fields<'js>(&self, ctx: Ctx<'js>, fields: String) -> rquickjs::Result<Class<'js, HostFind>> {
+        host_guard(&ctx, || {
+            let find = take_find(&ctx, &self.inner)?.select_form_fields(&fields);
+            wrap_find(&ctx, find)
+        })
+    }
+
     fn list<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<Class<'js, HostList>> {
         host_guard(&ctx, || {
             let list = take_find(&ctx, &self.inner)?
@@ -277,7 +285,8 @@ impl HostFind {
         })
     }
 
-    fn delete_all(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
+    /// Delete the rows the find matches. Returns how many, as Java's `deleteAll`.
+    fn delete_all<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || {
             let facade = facade_of(&ctx)?;
             let list = take_find(&ctx, &self.inner)?
@@ -286,7 +295,7 @@ impl HostFind {
             for value in list.values() {
                 value.delete(&facade).map_err(|err| throw_lib(&ctx, &err))?;
             }
-            Ok(())
+            i64_to_js(&ctx, i64::try_from(list.len()).unwrap_or(i64::MAX))
         })
     }
 
@@ -808,6 +817,27 @@ impl HostEntity {
             self.val()
                 .create_or_update(&facade)
                 .map_err(|err| throw_lib(&ctx, &err))
+        })
+    }
+
+    /// `getPrimaryKeys()`: the primary key fields of the value, as a map.
+    fn get_primary_keys<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            let facade = facade_of(&ctx)?;
+            let value = self.val();
+            let names: Vec<String> = facade
+                .with_entity(value.entity_name(), |entity, _, _| {
+                    Ok(entity.pk_field_names().iter().map(|name| (*name).to_string()).collect())
+                })
+                .map_err(|err| throw_lib(&ctx, &err))?;
+            let map: indexmap::IndexMap<String, Value> = names
+                .into_iter()
+                .map(|name| {
+                    let field = value.get(&name).cloned().unwrap_or(Value::Null);
+                    (name, field)
+                })
+                .collect();
+            host_to_js(&ctx, Value::Map(map))
         })
     }
 

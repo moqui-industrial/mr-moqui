@@ -138,9 +138,20 @@ pub(super) fn collection_to_js<'js>(ctx: &Ctx<'js>, value: Value) -> rquickjs::R
             constructor.construct((array,))
         }
         Value::Map(entries) => {
+            let wrap = match entries.get(WRAP_KEY) {
+                Some(Value::String(name)) => Some(name.clone()),
+                _ => None,
+            };
             let object = Object::new(ctx.clone())?;
             for (key, item) in entries {
                 object.set(key, host_to_js(ctx, item)?)?;
+            }
+            // A tools object keeps its data on the stack and gets its methods back when it is read (`tools_host`).
+            if let Some(name) = wrap {
+                let wrapper: Option<rquickjs::Function> = ctx.globals().get("__moquiWrap").ok();
+                if let Some(wrapper) = wrapper {
+                    return wrapper.call((name, object));
+                }
             }
             Ok(object.into_value())
         }
@@ -217,9 +228,13 @@ pub(super) fn js_value_to_host(ctx: &Ctx<'_>, value: &JsValue<'_>) -> Result<Val
             map.insert(SET_KEY.to_string(), js_value_to_host(ctx, &items)?);
             return Ok(Value::Map(map));
         }
+        // A method of the object is not data, so it is left out, as the unwrapped projection leaves out a function.
         let mut map = indexmap::IndexMap::new();
         for entry in object.props::<String, JsValue>() {
             let (key, item) = entry.map_err(|err| js_caught(ctx, err))?;
+            if item.is_function() {
+                continue;
+            }
             map.insert(key, js_value_to_host(ctx, &item)?);
         }
         return Ok(Value::Map(map));
@@ -230,6 +245,9 @@ pub(super) fn js_value_to_host(ctx: &Ctx<'_>, value: &JsValue<'_>) -> Result<Val
 /// A script `Set` is held on the context stack as a one-key map holding its items, so a Set one
 /// action block makes in a context name is a Set again in the next block.
 const SET_KEY: &str = "__set__";
+
+/// The key of a map whose JavaScript form is a tools object: the name of the wrapper that adds its methods.
+pub(super) const WRAP_KEY: &str = "__wrap";
 
 fn is_js_set(object: &Object<'_>) -> bool {
     object

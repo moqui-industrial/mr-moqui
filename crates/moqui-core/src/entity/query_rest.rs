@@ -1741,12 +1741,54 @@ fn first_text(records: &[BTreeMap<String, Value>], key: &str) -> Option<String> 
 
 fn render_xml(nodes: &[RecordNode], prefix: &str, iso: bool) -> String {
     let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<entity-facade-xml>\n");
+    out.push_str(&xml_body(nodes, prefix, iso));
+    out.push_str("</entity-facade-xml>\n\n");
+    out
+}
+
+fn xml_body(nodes: &[RecordNode], prefix: &str, iso: bool) -> String {
+    let mut out = String::new();
     for node in nodes {
         let element = node.entity_key.replace('#', "-");
         write_xml_node(&mut out, node, &element, 1, prefix, iso);
     }
-    out.push_str("</entity-facade-xml>\n\n");
     out
+}
+
+/// The records of one entity as the data writer writes them between the file's start and end: XML
+/// elements, or JSON objects each followed by a comma, with dependents to `levels` or the `master`
+/// definition. Each top record counts once.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn data_body(
+    facade: &EntityFacade,
+    entity_name: &str,
+    records: &[BTreeMap<String, Value>],
+    json: bool,
+    levels: i64,
+    master: Option<&str>,
+    prefix: &str,
+    iso: bool,
+) -> Result<String, Error> {
+    let mut nodes = Vec::with_capacity(records.len());
+    for record in records {
+        nodes.push(render_record(facade, entity_name, record, levels, master)?);
+    }
+    if !json {
+        return Ok(xml_body(&nodes, prefix, iso));
+    }
+    let mut out = String::new();
+    for node in &nodes {
+        out.push_str("    ");
+        write_json_node(&mut out, node, 4, iso);
+        out.push_str(",\n");
+    }
+    Ok(out)
+}
+
+/// One field as a CSV cell: base64 for bytes, ISO text for a date or time when `iso`, the CSV quoting.
+pub(crate) fn csv_cell(out: &mut String, value: Option<&Value>, iso: bool) {
+    let text = value.map(|value| scalar_string(value, iso)).unwrap_or_default();
+    write_csv_field(out, &text);
 }
 
 fn write_xml_node(out: &mut String, node: &RecordNode, element: &str, level: usize, prefix: &str, iso: bool) {

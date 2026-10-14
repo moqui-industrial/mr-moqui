@@ -113,6 +113,8 @@ interface EntityValueMethods<N extends string = string> {
         useCache?: boolean | null,
         forUpdate?: boolean | null,
     ): EntityList<MoquiRelated<N, R>>;
+    /** The primary key fields of the value. */
+    getPrimaryKeys(): { [K in MoquiPk<N> & MoquiFieldName<N>]?: MoquiFields<N>[K] };
     findRelatedOne<R extends keyof MoquiRel<N> & string>(
         relationship: R,
         useCache?: boolean | null,
@@ -168,7 +170,8 @@ interface EntityFind<N extends string = string> {
     list(): EntityList<N>;
     iterator(): EntityList<N>;
     count(): number;
-    deleteAll(): void;
+    /** How many rows were deleted. */
+    deleteAll(): number;
     getLimit(): number | null;
     getOffset(): number | null;
     getPageIndex(): number;
@@ -442,6 +445,11 @@ interface MoquiServerEc {
     readonly context: MoquiEcContext;
     readonly factory: { readonly moquiVersion: string };
     readonly cache: { getCache(name: string): { get(key: string): unknown; put(key: string, value: unknown): void; remove(key: string): boolean; containsKey(key: string): boolean; clear(): void } };
+    /**
+     * The tools calls (phase 11): cache admin, the entity and service model, screen statistics, the server status,
+     * the SQL runner, the data writer and loader. They are outside the Server host methods list and typed loosely.
+     */
+    readonly artifactExecution: { isPermitted(name: string, artifactType?: string, action?: string): boolean };
     readonly search: { [method: string]: (...args: unknown[]) => unknown };
 }
 

@@ -85,8 +85,12 @@ pub fn framework_dir() -> PathBuf {
 ///
 /// # Errors
 ///
-/// Returns an error when a `component://` location has no name or names an unknown component.
+/// Returns an error when a `component://` location has no name or names an unknown component, and
+/// for a `content://` location: JCR is not part of this port, and the location is not remapped.
 pub fn locate(location: &str) -> Result<PathBuf, Error> {
+    if location.starts_with("content:") {
+        return Err(Error::new(format!("content resource is not available: {location}")));
+    }
     let roots = roots();
     if let Some(rest) = strip_prefix(location, &["classpath://", "classpath:"]) {
         return Ok(roots.framework.join(rest.trim_start_matches('/')));
@@ -123,4 +127,17 @@ fn component_root(roots: &Roots, name: &str) -> Option<PathBuf> {
 
 fn strip_prefix<'a>(location: &'a str, prefixes: &[&str]) -> Option<&'a str> {
     prefixes.iter().find_map(|prefix| location.strip_prefix(prefix))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_content_location_is_an_error_that_names_it() {
+        let err = super::locate("content://main/WikiSpace/Page.md").unwrap_err();
+        assert_eq!(
+            err.message(),
+            "content resource is not available: content://main/WikiSpace/Page.md"
+        );
+        assert!(super::locate("classpath://screen/ScreenRenderEmail.xml").is_ok());
+    }
 }

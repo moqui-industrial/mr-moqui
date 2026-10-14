@@ -66,6 +66,7 @@ impl FormInstance {
             Some(find) if list => {
                 let copy = find.deep_copy();
                 copy.set_attribute("list", list_name.clone());
+                copy.set_attribute("form-select-fields", form_select_fields(node).join(","));
                 let actions = MNode::new("actions");
                 actions.append_node(copy);
                 Some(Actions::from_xml(
@@ -100,6 +101,51 @@ impl FormInstance {
             field_from,
         })
     }
+}
+
+/// The fields a form-list's `entity-find` selects, as Java's `FormListRenderInfo`: the fields of the
+/// columns (the `form-list-column` or `columns` field refs, otherwise each field whose widget is not
+/// hidden), then the hidden fields that have a `default-field`. Java takes the columns from the
+/// user's saved column selection when there is one; here the definition's columns are a superset of it.
+fn form_select_fields(form: &MNode) -> Vec<String> {
+    let fields = form.children_named("field");
+    let mut names: Vec<String> = Vec::new();
+    let mut push = |name: String| {
+        if !name.is_empty() && !names.contains(&name) {
+            names.push(name);
+        }
+    };
+    let column_refs: Vec<String> = form
+        .children()
+        .into_iter()
+        .filter(|child| child.name() == "form-list-column" || child.name() == "columns")
+        .flat_map(|child| descendants_named(&child, "field-ref"))
+        .filter_map(|field_ref| field_ref.attribute("name"))
+        .collect();
+    if column_refs.is_empty() {
+        for field in &fields {
+            if !list_field_hidden_widget(field) && field.attribute("hide").as_deref() != Some("true") {
+                push(field.attribute("name").unwrap_or_default());
+            }
+        }
+    } else {
+        column_refs.into_iter().for_each(&mut push);
+    }
+    for field in &fields {
+        if list_field_hidden_widget(field) && field.first_named("default-field").is_some() {
+            push(field.attribute("name").unwrap_or_default());
+        }
+    }
+    names
+}
+
+/// Java's `isListFieldHiddenWidget`: the default field and each conditional field are hidden or ignored.
+fn list_field_hidden_widget(field: &MNode) -> bool {
+    let shown = |sub: &MNode| sub.first_named("hidden").is_none() && sub.first_named("ignored").is_none();
+    if field.first_named("default-field").is_some_and(|sub| shown(&sub)) {
+        return false;
+    }
+    !field.children_named("conditional-field").iter().any(shown)
 }
 
 /// The assembled form `name` of `def`, from the definition's cache when it was assembled before.

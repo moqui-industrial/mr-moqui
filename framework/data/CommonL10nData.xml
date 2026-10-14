@@ -78,12 +78,12 @@ along with this software (see the LICENSE.md file). If not, see
     <moqui.basic.LocalizedMessage locale="default" original="StatusItemNameTemplate" localized="${description}"/>
     <moqui.basic.LocalizedMessage locale="default" original="StatusTransitionNameTemplate" localized="${transitionName}${description == transitionName ? '' : ' (' + description + ')'}"/>
     <moqui.basic.LocalizedMessage locale="default" original="StatusFlowTransitionNotFoundTemplate"
-            localized="Status change not allowed from ${lookedUpStatusName?:lookedUpStatusId} to ${parameterStatusName?:parameterStatusId}"/>
+            localized="Status change not allowed from ${lookedUpStatusName || lookedUpStatusId} to ${parameterStatusName || parameterStatusId}"/>
 
-    <moqui.basic.LocalizedMessage locale="default" original="UomNameTemplate" localized="${description?:''} (${abbreviation?:uomId})"/>
+    <moqui.basic.LocalizedMessage locale="default" original="UomNameTemplate" localized="${description || ''} (${abbreviation || uomId})"/>
     <moqui.basic.LocalizedMessage locale="default" original="UserGroupNameTemplate" localized="${description} [${userGroupId}]"/>
     <moqui.basic.LocalizedMessage locale="default" original="UsernameTemplate"
-            localized="${userFullName ?: (lastName ? (firstName ? firstName + ' ' : '') + lastName : '')} [${username?:userId?:''}]"/>
+            localized="${userFullName || (lastName ? (firstName ? firstName + ' ' : '') + lastName : '')} [${username || userId || ''}]"/>
 
     <moqui.basic.LocalizedMessage locale="default" original="UserAuthcOtpMessage" localized="Your single use code is ${code}"/>
 </entity-facade-xml>

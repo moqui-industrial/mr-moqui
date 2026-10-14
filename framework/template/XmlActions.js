@@ -96,7 +96,8 @@
 
     // ec.entity.find(...) through the options that entity-find-one and the find-by-condition elements share.
     const findHead = (node, distinct) => joinPresent([
-        `ec.entity.find(${jsString(attr(node, "entity-name"))})`,
+        // An entity name with ${} is expanded, as the Groovy string of the Java template was.
+        `ec.entity.find(${literalOrExpand(attr(node, "entity-name"))})`,
         has(node, "cache") && `.useCache(${attr(node, "cache")})`,
         has(node, "for-update") && `.forUpdate(${attr(node, "for-update")})`,
         distinct && has(node, "distinct") && `.distinct(${attr(node, "distinct")})`,
@@ -127,6 +128,8 @@
             has(node, "offset") && `.offset(${attr(node, "offset")})`,
             has(node, "limit") && `.limit(${attr(node, "limit")})`,
             childrenNamed(node, "select-field").map((kid) => `.selectField(${jsString(attr(kid, "field-name"))})`).join(""),
+            // The fields a form-list shows, set by the screen on the copy of its entity-find (not a schema attribute).
+            has(node, "form-select-fields") && `.selectFormFields(${jsString(attr(node, "form-select-fields"))})`,
             childrenNamed(node, "order-by").map((kid) => `.orderBy(${jsString(attr(kid, "field-name"))})`).join(""),
             node.children.map((kid) => findCondition(kid, cached)).join("")
         ]);
@@ -461,7 +464,7 @@
                 ? `${field}.setFields(${attr(node, "map")}, true, null, null);`
                 : "";
             return js`
-                ${field} = ec.entity.makeValue(${jsString(attr(node, "entity-name"))});
+                ${field} = ec.entity.makeValue(${literalOrExpand(attr(node, "entity-name"))});
                 ${setFields}
             `;
         }),

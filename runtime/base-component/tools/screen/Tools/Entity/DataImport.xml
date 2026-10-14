@@ -24,8 +24,9 @@ along with this software (see the LICENSE.md file). If not, see
                 if (components) edl.componentNameList(components.split(","))
                 source = `Types: ${types || 'N/A'}, Components: ${components || 'N/A'}`
             } else if (location) {
-                if (WebUtilities.isProductionRemoteDataLoadBlocked(String(location))) {
-                    ec.message.addError("Remote data load location is not allowed when instance_purpose is production")
+                // Java blocks a remote location in production; the loader here reads local and component locations only
+                if (/^https?:/i.test(String(location))) {
+                    ec.message.addError("Remote data load location is not allowed")
                     return
                 }
                 edl.location(location)
@@ -56,12 +57,12 @@ along with this software (see the LICENSE.md file). If not, see
                 const messages = []
                 const recordsLoaded = edl.load(messages)
                 ec.message.addMessage(`Loaded ${recordsLoaded} records from [${source}]`)
-                ec.web.session.setAttribute("DataImport.messages", messages)
+                ec.web.sessionAttributes["DataImport.messages"] = messages
             } else {
                 const messages = []
                 const recordsLoaded = edl.load(messages)
                 ec.message.addMessage(`Loaded ${recordsLoaded} records from [${source}]`)
-                ec.web.session.setAttribute("DataImport.messages", messages)
+                ec.web.sessionAttributes["DataImport.messages"] = messages
             }
         ]]></script></actions>
         <conditional-response url="." save-parameters="true">
@@ -112,8 +113,8 @@ along with this software (see the LICENSE.md file). If not, see
     <actions>
         <set field="pageSize" from="pageSize || '100'"/>
         <script><![CDATA[
-            messages = ec.web.session.getAttribute('DataImport.messages')
-            if (messages) ec.web.session.removeAttribute('DataImport.messages')
+            messages = ec.web.sessionAttributes['DataImport.messages']
+            if (messages) ec.web.sessionAttributes.remove('DataImport.messages')
         ]]></script>
     </actions>
     <widgets>

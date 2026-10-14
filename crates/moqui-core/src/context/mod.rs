@@ -25,6 +25,7 @@ mod hits;
 mod locate;
 mod message;
 mod resource;
+pub mod status;
 
 pub use artifact::AuthzGuard;
 pub use cache::CacheFacade;

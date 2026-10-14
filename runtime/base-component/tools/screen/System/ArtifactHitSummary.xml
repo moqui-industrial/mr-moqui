@@ -43,17 +43,6 @@ along with this software (see the LICENSE.md file). If not, see
                    header-dialog="true" saved-finds="true" select-columns="true">
             <entity-find entity-name="moqui.server.ArtifactHitReport" list="artifactHitReportList" limit="50" use-clone="true">
                 <search-form-inputs default-order-by="artifactType,artifactName" require-parameters="true"/>
-                <!-- Java adds the displayed fields of the form-list to the select; here they are named, so the aliases are not
-                    left out of the GROUP BY. -->
-                <select-field field-name="artifactType"/>
-                <select-field field-name="artifactSubType"/>
-                <select-field field-name="artifactName"/>
-                <select-field field-name="lastHitDateTime"/>
-                <select-field field-name="hitCount"/>
-                <select-field field-name="totalTimeMillis"/>
-                <select-field field-name="minTimeMillis"/>
-                <select-field field-name="maxTimeMillis"/>
-                <select-field field-name="slowHitCount"/>
                 <select-field field-name="totalSquaredTime"/>
             </entity-find>
             <row-actions>

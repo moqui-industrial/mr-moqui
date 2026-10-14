@@ -261,6 +261,36 @@ fn clear_named(facade: &EntityFacade, full_name: &str) -> Result<(), Error> {
     })
 }
 
+/// The list cache of each entity that has cached a find, for the cache admin screen. The names are
+/// `entity.record.list.{entity}`, as in Java.
+pub fn list_cache_infos(facade: &EntityFacade) -> Vec<moqui_lib::cache::CacheInfo> {
+    facade.with_slot(OneCaches::default, |caches| {
+        let mut infos: Vec<_> = caches.lists.values().map(MCache::info).collect();
+        infos.sort_by(|left, right| left.name.cmp(&right.name));
+        infos
+    })
+}
+
+/// Clear the list cache named `cache_name`. `false` when no entity has a list cache of that name.
+pub fn clear_list_cache(facade: &EntityFacade, cache_name: &str) -> Result<bool, Error> {
+    facade.with_slot(OneCaches::default, |caches| {
+        match caches.lists.values().find(|cache| cache.name() == cache_name) {
+            Some(cache) => cache.clear().map(|()| true),
+            None => Ok(false),
+        }
+    })
+}
+
+/// Clear every entity list cache.
+pub fn clear_all_list_caches(facade: &EntityFacade) -> Result<(), Error> {
+    facade.with_slot(OneCaches::default, |caches| {
+        for cache in caches.lists.values() {
+            cache.clear()?;
+        }
+        Ok(())
+    })
+}
+
 /// Register the commit flush and the rollback drop for this frame.
 ///
 /// The closure reads the thread-local list when it runs, so later writes in the frame are included.

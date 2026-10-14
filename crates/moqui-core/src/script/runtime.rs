@@ -52,6 +52,7 @@ mod helpers;
 mod screen_host;
 mod search;
 mod services;
+mod tools_host;
 mod upload;
 mod urls;
 mod user_host;
@@ -477,6 +478,7 @@ fn install_context(ctx: &Ctx<'_>) -> Result<Helpers, Error> {
     // Own property before the proxy. A later set walks the prototype and the proxy refuses objects.
     install_ec(ctx)?;
     install_helpers(ctx)?;
+    tools_host::install(ctx, &string_utilities, &collection_utilities, &web_utilities)?;
     install_entity_prototypes(ctx)?;
     install_proxy(ctx)?;
     Ok(Helpers {

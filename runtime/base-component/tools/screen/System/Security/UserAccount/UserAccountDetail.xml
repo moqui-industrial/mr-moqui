@@ -87,7 +87,7 @@ along with this software (see the LICENSE.md file). If not, see
         <set field="singleUseCodes" from="ec.web.sessionAttributes.remove('singleUseCodes')"/>
         <set field="localeStringList" from="[]"/>
 
-        <iterate list="Locale.getAvailableLocales()" entry="lcl"><script>localeStringList.push({locale:lcl.toString(), name:lcl.getDisplayName(ec.user.locale)})</script></iterate>
+        <iterate list="ec.l10n.getAvailableLocales()" entry="lcl"><script>localeStringList.push({locale: lcl.locale, name: lcl.name})</script></iterate>
         <order-map-list list="localeStringList"><order-by field-name="name"/></order-map-list>
 
         <entity-find entity-name="moqui.security.UserGroupMember" list="ugmList">
@@ -199,7 +199,7 @@ along with this software (see the LICENSE.md file). If not, see
                         <drop-down allow-empty="true"><list-options list="localeStringList" key="${locale}" text="${locale} - ${name}"/></drop-down>
                     </default-field></field>
                     <field name="timeZone"><default-field>
-                        <drop-down allow-empty="true"><list-options list="Array.from(TimeZone.getAvailableIDs()).sort()"/></drop-down>
+                        <drop-down allow-empty="true"><list-options list="ec.l10n.getAvailableTimeZones()"/></drop-down>
                     </default-field></field>
 
                     <field name="submitButton"><default-field title="Update"><submit/></default-field></field>

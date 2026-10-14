@@ -435,24 +435,10 @@ fn every_base_component_screen_generates_in_all_three_modes() {
         }
     }
     assert!(units > 300, "{units} units");
-    // Three Tools screens keep Groovy-only code (java.sql imports) that the slice 0 migration left, so they
-    // do not load at all. They are listed here so they stay in view.
-    let known = |failure: &String| {
-        failure.contains(": load: ")
-            && ["SqlRunner.xml", "SqlScriptRunner.xml", "SpeedTest.xml"]
-                .iter()
-                .any(|file| failure.contains(file))
-    };
-    let unexpected: Vec<&String> = failures.iter().filter(|failure| !known(failure)).collect();
     assert!(
-        unexpected.is_empty(),
+        failures.is_empty(),
         "{} failures:\n{}",
-        unexpected.len(),
-        unexpected
-            .iter()
-            .map(|failure| failure.as_str())
-            .collect::<Vec<_>>()
-            .join("\n")
+        failures.len(),
+        failures.join("\n")
     );
-    assert!(failures.len() - unexpected.len() <= 3, "{failures:?}");
 }

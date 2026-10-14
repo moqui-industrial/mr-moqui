@@ -45,33 +45,35 @@ along with this software (see the LICENSE.md file). If not, see
             <if condition="visit == null"><return message="No visit found with ID ${visitId}"/></if>
             <if condition="!visit.clientIpAddress"><return message="Visit with ID ${visitId} has no clientIpAddress"/></if>
 
-            <if condition="!visit.clientIpAddress.contains('.')"><return message="IP address not a IPv4 address"/></if>
-            <set field="address" from="InetAddress.getByName(visit.clientIpAddress)"/>
-            <if condition="address.isSiteLocalAddress() || address.isAnyLocalAddress() || address.isLinkLocalAddress() ||
-                    address.isLoopbackAddress() || address.isMulticastAddress()">
+            <if condition="!visit.clientIpAddress.includes('.')"><return message="IP address not a IPv4 address"/></if>
+            <!-- InetAddress.getByName: a private, loopback, link-local, multicast or unspecified IPv4 address is not public -->
+            <set field="octets" from="visit.clientIpAddress.split('.').map((it) => parseInt(it, 10))"/>
+            <if condition="octets[0] == 10 || octets[0] == 127 || octets[0] == 0 || octets[0] &gt;= 224 ||
+                    (octets[0] == 172 &amp;&amp; octets[1] &gt;= 16 &amp;&amp; octets[1] &lt;= 31) ||
+                    (octets[0] == 192 &amp;&amp; octets[1] == 168) || (octets[0] == 169 &amp;&amp; octets[1] == 254)">
                 <return message="IP address is not a public address"/></if>
 
             <!-- get from http://freegeoip.net/json/${clientIpAddress} -->
-            <script>geoIp = ec.service.rest().method("get").uri("http://freegeoip.net/json/${visit.clientIpAddress}").call().checkError().jsonObject()</script>
+            <script>geoIp = ec.service.rest().method("get").uri(`http://freegeoip.net/json/${visit.clientIpAddress}`).call().checkError().jsonObject()</script>
 
             <if condition="!geoIp"><return message="No return from freegeoip.net for IP ${visit.clientIpAddress}"/></if>
-            <set field="mapped" from="[clientIpPostalCode:geoIp.zip_code, clientIpCity:geoIp.city,
-                    clientIpMetroCode:geoIp.metro_code, clientIpRegionCode:geoIp.region_code, clientIpRegionName:geoIp.region_name,
-                    clientIpLatitude:geoIp.latitude, clientIpLongitude:geoIp.longitude, clientIpTimeZone:geoIp.time_zone]"/>
+            <set field="mapped" from="{clientIpPostalCode: geoIp.zip_code, clientIpCity: geoIp.city,
+                    clientIpMetroCode: geoIp.metro_code, clientIpRegionCode: geoIp.region_code, clientIpRegionName: geoIp.region_name,
+                    clientIpLatitude: geoIp.latitude, clientIpLongitude: geoIp.longitude, clientIpTimeZone: geoIp.time_zone}"/>
             <if condition="geoIp.country_code">
                 <entity-find entity-name="moqui.basic.Geo" list="geoList">
                     <econdition field-name="geoTypeEnumId" value="GEOT_COUNTRY"/>
                     <econdition field-name="geoCodeAlpha2" from="geoIp.country_code"/></entity-find>
-                <if condition="geoList"><set field="mapped.clientIpCountryGeoId" from="geoList[0].geoId"/></if>
+                <if condition="geoList.length"><set field="mapped.clientIpCountryGeoId" from="geoList[0].geoId"/></if>
             </if>
             <if condition="geoIp.region_code">
                 <entity-find entity-name="moqui.basic.Geo" list="geoList">
                     <econdition field-name="geoTypeEnumId" operator="in" value="GEOT_STATE,GEOT_PROVINCE,GEOT_TERRITORY"/>
                     <econdition field-name="geoCodeAlpha2" from="geoIp.region_code"/></entity-find>
-                <if condition="geoList"><set field="mapped.clientIpStateProvGeoId" from="geoList[0].geoId"/></if>
+                <if condition="geoList.length"><set field="mapped.clientIpStateProvGeoId" from="geoList[0].geoId"/></if>
             </if>
 
-            <script>ec.context.putAll(mapped); visit.putAll(mapped)</script>
+            <script>for (const [key, value] of Object.entries(mapped)) { context[key] = value; visit[key] = value }</script>
             <entity-update value-field="visit"/>
         </actions>
     </service>
@@ -83,19 +85,16 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="artifactHitBinsRemoved" type="Long"/>
         </out-parameters>
         <actions><script>
-            import org.moqui.context.ExecutionContext
-            import org.moqui.entity.EntityCondition
-            ExecutionContext ec = context.ec
-            Calendar basisCal = ec.user.getCalendarSafe()
-            basisCal.add(Calendar.DAY_OF_YEAR, (int) -daysToKeep)
-            basisTimestamp = new Timestamp(basisCal.getTimeInMillis())
+            // Java subtracts days on the user's calendar; this subtracts whole days of milliseconds from now
+            const basisTimestamp = new Date(ec.user.timestampMillis(ec.user.nowTimestamp) - daysToKeep * 86400000).toISOString()
+            const cf = ec.entity.conditionFactory
             artifactHitsRemoved = ec.entity.find("moqui.server.ArtifactHit")
-                    .condition("startDateTime", EntityCondition.LESS_THAN, basisTimestamp)
+                    .condition(cf.makeCondition("startDateTime", "&lt;", basisTimestamp))
                     .disableAuthz().deleteAll()
             artifactHitBinsRemoved = ec.entity.find("moqui.server.ArtifactHitBin")
-                    .condition("binEndDateTime", EntityCondition.LESS_THAN, basisTimestamp)
+                    .condition(cf.makeCondition("binEndDateTime", "&lt;", basisTimestamp))
                     .disableAuthz().deleteAll()
-            ec.logger.info("Removed ${artifactHitsRemoved} ArtifactHit records and ${artifactHitBinsRemoved} ArtifactHitBin records more than ${daysToKeep} days old")
+            ec.logger.log("info", `Removed ${artifactHitsRemoved} ArtifactHit records and ${artifactHitBinsRemoved} ArtifactHitBin records more than ${daysToKeep} days old`)
         </script></actions>
     </service>
 
@@ -103,16 +102,11 @@ along with this software (see the LICENSE.md file). If not, see
         <in-parameters><parameter name="daysToKeep" type="Integer" default="7"/></in-parameters>
         <out-parameters><parameter name="printJobsRemoved" type="Long"/></out-parameters>
         <actions><script>
-            import org.moqui.context.ExecutionContext
-            import org.moqui.entity.EntityCondition
-            ExecutionContext ec = context.ec
-            Calendar basisCal = ec.user.getCalendarSafe()
-            basisCal.add(Calendar.DAY_OF_YEAR, (int) -daysToKeep)
-            basisTimestamp = new Timestamp(basisCal.getTimeInMillis())
+            const basisTimestamp = new Date(ec.user.timestampMillis(ec.user.nowTimestamp) - daysToKeep * 86400000).toISOString()
             printJobsRemoved = ec.entity.find("moqui.basic.print.PrintJob")
-                    .condition("createdDate", EntityCondition.LESS_THAN, basisTimestamp)
+                    .condition(ec.entity.conditionFactory.makeCondition("createdDate", "&lt;", basisTimestamp))
                     .disableAuthz().deleteAll()
-            ec.logger.info("Removed ${printJobsRemoved} PrintJob records more than ${daysToKeep} days old")
+            ec.logger.log("info", `Removed ${printJobsRemoved} PrintJob records more than ${daysToKeep} days old`)
         </script></actions>
     </service>
 </services>

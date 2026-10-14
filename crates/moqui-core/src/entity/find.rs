@@ -43,6 +43,8 @@ pub struct EntityFind {
     for_update: bool,
     pub(super) having: Vec<Condition>,
     select_fields: Vec<String>,
+    /// Set by `select_form_fields`: order only by a selected field, as a form-list's find does.
+    form_order_only: bool,
     /// Set by `require_search_form_parameters`: a find with no search parameter returns nothing.
     pub(super) require_search_parameters: bool,
     /// Set by `search_form_map` when the input made at least one condition.
@@ -64,6 +66,7 @@ impl EntityFind {
             for_update: false,
             having: Vec::new(),
             select_fields: Vec::new(),
+            form_order_only: false,
             require_search_parameters: false,
             has_search_parameters: false,
             disable_authz: false,
@@ -151,10 +154,45 @@ impl EntityFind {
 
     /// Read only these fields. A field the entity does not have is an error. The values returned
     /// have just these fields. On a view-entity only the members those fields read are joined,
-    /// and with an aggregate alias the selected fields are the `GROUP BY`.
+    /// and with an aggregate alias the selected fields are the `GROUP BY`. As in Java, `field` may
+    /// be a comma-separated list, and a field already selected is not added again.
     pub fn select_field(mut self, field: &str) -> Self {
-        self.select_fields.push(field.to_string());
+        for name in field.split(',').map(str::trim).filter(|name| !name.is_empty()) {
+            if !self.select_fields.iter().any(|known| known == name) {
+                self.select_fields.push(name.to_string());
+            }
+        }
         self
+    }
+
+    /// The fields a form-list shows and hides, for the find of its `entity-find`, as Java's
+    /// `FormListRenderInfo.getListObject`: each name that is a field of the entity is selected, and an
+    /// order-by field that is not selected is dropped, so a `DISTINCT` or an aggregate view groups by
+    /// what the form shows.
+    pub fn select_form_fields(mut self, fields: &str) -> Self {
+        let names: Vec<String> = self
+            .facade
+            .with_entity(&self.entity_name, |entity, _, _| {
+                Ok(fields
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty() && entity.has_field(name))
+                    .map(str::to_string)
+                    .collect())
+            })
+            .unwrap_or_default();
+        for name in names {
+            if !self.select_fields.contains(&name) {
+                self.select_fields.push(name);
+            }
+        }
+        self.form_order_only = true;
+        self
+    }
+
+    /// The fields [`Self::select_field`] added, in order.
+    pub fn selected_fields(&self) -> &[String] {
+        &self.select_fields
     }
 
     /// True when the result depends on more than the conditions, order, and paging, so the entity
@@ -210,12 +248,58 @@ impl EntityFind {
         self.localize_list(list)
     }
 
-    pub fn one(self) -> Result<Option<EntityValue>, Error> {
+    pub fn one(mut self) -> Result<Option<EntityValue>, Error> {
+        self.narrow_to_full_pk();
         let list = self.list()?;
         if list.len() > 1 {
             return Err(Error::new(format!("find one found {} rows", list.len())));
         }
         Ok(list.values().first().cloned())
+    }
+
+    /// Java `oneInternal`: a find one whose field equalities hold the full primary key, with more besides (a
+    /// `condition(context)` puts every field of the context in), finds by the primary key alone. Other kinds of
+    /// condition stay.
+    fn narrow_to_full_pk(&mut self) {
+        let pk_names: Vec<String> = match self.facade.with_entity(&self.entity_name, |entity, _, _| {
+            Ok(entity.pk_field_names().iter().map(|name| (*name).to_string()).collect())
+        }) {
+            Ok(names) => names,
+            Err(_) => return,
+        };
+        let equals_on = |condition: &Condition, name: &str| match condition {
+            Condition::Equals(field, value) => {
+                field.entity_alias.is_none() && field.name == name && !moqui_lib::object::is_empty(value)
+            }
+            _ => false,
+        };
+        let has_full_pk = !pk_names.is_empty()
+            && pk_names
+                .iter()
+                .all(|name| self.conditions.iter().any(|condition| equals_on(condition, name)));
+        let equalities = self
+            .conditions
+            .iter()
+            .filter(|condition| matches!(condition, Condition::Equals(..)))
+            .count();
+        if !has_full_pk || equalities <= pk_names.len() {
+            return;
+        }
+        let mut kept: Vec<Condition> = Vec::new();
+        for condition in std::mem::take(&mut self.conditions) {
+            let Condition::Equals(field, _) = &condition else {
+                kept.push(condition);
+                continue;
+            };
+            let first_for_pk = pk_names.contains(&field.name)
+                && !kept
+                    .iter()
+                    .any(|known| matches!(known, Condition::Equals(other, _) if other.name == field.name));
+            if first_for_pk && equals_on(&condition, &field.name) {
+                kept.push(condition);
+            }
+        }
+        self.conditions = kept;
     }
 
     pub fn count(self) -> Result<i64, Error> {
@@ -326,6 +410,15 @@ impl EntityFind {
             }
             let wanted =
                 |name: &str| self.select_fields.is_empty() || self.select_fields.iter().any(|field| field == name);
+            // Java's `orderBy` skips a name that is not a field of the entity, such as a default
+            // order a screen names for a column its entity does not have.
+            let order: Vec<OrderBy> = self
+                .order
+                .iter()
+                .filter(|entry| entry.field.entity_alias.is_some() || entity.has_field(&entry.field.name))
+                .filter(|entry| !self.form_order_only || self.select_fields.contains(&entry.field.name))
+                .cloned()
+                .collect();
             let (statement, mut columns) = if entity.is_view {
                 let statement = if count_only {
                     count_view(entity, model, dialect, &FindValues, condition.as_ref(), &options)?
@@ -336,7 +429,7 @@ impl EntityFind {
                         dialect,
                         &FindValues,
                         condition.as_ref(),
-                        &self.order,
+                        &order,
                         page,
                         &options,
                     )?
@@ -351,15 +444,7 @@ impl EntityFind {
                     .filter(|field| wanted(&field.name))
                     .map(|field| FieldRef::new(&field.name))
                     .collect();
-                let statement = select_with(
-                    entity,
-                    dialect,
-                    &fields,
-                    condition.as_ref(),
-                    &self.order,
-                    page,
-                    &options,
-                )?;
+                let statement = select_with(entity, dialect, &fields, condition.as_ref(), &order, page, &options)?;
                 (statement, entity_columns(entity, model))
             };
             if count_only {

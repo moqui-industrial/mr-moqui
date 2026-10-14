@@ -20,10 +20,10 @@ along with this software (see the LICENSE.md file). If not, see
     <parameter name="_id" required="true"/>
     
     <actions><script>
-        const elasticClient = ec.factory.elastic.getDefault()
-        sourceMap = elasticClient.get(String(_index), String(_id))?._source
+        // The search facade reads a document by its type (the DataDocument ID), not by Elastic index
+        sourceMap = _id ? ec.search.getDocument(String(_type || _index), String(_id)) : null
         documentString = JSON.stringify(sourceMap, null, 2)
-        flattenedDocumentMap = CollectionUtilities.flattenNestedMap(sourceMap)
+        flattenedDocumentMap = sourceMap ? ec.search.flatten(sourceMap) : null
     </script></actions>
     <widgets>
         <label text="Flattened Map" type="h4"/>
@@ -31,7 +31,7 @@ along with this software (see the LICENSE.md file). If not, see
         <label text="Document JSON" type="h4"/>
         <label text="${documentString}" encode="true" type="pre" style="pre-plain"/>
         <label text="Document Map" type="h4"/>
-        <section-iterate name="SourceMapSection" list="Object.keys(sourceMap)" entry="smKey"><widgets>
+        <section-iterate name="SourceMapSection" list="Object.keys(sourceMap || {})" entry="smKey"><widgets>
             <label text="${smKey}: ${sourceMap[smKey]} (${typeof sourceMap[smKey]})" type="div"/>
         </widgets></section-iterate>
     </widgets>

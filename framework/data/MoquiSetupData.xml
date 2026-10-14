@@ -42,10 +42,10 @@ along with this software (see the LICENSE.md file). If not, see
     <!-- Web Servlet Errors NotificationTopic -->
     <moqui.security.user.NotificationTopic topic="WebServletError" description="Web Servlet Error"
             typeString="danger" showAlert="Y" persistOnSend="Y" receiveNotifications="N" isPrivate="Y" emailTemplateId="NOTIFICATION"
-            titleTemplate="Web Error ${errorCode?:''} (${username?:'no user'}) ${path?:''} ${message?:'N/A'}"/>
+            titleTemplate="Web Error ${errorCode || ''} (${username || 'no user'}) ${path || ''} ${message || 'N/A'}"/>
     <moqui.security.user.NotificationTopic topic="ServiceJobError" description="Service Job Error"
             typeString="danger" showAlert="Y" persistOnSend="Y" receiveNotifications="N" isPrivate="Y" emailTemplateId="NOTIFICATION"
-            titleTemplate="Job Error ${serviceCallRun.jobName?:''} [${serviceCallRun.jobRunId?:''}] ${serviceCallRun.errors?:'N/A'}"
+            titleTemplate="Job Error ${serviceCallRun.jobName || ''} [${serviceCallRun.jobRunId || ''}] ${serviceCallRun.errors || 'N/A'}"
             linkTemplate="/qapps/System/ServiceJob/JobRuns/JobRunDetail?jobRunId=${serviceCallRun.jobRunId}"/>
 
     <!-- ========== Framework Scheduled ServiceJob Data ========== -->

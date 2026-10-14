@@ -250,6 +250,15 @@ pub fn eca_rules(facade: &EntityFacade, entity_name: &str) -> Vec<EcaRule> {
     })
 }
 
+/// How many entity ECA rules are loaded, for the tools artifact stats.
+pub fn eca_rule_count(facade: &EntityFacade) -> usize {
+    let framework = facade.framework_dir().to_path_buf();
+    with_load_slot(facade, |slot| {
+        ensure_rules(slot, &framework);
+        slot.eca_rules.len()
+    })
+}
+
 /// Ids from the most recent [`match_rules`] call on this facade.
 pub fn matched_eca_ids(facade: &EntityFacade) -> Vec<String> {
     with_load_slot(facade, |slot| slot.last_matched.clone())

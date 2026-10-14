@@ -38,6 +38,10 @@ pub(crate) enum ServiceKind {
     SystemSync,
     /// The elFinder connector service, whose body is Rust, in `elfinder`.
     ElFinder,
+    /// A tools service (print jobs, entity data snapshots, data document notifications) whose body is Rust, in `tools`.
+    Tools,
+    /// A service defined but not available in this port, in `not_ported`: LLM, A2A, Docker instances.
+    NotPorted,
     /// A script service whose language this port does not run, such as Groovy.
     Unsupported,
 }
@@ -472,21 +476,27 @@ fn load_service(prefix: &str, node: &MNode, services: &mut BTreeMap<String, Serv
         failures.push(format!("service {name} has unknown type {type_name}"));
         return;
     }
+    // A service that is not available keeps its definition, so a call names why; its body is not compiled.
+    let not_ported = type_name != "interface" && super::not_ported::runs(&name);
     let mut expression_errors = Vec::new();
-    if !expressions_ok(&name, node, &mut expression_errors) {
+    if !not_ported && !expressions_ok(&name, node, &mut expression_errors) {
         failures.extend(expression_errors);
         return;
     }
     // The generated script is what runs, so it is what must parse. This reaches every attribute
     // that becomes JavaScript, not only the ones named in `is_expression_attr`.
-    if let Some(actions) = node.first_named("actions") {
+    if let Some(actions) = node.first_named("actions").filter(|_| !not_ported) {
         if let Err(err) = crate::script::check_actions(&actions.write_string()) {
             failures.push(format!("service {name} {err}"));
             return;
         }
     }
     let location = node.attribute("location").unwrap_or_default();
-    let kind = if super::system_sync::runs(&name) {
+    let kind = if not_ported {
+        ServiceKind::NotPorted
+    } else if super::tools::runs(&name) {
+        ServiceKind::Tools
+    } else if super::system_sync::runs(&name) {
         ServiceKind::SystemSync
     } else if super::elfinder::runs(&name) {
         ServiceKind::ElFinder
