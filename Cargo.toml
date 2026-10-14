@@ -39,6 +39,12 @@ unexpected_cfgs = { level = "deny", priority = -1 }
 [profile.dev]
 panic = "unwind"
 
+# Dependencies optimized in dev and test builds; the workspace crates stay at opt-level 0. A debug
+# screen render was about 12x slower than release with unoptimized dependencies, which made the
+# screen tests take minutes. Costs one longer build of the dependencies.
+[profile.dev.package."*"]
+opt-level = 3
+
 [profile.release]
 panic = "unwind"
 
