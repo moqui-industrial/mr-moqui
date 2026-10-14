@@ -35,7 +35,7 @@ Mantle and the other application components stay outside this repository. They a
 - Basic `ec.l10n` format and localize land with screen macros. Localization admin screens are ordinary screens.
 - Server-static `qvt` closes gate 3, after server-merged `qvt` renders. It follows `plans/QvtServerStatic.md` and stays opt-in.
 - Search is implemented under gate 4. The design is `plans/SearchFacade.md`.
-- The SSO relying party is framework code. The crate is chosen in `plans/Sso.md`. The redirect is not part of gate 2 and does not sit in the tool-component tail. PDF and the tool components (`moqui-poi`, `moqui-image`, `moqui-cups`) are the tail of gate 4. Gate 3 `html-print` is the print document, and the name `xsl-fo` selects that mode. Email attachments, scheduled screen PDFs, and print rendering report that PDF is not available until phase 12. The engine is the long-lived Chromium in Tool components and print of `plans/Architecture-Proposal.md`. `moqui-fop` is not ported.
+- The SSO relying party is framework code. The crate is chosen in `plans/Sso.md`. The redirect is not part of gate 2 and does not sit in the tool-component tail. PDF and the tool components (`moqui-poi`, `moqui-image`, `moqui-cups`, in `plans/Office-Image-Print.md`) are the tail of gate 4. Gate 3 `html-print` is the print document, and the name `xsl-fo` selects that mode. Email attachments, scheduled screen PDFs, and print rendering report that PDF is not available until phase 12. The engine is the long-lived Chromium in Tool components and print of `plans/Architecture-Proposal.md`. `moqui-fop` is not ported.
 - The Groovy shell endpoint is dropped. There is no Java service runner and no Groovy runner. Framework script services become JavaScript or Rust. The replacement crates are chosen in `plans/Ssh.md`. The sshd is still not part of the port.
 - `InstanceServices` Docker provisioning (init, start, stop, remove, logs, and create database) is not ported. `callFuture()` still reserves a worker when the caller is already a pool thread. The Java joined sites stay named in `plans/Architecture-Proposal.md`. They are not a body of work in this repository.
 
@@ -700,7 +700,7 @@ Phase 11 was built in slices on branch `phase11`, then reviewed against the Java
   - The JVM parts of the dashboard, cache and thread screens show process figures from `/proc` instead.
   - Every tools screen renders in `html` (`tools_screens.rs`). GroovyShell and the log viewer say why they have nothing to show. `ViewDbView` says that DbViewEntity views are not in the entity model.
 - **Print jobs.**
-  - `print#Document` stores the `PrintJob` and marks the send `PtjSendFailed`, with "Network printing is not available until phase 12 (moqui-cups)".
+  - `print#Document` stores the `PrintJob` and marks the send `PtjSendFailed`, with "Network printing is not available until phase 12 (moqui-cups)". Phase 12 sends it over IPP (`plans/Office-Image-Print.md`).
   - `print#ScreenDocument` reports that PDF is not available until phase 12.
 - **Not ported, with an error that says so.** These are `ServiceKind::NotPorted`:
   - LLM and A2A (phase 13).
@@ -746,7 +746,7 @@ Depends on the `html-print` render from gate 3, and on the `DbDriver` trait from
 
 - `PdfRenderer` in the host, as Tool components and print in `plans/Architecture-Proposal.md` describes. One long-lived Chromium, the external-binary recipe, and `pdf-servo` left off. The wait does not hold the enlisted connection.
 - Rewrite the SimpleScreens `*.xsl-fo.ftl` documents to `html-print` templates. Callers that store render mode `xsl-fo` to mean PDF render `html-print` and pass it to `PdfRenderer`. The data-prep services stay. The screen `<text type="xsl-fo">` elements that include those templates stay valid through the alias. **Deferred:** SimpleScreens is outside this repository; the rewrite is a pass in that component.
-- `moqui-fop` is not ported. `moqui-poi`, `moqui-image`, and `moqui-cups` stay outside, for binary size, the way `moqui.war` size kept them out of the Java framework. `moqui-cups` would consume the PDF bytes. `moqui-sftp` and `moqui-sso` are in the framework (`plans/Ssh.md`, `plans/Sso.md`).
+- `moqui-fop` is not ported. `moqui-sftp` and `moqui-sso` are in the framework (`plans/Ssh.md`, `plans/Sso.md`), and so are `moqui-poi`, `moqui-image`, and `moqui-cups` (`plans/Office-Image-Print.md`), always linked. The `moqui.war` size kept those three out of the Java framework. Their crates are small next to embedded Postgres. `moqui-cups` consumes the PDF bytes.
 - Further sync drivers (SQL Server, Oracle, DB2, DB2 for i, Derby, HSQLDB). **Deferred:** the port stays on Postgres, MySQL, and SQLite (the browser build) for now. A missing driver is a configuration error that names the database.
 
 ### Where the code differs from the text above
@@ -757,7 +757,7 @@ Depends on the `html-print` render from gate 3, and on the `DbDriver` trait from
   - The browser starts on the first render, not at startup, and starts again after it exits. Each document is a page whose every request is failed (`Fetch.enable` with no patterns), so a document reaches no network and no server; it is set with `Page.setDocumentContent`, waits for load and fonts, and prints with `preferCSSPageSize`.
   - The async clients (PDF, SSH, SSO) share one small runtime, `crates/moqui-host/src/edge.rs`. A blocking caller spawns onto it and waits on a channel, so it is safe from any thread.
   - `ec.resource.xslFoTransform(document, null, null, 'application/pdf')` returns the bytes as a `Uint8Array`; a stylesheet or another content type is an error. Binary values now cross into scripts as `Uint8Array` and back, and a resource reference has `putBytes`.
-  - Email attachments with `screenRenderMode` `xsl-fo` attach the PDF; `render#ScheduledScreen` attaches and saves it; `print#ScreenDocument` renders the screen as `html-print`, stores the PDF on the `PrintJob`, and sends it, which fails as cups is not part of this build.
+  - Email attachments with `screenRenderMode` `xsl-fo` attach the PDF; `render#ScheduledScreen` attaches and saves it; `print#ScreenDocument` renders the screen as `html-print`, stores the PDF on the `PrintJob`, and sends it over IPP.
 - **SFTP (`moqui-sftp`).**
   - `moqui_core::sftp::SftpClient` keeps the Java client's behavior: `host:port` parsing and Java's default port of 115, the directory-or-file target of `put`, `createDir`, `moveFile`, `renameFile`, charsets (`encoding_rs`), streams, and the Java messages. Scripts get a global `SftpClient` with the Groovy class's methods; the Java-object `publicKey` overloads and `getInternalClient` throw. A client left open is closed when collected, with an error in the log.
   - `send#SystemMessageSftp` and `poll#SystemMessageSftp` keep the Java names, parameters and logic, as Rust bodies (`service/system_sync/sftp.rs`). A path with Groovy `?:` is an error that says to use `??`; mantle's demo data needs that change. `SftpDemoData.xml` is framework demo data.
@@ -771,6 +771,16 @@ Depends on the `html-print` render from gate 3, and on the `DbDriver` trait from
   - The entities, enumerations, `org.moqui.sso.AuthServices`, the `/sso` screen and the Login hooks are in the framework. `OauthFlow` gained `authorizeUrl`, `tokenUrl`, `userInfoUrl` and `scope`; `OidcFlow` gained `appleTeamId` and `appleKeyId`.
   - The account and group sync follow `MoquiSecurityGrantedAccessAdapter`, including that a current group no mapped role names is ended unless it is the default group. The username is `preferred_username`, else `email` (pac4j gave no username without `preferred_username`, so such logins failed in Java). The login replaces the session id.
   - OAuth 1.0 and SAML report that they are not available. `ES512` ID tokens are refused.
+- **XLSX (`moqui-poi`).**
+  - `xlsx` is a binary render mode from conf `screen-output`. The macro module `ScreenXlsx.js` fills a workbook (`screen/xlsx.rs`, on `rust_xlsxwriter`) through `sri.xlsx*`, and the render sends its bytes. Text writes in a binary mode are dropped.
+  - The walk, the cell types, and the styles are `ScreenWidgetRenderExcel` and `FormListExcelRender`. A conditional-field that holds is used, as in csv, where Java read only the default-field. A hidden or ignored field is an empty cell, so later cells stay under their headers.
+  - `ScreenRender.renderBytes()` and `ec.screen.isRenderModeBinary()` are new. Email attachments and `render#ScheduledScreen` attach and save xlsx. The webroot `BasicTransitions.xml` (Email Export, XLS by default) was missing and is copied.
+  - `SpreadsheetServices` (`read#Spreadsheet`, `load#SpreadsheetEntity`, on `calamine`) are new; Java read no spreadsheet.
+- **Images (`moqui-image`).**
+  - `ImageServices` keep their names and parameters, with Rust bodies on `image` (jpg, png, gif, tiff, webp, bmp; wbmp and SVG are not carried). Each width is resampled from the original, where Java resampled each from the one before. The writes run in the call, where Java started a service for each. `write#Image` takes encoded bytes. `inputLocation` is new.
+- **Printing (`moqui-cups`).**
+  - The print services send over IPP through a host `PrintClient` (`ipp` encoding, async `reqwest` on the edge runtime), with cups4j's operations, status map, and messages. A send that fails, including a server that does not answer, is `PtjSendFailed` with the message. `make#CupsPrinter` and `make#CupsClient` returned Java objects and are internal steps.
+- **Size.** The three components added 4.3 MB to the x86_64 release `moqui` (58.8 MB to 63.2 MB, against the SSO commit), for the record. It is not a gate.
 - **Fixed along the way.** `auto-parameters` copied an entity field's `default` expression as a literal parameter default, so `update#UserAccount` without `disabled` wrote `'N'` with its quotes; Java takes no default there.
 
 ### Gate 4 — tools and utilities
@@ -786,13 +796,14 @@ The gate is a checklist. Each item is its own test. Entity and service behavior 
 - An ETL flat-XML extract loads entity rows, and an EDI document round-trips.
 - When `pdf-chromium-path` names a Chromium binary, one `html-print` document comes back as PDF bytes and a print-job record can hold them. When the binary is absent, the same call reports that PDF is not available, and the gate still passes.
 - Every entry in the tool-component list is either implemented or recorded as staying outside. `moqui-fop` is recorded as not ported.
+- A form-list screen requested as `xlsx` is a workbook with typed cells and `read#Spreadsheet` reads it back; `convert#Image` writes each width; a print job goes to an IPP server and its details and cancel come back.
 - A later database driver, when one is included in the build under test, runs the same metadata and insert smoke test as MySQL. A build that omits them still passes the gate.
 - Type generation emits declarations for a sample of framework and tools services and screens, and the output passes `tsc --noEmit`.
 - `/health` reports ready and `/metrics` reports the pool gauges.
 
 Scheduled jobs are a phase 6 test. Sim mode is a phase 4 test. They are not repeated on this checklist.
 
-The phase 12 items run in `crates/moqui-host/tests`: the PDF item in `tools_services.rs` (with a browser found, the tools dashboard prints as `html-print`, comes back as PDF, and its `PrintJob` holds the bytes; without one the call reports PDF not available) and `pdf.rs` (the engine alone: concurrent pages, a restart, and a document that reaches no network); SFTP, the SystemMessage cycle over SFTP, the SSH server, the shell, and the SSH cluster channel in `ssh.rs`; SSO against a test OpenID provider in `sso.rs`. The tool-component list is recorded in the phase 12 bullets above.
+The phase 12 items run in `crates/moqui-host/tests`: the PDF item in `tools_services.rs` (with a browser found, the tools dashboard prints as `html-print`, comes back as PDF, and its `PrintJob` holds the bytes; without one the call reports PDF not available) and `pdf.rs` (the engine alone: concurrent pages, a restart, and a document that reaches no network); SFTP, the SystemMessage cycle over SFTP, the SSH server, the shell, and the SSH cluster channel in `ssh.rs`; SSO against a test OpenID provider in `sso.rs`; xlsx, spreadsheet read, image conversion, and printing against an IPP server in the test in `tool_components.rs`. The tool-component list is recorded in the phase 12 bullets above.
 
 ## Phase 13 — LLM and A2A
 

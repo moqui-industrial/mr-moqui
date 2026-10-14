@@ -13,7 +13,7 @@
  */
 
 //! The tools services on the seeded embedded Postgres, called through the Service Run screen's `runJson` transition as
-//! an admin: a print job is created and its status moves to a failed send, a screen document reports that PDF is not
+//! an admin: a print job is created and its status moves to a failed send (its print server, port 9, does not answer), a screen document reports that PDF is not
 //! available, the clean services delete by a time basis, an entity data snapshot goes
 //! out to a zip and back in, and the cache admin screen clears a cache.
 
@@ -26,7 +26,7 @@ use std::net::SocketAddr;
 use common::{basic, exchange, http_request, start_with_data};
 
 const DATA: &str = r#"<entity-facade-xml type="seed">
-    <moqui.basic.print.NetworkPrinter networkPrinterId="GATE_PRINTER" serverHost="localhost" printerName="gate"/>
+    <moqui.basic.print.NetworkPrinter networkPrinterId="GATE_PRINTER" serverHost="127.0.0.1" serverPort="9" printerName="gate"/>
     <moqui.basic.print.PrintJob printJobId="GATE_OLD_PJ" networkPrinterId="GATE_PRINTER" statusId="PtjNotSent"
         createdDate="2020-01-02 03:04:05"/>
     <moqui.basic.Uom uomId="GATE_A" description="Gate A" uomTypeEnumId="UT_LENGTH_MEASURE"/>
@@ -100,7 +100,8 @@ fn tools_services_run_on_postgres() {
     let address = gate.server.address();
     let john = basic("john.doe", "moqui");
 
-    // print#Document: the job is created not sent, then the send records that network printing is not installed.
+    // print#Document: the job is created not sent, then the send records that the print server did not answer. A
+    // server that answers is tool_components.rs.
     let (_, printed) = run(
         address,
         &john,
@@ -113,7 +114,7 @@ fn tools_services_run_on_postgres() {
         ],
     );
     assert!(
-        printed.contains("Network printing support not installed (moqui-cups is not part of this build)"),
+        printed.contains("Could not reach print server at http://127.0.0.1:9"),
         "{printed}"
     );
     let jobs = page(
@@ -138,7 +139,7 @@ fn tools_services_run_on_postgres() {
         assert!(pdf.contains("PDF is not available"), "{pdf}");
     } else {
         // Gate 4: the html-print document came back as PDF bytes, and the print job holds them.
-        assert!(pdf.contains("moqui-cups is not part of this build"), "{pdf}");
+        assert!(pdf.contains("Could not reach print server"), "{pdf}");
         let factory = std::sync::Arc::clone(gate.server.factory());
         let context = factory.new_context();
         let _entered = context.enter();

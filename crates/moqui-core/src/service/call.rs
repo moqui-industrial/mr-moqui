@@ -603,6 +603,8 @@ fn execute(
         ServiceKind::ElFinder => super::elfinder::run(&def.name, parameters, facade),
         ServiceKind::Sso => super::sso::run(&def.name, parameters, facade),
         ServiceKind::Tools => super::tools::run(&def.name, parameters, facade),
+        ServiceKind::Spreadsheet => super::spreadsheet::run(&def.name, parameters, facade),
+        ServiceKind::Image => super::images::run(&def.name, parameters, facade),
         ServiceKind::NotPorted => Err(LibError::new(
             super::not_ported::reason(&def.name).unwrap_or_else(|| format!("service {} is not available", def.name)),
         )),

@@ -20,6 +20,7 @@ mod eca;
 mod eca_rules;
 mod elfinder;
 mod email_eca;
+mod images;
 pub mod info;
 #[cfg(test)]
 mod inline_tests;
@@ -36,6 +37,7 @@ mod schedule;
 mod seca;
 mod security_checks;
 pub(crate) mod semaphore;
+mod spreadsheet;
 mod sso;
 mod system_sync;
 mod tools;

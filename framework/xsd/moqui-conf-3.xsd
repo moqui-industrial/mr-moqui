@@ -531,7 +531,11 @@ along with this software (see the LICENSE.md file). If not, see
         <xs:attribute name="mime-type" type="xs:string" use="optional"/>
         <xs:attribute name="always-standalone" type="boolean" default="false"/>
         <xs:attribute name="skip-actions" type="boolean" default="false"/>
-        <xs:attribute name="widget-render-class" type="xs:string" use="required"/>
+        <xs:attribute name="macro-template-location" type="xs:string"><xs:annotation><xs:documentation>
+            The JavaScript macro module that fills the document of this binary mode, such as
+            framework/template/screen/ScreenXlsx.js for xlsx. A built-in mode has one by default.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="widget-render-class" type="xs:string"><xs:annotation><xs:documentation>
+            The Java ScreenWidgetRender class. Read and not used: the type selects the built-in module.</xs:documentation></xs:annotation></xs:attribute>
     </xs:complexType></xs:element>
 
     <!-- ====================== Service Facade Conf Root ======================= -->

@@ -136,6 +136,7 @@ A trait is used when conf selects an implementation, or when the implementation 
 | `ServiceRunner` | Entity-auto, script, and remote runners are built in. Remote runners call `HttpClient`. |
 | `SearchBackend` | Postgres SQL for the query and aggregation trees is in core. An OpenSearch mapping that only builds HTTP bodies can live here and use `HttpClient`. |
 | `LlmProtocol`, `LlmTool` | More than one protocol and many tools. |
+| `PrintClient` | The IPP client is in `moqui-host`. With none installed, a send reports that network printing is not installed. `plans/Office-Image-Print.md`. |
 | `PdfRenderer` | Optional. Core renders `html-print` without this trait. The host prints that HTML to PDF. The default engine is a long-lived Chromium process. `pdf-servo` is an in-process alternate. See Tool components and print in the architecture proposal. |
 | `TemplateRenderer` | Conf maps a file extension to an implementation, as Java's `<template-renderer>` does. The implementations are `JsTemplateLiteral`, the fancy renderer, and the locked-down fancy renderer. All of them run on the QuickJS runtime. See Templating in the architecture proposal. |
 
@@ -226,7 +227,7 @@ Cargo features may trim a driver out of a custom build. The default feature set 
 
 ## moqui-host
 
-The process edge. Depends on `moqui-core` and on `moqui-lib` with the `http` feature. This is the only crate that may use axum, Tokio, the sync DB clients (`postgres`, `mysql`), `postgresql_embedded`, process spawn, SSH (`russh`, `russh-sftp`), and the OIDC client (`huskarl`). `lettre` lives in core. `MCache` lives in lib. There is no `moka`, no `r2d2`, and no XML crate.
+The process edge. Depends on `moqui-core` and on `moqui-lib` with the `http` feature. This is the only crate that may use axum, Tokio, the sync DB clients (`postgres`, `mysql`), `postgresql_embedded`, process spawn, SSH (`russh`, `russh-sftp`), the OIDC client (`huskarl`), and the IPP client (`ipp`). `lettre` lives in core. `MCache` lives in lib. There is no `moka`, no `r2d2`, and no XML crate.
 
 | Module | Role |
 |---|---|
@@ -236,8 +237,9 @@ The process edge. Depends on `moqui-core` and on `moqui-lib` with the `http` fea
 | `search` | OpenSearch process supervisor. Query construction stays in core. |
 | `pdf` | `PdfRenderer`'s engine behind the core `PdfEngine` slot. Feature `pdf` (default) is a DevTools client on `tokio-tungstenite` that drives one long-lived external Chromium; `chromiumoxide` was dropped because its message parsing fails under `serde_json` `arbitrary_precision`. No browser fetcher is linked. Feature `pdf-servo` (off by default) links Servo for an in-process render where a child process is forbidden. The recipe, the process flags, and the page cap are Tool components and print in `plans/Architecture-Proposal.md`. |
 | `ssh` | `russh` 0.64 and `russh-sftp` 3. `russh` is `default-features = false` with `aws-lc-rs`, `flate2`, and `rsa`. `ring`, `des`, and `dsa` stay off. The SFTP client behind `moqui_core::sftp`, the SSH server (SFTP over a resource root, exec and the admin shell) when `ssh_port` is set, and the SSH cluster channel. `plans/Ssh.md`. |
-| `edge` | One small Tokio runtime for the async clients (PDF, SSH, SSO). A blocking caller spawns onto it and waits on a channel. |
+| `edge` | One small Tokio runtime for the async clients (PDF, SSH, SSO, IPP). A blocking caller spawns onto it and waits on a channel. |
 | `sso` | `huskarl` 0.11, default features (the native JWS verifier), with an async `reqwest` transport. The OIDC and OAuth 2 client behind `moqui_core::sso`; the services and the account sync are core. `plans/Sso.md`. |
+| `ipp` | `ipp` 7 message encoding, no client features, posted with the async `reqwest` on the edge runtime. The network printing client behind `moqui_core::print` (`moqui-cups`); the print services are core. `plans/Office-Image-Print.md`. |
 
 Features on this crate, not more crates: `opensearch`, `inbound-smtp`, `pdf`, `pdf-servo`. Default features are embedded Postgres, external Postgres, MySQL, axum, and `pdf`. `pdf-servo` stays off. Chromium itself is not a crate and is not in the binary.
 
@@ -290,4 +292,4 @@ Tests that start a factory, load `framework/`, and hit HTTP live under `crates/m
 - A `start` or `execWar` source tree.
 - A port of the JSR-107 cache API, Shiro, the Bitronix XA journal, Jackrabbit, H2, JCS, or the servlet types. `MCache` is ported. The transaction manager is Moqui's own, against `DbDriver`, with Bitronix's behavior as the reference.
 - A `moqui-js` crate, a crate per database, or a drivers-without-HTTP crate.
-- The tool components (`moqui-poi`, `moqui-image`, `moqui-cups`, `moqui-sftp`). Whether any of them move into this repository is a later decision, limited by binary size. The SSO relying party is framework code, in `plans/Sso.md`. `moqui-fop` is not ported. PDF is the host `pdf` module.
+- A crate for the tool components. `moqui-sftp` and the SSO relying party (`plans/Ssh.md`, `plans/Sso.md`), and `moqui-poi`, `moqui-image`, and `moqui-cups` (`plans/Office-Image-Print.md`), are framework code in these crates. `moqui-fop` is not ported. PDF is the host `pdf` module.

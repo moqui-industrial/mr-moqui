@@ -41,7 +41,7 @@ const TEMPLATE_SUPPORT: &str = include_str!("../../../../framework/template/Temp
 const SCREEN_SUPPORT: &str = include_str!("../../../../framework/template/screen/ScreenSupport.js");
 
 /// The mode modules built into the binary, by file name.
-const MODE_MODULES: [(&str, &str); 8] = [
+const MODE_MODULES: [(&str, &str); 9] = [
     (
         "ScreenText.js",
         include_str!("../../../../framework/template/screen/ScreenText.js"),
@@ -73,6 +73,10 @@ const MODE_MODULES: [(&str, &str); 8] = [
     (
         "ScreenPlain.js",
         include_str!("../../../../framework/template/screen/ScreenPlain.js"),
+    ),
+    (
+        "ScreenXlsx.js",
+        include_str!("../../../../framework/template/screen/ScreenXlsx.js"),
     ),
 ];
 
@@ -512,6 +516,7 @@ pub fn generate_xml(mode: &str, xml: &str, debug_comments: bool) -> Result<Strin
     let file = match mode {
         "text" => "ScreenText.js",
         "csv" => "ScreenCsv.js",
+        "xlsx" => "ScreenXlsx.js",
         "xml" => "ScreenXml.js",
         "html-print" => "ScreenHtmlPrint.js",
         "html" => "ScreenHtml.js",
@@ -542,6 +547,7 @@ pub fn generate_unit_source(mode: &str, xml: &str) -> Result<String, Error> {
     let file = match mode {
         "text" => "ScreenText.js",
         "csv" => "ScreenCsv.js",
+        "xlsx" => "ScreenXlsx.js",
         "html-print" => "ScreenHtmlPrint.js",
         "html" => "ScreenHtml.js",
         "qvt" => "ScreenQvt.js",

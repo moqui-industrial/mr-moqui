@@ -180,6 +180,45 @@ fn a_form_list_in_csv_and_xml_and_a_form_single_in_neither() {
 }
 
 #[test]
+fn a_form_list_in_xlsx_is_a_sheet_with_typed_cells() {
+    use calamine::{Data, Reader};
+    let context = ExecutionContextFactory::test_context();
+    let output = render_with(context.factory(), "/Forms.xlsx", &[("saveFilename", "Forms.xlsx")]).unwrap();
+    assert_eq!(output.status, 200);
+    assert_eq!(
+        output.content_type(),
+        Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    );
+    assert!(output.header("Content-Disposition").unwrap().contains("Forms.xlsx"));
+    let mut book = calamine::open_workbook_auto_from_rs(std::io::Cursor::new(output.body)).unwrap();
+    // the form-single is not in the workbook, the form-list is one sheet
+    assert_eq!(book.sheet_names(), vec!["ItemList".to_string()]);
+    let range = book.worksheet_range("ItemList").unwrap();
+    let row = |index: u32| -> Vec<Data> {
+        (0..5)
+            .map(|col| range.get_value((index, col)).cloned().unwrap_or(Data::Empty))
+            .collect()
+    };
+    let text = |value: &str| Data::String(value.to_string());
+    assert_eq!(
+        row(0),
+        vec![text("Item ID"), text("Name"), text("Price"), text("Note"), text("Do")]
+    );
+    // the price is a number, not the formatted text, and the submit is an empty cell
+    assert_eq!(
+        row(1),
+        vec![
+            text("I1"),
+            text("Widget, \"large\""),
+            Data::Float(12.5),
+            text("first line"),
+            Data::Empty
+        ]
+    );
+    assert_eq!(row(2)[..3], [text("I2"), text("Gadget"), Data::Float(3.0)]);
+}
+
+#[test]
 fn sections_fail_widgets_include_screen_and_text() {
     let context = ExecutionContextFactory::test_context();
     let included = "src/screen/testdata/Render/Render/Included.xml";

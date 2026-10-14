@@ -51,12 +51,16 @@ bytes = { workspace = true }
 form_urlencoded = { workspace = true }
 p256 = { workspace = true }
 reqwest = { workspace = true }
+ipp = { workspace = true }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
 indexmap = { workspace = true }
+# Read back the xlsx render and the converted images in tests/tool_components.rs.
+calamine = { workspace = true }
+image = { workspace = true }
 # Same 0.29 handshake set axum's ws feature already links. No native-tls and no rustls.
 tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
 

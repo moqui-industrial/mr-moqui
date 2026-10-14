@@ -42,6 +42,10 @@ pub(crate) enum ServiceKind {
     Sso,
     /// A tools service (print jobs, entity data snapshots, data document notifications) whose body is Rust, in `tools`.
     Tools,
+    /// A spreadsheet read or load (`SpreadsheetServices`), whose body is Rust, in `spreadsheet`.
+    Spreadsheet,
+    /// An image service of `moqui-image` whose body is Rust, in `images`.
+    Image,
     /// A service defined but not available in this port, in `not_ported`: LLM, A2A, Docker instances.
     NotPorted,
     /// A script service whose language this port does not run, such as Groovy.
@@ -609,6 +613,10 @@ fn load_service(prefix: &str, node: &MNode, services: &mut BTreeMap<String, Serv
         ServiceKind::ElFinder
     } else if super::sso::runs(&name) {
         ServiceKind::Sso
+    } else if super::spreadsheet::runs(&name) {
+        ServiceKind::Spreadsheet
+    } else if super::images::runs(&name) {
+        ServiceKind::Image
     } else {
         kind_of(&type_name, &location)
     };
