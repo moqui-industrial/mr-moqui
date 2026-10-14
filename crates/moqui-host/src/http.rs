@@ -78,6 +78,9 @@ pub(crate) async fn listen(
         factory: Arc::clone(&factory),
         posts,
     }));
+    tracing::info!(
+        "Listening for HTTP on {address} and cluster on {cluster}; routes /health, /metrics, /notws, /elastic, /kibana and the screen dispatcher"
+    );
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let app = Router::new()
         .route("/health", get(health))
@@ -272,7 +275,10 @@ impl RequestLog {
             entry.insert("content_type".into(), Value::String(content_type));
         }
         entry.insert("request_method".into(), Value::String(self.method));
-        entry.insert("request_scheme".into(), Value::string(if self.https { "https" } else { "http" }));
+        entry.insert(
+            "request_scheme".into(),
+            Value::string(if self.https { "https" } else { "http" }),
+        );
         entry.insert("request_host".into(), Value::String(self.host));
         entry.insert("request_path".into(), Value::String(self.path));
         if !self.query.is_empty() {

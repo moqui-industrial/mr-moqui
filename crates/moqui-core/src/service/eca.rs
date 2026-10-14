@@ -27,7 +27,7 @@ use moqui_lib::object::Value;
 use super::rule_actions::{condition_allows, publish_names, run_stored_actions};
 use super::security_checks::{assert_privileged_group_membership, assert_sealed_permission_grant, map_text};
 use crate::context::ExecutionContext;
-use crate::entity::load_feed::{self, HeldService};
+use crate::entity::load_feed::{self, DataFileService};
 use crate::entity::EntityFacade;
 
 /// Whether feed receive found search down. Kept with the facade, so it is the same on every thread
@@ -73,13 +73,13 @@ pub fn run_matched_eca(
 /// Run one data-file service element through [`crate::service::call::sync`].
 ///
 /// `sync` reads the facade on the current execution context. A load that has not
-/// entered a context keeps the held service and does not call it.
-pub fn run_held_service(facade: &EntityFacade, service: &HeldService) -> Result<(), Error> {
+/// entered a context returns an error and does not call the service.
+pub fn run_data_file_service(facade: &EntityFacade, service: &DataFileService) -> Result<(), Error> {
     tracing::debug!(
         service = %service.name,
         location = %service.location,
         feed_off = facade.flags().disable_data_feed,
-        "running held data-file service"
+        "running data-file service"
     );
     let mut params = BTreeMap::new();
     for (name, value) in &service.parameters {
@@ -94,7 +94,32 @@ pub fn run_held_service(facade: &EntityFacade, service: &HeldService) -> Result<
         )));
     }
     let _guard = ExecutionContext::with_current(|ctx| ctx.disable_authz());
-    super::call::sync(&service.name, &params).map(|_| ()).map_err(to_lib)
+    let started = std::time::Instant::now();
+    tracing::info!(
+        "Calling service {} in data load from {} with {} parameters",
+        service.name,
+        service.location,
+        service.parameters.len()
+    );
+    match super::call::sync(&service.name, &params) {
+        Ok(_) => {
+            tracing::info!(
+                "Called service {} in data load in {}ms",
+                service.name,
+                started.elapsed().as_millis()
+            );
+            Ok(())
+        }
+        Err(err) => {
+            tracing::warn!(
+                "Service {} called in data load from {} failed after {}ms: {err}",
+                service.name,
+                service.location,
+                started.elapsed().as_millis()
+            );
+            Err(to_lib(err))
+        }
+    }
 }
 
 /// The service that consumes `DataFeedPending` rows on a worker.
@@ -109,7 +134,7 @@ pub const PROCESS_PENDING_SERVICE: &str = "org.moqui.EntityServices.process#Data
 pub fn schedule_feed_receive(facade: &EntityFacade, pending_ids: Vec<String>) -> Result<(), Error> {
     let search_up =
         ExecutionContext::with_current(|ec| crate::search::installed(ec.factory()).is_some()).unwrap_or(false);
-    if !search_up && !load_feed::held_feed_services(facade).is_empty() {
+    if !search_up && !load_feed::feed_service_names(facade).is_empty() {
         facade.with_slot(SearchState::default, |state| {
             state.down.store(true, std::sync::atomic::Ordering::Relaxed);
         });

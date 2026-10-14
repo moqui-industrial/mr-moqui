@@ -144,8 +144,26 @@ impl EntityFacade {
         }
         let conf_path = framework_dir.join("conf/MoquiDefaultConf.xml");
         let conf = MNode::parse_file(&conf_path)?;
+        let started = std::time::Instant::now();
+        tracing::info!(
+            "Loading entity definitions from {}",
+            framework_dir.join("entity").display()
+        );
         let model = EntityModel::load_directory(&conf, &framework_dir.join("entity"))?;
         let dialects = Dialects::load(&conf)?;
+        let all = model.entities();
+        let views = all.iter().filter(|entity| entity.is_view).count();
+        tracing::info!(
+            "Loaded {} entity definitions ({} view-entities) in {}ms",
+            all.len(),
+            views,
+            started.elapsed().as_millis()
+        );
+        let reverses: usize = all
+            .iter()
+            .map(|entity| entity.relationships.iter().filter(|rel| rel.is_auto_reverse).count())
+            .sum();
+        tracing::info!("Created {reverses} automatic reverse relationships");
         let mut runtimes = HashMap::new();
         for group in groups {
             if runtimes.contains_key(&group.name) {

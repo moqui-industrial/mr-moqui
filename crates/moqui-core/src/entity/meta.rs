@@ -97,14 +97,60 @@ impl EntityDbMeta<'_> {
             }
         }
         let skip_fk = self.facade.flags().disable_fk_create;
-        for batch in batches.into_values() {
+        let started = std::time::Instant::now();
+        let mut totals = Counts::default();
+        let mut groups: Vec<String> = batches.keys().cloned().collect();
+        groups.sort();
+        tracing::info!("Checking tables for entities in groups [{}]", groups.join(", "));
+        for (group, batch) in batches {
             let facade = self.facade;
             let names = batch.names;
-            batch
+            let group_started = std::time::Instant::now();
+            let counts = batch
                 .tx
-                .with_reserve(|conn| apply(facade, conn, &names, skip_fk, lenient_fk))?;
+                .with_reserve(|conn| apply(facade, conn, &group, &names, skip_fk, lenient_fk))?;
+            tracing::info!(
+                "Checked {} entities in group {group} in {:.3} seconds: {} tables created, {} already existed, {} columns added, {} indexes, {} full-text indexes, {} foreign keys",
+                names.len(),
+                group_started.elapsed().as_secs_f64(),
+                counts.tables_created,
+                names.len().saturating_sub(counts.tables_created),
+                counts.columns,
+                counts.indexes,
+                counts.fts,
+                counts.fks
+            );
+            totals.add(&counts);
         }
+        if totals.tables_created > 0 {
+            tracing::info!("Created {} tables", totals.tables_created);
+        } else {
+            tracing::info!("No tables needed to be created");
+        }
+        tracing::info!(
+            "Checked tables for all entities in {:.3} seconds",
+            started.elapsed().as_secs_f64()
+        );
         Ok(())
+    }
+}
+
+#[derive(Default)]
+struct Counts {
+    tables_created: usize,
+    columns: usize,
+    indexes: usize,
+    fts: usize,
+    fks: usize,
+}
+
+impl Counts {
+    fn add(&mut self, other: &Counts) {
+        self.tables_created += other.tables_created;
+        self.columns += other.columns;
+        self.indexes += other.indexes;
+        self.fts += other.fts;
+        self.fks += other.fks;
     }
 }
 
@@ -156,36 +202,54 @@ fn collect(facade: &EntityFacade, name: &str, out: &mut Vec<String>, seen: &mut 
 fn apply(
     facade: &EntityFacade,
     conn: &mut dyn DbConnection,
+    group: &str,
     names: &[String],
     skip_fk: bool,
     lenient_fk: bool,
-) -> Result<(), Error> {
+) -> Result<Counts, Error> {
+    let mut counts = Counts::default();
     for name in names {
         let sql = facade.with_entity(name, |entity, dialect, model| {
             if table_exists_conn(conn, dialect, &entity.table_name)? {
                 Ok(None)
             } else {
-                Ok(Some(create_table(entity, model, dialect)?))
+                let pks: Vec<&str> = entity
+                    .fields
+                    .iter()
+                    .filter(|field| field.is_pk)
+                    .map(|field| field.name.as_str())
+                    .collect();
+                tracing::info!("Creating table for {name} pks: [{}]", pks.join(", "));
+                Ok(Some((create_table(entity, model, dialect)?, entity.table_name.clone())))
             }
         })?;
-        if let Some(sql) = sql {
+        if let Some((sql, table)) = sql {
             execute_script(conn, &sql)?;
+            counts.tables_created += 1;
+            tracing::info!("Created table {table} for entity {name} in group {group}");
+        } else {
+            tracing::debug!("Table for entity {name} already exists");
         }
     }
     for name in names {
-        ensure_columns(facade, conn, name)?;
-        ensure_indexes(facade, conn, name)?;
-        ensure_fts(facade, conn, name)?;
+        counts.columns += ensure_columns(facade, conn, name)?;
+        counts.indexes += ensure_indexes(facade, conn, name)?;
+        counts.fts += ensure_fts(facade, conn, name)?;
     }
     if !skip_fk {
-        for name in names {
-            ensure_fks(facade, conn, name, lenient_fk)?;
+        if counts.tables_created > 0 {
+            tracing::info!("Tables were created, checking FKs for all entities in group {group}");
         }
+        for name in names {
+            counts.fks += ensure_fks(facade, conn, name, lenient_fk)?;
+        }
+    } else {
+        tracing::info!("Not checking foreign keys for group {group}, disable-fk-create is set");
     }
-    Ok(())
+    Ok(counts)
 }
 
-fn ensure_columns(facade: &EntityFacade, conn: &mut dyn DbConnection, name: &str) -> Result<(), Error> {
+fn ensure_columns(facade: &EntityFacade, conn: &mut dyn DbConnection, name: &str) -> Result<usize, Error> {
     let statements = facade.with_entity(name, |entity, dialect, model| {
         let present = column_names(conn, dialect, &entity.table_name)?;
         let mut statements = Vec::new();
@@ -193,21 +257,25 @@ fn ensure_columns(facade: &EntityFacade, conn: &mut dyn DbConnection, name: &str
             if has_name(&present, &field.column_name) {
                 continue;
             }
-            statements.push(add_column(entity, field, model, dialect)?);
+            statements.push((add_column(entity, field, model, dialect)?, field.column_name.clone()));
         }
         Ok(statements)
     })?;
-    for sql in statements {
-        run_statement(conn, &sql, false)?;
+    let mut added = 0;
+    for (sql, column) in statements {
+        if run_statement(conn, &sql, false)? {
+            added += 1;
+            tracing::info!("Added column {column} to the table of entity {name}");
+        }
     }
-    Ok(())
+    Ok(added)
 }
 
-fn ensure_indexes(facade: &EntityFacade, conn: &mut dyn DbConnection, name: &str) -> Result<(), Error> {
+fn ensure_indexes(facade: &EntityFacade, conn: &mut dyn DbConnection, name: &str) -> Result<usize, Error> {
     let statements = facade.with_entity(name, |entity, dialect, _| {
         let mut statements = Vec::new();
         for index in &entity.indexes {
-            statements.push(create_index(entity, index, dialect)?);
+            statements.push((create_index(entity, index, dialect)?, index.name.clone()));
         }
         // Java creates an index on the keys of each foreign key; Postgres does not index them itself.
         if dialect.use_foreign_key_indexes {
@@ -218,34 +286,45 @@ fn ensure_indexes(facade: &EntityFacade, conn: &mut dyn DbConnection, name: &str
                 {
                     continue;
                 }
-                statements.push(create_fk_index(entity, relationship, dialect)?);
+                statements.push((
+                    create_fk_index(entity, relationship, dialect)?,
+                    format!("foreign key to {}", relationship.related),
+                ));
             }
         }
         Ok(statements)
     })?;
-    for sql in statements {
-        run_statement(conn, &sql, false)?;
+    let mut created = 0;
+    for (sql, label) in statements {
+        if run_statement(conn, &sql, false)? {
+            created += 1;
+            tracing::info!("Created index {label} for entity {name}");
+        }
     }
-    Ok(())
+    Ok(created)
 }
 
-fn ensure_fts(facade: &EntityFacade, conn: &mut dyn DbConnection, name: &str) -> Result<(), Error> {
+fn ensure_fts(facade: &EntityFacade, conn: &mut dyn DbConnection, name: &str) -> Result<usize, Error> {
     let statements = facade.with_entity(name, |entity, dialect, _| {
         let mut statements = Vec::new();
         for field in entity.fields.iter().filter(|field| field.field_type == "text-fts") {
             if let Some(sql) = fts_sql(entity, &field.name, dialect)? {
-                statements.push(sql);
+                statements.push((sql, field.name.clone()));
             }
         }
         Ok(statements)
     })?;
-    for sql in statements {
-        run_statement(conn, &sql, false)?;
+    let mut created = 0;
+    for (sql, field) in statements {
+        if run_statement(conn, &sql, false)? {
+            created += 1;
+            tracing::info!("Created full-text index on field {field} of entity {name}");
+        }
     }
-    Ok(())
+    Ok(created)
 }
 
-fn ensure_fks(facade: &EntityFacade, conn: &mut dyn DbConnection, name: &str, lenient: bool) -> Result<(), Error> {
+fn ensure_fks(facade: &EntityFacade, conn: &mut dyn DbConnection, name: &str, lenient: bool) -> Result<usize, Error> {
     let statements = facade.with_entity(name, |entity, dialect, model| {
         let mut statements = Vec::new();
         // SQLite cannot add a foreign key to an existing table, and the browser copy is not the authority.
@@ -264,19 +343,26 @@ fn ensure_fks(facade: &EntityFacade, conn: &mut dyn DbConnection, name: &str, le
         }
         Ok(statements)
     })?;
+    let mut created = 0;
     for sql in statements {
-        run_statement(conn, &sql, lenient)?;
+        if run_statement(conn, &sql, lenient)? {
+            created += 1;
+        }
     }
-    Ok(())
+    if created > 0 {
+        tracing::info!("Created {created} FKs for entity {name}");
+    }
+    Ok(created)
 }
 
-fn run_statement(conn: &mut dyn DbConnection, sql: &str, lenient: bool) -> Result<(), Error> {
+/// True when the statement ran, false when the object existed or a lenient statement failed.
+fn run_statement(conn: &mut dyn DbConnection, sql: &str, lenient: bool) -> Result<bool, Error> {
     match execute_conn(conn, sql, &[]) {
-        Ok(_) => Ok(()),
-        Err(err) if already_exists(&err) => Ok(()),
+        Ok(_) => Ok(true),
+        Err(err) if already_exists(&err) => Ok(false),
         Err(err) if lenient => {
             tracing::warn!(%err, sql = %sql, "foreign key was not created");
-            Ok(())
+            Ok(false)
         }
         Err(err) => Err(err),
     }
