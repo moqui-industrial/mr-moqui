@@ -65,7 +65,7 @@ const stubs = {
         data() { return { fields: Object.assign({}, this.fieldsInitial) }; },
         render() { return Vue.h("m-form", { name: this.$attrs.name, fields: this.fields }, this.$slots.default({ fields: this.fields, hasFieldsChanged: false })); }
     },
-    "m-form-paginate": { props: ["paginate", "formList"], render() { captured.lists[this.formList.name] = this.formList; return Vue.h("m-form-paginate", { paginate: this.paginate }); } },
+    "m-form-paginate": { props: ["paginate", "formList"], render() { if (this.formList) captured.lists[this.formList.name] = this.formList; return Vue.h("m-form-paginate", { paginate: this.paginate }); } },
     "m-form-go-page": { props: ["idVal", "formList"], render() { return Vue.h("m-form-go-page"); } }
 };
 ["m-display", "m-text-line", "m-drop-down", "m-link", "q-btn", "m-form-link", "m-container-box", "m-container-dialog"].forEach((tag) => { stubs[tag] = leaf(tag); });
@@ -256,6 +256,14 @@ test("Parity: a condition element is a v-if over and, or, not, compare and expre
     assert.doesNotMatch(text, /the condition fails/);
     assert.match(text, /the second fails/);
     assert.doesNotMatch(text, /the second holds/);
+});
+
+test("Parity: a paginated section-iterate shows its page and the page buttons over the package's keys", async () => {
+    setup();
+    const { container } = await mountStatic("", "Parity");
+    const text = html(container);
+    assert.equal((text.match(/line L\d+/g) || []).length, 20);
+    assert.match(text, /<m-form-paginate paginate='\{"count":25,"pageIndex":0,"pageSize":20,"pageMaxIndex":1,"pageRangeLow":1,"pageRangeHigh":20\}'/);
 });
 
 test("the restricted ec has the table of members and throws on anything else", () => {

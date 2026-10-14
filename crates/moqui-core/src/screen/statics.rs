@@ -582,12 +582,22 @@ fn prepare_section(
     section: &SectionDef,
     depth: usize,
 ) -> Result<(), Error> {
-    if let SectionKind::Iterate { list, entry, key, .. } = &section.kind {
+    if let SectionKind::Iterate {
+        list,
+        entry,
+        key,
+        paginate,
+    } = &section.kind
+    {
         let value = script::eval_value(list)?;
         if is_empty(&value) {
             return Ok(());
         }
-        let items = sri::iteration_entries(&value);
+        let mut items = sri::iteration_entries(&value);
+        // paginate: the page keys of the list go in the package, and the list is the page, as ScreenSection renders it.
+        if *paginate && is_name(list) {
+            items = sri::paginate_items(list, items)?;
+        }
         let mut kept = Vec::with_capacity(items.len());
         let count = items.len();
         for (index, (item_key, item)) in items.into_iter().enumerate() {

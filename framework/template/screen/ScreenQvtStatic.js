@@ -1060,6 +1060,20 @@
             "check": (n) => checkOrRadio(n, "checkbox"), "radio": (n) => checkOrRadio(n, "radio"), "display": displayWidget, "display-entity": displayEntity,
             "image": image, "label": labelWidget, "link": (n) => link(n, true), "editable": editable
         };
+        // The page buttons of a section-iterate with paginate, over the page keys of its list in the package (ScreenSection paginates the
+        // list the same way); a page goes to the screen with pageIndex. The list must be a name, which the keys are named after.
+        const sectionPaginate = (n) => {
+            const list = at(n, "list");
+            if (!IDENT.test(list)) {
+                note("section-paginate", n, "paginate of section-iterate " + at(n, "name") + " needs a list name, which the page keys are named after");
+                return "";
+            }
+            const key = (suffix) => "Number(" + scopeRef(list + suffix) + ")";
+            const props = "{count:" + key("Count") + ",pageIndex:" + key("PageIndex") + ",pageSize:" + key("PageSize") + ",pageMaxIndex:" + key("PageMaxIndex") +
+                ",pageRangeLow:" + key("PageRangeLow") + ",pageRangeHigh:" + key("PageRangeHigh") + "}";
+            return "<m-form-paginate" + A({ "v-if": scopeRef(list + "Count"), ":paginate": props }) + "></m-form-paginate>";
+        };
+
         // An XML condition element as one expression, as XmlActions.js writes it for an if: and, or and not join their parts, an expression
         // is its text, and a compare is $mq.compare, the browser's copy of the server's compare. The value of a compare with ${} is expanded.
         const xmlCondExpr = (n) => {
@@ -1117,7 +1131,7 @@
                 }
             } else if (name === "section-iterate") {
                 const condition = sectionCondition(n);
-                if (at(n, "paginate") === "true") note("section-paginate", n, "paginate of section-iterate " + at(n, "name") + " is not written");
+                if (at(n, "paginate") === "true") w(sectionPaginate(n));
                 w(vFor(n));
                 if (condition) w(vIf(n, condition));
                 nodesOf(n, "widgets").forEach(renderNode);
@@ -1460,7 +1474,7 @@
             reset, push, pop, e, A, cls, at, X, exp, st, sq, w, note, vIf, vFor, withCondition, urlOf, textOf,
             containerDialog, dynamicDialog, dynamicContainer, tree, subscreensPanel, subscreensTabs, image, label: labelWidget,
             link: (n, inField) => link(n, inField), editable, formSingle, formList, rowOpen, colOpen, fieldGroup, fieldGroupClose, quasarColor,
-            split, js: js_, widgetFns, imageTag, xmlCondition
+            split, js: js_, widgetFns, imageTag, xmlCondition, sectionPaginate
         };
         Object.defineProperty(globalThis, "$mqQvtS", { value: h, configurable: true });
     };
@@ -1500,7 +1514,7 @@
         const fail = child(node, "fail-widgets");
         const condition = conditionCode(node);
         let code = "";
-        if (attr(node, "paginate") === "true") code += `sri.staticNote("section-paginate", "section-iterate", ${lit("paginate of section-iterate " + attr(node, "name") + " is not written")});\n`;
+        if (attr(node, "paginate") === "true") code += `sri.write($s.sectionPaginate(${wlit(node, false)}));\n`;
         code += `sri.write($s.vFor(${wlit(node, false)}));\n`;
         if (condition) code += `const $cond = ${condition};\nif ($cond) sri.write($s.vIf(${wlit(node, false)}, $cond));\n`;
         code += widgets ? widgets.source || "" : "";

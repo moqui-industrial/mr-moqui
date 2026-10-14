@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- The XML screen and form features at parity with Java Moqui, written in a server-static template: a condition element. -->
+<!-- The XML screen and form features at parity with Java Moqui, written in a server-static template: a condition element, section-iterate paging. -->
 <screen require-authentication="false" server-static="qvt" default-menu-title="Parity">
     <actions>
         <set field="status" value="ACTIVE"/>
         <set field="qty" from="5"/>
+        <set field="lines" from="Array.from({length: 25}, (_, i) => ({lineId: 'L' + (i + 1)}))"/>
     </actions>
     <widgets>
         <section name="Holds">
@@ -16,5 +17,8 @@
             <widgets><label text="the second holds" type="p"/></widgets>
             <fail-widgets><label text="the second fails" type="p"/></fail-widgets>
         </section>
+        <section-iterate name="Lines" list="lines" entry="line" paginate="true">
+            <widgets><label text="line ${line.lineId}" type="div"/></widgets>
+        </section-iterate>
     </widgets>
 </screen>

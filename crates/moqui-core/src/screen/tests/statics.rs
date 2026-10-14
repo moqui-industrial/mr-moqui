@@ -740,4 +740,12 @@ fn the_parity_fixture_is_a_template_with_its_data_in_the_packages() {
     let package = render(context.factory(), "/Parity/actions", &[]);
     assert_eq!(package.status, 200, "{}", package.body_text());
     golden("Parity.package.json", &package.body_text());
+    // a paginated section-iterate: the page keys in the package, and the list is the page
+    let json = json_of(&package);
+    assert_eq!(json["linesCount"], 25, "{json}");
+    assert_eq!(json["lines"].as_array().map(Vec::len), Some(20), "{json}");
+    let second = json_of(&render(context.factory(), "/Parity/actions", &[("pageIndex", "1")]));
+    assert_eq!(second["lines"][0]["lineId"], "L21", "{second}");
+    assert_eq!(second["linesPageRangeLow"], 21, "{second}");
+    assert!(html.contains("<m-form-paginate v-if=\"$scope['linesCount']\""), "{html}");
 }

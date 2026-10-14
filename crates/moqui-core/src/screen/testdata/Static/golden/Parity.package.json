@@ -1,1 +1,1 @@
-{"qty":5,"status":"ACTIVE"}
+{"lines":[{"lineId":"L1"},{"lineId":"L2"},{"lineId":"L3"},{"lineId":"L4"},{"lineId":"L5"},{"lineId":"L6"},{"lineId":"L7"},{"lineId":"L8"},{"lineId":"L9"},{"lineId":"L10"},{"lineId":"L11"},{"lineId":"L12"},{"lineId":"L13"},{"lineId":"L14"},{"lineId":"L15"},{"lineId":"L16"},{"lineId":"L17"},{"lineId":"L18"},{"lineId":"L19"},{"lineId":"L20"}],"linesCount":25,"linesPageIndex":0,"linesPageMaxIndex":1,"linesPageRangeHigh":20,"linesPageRangeLow":1,"linesPageSize":20,"qty":5,"status":"ACTIVE"}
