@@ -591,6 +591,11 @@ fn static_list(browser: &mut Browser, base: &str) {
         browser.eval("typeof (moqui.qvtStatic || {})['/apps/GateStaticList']"),
         "function"
     );
+    // every component runs its precompiled render function: none is left with a string template for the browser to compile
+    assert_eq!(
+        browser.eval("Object.keys(moqui.qvt.components).filter((name) => typeof moqui.qvt.components[name].template === 'string').join(',')"),
+        ""
+    );
     let text = browser.eval("document.body.innerText");
     let text = text.as_str().unwrap();
     assert!(text.contains("Enumerations of john.doe"), "{text}");

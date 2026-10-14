@@ -170,3 +170,32 @@ fn row_selection_multi_forms_find_dialogs_and_the_options_of_a_drop_down() {
         "{out}"
     );
 }
+
+/// `WebrootVue.qvt.render.js` is the render functions of the client components as their templates are now: the file
+/// is made again and compared. `UPDATE_GOLDEN=1` writes it.
+#[test]
+fn client_components_are_precompiled() {
+    let js = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/webroot/screen/webroot");
+    let read = |path: &str| std::fs::read_to_string(js.join(path)).unwrap_or_else(|err| panic!("{path}: {err}"));
+    let compiler = read("libs/vue/compiler-dom.cjs.js");
+    let made = crate::screen::vue_check::precompiled_components(
+        &compiler,
+        &[&read("js/MoquiLib.js"), &read("js/WebrootVue.qvt.js")],
+    )
+    .unwrap();
+    let path = js.join("js/WebrootVue.qvt.render.js");
+    if std::env::var_os("UPDATE_GOLDEN").is_some() {
+        std::fs::write(&path, &made).unwrap();
+        return;
+    }
+    let kept = std::fs::read_to_string(&path).unwrap_or_default();
+    assert!(
+        kept == made,
+        "{} is not the render functions of the current templates: UPDATE_GOLDEN=1 cargo test -p moqui-core --lib client_components_are_precompiled",
+        path.display()
+    );
+    // no with, no eval: the build without the compiler and a CSP without unsafe-eval can load it
+    for banned in ["with (", "with(", "new Function", "eval("] {
+        assert!(!made.contains(banned), "{banned}");
+    }
+}

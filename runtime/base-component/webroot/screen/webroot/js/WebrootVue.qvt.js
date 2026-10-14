@@ -2634,7 +2634,30 @@
     });
 
     // Start the application: the language pack, the formatter, the components, and the mount on the shell.
+    // The render functions of the components, precompiled from their templates into WebrootVue.qvt.render.js (moqui.qvtRenders), which loads
+    // first. One is used only while its hash matches the template here, so a template edited without making the file again is compiled in the
+    // browser as before; the build without the compiler needs them all. The hash is FNV-1a over the UTF-16 code units, as the generator reads it.
+    qvt.templateHash = (text) => {
+        let hash = 0x811c9dc5;
+        for (let i = 0; i < text.length; i++) {
+            hash ^= text.charCodeAt(i);
+            hash = Math.imul(hash, 0x01000193) >>> 0;
+        }
+        return hash.toString(16);
+    };
+    qvt.applyRenders = () => {
+        const renders = moqui.qvtRenders || {};
+        Object.keys(renders).forEach((name) => {
+            const comp = qvt.components[name];
+            const made = renders[name];
+            if (!comp || typeof comp.template !== "string" || made.hash !== qvt.templateHash(comp.template)) return;
+            comp.render = made.make(root.Vue);
+            delete comp.template;
+        });
+    };
+
     qvt.start = () => {
+        qvt.applyRenders();
         const doc = root.document;
         const configEl = doc.getElementById("moqui-config");
         const config = JSON.parse(configEl.textContent);

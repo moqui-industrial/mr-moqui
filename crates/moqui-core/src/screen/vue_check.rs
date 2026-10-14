@@ -142,3 +142,72 @@ pub fn compile_render(compiler_source: &str, template: &str) -> Result<String, E
             .ok_or_else(|| Error::new("the Vue compiler gave no code"))
     })
 }
+
+/// The string templates of the client components: each script is run in a QuickJS context of its own (the client loads
+/// `MoquiLib.js` and then `WebrootVue.qvt.js`), and each entry of `moqui.qvt.components` that has a template is
+/// answered as its name, the template, and the hash `qvt.templateHash` gives. A definition registered under two names
+/// is answered once.
+///
+/// # Errors
+///
+/// Returns an error when a script does not run.
+pub fn component_templates(scripts: &[&str]) -> Result<Vec<(String, String, String)>, Error> {
+    let runtime = Runtime::new().map_err(|err| Error::new(err.to_string()))?;
+    runtime.set_memory_limit(MEMORY_LIMIT);
+    runtime.set_max_stack_size(STACK_LIMIT);
+    let context = Context::full(&runtime).map_err(|err| Error::new(err.to_string()))?;
+    context.with(|ctx| {
+        for script in scripts {
+            ctx.eval::<(), _>(*script)
+                .catch(&ctx)
+                .map_err(|err| Error::new(format!("a client script did not run: {err}")))?;
+        }
+        let json: String = ctx
+            .eval(
+                "(function () { var qvt = globalThis.moqui.qvt; var seen = []; var out = [];
+                    Object.keys(qvt.components).sort().forEach(function (name) {
+                        var comp = qvt.components[name];
+                        if (typeof comp.template !== 'string' || seen.indexOf(comp) >= 0) return;
+                        seen.push(comp);
+                        out.push([name, comp.template, qvt.templateHash(comp.template)]);
+                    });
+                    return JSON.stringify(out); })()",
+            )
+            .catch(&ctx)
+            .map_err(|err| Error::new(format!("the client components could not be read: {err}")))?;
+        serde_json::from_str(&json).map_err(|err| Error::new(err.to_string()))
+    })
+}
+
+/// `WebrootVue.qvt.render.js`: the render function of each client component, compiled as a server-static template is
+/// (`prefixIdentifiers`, no `with`), with the hash of the template it came from.
+///
+/// # Errors
+///
+/// Returns an error when a script does not run or the compiler rejects a template.
+pub fn precompiled_components(compiler_source: &str, scripts: &[&str]) -> Result<String, Error> {
+    let mut out = String::from(
+        "/* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */\n\n\
+         // Generated from the component templates of WebrootVue.qvt.js; do not edit. Make it again with\n\
+         //   UPDATE_GOLDEN=1 cargo test -p moqui-core --lib client_components_are_precompiled\n\
+         // qvt.applyRenders uses an entry only while its hash matches the template (plans/QvtServerStatic.md, Page build).\n\
+         (function (moqui) {\n    \"use strict\";\n    moqui.qvtRenders = {\n",
+    );
+    let templates = component_templates(scripts)?;
+    for (index, (name, template, hash)) in templates.iter().enumerate() {
+        let code = compile_render(compiler_source, template)
+            .map_err(|err| Error::new(format!("component {name}: {err}")))?;
+        let body = code
+            .lines()
+            .map(|line| if line.is_empty() { String::new() } else { format!("            {line}") })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let name_lit = serde_json::to_string(name).map_err(|err| Error::new(err.to_string()))?;
+        out.push_str(&format!(
+            "        {name_lit}: {{ hash: \"{hash}\", make: function (Vue) {{\n{body}\n        }} }}{}\n",
+            if index + 1 < templates.len() { "," } else { "" }
+        ));
+    }
+    out.push_str("    };\n})(globalThis.moqui);\n");
+    Ok(out)
+}

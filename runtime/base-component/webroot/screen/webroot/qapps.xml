@@ -34,6 +34,8 @@ along with this software (see the LICENSE.md file). If not, see
         footer_scripts.add('/libs/quasar/lang/' + quasarLang + '.umd.prod.js')
         footer_scripts.add('/js/MoquiLib.js')
         footer_scripts.add('/js/MoquiL10n.js')
+        // the render functions of the components, precompiled from their templates; WebrootVue.qvt.js applies them when it starts
+        footer_scripts.add('/js/WebrootVue.qvt.render.js')
         footer_scripts.add('/js/WebrootVue.qvt.js')
 
         // The settings of the client: one JSON block in the shell, WebrootVue.qvt.html.fancy.
