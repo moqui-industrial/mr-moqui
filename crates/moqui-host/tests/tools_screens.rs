@@ -273,8 +273,7 @@ fn the_sql_runners_run_for_an_admin_and_refuse_other_users() {
     const UPDATE: &str = r#"update "Enumeration" set "description" = 'changed' where "enumId" = 'GATE_SQL'"#;
     const SELECT: &str = r#"select "description" from "Enumeration" where "enumId" = 'GATE_SQL'"#;
 
-    // An admin reads a query to its limit, and no further. (The "Only showing" and "Query altered" messages do not
-    // show: a push of an `ec.resource.expand` with a map loses the push, so these check the rows instead.)
+    // An admin reads a query to its limit, and no further.
     let (status, page) = run_sql(
         address,
         &john,
@@ -285,8 +284,12 @@ fn the_sql_runners_run_for_an_admin_and_refuse_other_users() {
     assert_eq!(status, 200, "{page}");
     assert!(!page.contains("Error rendering"), "{page}");
     assert_eq!(page.matches("<tr><td").count(), 3, "{page}");
+    assert!(page.contains("Only showing first 3 rows."), "{page}");
     let (_, page) = run_sql(address, &john, "SqlRunner", SELECT, "500");
-    assert!(page.contains("untouched"), "{page}");
+    assert!(
+        page.contains("untouched") && page.contains("Showing all 1 results."),
+        "{page}"
+    );
     // A failed statement shows its error.
     let (_, page) = run_sql(address, &john, "SqlRunner", "select * from no_such_table", "500");
     assert!(
@@ -316,6 +319,7 @@ fn the_sql_runners_run_for_an_admin_and_refuse_other_users() {
     // The script runner runs the admin's update.
     let (_, page) = run_sql(address, &john, "SqlScriptRunner", UPDATE, "500");
     assert!(!page.contains("Error rendering"), "{page}");
+    assert!(page.contains("Query altered 1 rows."), "{page}");
     let (_, page) = run_sql(address, &john, "SqlRunner", SELECT, "500");
     assert!(page.contains("changed"), "{page}");
 }

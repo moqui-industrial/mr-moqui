@@ -78,15 +78,12 @@ fn run_unit(ctx: &Ctx<'_>, unit: &Unit) -> Result<(), Error> {
         }
     };
     LAST_KIND.with(|kind| kind.set(ErrorKind::General));
-    // Lists the caller read are written back first, and what the unit reads is forgotten after, so the
-    // next unit under a different context frame reads the stack again.
-    flush_current(ctx, true).map_err(|_| Error::new("could not flush script values"))?;
-    let result = function.call::<_, ()>(()).catch(ctx).map_err(|caught| {
-        let kind = LAST_KIND.with(Cell::take);
-        Error::of_kind(kind, caught.to_string())
-    });
-    let flushed = flush_current(ctx, true).map_err(|_| Error::new("could not flush script values"));
-    result.and(flushed)
+    in_unit_scope(ctx, || {
+        function.call::<_, ()>(()).catch(ctx).map_err(|caught| {
+            let kind = LAST_KIND.with(Cell::take);
+            Error::of_kind(kind, caught.to_string())
+        })
+    })
 }
 
 /// Throw an error to the script, remembering a security kind.

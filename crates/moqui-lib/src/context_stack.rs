@@ -148,6 +148,16 @@ impl ContextStack {
         }
     }
 
+    /// Whether `key` resolves to a value equal to `value`, compared in place without the copy [`Self::get`] makes.
+    pub fn holds(&self, key: &str, value: &Value) -> bool {
+        for frame in self.frames[..=self.index].iter().rev().flatten() {
+            if let Some(found) = frame.borrow().get(key) {
+                return found == value;
+            }
+        }
+        false
+    }
+
     pub fn put(&mut self, key: impl Into<String>, value: Value) -> Result<Option<Value>, Error> {
         let key = key.into();
         if self.include_context && key == "context" {
