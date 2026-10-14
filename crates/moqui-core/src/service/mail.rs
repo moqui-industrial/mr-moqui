@@ -20,8 +20,8 @@
 //! `bodyParameters` and the template values (`fromAddress`, `subject`, `webappName`, `webHostName`,
 //! `emailMessageId` and the rest) in the context, and links built from the conf `webapp` named by
 //! `webappName`. A `body` or `bodyText` the caller passed is used instead of that render. Screen
-//! attachments render the same way. A screen attachment in `xsl-fo` is skipped with a logged warning,
-//! as Java does when the PDF transform fails, and the email is sent without it: PDF is phase 12. A render
+//! attachments render the same way. A screen attachment in `xsl-fo` renders `html-print` and attaches its PDF;
+//! when PDF is not available it is skipped with a logged warning, as Java does when the PDF transform fails. A render
 //! that fails stops the send with the message `Error sending email: ...`, as the Groovy outer catch did.
 
 use std::cell::RefCell;
@@ -2289,10 +2289,12 @@ mod tests {
 
     /// Gate 4: a screen body renders in html and text and goes out as multipart/alternative, with
     /// screen attachments (forEachIn, attachmentCondition, csv/text/html), a plain file, and an xsl-fo
-    /// attachment that is skipped because PDF waits for phase 12.
+    /// attachment that is skipped because no PDF engine is installed.
     #[test]
     fn screen_body_renders_html_and_text_and_sends_with_attachments() {
         let _lock = lock_tests();
+        let _pdf = crate::screen::pdf_test_lock();
+        crate::screen::clear_pdf_engine();
         let (facade, context) = entered();
         let _entered = context.enter();
         crate::service::load_definitions().unwrap();

@@ -28,7 +28,7 @@ Emscripten does not turn threads, thread-local transaction state, sockets, or na
 | `moqui-lib` | Builds with the `http` feature off. Blocking reqwest has no wasm backend. |
 | `moqui-db` | Builds unchanged. |
 | `moqui-core` | Builds with `default-features = false`. About 3.5k of 76k lines are gated (below). Entity, service, screen, script, transaction manager, search query building, notify, and user stay. |
-| `moqui-host`, `moqui` | Server only. Tokio, axum, the Postgres and MySQL clients, embedded Postgres, russh, huskarl, and chromiumoxide. |
+| `moqui-host`, `moqui` | Server only. Tokio, axum, the Postgres and MySQL clients, embedded Postgres, russh, huskarl, and the PDF browser's DevTools client. |
 | `moqui-browser` | New. The browser host: the counterpart of `moqui-host`. |
 
 The blockers are dependencies, not threads. `std::thread::spawn` compiles for this target. Without pthreads it returns `Err` at runtime. The browser build must not start the service pools, the scheduler, the deadline timer, or the cluster sender. The dependencies that do not build, or must not be linked, are aws-lc-sys (through rustls, lettre, and rcgen), reqwest, imap, and the raw `TcpStream` in mail.

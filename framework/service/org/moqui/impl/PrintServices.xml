@@ -89,7 +89,7 @@ along with this software (see the LICENSE.md file). If not, see
         </actions>
     </service>
     <service verb="send" noun="PrintJobInternal">
-        <description>The body is Rust (crates/moqui-core/src/service/tools.rs). Sending to a print server is phase 12 (moqui-cups): the job is marked PtjSendFailed and the call reports that network printing is not available.</description>
+        <description>The body is Rust (crates/moqui-core/src/service/tools.rs). There is no print server client (moqui-cups stays outside): the job is marked PtjSendFailed and the call reports that network printing is not installed.</description>
         <in-parameters><parameter name="printJob" type="EntityValue" required="true"/></in-parameters>
         <out-parameters>
             <parameter name="jobId" type="Integer"/>

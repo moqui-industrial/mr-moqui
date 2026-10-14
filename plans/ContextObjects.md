@@ -350,6 +350,17 @@ The calls the tools screens and services make (`script/runtime/tools_host.rs`). 
 - The stack holds data, so a method does not survive a `set`. A tools object is a map with a `__wrap` name; reading it back from the stack gives it its methods
   again (`globalThis.__moquiWrap`). A method of any other object is left out when the object goes on the stack, as the unwrapped projection leaves out a function.
 
+### Added by phase 12
+
+- Binary values cross into a script as `Uint8Array`, and a `Uint8Array` or `ArrayBuffer` goes back as bytes. Before, a binary value could not be read by
+  a script. `context` still leaves binary values out.
+- `ec.resource.xslFoTransform(document, null, null, 'application/pdf')` returns the PDF bytes of an `html-print` (old name `xsl-fo`) document. Java
+  wrote to an `OutputStream` argument, which a script has none of. A stylesheet or another content type is an error.
+- A resource reference from `ec.resource.getLocationReference` has `putBytes(bytes)` beside `putText`.
+- `SftpClient`, a global like `EdiHandler`: `new SftpClient(host, username, port?)` for the Groovy `new org.moqui.sftp.SftpClient(...)`, with the Java
+  methods (`plans/Ssh.md`). Bytes are `Uint8Array`; `openStream` and `putStream` return stream objects with `read`, `readAllBytes`, `readText`, `write`,
+  and `close`.
+
 ## Out of scope
 
 - QuickJS operator overloading for decimals. QuickJS-NG ties it to the built-in `BigDecimal` and `BigFloat` classes (`CONFIG_BIGNUM`). It does not extend to a host class, so the build flag does not give a host decimal `+`. The browser cannot share that flag either.

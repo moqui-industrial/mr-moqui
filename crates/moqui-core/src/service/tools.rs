@@ -16,9 +16,8 @@
 //! `PrintServices.xml`, the data document notifications, and the encrypted field rewrite of `EntityServices.xml`.
 //!
 //! Print jobs are records only; there is no print server client (`moqui-cups` stays outside). A screen document is
-//! rendered as `html-print` and turned into PDF by the host's engine.
-//! Sending to a print server is phase 12 too (`moqui-cups`): the send records the failure on the job, as the
-//! `moqui-cups` send does when the server does not take the job, and reports that network printing is not available.
+//! rendered as `html-print` and turned into PDF by the host's engine. The send records the failure on the job, as the
+//! `moqui-cups` send does when the server does not take the job, and reports that network printing is not installed.
 
 use std::collections::{BTreeMap, BTreeSet};
 

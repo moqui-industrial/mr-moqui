@@ -709,10 +709,34 @@ Fixed after the review against Java. Several of these predate phase 11:
 
 Depends on the `html-print` render from gate 3, and on the `DbDriver` trait from phase 3.
 
-- `PdfRenderer` in the host, as Tool components and print in `plans/Architecture-Proposal.md` describes. One long-lived Chromium, `chromiumoxide` 0.9, the external-binary recipe, and `pdf-servo` left off. The wait does not hold the enlisted connection.
-- Rewrite the SimpleScreens `*.xsl-fo.ftl` documents to `html-print` templates. Callers that store render mode `xsl-fo` to mean PDF render `html-print` and pass it to `PdfRenderer`. The data-prep services stay. The screen `<text type="xsl-fo">` elements that include those templates stay valid through the alias.
-- `moqui-fop` is not ported. `moqui-poi`, `moqui-image`, `moqui-cups`, and `moqui-sftp` are each weighed against binary size the way `moqui.war` size kept them out of the Java framework. A component that stays outside is listed as outside, with that reason. `moqui-cups` consumes the PDF bytes. When `moqui-sftp` is built, the client is `russh-sftp` on `russh`, not a new stack.
-- Further sync drivers, each a dialect plus a `DbDriver`: SQL Server, Oracle, DB2, DB2 for i, Derby, HSQLDB. A missing driver is a configuration error that names the database. None of them block the other gate 4 work.
+- `PdfRenderer` in the host, as Tool components and print in `plans/Architecture-Proposal.md` describes. One long-lived Chromium, the external-binary recipe, and `pdf-servo` left off. The wait does not hold the enlisted connection.
+- Rewrite the SimpleScreens `*.xsl-fo.ftl` documents to `html-print` templates. Callers that store render mode `xsl-fo` to mean PDF render `html-print` and pass it to `PdfRenderer`. The data-prep services stay. The screen `<text type="xsl-fo">` elements that include those templates stay valid through the alias. **Deferred:** SimpleScreens is outside this repository; the rewrite is a pass in that component.
+- `moqui-fop` is not ported. `moqui-poi`, `moqui-image`, and `moqui-cups` stay outside, for binary size, the way `moqui.war` size kept them out of the Java framework. `moqui-cups` would consume the PDF bytes. `moqui-sftp` and `moqui-sso` are in the framework (`plans/Ssh.md`, `plans/Sso.md`).
+- Further sync drivers (SQL Server, Oracle, DB2, DB2 for i, Derby, HSQLDB). **Deferred:** the port stays on Postgres, MySQL, and SQLite (the browser build) for now. A missing driver is a configuration error that names the database.
+
+### Where the code differs from the text above
+
+- **PDF.**
+  - The DevTools client is the host's own (`crates/moqui-host/src/pdf/cdp.rs`, on `tokio-tungstenite`, already in the graph under axum), not `chromiumoxide`. `chromiumoxide` 0.9 parses messages through an untagged enum, which fails on every event with a float once the workspace's `serde_json` has `arbitrary_precision`; its pages never finished loading. Dropping it also drops `async-tungstenite`, `which`, and `windows-registry` from the graph.
+  - `pdf_chromium_path`, `pdf_page_limit` (4) and `pdf_timeout` (60 seconds) are default properties. The binary is `pdf_chromium_path`, else `chromium`, else `chromium-browser` on the `PATH`. With none the server starts and a PDF request reports that PDF is not available.
+  - The browser starts on the first render, not at startup, and starts again after it exits. Each document is a page whose every request is failed (`Fetch.enable` with no patterns), so a document reaches no network and no server; it is set with `Page.setDocumentContent`, waits for load and fonts, and prints with `preferCSSPageSize`.
+  - The async clients (PDF, SSH, SSO) share one small runtime, `crates/moqui-host/src/edge.rs`. A blocking caller spawns onto it and waits on a channel, so it is safe from any thread.
+  - `ec.resource.xslFoTransform(document, null, null, 'application/pdf')` returns the bytes as a `Uint8Array`; a stylesheet or another content type is an error. Binary values now cross into scripts as `Uint8Array` and back, and a resource reference has `putBytes`.
+  - Email attachments with `screenRenderMode` `xsl-fo` attach the PDF; `render#ScheduledScreen` attaches and saves it; `print#ScreenDocument` renders the screen as `html-print`, stores the PDF on the `PrintJob`, and sends it, which fails as cups is not part of this build.
+- **SFTP (`moqui-sftp`).**
+  - `moqui_core::sftp::SftpClient` keeps the Java client's behavior: `host:port` parsing and Java's default port of 115, the directory-or-file target of `put`, `createDir`, `moveFile`, `renameFile`, charsets (`encoding_rs`), streams, and the Java messages. Scripts get a global `SftpClient` with the Groovy class's methods; the Java-object `publicKey` overloads and `getInternalClient` throw. A client left open is closed when collected, with an error in the log.
+  - `send#SystemMessageSftp` and `poll#SystemMessageSftp` keep the Java names, parameters and logic, as Rust bodies (`service/system_sync/sftp.rs`). A path with Groovy `?:` is an error that says to use `??`; mantle's demo data needs that change. `SftpDemoData.xml` is framework demo data.
+  - Host keys: Java accepted any key. A remote's `sshHostKeyFingerprint` pins one; otherwise the key is trusted on first use in `runtime/conf/ssh_known_hosts` and a changed key is refused.
+- **The built-in SSH server.**
+  - Off unless `ssh_port` is set; `ssh_host` defaults to `127.0.0.1`. The host key `ssh_host_key` is the base64 Ed25519 seed the `CHANGEME` generator writes, or an OpenSSH private key.
+  - Login is `loginUser` (failures count toward lockout; a second factor cannot be given here) or an active `moqui.security.UserSshKey`. `SSH_SFTP` (ADMIN) allows the SFTP subsystem over `ssh_sftp_root` (default `runtime://sftp`; any writable resource scheme, `dbresource` included); `SSH_SHELL` (ADMIN_ADV, sealed) allows `exec` and the shell: `help`, `status`, `service`, `entity`, `cache clear`, `js`. Each command runs as the user, so artifact authorization applies.
+  - `ResourceFacade` gained `stat`, `list`, `make_directory`, `delete`, `rename`, and `write_bytes` for `file`, `runtime` and `component` as well as `dbresource`.
+  - `cluster_transport=ssh` is the optional cluster channel: members advertise `ssh://host:port`, register their host key fingerprint on `ClusterMember.sshHostKeyFingerprint`, and log in to each other with a key derived from the shared `cluster_tls_key`. An `https://` peer still gets the HTTPS POST, which stays the default.
+- **SSO (`moqui-sso`).**
+  - The entities, enumerations, `org.moqui.sso.AuthServices`, the `/sso` screen and the Login hooks are in the framework. `OauthFlow` gained `authorizeUrl`, `tokenUrl`, `userInfoUrl` and `scope`; `OidcFlow` gained `appleTeamId` and `appleKeyId`.
+  - The account and group sync follow `MoquiSecurityGrantedAccessAdapter`, including that a current group no mapped role names is ended unless it is the default group. The username is `preferred_username`, else `email` (pac4j gave no username without `preferred_username`, so such logins failed in Java). The login replaces the session id.
+  - OAuth 1.0 and SAML report that they are not available. `ES512` ID tokens are refused.
+- **Fixed along the way.** `auto-parameters` copied an entity field's `default` expression as a literal parameter default, so `update#UserAccount` without `disabled` wrote `'N'` with its quotes; Java takes no default there.
 
 ### Gate 4 — tools and utilities
 
@@ -732,6 +756,8 @@ The gate is a checklist. Each item is its own test. Entity and service behavior 
 - `/health` reports ready and `/metrics` reports the pool gauges.
 
 Scheduled jobs are a phase 6 test. Sim mode is a phase 4 test. They are not repeated on this checklist.
+
+The phase 12 items run in `crates/moqui-host/tests`: the PDF item in `tools_services.rs` (with a browser found, the tools dashboard prints as `html-print`, comes back as PDF, and its `PrintJob` holds the bytes; without one the call reports PDF not available) and `pdf.rs` (the engine alone: concurrent pages, a restart, and a document that reaches no network); SFTP, the SystemMessage cycle over SFTP, the SSH server, the shell, and the SSH cluster channel in `ssh.rs`; SSO against a test OpenID provider in `sso.rs`. The tool-component list is recorded in the phase 12 bullets above.
 
 ## Phase 13 — LLM and A2A
 

@@ -72,8 +72,30 @@ fn page(address: SocketAddr, auth: &str, path: &str) -> String {
     text
 }
 
+/// A browser for the PDF check: `pdf_chromium_path` when set, else `chromium`, `chromium-browser` or `google-chrome` on the
+/// `PATH`. With none the screen document reports that PDF is not available, which also passes gate 4.
+fn browser() -> Option<String> {
+    let configured = moqui_lib::env::get_prop_or_env("pdf_chromium_path");
+    if !configured.is_empty() {
+        return Some(configured);
+    }
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    ["chromium", "chromium-browser", "google-chrome"]
+        .iter()
+        .find_map(|name| {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join(name))
+                .find(|candidate| candidate.is_file())
+                .map(|found| found.display().to_string())
+        })
+}
+
 #[test]
 fn tools_services_run_on_postgres() {
+    let browser = browser();
+    if let Some(binary) = &browser {
+        moqui_lib::env::set_property("pdf_chromium_path", binary);
+    }
     let gate = start_with_data("tools-services", DATA);
     let address = gate.server.address();
     let john = basic("john.doe", "moqui");
@@ -112,10 +134,33 @@ fn tools_services_run_on_postgres() {
             ("screenLocation", "component://tools/screen/System/dashboard.xml"),
         ],
     );
-    assert!(
-        pdf.contains("PDF is not available") || pdf.contains("moqui-cups is not part of this build"),
-        "{pdf}"
-    );
+    if browser.is_none() {
+        assert!(pdf.contains("PDF is not available"), "{pdf}");
+    } else {
+        // Gate 4: the html-print document came back as PDF bytes, and the print job holds them.
+        assert!(pdf.contains("moqui-cups is not part of this build"), "{pdf}");
+        let factory = std::sync::Arc::clone(gate.server.factory());
+        let context = factory.new_context();
+        let _entered = context.enter();
+        let _authz = context.disable_authz();
+        let jobs = factory
+            .entity()
+            .unwrap()
+            .find("moqui.basic.print.PrintJob")
+            .unwrap()
+            .eq("contentType", moqui_lib::object::Value::string("application/pdf"))
+            .list()
+            .unwrap();
+        let document = jobs.values().iter().find_map(|job| match job.get("document") {
+            Some(moqui_lib::object::Value::Bytes(bytes)) => Some(bytes.clone()),
+            _ => None,
+        });
+        assert!(
+            document.is_some_and(|bytes| bytes.starts_with(b"%PDF-")),
+            "no PDF on a print job"
+        );
+        moqui_lib::env::set_property("pdf_chromium_path", "");
+    }
 
     // The clean services compare a time basis with the stamp columns.
     let (status, cleaned) = run(
