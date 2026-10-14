@@ -1214,7 +1214,7 @@
             const skipForm = at(n, "skip-form") === "true";
             const multi = !skipForm && at(n, "multi") === "true";
             if (multi) note("form-list-multi", n, "form-list " + name + " posts every row in one form, and its rows are written as separate forms");
-            if (kids(n, "field").some((f) => at(f, "aggregate"))) note("form-list-aggregate", n, "form-list " + name + " aggregates rows (group-by, sub-list), which the form request does not do yet");
+            if (kids(n, "field").some((f) => at(f, "aggregate") === "sub-list")) note("form-list-aggregate", n, "the sub-list fields of form-list " + name + " are not written (the form request groups the rows)");
             if (!skipHeader) {
                 w('<template v-slot:header="hs">');
                 if (headerFields.length) {

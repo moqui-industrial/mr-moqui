@@ -1231,7 +1231,56 @@ fn form_rows(form: &FormInstance) -> Result<Vec<IndexMap<String, Value>>, Error>
         ran?;
         rows.push(row);
     }
+    if let Some(aggregation) = &form.aggregation {
+        rows = aggregation.apply(rows, |row, name| {
+            row.get(name)
+                .cloned()
+                .or_else(|| script::context_value(name))
+                .unwrap_or(Value::Null)
+        });
+    }
     Ok(rows)
+}
+
+/// `sri.formListSubRowCount(info, index)`: the number of sub-list rows of a row of an aggregated form-list.
+pub fn form_list_sub_row_count(state: &RenderState, handle: usize, index: usize) -> usize {
+    let lists = state.form_lists.borrow();
+    match lists
+        .get(handle)
+        .and_then(Option::as_ref)
+        .and_then(|list| list.rows.get(index))
+        .and_then(|row| row.get("aggregateSubList"))
+    {
+        Some(Value::List(items)) => items.len(),
+        _ => 0,
+    }
+}
+
+/// `sri.startFormListSubRow(info, index, subIndex)`: a frame over the row's frame holding the sub-list entry and `_formMap`,
+/// as Java's `startFormListSubRow`. `sri.endFormListSubRow()` pops it.
+///
+/// # Errors
+///
+/// Returns an error for a row or a sub-row that is not there.
+pub fn start_form_list_sub_row(state: &RenderState, handle: usize, index: usize, sub: usize) -> Result<(), Error> {
+    let entry = {
+        let lists = state.form_lists.borrow();
+        let row = lists
+            .get(handle)
+            .and_then(Option::as_ref)
+            .and_then(|list| list.rows.get(index))
+            .ok_or_else(|| Error::new("form-list row is not available"))?;
+        match row.get("aggregateSubList") {
+            Some(Value::List(items)) => items.get(sub).cloned(),
+            _ => None,
+        }
+        .ok_or_else(|| Error::new("form-list sub-row is not available"))?
+    };
+    let fields = script::value_map(&entry).unwrap_or_default();
+    script::push_context_frame();
+    script::put_context_all(&fields);
+    let _ = script::set_context_name("_formMap", Value::Map(fields));
+    Ok(())
 }
 
 /// `sri.startFormListRow`: a frame holding the row and `_formMap`.

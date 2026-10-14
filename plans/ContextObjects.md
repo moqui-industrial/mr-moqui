@@ -206,8 +206,9 @@ template still works.
 the server-side `dynamic-options` (both run a transition as a test render), `makeFormListSingleMap`,
 `makeFormListMultiMap`, `getFormListHeaderValues`, `getFormFieldValues`, `startFormListSubRow`, `endFormListSubRow`,
 `getFormInstance().makeFormListRenderInfo()`, and the screen definition's `getMenuSubscreensItems`.
-Form-list `group-by`, `sub-list` and `show-total` are deferred with them; saved finds and `select-columns` are done
-(`sri.getUserFormListFinds`, `sri.getUserDefaultFormListFindId`, `sri.renderUserColumnsForm`).
+Form-list `group-by`, `sub-list` and `show-total`, saved finds and `select-columns` are done (`sri.formListSubRowCount`,
+`sri.startFormListSubRow`, `sri.endFormListSubRow`, `sri.getUserFormListFinds`, `sri.getUserDefaultFormListFindId`,
+`sri.renderUserColumnsForm`).
 `auto-fields-service`, `auto-widget-service`, `DbForm` forms and `dynamic="true"` forms are assembled (Phase 8 notes in
 `plans/Implementation-Phases.md`). A related entity's drop-down in `auto-fields-entity` is a text widget.
 

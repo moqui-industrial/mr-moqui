@@ -223,6 +223,10 @@ table.form-list th, table.form-list td { padding: 4px 8px; text-align: left; ver
 table.form-list thead th { vertical-align: top; border-top: 0; border-bottom: 2px solid var(--line); background: var(--panel); }
 table.form-list tbody tr:nth-child(odd) { background: var(--stripe); }
 table.form-list tbody tr:hover { background: var(--hover); }
+table.form-list tr.sub-rows > td, table.form-list tr.sub-header > td { padding: 0 0 4px 24px; }
+table.form-list-sub { width: 100%; }
+table.form-list-sub th, table.form-list-sub td { padding: 2px 8px; text-align: left; vertical-align: top; }
+table.form-list tr[data-total] td { font-weight: bold; border-top: 2px solid var(--line); }
 table.form-list td > div { margin: 0; }
 table.form-list td [data-align], table.form-list th [data-align] { text-align: inherit; }
 table.form-list td[data-align="right"], td > [data-align="right"], th > [data-align="right"] { text-align: right; }

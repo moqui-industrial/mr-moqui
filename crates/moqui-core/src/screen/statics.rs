@@ -857,6 +857,8 @@ fn form_package(state: &RenderState, def: &Arc<ScreenDef>, name: &str) -> Result
     }
     sri::close_form_list(state, handle);
     resolved?;
+    // The show-total row is a footer, not a row, and the package leaves it out as Java's does.
+    rows.retain(|row| row.get("_moquiRowType").and_then(Value::as_str) != Some("total"));
 
     let mut body = serde_json::Map::new();
     body.insert(

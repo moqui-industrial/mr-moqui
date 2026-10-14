@@ -18,6 +18,7 @@
 //! `url` resolves a path against the tree, and `render` runs actions and sends the response.
 //! `dispatch` holds the Rust bodies for the `rest.xml` transitions. Widgets are slice 2.
 
+pub(crate) mod aggregate;
 mod cache;
 mod definition;
 mod dispatch;

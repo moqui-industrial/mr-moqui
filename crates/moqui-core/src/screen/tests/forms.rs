@@ -647,3 +647,60 @@ fn db_forms_modify_and_extend_a_form() {
     assert!(html.contains(">Alpha</option>"), "{html}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A form-list that groups by a field sums the others over the group, draws its sub-list fields in rows under the
+/// group's row, and ends with the show-total row, in html and in qvt (whose template the Vue compiler takes).
+#[test]
+fn an_aggregated_form_list_groups_rows_with_sub_rows_and_totals() {
+    let dir = std::env::temp_dir().join(format!("moqui-forms-aggregate-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.join("Form.xml").to_string_lossy().into_owned();
+    std::fs::write(
+        &root,
+        r#"<screen require-authentication="false">
+    <actions>
+        <script>lines = [{party: 'Acme', amount: 2, item: 'Bolt'}, {party: 'Zed', amount: 5, item: 'Nut'}, {party: 'Acme', amount: 3, item: 'Gear'}]</script>
+    </actions>
+    <widgets>
+        <form-list name="Lines" list="lines">
+            <field name="party" aggregate="group-by"><default-field title="Party"><display/></default-field></field>
+            <field name="amount" aggregate="sum" show-total="true"><default-field title="Amount"><display/></default-field></field>
+            <field name="item" aggregate="sub-list"><default-field title="Item"><display/></default-field></field>
+        </form-list>
+    </widgets>
+</screen>"#,
+    )
+    .unwrap();
+    let world = World::open("");
+    let html = serve_at(&world.factory, request("GET", "/"), &root).body_text();
+    let body = &html[html.find("<tbody>").expect("rows")..];
+    let acme = body.find(">Acme<").expect("the Acme group");
+    assert_eq!(body.matches(">Acme<").count(), 1, "one row for the group: {body}");
+    assert!(body[acme..].find(">5<").is_some(), "Acme's amounts summed: {body}");
+    let sub = body.find("<tr class=\"sub-rows\">").expect("sub rows");
+    assert!(
+        body[sub..].find(">Bolt<").is_some() && body[sub..].find(">Gear<").is_some(),
+        "{body}"
+    );
+    let total = body.find("<tr data-total=\"\">").expect("the total row");
+    assert!(body[total..].contains(">10<"), "{body}");
+    assert!(
+        body.contains("id=\"Lines_item_0_1\""),
+        "a sub row's inputs have ids of their own: {body}"
+    );
+    assert!(
+        html.contains("<tr class=\"sub-header\">") && html.contains(">Item<"),
+        "{html}"
+    );
+
+    let mut get = request("GET", "/");
+    get.query.push(("renderMode".into(), "qvt".into()));
+    let qvt = serve_at(&world.factory, get, &root).body_text();
+    assert!(
+        qvt.contains("tr sub-rows") && qvt.contains("Gear") && qvt.contains("text-weight-bold"),
+        "{qvt}"
+    );
+    super::qvt::assert_compiles(&["aggregate".to_string()], &[qvt]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

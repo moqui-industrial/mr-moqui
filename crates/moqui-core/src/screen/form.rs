@@ -47,6 +47,8 @@ pub struct FormInstance {
     pub row_actions: Option<Actions>,
     /// Fields with a `from` expression, evaluated for each row after the row actions.
     pub field_from: Vec<(String, String)>,
+    /// `form-list` only: the `aggregate` and `show-total` of its fields, when any has one.
+    pub(crate) aggregation: Option<super::aggregate::Aggregation>,
 }
 
 impl FormInstance {
@@ -101,7 +103,13 @@ impl FormInstance {
                 }
             }
         }
+        let aggregation = if list {
+            super::aggregate::Aggregation::of(node).map_err(|err| Error::new(format!("{label}: {err}")))?
+        } else {
+            None
+        };
         Ok(Self {
+            aggregation,
             name,
             list,
             xml: Arc::from(node.write_string()),

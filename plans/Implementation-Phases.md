@@ -306,7 +306,6 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   template is fetched once to read `X-Moqui-Qvt` and then loaded again by a script element (a URL without the query), so it downloads twice.
 - **Deferred after the Phase 8 and 10 review against Java.** Each is a Java feature no screen in this tree needs yet; the Java reference is
   in `ScreenRenderImpl` (SRI), `ScreenDefinition` (SD), `ScreenForm` (SF) and `ScreenUrlInfo` (SUI):
-  - form-list aggregation (`group-by`, `sub-list`, `show-total`) and a select limited to the displayed and hidden fields (SF:2033-2139);
   - tree node JSON (`sendSubNodeJson`, SD:1085-1088), `include-child-content` and template files under a screen (SRI:650-747),
     transition names that are patterns (SD:509-515), and `section-include` copying only what the section holds (SD:366-390).
 - **Ported after the review.** These came off the list above:
@@ -332,6 +331,14 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
     `sri.getUserDefaultFormListFindId`), and the menu data has them and the target's screen documents. Differences: the
     `DbFormLookup` and `FormConfigUserGroupView` views are read as their entities; a saved find's description defaults to the username and
     the server time.
+  - Form-list aggregation (`screen/aggregate.rs`, a port of `AggregationUtil`): `aggregate="group-by"` merges the rows with the same
+    values, a function (`min`, `max`, `sum`, `avg`, `count`, `first`, `last`) aggregates over the group, `aggregate="sub-list"` fields
+    become the group's `aggregateSubList`, and `show-total` (`true` is `sum`) adds a last row marked `_moquiRowType: "total"` (and sub-list
+    totals). It runs in `sri.openFormList`, so every mode gets the grouped rows. html and qvt draw the sub-list fields in rows under the
+    main row (`sri.formListSubRowCount`, `sri.startFormListSubRow`, `sri.endFormListSubRow`) and mark the total row; the other modes show the
+    main fields. The group key is every `group-by` field, where Java takes only the displayed ones. A static template leaves out the
+    sub-list fields and the total row, which the `/actions/{form}` package does not carry. The select limited to the displayed and
+    hidden fields was done in phase 11.
 - **Differences that stay.** `disable-when` on a `subscreens-item` blocks the screen below the first level; Java defines `getDisable`
   but reads it nowhere. The `default-display` attribute of an entity field is not read (no entity in this tree or the Java components
   sets it).
@@ -360,8 +367,7 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   unit that names it), so a unit holds only the structure of its form and calls `$h.dropDown(...)` and the like. The
   attributes the client binds are listed in `webroot/js/README.md`. Differences: option text and labels are always
   encoded; a text-line `ac-transition` is a `select` that Tom Select fills, so `name_ac` is not posted; `lookup` is a text
-  line (the Java macro was commented out); a form-list with `group-by` sub-lists renders every column in the main row;
-  `show-pdf-button` links to the `html-print` page. No unit has a `<script>`.
+  line (the Java macro was commented out); `show-pdf-button` links to the `html-print` page. No unit has a `<script>`.
 - **Page shell.** `Header`, `Footer`, `navbar`, `Messages`, `Login` and `SecondFactor` are `.html.fancy` files, and the
   `webroot.xml`, `apps.xml`, `Login.xml`, `SecondFactor.xml`, error and `AppList` screens use them. `.ftl` locations are
   refused when rendered, so the `.ftl` files left are `WebrootVue.qvt.ftl` (qapps) and `AutoScreenMenu.qvt.ftl`, which
@@ -401,7 +407,7 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   at the top of `ScreenQvt.js`: `text-line` with `ac-transition` is an `m-drop-down` with `server-search` (the Java macro wrote an error),
   a confirmation is a `data-confirm` attribute the shell answers, the `background-message` is text and not evaluated, `editor-type` `html`
   and `md` are `m-text-area` (`QEditor`; a text area with a Marked preview), `lookup` is a text line, the Inputmask `mask` is converted to Quasar's
-  tokens, a form-list with `group-by` sub-lists keeps every column in the main row, and the navigation bar of a form-list sits above the table. The column dialog is `m-form-column-config`. `ScreenPlain.js` serves `qjs` and `qvue`: the text of the screen's own `render-mode`
+  tokens, and the navigation bar of a form-list sits above the table. The column dialog is `m-form-column-config`. `ScreenPlain.js` serves `qjs` and `qvue`: the text of the screen's own `render-mode`
   elements and the subscreen and section calls. The mode a unit is made for reaches a module that serves more than one mode as
   `T.options.mode`.
 - **Page shell and host.** `/qapps/**` is `webroot/screen/webroot/qapps.xml` (`allow-extra-path`) and renders `includes/WebrootVue.qvt.html.fancy`

@@ -27,7 +27,8 @@
 //  - Option text, labels and display values are always encoded.
 //  - The text-line ac-transition is a select that Tom Select fills from the transition, so the typed text
 //    is not posted as name_ac.
-//  - A form-list with sub-list columns (group-by) renders every column in the main row. The saved finds and
+//  - A form-list with sub-list fields (aggregate="sub-list") draws them in a table under each main row, and its
+//    show-total row is the last row, with data-total. The saved finds and
 //    column dialogs post to the implicit formSaveFind and formSelectColumns transitions, with the form's name as
 //    formLocation (the server makes the full location of it).
 //  - lookup is a text line. The Java macros had it commented out.
@@ -1060,7 +1061,10 @@
             const multi = !skipForm && at(n, "multi") === "true";
             cfg.savedFinds = at(n, "saved-finds") === "true" && !sri.buildUrl("formSaveFind").getDisableLink();
             cfg.selectColumns = at(n, "select-columns") === "true" && !sri.buildUrl("formSelectColumns").getDisableLink();
-            const visible = cols.map((col) => col.filter((f) => !f.hide || !f.hide())).filter((col) => col.length > 0);
+            const shown = cols.map((col) => col.filter((f) => !f.hide || !f.hide())).filter((col) => col.length > 0);
+            // The sub-list fields of an aggregated form-list have rows of their own under each main row.
+            const visible = shown.map((col) => col.filter((f) => !f.sub)).filter((col) => col.length > 0);
+            const subCols = shown.map((col) => col.filter((f) => f.sub)).filter((col) => col.length > 0);
             const listUrl = sri.makeUrlByType(at(n, "transition"), "transition", null, "false");
             const hidden = hiddenParams(n);
             const hiddenInputs = () => Object.keys(hidden).map((key) => hiddenInput(key, hidden[key])).join("");
@@ -1116,8 +1120,8 @@
                     w("</form>\n");
                 }
                 if (!skipHeader) {
-                    if (cfg.headerDialog || cfg.savedFinds) findDialog(n, visible, cfg);
-                    if (cfg.selectColumns) columnsDialog(n, visible, cfg.allFields, cfg);
+                    if (cfg.headerDialog || cfg.savedFinds) findDialog(n, shown, cfg);
+                    if (cfg.selectColumns) columnsDialog(n, shown, cfg.allFields, cfg);
                     if (at(n, "show-text-button") === "true") textDialog(n, cfg);
                 }
                 w('<div class="table-wrap"><table' + A({ class: cls("form-list", xn(at(n, "style")) || null), id: formId + "_table" }) + ">");
@@ -1140,7 +1144,13 @@
                     st.owner = cfg.headerFormId;
                     w("<tr>");
                     visible.forEach((col) => th(col, cfg));
-                    w("</tr></thead>\n");
+                    w("</tr>");
+                    if (subCols.length) {
+                        w('<tr class="sub-header"><td colspan="' + Math.max(visible.length, 1) + '"><table class="form-list-sub"><thead><tr>');
+                        subCols.forEach((col) => th(col, cfg));
+                        w("</tr></thead></table></td></tr>");
+                    }
+                    w("</thead>\n");
                     st.owner = "";
                 }
                 w("<tbody>\n");
@@ -1167,13 +1177,31 @@
                 sri.startFormListRow(info, i);
                 st.entry = String(i);
                 if (!(multi || skipForm)) st.owner = formId + "_" + i;
-                w("<tr>");
+                w("<tr" + A({ "data-total": ec.context.get("_moquiRowType") === "total" ? "" : null }) + ">");
                 visible.forEach((col) => {
                     w("<td>");
                     col.forEach((f) => f.cell(multi ? 1 : 0));
                     w("</td>");
                 });
                 w("</tr>\n");
+                const subRows = subCols.length ? sri.formListSubRowCount(info, i) : 0;
+                if (subRows) {
+                    w('<tr class="sub-rows"><td colspan="' + Math.max(visible.length, 1) + '"><table class="form-list-sub"><tbody>');
+                    for (let j = 0; j < subRows; j++) {
+                        sri.startFormListSubRow(info, i, j);
+                        st.entry = i + "_" + j;
+                        w("<tr>");
+                        subCols.forEach((col) => {
+                            w("<td>");
+                            col.forEach((f) => f.cell(multi ? 1 : 0));
+                            w("</td>");
+                        });
+                        w("</tr>");
+                        sri.endFormListSubRow();
+                        st.entry = String(i);
+                    }
+                    w("</tbody></table></td></tr>\n");
+                }
                 sri.endFormListRow();
             }
             st.entry = "";
@@ -1463,6 +1491,7 @@
                 "headerStyle": ${noL10n(headerField ? attr(headerField, "container-style") : "")},
                 "orderBy": ${lit(orderBy)},
                 "submit": ${!!(header && child(header, "submit"))},
+                "sub": ${attr(field, "aggregate") === "sub-list"},
                 ${hide ? `"hide": () => (${raw(hide)}),` : ""}
                 "title": () => ${titleCode(header)},
                 "find": ${find || "null"},

@@ -458,6 +458,29 @@ fn sri_start_form_list_row(ctx: Ctx<'_>, info: JsValue<'_>, index: i32) -> rquic
     .map(|()| String::new())
 }
 
+fn sri_form_list_sub_row_count(ctx: Ctx<'_>, info: JsValue<'_>, index: i32) -> rquickjs::Result<i32> {
+    host_guard(&ctx, || {
+        let id = list_id(&ctx, &info)?;
+        let index = usize::try_from(index).map_err(|_| Exception::throw_message(&ctx, "bad row index"))?;
+        let count = with_render(&ctx, false, |state| {
+            Ok(logic::form_list_sub_row_count(state, id, index))
+        })?;
+        Ok(i32::try_from(count).unwrap_or(i32::MAX))
+    })
+}
+
+fn sri_start_form_list_sub_row(ctx: Ctx<'_>, info: JsValue<'_>, index: i32, sub: i32) -> rquickjs::Result<String> {
+    host_guard(&ctx, || {
+        let id = list_id(&ctx, &info)?;
+        let index = usize::try_from(index).map_err(|_| Exception::throw_message(&ctx, "bad row index"))?;
+        let sub = usize::try_from(sub).map_err(|_| Exception::throw_message(&ctx, "bad sub-row index"))?;
+        with_render(&ctx, true, |state| {
+            logic::start_form_list_sub_row(state, id, index, sub)
+        })
+    })
+    .map(|()| String::new())
+}
+
 fn sri_end_form_list_row(ctx: Ctx<'_>) -> rquickjs::Result<String> {
     sri_pop_context(ctx)
 }
@@ -778,6 +801,9 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("openFormList", sri_open_form_list);
     method!("startFormListRow", sri_start_form_list_row);
     method!("endFormListRow", sri_end_form_list_row);
+    method!("formListSubRowCount", sri_form_list_sub_row_count);
+    method!("startFormListSubRow", sri_start_form_list_sub_row);
+    method!("endFormListSubRow", sri_end_form_list_row);
     method!("safeCloseList", sri_safe_close_list);
     method!("formListColumnCharWidths", sri_form_list_column_char_widths);
     method!("getFormNode", sri_get_form_node);
