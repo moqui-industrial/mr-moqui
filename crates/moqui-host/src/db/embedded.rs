@@ -711,6 +711,78 @@ mod cluster {
             );
         }
 
+        /// The figures in plans/EmbeddedPostgres.md: `cargo test -p moqui-host --lib postmaster_memory -- --nocapture`.
+        /// PSS splits shared_buffers across the processes that map it, so its sum is the cluster's share of RAM.
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn postmaster_memory_stays_small_for_both_roles() {
+            for role in [ClusterRole::Entity, ClusterRole::Sim] {
+                let dir = prepared_dir();
+                let _guard = DirGuard(dir.clone());
+                let options = StartOptions {
+                    role,
+                    ..StartOptions::new(20)
+                };
+                let (cluster, driver) = EmbeddedCluster::start_with(&dir, &options).unwrap();
+                let mut conn = driver.connect_postgres().unwrap();
+                conn.execute(
+                    "CREATE TABLE filler AS SELECT g, md5(g::text) AS t FROM generate_series(1, 20000) g",
+                    &[],
+                )
+                .unwrap();
+                conn.query_once("SELECT count(*) FROM filler", &[]).unwrap();
+                let pid = postmaster_pid(cluster.data_dir());
+                let (processes, rss_kb, pss_kb) = cluster_memory(pid);
+                println!(
+                    "{role:?}: {processes} processes, RSS sum {} MB, PSS sum {} MB",
+                    rss_kb / 1024,
+                    pss_kb / 1024
+                );
+                assert!(pss_kb < 200 * 1024, "{role:?} PSS {pss_kb} kB");
+                drop(conn);
+                drop(cluster);
+            }
+        }
+
+        /// Process count and the RSS and PSS sums, in kB, of a postmaster and its children.
+        #[cfg(target_os = "linux")]
+        fn cluster_memory(postmaster: u32) -> (usize, u64, u64) {
+            let mut pids = vec![postmaster];
+            for entry in std::fs::read_dir("/proc").unwrap().flatten() {
+                let Some(pid) = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok()) else {
+                    continue;
+                };
+                let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+                    continue;
+                };
+                let ppid = stat
+                    .rfind(')')
+                    .and_then(|end| stat[end + 1..].split_whitespace().nth(1))
+                    .and_then(|field| field.parse::<u32>().ok());
+                if ppid == Some(postmaster) {
+                    pids.push(pid);
+                }
+            }
+            let mut rss = 0;
+            let mut pss = 0;
+            for pid in &pids {
+                let rollup = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).unwrap_or_default();
+                for line in rollup.lines() {
+                    let mut parts = line.split_whitespace();
+                    let (Some(name), Some(kb)) = (parts.next(), parts.next().and_then(|kb| kb.parse::<u64>().ok()))
+                    else {
+                        continue;
+                    };
+                    match name {
+                        "Rss:" => rss += kb,
+                        "Pss:" => pss += kb,
+                        _ => {}
+                    }
+                }
+            }
+            (pids.len(), rss, pss)
+        }
+
         #[test]
         fn same_version_restart_keeps_the_row() {
             let dir = prepared_dir();

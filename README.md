@@ -34,8 +34,11 @@ embedded-Postgres 18.6.0 archive. Node.js is optional; the JS client tests run u
 # Development build, binary at target/debug/moqui
 cargo build -p moqui
 
-# Production build, binary at target/release/moqui
+# Production build, binary at target/release/moqui. Strip psql (it links GPL readline)
+# from the Postgres archive the binary embeds first, and check the result.
+scripts/pg-payload.sh strip
 cargo build --release -p moqui
+scripts/pg-payload.sh check
 
 # Tests (whole workspace) and lints
 cargo test
@@ -46,7 +49,10 @@ cargo test -p moqui-host --test gate3 --test gate3_browser
 ```
 
 Run from the repo root (paths default to `MOQUI_RUNTIME=runtime`,
-`MOQUI_FRAMEWORK=<runtime>/../framework`, embedded cluster in `runtime/db/embedded`):
+`MOQUI_FRAMEWORK=<runtime>/../framework`, embedded cluster in `runtime/db/embedded`).
+Setting `entity_ds_db_conf` to `postgres`, `mysql` or `mysql8`, with the other `entity_ds_*`
+properties, uses that server instead. The examples are in `runtime/conf/MoquiDevConf.xml`.
+
 
 ```sh
 cargo run -p moqui

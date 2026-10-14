@@ -22,7 +22,7 @@ Measured theseus Postgres 18.6.0 archive sizes, 2026-10-11. The compressed figur
 | macOS | 12.5–12.8 MB | not unpacked |
 | Windows x86_64 | 51.6 MB | not unpacked; only the Windows build pays this |
 
-Runtime RSS was not measured. `shared_buffers` dominates it, so the settings below start small, and the first driver test records RSS.
+Runtime memory, measured 2026-10-14 (`postmaster_memory_stays_small_for_both_roles`, x86_64 Linux, one client after a 20,000-row table): the entity cluster is 10 processes with an RSS sum of 101 MB and a PSS sum of 28 MB. The sim overlay is 10 processes, 98 MB RSS and 24 MB PSS. RSS counts the shared memory once per process, and PSS splits it, so PSS is the cluster's share of RAM.
 
 Startup settings. The first two bullets are the Unix recipe. Windows is the section below.
 
@@ -66,7 +66,7 @@ A host test that needs more than one database uses two clusters.
 
 ## Dev snapshots and upgrades
 
-`save-db` and `load-save` are binary commands, the Gradle tasks of those names. They run `pg_dump` and `pg_restore` from the theseus archive against the entity cluster, custom format. When the `search` schema lives on that cluster, the dump includes it. `plans/License-Review.md` walked every ELF in the 18.6.0 archive. `psql` is the only binary that needs `libreadline`, and it stays stripped. `pg_dump`, `pg_restore`, `pg_upgrade`, and `pg_basebackup` stay in the payload. Each theseus bump rechecks `NEEDED` the same way.
+`save-db` and `load-save` are binary commands, the Gradle tasks of those names. They run `pg_dump` and `pg_restore` from the theseus archive against the entity cluster, custom format. When the `search` schema lives on that cluster, the dump includes it. `plans/License-Review.md` walked every ELF in the 18.6.0 archive. `psql` is the only binary that needs `libreadline`, and it stays stripped. `scripts/pg-payload.sh strip` repacks the cached theseus archive (`~/.theseus/postgresql/`, which the bundled build reads before it downloads) without `bin/psql` and makes cargo stage it again. `scripts/pg-payload.sh check` fails on `psql`, on a readline library, or on an ELF that `NEED`s readline, in the cached archive and in every archive staged under `target/`, and prints the `NEEDED` set for review. An install unpacked before the strip still has `psql` on disk. It is not in the payload. `pg_dump`, `pg_restore`, `pg_upgrade`, and `pg_basebackup` stay in the payload. Each theseus bump rechecks `NEEDED` the same way.
 
 `PG_VERSION` in the data directory is the installed major version. A minor bump starts the new postmaster on the same directory. A major bump cannot open the old directory. Only one major (18) ships today, so startup refuses a data directory from another major and names both versions; it does not run `pg_upgrade`. The upgrade path (previous server binaries beside the new install, then `pg_upgrade`, or `save-db` and `load-save`) lands with the first theseus bump that changes the major, in the phase that bumps it.
 
