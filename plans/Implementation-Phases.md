@@ -109,7 +109,7 @@ Throwaway programs, run before phases 3 and 6 are treated as settled. They are n
 
 Depends on phase 2. `DbDriver` is a trait in core. Connections are host. Dialect profiles and SQL text are `moqui-db`. The SQL text is written in phase 4. There is no SQLx dependency.
 
-- `TransactionFacade` and the transaction manager, in core, calling `DbDriver`: begin-or-join, commit, rollback, savepoint, `setRollbackOnly`, timeout, `ignore`, `use-or-begin`, `force-new`, `cache`, `force-cache`, and the synchronization list (transaction cache, `runOnCommit` / `runOnRollback`, service ECAs, data feed). `begin` records the deadline and does not check out. The first statement enlists one connection. The feed hook follows `plans/SearchFacade.md` and the fixed phases in the Transactions section: after the cache flush and before commit, the feed inserts the pending row on the enlisted connection. Phase 3 registers that insert. Phase 6 points the after-commit slot at the receive service, which records that search is not up and leaves the pending row. Phase 9 consumes the row with the index write. `suspend` parks that client on the transaction, off the free list. `resume` checks the same client out. `force-new` is that suspend followed by begin, on the same thread and the same `ExecutionContext`. The park budget is 1. The thread holds one ordinary connection per pool. The parked client still counts against the pool max. A reserve inside the pool (default 8) serves side-channel work. Startup fails when `(request cap + service cap) × 2` exceeds `pool_max - reserve`. One deadline per transaction, default 60 seconds. The timer marks rollback-only and cancels the active statement. `destroyAllInThread` runs in a `finally` block on every request, job, and async-service thread. No JTA types and no XA two-phase commit. The rules are the Transactions section of `plans/Architecture-Proposal.md`. The transaction-cache hooks used in phase 4 sit on these same calls.
+- `TransactionFacade` and the transaction manager, in core, calling `DbDriver`: begin-or-join, commit, rollback, savepoint, `setRollbackOnly`, timeout, `ignore`, `use-or-begin`, `force-new`, `cache`, `force-cache`, and the synchronization list (transaction cache, `runOnCommit` / `runOnRollback`, service ECAs, data feed). `begin` records the deadline and does not check out. The first statement enlists one connection. The feed hook follows `plans/SearchFacade.md` and the fixed phases in the Transactions section: after the cache flush and before commit, the feed inserts the pending row on the enlisted connection. Phase 3 registers that insert. Phase 6 points the after-commit slot at the receive service, which records that search is not up and leaves the pending row. Phase 9 consumes the row with the index write. `suspend` parks that client on the transaction, off the free list. `resume` checks the same client out. `force-new` is that suspend followed by begin, on the same thread and the same `ExecutionContext`. The park budget is counted per thread and per pool: `max - reserve - 1` parked levels, so `force-new` nests as in Java. The startup check below still guarantees one parked level for every thread at once, and a deeper level that finds the pool exhausted fails within `pool-time-wait` instead of waiting on a parked connection. The thread holds one active ordinary connection per pool. The parked client still counts against the pool max. A reserve inside the pool (default 8) serves side-channel work. Startup fails when `(request cap + service cap) × 2` exceeds `pool_max - reserve`. One deadline per transaction, default 60 seconds. The timer marks rollback-only and cancels the active statement. `destroyAllInThread` runs in a `finally` block on every request, job, and async-service thread. No JTA types and no XA two-phase commit. The rules are the Transactions section of `plans/Architecture-Proposal.md`. The transaction-cache hooks used in phase 4 sit on these same calls.
 - Per-connection prepared-statement LRU, cap 100, keyed by SQL text, on the Postgres and MySQL drivers. Entity SQL uses it. `query_once` is the one-shot path.
 - Dialect profiles from the `<database>` block, in `moqui-db`. Postgres and MySQL in this phase.
 - Instrumentation from the start: gauges for checked-out, parked (suspended), and waiting connections, pool wait time, and service worker pool depth and queue wait, reported through `tracing` metrics. A pool that starves is the failure mode this port can create, and it must be visible.
@@ -592,6 +592,103 @@ Depends on the HTTP client and the user facade. LLM and A2A were split out of th
 - User remainder: preferences, password reset, TOTP, email second factor, and the admin side of API keys and login keys. The `sendOtp` and `verifyOtp` transitions start working here.
 - The Groovy shell is not replaced with a script console, and there is no web eval endpoint even in development: the hardened shell is still too risky. The crates are `russh` and `russh-sftp` (`plans/Ssh.md`). An SSH server in the host, authenticated through the user facade and artifact authz, is the later shape for admin access and pairs with `moqui-sftp`. The server is not part of the port.
 - Definition type generation (`plans/TypeGeneration.md`): TypeScript declarations from entity, service, and screen definitions, emitted by a CLI subcommand after definitions load.
+
+### Where the code differs from the text above
+
+Phase 11 was built in slices on branch `phase11`, then reviewed against the Java code. Tests are named in each slice's commit.
+
+- **User remainder.**
+  - `user/preference.rs` covers preferences: property, then `UserPreference`, then the user's `UserGroupPreference` rows by `groupPriority`, with `ALL_USERS` as the default group.
+  - `user/factor.rs` covers TOTP (`totp-rs`: SHA1, 6 digits, 30 s, skew 1), single-use codes and the `getLoginKey` port.
+  - `UserServices.xml` is JavaScript.
+  - A login that needs a factor rotates the session and sets the pre-auth attributes. `login`, `sendOtp` and `verifyOtp` on `rest.xml` finish it.
+  - Whether a factor is required is decided in Rust and not by calling `get#UserAuthcFactorRequired`, so a boot without `UserServices` cannot skip it. An override of that service does not change login.
+  - Passwords and reset passwords are argon2.
+  - `setup#UserAuthcFactorTotp` returns the `otpauth://` URI and no QR image, because `totp-rs` is linked without `qr`.
+- **System messages and entity sync.**
+  - `SystemMessageServices.xml` is JavaScript.
+  - `/rest/sm` (`service/system_sync/message.rs`) follows `WebFacadeImpl.handleSystemMessage`. The HMAC is compared in constant time.
+  - `send#SystemMessageJsonRpc` is an error that names `send#SystemMessageRest`.
+  - Entity sync runs over REST (`/rest/s1/moqui/entity/syncs/data/{get|put}`). `targetServerUrl` is the remote server root, so rows that name `/rpc/json` need a new URL.
+  - `get#EntitySyncData` applies each entry's `includeFilterList`. The Java loop never did, so this changes which records sync.
+  - Inline and script services get an isolated context, as Java's `pushContext` does.
+  - A `service-call` name with `${}` is expanded.
+- **ETL, sgml, EDI.**
+  - `moqui_lib::etl` and `moqui_lib::sgml`.
+  - `EntityFacade::make_etl_loader` and `EntityFind::extract` in core.
+  - `JdbcExtractor` in the host, on its own driver connection.
+  - `EdiHandler` in core, with a script global.
+  - The `EtlLoader` try-insert is an upsert or `create_or_update`, as in the data loader, because a failed statement marks the transaction rollback-only.
+  - EDI structure files are JavaScript expressions, so mantle's `X12*.groovy` grammars need that conversion. Script code calls `EdiHandler.makeAk3(segmentError)`.
+  - In Java, a configuration added with `addConfiguration` never runs. Here it runs.
+- **Type generation.**
+  - `moqui types [--out dir]` sits beside `load` and `lint`, because there is no `run` command.
+  - Members the runtime does not have are left out, for example `ScheduledJobRunner`.
+  - Entity fields are typed as properties, as well as with `get` and `set`.
+  - The `tsc` checks skip with a logged message when `tsc` is not on PATH.
+- **Entity value property access.** This was not in the bullets above.
+  - `value.field` reads and writes in scripts and trusted templates, and so do `value['field']` and a relationship name.
+  - Entity lists index, have `length`, and support `for...of`, `map`, `filter` and `forEach`.
+  - A method name wins over a field name.
+  - Reading an unknown name gives `undefined`, where Java throws. Writing one throws, and so does `.set`.
+  - `list[0]` is a copy, so `list[0].x = y` does not change the list. `plans/ContextObjects.md` has the rules.
+- **Artifact hits.**
+  - Hits are counted when an artifact frame pops (`context/hits.rs`), not by a `tracing` subscriber.
+  - The scheduler tick writes `ArtifactHit` and `ArtifactHitBin` on a reserve connection, and shutdown flushes what is left.
+  - A bin whose length has passed is written on the tick, without waiting for the next hit.
+  - The parameter string leaves out credential names, ignoring case.
+- **ElFinder.**
+  - `service/elfinder.rs` implements the commands Java implements, over `dbresource://` and the resolved file roots, with Java's hashes.
+  - `ec.web.sendResourceResponse` is a port of Java's.
+  - The elFinder client, jQuery and jQuery UI load from cdnjs as in Java. They are not vendored, because elFinder is not on npm and jQuery was removed (`plans/License-Review.md`).
+- **Tools.**
+  - The `ServerServices`, `BasicServices`, `EntityServices`, `ServiceServices` and `ScreenServices` bodies are JavaScript, or Rust under `ServiceKind::Tools`.
+  - Cache admin runs on `MCacheManager`.
+  - `EntityDataWriter` writes text, files and stored zips.
+  - `tools_host.rs` is the script host the tools screens call. `plans/ContextObjects.md` has it under "Added by phase 11 (tools)".
+  - The JVM parts of the dashboard, cache and thread screens show process figures from `/proc` instead.
+  - Every tools screen renders in `html` (`tools_screens.rs`). GroovyShell and the log viewer say why they have nothing to show. `ViewDbView` says that DbViewEntity views are not in the entity model.
+- **Print jobs.**
+  - `print#Document` stores the `PrintJob` and marks the send `PtjSendFailed`, with "Network printing is not available until phase 12 (moqui-cups)".
+  - `print#ScreenDocument` reports that PDF is not available until phase 12.
+- **Not ported, with an error that says so.** These are `ServiceKind::NotPorted`:
+  - LLM and A2A (phase 13).
+  - `InstanceServices`.
+  - The wiki services, whose screens are in HiveMind.
+- **Framework gaps closed along the way.**
+  - A form-list `entity-find` selects the displayed and hidden fields, as Java's `getListObject` does.
+  - `entity-find-one` with a full primary key finds by the primary key only.
+  - `select-field` takes a comma list.
+  - Text `List` and `Set` parameters are split.
+  - An uploaded file passed into a service stays a file.
+  - The Groovy idioms `context + {...}` and Elvis are gone from the seed data and the tools screens.
+
+Fixed after the review against Java. Several of these predate phase 11:
+
+- **Transactions.**
+  - The `force-new` park budget is per thread, and nesting works (see phase 3).
+  - Rows held by the transaction cache belong to their frame, so an inner `force-new` commit or rollback no longer writes or drops the outer frame's rows.
+  - Holding is on only for `cache` and `force-cache`. `use-transaction-cache="false"` turns it off.
+  - `in_transaction()` is Java's `isTransactionInPlace`.
+  - The ETL loader begins a transaction on every entity group it writes.
+  - Still different from Java:
+    - `ignore` suspends the outer transaction, where Java runs inside it.
+    - The `no-tx-cache` service attribute is not parsed.
+- **Authorization.**
+  - Service and entity REST push an `AT_REST_PATH` frame for each path segment, as `RestApi` does. The `/rest/s1/moqui` ADMIN rule and the grants it passes down now apply.
+  - Login checks `ipAllowed` on the account and its groups.
+- **Hardening beyond Java.**
+  - A sync load with restricted entities refuses a restricted record at any depth, and refuses service elements.
+  - A second-factor code stands in for the old password only for the pre-authenticated user's own account.
+  - A wrong code counts as a failed login.
+  - The `/rest/sm` replay check is an atomic `put_if_absent`.
+  - The artifact-hit parameter string leaves out credentials, codes, `sql`, secrets and tokens, and the in-memory hits are capped.
+- **ElFinder.** A target that does not decode, or that leaves the volume, is `errFileNotFound`, never the root. `rm`, `rename`, `put` and upload are refused on the root.
+- **SQL runner.** It reads a query through a cursor to one row past the limit. `ec.logger.log` takes Java's numeric levels.
+- **Script runtime.**
+  - A list or map a script holds keeps its JS identity across a host call that leaves the stack value unchanged. Before, `list.push(ec.service.sync()...call())` and an alias kept across a call lost their writes.
+  - When the host call changed the value, the host wins.
+  - An entity-value property write through the prototype chain lands on the receiver.
 
 ## Phase 12 — PDF, later drivers, and the tool components
 
