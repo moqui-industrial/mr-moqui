@@ -499,6 +499,9 @@ pub fn render_condition(condition: &Condition, dialect: &Dialect) -> Result<Stat
 pub(crate) struct Column {
     pub sql: String,
     pub text: Option<bool>,
+    /// The field's Java type when the entity or view knows it. A text value compared to a date, time, or number
+    /// field is converted to it before binding, as Java's condition does with the field type.
+    pub java_type: Option<String>,
 }
 
 impl Column {
@@ -506,11 +509,37 @@ impl Column {
     pub(crate) fn plain(dialect: &Dialect, field: &FieldRef) -> Self {
         let mut sql = String::new();
         write_field(&mut sql, dialect, field);
-        Self { sql, text: None }
+        Self {
+            sql,
+            text: None,
+            java_type: None,
+        }
     }
 
     fn upper_applies(&self) -> bool {
         self.text != Some(false)
+    }
+
+    /// A text value converted to the column's date, time, or number type; anything else as given. Scripts carry
+    /// dates as epoch millis text, so that form is read as a moment.
+    fn typed(&self, value: Value) -> Value {
+        let (Some(java_type), Value::String(text)) = (self.java_type.as_deref(), &value) else {
+            return value;
+        };
+        let simple = java_type.rsplit('.').next().unwrap_or(java_type);
+        let temporal = matches!(simple, "Date" | "Timestamp" | "Time");
+        let number = matches!(simple, "BigDecimal" | "BigInteger" | "Long" | "Integer" | "Double" | "Float");
+        if !temporal && !number {
+            return value;
+        }
+        let source = match text.trim().parse::<i64>() {
+            Ok(millis) if temporal => moqui_lib::object::basic_convert(&Value::I64(millis), "java.sql.Timestamp").value,
+            _ => value.clone(),
+        };
+        match moqui_lib::object::basic_convert(&source, java_type).value {
+            Value::String(_) => value,
+            converted => converted,
+        }
     }
 }
 
@@ -653,6 +682,7 @@ impl<'a> Writer<'a> {
             return Ok(());
         }
         let column = columns(field)?;
+        let values: Vec<Value> = values.into_iter().map(|value| column.typed(value)).collect();
         let upper = ignore_case && column.upper_applies();
         if matches!(condition, Condition::IsNull(_) | Condition::IsNotNull(_)) {
             self.push(&column.sql);
@@ -853,4 +883,28 @@ pub(crate) fn write_field(out: &mut String, dialect: &Dialect, field: &FieldRef)
         out.push('.');
     }
     out.push_str(&quote_ident(dialect, &field.name));
+}
+
+#[cfg(test)]
+mod typed_tests {
+    use super::*;
+
+    fn column(java_type: &str) -> Column {
+        Column {
+            sql: "\"f\"".to_string(),
+            text: Some(false),
+            java_type: Some(java_type.to_string()),
+        }
+    }
+
+    #[test]
+    fn text_is_converted_to_a_date_time_or_number_field() {
+        let date = column("java.sql.Date").typed(Value::string("1791936000000"));
+        assert!(matches!(date, Value::Date(_)), "{date:?}");
+        assert!(matches!(column("java.sql.Date").typed(Value::string("2026-10-14")), Value::Date(_)));
+        assert!(matches!(column("java.sql.Timestamp").typed(Value::string("1791936000000")), Value::Timestamp(_)));
+        assert!(matches!(column("java.math.BigDecimal").typed(Value::string("12.50")), Value::Decimal(_)));
+        assert_eq!(column("java.lang.String").typed(Value::string("1791936000000")), Value::string("1791936000000"));
+        assert_eq!(column("java.sql.Date").typed(Value::string("not a date")), Value::string("not a date"));
+    }
 }

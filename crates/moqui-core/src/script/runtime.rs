@@ -869,6 +869,7 @@ fn install_ec(ctx: &Ctx<'_>) -> Result<(), Error> {
     ec.set("web", web).map_err(js_error)?;
     ec.set("cache", cache_object(ctx)?).map_err(js_error)?;
     ec.set("search", search_object(ctx)?).map_err(js_error)?;
+    ec.set("transaction", transaction_object(ctx)?).map_err(js_error)?;
     ec_extra::install_ec_extras(ctx, &ec)?;
     caught(ctx, "globals", ctx.globals().set("ec", ec))?;
     ec_screen::install_builder(ctx)?;
@@ -884,6 +885,40 @@ fn install_ec(ctx: &Ctx<'_>) -> Result<(), Error> {
 
 fn caught<'js, T>(ctx: &Ctx<'js>, step: &str, result: rquickjs::Result<T>) -> Result<T, Error> {
     result.catch(ctx).map_err(|err| Error::new(format!("{step}: {err}")))
+}
+
+/// `ec.transaction`: the read-only queries of Java's `TransactionFacade`, on the default entity group's manager.
+/// Transactions are begun, committed, and suspended by service and screen attributes, not by scripts.
+fn transaction_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
+    let transaction = Object::new(ctx.clone()).map_err(js_error)?;
+    let in_place = caught(
+        ctx,
+        "transaction.isTransactionInPlace",
+        Function::new(ctx.clone(), |ctx: Ctx<'_>| {
+            host_guard(&ctx, || Ok(default_transactions(&ctx)?.in_transaction()))
+        }),
+    )?;
+    transaction.set("isTransactionInPlace", in_place).map_err(js_error)?;
+    let cache = caught(
+        ctx,
+        "transaction.isTransactionCacheActive",
+        Function::new(ctx.clone(), |ctx: Ctx<'_>| {
+            host_guard(&ctx, || Ok(default_transactions(&ctx)?.transaction_cache_active()))
+        }),
+    )?;
+    transaction.set("isTransactionCacheActive", cache).map_err(js_error)?;
+    Ok(transaction)
+}
+
+fn default_transactions(ctx: &Ctx<'_>) -> rquickjs::Result<crate::transaction::TransactionManager> {
+    let facade = facade_of(ctx)?;
+    let group = facade.inner.default_group.clone();
+    facade
+        .inner
+        .groups
+        .get(&group)
+        .map(|runtime| runtime.transactions.clone())
+        .ok_or_else(|| Exception::throw_message(ctx, &format!("no transaction manager for entity group {group}")))
 }
 
 fn entity_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
@@ -952,6 +987,14 @@ fn logger_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     logger.set("log", log).map_err(js_error)?;
     let warn = Function::new(ctx.clone(), logger_warn).map_err(js_error)?;
     logger.set("warn", warn).map_err(js_error)?;
+    let info = Function::new(ctx.clone(), facades::logger_info).map_err(js_error)?;
+    logger.set("info", info).map_err(js_error)?;
+    let error = Function::new(ctx.clone(), facades::logger_error).map_err(js_error)?;
+    logger.set("error", error).map_err(js_error)?;
+    let debug = Function::new(ctx.clone(), facades::logger_debug).map_err(js_error)?;
+    logger.set("debug", debug).map_err(js_error)?;
+    let trace = Function::new(ctx.clone(), facades::logger_trace).map_err(js_error)?;
+    logger.set("trace", trace).map_err(js_error)?;
     Ok(logger)
 }
 

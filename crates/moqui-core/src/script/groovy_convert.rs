@@ -20,6 +20,9 @@
 //! - a Groovy map literal `[a: 1, (k): v]` becomes `{a: 1, [k]: v}`, and `[:]` becomes `{}`;
 //! - `context + [a: 1]` becomes `Object.assign({}, context, {a: 1})`;
 //! - Elvis `a ?: b` becomes `a || b`, except before a ternary at the same depth, where `||` would bind differently;
+//! - in a `condition` attribute, a name that is the `list` of an `entity-find` or `entity-find-related` in the same file
+//!   becomes `(name?.length > 0)`, and `!name` becomes `!name?.length`: an empty list is false in Groovy and an object
+//!   (always true) in JavaScript. `?.length` holds for an entity list, an array, and null;
 //! - an EDI grammar file (a `.groovy` file that is one list literal) gets a `.js` copy in JavaScript, and an XML
 //!   location that names the `.groovy` file names the `.js` one.
 //!
@@ -37,6 +40,7 @@ pub enum RewriteKind {
     MapLiteral,
     ContextPlus,
     Elvis,
+    EmptyList,
     GrammarFile,
     GrammarLocation,
 }
@@ -47,6 +51,7 @@ impl RewriteKind {
             RewriteKind::MapLiteral => "map-literal",
             RewriteKind::ContextPlus => "context-plus",
             RewriteKind::Elvis => "elvis",
+            RewriteKind::EmptyList => "empty-list",
             RewriteKind::GrammarFile => "grammar-file",
             RewriteKind::GrammarLocation => "grammar-location",
         }
@@ -106,6 +111,7 @@ impl ConvertReport {
             RewriteKind::MapLiteral,
             RewriteKind::ContextPlus,
             RewriteKind::Elvis,
+            RewriteKind::EmptyList,
             RewriteKind::GrammarFile,
             RewriteKind::GrammarLocation,
         ] {
@@ -275,6 +281,7 @@ fn is_expression_attr(element: &str, attr: &str) -> bool {
 /// Convert the expression places of one XML file. The rest of the text is copied as it is.
 pub fn convert_xml(text: &str) -> FileConversion {
     let mut file = FileConversion::default();
+    let lists = entity_find_lists(text);
     let mut out = String::with_capacity(text.len());
     let mut stack: Vec<String> = Vec::new();
     let bytes = text.as_bytes();
@@ -304,7 +311,7 @@ pub fn convert_xml(text: &str) -> FileConversion {
             out.push_str(&text[index..end]);
             index = end;
         } else if bytes[index] == b'<' {
-            index = convert_tag(&mut file, text, index, &mut out, &mut stack);
+            index = convert_tag(&mut file, text, index, &mut out, &mut stack, &lists);
         } else {
             let end = text[index..].find('<').map_or(text.len(), |end| index + end);
             let in_script = stack
@@ -325,6 +332,7 @@ fn convert_tag(
     start: usize,
     out: &mut String,
     stack: &mut Vec<String>,
+    lists: &BTreeSet<String>,
 ) -> usize {
     let bytes = text.as_bytes();
     let mut index = start + 1;
@@ -371,7 +379,19 @@ fn convert_tag(
             .map_or(text.len(), |end| value_start + end);
         out.push_str(&text[rest..value_start]);
         let value = &text[value_start..value_end];
-        if is_expression_attr(&element, &attr) {
+        if attr == "condition" && is_expression_attr(&element, &attr) {
+            let converted = convert_place(file, text, value_start, value, true);
+            let (checked, count) = empty_list(&converted, lists);
+            if count > 0 {
+                file.rewrites.push(Rewrite {
+                    line: line_of(text, value_start),
+                    kinds: vec![RewriteKind::EmptyList],
+                    before: converted,
+                    after: checked.clone(),
+                });
+            }
+            out.push_str(&checked);
+        } else if is_expression_attr(&element, &attr) {
             out.push_str(&convert_place(file, text, value_start, value, true));
         } else {
             out.push_str(&convert_place(file, text, value_start, value, false));
@@ -422,6 +442,76 @@ fn convert_expression_at(file: &mut FileConversion, whole: &str, offset: usize, 
         });
     }
     converted
+}
+
+/// The `list` names of the `entity-find` and `entity-find-related` elements of a file: names that always hold a list.
+fn entity_find_lists(text: &str) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for tag in ["<entity-find ", "<entity-find-related "] {
+        let mut rest = text;
+        while let Some(at) = rest.find(tag) {
+            let after = &rest[at + tag.len()..];
+            let end = after.find('>').unwrap_or(after.len());
+            let attrs = &after[..end];
+            if let Some(start) = attrs.find(" list=\"").map(|at| at + 7).or_else(|| attrs.strip_prefix("list=\"").map(|_| 6)) {
+                if let Some(len) = attrs[start..].find('"') {
+                    let name = &attrs[start..start + len];
+                    if !name.is_empty() && name.bytes().all(is_ident) {
+                        names.insert(name.to_string());
+                    }
+                }
+            }
+            rest = &after[end..];
+        }
+    }
+    names
+}
+
+/// `name` to `(name?.length > 0)` and `!name` to `!name?.length` for each standalone name of `lists` in a condition.
+/// Strings are skipped, and a name used as an object (`name.size()`, `name[0]`, `a.name`) is left alone.
+fn empty_list(text: &str, lists: &BTreeSet<String>) -> (String, usize) {
+    if lists.is_empty() {
+        return (text.to_string(), 0);
+    }
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len() + 16);
+    let mut count = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'\'' || byte == b'"' {
+            let end = text[index + 1..].find(byte as char).map_or(text.len(), |end| index + 1 + end + 1);
+            out.push_str(&text[index..end]);
+            index = end;
+            continue;
+        }
+        if !is_ident(byte) || (index > 0 && is_ident(bytes[index - 1])) {
+            out.push(byte as char);
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < bytes.len() && is_ident(bytes[index]) {
+            index += 1;
+        }
+        let name = &text[start..index];
+        let before = text[..start].trim_end();
+        let next = text[index..].trim_start().as_bytes().first().copied();
+        let used_as_object = matches!(next, Some(b'.' | b'[' | b'(' | b'?' | b'='))
+            || before.ends_with('.')
+            || before.ends_with("?.");
+        if !lists.contains(name) || used_as_object || name.as_bytes()[0].is_ascii_digit() {
+            out.push_str(name);
+            continue;
+        }
+        count += 1;
+        if out.trim_end().ends_with('!') && !out.trim_end().ends_with("!!") {
+            out.push_str(&format!("{name}?.length"));
+        } else {
+            out.push_str(&format!("({name}?.length > 0)"));
+        }
+    }
+    (out, count)
 }
 
 fn line_of(text: &str, offset: usize) -> u32 {
@@ -994,5 +1084,20 @@ mod tests {
         assert!(written.contains("component://c/service/edi/X12Test.js\""), "{written}");
         assert!(written.contains("from=\"y || 1\""), "{written}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_found_list_in_a_condition_is_tested_for_rows() {
+        let xml = r#"<actions>
+            <entity-find entity-name="a.B" list="fooList"><econdition field-name="x"/></entity-find>
+            <if condition="fooList"><log message="x"/></if>
+            <if condition="!fooList &amp;&amp; otherList"><log message="x"/></if>
+            <if condition="fooList.size() &gt; 1 || fooList[0] || 'fooList'"><log message="x"/></if>
+        </actions>"#;
+        let converted = convert_xml(xml);
+        assert!(converted.text.contains(r#"<if condition="(fooList?.length > 0)">"#), "{}", converted.text);
+        assert!(converted.text.contains(r#"<if condition="!fooList?.length &amp;&amp; otherList">"#), "{}", converted.text);
+        assert!(converted.text.contains(r#"<if condition="fooList.size() &gt; 1 || fooList[0] || 'fooList'">"#), "{}", converted.text);
+        assert_eq!(converted.rewrites.iter().filter(|rewrite| rewrite.kinds == vec![RewriteKind::EmptyList]).count(), 2);
     }
 }

@@ -50,6 +50,7 @@ pub(crate) fn entity_column(entity: &EntityDefinition, dialect: &Dialect, field:
         Some(definition) => Column {
             sql: quote_ident(dialect, &definition.column_name),
             text: Some(definition.is_text()),
+            java_type: entity.java_type_of(&field.name).map(str::to_string),
         },
         None => Column::plain(dialect, field),
     }

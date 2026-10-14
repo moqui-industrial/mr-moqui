@@ -623,8 +623,33 @@ fn load_with_factory(
     drop(authz);
     drop(entered);
     drop(context);
+    // The data feed indexes on service workers after each commit; let that work finish before the database closes, so it
+    // is not cut off mid-statement. Rows it does not deliver stay pending for the feed job either way.
+    wait_for_workers(factory, std::time::Duration::from_secs(120));
     drop(facade);
     outcome
+}
+
+/// Wait until the service workers have nothing running or queued, or `limit` passes.
+#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+fn wait_for_workers(factory: &moqui_core::context::ExecutionContextFactory, limit: std::time::Duration) {
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        let status = factory.service_pools().status();
+        if status.active == 0 && status.queued == 0 {
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            tracing::warn!(
+                "Service workers still busy after {}s ({} running, {} queued); closing the database anyway",
+                limit.as_secs(),
+                status.active,
+                status.queued
+            );
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 /// A load's pool is the conf's, opened lazily (`min` 0). Its data feed runs on the service workers, each of which can

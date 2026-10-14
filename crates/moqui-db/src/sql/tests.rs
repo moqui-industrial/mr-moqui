@@ -246,7 +246,8 @@ fn ignore_case_upper_cases_text_fields_and_values_only() {
         "{}",
         sql.sql
     );
-    assert_eq!(sql.params, vec![Value::string("ALPHA"), Value::string("5")]);
+    // The number field's text value binds as a number.
+    assert_eq!(sql.params, vec![Value::string("ALPHA"), Value::I64(5)]);
 
     let fields = render_condition(
         &Condition::ignore_case(Condition::compare_fields(
@@ -1209,7 +1210,7 @@ fn a_sub_select_member_aggregates_inside_and_takes_its_conditions() {
         unquote(&sql.sql),
         "SELECT OI.orderId, OI.itemSeqId, IB.billedAmount FROM (OrderItem OI LEFT OUTER JOIN (SELECT SUM(IB.amount) AS billedAmount, IB.orderId AS orderId, IB.itemSeqId AS itemSeqId FROM ItemBilling IB WHERE IB.billingDate > ? GROUP BY IB.orderId, IB.itemSeqId) IB ON OI.orderId = IB.orderId AND OI.itemSeqId = IB.itemSeqId) WHERE OI.orderId = ?"
     );
-    assert_eq!(sql.params, vec![Value::string("2026-01-01"), Value::string("O1")]);
+    assert_eq!(sql.params, vec![billing_from(), Value::string("O1")]);
     // With LATERAL the keys move inside and the join is ON 1=1.
     let lateral = sample_postgres();
     assert_eq!(lateral.from_lateral_style.as_deref(), Some("lateral"));
@@ -1382,4 +1383,9 @@ fn foreign_key_and_index_names_are_unique() {
             assert!(constraints.insert(constraint.clone()), "{constraint:?}");
         }
     }
+}
+
+/// The `billingDate` condition text as the timestamp it binds: text compared to a timestamp field is converted.
+fn billing_from() -> Value {
+    moqui_lib::object::basic_convert(&Value::string("2026-01-01"), "java.sql.Timestamp").value
 }

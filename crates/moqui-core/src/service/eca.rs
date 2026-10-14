@@ -104,7 +104,18 @@ pub fn run_matched_eca(
         let cell: std::sync::Arc<std::sync::Mutex<crate::entity::EntityValue>> =
             std::sync::Arc::new(std::sync::Mutex::new(current));
 
-        let _frame = publish_names(values).map_err(to_lib).map_err(in_rule)?;
+        // Every field of the entity is a name in the rule's context, null when not set, as the Java value's map is, so an
+        // unset field does not read a variable of the same name from the caller.
+        let mut published = values.clone();
+        let names = facade
+            .with_entity(entity_name, |entity, _, _| {
+                Ok(entity.field_names().into_iter().map(str::to_string).collect::<Vec<_>>())
+            })
+            .map_err(in_rule)?;
+        for name in names {
+            published.entry(name).or_insert(Value::Null);
+        }
+        let _frame = publish_names(&published).map_err(to_lib).map_err(in_rule)?;
         let put = |name: &str, value: Value| crate::script::set_context_name(name, value).map_err(to_lib).map_err(in_rule);
         put("entityValue", Value::Object(HostObject(cell.clone())))?;
         put("originalValue", original)?;
@@ -126,11 +137,12 @@ pub fn run_matched_eca(
             let set = crate::script::top_context_entries();
             let fields = facade
                 .with_entity(entity_name, |entity, _, _| {
+                    let pks = entity.pk_field_names();
                     Ok(entity
-                        .fields
-                        .iter()
-                        .filter(|field| !field.is_pk)
-                        .map(|field| field.name.clone())
+                        .field_names()
+                        .into_iter()
+                        .filter(|name| !pks.contains(name))
+                        .map(str::to_string)
                         .collect::<Vec<_>>())
                 })
                 .map_err(in_rule)?;
