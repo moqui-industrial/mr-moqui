@@ -967,7 +967,11 @@ fn distinct_and_for_update_are_written_and_cannot_be_combined() {
         &locking,
     )
     .unwrap();
-    assert!(!sql.sql.contains("FOR UPDATE") && !sql.sql.ends_with(' '), "{}", sql.sql);
+    assert!(
+        !sql.sql.contains("FOR UPDATE") && !sql.sql.ends_with(' '),
+        "{}",
+        sql.sql
+    );
     let both = SelectOptions {
         distinct: true,
         for_update: true,

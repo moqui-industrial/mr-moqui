@@ -666,7 +666,13 @@ pub fn take_saved_for_page() -> SavedForPage {
             validation_errors,
             error_parameters: std::mem::take(&mut session.errors),
         };
-        for key in [MESSAGE_PUBLIC, MESSAGE_ERROR, MESSAGE_TYPES, MESSAGE_VALIDATION, ERROR_PARAMETERS] {
+        for key in [
+            MESSAGE_PUBLIC,
+            MESSAGE_ERROR,
+            MESSAGE_TYPES,
+            MESSAGE_VALIDATION,
+            ERROR_PARAMETERS,
+        ] {
             if session.attributes.remove(key).is_some() && session.bound_id.is_some() {
                 session.dirty_json.insert(key.to_string());
             }

@@ -567,7 +567,9 @@ pub fn render_text(state: &RenderState, location: &str, template: &str) -> Resul
     }
     let registry = script::template::TemplateRegistry::of(&state.factory);
     if template == "false" {
-        return registry.location_text(&state.factory, location).map(|text| text.to_string());
+        return registry
+            .location_text(&state.factory, location)
+            .map(|text| text.to_string());
     }
     if location.ends_with(".ftl") {
         return Err(Error::new(format!(
@@ -1460,17 +1462,20 @@ fn find_theme_id(state: &RenderState) -> String {
             .map(|groups| groups.iter().cloned().collect())
             .unwrap_or_default();
         groups.sort_unstable_by(|left, right| right.cmp(left));
-        let rows = facade.find("moqui.security.UserGroupScreenTheme").ok().and_then(|find| {
-            find.condition(moqui_db::sql::Condition::is_in(
-                "userGroupId",
-                groups.into_iter().map(Value::String).collect(),
-            ))
-            .eq("screenThemeTypeEnumId", Value::string(&theme_type))
-            .order_by("sequenceNum", false)
-            .order_by("userGroupId", true)
-            .list()
+        let rows = facade
+            .find("moqui.security.UserGroupScreenTheme")
             .ok()
-        });
+            .and_then(|find| {
+                find.condition(moqui_db::sql::Condition::is_in(
+                    "userGroupId",
+                    groups.into_iter().map(Value::String).collect(),
+                ))
+                .eq("screenThemeTypeEnumId", Value::string(&theme_type))
+                .order_by("sequenceNum", false)
+                .order_by("userGroupId", true)
+                .list()
+                .ok()
+            });
         theme = text_of(rows.and_then(|rows| rows.values().first().cloned()), "screenThemeId");
     }
     if theme.is_none() {
@@ -1485,7 +1490,10 @@ fn find_theme_id(state: &RenderState) -> String {
     if theme.is_none() {
         let rows = facade.find("moqui.screen.ScreenTheme").ok().and_then(|find| {
             find.eq("screenThemeTypeEnumId", Value::string(&theme_type))
-                .condition(moqui_db::sql::Condition::like("screenThemeId", Value::string("%DEFAULT%")))
+                .condition(moqui_db::sql::Condition::like(
+                    "screenThemeId",
+                    Value::string("%DEFAULT%"),
+                ))
                 .list()
                 .ok()
         });

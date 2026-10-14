@@ -182,7 +182,10 @@ fn a_locked_down_template_cannot_change_what_the_next_one_runs() {
 fn locked_down_format_reads_a_decimal_text_by_a_number_pattern_and_a_date_by_a_date_pattern() {
     use std::str::FromStr;
     let mut entries = indexmap::IndexMap::new();
-    entries.insert("qty".to_string(), Value::Decimal(moqui_lib::format::Decimal::from_str("100").unwrap()));
+    entries.insert(
+        "qty".to_string(),
+        Value::Decimal(moqui_lib::format::Decimal::from_str("100").unwrap()),
+    );
     entries.insert(
         "day".to_string(),
         Value::Date(moqui_lib::object::parse_date("2024-03-05").unwrap()),

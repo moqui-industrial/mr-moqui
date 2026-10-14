@@ -292,7 +292,9 @@ impl ScreenFacade {
                     .or_default(),
             )
         });
-        let _held = lock.as_ref().map(|lock| lock.lock().unwrap_or_else(|err| err.into_inner()));
+        let _held = lock
+            .as_ref()
+            .map(|lock| lock.lock().unwrap_or_else(|err| err.into_inner()));
         // Another request may have loaded it while this one waited.
         let stale = match self.definitions.get(&key)? {
             Some(cached) if lock.is_some() && self.is_current(factory, &cached) => return Ok(cached),

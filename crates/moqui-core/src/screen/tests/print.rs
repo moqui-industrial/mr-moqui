@@ -338,7 +338,12 @@ fn a_text_location_uses_the_renderer_of_its_extension_and_ftl_is_refused() {
     // No renderer for the extension: the file's text, as Java writes it, so a .js file's `${` is not run.
     assert_eq!(text("B.xml", "Other.txt").unwrap().body_text(), "plain ${1 + 1}");
     // A `template` that names an extension picks that renderer, Java's default extension.
-    assert_eq!(text_as("B2.xml", "Other.txt", r#" template="fancy""#).unwrap().body_text(), "plain 2");
+    assert_eq!(
+        text_as("B2.xml", "Other.txt", r#" template="fancy""#)
+            .unwrap()
+            .body_text(),
+        "plain 2"
+    );
     let err = text("C.xml", "Old.ftl").unwrap_err();
     assert!(
         err.message().contains("FreeMarker template") && err.message().contains("fancy"),

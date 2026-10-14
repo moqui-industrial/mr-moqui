@@ -379,7 +379,11 @@ impl Walk<'_> {
         };
         let mut chosen = None;
         for row in rows.values() {
-            let text = |name: &str| row.get(name).map(moqui_lib::object::to_plain_string).unwrap_or_default();
+            let text = |name: &str| {
+                row.get(name)
+                    .map(moqui_lib::object::to_plain_string)
+                    .unwrap_or_default()
+            };
             let condition = text("conditionExpression");
             if !condition.is_empty() {
                 self.info.reusable = false;

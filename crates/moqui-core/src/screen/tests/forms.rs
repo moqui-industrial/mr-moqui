@@ -127,7 +127,13 @@ fn a_validation_error_shows_by_its_field_and_a_message_keeps_its_type_after_the_
     let token = token_of(&page.body_text());
     let posted = serve_at(
         &world.factory,
-        with_cookies(form_post("/check", &format!("title=x&moquiFormName=Edit&moquiSessionToken={token}")), &jar),
+        with_cookies(
+            form_post(
+                "/check",
+                &format!("title=x&moquiFormName=Edit&moquiSessionToken={token}"),
+            ),
+            &jar,
+        ),
         &site.root,
     );
     assert_eq!(posted.status, 302, "{}", posted.body_text());
@@ -136,7 +142,10 @@ fn a_validation_error_shows_by_its_field_and_a_message_keeps_its_type_after_the_
     assert!(html.contains("data-type=\"warning\""), "{html}");
     assert!(html.contains("Check this"), "{html}");
     // The field's own error is under the field, not a line at the top of the page.
-    assert!(html.contains("<div class=\"field-error\" role=\"alert\">Title needs a letter</div>"), "{html}");
+    assert!(
+        html.contains("<div class=\"field-error\" role=\"alert\">Title needs a letter</div>"),
+        "{html}"
+    );
     assert!(!html.contains("data-type=\"danger\""), "{html}");
 }
 

@@ -374,9 +374,10 @@ pub fn round_currency(amount: &Value, uom_id: &str, precise: bool) -> Result<Val
         .ok_or_else(|| Error::new(format!("cannot round {} as currency", to_plain_string(amount))))?;
     let digits = currency_info(Some(uom_id)).fraction_digits.unwrap_or(2) + usize::from(precise);
     let digits = u32::try_from(digits).unwrap_or(2);
-    Ok(Value::Decimal(
-        number.round_dp_with_strategy(digits, format::RoundingStrategy::MidpointAwayFromZero),
-    ))
+    Ok(Value::Decimal(number.round_dp_with_strategy(
+        digits,
+        format::RoundingStrategy::MidpointAwayFromZero,
+    )))
 }
 
 #[cfg(test)]
@@ -459,13 +460,21 @@ mod tests {
         let _entered = context.enter();
         crate::user::session::set_time_zone(Some("America/New_York"));
         // The pattern's offset wins; without one the session zone.
-        let with_offset = super::parse_timestamp_format("2024-03-05T10:20:30.000-0800", Some("yyyy-MM-dd'T'HH:mm:ss.SSSZ"));
-        let Some(Value::Timestamp(stamp)) = with_offset else { panic!("{with_offset:?}") };
+        let with_offset =
+            super::parse_timestamp_format("2024-03-05T10:20:30.000-0800", Some("yyyy-MM-dd'T'HH:mm:ss.SSSZ"));
+        let Some(Value::Timestamp(stamp)) = with_offset else {
+            panic!("{with_offset:?}")
+        };
         assert_eq!(stamp.to_string(), "2024-03-05T18:20:30Z");
         let local = super::parse_timestamp_format("20240305 0930", Some("yyyyMMdd HHmm"));
-        let Some(Value::Timestamp(stamp)) = local else { panic!("{local:?}") };
+        let Some(Value::Timestamp(stamp)) = local else {
+            panic!("{local:?}")
+        };
         assert_eq!(stamp.to_string(), "2024-03-05T14:30:00Z");
-        assert!(matches!(super::parse_date_format("03/05/2024", None), Some(Value::Date(_))));
+        assert!(matches!(
+            super::parse_date_format("03/05/2024", None),
+            Some(Value::Date(_))
+        ));
 
         crate::user::session::set_locale(Some("de_DE"));
         assert_eq!(
@@ -474,10 +483,19 @@ mod tests {
         );
         crate::user::session::set_locale(None);
         let amount = Value::Decimal(moqui_lib::format::Decimal::from_str("1.23456").unwrap());
-        assert_eq!(moqui_lib::object::to_plain_string(&super::round_currency(&amount, "BHD", false).unwrap()), "1.235");
-        assert_eq!(moqui_lib::object::to_plain_string(&super::round_currency(&amount, "USD", false).unwrap()), "1.23");
+        assert_eq!(
+            moqui_lib::object::to_plain_string(&super::round_currency(&amount, "BHD", false).unwrap()),
+            "1.235"
+        );
+        assert_eq!(
+            moqui_lib::object::to_plain_string(&super::round_currency(&amount, "USD", false).unwrap()),
+            "1.23"
+        );
         let half = Value::Decimal(moqui_lib::format::Decimal::from_str("2.125").unwrap());
-        assert_eq!(moqui_lib::object::to_plain_string(&super::round_currency(&half, "USD", false).unwrap()), "2.13");
+        assert_eq!(
+            moqui_lib::object::to_plain_string(&super::round_currency(&half, "USD", false).unwrap()),
+            "2.13"
+        );
         crate::user::session::set_time_zone(None);
     }
 

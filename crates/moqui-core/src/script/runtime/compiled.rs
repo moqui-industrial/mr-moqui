@@ -97,9 +97,10 @@ fn run_compiled<'js>(ctx: &Ctx<'js>, compiled: &JsValue<'js>) -> Result<JsValue<
 fn owned_or_exception<'js>(ctx: &Ctx<'js>, raw: qjs::JSValue) -> Result<JsValue<'js>, Error> {
     // SAFETY: `raw` is an owned value just returned by the C API for this context.
     if unsafe { qjs::JS_IsException(raw) } {
-        return Err(Err::<(), _>(rquickjs::Error::Exception)
-            .catch(ctx)
-            .map_or_else(|caught| Error::new(caught.to_string()), |()| Error::new("script failed")));
+        return Err(Err::<(), _>(rquickjs::Error::Exception).catch(ctx).map_or_else(
+            |caught| Error::new(caught.to_string()),
+            |()| Error::new("script failed"),
+        ));
     }
     // SAFETY: as above; the new value owns the reference.
     Ok(unsafe { JsValue::from_raw(ctx.clone(), raw) })

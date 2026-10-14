@@ -1252,13 +1252,11 @@ fn load_subscreens(
     // shared by every user.
     if let Some(entity) = factory.entity() {
         let _authz = crate::context::ExecutionContext::with_current(crate::context::ExecutionContext::disable_authz);
-        let rows = entity
-            .find("moqui.screen.SubscreensItem")
-            .and_then(|find| {
-                find.eq("screenLocation", moqui_lib::object::Value::string(location))
-                    .use_cache(true)
-                    .list()
-            });
+        let rows = entity.find("moqui.screen.SubscreensItem").and_then(|find| {
+            find.eq("screenLocation", moqui_lib::object::Value::string(location))
+                .use_cache(true)
+                .list()
+        });
         match rows {
             Ok(rows) => {
                 for row in rows.values() {

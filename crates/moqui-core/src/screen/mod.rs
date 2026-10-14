@@ -149,7 +149,10 @@ fn handle(
     let parameters = if saved.is_empty() {
         parameters
     } else {
-        let mut all: BTreeMap<String, Value> = saved.into_iter().map(|(name, value)| (name, Value::String(value))).collect();
+        let mut all: BTreeMap<String, Value> = saved
+            .into_iter()
+            .map(|(name, value)| (name, Value::String(value)))
+            .collect();
         all.extend(parameters.iter().map(|(name, value)| (name.clone(), value.clone())));
         merged = all;
         &merged

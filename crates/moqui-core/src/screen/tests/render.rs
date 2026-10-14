@@ -310,7 +310,11 @@ fn a_signed_in_user_without_an_allow_record_is_403_on_a_screen() {
 fn a_page_asked_for_before_login_is_where_screen_last_goes_back_to() {
     let world = World::open("");
     let root = fixture_root();
-    let response = serve_at(&world.factory, with_query(request("GET", "/Secure"), "tab", "two"), &root);
+    let response = serve_at(
+        &world.factory,
+        with_query(request("GET", "/Secure"), "tab", "two"),
+        &root,
+    );
     assert_eq!(response.status, 302, "{}", response.body_text());
     let cookie = super::header_value(&response, "Set-Cookie").expect("session cookie");
     let session = cookie.split(';').next().unwrap().split_once('=').unwrap().1.to_string();
@@ -397,29 +401,51 @@ fn files_are_checked_once_per_interval_and_a_new_subscreen_file_is_seen() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("Top")).unwrap();
     let top = dir.join("Top.xml");
-    std::fs::write(&top, r#"<screen require-authentication="false" default-menu-title="One"><widgets/></screen>"#).unwrap();
-    std::fs::write(dir.join("Top/A.xml"), r#"<screen require-authentication="false"><widgets/></screen>"#).unwrap();
+    std::fs::write(
+        &top,
+        r#"<screen require-authentication="false" default-menu-title="One"><widgets/></screen>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Top/A.xml"),
+        r#"<screen require-authentication="false"><widgets/></screen>"#,
+    )
+    .unwrap();
     let location = top.to_string_lossy().into_owned();
     let bump = |path: &std::path::Path, seconds: u64| {
         let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
-        file.set_modified(SystemTime::now() + Duration::from_secs(seconds)).unwrap();
+        file.set_modified(SystemTime::now() + Duration::from_secs(seconds))
+            .unwrap();
     };
 
     let first = facade.screen_def(factory, &location).unwrap();
     assert!(first.subscreens.get("A").is_some() && first.subscreens.get("B").is_none());
     // Inside the interval the edit is not looked for, as a Java screen.location hit.
-    std::fs::write(&top, r#"<screen require-authentication="false" default-menu-title="Two"><widgets/></screen>"#).unwrap();
+    std::fs::write(
+        &top,
+        r#"<screen require-authentication="false" default-menu-title="Two"><widgets/></screen>"#,
+    )
+    .unwrap();
     bump(&top, 30);
-    assert!(std::sync::Arc::ptr_eq(&first, &facade.screen_def(factory, &location).unwrap()));
+    assert!(std::sync::Arc::ptr_eq(
+        &first,
+        &facade.screen_def(factory, &location).unwrap()
+    ));
     let path = ScreenUrlInfo::resolve(factory, &location, &["A".to_string()], 0).unwrap();
     let again = ScreenUrlInfo::resolve(factory, &location, &["A".to_string()], 0).unwrap();
     assert!(std::sync::Arc::ptr_eq(&path.target_screen, &again.target_screen));
 
     // Past the interval the edit and a file added to the subscreen directory are both seen, and the resolved path follows.
     facade.set_check_interval(Some(Duration::ZERO));
-    std::fs::write(dir.join("Top/B.xml"), r#"<screen require-authentication="false"><widgets/></screen>"#).unwrap();
+    std::fs::write(
+        dir.join("Top/B.xml"),
+        r#"<screen require-authentication="false"><widgets/></screen>"#,
+    )
+    .unwrap();
     let directory = std::fs::File::open(dir.join("Top")).unwrap();
-    directory.set_modified(SystemTime::now() + Duration::from_secs(40)).unwrap();
+    directory
+        .set_modified(SystemTime::now() + Duration::from_secs(40))
+        .unwrap();
     let changed = facade.screen_def(factory, &location).unwrap();
     assert!(!std::sync::Arc::ptr_eq(&first, &changed));
     assert_eq!(changed.default_menu_title, "Two");
@@ -655,7 +681,11 @@ fn a_transition_runs_its_path_in_one_transaction_and_keeps_the_last_response_tha
     )
     .unwrap();
     for name in ["First", "Second", "Default"] {
-        std::fs::write(dir.join(format!("Tx/{name}.xml")), r#"<screen require-authentication="false"><widgets/></screen>"#).unwrap();
+        std::fs::write(
+            dir.join(format!("Tx/{name}.xml")),
+            r#"<screen require-authentication="false"><widgets/></screen>"#,
+        )
+        .unwrap();
     }
     let root = dir.join("Tx.xml").to_string_lossy().into_owned();
     let post = |path: &str, mark: &str| {
@@ -738,8 +768,16 @@ fn subscreens_item_rows_mount_screens_and_a_user_group_limits_them() {
         r#"<screen require-authentication="false"><subscreens default-item="Own"/><widgets><subscreens-active/></widgets></screen>"#,
     )
     .unwrap();
-    std::fs::write(dir.join("Base/Own.xml"), r#"<screen require-authentication="false"><widgets><label text="own"/></widgets></screen>"#).unwrap();
-    std::fs::write(dir.join("App.xml"), r#"<screen require-authentication="false"><widgets><label text="mounted app"/></widgets></screen>"#).unwrap();
+    std::fs::write(
+        dir.join("Base/Own.xml"),
+        r#"<screen require-authentication="false"><widgets><label text="own"/></widgets></screen>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("App.xml"),
+        r#"<screen require-authentication="false"><widgets><label text="mounted app"/></widgets></screen>"#,
+    )
+    .unwrap();
     let root = dir.join("Base.xml").to_string_lossy().into_owned();
     let render_path = |path: &str| {
         make_render(&world.factory)
@@ -755,7 +793,10 @@ fn subscreens_item_rows_mount_screens_and_a_user_group_limits_them() {
         row.set("screenLocation", Value::string(&root));
         row.set("subscreenName", Value::string(name));
         row.set("userGroupId", Value::string(group));
-        row.set("subscreenLocation", Value::string(dir.join("App.xml").to_string_lossy()));
+        row.set(
+            "subscreenLocation",
+            Value::string(dir.join("App.xml").to_string_lossy()),
+        );
         row.set("menuInclude", Value::string("Y"));
         row.set("makeDefault", Value::string(default));
         row.create(&world.facade).unwrap();
@@ -815,7 +856,11 @@ fn a_transition_that_writes_refuses_parameters_in_the_url() {
     posted.query.push(("x".to_string(), "1".to_string()));
     let response = serve_at(&world.factory, posted, &fixture_root());
     assert_eq!(response.status, 400, "{}", response.body_text());
-    assert!(response.body_text().contains("URL parameters"), "{}", response.body_text());
+    assert!(
+        response.body_text().contains("URL parameters"),
+        "{}",
+        response.body_text()
+    );
     // A read-only transition takes them.
     let mut read = request("GET", "/goUrl");
     read.query.push(("x".to_string(), "1".to_string()));

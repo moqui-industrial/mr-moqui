@@ -26,8 +26,8 @@ mod preference;
 pub(crate) mod session;
 mod visit;
 
-pub use authz::{authorize, context_entered};
 pub(crate) use authz::current_user_groups;
+pub use authz::{authorize, context_entered};
 pub(crate) use authz::{denied, is_permitted, note_entity_write, AuthInfo, Permit};
 pub use factor::{
     random_code, random_string, second_factor_required, single_use_hash, totp_code_valid, totp_secret, totp_uri,

@@ -238,7 +238,11 @@ fn idle_timeout() -> std::time::Duration {
         .map_or(DEFAULT_IDLE, std::time::Duration::from_secs)
 }
 
-async fn handle_incoming(socket: &mut WebSocket, slot: &Arc<Slot>, incoming: Option<Result<Message, axum::Error>>) -> bool {
+async fn handle_incoming(
+    socket: &mut WebSocket,
+    slot: &Arc<Slot>,
+    incoming: Option<Result<Message, axum::Error>>,
+) -> bool {
     match incoming {
         Some(Ok(Message::Text(text))) => {
             // A topic change is a set update on this socket; it needs no execution context or worker.

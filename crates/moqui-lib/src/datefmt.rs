@@ -378,7 +378,11 @@ pub fn parse(input: &str, pattern: &str) -> Option<ParsedDate> {
                         match letter {
                             'y' | 'u' => {
                                 let year = if *count == 2 && at - start == 2 {
-                                    if value < 70 { 2000 + value } else { 1900 + value }
+                                    if value < 70 {
+                                        2000 + value
+                                    } else {
+                                        1900 + value
+                                    }
                                 } else {
                                     value
                                 };
@@ -475,13 +479,37 @@ mod tests {
     fn the_patterns_the_components_parse_with_read_their_fields() {
         let full = parse("2024-03-05T10:20:30.123-0800", "yyyy-MM-dd'T'HH:mm:ss.SSSZ").unwrap();
         assert_eq!(
-            (full.year, full.month, full.day, full.hour, full.minute, full.second, full.millisecond, full.offset_seconds),
-            (Some(2024), Some(3), Some(5), Some(10), Some(20), Some(30), Some(123), Some(-8 * 3600))
+            (
+                full.year,
+                full.month,
+                full.day,
+                full.hour,
+                full.minute,
+                full.second,
+                full.millisecond,
+                full.offset_seconds
+            ),
+            (
+                Some(2024),
+                Some(3),
+                Some(5),
+                Some(10),
+                Some(20),
+                Some(30),
+                Some(123),
+                Some(-8 * 3600)
+            )
         );
         let abutting = parse("20240305 1020", "yyyyMMdd HHmm").unwrap();
-        assert_eq!((abutting.year, abutting.month, abutting.day, abutting.hour), (Some(2024), Some(3), Some(5), Some(10)));
+        assert_eq!(
+            (abutting.year, abutting.month, abutting.day, abutting.hour),
+            (Some(2024), Some(3), Some(5), Some(10))
+        );
         let us = parse("3/5/2024 1:2:03 PM", "M/d/yyyy h:m:ss a").unwrap();
-        assert_eq!((us.month, us.day, us.hour, us.minute), (Some(3), Some(5), Some(13), Some(2)));
+        assert_eq!(
+            (us.month, us.day, us.hour, us.minute),
+            (Some(3), Some(5), Some(13), Some(2))
+        );
         let named = parse("05 Mar 24", "dd MMM yy").unwrap();
         assert_eq!((named.year, named.month), (Some(2024), Some(3)));
         // The whole text must match, and a short abutting field does not.

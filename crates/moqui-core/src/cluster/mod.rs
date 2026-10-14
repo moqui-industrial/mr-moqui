@@ -567,7 +567,12 @@ fn current_peers(factory: &ExecutionContextFactory) -> Vec<String> {
         }
     }
     refresh_peers(factory);
-    outbox().peers.lock().unwrap_or_else(|err| err.into_inner()).urls.clone()
+    outbox()
+        .peers
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .urls
+        .clone()
 }
 
 fn refresh_peers(factory: &ExecutionContextFactory) {
@@ -753,11 +758,15 @@ fn write_member(facade: &EntityFacade, member: &Member) -> Result<(), Error> {
 
 /// The database server's time in epoch milliseconds, else this host's.
 fn db_now(facade: &EntityFacade) -> i64 {
-    let read = facade.transactions_for(MEMBER).map_err(Error::from).and_then(|tx| {
-        with_reserve_tx(&tx, |conn| conn.query("SELECT CURRENT_TIMESTAMP", &[])).map_err(Error::from)
-    });
+    let read = facade
+        .transactions_for(MEMBER)
+        .map_err(Error::from)
+        .and_then(|tx| with_reserve_tx(&tx, |conn| conn.query("SELECT CURRENT_TIMESTAMP", &[])).map_err(Error::from));
     read.ok()
-        .and_then(|rows| rows.first().and_then(|row| row.columns.first().map(|(_, value)| value.clone())))
+        .and_then(|rows| {
+            rows.first()
+                .and_then(|row| row.columns.first().map(|(_, value)| value.clone()))
+        })
         .and_then(|value| value_millis(&value))
         .unwrap_or_else(now_millis)
 }
@@ -771,7 +780,9 @@ fn delete_dead_members(facade: &EntityFacade, before: i64) -> Result<(), Error> 
     let _authz = entered_authz();
     let condition = Condition::less("heartbeat", millis_value(before));
     let statement = facade
-        .with_entity(MEMBER, |entity, dialect, _| sql_delete(entity, dialect, Some(&condition)))
+        .with_entity(MEMBER, |entity, dialect, _| {
+            sql_delete(entity, dialect, Some(&condition))
+        })
         .map_err(Error::from)?;
     let tx = facade.transactions_for(MEMBER).map_err(Error::from)?;
     with_reserve_tx(&tx, |conn| {
@@ -785,7 +796,12 @@ fn delete_dead_members(facade: &EntityFacade, before: i64) -> Result<(), Error> 
 /// fan-out to it fails without a sign otherwise.
 fn warn_loopback_peers(factory: &ExecutionContextFactory) {
     static WARNED: AtomicBool = AtomicBool::new(false);
-    let peers = outbox().peers.lock().unwrap_or_else(|err| err.into_inner()).urls.clone();
+    let peers = outbox()
+        .peers
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .urls
+        .clone();
     if peers.is_empty() || WARNED.load(Ordering::Relaxed) {
         return;
     }

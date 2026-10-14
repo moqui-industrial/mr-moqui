@@ -457,7 +457,10 @@ pub(crate) fn send_json_response(value: Value) {
                 map.insert("errors".to_string(), Value::string(errors.join("\n")));
             }
             Value::Map(_) => {}
-            _ => tracing::error!("Error found when sending JSON, the JSON is not a map so no errors were added: {}", errors.join("; ")),
+            _ => tracing::error!(
+                "Error found when sending JSON, the JSON is not a map so no errors were added: {}",
+                errors.join("; ")
+            ),
         }
         500
     };
@@ -876,10 +879,7 @@ pub(crate) fn parse_body(request: &WebRequest) -> Result<ParsedBody, BodyError> 
             Ok(_) => {}
             Err(err) => {
                 tracing::warn!("Error parsing HTTP request body JSON: {}", err.message());
-                parameters.insert(
-                    "_requestBodyJsonParseError".to_string(),
-                    Value::string(err.message()),
-                );
+                parameters.insert("_requestBodyJsonParseError".to_string(), Value::string(err.message()));
             }
         }
     }
@@ -1264,7 +1264,10 @@ mod tests {
         };
         let object = body(r#"{"a": 1}"#);
         assert_eq!(object.parameters.get("a"), Some(&Value::I64(1)));
-        assert_eq!(object.parameters.get("_requestBodyText"), Some(&Value::string(r#"{"a": 1}"#)));
+        assert_eq!(
+            object.parameters.get("_requestBodyText"),
+            Some(&Value::string(r#"{"a": 1}"#))
+        );
         let list = body("[1, 2]");
         assert!(matches!(list.parameters.get("_requestBodyJsonList"), Some(Value::List(items)) if items.len() == 2));
         assert!(list.json_list.is_none());

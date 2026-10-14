@@ -500,9 +500,7 @@ impl HostList {
 
     fn item<'js>(&self, ctx: &Ctx<'js>, index: usize) -> rquickjs::Result<JsValue<'js>> {
         match self.inner.get(index) {
-            Some(value) => {
-                entity_to_js(ctx, HostEntity::new(value.clone()))
-            }
+            Some(value) => entity_to_js(ctx, HostEntity::new(value.clone())),
             None => Null.into_js(ctx),
         }
     }
@@ -737,9 +735,7 @@ impl HostEntity {
                 .one()
                 .map_err(|err| throw_lib(ctx, &err))?
             {
-                Some(value) => {
-                    entity_to_js(ctx, HostEntity::new(value))
-                }
+                Some(value) => entity_to_js(ctx, HostEntity::new(value)),
                 None => Null.into_js(ctx),
             },
             Some(Member::Many) => {

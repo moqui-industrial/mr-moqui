@@ -56,7 +56,11 @@ pub(crate) fn clean(
         }
     }
     if !failed.is_empty() {
-        let joined = failed.iter().map(|(_, message)| message.as_str()).collect::<Vec<_>>().join("; ");
+        let joined = failed
+            .iter()
+            .map(|(_, message)| message.as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
         crate::context::ExecutionContext::with_current(|ec| {
             let mut messages = ec.message();
             for (field, message) in &failed {

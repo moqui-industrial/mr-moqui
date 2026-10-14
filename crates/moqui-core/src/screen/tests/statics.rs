@@ -699,7 +699,12 @@ fn a_template_the_compiler_rejects_leaves_a_clean_merged_render_and_is_not_built
             .unwrap()
     };
     let first = render();
-    assert_eq!(header(&first, "X-Moqui-Qvt"), "merged-fragment", "{}", first.body_text());
+    assert_eq!(
+        header(&first, "X-Moqui-Qvt"),
+        "merged-fragment",
+        "{}",
+        first.body_text()
+    );
     // Only the merged render's text: the template that was written before the compiler refused it is gone.
     assert_eq!(first.body_text().matches("before").count(), 1, "{}", first.body_text());
     let def = ScreenFacade::of(factory)

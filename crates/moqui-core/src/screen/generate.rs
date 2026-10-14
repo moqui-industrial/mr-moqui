@@ -172,7 +172,11 @@ impl Generated {
     }
 
     pub(super) fn static_failure(&self, key: &str) -> Option<String> {
-        self.static_failures.lock().unwrap_or_else(|err| err.into_inner()).get(key).cloned()
+        self.static_failures
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .get(key)
+            .cloned()
     }
 
     pub(super) fn put_static_failure(&self, key: String, reason: String) {

@@ -120,7 +120,11 @@ impl UrlInstance {
         if !self.exists {
             return Ok(true);
         }
-        if let Some(condition) = self.transition.as_ref().and_then(|transition| transition.condition.as_ref()) {
+        if let Some(condition) = self
+            .transition
+            .as_ref()
+            .and_then(|transition| transition.condition.as_ref())
+        {
             if !super::render::check_condition(condition)? {
                 return Ok(true);
             }

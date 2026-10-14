@@ -350,7 +350,8 @@ impl TemplateRegistry {
     pub fn renderer_with_default(&self, location: &str, default_extension: &str) -> Option<Arc<dyn TemplateRenderer>> {
         self.renderer_for(location).or_else(|| {
             let extension = default_extension.trim().trim_start_matches('.');
-            (!extension.is_empty() && extension != "true").then(|| self.renderer_for(&format!("template.{extension}")))?
+            (!extension.is_empty() && extension != "true")
+                .then(|| self.renderer_for(&format!("template.{extension}")))?
         })
     }
 
@@ -385,7 +386,9 @@ impl TemplateRegistry {
         let Some(renderer) = self.renderer_with_default(location, default_extension) else {
             return self.location_text(factory, location).map(|text| text.to_string());
         };
-        let text = self.prepared(factory, location, &format!("t:{location}"), |source| renderer.prepare(source))?;
+        let text = self.prepared(factory, location, &format!("t:{location}"), |source| {
+            renderer.prepare(source)
+        })?;
         renderer.render_prepared(&text, data)
     }
 
@@ -395,7 +398,9 @@ impl TemplateRegistry {
     ///
     /// Returns an error when the file cannot be read.
     pub fn location_text(&self, factory: &ExecutionContextFactory, location: &str) -> Result<Arc<str>, Error> {
-        self.prepared(factory, location, &format!("x:{location}"), |source| Ok(source.to_string()))
+        self.prepared(factory, location, &format!("x:{location}"), |source| {
+            Ok(source.to_string())
+        })
     }
 
     fn prepared(

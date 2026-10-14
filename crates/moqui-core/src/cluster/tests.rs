@@ -388,7 +388,10 @@ fn many_writes_in_one_wait_reach_a_peer_as_one_invalidation_and_the_commit_does_
     impl Sender for Slow {
         fn post(&self, _base_url: &str, _topic: &str, payload: &[u8]) -> Result<(), Error> {
             std::thread::sleep(Duration::from_millis(200));
-            self.0.lock().unwrap_or_else(|err| err.into_inner()).push(String::from_utf8_lossy(payload).to_string());
+            self.0
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .push(String::from_utf8_lossy(payload).to_string());
             Ok(())
         }
     }
@@ -398,7 +401,14 @@ fn many_writes_in_one_wait_reach_a_peer_as_one_invalidation_and_the_commit_does_
     let _entered = ctx.enter();
     let _authz = ctx.disable_authz();
     super::start(ctx.factory()).unwrap();
-    put_member(&facade, "inst-batch-peer", "https://batch.example:8443", now_value(), &fingerprints.session, &fingerprints.cert);
+    put_member(
+        &facade,
+        "inst-batch-peer",
+        "https://batch.example:8443",
+        now_value(),
+        &fingerprints.session,
+        &fingerprints.cert,
+    );
     let started = std::time::Instant::now();
     facade.begin("moqui.server.Visitor", None).unwrap();
     for index in 0..200 {
@@ -407,10 +417,17 @@ fn many_writes_in_one_wait_reach_a_peer_as_one_invalidation_and_the_commit_does_
         value.create(&facade).unwrap();
     }
     facade.commit("moqui.server.Visitor").unwrap();
-    assert!(started.elapsed() < Duration::from_secs(2), "the commit waited on the peer: {:?}", started.elapsed());
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "the commit waited on the peer: {:?}",
+        started.elapsed()
+    );
     assert!(super::wait_for_sends(Duration::from_secs(10)));
     let posted = slow.0.lock().unwrap_or_else(|err| err.into_inner());
-    let visitor_posts = posted.iter().filter(|text| text.contains("moqui.server.Visitor")).count();
+    let visitor_posts = posted
+        .iter()
+        .filter(|text| text.contains("moqui.server.Visitor"))
+        .count();
     // The first commit callback may be taken alone before the rest are queued; the rest arrive together.
     assert!((1..=2).contains(&visitor_posts), "{visitor_posts} posts for 200 writes");
 }
@@ -448,9 +465,13 @@ fn cluster_tls_pair_is_stable_and_a_cert_without_a_key_fails() {
     assert_eq!(env::get_prop_or_env("cluster_tls_cert"), cert);
     assert_eq!(env::get_prop_or_env("cluster_tls_key"), key);
     // The instance id is the instance's own, in runtime/db, not in the .env the members share.
-    assert!(!std::fs::read_to_string(temp.path().join(".env")).unwrap().contains("instance_id"));
+    assert!(!std::fs::read_to_string(temp.path().join(".env"))
+        .unwrap()
+        .contains("instance_id"));
     assert_eq!(
-        std::fs::read_to_string(temp.path().join("db/instance_id")).unwrap().trim(),
+        std::fs::read_to_string(temp.path().join("db/instance_id"))
+            .unwrap()
+            .trim(),
         instance
     );
     again.set_entity(crate::testing::open());

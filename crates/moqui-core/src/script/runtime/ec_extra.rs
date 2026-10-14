@@ -301,7 +301,11 @@ fn parsed_or_null<'js>(ctx: &Ctx<'js>, value: Option<Value>) -> rquickjs::Result
     }
 }
 
-fn l10n_parse_timestamp<'js>(ctx: Ctx<'js>, input: JsValue<'js>, format: Opt<JsValue<'js>>) -> rquickjs::Result<JsValue<'js>> {
+fn l10n_parse_timestamp<'js>(
+    ctx: Ctx<'js>,
+    input: JsValue<'js>,
+    format: Opt<JsValue<'js>>,
+) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let input = moqui_lib::object::to_plain_string(&js_to_host(&ctx, &input)?);
         let format = optional_text(&ctx, &format)?;
@@ -309,7 +313,11 @@ fn l10n_parse_timestamp<'js>(ctx: Ctx<'js>, input: JsValue<'js>, format: Opt<JsV
     })
 }
 
-fn l10n_parse_date<'js>(ctx: Ctx<'js>, input: JsValue<'js>, format: Opt<JsValue<'js>>) -> rquickjs::Result<JsValue<'js>> {
+fn l10n_parse_date<'js>(
+    ctx: Ctx<'js>,
+    input: JsValue<'js>,
+    format: Opt<JsValue<'js>>,
+) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let input = moqui_lib::object::to_plain_string(&js_to_host(&ctx, &input)?);
         let format = optional_text(&ctx, &format)?;
@@ -317,7 +325,11 @@ fn l10n_parse_date<'js>(ctx: Ctx<'js>, input: JsValue<'js>, format: Opt<JsValue<
     })
 }
 
-fn l10n_parse_time<'js>(ctx: Ctx<'js>, input: JsValue<'js>, format: Opt<JsValue<'js>>) -> rquickjs::Result<JsValue<'js>> {
+fn l10n_parse_time<'js>(
+    ctx: Ctx<'js>,
+    input: JsValue<'js>,
+    format: Opt<JsValue<'js>>,
+) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let input = moqui_lib::object::to_plain_string(&js_to_host(&ctx, &input)?);
         let format = optional_text(&ctx, &format)?;
@@ -325,7 +337,11 @@ fn l10n_parse_time<'js>(ctx: Ctx<'js>, input: JsValue<'js>, format: Opt<JsValue<
     })
 }
 
-fn l10n_parse_number<'js>(ctx: Ctx<'js>, input: JsValue<'js>, _format: Opt<JsValue<'js>>) -> rquickjs::Result<JsValue<'js>> {
+fn l10n_parse_number<'js>(
+    ctx: Ctx<'js>,
+    input: JsValue<'js>,
+    _format: Opt<JsValue<'js>>,
+) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let input = moqui_lib::object::to_plain_string(&js_to_host(&ctx, &input)?);
         parsed_or_null(&ctx, l10n::parse_number(&input))

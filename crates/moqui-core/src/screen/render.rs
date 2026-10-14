@@ -693,7 +693,10 @@ fn redirect_to_https(factory: &ExecutionContextFactory, job: &Job<'_>, info: &Sc
     } else {
         format!("{host}:{port}")
     };
-    let mut location = format!("https://{authority}{}", job.request.path.split('?').next().unwrap_or(""));
+    let mut location = format!(
+        "https://{authority}{}",
+        job.request.path.split('?').next().unwrap_or("")
+    );
     let query: BTreeMap<String, String> = job.request.query.iter().cloned().collect();
     location = with_query(location, &query);
     save_messages();
@@ -1008,7 +1011,11 @@ pub(super) fn transition_authz_action(transition: &TransitionDef) -> String {
 
 /// A transition that writes is refused from a request that is not encrypted when https is on, or that carries its
 /// parameters in the URL, where they are not protected (Java's ScreenRenderImpl). A read-only one is not.
-fn insecure_transition(factory: &ExecutionContextFactory, job: &Job<'_>, transition: &TransitionDef) -> Option<&'static str> {
+fn insecure_transition(
+    factory: &ExecutionContextFactory,
+    job: &Job<'_>,
+    transition: &TransitionDef,
+) -> Option<&'static str> {
     if transition.read_only || (transition.actions.is_none() && transition.actions_error.is_none()) {
         return None;
     }
@@ -1050,8 +1057,10 @@ fn reject_html_for_entity_auto(transition: &TransitionDef) {
                         "",
                         field,
                         service,
-                        &crate::l10n::localize("HTML not allowed including less-than (<), greater-than (>), etc symbols")
-                            .unwrap_or_else(|_| "HTML not allowed".to_string()),
+                        &crate::l10n::localize(
+                            "HTML not allowed including less-than (<), greater-than (>), etc symbols",
+                        )
+                        .unwrap_or_else(|_| "HTML not allowed".to_string()),
                     );
                 });
             }
@@ -1367,7 +1376,14 @@ fn send_json_redirect(screen_path: Option<Vec<String>>, location: &str, paramete
             V::List(
                 validation
                     .iter()
-                    .map(|error| V::Map(validation_map(error).into_iter().map(|(key, value)| (key, V::string(value))).collect()))
+                    .map(|error| {
+                        V::Map(
+                            validation_map(error)
+                                .into_iter()
+                                .map(|(key, value)| (key, V::string(value)))
+                                .collect(),
+                        )
+                    })
                     .collect(),
             ),
         );

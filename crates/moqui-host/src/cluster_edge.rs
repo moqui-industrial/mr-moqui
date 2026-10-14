@@ -191,7 +191,9 @@ fn spawn_conn(
     {
         // Finished connections are joined as new ones come, so the list holds only the live ones.
         let mut live = lock(joins);
-        let (done, running): (Vec<_>, Vec<_>) = std::mem::take(&mut *live).into_iter().partition(JoinHandle::is_finished);
+        let (done, running): (Vec<_>, Vec<_>) = std::mem::take(&mut *live)
+            .into_iter()
+            .partition(JoinHandle::is_finished);
         *live = running;
         drop(live);
         for handle in done {

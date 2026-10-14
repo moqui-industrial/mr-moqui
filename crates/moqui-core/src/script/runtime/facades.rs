@@ -241,7 +241,9 @@ impl HostMessage {
                 }
             };
             let (form, field, service, message) = (text(form)?, text(field)?, text(service)?, text(message)?);
-            with_ec(&ctx, |ec| ec.message().add_validation_error(&form, &field, &service, &message))?;
+            with_ec(&ctx, |ec| {
+                ec.message().add_validation_error(&form, &field, &service, &message)
+            })?;
             Ok(())
         })
     }
@@ -611,7 +613,14 @@ impl HostWeb {
             let list = crate::web::saved_for_page()
                 .validation_errors
                 .into_iter()
-                .map(|error| Value::Map(error.into_iter().map(|(key, value)| (key, Value::string(value))).collect()))
+                .map(|error| {
+                    Value::Map(
+                        error
+                            .into_iter()
+                            .map(|(key, value)| (key, Value::string(value)))
+                            .collect(),
+                    )
+                })
                 .collect();
             host_to_js(&ctx, Value::List(list))
         })

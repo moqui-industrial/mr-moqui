@@ -1328,9 +1328,15 @@ fn eca_fields(message: &Inbound, server_id: &str) -> BTreeMap<String, Value> {
     flags.insert("seen".into(), Value::Bool(message.seen));
     // Java puts the MimeMessage here; this is the part of it the rules read: its id, size and raw text.
     let mut raw = IndexMap::new();
-    raw.insert("messageId".into(), Value::string(header_one(&message.headers, "message-id")));
+    raw.insert(
+        "messageId".into(),
+        Value::string(header_one(&message.headers, "message-id")),
+    );
     raw.insert("subject".into(), Value::string(&message.subject));
-    raw.insert("size".into(), Value::I64(i64::try_from(message.raw.len()).unwrap_or(i64::MAX)));
+    raw.insert(
+        "size".into(),
+        Value::I64(i64::try_from(message.raw.len()).unwrap_or(i64::MAX)),
+    );
     raw.insert("raw".into(), Value::string(String::from_utf8_lossy(&message.raw)));
     let mut out = BTreeMap::new();
     out.insert("emailServerId".into(), Value::string(server_id));
@@ -1528,7 +1534,10 @@ impl Mailbox for ImapBox {
             .session
             .fetch(id, "BODY.PEEK[] FLAGS INTERNALDATE")
             .map_err(|err| err.to_string())?;
-        let fetch = fetches.iter().next().ok_or_else(|| format!("message {id} is not on the server"))?;
+        let fetch = fetches
+            .iter()
+            .next()
+            .ok_or_else(|| format!("message {id} is not on the server"))?;
         let mut message = parse_rfc822(fetch.body().unwrap_or_default());
         message.id = id.to_string();
         for flag in fetch.flags() {
@@ -1628,7 +1637,10 @@ impl Pop3 {
             if line == b"." {
                 break;
             }
-            let line = line.strip_prefix(b".").filter(|rest| rest.starts_with(b".")).unwrap_or(&line);
+            let line = line
+                .strip_prefix(b".")
+                .filter(|rest| rest.starts_with(b"."))
+                .unwrap_or(&line);
             raw.extend_from_slice(line);
             raw.extend_from_slice(b"\r\n");
         }
@@ -1741,7 +1753,8 @@ fn extra_ca_certificates() -> Result<Vec<rustls::pki_types::CertificateDer<'stat
     if location.trim().is_empty() {
         return Ok(Vec::new());
     }
-    let pem = std::fs::read(location.trim()).map_err(|err| format!("could not read email_tls_ca_file {location}: {err}"))?;
+    let pem =
+        std::fs::read(location.trim()).map_err(|err| format!("could not read email_tls_ca_file {location}: {err}"))?;
     rustls::pki_types::CertificateDer::pem_slice_iter(&pem)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|err| format!("email_tls_ca_file {location} is not PEM certificates: {err}"))
@@ -1819,14 +1832,16 @@ fn parse_rfc822(bytes: &[u8]) -> Inbound {
         .map(address_text)
         .unwrap_or_default();
     let list = |address: Option<&mail_parser::Address<'_>>| -> Vec<String> {
-        address.map(|address| address.iter().map(address_text).collect()).unwrap_or_default()
+        address
+            .map(|address| address.iter().map(address_text).collect())
+            .unwrap_or_default()
     };
     message.to = list(parsed.to());
     message.cc = list(parsed.cc());
     message.bcc = list(parsed.bcc());
-    message.sent = parsed
-        .date()
-        .map_or(Value::Null, |date| stamp_millis(date.to_timestamp().saturating_mul(1000)));
+    message.sent = parsed.date().map_or(Value::Null, |date| {
+        stamp_millis(date.to_timestamp().saturating_mul(1000))
+    });
     leaf_parts(&parsed, bytes, 0, &mut message.parts, 0);
     message
 }
@@ -1834,7 +1849,9 @@ fn parse_rfc822(bytes: &[u8]) -> Inbound {
 /// A header's value as written, unfolded: what JavaMail's `Header.getValue` gives.
 fn raw_header_value(bytes: &[u8], header: &mail_parser::Header<'_>) -> String {
     let start = usize::try_from(header.offset_start).unwrap_or(0).min(bytes.len());
-    let end = usize::try_from(header.offset_end).unwrap_or(0).clamp(start, bytes.len());
+    let end = usize::try_from(header.offset_end)
+        .unwrap_or(0)
+        .clamp(start, bytes.len());
     let text = String::from_utf8_lossy(&bytes[start..end]);
     let mut out = String::new();
     for (index, line) in text.split('\n').enumerate() {
@@ -1891,7 +1908,10 @@ fn leaf_parts(message: &mail_parser::Message<'_>, raw: &[u8], id: u32, out: &mut
         map.insert("filename".into(), Value::string(name));
     }
     if let Some(disposition) = part.content_disposition() {
-        map.insert("disposition".into(), Value::string(disposition.ctype().to_ascii_lowercase()));
+        map.insert(
+            "disposition".into(),
+            Value::string(disposition.ctype().to_ascii_lowercase()),
+        );
     }
     match &part.body {
         PartType::Text(text) | PartType::Html(text) => {
@@ -2627,7 +2647,10 @@ AAEC/w==\r\n\
         let message = parse_rfc822(raw);
         assert_eq!(message.subject, "Gr\u{fc}\u{df}e from the team");
         assert_eq!(message.from, "J\u{fc}rgen <j@example.com>");
-        assert_eq!(message.to, vec!["a@example.com".to_string(), "\"Two, B\" <b@example.com>".to_string()]);
+        assert_eq!(
+            message.to,
+            vec!["a@example.com".to_string(), "\"Two, B\" <b@example.com>".to_string()]
+        );
         assert_eq!(header_one(&message.headers, "message-id"), "<m1@example.com>");
         assert!(!message.sent.is_null());
         // The leaf parts of both multiparts, in order: text in its charset, the attachment as bytes.
@@ -2709,6 +2732,9 @@ AAEC/w==\r\n\
         let mailbox = super::mailbox("Ann Smith <ann@example.com>", "").unwrap();
         assert_eq!(mailbox.email.to_string(), "ann@example.com");
         assert_eq!(mailbox.name.as_deref(), Some("Ann Smith"));
-        assert_eq!(super::mailbox("ann@example.com", "Named").unwrap().name.as_deref(), Some("Named"));
+        assert_eq!(
+            super::mailbox("ann@example.com", "Named").unwrap().name.as_deref(),
+            Some("Named")
+        );
     }
 }

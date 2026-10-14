@@ -1207,10 +1207,16 @@ mod tests {
         clear_context_stack();
         set_context_name("n", Value::I32(1))?;
         run_script("total = n * 10")?;
-        assert_eq!(context_value("total").map(|v| moqui_lib::object::to_plain_string(&v)), Some("10".to_string()));
+        assert_eq!(
+            context_value("total").map(|v| moqui_lib::object::to_plain_string(&v)),
+            Some("10".to_string())
+        );
         set_context_name("n", Value::I32(4))?;
         run_script("total = n * 10")?;
-        assert_eq!(context_value("total").map(|v| moqui_lib::object::to_plain_string(&v)), Some("40".to_string()));
+        assert_eq!(
+            context_value("total").map(|v| moqui_lib::object::to_plain_string(&v)),
+            Some("40".to_string())
+        );
         assert!(eval_condition("n > 3")?);
         set_context_name("n", Value::I32(2))?;
         assert!(!eval_condition("n > 3")?);

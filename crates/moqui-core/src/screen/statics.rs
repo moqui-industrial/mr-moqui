@@ -300,7 +300,8 @@ fn template_for(state: &RenderState, runner: &dyn Runner, key: &str) -> Result<A
         }
         Err(err) if is_security(&err) => Err(err),
         Err(err) => {
-            def.generated.put_static_failure(key.to_string(), err.message().to_string());
+            def.generated
+                .put_static_failure(key.to_string(), err.message().to_string());
             Err(err)
         }
     }

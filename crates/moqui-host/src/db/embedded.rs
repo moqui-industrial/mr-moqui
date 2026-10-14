@@ -68,8 +68,7 @@ mod cluster {
             // and the postmaster resolves a relative socket dir against the wrong base, so it
             // cannot create its lock file (`moqui load` passed `runtime/db/embedded` straight
             // through). Resolve once so every caller gets absolute paths.
-            let dir =
-                std::fs::canonicalize(dir).map_err(|err| Error::new("resolve embedded dir").with_source(err))?;
+            let dir = std::fs::canonicalize(dir).map_err(|err| Error::new("resolve embedded dir").with_source(err))?;
             let data_dir = dir.join("data");
             #[cfg(unix)]
             check_socket_len(&data_dir)?;
@@ -653,13 +652,20 @@ mod cluster {
             // checkout sits too deep for that; the absolute-resolution assert below still
             // documents the invariant.
             if abs.join("data").join(".s.PGSQL.5432").as_os_str().len() >= 108 {
-                println!("skipping live relative boot: socket path too long under {}", abs.display());
+                println!(
+                    "skipping live relative boot: socket path too long under {}",
+                    abs.display()
+                );
                 return;
             }
             provide_libxml2_soname(&abs);
             let (cluster, driver) = EmbeddedCluster::start(&rel, 20).unwrap();
             let data_dir = cluster.data_dir().to_path_buf();
-            assert!(data_dir.is_absolute(), "data dir still relative: {}", data_dir.display());
+            assert!(
+                data_dir.is_absolute(),
+                "data dir still relative: {}",
+                data_dir.display()
+            );
             assert!(
                 data_dir.join(".s.PGSQL.5432").exists(),
                 "socket missing in {}",

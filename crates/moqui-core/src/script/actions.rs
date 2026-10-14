@@ -556,7 +556,9 @@ mod tests {
             </actions>"#,
         )
         .unwrap();
-        let read = |name: &str| crate::script::runtime::context_value(name).map(|value| moqui_lib::object::to_plain_string(&value));
+        let read = |name: &str| {
+            crate::script::runtime::context_value(name).map(|value| moqui_lib::object::to_plain_string(&value))
+        };
         assert_eq!(read("seenMedium"), Some("medium".to_string()));
         assert_eq!(read("keys"), Some("true".to_string()));
         assert_eq!(read("json"), Some("SetField".to_string()));
