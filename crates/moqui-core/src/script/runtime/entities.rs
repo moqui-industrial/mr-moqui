@@ -820,6 +820,27 @@ impl HostEntity {
         })
     }
 
+    /// `getPrimaryKeys()`: the primary key fields of the value, as a map.
+    fn get_primary_keys<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            let facade = facade_of(&ctx)?;
+            let value = self.val();
+            let names: Vec<String> = facade
+                .with_entity(value.entity_name(), |entity, _, _| {
+                    Ok(entity.pk_field_names().iter().map(|name| (*name).to_string()).collect())
+                })
+                .map_err(|err| throw_lib(&ctx, &err))?;
+            let map: indexmap::IndexMap<String, Value> = names
+                .into_iter()
+                .map(|name| {
+                    let field = value.get(&name).cloned().unwrap_or(Value::Null);
+                    (name, field)
+                })
+                .collect();
+            host_to_js(&ctx, Value::Map(map))
+        })
+    }
+
     fn set_sequenced_id_primary(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
             let facade = facade_of(&ctx)?;

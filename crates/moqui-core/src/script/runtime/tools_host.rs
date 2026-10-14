@@ -44,19 +44,32 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
         return list;
     };
 
-    // ---- nodes: the parts of MNode the screens call ----
-    const makeNode = function (data) {
-        if (data == null) return null;
-        const node = {
-            name: data.name, attributes: data.attributes || {}, text: data.text || null,
-            attribute: (name) => (data.attributes || {})[name] ?? null,
-            children: (name) => (data.children || []).filter((kid) => name == null || kid.name === name).map(makeNode),
-            first: (name) => { const kid = (data.children || []).find((kid) => name == null || kid.name === name); return kid ? makeNode(kid) : null; },
-            hasChild: (name) => (data.children || []).some((kid) => kid.name === name),
-            toString: () => data.xml || ""
-        };
+    // ---- wrappers: a tools object is data with a `__wrap` name; reading it from the stack adds its methods back ----
+    const wrappers = {};
+    const wrap = (name, data) => { if (data == null) return null; data.__wrap = name; return wrappers[name](data); };
+    globalThis.__moquiWrap = (name, data) => (wrappers[name] ? wrappers[name](data) : data);
+
+    // the parts of MNode the screens call: `{name, attributes, text, children, xml}`
+    wrappers.Node = function (node) {
+        node.attributes = node.attributes || {};
+        // the child data is `childNodes`, since `children(name)` is the method
+        if (Array.isArray(node.children)) node.childNodes = node.children;
+        const all = (node.childNodes || []).map((kid) => kid.__wrap ? kid : wrap("Node", kid));
+        node.childNodes = all;
+        node.children = (name) => all.filter((kid) => name == null || kid.name === name);
+        node.attribute = (name) => node.attributes[name] ?? null;
+        node.first = (name) => all.find((kid) => name == null || kid.name === name) || null;
+        node.hasChild = (name) => all.some((kid) => kid.name === name);
+        node.toString = () => node.xml || "";
         return node;
     };
+    const makeNode = (data) => wrap("Node", data);
+    // a rule or tree that a screen shows with `toString()`
+    wrappers.Text = (data) => Object.assign(data, { toString: () => data.text || "" });
+    const makeText = (text) => wrap("Text", { text: text });
+
+    // `ec.context.putAll(map)`: each entry on the stack by name
+    ec.context.putAll = (map) => { for (const [key, value] of Object.entries(map || {})) globalThis[key] = value; };
 
     // ---- cache ----
     ec.cache.cacheExists = host.cacheExists;
@@ -78,40 +91,38 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     ec.entity.clearQueryStats = () => {};
     ec.entity.runSqlStatement = host.runSqlStatement;
     ec.entity.eecaRulesByEntityName = {
-        get: (entityName) => host.eecaRuleTexts(entityName).map((text) => ({ eecaNode: { toString: () => text } }))
+        get: (entityName) => host.eecaRuleTexts(entityName).map((text) => ({ eecaNode: makeText(text) }))
     };
-    ec.entity.getEntityDefinition = function (entityName) {
-        const info = host.entityDefinitionInfo(entityName);
-        if (info == null) return null;
-        const fieldByName = {};
-        for (const field of info.fields) {
-            field.fieldNode = makeNode({ name: "field", attributes: { name: field.name, type: field.type } });
-            fieldByName[field.name] = field;
+    // `RelationshipInfo`, with the calls of the auto screen menu
+    wrappers.Relationship = (rel) => Object.assign(rel, {
+        riRelatedEntityName: () => rel.relatedEntityName,
+        riPrettyName: () => rel.prettyName,
+        getTargetParameterMap: (values) => {
+            const target = {};
+            for (const [field, related] of Object.entries(rel.keyMap || {})) {
+                const value = values == null ? null : (typeof values.get === "function" ? values.get(field) : values[field]);
+                if (value != null && value !== "") target[related] = value;
+            }
+            return target;
         }
-        const relationships = info.relationships;
-        const ed = {
-            fullEntityName: info.fullEntityName, entityName: info.entityName, isViewEntity: info.isViewEntity,
-            tableName: info.tableName, groupName: info.groupName, pkFieldNames: info.pkFieldNames,
-            allFieldNames: info.allFieldNames, relationshipsInfo: relationships, masterNames: info.masterNames,
-            entityAttributes: info.entityAttributes, dependentsText: info.dependentsText, allDescendants: info.allDescendants,
-            prettyName: host.prettyName(info.entityName, null, null),
-            entityInfo: {
-                internalEntityName: info.entityName, shortAlias: info.shortAlias, fullTableName: info.tableName,
-                needsEncrypt: info.needsEncrypt, needsAuditLog: info.needsAuditLog, createOnly: info.createOnly,
-                allFieldInfoArray: info.fields, allFieldInfoList: info.fields
-            },
-            getFullEntityName: () => info.fullEntityName,
-            getPkFieldNames: () => info.pkFieldNames.slice(),
-            getAllFieldNames: () => info.allFieldNames.slice(),
-            getFieldNames: (pks, nonPks) => info.fields.filter((f) => (pks && f.isPk) || (nonPks && !f.isPk)).map((f) => f.name),
+    });
+    wrappers.EntityDefinition = function (ed) {
+        const fieldByName = {};
+        for (const field of ed.entityInfo.allFieldInfoArray) fieldByName[field.name] = field;
+        const relationships = ed.relationshipsInfo;
+        Object.assign(ed, {
+            getFullEntityName: () => ed.fullEntityName,
+            getPkFieldNames: () => ed.pkFieldNames.slice(),
+            getAllFieldNames: () => ed.allFieldNames.slice(),
+            getFieldNames: (pks, nonPks) => ed.entityInfo.allFieldInfoArray.filter((f) => (pks && f.isPk) || (nonPks && !f.isPk)).map((f) => f.name),
             isField: (name) => fieldByName[name] != null,
             isPkField: (name) => fieldByName[name] != null && fieldByName[name].isPk,
             getFieldInfo: (name) => fieldByName[name] || null,
             getColumnName: (name) => fieldByName[name] ? fieldByName[name].columnName : null,
-            getPrettyName: (title, baseName) => host.prettyName(info.entityName, title || null, baseName || null),
+            getPrettyName: (title, baseName) => host.prettyName(ed.entityName, title || null, baseName || null),
             getPrimaryKeys: (values) => {
                 const pks = {};
-                for (const name of info.pkFieldNames) {
+                for (const name of ed.pkFieldNames) {
                     const value = values == null ? null : (typeof values.get === "function" ? values.get(name) : values[name]);
                     if (value != null && value !== "") pks[name] = value;
                 }
@@ -120,11 +131,58 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
             getRelationshipsInfo: (dependentsOnly) => relationships.filter((rel) => !dependentsOnly || rel.dependent),
             getRelationshipInfo: (name) => relationships.find((rel) => rel.relationshipName === name || rel.shortAlias === name ||
                 (rel.title == null && rel.relatedEntityName.endsWith("." + name))) || null,
-            getMasterDefinitionMap: () => Object.fromEntries(info.masterNames.map((name) => [name, { name: name }])),
-            getEntityNode: () => makeNode({ name: "entity", attributes: info.entityAttributes }),
-            getDependentsTree: () => ({ allDescendants: info.allDescendants, toString: () => info.dependentsText })
-        };
+            getMasterDefinitionMap: () => Object.fromEntries(ed.masterNames.map((name) => [name, { name: name }])),
+            getEntityNode: () => ed.entityNode,
+            getDependentsTree: () => Object.assign(makeText(ed.dependentsText), { allDescendants: ed.allDescendants })
+        });
         return ed;
+    };
+    ec.entity.getEntityDefinition = function (entityName) {
+        const info = host.entityDefinitionInfo(entityName);
+        if (info == null) return null;
+        for (const field of info.fields) field.fieldNode = makeNode({ name: "field", attributes: { name: field.name, type: field.type } });
+        for (const rel of info.relationships) wrap("Relationship", rel);
+        return wrap("EntityDefinition", {
+            fullEntityName: info.fullEntityName, entityName: info.entityName, isViewEntity: info.isViewEntity,
+            tableName: info.tableName, groupName: info.groupName, pkFieldNames: info.pkFieldNames,
+            allFieldNames: info.allFieldNames, relationshipsInfo: info.relationships, masterNames: info.masterNames,
+            entityNode: makeNode({ name: "entity", attributes: info.entityAttributes }),
+            dependentsText: info.dependentsText, allDescendants: info.allDescendants,
+            prettyName: host.prettyName(info.entityName, null, null),
+            entityInfo: {
+                internalEntityName: info.entityName, shortAlias: info.shortAlias, fullTableName: info.tableName,
+                needsEncrypt: info.needsEncrypt, needsAuditLog: info.needsAuditLog, createOnly: info.createOnly,
+                allFieldInfoArray: info.fields, allFieldInfoList: info.fields
+            }
+        });
+    };
+    // The model loads the reverse relationships with the definitions, so there is nothing to create.
+    ec.entity.createAllAutoReverseManyRelationships = () => {};
+    // `getAllEntityRelatedFields`: the fields of an entity and of each related entity, with whether a data view has them
+    ec.entity.getAllEntityRelatedFields = function (entityName, orderByField, dbViewEntityName) {
+        const ed = entityName ? ec.entity.getEntityDefinition(entityName) : null;
+        if (ed == null) return [];
+        const alias = (entityAlias, fieldName) => dbViewEntityName ? ec.entity.find("moqui.entity.view.DbViewEntityAlias")
+            .condition({dbViewEntityName: dbViewEntityName, entityAlias: entityAlias, fieldName: fieldName}).one() : null;
+        const out = [];
+        for (const field of ed.entityInfo.allFieldInfoArray) {
+            const aliasVal = alias("MASTER", field.name);
+            out.push({entityName: ed.fullEntityName, fieldName: field.name, type: field.type, cardinality: "one",
+                inDbView: aliasVal != null, functionName: aliasVal?.functionName ?? null});
+        }
+        for (const rel of ed.getRelationshipsInfo(false)) {
+            const red = ec.entity.getEntityDefinition(rel.relatedEntityName);
+            if (red == null) continue;
+            const member = dbViewEntityName ? ec.entity.find("moqui.entity.view.DbViewEntityMember")
+                .condition({dbViewEntityName: dbViewEntityName, entityName: red.fullEntityName}).list()[0] : null;
+            for (const field of red.entityInfo.allFieldInfoArray) {
+                const aliasVal = member ? alias(member.entityAlias, field.name) : null;
+                out.push({entityName: rel.relatedEntityName, fieldName: field.name, type: field.type, cardinality: rel.type,
+                    title: rel.title, inDbView: aliasVal != null, functionName: aliasVal?.functionName ?? null});
+            }
+        }
+        if (orderByField) orderMapList(out, [orderByField]);
+        return out;
     };
     ec.entity.makeDataWriter = function () {
         const ops = [];
@@ -171,7 +229,7 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     ec.service.getAllServiceInfo = host.getAllServiceInfo;
     ec.service.getSecaRuleCount = host.getSecaRuleCount;
     ec.service.secaRulesByServiceName = {
-        get: (serviceName) => { const texts = host.secaRuleTexts(serviceName); return texts.length ? texts.map((text) => ({ toString: () => text })) : null; }
+        get: (serviceName) => { const texts = host.secaRuleTexts(serviceName); return texts.length ? texts.map(makeText) : null; }
     };
     ec.service.getServiceDefinition = function (serviceName) {
         const info = host.serviceDefinitionInfo(serviceName);
@@ -179,56 +237,46 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
         info.serviceNode = makeNode(host.parseNode(info.serviceXml));
         return info;
     };
-    const runnerInfo = () => {
-        const info = host.jobRunnerInfo();
-        if (info == null) return null;
-        return {
-            lastExecuteTime: info.lastExecuteTime, executeCount: info.executeCount, totalJobsRun: info.totalJobsRun,
-            lastJobsActive: info.lastJobsActive, lastJobsPaused: info.lastJobsPaused,
-            getLastExecuteTime: () => info.lastExecuteTime, getExecuteCount: () => info.executeCount,
-            getTotalJobsRun: () => info.totalJobsRun, getLastJobsActive: () => info.lastJobsActive,
-            getLastJobsPaused: () => info.lastJobsPaused
-        };
-    };
-    ec.service.getJobRunner = runnerInfo;
+    wrappers.JobRunner = (info) => Object.assign(info, {
+        getLastExecuteTime: () => info.lastExecuteTime, getExecuteCount: () => info.executeCount,
+        getTotalJobsRun: () => info.totalJobsRun, getLastJobsActive: () => info.lastJobsActive,
+        getLastJobsPaused: () => info.lastJobsPaused
+    });
+    ec.service.getJobRunner = () => wrap("JobRunner", host.jobRunnerInfo());
     // One pool runs service calls and jobs in this port, so the worker pool and the job pool are the same.
+    wrappers.WorkerPool = (info) => Object.assign(info, {
+        getActiveCount: () => info.activeCount, getPoolSize: () => info.poolSize, getMaximumPoolSize: () => info.maximumPoolSize,
+        getCorePoolSize: () => info.poolSize,
+        queue: { size: () => info.queueSize, remainingCapacity: () => info.remainingCapacity }
+    });
     const poolInfo = () => {
         const info = host.workerPoolInfo();
-        return {
+        return wrap("WorkerPool", {
             activeCount: info.active, poolSize: info.workers, maximumPoolSize: info.workers, queueSize: info.queued,
-            remainingCapacity: Math.max(info.queueCap - info.queued, 0),
-            getActiveCount: () => info.active, getPoolSize: () => info.workers, getMaximumPoolSize: () => info.workers,
-            getCorePoolSize: () => info.workers,
-            queue: { size: () => info.queued, remainingCapacity: () => Math.max(info.queueCap - info.queued, 0) }
-        };
+            remainingCapacity: Math.max(info.queueCap - info.queued, 0)
+        });
     };
     Object.defineProperty(ec.service, "jobWorkerPool", { get: poolInfo });
 
     // ---- screen ----
     ec.screen.getAllRootScreenLocations = host.getAllRootScreenLocations;
+    wrappers.ScreenInfo = (info) => Object.assign(info, { getIndentedName: () => info.indentedName });
     ec.screen.getScreenInfoList = function (rootLocation, levels) {
-        return host.getScreenInfoList(rootLocation, levels).map((info) => Object.assign(info, {
-            indentedName: "- ".repeat(info.level) + " " + info.name,
-            getIndentedName: () => "- ".repeat(info.level) + " " + info.name
-        }));
+        return host.getScreenInfoList(rootLocation, levels).map((info) =>
+            wrap("ScreenInfo", Object.assign(info, { indentedName: "- ".repeat(info.level) + " " + info.name })));
     };
 
     // ---- resources: the parts of ResourceReference the tools screens and services call ----
-    const makeRef = function (location, info) {
-        info = info || host.resourceInfo(location);
-        if (info == null) return null;
-        const ref = {
-            location: info.location, fileName: info.fileName, exists: info.exists, directory: info.directory,
-            getLocation: () => info.location, getFileName: () => info.fileName, getExists: () => info.exists,
-            isDirectory: () => info.directory, isFile: () => info.file, getSize: () => info.size,
-            getLastModified: () => info.lastModified, length: () => info.size || 0, getName: () => info.fileName,
-            getDirectoryEntries: () => (info.children || []).map((child) => makeRef(child.location, child)),
-            getText: () => host.resourceText(info.location),
-            putText: (text) => host.resourcePutText(info.location, String(text)),
-            delete: () => host.resourceDelete(info.location)
-        };
-        return ref;
-    };
+    wrappers.Resource = (ref) => Object.assign(ref, {
+        getLocation: () => ref.location, getFileName: () => ref.fileName, getExists: () => ref.exists,
+        isDirectory: () => ref.directory, isFile: () => ref.file, getSize: () => ref.size,
+        getLastModified: () => ref.lastModified, length: () => ref.size || 0, getName: () => ref.fileName,
+        getDirectoryEntries: () => (ref.children || []).map((child) => wrap("Resource", child)),
+        getText: () => host.resourceText(ref.location),
+        putText: (text) => host.resourcePutText(ref.location, String(text)),
+        delete: () => host.resourceDelete(ref.location)
+    });
+    const makeRef = (location) => wrap("Resource", host.resourceInfo(location));
     ec.resource.getLocationReference = (location) => makeRef(String(location));
     ec.resource.getLocationText = (location) => host.resourceText(String(location));
 
@@ -249,6 +297,22 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
 
     // `ScreenUrlInfo.isPermitted(ec, null, AUTHZA_ALL)` as a check of one artifact: the screen, the type, the action.
     ec.artifactExecution = { isPermitted: host.isPermitted };
+
+    // `Locale.getAvailableLocales()` with English display names. Java lists every JVM locale; the port has no locale
+    // database, so this is a fixed list of the common ones.
+    const localeNames = { ar: "Arabic", cs: "Czech", da: "Danish", de: "German", de_AT: "German (Austria)",
+        de_CH: "German (Switzerland)", de_DE: "German (Germany)", el: "Greek", en: "English", en_AU: "English (Australia)",
+        en_CA: "English (Canada)", en_GB: "English (United Kingdom)", en_IN: "English (India)", en_US: "English (United States)",
+        es: "Spanish", es_ES: "Spanish (Spain)", es_MX: "Spanish (Mexico)", fi: "Finnish", fr: "French", fr_CA: "French (Canada)",
+        fr_FR: "French (France)", he: "Hebrew", hi: "Hindi", hu: "Hungarian", it: "Italian", ja: "Japanese", ko: "Korean",
+        nl: "Dutch", no: "Norwegian", pl: "Polish", pt: "Portuguese", pt_BR: "Portuguese (Brazil)", ro: "Romanian",
+        ru: "Russian", sv: "Swedish", th: "Thai", tr: "Turkish", uk: "Ukrainian", vi: "Vietnamese", zh: "Chinese",
+        zh_CN: "Chinese (China)", zh_TW: "Chinese (Taiwan)" };
+    ec.l10n.getAvailableTimeZones = host.getAvailableTimeZones;
+    // `formatFieldString(entityName, fieldName, text)`: Java converts the text to the field's type and formats it with
+    // the user's locale; the audit log keeps the text, so it is shown as stored here.
+    ec.entity.formatFieldString = (entityName, fieldName, text) => text == null ? "" : String(text);
+    ec.l10n.getAvailableLocales = () => Object.entries(localeNames).map(([locale, name]) => ({ locale: locale, name: name }));
 
     // ---- user and messages ----
     // `getPeriodRange(baseName, inputs)`: from `{base}_period`, `_poffset`, and `_pdate`, else `_from` and `_thru`.
@@ -1139,12 +1203,21 @@ fn message_infos<'js>(ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
     })
 }
 
-fn camel_case_to_pretty(text: Opt<String>) -> String {
-    moqui_lib::string::camel_case_to_pretty(&text.0.unwrap_or_default())
+/// `TimeZone.getAvailableIDs()`: the zone names of the time zone database, sorted.
+fn get_available_time_zones<'js>(ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let mut names: Vec<String> = jiff::tz::db().available().map(|name| name.to_string()).collect();
+        names.sort();
+        js_texts(&ctx, names)
+    })
 }
 
-fn pretty_to_camel_case(text: Opt<String>, first_upper: Opt<bool>) -> String {
-    moqui_lib::string::pretty_to_camel_case(&text.0.unwrap_or_default(), first_upper.0.unwrap_or(false))
+fn camel_case_to_pretty(text: Opt<JsValue<'_>>) -> String {
+    moqui_lib::string::camel_case_to_pretty(&opt_text(&text))
+}
+
+fn pretty_to_camel_case(text: Opt<JsValue<'_>>, first_upper: Opt<JsValue<'_>>) -> String {
+    moqui_lib::string::pretty_to_camel_case(&opt_text(&text), opt_flag(&first_upper))
 }
 
 /// Add the tools calls to `ec` and the helper objects. `ec` is a global by now.
@@ -1194,6 +1267,7 @@ pub(super) fn install<'js>(
     method!("getRequestDetails", get_request_details);
     method!("secureRequestParameters", secure_request_parameters);
     method!("camelCaseToPretty", camel_case_to_pretty);
+    method!("getAvailableTimeZones", get_available_time_zones);
     method!("resourceInfo", resource_info);
     method!("restRootResources", rest_root_resources);
     method!("isPermitted", is_permitted);

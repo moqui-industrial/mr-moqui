@@ -238,6 +238,27 @@ pub fn render_section(state: &RenderState, runner: &dyn Runner, name: &str) -> R
     guarded(state, &label, || render_section_of(state, runner, &def, name))
 }
 
+/// The screen of a form that one of `def`'s forms `extends`, when that screen has the section `name`: a section
+/// inside an extended form's field, which Java adds to the extending screen's sections (`ScreenForm`).
+fn extended_section_screen(state: &RenderState, def: &ScreenDef, name: &str) -> Result<Option<Arc<ScreenDef>>, Error> {
+    for form in def.forms.values() {
+        let Some(extends) = form.node.node()?.attribute("extends") else {
+            continue;
+        };
+        let Some((location, _)) = extends.split_once('#') else {
+            continue;
+        };
+        if location == def.location || location.contains("${") {
+            continue;
+        }
+        let other = state.facade.screen_def(&state.factory, location)?;
+        if other.sections.contains_key(name) {
+            return Ok(Some(other));
+        }
+    }
+    Ok(None)
+}
+
 /// `sri.renderSectionInclude(node)`.
 ///
 /// # Errors
@@ -267,6 +288,14 @@ pub fn render_section_include(state: &RenderState, runner: &dyn Runner, include:
 }
 
 fn render_section_of(state: &RenderState, runner: &dyn Runner, def: &Arc<ScreenDef>, name: &str) -> Result<(), Error> {
+    if !name.is_empty() && !def.sections.contains_key(name) {
+        if let Some(other) = extended_section_screen(state, def, name)? {
+            let previous = state.override_def.replace(Some(Arc::clone(&other)));
+            let result = render_section_of(state, runner, &other, name);
+            state.override_def.replace(previous);
+            return result;
+        }
+    }
     let section = if name.is_empty() {
         &def.root
     } else {

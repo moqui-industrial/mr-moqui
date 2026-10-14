@@ -96,7 +96,8 @@
 
     // ec.entity.find(...) through the options that entity-find-one and the find-by-condition elements share.
     const findHead = (node, distinct) => joinPresent([
-        `ec.entity.find(${jsString(attr(node, "entity-name"))})`,
+        // An entity name with ${} is expanded, as the Groovy string of the Java template was.
+        `ec.entity.find(${literalOrExpand(attr(node, "entity-name"))})`,
         has(node, "cache") && `.useCache(${attr(node, "cache")})`,
         has(node, "for-update") && `.forUpdate(${attr(node, "for-update")})`,
         distinct && has(node, "distinct") && `.distinct(${attr(node, "distinct")})`,
@@ -463,7 +464,7 @@
                 ? `${field}.setFields(${attr(node, "map")}, true, null, null);`
                 : "";
             return js`
-                ${field} = ec.entity.makeValue(${jsString(attr(node, "entity-name"))});
+                ${field} = ec.entity.makeValue(${literalOrExpand(attr(node, "entity-name"))});
                 ${setFields}
             `;
         }),

@@ -43,7 +43,7 @@ const DATA: &str = r#"<entity-facade-xml type="seed">
     <moqui.server.Visit visitId="GATE_VISIT" userId="EX_JOHN_DOE" clientIpAddress="127.0.0.1" fromDate="2026-01-02 03:04:05"/>
     <moqui.server.instance.AppInstance appInstanceId="GATE_AI" instanceName="gate" hostName="gate.example"/>
     <moqui.entity.view.DbViewEntity dbViewEntityName="GateView" packageName="gate.view" isDataView="Y"/>
-    <moqui.entity.view.DbViewEntityMember dbViewEntityName="GateView" entityAlias="MME" entityName="moqui.basic.Enumeration"/>
+    <moqui.entity.view.DbViewEntityMember dbViewEntityName="GateView" entityAlias="MASTER" entityName="moqui.basic.Enumeration"/>
     <moqui.entity.document.DataDocument dataDocumentId="GateDoc" documentName="Gate Document" primaryEntityName="moqui.basic.Enumeration"
         indexName="gate"/>
     <moqui.entity.document.DataDocumentField dataDocumentId="GateDoc" fieldSeqId="01" fieldPath="enumId"/>
@@ -181,9 +181,12 @@ fn every_tools_screen_renders_in_html_for_an_admin() {
     // The detail screens show their records.
     let (_, entity) = get(address, &john, "/Tools/Entity/DataEdit/EntityDetail?selectedEntity=moqui.basic.Enumeration");
     assert!(entity.contains("Entity Detail for Enumeration (moqui.basic.Enumeration)"), "{entity}");
-    assert!(entity.contains("ENUM_ID"), "{entity}");
-    let (_, cache) = get(address, &john, "/System/Cache/CacheList");
-    assert!(cache.contains("l10n.message") && cache.contains("screen.definition"), "{cache}");
+    assert!(entity.contains("enumTypeId") && entity.contains("moqui.basic.EnumerationType"), "{entity}");
+    // The conf caches, the screen definitions, and the entity list caches are listed together.
+    let (_, cache) = get(address, &john, "/System/Cache/CacheList?filterRegexp=screen.def");
+    assert!(cache.contains("cacheName=screen.definition"), "{cache}");
+    let (_, cache) = get(address, &john, "/System/Cache/CacheList?filterRegexp=list.moqui.basic.Enum");
+    assert!(cache.contains("cacheName=entity.record.list.moqui.basic.Enumeration"), "{cache}");
     let (_, job) = get(address, &john, "/System/Print/PrintJob/PrintJobDetail?printJobId=GATE_PJ");
     assert!(job.contains("Gate job") && job.contains("Not Sent"), "{job}");
 }

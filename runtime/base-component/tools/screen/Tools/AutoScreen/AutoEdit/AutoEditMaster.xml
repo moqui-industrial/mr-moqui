@@ -84,7 +84,7 @@ along with this software (see the LICENSE.md file). If not, see
         <if condition="WebUtilities.isRestrictedGenericEntity(aen)"><message error="true">Entity ${aen} is not available through this tool</message><return/></if>
         <entity-find-one entity-name="${aen}" value-field="fieldValues"/>
         <set field="entityDefinition" from="ec.entity.getEntityDefinition(aen)"/>
-        <set field="masterNames" from="Array.from(entityDefinition.getMasterDefinitionMap().keySet()).sort()"/>
+        <set field="masterNames" from="Object.keys(entityDefinition.getMasterDefinitionMap()).sort()"/>
     </actions>
     <widgets>
         <link url="list" text="Entity List" link-type="hidden-form"/>

@@ -248,12 +248,56 @@ impl EntityFind {
         self.localize_list(list)
     }
 
-    pub fn one(self) -> Result<Option<EntityValue>, Error> {
+    pub fn one(mut self) -> Result<Option<EntityValue>, Error> {
+        self.narrow_to_full_pk();
         let list = self.list()?;
         if list.len() > 1 {
             return Err(Error::new(format!("find one found {} rows", list.len())));
         }
         Ok(list.values().first().cloned())
+    }
+
+    /// Java `oneInternal`: a find one whose field equalities hold the full primary key, with more besides (a
+    /// `condition(context)` puts every field of the context in), finds by the primary key alone. Other kinds of
+    /// condition stay.
+    fn narrow_to_full_pk(&mut self) {
+        let pk_names: Vec<String> = match self.facade.with_entity(&self.entity_name, |entity, _, _| {
+            Ok(entity.pk_field_names().iter().map(|name| (*name).to_string()).collect())
+        }) {
+            Ok(names) => names,
+            Err(_) => return,
+        };
+        let equals_on = |condition: &Condition, name: &str| match condition {
+            Condition::Equals(field, value) => {
+                field.entity_alias.is_none() && field.name == name && !moqui_lib::object::is_empty(value)
+            }
+            _ => false,
+        };
+        let has_full_pk = !pk_names.is_empty()
+            && pk_names
+                .iter()
+                .all(|name| self.conditions.iter().any(|condition| equals_on(condition, name)));
+        let equalities = self
+            .conditions
+            .iter()
+            .filter(|condition| matches!(condition, Condition::Equals(..)))
+            .count();
+        if !has_full_pk || equalities <= pk_names.len() {
+            return;
+        }
+        let mut kept: Vec<Condition> = Vec::new();
+        for condition in std::mem::take(&mut self.conditions) {
+            let Condition::Equals(field, _) = &condition else {
+                kept.push(condition);
+                continue;
+            };
+            let first_for_pk = pk_names.contains(&field.name)
+                && !kept.iter().any(|known| matches!(known, Condition::Equals(other, _) if other.name == field.name));
+            if first_for_pk && equals_on(&condition, &field.name) {
+                kept.push(condition);
+            }
+        }
+        self.conditions = kept;
     }
 
     pub fn count(self) -> Result<i64, Error> {
