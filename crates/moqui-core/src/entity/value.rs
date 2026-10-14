@@ -215,7 +215,8 @@ impl EntityFacade {
     ) -> Result<(), Error> {
         // Declared first, so it drops last: the authorization cache is invalidated after the write.
         let _note = WriteNote(entity_name);
-        let _artifact = EntityArtifact::push(self, entity_name, operation)?;
+        let sub_type = if operation == "upsert" { "create" } else { operation };
+        let _artifact = EntityArtifact::push(self, entity_name, operation, sub_type)?;
         let tx = self.transactions_for(entity_name)?;
         if tx.lock_track_enabled() {
             if let Ok(keys) = self.with_entity(entity_name, |entity, _, _| pk_values(entity, &plain)) {
@@ -350,7 +351,7 @@ impl EntityFacade {
         Ok((seq_field, format!("{next:0width$}")))
     }
 
-    fn normalize_values(
+    pub(crate) fn normalize_values(
         &self,
         entity_name: &str,
         values: &BTreeMap<String, Value>,
@@ -481,7 +482,13 @@ pub(crate) struct EntityArtifact {
 }
 
 impl EntityArtifact {
-    pub(crate) fn push(facade: &EntityFacade, entity_name: &str, operation: &str) -> Result<Self, Error> {
+    /// `sub_type` is the hit sub-type, Java's find method or write operation: `list`, `count`, `create`.
+    pub(crate) fn push(
+        facade: &EntityFacade,
+        entity_name: &str,
+        operation: &str,
+        sub_type: &str,
+    ) -> Result<Self, Error> {
         if !crate::user::context_entered() {
             return Ok(Self { pushed: false });
         }
@@ -491,7 +498,9 @@ impl EntityArtifact {
             .unwrap_or_default();
         let requires_authz = !skips_authz(&skip, action);
         let outcome = crate::context::ExecutionContext::with_current(|ctx| {
-            ctx.push_checked("AT_ENTITY", entity_name, action, requires_authz, false, None)
+            ctx.push_checked("AT_ENTITY", entity_name, action, requires_authz, false, None)?;
+            ctx.set_hit_detail(Some(sub_type), None);
+            Ok::<(), crate::context::Error>(())
         });
         match outcome {
             Some(Ok(())) => Ok(Self { pushed: true }),

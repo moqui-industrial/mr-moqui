@@ -40,7 +40,7 @@ fn permitted_under(
     parents: &[std::sync::Arc<super::definition::ScreenDef>],
     target: &super::definition::ScreenDef,
 ) -> bool {
-    let mut frames = Frames::default();
+    let mut frames = Frames::untracked();
     for parent in parents {
         if frames.push_screen(parent, false).is_err() {
             return false;
@@ -117,7 +117,7 @@ pub fn menu_data(state: &RenderState, path_names: &[String]) -> Result<Option<Va
     // Menu titles may come from values set in pre-actions: they run for every screen except the first two
     // (webroot and the app root), and an error in one is logged and does not stop the menu.
     {
-        let mut frames = Frames::default();
+        let mut frames = Frames::untracked();
         for (index, def) in info.path_defs.iter().enumerate() {
             frames.enter_screen(def, false)?;
             if index >= 2 {

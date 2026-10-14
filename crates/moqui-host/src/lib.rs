@@ -656,6 +656,10 @@ fn serve_thread(
         .ok_or_else(|| moqui_lib::error::Error::new("http server has no runtime"))?;
     let listened = runtime.block_on(http::listen(factory, address, cluster_address, posts, stop, sender));
     if let Some(factory) = process.factory.as_ref() {
+        // Hits and the open bins are only in memory until written, as Java's destroy writes the bins.
+        if let Err(err) = factory.flush_artifact_hits() {
+            eprintln!("artifact hit flush failed: {err}");
+        }
         if let Err(err) = factory.flush_sessions() {
             let err = moqui_lib::error::Error::new(err.to_string());
             if listened.is_ok() {

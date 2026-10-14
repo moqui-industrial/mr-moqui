@@ -331,7 +331,7 @@ pub(crate) fn serve_template(state: &RenderState, request: &WebRequest, path: &s
         // A report has what it needs, and the merged render would only run the screen's actions again.
         return Ok(report_active());
     }
-    let mut frames = Frames::default();
+    let mut frames = Frames::untracked();
     let last = info.path_defs.len() - 1;
     for (index, def) in info.path_defs.iter().enumerate() {
         frames.enter_screen(def, index == last)?;
