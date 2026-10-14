@@ -827,7 +827,7 @@ fn push_unique(headers: &mut Vec<(String, String)>, name: &str, value: &str) {
 }
 
 /// Names a response never carries: `WebUtilities.stripCredentialParameters`, compared without case.
-const CREDENTIAL_PARAMETER_NAMES: [&str; 13] = [
+pub(crate) const CREDENTIAL_PARAMETER_NAMES: [&str; 13] = [
     "password",
     "oldpassword",
     "newpassword",

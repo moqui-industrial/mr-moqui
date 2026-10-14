@@ -31,7 +31,7 @@ use moqui_lib::node::MNode;
 use crate::db::entity_facade::{attach, open_entity_facade};
 
 /// A driver for a run that reads the model and never the data.
-struct ModelOnly;
+pub(crate) struct ModelOnly;
 
 impl DbDriver for ModelOnly {
     fn connect(&self) -> Result<Box<dyn DbConnection>, Error> {
@@ -40,7 +40,7 @@ impl DbDriver for ModelOnly {
 }
 
 /// Screen files below `roots`: `*.xml` in a `screen` directory whose root element is `screen`.
-fn screen_files(roots: &[PathBuf]) -> Vec<PathBuf> {
+pub(crate) fn screen_files(roots: &[PathBuf]) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut stack: Vec<(PathBuf, bool)> = roots.iter().map(|root| (root.clone(), false)).collect();
     while let Some((dir, in_screen)) = stack.pop() {

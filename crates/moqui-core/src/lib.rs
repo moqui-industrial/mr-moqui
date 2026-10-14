@@ -27,6 +27,7 @@ pub mod service;
 #[cfg(test)]
 mod testing;
 pub mod transaction;
+pub mod typegen;
 pub mod user;
 pub mod web;
 

@@ -4,3 +4,4 @@
 /runtime/tmp
 /runtime/txlog
 /runtime/.env
+/runtime/types

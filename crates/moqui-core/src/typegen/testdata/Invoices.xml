@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Type generation fixture: a server-static qvt screen. Its actions prove typed keys, its forms prove maps and lists,
+     and its form-list package has a display-entity, a lookup drop-down and a header field. -->
+<screen require-authentication="false" server-static="qvt">
+    <parameter name="statusId"/>
+    <always-actions><set field="shellTitle" value="Invoices"/></always-actions>
+    <actions>
+        <entity-find-one entity-name="inv" value-field="invoice"/>
+        <entity-find entity-name="typegen.test.InvoiceItem" list="itemList"/>
+        <entity-find-count entity-name="typegen.test.InvoiceItem" count-field="itemCount"/>
+        <service-call name="typegen.services.send#Invoice" out-map="sendOut"/>
+        <set field="pageSize" from="20" type="Integer"/>
+        <set field="names" type="NewList"/>
+        <set field="dynamicName" from="statusId"/>
+        <set field="nested.value" value="no"/>
+        <script>scriptOnly = 1</script>
+    </actions>
+    <widgets>
+        <form-single name="EditInvoice" map="invoice">
+            <field name="invoiceId"><default-field><display/></default-field></field>
+            <field name="statusId"><default-field>
+                <drop-down><entity-options key="${statusId}" text="${description}">
+                    <entity-find entity-name="typegen.test.Status"/></entity-options></drop-down>
+            </default-field></field>
+        </form-single>
+        <form-single name="Find">
+            <field name="query"><default-field><text-line/></default-field></field>
+        </form-single>
+        <form-list name="Invoices" list="invoiceList">
+            <entity-find entity-name="typegen.test.Invoice"><search-form-inputs/></entity-find>
+            <field name="invoiceId"><header-field><text-find/></header-field><default-field><display/></default-field></field>
+            <field name="statusId"><default-field>
+                <display-entity entity-name="typegen.test.Status"/>
+                <set field="statusShown" value="Y"/>
+            </default-field></field>
+            <field name="nextStatus"><default-field>
+                <drop-down><entity-options key="${statusId}"><entity-find entity-name="typegen.test.Status"/></entity-options></drop-down>
+            </default-field></field>
+        </form-list>
+        <section-iterate name="Items" list="itemList" entry="item"><widgets><label text="${item.description}"/></widgets></section-iterate>
+    </widgets>
+</screen>

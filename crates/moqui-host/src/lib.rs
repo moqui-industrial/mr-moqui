@@ -13,13 +13,14 @@
  */
 
 //! Process edge. PDF, SSH, and SSO are not implemented yet.
-//! `load` reads framework data files. `lint` checks service definitions.
+//! `load` reads framework data files. `lint` checks service definitions. `types` writes TypeScript declarations.
 //! No arguments start the plain HTTP listener. Database drivers live in [`db`].
 //! The search store and backend are placed by [`search`].
 
 pub mod db;
 pub mod qvt_report;
 pub mod search;
+pub mod types;
 
 mod cluster_edge;
 
@@ -177,10 +178,11 @@ pub fn load_save(
     db::embedded::load_save(dir.as_ref(), dump.as_ref())
 }
 
-const USAGE: &str = "usage: moqui [save-db <cluster-dir> <dump-file> | load-save <cluster-dir> <dump-file> | load [name=value ...] | lint [file] | lint --screens [report-file] | lint --screens --qvt-static [report-file]]";
+const USAGE: &str = "usage: moqui [save-db <cluster-dir> <dump-file> | load-save <cluster-dir> <dump-file> | load [name=value ...] | lint [file] | lint --screens [report-file] | lint --screens --qvt-static [report-file] | types [--out dir]]";
 
 /// No arguments start the HTTP server. `save-db` and `load-save` take a cluster directory and a dump file.
 /// `load` takes `name=value` pairs. `lint` takes an optional service file. `lint --screens` checks the screen and form XML and may write a report file.
+/// `types` writes TypeScript declarations for the loaded definitions, by default into `types/` in the runtime directory.
 ///
 /// # Errors
 ///
@@ -202,6 +204,10 @@ where
         }
         [command, dir, file] if command == "load-save" => {
             load_save(dir, file)?;
+            Ok(None)
+        }
+        [command, rest @ ..] if command == "types" => {
+            dispatch_types(rest)?;
             Ok(None)
         }
         [command, rest @ ..] if command == "load" => {
@@ -237,6 +243,14 @@ fn dispatch_load(flags: &LoadFlags) -> Result<LoadReport, moqui_lib::error::Erro
     let framework = std::env::var_os("MOQUI_FRAMEWORK").map_or_else(|| runtime.join("../framework"), Into::into);
     let cluster = runtime.join("db/embedded");
     load_data(&runtime, &framework, &cluster, flags)
+}
+
+fn dispatch_types(args: &[String]) -> Result<(), moqui_lib::error::Error> {
+    let runtime = std::env::var_os("MOQUI_RUNTIME").map_or_else(|| std::path::PathBuf::from("runtime"), Into::into);
+    let framework = std::env::var_os("MOQUI_FRAMEWORK").map_or_else(|| runtime.join("../framework"), Into::into);
+    let out = types::parse_types_args(args, &runtime)?;
+    println!("{}", types::write_types(&runtime, &framework, &out)?);
+    Ok(())
 }
 
 fn dispatch_lint(path: Option<&str>) -> Result<(), moqui_lib::error::Error> {
