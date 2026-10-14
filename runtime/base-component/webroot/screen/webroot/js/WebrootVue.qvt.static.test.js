@@ -200,6 +200,26 @@ test("a multi form-list is one form with each row's fields under name_rowIndex, 
     assert.match(text, /<q-btn dense='' outline='' type='a' href='\/Items\?itemGroup=G1&renderMode=csv&pageNoLimit=true&lastStandalone=true&saveFilename=ItemList.csv'/);
 });
 
+test("the column picker lays out the user's columns from the package, and its dialog tree lists the rest as not shown", async () => {
+    setup();
+    answers["/Items/actions/ItemList"] = Object.assign({}, formPkg, { mqColumns: [["name", "itemId"], ["price"]] });
+    const { container } = await mountStatic("");
+    const list = captured.lists.ItemList;
+    assert.deepEqual(list.shownColumns(), [["name", "itemId"], ["price"]]);
+    const tree = list.columnsTree();
+    assert.deepEqual(tree.map((column) => column.id), ["hidden", "column_0", "column_1"]);
+    assert.deepEqual(tree[0].children.map((field) => field.id), ["go"]);
+    assert.deepEqual(tree[1].children, [{ id: "name", label: "Name" }, { id: "itemId", label: "Item ID" }]);
+    // a row is a td for each column: the name's text-line comes before the id's display in the first, and the save button is not shown
+    const text = html(container);
+    const row = text.slice(text.indexOf("<m-form name='ItemList_0'"));
+    const firstTd = row.slice(row.indexOf("<div class='td'>"), row.indexOf("</div></div>"));
+    assert.ok(firstTd.indexOf("<m-text-line") >= 0 && firstTd.indexOf("<m-text-line") < firstTd.indexOf("<m-display"), firstTd);
+    assert.ok(!/ItemList_go/.test(row.slice(0, row.indexOf("<m-form name='ItemList_1'"))), "the go field is not in a shown column");
+    // the row form starts from the row's values, with the form name
+    assert.match(text, /<m-form name='ItemList_0' fields='\{"itemId":"ZEBRA-R1","itemId_display":"ZEBRA-R1","name":"ZEBRA row one"/);
+});
+
 test("the restricted ec has the table of members and throws on anything else", () => {
     setup();
     const ec = qvt.makeEc(moqui.config);

@@ -554,7 +554,8 @@
         name: "mStaticFormList",
         inject: { mqScope: { default: null }, mqScreen: { default: null } },
         props: { name: { type: String, required: true }, id: String, action: String, listName: String, multi: Boolean, skipForm: Boolean, skipHeader: Boolean,
-            rowInitial: Function, formLocation: String, findAction: String },
+            rowInitial: Function, formLocation: String, findAction: String, defaultColumns: Array, columnFields: Array, columnsAction: String,
+            headerInitial: Function },
         data() { return { pkg: null, searchObj: {}, loading: false, generation: 0 }; },
         computed: {
             idVal() { return this.id && this.id.length ? this.id : this.name; },
@@ -603,8 +604,24 @@
                     findFields: (id) => Object.assign({ formLocation: this.formLocation, formListFindId: id }, params),
                     newFindFields: () => Object.assign({ formLocation: this.formLocation, _findDescription: "" }, params),
                     exportUrl: (mode) => screen.path + "?" + query({ renderMode: mode, pageNoLimit: "true", lastStandalone: "true", saveFilename: this.name + "." + mode }),
-                    printUrl: () => screen.path + "?" + query({ renderMode: "html-print", pageNoLimit: "true" })
+                    printUrl: () => screen.path + "?" + query({ renderMode: "html-print", pageNoLimit: "true" }),
+                    columnsAction: this.columnsAction || "", columnsTree: this.columnsTree()
                 };
+            },
+            // The columns shown: the user's from the package, else the template's.
+            shownColumns() {
+                const chosen = this.pkg && this.pkg.mqColumns;
+                return Array.isArray(chosen) && chosen.length ? chosen : this.defaultColumns || [];
+            },
+            // What the column dialog edits: the fields not shown, then each column with its fields, labelled as the server-merged dialog has them.
+            columnsTree() {
+                const fields = this.columnFields || [];
+                const labelOf = (id) => { const found = fields.find((field) => field.id === id); return found ? found.label : id; };
+                const columns = this.shownColumns();
+                const shown = new Set(columns.flat());
+                const tree = [{ id: "hidden", label: moqui.l10n.localize("Do Not Display"), children: fields.filter((field) => !shown.has(field.id)).map((field) => ({ id: field.id, label: field.label })) }];
+                columns.forEach((column, index) => tree.push({ id: "column_" + index, label: moqui.l10n.localize("Column") + " " + (index + 1), children: column.map((id) => ({ id, label: labelOf(id) })) }));
+                return tree;
             },
             // The fields of a form that posts every row: each row's starting values under name_rowIndex, as the server-merged form has them.
             multiFields(formScope) {
@@ -619,8 +636,9 @@
                 return out;
             },
             // The scope of a row. In a multi form, formProps reads and writes the row's fields under name_rowIndex in the one form.
-            rowScope(rowIndex, formScope, multiProps) {
+            rowScope(rowIndex, formScope, multiProps, formProps) {
                 const extra = { rowIndex, _formMap: this.rows[rowIndex] };
+                if (formProps) extra.formProps = formProps;
                 if (multiProps) {
                     const suffix = "_" + rowIndex;
                     const fields = new Proxy({}, {
@@ -648,9 +666,29 @@
             const h = V.h;
             const formScope = qvt.makeScope(() => this.pkg || {}, this.mqScope);
             const slots = this.$slots;
-            const header = slots.header ? slots.header({ sortBy: this.sortBy, orderBy: this.orderBy, action: this.$root && this.$root.currentLinkPath, orderByField: this.searchObj.orderByField || (this.pkg && this.pkg.orderByField) || "" }) : null;
-            const rowsOf = (multiProps) => this.rows.map((row, rowIndex) =>
-                h(V.Fragment, { key: this.generation + "_" + rowIndex }, slots.row ? slots.row(this.rowScope(rowIndex, formScope, multiProps)) : []));
+            const hs = { sortBy: this.sortBy, orderBy: this.orderBy, action: this.$root && this.$root.currentLinkPath, orderByField: this.searchObj.orderByField || (this.pkg && this.pkg.orderByField) || "" };
+            let header = slots.header ? slots.header(hs) : null;
+            if (this.defaultColumns) {
+                // the head of each shown column: the hc_ slot of each of its fields, in the header find form when the template gives its starting values
+                const ths = (formProps) => this.shownColumns().map((column) => h("div", { class: "th text-left" }, column.map((field) => (slots["hc_" + field] ? slots["hc_" + field]({ hs, formProps }) : null))));
+                header = this.headerInitial
+                    ? [h(V.resolveComponent("m-form-link"), { name: this.idVal + "_header", id: this.idVal + "_header", action: hs.action, fieldsInitial: this.headerInitial(formScope, hs) },
+                        { default: (formProps) => ths(formProps) })]
+                    : ths(null);
+            }
+            const columnsMode = !!this.defaultColumns;
+            const columns = columnsMode ? this.shownColumns() : null;
+            // In columns mode a row is a tr of a td for each column, each holding the rc_ slot of its fields, in a row form the component makes.
+            const cellsOf = (scope) => columns.map((column) => h("div", { class: "td" }, column.map((field) => (slots["rc_" + field] ? slots["rc_" + field](scope) : null))));
+            const columnsRow = (rowIndex, multiProps) => {
+                if (multiProps || this.skipForm) return h("div", { class: "tr", key: this.generation + "_" + rowIndex }, cellsOf(this.rowScope(rowIndex, formScope, multiProps, null)));
+                const initial = Object.assign({}, this.rowInitial ? this.rowInitial(this.rowScope(rowIndex, formScope, null, null)) : {},
+                    { moquiFormName: this.name, pageIndex: String((this.pkg && this.pkg.pageIndex) || 0) });
+                return h("div", { class: "tr", key: this.generation + "_" + rowIndex }, [h(V.resolveComponent("m-form"), { name: this.idVal + "_" + rowIndex, id: this.idVal + "_" + rowIndex, action: this.action, fieldsInitial: initial },
+                    { default: (formProps) => cellsOf(this.rowScope(rowIndex, formScope, null, formProps)) })]);
+            };
+            const rowsOf = (multiProps) => this.rows.map((row, rowIndex) => (columnsMode ? columnsRow(rowIndex, multiProps) :
+                h(V.Fragment, { key: this.generation + "_" + rowIndex }, slots.row ? slots.row(this.rowScope(rowIndex, formScope, multiProps)) : [])));
             const multiForm = this.multi && !this.skipForm;
             const rowNodes = multiForm ? [] : rowsOf(null);
             const nav = h("div", { class: "form-list-nav-row row items-center" }, [
@@ -2150,7 +2188,8 @@
                 // find on the same path makes a new use. The screens above the target keep theirs.
                 const isTarget = pathIndex === curPathList.length - 1;
                 const searchNow = isTarget ? rootVm_.currentSearch || "" : "";
-                const searchChanged = this.searchUsed !== null && this.searchUsed !== searchNow;
+                const searchChanged = (this.searchUsed !== null && this.searchUsed !== searchNow) || (isTarget && rootVm_.reloadTarget === true);
+                if (isTarget) rootVm_.reloadTarget = false;
                 this.searchUsed = searchNow;
                 if (!newPath || newPath.length === 0) {
                     this.activeComponent = moqui.EmptyComponent;
@@ -2266,6 +2305,8 @@
                 this.bodyParameters = bodyParameters;
                 url = this.getLinkPath(url);
                 if (this.currentLinkUrl === url && url !== this.linkBasePath) {
+                    // the same URL again is a reload: a cached (server-static) target screen makes a new use with fresh data too
+                    this.reloadTarget = true;
                     this.reloadSubscreens();
                     if (onComplete) this.callOnComplete(onComplete, this.currentPath);
                     return;

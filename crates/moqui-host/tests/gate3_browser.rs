@@ -664,6 +664,11 @@ fn static_list(browser: &mut Browser, base: &str) {
         WAIT,
     );
     browser.press("Escape");
+    browser.wait_for(
+        "the dialog closed",
+        "document.querySelectorAll('.q-dialog').length === 0",
+        WAIT,
+    );
     browser.click("Find Options", &by_text(".q-btn", "Find Options"));
     browser.wait_for(
         "the saved find listed",
@@ -671,6 +676,33 @@ fn static_list(browser: &mut Browser, base: &str) {
         WAIT,
     );
     browser.press("Escape");
+    browser.wait_for(
+        "the dialog closed",
+        "document.querySelectorAll('.q-dialog').length === 0",
+        WAIT,
+    );
+
+    // the column picker: the dialog lists the columns, and Reset to Default posts and reloads the list
+    browser.click("Columns", &by_text(".q-btn", "Columns"));
+    browser.wait_for(
+        "the column dialog",
+        "Array.from(document.querySelectorAll('.q-dialog')).some((el) => el.innerText.indexOf('Do Not Display') >= 0 && el.innerText.indexOf('Enum ID') >= 0)",
+        WAIT,
+    );
+    let before = browser.eval("window.__gate.fetches.filter((f) => f.url.indexOf('/actions/EnumList') >= 0).length");
+    browser.click("Reset to Default", &by_text(".q-dialog .q-btn", "Reset to Default"));
+    fetched(browser, "the column reset post", "/formSelectColumns");
+    browser.wait_for(
+        "the list fetched again",
+        &format!("window.__gate.fetches.filter((f) => f.url.indexOf('/actions/EnumList') >= 0).length > {before}"),
+        WAIT,
+    );
+    browser.press("Escape");
+    browser.wait_for(
+        "the dialog closed",
+        "document.querySelectorAll('.q-dialog').length === 0",
+        WAIT,
+    );
     assert_clean(browser, &page);
 }
 

@@ -9,6 +9,8 @@ return function render(_ctx, _cache) {
   const _component_m_form = _resolveComponent("m-form")
   const _component_m_scope = _resolveComponent("m-scope")
   const _component_m_link = _resolveComponent("m-link")
+  const _component_m_form_column_config = _resolveComponent("m-form-column-config")
+  const _component_m_container_dialog = _resolveComponent("m-container-dialog")
   const _component_m_static_form_list = _resolveComponent("m-static-form-list")
 
   return (_openBlock(), _createElementBlock(_Fragment, null, [
@@ -161,9 +163,38 @@ return function render(_ctx, _cache) {
       name: "ItemList",
       id: "ItemList",
       action: "/Items/saveItem",
-      "list-name": "itemList"
+      "list-name": "itemList",
+      "row-initial": (_ctx) => ({'itemId':_ctx.$mq.str(_ctx.$scope['itemId']),'itemId_display':_ctx.$mq.str(_ctx.$scope['itemId']),'name':_ctx.$mq.str(_ctx.$scope['name']),'price':_ctx.$mq.str(_ctx.$scope['price']),'price_display':_ctx.$mq.fmt(_ctx.$scope['price'],'#,##0.00')}),
+      "default-columns": [['itemId'],['name'],['price'],['go']],
+      "column-fields": [{id:'itemId',label:_ctx.ec.l10n.localize('Item ID')},{id:'name',label:_ctx.ec.l10n.localize('Name')},{id:'price',label:_ctx.ec.l10n.localize('Price')},{id:'go',label:_ctx.ec.l10n.localize('Save')}],
+      "columns-action": "/Items/formSelectColumns",
+      "form-location": "ItemList"
     }, {
       nav: _withCtx((nv) => [
+        _createVNode(_component_m_container_dialog, {
+          id: "ItemList_SelColsDialog",
+          title: _ctx.ec.l10n.localize('Column Fields')
+        }, {
+          button: _withCtx(() => [
+            _createVNode(_component_q_btn, {
+              dense: "",
+              outline: "",
+              "no-caps": "",
+              icon: "table_chart",
+              label: _ctx.ec.l10n.localize('Columns')
+            }, null, 8, ["label"])
+          ]),
+          default: _withCtx(() => [
+            _createVNode(_component_m_form_column_config, {
+              id: "ItemList_SelColsForm",
+              action: nv.columnsAction,
+              "find-parameters": nv.params,
+              "columns-initial": nv.columnsTree,
+              "form-location": "ItemList"
+            }, null, 8, ["action", "find-parameters", "columns-initial"])
+          ]),
+          _: 2
+        }, 1032, ["title"]),
         _createVNode(_component_q_btn, {
           dense: "",
           outline: "",
@@ -172,132 +203,116 @@ return function render(_ctx, _cache) {
           label: _ctx.ec.l10n.localize('CSV')
         }, null, 8, ["href", "label"])
       ]),
-      header: _withCtx((hs) => [
-        _createElementVNode("div", { class: "th text-left" }, [
-          _createElementVNode("div", null, [
-            _createElementVNode("div", { class: "form-title" }, [
-              _createElementVNode("span", {
-                textContent: _toDisplayString(_ctx.ec.l10n.localize('Item ID'))
-              }, null, 8, ["textContent"]),
-              _createElementVNode("span", { class: "form-order-by" }, [
-                _createElementVNode("a", {
-                  href: "#",
-                  onClick: _withModifiers($event => (hs.sortBy('itemId')), ["prevent"]),
-                  class: _normalizeClass({active: hs.orderBy('itemId') === 'asc'})
-                }, [
-                  _createElementVNode("i", { class: "fa fa-caret-up" })
-                ], 10, ["onClick"]),
-                _createElementVNode("a", {
-                  href: "#",
-                  onClick: _withModifiers($event => (hs.sortBy('-itemId')), ["prevent"]),
-                  class: _normalizeClass({active: hs.orderBy('-itemId') === 'desc'})
-                }, [
-                  _createElementVNode("i", { class: "fa fa-caret-down" })
-                ], 10, ["onClick"])
-              ])
+      hc_itemId: _withCtx(({hs, formProps}) => [
+        _createElementVNode("div", null, [
+          _createElementVNode("div", { class: "form-title" }, [
+            _createElementVNode("span", {
+              textContent: _toDisplayString(_ctx.ec.l10n.localize('Item ID'))
+            }, null, 8, ["textContent"]),
+            _createElementVNode("span", { class: "form-order-by" }, [
+              _createElementVNode("a", {
+                href: "#",
+                onClick: _withModifiers($event => (hs.sortBy('itemId')), ["prevent"]),
+                class: _normalizeClass({active: hs.orderBy('itemId') === 'asc'})
+              }, [
+                _createElementVNode("i", { class: "fa fa-caret-up" })
+              ], 10, ["onClick"]),
+              _createElementVNode("a", {
+                href: "#",
+                onClick: _withModifiers($event => (hs.sortBy('-itemId')), ["prevent"]),
+                class: _normalizeClass({active: hs.orderBy('-itemId') === 'desc'})
+              }, [
+                _createElementVNode("i", { class: "fa fa-caret-down" })
+              ], 10, ["onClick"])
             ])
-          ])
-        ]),
-        _createElementVNode("div", { class: "th text-left" }, [
-          _createElementVNode("div", null, [
-            _createElementVNode("div", { class: "form-title" }, [
-              _createElementVNode("span", {
-                textContent: _toDisplayString(_ctx.ec.l10n.localize('Name'))
-              }, null, 8, ["textContent"])
-            ])
-          ])
-        ]),
-        _createElementVNode("div", { class: "th text-left" }, [
-          _createElementVNode("div", null, [
-            _createElementVNode("div", { class: "form-title text-right" }, [
-              _createElementVNode("span", {
-                textContent: _toDisplayString(_ctx.ec.l10n.localize('Price'))
-              }, null, 8, ["textContent"])
-            ])
-          ])
-        ]),
-        _createElementVNode("div", { class: "th text-left" }, [
-          _createElementVNode("div", null, [
-            _createElementVNode("div", { class: "form-title" })
           ])
         ])
       ]),
-      row: _withCtx((_ctx) => [
-        _createElementVNode("div", { class: "tr" }, [
-          _createVNode(_component_m_form, {
-            name: 'ItemList_'+_ctx.rowIndex,
-            id: 'ItemList_'+_ctx.rowIndex,
-            action: "/Items/saveItem",
-            "fields-initial": {'itemId':_ctx.$mq.str(_ctx.$scope['itemId']),'itemId_display':_ctx.$mq.str(_ctx.$scope['itemId']),'name':_ctx.$mq.str(_ctx.$scope['name']),'price':_ctx.$mq.str(_ctx.$scope['price']),'price_display':_ctx.$mq.fmt(_ctx.$scope['price'],'#,##0.00'),'moquiFormName':'ItemList','pageIndex':_ctx.$mq.str(_ctx.$scope['pageIndex']||0)}
+      hc_name: _withCtx(({hs, formProps}) => [
+        _createElementVNode("div", null, [
+          _createElementVNode("div", { class: "form-title" }, [
+            _createElementVNode("span", {
+              textContent: _toDisplayString(_ctx.ec.l10n.localize('Name'))
+            }, null, 8, ["textContent"])
+          ])
+        ])
+      ]),
+      hc_price: _withCtx(({hs, formProps}) => [
+        _createElementVNode("div", null, [
+          _createElementVNode("div", { class: "form-title text-right" }, [
+            _createElementVNode("span", {
+              textContent: _toDisplayString(_ctx.ec.l10n.localize('Price'))
+            }, null, 8, ["textContent"])
+          ])
+        ])
+      ]),
+      hc_go: _withCtx(({hs, formProps}) => [
+        _createElementVNode("div", null, [
+          _createElementVNode("div", { class: "form-title" })
+        ])
+      ]),
+      rc_itemId: _withCtx((_ctx) => [
+        _createElementVNode("div", { class: "form-group" }, [
+          _createVNode(_component_m_display, {
+            name: "itemId",
+            id: 'ItemList_itemId'+'_'+_ctx.rowIndex+'_display',
+            modelValue: _ctx.formProps.fields.itemId,
+            "onUpdate:modelValue": $event => ((_ctx.formProps.fields.itemId) = $event),
+            display: _ctx.formProps.fields.itemId_display,
+            fields: _ctx.formProps.fields
+          }, null, 8, ["id", "modelValue", "onUpdate:modelValue", "display", "fields"])
+        ])
+      ]),
+      rc_name: _withCtx((_ctx) => [
+        _createElementVNode("div", { class: "form-group" }, [
+          _createVNode(_component_m_text_line, {
+            id: 'ItemList_name'+'_'+_ctx.rowIndex,
+            type: "text",
+            name: "name",
+            size: "30",
+            label: _ctx.ec.l10n.localize('Name'),
+            modelValue: _ctx.formProps.fields.name,
+            "onUpdate:modelValue": $event => ((_ctx.formProps.fields.name) = $event),
+            fields: _ctx.formProps.fields
+          }, null, 8, ["id", "label", "modelValue", "onUpdate:modelValue", "fields"])
+        ])
+      ]),
+      rc_price: _withCtx((_ctx) => [
+        _createElementVNode("div", { class: "form-group text-right" }, [
+          _createVNode(_component_m_display, {
+            name: "price",
+            class: "text-right",
+            id: 'ItemList_price'+'_'+_ctx.rowIndex+'_display',
+            modelValue: _ctx.formProps.fields.price,
+            "onUpdate:modelValue": $event => ((_ctx.formProps.fields.price) = $event),
+            display: _ctx.formProps.fields.price_display,
+            fields: _ctx.formProps.fields
+          }, null, 8, ["id", "modelValue", "onUpdate:modelValue", "display", "fields"])
+        ])
+      ]),
+      rc_go: _withCtx((_ctx) => [
+        _createElementVNode("div", { class: "form-group" }, [
+          _createVNode(_component_q_btn, {
+            dense: "",
+            outline: !_ctx.formProps.hasFieldsChanged,
+            "no-caps": "",
+            type: "submit",
+            name: "go",
+            value: "go",
+            color: "primary",
+            id: 'ItemList_go'+'_'+_ctx.rowIndex
           }, {
-            default: _withCtx((formProps) => [
-              _createElementVNode("div", { class: "td" }, [
-                _createElementVNode("div", { class: "form-group" }, [
-                  _createVNode(_component_m_display, {
-                    name: "itemId",
-                    id: 'ItemList_itemId'+'_'+_ctx.rowIndex+'_display',
-                    modelValue: formProps.fields.itemId,
-                    "onUpdate:modelValue": $event => ((formProps.fields.itemId) = $event),
-                    display: formProps.fields.itemId_display,
-                    fields: formProps.fields
-                  }, null, 8, ["id", "modelValue", "onUpdate:modelValue", "display", "fields"])
-                ])
-              ]),
-              _createElementVNode("div", { class: "td" }, [
-                _createElementVNode("div", { class: "form-group" }, [
-                  _createVNode(_component_m_text_line, {
-                    id: 'ItemList_name'+'_'+_ctx.rowIndex,
-                    type: "text",
-                    name: "name",
-                    size: "30",
-                    label: _ctx.ec.l10n.localize('Name'),
-                    modelValue: formProps.fields.name,
-                    "onUpdate:modelValue": $event => ((formProps.fields.name) = $event),
-                    fields: formProps.fields
-                  }, null, 8, ["id", "label", "modelValue", "onUpdate:modelValue", "fields"])
-                ])
-              ]),
-              _createElementVNode("div", { class: "td" }, [
-                _createElementVNode("div", { class: "form-group text-right" }, [
-                  _createVNode(_component_m_display, {
-                    name: "price",
-                    class: "text-right",
-                    id: 'ItemList_price'+'_'+_ctx.rowIndex+'_display',
-                    modelValue: formProps.fields.price,
-                    "onUpdate:modelValue": $event => ((formProps.fields.price) = $event),
-                    display: formProps.fields.price_display,
-                    fields: formProps.fields
-                  }, null, 8, ["id", "modelValue", "onUpdate:modelValue", "display", "fields"])
-                ])
-              ]),
-              _createElementVNode("div", { class: "td" }, [
-                _createElementVNode("div", { class: "form-group" }, [
-                  _createVNode(_component_q_btn, {
-                    dense: "",
-                    outline: !formProps.hasFieldsChanged,
-                    "no-caps": "",
-                    type: "submit",
-                    name: "go",
-                    value: "go",
-                    color: "primary",
-                    id: 'ItemList_go'+'_'+_ctx.rowIndex
-                  }, {
-                    default: _withCtx(() => [
-                      _createElementVNode("span", {
-                        textContent: _toDisplayString(_ctx.ec.l10n.localize('Save'))
-                      }, null, 8, ["textContent"])
-                    ]),
-                    _: 1
-                  }, 8, ["outline", "id"])
-                ])
-              ])
+            default: _withCtx(() => [
+              _createElementVNode("span", {
+                textContent: _toDisplayString(_ctx.ec.l10n.localize('Save'))
+              }, null, 8, ["textContent"])
             ]),
             _: 1
-          }, 8, ["name", "id", "fields-initial"])
+          }, 8, ["outline", "id"])
         ])
       ]),
       _: 1
-    }),
+    }, 8, ["row-initial", "column-fields"]),
     _createVNode(_component_m_static_form_list, {
       name: "ItemMulti",
       id: "ItemMulti",

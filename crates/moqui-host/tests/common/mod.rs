@@ -116,7 +116,7 @@ const STATIC_LIST: &str = r#"<screen require-authentication="false" server-stati
     </actions>
     <widgets>
         <label text="Enumerations of ${ec.user.username}" type="h4"/>
-        <form-list name="EnumList" list="enumList" header-dialog="true" saved-finds="true" show-csv-button="true">
+        <form-list name="EnumList" list="enumList" header-dialog="true" saved-finds="true" show-csv-button="true" select-columns="true">
             <field name="enumId"><header-field title="Enum ID" show-order-by="true"/><default-field><display/></default-field></field>
             <field name="description"><header-field show-order-by="true"><text-find/></header-field><default-field><display/></default-field></field>
         </form-list>

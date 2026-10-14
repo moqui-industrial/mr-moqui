@@ -959,7 +959,11 @@
         // The cells of one column header: the title and the links that sort by the field.
         const headerCell = (column, cfg) => {
             w('<div class="th text-left">');
-            column.forEach((f) => {
+            column.forEach((f) => headerFieldCell(f, cfg));
+            w("</div>");
+        };
+        const headerFieldCell = (f, cfg) => {
+            {
                 const align = f.align && f.align !== "left" ? f.align : null;
                 let out = '<div><div class="' + cls("form-title", f.headerStyle || null, align === "center" ? "text-center" : align === "right" ? "text-right" : null) + '">' +
                     (f.submit ? "" : '<span v-text="' + e(f.title) + '"></span>');
@@ -977,8 +981,7 @@
                     w("</div>");
                 }
                 w("</div>");
-            });
-            w("</div>");
+            }
         };
 
         const formListOpen = (n, cols, cfg) => {
@@ -996,7 +999,19 @@
                 "skip-header": at(n, "skip-header") === "true" || null, class: at(n, "style") || null, multi: multi || null
             };
             // A form that posts every row: the component makes one m-form, and each row's values start it under name_rowIndex.
-            if (multi) attrs[":row-initial"] = "(_ctx) => (" + initialOf(kids(n, "field"), "r", []) + ")";
+            const columnsMode = at(n, "select-columns") === "true";
+            st.columnsMode = columnsMode;
+            if (multi || columnsMode) attrs[":row-initial"] = "(_ctx) => (" + initialOf(kids(n, "field"), "r", []) + ")";
+            if (columnsMode) {
+                // The column picker: the component lays out the columns, the template's or the user's, from a slot for each field.
+                attrs[":default-columns"] = js_(cols.map((fields) => fields.map((field) => at(field, "name"))));
+                const listed = kids(n, "field").filter((field) => kids(field, "default-field").concat(kids(field, "conditional-field")).some((sub) => !kids(sub, "hidden").length && !kids(sub, "ignored").length));
+                attrs[":column-fields"] = "[" + listed.map((field) => "{id:" + sq(at(field, "name")) + ",label:" + titleExpr(first(field, "header-field") || first(field, "default-field") || kids(field, "conditional-field")[0]) + "}").join(",") + "]";
+                attrs["columns-action"] = sri.staticUrl("formSelectColumns", "transition").path;
+                attrs["form-location"] = name;
+                const headerFields = kids(n, "field").filter((f) => { const sub = first(f, "header-field"); return sub && sub.children.filter((x) => x.name !== "set").length; });
+                if (headerFields.length && at(n, "header-dialog") !== "true") attrs[":header-initial"] = "(_ctx, hs) => (" + initialOf(headerFields, "header-field", [["orderByField", "hs.orderByField"]]) + ")";
+            }
             if (at(n, "saved-finds") === "true") {
                 attrs["form-location"] = name;
                 attrs["find-action"] = sri.staticUrl("formSaveFind", "transition").path;
@@ -1209,13 +1224,18 @@
         // and the csv, xlsx, text and print exports. The component gives nv: the finds, the current parameters, and the URLs.
         const loc = (text) => "ec.l10n.localize(" + sq(text) + ")";
         const navSlot = (n, cols, headerFields, flags) => {
-            if (!(flags.headerDialog || flags.savedFinds || flags.csv || flags.xlsx || flags.text || flags.pdf)) return;
+            if (!(flags.headerDialog || flags.savedFinds || flags.csv || flags.xlsx || flags.text || flags.pdf || flags.columns)) return;
             const name = at(n, "name");
             w('<template v-slot:nav="nv">');
             if (flags.headerDialog || flags.savedFinds) {
                 w("<m-container-dialog" + A({ id: name + "_hdialog", ":title": loc("Find Options") }) + '><template v-slot:button><q-btn dense outline no-caps icon="search"' + A({ ":label": loc("Find Options") }) + "></q-btn></template>");
                 if (flags.savedFinds) savedFindsBody(name);
                 if (flags.headerDialog) findDialogForm(n, cols, headerFields);
+                w("</m-container-dialog>");
+            }
+            if (flags.columns) {
+                w("<m-container-dialog" + A({ id: name + "_SelColsDialog", ":title": loc("Column Fields") }) + '><template v-slot:button><q-btn dense outline no-caps icon="table_chart"' + A({ ":label": loc("Columns") }) + "></q-btn></template>");
+                w("<m-form-column-config" + A({ id: name + "_SelColsForm", ":action": "nv.columnsAction", ":find-parameters": "nv.params", ":columns-initial": "nv.columnsTree", "form-location": name }) + "></m-form-column-config>");
                 w("</m-container-dialog>");
             }
             if (flags.csv) w('<q-btn dense outline type="a"' + A({ ":href": "nv.exportUrl('csv')", ":label": loc("CSV") }) + "></q-btn>");
@@ -1275,6 +1295,45 @@
             w('<q-btn dense outline no-caps type="submit"' + A({ ":label": loc("Export Text") }) + "></q-btn></form></m-container-dialog>");
         };
 
+        // The cells of a form-list with the column picker: a header slot (hc_) and a row slot (rc_) for each field, which the component places in
+        // the columns the package names, or the template's own. The header slot gets hs and the formProps of the header find form; the row slot
+        // the row's scope, whose formProps is the row form the component makes.
+        const columnSlots = (n, cols, headerFields, flags, cfg) => {
+            const name = at(n, "name");
+            const skipForm = at(n, "skip-form") === "true";
+            const headerForm = headerFields.length && !flags.headerDialog;
+            if (at(n, "skip-header") !== "true") {
+                cols.flat().forEach((f) => {
+                    w("<template" + A({ ["v-slot:hc_" + f.name]: "{hs, formProps}" }) + ">");
+                    push();
+                    st.owner = headerForm ? name + "_header" : "";
+                    st.fieldForm = name + "_header";
+                    st.inForm = !!headerForm;
+                    st.inRow = false;
+                    headerFieldCell(f, cfg);
+                    pop();
+                    w("</template>");
+                });
+            }
+            kids(n, "field").forEach((field) => {
+                const fieldName = at(field, "name");
+                w("<template" + A({ ["v-slot:rc_" + fieldName]: "_ctx" }) + ">");
+                push();
+                st.inRow = true;
+                st.inForm = !skipForm;
+                st.owner = "";
+                cellBody(field, (sub) => {
+                    if (kids(sub, "ignored").length) return;
+                    if (kids(sub, "hidden").length) { subWidgets(sub); return; }
+                    w("<div" + A({ class: cellStyle(at(sub, "container-style"), at(field, "align")) }) + ">");
+                    subWidgets(sub);
+                    w("</div>");
+                });
+                pop();
+                w("</template>");
+            });
+        };
+
         const formList = (n, columnFieldLists, allFields) => {
             const cfg = {};
             const name = at(n, "name");
@@ -1282,12 +1341,11 @@
                 if (allFields.some((f) => { const sub = first(f, tag); return sub && sub.children.length; })) note("form-list-row", n, "the " + tag + " row of form-list " + name + " is not written");
             });
             if (first(n, "row-selection")) note("row-selection", n, "row-selection of form-list " + name + " is not written");
-            if (at(n, "select-columns") === "true") note("select-columns", n, "the column picker of form-list " + name + " is not written");
             if (kids(n, "field").some((f) => at(f, "show-total"))) note("form-list-total", n, "show-total of form-list " + name + " is not written");
             const flags = {
                 headerDialog: at(n, "header-dialog") === "true", savedFinds: at(n, "saved-finds") === "true",
                 csv: at(n, "show-csv-button") === "true", xlsx: at(n, "show-xlsx-button") === "true" && ec.screen.isRenderModeValid("xlsx"),
-                text: at(n, "show-text-button") === "true", pdf: at(n, "show-pdf-button") === "true"
+                text: at(n, "show-text-button") === "true", pdf: at(n, "show-pdf-button") === "true", columns: at(n, "select-columns") === "true"
             };
             cfg.headerDialog = flags.headerDialog;
             const opened = formListOpen(n, columnFieldLists, cfg);
@@ -1296,6 +1354,12 @@
             const headerFields = allFields.filter((f) => { const sub = first(f, "header-field"); return sub && sub.children.filter((x) => x.name !== "set").length; });
             if (kids(n, "field").some((f) => at(f, "aggregate") === "sub-list")) note("form-list-aggregate", n, "the sub-list fields of form-list " + name + " are not written (the form request groups the rows)");
             if (!skipHeader) navSlot(n, cols, headerFields, flags);
+            if (flags.columns) {
+                columnSlots(n, cols, headerFields, flags, cfg);
+                w("</m-static-form-list>\n");
+                pop();
+                return;
+            }
             if (!skipHeader) {
                 w('<template v-slot:header="hs">');
                 if (headerFields.length && !flags.headerDialog) {

@@ -895,6 +895,14 @@ fn form_package(state: &RenderState, def: &Arc<ScreenDef>, name: &str) -> Result
             }
         }
     }
+    // The columns the user chose for the form, as field names, when the column picker is on; without them the template's own columns hold.
+    if node.attribute("select-columns").as_deref() == Some("true") {
+        let location = super::saved_finds::form_location(&def.location, true, name);
+        let saved = super::saved_finds::saved_find_location(&location, definition.dynamic);
+        if let Some(columns) = super::saved_finds::user_columns(&location, &saved)? {
+            body.insert("mqColumns".to_string(), serde_json::json!(columns));
+        }
+    }
     // The user's saved finds of the form and the screen's default one, for the find dialog.
     if node.attribute("saved-finds").as_deref() == Some("true") {
         let location = super::saved_finds::form_location(&def.location, true, name);

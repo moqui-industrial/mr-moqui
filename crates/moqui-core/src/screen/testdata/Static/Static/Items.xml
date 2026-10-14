@@ -38,7 +38,7 @@
         <link url="viewItem" text="View ${item.itemId}" link-type="anchor">
             <parameter name="itemId" from="item.itemId"/>
         </link>
-        <form-list name="ItemList" list="itemList" transition="saveItem" show-csv-button="true">
+        <form-list name="ItemList" list="itemList" transition="saveItem" show-csv-button="true" select-columns="true">
             <field name="itemId"><header-field show-order-by="true"/><default-field><display/></default-field></field>
             <field name="name"><default-field><text-line size="30"/></default-field></field>
             <field name="price" align="right"><default-field><display format="#,##0.00"/></default-field></field>
