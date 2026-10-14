@@ -63,6 +63,49 @@ pub fn run(path: &[&str], method: &str, parameters: &BTreeMap<String, Value>) ->
     root.visit(path, 0, &method, &mut params)
 }
 
+/// `RestApi.getFreshRootResources` for the tools dashboard: each root resource with its `name`, `displayName`,
+/// `description`, the count of methods under it (`childMethods`), and its child resources by name (`resourceMap`).
+///
+/// # Errors
+///
+/// Returns an error when no context is entered.
+pub fn root_resource_infos() -> Result<Vec<Value>, Error> {
+    let roots = current_roots()?;
+    Ok(roots.resources.values().map(|node| resource_info(node, true)).collect())
+}
+
+fn resource_info(node: &Node, with_children: bool) -> Value {
+    let text = |value: &Option<String>| value.as_deref().map_or(Value::Null, Value::string);
+    let mut map = IndexMap::new();
+    map.insert("name".to_string(), Value::string(&node.name));
+    map.insert("displayName".to_string(), text(&node.display_name));
+    map.insert("description".to_string(), text(&node.description));
+    map.insert(
+        "childMethods".to_string(),
+        Value::I64(i64::try_from(node.method_count()).unwrap_or(i64::MAX)),
+    );
+    if with_children {
+        map.insert(
+            "resourceMap".to_string(),
+            Value::Map(
+                node.resources
+                    .iter()
+                    .map(|(name, child)| (name.clone(), resource_info(child, false)))
+                    .collect(),
+            ),
+        );
+    }
+    Value::Map(map)
+}
+
+impl Node {
+    fn method_count(&self) -> usize {
+        self.methods.len()
+            + self.resources.values().map(Node::method_count).sum::<usize>()
+            + self.id.as_ref().map_or(0, |id| id.method_count())
+    }
+}
+
 fn current_roots() -> Result<Arc<Roots>, Error> {
     let factory = ExecutionContext::with_current(|ctx| Arc::clone(ctx.factory()))
         .ok_or_else(|| Error::new("no execution context is entered"))?;
@@ -142,6 +185,9 @@ pub(crate) fn install(factory: &Arc<ExecutionContextFactory>, paths: &[PathBuf])
 
 struct Node {
     name: String,
+    /// `displayName` and `description` of a resource, for the tools REST API list.
+    display_name: Option<String>,
+    description: Option<String>,
     is_id: bool,
     allow_extra_path: bool,
     methods: BTreeMap<String, Operation>,
@@ -192,6 +238,12 @@ fn node_from(node: &MNode, parent_auth: &str, is_id: bool) -> Result<Node, Error
     }
     Ok(Node {
         name,
+        display_name: node.attribute("displayName").filter(|text| !text.is_empty()),
+        description: node
+            .first_named("description")
+            .and_then(|child| child.text())
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty()),
         is_id,
         allow_extra_path: is_id && node.attribute("allow-extra-path").as_deref() == Some("true"),
         methods,

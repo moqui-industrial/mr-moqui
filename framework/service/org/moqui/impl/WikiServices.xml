@@ -448,7 +448,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <if condition="!parentPath"><set field="parentPath" from="pagePath.contains('/') ? pagePath.substring(0, pagePath.lastIndexOf('/')) : null"/></if>
             </then><else>
                 <if condition="!pagePath"><set field="pagePath" from="(parentPath ? parentPath+'/' : '') + (pageName?:'')"/></if>
-                <service-call name="org.moqui.impl.WikiServices.get#WikiPageId" in-map="context + [createIfMissing:true]" out-map="context"/>
+                <service-call name="org.moqui.impl.WikiServices.get#WikiPageId" in-map="Object.assign({}, context, {createIfMissing: true})" out-map="context"/>
             </else></if>
 
             <if condition="wikiPage == null"><return error="true" message="Wiki Page [${wikiSpaceId}/${pagePath}] does not exist and could not be created"/></if>

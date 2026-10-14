@@ -84,6 +84,9 @@ pub(crate) fn run_scheduled(shared: &Arc<Shared>) -> PassReport {
         let _authz = context.disable_authz();
         pass(shared, &factory)
     }));
+    if let Ok(Ok(report)) = &outcome {
+        shared.note_pass(report);
+    }
     match outcome {
         Ok(Ok(report)) => report,
         Ok(Err(err)) => {

@@ -22,14 +22,11 @@ along with this software (see the LICENSE.md file). If not, see
             <script><![CDATA[
                 ec.logger.info(`Clearing cache entry with key ${key} from cache ${cacheName}`)
                 const theCache = ec.cache.getCache(cacheName)
-                const iter = theCache.iterator()
-                while (iter.hasNext()) {
-                    const entry = iter.next()
-                    if (key == String(entry.key)) {
-                        const cacheValue = theCache.getAndRemove(entry.key)
-                        ec.message.addMessage(ec.resource.expand('Cleared ${key} from cache [${cacheName}] had value [${cacheValue}]',''))
-                        return
-                    }
+                if (theCache.containsKey(String(key))) {
+                    const cacheValue = theCache.get(String(key))
+                    theCache.remove(String(key))
+                    ec.message.addMessage(ec.resource.expand('Cleared ${key} from cache [${cacheName}] had value [${cacheValue}]', '', {cacheValue: cacheValue}))
+                    return
                 }
                 ec.message.addError(ec.resource.expand('No entry with key [${key}] in cache [${cacheName}]',''))
             ]]></script>

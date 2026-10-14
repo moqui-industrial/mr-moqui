@@ -121,6 +121,10 @@ struct WebSlot {
     /// The full URL of the request and its `Referer`, for an artifact hit. Empty with no socket.
     request_url: String,
     referrer: String,
+    /// `getRequestDetails`: the request line, scheme, remote address, and headers, for the System dashboard.
+    request_details: String,
+    /// The names in the URL query string, which `getSecureRequestParameters` leaves out.
+    query_names: Vec<String>,
     /// Scheme, host, and context path that links start with. Empty for a path-only link.
     base_url: String,
     sent: bool,
@@ -160,6 +164,8 @@ pub(crate) fn install_with(parameters: BTreeMap<String, Value>, base_url: String
             host: String::new(),
             request_url: String::new(),
             referrer: String::new(),
+            request_details: String::new(),
+            query_names: Vec::new(),
             base_url,
             sent: false,
             status: 200,
@@ -240,12 +246,50 @@ pub(crate) fn set_request_info(request: &WebRequest) {
         url.push_str(&query.join("&"));
     }
     let referrer = request.header("referer").unwrap_or("").to_string();
+    let mut details = format!(
+        "Request: {} {url}\nScheme: {scheme}, Secure? {}\nRemote: {}\n",
+        request.method, request.https, request.peer_ip
+    );
+    for (name, value) in &request.headers {
+        // The credentials a header carries are not shown.
+        let shown = if name == "authorization" || name == "cookie" { "(hidden)" } else { value.as_str() };
+        details.push_str(&format!("Header: {name} = [{shown}]\n"));
+    }
     WEB.with(|slot| {
         if let Some(web) = slot.borrow_mut().as_mut() {
             web.request_url = url;
             web.referrer = referrer;
+            web.request_details = details;
+            web.query_names = request.query.iter().map(|(name, _)| name.clone()).collect();
         }
     });
+}
+
+/// `getSecureRequestParameters`: the parameters that did not come in the URL query string (the body, a multipart
+/// part), so a value that must not be in a link, such as the SQL runner's statement, is not read from one.
+pub(crate) fn secure_parameters() -> BTreeMap<String, Value> {
+    WEB.with(|slot| {
+        slot.borrow().as_ref().map_or_else(BTreeMap::new, |web| {
+            web.parameters
+                .iter()
+                .filter(|(name, _)| !web.query_names.contains(name))
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect()
+        })
+    })
+}
+
+/// The text [`set_request_info`] kept, with the parameters. Empty with no request.
+pub(crate) fn request_details() -> String {
+    WEB.with(|slot| {
+        slot.borrow().as_ref().map_or_else(String::new, |web| {
+            let mut text = web.request_details.clone();
+            for (name, value) in &web.parameters {
+                text.push_str(&format!("Parameter: {name} = {}\n", moqui_lib::object::to_plain_string(value)));
+            }
+            text
+        })
+    })
 }
 
 /// The URL [`set_request_info`] kept. None with no request, or for a render with no socket.

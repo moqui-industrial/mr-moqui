@@ -98,6 +98,29 @@ pub(super) fn seca_rule_from(node: &MNode) -> SecaRule {
     }
 }
 
+impl SecaRule {
+    /// Whether the rule runs for `service`, at any `when`.
+    pub(super) fn applies_to(&self, service: &str) -> bool {
+        service_matches(self, service)
+    }
+
+    /// The rule as XML, for the tools screens that list rules.
+    pub(super) fn describe(&self) -> String {
+        let mut text = format!(
+            "<seca service=\"{}\" when=\"{}\" priority=\"{}\"{}{}>",
+            self.service_plain,
+            self.when_name,
+            self.priority,
+            if self.name_is_pattern { " name-is-pattern=\"true\"" } else { "" },
+            if self.run_on_error { " run-on-error=\"true\"" } else { "" },
+        );
+        text.push_str(&self.condition);
+        text.push_str(&self.actions);
+        text.push_str("</seca>");
+        text
+    }
+}
+
 fn service_matches(rule: &SecaRule, service: &str) -> bool {
     let plain = service.replace('#', "");
     if !rule.name_is_pattern {

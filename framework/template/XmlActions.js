@@ -127,6 +127,8 @@
             has(node, "offset") && `.offset(${attr(node, "offset")})`,
             has(node, "limit") && `.limit(${attr(node, "limit")})`,
             childrenNamed(node, "select-field").map((kid) => `.selectField(${jsString(attr(kid, "field-name"))})`).join(""),
+            // The fields a form-list shows, set by the screen on the copy of its entity-find (not a schema attribute).
+            has(node, "form-select-fields") && `.selectFormFields(${jsString(attr(node, "form-select-fields"))})`,
             childrenNamed(node, "order-by").map((kid) => `.orderBy(${jsString(attr(kid, "field-name"))})`).join(""),
             node.children.map((kid) => findCondition(kid, cached)).join("")
         ]);

@@ -217,9 +217,13 @@ pub(super) fn js_value_to_host(ctx: &Ctx<'_>, value: &JsValue<'_>) -> Result<Val
             map.insert(SET_KEY.to_string(), js_value_to_host(ctx, &items)?);
             return Ok(Value::Map(map));
         }
+        // A method of the object is not data, so it is left out, as the unwrapped projection leaves out a function.
         let mut map = indexmap::IndexMap::new();
         for entry in object.props::<String, JsValue>() {
             let (key, item) = entry.map_err(|err| js_caught(ctx, err))?;
+            if item.is_function() {
+                continue;
+            }
             map.insert(key, js_value_to_host(ctx, &item)?);
         }
         return Ok(Value::Map(map));

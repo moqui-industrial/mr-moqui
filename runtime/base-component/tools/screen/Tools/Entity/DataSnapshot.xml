@@ -37,9 +37,9 @@ along with this software (see the LICENSE.md file). If not, see
         <parameter name="filename"/>
         <actions><script><![CDATA[
             if (!WebUtilities.isSafeSinglePathSegment(filename)) {
-                ec.web.sendError(404, "Snapshot not found", null)
+                ec.web.sendJsonError(404, "Snapshot not found")
             } else {
-                ec.web.sendResourceResponse("db/snapshot/" + filename)
+                ec.web.sendResourceResponse("runtime://db/snapshot/" + filename)
             }
         ]]></script></actions>
         <default-response type="none"/>
@@ -50,7 +50,7 @@ along with this software (see the LICENSE.md file). If not, see
             if (!WebUtilities.isSafeSinglePathSegment(filename)) {
                 ec.message.addError("Snapshot not found")
             } else {
-                ec.resource.getLocationReference("db/snapshot/" + filename).delete()
+                ec.resource.getLocationReference("runtime://db/snapshot/" + filename).delete()
             }
         ]]></script></actions>
         <default-response url="."/>
@@ -70,11 +70,8 @@ along with this software (see the LICENSE.md file). If not, see
             if (!filename?.endsWith(".zip") || !WebUtilities.isSafeSinglePathSegment(filename)) {
                 ec.message.addError(`File ${filename} is not a zip file, should be a zip containing one or more xml data files`); return
             }
-            const targetFile = new File(String(ec.factory.getRuntimePath()) + '/db/snapshot/' + filename)
-            if (!targetFile.parentFile.exists()) targetFile.parentFile.mkdirs()
-            if (targetFile.exists()) { ec.message.addError(`File ${filename} already exists`); return }
-            const fileStream = snapshotFile.getInputStream()
-            try { targetFile.append(fileStream) } finally { fileStream.close() }
+            // an uploaded file is written to dbresource:// only; a snapshot zip goes in runtime/db/snapshot by hand
+            ec.message.addError(`Upload of snapshot file ${filename} is not available; copy it to runtime/db/snapshot`)
         ]]></script></actions>
         <default-response url="."/>
     </transition>
@@ -96,11 +93,11 @@ along with this software (see the LICENSE.md file). If not, see
 
     <actions>
         <script><![CDATA[
-            const snapshotDir = new File(String(ec.factory.getRuntimePath()) + '/db/snapshot')
-            snapshotFiles = snapshotDir.exists() ? snapshotDir.listFiles() : null
+            const snapshotDir = ec.resource.getLocationReference('runtime://db/snapshot')
             snapshotList = []
-            if (snapshotFiles) for (const sfile of snapshotFiles)
-                if (!sfile.isDirectory() && sfile.getName().endsWith(".zip") && sfile.length() > 0) snapshotList.push(sfile)
+            if (snapshotDir != null && snapshotDir.exists) for (const sfile of snapshotDir.getDirectoryEntries())
+                if (!sfile.isDirectory() && sfile.fileName.endsWith(".zip") && sfile.getSize() > 0)
+                    snapshotList.push({name: sfile.fileName, lastModified: sfile.getLastModified(), size: sfile.getSize()})
         ]]></script>
     </actions>
     <widgets>
@@ -146,8 +143,8 @@ along with this software (see the LICENSE.md file). If not, see
         <section-iterate name="SnapshotListSection" list="snapshotList" entry="sfile"><widgets>
             <container-row>
                 <row-col sm="4"><label text="${sfile.name}"/></row-col>
-                <row-col sm="2"><label text="${ec.l10n.format(new java.sql.Timestamp(sfile.lastModified()), null)}"/></row-col>
-                <row-col sm="2"><label text="${ec.l10n.format((sfile.length())/(1024*1024), '#,##0.00')} MiB"/></row-col>
+                <row-col sm="2"><label text="${ec.l10n.format(basicConvert(sfile.lastModified, 'java.sql.Timestamp'), null)}"/></row-col>
+                <row-col sm="2"><label text="${ec.l10n.format(sfile.size/(1024*1024), '#,##0.00')} MiB"/></row-col>
                 <row-col sm="1"><link url="downloadSnapshot" text="Download" parameter-map="{filename:sfile.name}"/></row-col>
                 <row-col sm="1"><link url="deleteSnapshot" text="Delete" parameter-map="{filename:sfile.name}" confirmation="Really delete ${sfile.name}?"/></row-col>
                 <row-col sm="1"><container-dialog id="ImportDialog" button-text="Import">

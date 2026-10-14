@@ -23,6 +23,7 @@ mod definition;
 mod dispatch;
 pub(crate) mod form;
 pub(crate) mod generate;
+pub mod info;
 pub(crate) mod menu;
 mod pdf;
 mod render;

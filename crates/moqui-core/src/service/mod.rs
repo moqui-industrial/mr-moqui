@@ -18,10 +18,12 @@ pub(crate) mod call;
 pub(crate) mod define;
 mod eca;
 mod eca_rules;
+pub mod info;
 mod elfinder;
 mod email_eca;
 mod jobs;
 mod mail;
+mod not_ported;
 mod pool;
 mod remote;
 mod request_pool;
@@ -32,6 +34,7 @@ mod seca;
 mod security_checks;
 pub(crate) mod semaphore;
 mod system_sync;
+mod tools;
 mod validate;
 
 pub use call::{async_call, call, call_future, start_future, sync, ServiceFuture};
@@ -45,14 +48,14 @@ pub(crate) use jobs::send_job_error_notification;
 pub use jobs::{run_job_now, PassReport};
 #[cfg(test)]
 pub(crate) use mail::{SharedSinkGuard, SinkGuard};
-pub use pool::{start_pools, ServicePools};
+pub use pool::{start_pools, PoolStatus, RunnerStats, ServicePools};
 pub(crate) use remote::parse_json;
 pub use remote::shared_http_client;
 pub use request_pool::{caps, check_serve_caps, RequestPool};
 #[cfg(test)]
 pub(crate) use rest::install;
 pub(crate) use rest::openapi_document;
-pub use rest::run;
+pub use rest::{root_resource_infos, run};
 pub use seca::run_seca_rules;
 pub use security_checks::security_checks_run;
 pub use semaphore::acquire;

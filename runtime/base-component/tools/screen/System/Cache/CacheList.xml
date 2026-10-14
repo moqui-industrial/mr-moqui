@@ -26,11 +26,10 @@ along with this software (see the LICENSE.md file). If not, see
             'screen.find.path',
             'resource.xml-actions.location', 'resource.groovy.location',
             'resource.wiki.location', 'resource.markdown.location', 'resource.text.location', 'resource.text.location',
-            'resource.reference.location', 'l10n.message'].forEach(cacheName => {
+            'resource.reference.location', 'l10n.message', 'screen.definition'].forEach(cacheName => {
                 if (ec.cache.cacheExists(cacheName)) ec.cache.getCache(cacheName).clear()
             })
-
-            ec.ecfi.warmCache()
+            // Java then warms the entity, service, and screen caches; the port loads definitions when first used
         </script></actions>
         <default-response url="."/>
     </transition>
@@ -41,30 +40,24 @@ along with this software (see the LICENSE.md file). If not, see
     <transition name="cacheElements">
         <default-response url="../CacheElements"/>
     </transition>
-    <transition name="runGc" authz-action="update">
-        <actions><script>System.gc()</script></actions>
-        <default-response url="."/>
-    </transition>
 
     <actions>
         <set field="cacheList" from="ec.cache.getAllCachesInfo(orderByField || '+name', filterRegexp)"/>
         <set field="pageSize" from="pageSize || '40'"/>
         <script>CollectionUtilities.paginateList("cacheList", null, context)</script>
 
-        <set field="memoryMXBean" from="java.lang.management.ManagementFactory.getMemoryMXBean()"/>
-        <set field="heapMemoryUsage" from="memoryMXBean.getHeapMemoryUsage()"/>
-        <set field="nonHeapMemoryUsage" from="memoryMXBean.getNonHeapMemoryUsage()"/>
+        <!-- Java shows the JVM heap and non-heap; the port shows the process memory -->
+        <set field="processInfo" from="ec.factory.getStatusMap().Process"/>
     </actions>
     <widgets>
         <container-row><row-col lg="6" md="6">
-            <label text="Heap Used: ${ec.l10n.format(heapMemoryUsage.getUsed()/(1024*1024), '#,##0.00')} MiB, Committed: ${ec.l10n.format(heapMemoryUsage.getCommitted()/(1024*1024), '#,##0.00')} MiB, Max: ${ec.l10n.format(heapMemoryUsage.getMax()/(1024*1024), '#,##0.00')} MiB"/>
+            <label text="Memory Used: ${ec.l10n.format(processInfo.MemoryUsed, '#,##0.00')} MiB, Peak: ${ec.l10n.format(processInfo.MemoryPeak, '#,##0.00')} MiB"/>
         </row-col><row-col lg="6" md="6">
-            <label text="Non-Heap Used: ${ec.l10n.format(nonHeapMemoryUsage.getUsed()/(1024*1024), '#,##0.00')} MiB, Committed: ${ec.l10n.format(nonHeapMemoryUsage.getCommitted()/(1024*1024), '#,##0.00')} MiB"/>
+            <label text="Threads: ${processInfo.Threads}"/>
         </row-col></container-row>
         <container-row><row-col lg="6" md="6">
             <link text="Clear All" url="clearAllCaches"/>
             <link text="Clear All Artifact" url="clearArtifactCaches"/>
-            <link text="Run GC" url="runGc" btn-type="warning" confirmation="Run Java garbage collection? This may take some time and pause other running threads."/>
         </row-col><row-col lg="6" md="6">
             <form-single name="FilterForm" transition=".">
                 <field name="filterRegexp"><default-field><text-line size="30"/></default-field></field>

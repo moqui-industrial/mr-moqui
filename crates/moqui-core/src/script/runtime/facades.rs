@@ -72,8 +72,18 @@ impl HostCache {
         host_guard(&ctx, || self.with_cache(&ctx, false, |cache| cache.contains_key(&key)))
     }
 
+    /// Clear the cache. A name that is not a conf cache may be the screen definitions or an entity list cache.
     fn clear(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
-        host_guard(&ctx, || self.with_cache(&ctx, (), |cache| cache.clear()))
+        host_guard(&ctx, || {
+            let cleared = with_ec(&ctx, |ec| ec.factory().cache().clear(&self.name))?;
+            match cleared {
+                Ok(true) => Ok(()),
+                Ok(false) => super::tools_host::clear_other_cache(&self.name)
+                    .map(|_| ())
+                    .map_err(|err| throw_lib(&ctx, &err)),
+                Err(err) => Err(Exception::throw_message(&ctx, err.message())),
+            }
+        })
     }
 }
 

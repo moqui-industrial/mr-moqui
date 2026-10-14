@@ -21,8 +21,10 @@ pub mod field_rw;
 pub mod load_feed;
 pub mod query_rest;
 
+mod data_writer;
 mod dbresource;
 mod etl;
+pub mod info;
 pub(crate) mod exec;
 mod facade;
 mod find;
@@ -35,6 +37,7 @@ mod sequence;
 mod share;
 mod value;
 
+pub use data_writer::{DataFileType, EntityDataWriter};
 pub use dbresource::{DbResourceChild, DbResourceInfo, DbResourceStat};
 pub use etl::EtlLoader;
 pub use exec::statement_stats;

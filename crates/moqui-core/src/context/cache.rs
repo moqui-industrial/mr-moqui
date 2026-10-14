@@ -14,7 +14,7 @@
 
 //! One `MCache` per `<cache name>`. No second cache implementation.
 
-use moqui_lib::cache::{CacheConfig, MCache, MCacheManager};
+use moqui_lib::cache::{CacheConfig, CacheInfo, MCache, MCacheManager};
 use moqui_lib::node::MNode;
 
 use super::error::Error;
@@ -54,6 +54,21 @@ impl CacheFacade {
 
     pub fn get(&self, name: &str) -> Result<Option<MCache<String, String>>, Error> {
         self.manager.get(name).map_err(Error::from)
+    }
+
+    /// The size, limits, and counters of each conf cache.
+    pub fn infos(&self) -> Result<Vec<CacheInfo>, Error> {
+        self.manager.infos().map_err(Error::from)
+    }
+
+    /// Clear one conf cache. `false` when there is no cache of that name.
+    pub fn clear(&self, name: &str) -> Result<bool, Error> {
+        self.manager.clear(name).map_err(Error::from)
+    }
+
+    /// Clear every conf cache.
+    pub fn clear_all(&self) -> Result<(), Error> {
+        self.manager.clear_all().map_err(Error::from)
     }
 }
 

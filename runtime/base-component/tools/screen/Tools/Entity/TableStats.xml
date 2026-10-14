@@ -24,8 +24,10 @@ along with this software (see the LICENSE.md file). If not, see
         <set field="entityInfoList" from="[]"/>
         <iterate list="entityListOrig" entry="entityInfo">
             <script><![CDATA[
-                const rowCount = ec.entity.find(entityInfo.fullEntityName).count()
-                entityInfo.put("rowCount", rowCount)
+                // an entity of a group with no datasource here (logging is an Elastic datasource in Java) has no count
+                let rowCount = null
+                try { rowCount = ec.entity.find(entityInfo.fullEntityName).count() } catch (e) { ec.logger.warn(`No row count for ${entityInfo.fullEntityName}: ${e}`) }
+                entityInfo.rowCount = rowCount
                 if ('empty' == viewOption) {
                     if (rowCount == 0) entityInfoList.push(entityInfo)
                 } else if ('non-empty' == viewOption) {

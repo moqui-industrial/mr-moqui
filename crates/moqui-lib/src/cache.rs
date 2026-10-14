@@ -156,6 +156,31 @@ pub struct CacheStats {
     pub removals: u64,
 }
 
+/// What the cache admin screen lists for one cache: `CacheFacadeImpl.getAllCachesInfo`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CacheInfo {
+    pub name: String,
+    pub size: usize,
+    /// 0 is no limit.
+    pub max_entries: usize,
+    /// Milliseconds after the last access, 0 for none.
+    pub expire_idle_ms: i64,
+    /// Milliseconds after creation, 0 for none.
+    pub expire_live_ms: i64,
+    pub stats: CacheStats,
+}
+
+/// One entry for the cache elements screen: `MEntry` times and hits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntryInfo<K, V> {
+    pub key: K,
+    pub value: V,
+    pub hit_count: u64,
+    pub created: i64,
+    pub updated: i64,
+    pub accessed: i64,
+}
+
 struct Entry<V> {
     value: Arc<V>,
     created: i64,
@@ -371,6 +396,32 @@ where
 
     pub fn max_entries(&self) -> usize {
         self.inner.max_entries.load(Ordering::SeqCst) as usize
+    }
+
+    pub fn info(&self) -> CacheInfo {
+        CacheInfo {
+            name: self.inner.name.clone(),
+            size: self.len(),
+            max_entries: self.max_entries(),
+            expire_idle_ms: self.inner.expire_access_ms.unwrap_or(0),
+            expire_live_ms: self.inner.expire_creation_ms.unwrap_or(0),
+            stats: self.stats(),
+        }
+    }
+
+    /// Every entry with its times and hit count, in no order. Reading this is not an access.
+    pub fn entry_infos(&self) -> Vec<EntryInfo<K, V>> {
+        read_map(&self.inner.entries)
+            .iter()
+            .map(|(key, entry)| EntryInfo {
+                key: key.clone(),
+                value: (*entry.value).clone(),
+                hit_count: entry.access_count.load(Ordering::Relaxed),
+                created: entry.created,
+                updated: entry.updated,
+                accessed: entry.accessed.load(Ordering::Relaxed),
+            })
+            .collect()
     }
 
     /// Going from unlimited to a limit starts the background pass if the config enabled it.
@@ -599,6 +650,8 @@ where
 struct Slot {
     typed: Arc<dyn std::any::Any + Send + Sync>,
     close: Box<dyn Fn() + Send + Sync>,
+    info: Box<dyn Fn() -> CacheInfo + Send + Sync>,
+    clear: Box<dyn Fn() -> Result<(), Error> + Send + Sync>,
 }
 
 /// Name-to-cache map. `create` returns the existing cache when the name is already there.
@@ -629,6 +682,8 @@ impl MCacheManager {
         let cache = MCache::<K, V>::new(name.clone(), config);
         let typed = cache.inner.clone() as Arc<dyn std::any::Any + Send + Sync>;
         let closing = cache.clone();
+        let reading = cache.clone();
+        let clearing = cache.clone();
         slots.insert(
             name,
             Slot {
@@ -636,6 +691,8 @@ impl MCacheManager {
                 close: Box::new(move || {
                     let _ = closing.close();
                 }),
+                info: Box::new(move || reading.info()),
+                clear: Box::new(move || clearing.clear()),
             },
         );
         Ok(cache)
@@ -657,6 +714,31 @@ impl MCacheManager {
     pub fn cache_names(&self) -> Result<Vec<String>, Error> {
         self.ensure_open()?;
         Ok(lock_map(&self.slots).keys().cloned().collect())
+    }
+
+    /// The info of each cache, whatever its key and value types, in creation order.
+    pub fn infos(&self) -> Result<Vec<CacheInfo>, Error> {
+        self.ensure_open()?;
+        Ok(lock_map(&self.slots).values().map(|slot| (slot.info)()).collect())
+    }
+
+    /// Clear one cache by name. `false` when there is no cache of that name.
+    pub fn clear(&self, name: &str) -> Result<bool, Error> {
+        self.ensure_open()?;
+        let slots = lock_map(&self.slots);
+        match slots.get(name) {
+            Some(slot) => (slot.clear)().map(|()| true),
+            None => Ok(false),
+        }
+    }
+
+    /// Clear every cache, as `CacheFacade.clearAllCaches`.
+    pub fn clear_all(&self) -> Result<(), Error> {
+        self.ensure_open()?;
+        for slot in lock_map(&self.slots).values() {
+            (slot.clear)()?;
+        }
+        Ok(())
     }
 
     pub fn destroy(&self, name: &str) -> Result<(), Error> {
@@ -852,5 +934,32 @@ mod tests {
         manager.destroy("local").unwrap();
         assert!(started.elapsed() < Duration::from_millis(50));
         assert!(manager.destroy("local").is_err());
+    }
+
+    #[test]
+    fn manager_lists_and_clears_caches_of_any_type() {
+        let manager = MCacheManager::new();
+        let text = manager
+            .create::<String, String>("l10n.message", CacheConfig::new().expire_access_ms(5_000).background(false))
+            .unwrap();
+        let numbers = manager
+            .create::<i32, i64>("other", CacheConfig::new().max_entries(10).background(false))
+            .unwrap();
+        text.put("a".to_string(), "one".to_string()).unwrap();
+        assert_eq!(text.get(&"a".to_string()).unwrap().as_deref(), Some("one"));
+        numbers.put(1, 2).unwrap();
+        numbers.put(3, 4).unwrap();
+        let infos = manager.infos().unwrap();
+        assert_eq!(infos.len(), 2);
+        assert_eq!((infos[0].name.as_str(), infos[0].size, infos[0].expire_idle_ms), ("l10n.message", 1, 5_000));
+        assert_eq!((infos[1].name.as_str(), infos[1].size, infos[1].max_entries), ("other", 2, 10));
+        assert_eq!(infos[0].stats.hits, 1);
+        let entries = text.entry_infos();
+        assert_eq!((entries[0].key.as_str(), entries[0].value.as_str()), ("a", "one"));
+        assert!(manager.clear("other").unwrap());
+        assert!(!manager.clear("missing").unwrap());
+        assert_eq!(numbers.len(), 0);
+        manager.clear_all().unwrap();
+        assert_eq!(text.len(), 0);
     }
 }

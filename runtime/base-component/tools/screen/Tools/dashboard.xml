@@ -45,7 +45,7 @@ along with this software (see the LICENSE.md file). If not, see
                     <section-iterate name="RootResourcesSection" list="rootResources" entry="resource"><widgets>
                         <section name="RootResourceChildren" condition="resource.childMethods &gt; 100"><widgets>
                             <container-dialog id="RootResourceSwaggerDialog" button-text="${resource.displayName || resource.name} (${resource.childMethods})">
-                                <section-iterate name="RootResourceSwaggerSection" list="resource.resourceMap.values()" entry="childResource"><widgets>
+                                <section-iterate name="RootResourceSwaggerSection" list="Object.values(resource.resourceMap)" entry="childResource"><widgets>
                                     <container><link url="/toolstatic/lib/swagger-ui/index.html?url=${restUrl}/service.swagger/${resource.name}/${childResource.name}"
                                                      text="${childResource.displayName || childResource.description || childResource.name} (${childResource.childMethods})"
                                                      url-type="plain" link-type="anchor" target-window="_blank"/></container>

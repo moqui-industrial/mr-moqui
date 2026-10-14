@@ -68,6 +68,8 @@ pub struct ExecutionContextFactory {
     pub(crate) cluster_heartbeat: AtomicBool,
     /// Artifact hit counts and bins, written by the scheduler tick.
     hits: super::hits::ArtifactHits,
+    /// When the factory booted, in epoch milliseconds, for the status of the tools dashboard.
+    started_millis: i64,
 }
 
 impl ExecutionContextFactory {
@@ -131,6 +133,7 @@ impl ExecutionContextFactory {
             sessions: std::sync::Mutex::new(crate::user::session::SessionTable::new(flush_mode)),
             cluster_heartbeat: AtomicBool::new(false),
             hits,
+            started_millis: jiff::Timestamp::now().as_millisecond(),
         });
         factory.pools.attach(&factory);
         // The host calls cluster::start after the entity facade is installed.
@@ -189,6 +192,11 @@ impl ExecutionContextFactory {
             artifacts: RefCell::new(ArtifactStack::new()),
             session: RefCell::new(crate::user::Memory::default()),
         }
+    }
+
+    /// When the factory booted, in epoch milliseconds.
+    pub fn started_millis(&self) -> i64 {
+        self.started_millis
     }
 
     pub fn runtime_dir(&self) -> &Path {
@@ -913,6 +921,7 @@ impl ExecutionContextFactory {
             )),
             cluster_heartbeat: AtomicBool::new(false),
             hits: super::hits::ArtifactHits::from_conf(conf_text),
+            started_millis: jiff::Timestamp::now().as_millisecond(),
         });
         factory.pools.attach(&factory);
         install_hit_flush(&factory);

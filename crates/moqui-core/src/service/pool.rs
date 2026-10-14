@@ -106,7 +106,40 @@ pub(crate) struct Shared {
     pub(crate) factory: Mutex<Weak<ExecutionContextFactory>>,
     /// Threads running a nested `call_future` for a worker. Bounded by the worker count.
     pub(crate) reserved: std::sync::atomic::AtomicUsize,
+    /// What the scheduler passes did, for the tools job list.
+    pub(crate) runner: Mutex<RunnerStats>,
     handles: Mutex<Vec<JoinHandle<()>>>,
+}
+
+/// The `ScheduledJobRunner` counters the tools service job list shows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RunnerStats {
+    /// When the last pass ran, in epoch milliseconds. 0 before the first.
+    pub last_execute_millis: i64,
+    pub execute_count: u64,
+    pub total_jobs_run: u64,
+    pub last_jobs_active: usize,
+    pub last_jobs_paused: usize,
+}
+
+/// The worker pool as the tools dashboard shows a thread pool executor: threads and queue.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PoolStatus {
+    pub workers: usize,
+    pub active: usize,
+    pub queued: usize,
+    pub queue_cap: usize,
+}
+
+impl Shared {
+    pub(crate) fn note_pass(&self, report: &super::jobs::PassReport) {
+        let mut stats = lock_mutex(&self.runner);
+        stats.last_execute_millis = jiff::Timestamp::now().as_millisecond();
+        stats.execute_count += 1;
+        stats.total_jobs_run += u64::try_from(report.jobs_run).unwrap_or(0);
+        stats.last_jobs_active = report.jobs_active;
+        stats.last_jobs_paused = report.jobs_paused;
+    }
 }
 
 #[derive(Default)]
@@ -199,6 +232,25 @@ impl ServicePools {
     /// Test pool. `workers` is at least 1. Same Drop as a booted pool.
     pub fn bounded(workers: usize, queue: usize) -> Self {
         start(Settings::test(workers.max(1), queue)).expect("service worker pool")
+    }
+
+    /// Threads busy and work waiting now. Idle is all zero.
+    pub fn status(&self) -> PoolStatus {
+        let Some(shared) = self.shared.as_ref() else {
+            return PoolStatus::default();
+        };
+        let state = lock_mutex(&shared.state);
+        PoolStatus {
+            workers: shared.workers,
+            active: state.active,
+            queued: state.queue.len(),
+            queue_cap: shared.queue_cap,
+        }
+    }
+
+    /// The scheduler pass counters, or `None` when the pool is idle and runs no scheduler.
+    pub fn runner_stats(&self) -> Option<RunnerStats> {
+        self.shared.as_ref().map(|shared| lock_mutex(&shared.runner).clone())
     }
 
     /// Worker count and queue capacity. Idle is `(0, 0)`.
@@ -479,6 +531,7 @@ fn start(settings: Settings) -> Result<ServicePools, Error> {
         check_interval: settings.check_interval,
         factory: Mutex::new(Weak::new()),
         reserved: std::sync::atomic::AtomicUsize::new(0),
+        runner: Mutex::new(RunnerStats::default()),
         handles: Mutex::new(Vec::new()),
     });
     let handles = spawn_all(&shared, settings.workers)?;

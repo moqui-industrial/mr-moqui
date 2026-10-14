@@ -261,6 +261,11 @@ impl ScreenFacade {
     pub fn cache_stats(&self) -> moqui_lib::cache::CacheStats {
         self.definitions.stats()
     }
+
+    /// The definition cache as the cache admin screen lists it.
+    pub fn cache_info(&self) -> moqui_lib::cache::CacheInfo {
+        self.definitions.info()
+    }
 }
 
 fn is_current(factory: &ExecutionContextFactory, def: &ScreenDef) -> bool {

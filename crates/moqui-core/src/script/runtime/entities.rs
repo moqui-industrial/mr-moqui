@@ -220,6 +220,14 @@ impl HostFind {
         })
     }
 
+    /// The shown and hidden fields of a form-list, for its `entity-find` (generated code only).
+    fn select_form_fields<'js>(&self, ctx: Ctx<'js>, fields: String) -> rquickjs::Result<Class<'js, HostFind>> {
+        host_guard(&ctx, || {
+            let find = take_find(&ctx, &self.inner)?.select_form_fields(&fields);
+            wrap_find(&ctx, find)
+        })
+    }
+
     fn list<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<Class<'js, HostList>> {
         host_guard(&ctx, || {
             let list = take_find(&ctx, &self.inner)?
@@ -277,7 +285,8 @@ impl HostFind {
         })
     }
 
-    fn delete_all(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
+    /// Delete the rows the find matches. Returns how many, as Java's `deleteAll`.
+    fn delete_all<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || {
             let facade = facade_of(&ctx)?;
             let list = take_find(&ctx, &self.inner)?
@@ -286,7 +295,7 @@ impl HostFind {
             for value in list.values() {
                 value.delete(&facade).map_err(|err| throw_lib(&ctx, &err))?;
             }
-            Ok(())
+            i64_to_js(&ctx, i64::try_from(list.len()).unwrap_or(i64::MAX))
         })
     }
 
