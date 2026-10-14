@@ -39,6 +39,7 @@ pub(crate) mod tree;
 mod url;
 pub(crate) mod urls;
 pub mod vue_check;
+pub(crate) mod xlsx;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

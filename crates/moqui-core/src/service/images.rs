@@ -1,0 +1,389 @@
+/*
+ * This software is in the public domain under CC0 1.0 Universal plus a
+ * Grant of Patent License.
+ *
+ * To the extent possible under law, the author(s) have dedicated all
+ * copyright and related and neighboring rights to this software to the
+ * public domain worldwide. This software is distributed without any
+ * warranty.
+ *
+ * You should have received a copy of the CC0 Public Domain Dedication
+ * along with this software (see the LICENSE.md file). If not, see
+ * <http://creativecommons.org/publicdomain/zero/1.0/>.
+ */
+
+//! `org.moqui.impl.ImageServices` from `moqui-image`: convert an image to another format and to fixed widths, as the
+//! Groovy on ImageIO and TwelveMonkeys did, here on the `image` crate.
+//!
+//! Formats read and written: jpg (jpeg), png, gif, tiff (tif), webp (written lossless), and bmp. Java also had wbmp,
+//! and SVG input through batik; those are not here.
+//!
+//! `convert#Image` reads `inputImageStream` (the bytes) or `inputLocation`, and writes each output that is given: the
+//! original, then the large, medium, small and thumbnail widths, keeping the aspect ratio with a triangle filter (Java's
+//! `ResampleOp.FILTER_TRIANGLE`). An output is a resource location, or a resource reference from
+//! `ec.resource.getLocationReference`. A format with no alpha (jpg, bmp) gets the image on white, as Java's fallback
+//! did. When the encoder still refuses the image, it is written in the input's format with that extension, as Java's
+//! retry did, and `contentLocation` names that file.
+//!
+//! Differences from Java: each width is resampled from the original, where Java resampled each from the one before;
+//! the writes run in the call, where Java started a service for each; and `write#Image` takes the image as encoded bytes
+//! in `image`, where Java took an `IIOImage`.
+
+use std::collections::BTreeMap;
+use std::io::Cursor;
+
+use ::image::imageops::FilterType;
+use ::image::{DynamicImage, ImageFormat, ImageReader};
+use moqui_lib::error::Error as LibError;
+use moqui_lib::object::{is_empty, to_plain_string, Value};
+
+use crate::context::ExecutionContext;
+use crate::entity::EntityFacade;
+
+const CONVERT: &str = "org.moqui.impl.ImageServices.convert#Image";
+const WRITE: &str = "org.moqui.impl.ImageServices.write#Image";
+const READER_SUFFIXES: &str = "org.moqui.impl.ImageServices.get#ImageReaderFileSuffixes";
+const WRITER_SUFFIXES: &str = "org.moqui.impl.ImageServices.get#ImageWriterFileSuffixes";
+const READER_TYPES: &str = "org.moqui.impl.ImageServices.get#ImageReaderMIMETypes";
+const WRITER_TYPES: &str = "org.moqui.impl.ImageServices.get#ImageWriterMIMETypes";
+
+/// The file suffixes of the enabled formats, read and written alike.
+const SUFFIXES: [&str; 8] = ["jpg", "jpeg", "png", "gif", "tif", "tiff", "webp", "bmp"];
+const MIME_TYPES: [&str; 6] = [
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/tiff",
+    "image/webp",
+    "image/bmp",
+];
+
+/// The outputs of `convert#Image`: the parameter suffix and the width parameter (none for the original).
+const OUTPUTS: [(&str, Option<(&str, u32)>); 5] = [
+    ("Original", None),
+    ("Large", Some(("pixelWidthLarge", 2160))),
+    ("Medium", Some(("pixelWidthMedium", 1080))),
+    ("Small", Some(("pixelWidthSmall", 360))),
+    ("Thumbnail", Some(("pixelWidthThumbnail", 165))),
+];
+
+pub(super) fn runs(name: &str) -> bool {
+    matches!(
+        name,
+        CONVERT | WRITE | READER_SUFFIXES | WRITER_SUFFIXES | READER_TYPES | WRITER_TYPES
+    )
+}
+
+pub(super) fn run(
+    name: &str,
+    parameters: &BTreeMap<String, Value>,
+    _facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
+    let list = |key: &str, items: &[&str]| {
+        let mut out = BTreeMap::new();
+        out.insert(
+            key.to_string(),
+            Value::List(items.iter().map(|item| Value::string(*item)).collect()),
+        );
+        Ok(out)
+    };
+    match name {
+        CONVERT => convert_image(parameters),
+        WRITE => write_image_service(parameters),
+        READER_SUFFIXES => list("imageReaderFileSuffixes", &SUFFIXES),
+        WRITER_SUFFIXES => list("imageWriterFileSuffixes", &SUFFIXES),
+        READER_TYPES => list("imageReaderMIMETypes", &MIME_TYPES),
+        WRITER_TYPES => list("imageWriterMIMETypes", &MIME_TYPES),
+        other => Err(LibError::new(format!("image service {other} is not implemented"))),
+    }
+}
+
+fn text(parameters: &BTreeMap<String, Value>, name: &str) -> String {
+    match parameters.get(name) {
+        Some(value) if !is_empty(value) => to_plain_string(value),
+        _ => String::new(),
+    }
+}
+
+/// A resource location given as text, or as a resource reference (a map with its `location`).
+fn location_of(value: Option<&Value>) -> Option<String> {
+    match value? {
+        Value::String(location) if !location.is_empty() => Some(location.clone()),
+        Value::Map(map) => map
+            .get("location")
+            .map(to_plain_string)
+            .filter(|location| !location.is_empty()),
+        _ => None,
+    }
+}
+
+fn width(parameters: &BTreeMap<String, Value>, name: &str, default: u32) -> u32 {
+    let given = match parameters.get(name) {
+        Some(Value::I32(number)) => u32::try_from(*number).ok(),
+        Some(Value::I64(number)) => u32::try_from(*number).ok(),
+        Some(value) if !is_empty(value) => to_plain_string(value).parse().ok(),
+        _ => None,
+    };
+    given.filter(|width| *width > 0).unwrap_or(default)
+}
+
+/// The image bytes from `name` (bytes, or text that is a resource location) or from the resource at `location_name`.
+fn input_bytes(parameters: &BTreeMap<String, Value>, name: &str, location_name: &str) -> Result<Vec<u8>, LibError> {
+    let location = match parameters.get(name) {
+        Some(Value::Bytes(bytes)) if !bytes.is_empty() => return Ok(bytes.clone()),
+        Some(Value::String(location)) if !location.is_empty() => location.clone(),
+        _ => text(parameters, location_name),
+    };
+    if location.is_empty() {
+        return Err(LibError::new(format!("No image given in {name} or {location_name}")));
+    }
+    let found = ExecutionContext::with_current(|ctx| ctx.factory().resource().get(&location))
+        .ok_or_else(|| LibError::new("no execution context is entered"))?;
+    match found {
+        Ok(resource) if resource.exists() => resource.read_bytes().map_err(|err| LibError::new(err.message())),
+        _ => Err(LibError::new(format!("Could not find image at [{location}]"))),
+    }
+}
+
+/// Decode an image, and the name of its format as a file suffix.
+fn decode(bytes: &[u8]) -> Result<(DynamicImage, String), LibError> {
+    let reader = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|err| LibError::new(format!("Could not read image: {err}")))?;
+    let format = reader.format().ok_or_else(|| {
+        LibError::new("No reader for the image: its format is not one of jpg, png, gif, tiff, webp, bmp")
+    })?;
+    let image = reader
+        .decode()
+        .map_err(|err| LibError::new(format!("Could not read image: {err}")))?;
+    Ok((image, suffix_of(format).to_string()))
+}
+
+fn suffix_of(format: ImageFormat) -> &'static str {
+    match format {
+        ImageFormat::Jpeg => "jpg",
+        ImageFormat::Tiff => "tiff",
+        other => other.extensions_str().first().copied().unwrap_or("bin"),
+    }
+}
+
+fn format_of(name: &str) -> Option<ImageFormat> {
+    ImageFormat::from_extension(name.to_ascii_lowercase()).filter(|format| format.writing_enabled())
+}
+
+/// The bytes of `image` in `format_name`. A format with no alpha channel gets the image on white.
+fn encode(image: &DynamicImage, format_name: &str) -> Result<Vec<u8>, LibError> {
+    let format = format_of(format_name).ok_or_else(|| {
+        LibError::new(format!(
+            "No writer for: {format_name}, the formats are {}",
+            SUFFIXES.join(", ")
+        ))
+    })?;
+    let flattened;
+    let image = if matches!(format, ImageFormat::Jpeg | ImageFormat::Bmp) && image.color().has_alpha() {
+        flattened = on_white(image);
+        &flattened
+    } else if matches!(format, ImageFormat::Jpeg)
+        && !matches!(image, DynamicImage::ImageRgb8(_) | DynamicImage::ImageLuma8(_))
+    {
+        // jpeg takes 8-bit gray or color
+        flattened = DynamicImage::ImageRgb8(image.to_rgb8());
+        &flattened
+    } else {
+        image
+    };
+    let mut out = Cursor::new(Vec::new());
+    image
+        .write_to(&mut out, format)
+        .map_err(|err| LibError::new(format!("Could not write image as {format_name}: {err}")))?;
+    Ok(out.into_inner())
+}
+
+/// The image drawn on a white background, as Java's `drawImage(image, 0, 0, Color.WHITE, null)`.
+fn on_white(image: &DynamicImage) -> DynamicImage {
+    let rgba = image.to_rgba8();
+    let mut rgb = ::image::RgbImage::new(rgba.width(), rgba.height());
+    for (target, source) in rgb.pixels_mut().zip(rgba.pixels()) {
+        let alpha = u16::from(source[3]);
+        for channel in 0..3 {
+            let blended = (u16::from(source[channel]) * alpha + 255 * (255 - alpha) + 127) / 255;
+            target[channel] = u8::try_from(blended).unwrap_or(u8::MAX);
+        }
+    }
+    DynamicImage::ImageRgb8(rgb)
+}
+
+/// `width` wide, with the height that keeps the aspect ratio (the integer division Java did).
+fn resized(image: &DynamicImage, width: u32) -> DynamicImage {
+    let height = u64::from(width) * u64::from(image.height()) / u64::from(image.width().max(1));
+    let height = u32::try_from(height).unwrap_or(u32::MAX).max(1);
+    image.resize_exact(width, height, FilterType::Triangle)
+}
+
+fn put_bytes(location: &str, bytes: &[u8]) -> Result<(), LibError> {
+    ExecutionContext::with_current(|ctx| ctx.factory().resource().write_bytes(location, bytes))
+        .ok_or_else(|| LibError::new("no execution context is entered"))?
+        .map_err(|err| LibError::new(format!("Could not save image to {location}: {}", err.message())))
+}
+
+/// Write `image` as `format_name` to `location`; when that format refuses it and `retry` holds, write it in the input
+/// format to the same name with that extension. The location written.
+fn write_image(
+    image: &DynamicImage,
+    location: &str,
+    format_name: &str,
+    input_format: &str,
+    retry: bool,
+) -> Result<String, LibError> {
+    match encode(image, format_name) {
+        Ok(bytes) => {
+            put_bytes(location, &bytes)?;
+            Ok(location.to_string())
+        }
+        Err(err) => {
+            let stem = location.rsplit_once('.').map_or(location, |(stem, _)| stem);
+            let retry_location = format!("{stem}.{input_format}");
+            if !retry || retry_location == location || format_of(input_format).is_none() {
+                return Err(err);
+            }
+            tracing::warn!(
+                "Retrying to write image from format {format_name} to {input_format} with a destination to {retry_location} instead of {location}: {}",
+                err.message()
+            );
+            let bytes = encode(image, input_format)?;
+            put_bytes(&retry_location, &bytes)?;
+            Ok(retry_location)
+        }
+    }
+}
+
+fn convert_image(parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, LibError> {
+    let output_format = text(parameters, "outputImageFormat");
+    if output_format.is_empty() {
+        return Err(LibError::new("outputImageFormat is required"));
+    }
+    let targets: Vec<(&str, Option<u32>, String)> = OUTPUTS
+        .iter()
+        .filter_map(|(suffix, sized)| {
+            let location = location_of(parameters.get(&format!("outputResourceReference{suffix}")))?;
+            let width = sized.map(|(name, default)| width(parameters, name, default));
+            Some((*suffix, width, location))
+        })
+        .collect();
+    let mut out = BTreeMap::new();
+    for (suffix, _) in OUTPUTS {
+        out.insert(format!("contentLocation{suffix}"), Value::Null);
+    }
+    if targets.is_empty() {
+        return Ok(out);
+    }
+    let started = std::time::Instant::now();
+    let bytes = input_bytes(parameters, "inputImageStream", "inputLocation")?;
+    let (image, input_format) = decode(&bytes)?;
+    for (suffix, width, location) in targets {
+        let written = match width {
+            // the original keeps its format when it can be written
+            None => {
+                let format = if format_of(&input_format).is_some() {
+                    input_format.as_str()
+                } else {
+                    output_format.as_str()
+                };
+                write_image(&image, &location, format, &input_format, true)?
+            }
+            Some(width) => write_image(&resized(&image, width), &location, &output_format, &input_format, true)?,
+        };
+        out.insert(format!("contentLocation{suffix}"), Value::String(written));
+    }
+    tracing::info!(
+        "Finished ImageServices.convert took milliseconds {}",
+        started.elapsed().as_millis()
+    );
+    Ok(out)
+}
+
+/// `write#Image`: the image bytes in `image` written as `outputImageFormat` to `outputResourceReference`.
+fn write_image_service(parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, LibError> {
+    let location = location_of(parameters.get("outputResourceReference"))
+        .ok_or_else(|| LibError::new("outputResourceReference is required"))?;
+    let output_format = text(parameters, "outputImageFormat");
+    let bytes = input_bytes(parameters, "image", "inputLocation")?;
+    let (image, found_format) = decode(&bytes)?;
+    let input_format = Some(text(parameters, "inputImageFormat"))
+        .filter(|name| !name.is_empty())
+        .unwrap_or(found_format);
+    let retry = !matches!(text(parameters, "retryIfFail").as_str(), "false" | "N");
+    let written = write_image(&image, &location, &output_format, &input_format, retry)?;
+    let mut out = BTreeMap::new();
+    out.insert("contentLocation".to_string(), Value::String(written));
+    out.insert("succeeded".to_string(), Value::Bool(true));
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn png_with_alpha() -> Vec<u8> {
+        let mut image = ::image::RgbaImage::new(40, 20);
+        for (x, _, pixel) in image.enumerate_pixels_mut() {
+            *pixel = if x < 20 {
+                ::image::Rgba([255, 0, 0, 255])
+            } else {
+                ::image::Rgba([0, 0, 0, 0])
+            };
+        }
+        let mut out = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut out, ImageFormat::Png)
+            .unwrap();
+        out.into_inner()
+    }
+
+    #[test]
+    fn decode_finds_the_format_and_resize_keeps_the_aspect_ratio() {
+        let (image, format) = decode(&png_with_alpha()).unwrap();
+        assert_eq!(format, "png");
+        let small = resized(&image, 10);
+        assert_eq!((small.width(), small.height()), (10, 5));
+    }
+
+    #[test]
+    fn jpeg_puts_a_transparent_image_on_white() {
+        let (image, _) = decode(&png_with_alpha()).unwrap();
+        let bytes = encode(&image, "jpg").unwrap();
+        let (back, format) = decode(&bytes).unwrap();
+        assert_eq!(format, "jpg");
+        let rgb = back.to_rgb8();
+        // the transparent half is white, the opaque half stays red
+        let right = rgb.get_pixel(35, 10);
+        assert!(right.0.iter().all(|channel| *channel > 240), "{right:?}");
+        let left = rgb.get_pixel(5, 10);
+        assert!(left[0] > 200 && left[1] < 60, "{left:?}");
+    }
+
+    #[test]
+    fn every_listed_format_writes() {
+        let (image, _) = decode(&png_with_alpha()).unwrap();
+        for name in ["jpg", "png", "gif", "tiff", "webp", "bmp"] {
+            let bytes = encode(&image, name).unwrap_or_else(|err| panic!("{name}: {err}"));
+            assert_eq!(decode(&bytes).unwrap().0.width(), 40, "{name}");
+        }
+        assert!(encode(&image, "wbmp")
+            .unwrap_err()
+            .message()
+            .contains("No writer for: wbmp"));
+    }
+
+    #[test]
+    fn a_location_is_text_or_a_resource_reference() {
+        assert_eq!(
+            location_of(Some(&Value::string("runtime://a.png"))),
+            Some("runtime://a.png".to_string())
+        );
+        let mut map = indexmap::IndexMap::new();
+        map.insert("location".to_string(), Value::string("runtime://b.png"));
+        assert_eq!(location_of(Some(&Value::Map(map))), Some("runtime://b.png".to_string()));
+        assert_eq!(location_of(Some(&Value::Null)), None);
+    }
+}

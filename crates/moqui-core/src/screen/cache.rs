@@ -60,6 +60,8 @@ pub struct TextOutput {
     pub mime_type: String,
     pub macro_template_location: String,
     pub always_standalone: bool,
+    /// A `screen-output` mode: the macro module fills a document the render sends as bytes, such as `xlsx`.
+    pub binary: bool,
 }
 
 /// One `subscreens-item` from a conf `screen-facade/screen` element.
@@ -93,6 +95,14 @@ pub struct ScreenConf {
     pub default_paginate_rows: i64,
     pub default_autocomplete_rows: i64,
 }
+
+/// The `screen-output` (binary) modes: type, mime type, macro module. Java named a `widget-render-class` for each; here
+/// the module fills a document that the render sends as bytes.
+const BUILT_IN_BINARY_MODES: [(&str, &str, &str); 1] = [(
+    "xlsx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "ScreenXlsx.js",
+)];
 
 const BUILT_IN_MODES: [(&str, &str, &str, bool); 8] = [
     ("html", "text/html", "ScreenHtml.js", false),
@@ -130,6 +140,18 @@ impl ScreenConf {
                     mime_type: mime.to_string(),
                     macro_template_location: format!("framework/template/screen/{module}"),
                     always_standalone: standalone,
+                    binary: false,
+                },
+            );
+        }
+        for (mode, mime, module) in BUILT_IN_BINARY_MODES {
+            conf.text_output.insert(
+                mode.to_string(),
+                TextOutput {
+                    mime_type: mime.to_string(),
+                    macro_template_location: format!("framework/template/screen/{module}"),
+                    always_standalone: true,
+                    binary: true,
                 },
             );
         }
@@ -152,7 +174,15 @@ impl ScreenConf {
         {
             conf.default_autocomplete_rows = rows;
         }
-        for output in facade.children_named("screen-text-output") {
+        let text_outputs = facade
+            .children_named("screen-text-output")
+            .into_iter()
+            .map(|node| (node, false));
+        let binary_outputs = facade
+            .children_named("screen-output")
+            .into_iter()
+            .map(|node| (node, true));
+        for (output, binary) in text_outputs.chain(binary_outputs) {
             let Some(kind) = output.attribute("type").filter(|text| !text.is_empty()) else {
                 continue;
             };
@@ -173,6 +203,8 @@ impl ScreenConf {
                         .or_else(|| existing.as_ref().map(|found| found.macro_template_location.clone()))
                         .unwrap_or_default(),
                     always_standalone: output.attribute("always-standalone").as_deref() == Some("true"),
+                    // `widget-render-class` names a Java class; the type picks the module here.
+                    binary,
                 },
             );
         }
@@ -253,6 +285,11 @@ impl ScreenFacade {
 
     pub fn mime_type(&self, mode: &str) -> Option<&str> {
         self.text_output(mode).map(|output| output.mime_type.as_str())
+    }
+
+    /// Whether `mode` is a `screen-output` mode whose render is bytes, not text.
+    pub fn is_render_mode_binary(&self, mode: &str) -> bool {
+        self.text_output(mode).is_some_and(|output| output.binary)
     }
 
     pub fn is_always_standalone(&self, mode: &str) -> bool {

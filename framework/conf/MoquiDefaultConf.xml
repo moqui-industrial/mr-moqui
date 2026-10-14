@@ -489,6 +489,10 @@
                 macro-template-location="framework/template/screen/ScreenPlain.js"/>
         <screen-text-output type="qvue" mime-type="text/html" always-standalone="true"
                 macro-template-location="framework/template/screen/ScreenPlain.js"/>
+
+        <!-- xlsx is a binary mode (the moqui-poi port): the module fills a workbook with a sheet for each form-list -->
+        <screen-output type="xlsx" mime-type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                always-standalone="true" macro-template-location="framework/template/screen/ScreenXlsx.js"/>
     </screen-facade>
 
     <service-facade distributed-factory="" scheduled-job-check-time="${scheduled_job_check_time}"
@@ -506,6 +510,7 @@
         <!-- These are not needed for running classpath services, are for service reference (known services) -->
         <service-file location="classpath://service/org/moqui/EmailServices.xml"/>
         <service-file location="classpath://service/org/moqui/EntityServices.xml"/>
+        <service-file location="classpath://service/org/moqui/ImageServices.xml"/>
         <service-file location="classpath://service/org/moqui/SmsServices.xml"/>
         <service-file location="classpath://service/org/moqui/impl/BasicServices.xml"/>
         <service-file location="classpath://service/org/moqui/impl/ElFinderServices.xml"/>
@@ -513,6 +518,7 @@
         <service-file location="classpath://service/org/moqui/impl/EntityServices.xml"/>
         <service-file location="classpath://service/org/moqui/impl/EntitySyncServices.xml"/>
         <service-file location="classpath://service/org/moqui/impl/GoogleServices.xml"/>
+        <service-file location="classpath://service/org/moqui/impl/ImageServices.xml"/>
         <service-file location="classpath://service/org/moqui/impl/InstanceServices.xml"/>
         <service-file location="classpath://service/org/moqui/impl/PrintServices.xml"/>
         <service-file location="classpath://service/org/moqui/impl/ScreenServices.xml"/>
@@ -520,6 +526,7 @@
         <service-file location="classpath://service/org/moqui/impl/LlmServices.xml"/>
         <service-file location="classpath://service/org/moqui/impl/A2AServices.xml"/>
         <service-file location="classpath://service/org/moqui/impl/ServiceServices.xml"/>
+        <service-file location="classpath://service/org/moqui/impl/SpreadsheetServices.xml"/>
         <service-file location="classpath://service/org/moqui/impl/SystemMessageServices.xml"/>
         <service-file location="classpath://service/org/moqui/impl/UserServices.xml"/>
         <service-file location="classpath://service/org/moqui/impl/WikiServices.xml"/>

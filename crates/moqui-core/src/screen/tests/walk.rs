@@ -233,8 +233,13 @@ fn the_default_conf_parses_into_the_factory_conf() {
     modes.sort_unstable();
     assert_eq!(
         modes,
-        ["csv", "html", "html-print", "qjs", "qvt", "qvue", "text", "xml"]
+        ["csv", "html", "html-print", "qjs", "qvt", "qvue", "text", "xlsx", "xml"]
     );
+    // xlsx is the one screen-output (binary) mode
+    let xlsx = &parsed.text_output["xlsx"];
+    assert!(xlsx.binary && xlsx.always_standalone);
+    assert_eq!(xlsx.macro_template_location, "framework/template/screen/ScreenXlsx.js");
+    assert!(!parsed.text_output["csv"].binary);
     let print = &parsed.text_output["html-print"];
     assert_eq!(print.mime_type, "text/html");
     assert!(print.always_standalone);

@@ -15,9 +15,10 @@
 //! Rust bodies for the tools services whose Groovy holds bytes or reaches Java internals: the print jobs of
 //! `PrintServices.xml`, the data document notifications, and the encrypted field rewrite of `EntityServices.xml`.
 //!
-//! Print jobs are records only; there is no print server client (`moqui-cups` stays outside). A screen document is
-//! rendered as `html-print` and turned into PDF by the host's engine. The send records the failure on the job, as the
-//! `moqui-cups` send does when the server does not take the job, and reports that network printing is not installed.
+//! A print job is a `PrintJob` record sent to its `NetworkPrinter` through the host's IPP client (`crate::print`), the
+//! port of `moqui-cups` and its CUPS4J calls. A screen document is rendered as `html-print` and turned into PDF by the
+//! host's engine. A send the server does not take, or cannot be reached for, is recorded on the job as `PtjSendFailed`
+//! with the message, and the call returns that error.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -27,25 +28,41 @@ use moqui_lib::object::{is_empty, to_plain_string, Value};
 
 use crate::context::ExecutionContext;
 use crate::entity::{Condition, EntityFacade};
+use crate::print::{JobAction, PrintDocument, PrintServer, PrinterInfo};
 use crate::service::call::{sync_with, CallOptions};
 
 const PRINT_DOCUMENT: &str = "org.moqui.impl.PrintServices.print#Document";
 const PRINT_RESOURCE: &str = "org.moqui.impl.PrintServices.print#ResourceDocument";
 const PRINT_SCREEN: &str = "org.moqui.impl.PrintServices.print#ScreenDocument";
 const SEND_INTERNAL: &str = "org.moqui.impl.PrintServices.send#PrintJobInternal";
+const SERVER_PRINTERS: &str = "org.moqui.impl.PrintServices.get#ServerPrinters";
+const JOB_DETAILS: &str = "org.moqui.impl.PrintServices.get#PrintJobDetailsFromServer";
+const HOLD_JOB: &str = "org.moqui.impl.PrintServices.hold#PrintJob";
+const RELEASE_JOB: &str = "org.moqui.impl.PrintServices.release#PrintJob";
+const CANCEL_JOB: &str = "org.moqui.impl.PrintServices.cancel#PrintJob";
 const DOCUMENT_NOTIFICATIONS: &str = "org.moqui.impl.EntityServices.send#DataDocumentNotifications";
 const REWRITE_ENCRYPTED: &str = "org.moqui.impl.EntityServices.rewrite#EntityEncryptedFields";
 
 const PRINT_JOB: &str = "moqui.basic.print.PrintJob";
-/// The message of a send that has no print server to go to.
-pub(crate) const PRINTING_UNAVAILABLE: &str =
-    "Network printing support not installed (moqui-cups is not part of this build)";
+const NETWORK_PRINTER: &str = "moqui.basic.print.NetworkPrinter";
+/// CUPS4J's default port.
+const IPP_PORT: u16 = 631;
 
 /// True for a service this module runs. The definition keeps its parameters and has no actions.
 pub(super) fn runs(name: &str) -> bool {
     matches!(
         name,
-        PRINT_DOCUMENT | PRINT_RESOURCE | PRINT_SCREEN | SEND_INTERNAL | DOCUMENT_NOTIFICATIONS | REWRITE_ENCRYPTED
+        PRINT_DOCUMENT
+            | PRINT_RESOURCE
+            | PRINT_SCREEN
+            | SEND_INTERNAL
+            | SERVER_PRINTERS
+            | JOB_DETAILS
+            | HOLD_JOB
+            | RELEASE_JOB
+            | CANCEL_JOB
+            | DOCUMENT_NOTIFICATIONS
+            | REWRITE_ENCRYPTED
     )
 }
 
@@ -59,6 +76,11 @@ pub(super) fn run(
         PRINT_RESOURCE => print_resource_document(parameters),
         PRINT_SCREEN => print_screen_document(parameters),
         SEND_INTERNAL => send_print_job_internal(parameters, facade),
+        SERVER_PRINTERS => get_server_printers(parameters, facade),
+        JOB_DETAILS => get_print_job_details(parameters, facade),
+        HOLD_JOB => job_action(parameters, facade, JobAction::Hold),
+        RELEASE_JOB => job_action(parameters, facade, JobAction::Release),
+        CANCEL_JOB => job_action(parameters, facade, JobAction::Cancel),
         DOCUMENT_NOTIFICATIONS => send_document_notifications(parameters, facade),
         REWRITE_ENCRYPTED => rewrite_encrypted_fields(parameters, facade),
         other => Err(LibError::new(format!("tools service {other} is not implemented"))),
@@ -260,8 +282,79 @@ fn print_screen_document(parameters: &BTreeMap<String, Value>) -> Result<BTreeMa
     Ok(call(PRINT_DOCUMENT, &print, &CallOptions::default()))
 }
 
-/// `send#PrintJobInternal`: there is no print server client yet, so the job is marked as a failed send, as the
-/// `moqui-cups` send records a failure, and the call reports that network printing is not available.
+/// A record's fields, a `PrintJob` or a `NetworkPrinter`.
+type Fields = IndexMap<String, Value>;
+/// A `NetworkPrinter`, its server, and the server's printer.
+type Resolved = (Fields, PrintServer, PrinterInfo);
+
+fn force_new() -> CallOptions {
+    CallOptions {
+        require_new_transaction: Some(true),
+        ..CallOptions::default()
+    }
+}
+
+fn update_print_job(print_job_id: &str, fields: &[(&str, Value)], options: &CallOptions) {
+    let mut update = BTreeMap::new();
+    update.insert("printJobId".to_string(), Value::string(print_job_id));
+    for (name, value) in fields {
+        update.insert((*name).to_string(), value.clone());
+    }
+    call(&format!("update#{PRINT_JOB}"), &update, options);
+}
+
+fn map_text(map: &IndexMap<String, Value>, name: &str) -> String {
+    match map.get(name) {
+        Some(value) if !is_empty(value) => to_plain_string(value),
+        _ => String::new(),
+    }
+}
+
+fn server_of(printer: &IndexMap<String, Value>) -> PrintServer {
+    let port = match printer.get("serverPort") {
+        Some(value) if !is_empty(value) => to_plain_string(value).parse().unwrap_or(IPP_PORT),
+        _ => IPP_PORT,
+    };
+    PrintServer {
+        host: map_text(printer, "serverHost"),
+        port: if port == 0 { IPP_PORT } else { port },
+    }
+}
+
+/// `make#CupsPrinter`: the `NetworkPrinter` and the server's printer of that name, or the server's default printer when
+/// the record names none.
+fn make_printer(facade: &EntityFacade, network_printer_id: &str) -> Result<Result<Resolved, String>, LibError> {
+    let Some(record) = facade
+        .find(NETWORK_PRINTER)?
+        .eq("networkPrinterId", Value::string(network_printer_id))
+        .one()?
+    else {
+        return Ok(Err(format!("Could not find NetworkPrinter [{network_printer_id}]")));
+    };
+    let record: IndexMap<String, Value> = record.fields().clone().into_iter().collect();
+    let server = server_of(&record);
+    let client = crate::print::client().map_err(|err| LibError::new(err.message()))?;
+    let printer_name = map_text(&record, "printerName");
+    let found = if printer_name.is_empty() {
+        client.default_printer(&server)
+    } else {
+        client
+            .printers(&server)
+            .map(|printers| printers.into_iter().find(|printer| printer.name == printer_name))
+    };
+    match found {
+        Ok(Some(printer)) => Ok(Ok((record, server, printer))),
+        Ok(None) => Ok(Err(format!(
+            "Print not found with name [{printer_name}] on server [{}] for NetworkPrinter [{network_printer_id}]",
+            server.host
+        ))),
+        Err(err) => Ok(Err(err.message().to_string())),
+    }
+}
+
+/// `send#PrintJobInternal`: print the job's document on its printer. Taken, the job is `PtjPending` with the server's
+/// job id; refused or unreachable, it is `PtjSendFailed` with the message, written in its own transaction, and the call
+/// returns the error.
 fn send_print_job_internal(
     parameters: &BTreeMap<String, Value>,
     facade: &EntityFacade,
@@ -270,22 +363,267 @@ fn send_print_job_internal(
         add_error("Printing is disabled in LLM sim session");
         return Ok(BTreeMap::new());
     }
-    let print_job_id = match parameters.get("printJob") {
-        Some(Value::Map(job)) => job.get("printJobId").map(to_plain_string).unwrap_or_default(),
-        _ => String::new(),
+    let job = match parameters.get("printJob") {
+        Some(Value::Map(job)) => job.clone(),
+        _ => IndexMap::new(),
     };
-    if !print_job_id.is_empty() {
-        let mut update = BTreeMap::new();
-        update.insert("printJobId".to_string(), Value::string(&print_job_id));
-        update.insert("statusId".to_string(), Value::string("PtjSendFailed"));
-        update.insert("errorMessage".to_string(), Value::string(PRINTING_UNAVAILABLE));
-        let force_new = CallOptions {
-            require_new_transaction: Some(true),
-            ..CallOptions::default()
-        };
-        call(&format!("update#{PRINT_JOB}"), &update, &force_new);
+    let print_job_id = map_text(&job, "printJobId");
+    let (job_id, error) = match send_job(&job, facade)? {
+        Ok(result) => (result.job_id, result.error),
+        Err(message) => (None, Some(message)),
+    };
+    let mut out = BTreeMap::new();
+    if let Some(job_id) = job_id {
+        out.insert("jobId".to_string(), Value::I32(job_id));
     }
-    add_error(PRINTING_UNAVAILABLE);
+    let job_id_value = job_id.map_or(Value::Null, Value::I32);
+    if let Some(message) = error {
+        if !print_job_id.is_empty() {
+            update_print_job(
+                &print_job_id,
+                &[
+                    ("jobId", job_id_value),
+                    ("statusId", Value::string("PtjSendFailed")),
+                    ("errorMessage", Value::string(&message)),
+                ],
+                &force_new(),
+            );
+        }
+        add_error(message);
+    } else if !print_job_id.is_empty() {
+        update_print_job(
+            &print_job_id,
+            &[("jobId", job_id_value), ("statusId", Value::string("PtjPending"))],
+            &force_new(),
+        );
+    }
+    Ok(out)
+}
+
+fn send_job(
+    job: &IndexMap<String, Value>,
+    facade: &EntityFacade,
+) -> Result<Result<crate::print::PrintResult, String>, LibError> {
+    let (_, server, printer) = match make_printer(facade, &map_text(job, "networkPrinterId")) {
+        Ok(Ok(found)) => found,
+        Ok(Err(message)) => return Ok(Err(message)),
+        Err(err) => return Ok(Err(err.message().to_string())),
+    };
+    let bytes = match job.get("document") {
+        Some(Value::Bytes(bytes)) => bytes.clone(),
+        Some(Value::String(text)) => text.as_bytes().to_vec(),
+        _ => Vec::new(),
+    };
+    let optional = |name: &str| Some(map_text(job, name)).filter(|text| !text.is_empty());
+    let document = PrintDocument {
+        bytes,
+        content_type: map_text(job, "contentType"),
+        user_name: optional("username"),
+        job_name: optional("jobName"),
+        copies: optional("copies")
+            .and_then(|text| text.parse().ok())
+            .filter(|copies| *copies > 0),
+        duplex: optional("duplex").map(|flag| flag == "Y"),
+        page_ranges: optional("pageRanges"),
+    };
+    let client = match crate::print::client() {
+        Ok(client) => client,
+        Err(err) => return Ok(Err(err.message().to_string())),
+    };
+    Ok(client
+        .print(&server, &printer, &document)
+        .map_err(|err| err.message().to_string()))
+}
+
+/// The `PrintJob`, its printer, and the server for a `printJobId` (`make#CupsClient`).
+fn job_and_server(facade: &EntityFacade, print_job_id: &str) -> Result<Option<(Fields, PrintServer)>, LibError> {
+    let Some(job) = facade
+        .find(PRINT_JOB)?
+        .eq("printJobId", Value::string(print_job_id))
+        .one()?
+    else {
+        add_error(format!("Could not find PrintJob [{print_job_id}]"));
+        return Ok(None);
+    };
+    let job: IndexMap<String, Value> = job.fields().clone().into_iter().collect();
+    let Some(printer) = facade
+        .find(NETWORK_PRINTER)?
+        .eq("networkPrinterId", Value::string(map_text(&job, "networkPrinterId")))
+        .one()?
+    else {
+        add_error(format!("Could not find NetworkPrinter for PrintJob [{print_job_id}]"));
+        return Ok(None);
+    };
+    let printer: IndexMap<String, Value> = printer.fields().clone().into_iter().collect();
+    Ok(Some((job, server_of(&printer))))
+}
+
+fn job_id_of(job: &IndexMap<String, Value>) -> Option<i32> {
+    map_text(job, "jobId").parse().ok()
+}
+
+/// `get#ServerPrinters`: a `NetworkPrinter` for each printer of the server that has none yet, and the ids of all of
+/// that server's records.
+fn get_server_printers(
+    parameters: &BTreeMap<String, Value>,
+    facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
+    let host = text(parameters, "serverHost");
+    let port = text(parameters, "serverPort").parse().unwrap_or(IPP_PORT);
+    let existing = facade
+        .find(NETWORK_PRINTER)?
+        .eq("serverHost", Value::string(&host))
+        .eq("serverPort", Value::I64(i64::from(port)))
+        .list()?;
+    let mut ids: Vec<Value> = Vec::new();
+    let mut names = BTreeSet::new();
+    for row in existing.values() {
+        if let Some(id) = row.get("networkPrinterId") {
+            ids.push(id.clone());
+        }
+        names.insert(row.get("printerName").map(to_plain_string).unwrap_or_default());
+    }
+    let client = crate::print::client().map_err(|err| LibError::new(err.message()))?;
+    let server = PrintServer {
+        host: host.clone(),
+        port,
+    };
+    let printers = client.printers(&server).map_err(|err| LibError::new(err.message()))?;
+    for printer in printers.into_iter().filter(|printer| !names.contains(&printer.name)) {
+        let mut create = BTreeMap::new();
+        create.insert("serverHost".to_string(), Value::string(&host));
+        create.insert("serverPort".to_string(), Value::I64(i64::from(port)));
+        create.insert("printerName".to_string(), Value::string(&printer.name));
+        create.insert("description".to_string(), Value::string(&printer.description));
+        create.insert("location".to_string(), Value::string(&printer.location));
+        let created = call(&format!("create#{NETWORK_PRINTER}"), &create, &CallOptions::default());
+        if has_error() {
+            break;
+        }
+        if let Some(id) = created.get("networkPrinterId") {
+            ids.push(id.clone());
+        }
+    }
+    let mut out = BTreeMap::new();
+    out.insert("networkPrinterIdList".to_string(), Value::List(ids));
+    Ok(out)
+}
+
+/// cups4j's `JobStateEnum` names to `PrintJob` statuses.
+fn status_of_state(state: &str) -> Option<&'static str> {
+    Some(match state {
+        "aborted" => "PtjAborted",
+        "canceled" => "PtjCanceled",
+        "completed" => "PtjCompleted",
+        "pending" => "PtjPending",
+        "pending-held" => "PtjPendingHeld",
+        "processing" => "PtjProcessing",
+        "processing-stopped" => "PtjProcessingStopped",
+        _ => return None,
+    })
+}
+
+/// `get#PrintJobDetailsFromServer`: the `PrintJob` fields and the job's attributes from the server; a status that
+/// changed is saved on the job.
+fn get_print_job_details(
+    parameters: &BTreeMap<String, Value>,
+    facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
+    let print_job_id = text(parameters, "printJobId");
+    let Some((job, server)) = job_and_server(facade, &print_job_id)? else {
+        return Ok(BTreeMap::new());
+    };
+    let mut out: BTreeMap<String, Value> = job
+        .iter()
+        .filter(|(name, _)| name.as_str() != "printJobId")
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
+    let Some(job_id) = job_id_of(&job) else {
+        add_error(format!(
+            "PrintJob [{print_job_id}] has not been sent to the print server"
+        ));
+        return Ok(out);
+    };
+    let client = crate::print::client().map_err(|err| LibError::new(err.message()))?;
+    let attributes = client
+        .job_attributes(&server, job_id)
+        .map_err(|err| LibError::new(err.message()))?;
+    let stamp = |seconds: Option<i64>| {
+        seconds
+            .and_then(|seconds| jiff::Timestamp::from_second(seconds).ok())
+            .map_or(Value::Null, Value::Timestamp)
+    };
+    out.insert("completeTime".to_string(), stamp(attributes.complete_time));
+    out.insert("createTime".to_string(), stamp(attributes.create_time));
+    out.insert(
+        "jobUrl".to_string(),
+        attributes.job_url.map_or(Value::Null, Value::String),
+    );
+    out.insert(
+        "pagesPrinted".to_string(),
+        attributes.pages_printed.map_or(Value::Null, Value::I32),
+    );
+    out.insert(
+        "printerUrl".to_string(),
+        attributes.printer_url.map_or(Value::Null, Value::String),
+    );
+    out.insert("size".to_string(), attributes.size.map_or(Value::Null, Value::I32));
+    if let Some(status) = status_of_state(&attributes.state) {
+        out.insert("statusId".to_string(), Value::string(status));
+        if map_text(&job, "statusId") != status {
+            update_print_job(
+                &print_job_id,
+                &[("statusId", Value::string(status))],
+                &CallOptions::default(),
+            );
+        }
+    }
+    Ok(out)
+}
+
+/// `hold#`, `release#` and `cancel#PrintJob`: the action on the server, and the job's new status when it was done.
+fn job_action(
+    parameters: &BTreeMap<String, Value>,
+    facade: &EntityFacade,
+    action: JobAction,
+) -> Result<BTreeMap<String, Value>, LibError> {
+    let print_job_id = text(parameters, "printJobId");
+    let Some((job, server)) = job_and_server(facade, &print_job_id)? else {
+        return Ok(BTreeMap::new());
+    };
+    let (_, _, printer) = match make_printer(facade, &map_text(&job, "networkPrinterId"))? {
+        Ok(found) => found,
+        Err(message) => {
+            add_error(message);
+            return Ok(BTreeMap::new());
+        }
+    };
+    let (verb, status) = match action {
+        JobAction::Hold => ("hold", "PtjPendingHeld"),
+        JobAction::Release => ("release", "PtjPending"),
+        JobAction::Cancel => ("cancel", "PtjCanceled"),
+    };
+    let done = match job_id_of(&job) {
+        Some(job_id) => crate::print::client()
+            .map_err(|err| LibError::new(err.message()))?
+            .job_action(&server, &printer, job_id, action)
+            .map_err(|err| LibError::new(err.message()))?,
+        None => false,
+    };
+    if done {
+        update_print_job(
+            &print_job_id,
+            &[("statusId", Value::string(status))],
+            &CallOptions::default(),
+        );
+    } else {
+        let job_id = map_text(&job, "jobId");
+        let text = format!(
+            "Could not {verb} job [{job_id}] on print server at [{}] for PrintJob [{print_job_id}]",
+            server.host
+        );
+        ExecutionContext::with_current(|ctx| ctx.message().add_message(text));
+    }
     Ok(BTreeMap::new())
 }
 

@@ -1262,7 +1262,8 @@ fn bad_views_fail_to_load() {
     assert!(err.contains("member of itself"), "{err}");
 }
 
-/// Framework, mantle, and the other component entities in the Java tree, when it is next to this one.
+/// Framework, mantle, and the other component entities in the Java tree, when it is next to this one. The tool
+/// components ported into the framework are skipped.
 #[test]
 fn component_views_render_when_the_java_tree_is_present() {
     let root = workspace_root();
@@ -1273,9 +1274,12 @@ fn component_views_render_when_the_java_tree_is_present() {
     let conf = MNode::parse_file(root.join("framework/conf/MoquiDefaultConf.xml")).expect("conf");
     let mut documents = Vec::new();
     let mut directories = vec![root.join("framework/entity")];
+    // The tool components whose entities are in the framework now would be loaded twice.
+    let in_framework = ["moqui-sso", "moqui-sftp", "moqui-poi", "moqui-image", "moqui-cups"];
     let mut entries: Vec<_> = std::fs::read_dir(&components)
         .unwrap()
         .filter_map(Result::ok)
+        .filter(|entry| !in_framework.iter().any(|name| entry.file_name() == *name))
         .map(|entry| entry.path().join("entity"))
         .filter(|path| path.is_dir())
         .collect();

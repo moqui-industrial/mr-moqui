@@ -44,6 +44,9 @@ rustls = { workspace = true, optional = true }
 webpki-roots = { workspace = true, optional = true }
 rcgen = { workspace = true, optional = true }
 totp-rs = { workspace = true }
+rust_xlsxwriter = { workspace = true }
+calamine = { workspace = true }
+image = { workspace = true }
 
 # No prebuilt QuickJS bindings ship for this target. bindgen needs libclang and the emsdk sysroot;
 # scripts/wasm-env.sh sets both.

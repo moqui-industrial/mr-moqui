@@ -810,6 +810,66 @@ fn sri_static_note(ctx: Ctx<'_>, kind: String, element: String, detail: String) 
     })
 }
 
+// ---- xlsx (the moqui-poi port): ScreenXlsx.js fills the render's workbook ----
+
+fn sri_xlsx_sheet(ctx: Ctx<'_>, name: String) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        with_render(&ctx, false, |state| {
+            state.xlsx.borrow_mut().start_sheet(&name);
+            Ok(())
+        })
+    })
+}
+
+fn sri_xlsx_header(ctx: Ctx<'_>, title: JsValue<'_>) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        let title = to_plain_string_js(&ctx, &title)?;
+        with_render(&ctx, false, |state| {
+            state.xlsx.borrow_mut().header(&title);
+            Ok(())
+        })
+    })
+}
+
+/// `sri.xlsxCell(values, formats, currency, alignRight)`: one cell from the values of a field's widgets.
+fn sri_xlsx_cell<'js>(
+    ctx: Ctx<'js>,
+    values: Array<'js>,
+    formats: Array<'js>,
+    currency: Opt<bool>,
+    align_right: Opt<bool>,
+) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        let mut cells = Vec::with_capacity(values.len());
+        for (index, value) in values.iter::<JsValue>().enumerate() {
+            let value = js_to_host(&ctx, &value?)?;
+            let format = formats.get::<Option<String>>(index)?.unwrap_or_default();
+            cells.push((value, format));
+        }
+        let hints = crate::screen::xlsx::CellHints {
+            currency: currency.0.unwrap_or(false),
+            align_right: align_right.0.unwrap_or(false),
+        };
+        with_render(&ctx, false, |state| state.xlsx.borrow_mut().cell(&cells, hints))
+    })
+}
+
+fn sri_xlsx_cell_count(ctx: Ctx<'_>) -> rquickjs::Result<i32> {
+    host_guard(&ctx, || {
+        let count = with_render(&ctx, false, |state| Ok(state.xlsx.borrow().cell_count()))?;
+        Ok(i32::try_from(count).unwrap_or(i32::MAX))
+    })
+}
+
+fn sri_xlsx_end_row(ctx: Ctx<'_>) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        with_render(&ctx, false, |state| {
+            state.xlsx.borrow_mut().end_row();
+            Ok(())
+        })
+    })
+}
+
 /// Build the global `sri`.
 pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     let sri = caught(ctx, "sri", Object::new(ctx.clone()))?;
@@ -875,6 +935,11 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("staticUrl", sri_static_url);
     method!("staticCheck", sri_static_check);
     method!("staticNote", sri_static_note);
+    method!("xlsxSheet", sri_xlsx_sheet);
+    method!("xlsxHeader", sri_xlsx_header);
+    method!("xlsxCell", sri_xlsx_cell);
+    method!("xlsxCellCount", sri_xlsx_cell_count);
+    method!("xlsxEndRow", sri_xlsx_end_row);
     super::urls::install(ctx, &sri)?;
     Ok(sri)
 }

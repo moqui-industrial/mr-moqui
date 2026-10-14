@@ -217,6 +217,10 @@ pub struct RenderState {
     pub character_encoding: String,
     /// The mode's `screen-text-output` says it is always standalone.
     pub always_standalone: bool,
+    /// A `screen-output` mode: text writes are dropped and the document below is the response.
+    pub binary: bool,
+    /// The workbook of the `xlsx` mode.
+    pub xlsx: RefCell<super::xlsx::XlsxBook>,
     /// The macro module for the mode: the last `macro-template` of a screen in the path, else the conf's.
     pub macro_location: String,
     /// Index into `url_info.path_defs` of the screen being rendered.
@@ -251,6 +255,7 @@ impl RenderState {
         character_encoding: String,
     ) -> Self {
         let always_standalone = facade.is_always_standalone(&mode);
+        let binary = facade.is_render_mode_binary(&mode);
         let macro_location = info
             .path_defs
             .iter()
@@ -271,6 +276,8 @@ impl RenderState {
             content_type,
             character_encoding,
             always_standalone,
+            binary,
+            xlsx: RefCell::new(super::xlsx::XlsxBook::default()),
             macro_location,
             screen_path_index: Cell::new(0),
             dont_do_render: Cell::new(false),
@@ -629,6 +636,17 @@ fn render_screens(state: &RenderState, facade: &ScreenFacade) -> Result<(), Erro
 fn render_body(state: &RenderState) -> Result<(), Error> {
     let is_target = state.url_info.path_defs.len() <= state.screen_path_index.get() + 1;
     script::with_screen_runner(|runner| super::sri::render_active_screen(state, runner, is_target))?;
+    if state.binary {
+        if !web::output_sent() && !state.dont_do_render.get() {
+            let bytes = state.xlsx.borrow().to_bytes()?;
+            web::send_bytes_with_headers(
+                200,
+                vec![("Content-Type".to_string(), state.content_type.clone())],
+                bytes,
+            );
+        }
+        return Ok(());
+    }
     super::sri::flush_end_text(state);
     if !web::output_sent() && !state.dont_do_render.get() {
         web::start_output(200, &super::sri::content_type_header(state));

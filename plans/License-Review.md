@@ -65,6 +65,11 @@ These are the feature flags the resolve used. The unsafe defaults are called out
 | `russh` 0.64 | `default-features = false`, `aws-lc-rs`, `flate2`, `rsa` | `ring`, `des`, `dsa`. Defaults are off so a later default cannot turn `ring` on. `rsa` stays because servers still present RSA host keys. `flate2` is SSH compression, on the `miniz_oxide` backend already enabled. |
 | `russh-sftp` 3 | no features | `async-trait`. The crate has no crypto feature. |
 | `huskarl` 0.11 | default features, which are `default-jws-verifier-platform` | `authorization-flow-loopback`, `metrics`, `experimental-oidc-key-binding`. `huskarl-reqwest`, `huskarl-redis`, and `huskarl-google-cloud` are not dependencies. JOSE is `huskarl-crypto-native` (RustCrypto). TLS stays on `aws-lc-rs`. P-521 is not included. |
+| `rust_xlsxwriter` 0.99 | `default-features = false` | `chrono`, `jiff`, `serde`, `polars`, `constant_memory`, `zlib`. Dates are written as Excel serial numbers. Its `zip` dependency asks for `deflate`. |
+| `calamine` 0.36 | `default-features = false` | `chrono`/`dates`. Dates are read as Excel serial numbers and made `jiff` values. Its `zip` dependency asks for `deflate`. |
+| `zip` 8 (through the two above) | `deflate`, which both crates name: `deflate-zopfli` and `deflate-flate2-zlib-rs` | The other defaults (`aes-crypto`, `bzip2`, `zstd`, `lzma`, `xz`, `ppmd`, `deflate64`, `time`) stay off. `deflate` turns `flate2`'s `zlib-rs` backend on for the whole graph. `zlib-rs` is pure Rust under the Zlib license. `libz-sys` stays out. |
+| `image` 0.25 | `default-features = false`, `bmp`, `gif`, `jpeg`, `png`, `tiff`, `webp` | `rayon`, `avif` (and `dav1d`), `exr`, `dds`, `ff`, `hdr`, `ico`, `pnm`, `qoi`, `tga`, `serde`. JPEG decoding is `zune-jpeg`. |
+| `ipp` 7 | `default-features = false` | `async-client-rustls` (the default), `async-client`, `client`, and every TLS feature. The message encoding is used without the crate's clients; the host posts it with the workspace `reqwest`. |
 | `axum` 0.8 | `macros`, `ws` | |
 | `tower-http` 0.6 | `default-features = false`, `compression-gzip`, `fs`, `set-header` | |
 | `tokio-tungstenite` 0.29 | `default-features = false`, `connect` | TLS features. The PDF browser's DevTools socket is loopback `ws://`. Already in the graph under axum's `ws`. `chromiumoxide` was dropped (phase 12): its untagged-enum message parsing fails under `serde_json` `arbitrary_precision`. |
@@ -80,7 +85,7 @@ These are the feature flags the resolve used. The unsafe defaults are called out
 
 `oxc_parser` 0.139.0 is named in `[workspace.dependencies]` and is not a dependency of any crate. It is absent from `cargo tree -p moqui` until phase 6 links it. The 387-name count above does not include it. Its published `rust-version` is 1.94.0. Its license is MIT.
 
-`native-tls` and the `openssl` crate are not in the resolved graph. `openssl-probe` is. It only finds a certificate directory. It does not link libssl. `libz-sys` is not in the graph: `mysql` is on `minimal-rust`, and `flate2` 1.1 is on `rust_backend` (`miniz_oxide`). The `zlib-rs` feature is off.
+`native-tls` and the `openssl` crate are not in the resolved graph. `openssl-probe` is. It only finds a certificate directory. It does not link libssl. `libz-sys` is not in the graph: `mysql` is on `minimal-rust`, and `flate2` 1.1 is on `rust_backend`. Since phase 12 the `zip` `deflate` feature also turns on `flate2`'s `zlib-rs`, a pure-Rust port of zlib under the Zlib license, which then backs every `flate2` user.
 
 ## Servo, Chromium, OpenSearch
 
@@ -98,7 +103,7 @@ V8, if it ever replaces QuickJS, is BSD-3-Clause for the engine. That swap gets 
 
 Bitronix is not linked. The Java fork `org.moqui:btm` is annotated Apache-2.0 in the framework `build.gradle`. Upstream Bitronix was LGPL. The transaction manager is a behavior reimplementation against `DbDriver`. It is not a translation of LGPL source.
 
-An inbound SMTP server, CUPS, and the old tool components (`moqui-poi`, image, SFTP) are not in this graph. Each one is reviewed when it is proposed. CUPS is Apache-2.0. That does not pre-approve a particular Rust binding. `russh` 0.64.1 and `russh-sftp` 3.0.1 are linked from `moqui-host`; the SFTP client, the SSH server, and the SSH cluster channel are implemented (`plans/Ssh.md`). `libssh` stays out. It is LGPL. `ssh2` and `libssh2` stay out. They are a C client with no server. `remotefs-ssh` is reviewed only if it is proposed. `huskarl` 0.11.6 is linked from `moqui-host` and runs the SSO login (`plans/Sso.md`). SAML is not in the graph. `samael` and `openidconnect` stay out. `saml-rs` is reviewed when it is proposed.
+An inbound SMTP server is not in this graph. It is reviewed when it is proposed. The tool components are in the framework (`plans/Office-Image-Print.md`): `rust_xlsxwriter` and `calamine` (with `zip`) for `moqui-poi`, `image` for `moqui-image`, and `ipp` for `moqui-cups`. cups4j is LGPL-3.0 and libcups is C; neither is linked. The client speaks IPP to the CUPS server over HTTP. `russh` 0.64.1 and `russh-sftp` 3.0.1 are linked from `moqui-host`; the SFTP client, the SSH server, and the SSH cluster channel are implemented (`plans/Ssh.md`). `libssh` stays out. It is LGPL. `ssh2` and `libssh2` stay out. They are a C client with no server. `remotefs-ssh` is reviewed only if it is proposed. `huskarl` 0.11.6 is linked from `moqui-host` and runs the SSO login (`plans/Sso.md`). SAML is not in the graph. `samael` and `openidconnect` stay out. `saml-rs` is reviewed when it is proposed.
 
 ## Direct crates
 
@@ -150,8 +155,13 @@ Versions are what `cargo` locked on 2026-10-11 for the feature set above. "Stati
 | `tracing` | 0.1.44 | MIT | Log and metrics instrumentation | Static | OK |
 | `indexmap` | 2.x | Apache-2.0 OR MIT | Map used in place of `LiteStringMap` | Static | OK |
 | `regex` | 1.x | MIT OR Apache-2.0 | Transitive | Static | OK |
-| `flate2`, `miniz_oxide` | 1.1.10 / 0.9.1 | MIT OR Apache-2.0 / MIT OR Zlib OR Apache-2.0 | Compression. Pure Rust. `flate2` is on `rust_backend`. | Static | OK. `zlib-rs` and `libz-sys` are not enabled. |
+| `flate2`, `miniz_oxide`, `zlib-rs` | 1.1.10 / 0.9.1 / 0.6.8 | MIT OR Apache-2.0 / MIT OR Zlib OR Apache-2.0 / Zlib | Compression. Pure Rust. `flate2` is on `rust_backend`, and `zlib-rs` since `zip` `deflate` (phase 12). | Static | OK. `libz-sys` is not enabled. |
 | `ammonia` | 4.2.3 | MIT OR Apache-2.0 | HTML cleaning for `allow-html="safe"`, with its default allow-list | Static. Pulls `html5ever` 0.40 and `markup5ever` (MIT OR Apache-2.0), `url`, `maplit`, `tendril`, `string_cache`, `phf`. Also pulls `cssparser` 0.38 and `dtoa-short` 0.3.5, both **MPL-2.0**. | OK with a narrow exception. MPL-2.0 is file-level copyleft: we do not modify those crates, so the duty is to keep their license notice and offer their source, which the crates.io release is. `deny.toml` allows MPL-2.0 for those two crates by name and no other. |
+| `rust_xlsxwriter` | 0.99.1 | MIT OR Apache-2.0 | The `xlsx` render mode (`moqui-poi`) | Static | OK with `default-features = false`. |
+| `calamine` | 0.36.1 | MIT | `read#Spreadsheet` and `load#SpreadsheetEntity`: xlsx, xlsm, xlsb, xls, ods | Static. Pulls `quick-xml` 0.41 (MIT), `codepage` (Apache-2.0 OR MIT), `atoi_simd`, `fast-float2`, `debug_unsafe` (MIT OR Apache-2.0), and `encoding_rs`. | OK with `default-features = false`. |
+| `zip` | 8.6.0 | MIT | The xlsx container, read and written | Static. `deflate` pulls `zopfli` 0.8 (Apache-2.0), `flate2` with `zlib-rs` 0.6 (Zlib), and `typed-path` (MIT OR Apache-2.0). | OK |
+| `image` | 0.25.10 | MIT OR Apache-2.0 | `ImageServices` (`moqui-image`) | Static. Pulls `png`, `gif`, `image-webp`, `fdeflate`, `weezl`, `half` (MIT OR Apache-2.0), `tiff`, `fax`, `color_quant` (MIT), `zune-core` and `zune-jpeg` (MIT OR Apache-2.0 OR Zlib), `moxcms` and `pxfm` (BSD-3-Clause OR Apache-2.0), `bytemuck` (Zlib OR Apache-2.0 OR MIT), `byteorder-lite` (Unlicense OR MIT). | OK. Take Apache-2.0 for `moxcms` and `pxfm`. |
+| `ipp` | 7.0.0 | MIT OR Apache-2.0 | IPP messages for network printing (`moqui-cups`) | Static, moqui-host. Pulls `enum-as-inner` and `enum-primitive-derive` (proc-macros, not linked), `num-traits`, `thiserror`, `bytes`, `http`. | OK with `default-features = false`. |
 | `servo` | 0.7.0 | MPL-2.0 | In-process PDF alternate | Would be static | Hold. Off by default. |
 | `rusqlite` | 0.38.0 | MIT | SQLite `DbDriver` of the browser build (`crates/moqui-browser`, `plans/Wasm.md`) | Static in the emscripten module. Natively it is only in `moqui-browser` tests and stub; the `moqui` binary does not link it. Pulls `hashlink` 0.11, `fallible-iterator` 0.3, `fallible-streaming-iterator` 0.1 (MIT OR Apache-2.0 / MIT). | OK |
 | `libsqlite3-sys` | 0.36.0 | MIT; the bundled SQLite amalgamation is public domain | Compiles SQLite with the target C compiler (emcc for the browser) | Static, same scope as `rusqlite` | OK. Public domain needs no notice; keep the MIT notice for the crate. |
@@ -160,7 +170,7 @@ Versions are what `cargo` locked on 2026-10-11 for the feature set above. "Stati
 
 ## Other licenses in the static graph
 
-324 of the 382 third-party names are MIT, Apache-2.0, or MIT OR Apache-2.0, including the `MIT/Apache-2.0` and `Apache-2.0 / MIT` spellings. The five workspace crates are CC0-1.0. The other 58 third-party names are below. All of them are permissive. Unicode-3.0 is the current Unicode license (attribution, no share-alike). The ICU data crates carry it, pulled in by URL and text handling. `idna` itself is MIT OR Apache-2.0.
+324 of the 382 third-party names are MIT, Apache-2.0, or MIT OR Apache-2.0, including the `MIT/Apache-2.0` and `Apache-2.0 / MIT` spellings. The five workspace crates are CC0-1.0. The other 58 third-party names are below. Those counts are from before the phase 12 tool components. The 37 names those components added (`cargo tree -p moqui`, against the phase 12 SSO commit) are in the direct crates rows above, and the ones that are not MIT or Apache-2.0 are marked phase 12 below. All of them are permissive. Unicode-3.0 is the current Unicode license (attribution, no share-alike). The ICU data crates carry it, pulled in by URL and text handling. `idna` itself is MIT OR Apache-2.0.
 
 | License | Crates |
 |---|---|
@@ -172,6 +182,10 @@ Versions are what `cargo` locked on 2026-10-11 for the feature set above. "Stati
 | (Apache-2.0 OR MIT) AND PostgreSQL | `postgresql_embedded`, `postgresql_archive`, `postgresql_commands` |
 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | `linux-raw-sys`, `rustix`. Take Apache-2.0 or MIT. |
 | ISC | `rustls-webpki`, `untrusted` |
+| Zlib | `zlib-rs` (phase 12, through `zip`) |
+| Zlib OR Apache-2.0 OR MIT, MIT OR Apache-2.0 OR Zlib | `bytemuck`, `zune-core`, `zune-jpeg` (phase 12, through `image`) |
+| BSD-3-Clause OR Apache-2.0 | `moxcms`, `pxfm` (phase 12, through `image`). Take Apache-2.0. |
+| Unlicense OR MIT | `byteorder-lite` (phase 12, through `image`) |
 | ISC AND (Apache-2.0 OR ISC) | `aws-lc-rs` |
 | ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0) | `aws-lc-sys` |
 | Apache-2.0 AND ISC | `ring` |

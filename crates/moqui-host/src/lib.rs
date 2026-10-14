@@ -19,6 +19,7 @@
 
 pub mod db;
 pub mod edge;
+pub mod ipp;
 #[cfg(feature = "pdf")]
 pub mod pdf;
 pub mod qvt_report;
@@ -791,6 +792,7 @@ fn boot_server(
     let pdf = install_pdf(&runtime_dir);
     ssh::install_client(&runtime_dir);
     sso::install();
+    ipp::install();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

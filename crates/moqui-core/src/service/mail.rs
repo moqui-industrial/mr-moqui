@@ -318,6 +318,12 @@ impl RenderEnv {
     /// Render `location` as the root screen, or `screen_path` under the default root screen (Java's
     /// `rootScreenFromHost`, which this port has one of) as the last standalone screen, in `mode`.
     fn render(&self, location: &str, screen_path: &str, mode: &str) -> Result<String, String> {
+        self.render_bytes(location, screen_path, mode)
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// The body of the render, which for a binary mode such as `xlsx` is the document.
+    fn render_bytes(&self, location: &str, screen_path: &str, mode: &str) -> Result<Vec<u8>, String> {
         let Some(factory) = &self.factory else {
             return Err("no execution context to render a screen in".to_string());
         };
@@ -337,7 +343,13 @@ impl RenderEnv {
         if output.status != 200 {
             return Err(format!("could not render {shown} as {mode}: status {}", output.status));
         }
-        Ok(output.body_text())
+        Ok(output.body)
+    }
+
+    fn is_binary(&self, mode: &str) -> bool {
+        self.factory
+            .as_ref()
+            .is_some_and(|factory| ScreenFacade::of(factory).is_render_mode_binary(mode))
     }
 
     /// True when the screen at `location` has a `text` render, as `render-modes` says.
@@ -758,6 +770,7 @@ struct ScreenAttachment<'a> {
 /// `renderScreenAttachment`: the file name defaults to the screen's name with the mode as extension and
 /// is expanded in the context; the content type is the caller's or the mode's; blank output is no
 /// attachment. `xsl-fo` renders `html-print` and attaches its PDF; when PDF fails it is logged and skipped, as in Java.
+/// A binary mode such as `xlsx` attaches the document it renders.
 fn render_attachment(
     out: &mut Vec<AttachmentBytes>,
     screen: &ScreenAttachment<'_>,
@@ -776,6 +789,25 @@ fn render_attachment(
         filename = format!("{stem}.{extension}");
     }
     let filename = expand_text(&filename)?;
+    if env.is_binary(screen.mode) {
+        // A binary mode (xlsx) is the document as rendered.
+        let bytes = env.render_bytes(screen.location, screen.screen_path, screen.mode)?;
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let content_type = if screen.content_type.is_empty() {
+            env.mime_type(screen.mode)
+                .unwrap_or_else(|| "application/octet-stream".to_string())
+        } else {
+            screen.content_type.to_string()
+        };
+        out.push(AttachmentBytes {
+            filename,
+            content_type,
+            bytes,
+        });
+        return Ok(());
+    }
     let text = env.render(screen.location, screen.screen_path, screen.mode)?;
     if text.trim().is_empty() {
         return Ok(());
@@ -846,6 +878,7 @@ fn mime_from_name(filename: &str) -> String {
         Some("png") => "image/png",
         Some("jpg" | "jpeg") => "image/jpeg",
         Some("csv") => "text/csv",
+        Some("xlsx") => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         Some("xml") => "application/xml",
         Some("json") => "application/json",
         _ => "application/octet-stream",
@@ -2498,6 +2531,52 @@ mod tests {
         assert_eq!(content_type, "text/csv");
         assert!(String::from_utf8_lossy(bytes).contains("March"));
         assert!(mail.mime.contains("multipart/alternative"), "{}", mail.mime);
+    }
+
+    /// The Email Export dialog's default: the screen as xlsx, attached as the workbook it renders.
+    #[test]
+    fn screen_render_email_as_xlsx_attaches_the_workbook() {
+        use calamine::{Data, Reader};
+        let _lock = lock_tests();
+        let (facade, context) = entered();
+        let _entered = context.enter();
+        crate::service::load_definitions().unwrap();
+        smtp_server(&facade, &context, "SYSTEM");
+        seed(
+            &facade,
+            &context,
+            "moqui.basic.email.EmailTemplate",
+            &[
+                ("emailTemplateId", "SCREEN_RENDER"),
+                ("emailServerId", "SYSTEM"),
+                ("bodyScreenLocation", "classpath://screen/ScreenRenderEmail.xml"),
+                ("fromAddress", "reports@example.com"),
+                ("subject", "${title}"),
+            ],
+        );
+        log_in(&facade, &context);
+        let sink = SinkGuard::install();
+        let mut params = BTreeMap::new();
+        params.insert("screenLocation".into(), Value::string(fixture("MailList.xml")));
+        params.insert("screenRenderMode".into(), Value::string("xlsx"));
+        params.insert("toAddresses".into(), Value::string("boss@example.com"));
+        params.insert("title".into(), Value::string("Monthly Report"));
+        params.insert("bodyParameters".into(), map(vec![("rowName", Value::string("March"))]));
+        crate::service::sync("org.moqui.impl.EmailServices.send#ScreenRenderEmail", &params).expect("send");
+        let errors = context.message().errors().join("\n");
+        assert!(errors.is_empty(), "{errors}");
+        let sent = sink.sent();
+        assert_eq!(sent.len(), 1);
+        let (name, content_type, bytes) = &sent[0].attachments[0];
+        assert_eq!(name, "MailList.xlsx");
+        assert_eq!(
+            content_type,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        );
+        let mut book = calamine::open_workbook_auto_from_rs(std::io::Cursor::new(bytes.clone())).unwrap();
+        let range = book.worksheet_range("ReportList").unwrap();
+        assert_eq!(range.get_value((1, 0)), Some(&Data::String("March".to_string())));
+        assert_eq!(range.get_value((1, 1)), Some(&Data::Float(12.5)));
     }
 
     #[test]

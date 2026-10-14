@@ -30,7 +30,9 @@ const BUILDER: &str = r#"(function (ec) {
             baseLinkUrl: (v) => { o.baseLinkUrl = v; return b; },
             lastStandalone: (v) => { o.lastStandalone = String(v); return b; },
             parameters: (v) => { o.parameters = v; return b; },
-            render: () => ec.screen.render(o).text
+            render: () => ec.screen.render(o).text,
+            // The bytes of the render: a binary mode's document such as xlsx, or a text mode's UTF-8.
+            renderBytes: () => ec.screen.render(o).bytes
         };
         return b;
     };
@@ -74,6 +76,7 @@ fn screen_render<'js>(ctx: Ctx<'js>, options: JsValue<'js>) -> rquickjs::Result<
         result.set("status", i32::from(output.status))?;
         result.set("contentType", output.content_type().unwrap_or_default())?;
         result.set("text", output.body_text())?;
+        result.set("bytes", host_to_js(&ctx, Value::Bytes(output.body))?)?;
         Ok(result)
     })
 }
@@ -84,6 +87,15 @@ fn screen_mime_type_by_mode(ctx: Ctx<'_>, mode: String) -> rquickjs::Result<Opti
             crate::screen::ScreenFacade::of(ec.factory())
                 .mime_type(&mode)
                 .map(str::to_string)
+        })
+    })
+}
+
+/// `ec.screen.isRenderModeBinary(mode)`: a `screen-output` mode such as `xlsx`, whose render is bytes.
+fn screen_is_render_mode_binary(ctx: Ctx<'_>, mode: String) -> rquickjs::Result<bool> {
+    host_guard(&ctx, || {
+        with_ec(&ctx, |ec| {
+            crate::screen::ScreenFacade::of(ec.factory()).is_render_mode_binary(&mode)
         })
     })
 }
@@ -158,7 +170,17 @@ pub(super) fn install<'js>(ctx: &Ctx<'js>, screen: &Object<'js>) -> Result<(), E
         "screen.isRenderModeText",
         Function::new(ctx.clone(), screen_is_render_mode_text),
     )?;
-    caught(ctx, "screen.isRenderModeText", screen.set("isRenderModeText", text))
+    caught(ctx, "screen.isRenderModeText", screen.set("isRenderModeText", text))?;
+    let binary = caught(
+        ctx,
+        "screen.isRenderModeBinary",
+        Function::new(ctx.clone(), screen_is_render_mode_binary),
+    )?;
+    caught(
+        ctx,
+        "screen.isRenderModeBinary",
+        screen.set("isRenderModeBinary", binary),
+    )
 }
 
 /// Define the `makeRender` chain once `ec` is a global.

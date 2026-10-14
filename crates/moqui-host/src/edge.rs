@@ -13,7 +13,7 @@
  */
 
 //! The edge runtime: one small Tokio runtime for the async clients the framework calls from blocking code, which are
-//! the PDF browser, SSH and SFTP, and the OIDC client. It is not the axum runtime, and an `ExecutionContext` thread
+//! the PDF browser, SSH and SFTP, the OIDC client, and the IPP print client. It is not the axum runtime, and an `ExecutionContext` thread
 //! never enters it: [`block_on`] spawns the future here and waits on a plain channel, so it is safe from any thread,
 //! including a `spawn_blocking` thread of another runtime.
 

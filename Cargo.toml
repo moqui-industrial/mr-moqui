@@ -143,6 +143,15 @@ oxc_ast = { version = "0.139", features = ["serialize"] }
 # HTML cleaning for allow-html="safe" service parameters. MIT OR Apache-2.0. Builder::default() is the
 # conservative maintained allow-list; there is no custom list in this repo.
 ammonia = "4"
+# The xlsx render mode (the moqui-poi port). Defaults are empty; dates are written as Excel serial numbers, so the
+# chrono and jiff features stay off. Its zip dependency is `deflate` (zopfli and flate2 on zlib-rs).
+rust_xlsxwriter = { version = "0.99", default-features = false }
+# read#Spreadsheet: xlsx, xlsm, xlsb, xls, and ods. Defaults are empty; chrono (dates) stays off, dates are read as
+# Excel serial numbers. Shares zip with rust_xlsxwriter.
+calamine = { version = "0.36", default-features = false }
+# The moqui-image port. Defaults (rayon, and every format including avif and exr) stay off; these are the formats the
+# Java component read and wrote through ImageIO and TwelveMonkeys, less wbmp and SVG.
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 
 # --- moqui-host ---
 # rt-multi-thread is for axum. postgres::Client builds its own current_thread runtime.
@@ -196,6 +205,9 @@ p256 = { version = "0.14", default-features = false, features = ["ecdsa", "pkcs8
 # OIDC and OAuth 2 client. Default feature is the native JWS verifier.
 # Loopback, metrics, and the experimental key-binding feature stay off.
 huskarl = "0.11"
+# IPP message encoding for network printing (the moqui-cups port). The clients stay off, so the request goes through
+# the async reqwest above on the edge runtime; no second HTTP stack.
+ipp = { version = "7", default-features = false }
 
 # --- moqui-browser ---
 # The browser's local database (plans/Wasm.md). bundled compiles the SQLite amalgamation with the

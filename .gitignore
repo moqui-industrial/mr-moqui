@@ -1,7 +1,85 @@
 /target
+
+# common runtime additions that are runtime only (don't belong in git)
 /runtime/log
 /runtime/db
 /runtime/tmp
 /runtime/txlog
 /runtime/.env
 /runtime/types
+/runtime/opensearch*
+/runtime/component/
+/runtime/ecomponent/
+
+# Python HTTP security tests
+/framework/test/.venv/
+**/__pycache__/
+.pytest_cache/
+
+# IntelliJ IDEA files
+.idea
+out
+*.ipr
+*.iws
+*.iml
+
+# Eclipse files (and some general ones also used by Eclipse)
+.metadata
+bin
+tmp
+*.tmp
+*.bak
+*.swp
+*~.nib
+local.properties
+.settings
+.loadpath
+
+# NetBeans files
+nbproject/private
+nbbuild
+.nb-gradle
+nbdist
+nbactions.xml
+nb-configuration.xml
+
+# VSCode files
+.vscode
+# Emacs files
+.projectile
+# Zed IDE
+.zed/
+
+# Local agent workspaces
+.opencode/
+opencode.json
+.claude/
+.pi/
+.codex/
+.cursor/
+.windsurf/
+.cline/
+.roo/
+.aider/
+.grok/
+
+# Env style secrets
+.env
+.env.*
+.env.local
+
+# Version managers (sdkman, mise, asdf)
+mise.toml
+.tool-versions
+
+# OSX auto files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+# Windows auto files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+# Linux auto files
+*~

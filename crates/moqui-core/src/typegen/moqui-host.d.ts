@@ -416,13 +416,17 @@ interface MoquiScreenRenderBuilder {
     lastStandalone(value: string): MoquiScreenRenderBuilder;
     parameters(parameters: MoquiMap): MoquiScreenRenderBuilder;
     render(): string;
+    /** The document of a binary mode such as xlsx, or the UTF-8 of a text mode. */
+    renderBytes(): Uint8Array;
 }
 
 interface MoquiScreenFacade {
     isRenderModeValid(mode: string): boolean;
     isRenderModeText(mode: string): boolean;
+    /** A screen-output mode such as xlsx, whose render is bytes. */
+    isRenderModeBinary(mode: string): boolean;
     getMimeTypeByMode(mode: string): string | null;
-    render(options: MoquiScreenRenderOptions): { status: number; contentType: string; text: string };
+    render(options: MoquiScreenRenderOptions): { status: number; contentType: string; text: string; bytes: Uint8Array };
     makeRender(): MoquiScreenRenderBuilder;
 }
 

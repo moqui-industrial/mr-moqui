@@ -15,8 +15,8 @@ along with this software (see the LICENSE.md file). If not, see
 <services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
 
     <service verb="get" noun="ServerPrinters">
-        <!-- org.moqui.impl.PrintServices.get#ServerPrinters -->
-        <description>Get printers from print server and create a moqui.basic.print.NetworkPrinter record for each.</description>
+        <description>Get printers from print server and create a moqui.basic.print.NetworkPrinter record for each.
+            The body is Rust (crates/moqui-core/src/service/tools.rs), on the host's IPP client.</description>
         <in-parameters>
             <parameter name="serverHost" required="true"/>
             <parameter name="serverPort" type="Integer" default="631"/>
@@ -24,9 +24,6 @@ along with this software (see the LICENSE.md file). If not, see
         <out-parameters>
             <parameter name="networkPrinterIdList" type="List"><parameter name="networkPrinterId"/></parameter>
         </out-parameters>
-        <actions>
-            <return error="true" message="Network printing support not installed (moqui-cups is not part of this build)"/>
-        </actions>
     </service>
     <service verb="print" noun="DocumentInterface">
         <in-parameters>
@@ -89,7 +86,9 @@ along with this software (see the LICENSE.md file). If not, see
         </actions>
     </service>
     <service verb="send" noun="PrintJobInternal">
-        <description>The body is Rust (crates/moqui-core/src/service/tools.rs). There is no print server client (moqui-cups stays outside): the job is marked PtjSendFailed and the call reports that network printing is not installed.</description>
+        <description>Send the job's document to its NetworkPrinter over IPP (the moqui-cups port): taken, the job is
+            PtjPending with the server's jobId; refused or unreachable, it is PtjSendFailed with the errorMessage and the
+            call returns the error. The body is Rust (crates/moqui-core/src/service/tools.rs).</description>
         <in-parameters><parameter name="printJob" type="EntityValue" required="true"/></in-parameters>
         <out-parameters>
             <parameter name="jobId" type="Integer"/>
@@ -97,7 +96,7 @@ along with this software (see the LICENSE.md file). If not, see
     </service>
 
     <service verb="get" noun="PrintJobDetailsFromServer">
-        <!-- org.moqui.impl.PrintServices.get#PrintJobDetailsFromServer -->
+        <!-- org.moqui.impl.PrintServices.get#PrintJobDetailsFromServer: the body is Rust (crates/moqui-core/src/service/tools.rs) -->
         <description>Gets known local job details (from PrintJob record) job details/attributes from the print server,
             updating PrintJob record for status and just returning the rest.</description>
         <in-parameters><parameter name="printJobId"/></in-parameters>
@@ -111,30 +110,18 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="printerUrl"/>
             <parameter name="size" type="Integer"/>
         </out-parameters>
-        <actions>
-            <return error="true" message="Network printing support not installed (moqui-cups is not part of this build)"/>
-        </actions>
     </service>
 
     <service verb="hold" noun="PrintJob">
-        <!-- org.moqui.impl.PrintServices.hold#PrintJob -->
+        <!-- org.moqui.impl.PrintServices.hold#PrintJob: the body is Rust (crates/moqui-core/src/service/tools.rs) -->
         <in-parameters><parameter name="printJobId"/></in-parameters>
-        <actions>
-            <return error="true" message="Network printing support not installed (moqui-cups is not part of this build)"/>
-        </actions>
     </service>
     <service verb="release" noun="PrintJob">
-        <!-- org.moqui.impl.PrintServices.release#PrintJob -->
+        <!-- org.moqui.impl.PrintServices.release#PrintJob: the body is Rust (crates/moqui-core/src/service/tools.rs) -->
         <in-parameters><parameter name="printJobId"/></in-parameters>
-        <actions>
-            <return error="true" message="Network printing support not installed (moqui-cups is not part of this build)"/>
-        </actions>
     </service>
     <service verb="cancel" noun="PrintJob">
-        <!-- org.moqui.impl.PrintServices.cancel#PrintJob -->
+        <!-- org.moqui.impl.PrintServices.cancel#PrintJob: the body is Rust (crates/moqui-core/src/service/tools.rs) -->
         <in-parameters><parameter name="printJobId"/></in-parameters>
-        <actions>
-            <return error="true" message="Network printing support not installed (moqui-cups is not part of this build)"/>
-        </actions>
     </service>
 </services>

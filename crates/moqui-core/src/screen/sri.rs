@@ -149,7 +149,8 @@ pub fn content_type_header(state: &RenderState) -> String {
 /// Append text to the response. The first write opens it. Nothing is written once a redirect or
 /// another response has stopped the render.
 pub fn write(state: &RenderState, text: &str) {
-    if state.dont_do_render.get() || text.is_empty() {
+    // A binary mode's document is the response; text such as an untyped `text` element has no place in it.
+    if state.dont_do_render.get() || text.is_empty() || state.binary {
         return;
     }
     if !web::output_sent() {

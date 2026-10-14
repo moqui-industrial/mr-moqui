@@ -444,3 +444,28 @@ fn every_base_component_screen_generates_in_all_three_modes() {
         failures.join("\n")
     );
 }
+
+#[test]
+fn xlsx_fills_a_sheet_and_writes_no_text() {
+    let xml = r##"<widgets>
+        <container-box><box-body>
+            <form-list name="L" list="rows">
+                <field name="a" align="right"><default-field title="A"><display format="#,##0.00"/></default-field></field>
+                <field name="b"><default-field><display text="${a} x" default-text="none"/><link url="u" text="go"/></default-field></field>
+                <field name="c"><conditional-field condition="a"><display/></conditional-field></field>
+                <field name="d"><default-field><hidden/></default-field></field>
+                <field name="e"><default-field><display-entity entity-name="moqui.basic.Enumeration"/></default-field></field>
+            </form-list>
+        </box-body></container-box>
+        <label text="not in the workbook"/>
+    </widgets>"##;
+    let source = generate_unit_source("xlsx", xml).unwrap_or_else(|err| panic!("xlsx: {err}"));
+    assert!(source.contains("sri.xlsxSheet("), "{source}");
+    assert!(source.contains("sri.xlsxHeader("), "{source}");
+    assert!(source.contains(r#"sri.xlsxCell([sri.getFieldValue("#), "{source}");
+    // the one widget with a cents format is currency, and the field is right-aligned
+    assert!(source.contains(r##"["#,##0.00"], true, true)"##), "{source}");
+    // a field with only a conditional-field is still a cell when the condition fails
+    assert!(source.contains("sri.xlsxCellCount()"), "{source}");
+    assert!(!source.contains("sri.write("), "{source}");
+}

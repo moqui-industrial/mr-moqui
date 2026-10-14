@@ -126,8 +126,11 @@ along with this software (see the LICENSE.md file). If not, see
                         }
                     }
                 } else {
-                    // a binary render mode (xlsx) writes bytes, which a script cannot hold
-                    ec.logger.warn(`ScreenScheduled ${screenScheduledId} render mode ${renderMode} is not a text mode, not available for scheduled screens`)
+                    // a binary render mode (xlsx): the bytes are the document, as Java's render to an output stream
+                    const screenBytes = screenRender.renderBytes()
+                    if (screenBytes != null && screenBytes.length > 0) {
+                        attachmentInfo = {fileName: filename, contentType: ec.screen.getMimeTypeByMode(renderMode), contentBytes: screenBytes}
+                    }
                 }
             ]]></script>
 

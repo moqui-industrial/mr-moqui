@@ -375,6 +375,13 @@ pub fn http_request(method: &str, path: &str, headers: &[(&str, &str)], body: &s
 }
 
 pub fn exchange(address: SocketAddr, request: &str) -> (u16, Vec<(String, String)>, String) {
+    let (status, headers, body) = exchange_bytes(address, request);
+    (status, headers, String::from_utf8_lossy(&body).into_owned())
+}
+
+/// [`exchange`] with the body as bytes, for a binary response such as an xlsx render.
+#[allow(dead_code)]
+pub fn exchange_bytes(address: SocketAddr, request: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
     let mut stream = TcpStream::connect(address).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(120))).unwrap();
     stream.set_write_timeout(Some(Duration::from_secs(30))).unwrap();
@@ -425,9 +432,10 @@ fn content_length(head: &str) -> Option<usize> {
     None
 }
 
-fn parse_response(buf: &[u8]) -> (u16, Vec<(String, String)>, String) {
-    let text = String::from_utf8_lossy(buf);
-    let (head, body) = text.split_once("\r\n\r\n").unwrap_or((text.as_ref(), ""));
+fn parse_response(buf: &[u8]) -> (u16, Vec<(String, String)>, Vec<u8>) {
+    let split = find_header_end(buf);
+    let head = String::from_utf8_lossy(split.map_or(buf, |at| &buf[..at]));
+    let body = split.map_or(Vec::new(), |at| buf[at + 4..].to_vec());
     let mut lines = head.split("\r\n");
     let status_line = lines.next().unwrap_or("");
     let status = status_line
@@ -442,7 +450,7 @@ fn parse_response(buf: &[u8]) -> (u16, Vec<(String, String)>, String) {
             headers.push((name.trim().to_string(), value.trim().to_string()));
         }
     }
-    (status, headers, body.to_string())
+    (status, headers, body)
 }
 
 fn base64(bytes: &[u8]) -> String {
