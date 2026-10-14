@@ -38,7 +38,7 @@ use moqui_lib::object::{basic_convert, is_empty, to_plain_string, Value};
 
 use crate::context::{ExecutionContext, ExecutionContextFactory};
 use crate::entity::{EntityFacade, EntityValue};
-use crate::screen::{make_render, ScreenFacade, PDF_UNAVAILABLE};
+use crate::screen::{make_render, PdfRenderer, ScreenFacade};
 use crate::transaction::TransactionAttribute;
 
 const TEMPLATE: &str = "moqui.basic.email.EmailTemplate";
@@ -757,7 +757,7 @@ struct ScreenAttachment<'a> {
 
 /// `renderScreenAttachment`: the file name defaults to the screen's name with the mode as extension and
 /// is expanded in the context; the content type is the caller's or the mode's; blank output is no
-/// attachment. `xsl-fo` is logged and skipped, as Java does when the PDF transform fails.
+/// attachment. `xsl-fo` renders `html-print` and attaches its PDF; when PDF fails it is logged and skipped, as in Java.
 fn render_attachment(
     out: &mut Vec<AttachmentBytes>,
     screen: &ScreenAttachment<'_>,
@@ -776,12 +776,29 @@ fn render_attachment(
         filename = format!("{stem}.{extension}");
     }
     let filename = expand_text(&filename)?;
-    if screen.mode == "xsl-fo" {
-        tracing::warn!(file = %filename, "Error generating PDF from XSL-FO: {PDF_UNAVAILABLE}");
-        return Ok(());
-    }
     let text = env.render(screen.location, screen.screen_path, screen.mode)?;
     if text.trim().is_empty() {
+        return Ok(());
+    }
+    if screen.mode == "xsl-fo" {
+        // The html-print document becomes the PDF. A failure is logged and the attachment skipped, as in Java.
+        let bytes = match PdfRenderer::render(&text) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                tracing::warn!(file = %filename, "Error generating PDF from XSL-FO: {}", err.message());
+                return Ok(());
+            }
+        };
+        let content_type = if screen.content_type.is_empty() {
+            "application/pdf".to_string()
+        } else {
+            screen.content_type.to_string()
+        };
+        out.push(AttachmentBytes {
+            filename,
+            content_type,
+            bytes,
+        });
         return Ok(());
     }
     let content_type = if screen.content_type.is_empty() {
@@ -2482,8 +2499,10 @@ mod tests {
     }
 
     #[test]
-    fn screen_render_email_as_xsl_fo_sends_without_the_pdf() {
+    fn screen_render_email_as_xsl_fo_attaches_the_pdf_or_sends_without_it() {
         let _lock = lock_tests();
+        let _pdf = crate::screen::pdf_test_lock();
+        crate::screen::clear_pdf_engine();
         let (facade, context) = entered();
         let _entered = context.enter();
         crate::service::load_definitions().unwrap();
@@ -2515,6 +2534,25 @@ mod tests {
         assert_eq!(sent.len(), 1);
         assert!(sent[0].attachments.is_empty());
         assert!(sent[0].body.contains("Printed"), "{}", sent[0].body);
+
+        crate::screen::install_pdf_engine(std::sync::Arc::new(FakePdf));
+        crate::service::sync("org.moqui.impl.EmailServices.send#ScreenRenderEmail", &params).expect("send");
+        crate::screen::clear_pdf_engine();
+        let sent = sink.sent();
+        assert_eq!(sent.len(), 2);
+        let (filename, content_type, bytes) = &sent[1].attachments[0];
+        assert_eq!(content_type, "application/pdf");
+        assert!(filename.ends_with(".pdf"), "{filename}");
+        assert!(bytes.starts_with(b"%PDF-fake"));
+    }
+
+    struct FakePdf;
+
+    impl crate::screen::PdfEngine for FakePdf {
+        fn render(&self, html: &str) -> Result<Vec<u8>, crate::context::Error> {
+            assert!(html.contains("@page"), "the attachment is the html-print document");
+            Ok(b"%PDF-fake".to_vec())
+        }
     }
 
     #[test]

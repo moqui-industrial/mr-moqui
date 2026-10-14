@@ -38,7 +38,7 @@ pub use factory::{BootOptions, ContextGuard, ExecutionContext, ExecutionContextF
 pub(crate) use hits::Hit;
 pub use locate::{framework_dir, locate};
 pub use message::{MessageFacade, ValidationError};
-pub use resource::{ResourceFacade, ResourceRef};
+pub use resource::{ResourceEntry, ResourceFacade, ResourceRef, ResourceStat};
 
 #[cfg(test)]
 mod tests {

@@ -78,7 +78,7 @@ fn tools_services_run_on_postgres() {
     let address = gate.server.address();
     let john = basic("john.doe", "moqui");
 
-    // print#Document: the job is created not sent, then the send records that network printing is phase 12.
+    // print#Document: the job is created not sent, then the send records that network printing is not installed.
     let (_, printed) = run(
         address,
         &john,
@@ -91,7 +91,7 @@ fn tools_services_run_on_postgres() {
         ],
     );
     assert!(
-        printed.contains("Network printing is not available until phase 12 (moqui-cups)"),
+        printed.contains("Network printing support not installed (moqui-cups is not part of this build)"),
         "{printed}"
     );
     let jobs = page(
@@ -101,7 +101,8 @@ fn tools_services_run_on_postgres() {
     );
     assert!(jobs.contains("Gate print") && jobs.contains("Send Failed"), "{jobs}");
 
-    // A screen document asks for PDF.
+    // A screen document asks for PDF: with no Chromium it is not available; with one, the PDF prints and the send
+    // fails as any other.
     let (_, pdf) = run(
         address,
         &john,
@@ -111,7 +112,10 @@ fn tools_services_run_on_postgres() {
             ("screenLocation", "component://tools/screen/System/dashboard.xml"),
         ],
     );
-    assert!(pdf.contains("PDF is not available until phase 12"), "{pdf}");
+    assert!(
+        pdf.contains("PDF is not available") || pdf.contains("moqui-cups is not part of this build"),
+        "{pdf}"
+    );
 
     // The clean services compare a time basis with the stamp columns.
     let (status, cleaned) = run(

@@ -80,7 +80,7 @@ fn a_print_job_is_created_and_its_status_moves_to_a_failed_send() {
     let id = to_plain_string(out.get("printJobId").unwrap());
     assert!(!id.is_empty(), "{out:?}");
     assert!(
-        errors(&context).contains("Network printing is not available until phase 12 (moqui-cups)"),
+        errors(&context).contains("Network printing support not installed (moqui-cups is not part of this build)"),
         "{}",
         errors(&context)
     );
@@ -89,7 +89,7 @@ fn a_print_job_is_created_and_its_status_moves_to_a_failed_send() {
     assert_eq!(job_field(&facade, &id, "jobName"), "Test job");
     assert_eq!(
         job_field(&facade, &id, "errorMessage"),
-        "Network printing is not available until phase 12 (moqui-cups)"
+        "Network printing support not installed (moqui-cups is not part of this build)"
     );
     let stored = facade
         .find(PRINT_JOB)
@@ -114,23 +114,52 @@ fn a_print_job_is_created_and_its_status_moves_to_a_failed_send() {
     );
 }
 
+struct FakePdf;
+
+impl crate::screen::PdfEngine for FakePdf {
+    fn render(&self, html: &str) -> Result<Vec<u8>, crate::context::Error> {
+        assert!(html.contains("@page"), "the screen renders as html-print: {html}");
+        Ok(b"%PDF-1.7 fake".to_vec())
+    }
+}
+
 #[test]
-fn a_screen_document_reports_that_pdf_is_not_available() {
-    let (_facade, context) = setup();
+fn a_screen_document_prints_its_pdf_or_reports_that_pdf_is_not_available() {
+    let _pdf = crate::screen::pdf_test_lock();
+    crate::screen::clear_pdf_engine();
+    let (facade, context) = setup();
     let _entered = context.enter();
     let _authz = context.disable_authz();
     install(&["PrintServices.xml"]);
-    // Any file is a screen location to the check; the render would come next.
-    let location = crate::context::framework_dir()
-        .join("screen/ScreenRenderEmail.xml")
-        .display()
-        .to_string();
-    crate::service::sync(
-        "org.moqui.impl.PrintServices.print#ScreenDocument",
-        &params(&[("networkPrinterId", "P"), ("screenLocation", &location)]),
-    )
-    .unwrap();
+    let location = format!(
+        "{}/src/screen/testdata/Render/Render/Print.xml",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let call = params(&[
+        ("networkPrinterId", "P"),
+        ("screenLocation", &location),
+        ("jobName", "Screen job"),
+    ]);
+    crate::service::sync("org.moqui.impl.PrintServices.print#ScreenDocument", &call).unwrap();
     assert_eq!(errors(&context), crate::screen::PDF_UNAVAILABLE);
+
+    // With an engine the PDF is stored on the job, and the send fails as any other.
+    context.message().clear();
+    crate::screen::install_pdf_engine(std::sync::Arc::new(FakePdf));
+    let out = crate::service::sync("org.moqui.impl.PrintServices.print#ScreenDocument", &call).unwrap();
+    crate::screen::clear_pdf_engine();
+    let id = to_plain_string(out.get("printJobId").unwrap());
+    assert!(!id.is_empty(), "{out:?} {}", errors(&context));
+    assert_eq!(job_field(&facade, &id, "contentType"), "application/pdf");
+    assert_eq!(job_field(&facade, &id, "statusId"), "PtjSendFailed");
+    let stored = facade
+        .find(PRINT_JOB)
+        .unwrap()
+        .eq("printJobId", Value::string(&id))
+        .one()
+        .unwrap()
+        .unwrap();
+    assert!(matches!(stored.get("document"), Some(Value::Bytes(bytes)) if bytes.starts_with(b"%PDF-")));
 
     context.message().clear();
     crate::service::sync(

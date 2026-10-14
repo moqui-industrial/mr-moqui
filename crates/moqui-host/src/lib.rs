@@ -12,12 +12,15 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Process edge. PDF, SSH, and SSO are not implemented yet.
+//! Process edge. [`pdf`] is the Chromium engine behind `PdfRenderer`; [`edge`] is the runtime for the async clients.
 //! `load` reads framework data files. `lint` checks service definitions. `types` writes TypeScript declarations.
 //! No arguments start the plain HTTP listener. Database drivers live in [`db`].
 //! The search store and backend are placed by [`search`].
 
 pub mod db;
+pub mod edge;
+#[cfg(feature = "pdf")]
+pub mod pdf;
 pub mod qvt_report;
 pub mod search;
 pub mod types;
@@ -751,12 +754,14 @@ fn boot_server(
     moqui_core::cluster::start(&factory).map_err(moqui_lib::error::Error::from)?;
     let cluster_edge = cluster_edge::listen(Arc::clone(&factory))?;
     notws::install_push().map_err(moqui_lib::error::Error::from)?;
+    let pdf = install_pdf(&runtime_dir);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|err| moqui_lib::error::Error::new("could not start the http runtime").with_source(err))?;
     Ok(ServeProcess {
         runtime: Some(runtime),
+        pdf: Some(pdf),
         cluster_edge: Some(cluster_edge),
         factory: Some(factory),
         search,
@@ -766,12 +771,13 @@ fn boot_server(
     })
 }
 
-/// Drop order is the axum runtime, the cluster listener (while the request pool is still up),
+/// Drop order is the axum runtime, the PDF browser, the cluster listener (while the request pool is still up),
 /// the factory, the search store, the driver, then the database cluster. The search store outlives
 /// the factory so a dedicated postmaster stops after the facade's clients.
 #[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
 struct ServeProcess {
     runtime: Option<tokio::runtime::Runtime>,
+    pdf: Option<PdfSlot>,
     cluster_edge: Option<crate::cluster_edge::ClusterEdge>,
     factory: Option<std::sync::Arc<moqui_core::context::ExecutionContextFactory>>,
     search: Option<crate::search::SearchStore>,
@@ -784,6 +790,7 @@ struct ServeProcess {
 impl Drop for ServeProcess {
     fn drop(&mut self) {
         self.runtime.take();
+        self.pdf.take();
         self.cluster_edge.take();
         self.factory.take();
         self.search.take();
@@ -791,6 +798,22 @@ impl Drop for ServeProcess {
         self.driver.take();
         self.cluster.take();
     }
+}
+
+#[cfg(feature = "pdf")]
+type PdfSlot = pdf::PdfGuard;
+#[cfg(not(feature = "pdf"))]
+type PdfSlot = ();
+
+/// The Chromium engine, or the reason PDF is not available. The server starts either way.
+#[cfg(feature = "pdf")]
+fn install_pdf(runtime_dir: &std::path::Path) -> PdfSlot {
+    pdf::install(runtime_dir)
+}
+
+#[cfg(not(feature = "pdf"))]
+fn install_pdf(_runtime_dir: &std::path::Path) -> PdfSlot {
+    moqui_core::screen::install_pdf_unavailable("PDF is not available: this build leaves out the pdf feature");
 }
 
 #[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]

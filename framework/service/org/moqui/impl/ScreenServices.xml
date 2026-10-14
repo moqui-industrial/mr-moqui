@@ -113,9 +113,10 @@ along with this software (see the LICENSE.md file). If not, see
                     const screenText = screenRender.render()
                     if (screenText != null && screenText.trim().length > 0) {
                         if (renderMode == "xsl-fo") {
-                            // ResourceFacade.xslFoTransform() makes the PDF; that is phase 12, so this logs that PDF is not available
+                            // ResourceFacade.xslFoTransform() turns the html-print document into PDF bytes
                             try {
-                                ec.resource.xslFoTransform(screenText, null, null, "application/pdf")
+                                const pdfBytes = ec.resource.xslFoTransform(screenText, null, null, "application/pdf")
+                                attachmentInfo = {fileName: filename, contentType: "application/pdf", contentBytes: pdfBytes}
                             } catch (e) {
                                 ec.logger.warn(`Error generating PDF from XSL-FO: ${e}`)
                             }
@@ -182,8 +183,8 @@ along with this software (see the LICENSE.md file). If not, see
                         const saveToLocationExp = ec.resource.expand(saveToLocation, null)
                         try {
                             const saveToRr = ec.resource.getLocationReference(saveToLocationExp)
-                            // contentBytes (a binary render) does not reach a script; see above
-                            if (attachmentInfo.contentText) saveToRr.putText(attachmentInfo.contentText)
+                            if (attachmentInfo.contentBytes) saveToRr.putBytes(attachmentInfo.contentBytes)
+                            else if (attachmentInfo.contentText) saveToRr.putText(attachmentInfo.contentText)
                         } catch (t) {
                             ec.logger.log(200, `Error saving to saveToLocation ${saveToLocationExp} for ScreenScheduled ${screenScheduledId}`, t)
                         }

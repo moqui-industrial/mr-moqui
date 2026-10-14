@@ -259,16 +259,48 @@ fn layout_box_panel_break_label_and_link_in_html_print() {
     assert_eq!(body, expected);
 }
 
+struct FakePdf;
+
+impl crate::screen::PdfEngine for FakePdf {
+    fn render(&self, html: &str) -> Result<Vec<u8>, crate::context::Error> {
+        Ok(format!("%PDF-fake {}", html.len()).into_bytes())
+    }
+}
+
+/// One test owns the process-wide engine slot: none, a reason, then an engine.
 #[test]
-fn the_pdf_renderer_reports_that_it_is_not_available() {
+fn the_pdf_renderer_uses_the_installed_engine_or_reports_that_it_is_not_available() {
+    let _pdf = crate::screen::pdf_test_lock();
+    crate::screen::clear_pdf_engine();
     let err = PdfRenderer::render("<html></html>").unwrap_err();
-    assert_eq!(err.message(), "PDF is not available until phase 12");
     assert_eq!(PDF_UNAVAILABLE, err.message());
+    assert!(!PdfRenderer::available());
     let context = ExecutionContextFactory::test_context();
     let _entered = context.enter();
-    let thrown = crate::script::eval_condition("(() => { try { ec.resource.xslFoTransform(null, null, null, 'application/pdf'); return false } catch (e) { return String(e).includes('PDF is not available until phase 12') } })()")
+    let thrown = crate::script::eval_condition("(() => { try { ec.resource.xslFoTransform('<html></html>', null, null, 'application/pdf'); return false } catch (e) { return String(e).includes('PDF is not available') } })()")
         .unwrap();
     assert!(thrown);
+
+    crate::screen::install_pdf_unavailable("built without the pdf feature");
+    assert_eq!(
+        PdfRenderer::render("x").unwrap_err().message(),
+        "built without the pdf feature"
+    );
+
+    crate::screen::install_pdf_engine(std::sync::Arc::new(FakePdf));
+    assert!(PdfRenderer::available());
+    assert_eq!(PdfRenderer::render("<p>").unwrap(), b"%PDF-fake 3");
+    let bytes = crate::script::eval_condition(
+        "(() => { const b = ec.resource.xslFoTransform('<p>', null, null, 'application/pdf'); return b instanceof Uint8Array && b[0] == 37 && b.length == 11 })()",
+    )
+    .unwrap();
+    assert!(bytes);
+    let refused = crate::script::eval_condition(
+        "(() => { try { ec.resource.xslFoTransform('<p>', null, null, 'application/postscript'); return false } catch (e) { return String(e).includes('application/pdf') } })()",
+    )
+    .unwrap();
+    assert!(refused);
+    crate::screen::clear_pdf_engine();
 }
 
 // ---- the fancy renderers in a screen ----

@@ -30,10 +30,9 @@ pub(super) fn host_to_js<'js>(ctx: &Ctx<'js>, value: Value) -> rquickjs::Result<
         }
         Value::Timestamp(_) | Value::Date(_) | Value::Time(_) => temporal_text(&value).into_js(ctx),
         Value::List(_) | Value::Map(_) => collection_to_js(ctx, value),
-        Value::Bytes(_) => Err(Exception::throw_message(
-            ctx,
-            "binary values cannot be read by a script",
-        )),
+        Value::Bytes(bytes) => {
+            rquickjs::TypedArray::<u8>::new(ctx.clone(), bytes).map(rquickjs::TypedArray::into_value)
+        }
         Value::Object(object) => object_to_js(ctx, &object),
     }
 }
@@ -172,6 +171,17 @@ pub(super) fn object_map(
     }
 }
 
+/// A `Uint8Array` or an `ArrayBuffer` is binary: a copy of its bytes.
+pub(super) fn js_bytes(object: &Object<'_>) -> Option<Vec<u8>> {
+    if let Ok(array) = rquickjs::TypedArray::<u8>::from_object(object.clone()) {
+        // SAFETY: the slice is copied before any JavaScript runs again.
+        return unsafe { array.as_bytes() }.map(<[u8]>::to_vec);
+    }
+    let buffer = rquickjs::ArrayBuffer::from_object(object.clone())?;
+    // SAFETY: as above.
+    unsafe { buffer.as_bytes() }.map(<[u8]>::to_vec)
+}
+
 pub(super) fn js_value_to_host(ctx: &Ctx<'_>, value: &JsValue<'_>) -> Result<Value, Error> {
     if value.is_null() || value.is_undefined() {
         return Ok(Value::Null);
@@ -213,6 +223,9 @@ pub(super) fn js_value_to_host(ctx: &Ctx<'_>, value: &JsValue<'_>) -> Result<Val
         }
     }
     if let Some(object) = value.as_object() {
+        if let Some(bytes) = js_bytes(object) {
+            return Ok(Value::Bytes(bytes));
+        }
         if let Some(class) = object.as_class::<HostDecimal>() {
             return Ok(class.borrow().inner.clone());
         }

@@ -64,6 +64,15 @@
     -->
     <default-property name="email_allowed_hosts" value=""/>
 
+    <!--
+        PDF (the html-print render through headless Chromium). pdf_chromium_path names the executable; empty looks for
+        chromium, then chromium-browser, on the PATH. With none the server starts and PDF reports it is not available.
+        pdf_page_limit is the pages that print at once; pdf_timeout is the seconds one document may take.
+    -->
+    <default-property name="pdf_chromium_path" value=""/>
+    <default-property name="pdf_page_limit" value="4"/>
+    <default-property name="pdf_timeout" value="60"/>
+
     <!-- Properties for the primary (transactional group) datasource -->
     <default-property name="entity_ds_db_conf" value="h2"/>
     <default-property name="entity_ds_host" value="127.0.0.1"/>

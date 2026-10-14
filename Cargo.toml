@@ -174,9 +174,10 @@ tower-http = { version = "0.6", default-features = false, features = [
     "fs",
     "set-header",
 ] }
-# fetcher, native-tls, and rustls on 0.9 only enable chromiumoxide_fetcher.
-# There is no tokio-runtime feature. Leave the fetcher off.
-chromiumoxide = { version = "0.9", default-features = false }
+# The PDF browser's DevTools socket (crates/moqui-host/src/pdf). Already in the graph under axum's ws feature.
+# chromiumoxide was the plan; its untagged-enum message parsing fails under serde_json arbitrary_precision.
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect"] }
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 # MPL-2.0 hold. Off unless moqui-host is built with pdf-servo.
 servo = "0.7"
 # SSH client and server. ring, des, and dsa stay off. aws-lc-rs matches the other TLS crates.

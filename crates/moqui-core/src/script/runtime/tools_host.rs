@@ -274,6 +274,7 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
         getDirectoryEntries: () => (ref.children || []).map((child) => wrap("Resource", child)),
         getText: () => host.resourceText(ref.location),
         putText: (text) => host.resourcePutText(ref.location, String(text)),
+        putBytes: (bytes) => host.resourcePutBytes(ref.location, bytes),
         delete: () => host.resourceDelete(ref.location)
     });
     const makeRef = (location) => wrap("Resource", host.resourceInfo(location));
@@ -1119,21 +1120,24 @@ fn resource_text(ctx: Ctx<'_>, location: String) -> rquickjs::Result<String> {
 
 /// `putText`: a `dbresource://` row, or a file for the file-backed schemes.
 fn resource_put_text(ctx: Ctx<'_>, location: String, text: String) -> rquickjs::Result<()> {
-    host_guard(&ctx, || {
-        if location.starts_with("dbresource:") {
-            let written = with_ec(&ctx, |ec| {
-                ec.factory().resource().write_bytes(&location, text.as_bytes())
-            })?;
-            return written.map_err(|err| Exception::throw_message(&ctx, err.message()));
-        }
-        let resource = resource_ref(&ctx, &location)?;
-        let Some(path) = resource.file_path() else {
-            return Err(Exception::throw_message(&ctx, &format!("cannot write to {location}")));
-        };
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|err| Exception::throw_message(&ctx, &err.to_string()))?;
-        }
-        std::fs::write(path, text).map_err(|err| Exception::throw_message(&ctx, &format!("{location}: {err}")))
+    put_resource_bytes(&ctx, &location, text.as_bytes())
+}
+
+/// `putBytes`: a `Uint8Array` or `ArrayBuffer`, written as `putText` writes.
+fn resource_put_bytes<'js>(ctx: Ctx<'js>, location: String, bytes: JsValue<'js>) -> rquickjs::Result<()> {
+    let Some(bytes) = bytes.as_object().and_then(super::convert::js_bytes) else {
+        return Err(Exception::throw_message(
+            &ctx,
+            "putBytes needs a Uint8Array or an ArrayBuffer",
+        ));
+    };
+    put_resource_bytes(&ctx, &location, &bytes)
+}
+
+fn put_resource_bytes(ctx: &Ctx<'_>, location: &str, bytes: &[u8]) -> rquickjs::Result<()> {
+    host_guard(ctx, || {
+        let written = with_ec(ctx, |ec| ec.factory().resource().write_bytes(location, bytes))?;
+        written.map_err(|err| Exception::throw_message(ctx, err.message()))
     })
 }
 
@@ -1318,6 +1322,7 @@ pub(super) fn install<'js>(
     method!("messageInfos", message_infos);
     method!("resourceText", resource_text);
     method!("resourcePutText", resource_put_text);
+    method!("resourcePutBytes", resource_put_bytes);
     method!("resourceDelete", resource_delete);
     method!("formXml", form_xml);
     method!("isLastRunBeforeLastSchedule", is_last_run_before_last_schedule);

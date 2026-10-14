@@ -15,7 +15,8 @@
 //! Rust bodies for the tools services whose Groovy holds bytes or reaches Java internals: the print jobs of
 //! `PrintServices.xml`, the data document notifications, and the encrypted field rewrite of `EntityServices.xml`.
 //!
-//! Print jobs are records only. Producing a PDF is phase 12, so a screen document reports that PDF is not available.
+//! Print jobs are records only; there is no print server client (`moqui-cups` stays outside). A screen document is
+//! rendered as `html-print` and turned into PDF by the host's engine.
 //! Sending to a print server is phase 12 too (`moqui-cups`): the send records the failure on the job, as the
 //! `moqui-cups` send does when the server does not take the job, and reports that network printing is not available.
 
@@ -38,7 +39,8 @@ const REWRITE_ENCRYPTED: &str = "org.moqui.impl.EntityServices.rewrite#EntityEnc
 
 const PRINT_JOB: &str = "moqui.basic.print.PrintJob";
 /// The message of a send that has no print server to go to.
-pub(crate) const PRINTING_UNAVAILABLE: &str = "Network printing is not available until phase 12 (moqui-cups)";
+pub(crate) const PRINTING_UNAVAILABLE: &str =
+    "Network printing support not installed (moqui-cups is not part of this build)";
 
 /// True for a service this module runs. The definition keeps its parameters and has no actions.
 pub(super) fn runs(name: &str) -> bool {
@@ -185,19 +187,78 @@ fn print_resource_document(parameters: &BTreeMap<String, Value>) -> Result<BTree
     Ok(call(PRINT_DOCUMENT, &print, &CallOptions::default()))
 }
 
-/// `print#ScreenDocument`: Java renders the screen as XSL-FO and transforms it to the content type (PDF by default).
-/// That is phase 12, so after the screen check the call reports that PDF is not available.
+/// `print#ScreenDocument`: render the screen as `html-print` (the `xsl-fo` mode), turn it into PDF, and pass the bytes
+/// to `print#Document`, which stores the `PrintJob` and sends it. The screen parameters are `screenParameters` plus the
+/// map `screenParametersStr` evaluates to; the job name defaults to the screen name and those parameter values.
 fn print_screen_document(parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, LibError> {
     let location = text(parameters, "screenLocation");
-    let exists = ExecutionContext::with_current(|ctx| ctx.factory().resource().get(&location))
-        .and_then(Result::ok)
-        .is_some_and(|resource| resource.exists());
-    if !exists {
+    let Some(factory) = ExecutionContext::with_current(|ctx| ctx.factory().clone()) else {
+        return Err(LibError::new("no execution context is entered"));
+    };
+    let screens = crate::screen::ScreenFacade::of(&factory);
+    let Ok(def) = screens.screen_def(&factory, &location) else {
         add_error(format!("Screen not found at [{location}]"));
         return Ok(BTreeMap::new());
+    };
+    let mut screen_parameters = BTreeMap::new();
+    if let Some(Value::Map(given)) = parameters.get("screenParameters") {
+        screen_parameters.extend(given.iter().map(|(name, value)| (name.clone(), value.clone())));
     }
-    add_error(crate::screen::PDF_UNAVAILABLE);
-    Ok(BTreeMap::new())
+    let expression = text(parameters, "screenParametersStr");
+    if !expression.is_empty() {
+        let evaluated = crate::script::eval_map(&expression)
+            .map_err(|err| LibError::new(format!("screenParametersStr: {}", err.message())))?;
+        screen_parameters.extend(evaluated);
+    }
+    let content_type = match text(parameters, "contentType") {
+        found if found.is_empty() => "application/pdf".to_string(),
+        found => found,
+    };
+    if content_type != "application/pdf" {
+        add_error(format!(
+            "A screen document prints as application/pdf, not {content_type}"
+        ));
+        return Ok(BTreeMap::new());
+    }
+    let rendered = crate::screen::make_render(&factory)
+        .root_screen(&location)
+        .render_mode("xsl-fo")
+        .parameters(screen_parameters.clone())
+        .render();
+    let output = match rendered {
+        Ok(output) => output,
+        Err(err) => {
+            add_error(format!("Could not render screen at [{location}]: {}", err.message()));
+            return Ok(BTreeMap::new());
+        }
+    };
+    if output.status != 200 {
+        add_error(format!(
+            "Could not render screen at [{location}]: status {}",
+            output.status
+        ));
+        return Ok(BTreeMap::new());
+    }
+    let bytes = match crate::screen::PdfRenderer::render(&output.body_text()) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            add_error(err.message());
+            return Ok(BTreeMap::new());
+        }
+    };
+    let mut print = parameters.clone();
+    print.extend(screen_parameters.clone());
+    if text(parameters, "jobName").is_empty() {
+        let mut job_name = def.screen_name.clone();
+        for value in screen_parameters.values() {
+            job_name.push(' ');
+            job_name.push_str(&to_plain_string(value));
+        }
+        print.insert("jobName".to_string(), Value::string(job_name));
+    }
+    print.insert("inputStream".to_string(), Value::Bytes(bytes));
+    print.insert("contentType".to_string(), Value::string(content_type));
+    Ok(call(PRINT_DOCUMENT, &print, &CallOptions::default()))
 }
 
 /// `send#PrintJobInternal`: there is no print server client yet, so the job is marked as a failed send, as the

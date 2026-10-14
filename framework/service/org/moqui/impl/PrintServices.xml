@@ -25,7 +25,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="networkPrinterIdList" type="List"><parameter name="networkPrinterId"/></parameter>
         </out-parameters>
         <actions>
-            <return error="true" message="Network printing is not available until phase 12 (moqui-cups)"/>
+            <return error="true" message="Network printing support not installed (moqui-cups is not part of this build)"/>
         </actions>
     </service>
     <service verb="print" noun="DocumentInterface">
@@ -66,8 +66,8 @@ along with this software (see the LICENSE.md file). If not, see
         </in-parameters>
     </service>
     <service verb="print" noun="ScreenDocument">
-        <description>The body is Rust (crates/moqui-core/src/service/tools.rs). Producing the PDF is phase 12: the call
-            reports that PDF is not available.</description>
+        <description>The body is Rust (crates/moqui-core/src/service/tools.rs). The screen renders as html-print and
+            PdfRenderer makes the PDF; without a Chromium binary the call reports that PDF is not available.</description>
         <!-- org.moqui.impl.PrintServices.print#ScreenDocument -->
         <implements service="org.moqui.impl.PrintServices.print#DocumentInterface"/>
         <in-parameters>
@@ -112,7 +112,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="size" type="Integer"/>
         </out-parameters>
         <actions>
-            <return error="true" message="Network printing is not available until phase 12 (moqui-cups)"/>
+            <return error="true" message="Network printing support not installed (moqui-cups is not part of this build)"/>
         </actions>
     </service>
 
@@ -120,21 +120,21 @@ along with this software (see the LICENSE.md file). If not, see
         <!-- org.moqui.impl.PrintServices.hold#PrintJob -->
         <in-parameters><parameter name="printJobId"/></in-parameters>
         <actions>
-            <return error="true" message="Network printing is not available until phase 12 (moqui-cups)"/>
+            <return error="true" message="Network printing support not installed (moqui-cups is not part of this build)"/>
         </actions>
     </service>
     <service verb="release" noun="PrintJob">
         <!-- org.moqui.impl.PrintServices.release#PrintJob -->
         <in-parameters><parameter name="printJobId"/></in-parameters>
         <actions>
-            <return error="true" message="Network printing is not available until phase 12 (moqui-cups)"/>
+            <return error="true" message="Network printing support not installed (moqui-cups is not part of this build)"/>
         </actions>
     </service>
     <service verb="cancel" noun="PrintJob">
         <!-- org.moqui.impl.PrintServices.cancel#PrintJob -->
         <in-parameters><parameter name="printJobId"/></in-parameters>
         <actions>
-            <return error="true" message="Network printing is not available until phase 12 (moqui-cups)"/>
+            <return error="true" message="Network printing support not installed (moqui-cups is not part of this build)"/>
         </actions>
     </service>
 </services>

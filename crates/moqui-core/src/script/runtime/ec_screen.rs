@@ -99,12 +99,48 @@ fn screen_is_render_mode_text(ctx: Ctx<'_>, mode: String) -> rquickjs::Result<bo
     })
 }
 
-/// `ec.resource.xslFoTransform(...)`: PDF bytes, which arrive with phase 12.
-pub(super) fn resource_xsl_fo_transform(ctx: Ctx<'_>, _rest: Rest<JsValue<'_>>) -> rquickjs::Result<()> {
+/// `ec.resource.xslFoTransform(document, xslt, out, contentType)`: the PDF bytes of an `html-print` document (the
+/// old name `xsl-fo`), as a `Uint8Array`. Java writes to the `out` stream; a script has none, so the bytes are the
+/// return value and `out` is ignored. Java's XSLT step was an identity transform every caller skipped with null, so a
+/// stylesheet is an error, as is any content type but PDF.
+pub(super) fn resource_xsl_fo_transform<'js>(
+    ctx: Ctx<'js>,
+    document: JsValue<'js>,
+    xslt: Opt<JsValue<'js>>,
+    _out: Opt<JsValue<'js>>,
+    content_type: Opt<JsValue<'js>>,
+) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
-        crate::screen::PdfRenderer::render("")
-            .map(|_| ())
-            .map_err(|err| Exception::throw_message(&ctx, err.message()))
+        if xslt
+            .0
+            .as_ref()
+            .is_some_and(|value| !value.is_null() && !value.is_undefined())
+        {
+            return Err(Exception::throw_message(
+                &ctx,
+                "xslFoTransform does not apply an XSLT stylesheet; pass null",
+            ));
+        }
+        let content_type = match content_type.0.as_ref().and_then(JsValue::as_string) {
+            Some(text) => text.to_string()?,
+            None => String::new(),
+        };
+        if !content_type.is_empty() && content_type != "application/pdf" {
+            return Err(Exception::throw_message(
+                &ctx,
+                &format!("xslFoTransform makes application/pdf, not {content_type}"),
+            ));
+        }
+        let Some(text) = document.as_string() else {
+            return Err(Exception::throw_message(
+                &ctx,
+                "xslFoTransform needs the html-print document text",
+            ));
+        };
+        let text = text.to_string()?;
+        let bytes =
+            crate::screen::PdfRenderer::render(&text).map_err(|err| Exception::throw_message(&ctx, err.message()))?;
+        host_to_js(&ctx, Value::Bytes(bytes))
     })
 }
 

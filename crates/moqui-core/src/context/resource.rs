@@ -262,6 +262,27 @@ impl ResourceRef {
     }
 }
 
+/// What [`ResourceFacade::stat`] reports.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResourceStat {
+    pub is_file: bool,
+    pub size: u64,
+    /// Milliseconds since the epoch, when the storage keeps one.
+    pub last_modified: Option<i64>,
+}
+
+/// One entry of [`ResourceFacade::list`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResourceEntry {
+    pub name: String,
+    pub location: String,
+    pub is_file: bool,
+}
+
+fn io_error(location: &str, err: &std::io::Error) -> Error {
+    Error::new(format!("{location}: {err}"))
+}
+
 pub struct ResourceFacade {
     runtime_dir: PathBuf,
     components: HashMap<String, PathBuf>,
@@ -315,15 +336,160 @@ impl ResourceFacade {
         }
     }
 
-    /// Write bytes to a `dbresource://` file. `get` does not create a missing row.
+    /// Write bytes to a file, creating its parent directories: a `dbresource://` row, or a file under the
+    /// `file`, `runtime`, or `component` schemes.
     pub fn write_bytes(&self, location: &str, bytes: &[u8]) -> Result<(), Error> {
-        if scheme_of(location) != "dbresource" {
-            return Err(Error::new(format!("write_bytes supports dbresource only: {location}")));
+        if scheme_of(location) == "dbresource" {
+            return self
+                .db_facade()?
+                .write_db_resource(location, bytes)
+                .map_err(Error::from);
         }
-        let facade = self
-            .installed()
-            .ok_or_else(|| Error::new("database resource is not available"))?;
-        facade.write_db_resource(location, bytes).map_err(Error::from)
+        let path = self.writable_path(location)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|err| io_error(location, &err))?;
+        }
+        std::fs::write(&path, bytes).map_err(|err| io_error(location, &err))
+    }
+
+    /// The kind, size, and last-modified milliseconds of a location, or `None` when nothing is there.
+    pub fn stat(&self, location: &str) -> Result<Option<ResourceStat>, Error> {
+        if scheme_of(location) == "dbresource" {
+            return Ok(self
+                .db_facade()?
+                .stat_db_resource(location)
+                .map_err(Error::from)?
+                .map(|stat| ResourceStat {
+                    is_file: stat.is_file,
+                    size: stat.size,
+                    last_modified: stat.last_updated,
+                }));
+        }
+        let path = self.writable_path(location)?;
+        let Ok(meta) = std::fs::metadata(&path) else {
+            return Ok(None);
+        };
+        let last_modified = meta
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok());
+        Ok(Some(ResourceStat {
+            is_file: meta.is_file(),
+            size: if meta.is_file() { meta.len() } else { 0 },
+            last_modified,
+        }))
+    }
+
+    /// The files and directories directly under a directory location, sorted by name.
+    pub fn list(&self, location: &str) -> Result<Vec<ResourceEntry>, Error> {
+        let mut entries = if scheme_of(location) == "dbresource" {
+            let info = self.db_facade()?.read_db_resource(location).map_err(Error::from)?;
+            if !info.exists || info.is_file {
+                return Err(Error::new(format!("not a directory: {location}")));
+            }
+            info.children
+                .into_iter()
+                .map(|child| ResourceEntry {
+                    location: join_location(location, &child.name),
+                    name: child.name,
+                    is_file: child.is_file,
+                })
+                .collect::<Vec<_>>()
+        } else {
+            let path = self.writable_path(location)?;
+            let read = std::fs::read_dir(&path).map_err(|err| io_error(location, &err))?;
+            let mut entries = Vec::new();
+            for entry in read {
+                let entry = entry.map_err(|err| io_error(location, &err))?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let is_file = entry.file_type().map_err(|err| io_error(location, &err))?.is_file();
+                entries.push(ResourceEntry {
+                    location: join_location(location, &name),
+                    name,
+                    is_file,
+                });
+            }
+            entries
+        };
+        entries.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(entries)
+    }
+
+    /// Create a directory and any missing parents.
+    pub fn make_directory(&self, location: &str) -> Result<(), Error> {
+        if scheme_of(location) == "dbresource" {
+            return self.db_facade()?.make_db_directory(location).map_err(Error::from);
+        }
+        let path = self.writable_path(location)?;
+        std::fs::create_dir_all(&path).map_err(|err| io_error(location, &err))
+    }
+
+    /// Delete a file, or an empty directory. False when nothing is there.
+    pub fn delete(&self, location: &str) -> Result<bool, Error> {
+        if scheme_of(location) == "dbresource" {
+            let facade = self.db_facade()?;
+            let info = facade.read_db_resource(location).map_err(Error::from)?;
+            if info.exists && !info.is_file && !info.children.is_empty() {
+                return Err(Error::new(format!("directory is not empty: {location}")));
+            }
+            return facade.delete_db_resource(location).map_err(Error::from);
+        }
+        let path = self.writable_path(location)?;
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            return Ok(false);
+        };
+        let removed = if meta.is_dir() {
+            std::fs::remove_dir(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        removed.map(|()| true).map_err(|err| io_error(location, &err))
+    }
+
+    /// Move a file or directory to a new location of the same kind of storage.
+    pub fn rename(&self, location: &str, new_location: &str) -> Result<(), Error> {
+        let (from_db, to_db) = (
+            scheme_of(location) == "dbresource",
+            scheme_of(new_location) == "dbresource",
+        );
+        if from_db != to_db {
+            return Err(Error::new(format!(
+                "cannot move between database and file resources: {location} to {new_location}"
+            )));
+        }
+        if from_db {
+            let facade = self.db_facade()?;
+            if facade.stat_db_resource(location).map_err(Error::from)?.is_none() {
+                return Err(Error::new(format!("resource not found: {location}")));
+            }
+            return facade.move_db_resource(location, new_location).map_err(Error::from);
+        }
+        let from = self.writable_path(location)?;
+        let to = self.writable_path(new_location)?;
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent).map_err(|err| io_error(new_location, &err))?;
+        }
+        std::fs::rename(&from, &to).map_err(|err| io_error(location, &err))
+    }
+
+    fn db_facade(&self) -> Result<EntityFacade, Error> {
+        self.installed()
+            .ok_or_else(|| Error::new("database resource is not available"))
+    }
+
+    /// The path of a `file`, `runtime`, or `component` location. Other schemes are not writable.
+    fn writable_path(&self, location: &str) -> Result<PathBuf, Error> {
+        match scheme_of(location) {
+            "file" | "runtime" | "component" => {
+                let resource = self.get(location)?;
+                resource
+                    .file_path()
+                    .map(std::path::Path::to_path_buf)
+                    .ok_or_else(|| Error::new(format!("not a file location: {location}")))
+            }
+            other => Err(Error::new(format!("scheme {other} is not writable: {location}"))),
+        }
     }
 
     fn installed(&self) -> Option<EntityFacade> {

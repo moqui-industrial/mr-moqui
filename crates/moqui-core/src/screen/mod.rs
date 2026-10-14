@@ -52,7 +52,9 @@ pub use definition::{
     Actions, Authentication, Condition, FormDef, ParameterDef, ResponseDef, ResponseKind, ScreenDef, SectionDef,
     SectionKind, Subscreens, SubscreensItem, TransitionDef, TreeDef, WebSettings, XmlFragment,
 };
-pub use pdf::{PdfRenderer, PDF_UNAVAILABLE};
+#[cfg(test)]
+pub(crate) use pdf::pdf_test_lock;
+pub use pdf::{clear_pdf_engine, install_pdf_engine, install_pdf_unavailable, PdfEngine, PdfRenderer, PDF_UNAVAILABLE};
 pub use render::{
     make_render, save_screen_last_info, send_redirect_and_stop_render, with_current_render, RenderOutput, RenderState,
     ScreenRender,

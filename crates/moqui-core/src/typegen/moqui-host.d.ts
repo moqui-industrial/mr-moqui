@@ -308,8 +308,8 @@ interface MoquiResourceFacade {
     condition(expression: string, location?: string | null, map?: MoquiMap | null): boolean;
     script(location: string): void;
     template(location: string, data?: MoquiMap | null): string;
-    /** Throws: PDF is not available until phase 12. */
-    xslFoTransform(...args: unknown[]): never;
+    /** PDF bytes of an `html-print` (old name `xsl-fo`) document. `xslt` must be null and `out` is ignored. Throws when PDF is not available. */
+    xslFoTransform(document: string, xslt?: null, out?: unknown, contentType?: string | null): Uint8Array;
 }
 
 interface MoquiL10nFacade {
