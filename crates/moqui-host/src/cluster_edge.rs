@@ -78,11 +78,6 @@ pub(crate) fn listen_port(raw: &str) -> Result<u16, HostError> {
         .map_err(|_| HostError::new("cluster_https_port is not a port"))
 }
 
-pub(crate) fn install_sender() -> Result<(), HostError> {
-    moqui_core::cluster::install_sender(https_sender()?);
-    Ok(())
-}
-
 /// The HTTPS sender, which the SSH sender also uses for a peer whose base URL is `https://`.
 pub(crate) fn https_sender() -> Result<Arc<dyn Sender>, HostError> {
     let material = load_material()?;

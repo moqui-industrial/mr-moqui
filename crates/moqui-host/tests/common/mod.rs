@@ -134,6 +134,8 @@ pub struct Gate {
     pub server: moqui_host::Server,
     /// The runtime directory the server reads, removed when the gate drops.
     pub runtime: PathBuf,
+    /// The embedded cluster directory: `data` is the socket directory, `pgpass` the password.
+    pub cluster_dir: PathBuf,
     _serial: std::sync::MutexGuard<'static, ()>,
     _runtime: DirGuard,
     _cluster: DirGuard,
@@ -253,6 +255,7 @@ fn start_seeded(label: &str, static_fixture: bool, data: Option<&str>) -> Gate {
     Gate {
         server,
         runtime: runtime.clone(),
+        cluster_dir: cluster_dir.clone(),
         _serial: serial,
         _runtime: runtime_guard,
         _cluster: cluster_guard,

@@ -28,6 +28,7 @@ pub mod sso;
 pub mod types;
 
 mod cluster_edge;
+mod cluster_notify;
 
 #[cfg(feature = "axum")]
 mod http;
@@ -781,11 +782,9 @@ fn boot_server(
     // and host key.
     let cluster_posts = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sshd = ssh::server::start(&factory, &runtime_dir, Arc::clone(&cluster_posts))?;
-    if moqui_lib::env::get_prop_or_env("cluster_transport") == "ssh" {
-        ssh::cluster::install_sender(&factory)?;
-    } else {
-        cluster_edge::install_sender()?;
-    }
+    // One sender for every transport: a peer's base URL picks HTTPS, SSH, or Postgres NOTIFY.
+    cluster_notify::install_sender(&factory, db.is_postgres())?;
+    let notify_listener = cluster_notify::listen_if_configured(&factory, &db, Arc::clone(&cluster_posts))?;
     moqui_core::cluster::start(&factory).map_err(moqui_lib::error::Error::from)?;
     let cluster_edge = cluster_edge::listen(Arc::clone(&factory), cluster_posts)?;
     notws::install_push().map_err(moqui_lib::error::Error::from)?;
@@ -801,6 +800,7 @@ fn boot_server(
         pdf: Some(pdf),
         sshd,
         cluster_edge: Some(cluster_edge),
+        notify_listener,
         factory: Some(factory),
         search,
         facade: Some(facade),
@@ -809,7 +809,7 @@ fn boot_server(
     })
 }
 
-/// Drop order is the axum runtime, the PDF browser, the SSH server, the cluster listener (while the request pool is still up),
+/// Drop order is the axum runtime, the PDF browser, the SSH server, the cluster listeners (while the request pool is still up),
 /// the factory, the search store, the facade, the sim overlay, then the entity database (its driver, then its cluster). The search store
 /// outlives the factory so a dedicated postmaster stops after the facade's clients, and the overlay outlives the facade
 /// for its sim pool.
@@ -819,6 +819,7 @@ struct ServeProcess {
     pdf: Option<PdfSlot>,
     sshd: Option<ssh::server::SshServer>,
     cluster_edge: Option<crate::cluster_edge::ClusterEdge>,
+    notify_listener: Option<crate::cluster_notify::NotifyListener>,
     factory: Option<std::sync::Arc<moqui_core::context::ExecutionContextFactory>>,
     search: Option<crate::search::SearchStore>,
     facade: Option<moqui_core::entity::EntityFacade>,
@@ -833,6 +834,7 @@ impl Drop for ServeProcess {
         self.pdf.take();
         self.sshd.take();
         self.cluster_edge.take();
+        self.notify_listener.take();
         self.factory.take();
         self.search.take();
         self.facade.take();

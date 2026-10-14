@@ -153,6 +153,14 @@ along with this software (see the LICENSE.md file). If not, see
         <relationship type="one-nofk" related="moqui.server.Visitor"/>
         <index name="HTTP_SESSION_USER"><index-field name="userId"/></index>
     </entity>
+    <entity entity-name="ClusterMessage" package="moqui.server" cache="never" use="nontransactional">
+        <description>A cluster topic message too large for a Postgres NOTIFY payload (cluster_transport=notify). The
+            NOTIFY carries its id; every member reads the row, and rows past the liveness window are deleted.</description>
+        <field name="messageId" type="id" is-pk="true"/>
+        <field name="topic" type="text-short"/>
+        <field name="payload" type="text-very-long"/>
+        <field name="createdDate" type="date-time"/>
+    </entity>
     <entity entity-name="ClusterMember" package="moqui.server" cache="never" use="nontransactional">
         <field name="instanceId" type="id" is-pk="true"/>
         <field name="clusterBaseUrl" type="text-medium"/>

@@ -28,6 +28,8 @@ use moqui_lib::node::MNode;
 /// Postgres keeps three connection slots for superusers. The embedded role is a superuser, so they
 /// are room for `pg_dump` beside a full pool rather than for the pool.
 pub const SUPERUSER_SLOTS: u32 = 3;
+/// The cluster `LISTEN` connection, which is outside the pool.
+pub const LISTEN_SLOTS: u32 = 1;
 const POSTGRES_PORT: u16 = 5432;
 const MYSQL_PORT: u16 = 3306;
 
@@ -36,6 +38,9 @@ const MYSQL_PORT: u16 = 3306;
 pub struct EntityDb {
     pub conf: DatasourceConf,
     pub driver: Arc<dyn DbDriver>,
+    /// The same server as a Postgres driver, for a connection outside the pool (the cluster `LISTEN`).
+    #[cfg(feature = "postgres")]
+    pub postgres: Option<super::postgres::PostgresDriver>,
     #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
     cluster: Option<super::embedded::EmbeddedCluster>,
 }
@@ -82,7 +87,8 @@ pub fn transactional_conf(factory: &ExecutionContextFactory) -> Result<Datasourc
 }
 
 /// Open the database `conf` names. Embedded starts (or adopts) the cluster at `cluster_dir`, on the
-/// theseus install at `install_dir`, with `max_connections` of `pool_max` plus [`SUPERUSER_SLOTS`].
+/// theseus install at `install_dir`, with `max_connections` of `pool_max` plus [`LISTEN_SLOTS`] and
+/// [`SUPERUSER_SLOTS`].
 ///
 /// # Errors
 ///
@@ -91,23 +97,18 @@ pub fn transactional_conf(factory: &ExecutionContextFactory) -> Result<Datasourc
 pub fn open(conf: DatasourceConf, cluster_dir: &Path, install_dir: &Path, pool_max: u32) -> Result<EntityDb, Error> {
     match conf.kind {
         DatasourceKind::Embedded => open_embedded(conf, cluster_dir, install_dir, pool_max),
-        DatasourceKind::Postgres => {
-            let driver = postgres_driver(&conf)?;
-            Ok(external(conf, driver))
-        }
+        DatasourceKind::Postgres => open_postgres(conf),
         DatasourceKind::Mysql => {
             let driver = mysql_driver(&conf)?;
-            Ok(external(conf, driver))
+            Ok(EntityDb {
+                conf,
+                driver,
+                #[cfg(feature = "postgres")]
+                postgres: None,
+                #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+                cluster: None,
+            })
         }
-    }
-}
-
-fn external(conf: DatasourceConf, driver: Arc<dyn DbDriver>) -> EntityDb {
-    EntityDb {
-        conf,
-        driver,
-        #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
-        cluster: None,
     }
 }
 
@@ -122,14 +123,15 @@ fn open_embedded(
 
     crate::xmlshim::provide_libxml2_soname(cluster_dir)?;
     let options = StartOptions {
-        max_connections: pool_max + SUPERUSER_SLOTS,
+        max_connections: pool_max + LISTEN_SLOTS + SUPERUSER_SLOTS,
         role: ClusterRole::Entity,
         install_dir: Some(install_dir.to_path_buf()),
     };
     let (cluster, driver) = EmbeddedCluster::start_with(cluster_dir, &options)?;
     Ok(EntityDb {
         conf,
-        driver: Arc::new(driver),
+        driver: Arc::new(driver.clone()),
+        postgres: Some(driver),
         cluster: Some(cluster),
     })
 }
@@ -147,7 +149,24 @@ fn open_embedded(
 }
 
 #[cfg(feature = "postgres")]
-fn postgres_driver(conf: &DatasourceConf) -> Result<Arc<dyn DbDriver>, Error> {
+fn open_postgres(conf: DatasourceConf) -> Result<EntityDb, Error> {
+    let driver = postgres_driver(&conf)?;
+    Ok(EntityDb {
+        conf,
+        driver: Arc::new(driver.clone()),
+        postgres: Some(driver),
+        #[cfg(feature = "embedded-postgres")]
+        cluster: None,
+    })
+}
+
+#[cfg(not(feature = "postgres"))]
+fn open_postgres(_conf: DatasourceConf) -> Result<EntityDb, Error> {
+    Err(Error::new("the postgres driver is not in this build"))
+}
+
+#[cfg(feature = "postgres")]
+fn postgres_driver(conf: &DatasourceConf) -> Result<super::postgres::PostgresDriver, Error> {
     use super::postgres::PostgresDriver;
 
     let port = conf.port.unwrap_or(POSTGRES_PORT);
@@ -170,17 +189,11 @@ fn postgres_driver(conf: &DatasourceConf) -> Result<Arc<dyn DbDriver>, Error> {
     } else {
         PostgresDriver::tcp_no_tls(&conf.user, &conf.database, &conf.host, port)
     };
-    let driver = if conf.password.is_empty() {
+    Ok(if conf.password.is_empty() {
         driver
     } else {
         driver.password(&conf.password)
-    };
-    Ok(Arc::new(driver))
-}
-
-#[cfg(not(feature = "postgres"))]
-fn postgres_driver(_conf: &DatasourceConf) -> Result<Arc<dyn DbDriver>, Error> {
-    Err(Error::new("the postgres driver is not in this build"))
+    })
 }
 
 #[cfg(feature = "mysql")]

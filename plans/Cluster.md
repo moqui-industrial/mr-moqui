@@ -36,7 +36,7 @@ The member row is the instance id, the cluster base URL, the heartbeat timestamp
 
 ## Transport
 
-The sender is a small trait. The default implementation is an HTTPS POST to `{base}/cluster/{topic}` with the shared client certificate. The HTTP client keeps that connection pooled. The send runs on one host thread, after commit, and only after the enlisted client has been returned. The message is the cache key and carries an origin id. An invalidation is safe to apply twice. A failed send is retried briefly. A later optional sender is a `russh` session with two channels, one for each topic, specified in `plans/Ssh.md`. The default remains this POST.
+The sender is a small trait. The default implementation is an HTTPS POST to `{base}/cluster/{topic}` with the shared client certificate. The HTTP client keeps that connection pooled. The send runs on one host thread, after commit, and only after the enlisted client has been returned. The message is the cache key and carries an origin id. An invalidation is safe to apply twice. A failed send is retried briefly. The optional senders are a `russh` session with a channel for each topic (`plans/Ssh.md`) and Postgres `NOTIFY` (below). The default remains this POST.
 
 A notification carries a message id so a retry does not deliver it twice.
 
@@ -56,7 +56,15 @@ As built (`moqui-core/src/cluster`, `moqui-host/src/cluster_edge.rs`):
 - A generated `instance_id` is written to `runtime/db/instance_id`, not to `runtime/.env`, so copying `.env` between
   members does not give two members one id. An `instance_id` property still wins.
 
-Postgres `NOTIFY` can be another sender later, for peers that share the database and cannot open HTTPS to each other. It is not the default, and it is not specified further.
+## NOTIFY transport
+
+`cluster_transport=notify` is for members that share the entity database and cannot open a connection to each other. It works on embedded and external Postgres. A MySQL entity database refuses it at startup. The HTTPS POST stays the default.
+
+- A notify member advertises `pg-notify:` as its base URL, the default for this transport when `cluster_base_url` is empty. The fingerprint check is unchanged. The database credential is what reaches the channel, and the check catches a provisioning mistake.
+- The peer list folds every `pg-notify:` member into one entry, so the sender thread posts each message once for all of them. One dispatching sender (`moqui-host/src/cluster_notify.rs`) routes by base URL: `pg-notify:` to `pg_notify('moqui_cluster', ...)` on a pool connection, `ssh://` to the SSH sender, and anything else to the HTTPS POST. A member on any transport reaches a notify member, and the reverse. `cluster_transport` only picks what this member advertises and listens on.
+- The payload is the topic, the origin id, and the HTTPS body JSON, one per line. Postgres refuses a payload of 8000 bytes or more. A message past 7,900 bytes goes in a `moqui.server.ClusterMessage` row, and the payload carries `@` and the row id. Every member reads the row, and rows older than the liveness window are deleted once a minute by each notify member.
+- A notify member holds one connection outside the pool in `LISTEN moqui_cluster`, on its own thread. The embedded cluster's `max_connections` has a slot for it. A payload with this member's origin is skipped. Anything else is applied through the same path as `POST /cluster/{topic}`, including the message-id check for notifications.
+- A notification sent while the `LISTEN` connection is down is lost, as an HTTPS post that fails every try is. The thread reconnects with a backoff of up to five seconds and then clears the entity caches, so a missed invalidation cannot leave a stale row.
 
 ## Sessions
 

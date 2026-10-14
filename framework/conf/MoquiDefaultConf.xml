@@ -105,6 +105,9 @@
     <default-property name="cluster_tls_key" value="CHANGEME" is-secret="true"/>
     <default-property name="cluster_https_port" value=""/>
     <default-property name="cluster_base_url" value=""/>
+    <!-- How peers reach this member: empty is the HTTPS POST to cluster_base_url, "ssh" its SSH server (ssh_port),
+        "notify" Postgres NOTIFY on the shared entity database, for members that cannot open a connection to each other. -->
+    <default-property name="cluster_transport" value=""/>
     <default-property name="instance_id" value=""/>
     <default-property name="entity_add_missing_runtime" value="false"/>
     <default-property name="entity_add_missing_startup" value="true"/>

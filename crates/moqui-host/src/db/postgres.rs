@@ -40,6 +40,7 @@ mod driver {
     const PG_EPOCH_DAYS: i64 = 10_957;
 
     /// Username, database, and either a Unix socket directory or a TCP host.
+    #[derive(Clone)]
     pub struct PostgresDriver {
         user: String,
         database: String,
@@ -47,6 +48,7 @@ mod driver {
         target: Target,
     }
 
+    #[derive(Clone)]
     enum Target {
         #[cfg(unix)]
         Unix { socket_dir: PathBuf, port: u16 },
@@ -233,6 +235,51 @@ mod driver {
         #[must_use]
         pub fn statement_cache_len(&self) -> usize {
             self.cache.len()
+        }
+
+        /// `LISTEN` on `channel`, an identifier the caller controls.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error when the channel is not a plain identifier or the server refuses.
+        pub fn listen(&mut self, channel: &str) -> Result<(), Error> {
+            if channel.is_empty() || !channel.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+                return Err(Error::new(format!("{channel:?} is not a channel name")));
+            }
+            self.client
+                .batch_execute(&format!("LISTEN {channel}"))
+                .map_err(|err| pg("listen", err))
+        }
+
+        /// The payloads of the notifications that arrive within `timeout` of the call, and any already
+        /// waiting behind the first. Empty when none came.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error when the connection is lost.
+        pub fn notifications(&mut self, timeout: std::time::Duration) -> Result<Vec<String>, Error> {
+            use postgres::fallible_iterator::FallibleIterator;
+
+            let mut notifications = self.client.notifications();
+            let mut payloads = Vec::new();
+            let first = notifications
+                .timeout_iter(timeout)
+                .next()
+                .map_err(|err| pg("notification", err))?;
+            if let Some(first) = first {
+                payloads.push(first.payload().to_string());
+                let mut waiting = notifications.iter();
+                while let Some(next) = waiting.next().map_err(|err| pg("notification", err))? {
+                    payloads.push(next.payload().to_string());
+                }
+            }
+            Ok(payloads)
+        }
+
+        /// True when the server has closed this connection.
+        #[must_use]
+        pub fn is_closed(&self) -> bool {
+            self.client.is_closed()
         }
 
         fn prepared(&mut self, sql: &str) -> Result<Statement, Error> {

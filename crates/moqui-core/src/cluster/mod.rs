@@ -45,6 +45,9 @@ use crate::notify::{self, Listener, TopicMessage, ENTITY_CACHE_INVALIDATE, NOTIF
 use crate::user::{now_millis, now_value, value_millis};
 
 const MEMBER: &str = "moqui.server.ClusterMember";
+const MESSAGE: &str = "moqui.server.ClusterMessage";
+/// The base URL every `cluster_transport=notify` member advertises. One post to it reaches all of them.
+pub const NOTIFY_BASE_URL: &str = "pg-notify:";
 const MEMBER_COLUMNS: &[&str] = &[
     "instanceId",
     "clusterBaseUrl",
@@ -353,6 +356,8 @@ fn cluster_base_url() -> Result<String, Error> {
     let configured = env::get_prop_or_env("cluster_base_url");
     let url = if !configured.is_empty() {
         configured
+    } else if env::get_prop_or_env("cluster_transport") == "notify" {
+        NOTIFY_BASE_URL.to_string()
     } else if env::get_prop_or_env("cluster_transport") == "ssh" {
         let address = env::get_prop_or_env(SSH_ADDRESS_PROPERTY);
         if address.is_empty() {
@@ -637,7 +642,13 @@ fn live_peer_urls(factory: &ExecutionContextFactory, facade: &EntityFacade) -> R
             continue;
         }
         let base = trim_base(&member.base_url);
-        if !base.is_empty() {
+        // Every notify member is reached by the one NOTIFY, so they are one peer here.
+        let base = if base.starts_with(NOTIFY_BASE_URL) {
+            NOTIFY_BASE_URL.to_string()
+        } else {
+            base
+        };
+        if !base.is_empty() && !bases.contains(&base) {
             bases.push(base);
         }
     }
@@ -865,6 +876,77 @@ fn touch_member(facade: &EntityFacade, instance_id: &str, now: i64) -> Result<()
     let tx = facade.transactions_for(MEMBER).map_err(Error::from)?;
     with_reserve_tx(&tx, |conn| {
         conn.execute(&sql, &params)?;
+        Ok(())
+    })
+    .map_err(Error::from)
+}
+
+/// Keep a message too large for a NOTIFY payload, and answer the id the NOTIFY carries instead.
+///
+/// # Errors
+///
+/// Returns an error when the row cannot be written.
+pub fn store_message(facade: &EntityFacade, topic: &str, payload: &str) -> Result<String, Error> {
+    let _authz = entered_authz();
+    let id = crate::entity::uuid_v4().map_err(Error::from)?;
+    let sql = facade
+        .with_entity(MESSAGE, |entity, dialect, _| {
+            sql_insert(entity, dialect, &["messageId", "topic", "payload", "createdDate"])
+        })
+        .map_err(Error::from)?;
+    let params = [
+        Value::string(&id),
+        Value::string(topic),
+        Value::string(payload),
+        millis_value(db_now(facade)),
+    ];
+    let tx = facade.transactions_for(MESSAGE).map_err(Error::from)?;
+    with_reserve_tx(&tx, |conn| {
+        conn.execute(&sql, &params)?;
+        Ok(())
+    })
+    .map_err(Error::from)?;
+    Ok(id)
+}
+
+/// The topic and payload of a message [`store_message`] kept. `None` once it has been pruned.
+///
+/// # Errors
+///
+/// Returns an error when the row cannot be read.
+pub fn load_message(facade: &EntityFacade, id: &str) -> Result<Option<(String, String)>, Error> {
+    let _authz = entered_authz();
+    let fields = [FieldRef::new("topic"), FieldRef::new("payload")];
+    let by_id = Condition::equals("messageId", Value::string(id));
+    let statement = facade
+        .with_entity(MESSAGE, |entity, dialect, _| {
+            sql_select(entity, dialect, &fields, Some(&by_id), &[], LimitOffset::default())
+        })
+        .map_err(Error::from)?;
+    let tx = facade.transactions_for(MESSAGE).map_err(Error::from)?;
+    let rows = with_reserve_tx(&tx, |conn| conn.query(&statement.sql, &statement.params)).map_err(Error::from)?;
+    Ok(rows
+        .first()
+        .map(|row| (row_text(row, "topic"), row_text(row, "payload"))))
+}
+
+/// Delete kept messages older than the cluster's liveness window: every live member has read them by then.
+///
+/// # Errors
+///
+/// Returns an error when the rows cannot be deleted.
+pub fn prune_messages(factory: &ExecutionContextFactory, facade: &EntityFacade) -> Result<(), Error> {
+    let _authz = entered_authz();
+    let before = db_now(facade).saturating_sub(window_millis(factory));
+    let condition = Condition::less("createdDate", millis_value(before));
+    let statement = facade
+        .with_entity(MESSAGE, |entity, dialect, _| {
+            sql_delete(entity, dialect, Some(&condition))
+        })
+        .map_err(Error::from)?;
+    let tx = facade.transactions_for(MESSAGE).map_err(Error::from)?;
+    with_reserve_tx(&tx, |conn| {
+        conn.execute(&statement.sql, &statement.params)?;
         Ok(())
     })
     .map_err(Error::from)
