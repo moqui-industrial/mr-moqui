@@ -301,8 +301,7 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   components of the last page, and an `m-form` copies its `fields-initial` once, so page 2 showed the rows of page 1.
 - **Deferred.** PDF bytes (phase 12); `ScreenServices.xml` service bodies (mail screen bodies were done after slice 8, see phase 10's
   "Screen mail after phase 8"); `vuet` and `/vapps` (dropped); the Assist panel; in a
-  static template, row selection, first/second/last rows and aggregation (the column picker, the exports and precompiled `m-*` templates
-  came after slice 8, see slice 7's notes); the `lookup` widget (a text line, as the Java macro was commented out). A static
+  static template, the form-list tools (they came after slice 8, see slice 7's notes); the `lookup` widget (a text line, as the Java macro was commented out). A static
   template is fetched once to read `X-Moqui-Qvt` and then loaded again by a script element (a URL without the query), so it downloads twice.
 - **Ported after the Phase 8 and 10 review against Java.** These Java features were deferred by that review and are now done; the Java
   reference is `ScreenRenderImpl` (SRI), `ScreenDefinition` (SD), `ScreenForm` (SF) and `AggregationUtil`:
@@ -456,13 +455,12 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   actions and the actions of the sections it reaches, and answers the package; `GET {screen}/actions/{form}` answers a form-list. `display-entity`, `entity-options`,
   `list-options` and `dynamic-options` without `server-search` are looked up on the server (`list-options` too, which the plan left in the template), and a `set` in a field runs
   there. Differences from the plan: credential names are stripped at any depth; `include-screen` is written inline in the including template (and its actions run in the
-  package) instead of a child component; a static form-list leaves out sub-list fields (the report names screens that have them) and draws the total row the form request answers as `{list}Total`; first/second/last rows, row
-  selection and `button-menu` are not written in a static template (the find dialog, saved finds, the csv, xlsx, text and print exports, a multi form and the column picker are); the non-qvt modes get the cache header
+  package) instead of a child component; a static form-list leaves out sub-list fields (the report names screens that have them) and draws the total row the form request answers as `{list}Total`; the find dialog, saved finds, the csv, xlsx, text and print exports, a multi form, the column picker, row selection, first/second/last rows, aggregated sub-rows and `button-menu` are all written in a static template; the non-qvt modes get the cache header
   when the screen names them, and the automatic subscreens-only case gets it for qvt only (a page of html holds the navbar of the user). `webapp_qvt_static_only=true` loads
   `vue.runtime.global.prod.js`: the `m-*` components and the shell (`m-qapps-root`) are precompiled into `WebrootVue.qvt.render.js`, and a page of server-static screens runs under `script-src 'self'`.
   The report is `moqui lint --screens --qvt-static [report-file]` (one block for each screen file: location, mode, verdict, reasons and violations; it does not fail the
   process) and `screen::statics::static_report` with `full` for the render with the wrapped `ec`. Over this tree 129 screens (measured 2026-10-14, after the browser host gained `ec.factory.moquiVersion` and
-  `StringUtilities.camelCaseToPretty` and the tools screens moved their permission checks, clock and lookups into actions): 101 clean, 14 with violations, 14 stay a server merge, after the static form-list gained the find dialog, saved finds, the exports, a multi form, the column picker and the show-total row. `ArtifactGroupDetail` is clean, and Gate 3 marks it with a `screen-extend` in its own runtime.
+  `StringUtilities.camelCaseToPretty` and the tools screens moved their permission checks, clock and lookups into actions): 130 screens: 103 clean, 13 with violations, 14 stay a server merge, after the static form-list gained the find dialog, saved finds, the exports, a multi form, the column picker, the show-total row, aggregated sub-lists, first/second/last rows and row selection, and the static macros XML conditions, section-iterate paging, text-map, the field accordion and button-menu. What is left is the `ec` and `sri` calls of a few screens, decimal arithmetic, inline text templates and dynamic forms. `ArtifactGroupDetail` is clean, and Gate 3 marks it with a `screen-extend` in its own runtime.
 - **Slice 8, the Gate 3 harness.** `tests/gate3.rs` and `tests/gate3_browser.rs` share the seeded server in `tests/common/mod.rs`: one embedded
   Postgres, the seed load (framework files and each component's `data` directory, so the themes, pagination text and the tools app groups are
   rows without a by-location load), the demo users, and three screens of the test runtime (`GateCompanion`, `GateWidgets` with click to edit,

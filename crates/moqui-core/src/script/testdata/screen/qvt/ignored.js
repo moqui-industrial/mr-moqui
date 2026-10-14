@@ -9,8 +9,10 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN screen[@location=" + sri.get
         if (!$icon && $text) $icon = sri.getThemeIconClass($text) || "";
         const $badge = ec.resource.expand("", "");
         sri.write("<q-btn-dropdown" + $v.A({dense: true, outline: true, "no-caps": true, color: $v.quasarColor("primary") || null, class: null}) + "><template v-slot:label>" +
-            ($icon ? "<i class=\"" + $v.e($icon) + " q-icon" + ($text ? " on-left" : "") + "\"></i>" : "") + $text +
-            ($badge ? "<q-badge class=\"on-right\" transparent>" + $v.t($badge) + "</q-badge>" : "") + "</template><q-list>");
+            ($icon ? "<i class=\"" + $v.e($icon) + " q-icon" + ($text ? " on-left" : "") + "\"></i>" : ""));
+        // as Java: the image child in the place of the text
+        sri.write($text);
+        sri.write(($badge ? "<q-badge class=\"on-right\" transparent>" + $v.t($badge) + "</q-badge>" : "") + "</template><q-list>");
         sri.write("<q-item><q-item-section>");
         sri.write("</q-item-section></q-item>");
         sri.write("</q-list></q-btn-dropdown>\n");

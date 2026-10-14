@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The XML screen and form features at parity with Java Moqui, written in a server-static template: a condition element, section-iterate paging, text-map, an accordion, a button-menu, an aggregated list, first and last rows, row selection. -->
+<screen require-authentication="false" server-static="qvt" default-menu-title="Parity">
+    <actions>
+        <set field="status" value="ACTIVE"/>
+        <set field="qty" from="5"/>
+        <set field="lines" from="Array.from({length: 25}, (_, i) => ({lineId: 'L' + (i + 1)}))"/>
+        <set field="product" from="{productName: 'Widget X', price: 9}"/>
+        <set field="productName" value="the context's name"/>
+        <set field="newItem" from="{itemId: 'NEW', name: 'new item name'}"/>
+        <set field="itemsForEdit" from="[{itemId: 'E1', name: 'edit one'}, {itemId: 'E2', name: 'edit two'}]"/>
+        <set field="orderLines" from="[{orderId: 'O1', customer: 'Ada', item: 'Gear', qty: 2}, {orderId: 'O1', customer: 'Ada', item: 'Bolt', qty: 5}, {orderId: 'O2', customer: 'Bo', item: 'Nut', qty: 1}]"/>
+    </actions>
+    <transition name="viewProduct" read-only="true"><default-response type="none"/></transition>
+    <transition name="saveProduct"><default-response type="none"/></transition>
+    <transition name="createItem"><default-response type="none"/></transition>
+    <transition name="archiveItems"><default-response type="none"/></transition>
+    <widgets>
+        <section name="Holds">
+            <condition><and><compare field="status" operator="equals" value="ACTIVE"/><expression>qty &gt; 3</expression></and></condition>
+            <widgets><label text="the condition holds" type="p"/></widgets>
+            <fail-widgets><label text="the condition fails" type="p"/></fail-widgets>
+        </section>
+        <section name="Fails">
+            <condition><or><compare field="qty" operator="greater" value="10" type="Long"/><not><expression>status</expression></not></or></condition>
+            <widgets><label text="the second holds" type="p"/></widgets>
+            <fail-widgets><label text="the second fails" type="p"/></fail-widgets>
+        </section>
+        <label text="Product ${productName} at ${price}" text-map="product" type="p"/>
+        <link url="viewProduct" text="View ${productName}" text-map="product" link-type="anchor"/>
+        <button-menu text="Menu of ${productName}" text-map="product" icon="fa fa-bars">
+            <link url="viewProduct" text="View it" link-type="anchor"/>
+            <label text="shown when qty is over 3" condition="qty &gt; 3"/>
+            <label text="hidden when qty is over 3" condition="qty &lt;= 3"/>
+        </button-menu>
+        <form-single name="ProductForm" map="product" transition="saveProduct">
+            <field name="productName"><default-field><text-line/></default-field></field>
+            <field name="price"><default-field><text-line/></default-field></field>
+            <field name="note"><default-field><text-area/></default-field></field>
+            <field-layout><field-accordion active="2">
+                <field-group title="Names"><field-ref name="productName"/></field-group>
+                <field-group title="Amounts"><field-ref name="price"/><field-ref name="note"/></field-group>
+            </field-accordion></field-layout>
+        </form-single>
+        <form-list name="EditList" list="itemsForEdit" transition="saveProduct" map-first-row="newItem" transition-first-row="createItem">
+            <field name="itemId"><first-row-field><text-line size="10"/></first-row-field><default-field><display/></default-field></field>
+            <field name="name">
+                <first-row-field><text-line size="20"/></first-row-field>
+                <last-row-field><display text="the last row"/></last-row-field>
+                <default-field><text-line size="20"/></default-field>
+            </field>
+            <field name="secret"><first-row-field><hidden default-value="S1"/></first-row-field><default-field><hidden/></default-field></field>
+            <field name="go"><first-row-field><submit text="Create"/></first-row-field><default-field><submit text="Save"/></default-field></field>
+        </form-list>
+        <form-list name="PickList" list="itemsForEdit" skip-form="true">
+            <row-selection id-field="itemId">
+                <action>
+                    <dialog button-text="Archive" title="Archive Items"/>
+                    <form-single name="ArchiveForm" transition="archiveItems">
+                        <field name="reason"><default-field><text-line size="20"/></default-field></field>
+                        <field name="go"><default-field title="Archive"><submit/></default-field></field>
+                    </form-single>
+                </action>
+            </row-selection>
+            <field name="itemId"><default-field><display/></default-field></field>
+            <field name="name"><default-field><display/></default-field></field>
+        </form-list>
+        <form-list name="OrderList" list="orderLines" skip-form="true">
+            <field name="orderId" aggregate="group-by"><default-field><display/></default-field></field>
+            <field name="customer" aggregate="group-by"><default-field><display/></default-field></field>
+            <field name="item" aggregate="sub-list"><default-field><display/></default-field></field>
+            <field name="qty" aggregate="sub-list" show-total="sum"><default-field><display/></default-field></field>
+        </form-list>
+        <section-iterate name="Lines" list="lines" entry="line" paginate="true">
+            <widgets><label text="line ${line.lineId}" type="div"/></widgets>
+        </section-iterate>
+    </widgets>
+</screen>

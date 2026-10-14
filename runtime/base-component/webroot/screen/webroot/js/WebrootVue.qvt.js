@@ -379,6 +379,54 @@
             const query = qvt.helpers.qs(params, map);
             return query ? path + (path.indexOf("?") >= 0 ? "&" : "?") + query : path;
         },
+        // A text-map of a text: whether the map has the name, or with value true the entry itself.
+        inMap: (map, name, value) => {
+            const has = map !== null && map !== undefined && typeof map === "object" && Object.prototype.hasOwnProperty.call(map, name);
+            return value ? (has ? map[name] : undefined) : has;
+        },
+        // The compare of an XML condition (moqui_lib::object::compare): both sides converted by the type, then the operator. A package holds a
+        // decimal as text, so a numeric type compares numbers; Object compares numbers when both sides are numbers or numeric text, else text.
+        compare: (field, operator, value, toField, format, type) => {
+            const empty = (v) => v === null || v === undefined || v === "" || (Array.isArray(v) && !v.length) || (moqui.isPlainObject(v) && !Object.keys(v).length);
+            let target = value === null || value === undefined ? toField : value;
+            const kind = String(type || "Object");
+            const numeric = /^(BigDecimal|Long|Integer|Double|Float|Number|java\.math\.BigDecimal|java\.lang\.(Long|Integer|Double))$/.test(kind);
+            const isNum = (v) => typeof v === "number" || (typeof v === "string" && NUMBER_TEXT.test(v.trim()));
+            const conv = (v) => {
+                if (v === null || v === undefined || (typeof v === "string" && v === "" && kind !== "String")) return null;
+                if (numeric) return Number(v);
+                if (kind === "Boolean") return v === true || String(v) === "true";
+                if (kind === "String") return String(v);
+                return v;
+            };
+            let left = conv(field);
+            let right = empty(target) ? (target === undefined ? null : target) : conv(target);
+            if (kind === "Object" && isNum(left) && isNum(right)) { left = Number(left); right = Number(right); }
+            const text = (v) => (v === null || v === undefined ? "" : String(v));
+            const order = () => {
+                if (left === null) return right === null ? 0 : 1;
+                if (right === null) throw new Error("cannot compare a value to null");
+                if (typeof left === "number" && typeof right === "number") return left < right ? -1 : left > right ? 1 : 0;
+                const a = text(left);
+                const b = text(right);
+                return a < b ? -1 : a > b ? 1 : 0;
+            };
+            const full = (pattern) => new RegExp("^(?:" + text(pattern) + ")$");
+            switch (operator || "equals") {
+                case "less": return order() < 0;
+                case "greater": return order() > 0;
+                case "less-equals": return order() <= 0;
+                case "greater-equals": return order() >= 0;
+                case "contains": return text(left).indexOf(text(right)) >= 0;
+                case "not-contains": return text(left).indexOf(text(right)) < 0;
+                case "empty": return empty(field);
+                case "not-empty": return !empty(field);
+                case "matches": return full(right).test(text(left));
+                case "not-matches": return !full(right).test(text(left));
+                case "not-equals": return !(left === right || (left !== null && right !== null && typeof left === typeof right && String(left) === String(right)));
+                default: return left === right || (left !== null && right !== null && typeof left === typeof right && String(left) === String(right));
+            }
+        },
         // The style of a field shown only while another field has a value.
         shown: (expected, actual) => {
             let wanted = expected;
@@ -555,7 +603,7 @@
         inject: { mqScope: { default: null }, mqScreen: { default: null } },
         props: { name: { type: String, required: true }, id: String, action: String, listName: String, multi: Boolean, skipForm: Boolean, skipHeader: Boolean,
             rowInitial: Function, formLocation: String, findAction: String, defaultColumns: Array, columnFields: Array, columnsAction: String,
-            headerInitial: Function },
+            headerInitial: Function, subFields: Array, specialRows: Object, selectionIdField: String, selectionParameter: String, selectionListMode: Boolean },
         data() { return { pkg: null, searchObj: {}, loading: false, generation: 0 }; },
         computed: {
             idVal() { return this.id && this.id.length ? this.id : this.name; },
@@ -614,10 +662,27 @@
                     columnsAction: this.columnsAction || "", columnsTree: this.columnsTree()
                 };
             },
-            // The columns shown: the user's from the package, else the template's.
+            // The columns shown: the user's from the package, else the template's, without the sub-list fields, which are the sub columns.
             shownColumns() {
                 const chosen = this.pkg && this.pkg.mqColumns;
-                return Array.isArray(chosen) && chosen.length ? chosen : this.defaultColumns || [];
+                const all = Array.isArray(chosen) && chosen.length ? chosen : this.defaultColumns || [];
+                const sub = this.subFields || [];
+                return all.map((column) => column.filter((field) => !sub.includes(field))).filter((column) => column.length);
+            },
+            // The sub-list fields in the user's columns (or each in a column of its own), for the sub-rows of an aggregated list.
+            subColumns() {
+                const sub = this.subFields || [];
+                if (!sub.length) return [];
+                const chosen = this.pkg && this.pkg.mqColumns;
+                const all = Array.isArray(chosen) && chosen.length ? chosen : (this.defaultColumns || []).concat(sub.map((field) => [field]));
+                return all.map((column) => column.filter((field) => sub.includes(field))).filter((column) => column.length);
+            },
+            // The scope of a sub-row: its entry over the row's scope, with the sub index, as Java's startFormListSubRow.
+            subScope(entry, subIndex, count, rowScope) {
+                const extra = { _formMap: entry };
+                extra[this.listKey + "_sub_index"] = subIndex;
+                extra[this.listKey + "_sub_has_next"] = subIndex + 1 < count;
+                return qvt.makeScope(() => Object.assign({}, entry, extra), rowScope);
             },
             // What the column dialog edits: the fields not shown, then each column with its fields, labelled as the server-merged dialog has them.
             columnsTree() {
@@ -644,6 +709,7 @@
             // The scope of a row. In a multi form, formProps reads and writes the row's fields under name_rowIndex in the one form.
             rowScope(rowIndex, formScope, multiProps, formProps) {
                 const extra = { rowIndex, _formMap: this.rows[rowIndex] };
+                if (this.mqSelState) extra.mqSel = this.mqSelState;
                 if (formProps) extra.formProps = formProps;
                 if (multiProps) {
                     const suffix = "_" + rowIndex;
@@ -672,6 +738,23 @@
             const h = V.h;
             const formScope = qvt.makeScope(() => this.pkg || {}, this.mqScope);
             const slots = this.$slots;
+            // With row-selection the table is in an m-checkbox-set (sel): the head starts with select-all and the menu of the row actions,
+            // and each row with a checkbox, as Java's form-list; sel is not reactive state of this component.
+            const build = (sel) => {
+            this.mqSelState = sel;
+            const selCell = (rowIndex) => {
+                if (!sel) return null;
+                const row = rowIndex === null ? null : this.rows[rowIndex];
+                const id = row ? row[this.selectionIdField] : null;
+                if (id === null || id === undefined || id === "") return h("div", { class: "td" }, "\u00a0");
+                return h("div", { class: "td" }, [h("div", { class: "q-my-auto" }, [h("input", { type: "checkbox", style: "transform: scale(1.3)", checked: !!sel.checkboxStates[rowIndex],
+                    onClick: (event) => sel.clickCheckbox(event, rowIndex), onChange: (event) => { sel.checkboxStates[rowIndex] = event.target.checked; } })])]);
+            };
+            const selHead = sel ? h("div", { class: "th" }, [h("span", { class: "q-my-auto" }, [
+                h(V.resolveComponent("q-checkbox"), { size: "sm", modelValue: sel.checkboxAllState, "onUpdate:modelValue": sel.setCheckboxAllState }),
+                h(V.resolveComponent("q-btn"), { dense: true, flat: true, icon: "build", color: sel.checkboxStates && sel.checkboxStates.includes(true) ? "positive" : "" }, { default: () => [
+                    h(V.resolveComponent("q-tooltip"), null, { default: () => moqui.l10n.localize("Row Actions") }),
+                    h(V.resolveComponent("q-menu"), { anchor: "top left", self: "bottom left" }, { default: () => (slots.selection ? slots.selection(sel) : null) })] })])]) : null;
             const hs = { sortBy: this.sortBy, orderBy: this.orderBy, action: this.$root && this.$root.currentLinkPath, orderByField: this.searchObj.orderByField || (this.pkg && this.pkg.orderByField) || "" };
             let header = slots.header ? slots.header(hs) : null;
             if (this.defaultColumns) {
@@ -682,37 +765,84 @@
                         { default: (formProps) => ths(formProps) })]
                     : ths(null);
             }
+            if (selHead) header = [selHead].concat(header || []);
             const columnsMode = !!this.defaultColumns;
             const columns = columnsMode ? this.shownColumns() : null;
             // In columns mode a row is a tr of a td for each column, each holding the rc_ slot of its fields, in a row form the component makes.
             const cellsOf = (scope) => columns.map((column) => h("div", { class: "td" }, column.map((field) => (slots["rc_" + field] ? slots["rc_" + field](scope) : null))));
             const columnsRow = (rowIndex, multiProps) => {
                 const rowClass = this.rows[rowIndex] && this.rows[rowIndex]._moquiRowType === "total" ? "tr text-weight-bold" : "tr";
-                if (multiProps || this.skipForm) return h("div", { class: rowClass, key: this.generation + "_" + rowIndex }, cellsOf(this.rowScope(rowIndex, formScope, multiProps, null)));
+                if (multiProps || this.skipForm) return h("div", { class: rowClass, key: this.generation + "_" + rowIndex }, [selCell(rowIndex)].concat(cellsOf(this.rowScope(rowIndex, formScope, multiProps, null))));
                 const initial = Object.assign({}, this.rowInitial ? this.rowInitial(this.rowScope(rowIndex, formScope, null, null)) : {},
                     { moquiFormName: this.name, pageIndex: String((this.pkg && this.pkg.pageIndex) || 0) });
-                return h("div", { class: rowClass, key: this.generation + "_" + rowIndex }, [h(V.resolveComponent("m-form"), { name: this.idVal + "_" + rowIndex, id: this.idVal + "_" + rowIndex, action: this.action, fieldsInitial: initial },
+                return h("div", { class: rowClass, key: this.generation + "_" + rowIndex }, [selCell(rowIndex), h(V.resolveComponent("m-form"), { name: this.idVal + "_" + rowIndex, id: this.idVal + "_" + rowIndex, action: this.action, fieldsInitial: initial },
                     { default: (formProps) => cellsOf(this.rowScope(rowIndex, formScope, null, formProps)) })]);
             };
-            const rowsOf = (multiProps) => this.rows.map((row, rowIndex) => (columnsMode ? columnsRow(rowIndex, multiProps) :
-                h(V.Fragment, { key: this.generation + "_" + rowIndex }, slots.row ? slots.row(this.rowScope(rowIndex, formScope, multiProps)) : [])));
+            // The sub-rows of an aggregated row, under it: each entry of its aggregateSubList as a row of the sub columns.
+            const subColumns = columnsMode ? this.subColumns() : null;
+            const subRowsOf = (rowIndex) => {
+                const entries = this.rows[rowIndex] && this.rows[rowIndex].aggregateSubList;
+                if (!Array.isArray(entries) || !entries.length || !(columnsMode ? subColumns.length : slots.subrow)) return null;
+                const parent = this.rowScope(rowIndex, formScope, null, null);
+                const cells = (scope) => (columnsMode
+                    ? subColumns.map((column) => h("div", { class: "col" }, column.map((field) => (slots["rc_" + field] ? slots["rc_" + field](scope) : null))))
+                    : slots.subrow(scope));
+                return h("div", { class: "tr sub-rows" }, [sel ? h("div", { class: "td" }, "\u00a0") : null, h("div", { class: "td" }, [h("div", { class: "q-pl-lg" },
+                    entries.map((entry, subIndex) => h("div", { class: "row no-wrap q-col-gutter-sm" }, cells(this.subScope(entry, subIndex, entries.length, parent)))))])]);
+            };
+            const rowsOf = (multiProps) => this.rows.map((row, rowIndex) => h(V.Fragment, { key: this.generation + "_" + rowIndex },
+                [columnsMode ? columnsRow(rowIndex, multiProps) : h(V.Fragment, slots.row ? slots.row(this.rowScope(rowIndex, formScope, multiProps)) : []), subRowsOf(rowIndex)]));
             const multiForm = this.multi && !this.skipForm;
             const rowNodes = multiForm ? [] : rowsOf(null);
+            // The first, second and last rows: the map the form request answers for each (listFirst, ...), in a form of their own when the
+            // template gives the transition, as Java's name_first form; outside a multi form, whose rows are the list's.
+            const specialRow = (kind) => {
+                const spec = this.specialRows && this.specialRows[kind];
+                if (!spec || !this.pkg) return null;
+                const map = this.pkg[this.listKey + kind.charAt(0).toUpperCase() + kind.slice(1)] || {};
+                const scopeOf = (formProps) => qvt.makeScope(() => Object.assign({}, map, { _formMap: map }, formProps ? { formProps } : {}), formScope);
+                const content = (scope) => (columnsMode
+                    ? h("div", { class: "tr " + kind }, [sel ? h("div", { class: "td" }, "\u00a0") : null].concat(columns.map((column) => h("div", { class: "td" },
+                        column.map((field) => (slots["rc" + kind.charAt(0) + "_" + field] ? slots["rc" + kind.charAt(0) + "_" + field](scope) : null))))))
+                    : (slots["row_" + kind] ? slots["row_" + kind](scope) : null));
+                if (!spec.action) return h(V.Fragment, { key: kind + "_" + this.generation }, [content(scopeOf(null))]);
+                const initial = Object.assign({}, spec.initial ? spec.initial(scopeOf(null)) : {}, { moquiFormName: this.name, pageIndex: String(this.pkg.pageIndex || 0) });
+                const order = this.searchObj.orderByField || this.pkg.orderByField;
+                if (order) initial.orderByField = String(order);
+                return h(V.resolveComponent("m-form"), { key: kind + "_" + this.generation, name: this.idVal + "_" + kind, id: this.idVal + "_" + kind, action: spec.action, fieldsInitial: initial },
+                    { default: (formProps) => content(scopeOf(formProps)) });
+            };
+            const empty = [h("div", { class: "tr" }, [h("div", { class: "td" }, moqui.l10n.localize("No results found"))])];
+            const body = multiForm
+                ? h(V.resolveComponent("m-form"), { key: "multi_" + this.generation, name: this.idVal, id: this.idVal, action: this.action, fieldsInitial: this.multiFields(formScope),
+                    parentCheckboxSet: sel || undefined, checkboxOptional: true },
+                    { default: (multiProps) => (this.rows.length || this.loading ? rowsOf(multiProps) : empty) })
+                : rowNodes.length || this.loading ? rowNodes : empty;
+            // as Java: the titles of the sub-list columns once in the head
+            const labelOf = (field) => { const found = (this.columnFields || []).find((item) => item.id === field); return found ? found.label : field; };
+            const subHead = columnsMode
+                ? (subColumns.length ? subColumns.map((column) => h("div", { class: "col" }, column.map(labelOf).join(" "))) : null)
+                : (slots.subhead ? slots.subhead() : null);
+            const subHeader = subHead ? h("div", { class: "tr sub-header" }, [h("div", { class: "th" }, [h("div", { class: "q-pl-lg" },
+                [h("div", { class: "row no-wrap q-col-gutter-sm text-weight-bold" }, subHead)])])]) : null;
+            const table = h("div", { class: "table q-table", id: this.idVal + "_table" }, [
+                this.skipHeader ? null : h("div", { class: "thead" }, [h("div", { class: "tr" }, header), subHeader]),
+                h("div", { class: "tbody" }, [specialRow("first"), specialRow("second")].concat(multiForm ? [body] : body, [specialRow("last")]))
+            ]);
+            return table;
+            };
             const nav = h("div", { class: "form-list-nav-row row items-center" }, [
                 slots.nav ? h("div", { class: "row items-center q-gutter-xs" }, slots.nav(this.navProps())) : null,
                 h(V.resolveComponent("q-space")),
                 h(V.resolveComponent("m-form-paginate"), { paginate: this.paginate, formList: this }),
                 h(V.resolveComponent("m-form-go-page"), { idVal: this.idVal, formList: this })
             ]);
-            const empty = [h("div", { class: "tr" }, [h("div", { class: "td" }, moqui.l10n.localize("No results found"))])];
-            const body = multiForm
-                ? h(V.resolveComponent("m-form"), { key: "multi_" + this.generation, name: this.idVal, id: this.idVal, action: this.action, fieldsInitial: this.multiFields(formScope) },
-                    { default: (multiProps) => (this.rows.length || this.loading ? rowsOf(multiProps) : empty) })
-                : rowNodes.length || this.loading ? rowNodes : empty;
-            const table = h("div", { class: "table q-table", id: this.idVal + "_table" }, [
-                this.skipHeader ? null : h("div", { class: "thead" }, [h("div", { class: "tr" }, header)]),
-                h("div", { class: "tbody" }, multiForm ? [body] : body)
-            ]);
+            const table = this.selectionIdField
+                ? h(V.resolveComponent("m-checkbox-set"), {
+                    key: "sel_" + this.generation, checkboxCount: this.rows.length, checkboxParameter: this.selectionParameter || this.selectionIdField,
+                    checkboxListMode: !!this.selectionListMode, checkboxValues: this.rows.map((row) => (row[this.selectionIdField] === undefined ? null : row[this.selectionIdField]))
+                }, { default: (sel) => [build(sel)] })
+                : build(null);
             return h("div", { class: "q-my-sm q-table__container q-table__card q-table--horizontal-separator q-table--dense q-table--flat" }, [nav, table]);
         }
     });
@@ -1096,7 +1226,7 @@
         mixins: [checkboxSetMixin],
         props: { fieldsInitial: Object, action: { type: String, required: true }, method: { type: String, default: "POST" }, readOnly: { type: Boolean, default: false },
             submitMessage: String, submitReloadId: String, submitHideId: String, focusField: String, noValidate: Boolean, excludeEmptyFields: Boolean,
-            parentCheckboxSet: Object, bodyParameterNames: Array, validationErrorsInitial: Array },
+            parentCheckboxSet: Object, checkboxOptional: Boolean, bodyParameterNames: Array, validationErrorsInitial: Array },
         data() {
             return { fields: Object.assign({}, this.fieldsInitial), fieldsOriginal: Object.assign({}, this.fieldsInitial), buttonClicked: null,
                 fieldErrors: {}, fieldErrorValues: {} };
@@ -1165,7 +1295,12 @@
                 remove.forEach((name) => formData.delete(name));
                 formData.set("moquiSessionToken", this.$root.moquiSessionToken);
                 if (btnName) formData.set(btnName, btnValue);
-                if (this.parentCheckboxSet && this.parentCheckboxSet.addCheckboxParameters) this.parentCheckboxSet.addCheckboxParameters(formData);
+                // A row action posts the selected rows. With none selected it does not post (Java's posted without them).
+                if (this.parentCheckboxSet && this.parentCheckboxSet.addCheckboxParameters && !this.parentCheckboxSet.addCheckboxParameters(formData) && !this.checkboxOptional) {
+                    if (button) button.disabled = false;
+                    notify(Object.assign({}, moqui.notifyOptsInfo, { type: "warning", message: moqui.l10n ? moqui.l10n.localize("Select one or more rows first") : "Select one or more rows first" }));
+                    return;
+                }
 
                 const root_ = this.$root;
                 root_.loading++;

@@ -65,12 +65,26 @@ const stubs = {
         data() { return { fields: Object.assign({}, this.fieldsInitial) }; },
         render() { return Vue.h("m-form", { name: this.$attrs.name, fields: this.fields }, this.$slots.default({ fields: this.fields, hasFieldsChanged: false })); }
     },
-    "m-form-paginate": { props: ["paginate", "formList"], render() { captured.lists[this.formList.name] = this.formList; return Vue.h("m-form-paginate", { paginate: this.paginate }); } },
+    "m-form-paginate": { props: ["paginate", "formList"], render() { if (this.formList) captured.lists[this.formList.name] = this.formList; return Vue.h("m-form-paginate", { paginate: this.paginate }); } },
     "m-form-go-page": { props: ["idVal", "formList"], render() { return Vue.h("m-form-go-page"); } }
 };
-["m-display", "m-text-line", "m-drop-down", "m-link", "q-btn", "m-form-link", "m-container-box", "m-container-dialog"].forEach((tag) => { stubs[tag] = leaf(tag); });
+["m-display", "m-text-line", "m-text-area", "m-drop-down", "m-link", "q-btn", "m-form-link", "m-container-box", "m-container-dialog",
+    "q-list", "q-item", "q-item-section", "q-expansion-item", "q-badge", "q-tooltip"].forEach((tag) => { stubs[tag] = leaf(tag); });
+stubs["q-btn-dropdown"] = { inheritAttrs: false, render() {
+    return Vue.h("q-btn-dropdown", this.$attrs, [this.$slots.label ? Vue.h("label", {}, this.$slots.label()) : null].concat(this.$slots.default ? this.$slots.default() : []));
+} };
 
 const captured = { lists: {} };
+// the checkbox set records its props and gives its slot the selection state the real one does
+stubs["m-checkbox-set"] = {
+    props: ["checkboxCount", "checkboxParameter", "checkboxListMode", "checkboxValues"],
+    data() { return { checkboxStates: new Array(this.checkboxCount).fill(false), checkboxAllState: false }; },
+    render() {
+        captured.checkboxSet = this;
+        return Vue.h("m-checkbox-set", {}, this.$slots.default({ checkboxStates: this.checkboxStates, checkboxAllState: this.checkboxAllState,
+            setCheckboxAllState: () => {}, clickCheckbox: () => {}, addCheckboxParameters: () => true }));
+    }
+};
 const answers = {};
 const requests = [];
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -95,15 +109,26 @@ const setup = () => {
     answers["/Items/actions/ItemMulti"] = multiPkg;
 };
 
-const registerScript = () => {
-    delete moqui.qvtStatic["/Items"];
-    vm.runInThisContext(scriptText);
-    return moqui.qvtStatic["/Items"];
+const registerScript = (key, text) => {
+    const at = key || "/Items";
+    delete moqui.qvtStatic[at];
+    vm.runInThisContext(text || scriptText);
+    return moqui.qvtStatic[at];
 };
 
-const mountStatic = async (search) => {
-    const factory = registerScript();
-    const comp = qvt.staticComponent("/Items", factory, { path: "/Items", search: search || "", divId: "ItemsDiv" });
+// The fixture of a key: its script, package and form answers are the goldens of the Rust tests.
+const fixture = (name) => {
+    const text = goldenText(name + ".script.js");
+    answers["/" + name + "/actions"] = JSON.parse(goldenText(name + ".package.json"));
+    fs.readdirSync(golden).filter((file) => file.startsWith(name + ".") && file.endsWith(".json") && file !== name + ".package.json")
+        .forEach((file) => { answers["/" + name + "/actions/" + file.slice(name.length + 1, -5)] = JSON.parse(goldenText(file)); });
+    return text;
+};
+
+const mountStatic = async (search, name) => {
+    const key = "/" + (name || "Items");
+    const factory = registerScript(key, name ? fixture(name) : scriptText);
+    const comp = qvt.staticComponent(key, factory, { path: key, search: search || "", divId: (name || "Items") + "Div" });
     const app = renderer.createApp(comp);
     Object.keys(qvt.components).forEach((name) => { if (!stubs[name]) app.component(name, qvt.components[name]); });
     Object.keys(stubs).forEach((name) => app.component(name, stubs[name]));
@@ -228,6 +253,123 @@ test("the show-total row of the form request is drawn after the rows, in bold", 
     assert.match(text, /<div class='tr text-weight-bold'><m-form name='ItemList_2' fields='[^']*"price_display":"15.50"/);
     // the data rows stay two: the total is not a row of the list
     assert.equal(formPkg.itemList.length, 2);
+});
+
+test("$mq.compare gives what the server's compare does for the same vectors", () => {
+    const vectors = JSON.parse(fs.readFileSync(path.join(__dirname, "../../../../../../crates/moqui-lib/testdata/compare-vectors.json"), "utf8"));
+    vectors.forEach(([field, operator, to, type, expected]) => {
+        assert.equal(qvt.helpers.compare(field, operator, to, null, null, type), expected, JSON.stringify([field, operator, to, type]));
+    });
+});
+
+test("Parity: a condition element is a v-if over and, or, not, compare and expression, with its fail-widgets", async () => {
+    setup();
+    const { container } = await mountStatic("", "Parity");
+    const text = html(container);
+    assert.match(text, /the condition holds/);
+    assert.doesNotMatch(text, /the condition fails/);
+    assert.match(text, /the second fails/);
+    assert.doesNotMatch(text, /the second holds/);
+});
+
+test("Parity: text-map puts the map's entries before the scope's for the text of a label and a link", async () => {
+    setup();
+    const { container } = await mountStatic("", "Parity");
+    const text = html(container);
+    assert.match(text, /Product Widget X at 9/);
+    assert.match(text, /View Widget X/);
+    assert.doesNotMatch(text, /the context's name/);
+});
+
+test("Parity: a field accordion opens its active group, and a button-menu lists the children whose condition holds", async () => {
+    setup();
+    const { container } = await mountStatic("", "Parity");
+    const text = html(container);
+    const items = text.match(/<q-expansion-item[^>]*>/g) || [];
+    assert.equal(items.length, 2, text);
+    assert.match(items[0], /label='Names'/);
+    assert.doesNotMatch(items[0], /default-opened/);
+    assert.match(items[1], /label='Amounts'/);
+    assert.match(items[1], /default-opened/);
+    assert.match(items[1], /group='ProductForm_accordion'/);
+    // the menu's label is the text with the map's entry, its items the link and the label whose condition holds
+    assert.match(text, /<q-btn-dropdown[^>]*>.*Menu of Widget X/);
+    assert.match(text, /View it/);
+    assert.match(text, /shown when qty is over 3/);
+    assert.doesNotMatch(text, /hidden when qty is over 3/);
+});
+
+test("Parity: an aggregated list writes the sub-list titles once in the head and each row's sub-rows with their own values", async () => {
+    setup();
+    const { container } = await mountStatic("", "Parity");
+    const text = html(container);
+    const table = text.slice(text.indexOf("<div class='table q-table' id='OrderList_table'>"));
+    assert.equal((table.match(/class='tr sub-header'/g) || []).length, 1, table);
+    assert.match(table, /class='tr sub-header'.*Item.*Qty/);
+    assert.equal((table.match(/class='tr sub-rows'/g) || []).length, 2);
+    // the first order's sub-rows: Gear and Bolt, then the total of the quantities
+    const first = table.slice(table.indexOf("class='tr sub-rows'"));
+    assert.ok(first.indexOf("Gear") >= 0 && first.indexOf("Gear") < first.indexOf("Bolt"), first);
+    assert.match(first, /textContent='7'|>7</);
+    assert.match(table, /Nut/);
+});
+
+test("Parity: the first row is a form of its own over map-first-row, and the last row follows the rows", async () => {
+    setup();
+    const { container } = await mountStatic("", "Parity");
+    const text = html(container);
+    const table = text.slice(text.indexOf("<div class='table q-table' id='EditList_table'>"));
+    const firstForm = table.match(/<m-form name='EditList_first' fields='([^']*)'/);
+    assert.ok(firstForm, table);
+    const fields = JSON.parse(firstForm[1]);
+    assert.equal(fields.itemId, "NEW");
+    assert.equal(fields.name, "new item name");
+    assert.equal(fields.secret, "S1");
+    assert.equal(fields.moquiFormName, "EditList");
+    // the first row comes before the data rows, the last after them
+    assert.ok(table.indexOf("EditList_first") < table.indexOf("EditList_0"), table);
+    assert.ok(table.indexOf("the last row") > table.indexOf("EditList_1"), table);
+    assert.match(table, /class='tr first'/);
+    assert.match(table, /class='tr last'/);
+});
+
+test("Parity: row selection is a checkbox set over the rows' ids, a checkbox for each row, and the actions posting through it", async () => {
+    setup();
+    const { container } = await mountStatic("", "Parity");
+    const text = html(container);
+    const set = captured.checkboxSet;
+    assert.ok(set, "the list is in a checkbox set");
+    assert.deepEqual(set.checkboxValues, ["E1", "E2"]);
+    assert.equal(set.checkboxParameter, "itemId");
+    assert.equal(set.checkboxCount, 2);
+    const table = text.slice(text.indexOf("<div class='table q-table' id='PickList_table'>"));
+    assert.equal((table.match(/<input type='checkbox'/g) || []).length, 2, table);
+    // the menu of the head holds the action: its dialog and the form-single that posts the selected rows
+    assert.match(table, /<m-container-dialog[^>]*button-text='Archive'/);
+    assert.match(table, /<m-form name='ArchiveForm'/);
+});
+
+test("the checkbox mixin posts the selected ids as name_i with _isMulti, or one list value, and nothing when none is selected", () => {
+    const methods = moqui.checkboxSetMixin.methods;
+    const state = (states, listMode) => ({ checkboxValues: ["a", "b", "c"], checkboxStates: states, checkboxParameter: "id", checkboxListMode: listMode, getCheckboxValueArray: methods.getCheckboxValueArray });
+    const formData = () => { const map = {}; return { map, set: (key, value) => { map[key] = value; } }; };
+    const multi = formData();
+    assert.equal(methods.addCheckboxParameters.call(state([false, true, true], false), multi), true);
+    assert.deepEqual(multi.map, { id_0: "b", id_1: "c", _isMulti: "true" });
+    const list = formData();
+    methods.addCheckboxParameters.call(state([true, false, true], true), list);
+    assert.deepEqual(list.map, { id: "a,c" });
+    const none = formData();
+    assert.equal(methods.addCheckboxParameters.call(state([false, false, false], false), none), false);
+    assert.deepEqual(none.map, {});
+});
+
+test("Parity: a paginated section-iterate shows its page and the page buttons over the package's keys", async () => {
+    setup();
+    const { container } = await mountStatic("", "Parity");
+    const text = html(container);
+    assert.equal((text.match(/line L\d+/g) || []).length, 20);
+    assert.match(text, /<m-form-paginate paginate='\{"count":25,"pageIndex":0,"pageSize":20,"pageMaxIndex":1,"pageRangeLow":1,"pageRangeHigh":20\}'/);
 });
 
 test("the restricted ec has the table of members and throws on anything else", () => {

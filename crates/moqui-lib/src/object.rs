@@ -1010,6 +1010,19 @@ pub fn regex_full_match(text: &str, pattern: &str) -> Result<bool, Error> {
 mod tests {
     use super::*;
 
+    /// The browser's `$mq.compare` (WebrootVue.qvt.js) is checked against the same vectors.
+    #[test]
+    fn compare_vectors() {
+        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/compare-vectors.json")).unwrap();
+        let vectors: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap();
+        for vector in vectors {
+            let field = crate::json::from_json(&vector[0]);
+            let to = crate::json::from_json(&vector[2]);
+            let got = compare(&field, vector[1].as_str().unwrap(), &to, vector[3].as_str().unwrap()).unwrap();
+            assert_eq!(got, vector[4].as_bool().unwrap(), "{vector}");
+        }
+    }
+
     #[test]
     fn decimal_divide_uses_groovy_scale() {
         let quotient = decimal_divide(Decimal::from(1), Decimal::from(3)).unwrap();

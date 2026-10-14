@@ -582,12 +582,22 @@ fn prepare_section(
     section: &SectionDef,
     depth: usize,
 ) -> Result<(), Error> {
-    if let SectionKind::Iterate { list, entry, key, .. } = &section.kind {
+    if let SectionKind::Iterate {
+        list,
+        entry,
+        key,
+        paginate,
+    } = &section.kind
+    {
         let value = script::eval_value(list)?;
         if is_empty(&value) {
             return Ok(());
         }
-        let items = sri::iteration_entries(&value);
+        let mut items = sri::iteration_entries(&value);
+        // paginate: the page keys of the list go in the package, and the list is the page, as ScreenSection renders it.
+        if *paginate && is_name(list) {
+            items = sri::paginate_items(list, items)?;
+        }
         let mut kept = Vec::with_capacity(items.len());
         let count = items.len();
         for (index, (item_key, item)) in items.into_iter().enumerate() {
@@ -839,9 +849,30 @@ fn form_package(state: &RenderState, def: &Arc<ScreenDef>, name: &str) -> Result
         instance.list_entry.clone()
     };
     let mut resolved = Ok(());
+    let sub_fields: Vec<String> = node
+        .children_named("field")
+        .iter()
+        .filter(|field| field.attribute("aggregate").as_deref() == Some("sub-list"))
+        .filter_map(|field| field.attribute("name"))
+        .collect();
     for (index, row) in rows.iter_mut().enumerate() {
         sri::start_form_list_row(state, handle, index)?;
-        let extras = row_extras(&node, name);
+        let extras = row_extras(&node, name, &|_| true);
+        // the sub-rows of an aggregated row get the lookups and sets of the sub-list fields, each over the row
+        if extras.is_ok() && !sub_fields.is_empty() {
+            if let Some(Value::List(entries)) = row.get_mut("aggregateSubList") {
+                for (sub, entry) in entries.iter_mut().enumerate() {
+                    sri::start_form_list_sub_row(state, handle, index, sub)?;
+                    let sub_extras = row_extras(&node, name, &|field| {
+                        sub_fields.contains(&field.attribute("name").unwrap_or_default())
+                    });
+                    script::pop_context_frame();
+                    if let (Value::Map(map), Ok(sub_extras)) = (entry, sub_extras) {
+                        map.extend(sub_extras);
+                    }
+                }
+            }
+        }
         script::pop_context_frame();
         match extras {
             Ok(extras) => row.extend(extras),
@@ -868,6 +899,30 @@ fn form_package(state: &RenderState, def: &Arc<ScreenDef>, name: &str) -> Result
     );
     if let Some(total) = &total {
         body.insert(format!("{}Total", instance.list_name), unwrap_map(total));
+    }
+    // The first, second and last rows: the map-*-row map (an empty one without), with the lookups and sets of the *-row-field
+    // widgets over it, as Java pushes the map for those rows.
+    for (kind, suffix) in [("first", "First"), ("second", "Second"), ("last", "Last")] {
+        let tag = format!("{kind}-row-field");
+        let has = node
+            .children_named("field")
+            .iter()
+            .any(|field| field.first_named(&tag).is_some_and(|sub| !sub.children().is_empty()));
+        if !has {
+            continue;
+        }
+        let expression = node.attribute(&format!("map-{kind}-row")).unwrap_or_default();
+        let map = if expression.trim().is_empty() {
+            Value::Map(IndexMap::new())
+        } else {
+            script::eval_value(&expression)?
+        };
+        sri::push_single_form_map_context(&map);
+        let extras = row_extras_of(&node, name, &|_| true, &[tag.as_str()]);
+        script::pop_context_frame();
+        let mut fields = script::value_map(&map).unwrap_or_default();
+        fields.extend(extras?);
+        body.insert(format!("{}{suffix}", instance.list_name), unwrap_map(&fields));
     }
     let mut headers = Vec::new();
     if let Some(pages) = page_keys(&node, rows.len())? {
@@ -1045,14 +1100,28 @@ fn page_keys(form: &MNode, rows: usize) -> Result<Option<PageKeys>, Error> {
 }
 
 /// For one row, in the row's frame: the text of its `display-entity` fields and the fields its `set` elements make.
-fn row_extras(node: &MNode, form_name: &str) -> Result<IndexMap<String, Value>, Error> {
+fn row_extras(
+    node: &MNode,
+    form_name: &str,
+    include: &dyn Fn(&MNode) -> bool,
+) -> Result<IndexMap<String, Value>, Error> {
+    row_extras_of(node, form_name, include, &["default-field", "conditional-field"])
+}
+
+/// [`row_extras`] for the widgets of the named sub-nodes of each field.
+fn row_extras_of(
+    node: &MNode,
+    form_name: &str,
+    include: &dyn Fn(&MNode) -> bool,
+    subs: &[&str],
+) -> Result<IndexMap<String, Value>, Error> {
     let mut extras = IndexMap::new();
-    for field in node.children_named("field") {
+    for field in node.children_named("field").into_iter().filter(|field| include(field)) {
         let field_name = field.attribute("name").unwrap_or_default();
         for sub in field
             .children()
             .into_iter()
-            .filter(|sub| matches!(sub.name().as_str(), "default-field" | "conditional-field"))
+            .filter(|sub| subs.contains(&sub.name().as_str()))
         {
             for set in sub.children_named("set") {
                 let target = set.attribute("field").unwrap_or_default();
@@ -1207,8 +1276,19 @@ fn section_node(section: &SectionDef) -> Result<MNode, Error> {
     out.set_attribute("name", section.name.clone());
     match &section.condition {
         Some(Condition::Expression(expression)) => out.set_attribute("condition", expression.clone()),
-        Some(Condition::Wrapped(_)) => {
-            out.append("condition").append("wrapped");
+        // The XML condition is kept inside the actions it was wrapped in: <actions><if><condition>...</condition>.
+        Some(Condition::Wrapped(actions)) => {
+            let wrapped = MNode::parse_text("condition", &actions.xml)?;
+            let condition = wrapped
+                .first_named("if")
+                .and_then(|found| found.first_named("condition"))
+                .map(|found| found.deep_copy());
+            match condition {
+                Some(condition) => out.append_node(condition),
+                None => {
+                    out.append("condition").append("wrapped");
+                }
+            }
         }
         None => {}
     }

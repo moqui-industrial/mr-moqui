@@ -32,8 +32,7 @@
 //  - The background-message of a form is text. The Java client evaluated it as a JavaScript string.
 //  - An editor-type html or md text-area is an m-text-area (QEditor, or a textarea with a Marked preview).
 //  - lookup is a text line. The Java macros had it commented out.
-//  - A form-list draws its sub-list fields (aggregate="sub-list") in rows under each main row, and the navigation bar sits above
-//    the table of a form-list and not in a table row. The saved finds are listed in the find dialog; the menu
+//  - The navigation bar sits above the table of a form-list and not in a table row. The saved finds are listed in the find dialog; the menu
 //    data has them and the screen documents.
 //  - The mask of a text-line is converted from the Inputmask patterns (9, a, *) to Quasar mask tokens.
 //  - In fields-initial a link does not replace the _display text of a display or display-entity before it in the same field.
@@ -1341,7 +1340,14 @@
                         visible.forEach((col) => headerCell(col, cfg));
                         pop();
                     }
-                    w("</div></div>\n");
+                    w("</div>");
+                    // as Java: the titles of the sub-list columns once in the head, over the sub-rows of every row
+                    if (subCols.length) {
+                        w('<div class="tr sub-header">' + (rowSel ? '<div class="th">&nbsp;</div>' : "") + '<div class="th"><div class="q-pl-lg"><div class="row no-wrap q-col-gutter-sm text-weight-bold">');
+                        subCols.forEach((col) => w('<div class="col">' + col.map((f) => t(f.title())).join(" ") + "</div>"));
+                        w("</div></div></div></div>");
+                    }
+                    w("</div>\n");
                 }
                 w('<div class="tbody">\n');
                 st.owner = formId;
@@ -1407,9 +1413,6 @@
                     const was = st.inForm;
                     st.inForm = false;
                     w('<div class="tr sub-rows">' + (rowSel ? '<div class="td">&nbsp;</div>' : "") + '<div class="td"><div class="q-pl-lg">');
-                    w('<div class="row no-wrap q-col-gutter-sm text-weight-bold">');
-                    subCols.forEach((col) => w('<div class="col">' + col.map((f) => t(f.title())).join(" ") + "</div>"));
-                    w("</div>");
                     for (let j = 0; j < subRows; j++) {
                         sri.startFormListSubRow(info, i, j);
                         st.entry = i + "_" + j;
@@ -1890,9 +1893,11 @@
                     const $badge = ec.resource.expand(${lit(attr(node, "badge"))}, "");
                     sri.write("<q-btn-dropdown" + $v.A({dense: true, outline: true, "no-caps": true, color: $v.quasarColor(${lit(attr(node, "btn-type") || "primary")}) || null, class: ${attr(node, "style") ? noL10n(attr(node, "style")) : "null"}}) + "><template v-slot:label>" +
                         ${attr(node, "tooltip") ? `$v.tooltipTag(ec.resource.expand(${lit(attr(node, "tooltip"))}, "")) + ` : ""}
-                        ($icon ? "<i class=\\"" + $v.e($icon) + " q-icon" + ($text ? " on-left" : "") + "\\"></i>" : "") + $text +
-                        ($badge ? "<q-badge class=\\"on-right\\" transparent>" + $v.t($badge) + "</q-badge>" : "") + "</template><q-list>");
-                    ${linkItems.map((kid) => `sri.write("<q-item><q-item-section>");\n${kid.source}sri.write("</q-item-section></q-item>");\n`).join("")}
+                        ($icon ? "<i class=\\"" + $v.e($icon) + " q-icon" + ($text ? " on-left" : "") + "\\"></i>" : ""));
+                    // as Java: the image child in the place of the text
+                    ${image ? image.source : "sri.write($text);"}
+                    sri.write(($badge ? "<q-badge class=\\"on-right\\" transparent>" + $v.t($badge) + "</q-badge>" : "") + "</template><q-list>");
+                    ${linkItems.map((kid) => condGuard(attr(kid, "condition"), `sri.write("<q-item><q-item-section>");\n${kid.source}sri.write("</q-item-section></q-item>");\n`)).join("")}
                     sri.write("</q-list></q-btn-dropdown>\\n");
                 }
             }

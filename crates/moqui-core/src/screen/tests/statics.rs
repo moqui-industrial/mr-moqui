@@ -720,3 +720,69 @@ fn a_template_the_compiler_rejects_leaves_a_clean_merged_render_and_is_not_built
     assert_eq!(header(&second, "X-Moqui-Qvt"), "merged-fragment");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The Parity fixture: the XML screen and form features at parity with Java Moqui, as a template, its package and its form requests.
+#[test]
+fn the_parity_fixture_is_a_template_with_its_data_in_the_packages() {
+    let context = ExecutionContextFactory::test_context();
+    let output = render(context.factory(), "/Parity.qvt", &[]);
+    assert_eq!(output.status, 200, "{}", output.body_text());
+    assert_eq!(header(&output, "X-Moqui-Qvt"), "static-template");
+    let html = html_of(context.factory(), "Parity", "/Parity");
+    // a condition element is one v-if: and, or, not, compare and expression, with its fail-widgets as the v-else
+    assert!(
+        html.contains("$mq.compare(status,'equals','ACTIVE',null,null,'Object') &amp;&amp; (qty &gt; 3)"),
+        "{html}"
+    );
+    assert!(html.contains("<template v-else>"), "{html}");
+    golden("Parity.script.js", &output.body_text());
+    golden("Parity.template.html", &html);
+    let package = render(context.factory(), "/Parity/actions", &[]);
+    assert_eq!(package.status, 200, "{}", package.body_text());
+    golden("Parity.package.json", &package.body_text());
+    // a paginated section-iterate: the page keys in the package, and the list is the page
+    let json = json_of(&package);
+    assert_eq!(json["linesCount"], 25, "{json}");
+    assert_eq!(json["lines"].as_array().map(Vec::len), Some(20), "{json}");
+    let second = json_of(&render(context.factory(), "/Parity/actions", &[("pageIndex", "1")]));
+    assert_eq!(second["lines"][0]["lineId"], "L21", "{second}");
+    assert_eq!(second["linesPageRangeLow"], 21, "{second}");
+    assert!(
+        html.contains("<m-form-paginate v-if=\"$scope['linesCount']\""),
+        "{html}"
+    );
+    // text-map: a name of the text reads the map first
+    assert!(html.contains("$mq.inMap((product),'productName')"), "{html}");
+    // the accordion: a group of expansion items, the second open; the button-menu: a dropdown of its children
+    assert!(html.contains("group=\"ProductForm_accordion\""), "{html}");
+    assert!(html.contains("<q-btn-dropdown"), "{html}");
+    // the aggregated list: rows grouped by order, each with its sub-list of items and their total
+    let orders = render(context.factory(), "/Parity/actions/OrderList", &[]);
+    assert_eq!(orders.status, 200, "{}", orders.body_text());
+    let orders = json_of(&orders);
+    assert_eq!(orders["orderLines"].as_array().map(Vec::len), Some(2), "{orders}");
+    assert_eq!(
+        orders["orderLines"][0]["aggregateSubList"][1]["item"], "Bolt",
+        "{orders}"
+    );
+    golden("Parity.OrderList.json", &serde_json::to_string(&orders).unwrap());
+    assert!(html.contains("v-slot:subrow"), "{html}");
+    // first and last rows: the map-first-row map in the form request, and slots of their own in the template
+    let edits = json_of(&render(context.factory(), "/Parity/actions/EditList", &[]));
+    assert_eq!(edits["itemsForEditFirst"]["itemId"], "NEW", "{edits}");
+    assert!(edits.get("itemsForEditLast").is_some(), "{edits}");
+    golden("Parity.EditList.json", &serde_json::to_string(&edits).unwrap());
+    assert!(
+        html.contains("v-slot:row_first") && html.contains("v-slot:row_last"),
+        "{html}"
+    );
+    // row selection: the id field for the checkbox set, a checkbox for each row, and the action form posting through the set
+    assert!(
+        html.contains("selection-id-field=\"itemId\"")
+            && html.contains("mqSel.checkboxStates[rowIndex] = $event.target.checked"),
+        "{html}"
+    );
+    assert!(html.contains(":parent-checkbox-set=\"mqSelSet\""), "{html}");
+    let picks = json_of(&render(context.factory(), "/Parity/actions/PickList", &[]));
+    golden("Parity.PickList.json", &serde_json::to_string(&picks).unwrap());
+}

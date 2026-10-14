@@ -212,7 +212,10 @@ mod tests {
     }
 
     fn jobs_world(workers: usize, queue: usize) -> Jobs {
-        let path = std::env::temp_dir().join(format!("moqui-jobs-{}.xml", std::process::id()));
+        // a file for each harness: tests in parallel would otherwise write and lint one shared file
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("moqui-jobs-{}-{seq}.xml", std::process::id()));
         std::fs::write(&path, SERVICES).unwrap();
         let pools = ServicePools::bounded(workers, queue);
         let pools_handle = pools.shared_handle();

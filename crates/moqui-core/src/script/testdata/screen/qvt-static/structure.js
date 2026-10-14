@@ -47,9 +47,11 @@ $s.label({"name":"label","attrs":{"text":"in dialog"}});
     sri.write($c ? "</m-container-dialog></template>\n" : "</m-container-dialog>\n");
 }
 $s.label({"name":"label","attrs":{"text":"first"}});
+{
 sri.write($s.vFor({"name":"section-iterate","attrs":{"name":"Each","list":"rows","entry":"row"}}));
 $s.label({"name":"label","attrs":{"text":"${row}"}});
 sri.write("</template>");
+}
 sri.staticNote("section-include", "section-include", "section-include First was not resolved");
 $s.subscreensTabs({"name":"subscreens-menu","attrs":{}});
 sri.write("<m-subscreens-active></m-subscreens-active>");

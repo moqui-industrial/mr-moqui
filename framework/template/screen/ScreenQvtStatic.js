@@ -31,8 +31,8 @@
 //  - display-entity, entity-options, list-options and dynamic-options (without server-search) read keys the package
 //    holds: name_display, and mqOpt_{form}_{field}_{sub}_{widget} for the options of a widget;
 //  - a link that the user may not use is still written (the server refuses the request), and no icon comes from the theme;
-//  - include-screen is written inline; the first-row, second-row and last-row of a form-list, row-selection and the column picker
-//    are not written (a violation in the report). The find dialog, saved finds, the exports and a multi form are written.
+//  - include-screen is written inline. A form-list writes the find dialog, saved finds, the exports, a multi form, the column picker,
+//    row-selection, the first/second/last rows and aggregated sub-rows; their data comes with the form request.
 (function (T, S) {
     "use strict";
 
@@ -160,6 +160,17 @@
         };
         const isDynamic = (text) => text.indexOf("${") >= 0;
 
+        // An expression of a text whose element has text-map: Java expands the text with the map's entries over the context, so a name or a path
+        // that starts at a key of the map reads the map. Any other expression reads the scope. The map expression is evaluated on each read.
+        const PATH = /^([A-Za-z_$][A-Za-z0-9_$]*)((?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)$/;
+        const textMapped = (key, n, attrName) => {
+            const map = attrName === "text" && n && n.attrs ? n.attrs["text-map"] : "";
+            const found = map ? PATH.exec(key) : null;
+            if (!found) return X(key, n, attrName);
+            const mapExpr = X(map, n, "text-map");
+            const rest = found[2] ? found[2].split(".").slice(1).map((part) => "?." + part).join("") : "";
+            return "($mq.inMap(" + mapExpr + "," + sq(found[1]) + ")?$mq.inMap(" + mapExpr + "," + sq(found[1]) + ",true)" + rest + ":" + X(key, n, attrName) + ")";
+        };
         // A string expression for a text with ${} in it. localize says whether the pattern is localized first, as
         // ec.resource.expand does. The table maps each expression text to a function over the scope, so the browser never
         // compiles code, and a localized pattern can use the expressions the original has.
@@ -172,7 +183,7 @@
                 const key = part.expr.trim();
                 if (seen[key]) return;
                 seen[key] = true;
-                entries.push(sq(key) + ":()=>" + X(key, n, attrName));
+                entries.push(sq(key) + ":()=>" + textMapped(key, n, attrName));
             });
             return "ec.resource." + (localize ? "expand" : "expandNoL10n") + "(" + sq(text) + ",{" + entries.join(",") + "})";
         };
@@ -223,7 +234,7 @@
         const st = {};
         const saved = [];
         const reset = () => {
-            Object.assign(st, { formName: "", fieldForm: "", owner: "", inForm: false, inRow: false, listName: "", multi: false });
+            Object.assign(st, { formName: "", fieldForm: "", owner: "", inForm: false, inRow: false, listName: "", multi: false, accordion: "", accIndex: 0, accActive: "", selectedForm: false });
             saved.length = 0;
         };
         reset();
@@ -651,7 +662,6 @@
             const unit = at(n, "currency-unit-field");
             const hideSymbol = at(n, "currency-hide-symbol") === "true";
             const currency = (value) => "ec.l10n." + (hideSymbol ? "formatCurrencyNoSymbol" : "formatCurrency") + "(" + value + "," + X(unit, n, "currency-unit-field") + ")";
-            if (at(n, "text-map")) note("text-map", n, "the expressions of text cannot see text-map in a server-static screen");
             if (at(n, "text")) {
                 const text = exp(at(n, "text"), n, "text", true);
                 return unit ? currency(text) : text;
@@ -741,7 +751,6 @@
         };
 
         const labelWidget = (n) => {
-            if (at(n, "text-map")) note("text-map", n, "the expressions of text cannot see text-map in a server-static screen");
             const type = at(n, "type") || "span";
             const out = { class: cls("text-inline", at(n, "style") || null), ":v-text": null };
             plainAttr(out, "id", at(n, "id"), n);
@@ -754,7 +763,6 @@
 
         // The way a link is written: a screen link, a plain link, or a form that posts a transition.
         const link = (n, inField) => {
-            if (at(n, "text-map")) note("text-map", n, "the expressions of text cannot see text-map in a server-static screen");
             const urlType = at(n, "url-type") || "transition";
             const found = urlType === "transition" || urlType === "screen" ? sri.staticUrl(at(n, "url"), urlType) : null;
             const img = first(n, "image");
@@ -913,6 +921,8 @@
                 ":fields-initial": initial, "v-slot:default": "formProps"
             };
             if (at(n, "body-parameters")) attrs[":body-parameter-names"] = js_(at(n, "body-parameters").split(",").map((item) => item.trim()).filter((item) => item));
+            // a row action of a form-list with row-selection posts the selected rows: the checkbox set is the selection slot's mqSelSet
+            if (st.selectedForm && isForm) attrs[":parent-checkbox-set"] = "mqSelSet";
             w('<m-scope :value="' + e(X(map, n, "map")) + '" :extra="' + e("$scope[" + sq("mqExtra_" + at(n, "name")) + "]") + '" v-slot="_ctx">');
             w(skipStart ? "" : '<div class="q-my-md"><' + tag + A(attrs) + ">");
             return { skipStart, tag };
@@ -949,10 +959,14 @@
         const fieldGroup = (n) => {
             const title = at(n, "title");
             const heading = title ? "<h5><span v-text=\"" + e(exp(title, n, "title", true)) + "\"></span></h5>" : "";
-            if (at(n, "box") === "true") w('<div class="panel panel-default"><div class="panel-heading"><h5 class="panel-title">' + (title ? "<span v-text=\"" + e(exp(title, n, "title", true)) + "\"></span>" : "") + '</h5></div><div class="' + cls("panel-body", at(n, "style") || null) + '">');
+            if (st.accordion) {
+                st.accIndex++;
+                w("<q-list bordered padding><q-expansion-item" + A({ "switch-toggle-side": true, group: st.accordion, ":label": title ? exp(title, n, "title", true) : "ec.l10n.localize('Fields')",
+                    "default-opened": String(st.accIndex) === st.accActive ? true : null }) + '><div class="' + cls("panel-body", at(n, "style") || null) + '">');
+            } else if (at(n, "box") === "true") w('<div class="panel panel-default"><div class="panel-heading"><h5 class="panel-title">' + (title ? "<span v-text=\"" + e(exp(title, n, "title", true)) + "\"></span>" : "") + '</h5></div><div class="' + cls("panel-body", at(n, "style") || null) + '">');
             else w('<div class="' + cls("form-single-field-group", at(n, "style") || null) + '">' + heading);
         };
-        const fieldGroupClose = (n) => w(at(n, "box") === "true" ? "</div></div>\n" : "</div>\n");
+        const fieldGroupClose = (n) => w(st.accordion ? "</div></q-expansion-item></q-list>\n" : at(n, "box") === "true" ? "</div></div>\n" : "</div>\n");
 
         // ---- form-list ----
 
@@ -1008,9 +1022,23 @@
                 const listed = kids(n, "field").filter((field) => kids(field, "default-field").concat(kids(field, "conditional-field")).some((sub) => !kids(sub, "hidden").length && !kids(sub, "ignored").length));
                 attrs[":column-fields"] = "[" + listed.map((field) => "{id:" + sq(at(field, "name")) + ",label:" + titleExpr(first(field, "header-field") || first(field, "default-field") || kids(field, "conditional-field")[0]) + "}").join(",") + "]";
                 attrs["columns-action"] = sri.staticUrl("formSelectColumns", "transition").path;
+                if (cfg.subFields && cfg.subFields.length) attrs[":sub-fields"] = js_(cfg.subFields);
                 attrs["form-location"] = name;
                 const headerFields = kids(n, "field").filter((f) => { const sub = first(f, "header-field"); return sub && sub.children.filter((x) => x.name !== "set").length; });
                 if (headerFields.length && at(n, "header-dialog") !== "true") attrs[":header-initial"] = "(_ctx, hs) => (" + initialOf(headerFields, "header-field", [["orderByField", "hs.orderByField"]]) + ")";
+            }
+            if (cfg.selection) {
+                attrs["selection-id-field"] = cfg.selection.idField;
+                attrs["selection-parameter"] = cfg.selection.parameter || null;
+                attrs[":selection-list-mode"] = cfg.selection.listMode ? "true" : "false";
+            }
+            const kinds = Object.keys(cfg.special || {});
+            if (kinds.length) {
+                attrs[":special-rows"] = "{" + kinds.map((kind) => {
+                    const { tag, transition } = cfg.special[kind];
+                    const action = transition ? sq(sri.staticUrl(transition, "transition").path) : "null";
+                    return kind + ":{action:" + action + ",initial:(_ctx) => (" + initialOf(kids(n, "field"), tag, []) + ")}";
+                }).join(",") + "}";
             }
             if (at(n, "saved-finds") === "true") {
                 attrs["form-location"] = name;
@@ -1060,14 +1088,77 @@
             "check": (n) => checkOrRadio(n, "checkbox"), "radio": (n) => checkOrRadio(n, "radio"), "display": displayWidget, "display-entity": displayEntity,
             "image": image, "label": labelWidget, "link": (n) => link(n, true), "editable": editable
         };
+        // The page buttons of a section-iterate with paginate, over the page keys of its list in the package (ScreenSection paginates the
+        // list the same way); a page goes to the screen with pageIndex. The list must be a name, which the keys are named after.
+        const sectionPaginate = (n) => {
+            const list = at(n, "list");
+            if (!IDENT.test(list)) {
+                note("section-paginate", n, "paginate of section-iterate " + at(n, "name") + " needs a list name, which the page keys are named after");
+                return "";
+            }
+            const key = (suffix) => "Number(" + scopeRef(list + suffix) + ")";
+            const props = "{count:" + key("Count") + ",pageIndex:" + key("PageIndex") + ",pageSize:" + key("PageSize") + ",pageMaxIndex:" + key("PageMaxIndex") +
+                ",pageRangeLow:" + key("PageRangeLow") + ",pageRangeHigh:" + key("PageRangeHigh") + "}";
+            return "<m-form-paginate" + A({ "v-if": scopeRef(list + "Count"), ":paginate": props }) + "></m-form-paginate>";
+        };
+
+        // A button-menu, as Java's: a q-btn-dropdown whose label has the tooltip, the icon (the attribute, else the theme's icon of the
+        // text), the image child or the text, and the badge; each child is a q-item, shown by its own condition.
+        const buttonMenuOpen = (n, img) => {
+            const text = at(n, "text");
+            const icon = at(n, "icon") || (text && !isDynamic(text) ? sri.getThemeIconClass(text) || "" : "");
+            if (!text && !img && !icon) return "";
+            if (at(n, "encode") === "false") note("encode-false", n, "button-menu with encode=false writes text as html");
+            let out = (at(n, "condition") ? '<template v-if="' + e(X(at(n, "condition"), n, "condition")) + '">' : "") +
+                "<q-btn-dropdown" + A({ dense: true, outline: true, "no-caps": true, color: quasarColor(at(n, "btn-type") || "primary") || null, class: at(n, "style") || null }) + "><template v-slot:label>";
+            if (at(n, "tooltip")) out += '<q-tooltip><span v-text="' + e(exp(at(n, "tooltip"), n, "tooltip", true)) + '"></span></q-tooltip>';
+            if (icon) out += '<i class="' + e(icon + " q-icon" + (text ? " on-left" : "")) + '"></i>';
+            out += img ? imageTag(img) : '<span v-text="' + e(textOf(n)) + '"></span>';
+            if (at(n, "badge")) {
+                const badge = exp(at(n, "badge"), n, "badge", false);
+                out += '<q-badge class="on-right" transparent' + A({ "v-if": badge, "v-text": badge }) + "></q-badge>";
+            }
+            return out + "</template><q-list>";
+        };
+        const buttonMenuItem = (kid) => "<q-item" + (at(kid, "condition") ? ' v-if="' + e(X(at(kid, "condition"), kid, "condition")) + '"' : "") + "><q-item-section>";
+        const buttonMenuClose = (n) => "</q-list></q-btn-dropdown>" + (at(n, "condition") ? "</template>" : "") + "\n";
+
+        // An XML condition element as one expression, as XmlActions.js writes it for an if: and, or and not join their parts, an expression
+        // is its text, and a compare is $mq.compare, the browser's copy of the server's compare. The value of a compare with ${} is expanded.
+        const xmlCondExpr = (n) => {
+            const parts = (kidsOf, joiner) => (kidsOf.length ? "(" + kidsOf.map(xmlCondExpr).join(joiner) + ")" : "true");
+            switch (n.name) {
+                case "and": return parts(n.children || [], " && ");
+                case "or": return parts(n.children || [], " || ");
+                case "not": return "!(" + ((n.children || []).length ? xmlCondExpr(n.children[0]) : "true") + ")";
+                case "expression": return "(" + ((n.text || "").trim() || "true") + ")";
+                case "compare": {
+                    const value = n.attrs && n.attrs.value !== undefined && n.attrs.value !== null ? String(n.attrs.value) : null;
+                    const valueExpr = value === null ? "null" : isDynamic(value) ? exp(value, n, "value", false) : sq(value);
+                    return "$mq.compare(" + (at(n, "field") || "null") + "," + sq(at(n, "operator") || "equals") + "," + valueExpr + "," +
+                        (at(n, "to-field") || "null") + "," + (at(n, "format") ? sq(at(n, "format")) : "null") + "," + sq(at(n, "type") || "Object") + ")";
+                }
+                default: throw new Error(n.name + " is not a condition element");
+            }
+        };
+        // The condition element of a section or a section-iterate, or "" (with a note) when it does not compile.
+        const xmlCondition = (element, owner) => {
+            try {
+                const kidsOf = element.children || [];
+                return kidsOf.length ? kidsOf.map(xmlCondExpr).join(" && ") : "";
+            } catch (err) {
+                note("condition", owner, "section " + at(owner, "name") + ": " + err.message);
+                return "";
+            }
+        };
+
         // The elements of a field's sub-node that are not field widgets: a container, a section, a loop. These are the same elements the
         // macros write for a screen, written here from the literal because a form is read whole.
         const sectionCondition = (n) => {
             if (at(n, "condition")) return at(n, "condition");
             const element = first(n, "condition");
             if (!element) return "";
-            if (element.children.length === 1 && element.children[0].name === "expression") return (element.children[0].text || "").trim();
-            return null;
+            return xmlCondition(element, n);
         };
         const nodesOf = (n, name) => { const part = first(n, name); return part ? part.children : []; };
         const renderNode = (n) => {
@@ -1089,7 +1180,7 @@
                 }
             } else if (name === "section-iterate") {
                 const condition = sectionCondition(n);
-                if (at(n, "paginate") === "true") note("section-paginate", n, "paginate of section-iterate " + at(n, "name") + " is not written");
+                if (at(n, "paginate") === "true") w(sectionPaginate(n));
                 w(vFor(n));
                 if (condition) w(vIf(n, condition));
                 nodesOf(n, "widgets").forEach(renderNode);
@@ -1187,8 +1278,13 @@
                         layoutCode(kid, big);
                         fieldGroupClose(kid);
                     } else if (name === "field-accordion") {
-                        note("field-accordion", kid, "an accordion is written as plain groups");
+                        // Java's accordion: a q-list of groups, each a q-expansion-item of one group, the active one (1-based, "false" for none) open
+                        const before = { accordion: st.accordion, accIndex: st.accIndex, accActive: st.accActive };
+                        Object.assign(st, { accordion: at(kid, "id") || (st.fieldForm || at(n, "name")) + "_accordion", accIndex: 0, accActive: at(kid, "active") || "1" });
+                        w("<q-list>");
                         layoutCode(kid, big);
+                        w("</q-list>\n");
+                        Object.assign(st, before);
                     } else if (name === "field-col-row") {
                         rowOpen("row", at(kid, "style"));
                         kids(kid, "field-col").forEach((col) => { colOpen(col, true); layoutCode(col, false); w("</div>"); });
@@ -1315,12 +1411,26 @@
                     w("</template>");
                 });
             }
+            Object.keys(cfg.special || {}).forEach((kind) => {
+                const { tag, transition } = cfg.special[kind];
+                kids(n, "field").forEach((field) => {
+                    const sub = first(field, tag);
+                    if (!sub || !sub.children.length || kids(sub, "hidden").length) return;
+                    w("<template" + A({ ["v-slot:rc" + kind.charAt(0) + "_" + at(field, "name")]: "_ctx" }) + ">");
+                    push();
+                    Object.assign(st, { inRow: false, inForm: !!transition, fieldForm: name + "_" + kind, owner: "" });
+                    specialCell(field, tag);
+                    pop();
+                    w("</template>");
+                });
+            });
             kids(n, "field").forEach((field) => {
                 const fieldName = at(field, "name");
                 w("<template" + A({ ["v-slot:rc_" + fieldName]: "_ctx" }) + ">");
                 push();
                 st.inRow = true;
-                st.inForm = !skipForm;
+                // a sub-list field is a cell of a sub-row, which is outside the row's form
+                st.inForm = !skipForm && at(field, "aggregate") !== "sub-list";
                 st.owner = "";
                 cellBody(field, (sub) => {
                     if (kids(sub, "ignored").length) return;
@@ -1334,27 +1444,95 @@
             });
         };
 
+        // The checkbox of a row of a form-list with row-selection, bound to the checkbox set (mqSel in the row's scope), written when the row has
+        // an id, as Java's.
+        const selectionCell = (selection) => '<div class="td"><div class="q-my-auto"' + A({ "v-if": "$mq.str(" + scopeRef(selection.idField) + ")" }) +
+            '><input type="checkbox" style="transform: scale(1.3)" :checked="mqSel.checkboxStates[rowIndex]" @click="mqSel.clickCheckbox($event, rowIndex)" @change="mqSel.checkboxStates[rowIndex] = $event.target.checked"></div></div>';
+        // The actions of the selected rows, in the menu of the head: each action's form-single, in a dialog when it has one, posting the
+        // selected ids through the checkbox set (Java's formListSelectedRowCard).
+        const selectionSlot = (selection) => {
+            w('<template v-slot:selection="mqSelSet"><q-card flat bordered><q-card-section horizontal class="q-pa-md">');
+            kids(selection.node, "action").forEach((action) => {
+                const dialog = first(action, "dialog");
+                const form = first(action, "form-single");
+                if (dialog) {
+                    const out = { color: quasarColor(at(dialog, "button-type") || "primary") || null, width: at(dialog, "width") || null, "button-class": at(dialog, "button-style") || null };
+                    textAttr(out, "button-text", at(dialog, "button-text"), dialog, true);
+                    textAttr(out, "title", at(dialog, "title") || at(dialog, "button-text"), dialog, true);
+                    w('<span class="q-my-md"><div class="q-ma-sm"><m-container-dialog' + A(out) + ">");
+                }
+                if (form) {
+                    push();
+                    st.selectedForm = true;
+                    formSingle(form);
+                    pop();
+                }
+                if (dialog) w("</m-container-dialog></div></span>");
+            });
+            w("</q-card-section></q-card></template>");
+        };
+        // A cell of a first, second or last row: the field's *-row-field widgets. One that holds a hidden widget writes nothing; its value is
+        // in the row form's starting values.
+        const specialCell = (field, tag) => {
+            const sub = first(field, tag);
+            if (!sub || !sub.children.length || kids(sub, "hidden").length) return;
+            w("<div" + A({ class: cellStyle(at(sub, "container-style"), at(field, "align")) }) + ">");
+            subWidgets(sub);
+            w("</div>");
+        };
+        // The sub-rows of an aggregated list: the titles of the sub-list columns for the head, and the cells of one sub-row over its entry.
+        const subSlots = (subLists) => {
+            w("<template v-slot:subhead>");
+            subLists.forEach((fields) => w('<div class="col">' + fields.map((field) => '<span v-text="' + e(titleExpr(first(field, "header-field") || first(field, "default-field") || kids(field, "conditional-field")[0])) + '"></span>').join(" ") + "</div>"));
+            w("</template>");
+            w('<template v-slot:subrow="_ctx">');
+            push();
+            st.inRow = true;
+            st.inForm = false;
+            subLists.forEach((fields) => {
+                w('<div class="col">');
+                fields.forEach((field) => cellBody(field, (sub) => {
+                    if (kids(sub, "ignored").length || kids(sub, "hidden").length) return;
+                    w("<div" + A({ class: cellStyle(at(sub, "container-style"), at(field, "align")) }) + ">");
+                    subWidgets(sub);
+                    w("</div>");
+                }));
+                w("</div>");
+            });
+            pop();
+            w("</template>");
+        };
+
         const formList = (n, columnFieldLists, allFields) => {
             const cfg = {};
             const name = at(n, "name");
-            ["first-row-field", "second-row-field", "last-row-field"].forEach((tag) => {
-                if (allFields.some((f) => { const sub = first(f, tag); return sub && sub.children.length; })) note("form-list-row", n, "the " + tag + " row of form-list " + name + " is not written");
+            // the first, second and last rows: the fields' *-row-field widgets over the map-*-row map, in a form when transition-*-row names one
+            cfg.special = {};
+            ["first", "second", "last"].forEach((kind) => {
+                const tag = kind + "-row-field";
+                if (allFields.some((f) => { const sub = first(f, tag); return sub && sub.children.length; })) cfg.special[kind] = { tag, transition: at(n, "transition-" + kind + "-row") };
             });
-            if (first(n, "row-selection")) note("row-selection", n, "row-selection of form-list " + name + " is not written");
+            const selection = first(n, "row-selection");
+            cfg.selection = selection ? { idField: at(selection, "id-field"), parameter: at(selection, "parameter"), listMode: at(selection, "list-mode") === "true", node: selection } : null;
             const flags = {
                 headerDialog: at(n, "header-dialog") === "true", savedFinds: at(n, "saved-finds") === "true",
                 csv: at(n, "show-csv-button") === "true", xlsx: at(n, "show-xlsx-button") === "true" && ec.screen.isRenderModeValid("xlsx"),
                 text: at(n, "show-text-button") === "true", pdf: at(n, "show-pdf-button") === "true", columns: at(n, "select-columns") === "true"
             };
             cfg.headerDialog = flags.headerDialog;
+            // An aggregated list's sub-list fields are not main columns: they are the columns of the sub-rows under each row (Java's subColInfo).
+            const isSub = (field) => at(field, "aggregate") === "sub-list";
+            const subLists = columnFieldLists.map((fields) => fields.filter(isSub)).filter((fields) => fields.length);
+            columnFieldLists = columnFieldLists.map((fields) => fields.filter((field) => !isSub(field))).filter((fields) => fields.length);
+            cfg.subFields = kids(n, "field").filter(isSub).map((field) => at(field, "name"));
             const opened = formListOpen(n, columnFieldLists, cfg);
             const cols = columnFieldLists.map((fields) => columnOf(n, fields));
             const skipHeader = at(n, "skip-header") === "true";
             const headerFields = allFields.filter((f) => { const sub = first(f, "header-field"); return sub && sub.children.filter((x) => x.name !== "set").length; });
-            if (kids(n, "field").some((f) => at(f, "aggregate") === "sub-list")) note("form-list-aggregate", n, "the sub-list fields of form-list " + name + " are not written (the form request groups the rows)");
             if (!skipHeader) navSlot(n, cols, headerFields, flags);
             if (flags.columns) {
                 columnSlots(n, cols, headerFields, flags, cfg);
+                if (cfg.selection) selectionSlot(cfg.selection);
                 w("</m-static-form-list>\n");
                 pop();
                 return;
@@ -1383,6 +1561,7 @@
             st.inRow = true;
             // the show-total row, which the component draws after the rows, is bold as the server-merged one is
             w('<div class="tr" :class="{\'text-weight-bold\': _moquiRowType === \'total\'}">');
+            if (cfg.selection) w(selectionCell(cfg.selection));
             const formOpened = rowFormOpen(n, cfg, kids(n, "field"), opened);
             columnFieldLists.forEach((fields) => {
                 w('<div class="td">');
@@ -1402,6 +1581,19 @@
             // fields with only a hidden widget are not in a column but their values still start the form
             pop();
             w("</template>");
+            Object.keys(cfg.special).forEach((kind) => {
+                const { tag, transition } = cfg.special[kind];
+                w('<template v-slot:row_' + kind + '="_ctx">');
+                push();
+                Object.assign(st, { inRow: false, inForm: !!transition, fieldForm: name + "_" + kind, owner: "" });
+                w('<div class="tr ' + kind + '">' + (cfg.selection ? '<div class="td">&nbsp;</div>' : ""));
+                columnFieldLists.forEach((fields) => { w('<div class="td">'); fields.forEach((field) => specialCell(field, tag)); w("</div>"); });
+                w("</div>");
+                pop();
+                w("</template>");
+            });
+            if (subLists.length) subSlots(subLists);
+            if (cfg.selection) selectionSlot(cfg.selection);
             w("</m-static-form-list>\n");
             pop();
         };
@@ -1432,7 +1624,7 @@
             reset, push, pop, e, A, cls, at, X, exp, st, sq, w, note, vIf, vFor, withCondition, urlOf, textOf,
             containerDialog, dynamicDialog, dynamicContainer, tree, subscreensPanel, subscreensTabs, image, label: labelWidget,
             link: (n, inField) => link(n, inField), editable, formSingle, formList, rowOpen, colOpen, fieldGroup, fieldGroupClose, quasarColor,
-            split, js: js_, widgetFns, imageTag
+            split, js: js_, widgetFns, imageTag, xmlCondition, sectionPaginate, buttonMenuOpen, buttonMenuItem, buttonMenuClose
         };
         Object.defineProperty(globalThis, "$mqQvtS", { value: h, configurable: true });
     };
@@ -1445,13 +1637,14 @@
     const call = (name, node, withChildren) => `$s.${name}(${wlit(node, withChildren)});\n`;
     const write = (text) => `sri.write(${lit(text)});\n`;
 
-    // The condition of a section: the attribute, or an expression element inside a condition element. null is a condition that is not an expression.
-    const conditionOf = (node) => {
-        if (attr(node, "condition")) return attr(node, "condition");
+    // The condition of a section as code for the unit: the attribute, an expression element alone, or the condition element compiled at
+    // render time by $s.xmlCondition (and, or, not, compare, expression). "" is no condition.
+    const conditionCode = (node) => {
+        if (attr(node, "condition")) return lit(attr(node, "condition"));
         const element = child(node, "condition");
         if (!element) return "";
-        if (element.children.length === 1 && element.children[0].name === "expression") return (element.children[0].text || "").trim();
-        return null;
+        if (element.children.length === 1 && element.children[0].name === "expression" && !element.children[0].children.length) return lit((element.children[0].text || "").trim());
+        return `$s.xmlCondition(${wlit(element)}, ${wlit(node, false)})`;
     };
 
     const widgetsMacro = stmt((node, children) => children);
@@ -1459,30 +1652,28 @@
     const sectionMacro = stmt((node) => {
         const widgets = child(node, "widgets");
         const fail = child(node, "fail-widgets");
-        const condition = conditionOf(node);
+        const condition = conditionCode(node);
         const body = widgets ? widgets.source || "" : "";
-        if (condition === null) {
-            return `sri.staticNote("condition", "section", ${lit("section " + attr(node, "name") + " has an XML condition that cannot be a v-if")});\n${body}`;
-        }
         if (!condition) return body;
-        return `sri.write($s.vIf(${wlit(node, false)}, ${lit(condition)}));\n${body}sri.write("</template>");\n` +
-            (fail ? `sri.write("<template v-else>");\n${fail.source || ""}sri.write("</template>");\n` : "");
+        return `{\nconst $cond = ${condition};\nif ($cond) sri.write($s.vIf(${wlit(node, false)}, $cond));\n${body}if ($cond) {\nsri.write("</template>");\n` +
+            (fail ? `sri.write("<template v-else>");\n${fail.source || ""}sri.write("</template>");\n` : "") + "}\n}\n";
     });
 
     const sectionIterateMacro = stmt((node) => {
         const widgets = child(node, "widgets");
         const fail = child(node, "fail-widgets");
-        const condition = conditionOf(node);
+        const condition = conditionCode(node);
         let code = "";
-        if (attr(node, "paginate") === "true") code += `sri.staticNote("section-paginate", "section-iterate", ${lit("paginate of section-iterate " + attr(node, "name") + " is not written")});\n`;
+        if (attr(node, "paginate") === "true") code += `sri.write($s.sectionPaginate(${wlit(node, false)}));\n`;
         code += `sri.write($s.vFor(${wlit(node, false)}));\n`;
-        if (condition) code += `sri.write($s.vIf(${wlit(node, false)}, ${lit(condition)}));\n`;
+        if (condition) code += `const $cond = ${condition};\nif ($cond) sri.write($s.vIf(${wlit(node, false)}, $cond));\n`;
         code += widgets ? widgets.source || "" : "";
         if (condition) {
+            code += `if ($cond) {\n`;
             if (fail) code += `sri.write("</template><template v-else>");\n${fail.source || ""}`;
-            code += `sri.write("</template>");\n`;
+            code += `sri.write("</template>");\n}\n`;
         }
-        return code + `sri.write("</template>");\n`;
+        return "{\n" + code + `sri.write("</template>");\n}\n`;
     });
 
     const containerMacro = stmt((node, children) => `$s.containerOpen(${wlit(node, false)});\n${children}sri.write(${lit(`</${attr(node, "type") || "div"}>\n`)});\n`);
@@ -1519,7 +1710,13 @@
 
     const containerDialogMacro = stmt((node, children) => `{\n    const $c = $s.containerDialog(${wlit(node, false)});\n${children}    sri.write($c ? "</m-container-dialog></template>\\n" : "</m-container-dialog>\\n");\n}\n`);
 
-    const buttonMenuMacro = stmt((node) => `sri.staticNote("button-menu", "button-menu", ${lit("button-menu " + (attr(node, "text") || "") + " is not written by the server-static macros")});\n`);
+    const buttonMenuMacro = stmt((node) => {
+        const image = child(node, "image");
+        const items = node.children.filter((kid) => kid.name !== "image" && kid.name !== "parameter");
+        return `{\nconst $bm = $s.buttonMenuOpen(${wlit(node, false)}, ${image ? wlit(image) : "null"});\nif ($bm) {\nsri.write($bm);\n` +
+            items.map((kid) => `sri.write($s.buttonMenuItem(${wlit(kid, false)}));\n${kid.source || ""}sri.write("</q-item-section></q-item>");\n`).join("") +
+            `sri.write($s.buttonMenuClose(${wlit(node, false)}));\n}\n}\n`;
+    });
 
     const formSingleMacro = stmt((node) => `$s.formSingle(${wlit(node, true)});\n`);
 
@@ -1592,6 +1789,7 @@
         "dynamic-container": widget("dynamicContainer", true),
         "dynamic-dialog": widget("dynamicDialog", true),
         "button-menu": buttonMenuMacro,
+        "menu-item": stmt(() => ""),
         "tree": widget("tree", true),
         "link": linkMacro,
         "image": widget("image", true),
@@ -1605,7 +1803,7 @@
     // widgets are walked, so the template of a section is the code of its children.
     const opaque = S.opaqueElements
         .filter((name) => !["section", "section-iterate", "section-include", "button-menu", "row-selection", "action"].includes(name))
-        .concat(["condition", "actions", "form-single", "form-list", "link", "image", "label", "editable", "dynamic-container", "dynamic-dialog", "button-menu", "row-selection"]);
+        .concat(["condition", "actions", "form-single", "form-list", "link", "image", "label", "editable", "dynamic-container", "dynamic-dialog", "row-selection"]);
 
     return { macros, opaque, prelude, runtime };
 })
