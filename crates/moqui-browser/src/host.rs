@@ -29,11 +29,10 @@ use std::time::Duration;
 use moqui_core::context::{BootOptions, ExecutionContextFactory, Executor};
 use moqui_core::driver::DbDriver;
 use moqui_core::entity::load_feed::{load_entity_data, LoadOptions};
-use moqui_core::entity::{EntityFacade, EntityGroup};
+use moqui_core::entity::EntityFacade;
 use moqui_core::screen::ScreenTest;
-use moqui_core::transaction::{PoolConfig, TransactionManager};
+use moqui_core::transaction::PoolConfig;
 use moqui_lib::error::Error;
-use moqui_lib::node::MNode;
 use moqui_lib::object::Value;
 
 use crate::sqlite::SqliteDriver;
@@ -223,27 +222,13 @@ impl Browser {
 }
 
 /// Load the framework model onto the `transactional` and `logging` groups with the `sqlite` dialect.
-///
-/// The same as `moqui-host` `open_entity_facade_dialect`. It has no host type in it; it belongs in core.
+/// One database holds every group. The server puts `logging` on a separate datasource.
 ///
 /// # Errors
 ///
 /// Returns an error when the conf or the entity model cannot be read.
 pub fn open_entity_facade(framework_dir: &Path, driver: Arc<dyn DbDriver>) -> Result<EntityFacade, Error> {
-    let transactions = TransactionManager::new(driver, pool())?;
-    let conf = MNode::parse_file(framework_dir.join("conf/MoquiDefaultConf.xml"))?;
-    transactions.configure_from_conf(&conf)?;
-    // One database holds every group. The server puts `logging` on a separate datasource.
-    let facade = EntityFacade::open(
-        framework_dir,
-        "transactional",
-        vec![
-            EntityGroup::new("transactional", DIALECT, transactions.clone()),
-            EntityGroup::new("logging", DIALECT, transactions),
-        ],
-    )?;
-    facade.crypt_from_conf(&conf)?;
-    Ok(facade)
+    EntityFacade::open_with_driver(framework_dir, driver, pool(), DIALECT, &["transactional", "logging"])
 }
 
 #[cfg(test)]

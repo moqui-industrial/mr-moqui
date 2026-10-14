@@ -101,6 +101,38 @@ pub struct EntityFacade {
 }
 
 impl EntityFacade {
+    /// Open the framework model over one driver. Every name in `groups` shares one transaction
+    /// manager; the first is the default group. Reads `conf/MoquiDefaultConf.xml` for the
+    /// transaction and field-encryption settings.
+    ///
+    /// The server opens `transactional` alone; the browser puts `logging` on the same database.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the conf or the entity model cannot be read, `dialect` is not
+    /// defined, or `groups` is empty.
+    pub fn open_with_driver(
+        framework_dir: &Path,
+        driver: Arc<dyn crate::driver::DbDriver>,
+        pool: crate::transaction::PoolConfig,
+        dialect: &str,
+        groups: &[&str],
+    ) -> Result<Self, Error> {
+        let Some(default_group) = groups.first() else {
+            return Err(Error::new("open_with_driver needs at least one entity group"));
+        };
+        let transactions = TransactionManager::new(driver, pool)?;
+        let conf = MNode::parse_file(framework_dir.join("conf/MoquiDefaultConf.xml"))?;
+        transactions.configure_from_conf(&conf)?;
+        let groups = groups
+            .iter()
+            .map(|group| EntityGroup::new(*group, dialect, transactions.clone()))
+            .collect();
+        let facade = Self::open(framework_dir, default_group, groups)?;
+        facade.crypt_from_conf(&conf)?;
+        Ok(facade)
+    }
+
     /// Load the framework entity model and attach one transaction manager per group.
     pub fn open(framework_dir: &Path, default_group: &str, groups: Vec<EntityGroup>) -> Result<Self, Error> {
         if groups.is_empty() {

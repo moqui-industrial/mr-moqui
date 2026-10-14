@@ -19,10 +19,9 @@ use std::sync::Arc;
 
 use moqui_core::context::ExecutionContextFactory;
 use moqui_core::driver::DbDriver;
-use moqui_core::entity::{EntityFacade, EntityGroup};
-use moqui_core::transaction::{PoolConfig, TransactionManager};
+use moqui_core::entity::EntityFacade;
+use moqui_core::transaction::PoolConfig;
 use moqui_lib::error::Error;
-use moqui_lib::node::MNode;
 
 /// Load the framework model onto the `transactional` group using the `postgres` dialect.
 pub fn open_entity_facade(
@@ -46,16 +45,7 @@ pub fn open_entity_facade_dialect(
     pool: PoolConfig,
     dialect: &str,
 ) -> Result<EntityFacade, Error> {
-    let transactions = TransactionManager::new(driver, pool)?;
-    let conf = MNode::parse_file(framework_dir.join("conf/MoquiDefaultConf.xml"))?;
-    transactions.configure_from_conf(&conf)?;
-    let facade = EntityFacade::open(
-        framework_dir,
-        "transactional",
-        vec![EntityGroup::new("transactional", dialect, transactions)],
-    )?;
-    facade.crypt_from_conf(&conf)?;
-    Ok(facade)
+    EntityFacade::open_with_driver(framework_dir, driver, pool, dialect, &["transactional"])
 }
 
 /// Install the facade so `dbresource://` reads and writes through it.
