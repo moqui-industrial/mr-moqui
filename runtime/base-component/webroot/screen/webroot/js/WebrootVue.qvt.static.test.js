@@ -68,7 +68,11 @@ const stubs = {
     "m-form-paginate": { props: ["paginate", "formList"], render() { if (this.formList) captured.lists[this.formList.name] = this.formList; return Vue.h("m-form-paginate", { paginate: this.paginate }); } },
     "m-form-go-page": { props: ["idVal", "formList"], render() { return Vue.h("m-form-go-page"); } }
 };
-["m-display", "m-text-line", "m-drop-down", "m-link", "q-btn", "m-form-link", "m-container-box", "m-container-dialog"].forEach((tag) => { stubs[tag] = leaf(tag); });
+["m-display", "m-text-line", "m-text-area", "m-drop-down", "m-link", "q-btn", "m-form-link", "m-container-box", "m-container-dialog",
+    "q-list", "q-item", "q-item-section", "q-expansion-item", "q-badge", "q-tooltip"].forEach((tag) => { stubs[tag] = leaf(tag); });
+stubs["q-btn-dropdown"] = { inheritAttrs: false, render() {
+    return Vue.h("q-btn-dropdown", this.$attrs, [this.$slots.label ? Vue.h("label", {}, this.$slots.label()) : null].concat(this.$slots.default ? this.$slots.default() : []));
+} };
 
 const captured = { lists: {} };
 const answers = {};
@@ -265,6 +269,24 @@ test("Parity: text-map puts the map's entries before the scope's for the text of
     assert.match(text, /Product Widget X at 9/);
     assert.match(text, /View Widget X/);
     assert.doesNotMatch(text, /the context's name/);
+});
+
+test("Parity: a field accordion opens its active group, and a button-menu lists the children whose condition holds", async () => {
+    setup();
+    const { container } = await mountStatic("", "Parity");
+    const text = html(container);
+    const items = text.match(/<q-expansion-item[^>]*>/g) || [];
+    assert.equal(items.length, 2, text);
+    assert.match(items[0], /label='Names'/);
+    assert.doesNotMatch(items[0], /default-opened/);
+    assert.match(items[1], /label='Amounts'/);
+    assert.match(items[1], /default-opened/);
+    assert.match(items[1], /group='ProductForm_accordion'/);
+    // the menu's label is the text with the map's entry, its items the link and the label whose condition holds
+    assert.match(text, /<q-btn-dropdown[^>]*>.*Menu of Widget X/);
+    assert.match(text, /View it/);
+    assert.match(text, /shown when qty is over 3/);
+    assert.doesNotMatch(text, /hidden when qty is over 3/);
 });
 
 test("Parity: a paginated section-iterate shows its page and the page buttons over the package's keys", async () => {

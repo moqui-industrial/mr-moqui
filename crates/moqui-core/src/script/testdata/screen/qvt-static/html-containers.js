@@ -39,7 +39,19 @@ $s.label({"name":"label","attrs":{"text":"dialog body"}});
 }
 $s.dynamicContainer({"name":"dynamic-container","attrs":{"id":"Dyn","transition":"load"},"children":[{"name":"parameter","attrs":{"name":"p","value":"1"}}]});
 $s.dynamicDialog({"name":"dynamic-dialog","attrs":{"id":"DynDlg","button-text":"Edit","transition":"edit"},"children":[{"name":"parameter","attrs":{"name":"id","from":"rowId"}}]});
-sri.staticNote("button-menu", "button-menu", "button-menu Actions is not written by the server-static macros");
+{
+const $bm = $s.buttonMenuOpen({"name":"button-menu","attrs":{"text":"Actions","icon":"fa fa-cog","btn-type":"info"}}, null);
+if ($bm) {
+sri.write($bm);
+sri.write($s.buttonMenuItem({"name":"link","attrs":{"url":"one","text":"One","link-type":"anchor"}}));
+$s.link({"name":"link","attrs":{"url":"one","text":"One","link-type":"anchor"}}, false);
+sri.write("</q-item-section></q-item>");
+sri.write($s.buttonMenuItem({"name":"link","attrs":{"url":"two","text":"Two","link-type":"anchor","confirmation":"Sure?"}}));
+$s.link({"name":"link","attrs":{"url":"two","text":"Two","link-type":"anchor","confirmation":"Sure?"}}, false);
+sri.write("</q-item-section></q-item>");
+sri.write($s.buttonMenuClose({"name":"button-menu","attrs":{"text":"Actions","icon":"fa fa-cog","btn-type":"info"}}));
+}
+}
 $s.tree({"name":"tree","attrs":{"name":"Nodes","transition":"treeItems","open-path":"${path}"},"children":[{"name":"parameter","attrs":{"name":"root","value":"a"}}]});
 $s.editable({"name":"editable","attrs":{"id":"Ed","transition":"save","text":"${name}","parameter-name":"name"}});
 $s.link({"name":"link","attrs":{"url":"go","text":"Go","btn-type":"success","icon":"fa fa-go","badge":"3","tooltip":"Go now","target-window":"_blank"}}, false);

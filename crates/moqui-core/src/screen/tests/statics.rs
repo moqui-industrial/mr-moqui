@@ -750,4 +750,7 @@ fn the_parity_fixture_is_a_template_with_its_data_in_the_packages() {
     assert!(html.contains("<m-form-paginate v-if=\"$scope['linesCount']\""), "{html}");
     // text-map: a name of the text reads the map first
     assert!(html.contains("$mq.inMap((product),'productName')"), "{html}");
+    // the accordion: a group of expansion items, the second open; the button-menu: a dropdown of its children
+    assert!(html.contains("group=\"ProductForm_accordion\""), "{html}");
+    assert!(html.contains("<q-btn-dropdown"), "{html}");
 }

@@ -31,8 +31,8 @@
 //  - display-entity, entity-options, list-options and dynamic-options (without server-search) read keys the package
 //    holds: name_display, and mqOpt_{form}_{field}_{sub}_{widget} for the options of a widget;
 //  - a link that the user may not use is still written (the server refuses the request), and no icon comes from the theme;
-//  - include-screen is written inline; the first-row, second-row and last-row of a form-list, row-selection and the column picker
-//    are not written (a violation in the report). The find dialog, saved finds, the exports and a multi form are written.
+//  - include-screen is written inline; the first-row, second-row and last-row of a form-list and row-selection are not written (a
+//    violation in the report). The find dialog, saved finds, the exports, a multi form and the column picker are written.
 (function (T, S) {
     "use strict";
 
@@ -234,7 +234,7 @@
         const st = {};
         const saved = [];
         const reset = () => {
-            Object.assign(st, { formName: "", fieldForm: "", owner: "", inForm: false, inRow: false, listName: "", multi: false });
+            Object.assign(st, { formName: "", fieldForm: "", owner: "", inForm: false, inRow: false, listName: "", multi: false, accordion: "", accIndex: 0, accActive: "" });
             saved.length = 0;
         };
         reset();
@@ -957,10 +957,14 @@
         const fieldGroup = (n) => {
             const title = at(n, "title");
             const heading = title ? "<h5><span v-text=\"" + e(exp(title, n, "title", true)) + "\"></span></h5>" : "";
-            if (at(n, "box") === "true") w('<div class="panel panel-default"><div class="panel-heading"><h5 class="panel-title">' + (title ? "<span v-text=\"" + e(exp(title, n, "title", true)) + "\"></span>" : "") + '</h5></div><div class="' + cls("panel-body", at(n, "style") || null) + '">');
+            if (st.accordion) {
+                st.accIndex++;
+                w("<q-list bordered padding><q-expansion-item" + A({ "switch-toggle-side": true, group: st.accordion, ":label": title ? exp(title, n, "title", true) : "ec.l10n.localize('Fields')",
+                    "default-opened": String(st.accIndex) === st.accActive ? true : null }) + '><div class="' + cls("panel-body", at(n, "style") || null) + '">');
+            } else if (at(n, "box") === "true") w('<div class="panel panel-default"><div class="panel-heading"><h5 class="panel-title">' + (title ? "<span v-text=\"" + e(exp(title, n, "title", true)) + "\"></span>" : "") + '</h5></div><div class="' + cls("panel-body", at(n, "style") || null) + '">');
             else w('<div class="' + cls("form-single-field-group", at(n, "style") || null) + '">' + heading);
         };
-        const fieldGroupClose = (n) => w(at(n, "box") === "true" ? "</div></div>\n" : "</div>\n");
+        const fieldGroupClose = (n) => w(st.accordion ? "</div></q-expansion-item></q-list>\n" : at(n, "box") === "true" ? "</div></div>\n" : "</div>\n");
 
         // ---- form-list ----
 
@@ -1081,6 +1085,27 @@
                 ",pageRangeLow:" + key("PageRangeLow") + ",pageRangeHigh:" + key("PageRangeHigh") + "}";
             return "<m-form-paginate" + A({ "v-if": scopeRef(list + "Count"), ":paginate": props }) + "></m-form-paginate>";
         };
+
+        // A button-menu, as Java's: a q-btn-dropdown whose label has the tooltip, the icon (the attribute, else the theme's icon of the
+        // text), the image child or the text, and the badge; each child is a q-item, shown by its own condition.
+        const buttonMenuOpen = (n, img) => {
+            const text = at(n, "text");
+            const icon = at(n, "icon") || (text && !isDynamic(text) ? sri.getThemeIconClass(text) || "" : "");
+            if (!text && !img && !icon) return "";
+            if (at(n, "encode") === "false") note("encode-false", n, "button-menu with encode=false writes text as html");
+            let out = (at(n, "condition") ? '<template v-if="' + e(X(at(n, "condition"), n, "condition")) + '">' : "") +
+                "<q-btn-dropdown" + A({ dense: true, outline: true, "no-caps": true, color: quasarColor(at(n, "btn-type") || "primary") || null, class: at(n, "style") || null }) + "><template v-slot:label>";
+            if (at(n, "tooltip")) out += '<q-tooltip><span v-text="' + e(exp(at(n, "tooltip"), n, "tooltip", true)) + '"></span></q-tooltip>';
+            if (icon) out += '<i class="' + e(icon + " q-icon" + (text ? " on-left" : "")) + '"></i>';
+            out += img ? imageTag(img) : '<span v-text="' + e(textOf(n)) + '"></span>';
+            if (at(n, "badge")) {
+                const badge = exp(at(n, "badge"), n, "badge", false);
+                out += '<q-badge class="on-right" transparent' + A({ "v-if": badge, "v-text": badge }) + "></q-badge>";
+            }
+            return out + "</template><q-list>";
+        };
+        const buttonMenuItem = (kid) => "<q-item" + (at(kid, "condition") ? ' v-if="' + e(X(at(kid, "condition"), kid, "condition")) + '"' : "") + "><q-item-section>";
+        const buttonMenuClose = (n) => "</q-list></q-btn-dropdown>" + (at(n, "condition") ? "</template>" : "") + "\n";
 
         // An XML condition element as one expression, as XmlActions.js writes it for an if: and, or and not join their parts, an expression
         // is its text, and a compare is $mq.compare, the browser's copy of the server's compare. The value of a compare with ${} is expanded.
@@ -1237,8 +1262,13 @@
                         layoutCode(kid, big);
                         fieldGroupClose(kid);
                     } else if (name === "field-accordion") {
-                        note("field-accordion", kid, "an accordion is written as plain groups");
+                        // Java's accordion: a q-list of groups, each a q-expansion-item of one group, the active one (1-based, "false" for none) open
+                        const before = { accordion: st.accordion, accIndex: st.accIndex, accActive: st.accActive };
+                        Object.assign(st, { accordion: at(kid, "id") || (st.fieldForm || at(n, "name")) + "_accordion", accIndex: 0, accActive: at(kid, "active") || "1" });
+                        w("<q-list>");
                         layoutCode(kid, big);
+                        w("</q-list>\n");
+                        Object.assign(st, before);
                     } else if (name === "field-col-row") {
                         rowOpen("row", at(kid, "style"));
                         kids(kid, "field-col").forEach((col) => { colOpen(col, true); layoutCode(col, false); w("</div>"); });
@@ -1482,7 +1512,7 @@
             reset, push, pop, e, A, cls, at, X, exp, st, sq, w, note, vIf, vFor, withCondition, urlOf, textOf,
             containerDialog, dynamicDialog, dynamicContainer, tree, subscreensPanel, subscreensTabs, image, label: labelWidget,
             link: (n, inField) => link(n, inField), editable, formSingle, formList, rowOpen, colOpen, fieldGroup, fieldGroupClose, quasarColor,
-            split, js: js_, widgetFns, imageTag, xmlCondition, sectionPaginate
+            split, js: js_, widgetFns, imageTag, xmlCondition, sectionPaginate, buttonMenuOpen, buttonMenuItem, buttonMenuClose
         };
         Object.defineProperty(globalThis, "$mqQvtS", { value: h, configurable: true });
     };
@@ -1568,7 +1598,13 @@
 
     const containerDialogMacro = stmt((node, children) => `{\n    const $c = $s.containerDialog(${wlit(node, false)});\n${children}    sri.write($c ? "</m-container-dialog></template>\\n" : "</m-container-dialog>\\n");\n}\n`);
 
-    const buttonMenuMacro = stmt((node) => `sri.staticNote("button-menu", "button-menu", ${lit("button-menu " + (attr(node, "text") || "") + " is not written by the server-static macros")});\n`);
+    const buttonMenuMacro = stmt((node) => {
+        const image = child(node, "image");
+        const items = node.children.filter((kid) => kid.name !== "image" && kid.name !== "parameter");
+        return `{\nconst $bm = $s.buttonMenuOpen(${wlit(node, false)}, ${image ? wlit(image) : "null"});\nif ($bm) {\nsri.write($bm);\n` +
+            items.map((kid) => `sri.write($s.buttonMenuItem(${wlit(kid, false)}));\n${kid.source || ""}sri.write("</q-item-section></q-item>");\n`).join("") +
+            `sri.write($s.buttonMenuClose(${wlit(node, false)}));\n}\n}\n`;
+    });
 
     const formSingleMacro = stmt((node) => `$s.formSingle(${wlit(node, true)});\n`);
 
@@ -1641,6 +1677,7 @@
         "dynamic-container": widget("dynamicContainer", true),
         "dynamic-dialog": widget("dynamicDialog", true),
         "button-menu": buttonMenuMacro,
+        "menu-item": stmt(() => ""),
         "tree": widget("tree", true),
         "link": linkMacro,
         "image": widget("image", true),
@@ -1654,7 +1691,7 @@
     // widgets are walked, so the template of a section is the code of its children.
     const opaque = S.opaqueElements
         .filter((name) => !["section", "section-iterate", "section-include", "button-menu", "row-selection", "action"].includes(name))
-        .concat(["condition", "actions", "form-single", "form-list", "link", "image", "label", "editable", "dynamic-container", "dynamic-dialog", "button-menu", "row-selection"]);
+        .concat(["condition", "actions", "form-single", "form-list", "link", "image", "label", "editable", "dynamic-container", "dynamic-dialog", "row-selection"]);
 
     return { macros, opaque, prelude, runtime };
 })

@@ -3,6 +3,15 @@ const { toDisplayString: _toDisplayString, openBlock: _openBlock, createElementB
 
 return function render(_ctx, _cache) {
   const _component_m_link = _resolveComponent("m-link")
+  const _component_q_item_section = _resolveComponent("q-item-section")
+  const _component_q_item = _resolveComponent("q-item")
+  const _component_q_list = _resolveComponent("q-list")
+  const _component_q_btn_dropdown = _resolveComponent("q-btn-dropdown")
+  const _component_m_text_line = _resolveComponent("m-text-line")
+  const _component_q_expansion_item = _resolveComponent("q-expansion-item")
+  const _component_m_text_area = _resolveComponent("m-text-area")
+  const _component_m_form = _resolveComponent("m-form")
+  const _component_m_scope = _resolveComponent("m-scope")
   const _component_m_form_paginate = _resolveComponent("m-form-paginate")
 
   return (_openBlock(), _createElementBlock(_Fragment, null, [
@@ -42,6 +51,185 @@ return function render(_ctx, _cache) {
       ]),
       _: 1
     }, 8, ["href"]),
+    _createVNode(_component_q_btn_dropdown, {
+      dense: "",
+      outline: "",
+      "no-caps": "",
+      color: "primary"
+    }, {
+      label: _withCtx(() => [
+        _createElementVNode("i", { class: "fa fa-bars q-icon on-left" }),
+        _createElementVNode("span", {
+          textContent: _toDisplayString(_ctx.ec.resource.expand('Menu of ${productName}',{'productName':()=>(_ctx.$mq.inMap((_ctx.product),'productName')?_ctx.$mq.inMap((_ctx.product),'productName',true):(_ctx.productName))}))
+        }, null, 8, ["textContent"])
+      ]),
+      default: _withCtx(() => [
+        _createVNode(_component_q_list, null, {
+          default: _withCtx(() => [
+            _createVNode(_component_q_item, null, {
+              default: _withCtx(() => [
+                _createVNode(_component_q_item_section, null, {
+                  default: _withCtx(() => [
+                    _createVNode(_component_m_link, {
+                      href: _ctx.$mq.url('/Parity/viewProduct',{},null)
+                    }, {
+                      default: _withCtx(() => [
+                        _createElementVNode("span", {
+                          textContent: _toDisplayString(_ctx.ec.l10n.localize('View it'))
+                        }, null, 8, ["textContent"])
+                      ]),
+                      _: 1
+                    }, 8, ["href"])
+                  ]),
+                  _: 1
+                })
+              ]),
+              _: 1
+            }),
+            ((_ctx.qty > 3))
+              ? (_openBlock(), _createBlock(_component_q_item, { key: 0 }, {
+                  default: _withCtx(() => [
+                    _createVNode(_component_q_item_section, null, {
+                      default: _withCtx(() => [
+                        ((_ctx.qty > 3))
+                          ? (_openBlock(), _createElementBlock("span", {
+                              key: 0,
+                              class: "text-inline",
+                              textContent: _toDisplayString(_ctx.ec.l10n.localize('shown when qty is over 3'))
+                            }, null, 8, ["textContent"]))
+                          : _createCommentVNode("", true)
+                      ]),
+                      _: 1
+                    })
+                  ]),
+                  _: 1
+                }))
+              : _createCommentVNode("", true),
+            ((_ctx.qty <= 3))
+              ? (_openBlock(), _createBlock(_component_q_item, { key: 1 }, {
+                  default: _withCtx(() => [
+                    _createVNode(_component_q_item_section, null, {
+                      default: _withCtx(() => [
+                        ((_ctx.qty <= 3))
+                          ? (_openBlock(), _createElementBlock("span", {
+                              key: 0,
+                              class: "text-inline",
+                              textContent: _toDisplayString(_ctx.ec.l10n.localize('hidden when qty is over 3'))
+                            }, null, 8, ["textContent"]))
+                          : _createCommentVNode("", true)
+                      ]),
+                      _: 1
+                    })
+                  ]),
+                  _: 1
+                }))
+              : _createCommentVNode("", true)
+          ]),
+          _: 1
+        })
+      ]),
+      _: 1
+    }),
+    _createVNode(_component_m_scope, {
+      value: (_ctx.product),
+      extra: _ctx.$scope['mqExtra_ProductForm']
+    }, {
+      default: _withCtx((_ctx) => [
+        _createElementVNode("div", { class: "q-my-md" }, [
+          _createVNode(_component_m_form, {
+            name: "ProductForm",
+            id: "ProductForm",
+            action: "/Parity/saveProduct",
+            "read-only": "",
+            "fields-initial": {'productName':_ctx.$mq.str(_ctx.$scope['productName']),'price':_ctx.$mq.str(_ctx.$scope['price']),'note':_ctx.$mq.str(_ctx.$scope['note']),'moquiFormName':'ProductForm'}
+          }, {
+            default: _withCtx((formProps) => [
+              _createVNode(_component_q_list, null, {
+                default: _withCtx(() => [
+                  _createVNode(_component_q_list, {
+                    bordered: "",
+                    padding: ""
+                  }, {
+                    default: _withCtx(() => [
+                      _createVNode(_component_q_expansion_item, {
+                        "switch-toggle-side": "",
+                        group: "ProductForm_accordion",
+                        label: _ctx.ec.l10n.localize('Names')
+                      }, {
+                        default: _withCtx(() => [
+                          _createElementVNode("div", { class: "panel-body" }, [
+                            _createElementVNode("div", { class: "q-ma-sm" }, [
+                              _createVNode(_component_m_text_line, {
+                                id: "ProductForm_productName",
+                                type: "text",
+                                name: "productName",
+                                style: {"width":"100%"},
+                                label: _ctx.ec.l10n.localize('Product Name'),
+                                modelValue: formProps.fields.productName,
+                                "onUpdate:modelValue": $event => ((formProps.fields.productName) = $event),
+                                fields: formProps.fields
+                              }, null, 8, ["label", "modelValue", "onUpdate:modelValue", "fields"])
+                            ])
+                          ])
+                        ]),
+                        _: 2
+                      }, 1032, ["label"])
+                    ]),
+                    _: 2
+                  }, 1024),
+                  _createVNode(_component_q_list, {
+                    bordered: "",
+                    padding: ""
+                  }, {
+                    default: _withCtx(() => [
+                      _createVNode(_component_q_expansion_item, {
+                        "switch-toggle-side": "",
+                        group: "ProductForm_accordion",
+                        label: _ctx.ec.l10n.localize('Amounts'),
+                        "default-opened": ""
+                      }, {
+                        default: _withCtx(() => [
+                          _createElementVNode("div", { class: "panel-body" }, [
+                            _createElementVNode("div", { class: "q-ma-sm" }, [
+                              _createVNode(_component_m_text_line, {
+                                id: "ProductForm_price",
+                                type: "text",
+                                name: "price",
+                                style: {"width":"100%"},
+                                label: _ctx.ec.l10n.localize('Price'),
+                                modelValue: formProps.fields.price,
+                                "onUpdate:modelValue": $event => ((formProps.fields.price) = $event),
+                                fields: formProps.fields
+                              }, null, 8, ["label", "modelValue", "onUpdate:modelValue", "fields"])
+                            ]),
+                            _createElementVNode("div", { class: "q-ma-sm" }, [
+                              _createVNode(_component_m_text_area, {
+                                name: "note",
+                                id: "ProductForm_note",
+                                rows: "3",
+                                style: {"width":"100%"},
+                                label: _ctx.ec.l10n.localize('Note'),
+                                modelValue: formProps.fields.note,
+                                "onUpdate:modelValue": $event => ((formProps.fields.note) = $event)
+                              }, null, 8, ["label", "modelValue", "onUpdate:modelValue"])
+                            ])
+                          ])
+                        ]),
+                        _: 2
+                      }, 1032, ["label"])
+                    ]),
+                    _: 2
+                  }, 1024)
+                ]),
+                _: 2
+              }, 1024)
+            ]),
+            _: 1
+          }, 8, ["fields-initial"])
+        ])
+      ]),
+      _: 1
+    }, 8, ["value", "extra"]),
     (_ctx.$scope['linesCount'])
       ? (_openBlock(), _createBlock(_component_m_form_paginate, {
           key: 4,

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- The XML screen and form features at parity with Java Moqui, written in a server-static template: a condition element, section-iterate paging, text-map. -->
+<!-- The XML screen and form features at parity with Java Moqui, written in a server-static template: a condition element, section-iterate paging, text-map, an accordion, a button-menu. -->
 <screen require-authentication="false" server-static="qvt" default-menu-title="Parity">
     <actions>
         <set field="status" value="ACTIVE"/>
@@ -9,6 +9,7 @@
         <set field="productName" value="the context's name"/>
     </actions>
     <transition name="viewProduct" read-only="true"><default-response type="none"/></transition>
+    <transition name="saveProduct"><default-response type="none"/></transition>
     <widgets>
         <section name="Holds">
             <condition><and><compare field="status" operator="equals" value="ACTIVE"/><expression>qty &gt; 3</expression></and></condition>
@@ -22,6 +23,20 @@
         </section>
         <label text="Product ${productName} at ${price}" text-map="product" type="p"/>
         <link url="viewProduct" text="View ${productName}" text-map="product" link-type="anchor"/>
+        <button-menu text="Menu of ${productName}" text-map="product" icon="fa fa-bars">
+            <link url="viewProduct" text="View it" link-type="anchor"/>
+            <label text="shown when qty is over 3" condition="qty &gt; 3"/>
+            <label text="hidden when qty is over 3" condition="qty &lt;= 3"/>
+        </button-menu>
+        <form-single name="ProductForm" map="product" transition="saveProduct">
+            <field name="productName"><default-field><text-line/></default-field></field>
+            <field name="price"><default-field><text-line/></default-field></field>
+            <field name="note"><default-field><text-area/></default-field></field>
+            <field-layout><field-accordion active="2">
+                <field-group title="Names"><field-ref name="productName"/></field-group>
+                <field-group title="Amounts"><field-ref name="price"/><field-ref name="note"/></field-group>
+            </field-accordion></field-layout>
+        </form-single>
         <section-iterate name="Lines" list="lines" entry="line" paginate="true">
             <widgets><label text="line ${line.lineId}" type="div"/></widgets>
         </section-iterate>

@@ -1890,9 +1890,11 @@
                     const $badge = ec.resource.expand(${lit(attr(node, "badge"))}, "");
                     sri.write("<q-btn-dropdown" + $v.A({dense: true, outline: true, "no-caps": true, color: $v.quasarColor(${lit(attr(node, "btn-type") || "primary")}) || null, class: ${attr(node, "style") ? noL10n(attr(node, "style")) : "null"}}) + "><template v-slot:label>" +
                         ${attr(node, "tooltip") ? `$v.tooltipTag(ec.resource.expand(${lit(attr(node, "tooltip"))}, "")) + ` : ""}
-                        ($icon ? "<i class=\\"" + $v.e($icon) + " q-icon" + ($text ? " on-left" : "") + "\\"></i>" : "") + $text +
-                        ($badge ? "<q-badge class=\\"on-right\\" transparent>" + $v.t($badge) + "</q-badge>" : "") + "</template><q-list>");
-                    ${linkItems.map((kid) => `sri.write("<q-item><q-item-section>");\n${kid.source}sri.write("</q-item-section></q-item>");\n`).join("")}
+                        ($icon ? "<i class=\\"" + $v.e($icon) + " q-icon" + ($text ? " on-left" : "") + "\\"></i>" : ""));
+                    // as Java: the image child in the place of the text
+                    ${image ? image.source : "sri.write($text);"}
+                    sri.write(($badge ? "<q-badge class=\\"on-right\\" transparent>" + $v.t($badge) + "</q-badge>" : "") + "</template><q-list>");
+                    ${linkItems.map((kid) => condGuard(attr(kid, "condition"), `sri.write("<q-item><q-item-section>");\n${kid.source}sri.write("</q-item-section></q-item>");\n`)).join("")}
                     sri.write("</q-list></q-btn-dropdown>\\n");
                 }
             }
