@@ -51,6 +51,7 @@ fn postgres_backend_sales_and_party_parity() {
 
     sales_parity(&backend);
     party_parity(&backend);
+    phrase_parity(&backend);
 
     drop(backend);
     drop(cluster);
@@ -70,6 +71,7 @@ fn opensearch_backend_sales_and_party_parity() {
     let backend = moqui_core::search::opensearch::OpenSearchBackend::new(&conf);
     sales_parity(&backend);
     party_parity(&backend);
+    phrase_parity(&backend);
 }
 
 fn field(kind: FieldKind) -> FieldMapping {
@@ -640,6 +642,79 @@ fn party_parity(backend: &dyn SearchBackend) {
     assert_eq!(page.total, 4);
 
     backend.drop_index(&product).unwrap();
+    backend.drop_index(&mapping).unwrap();
+}
+
+/// A quoted phrase: those words, in that order, next to each other, after the `simple` analysis
+/// (lower case, no stemming, stop words kept). It does not run from one stored value into the next.
+fn phrase_parity(backend: &dyn SearchBackend) {
+    let mut root = object(&[("noteId", FieldKind::Keyword)]);
+    root.fields.insert("title".into(), field(FieldKind::Text));
+    root.fields.insert("noteText".into(), field(FieldKind::Text));
+    root.children.insert("lines".into(), object(&[("lineText", FieldKind::Text)]));
+    let mapping = DocumentMapping {
+        document_id: "TestPhraseNote".into(),
+        index_name: None,
+        physical_name: "test_phrase_note".into(),
+        root,
+        manual_mapping_service: None,
+    };
+    backend.ensure_index(&mapping).unwrap();
+    let note = |id: &str, title: &str, text: &str, lines: &[&str]| {
+        (
+            id.to_string(),
+            doc(vec![
+                ("noteId", Value::string(id)),
+                ("title", Value::string(title)),
+                ("noteText", Value::string(text)),
+                (
+                    "lines",
+                    list(lines.iter().map(|line| doc(vec![("lineText", Value::string(*line))])).collect()),
+                ),
+            ]),
+        )
+    };
+    let docs = vec![
+        note("ADJACENT", "Pump Notes", "The Water Pump is industrial", &[]),
+        note("REVERSED", "Reversed", "pump water", &[]),
+        note("SEPARATED", "Separated", "water for the pump", &[]),
+        // "water" ends one stored value and "pump" starts the next.
+        note("SPLIT", "pump station", "fresh water", &["clean water", "pump house"]),
+    ];
+    backend.index_documents(&mapping, &docs).unwrap();
+    let mappings = vec![Arc::new(mapping.clone())];
+    let ids = |text: &str| -> Vec<String> {
+        let page = backend
+            .search(&mappings, &SearchRequest::new(parse_query_string(text).unwrap()))
+            .unwrap();
+        let mut ids: Vec<String> = page.hits.iter().map(|hit| hit.id.clone()).collect();
+        ids.sort();
+        ids
+    };
+
+    assert_eq!(ids("noteText:\"water pump\""), vec!["ADJACENT"], "adjacent, in order, any case");
+    assert_eq!(ids("noteText:\"pump water\""), vec!["REVERSED"], "order matters");
+    assert_eq!(ids("noteText:\"for the pump\""), vec!["SEPARATED"], "stop words are kept");
+    assert_eq!(ids("noteText:\"the water pump\""), vec!["ADJACENT"]);
+    assert_eq!(ids("\"water pump\""), vec!["ADJACENT"], "every field: not across stored values");
+    assert_eq!(ids("\"pump house\""), vec!["SPLIT"], "a child value");
+    assert_eq!(ids("lines.lineText:\"water pump\""), Vec::<String>::new(), "not across child elements");
+    assert_eq!(ids("noteText:water AND noteText:pump"), vec!["ADJACENT", "REVERSED", "SEPARATED"]);
+
+    // Highlight marks the phrase where its words are next to each other, not each word alone.
+    let mut highlighted = SearchRequest::new(parse_query_string("\"water pump\"").unwrap());
+    highlighted.highlight = vec!["noteText".into(), "title".into()];
+    let page = backend.search(&mappings, &highlighted).unwrap();
+    assert_eq!(page.hits.len(), 1);
+    assert_eq!(
+        page.hits[0].highlights["noteText"],
+        vec!["The <em>Water</em> <em>Pump</em> is industrial".to_string()]
+    );
+    assert!(
+        !page.hits[0].highlights.contains_key("title"),
+        "Pump Notes has no water before pump"
+    );
+
     backend.drop_index(&mapping).unwrap();
 }
 

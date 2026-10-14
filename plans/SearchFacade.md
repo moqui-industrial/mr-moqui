@@ -147,7 +147,7 @@ FieldOp = Eq | In | Prefix | Wildcard | Range | Exists
 
 Scripts pass the same tree as maps: `"match_all"`, `{text: {terms, fields: "all" | [names], match}}`, `{field: {name, op, value, values, gt, gte, lt, lte, negate}}`, `{bool: {all, any, none, min_any}}`, `{child: {path, query}}`. A string in that place is a query string.
 
-`Text` is the scored clause. It replaces `elasticQueryAutoWildcard` and `*:`. An empty text query matches every document. `Phrase` preserves term order and adjacency after configured text analysis; quoted query-string input compiles to this variant. PostgreSQL compiles it with `phraseto_tsquery`, and OpenSearch uses an equivalent phrase query. Golden tests distinguish adjacent, reversed, and separated terms, including stop-word handling.
+`Text` is the scored clause. It replaces `elasticQueryAutoWildcard` and `*:`. An empty text query matches every document. `Phrase` preserves term order and adjacency after configured text analysis; quoted query-string input compiles to this variant. PostgreSQL compiles it with `phraseto_tsquery`, and OpenSearch uses an equivalent phrase query. Golden tests distinguish adjacent, reversed, and separated terms, including stop-word handling. `simple` keeps stop words, as Elastic's `standard` analyzer does. A phrase does not run from one stored value into the next, on the root, across fields, or across child elements: `jsonb_to_tsvector` leaves a position gap between values. Highlights mark a phrase's words only where they are adjacent.
 
 How a clause matches depends on the field's kind. That is the Elastic behavior for `text` and `keyword` mappings, and the screens rely on it:
 
@@ -293,7 +293,7 @@ Feed registration is transactional; document assembly and indexing remain eventu
 
 The baseline `Query`, `Agg`, sorting, highlighting, exact totals, and offset/limit paging above remain authoritative. Universal search uses `Text`, `Field`, `Child`, and `aggregate` through that contract; it does not send raw SQL or PostgreSQL query strings around the facade parser. OpenSearch remains optional, with one active backend and no dual indexing.
 
-Additional universal-search goals are typo recovery, proximity, relevance boosting, optional semantic/vector retrieval, hybrid reciprocal rank fusion (RRF), and multilingual analysis. These require explicit, opt-in facade capability extensions before an application exposes them. They are not silently new meanings for `Text` or query-time scripts. Define the typed inputs, ranking/filter semantics, and backend support for each extension; unsupported modes return a clear capability error, not a hidden fallback or a second backend. Existing lexical search works without embeddings or a hosted inference service. The initial English analysis and existing `ts_rank` behavior stay the defaults; multilingual configuration waits on a non-English corpus.
+Additional universal-search goals are typo recovery, proximity, relevance boosting, optional semantic/vector retrieval, hybrid reciprocal rank fusion (RRF), and multilingual analysis. These require explicit, opt-in facade capability extensions before an application exposes them. They are not silently new meanings for `Text` or query-time scripts. Define the typed inputs, ranking/filter semantics, and backend support for each extension; unsupported modes return a clear capability error, not a hidden fallback or a second backend. Existing lexical search works without embeddings or a hosted inference service. The `simple` text configuration and existing `ts_rank` behavior stay the defaults; language-specific and multilingual configuration waits on a corpus that needs it.
 
 For the PostgreSQL extensions, use independent indexed retrieval branches:
 
@@ -378,7 +378,7 @@ When the entity datasource is Postgres, embedded or external, the default is the
 
 Keep dependencies minimal: native PostgreSQL full-text/JSON operators, bundled `pg_trgm`, optional `unaccent` for accent folding, and optional community `pgvector` for semantic retrieval. No custom BM25 implementation or separate search engine is needed for the PostgreSQL path; the optional OpenSearch backend is unchanged.
 
-Configure accent folding with a custom text-search configuration placing `unaccent` before the stemming dictionary; installing the extension alone does not activate it. Later multilingual support must store the selected language/configuration with the document metadata and use matching index/query analysis. Configured dictionaries or `ts_rewrite` can handle synonyms. Do not change initial English behavior without corpus tests.
+Configure accent folding with a custom text-search configuration placing `unaccent` before the `simple` (or, later, stemming) dictionary; installing the extension alone does not activate it. Later multilingual support must store the selected language/configuration with the document metadata and use matching index/query analysis. Configured dictionaries or `ts_rewrite` can handle synonyms. Do not change the default `simple` behavior without corpus tests.
 
 When semantic search is enabled, add embedding storage and indexes to the relevant per-DataDocument store through `ensure_index`, not another universal table. One candidate representation is `halfvec(1024)` with a partial HNSW index using `halfvec_cosine_ops` where the embedding is non-null; model choice determines the actual dimensions and representation. Omit the vector extension, storage, index, and worker when disabled. Provision compatible extensions for embedded and external databases before enabling the feature; do not assume `pgvector` is bundled.
 
@@ -447,6 +447,8 @@ Each stored document carries `_indexed_at` (epoch millis), which a retention `de
 ```
 
 `backend` defaults to `postgres`. With no `postgres` element, tables live in the `search` schema of the entity Postgres, embedded or external. When the entity datasource is not Postgres, that default is a dedicated embedded cluster. With `backend="opensearch"` the cluster element is required and the Postgres search store is not opened.
+
+A `postgres` url uses TLS unless it carries `?sslmode=disable`, the same rule as the entity datasource's `sslmode`. A host that is an absolute path is a Unix socket directory.
 
 The optional `read-url` selects a physical replica of the search primary for reads only; it uses the configured credentials and a separate read-only pool. It never receives index/schema writes. Without it, reads use the primary. Primary fallback and bounded freshness waits follow Read replicas and freshness above.
 

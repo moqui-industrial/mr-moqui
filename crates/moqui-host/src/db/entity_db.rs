@@ -167,32 +167,56 @@ fn open_postgres(_conf: DatasourceConf) -> Result<EntityDb, Error> {
 
 #[cfg(feature = "postgres")]
 fn postgres_driver(conf: &DatasourceConf) -> Result<super::postgres::PostgresDriver, Error> {
+    let password = (!conf.password.is_empty()).then_some(conf.password.as_str());
+    postgres_server_driver(
+        &conf.user,
+        password,
+        &conf.database,
+        &conf.host,
+        conf.port.unwrap_or(POSTGRES_PORT),
+        conf.tls,
+    )
+}
+
+/// A driver for a Postgres server this process did not start: the entity datasource, a search
+/// `postgres` url, and its read replica. As in libpq, a host that is an absolute path is the
+/// server's Unix socket directory. Otherwise TCP, with TLS unless `tls` is false.
+///
+/// # Errors
+///
+/// Returns an error when the TLS configuration cannot be built.
+#[cfg(feature = "postgres")]
+pub fn postgres_server_driver(
+    user: &str,
+    password: Option<&str>,
+    database: &str,
+    host: &str,
+    port: u16,
+    tls: bool,
+) -> Result<super::postgres::PostgresDriver, Error> {
     use super::postgres::PostgresDriver;
 
-    let port = conf.port.unwrap_or(POSTGRES_PORT);
-    // As in libpq, a host that is an absolute path is the server's Unix socket directory.
     #[cfg(unix)]
-    let socket = conf.host.starts_with('/');
+    let socket = host.starts_with('/');
     #[cfg(not(unix))]
     let socket = false;
     let driver = if socket {
         #[cfg(unix)]
         {
-            PostgresDriver::unix_socket(&conf.user, &conf.database, &conf.host).port(port)
+            PostgresDriver::unix_socket(user, database, host).port(port)
         }
         #[cfg(not(unix))]
         {
             unreachable!("a socket host is unix only")
         }
-    } else if conf.tls {
-        PostgresDriver::external(&conf.user, &conf.database, &conf.host, port)?
+    } else if tls {
+        PostgresDriver::external(user, database, host, port)?
     } else {
-        PostgresDriver::tcp_no_tls(&conf.user, &conf.database, &conf.host, port)
+        PostgresDriver::tcp_no_tls(user, database, host, port)
     };
-    Ok(if conf.password.is_empty() {
-        driver
-    } else {
-        driver.password(&conf.password)
+    Ok(match password {
+        Some(password) => driver.password(password),
+        None => driver,
     })
 }
 

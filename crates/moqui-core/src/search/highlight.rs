@@ -134,22 +134,37 @@ fn words(text: &str) -> Vec<(usize, String)> {
 }
 
 fn mark(value: &str, terms: &[&Term]) -> Option<String> {
-    let mut out = String::with_capacity(value.len() + 16);
-    let mut last = 0;
-    let mut any = false;
-    for (start, word) in words(value) {
-        let lower = word.to_lowercase();
-        if terms.iter().any(|term| word_matches(term, &lower)) {
-            out.push_str(&value[last..start]);
-            out.push_str("<em>");
-            out.push_str(&word);
-            out.push_str("</em>");
-            last = start + word.len();
-            any = true;
+    let spans = words(value);
+    let lower: Vec<String> = spans.iter().map(|(_, word)| word.to_lowercase()).collect();
+    let mut marked = vec![false; spans.len()];
+    for term in terms {
+        if term.kind == TextMatch::Phrase && term.words.len() > 1 {
+            // Only where the phrase's words are next to each other, in order.
+            let len = term.words.len();
+            for start in 0..lower.len().saturating_sub(len - 1) {
+                if lower[start..start + len] == term.words[..] {
+                    marked[start..start + len].fill(true);
+                }
+            }
+        } else {
+            for (index, word) in lower.iter().enumerate() {
+                if word_matches(term, word) {
+                    marked[index] = true;
+                }
+            }
         }
     }
-    if !any {
+    if !marked.contains(&true) {
         return None;
+    }
+    let mut out = String::with_capacity(value.len() + 16);
+    let mut last = 0;
+    for ((start, word), _) in spans.iter().zip(&marked).filter(|(_, marked)| **marked) {
+        out.push_str(&value[last..*start]);
+        out.push_str("<em>");
+        out.push_str(word);
+        out.push_str("</em>");
+        last = start + word.len();
     }
     out.push_str(&value[last..]);
     Some(out)
@@ -188,5 +203,20 @@ mod tests {
         assert_eq!(out["combinedName"], vec!["<em>John</em> Smith".to_string()]);
         assert_eq!(out["contactMechs.city"], vec!["<em>Johnstown</em>".to_string()]);
         assert!(!out.contains_key("pseudoId"));
+    }
+
+    #[test]
+    fn marks_a_phrase_only_where_its_words_are_adjacent() {
+        let mut body = Document::new();
+        body.insert("noteText".into(), Value::string("Pump water, then the water pump"));
+        body.insert("title".into(), Value::string("Water and pump"));
+        let query = Query::text("water pump", TextMatch::Phrase);
+        let fields = vec!["noteText".to_string(), "title".to_string()];
+        let out = highlights(&query, &fields, &body);
+        assert_eq!(
+            out["noteText"],
+            vec!["Pump water, then the <em>water</em> <em>pump</em>".to_string()]
+        );
+        assert!(!out.contains_key("title"));
     }
 }

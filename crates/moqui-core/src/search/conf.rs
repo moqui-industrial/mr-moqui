@@ -128,12 +128,23 @@ fn attr(node: &MNode, name: &str) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-/// `postgresql://host:port/database` as host, port, and database. The port defaults to 5432.
+/// A search `postgres` url, read by [`parse_postgres_url`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PostgresUrl {
+    pub host: String,
+    pub port: u16,
+    pub database: String,
+    /// False only when the url says `sslmode=disable`, as the entity datasource reads `sslmode`.
+    pub tls: bool,
+}
+
+/// `postgresql://host:port/database[?sslmode=...]`. The port defaults to 5432, and TLS is on
+/// unless `sslmode` is `disable`.
 ///
 /// # Errors
 ///
 /// Returns an error when the url is not that form.
-pub fn parse_postgres_url(url: &str) -> Result<(String, u16, String), Error> {
+pub fn parse_postgres_url(url: &str) -> Result<PostgresUrl, Error> {
     let rest = url
         .strip_prefix("postgresql://")
         .or_else(|| url.strip_prefix("postgres://"))
@@ -143,11 +154,12 @@ pub fn parse_postgres_url(url: &str) -> Result<(String, u16, String), Error> {
                 "search postgres url {url} is not postgresql://host:port/database"
             ))
         })?;
-    let (authority, database) = rest
+    let (authority, path) = rest
         .split_once('/')
         .ok_or_else(|| Error::new(format!("search postgres url {url} has no database")))?;
     let authority = authority.rsplit('@').next().unwrap_or(authority);
-    let database = database.split(['?', '#']).next().unwrap_or(database);
+    let path = path.split('#').next().unwrap_or(path);
+    let (database, params) = path.split_once('?').unwrap_or((path, ""));
     let (host, port) = match authority.rsplit_once(':') {
         Some((host, port)) => (
             host,
@@ -161,7 +173,17 @@ pub fn parse_postgres_url(url: &str) -> Result<(String, u16, String), Error> {
             "search postgres url {url} needs a host and a database"
         )));
     }
-    Ok((host.to_string(), port, database.to_string()))
+    let sslmode = params
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(key, _)| key.eq_ignore_ascii_case("sslmode"))
+        .map_or("", |(_, value)| value);
+    Ok(PostgresUrl {
+        host: host.to_string(),
+        port,
+        database: database.to_string(),
+        tls: crate::entity::datasource::tls_wanted(sslmode),
+    })
 }
 
 #[cfg(test)]
@@ -188,13 +210,23 @@ mod tests {
 
     #[test]
     fn postgres_urls() {
+        let url = |host: &str, port, database: &str, tls| PostgresUrl {
+            host: host.to_string(),
+            port,
+            database: database.to_string(),
+            tls,
+        };
         assert_eq!(
             parse_postgres_url("postgresql://db.example:6432/search").unwrap(),
-            ("db.example".to_string(), 6432, "search".to_string())
+            url("db.example", 6432, "search", true)
         );
         assert_eq!(
             parse_postgres_url("jdbc:postgresql://u@db/moqui?ssl=true").unwrap(),
-            ("db".to_string(), 5432, "moqui".to_string())
+            url("db", 5432, "moqui", true)
+        );
+        assert_eq!(
+            parse_postgres_url("postgresql://127.0.0.1:5433/search?user=s&sslmode=disable").unwrap(),
+            url("127.0.0.1", 5433, "search", false)
         );
         assert!(parse_postgres_url("mysql://db/x").is_err());
     }

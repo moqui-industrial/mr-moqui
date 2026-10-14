@@ -219,7 +219,8 @@ fn port(text: &str) -> Result<Option<u16>, Error> {
         .map_err(|_| Error::new(format!("datasource port {text:?} is not a port")))
 }
 
-fn tls_wanted(mode: &str) -> bool {
+/// An `sslmode` value asks for TLS unless it is `disable` or `disabled`; empty asks for it.
+pub fn tls_wanted(mode: &str) -> bool {
     !matches!(mode.to_ascii_lowercase().as_str(), "disable" | "disabled")
 }
 

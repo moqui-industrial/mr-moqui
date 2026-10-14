@@ -96,11 +96,15 @@ pub fn attach_search(
 
 #[cfg(feature = "postgres")]
 fn external_tx(url: &str, user: Option<&str>, password: Option<&str>) -> Result<TransactionManager, Error> {
-    let (host, port, database) = moqui_core::search::conf::parse_postgres_url(url)?;
-    let mut driver = crate::db::postgres::PostgresDriver::external(user.unwrap_or("postgres"), database, host, port)?;
-    if let Some(password) = password {
-        driver = driver.password(password);
-    }
+    let url = moqui_core::search::conf::parse_postgres_url(url)?;
+    let driver = crate::db::entity_db::postgres_server_driver(
+        user.unwrap_or("postgres"),
+        password,
+        &url.database,
+        &url.host,
+        url.port,
+        url.tls,
+    )?;
     TransactionManager::new(Arc::new(driver), search_pool())
 }
 
