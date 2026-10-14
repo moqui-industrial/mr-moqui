@@ -56,6 +56,7 @@ These are rewrites whose meaning is the same in JavaScript, made only in express
 - `context + [..]` becomes `Object.assign({}, context, {..})`.
 - Elvis `a ?: b` becomes `a || b`.
 - EDI grammar files get a `.js` copy.
+- String-literal `equals`, simple casts, `.contains(` on known lists and strings, and empty `ArrayList`/`HashMap` constructors (the second iteration, below).
 - **New in this trial:** in a `condition` attribute, a name that is the `list` of an `entity-find` or `entity-find-related` in the same file becomes `(name?.length > 0)`, and `!name` becomes `!name?.length`.
   - An empty list is false in Groovy, but an object (always true) in JavaScript.
   - `?.length` works for an entity list, an array, and null.
@@ -100,7 +101,33 @@ Each kind below names where it came up. Port to plain JavaScript; do not add Jav
   - Seen in: `create#VariantProduct`.
 - **Data-file Groovy.** A `LocalizedMessage` template in `MantleUdmSetupData.xml` (`TimePeriodBaseNameTemplate`) used `padLeft`, `getYear()`, and a string regex split. It now uses `padStart`, `slice`, and a regex literal.
 
-Candidates for the converter next, by how often they came up and how safe the rewrite is: `'lit'.equals(x)` to `x === 'lit'`; `as String` and `as int` casts; `.contains(` to `.includes(` on names known to be lists; and `new HashSet(...)` / `new ArrayList(...)` of a literal list.
+The second iteration turned the safe ones of these into converter rules. See below.
+
+## Second iteration: more converter rules
+
+These rules were added and run on `mantle-usl`, in its own commit on the `mr-moqui` branch:
+
+- **`string-equals` (45):** `'lit'.equals(x)` becomes `'lit' === x`, and `chain.equals('lit')` becomes `chain === 'lit'`. Both are wrapped in parentheses unless they are already the whole of a parenthesized group, such as an `if (...)`.
+  - A Groovy `x.equals(..)` on null throws, where `===` is false.
+  - `.equals` with no string literal on either side is left alone.
+- **`cast` (44):**
+  - `x as String` becomes `x?.toString()`, which is null for null as in Groovy.
+  - `x as BigDecimal` becomes `(x == null ? null : toDecimal(x))`, and `x as int` (or `Integer`, `long`, `Long`) becomes `(x == null ? null : Math.trunc(toDecimal(x).toNumber()))`. These repeat the operand, so only a name chain is rewritten.
+  - Groovy's `as` binds more loosely than arithmetic and ordering (`a + b as String` casts the sum). So a cast is rewritten only when its operand begins after `(`, `,`, `[`, `{`, `?`, `:`, `=`, `==`, `!=`, `&&`, `||`, `;`, or `return`.
+  - The rest are left for review. The first run of this rule cast only the `b` of `a + b as String`; the spot check of the diff caught it.
+- **`list-includes` (0 in Mantle):** `.contains(` becomes `.includes(` on a string literal or a found list of the file. Mantle's `contains` calls are on sets and on strings held in variables, which this rule cannot see.
+- **`empty-collection` (12):** `new ArrayList()` becomes `[]`, and `new HashMap()` or `new LinkedHashMap()` becomes `{}`, with or without generics.
+
+The load is unchanged: all data, ECAs on, exit 0, 12 variants. Service expressions that fail to parse went from 532 to 503. Most of what remains are whole Groovy script blocks, each one failure. `moqui lint --groovy` idiom sites went from 2083 to 2050. The `equals` fixes do not show in either count: `'X'.equals(y)` parses as JavaScript and fails only when it runs.
+
+What is left needs a decision, not more safe rewrites:
+
+- Java collections used as collections: `new HashSet(..)` 90, `new TreeSet(..)` 42, `new ArrayList(..)` with contents, `.add(` 366, `.put(` 204, `.addAll(` 57, `.contains(` 86, and `*.` spreads 174.
+- JavaScript arrays, JavaScript `Set`, and Java's `Set` have different method shapes:
+  - `add`/`contains` on Java's `Set`; `add`/`has` and a `size` property on a JS `Set`; `push`/`includes` on an array.
+  - So rewriting call sites one by one needs the type at each call.
+- `plans/Architecture-Proposal.md` says JDK types such as `BigDecimal` and `TreeSet` are small host helpers with the same call shape. Following it would mean script globals `HashSet`, `TreeSet`, `ArrayList`, and `HashMap` with Java's methods. The converter would then only strip generics, and `*.name` could become `.map((it) => it.name)`.
+- That is a choice about the script environment, so it is noted here rather than made. The ports so far use plain JavaScript.
 
 ## Framework changes the trial needed
 

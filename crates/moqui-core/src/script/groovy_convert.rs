@@ -23,6 +23,12 @@
 //! - in a `condition` attribute, a name that is the `list` of an `entity-find` or `entity-find-related` in the same file
 //!   becomes `(name?.length > 0)`, and `!name` becomes `!name?.length`: an empty list is false in Groovy and an object
 //!   (always true) in JavaScript. `?.length` holds for an entity list, an array, and null;
+//! - `'lit'.equals(x)` and `x.equals('lit')` (a name chain) become `('lit' === x)` and `(x === 'lit')`;
+//! - `x as String` becomes `x?.toString()`; `x as BigDecimal` and `x as int` (or `Integer`, `long`, `Long`) of a name
+//!   chain become `(x == null ? null : toDecimal(x))` and `(x == null ? null : Math.trunc(toDecimal(x).toNumber()))`,
+//!   as a Groovy cast of null is null; a numeric cast of anything else is left for review;
+//! - `.contains(` becomes `.includes(` on a string literal or a name that is a found list of the file;
+//! - `new ArrayList()` becomes `[]`, and `new HashMap()` or `new LinkedHashMap()` becomes `{}` (generics or not);
 //! - an EDI grammar file (a `.groovy` file that is one list literal) gets a `.js` copy in JavaScript, and an XML
 //!   location that names the `.groovy` file names the `.js` one.
 //!
@@ -41,6 +47,10 @@ pub enum RewriteKind {
     ContextPlus,
     Elvis,
     EmptyList,
+    StringEquals,
+    Cast,
+    ListIncludes,
+    EmptyCollection,
     GrammarFile,
     GrammarLocation,
 }
@@ -52,6 +62,10 @@ impl RewriteKind {
             RewriteKind::ContextPlus => "context-plus",
             RewriteKind::Elvis => "elvis",
             RewriteKind::EmptyList => "empty-list",
+            RewriteKind::StringEquals => "string-equals",
+            RewriteKind::Cast => "cast",
+            RewriteKind::ListIncludes => "list-includes",
+            RewriteKind::EmptyCollection => "empty-collection",
             RewriteKind::GrammarFile => "grammar-file",
             RewriteKind::GrammarLocation => "grammar-location",
         }
@@ -84,6 +98,8 @@ pub struct FileConversion {
     pub text: String,
     pub rewrites: Vec<Rewrite>,
     pub left: Vec<Left>,
+    /// The found-list names of the file, which the list rewrites read.
+    pub lists: BTreeSet<String>,
 }
 
 /// The conversion of a tree.
@@ -112,6 +128,10 @@ impl ConvertReport {
             RewriteKind::ContextPlus,
             RewriteKind::Elvis,
             RewriteKind::EmptyList,
+            RewriteKind::StringEquals,
+            RewriteKind::Cast,
+            RewriteKind::ListIncludes,
+            RewriteKind::EmptyCollection,
             RewriteKind::GrammarFile,
             RewriteKind::GrammarLocation,
         ] {
@@ -189,6 +209,7 @@ pub fn convert_tree(roots: &[PathBuf], write: bool) -> Result<ConvertReport, Err
             }],
             text: converted,
             left: Vec::new(),
+            lists: BTreeSet::new(),
         });
     }
     for path in xml {
@@ -280,8 +301,11 @@ fn is_expression_attr(element: &str, attr: &str) -> bool {
 
 /// Convert the expression places of one XML file. The rest of the text is copied as it is.
 pub fn convert_xml(text: &str) -> FileConversion {
-    let mut file = FileConversion::default();
-    let lists = entity_find_lists(text);
+    let mut file = FileConversion {
+        lists: entity_find_lists(text),
+        ..FileConversion::default()
+    };
+    let lists = file.lists.clone();
     let mut out = String::with_capacity(text.len());
     let mut stack: Vec<String> = Vec::new();
     let bytes = text.as_bytes();
@@ -425,7 +449,7 @@ fn convert_place(file: &mut FileConversion, whole: &str, offset: usize, text: &s
 
 fn convert_expression_at(file: &mut FileConversion, whole: &str, offset: usize, text: &str) -> String {
     let line = line_of(whole, offset);
-    let (converted, kinds, left) = rewrite_expression(text);
+    let (converted, kinds, left) = rewrite_expression_with(text, &file.lists);
     for reason in left {
         file.left.push(Left {
             line,
@@ -442,6 +466,331 @@ fn convert_expression_at(file: &mut FileConversion, whole: &str, offset: usize, 
         });
     }
     converted
+}
+
+/// Byte ranges of the string literals of `text` (single, double, and triple quotes), so rewrites skip them.
+fn string_spans(text: &str) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut spans = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'\'' || byte == b'"' {
+            let triple = text[index..].starts_with(if byte == b'"' { "\"\"\"" } else { "\'\'\'" });
+            let (open, close) = if triple { (3, if byte == b'"' { "\"\"\"" } else { "\'\'\'" }) } else { (1, if byte == b'"' { "\"" } else { "'" }) };
+            let mut end = index + open;
+            loop {
+                match text[end..].find(close) {
+                    Some(at) if !triple && at > 0 && bytes[end + at - 1] == b'\\' => end += at + 1,
+                    Some(at) => {
+                        end += at + close.len();
+                        break;
+                    }
+                    None => {
+                        end = text.len();
+                        break;
+                    }
+                }
+            }
+            spans.push((index, end));
+            index = end;
+        } else {
+            index += 1;
+        }
+    }
+    spans
+}
+
+fn in_spans(spans: &[(usize, usize)], at: usize) -> bool {
+    spans.iter().any(|(start, end)| at >= *start && at < *end)
+}
+
+/// The start of the name chain (`a.b?.c`) that ends at `end`, if the text before `end` is one.
+fn chain_start(text: &str, end: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut start = end;
+    while start > 0 {
+        let byte = bytes[start - 1];
+        if is_ident(byte) || byte == b'.' || (byte == b'?' && start < end && bytes[start] == b'.') {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    let chain = &text[start..end];
+    let first = chain.as_bytes().first().copied()?;
+    if !(first.is_ascii_alphabetic() || first == b'_' || first == b'$') || chain.ends_with('.') || chain.ends_with('?') {
+        return None;
+    }
+    // A chain right after a `.`, `)` or `]` is the end of a longer expression; leave it.
+    if start > 0 && matches!(bytes[start - 1], b'.' | b')' | b']') {
+        return None;
+    }
+    Some(start)
+}
+
+/// `'lit'.equals(x)` to `('lit' === x)`, and `chain.equals('lit')` to `(chain === 'lit')`.
+fn string_equals(text: &str) -> (String, usize) {
+    let mut out = text.to_string();
+    let mut count = 0;
+    loop {
+        let spans = string_spans(&out);
+        let mut done = true;
+        for (start, end) in &spans {
+            let literal = &out[*start..*end];
+            if literal.contains("${") || literal.starts_with("\"\"\"") || literal.starts_with("\'\'\'") {
+                continue;
+            }
+            // 'lit'.equals(arg)
+            if out[*end..].starts_with(".equals(") {
+                let open = end + ".equals".len();
+                if let Some(close) = matching(&out, open, b'(', b')') {
+                    let arg = out[open + 1..close].trim().to_string();
+                    let compared = parenthesize(&out, *start, close + 1, &format!("{literal} === {arg}"));
+                    out = format!("{}{compared}{}", &out[..*start], &out[close + 1..]);
+                    count += 1;
+                    done = false;
+                    break;
+                }
+            }
+            // chain.equals('lit')
+            let before = &out[..*start];
+            if before.ends_with(".equals(") && out[*end..].trim_start().starts_with(')') {
+                let call = start - ".equals(".len();
+                if let Some(chain) = chain_start(&out, call) {
+                    let close = end + out[*end..].find(')').unwrap_or(0);
+                    let compared = parenthesize(&out, chain, close + 1, &format!("{} === {literal}", &out[chain..call]));
+                    out = format!("{}{compared}{}", &out[..chain], &out[close + 1..]);
+                    count += 1;
+                    done = false;
+                    break;
+                }
+            }
+        }
+        if done {
+            return (out, count);
+        }
+    }
+}
+
+/// `inner` in parentheses, unless the text it replaces (`start..end` of `text`) is already the whole of a parenthesized
+/// group, such as an `if (...)` condition.
+fn parenthesize(text: &str, start: usize, end: usize, inner: &str) -> String {
+    let wrapped = text[..start].trim_end().ends_with('(') && text[end..].trim_start().starts_with(')');
+    if wrapped {
+        inner.to_string()
+    } else {
+        format!("({inner})")
+    }
+}
+
+/// `x as String`, and the numeric casts of a name chain. See the module notes.
+fn casts(text: &str) -> (String, usize, usize) {
+    let mut out = text.to_string();
+    let mut count = 0;
+    let mut skipped = 0;
+    let mut from = 0;
+    loop {
+        let spans = string_spans(&out);
+        let Some(found) = find_cast(&out, from, &spans) else {
+            return (out, count, skipped);
+        };
+        let (as_at, type_end, kind) = found;
+        let before = out[..as_at].trim_end();
+        let operand_end = before.len();
+        let operand_start = if before.ends_with(')') {
+            let open = matching_back(&out, operand_end - 1, b'(', b')');
+            match open {
+                Some(open) => chain_start(&out, open).unwrap_or(open),
+                None => {
+                    from = type_end;
+                    continue;
+                }
+            }
+        } else {
+            match chain_start(&out, operand_end) {
+                Some(start) => start,
+                None => {
+                    from = type_end;
+                    continue;
+                }
+            }
+        };
+        // `as` binds looser than arithmetic and ordering in Groovy (`a + b as String` casts the sum), so the operand must
+        // start where an expression at that level starts.
+        if !starts_cast_operand(out[..operand_start].trim_end()) {
+            skipped += 1;
+            from = type_end;
+            continue;
+        }
+        let operand = out[operand_start..operand_end].to_string();
+        let simple = chain_start(&operand, operand.len()) == Some(0);
+        let replacement = match kind {
+            "String" => {
+                let wrapped = operand.starts_with('(') && matching(&operand, 0, b'(', b')') == Some(operand.len() - 1);
+                if simple || wrapped {
+                    format!("{operand}?.toString()")
+                } else {
+                    format!("({operand})?.toString()")
+                }
+            }
+            _ if !simple => {
+                skipped += 1;
+                from = type_end;
+                continue;
+            }
+            "BigDecimal" => parenthesize(
+                &out,
+                operand_start,
+                type_end,
+                &format!("{operand} == null ? null : toDecimal({operand})"),
+            ),
+            _ => parenthesize(
+                &out,
+                operand_start,
+                type_end,
+                &format!("{operand} == null ? null : Math.trunc(toDecimal({operand}).toNumber())"),
+            ),
+        };
+        out = format!("{}{replacement}{}", &out[..operand_start], &out[type_end..]);
+        from = operand_start + replacement.len();
+        count += 1;
+    }
+}
+
+/// True when text ending with `before` is followed by the start of an operand that a Groovy `as` covers whole: nothing,
+/// an opening bracket, a separator, an assignment or equality, a logical operator, or `return`.
+fn starts_cast_operand(before: &str) -> bool {
+    if before.is_empty() {
+        return true;
+    }
+    if before.ends_with("<=") || before.ends_with(">=") {
+        return false;
+    }
+    ["(", ",", "[", "{", "?", ":", "=", "&&", "||", ";", "return"]
+        .iter()
+        .any(|end| before.ends_with(end))
+}
+
+/// The next ` as TYPE` outside a string from `from`: where `as` starts, where the type ends, and the type.
+fn find_cast(text: &str, from: usize, spans: &[(usize, usize)]) -> Option<(usize, usize, &'static str)> {
+    let mut search = from;
+    while let Some(at) = text[search..].find(" as ") {
+        let as_at = search + at + 1;
+        search = as_at + 2;
+        if in_spans(spans, as_at) {
+            continue;
+        }
+        let rest = &text[as_at + 3..];
+        let trimmed = rest.trim_start();
+        let type_start = as_at + 3 + (rest.len() - trimmed.len());
+        for (name, kind) in [
+            ("BigDecimal", "BigDecimal"),
+            ("String", "String"),
+            ("Integer", "int"),
+            ("int", "int"),
+            ("Long", "int"),
+            ("long", "int"),
+        ] {
+            if trimmed.starts_with(name) {
+                let type_end = type_start + name.len();
+                let next = text.as_bytes().get(type_end).copied();
+                if next.is_some_and(|byte| is_ident(byte) || byte == b'[' || byte == b'.') {
+                    continue;
+                }
+                return Some((as_at, type_end, kind));
+            }
+        }
+    }
+    None
+}
+
+/// The opening bracket that matches the closing one at `close`, scanning back.
+fn matching_back(text: &str, close: usize, opening: u8, closing: u8) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut depth = 0usize;
+    let mut index = close + 1;
+    while index > 0 {
+        index -= 1;
+        if bytes[index] == closing {
+            depth += 1;
+        } else if bytes[index] == opening {
+            depth -= 1;
+            if depth == 0 {
+                return Some(index);
+            }
+        }
+    }
+    None
+}
+
+/// `.contains(` to `.includes(` on a string literal or a found list of the file.
+fn list_includes(text: &str, lists: &BTreeSet<String>) -> (String, usize) {
+    let spans = string_spans(text);
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    let mut count = 0;
+    let mut search = 0;
+    while let Some(at) = text[search..].find(".contains(") {
+        let at = search + at;
+        search = at + 1;
+        if in_spans(&spans, at) {
+            continue;
+        }
+        let literal = spans.iter().any(|(_, end)| *end == at);
+        let named = chain_start(text, at).is_some_and(|start| lists.contains(&text[start..at]));
+        if literal || named {
+            out.push_str(&text[last..at]);
+            out.push_str(".includes(");
+            last = at + ".contains(".len();
+            count += 1;
+        }
+    }
+    out.push_str(&text[last..]);
+    (out, count)
+}
+
+/// `new ArrayList()` to `[]`, `new HashMap()` and `new LinkedHashMap()` to `{}`, with or without generics.
+fn empty_collections(text: &str) -> (String, usize) {
+    let spans = string_spans(text);
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    let mut count = 0;
+    let mut search = 0;
+    while let Some(at) = text[search..].find("new ") {
+        let at = search + at;
+        search = at + 4;
+        if in_spans(&spans, at) || (at > 0 && is_ident(text.as_bytes()[at - 1])) {
+            continue;
+        }
+        let rest = &text[at + 4..];
+        let (name, empty) = if rest.starts_with("ArrayList") {
+            ("ArrayList", "[]")
+        } else if rest.starts_with("LinkedHashMap") {
+            ("LinkedHashMap", "{}")
+        } else if rest.starts_with("HashMap") {
+            ("HashMap", "{}")
+        } else {
+            continue;
+        };
+        let mut index = at + 4 + name.len();
+        if text[index..].starts_with('<') {
+            match matching(text, index, b'<', b'>') {
+                Some(close) => index = close + 1,
+                None => continue,
+            }
+        }
+        if !text[index..].starts_with("()") {
+            continue;
+        }
+        out.push_str(&text[last..at]);
+        out.push_str(empty);
+        last = index + 2;
+        search = last;
+        count += 1;
+    }
+    out.push_str(&text[last..]);
+    (out, count)
 }
 
 /// The `list` names of the `entity-find` and `entity-find-related` elements of a file: names that always hold a list.
@@ -560,6 +909,41 @@ fn dollar_spans(text: &str) -> Vec<(usize, usize)> {
 
 /// Rewrite one expression or script. Returns the text, what was rewritten, and why any place was left.
 pub fn rewrite_expression(text: &str) -> (String, Vec<RewriteKind>, Vec<&'static str>) {
+    rewrite_expression_with(text, &BTreeSet::new())
+}
+
+/// [`rewrite_expression`] knowing the found-list names of the file.
+pub fn rewrite_expression_with(text: &str, lists: &BTreeSet<String>) -> (String, Vec<RewriteKind>, Vec<&'static str>) {
+    let (text, mut kinds, mut left) = rewrite_core(text);
+    let mut current = text;
+    let (next, count) = string_equals(&current);
+    if count > 0 {
+        kinds.push(RewriteKind::StringEquals);
+    }
+    current = next;
+    let (next, count, skipped) = casts(&current);
+    if count > 0 {
+        kinds.push(RewriteKind::Cast);
+    }
+    if skipped > 0 {
+        left.push("cast of an expression that is not a name chain, or under a tighter operator");
+    }
+    current = next;
+    let (next, count) = list_includes(&current, lists);
+    if count > 0 {
+        kinds.push(RewriteKind::ListIncludes);
+    }
+    current = next;
+    let (next, count) = empty_collections(&current);
+    if count > 0 {
+        kinds.push(RewriteKind::EmptyCollection);
+    }
+    kinds.sort();
+    kinds.dedup();
+    (next, kinds, left)
+}
+
+fn rewrite_core(text: &str) -> (String, Vec<RewriteKind>, Vec<&'static str>) {
     let mut kinds = BTreeSet::new();
     let mut left = Vec::new();
     let (literals, maps, plus_left) = convert_literals_counted(text);
@@ -1099,5 +1483,30 @@ mod tests {
         assert!(converted.text.contains(r#"<if condition="!fooList?.length &amp;&amp; otherList">"#), "{}", converted.text);
         assert!(converted.text.contains(r#"<if condition="fooList.size() &gt; 1 || fooList[0] || 'fooList'">"#), "{}", converted.text);
         assert_eq!(converted.rewrites.iter().filter(|rewrite| rewrite.kinds == vec![RewriteKind::EmptyList]).count(), 2);
+    }
+
+    #[test]
+    fn string_equals_casts_includes_and_empty_collections() {
+        let lists: BTreeSet<String> = ["orderList".to_string()].into_iter().collect();
+        let rewrite = |text: &str| rewrite_expression_with(text, &lists).0;
+        assert_eq!(rewrite("'DEBIT'.equals(rootId) ? 'N' : 'Y'"), "('DEBIT' === rootId) ? 'N' : 'Y'");
+        assert_eq!(rewrite("party.partyTypeEnumId.equals(\"PtyPerson\")"), "(party.partyTypeEnumId === \"PtyPerson\")");
+        assert_eq!(rewrite("foo(a).equals('x')"), "foo(a).equals('x')", "not a name chain");
+        assert_eq!(rewrite("curYear as String"), "curYear?.toString()");
+        assert_eq!(rewrite("(curYear + 1) as String"), "(curYear + 1)?.toString()");
+        assert_eq!(rewrite("item.quantity as BigDecimal"), "(item.quantity == null ? null : toDecimal(item.quantity))");
+        assert_eq!(rewrite("x as int"), "(x == null ? null : Math.trunc(toDecimal(x).toNumber()))");
+        assert_eq!(rewrite("if ('A'.equals(x)) y"), "if ('A' === x) y", "already in parentheses");
+        assert_eq!(rewrite("(total as BigDecimal).add(1)"), "(total == null ? null : toDecimal(total)).add(1)");
+        assert_eq!(rewrite("'n' + count as String"), "'n' + count as String", "the sum is cast in Groovy");
+        assert_eq!(rewrite("x = count as String"), "x = count?.toString()");
+        let (text, _, left) = rewrite_expression_with("(a + b) as BigDecimal", &lists);
+        assert_eq!(text, "(a + b) as BigDecimal");
+        assert_eq!(left, vec!["cast of an expression that is not a name chain, or under a tighter operator"]);
+        assert_eq!(rewrite("'a as String'"), "'a as String'", "strings are left");
+        assert_eq!(rewrite("orderList.contains(id) || 'ab'.contains(c) || other.contains(d)"),
+            "orderList.includes(id) || 'ab'.includes(c) || other.contains(d)");
+        assert_eq!(rewrite("x = new ArrayList<String>(); m = new LinkedHashMap(); n = new HashMap(map)"),
+            "x = []; m = {}; n = new HashMap(map)");
     }
 }
