@@ -132,6 +132,9 @@ impl EntityList {
     pub fn values(&self) -> &[EntityValue] {
         &self.values
     }
+    pub fn into_values(self) -> Vec<EntityValue> {
+        self.values
+    }
 }
 
 impl EntityFacade {

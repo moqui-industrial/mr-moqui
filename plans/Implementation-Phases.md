@@ -650,7 +650,7 @@ Phase 11 was built in slices on branch `phase11`, then reviewed against the Java
   - Entity lists index, have `length`, and support `for...of`, `map`, `filter` and `forEach`.
   - A method name wins over a field name.
   - Reading an unknown name gives `undefined`, where Java throws. Writing one throws, and so does `.set`.
-  - `list[0]` is a copy, so `list[0].x = y` does not change the list. `plans/ContextObjects.md` has the rules.
+  - `list[0]` is the row of the list, so `list[0].x = y` and a `<set>` on an `<iterate>` entry change the list, as in Groovy. `plans/ContextObjects.md` has the rules.
 - **Artifact hits.**
   - Hits are counted when an artifact frame pops (`context/hits.rs`), not by a `tracing` subscriber.
   - The scheduler tick writes `ArtifactHit` and `ArtifactHitBin` on a reserve connection, and shutdown flushes what is left.

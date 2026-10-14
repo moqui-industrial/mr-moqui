@@ -251,7 +251,7 @@ impl HostFind {
             let list = take_find(&ctx, &self.inner)?
                 .list()
                 .map_err(|err| throw_lib(&ctx, &err))?;
-            Class::instance(ctx.clone(), HostList { inner: Arc::new(list) })
+            Class::instance(ctx.clone(), HostList::of_list(list))
         })
     }
 
@@ -478,16 +478,66 @@ fn define_on_receiver<'js>(atom: Atom<'js>, receiver: &JsValue<'js>, value: JsVa
     result
 }
 
+/// A find result as scripts and the context stack hold it. Each row is its own shared cell, so a field set through
+/// `list[0]`, `get`, `for...of` or an `<iterate>` entry is kept in the list, as on a Java `List` of values. The rows are
+/// copied from the [`EntityList`] the find returned, so the entity cache's list is not changed.
+pub(crate) struct ScriptList {
+    cells: Vec<Arc<EntityCell>>,
+}
+
+impl ScriptList {
+    pub(crate) fn of_list(list: EntityList) -> Self {
+        Self::of_cells(
+            list.into_values()
+                .into_iter()
+                .map(|value| Arc::new(Mutex::new(value)))
+                .collect(),
+        )
+    }
+
+    pub(crate) fn of_cells(cells: Vec<Arc<EntityCell>>) -> Self {
+        Self { cells }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.cells.len()
+    }
+
+    pub(crate) fn cells(&self) -> &[Arc<EntityCell>] {
+        &self.cells
+    }
+
+    /// The rows as they are now.
+    pub(crate) fn values(&self) -> Vec<EntityValue> {
+        self.cells
+            .iter()
+            .map(|cell| cell.lock().unwrap_or_else(|err| err.into_inner()).clone())
+            .collect()
+    }
+}
+
 /// A find result. `length`, an index and `get` are what iterate and inline scripts use, and it is iterable as a
 /// Java `List` is to Groovy. The methods written in JavaScript are added by [`install_entity_prototypes`].
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class(exotic)]
 pub(super) struct HostList {
     #[qjs(skip_trace)]
-    pub(super) inner: Arc<EntityList>,
+    pub(super) inner: Arc<ScriptList>,
 }
 
 impl HostList {
+    pub(super) fn of_list(list: EntityList) -> Self {
+        Self {
+            inner: Arc::new(ScriptList::of_list(list)),
+        }
+    }
+
+    fn of_cells(cells: Vec<Arc<EntityCell>>) -> Self {
+        Self {
+            inner: Arc::new(ScriptList::of_cells(cells)),
+        }
+    }
+
     fn length(&self, ctx: &Ctx<'_>) -> rquickjs::Result<i32> {
         i32::try_from(self.inner.len()).map_err(|_| Exception::throw_message(ctx, "list is too long"))
     }
@@ -498,9 +548,10 @@ impl HostList {
         (index < self.inner.len() && index.to_string() == name).then_some(index)
     }
 
+    /// The row itself, not a copy: a field set on it is kept in the list.
     fn item<'js>(&self, ctx: &Ctx<'js>, index: usize) -> rquickjs::Result<JsValue<'js>> {
-        match self.inner.get(index) {
-            Some(value) => entity_to_js(ctx, HostEntity::new(value.clone())),
+        match self.inner.cells().get(index) {
+            Some(cell) => entity_to_js(ctx, HostEntity::of(Arc::clone(cell))),
             None => Null.into_js(ctx),
         }
     }
@@ -600,13 +651,9 @@ impl HostList {
         host_guard(&ctx, || {
             let start = usize::try_from(offset.max(0)).unwrap_or(0);
             let take = usize::try_from(size.max(0)).unwrap_or(0);
-            let values = self.inner.values().iter().skip(start).take(take).cloned().collect();
-            Class::instance(
-                ctx.clone(),
-                HostList {
-                    inner: Arc::new(EntityList::new(values)),
-                },
-            )
+            // The part shares the rows, as a Java sublist shares its elements.
+            let cells = self.inner.cells().iter().skip(start).take(take).cloned().collect();
+            Class::instance(ctx.clone(), HostList::of_cells(cells))
         })
     }
 
@@ -621,14 +668,15 @@ impl HostList {
         host_guard(&ctx, || {
             let valid = js_to_host(&ctx, &valid)?;
             let empty = moqui_lib::object::is_empty(&valid);
-            let values = if empty && ignore_if_empty.0.unwrap_or(false) {
-                self.inner.values().to_vec()
+            let cells = if empty && ignore_if_empty.0.unwrap_or(false) {
+                self.inner.cells().to_vec()
             } else {
                 let valid = if empty { now_timestamp() } else { timestamp_of(&valid) };
                 self.inner
-                    .values()
+                    .cells()
                     .iter()
-                    .filter(|row| {
+                    .filter(|cell| {
+                        let row = cell.lock().unwrap_or_else(|err| err.into_inner());
                         let from = timestamp_of(row.get(&from_name).unwrap_or(&Value::Null));
                         let thru = timestamp_of(row.get(&thru_name).unwrap_or(&Value::Null));
                         let started = from.is_null()
@@ -642,12 +690,7 @@ impl HostList {
                     .cloned()
                     .collect()
             };
-            Class::instance(
-                ctx.clone(),
-                HostList {
-                    inner: Arc::new(EntityList::new(values)),
-                },
-            )
+            Class::instance(ctx.clone(), HostList::of_cells(cells))
         })
     }
 }
@@ -743,7 +786,7 @@ impl HostEntity {
                     .related_find(ctx, name)?
                     .list()
                     .map_err(|err| throw_lib(ctx, &err))?;
-                Class::instance(ctx.clone(), HostList { inner: Arc::new(list) }).and_then(|class| class.into_js(ctx))
+                Class::instance(ctx.clone(), HostList::of_list(list)).and_then(|class| class.into_js(ctx))
             }
             Some(Member::Unknown) | None => Undefined.into_js(ctx),
         }
@@ -1005,7 +1048,7 @@ impl HostEntity {
                 }
             }
             let list = find.list().map_err(|err| throw_lib(&ctx, &err))?;
-            Class::instance(ctx.clone(), HostList { inner: Arc::new(list) })
+            Class::instance(ctx.clone(), HostList::of_list(list))
         })
     }
 
@@ -1304,6 +1347,71 @@ mod tests {
                     && JSON.parse(JSON.stringify(list))[1].enumId === "E2" && Object.keys(list).join() === "0,1,2";
             })()"#,
         );
+    }
+
+    #[test]
+    fn a_field_set_on_a_list_row_is_kept_in_the_list() {
+        let context = enumerations();
+        let _entered = context.enter();
+        seed();
+        holds(
+            r#"(() => {
+                const list = ec.entity.find("moqui.basic.Enumeration").orderBy("sequenceNum").list();
+                list[0].description = "changed";
+                list.get(1).description = "by get";
+                for (const value of list) value.enumCode = "C" + value.sequenceNum;
+                list.forEach((value) => { value.optionValue = "f"; });
+                const part = list.getPartialList(2, 1, false);
+                part[0].description = "by part";
+                return list[0].description === "changed" && list.get(1).description === "by get"
+                    && list[2].enumCode === "C3" && list[1].optionValue === "f" && list[2].description === "by part";
+            })()"#,
+        );
+        // the list kept on the context has the change, and the database and a new find do not
+        run_script(
+            r#"enums = ec.entity.find("moqui.basic.Enumeration").orderBy("sequenceNum").list(); enums[0].description = "kept""#,
+        )
+        .unwrap();
+        holds(r#"enums[0].description === "kept" && ec.context.get("enums")[0].description === "kept""#);
+        holds(r#"ec.entity.find("moqui.basic.Enumeration").condition("enumId", "E1").one().description === "first""#);
+    }
+
+    #[test]
+    fn a_cached_find_list_is_not_changed_by_a_script() {
+        let context = enumerations();
+        let _entered = context.enter();
+        seed();
+        holds(
+            r#"(() => {
+                const first = ec.entity.find("moqui.basic.Enumeration").condition("enumTypeId", "T1").orderBy("sequenceNum").useCache(true).list();
+                first[0].description = "scribbled";
+                const again = ec.entity.find("moqui.basic.Enumeration").condition("enumTypeId", "T1").orderBy("sequenceNum").useCache(true).list();
+                return again[0].description === "first";
+            })()"#,
+        );
+    }
+
+    #[test]
+    fn an_iterate_entry_is_the_row_of_the_list() {
+        let context = enumerations();
+        let _entered = context.enter();
+        seed();
+        crate::script::actions::run_actions(
+            r#"<actions>
+                <entity-find entity-name="moqui.basic.Enumeration" list="enumList"><order-by field-name="sequenceNum"/></entity-find>
+                <iterate list="enumList" entry="enumValue"><set field="enumValue.description" from="'it ' + enumValue.enumId"/></iterate>
+            </actions>"#,
+        )
+        .unwrap();
+        holds(r#"enumList[0].description === "it E1" && enumList[2].description === "it E3""#);
+    }
+
+    #[test]
+    fn a_map_list_read_through_context_get_keeps_its_writes() {
+        clear_context_stack();
+        run_script(r#"rows = [{a: 1}, {a: 2}]"#).unwrap();
+        run_script(r#"ec.context.get("rows")[0].a = 5; ec.context.get("rows").push({a: 3})"#).unwrap();
+        holds(r#"rows.length === 3 && rows[0].a === 5"#);
     }
 
     #[test]

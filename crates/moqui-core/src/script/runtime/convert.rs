@@ -52,8 +52,12 @@ pub(super) fn object_to_js<'js>(ctx: &Ctx<'js>, object: &HostObject) -> rquickjs
     if let Some(inner) = object.downcast::<EntityCell>() {
         return entity_to_js(ctx, HostEntity::of(inner));
     }
-    if let Some(inner) = object.downcast::<EntityList>() {
+    if let Some(inner) = object.downcast::<ScriptList>() {
         return Class::instance(ctx.clone(), HostList { inner }).and_then(|class| class.into_js(ctx));
+    }
+    if let Some(list) = object.downcast::<EntityList>() {
+        return Class::instance(ctx.clone(), HostList::of_list(EntityList::clone(&list)))
+            .and_then(|class| class.into_js(ctx));
     }
     if let Some(inner) = object.downcast::<crate::web::error_info::ErrorInfo>() {
         return Class::instance(ctx.clone(), HostErrorInfo { inner }).and_then(|class| class.into_js(ctx));

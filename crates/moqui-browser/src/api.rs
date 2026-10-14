@@ -183,6 +183,9 @@ fn map_json(values: &BTreeMap<String, Value>) -> Json {
 fn plain(value: &Value) -> Value {
     match value {
         Value::Object(object) => {
+            if let Some(rows) = moqui_core::script::script_list_values(value) {
+                return Value::List(rows.iter().map(entity_map).collect());
+            }
             if let Some(list) = object.downcast::<EntityList>() {
                 return Value::List(list.iter().map(entity_map).collect());
             }
