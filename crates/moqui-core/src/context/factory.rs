@@ -709,7 +709,7 @@ fn push_base64(out: &mut String, alphabet: &[u8], chunk: u32, count: usize) {
     }
 }
 
-pub(crate) fn append_env_secrets(path: &Path, pairs: &[(String, String)]) -> Result<(), Error> {
+fn append_env_secrets(path: &Path, pairs: &[(String, String)]) -> Result<(), Error> {
     if pairs.is_empty() {
         return Ok(());
     }

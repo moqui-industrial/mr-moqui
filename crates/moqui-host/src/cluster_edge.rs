@@ -14,7 +14,8 @@
 
 //! Cluster HTTPS listener and the blocking peer client.
 //!
-//! Empty `cluster_https_port` binds `127.0.0.1:8443`. `0` is ephemeral: the listener binds port 0
+//! Empty `cluster_https_port` is 8443 on `cluster_bind_address` (default `0.0.0.0`, so other hosts reach it; the
+//! listener takes only peers that present the cluster certificate). `0` is ephemeral: the listener binds port 0
 //! and [`ClusterEdge::address`] is the address the kernel chose. The public axum listener stays
 //! plain HTTP and does not ask for a client certificate.
 
@@ -40,8 +41,13 @@ use sha2::{Digest, Sha256};
 const DEFAULT_PORT: u16 = 8443;
 const BODY_LIMIT: usize = 1024 * 1024;
 const HEADER_LIMIT: usize = 16 * 1024;
+/// How often a connection with nothing to read checks whether the listener is stopping.
 const READ_IDLE: Duration = Duration::from_millis(250);
 const CLIENT_IO: Duration = Duration::from_secs(10);
+/// Connections served at once; one more is closed, and the peer's post tries again.
+const MAX_CONNECTIONS: usize = 64;
+/// Topics kept for [`ClusterEdge::posts`], newest last.
+const POSTS_KEPT: usize = 256;
 
 type HostError = moqui_lib::error::Error;
 type CoreError = moqui_core::context::Error;
@@ -50,6 +56,17 @@ struct Material {
     cert: Vec<u8>,
     key: Vec<u8>,
     digest: [u8; 32],
+}
+
+/// `cluster_bind_address`, else every interface: a member on another host must reach this one.
+fn bind_address() -> Result<IpAddr, HostError> {
+    let raw = moqui_lib::env::get_prop_or_env("cluster_bind_address");
+    if raw.trim().is_empty() {
+        return Ok(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+    }
+    raw.trim()
+        .parse()
+        .map_err(|_| HostError::new(format!("cluster_bind_address {raw} is not an IP address")))
 }
 
 /// `cluster_https_port`. Empty is 8443. `0` is ephemeral and is passed through to `bind`.
@@ -77,7 +94,7 @@ pub(crate) fn listen(factory: Arc<ExecutionContextFactory>) -> Result<ClusterEdg
     let material = load_material()?;
     let config = Arc::new(server_config(&material)?);
     let port = listen_port(&moqui_lib::env::get_prop_or_env("cluster_https_port"))?;
-    let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let bind = SocketAddr::from((bind_address()?, port));
     let listener = TcpListener::bind(bind).map_err(|err| HostError::new(format!("could not bind {bind}: {err}")))?;
     let address = listener
         .local_addr()
@@ -171,6 +188,20 @@ fn spawn_conn(
     joins: &Arc<Mutex<Vec<JoinHandle<()>>>>,
     stream: TcpStream,
 ) {
+    {
+        // Finished connections are joined as new ones come, so the list holds only the live ones.
+        let mut live = lock(joins);
+        let (done, running): (Vec<_>, Vec<_>) = std::mem::take(&mut *live).into_iter().partition(JoinHandle::is_finished);
+        *live = running;
+        drop(live);
+        for handle in done {
+            join_handle("cluster connection", handle);
+        }
+    }
+    if lock(joins).len() >= MAX_CONNECTIONS {
+        tracing::warn!("cluster listener is at {MAX_CONNECTIONS} connections; one was closed");
+        return;
+    }
     let config = Arc::clone(config);
     let factory = Arc::clone(factory);
     let posts = Arc::clone(posts);
@@ -201,14 +232,24 @@ fn serve_conn(
     let conn = rustls::ServerConnection::new(config).map_err(|err| err.to_string())?;
     let mut tls = rustls::StreamOwned::new(conn, stream);
     let mut buf = Vec::new();
+    // When a request began arriving: a pause inside one is waited out up to the client timeout, not refused.
+    let mut partial_since: Option<std::time::Instant> = None;
     while !stop.load(Ordering::SeqCst) {
         match read_exchange(&mut tls, &mut buf) {
             Ok(Some(exchange)) => {
+                partial_since = None;
                 let status = handle_exchange(&factory, &posts, &exchange);
                 write_status(&mut tls, status).map_err(|err| err.to_string())?;
             }
             Ok(None) => return Ok(()),
-            Err(IoFail::Timeout) => {}
+            Err(IoFail::Timeout) if buf.is_empty() => partial_since = None,
+            Err(IoFail::Timeout) => {
+                let since = *partial_since.get_or_insert_with(std::time::Instant::now);
+                if since.elapsed() > CLIENT_IO {
+                    let _ = write_status(&mut tls, 400);
+                    return Err("cluster request was incomplete".to_string());
+                }
+            }
             Err(IoFail::Closed) => return Ok(()),
             Err(IoFail::Bad(message)) => {
                 let _ = write_status(&mut tls, 400);
@@ -230,8 +271,14 @@ fn handle_exchange(factory: &Arc<ExecutionContextFactory>, posts: &Mutex<Vec<Str
             return 400;
         }
     };
-    // Count before apply so the peer's post returns with this request already visible.
-    lock(posts).push(topic.to_string());
+    // Count before apply so the peer's post returns with this request already visible. Only the newest are kept.
+    {
+        let mut kept = lock(posts);
+        if kept.len() >= POSTS_KEPT {
+            kept.remove(0);
+        }
+        kept.push(topic.to_string());
+    }
     apply_on_pool(factory, topic, message)
 }
 
@@ -470,12 +517,9 @@ fn read_some(stream: &mut impl Read, buf: &mut Vec<u8>) -> Result<usize, IoFail>
             buf.extend_from_slice(&tmp[..count]);
             Ok(count)
         }
+        // With part of a request read too, the connection loop decides how long it may wait.
         Err(err) if err.kind() == std::io::ErrorKind::TimedOut || err.kind() == std::io::ErrorKind::WouldBlock => {
-            if buf.is_empty() {
-                Err(IoFail::Timeout)
-            } else {
-                Err(IoFail::Bad("cluster request was incomplete".to_string()))
-            }
+            Err(IoFail::Timeout)
         }
         Err(err) if err.kind() == std::io::ErrorKind::Interrupted => read_some(stream, buf),
         Err(_) => Err(IoFail::Closed),

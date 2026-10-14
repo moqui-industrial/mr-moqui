@@ -40,6 +40,22 @@ The sender is a small trait. The default implementation is an HTTPS POST to `{ba
 
 A notification carries a message id so a retry does not deliver it twice.
 
+As built (`moqui-core/src/cluster`, `moqui-host/src/cluster_edge.rs`):
+
+- The publishing thread only queues the message (up to 10,000; past that a message is dropped and counted). One
+  sender thread takes what is waiting, sends one invalidation for each entity (a peer clears the entity's whole
+  cache for one), and posts each message to every live peer, trying three times with 100 ms and 500 ms waits. A peer
+  whose post failed every try is skipped for five seconds.
+- The live peers are kept, and read again on the heartbeat tick. A member that joins is posted to from the next tick
+  of each other member.
+- Heartbeats and the liveness check use the database's clock (`SELECT CURRENT_TIMESTAMP`), so members whose clocks
+  differ still see each other. A member row with no heartbeat for ten liveness windows is deleted.
+- The listener binds `cluster_bind_address`, default `0.0.0.0`, on `cluster_https_port` (8443). `cluster_base_url` is
+  how the others reach this member; its default `https://127.0.0.1:8443` is for one host only, and a cluster where a
+  live member has a loopback base URL logs an error.
+- A generated `instance_id` is written to `runtime/db/instance_id`, not to `runtime/.env`, so copying `.env` between
+  members does not give two members one id. An `instance_id` property still wins.
+
 Postgres `NOTIFY` can be another sender later, for peers that share the database and cannot open HTTPS to each other. It is not the default, and it is not specified further.
 
 ## Sessions

@@ -196,8 +196,10 @@ fn commit_posts_once_and_remote_apply_does_not_repost() {
     super::start(ctx.factory()).unwrap();
     assert_eq!(super::load_members(&facade).unwrap().len(), 2);
     write_visitor(&facade, "V1", false);
+    assert!(super::wait_for_sends(Duration::from_secs(5)));
     assert!(recording.calls.lock().unwrap_or_else(|err| err.into_inner()).is_empty());
     write_visitor(&facade, "V2", true);
+    assert!(super::wait_for_sends(Duration::from_secs(5)));
     let calls = recording.calls.lock().unwrap_or_else(|err| err.into_inner());
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].base, "https://peer.example:8443");
@@ -219,6 +221,7 @@ fn commit_posts_once_and_remote_apply_does_not_repost() {
     drop(calls);
     super::apply_remote(&facade, "entity-cache-invalidate", &message).unwrap();
     super::apply_remote(&facade, "entity-cache-invalidate", &message).unwrap();
+    assert!(super::wait_for_sends(Duration::from_secs(5)));
     assert_eq!(recording.calls.lock().unwrap_or_else(|err| err.into_inner()).len(), 1);
     let err = super::apply_remote(&facade, "not-a-topic", &message).unwrap_err();
     assert!(err.to_string().contains("unknown topic"));
@@ -293,6 +296,7 @@ fn a_stale_peer_is_not_posted() {
         &fingerprints.cert,
     );
     write_visitor(&facade, "V3", true);
+    assert!(super::wait_for_sends(Duration::from_secs(5)));
     assert!(recording.calls.lock().unwrap_or_else(|err| err.into_inner()).is_empty());
 }
 
@@ -355,6 +359,7 @@ fn a_sender_retries_three_times_and_an_always_failing_sender_does_not_panic() {
         &fingerprints.cert,
     );
     write_visitor(&facade, "RETRY-V4", true);
+    assert!(super::wait_for_sends(Duration::from_secs(5)));
     assert_eq!(scripted.calls.load(Ordering::SeqCst), 3);
 
     let always = Arc::new(Scripted {
@@ -364,10 +369,50 @@ fn a_sender_retries_three_times_and_an_always_failing_sender_does_not_panic() {
     });
     super::install_sender(Arc::clone(&always) as Arc<dyn Sender>);
     write_visitor(&facade, "RETRY-V5", true);
+    assert!(super::wait_for_sends(Duration::from_secs(5)));
     assert_eq!(always.calls.load(Ordering::SeqCst), 3);
 
     *super::sender_slot() = None;
     write_visitor(&facade, "RETRY-V6", true);
+    assert!(super::wait_for_sends(Duration::from_secs(5)));
+}
+
+#[test]
+fn many_writes_in_one_wait_reach_a_peer_as_one_invalidation_and_the_commit_does_not_wait() {
+    let _lock = lock();
+    let _clean = Clean;
+    preset("inst-batch");
+    let fingerprints = super::configured_fingerprints().unwrap();
+    // A peer that takes a while to answer: the commit returns long before the posts are done.
+    struct Slow(Mutex<Vec<String>>);
+    impl Sender for Slow {
+        fn post(&self, _base_url: &str, _topic: &str, payload: &[u8]) -> Result<(), Error> {
+            std::thread::sleep(Duration::from_millis(200));
+            self.0.lock().unwrap_or_else(|err| err.into_inner()).push(String::from_utf8_lossy(payload).to_string());
+            Ok(())
+        }
+    }
+    let slow = Arc::new(Slow(Mutex::new(Vec::new())));
+    super::install_sender(Arc::clone(&slow) as Arc<dyn Sender>);
+    let (ctx, facade) = open_facade();
+    let _entered = ctx.enter();
+    let _authz = ctx.disable_authz();
+    super::start(ctx.factory()).unwrap();
+    put_member(&facade, "inst-batch-peer", "https://batch.example:8443", now_value(), &fingerprints.session, &fingerprints.cert);
+    let started = std::time::Instant::now();
+    facade.begin("moqui.server.Visitor", None).unwrap();
+    for index in 0..200 {
+        let mut value = facade.make_value("moqui.server.Visitor").unwrap();
+        value.set("visitorId", Value::string(format!("BATCH-{index}")));
+        value.create(&facade).unwrap();
+    }
+    facade.commit("moqui.server.Visitor").unwrap();
+    assert!(started.elapsed() < Duration::from_secs(2), "the commit waited on the peer: {:?}", started.elapsed());
+    assert!(super::wait_for_sends(Duration::from_secs(10)));
+    let posted = slow.0.lock().unwrap_or_else(|err| err.into_inner());
+    let visitor_posts = posted.iter().filter(|text| text.contains("moqui.server.Visitor")).count();
+    // The first commit callback may be taken alone before the rest are queued; the rest arrive together.
+    assert!((1..=2).contains(&visitor_posts), "{visitor_posts} posts for 200 writes");
 }
 
 #[test]
@@ -402,7 +447,12 @@ fn cluster_tls_pair_is_stable_and_a_cert_without_a_key_fails() {
     let again = ExecutionContextFactory::boot_with_framework(temp.path(), &framework).unwrap();
     assert_eq!(env::get_prop_or_env("cluster_tls_cert"), cert);
     assert_eq!(env::get_prop_or_env("cluster_tls_key"), key);
-    assert_eq!(env::get_prop_or_env("instance_id"), instance);
+    // The instance id is the instance's own, in runtime/db, not in the .env the members share.
+    assert!(!std::fs::read_to_string(temp.path().join(".env")).unwrap().contains("instance_id"));
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("db/instance_id")).unwrap().trim(),
+        instance
+    );
     again.set_entity(crate::testing::open());
     super::start(&again).unwrap();
     assert_eq!(env::get_prop_or_env("instance_id"), instance);
@@ -426,7 +476,7 @@ fn cluster_tls_pair_is_stable_and_a_cert_without_a_key_fails() {
             .lines()
             .filter(|line| line.starts_with("instance_id="))
             .count(),
-        1
+        0
     );
     assert_consecutive_pair(&env_again);
     for name in again.property_names() {

@@ -112,11 +112,24 @@ fn notws_push_and_one_cluster_invalidation() {
     let (session_fp, cert_fp) = member_fingerprints(&factory);
     let port = server.cluster_address().port();
     insert_peer(&factory, &session_fp, &cert_fp, port);
+    // A member that joins is seen on the next heartbeat tick, which reads the member list again.
+    factory.service_pools().tick();
     let before = server.cluster_posts().len();
     create_test_entity(&factory);
+    // The post goes from the cluster sender thread after commit, not from the committing thread.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && server.cluster_posts().len() == before {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(100));
     let posts = server.cluster_posts();
     let added = &posts[before..];
-    assert_eq!(added, ["entity-cache-invalidate"], "posts {posts:?} before {before}");
+    // The tick that found the peer also wrote rows of its own, which go out as invalidations too; each entity is
+    // posted once (see the cluster tests), and nothing but invalidations was posted.
+    assert!(
+        !added.is_empty() && added.iter().all(|topic| topic == "entity-cache-invalidate"),
+        "posts {posts:?} before {before}"
+    );
 }
 
 fn prove_both_subscribed(factory: &Arc<ExecutionContextFactory>, user_id: &str, all: &mut Ws, other: &mut Ws) {
