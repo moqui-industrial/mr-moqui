@@ -15,7 +15,8 @@
 //! XML actions. One cached script per action XML text. Names in that script are bare.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+use std::rc::Rc;
 
 use moqui_lib::node::MNode;
 use rquickjs::{Ctx, Object};
@@ -32,7 +33,8 @@ const DEBUG_ENV: &str = "MOQUI_ACTIONS_DEBUG";
 const MAX_CACHED_SCRIPTS: usize = 4096;
 
 thread_local! {
-    static SCRIPTS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    static SCRIPTS: RefCell<super::bounded::BoundedMap<String, Rc<str>>> =
+        RefCell::new(super::bounded::BoundedMap::new(MAX_CACHED_SCRIPTS));
 }
 
 pub fn run_actions(actions: &str) -> Result<(), Error> {
@@ -61,20 +63,14 @@ pub fn check_actions(xml: &str) -> Result<(), Error> {
     super::parse::check_program(&source)
 }
 
-fn generated(xml: &str) -> Result<String, Error> {
-    let cached = SCRIPTS.with(|scripts| scripts.borrow().get(xml).cloned());
+fn generated(xml: &str) -> Result<Rc<str>, Error> {
+    let cached = SCRIPTS.with(|scripts| scripts.borrow_mut().get(xml));
     if let Some(source) = cached {
         return Ok(source);
     }
-    let source = generate(xml)?;
-    SCRIPTS.with(|scripts| {
-        let mut scripts = scripts.borrow_mut();
-        // Dynamic action text would otherwise grow this without bound.
-        if scripts.len() >= MAX_CACHED_SCRIPTS {
-            scripts.clear();
-        }
-        scripts.insert(xml.to_string(), source.clone());
-    });
+    let source: Rc<str> = generate(xml)?.into();
+    // Dynamic action text is bounded by the map's cap.
+    SCRIPTS.with(|scripts| scripts.borrow_mut().insert(xml.to_string(), Rc::clone(&source)));
     Ok(source)
 }
 
@@ -502,6 +498,41 @@ mod tests {
 
     fn field_str(row: &EntityValue, name: &str) -> String {
         row.get(name).and_then(Value::as_str).unwrap_or("").to_string()
+    }
+
+    #[test]
+    fn a_cache_keeps_a_map_and_a_script_file_returns_its_value() {
+        let ctx = ExecutionContextFactory::test_context_with_conf(
+            r#"<moqui-conf><cache-list><cache name="l10n.message"/></cache-list></moqui-conf>"#,
+        );
+        let _guard = ctx.enter();
+        clear_context_stack();
+        run_actions(
+            r#"<actions><script>
+                const cache = ec.cache.getCache('l10n.message');
+                cache.put('mapKey', {count: 2, names: ['a', 'b']});
+                const back = cache.get('mapKey');
+                kept = back.count + back.names.length;
+            </script></actions>"#,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::script::runtime::context_value("kept").map(|value| moqui_lib::object::to_plain_string(&value)),
+            Some("4".to_string())
+        );
+
+        let dir = std::env::temp_dir().join(format!("moqui-script-value-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Answer.js");
+        std::fs::write(&file, "6 * 7").unwrap();
+        set_context_name("where", Value::string(file.to_string_lossy())).unwrap();
+        run_actions("<actions><script>answer = ec.resource.script(where)</script></actions>").unwrap();
+        assert_eq!(
+            crate::script::runtime::context_value("answer").map(|value| moqui_lib::object::to_plain_string(&value)),
+            Some("42".to_string())
+        );
+        clear_context_stack();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn open_facade() -> EntityFacade {

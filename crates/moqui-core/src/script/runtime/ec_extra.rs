@@ -122,7 +122,7 @@ fn resource_expression<'js>(
         flush_current(&ctx, false)?;
         let value = with_additional(&ctx, &map, || {
             with_widget_ec(&ctx, &expression, None, || {
-                eval_js::<JsValue>(&ctx, &as_expression(&expression))
+                eval_compiled::<JsValue>(&ctx, &as_expression(&expression), true)
             })
             .map_err(|err| Exception::throw_message(&ctx, err.message()))
         });
@@ -146,7 +146,7 @@ fn resource_condition<'js>(
         flush_current(&ctx, false)?;
         let holds = with_additional(&ctx, &map, || {
             let value = with_widget_ec(&ctx, &expression, None, || {
-                eval_js::<JsValue>(&ctx, &as_expression(&expression))
+                eval_compiled::<JsValue>(&ctx, &as_expression(&expression), true)
             })
             .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
             Ok(js_truthy(&value))

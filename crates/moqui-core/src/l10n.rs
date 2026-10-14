@@ -79,13 +79,13 @@ pub fn localize_in(original: &str, locale: &str) -> Result<String, Error> {
         .flatten();
     if let Some(cache) = &cache {
         if let Some(found) = cache.get(&key)? {
-            return Ok(found);
+            return Ok(moqui_lib::object::to_plain_string(&found));
         }
     }
     let (result, store) = lookup(original, locale);
     if store {
         if let Some(cache) = &cache {
-            cache.put(key, result.clone())?;
+            cache.put(key, Value::string(&result))?;
         }
     }
     Ok(result)

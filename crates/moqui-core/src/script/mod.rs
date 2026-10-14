@@ -15,6 +15,7 @@
 //! Script facade: server expressions and XML actions on QuickJS.
 
 mod actions;
+mod bounded;
 mod parse;
 mod runtime;
 pub mod screen_lint;
@@ -22,6 +23,7 @@ pub mod template;
 pub(crate) mod walker;
 
 pub use actions::{check_actions, run_actions};
+pub(crate) use bounded::BoundedMap;
 pub(crate) use parse::check_program;
 pub use parse::parse_js;
 #[cfg(test)]

@@ -39,6 +39,7 @@ use rquickjs::{
     Runtime, Undefined, Value as JsValue,
 };
 
+mod compiled;
 mod conditions;
 mod convert;
 mod decimal;
@@ -55,6 +56,7 @@ mod upload;
 mod urls;
 mod values;
 
+use compiled::{eval_compiled, MAX_COMPILED_SCRIPTS};
 use conditions::*;
 use convert::*;
 use decimal::*;
@@ -186,9 +188,11 @@ struct Engine {
     /// Lists and maps a running script read by bare name. The script mutates these objects, so
     /// they are written back to the stack at the end of the run and before a host call.
     tracked: RefCell<HashMap<String, Persistent<JsValue<'static>>>>,
-    templates: RefCell<HashMap<String, Persistent<Function<'static>>>>,
+    templates: RefCell<super::bounded::BoundedMap<String, Persistent<Function<'static>>>>,
+    /// Action scripts, conditions, and expressions compiled to bytecode, by text.
+    scripts: RefCell<super::bounded::BoundedMap<String, Persistent<JsValue<'static>>>>,
     /// Compiled screen units by unit id.
-    units: RefCell<HashMap<u64, Persistent<Function<'static>>>>,
+    units: RefCell<super::bounded::BoundedMap<u64, Persistent<Function<'static>>>>,
     /// Ids of the mode runtimes this engine has already run.
     runtimes: RefCell<std::collections::HashSet<u64>>,
     object_utilities: Persistent<Object<'static>>,
@@ -266,7 +270,7 @@ pub fn eval_condition(expression: &str) -> Result<bool, Error> {
     }
     with_context(|ctx| {
         with_widget_ec(ctx, expression, None, || {
-            let value = eval_js::<JsValue>(ctx, &as_expression(expression))?;
+            let value = eval_compiled::<JsValue>(ctx, &as_expression(expression), true)?;
             Ok(js_truthy(&value))
         })
     })
@@ -299,15 +303,7 @@ where
 /// The script is not strict. A strict function would reject bare assignment, and
 /// that assignment is how a plain value reaches the context stack.
 pub(super) fn eval_script(source: &str) -> Result<(), Error> {
-    with_context(|ctx| {
-        let mut options = EvalOptions::default();
-        options.strict = false;
-        options.global = true;
-        ctx.eval_with_options::<JsValue, _>(source, options)
-            .catch(ctx)
-            .map(|_| ())
-            .map_err(|caught| Error::new(caught.to_string()))
-    })
+    with_context(|ctx| eval_compiled::<JsValue>(ctx, source, false).map(|_| ()))
 }
 
 /// Same prefix rules as [`expand`], on the callback's context.
@@ -427,8 +423,9 @@ impl Engine {
         let helpers = context.with(|ctx| install_context(&ctx))?;
         Ok(Self {
             tracked: RefCell::new(HashMap::new()),
-            templates: RefCell::new(HashMap::new()),
-            units: RefCell::new(HashMap::new()),
+            templates: RefCell::new(super::bounded::BoundedMap::new(MAX_CACHED_TEMPLATES)),
+            scripts: RefCell::new(super::bounded::BoundedMap::new(MAX_COMPILED_SCRIPTS)),
+            units: RefCell::new(super::bounded::BoundedMap::new(MAX_CACHED_TEMPLATES)),
             runtimes: RefCell::new(std::collections::HashSet::new()),
             object_utilities: helpers.object_utilities,
             collection_utilities: helpers.collection_utilities,
@@ -666,7 +663,7 @@ pub(crate) fn run_template_function_here(ctx: &Ctx<'_>, source: &str) -> Result<
 }
 
 fn restore_template<'js>(ctx: &Ctx<'js>, template: &str) -> Result<Option<Function<'js>>, Error> {
-    let persistent = current_engine().and_then(|engine| engine.templates.borrow().get(template).cloned());
+    let persistent = current_engine().and_then(|engine| engine.templates.borrow_mut().get(template));
     let Some(persistent) = persistent else {
         return Ok(None);
     };
@@ -676,11 +673,7 @@ fn restore_template<'js>(ctx: &Ctx<'js>, template: &str) -> Result<Option<Functi
 fn save_template<'js>(ctx: &Ctx<'js>, template: &str, function: &Function<'js>) {
     let saved = Persistent::save(ctx, function.clone());
     if let Some(engine) = current_engine() {
-        let mut templates = engine.templates.borrow_mut();
-        if templates.len() >= MAX_CACHED_TEMPLATES {
-            templates.clear();
-        }
-        templates.insert(template.to_string(), saved);
+        engine.templates.borrow_mut().insert(template.to_string(), saved);
     }
 }
 
@@ -869,7 +862,7 @@ pub fn eval_value(expression: &str) -> Result<Value, Error> {
     }
     with_context(|ctx| {
         with_widget_ec(ctx, expression, None, || {
-            let evaluated = eval_js::<JsValue>(ctx, &as_expression(expression))?;
+            let evaluated = eval_compiled::<JsValue>(ctx, &as_expression(expression), true)?;
             js_value_to_host(ctx, &evaluated)
         })
     })
@@ -882,7 +875,7 @@ pub fn eval_map(expression: &str) -> Result<std::collections::BTreeMap<String, V
     }
     with_context(|ctx| {
         with_widget_ec(ctx, expression, None, || {
-            let evaluated = eval_js::<JsValue>(ctx, &as_expression(expression))?;
+            let evaluated = eval_compiled::<JsValue>(ctx, &as_expression(expression), true)?;
             object_map(ctx, &evaluated)
         })
     })
@@ -890,7 +883,7 @@ pub fn eval_map(expression: &str) -> Result<std::collections::BTreeMap<String, V
 
 #[cfg(test)]
 mod tests {
-    use super::{clear_context_stack, eval_condition, expand, push_context_frame, set_context_name};
+    use super::{clear_context_stack, context_value, eval_condition, expand, push_context_frame, run_script, set_context_name};
     use crate::context::Error;
     use moqui_lib::object::{basic_convert, Value};
 
@@ -960,6 +953,25 @@ mod tests {
         assert_eq!(expand("no dollars")?, "no dollars");
         assert_eq!(expand("trailing$")?, "trailing$");
         assert_eq!(expand("${big}")?, MAX_COEFFICIENT);
+        Ok(())
+    }
+
+    #[test]
+    fn a_compiled_script_runs_again_with_the_context_of_each_run() -> Result<(), Error> {
+        clear_context_stack();
+        set_context_name("n", Value::I32(1))?;
+        run_script("total = n * 10")?;
+        assert_eq!(context_value("total").map(|v| moqui_lib::object::to_plain_string(&v)), Some("10".to_string()));
+        set_context_name("n", Value::I32(4))?;
+        run_script("total = n * 10")?;
+        assert_eq!(context_value("total").map(|v| moqui_lib::object::to_plain_string(&v)), Some("40".to_string()));
+        assert!(eval_condition("n > 3")?);
+        set_context_name("n", Value::I32(2))?;
+        assert!(!eval_condition("n > 3")?);
+        let failed = run_script("this is not javascript").unwrap_err();
+        assert!(failed.message().contains("expecting"), "{}", failed.message());
+        let thrown = run_script("throw new Error('boom ' + n)").unwrap_err();
+        assert!(thrown.message().contains("boom 2"), "{}", thrown.message());
         Ok(())
     }
 }

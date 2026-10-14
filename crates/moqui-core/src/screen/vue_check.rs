@@ -17,7 +17,8 @@
 //! component. This is the check that "the qvt response is a component the Vue 3 compiler can compile" (Gate 3) runs
 //! for the fixture screens, and the compiler the server-static work compiles with.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::time::{Duration, Instant};
 
 use rquickjs::{CatchResultExt, Context, Runtime};
 
@@ -36,6 +37,10 @@ pub fn compile_errors(compiler_source: &str, templates: &[String]) -> Result<Vec
     let runtime = Runtime::new().map_err(|err| Error::new(err.to_string()))?;
     runtime.set_memory_limit(MEMORY_LIMIT);
     runtime.set_max_stack_size(STACK_LIMIT);
+    // A template that sends the compiler into a loop stops at the deadline instead of holding the worker.
+    runtime.set_interrupt_handler(Some(Box::new(|| {
+        COMPILE_DEADLINE.with(Cell::get).is_some_and(|at| Instant::now() >= at)
+    })));
     let context = Context::full(&runtime).map_err(|err| Error::new(err.to_string()))?;
     let list = serde_json::to_string(templates).map_err(|err| Error::new(err.to_string()))?;
     context.with(|ctx| {
@@ -66,7 +71,11 @@ struct Compiler {
 
 thread_local! {
     static COMPILER: RefCell<Option<(u64, Compiler)>> = const { RefCell::new(None) };
+    static COMPILE_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
 }
+
+/// How long one template compile may run.
+const COMPILE_TIME_LIMIT: Duration = Duration::from_secs(20);
 
 fn compiler_for(source: &str) -> Result<Compiler, Error> {
     let runtime = Runtime::new().map_err(|err| Error::new(err.to_string()))?;
@@ -81,11 +90,12 @@ fn compiler_for(source: &str) -> Result<Compiler, Error> {
     Ok(Compiler { context, runtime })
 }
 
+/// The whole compiler text, so an edited bundle of the same length starts a new runtime. Compiles are rare: once per
+/// screen definition that is server-static.
 fn source_key(source: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    source.len().hash(&mut hasher);
-    source.get(..64).hash(&mut hasher);
+    source.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -110,11 +120,14 @@ pub fn compile_render(compiler_source: &str, template: &str) -> Result<String, E
                 onError: function (err) {{ errors.push(err.code + ' ' + err.message + (err.loc ? ' at ' + err.loc.start.line + ':' + err.loc.start.column : '')); }} }});
                 return JSON.stringify({{ code: result.code, errors: errors }}); }})()"
         );
-        let json: String = compiler.context.with(|ctx| {
+        COMPILE_DEADLINE.with(|deadline| deadline.set(Some(Instant::now() + COMPILE_TIME_LIMIT)));
+        let json: Result<String, Error> = compiler.context.with(|ctx| {
             ctx.eval(script)
                 .catch(&ctx)
                 .map_err(|err| Error::new(format!("the Vue compiler failed: {err}")))
-        })?;
+        });
+        COMPILE_DEADLINE.with(|deadline| deadline.set(None));
+        let json = json?;
         let parsed: serde_json::Value = serde_json::from_str(&json).map_err(|err| Error::new(err.to_string()))?;
         let errors: Vec<String> = parsed["errors"]
             .as_array()

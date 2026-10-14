@@ -813,7 +813,11 @@ impl ExecutionContextFactory {
         pools: crate::service::ServicePools,
         framework_dir: PathBuf,
     ) -> ExecutionContext {
-        let conf = MNode::parse_text("test", "<moqui-conf/>").expect("conf");
+        // The conf's cache-list, when the test gives one, makes the named caches.
+        let conf = MNode::parse_text("test", conf_text)
+            .ok()
+            .filter(|root| root.name() == "moqui-conf")
+            .unwrap_or_else(|| MNode::parse_text("test", "<moqui-conf/>").expect("conf"));
         let entity = Arc::new(RwLock::new(None));
         let runtime_dir = PathBuf::from(".");
         let factory = Arc::new(Self {

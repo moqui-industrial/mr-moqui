@@ -21,7 +21,6 @@
 //! `plans/Architecture-Proposal.md`.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -287,7 +286,8 @@ pub fn check_template(source: &str) -> Result<(), Error> {
 /// The renderers registered in conf, by extension, and the compiled form of file templates.
 pub struct TemplateRegistry {
     by_extension: Vec<(String, Arc<dyn TemplateRenderer>)>,
-    files: Mutex<HashMap<String, (Option<i64>, String)>>,
+    /// The prepared text of a file template by location, with the stamp it was prepared at.
+    files: Mutex<super::bounded::BoundedMap<String, (i64, Arc<str>)>>,
 }
 
 impl TemplateRegistry {
@@ -329,12 +329,14 @@ impl TemplateRegistry {
         }
         Self {
             by_extension,
-            files: Mutex::new(HashMap::new()),
+            files: Mutex::new(super::bounded::BoundedMap::new(MAX_COMPILED)),
         }
     }
 
     /// The renderer for the longest registered extension `location` ends with.
     pub fn renderer_for(&self, location: &str) -> Option<Arc<dyn TemplateRenderer>> {
+        // A `#version` suffix names a version, not part of the file name.
+        let location = location.split('#').next().unwrap_or(location);
         let name = location.rsplit('/').next().unwrap_or(location);
         self.by_extension
             .iter()
@@ -360,23 +362,34 @@ impl TemplateRegistry {
             .renderer_for(location)
             .ok_or_else(|| Error::new(format!("no template renderer for location {location}")))?;
         let resource = factory.resource().get(location)?;
-        let modified = resource.last_modified();
+        // A file is kept by its modified time. A database or http resource has none, and its text is
+        // already in hand, so it is kept by a hash of that text: the markdown is not converted again.
+        let (stamp, source) = match resource.last_modified() {
+            Some(modified) => (modified, None),
+            None => {
+                let source = resource.read_text()?;
+                (text_stamp(&source), Some(source))
+            }
+        };
         let cached = self
             .files
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .get(location)
-            .filter(|(stamp, _)| *stamp == modified && modified.is_some())
-            .map(|(_, text)| text.clone());
+            .filter(|(kept, _)| *kept == stamp)
+            .map(|(_, text)| text);
         let text = match cached {
             Some(text) => text,
             None => {
-                let text = renderer.prepare(&resource.read_text()?)?;
-                let mut files = self.files.lock().unwrap_or_else(|err| err.into_inner());
-                if files.len() >= MAX_COMPILED {
-                    files.clear();
-                }
-                files.insert(location.to_string(), (modified, text.clone()));
+                let source = match source {
+                    Some(source) => source,
+                    None => resource.read_text()?,
+                };
+                let text: Arc<str> = renderer.prepare(&source)?.into();
+                self.files
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .insert(location.to_string(), (stamp, Arc::clone(&text)));
                 text
             }
         };
@@ -384,26 +397,35 @@ impl TemplateRegistry {
     }
 }
 
+/// A stamp for text with no modified time: FNV-1a of the bytes.
+fn text_stamp(text: &str) -> i64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    i64::from_ne_bytes(hash.to_ne_bytes())
+}
+
 // ---- cache of compiled functions, by source text ----
 
-type CompiledCache = Mutex<HashMap<(Escape, bool, String), Arc<str>>>;
+type CompiledCache = Mutex<super::bounded::BoundedMap<(Escape, bool, String), Arc<str>>>;
 
 fn cache() -> &'static CompiledCache {
     static CACHE: std::sync::OnceLock<CompiledCache> = std::sync::OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+    CACHE.get_or_init(|| Mutex::new(super::bounded::BoundedMap::new(MAX_COMPILED)))
 }
 
 fn compiled(source: &str, escape: Escape, scope: Scope) -> Result<Arc<str>, Error> {
     let key = (escape, scope == Scope::Snapshot, source.to_string());
     if let Some(found) = cache().lock().unwrap_or_else(|err| err.into_inner()).get(&key) {
-        return Ok(Arc::clone(found));
+        return Ok(found);
     }
     let made: Arc<str> = Arc::from(compile(source, escape, scope)?);
-    let mut guard = cache().lock().unwrap_or_else(|err| err.into_inner());
-    if guard.len() >= MAX_COMPILED {
-        guard.clear();
-    }
-    guard.insert(key, Arc::clone(&made));
+    cache()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .insert(key, Arc::clone(&made));
     Ok(made)
 }
 
@@ -808,7 +830,7 @@ globalThis.$scope = (data) => new Proxy(JSON.parse(data), {
 "#;
 
 struct Sandbox {
-    functions: RefCell<HashMap<String, Persistent<Function<'static>>>>,
+    functions: RefCell<super::bounded::BoundedMap<String, Persistent<Function<'static>>>>,
     context: Context,
     // The context borrows this runtime. Drop order frees the context first.
     #[allow(dead_code)]
@@ -844,7 +866,7 @@ impl Sandbox {
                 .map_err(|err| Error::new(err.to_string()))
         })?;
         Ok(Self {
-            functions: RefCell::new(HashMap::new()),
+            functions: RefCell::new(super::bounded::BoundedMap::new(MAX_COMPILED)),
             context,
             runtime,
         })
@@ -894,7 +916,7 @@ fn render_locked(compiled: &str, json: &str) -> Result<String, Error> {
         let previous = LOCKED_DEADLINE.with(Cell::get);
         LOCKED_DEADLINE.with(|deadline| deadline.set(Some(Instant::now() + LOCKED_TIME_LIMIT)));
         let result = sandbox.context.with(|ctx| {
-            let saved = sandbox.functions.borrow().get(compiled).cloned();
+            let saved = sandbox.functions.borrow_mut().get(compiled);
             let function = match saved {
                 Some(saved) => saved.restore(&ctx).map_err(js_error)?,
                 None => {
@@ -905,11 +927,10 @@ fn render_locked(compiled: &str, json: &str) -> Result<String, Error> {
                         .eval_with_options(compiled, options)
                         .catch(&ctx)
                         .map_err(|err| Error::new(err.to_string()))?;
-                    let mut functions = sandbox.functions.borrow_mut();
-                    if functions.len() >= MAX_COMPILED {
-                        functions.clear();
-                    }
-                    functions.insert(compiled.to_string(), Persistent::save(&ctx, function.clone()));
+                    sandbox
+                        .functions
+                        .borrow_mut()
+                        .insert(compiled.to_string(), Persistent::save(&ctx, function.clone()));
                     function
                 }
             };
