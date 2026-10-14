@@ -30,6 +30,10 @@ along with this software (see the LICENSE.md file). If not, see
         <!-- Java lists its Elastic clients; the search facade has one backend -->
         <set field="searchBackendName" from="ec.search.backendName()"/>
         <set field="searchAvailable" from="ec.search.isAvailable()"/>
+
+        <!-- request and clock values for the labels, so a server-static template reads them from the screen package -->
+        <set field="requestDetails" from="ec.web.getRequestDetails()"/>
+        <set field="nowText" from="ec.l10n.format(ec.user.nowTimestamp, null)"/>
     </actions>
     <widgets>
         <container-row><row-col md="6">
@@ -76,7 +80,7 @@ along with this software (see the LICENSE.md file). If not, see
         </row-col></container-row>
         <container-box id="SystemInformation"><box-header title="System Information"/><box-toolbar>
             <container-dialog id="RequestHeaders" button-text="Request Details">
-                <label text="${ec.web.getRequestDetails()}" type="pre"/>
+                <label text="${requestDetails}" type="pre"/>
             </container-dialog>
             <link url="threadList" text="Thread List"/>
         </box-toolbar><box-body>
@@ -85,7 +89,7 @@ along with this software (see the LICENSE.md file). If not, see
             </row-col><row-col sm="4">
                 <label text="Locale: ${ec.user.locale}" type="strong"/>
             </row-col><row-col sm="4">
-                <label text="Time: ${ec.l10n.format(ec.user.nowTimestamp, null)} ${ec.user.timeZone}" type="strong"/>
+                <label text="Time: ${nowText} ${ec.user.timeZone}" type="strong"/>
             </row-col></container-row>
             <container-row><row-col md="4">
                 <!-- Java shows the JVM heap, non-heap, and the runtime disk; the port shows the process memory -->

@@ -99,6 +99,8 @@ along with this software (see the LICENSE.md file). If not, see
                 if (!sfile.isDirectory() && sfile.fileName.endsWith(".zip") && sfile.getSize() > 0)
                     snapshotList.push({name: sfile.fileName, lastModified: sfile.getLastModified(), size: sfile.getSize()})
         ]]></script>
+        <!-- the clock is read here, so a server-static template reads it from the screen package -->
+        <set field="snapshotStamp" from="ec.l10n.format(ec.user.nowTimestamp, 'yyyyMMdd-HHmm')"/>
     </actions>
     <widgets>
         <container-dialog id="ExportDialog" button-text="Export Snapshot">
@@ -114,7 +116,7 @@ along with this software (see the LICENSE.md file). If not, see
                 </drop-down></default-field></field>
                 <field name="fromDate"><default-field><date-time minute-stepping="1"/></default-field></field>
                 <field name="thruDate"><default-field><date-time minute-stepping="1"/></default-field></field>
-                <field name="baseFilename"><default-field><text-line size="40" default-value="MoquiSnapshot-${ec.l10n.format(ec.user.nowTimestamp, 'yyyyMMdd-HHmm')}"/></default-field></field>
+                <field name="baseFilename"><default-field><text-line size="40" default-value="MoquiSnapshot-${snapshotStamp}"/></default-field></field>
                 <field name="fileType"><default-field>
                     <radio no-current-selected-key="XML"><option key="XML"/><option key="JSON"/><option key="CSV"/></radio>
                 </default-field></field>

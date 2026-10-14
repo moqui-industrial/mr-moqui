@@ -47,7 +47,11 @@ const EC_ALLOWED: &[(&str, &[&str])] = &[
         ],
     ),
     ("resource", &["expand", "expandNoL10n"]),
+    ("factory", &["moquiVersion"]),
 ];
+
+/// Utility calls the browser host has, the same pure functions as on the server.
+const UTILITIES_ALLOWED: &[(&str, &str)] = &[("StringUtilities", "camelCaseToPretty")];
 
 /// Methods of a decimal host value. A browser holds a decimal as a string, so a call to one of these is arithmetic the
 /// package cannot do.
@@ -128,10 +132,18 @@ fn check_path(path: &[String], found: &mut Vec<AstViolation>) {
             kind: "context",
             operation,
         }),
-        Some(name) if UTILITIES.contains(&name) => found.push(AstViolation {
-            kind: "utilities",
-            operation,
-        }),
+        Some(name) if UTILITIES.contains(&name) => {
+            let allowed = path.len() == 2
+                && UTILITIES_ALLOWED
+                    .iter()
+                    .any(|(object, method)| *object == name && path[1] == *method);
+            if !allowed {
+                found.push(AstViolation {
+                    kind: "utilities",
+                    operation,
+                });
+            }
+        }
         Some(name) if SERVER_GLOBALS.contains(&name) => found.push(AstViolation {
             kind: "server-global",
             operation,
@@ -213,6 +225,8 @@ mod tests {
             "Math.max(a, b) > 3 && !done",
             "`${a}-${b}`",
             "ec.resource.expand('x ${y}', {})",
+            "ec.factory.moquiVersion",
+            "StringUtilities.camelCaseToPretty(fieldName)",
         ] {
             assert!(operations(clean).is_empty(), "{clean}: {:?}", operations(clean));
         }
@@ -230,6 +244,10 @@ mod tests {
             ["utilities:ObjectUtilities.compareObj"]
         );
         assert_eq!(operations("context.foo"), ["context:context.foo"]);
+        assert_eq!(
+            operations("StringUtilities.prettyToCamelCase(a, true)"),
+            ["utilities:StringUtilities.prettyToCamelCase"]
+        );
         assert_eq!(
             operations("System.getProperty('a')"),
             ["server-global:System.getProperty"]

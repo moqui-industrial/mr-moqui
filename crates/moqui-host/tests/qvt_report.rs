@@ -52,19 +52,28 @@ fn the_report_over_every_screen_and_the_verdict_of_the_gate_3_fixture() {
     assert_eq!(fixture.mode, "qvt");
     assert!(fixture.render().contains("verdict clean"), "{}", fixture.render());
 
-    // Screens that read ec.entity, ec.web or ec.user.nowTimestamp in a widget say so, with the screen, the element and the operation.
-    let user = find("tools/screen/System/Security/UserAccount/UserAccountDetail.xml");
+    // A screen that reads a server-only part of ec in a widget says so, with the screen, the element and the operation.
+    let service = find("tools/screen/Tools/Service/ServiceDetail.xml");
     assert!(
-        user.violations
+        service
+            .violations
             .iter()
-            .any(|violation| violation.kind == "ec" && violation.detail.contains("ec.user.nowTimestamp")),
+            .any(|violation| violation.kind == "ec" && violation.detail.contains("ec.resource.getLocationText")),
         "{}",
-        user.render()
+        service.render()
     );
     assert!(
-        user.violations
+        service
+            .violations
             .iter()
-            .all(|violation| violation.screen.ends_with("UserAccountDetail.xml")),
+            .all(|violation| violation.screen.ends_with("ServiceDetail.xml")),
+        "{}",
+        service.render()
+    );
+    // Work moved into the actions is read from the package: UserAccountDetail reads its clock and permission there.
+    let user = find("tools/screen/System/Security/UserAccount/UserAccountDetail.xml");
+    assert!(
+        user.violations.iter().all(|violation| violation.kind != "ec"),
         "{}",
         user.render()
     );

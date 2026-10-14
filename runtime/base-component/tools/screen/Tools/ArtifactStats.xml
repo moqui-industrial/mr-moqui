@@ -30,10 +30,15 @@ along with this software (see the LICENSE.md file). If not, see
 
         <set field="serviceInfoList" from="ec.service.getAllServiceInfo(levels)"/>
         <set field="allRootScreenLocations" from="ec.screen.getAllRootScreenLocations()"/>
+
+        <!-- the counts the labels show, so a server-static template reads them from the screen package -->
+        <set field="eecaRuleCount" from="ec.entity.getEecaRuleCount()"/>
+        <set field="knownServiceCount" from="Array.from(ec.service.getKnownServiceNames()).length"/>
+        <set field="secaRuleCount" from="ec.service.getSecaRuleCount()"/>
     </actions>
     <widgets>
         <label text="Entity Stats" type="h3"/>
-        <label text="Entities: ${parseInt(entityCount, 10)}, View Entities: ${parseInt(viewEntityCount, 10)}, EECA rules: ${ec.entity.getEecaRuleCount()}" type="p"/>
+        <label text="Entities: ${parseInt(entityCount, 10)}, View Entities: ${parseInt(viewEntityCount, 10)}, EECA rules: ${eecaRuleCount}" type="p"/>
         <form-list name="EntityInfoList" list="entityInfoList" skip-form="true">
             <field name="name"><default-field><display/></default-field></field>
             <field name="entities"><default-field><display/></default-field></field>
@@ -41,7 +46,7 @@ along with this software (see the LICENSE.md file). If not, see
         </form-list>
 
         <label text="Service Stats" type="h3"/>
-        <label text="Services: ${Array.from(ec.service.getKnownServiceNames()).length}, SECA rules: ${ec.service.getSecaRuleCount()}" type="p"/>
+        <label text="Services: ${knownServiceCount}, SECA rules: ${secaRuleCount}" type="p"/>
         <form-list name="ServiceInfoList" list="serviceInfoList" skip-form="true">
             <field name="name"><default-field>
                 <link url="serviceReference" text="${name}" parameter-map="{serviceName:name}" link-type="anchor"/>

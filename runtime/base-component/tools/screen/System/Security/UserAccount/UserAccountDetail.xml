@@ -83,6 +83,8 @@ along with this software (see the LICENSE.md file). If not, see
 
     <actions>
         <entity-find-one entity-name="moqui.security.UserAccount" value-field="userAccount"/>
+        <!-- the permission check runs here, so a server-static template reads the flag from the screen package -->
+        <set field="canLoginAs" from="ec.user.hasPermission('ADMIN_LOGIN_AS') &amp;&amp; userAccount &amp;&amp; ec.user.username != userAccount.username"/>
 
         <set field="singleUseCodes" from="ec.web.sessionAttributes.remove('singleUseCodes')"/>
         <set field="localeStringList" from="[]"/>
@@ -109,6 +111,9 @@ along with this software (see the LICENSE.md file). If not, see
         <!-- only show SMS dialog if org.moqui.SmsServices.send#SmsMessage service is NOT from moqui-framework (on classpath) -->
         <set field="sendSmsLoc" from="ec.service.getServiceDefinition('org.moqui.SmsServices.send#SmsMessage')?.serviceNode?.fileLocation"/>
         <set field="isSmsActive" from="sendSmsLoc &amp;&amp; !sendSmsLoc.includes('classpath')"/>
+        <!-- the clock is read here, so a server-static template reads it from the screen package -->
+        <set field="nowStamp" from="ec.user.nowTimestamp"/>
+        <set field="yearOutStamp" from="ec.user.nowTimestamp + 365"/>
     </actions>
     <widgets>
         <container-row>
@@ -129,7 +134,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <link url="resetPassword" text="Reset Password" parameter-map="{userId:userAccount.userId}" condition="userAccount.emailAddress"
                         confirmation="Generate reset password and send by email to ${userAccount.emailAddress}?"/>
                 <link url="loginAs" text="Login As" confirmation="Login as ${userAccount.username}?"
-                        condition="ec.user.hasPermission('ADMIN_LOGIN_AS') &amp;&amp; ec.user.username != userAccount.username"
+                        condition="canLoginAs"
                         parameter-map="{loginAsUsername:userAccount.username}"/>
 
                 <container-dialog id="AuditLogDialog" button-text="Audit Log" width="960">
@@ -142,6 +147,11 @@ along with this software (see the LICENSE.md file). If not, see
                             <order-by field-name="-changedDate,pkSecondaryValue"/>
                         </entity-find>
 
+                        <!-- the values are formatted for each row on the server, so a server-static template reads them from the row -->
+                        <row-actions>
+                            <set field="oldValueDisplay" from="ec.entity.formatFieldString(changedEntityName, changedFieldName, oldValueText)"/>
+                            <set field="newValueDisplay" from="ec.entity.formatFieldString(changedEntityName, changedFieldName, newValueText)"/>
+                        </row-actions>
                         <field name="changedDate"><default-field title="Date"><display/></default-field></field>
                         <field name="changedByUserId"><default-field title="User">
                             <display-entity text="${userFullName || ''} [${username || userId || ''}]" entity-name="moqui.security.UserAccount" key-field-name="userId"/></default-field></field>
@@ -149,9 +159,9 @@ along with this software (see the LICENSE.md file). If not, see
                         <field name="changedFieldName"><default-field title="Field">
                             <display text="${StringUtilities.camelCaseToPretty(changedFieldName)}"/></default-field></field>
                         <field name="oldValueText"><default-field title="From">
-                            <display text="${ec.entity.formatFieldString(changedEntityName, changedFieldName, oldValueText)}"/></default-field></field>
+                            <display text="${oldValueDisplay}"/></default-field></field>
                         <field name="newValueText"><default-field title="To">
-                            <display text="${ec.entity.formatFieldString(changedEntityName, changedFieldName, newValueText)}"/></default-field></field>
+                            <display text="${newValueDisplay}"/></default-field></field>
                     </form-list>
                 </container-dialog>
                 <container-dialog id="TopicUserDialog" button-text="Topic Subscriptions">
@@ -218,7 +228,7 @@ along with this software (see the LICENSE.md file). If not, see
                                     </entity-options>
                                 </drop-down>
                             </default-field></field>
-                            <field name="fromDate" from="ec.user.nowTimestamp"><default-field><date-time/></default-field></field>
+                            <field name="fromDate" from="nowStamp"><default-field><date-time/></default-field></field>
                             <field name="submitButton"><default-field title="Add"><submit/></default-field></field>
                         </form-single>
                     </container-dialog>
@@ -315,20 +325,20 @@ along with this software (see the LICENSE.md file). If not, see
                         <container-dialog id="CreateTotpDialog" button-text="Add Authenticator App">
                             <form-single name="CreateUserAuthcFactorTotp" transition="createUserAuthcFactorTotp">
                                 <field name="userId"><default-field><hidden/></default-field></field>
-                                <field name="thruDate" from="ec.user.nowTimestamp + 365"><default-field><date-time/></default-field></field>
+                                <field name="thruDate" from="yearOutStamp"><default-field><date-time/></default-field></field>
                                 <field name="submitButton"><default-field title="Add"><submit/></default-field></field>
                             </form-single></container-dialog>
                         <container-dialog id="AddSingleUseDialog" button-text="Add Single Use Codes">
                             <form-single name="CreateUserAuthcFactorSingleUse" transition="createUserAuthcFactorSingleUse">
                                 <field name="userId"><default-field><hidden/></default-field></field>
-                                <field name="fromDate" from="ec.user.nowTimestamp + 365"><default-field><date-time/></default-field></field>
+                                <field name="fromDate" from="yearOutStamp"><default-field><date-time/></default-field></field>
                                 <field name="numberOfCodes"><default-field title="Number of Codes"><text-line size="5" default-value="1"/></default-field></field>
                                 <field name="submitButton"><default-field title="Add" ><submit/></default-field></field>
                             </form-single></container-dialog>
                         <container-dialog id="AddEmailFactor" button-text="Add Email Factor">
                             <form-single name="CreateUserAuthcFactorEmail" transition="createUserAuthcFactorEmail">
                                 <field name="userId"><default-field><hidden/></default-field></field>
-                                <field name="thruDate" from="ec.user.nowTimestamp + 365"><default-field><date-time/></default-field></field>
+                                <field name="thruDate" from="yearOutStamp"><default-field><date-time/></default-field></field>
                                 <field name="factorOption" from="userAccount.emailAddress"><default-field title="Email"><text-line size="40"/></default-field></field>
                                 <field name="submitButton"><default-field title="Add"><submit/></default-field></field>
                             </form-single>
@@ -336,7 +346,7 @@ along with this software (see the LICENSE.md file). If not, see
                         <container-dialog id="AddSmsFactor" button-text="Add SMS Factor" condition="isSmsActive">
                             <form-single name="CreateUserAuthcFactorSms" transition="createUserAuthcFactorSms">
                                 <field name="userId"><default-field><hidden/></default-field></field>
-                                <field name="thruDate" from="ec.user.nowTimestamp + 365"><default-field><date-time/></default-field></field>
+                                <field name="thruDate" from="yearOutStamp"><default-field><date-time/></default-field></field>
                                 <field name="factorOption"><default-field title="Phone (for SMS)"><text-line size="15"/></default-field></field>
                                 <field name="submitButton"><default-field title="Add"><submit/></default-field></field>
                             </form-single>
@@ -397,7 +407,7 @@ along with this software (see the LICENSE.md file). If not, see
             <field name="releaseDateTime"><default-field><display/></default-field></field>
             <field name="releaseNow"><default-field>
                 <link url="releaseTarpitNow" text="Release Now" parameter-map="{artifactTarpitLockId:artifactTarpitLockId}"
-                        condition="releaseDateTime &gt; ec.user.nowTimestamp"/>
+                        condition="releaseDateTime &gt; nowStamp"/>
             </default-field></field>
         </form-list>
     </widgets>

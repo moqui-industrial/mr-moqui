@@ -461,7 +461,8 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   when the screen names them, and the automatic subscreens-only case gets it for qvt only (a page of html holds the navbar of the user). `webapp_qvt_static_only=true` loads
   `vue.runtime.global.prod.js`, and waits for the `m-*` components and the shell to be precompiled before it can be used: they still have string templates.
   The report is `moqui lint --screens --qvt-static [report-file]` (one block for each screen file: location, mode, verdict, reasons and violations; it does not fail the
-  process) and `screen::statics::static_report` with `full` for the render with the wrapped `ec`. Over this tree 128 screens (measured 2026-10-14): 76 clean, 38 with violations, 14 stay a server
+  process) and `screen::statics::static_report` with `full` for the render with the wrapped `ec`. Over this tree 129 screens (measured 2026-10-14, after the browser host gained `ec.factory.moquiVersion` and
+  `StringUtilities.camelCaseToPretty` and the tools screens moved their permission checks, clock and lookups into actions): 88 clean, 27 with violations, 14 stay a server
   merge. `ArtifactGroupDetail` is clean, and Gate 3 marks it with a `screen-extend` in its own runtime.
 - **Slice 8, the Gate 3 harness.** `tests/gate3.rs` and `tests/gate3_browser.rs` share the seeded server in `tests/common/mod.rs`: one embedded
   Postgres, the seed load (framework files and each component's `data` directory, so the themes, pagination text and the tools app groups are

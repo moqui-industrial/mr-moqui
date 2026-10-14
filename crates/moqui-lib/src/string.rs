@@ -510,6 +510,13 @@ mod tests {
         );
         assert_eq!(camel_case_to_pretty("orderId"), "Order ID");
         assert_eq!(camel_case_to_pretty("foo.bar"), "Foo Bar");
+        // The browser copy in WebrootVue.qvt.js (qvt.StringUtilities) is checked against the same vectors.
+        assert_eq!(camel_case_to_pretty("productStoreId"), "Product Store ID");
+        assert_eq!(camel_case_to_pretty("toFieldNameAlias"), "To Field Name Alias");
+        assert_eq!(camel_case_to_pretty("aaAa"), "Aa");
+        assert_eq!(camel_case_to_pretty("item2Id"), "Item 2 ID");
+        assert_eq!(camel_case_to_pretty("#hash"), "Hash");
+        assert_eq!(camel_case_to_pretty(""), "");
         assert_eq!(pretty_to_camel_case("Order ID", false), "orderId");
         assert_eq!(pretty_to_camel_case("order id", true), "OrderId");
     }

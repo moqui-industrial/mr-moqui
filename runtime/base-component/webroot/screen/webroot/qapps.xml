@@ -58,7 +58,7 @@ along with this software (see the LICENSE.md file). If not, see
             navPlugins: sri.getThemeValues('STRT_HEADER_NAVBAR_COMP'), accountPlugins: sri.getThemeValues('STRT_HEADER_ACCOUNT_COMP'),
             qz: { enabled: qzEnabled },
             userAccount: { partyId: account.partyId || '', emailAddress: account.emailAddress || '', userFullName: account.userFullName || '' },
-            preferences: preferences,
+            preferences: preferences, moquiVersion: ec.factory.moquiVersion,
             qvt: { build: staticOnly ? 'runtime' : 'compiler', handles: staticOnly ? ['static-template'] : ['merged-fragment', 'static-template'] },
             labels: { sendCodeTo: ec.l10n.localize('Send code to') }
         }

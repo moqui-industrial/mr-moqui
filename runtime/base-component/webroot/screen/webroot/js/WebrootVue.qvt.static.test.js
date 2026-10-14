@@ -199,6 +199,21 @@ test("the restricted ec has the table of members and throws on anything else", (
     assert.equal(ec.then, undefined);
 });
 
+test("the browser utilities give what the server's do", () => {
+    setup();
+    // the same vectors as moqui_lib::string::camel_case_to_pretty
+    assert.equal(qvt.StringUtilities.camelCaseToPretty("orderId"), "Order ID");
+    assert.equal(qvt.StringUtilities.camelCaseToPretty("foo.bar"), "Foo Bar");
+    assert.equal(qvt.StringUtilities.camelCaseToPretty("productStoreId"), "Product Store ID");
+    assert.equal(qvt.StringUtilities.camelCaseToPretty("toFieldNameAlias"), "To Field Name Alias");
+    assert.equal(qvt.StringUtilities.camelCaseToPretty("aaAa"), "Aa");
+    assert.equal(qvt.StringUtilities.camelCaseToPretty("item2Id"), "Item 2 ID");
+    assert.equal(qvt.StringUtilities.camelCaseToPretty("#hash"), "Hash");
+    assert.equal(qvt.StringUtilities.camelCaseToPretty(""), "");
+    assert.equal(qvt.StringUtilities.camelCaseToPretty(null), "");
+    assert.equal(qvt.makeEc({ moquiVersion: "1.2.3" }).factory.moquiVersion, "1.2.3");
+});
+
 test("ec.resource.expand localizes the pattern, then reads the expressions from the table", () => {
     setup();
     moqui.l10n.setCatalog({ "Total ${sum} for ${who}": "Summe ${sum} fuer ${who}" });

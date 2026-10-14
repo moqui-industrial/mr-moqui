@@ -48,6 +48,8 @@ along with this software (see the LICENSE.md file). If not, see
         <entity-find entity-name="moqui.security.UserGroupMember" list="ugmList">
             <search-form-inputs default-order-by="userId"/>
             <econdition field-name="userGroupId"/></entity-find>
+        <!-- the clock is read here, so a server-static template reads it from the screen package -->
+        <set field="nowStamp" from="ec.user.nowTimestamp"/>
     </actions>
     <widgets>
         <container-dialog id="AddGroupMemberDialog" button-text="Add User">
@@ -56,7 +58,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <field name="userId"><default-field title="User">
                     <drop-down><dynamic-options transition="getUserList" server-search="true" min-length="2"/></drop-down>
                 </default-field></field>
-                <field name="fromDate" from="ec.user.nowTimestamp"><default-field><date-time/></default-field></field>
+                <field name="fromDate" from="nowStamp"><default-field><date-time/></default-field></field>
                 <field name="submitButton"><default-field title="Add"><submit/></default-field></field>
             </form-single>
         </container-dialog>

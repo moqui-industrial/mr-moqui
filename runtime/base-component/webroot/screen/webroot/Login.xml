@@ -158,13 +158,18 @@ along with this software (see the LICENSE.md file). If not, see
         <set field="minLength" from="ec.user.passwordRules.minLength"/>
         <set field="minDigits" from="ec.user.passwordRules.minDigits"/>
         <set field="minOthers" from="ec.user.passwordRules.minOthers"/>
+
+        <!-- the account checks the sections show by, read here so the widgets read flags -->
+        <set field="hasUserAccounts" from="ec.entity.find('moqui.security.UserAccount').disableAuthz().count() > 1"/>
+        <set field="hasTestLogin" from="ec.entity.find('moqui.security.UserAccount').condition('userId', 'EX_JOHN_DOE')
+            .condition('currentPassword', '16ac58bbfa332c1c55bd98b53e60720bfa90d394').disableAuthz().count() > 0"/>
     </actions>
     <widgets>
         <!-- NOTE: this screen is not under the apps screen, but uses similar header/footer/etc -->
         <container id="content" style="Login"><container style="inner">
             <render-mode><text type="html" location="component://webroot/screen/includes/Messages.html.fancy"/></render-mode>
 
-            <section name="NeedsSetupSection" condition="ec.entity.find('moqui.security.UserAccount').disableAuthz().count() > 1"><widgets>
+            <section name="NeedsSetupSection" condition="hasUserAccounts"><widgets>
                 <!-- primary scenario, main login screen -->
                 <render-mode><text type="html" location="component://webroot/screen/webroot/Login.html.fancy"/></render-mode>
             </widgets><fail-widgets>
@@ -188,8 +193,7 @@ along with this software (see the LICENSE.md file). If not, see
 
             <!-- TODO: very convenient for dev/testing and generally safe but adds some overhead in production, consider removing for large instances -->
             <section name="TestLoginSection">
-                <condition><expression>ec.entity.find('moqui.security.UserAccount').condition('userId', 'EX_JOHN_DOE')
-                    .condition('currentPassword', '16ac58bbfa332c1c55bd98b53e60720bfa90d394').disableAuthz().count()</expression></condition>
+                <condition><expression>hasTestLogin</expression></condition>
                 <widgets><render-mode><text type="html"><![CDATA[
                 <form method="post" action="${sri.buildUrl("login").url}" id="TestLoginLink">
                     <input type="hidden" name="username" value="john.doe">

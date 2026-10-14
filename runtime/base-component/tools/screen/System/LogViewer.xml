@@ -97,9 +97,10 @@ along with this software (see the LICENSE.md file). If not, see
         <form-list name="LogMessageDocuments" list="documentList" paginate="true" paginate-always-show="true" skip-form="true" show-page-size="true">
             <row-actions>
                 <set field="levelStyle" from="level == 'ERROR' ? 'text-danger' : (level == 'WARN' ? 'text-warning' : (level == 'INFO' ? 'text-success' : ''))"/>
+                <set field="timestampText" from="ec.l10n.format(basicConvert(ec.context.get('@timestamp'), 'java.sql.Timestamp'), 'yyyy-MM-dd HH:mm:ss.SSS')"/>
             </row-actions>
             <field name="@timestamp"><default-field container-style="text-nowrap ${levelStyle}">
-                <display text="${ec.l10n.format(basicConvert(ec.context.get('@timestamp'), 'java.sql.Timestamp'), 'yyyy-MM-dd HH:mm:ss.SSS')}" encode="false"/></default-field></field>
+                <display text="${timestampText}" encode="false"/></default-field></field>
             <field name="thread_name"><default-field title="thread_name" container-style="text-nowrap ${levelStyle}"><display text="${thread_name}(${thread_id}:${thread_priority})"/></default-field></field>
             <field name="level"><default-field title="level" container-style="${levelStyle}"><display/></default-field></field>
             <field name="source_host"><default-field title="source_host" container-style="text-nowrap ${levelStyle}"><display/></default-field></field>

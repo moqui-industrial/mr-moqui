@@ -314,6 +314,34 @@
         return scope;
     };
 
+    // The utility calls a server-static template may make: pure functions that give what the server's do (moqui_lib::string).
+    qvt.StringUtilities = {
+        // A part equal to "id" in any case becomes "ID"; ".", "#", a capital and a digit start a part; a part that repeats the one before is dropped.
+        camelCaseToPretty: (camel) => {
+            const text = camel === null || camel === undefined ? "" : String(camel);
+            const raw = [];
+            let current = "";
+            for (let i = 0; i < text.length; i++) {
+                const ch = text.charAt(i);
+                if (i > 0 && /[A-Z0-9.#]/.test(ch) && current) { raw.push(current); current = ""; }
+                current += ch;
+            }
+            if (current) raw.push(current);
+            const parts = [];
+            let last = null;
+            raw.forEach((piece) => {
+                let part = piece.charAt(0) === "." || piece.charAt(0) === "#" ? piece.substring(1) : piece;
+                if (!part) return;
+                if (part.charAt(0) !== part.charAt(0).toUpperCase()) part = part.charAt(0).toUpperCase() + part.substring(1);
+                if (part.toLowerCase() === "id") part = "ID";
+                if (part === last) return;
+                last = part;
+                parts.push(part);
+            });
+            return parts.join(" ");
+        }
+    };
+
     // The helpers a template calls as $mq: the few things an expression needs that are not in the language.
     const NUMBER_TEXT = /^[-+]?\d+(\.\d+)?$/;
     qvt.helpers = {
@@ -433,7 +461,7 @@
             return out;
         };
         const members = {
-            l10n, user,
+            l10n, user, factory: { moquiVersion: settings.moquiVersion || "" },
             resource: { expand: (text, expressions) => expand(text, expressions, true), expandNoL10n: (text, expressions) => expand(text, expressions, false) }
         };
         return new Proxy(members, {
@@ -449,7 +477,7 @@
     // The scope a screen is rendered with: its package, the host, and the instance for the names Vue itself gives a template.
     const rootScope = (vm, pkg) => {
         const fallback = new Proxy({}, { get: (target, key) => (typeof key === "string" && key.charAt(0) === "$" ? vm[key] : undefined), has: (target, key) => typeof key === "string" && key.charAt(0) === "$" });
-        const host = { ec: qvt.ec(), $mq: qvt.helpers };
+        const host = { ec: qvt.ec(), $mq: qvt.helpers, StringUtilities: qvt.StringUtilities };
         return qvt.makeScope(pkg, fallback, host);
     };
     qvt.ec = () => {

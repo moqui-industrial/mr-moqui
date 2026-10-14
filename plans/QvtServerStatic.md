@@ -87,11 +87,13 @@ The browser `ec` is a small object implemented in the qvt client runtime. It is 
 | `ec.user.userId`, `username`, `locale`, `timeZone` | The logged-in session. |
 | `ec.user.userAccount` | `partyId`, `emailAddress`, `userFullName`, plus the session locale and time zone. Credential columns (`currentPassword` and the other password fields) stay on the server. |
 | `ec.user.getPreference` | Reads a preference from the snapshot loaded with the session. |
+| `ec.factory.moquiVersion` | The version, from the session settings. |
+| `StringUtilities.camelCaseToPretty` | The same function as the server's (`moqui_lib::string`), checked against the same vectors. |
 | `ec.resource.expand` | Localizes a string under the server's length rule, then evaluates its expressions against the current scope plus the extra map argument. Those expressions run under this same restricted host. A string that calls `ec.entity` or `sri` throws the way a widget expression does. |
 
 Anything else read from `ec` throws in the browser. That includes `ec.entity`, `ec.web`, `ec.context`, `ec.resource` methods other than `expand`, `ec.user` methods other than the reads above, and `sri`. An expression that calls `ec.entity.find`, `ec.web.getRequest`, or `sri.buildUrl` is a screen bug for server-static mode. The fix is to move that work into actions, or into the package prep above, so the template reads a value that is already on the context.
 
-`ec.resource.expand` expands strings under the restricted host. It does not load resources, and it does not call the server to evaluate an expression. `ec.resource.getLocationText` stays unsupported.
+`ec.resource.expand` expands strings under the restricted host. It does not load resources, and it does not call the server to evaluate an expression. `ec.resource.getLocationText` stays unsupported. `ec.user.nowTimestamp` and `ec.user.hasPermission` stay outside the host. A package carries a timestamp as epoch milliseconds, so the browser would evaluate an expression such as `ec.user.nowTimestamp + 365` differently from the server. A permission snapshot in the browser is a security decision this plan does not take. A screen reads either one in its actions and shows the value from the package. The tools and webroot screens in this tree do that now: the tools dashboards, `ArtifactStats`, `MainEntityList`, `UserAccountDetail`, `GroupUsers`, `UserGroupDetail`, `DataSnapshot`, `Login` and `ChangePassword`.
 
 ## Compatibility check
 
