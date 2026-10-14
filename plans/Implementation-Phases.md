@@ -13,15 +13,15 @@ Mantle and the other application components stay outside this repository. They a
 1. **Data file load.** The entity facade and the service facade are already complete. Startup creates tables, framework seed XML loads, and a data-file element that names a service runs that service.
 2. **REST API request.** The HTTP edge and a basic screen facade run `rest.xml`. Entity REST and service REST are the facade methods from gate 1, called through a transition.
 3. **Screen rendering.** One real screen renders in every kept mode: `text`, `csv`, `xml`, `html-print`, `html`, `qvt`, plus the `qjs` and `qvue` companions. The name `xsl-fo` selects `html-print`. `vuet` is absent. Server-static `qvt` is the last slice of this gate.
-4. **Tools and utilities.** The other facades and tool services: search, mail transport, notifications, LLM and A2A, ETL, and the tool components. This is not a second pass over entity or service.
+4. **Tools and utilities.** The other facades and tool services: search, mail transport, notifications, system messages, entity sync, ETL, and the tool components. This is not a second pass over entity or service. LLM and A2A are phase 13, after this gate, and do not block it.
 
 ## Decisions
 
 - Build bottom-up. A facade is finished, including the features that would otherwise be left as a remainder, before any gate that depends on it. Gate 1 depends on the whole entity facade and the whole service facade.
 - The entity facade is one phase: definitions, SQL, CRUD, database metadata, view-entity, dynamic view, master definitions, entity cache, transaction cache, sim mode, `text-fts` (column, index, and `matches`), audit log, field encryption, localized fields, ECAs, the data loader, the data writer, and `EntityFacade.rest`. Document assembly and feed rules live here too. The index those feeds write is `SearchFacade`, which stays gate 4. Until that facade exists, feed dispatch inserts the pending row and the receive service records that search is not up. It leaves that row. It does not grow a second, temporary index.
 - The service facade is the next phase, after the entity facade and after the user and artifact-authz checks those calls enforce. It includes definitions, entity-auto, inline, script, the full XML action library, QuickJS, SECAs, email-ECA rules, `service-group`, local `async="true"`, service `callFuture()`, the scheduler and scheduled jobs, parameter validation, `RestApi`, and the remote REST runner. `async="distribute"` stays dropped, as the architecture proposal already decided. `callFuture()` is the same factory thread and new `ExecutionContext` as `async="true"`, plus a oneshot the caller waits on.
-- JSON-RPC is not included. Moqui's generic service endpoint (`rpc.xml`, `handleJsonRpcServiceCall`, service type `remote-json-rpc`, `callJsonRpc`, `send#SystemMessageJsonRpc`) was not used seriously, and its authorization semantics are a reason XML-configured REST exists. There is no dispatcher, no remote JSON-RPC runner, and no `/rpc` route. A service of type `remote-json-rpc` fails registration. Copied Java XML that names it stays in the tree and is not wired. The A2A protocol binding is a different wire format and stays in the phase 11 plan.
-- Tool services are not the service facade. Send-mail, search indexing, LLM, print, and system-message handling are gate 4 service bodies on top of a facade that can already call them. Email-ECA rules are the service facade. The `lettre` transport they eventually call is gate 4.
+- JSON-RPC is not included. Moqui's generic service endpoint (`rpc.xml`, `handleJsonRpcServiceCall`, service type `remote-json-rpc`, `callJsonRpc`, `send#SystemMessageJsonRpc`) was not used seriously, and its authorization semantics are a reason XML-configured REST exists. There is no dispatcher, no remote JSON-RPC runner, and no `/rpc` route. A service of type `remote-json-rpc` fails registration. Copied Java XML that names it stays in the tree and is not wired. The A2A protocol binding is a different wire format and stays in the phase 13 plan.
+- Tool services are not the service facade. Send-mail, search indexing, print, and system-message handling are gate 4 service bodies on top of a facade that can already call them. LLM service bodies are phase 13. Email-ECA rules are the service facade. The `lettre` transport they eventually call is gate 4.
 - XML actions are one JavaScript macro module and one QuickJS runner, inside the service facade, before gate 1. `JsTemplateLiteral` is part of that runner, because action text calls `ec.resource.expand()`. Screen transitions reuse the runner. There is no smaller action subset built only for the load gate. The fancy renderer and its locked-down variant land with screens.
 - The script host at the end of the service facade exposes `ec.entity`, `ec.service`, `ec.message`, `ec.logger`, `ec.resource`, `ec.user`, and the static helpers from `plans/ContextObjects.md`. `ec.web` and `sri` grow with the web and screen phases. The method list is the Server host methods section of `plans/ContextObjects.md`. This document says which facade must answer before which gate.
 - Before any Groovy `<script>` body or attribute expression is rewritten, and before screen macros are written, a mechanical pre-scan extracts those texts and classifies Elvis, empty collections, Groovy ranges, decimal arithmetic and `BigDecimal` method calls, decimal `==` and truthiness, decimal literals (Groovy decimal literals are `BigDecimal`; their scale and rounding are not JavaScript number behavior), closure idioms (`each`, `collect`, `find`, `any`, `every`), GString, the regex operators (`=~`, `==~`), Elvis on a method chain, and `catch` around an entity or service call, per file. The same toolkit extracts the translatable string call sites so the localization catalogs survive the migration, and its report is a per-expression before/after report that feeds the AI pass in `plans/Architecture-Proposal.md`. It is not a compatibility shim. It runs on Groovy source. Text that is already JavaScript is parsed by `oxc_parser` at definition load, in phase 6. mantle-usl is outside this repository. The same pass covers it before that migration is treated as ready. Counts already recorded as a review's counts are re-measured by that pass.
@@ -56,14 +56,15 @@ Mantle and the other application components stay outside this repository. They a
         Gate 3 — screen rendering
 9  SearchFacade, and the feed starts indexing
 10 mail transport, notifications
-11 LLM, A2A, and the other tools
+11 system messages, entity sync, user remainder, and the other tools
 12 PDF, later database drivers, and the tool components
         Gate 4 — tools and utilities
+13 LLM and A2A, once the Java side settles
 ```
 
 Inside phase 4 the entity code is still ordered bottom-up: definitions and SQL, then metadata, then the write-path features (cache, sim, full-text, ECA matching, loader and writer). ECA actions and data-file service elements call the service facade, so they are turned on at the end of phase 6, still before gate 1. That is the one cycle between the two facades. Entity is built first, with those callbacks stored and not yet run. Service is built second. The gate runs only after both sides of the callback exist.
 
-Phase 9 depends on gate 1 and can run beside phases 7 and 8. Phase 10's mail depends on the service facade. The notification WebSocket also needs the phase 7 session cookie. Neither waits on gate 3. An email body that is a screen uses the phase 8 renderers. Phase 11 needs the HTTP client from phase 6, the screen facade, and SearchFacade where a tool calls search. Phase 12's PDF needs the `html-print` render from gate 3. Later database drivers in phase 12 need only the `DbDriver` trait from phase 3.
+Phase 9 depends on gate 1 and can run beside phases 7 and 8. Phase 10's mail depends on the service facade. The notification WebSocket also needs the phase 7 session cookie. Neither waits on gate 3. An email body that is a screen uses the phase 8 renderers. Phase 11 needs the HTTP client from phase 6 for system messages and entity sync, and the phase 7 transitions (`/rest/sm`, `sendOtp`, `verifyOtp`). Phase 12's PDF needs the `html-print` render from gate 3. Later database drivers in phase 12 need only the `DbDriver` trait from phase 3. Phase 13 needs the HTTP client, the user facade, the screen facade for screen-search hints, and SearchFacade. It does not hold up gate 4.
 
 ## Phase 0 — Workspace and XML trees
 
@@ -575,12 +576,10 @@ Where it differs from Java:
   `a_notification_sent_on_the_server_shows_in_the_html_and_qapps_pages` (the login page has no socket; after sign in a
   `NotificationMessage` sent through the core API shows in `html` and in `/qapps`, and the console stays clean).
 
-## Phase 11 — LLM, A2A, and the other tools
+## Phase 11 — System messages, entity sync, user remainder, and the other tools
 
-Depends on the HTTP client, the user facade, and the screen facade for screen-search hints. Search-backed tools wait on phase 9. The LLM client sets the sim-allow exception on `RestClient`.
+Depends on the HTTP client and the user facade. LLM and A2A were split out of this phase into phase 13.
 
-- LLM client, conversation, protocols, and the tool loop, as the Java framework stands when the port begins. Host routes for the LLM endpoints. A stream stays in the host.
-- A2A routes in the host, following `../moqui/framework/plans/A2A-Server.md`. This document does not restate that plan. Streams do not hold an `ExecutionContext`.
 - ElFinder on the host, when the file API stays.
 - Artifact hit bins and the flush that writes them. The flush is a subscriber on the phase 2 artifact spans and runs as reserve-connection work on the scheduler tick. It still writes `ArtifactHit` and `ArtifactHitBin`, and the tools screens still read those tables.
 - System messages, a port of the Java services, no redesign. `queue#SystemMessage` inserts `SmsgProduced` in a new transaction (`force-new`), then `sendNow` (the default) submits `send#ProducedSystemMessage` as local async. Senders are the type's `sendServiceName`: REST or direct local. `send#SystemMessageJsonRpc` is not ported. Status moves `SmsgProduced` to `SmsgSending`, then `SmsgSent`, or back to the prior status on failure. `receive#IncomingSystemMessage` is the `/rest/sm` transition from phase 7. Consume runs the type's consume service. Ack uses `produceAckServiceName`. `reset#SystemMessageInError` puts an error row back to produced or received. The paused jobs `send_AllProducedSystemMessages_frequent` and `consume_AllReceivedSystemMessages_frequent` stay paused.
@@ -610,7 +609,10 @@ The gate is a checklist. Each item is its own test. Entity and service behavior 
 - SearchFacade indexes one data document on Postgres and a query returns it. The feed from phase 4 is the writer. An OpenSearch run is a second test. The default remains Postgres.
 - An email whose body is a screen renders in `text` and `html`, the subject is a `JsTemplateLiteral` expansion, and the send path accepts it. A test sink is enough. An email ECA that calls send uses that path.
 - A notification sent from a service arrives on the WebSocket for the same session the HTTP request used.
-- LLM and A2A cover the same cases as the current Java tests for those facades.
+- A system message is queued, sent, received, and consumed. An entity sync push and pull each complete with a history row.
+- A user logs in with TOTP and with an email second factor, and a password reset email goes through the test sink.
+- The flush writes artifact hit bins, and the tools screen reads them.
+- An ETL flat-XML extract loads entity rows, and an EDI document round-trips.
 - When `pdf-chromium-path` names a Chromium binary, one `html-print` document comes back as PDF bytes and a print-job record can hold them. When the binary is absent, the same call reports that PDF is not available, and the gate still passes.
 - Every entry in the tool-component list is either implemented or recorded as staying outside. `moqui-fop` is recorded as not ported.
 - A later database driver, when one is included in the build under test, runs the same metadata and insert smoke test as MySQL. A build that omits them still passes the gate.
@@ -618,6 +620,19 @@ The gate is a checklist. Each item is its own test. Entity and service behavior 
 - `/health` reports ready and `/metrics` reports the pool gauges.
 
 Scheduled jobs are a phase 6 test. Sim mode is a phase 4 test. They are not repeated on this checklist.
+
+## Phase 13 — LLM and A2A
+
+The LLM client, the agent and assist parts, and A2A are new in the Java framework and not yet stable. They are ported as the Java framework stands when this phase begins, not as it stood when the port began. They come after gate 4 and do not block it.
+
+Depends on the HTTP client, the user facade, the screen facade for screen-search hints, and SearchFacade. The LLM client sets the sim-allow exception on `RestClient`.
+
+- LLM client, conversation, protocols, and the tool loop. Host routes for the LLM endpoints. A stream stays in the host.
+- A2A routes in the host, following `../moqui/framework/plans/A2A-Server.md`. This document does not restate that plan. Streams do not hold an `ExecutionContext`.
+
+Until this phase, the copied XML (`LlmServices.xml`, `A2AServices.xml`, and the LLM and A2A parts of the tools component) stays in the tree and is not wired, as was done for JSON-RPC. A call to one of those services fails with an error that names the service. It does not quietly run nothing.
+
+Check: LLM and A2A cover the same cases as the Java tests for those facades at the time of the port.
 
 ## Tests
 
