@@ -38,11 +38,17 @@
         <link url="viewItem" text="View ${item.itemId}" link-type="anchor">
             <parameter name="itemId" from="item.itemId"/>
         </link>
-        <form-list name="ItemList" list="itemList" transition="saveItem">
+        <form-list name="ItemList" list="itemList" transition="saveItem" show-csv-button="true">
             <field name="itemId"><header-field show-order-by="true"/><default-field><display/></default-field></field>
             <field name="name"><default-field><text-line size="30"/></default-field></field>
             <field name="price" align="right"><default-field><display format="#,##0.00"/></default-field></field>
             <field name="go"><default-field title="Save"><submit/></default-field></field>
+        </form-list>
+        <!-- one form that posts every row, each row's fields under name_rowIndex -->
+        <form-list name="ItemMulti" list="itemList" transition="saveItem" multi="true">
+            <field name="itemId"><default-field><display/></default-field></field>
+            <field name="name"><default-field><text-line size="30"/></default-field></field>
+            <field name="go"><default-field title="Save All"><submit/></default-field></field>
         </form-list>
     </widgets>
 </screen>

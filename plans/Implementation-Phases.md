@@ -457,13 +457,12 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   `list-options` and `dynamic-options` without `server-search` are looked up on the server (`list-options` too, which the plan left in the template), and a `set` in a field runs
   there. Differences from the plan: credential names are stripped at any depth; `include-screen` is written inline in the including template (and its actions run in the
   package) instead of a child component; a static form-list leaves out sub-list fields and the total row (the report names screens that have them); first/second/last rows, row
-  selection, saved finds, the column picker, the csv, text and pdf buttons, a multi form and `button-menu` are not written in a static template; the non-qvt modes get the cache header
+  selection, the column picker and `button-menu` are not written in a static template (the find dialog, saved finds, the csv, xlsx, text and print exports and a multi form are); the non-qvt modes get the cache header
   when the screen names them, and the automatic subscreens-only case gets it for qvt only (a page of html holds the navbar of the user). `webapp_qvt_static_only=true` loads
   `vue.runtime.global.prod.js`, and waits for the `m-*` components and the shell to be precompiled before it can be used: they still have string templates.
   The report is `moqui lint --screens --qvt-static [report-file]` (one block for each screen file: location, mode, verdict, reasons and violations; it does not fail the
   process) and `screen::statics::static_report` with `full` for the render with the wrapped `ec`. Over this tree 129 screens (measured 2026-10-14, after the browser host gained `ec.factory.moquiVersion` and
-  `StringUtilities.camelCaseToPretty` and the tools screens moved their permission checks, clock and lookups into actions): 88 clean, 27 with violations, 14 stay a server
-  merge. `ArtifactGroupDetail` is clean, and Gate 3 marks it with a `screen-extend` in its own runtime.
+  `StringUtilities.camelCaseToPretty` and the tools screens moved their permission checks, clock and lookups into actions): 97 clean, 18 with violations, 14 stay a server merge, after the static form-list gained the find dialog, saved finds, the exports and a multi form. `ArtifactGroupDetail` is clean, and Gate 3 marks it with a `screen-extend` in its own runtime.
 - **Slice 8, the Gate 3 harness.** `tests/gate3.rs` and `tests/gate3_browser.rs` share the seeded server in `tests/common/mod.rs`: one embedded
   Postgres, the seed load (framework files and each component's `data` directory, so the themes, pagination text and the tools app groups are
   rows without a by-location load), the demo users, and three screens of the test runtime (`GateCompanion`, `GateWidgets` with click to edit,

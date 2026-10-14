@@ -163,6 +163,15 @@ return function render(_ctx, _cache) {
       action: "/Items/saveItem",
       "list-name": "itemList"
     }, {
+      nav: _withCtx((nv) => [
+        _createVNode(_component_q_btn, {
+          dense: "",
+          outline: "",
+          type: "a",
+          href: nv.exportUrl('csv'),
+          label: _ctx.ec.l10n.localize('CSV')
+        }, null, 8, ["href", "label"])
+      ]),
       header: _withCtx((hs) => [
         _createElementVNode("div", { class: "th text-left" }, [
           _createElementVNode("div", null, [
@@ -288,7 +297,93 @@ return function render(_ctx, _cache) {
         ])
       ]),
       _: 1
-    })
+    }),
+    _createVNode(_component_m_static_form_list, {
+      name: "ItemMulti",
+      id: "ItemMulti",
+      action: "/Items/saveItem",
+      "list-name": "itemList",
+      multi: "",
+      "row-initial": (_ctx) => ({'itemId':_ctx.$mq.str(_ctx.$scope['itemId']),'itemId_display':_ctx.$mq.str(_ctx.$scope['itemId']),'name':_ctx.$mq.str(_ctx.$scope['name'])})
+    }, {
+      header: _withCtx((hs) => [
+        _createElementVNode("div", { class: "th text-left" }, [
+          _createElementVNode("div", null, [
+            _createElementVNode("div", { class: "form-title" }, [
+              _createElementVNode("span", {
+                textContent: _toDisplayString(_ctx.ec.l10n.localize('Item ID'))
+              }, null, 8, ["textContent"])
+            ])
+          ])
+        ]),
+        _createElementVNode("div", { class: "th text-left" }, [
+          _createElementVNode("div", null, [
+            _createElementVNode("div", { class: "form-title" }, [
+              _createElementVNode("span", {
+                textContent: _toDisplayString(_ctx.ec.l10n.localize('Name'))
+              }, null, 8, ["textContent"])
+            ])
+          ])
+        ]),
+        _createElementVNode("div", { class: "th text-left" }, [
+          _createElementVNode("div", null, [
+            _createElementVNode("div", { class: "form-title" })
+          ])
+        ])
+      ]),
+      row: _withCtx((_ctx) => [
+        _createElementVNode("div", { class: "tr" }, [
+          _createElementVNode("div", { class: "td" }, [
+            _createElementVNode("div", { class: "form-group" }, [
+              _createVNode(_component_m_display, {
+                name: "itemId",
+                id: 'ItemMulti_itemId'+'_'+_ctx.rowIndex+'_display',
+                modelValue: _ctx.formProps.fields.itemId,
+                "onUpdate:modelValue": $event => ((_ctx.formProps.fields.itemId) = $event),
+                display: _ctx.formProps.fields.itemId_display,
+                fields: _ctx.formProps.fields
+              }, null, 8, ["id", "modelValue", "onUpdate:modelValue", "display", "fields"])
+            ])
+          ]),
+          _createElementVNode("div", { class: "td" }, [
+            _createElementVNode("div", { class: "form-group" }, [
+              _createVNode(_component_m_text_line, {
+                id: 'ItemMulti_name'+'_'+_ctx.rowIndex,
+                type: "text",
+                name: "name",
+                size: "30",
+                label: _ctx.ec.l10n.localize('Name'),
+                modelValue: _ctx.formProps.fields.name,
+                "onUpdate:modelValue": $event => ((_ctx.formProps.fields.name) = $event),
+                fields: _ctx.formProps.fields
+              }, null, 8, ["id", "label", "modelValue", "onUpdate:modelValue", "fields"])
+            ])
+          ]),
+          _createElementVNode("div", { class: "td" }, [
+            _createElementVNode("div", { class: "form-group" }, [
+              _createVNode(_component_q_btn, {
+                dense: "",
+                outline: !_ctx.formProps.hasFieldsChanged,
+                "no-caps": "",
+                type: "submit",
+                name: "go",
+                value: "go",
+                color: "primary",
+                id: 'ItemMulti_go'+'_'+_ctx.rowIndex
+              }, {
+                default: _withCtx(() => [
+                  _createElementVNode("span", {
+                    textContent: _toDisplayString(_ctx.ec.l10n.localize('Save All'))
+                  }, null, 8, ["textContent"])
+                ]),
+                _: 1
+              }, 8, ["outline", "id"])
+            ])
+          ])
+        ])
+      ]),
+      _: 1
+    }, 8, ["row-initial"])
   ], 64))
 }
 };})();

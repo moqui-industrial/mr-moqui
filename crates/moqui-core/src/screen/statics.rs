@@ -895,6 +895,19 @@ fn form_package(state: &RenderState, def: &Arc<ScreenDef>, name: &str) -> Result
             }
         }
     }
+    // The user's saved finds of the form and the screen's default one, for the find dialog.
+    if node.attribute("saved-finds").as_deref() == Some("true") {
+        let location = super::saved_finds::form_location(&def.location, true, name);
+        let finds = super::saved_finds::user_form_list_finds(&super::saved_finds::saved_find_location(
+            &location,
+            definition.dynamic,
+        ))?;
+        let listed: Vec<serde_json::Value> = finds.iter().map(saved_find_json).collect();
+        body.insert("formListFinds".to_string(), serde_json::Value::Array(listed));
+        if let Some(id) = super::saved_finds::user_default_find_id(&def.location)? {
+            body.insert("defaultFormListFindId".to_string(), serde_json::Value::String(id));
+        }
+    }
     for key in ["orderByField", "pageIndex", "pageSize", "formListFindId"] {
         if let Some(value) = script::context_value(key).filter(|value| !value.is_null()) {
             body.entry(key.to_string())
@@ -916,6 +929,28 @@ fn form_package(state: &RenderState, def: &Arc<ScreenDef>, name: &str) -> Result
     web::strip_credential_parameters(&mut body);
     send_json(&body, headers);
     Ok(())
+}
+
+/// One saved find as the find dialog lists it: its id, description, and whether it is the user's own (which the user may
+/// update and delete) rather than a group's.
+fn saved_find_json(find: &Value) -> serde_json::Value {
+    let read = |path: &[&str]| -> String {
+        let mut current = Some(find.clone());
+        for key in path {
+            current = match current {
+                Some(Value::Map(map)) => map.get(*key).cloned(),
+                _ => None,
+            };
+        }
+        current
+            .map(|value| moqui_lib::object::to_plain_string(&value))
+            .unwrap_or_default()
+    };
+    serde_json::json!({
+        "formListFindId": read(&["formListFind", "formListFindId"]),
+        "description": read(&["description"]),
+        "isByUserId": read(&["isByUserId"]),
+    })
 }
 
 /// The page keys the renderer sets for a list with `search-form-inputs` that paginates: as `ScreenForm` does for a form-list's own `entity-find`.
@@ -1045,6 +1080,14 @@ pub(crate) fn run_actions_transition(state: &RenderState) -> Result<(), Error> {
     } else {
         info.render_path_difference
     };
+    // As a render does first: the user's default saved find, or the one the request names, and the saved page size.
+    let target_parameters: Vec<String> = info
+        .target_screen
+        .parameters
+        .iter()
+        .map(|parameter| parameter.name.clone())
+        .collect();
+    super::saved_finds::apply_on_render(&info.target_screen.location, &target_parameters, true)?;
     for (index, def) in defs.iter().enumerate() {
         if index >= first_pre {
             state.screen_path_index.set(index);

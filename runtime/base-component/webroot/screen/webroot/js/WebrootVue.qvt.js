@@ -553,7 +553,8 @@
     component("m-static-form-list", {
         name: "mStaticFormList",
         inject: { mqScope: { default: null }, mqScreen: { default: null } },
-        props: { name: { type: String, required: true }, id: String, action: String, listName: String, multi: Boolean, skipForm: Boolean, skipHeader: Boolean },
+        props: { name: { type: String, required: true }, id: String, action: String, listName: String, multi: Boolean, skipForm: Boolean, skipHeader: Boolean,
+            rowInitial: Function, formLocation: String, findAction: String },
         data() { return { pkg: null, searchObj: {}, loading: false, generation: 0 }; },
         computed: {
             idVal() { return this.id && this.id.length ? this.id : this.name; },
@@ -579,6 +580,60 @@
                     this.generation++;
                 }, (err) => { this.loading = false; moqui.handleLoadError(err); });
             },
+            screen() { return this.mqScreen || { path: this.$root.currentPath, parameters: {} }; },
+            // The parameters of the current find: the screen's and the list's own, without the ones that only move through the pages.
+            findParameters() {
+                const out = Object.assign({}, this.screen().parameters, this.searchObj);
+                ["pageIndex", "moquiFormName", "moquiSessionToken", "lastStandalone", "formListFindId"].forEach((key) => { delete out[key]; });
+                Object.keys(out).forEach((key) => { if (out[key] === null || out[key] === undefined || out[key] === "") delete out[key]; });
+                return out;
+            },
+            // What the nav slot of the template binds: the saved finds, the find and export URLs, and the current parameters.
+            navProps() {
+                const pkg = this.pkg || {};
+                const screen = this.screen();
+                const params = this.findParameters();
+                const linkPath = (this.$root && this.$root.currentLinkPath) || screen.path;
+                const query = (extra) => moqui.objToSearch(Object.assign({}, screen.parameters, this.searchObj, extra));
+                return {
+                    finds: Array.isArray(pkg.formListFinds) ? pkg.formListFinds : [], activeFindId: pkg.formListFindId || "", defaultFindId: pkg.defaultFormListFindId || "",
+                    params, hasParams: Object.keys(params).length > 0, orderByField: this.searchObj.orderByField || pkg.orderByField || "",
+                    findAction: linkPath, saveFindAction: this.findAction || "", screenPath: screen.path,
+                    findUrl: (id) => linkPath + "?formListFindId=" + encodeURIComponent(id),
+                    findFields: (id) => Object.assign({ formLocation: this.formLocation, formListFindId: id }, params),
+                    newFindFields: () => Object.assign({ formLocation: this.formLocation, _findDescription: "" }, params),
+                    exportUrl: (mode) => screen.path + "?" + query({ renderMode: mode, pageNoLimit: "true", lastStandalone: "true", saveFilename: this.name + "." + mode }),
+                    printUrl: () => screen.path + "?" + query({ renderMode: "html-print", pageNoLimit: "true" })
+                };
+            },
+            // The fields of a form that posts every row: each row's starting values under name_rowIndex, as the server-merged form has them.
+            multiFields(formScope) {
+                const out = { moquiFormName: this.name, _isMulti: "true", pageIndex: String((this.pkg && this.pkg.pageIndex) || 0) };
+                const order = this.searchObj.orderByField || (this.pkg && this.pkg.orderByField);
+                if (order) out.orderByField = String(order);
+                if (!this.rowInitial) return out;
+                this.rows.forEach((row, rowIndex) => {
+                    const initial = this.rowInitial(this.rowScope(rowIndex, formScope, null)) || {};
+                    Object.keys(initial).forEach((key) => { if (initial[key] !== undefined) out[key + "_" + rowIndex] = initial[key]; });
+                });
+                return out;
+            },
+            // The scope of a row. In a multi form, formProps reads and writes the row's fields under name_rowIndex in the one form.
+            rowScope(rowIndex, formScope, multiProps) {
+                const extra = { rowIndex, _formMap: this.rows[rowIndex] };
+                if (multiProps) {
+                    const suffix = "_" + rowIndex;
+                    const fields = new Proxy({}, {
+                        get: (target, key) => (typeof key === "string" ? multiProps.fields[key + suffix] : undefined),
+                        set: (target, key, value) => { multiProps.fields[key + suffix] = value; return true; },
+                        has: (target, key) => typeof key === "string" && (key + suffix) in multiProps.fields,
+                        ownKeys: () => Object.keys(multiProps.fields).filter((key) => key.endsWith(suffix)).map((key) => key.slice(0, -suffix.length)),
+                        getOwnPropertyDescriptor: (target, key) => (typeof key === "string" && (key + suffix) in multiProps.fields ? { enumerable: true, configurable: true, value: multiProps.fields[key + suffix] } : undefined)
+                    });
+                    extra.formProps = Object.assign({}, multiProps, { fields });
+                }
+                return qvt.makeScope(() => Object.assign({}, this.rows[rowIndex], extra), formScope);
+            },
             setPageIndex(index) { this.searchObj = Object.assign({}, this.searchObj, { pageIndex: index }); this.fetchRows(); },
             sortBy(field) { this.searchObj = Object.assign({}, this.searchObj, { orderByField: field, pageIndex: 0 }); this.fetchRows(); },
             orderBy(field) {
@@ -594,19 +649,24 @@
             const formScope = qvt.makeScope(() => this.pkg || {}, this.mqScope);
             const slots = this.$slots;
             const header = slots.header ? slots.header({ sortBy: this.sortBy, orderBy: this.orderBy, action: this.$root && this.$root.currentLinkPath, orderByField: this.searchObj.orderByField || (this.pkg && this.pkg.orderByField) || "" }) : null;
-            const rowNodes = [];
-            this.rows.forEach((row, rowIndex) => {
-                const scope = qvt.makeScope(() => Object.assign({}, this.rows[rowIndex], { rowIndex, _formMap: this.rows[rowIndex] }), formScope);
-                rowNodes.push(h(V.Fragment, { key: this.generation + "_" + rowIndex }, slots.row ? slots.row(scope) : []));
-            });
+            const rowsOf = (multiProps) => this.rows.map((row, rowIndex) =>
+                h(V.Fragment, { key: this.generation + "_" + rowIndex }, slots.row ? slots.row(this.rowScope(rowIndex, formScope, multiProps)) : []));
+            const multiForm = this.multi && !this.skipForm;
+            const rowNodes = multiForm ? [] : rowsOf(null);
             const nav = h("div", { class: "form-list-nav-row row items-center" }, [
+                slots.nav ? h("div", { class: "row items-center q-gutter-xs" }, slots.nav(this.navProps())) : null,
                 h(V.resolveComponent("q-space")),
                 h(V.resolveComponent("m-form-paginate"), { paginate: this.paginate, formList: this }),
                 h(V.resolveComponent("m-form-go-page"), { idVal: this.idVal, formList: this })
             ]);
+            const empty = [h("div", { class: "tr" }, [h("div", { class: "td" }, moqui.l10n.localize("No results found"))])];
+            const body = multiForm
+                ? h(V.resolveComponent("m-form"), { key: "multi_" + this.generation, name: this.idVal, id: this.idVal, action: this.action, fieldsInitial: this.multiFields(formScope) },
+                    { default: (multiProps) => (this.rows.length || this.loading ? rowsOf(multiProps) : empty) })
+                : rowNodes.length || this.loading ? rowNodes : empty;
             const table = h("div", { class: "table q-table", id: this.idVal + "_table" }, [
                 this.skipHeader ? null : h("div", { class: "thead" }, [h("div", { class: "tr" }, header)]),
-                h("div", { class: "tbody" }, rowNodes.length || this.loading ? rowNodes : [h("div", { class: "tr" }, [h("div", { class: "td" }, moqui.l10n.localize("No results found"))])])
+                h("div", { class: "tbody" }, multiForm ? [body] : body)
             ]);
             return h("div", { class: "q-my-sm q-table__container q-table__card q-table--horizontal-separator q-table--dense q-table--flat" }, [nav, table]);
         }
@@ -2075,7 +2135,7 @@
 
     component("m-subscreens-active", {
         name: "mSubscreensActive",
-        data() { return { activeComponent: moqui.EmptyComponent, pathIndex: -1, pathName: null }; },
+        data() { return { activeComponent: moqui.EmptyComponent, pathIndex: -1, pathName: null, searchUsed: null }; },
         template: '<component :is="activeComponent" style="height:100%;width:100%;"></component>',
         methods: {
             // a method and not a watch on pathName, so that it runs when the path is the same and the screen is not static
@@ -2086,12 +2146,18 @@
                 const newPath = curPathList[pathIndex];
                 const pathChanged = this.pathName !== newPath;
                 this.pathName = newPath;
+                // A cached (server-static) target screen is used again for new parameters: its data comes from them, so a find or a saved
+                // find on the same path makes a new use. The screens above the target keep theirs.
+                const isTarget = pathIndex === curPathList.length - 1;
+                const searchNow = isTarget ? rootVm_.currentSearch || "" : "";
+                const searchChanged = this.searchUsed !== null && this.searchUsed !== searchNow;
+                this.searchUsed = searchNow;
                 if (!newPath || newPath.length === 0) {
                     this.activeComponent = moqui.EmptyComponent;
                     return true;
                 }
                 const fullPath = rootVm_.basePath + "/" + curPathList.slice(0, pathIndex + 1).join("/");
-                if (!pathChanged && moqui.componentCache.containsKey(fullPath)) return false;
+                if (!pathChanged && !searchChanged && moqui.componentCache.containsKey(fullPath)) return false;
                 const urlInfo = { path: fullPath };
                 if (pathIndex === curPathList.length - 1) {
                     const extra = rootVm_.extraPathList;

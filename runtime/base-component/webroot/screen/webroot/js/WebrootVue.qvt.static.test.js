@@ -25,6 +25,7 @@ const goldenText = (name) => fs.readFileSync(path.join(golden, name), "utf8");
 const scriptText = goldenText("Items.script.js");
 const pkg = JSON.parse(goldenText("Items.package.json"));
 const formPkg = JSON.parse(goldenText("Items.ItemList.json"));
+const multiPkg = JSON.parse(goldenText("Items.ItemMulti.json"));
 
 // ---- a Vue renderer over plain objects ----
 
@@ -64,12 +65,12 @@ const stubs = {
         data() { return { fields: Object.assign({}, this.fieldsInitial) }; },
         render() { return Vue.h("m-form", { name: this.$attrs.name, fields: this.fields }, this.$slots.default({ fields: this.fields, hasFieldsChanged: false })); }
     },
-    "m-form-paginate": { props: ["paginate", "formList"], render() { captured.formList = this.formList; return Vue.h("m-form-paginate", { paginate: this.paginate }); } },
+    "m-form-paginate": { props: ["paginate", "formList"], render() { captured.lists[this.formList.name] = this.formList; return Vue.h("m-form-paginate", { paginate: this.paginate }); } },
     "m-form-go-page": { props: ["idVal", "formList"], render() { return Vue.h("m-form-go-page"); } }
 };
-["m-display", "m-text-line", "m-drop-down", "m-link", "q-btn", "m-form-link", "m-container-box"].forEach((tag) => { stubs[tag] = leaf(tag); });
+["m-display", "m-text-line", "m-drop-down", "m-link", "q-btn", "m-form-link", "m-container-box", "m-container-dialog"].forEach((tag) => { stubs[tag] = leaf(tag); });
 
-const captured = {};
+const captured = { lists: {} };
 const answers = {};
 const requests = [];
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -91,6 +92,7 @@ const setup = () => {
     moqui.l10n.setCatalog({});
     answers["/Items/actions"] = pkg;
     answers["/Items/actions/ItemList"] = formPkg;
+    answers["/Items/actions/ItemMulti"] = multiPkg;
 };
 
 const registerScript = () => {
@@ -125,7 +127,7 @@ test("the screen is fetched from actions, and renders with the package and the f
     const { container } = await mountStatic("itemId=I9&page=2");
     assert.equal(requests[0].url, "/Items/actions");
     assert.deepEqual(requests[0].params, { itemId: "I9", page: "2" });
-    assert.equal(requests[1].url, "/Items/actions/ItemList");
+    assert.deepEqual(requests.slice(1).map((request) => request.url).sort(), ["/Items/actions/ItemList", "/Items/actions/ItemMulti"]);
     const text = html(container);
     // the label has the package's greeting through ec.resource.expand with its expression table
     assert.match(text, /<h4 class='text-inline' textContent='Hello ZEBRA greeting for Ada Lovelace'><\/h4>/);
@@ -157,21 +159,45 @@ test("paging and sorting a static form-list change the request and fetch again",
     const { container } = await mountStatic("itemGroup=G1");
     // the page keys of the answer are the paginate of the page buttons
     assert.match(html(container), /<m-form-paginate paginate='\{"count":45,"pageIndex":1,"pageSize":20,"pageMaxIndex":2,"pageRangeLow":21,"pageRangeHigh":40\}'/);
-    const list = captured.formList;
+    const list = captured.lists.ItemList;
     assert.ok(list, "the page buttons got the form-list");
-    assert.equal(requests.length, 2);
+    const listRequests = () => requests.filter((request) => request.url === "/Items/actions/ItemList");
+    assert.equal(listRequests().length, 1);
     list.setPageIndex(1);
     await flush();
-    assert.equal(requests.length, 3);
-    assert.equal(requests[2].url, "/Items/actions/ItemList");
-    assert.deepEqual(requests[2].params, { itemGroup: "G1", pageIndex: 1 });
+    assert.equal(listRequests().length, 2);
+    assert.deepEqual(listRequests()[1].params, { itemGroup: "G1", pageIndex: 1 });
     list.sortBy("-itemId");
     await flush();
-    assert.deepEqual(requests[3].params, { itemGroup: "G1", pageIndex: 0, orderByField: "-itemId" });
+    assert.deepEqual(listRequests()[2].params, { itemGroup: "G1", pageIndex: 0, orderByField: "-itemId" });
     assert.equal(list.orderBy("-itemId"), "desc");
     assert.equal(list.orderBy("itemId"), "");
     // the screen package is not asked for again
     assert.equal(requests.filter((request) => request.url === "/Items/actions").length, 1);
+});
+
+test("a multi form-list is one form with each row's fields under name_rowIndex, and the nav row has the exports", async () => {
+    setup();
+    const { container } = await mountStatic("itemGroup=G1");
+    const text = html(container);
+    // one m-form for the multi list: its fields are every row's, numbered, with the form name and the multi flag
+    const multi = text.match(/<m-form name='ItemMulti' fields='([^']*)'/);
+    assert.ok(multi, text);
+    const fields = JSON.parse(multi[1]);
+    assert.equal(fields.moquiFormName, "ItemMulti");
+    assert.equal(fields._isMulti, "true");
+    assert.equal(fields.name_0, "ZEBRA row one");
+    assert.equal(fields.name_1, "ZEBRA row two");
+    assert.equal(fields.itemId_1, "ZEBRA-R2");
+    assert.ok(!("name" in fields), "a multi row writes its own numbered fields");
+    // the row widgets bind through the row's formProps: the second row's text-line shows the second row's name
+    const list = captured.lists.ItemMulti;
+    const second = list.rowScope(1, qvt.makeScope(() => ({}), null), { fields });
+    assert.equal(second.formProps.fields.name, "ZEBRA row two");
+    second.formProps.fields.name = "changed";
+    assert.equal(fields.name_1, "changed");
+    // the csv button of ItemList goes to the screen in csv with the find parameters
+    assert.match(text, /<q-btn dense='' outline='' type='a' href='\/Items\?itemGroup=G1&renderMode=csv&pageNoLimit=true&lastStandalone=true&saveFilename=ItemList.csv'/);
 });
 
 test("the restricted ec has the table of members and throws on anything else", () => {

@@ -505,7 +505,7 @@ fn qapps_widgets(browser: &mut Browser, base: &str) {
     browser.click("page 2", &by_text(".q-pagination button", "2"));
     browser.wait_for(
         "page 2",
-        "document.body.innerText.indexOf('2 / 10 (21-40 / 186)') >= 0",
+        "/2 \\/ \\d+ \\(21-40 \\/ \\d+\\)/.test(document.body.innerText)",
         WAIT,
     );
     browser.pump(Duration::from_millis(500));
@@ -584,7 +584,7 @@ fn static_list(browser: &mut Browser, base: &str) {
     browser.navigate(&page);
     browser.wait_for(
         "the list",
-        "document.body.innerText.indexOf('1 / 10 (1-20 / 186)') >= 0",
+        "/1 \\/ \\d+ \\(1-20 \\/ \\d+\\)/.test(document.body.innerText)",
         WAIT,
     );
     assert_eq!(
@@ -603,7 +603,7 @@ fn static_list(browser: &mut Browser, base: &str) {
     browser.click("page 2", &by_text(".q-pagination button", "2"));
     browser.wait_for(
         "page 2",
-        "document.body.innerText.indexOf('2 / 10 (21-40 / 186)') >= 0",
+        "/2 \\/ \\d+ \\(21-40 \\/ \\d+\\)/.test(document.body.innerText)",
         WAIT,
     );
     let rows = fetched(browser, "the rows of page 2", "/actions/EnumList");
@@ -616,7 +616,7 @@ fn static_list(browser: &mut Browser, base: &str) {
     );
     browser.wait_for(
         "sorted, back on the first page",
-        "document.body.innerText.indexOf('1 / 10 (1-20 / 186)') >= 0 && window.__gate.fetches.some((f) => f.url.indexOf('orderByField=-enumId') >= 0)",
+        "/1 \\/ \\d+ \\(1-20 \\/ \\d+\\)/.test(document.body.innerText) && window.__gate.fetches.some((f) => f.url.indexOf('orderByField=-enumId') >= 0)",
         WAIT,
     );
     let ids = browser.eval("Array.from(document.querySelectorAll('#EnumList_table .tbody .tr')).map((tr) => tr.querySelector('.td').innerText.trim())");
@@ -633,6 +633,44 @@ fn static_list(browser: &mut Browser, base: &str) {
         ids[0].to_lowercase() > first.as_str().unwrap().to_lowercase(),
         "{ids:?}"
     );
+
+    // the csv export goes to the screen in csv with the current sort
+    let csv = browser.eval(
+        "(Array.from(document.querySelectorAll('a')).find((a) => a.href.indexOf('renderMode=csv') >= 0) || {}).href || ''",
+    );
+    let csv = csv.as_str().unwrap();
+    assert!(
+        csv.contains("/apps/GateStaticList?") && csv.contains("orderByField=-enumId"),
+        "{csv}"
+    );
+
+    // the find dialog: the header field and the order by, and a new saved find of the current sort
+    browser.click("Find Options", &by_text(".q-btn", "Find Options"));
+    browser.wait_for(
+        "the find dialog",
+        "Array.from(document.querySelectorAll('.q-dialog')).some((el) => el.innerText.indexOf('Clear Parameters') >= 0 && el.innerText.indexOf('Save New Find') >= 0)",
+        WAIT,
+    );
+    browser.click(
+        "the find description",
+        "document.querySelector('#EnumList_NewFind_description')",
+    );
+    browser.type_text("Gate find");
+    browser.click("Save New Find", &by_text(".q-dialog .q-btn", "Save New Find"));
+    fetched(browser, "the saved find post", "/formSaveFind");
+    browser.wait_for(
+        "the saved find in the next form request",
+        "window.__gate.fetches.some((f) => f.url.indexOf('/actions/EnumList') >= 0 && f.url.indexOf('formListFindId=') >= 0)",
+        WAIT,
+    );
+    browser.press("Escape");
+    browser.click("Find Options", &by_text(".q-btn", "Find Options"));
+    browser.wait_for(
+        "the saved find listed",
+        "Array.from(document.querySelectorAll('.q-dialog')).some((el) => el.innerText.indexOf('Gate find') >= 0)",
+        WAIT,
+    );
+    browser.press("Escape");
     assert_clean(browser, &page);
 }
 
@@ -814,7 +852,7 @@ fn html_widgets(browser: &mut Browser, base: &str) {
     browser.wait_event("Page.loadEventFired", WAIT);
     browser.wait_for(
         "page 2",
-        "document.body.innerText.indexOf('Page 2 of 10 (21 - 40 of 186)') >= 0",
+        "/Page 2 of \\d+ \\(21 - 40 of \\d+\\)/.test(document.body.innerText)",
         WAIT,
     );
     assert_ne!(

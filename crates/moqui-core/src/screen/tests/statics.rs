@@ -214,6 +214,11 @@ fn a_form_request_answers_its_rows_and_page_keys() {
     // the body is the context-shaped map, not a bare array
     assert!(body.is_object());
     golden("Items.ItemList.json", &output.body_text());
+    // the multi form-list of the same list answers the same rows
+    let multi = render(context.factory(), "/Items/actions/ItemMulti", &[]);
+    assert_eq!(multi.status, 200, "{}", multi.body_text());
+    assert_eq!(json_of(&multi)["itemList"].as_array().map(Vec::len), Some(2));
+    golden("Items.ItemMulti.json", &multi.body_text());
     // a form that is not a list, and a name that is not a form
     let single = render(context.factory(), "/Items/actions/ItemForm", &[]);
     assert_eq!(single.status, 400, "{}", single.body_text());

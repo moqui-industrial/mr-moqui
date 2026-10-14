@@ -31,8 +31,8 @@
 //  - display-entity, entity-options, list-options and dynamic-options (without server-search) read keys the package
 //    holds: name_display, and mqOpt_{form}_{field}_{sub}_{widget} for the options of a widget;
 //  - a link that the user may not use is still written (the server refuses the request), and no icon comes from the theme;
-//  - include-screen is written inline, the first-row, second-row and last-row of a form-list, row-selection, saved finds,
-//    the column picker and the csv, text and pdf buttons are not written (a violation in the report), text-map is ignored.
+//  - include-screen is written inline; the first-row, second-row and last-row of a form-list, row-selection and the column picker
+//    are not written (a violation in the report). The find dialog, saved finds, the exports and a multi form are written.
 (function (T, S) {
     "use strict";
 
@@ -989,10 +989,18 @@
             st.formName = name;
             st.fieldForm = name;
             st.listName = at(n, "list");
+            const multi = !skipForm && at(n, "multi") === "true";
+            st.multi = multi;
             const attrs = {
                 name, id: name, action: found.path, "list-name": at(n, "list"), "skip-form": skipForm || null,
-                "skip-header": at(n, "skip-header") === "true" || null, class: at(n, "style") || null
+                "skip-header": at(n, "skip-header") === "true" || null, class: at(n, "style") || null, multi: multi || null
             };
+            // A form that posts every row: the component makes one m-form, and each row's values start it under name_rowIndex.
+            if (multi) attrs[":row-initial"] = "(_ctx) => (" + initialOf(kids(n, "field"), "r", []) + ")";
+            if (at(n, "saved-finds") === "true") {
+                attrs["form-location"] = name;
+                attrs["find-action"] = sri.staticUrl("formSaveFind", "transition").path;
+            }
             w("<m-static-form-list" + A(attrs) + ">");
             return { found };
         };
@@ -1003,6 +1011,8 @@
             if (skipForm) { st.inForm = false; st.owner = ""; return false; }
             st.inForm = true;
             st.owner = "";
+            // The rows of a multi form bind to the one m-form of the list; formProps in the row scope maps a name to name_rowIndex.
+            if (st.multi) return false;
             const initial = initialOf(fields, "r", [["moquiFormName", sq(name)], ["pageIndex", "$mq.str(" + scopeRef("pageIndex") + "||0)"]]);
             w("<m-form" + A({ ":name": sq(name + "_") + "+rowIndex", ":id": sq(name + "_") + "+rowIndex", action: opened.found.path, ":fields-initial": initial, "v-slot:default": "formProps" }) + ">");
             return true;
@@ -1195,6 +1205,76 @@
             pop();
         };
 
+        // The tools above a form-list, as the server-merged nav row has them: the find dialog with the saved finds and the header fields,
+        // and the csv, xlsx, text and print exports. The component gives nv: the finds, the current parameters, and the URLs.
+        const loc = (text) => "ec.l10n.localize(" + sq(text) + ")";
+        const navSlot = (n, cols, headerFields, flags) => {
+            if (!(flags.headerDialog || flags.savedFinds || flags.csv || flags.xlsx || flags.text || flags.pdf)) return;
+            const name = at(n, "name");
+            w('<template v-slot:nav="nv">');
+            if (flags.headerDialog || flags.savedFinds) {
+                w("<m-container-dialog" + A({ id: name + "_hdialog", ":title": loc("Find Options") }) + '><template v-slot:button><q-btn dense outline no-caps icon="search"' + A({ ":label": loc("Find Options") }) + "></q-btn></template>");
+                if (flags.savedFinds) savedFindsBody(name);
+                if (flags.headerDialog) findDialogForm(n, cols, headerFields);
+                w("</m-container-dialog>");
+            }
+            if (flags.csv) w('<q-btn dense outline type="a"' + A({ ":href": "nv.exportUrl('csv')", ":label": loc("CSV") }) + "></q-btn>");
+            if (flags.xlsx) w('<q-btn dense outline type="a"' + A({ ":href": "nv.exportUrl('xlsx')", ":label": loc("XLS") }) + "></q-btn>");
+            if (flags.text) textExportDialog(name);
+            if (flags.pdf) w('<q-btn dense outline type="a" target="_blank"' + A({ ":href": "nv.printUrl()", ":label": loc("Print") }) + "></q-btn>");
+            w("</template>");
+        };
+        const savedFindsBody = (name) => {
+            const button = (buttonName, text, extra) => '<q-btn dense flat no-caps type="submit"' + A(Object.assign({ name: buttonName, value: buttonName ? "Y" : null, ":label": loc(text) }, extra || {})) + "></q-btn>";
+            w('<q-list dense class="q-my-sm" v-if="nv.finds.length">');
+            w('<q-item v-for="mqFind in nv.finds" :key="mqFind.formListFindId" :active="mqFind.formListFindId === nv.activeFindId">');
+            w('<q-item-section><m-link :href="nv.findUrl(mqFind.formListFindId)"><span v-text="(mqFind.description || mqFind.formListFindId) + (mqFind.formListFindId === nv.defaultFindId ? \' (\' + ' + e(loc("Default")) + ' + \')\' : \'\')"></span></m-link></q-item-section>');
+            w('<q-item-section side><m-form class="form-inline" :action="nv.saveFindAction" :fields-initial="nv.findFields(mqFind.formListFindId)">');
+            w(button(null, "Update to Current", { "v-if": "mqFind.isByUserId === 'true' && nv.hasParams" }));
+            w(button("ClearDefault", "Clear Default", { "v-if": "mqFind.formListFindId === nv.defaultFindId" }));
+            w(button("MakeDefault", "Make Default", { "v-else": true }));
+            w(button("DeleteFind", "Delete", { "v-if": "mqFind.isByUserId === 'true'", color: "negative" }));
+            w("</m-form></q-item-section></q-item></q-list>");
+            w("<m-form" + A({ "v-if": "nv.hasParams", class: "form-inline", id: name + "_NewFind", ":action": "nv.saveFindAction", ":fields-initial": "nv.newFindFields()", "v-slot:default": "formProps" }) + '><div class="big-row"><div class="q-my-auto big-row-item"><m-text-line' +
+                A({ "v-model": "formProps.fields._findDescription", name: "_findDescription", id: name + "_NewFind_description", ":label": loc("Description"), size: "30", required: true }) +
+                '></m-text-line></div><div class="on-right q-my-auto big-row-item"><q-btn dense outline no-caps type="submit"' + A({ ":label": loc("Save New Find") }) + "></q-btn></div></div></m-form>");
+            w('<div v-else style="margin:12px 0;"><strong' + A({ "v-text": loc("No find parameters (or default), choose some in Find Options to save a new find or update existing") }) + "></strong></div>");
+        };
+        // The header fields as a find form in the dialog, with clear and order-by, which goes to the screen with the fields as parameters.
+        const findDialogForm = (n, cols, headerFields) => {
+            const name = at(n, "name");
+            const orderOptions = [];
+            cols.flat().filter((f) => f.orderBy).forEach((f) => {
+                const ci = f.orderBy === "case-insensitive" ? "^" : "";
+                orderOptions.push("{value:" + sq(ci + f.name) + ",label:" + f.title + "+' '+" + loc("(Asc)") + "}", "{value:" + sq("-" + ci + f.name) + ",label:" + f.title + "+' '+" + loc("(Desc)") + "}");
+            });
+            push();
+            st.owner = name + "_header";
+            st.fieldForm = name + "_header";
+            st.inForm = true;
+            st.inRow = false;
+            w("<m-form-link" + A({ name: name + "_header", id: name + "_header", ":action": "nv.findAction", ":fields-initial": initialOf(headerFields, "header-field", [["orderByField", "nv.orderByField"]]), "v-slot:default": "formProps" }) + ">");
+            w('<div class="q-mx-sm"><q-btn dense outline no-caps name="clearParameters" @click.prevent="formProps.clearForm"' + A({ ":label": loc("Clear Parameters") }) + "></q-btn>");
+            w("<m-drop-down" + A({ name: "orderByField", id: name + "_header_orderByField", ":label": loc("Order By"), multiple: true, "allow-empty": true, ":options": "[" + orderOptions.join(",") + "]", "v-model": "formProps.fields.orderByField" }) + "></m-drop-down></div>");
+            cols.flat().forEach((f) => {
+                if (!f.find) return;
+                w('<div class="q-mx-sm q-my-sm"><div class="form-title"><span v-text="' + e(f.title) + '"></span></div>');
+                f.find();
+                w("</div>");
+            });
+            w("</m-form-link>");
+            pop();
+        };
+        // The fixed-width text export: a plain form posted to the screen with renderMode text, the current parameters, and the sizes.
+        const textExportDialog = (name) => {
+            const row = (title, fieldName, value, size) => '<div class="q-my-sm"><m-text-line' + A({ name: fieldName, id: name + "_Text_" + fieldName, ":label": loc(title), "model-value": value, form: name + "_Text", size }) + "></m-text-line></div>";
+            w("<m-container-dialog" + A({ id: name + "_TextDialog", ":button-text": loc("Text"), ":title": loc("Export Fixed-Width Plain Text") }) + ">");
+            w("<form" + A({ id: name + "_Text", method: "post", ":action": "nv.screenPath" }) + '><input type="hidden" name="renderMode" value="text"><input type="hidden" name="pageNoLimit" value="true"><input type="hidden" name="lastStandalone" value="true">');
+            w('<input v-for="(mqValue, mqKey) in nv.params" :key="mqKey" type="hidden" :name="mqKey" :value="mqValue">');
+            w(row("Line Characters", "lineCharacters", "132", "4") + row("Page Lines", "pageLines", "88", "4") + row("Line Wrap?", "lineWrap", "true", "5") + row("Save to Filename", "saveFilename", name + ".txt", "40"));
+            w('<q-btn dense outline no-caps type="submit"' + A({ ":label": loc("Export Text") }) + "></q-btn></form></m-container-dialog>");
+        };
+
         const formList = (n, columnFieldLists, allFields) => {
             const cfg = {};
             const name = at(n, "name");
@@ -1202,22 +1282,23 @@
                 if (allFields.some((f) => { const sub = first(f, tag); return sub && sub.children.length; })) note("form-list-row", n, "the " + tag + " row of form-list " + name + " is not written");
             });
             if (first(n, "row-selection")) note("row-selection", n, "row-selection of form-list " + name + " is not written");
-            if (at(n, "saved-finds") === "true") note("saved-finds", n, "saved finds of form-list " + name + " are not written");
             if (at(n, "select-columns") === "true") note("select-columns", n, "the column picker of form-list " + name + " is not written");
-            ["show-csv-button", "show-xlsx-button", "show-text-button", "show-pdf-button"].forEach((attrName) => { if (at(n, attrName) === "true") note("form-list-button", n, attrName + " of form-list " + name + " is not written"); });
-            if (at(n, "header-dialog") === "true") note("header-dialog", n, "the find dialog of form-list " + name + " is written as header fields");
             if (kids(n, "field").some((f) => at(f, "show-total"))) note("form-list-total", n, "show-total of form-list " + name + " is not written");
+            const flags = {
+                headerDialog: at(n, "header-dialog") === "true", savedFinds: at(n, "saved-finds") === "true",
+                csv: at(n, "show-csv-button") === "true", xlsx: at(n, "show-xlsx-button") === "true" && ec.screen.isRenderModeValid("xlsx"),
+                text: at(n, "show-text-button") === "true", pdf: at(n, "show-pdf-button") === "true"
+            };
+            cfg.headerDialog = flags.headerDialog;
             const opened = formListOpen(n, columnFieldLists, cfg);
             const cols = columnFieldLists.map((fields) => columnOf(n, fields));
             const skipHeader = at(n, "skip-header") === "true";
             const headerFields = allFields.filter((f) => { const sub = first(f, "header-field"); return sub && sub.children.filter((x) => x.name !== "set").length; });
-            const skipForm = at(n, "skip-form") === "true";
-            const multi = !skipForm && at(n, "multi") === "true";
-            if (multi) note("form-list-multi", n, "form-list " + name + " posts every row in one form, and its rows are written as separate forms");
             if (kids(n, "field").some((f) => at(f, "aggregate") === "sub-list")) note("form-list-aggregate", n, "the sub-list fields of form-list " + name + " are not written (the form request groups the rows)");
+            if (!skipHeader) navSlot(n, cols, headerFields, flags);
             if (!skipHeader) {
                 w('<template v-slot:header="hs">');
-                if (headerFields.length) {
+                if (headerFields.length && !flags.headerDialog) {
                     push();
                     st.owner = name + "_header";
                     st.fieldForm = name + "_header";
