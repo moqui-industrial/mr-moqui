@@ -4730,6 +4730,7 @@ dependencies = [
  "image",
  "indexmap 2.14.2",
  "ipp",
+ "jiff",
  "moqui-core",
  "moqui-lib",
  "mysql",

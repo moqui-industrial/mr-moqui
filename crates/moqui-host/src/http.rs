@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use axum::extract::{ConnectInfo, Request, State};
 use axum::response::Response;
-use axum::routing::get;
+use axum::routing::{any, get};
 use axum::Router;
 use moqui_core::context::ErrorKind;
 use moqui_core::context::ExecutionContextFactory;
@@ -30,7 +30,7 @@ use moqui_core::web::{WebRequest, WebResponse};
 use moqui_lib::error::Error;
 use tokio::net::TcpListener;
 
-use crate::notws;
+use crate::{notws, search_proxy};
 
 pub(crate) struct HttpState {
     pub factory: Arc<ExecutionContextFactory>,
@@ -83,6 +83,12 @@ pub(crate) async fn listen(
         .route("/health", get(health))
         .route("/metrics", get(metrics))
         .route("/notws", get(notws::upgrade))
+        .route("/elastic", any(search_proxy::elastic))
+        .route("/elastic/", any(search_proxy::elastic))
+        .route("/elastic/{*rest}", any(search_proxy::elastic))
+        .route("/kibana", any(search_proxy::kibana))
+        .route("/kibana/", any(search_proxy::kibana))
+        .route("/kibana/{*rest}", any(search_proxy::kibana))
         .fallback(dispatch_screen)
         .layer(tower_http::compression::CompressionLayer::new())
         .with_state(Arc::new(HttpState {
@@ -154,6 +160,8 @@ async fn dispatch_screen(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     request: Request,
 ) -> Response {
+    let started = std::time::Instant::now();
+    let started_millis = crate::logging::now_millis();
     let (parts, body) = request.into_parts();
     let mut web = WebRequest::new(parts.method.as_str(), parts.uri.path());
     web.https = forwarded_https(&parts.headers);
@@ -175,6 +183,18 @@ async fn dispatch_screen(
         _ => return plain(413, &format!("request body is larger than {limit} bytes")),
     };
     web.body = bytes.to_vec();
+    let log = RequestLog {
+        started_millis,
+        client_ip: moqui_core::web::client_ip(&web),
+        method: parts.method.as_str().to_string(),
+        https: web.https,
+        host: web.header("host").unwrap_or("").to_string(),
+        path: parts.uri.path().to_string(),
+        query: parts.uri.query().unwrap_or("").to_string(),
+        version: parts.version,
+        referrer: web.header("referer").unwrap_or("").to_string(),
+        agent: web.header("user-agent").unwrap_or("").to_string(),
+    };
     let factory = Arc::clone(&state.factory);
     let job_factory = Arc::clone(&factory);
     let serve_factory = Arc::clone(&factory);
@@ -191,8 +211,75 @@ async fn dispatch_screen(
         return plain(500, err.message());
     }
     match result.await {
-        Ok(response) => from_web(response),
+        Ok(response) => {
+            log.queue(&response, started.elapsed());
+            from_web(response)
+        }
         Err(_) => plain(500, "request worker stopped"),
+    }
+}
+
+/// One `moqui_http_log` entry, the fields of Java's `ElasticRequestLogFilter`. Queued only while
+/// logs ship to the search backend.
+struct RequestLog {
+    started_millis: i64,
+    client_ip: String,
+    method: String,
+    https: bool,
+    host: String,
+    path: String,
+    query: String,
+    version: axum::http::Version,
+    referrer: String,
+    agent: String,
+}
+
+impl RequestLog {
+    fn queue(self, response: &WebResponse, elapsed: std::time::Duration) {
+        use moqui_lib::object::Value;
+
+        let millis = i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX);
+        let version = match self.version {
+            axum::http::Version::HTTP_09 => 0.9,
+            axum::http::Version::HTTP_10 => 1.0,
+            axum::http::Version::HTTP_2 => 2.0,
+            axum::http::Version::HTTP_3 => 3.0,
+            _ => 1.1,
+        };
+        let content_type = response
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+            .map(|(_, value)| value.clone());
+        let mut entry = moqui_core::entity::document::Document::new();
+        entry.insert("@timestamp".into(), Value::I64(self.started_millis));
+        entry.insert("remote_ip".into(), Value::String(self.client_ip));
+        entry.insert("server_ip".into(), Value::string(crate::logging::host_name()));
+        if let Some(content_type) = content_type {
+            entry.insert("content_type".into(), Value::String(content_type));
+        }
+        entry.insert("request_method".into(), Value::String(self.method));
+        entry.insert("request_scheme".into(), Value::string(if self.https { "https" } else { "http" }));
+        entry.insert("request_host".into(), Value::String(self.host));
+        entry.insert("request_path".into(), Value::String(self.path));
+        if !self.query.is_empty() {
+            entry.insert("request_query".into(), Value::String(self.query));
+        }
+        entry.insert("http_version".into(), Value::F64(version));
+        entry.insert("response".into(), Value::I64(i64::from(response.status)));
+        entry.insert("time_initial_ms".into(), Value::I64(millis));
+        entry.insert("time_final_ms".into(), Value::I64(millis));
+        entry.insert(
+            "bytes".into(),
+            Value::I64(i64::try_from(response.body.len()).unwrap_or(i64::MAX)),
+        );
+        if !self.referrer.is_empty() {
+            entry.insert("referrer".into(), Value::String(self.referrer));
+        }
+        if !self.agent.is_empty() {
+            entry.insert("agent".into(), Value::String(self.agent));
+        }
+        crate::logging::queue_http_request(entry);
     }
 }
 
@@ -215,7 +302,7 @@ fn forwarded_https(headers: &axum::http::HeaderMap) -> bool {
         })
 }
 
-fn header_map(headers: &axum::http::HeaderMap) -> BTreeMap<String, String> {
+pub(crate) fn header_map(headers: &axum::http::HeaderMap) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     for name in headers.keys() {
         let values: Vec<&str> = headers

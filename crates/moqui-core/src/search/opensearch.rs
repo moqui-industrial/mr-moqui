@@ -90,6 +90,8 @@ fn object_properties(object: &ObjectMapping) -> Map<String, Json> {
 /// its `.keyword` subfield. Other `.keyword` suffixes are dropped, since the field is one.
 fn field_name(mapping: &DocumentMapping, name: &str, unanalyzed: bool) -> String {
     match name {
+        // A log index has its own `@timestamp`, the event time.
+        "@timestamp" if mapping.root.fields.contains_key(name) => return name.to_string(),
         "@timestamp" | "_timestamp" | "indexed_at" => return INDEXED_AT.to_string(),
         "_id" | "_score" => return name.to_string(),
         _ => {}
@@ -107,6 +109,7 @@ fn field_name(mapping: &DocumentMapping, name: &str, unanalyzed: bool) -> String
 
 fn kind_of(mapping: &DocumentMapping, name: &str) -> Option<FieldKind> {
     match name {
+        "@timestamp" if mapping.root.fields.contains_key(name) => Some(FieldKind::Date),
         "@timestamp" | "_timestamp" | "indexed_at" => Some(FieldKind::Date),
         _ => mapping.resolve(name).field().map(|field| field.kind),
     }
@@ -150,6 +153,7 @@ fn full(prefix: &str, name: &str) -> String {
 fn compile(mapping: &DocumentMapping, query: &Query, prefix: &str) -> Json {
     match query {
         Query::MatchAll => json!({"match_all": {}}),
+        Query::Lucene(text) => json!({"query_string": {"query": text, "lenient": true, "analyze_wildcard": true}}),
         Query::Text { terms, fields, kind } => {
             let text = match kind {
                 TextMatch::Term => terms.split_whitespace().map(escape).collect::<Vec<_>>().join(" "),
@@ -436,6 +440,11 @@ impl OpenSearchBackend {
         }
     }
 
+    /// True when the cluster answers `GET /`.
+    pub fn reachable(&self) -> bool {
+        matches!(self.send("GET", "/", None), Ok((status, _)) if status < 300)
+    }
+
     pub fn index_name(&self, mapping: &DocumentMapping) -> String {
         format!("{}{}", self.index_prefix, mapping.physical_name)
     }
@@ -501,7 +510,16 @@ impl OpenSearchBackend {
         if let Some(alias) = &mapping.index_name {
             body.insert("aliases".into(), json!({format!("{}{alias}", self.index_prefix): {}}));
         }
-        self.checked("PUT", &index, Some(Body::Json(Json::Object(body))))?;
+        let (status, json) = self.send("PUT", &index, Some(Body::Json(Json::Object(body))))?;
+        // Another thread or node made it between the mapping check and here: the same definition.
+        let exists = json.pointer("/error/type").and_then(Json::as_str) == Some("resource_already_exists_exception");
+        if status >= 300 && !exists {
+            let reason = json
+                .pointer("/error/reason")
+                .and_then(Json::as_str)
+                .map_or_else(|| json.to_string(), str::to_string);
+            return Err(Error::new(format!("OpenSearch PUT {index} returned {status}: {reason}")));
+        }
         Ok(())
     }
 }
@@ -512,6 +530,10 @@ enum Body {
 }
 
 impl SearchBackend for OpenSearchBackend {
+    fn keeps_log_indexes(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &'static str {
         "opensearch"
     }
@@ -557,8 +579,15 @@ impl SearchBackend for OpenSearchBackend {
         let index = self.index_name(mapping);
         let now = Timestamp::now().as_millisecond();
         let mut text = String::new();
+        // Log entries come without ids: OpenSearch makes them, and the write does not wait for a refresh.
+        let generated_ids = documents.iter().all(|(id, _)| id.is_empty());
         for (id, body) in documents {
-            text.push_str(&json!({"index": {"_index": index, "_id": id}}).to_string());
+            let action = if id.is_empty() {
+                json!({"index": {"_index": index}})
+            } else {
+                json!({"index": {"_index": index, "_id": id}})
+            };
+            text.push_str(&action.to_string());
             text.push('\n');
             let mut source = body_json(&Value::Map(body.clone()));
             if let Json::Object(map) = &mut source {
@@ -567,7 +596,8 @@ impl SearchBackend for OpenSearchBackend {
             text.push_str(&source.to_string());
             text.push('\n');
         }
-        let response = self.checked("POST", "_bulk?refresh=wait_for", Some(Body::NdJson(text)))?;
+        let path = if generated_ids { "_bulk" } else { "_bulk?refresh=wait_for" };
+        let response = self.checked("POST", path, Some(Body::NdJson(text)))?;
         if response.get("errors").and_then(Json::as_bool) == Some(true) {
             let first = response
                 .get("items")

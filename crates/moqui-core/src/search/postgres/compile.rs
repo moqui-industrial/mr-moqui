@@ -176,6 +176,9 @@ impl<'a> Compiler<'a> {
     fn compile(&self, query: &Query, scope: &Scope<'a>) -> Result<Sql, Error> {
         match query {
             Query::MatchAll => Ok(Sql::new("TRUE")),
+            Query::Lucene(_) => Err(Error::new(
+                "a Lucene query string runs only on the opensearch search backend",
+            )),
             Query::Text { terms, fields, kind } => self.text(scope, terms, fields, *kind),
             Query::Field(field) => {
                 let positive = self.field(scope, field)?;

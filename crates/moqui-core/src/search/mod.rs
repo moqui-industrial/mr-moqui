@@ -25,6 +25,7 @@ pub mod conf;
 pub mod es_json;
 pub mod feed;
 pub mod highlight;
+pub mod logs;
 pub mod mapping;
 #[cfg(feature = "http")]
 pub mod opensearch;
@@ -148,6 +149,10 @@ pub trait SearchBackend: Send + Sync {
         aggs: &IndexMap<String, Agg>,
     ) -> Result<IndexMap<String, Value>, Error>;
     fn drop_index(&self, mapping: &DocumentMapping) -> Result<(), Error>;
+    /// Whether this backend keeps the log indexes (`search::logs`). Only OpenSearch does.
+    fn keeps_log_indexes(&self) -> bool {
+        false
+    }
 }
 
 pub struct SearchFacade {
@@ -184,6 +189,11 @@ impl SearchFacade {
         if let Some(found) = lock(&self.mappings).get(data_document_id) {
             return Ok(Arc::clone(found));
         }
+        if let Some(mapping) = self.log_mapping(data_document_id) {
+            let mapping = Arc::new(mapping);
+            lock(&self.mappings).insert(data_document_id.to_string(), Arc::clone(&mapping));
+            return Ok(mapping);
+        }
         let info = document::document_info(&self.entity, data_document_id)?;
         let mapping = Arc::new(DocumentMapping::from_info(&info));
         lock(&self.mappings).insert(data_document_id.to_string(), Arc::clone(&mapping));
@@ -205,8 +215,37 @@ impl SearchFacade {
     pub fn target_documents(&self, target: &Target) -> Result<Vec<String>, Error> {
         match target {
             Target::Documents(ids) => Ok(ids.clone()),
+            Target::Index(name) if self.is_log_index(name) => Ok(vec![name.clone()]),
             Target::Index(name) => document::documents_in_index(&self.entity, name),
         }
+    }
+
+    /// True when `name` is a log index and this backend keeps the log indexes.
+    pub fn is_log_index(&self, name: &str) -> bool {
+        logs::is_log_index(name) && self.backend.keeps_log_indexes()
+    }
+
+    fn log_mapping(&self, name: &str) -> Option<DocumentMapping> {
+        if self.backend.keeps_log_indexes() {
+            logs::log_mapping(name)
+        } else {
+            None
+        }
+    }
+
+    /// Index log entries (`search::logs`), each a flat body with its own `@timestamp`. The
+    /// backend makes the id. Nothing is written when the backend does not keep log indexes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the index cannot be made or the bulk write fails.
+    pub fn index_log_entries(&self, index: &str, entries: Vec<Document>) -> Result<usize, Error> {
+        if !self.is_log_index(index) || entries.is_empty() {
+            return Ok(0);
+        }
+        let mapping = self.ensure_cached(index)?;
+        let documents: Vec<(String, Document)> = entries.into_iter().map(|body| (String::new(), body)).collect();
+        self.backend.index_documents(&mapping, &documents)
     }
 
     /// `ensure_index`: create or rebuild the store from the current definition.

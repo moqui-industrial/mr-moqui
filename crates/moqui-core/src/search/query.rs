@@ -110,6 +110,9 @@ pub enum Query {
         path: String,
         query: Box<Query>,
     },
+    /// A Lucene query string sent to OpenSearch as written. Only a log index search makes one (the
+    /// log viewer); it is not the facade grammar, and the Postgres backend rejects it.
+    Lucene(String),
 }
 
 impl Query {
@@ -331,6 +334,11 @@ impl Query {
         };
         match self {
             Self::MatchAll => Value::string("match_all"),
+            Self::Lucene(text) => {
+                let mut map = IndexMap::new();
+                map.insert("lucene".to_string(), Value::string(text));
+                Value::Map(map)
+            }
             Self::Text { terms, fields, kind } => {
                 let mut inner = IndexMap::new();
                 inner.insert("terms".into(), Value::string(terms));

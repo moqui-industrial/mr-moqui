@@ -384,6 +384,59 @@ fn authenticate(request: &WebRequest, parameters: &BTreeMap<String, Value>) -> R
     Ok((login_error, by_header))
 }
 
+/// What [`check_permission`] found for a request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PermissionCheck {
+    Allowed,
+    /// Nobody is logged in: Java's `MoquiAuthFilter` answers 401 with a Basic challenge.
+    Unauthenticated,
+    /// Logged in without the permission: 403.
+    Forbidden,
+}
+
+/// Java's `MoquiAuthFilter`, for a path that is not a screen (the `/elastic` and `/kibana` proxies):
+/// the session cookie, Basic, `api_key`/`login_key`, or `authUsername`/`authPassword` login a screen
+/// request makes, then whether the user has `permission`. The session is not handed back to the client.
+///
+/// # Errors
+///
+/// Returns an error when the session or the permission rows cannot be read.
+pub fn check_permission(
+    factory: &Arc<ExecutionContextFactory>,
+    request: &WebRequest,
+    permission: &str,
+) -> Result<PermissionCheck, Error> {
+    let context = crate::context::ExecutionContext::current()
+        .is_none()
+        .then(|| factory.new_context());
+    let _entered = context.as_ref().map(|context| context.enter());
+    let session_cookie = web::session_cookie_of(request);
+    let visitor_cookie = web::visitor_cookie_of(request);
+    let guard = user::bind(
+        factory,
+        session_cookie.as_deref(),
+        visitor_cookie.as_deref(),
+        request.https,
+    )?;
+    let parameters: BTreeMap<String, Value> = request
+        .query
+        .iter()
+        .map(|(name, value)| (name.clone(), Value::string(value)))
+        .collect();
+    let _web = web::install(parameters.clone());
+    authenticate(request, &parameters)?;
+    let check = if user::current_username()?.is_none() {
+        PermissionCheck::Unauthenticated
+    } else if user::has_permission(permission)? {
+        PermissionCheck::Allowed
+    } else {
+        PermissionCheck::Forbidden
+    };
+    user::end_request()?;
+    drop(guard);
+    Ok(check)
+}
+
 /// Walk `path` from `root` without binding a session.
 ///
 /// # Errors

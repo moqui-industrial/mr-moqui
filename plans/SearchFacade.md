@@ -446,6 +446,8 @@ Each stored document carries `_indexed_at` (epoch millis), which a retention `de
 </search-facade>
 ```
 
+`opensearch_run`, `opensearch_start_wait`, and `moqui_log_level` are default properties; Dashboards and logs describes them.
+
 `backend` defaults to `postgres`. With no `postgres` element, tables live in the `search` schema of the entity Postgres, embedded or external. When the entity datasource is not Postgres, that default is a dedicated embedded cluster. With `backend="opensearch"` the cluster element is required and the Postgres search store is not opened.
 
 A `postgres` url uses TLS unless it carries `?sslmode=disable`, the same rule as the entity datasource's `sslmode`. A host that is an absolute path is a Unix socket directory.
@@ -459,6 +461,12 @@ Service parameters named `clusterName` go away. There is one backend. The `logge
 OpenSearch Dashboards, the `/elastic` and `/kibana` proxies, and the `ElasticRemote` and `KibanaRemote` permissions stay. They do nothing when the backend is Postgres, because there is no cluster to proxy. People who build visualizations on the Mantle indexes keep doing that when they choose the OpenSearch backend. The documents they see are the same documents the facade indexes. The facade is not a report designer, and Postgres is not given a dashboard server.
 
 Application logs and HTTP request logs are flat indexes, `moqui_logs` and `moqui_http_log`, written by the host. They are not DataDocuments. The log viewer and the two cleanup jobs run when the backend is OpenSearch. When the backend is Postgres, log events stay in the tracing output and the log viewer reports that the search backend has no log index. `Crate-Layout.md` already places the log shipper on the host, beside the OpenSearch process.
+
+On OpenSearch the facade treats each log index as a flat document type named for the index (`search::logs`), with the fields of `ElasticSearchLogger` and `ElasticRequestLogFilter` and the event time in its own `@timestamp`. So `search`, `delete_matching` retention, and `get_document` work as they do for documents, and `Index("moqui_logs")` names it. The log viewer's string is a `Query::Lucene`, sent as written; the Postgres compiler rejects that variant. The host installs a `tracing` subscriber (stderr lines at `moqui_log_level`) and, on OpenSearch, a shipper thread that bulk-indexes queued events every two seconds without waiting for a refresh. As in Java, DEBUG and TRACE are not shipped, a full queue (16384) drops new entries, and the shipper's own events are not queued. Screen and REST requests go to `moqui_http_log`; proxied requests do not, as Java's filter covered only the webapp.
+
+`/elastic/*` proxies to `elasticsearch_url` with the prefix removed, and `/kibana/*` to `http://${kibana_host}:${kibana_port}` with the prefix kept (Dashboards sets `server.basePath: "/kibana"`). Each needs a login (session, Basic, or `api_key`) and the `ElasticRemote` or `KibanaRemote` permission: 401 with a Basic challenge, else 403, as `MoquiAuthFilter` answers. The client's `Authorization` and `Cookie` headers are not forwarded; `elasticsearch_user` and `elasticsearch_password` are. On Postgres both paths are 404.
+
+When the opensearch backend's cluster is this host and nothing answers, the search store starts `runtime/opensearch` (`bin/opensearch` in the foreground with its bundled JDK, as `su` to an owning `opensearch` user when that works) and waits up to `opensearch_start_wait` seconds. Dropping the store sends SIGTERM and then kills it. A `pid` file means the node is run outside the server (`bin/opensearch -d -p pid`), and it is left alone. `opensearch_run=false` never starts one.
 
 ## Caller migration
 

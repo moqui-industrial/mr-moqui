@@ -17,10 +17,14 @@
 //! The Postgres backend uses, in order: the `postgres` url from `search-facade`; the entity
 //! Postgres (its `search` schema), when the entity datasource is Postgres; or a dedicated embedded
 //! cluster under `runtime/db/search` when the entity datasource is not Postgres. The OpenSearch
-//! backend talks to the conf `cluster` over HTTP; starting that process is not done here.
+//! backend talks to the conf `cluster` over HTTP. When that cluster is local and not running, and
+//! `runtime/opensearch` holds an install, the store starts it, as `MoquiStart` does, and stops it
+//! when dropped.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use moqui_core::context::ExecutionContextFactory;
 use moqui_core::entity::EntityFacade;
@@ -30,14 +34,21 @@ use moqui_core::search::SearchFacade;
 use moqui_core::transaction::{PoolConfig, TransactionManager};
 use moqui_lib::error::Error;
 
-/// Keeps a dedicated search postmaster alive. Drop it after the factory.
+/// Keeps a dedicated search postmaster, or a local OpenSearch this process started, alive. Drop it
+/// after the factory.
 #[derive(Default)]
 pub struct SearchStore {
     #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
     cluster: Option<crate::db::embedded::EmbeddedCluster>,
+    opensearch: Option<OpenSearchProcess>,
 }
 
 impl SearchStore {
+    /// True when this store started the OpenSearch in `runtime/opensearch`.
+    pub fn started_opensearch(&self) -> bool {
+        self.opensearch.is_some()
+    }
+
     /// True when this store started its own embedded postmaster.
     pub fn has_own_cluster(&self) -> bool {
         #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
@@ -147,6 +158,161 @@ fn attach_opensearch(
         .as_ref()
         .ok_or_else(|| Error::new("search-facade backend opensearch needs a cluster url"))?;
     let backend = moqui_core::search::opensearch::OpenSearchBackend::new(cluster);
+    let mut store = SearchStore::default();
+    if !backend.reachable() {
+        let dir = factory.runtime_dir().join("opensearch");
+        if run_local_opensearch(&dir, &cluster.url) {
+            store.opensearch = Some(OpenSearchProcess::start(&dir)?);
+            wait_for(&backend, &dir)?;
+        }
+    }
     moqui_core::search::install(factory, SearchFacade::new(Arc::new(backend), entity.clone()));
-    Ok(SearchStore::default())
+    Ok(store)
+}
+
+/// An OpenSearch child process. Dropping it stops the process.
+struct OpenSearchProcess {
+    child: Child,
+}
+
+impl OpenSearchProcess {
+    /// `bin/opensearch` in the foreground, in its own directory, as `MoquiStart.checkStartElasticSearch`
+    /// does. The install's bundled JDK is used. When the directory belongs to an `opensearch` user that
+    /// `su` can switch to, it runs as that user. Output goes to `logs/moqui-start.log` in the install.
+    fn start(dir: &Path) -> Result<Self, Error> {
+        let logs = dir.join("logs");
+        std::fs::create_dir_all(&logs)
+            .map_err(|err| Error::new(format!("could not make {}", logs.display())).with_source(err))?;
+        let log_path = logs.join("moqui-start.log");
+        let log = std::fs::File::create(&log_path)
+            .map_err(|err| Error::new(format!("could not write {}", log_path.display())).with_source(err))?;
+        let err_log = log
+            .try_clone()
+            .map_err(|err| Error::new("could not share the OpenSearch log file").with_source(err))?;
+        let mut command = opensearch_command(dir);
+        command
+            .current_dir(dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log))
+            .stderr(Stdio::from(err_log));
+        let child = command.spawn().map_err(|err| {
+            Error::new(format!("could not start OpenSearch in {}", dir.display())).with_source(err)
+        })?;
+        eprintln!(
+            "Started OpenSearch from {} (pid {}), output in {}",
+            dir.display(),
+            child.id(),
+            log_path.display()
+        );
+        Ok(Self { child })
+    }
+}
+
+impl Drop for OpenSearchProcess {
+    fn drop(&mut self) {
+        stop_child(&mut self.child);
+    }
+}
+
+/// Ask the process to stop (SIGTERM on unix, so OpenSearch closes its shards), wait a little, then kill it.
+fn stop_child(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        if let Ok(pid) = i32::try_from(child.id()) {
+            let _ = Command::new("kill").arg("-TERM").arg(pid.to_string()).status();
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while Instant::now() < deadline {
+                if matches!(child.try_wait(), Ok(Some(_))) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Start the install in `dir` when: `opensearch_run` is not false, `dir/bin` exists, there is no
+/// `dir/pid` (a node started with `-p pid` is managed outside this process, as Java leaves it), and
+/// the cluster url is this host.
+fn run_local_opensearch(dir: &Path, url: &str) -> bool {
+    let run = moqui_lib::env::get_prop_or_env("opensearch_run");
+    if run.trim().eq_ignore_ascii_case("false") {
+        return false;
+    }
+    if !dir.join("bin").is_dir() || dir.join("pid").exists() {
+        return false;
+    }
+    let host = url
+        .split_once("://")
+        .map_or(url, |(_, rest)| rest)
+        .split(['/', ':'])
+        .next()
+        .unwrap_or("");
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]")
+}
+
+fn opensearch_command(dir: &Path) -> Command {
+    if cfg!(windows) {
+        let mut command = Command::new("cmd.exe");
+        command.args(["/c", "bin\\opensearch.bat"]);
+        return command;
+    }
+    if let Some(user) = switchable_owner(dir) {
+        let mut command = Command::new("su");
+        command.args(["-c", "./bin/opensearch", &user]);
+        return command;
+    }
+    Command::new("./bin/opensearch")
+}
+
+/// `opensearch`, when that user owns `dir`, this process runs as someone else, and `su` to it works
+/// without a password (as root).
+#[cfg(unix)]
+fn switchable_owner(dir: &Path) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let owner = std::fs::metadata(dir).ok()?.uid();
+    let output = Command::new("id").args(["-u", "opensearch"]).output().ok()?;
+    let id: u32 = String::from_utf8_lossy(&output.stdout).trim().parse().ok()?;
+    let own = Command::new("id").arg("-u").output().ok()?;
+    let me: u32 = String::from_utf8_lossy(&own.stdout).trim().parse().ok()?;
+    if id != owner || id == me {
+        return None;
+    }
+    let su = Command::new("/bin/su")
+        .args(["-c", "/bin/true", "opensearch"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok()?;
+    su.success().then(|| "opensearch".to_string())
+}
+
+#[cfg(not(unix))]
+fn switchable_owner(_dir: &Path) -> Option<String> {
+    None
+}
+
+/// Wait for the started node to answer, up to `opensearch_start_wait` seconds (default 120).
+fn wait_for(backend: &moqui_core::search::opensearch::OpenSearchBackend, dir: &Path) -> Result<(), Error> {
+    let seconds = moqui_lib::env::get_prop_or_env("opensearch_start_wait")
+        .trim()
+        .parse::<u64>()
+        .unwrap_or(120);
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    while Instant::now() < deadline {
+        if backend.reachable() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    let log: PathBuf = dir.join("logs").join("moqui-start.log");
+    Err(Error::new(format!(
+        "OpenSearch in {} did not answer within {seconds}s; see {}",
+        dir.display(),
+        log.display()
+    )))
 }

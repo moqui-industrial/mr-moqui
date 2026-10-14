@@ -522,7 +522,8 @@ Phase 9 was checked against `SalesSummary.xml` through `SalesReportServices`, an
 - **Text** uses the `simple` configuration, not `english`, to match Elastic's `standard` analyzer.
 - **Services.** `SearchServices.xml` bodies are JavaScript on `ec.search`. `search#DataDocuments` reads the Elastic JSON `nestedQueryMap` that unmigrated callers send. A `<script>` body may end with a top-level `return`.
 - **Store placement** is the host `search` module: the entity Postgres `search` schema, a `postgres` url, or a dedicated embedded cluster under `runtime/db/search` when the entity database is not Postgres. The data load attaches search when it can.
-- **OpenSearch** request bodies are built by the compiler in core. Starting the OpenSearch process, the `/elastic` and `/kibana` proxies, and the log indexes wait for the web phases.
+- **OpenSearch** request bodies are built by the compiler in core. The host starts a local `runtime/opensearch` when the cluster url is this host and nothing answers, proxies `/elastic` and `/kibana` behind `ElasticRemote` and `KibanaRemote`, installs the `tracing` subscriber, and ships log events and screen requests to `moqui_logs` and `moqui_http_log`, which the facade treats as flat document types on that backend only. `tests/search_opensearch.rs` and `tests/opensearch_start.rs` cover these against a live node and are ignored by default.
+- **Phrase.** Golden tests on both backends: adjacent, reversed, and separated terms, kept stop words, and no match across stored values or child elements. Highlights mark a phrase only where its words are adjacent.
 
 `get#InventoryProjectedInfo` is a mantle rewrite onto `aggregate`. `get#PriceHistoryInfo` stays unimplemented because it has no callers. Both are named here so they are not ported as `ElasticFacade` clients. The inventory rewrite happens with mantle, outside this gate.
 

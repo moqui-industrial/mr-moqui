@@ -28,6 +28,8 @@ inbound-smtp = []
 moqui-core = { workspace = true, features = ["mail", "http", "cluster-tls"] }
 moqui-lib = { workspace = true, features = ["http"] }
 tracing = { workspace = true }
+# Log line and log entry timestamps (crates/moqui-host/src/logging.rs). Already in the graph under moqui-lib.
+jiff = { workspace = true }
 tokio = { workspace = true }
 rustls = { workspace = true }
 sha2 = { workspace = true }

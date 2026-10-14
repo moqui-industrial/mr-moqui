@@ -139,6 +139,13 @@
     <default-property name="elasticsearch_user" value=""/>
     <default-property name="elasticsearch_password" value="" is-secret="true"/>
     <default-property name="elasticsearch_index_prefix" value=""/>
+    <!-- On the opensearch backend, when elasticsearch_url is this host and nothing answers there, the server starts the install in
+        runtime/opensearch (unless it has a pid file, a node run outside the server) and stops it on shutdown. "false" never starts it.
+        opensearch_start_wait is how many seconds startup waits for that node to answer. -->
+    <default-property name="opensearch_run" value="true"/>
+    <default-property name="opensearch_start_wait" value="120"/>
+    <!-- Server log output on stderr: trace, debug, info, warn, or error -->
+    <default-property name="moqui_log_level" value="info"/>
 
     <!-- LLM Client settings (env vars / Java properties; see ReleaseNotes.md). url may be an origin
          (default path /v1/chat/completions is appended) or a full chat/completions URL (Azure).

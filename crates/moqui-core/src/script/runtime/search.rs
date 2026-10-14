@@ -138,9 +138,16 @@ pub(super) fn search_search<'js>(ctx: Ctx<'js>, args: JsValue<'js>) -> rquickjs:
     host_guard(&ctx, || {
         let map = options(&ctx, &args)?;
         let target = target_of(&ctx, &map)?;
+        let facade = facade(&ctx)?;
+        // The log viewer's string goes to OpenSearch as written, as query_string did in Java.
+        let log_index = matches!(&target, Target::Index(name) if facade.is_log_index(name));
         let mut query = query_of(&ctx, map.get("query"))?;
         if let Some(text) = map.get("queryString").map(moqui_lib::object::to_plain_string) {
-            let parsed = lib(&ctx, search::parse::parse_query_string(&text))?;
+            let parsed = if log_index {
+                Query::Lucene(text)
+            } else {
+                lib(&ctx, search::parse::parse_query_string(&text))?
+            };
             query = match query {
                 Query::MatchAll => parsed,
                 other => Query::all(vec![other, parsed]),
@@ -154,7 +161,7 @@ pub(super) fn search_search<'js>(ctx: Ctx<'js>, args: JsValue<'js>) -> rquickjs:
         request.offset = number(map.get("offset"), 0);
         request.limit = number(map.get("limit"), 20);
         request.highlight = text_list(map.get("highlight").or_else(|| map.get("highlightFields")));
-        let page = lib(&ctx, facade(&ctx)?.search(&target, &request))?;
+        let page = lib(&ctx, facade.search(&target, &request))?;
         let mut hits = Vec::with_capacity(page.hits.len());
         for hit in page.hits {
             let mut entry = indexmap::IndexMap::new();

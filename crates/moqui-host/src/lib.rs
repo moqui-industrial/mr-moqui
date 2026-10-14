@@ -23,6 +23,7 @@ pub mod ipp;
 #[cfg(feature = "pdf")]
 pub mod pdf;
 pub mod qvt_report;
+pub mod logging;
 pub mod search;
 pub mod ssh;
 pub mod sso;
@@ -33,6 +34,8 @@ mod cluster_notify;
 
 #[cfg(feature = "axum")]
 mod http;
+#[cfg(feature = "axum")]
+mod search_proxy;
 #[cfg(feature = "axum")]
 mod notws;
 
@@ -47,6 +50,7 @@ pub fn serve() -> Result<(), moqui_lib::error::Error> {
         let runtime = std::env::var_os("MOQUI_RUNTIME").map_or_else(|| std::path::PathBuf::from("runtime"), Into::into);
         let framework = std::env::var_os("MOQUI_FRAMEWORK").map_or_else(|| runtime.join("../framework"), Into::into);
         let cluster = runtime.join("db/embedded");
+        logging::install();
         let server = start_server_in(runtime, framework, cluster, ListenBind::Property)?;
         println!("Listening on {}", server.address());
         server.wait();
@@ -758,6 +762,8 @@ fn boot_server(
             None
         }
     };
+    // On OpenSearch, log events and HTTP requests go to moqui_logs and moqui_http_log.
+    logging::ship_to_search(&factory);
     {
         let context = factory.new_context();
         let entered = context.enter();
