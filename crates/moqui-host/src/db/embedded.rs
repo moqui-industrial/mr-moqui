@@ -64,16 +64,22 @@ mod cluster {
         pub fn start(dir: impl AsRef<Path>, max_connections: u32) -> Result<(Self, PostgresDriver), Error> {
             let dir = dir.as_ref();
             std::fs::create_dir_all(dir).map_err(|err| Error::new("create embedded dir").with_source(err))?;
+            // postgresql_embedded is handed install, data, socket, and password paths verbatim,
+            // and the postmaster resolves a relative socket dir against the wrong base, so it
+            // cannot create its lock file (`moqui load` passed `runtime/db/embedded` straight
+            // through). Resolve once so every caller gets absolute paths.
+            let dir =
+                std::fs::canonicalize(dir).map_err(|err| Error::new("resolve embedded dir").with_source(err))?;
             let data_dir = dir.join("data");
             #[cfg(unix)]
             check_socket_len(&data_dir)?;
             if let Some(lock) = postmaster_lock(&data_dir)? {
                 if process_live(lock.pid) {
-                    return adopt(dir, &data_dir, max_connections, lock);
+                    return adopt(&dir, &data_dir, max_connections, lock);
                 }
             }
-            ensure_major_can_start(dir, &data_dir)?;
-            launch(dir, &data_dir, max_connections, None)
+            ensure_major_can_start(&dir, &data_dir)?;
+            launch(&dir, &data_dir, max_connections, None)
         }
 
         /// `pg_dump --format=custom` of the whole `moqui` database, including a `search` schema.
@@ -625,6 +631,44 @@ mod cluster {
             let rows = conn.query("SELECT n FROM kept", &[]).unwrap();
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].get("n"), Some(&Value::I32(7)));
+        }
+
+        static RELATIVE_CLUSTER_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+        /// Regression: `moqui load` passed the relative `runtime/db/embedded` straight into
+        /// postgresql_embedded, and the postmaster could not create its lock file because a
+        /// relative socket dir resolves against the wrong base. `start` must resolve to
+        /// absolute install/data/socket paths, so a relative dir boots and serves its socket.
+        #[test]
+        fn relative_cluster_dir_starts_and_serves_its_socket() {
+            let name = format!(
+                "moqui-pg-rel-{}-{}",
+                std::process::id(),
+                RELATIVE_CLUSTER_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            );
+            let rel = PathBuf::from(&name);
+            let abs = std::env::current_dir().unwrap().join(&rel);
+            let _guard = DirGuard(abs.clone());
+            // Unix socket paths need fewer than 108 bytes. Skip the live boot when this
+            // checkout sits too deep for that; the absolute-resolution assert below still
+            // documents the invariant.
+            if abs.join("data").join(".s.PGSQL.5432").as_os_str().len() >= 108 {
+                println!("skipping live relative boot: socket path too long under {}", abs.display());
+                return;
+            }
+            provide_libxml2_soname(&abs);
+            let (cluster, driver) = EmbeddedCluster::start(&rel, 20).unwrap();
+            let data_dir = cluster.data_dir().to_path_buf();
+            assert!(data_dir.is_absolute(), "data dir still relative: {}", data_dir.display());
+            assert!(
+                data_dir.join(".s.PGSQL.5432").exists(),
+                "socket missing in {}",
+                data_dir.display()
+            );
+            let mut conn = driver.connect_postgres().unwrap();
+            let rows = conn.query_once("SELECT 1", &[]).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].columns[0].1, Value::I32(1));
         }
 
         #[test]
