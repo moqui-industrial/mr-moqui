@@ -10,7 +10,7 @@ This follows `plans/Architecture-Proposal.md` (Database, Platform notes, Transac
 
 `moqui-host`'s `db` module owns startup and shutdown. Default features of `postgresql_embedded` are off. The features that are on are `bundled`, `blocking`, `theseus`, and `tls-rustls-aws-lc-rs`. `native-tls` and `zonky` stay off. `POSTGRESQL_VERSION` is pinned at build to 18.6.0, so a bundled binary does not call GitHub at runtime. The crate's MSRV is Rust 1.94, and that is the floor for the host crate.
 
-The install lives under the runtime directory, not `~/.theseus`. One install serves every cluster. Two data directories: the entity cluster, and a temp directory for the sim cluster.
+The install lives under the runtime directory, not `~/.theseus`. One install serves every cluster: `runtime/db/install`, shared by the entity cluster, the search cluster, and the sim overlay (`shared_install_dir`). An earlier build unpacked an install inside each cluster directory. The entity cluster's install is moved to the shared path the first time rather than unpacked again. The major-version check looks for a previous server beside both the cluster directory and the shared install. Two data directories: the entity cluster, and a temp directory for the sim cluster.
 
 Measured theseus Postgres 18.6.0 archive sizes, 2026-10-11. The compressed figure is what a bundled build adds. The extracted figure is the on-disk install.
 
@@ -70,7 +70,7 @@ A host test that needs more than one database uses two clusters.
 
 `PG_VERSION` in the data directory is the installed major version. A minor bump starts the new postmaster on the same directory. A major bump cannot open the old directory. Only one major (18) ships today, so startup refuses a data directory from another major and names both versions; it does not run `pg_upgrade`. The upgrade path (previous server binaries beside the new install, then `pg_upgrade`, or `save-db` and `load-save`) lands with the first theseus bump that changes the major, in the phase that bumps it.
 
-After a hard kill, startup reads `postmaster.pid`. A live process on our data directory is adopted when the version matches, and refused with that pid when it does not. An adopted postmaster is never stopped by the process that adopted it, so `save-db` and `load-save` run beside a live server leave it running. Startup does not kill an unrelated postmaster and does not start a second one on the same directory.
+After a hard kill, startup reads `postmaster.pid`. A live process on our data directory is adopted when the version matches, and refused with that pid when it does not. Line 2 of the lock file must name this data directory. A lock copied with a data directory from a live cluster names the other directory, and startup refuses it, naming the pid and that directory. An adopted postmaster is never stopped by the process that adopted it, so `save-db` and `load-save` run beside a live server leave it running. Startup does not kill an unrelated postmaster and does not start a second one on the same directory.
 
 ## What this does not change
 

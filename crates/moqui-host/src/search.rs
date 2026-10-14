@@ -111,9 +111,17 @@ fn external_tx(_url: &str, _user: Option<&str>, _password: Option<&str>) -> Resu
 
 #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
 fn embedded_tx(runtime_dir: &Path, store: &mut SearchStore) -> Result<TransactionManager, Error> {
-    let dir = runtime_dir.join("db").join("search");
+    use crate::db::embedded::{shared_install_dir, ClusterRole, EmbeddedCluster, StartOptions};
+
+    let db_dir = runtime_dir.join("db");
+    let dir = db_dir.join("search");
     crate::xmlshim::provide_libxml2_soname(&dir)?;
-    let (cluster, driver) = crate::db::embedded::EmbeddedCluster::start(&dir, search_pool().max + 4)?;
+    let options = StartOptions {
+        max_connections: search_pool().max + crate::db::entity_db::SUPERUSER_SLOTS,
+        role: ClusterRole::Entity,
+        install_dir: Some(shared_install_dir(&db_dir, &dir)),
+    };
+    let (cluster, driver) = EmbeddedCluster::start_with(&dir, &options)?;
     store.cluster = Some(cluster);
     TransactionManager::new(Arc::new(driver), search_pool())
 }

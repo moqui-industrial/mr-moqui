@@ -81,16 +81,16 @@ pub fn transactional_conf(factory: &ExecutionContextFactory) -> Result<Datasourc
     datasource_conf(&conf, "transactional")
 }
 
-/// Open the database `conf` names. Embedded starts (or adopts) the cluster at `cluster_dir` with
-/// `max_connections` of `pool_max` plus [`SUPERUSER_SLOTS`].
+/// Open the database `conf` names. Embedded starts (or adopts) the cluster at `cluster_dir`, on the
+/// theseus install at `install_dir`, with `max_connections` of `pool_max` plus [`SUPERUSER_SLOTS`].
 ///
 /// # Errors
 ///
 /// Returns an error when the cluster does not start, or the driver for the kind is not in this
 /// build or cannot be made.
-pub fn open(conf: DatasourceConf, cluster_dir: &Path, pool_max: u32) -> Result<EntityDb, Error> {
+pub fn open(conf: DatasourceConf, cluster_dir: &Path, install_dir: &Path, pool_max: u32) -> Result<EntityDb, Error> {
     match conf.kind {
-        DatasourceKind::Embedded => open_embedded(conf, cluster_dir, pool_max),
+        DatasourceKind::Embedded => open_embedded(conf, cluster_dir, install_dir, pool_max),
         DatasourceKind::Postgres => {
             let driver = postgres_driver(&conf)?;
             Ok(external(conf, driver))
@@ -112,9 +112,21 @@ fn external(conf: DatasourceConf, driver: Arc<dyn DbDriver>) -> EntityDb {
 }
 
 #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
-fn open_embedded(conf: DatasourceConf, cluster_dir: &Path, pool_max: u32) -> Result<EntityDb, Error> {
+fn open_embedded(
+    conf: DatasourceConf,
+    cluster_dir: &Path,
+    install_dir: &Path,
+    pool_max: u32,
+) -> Result<EntityDb, Error> {
+    use super::embedded::{ClusterRole, EmbeddedCluster, StartOptions};
+
     crate::xmlshim::provide_libxml2_soname(cluster_dir)?;
-    let (cluster, driver) = super::embedded::EmbeddedCluster::start(cluster_dir, pool_max + SUPERUSER_SLOTS)?;
+    let options = StartOptions {
+        max_connections: pool_max + SUPERUSER_SLOTS,
+        role: ClusterRole::Entity,
+        install_dir: Some(install_dir.to_path_buf()),
+    };
+    let (cluster, driver) = EmbeddedCluster::start_with(cluster_dir, &options)?;
     Ok(EntityDb {
         conf,
         driver: Arc::new(driver),
@@ -123,7 +135,12 @@ fn open_embedded(conf: DatasourceConf, cluster_dir: &Path, pool_max: u32) -> Res
 }
 
 #[cfg(not(all(feature = "embedded-postgres", feature = "postgres")))]
-fn open_embedded(_conf: DatasourceConf, _cluster_dir: &Path, _pool_max: u32) -> Result<EntityDb, Error> {
+fn open_embedded(
+    _conf: DatasourceConf,
+    _cluster_dir: &Path,
+    _install_dir: &Path,
+    _pool_max: u32,
+) -> Result<EntityDb, Error> {
     Err(Error::new(
         "embedded postgres is not in this build; set entity_ds_db_conf to postgres or mysql",
     ))

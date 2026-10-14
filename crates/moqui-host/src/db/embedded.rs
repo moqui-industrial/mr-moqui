@@ -44,6 +44,8 @@ mod cluster {
     struct PostmasterLock {
         pid: u32,
         port: u16,
+        /// Line 2: the data directory the postmaster was started on.
+        data_dir: PathBuf,
     }
 
     /// What a cluster is for. The sim overlay is small and does not wait for its commits to sync.
@@ -115,7 +117,8 @@ mod cluster {
                     return adopt(&dir, &data_dir, options, lock);
                 }
             }
-            ensure_major_can_start(&dir, &data_dir)?;
+            let install_root = options.install_dir.clone().unwrap_or_else(|| dir.join("install"));
+            ensure_major_can_start(&dir, &install_root, &data_dir)?;
             launch(&dir, &data_dir, options, None)
         }
 
@@ -200,6 +203,24 @@ mod cluster {
         cluster.load_save(dump)
     }
 
+    /// The one theseus install under `db_dir`, shared by the entity, search and sim clusters. An
+    /// install that an earlier build unpacked inside `cluster_dir` is moved there rather than unpacked
+    /// again.
+    pub fn shared_install_dir(db_dir: &Path, cluster_dir: &Path) -> PathBuf {
+        let shared = db_dir.join("install");
+        let legacy = cluster_dir.join("install");
+        if !shared.exists() && legacy.join(SHIPPED_VERSION).is_dir() {
+            if let Err(err) = std::fs::create_dir_all(db_dir).and_then(|()| std::fs::rename(&legacy, &shared)) {
+                tracing::warn!(
+                    "could not move {} to {}; it is unpacked again: {err}",
+                    legacy.display(),
+                    shared.display()
+                );
+            }
+        }
+        shared
+    }
+
     #[cfg(unix)]
     fn check_socket_len(data_dir: &Path) -> Result<(), Error> {
         let socket_file = data_dir.join(format!(".s.PGSQL.{PORT}"));
@@ -218,6 +239,17 @@ mod cluster {
         options: &StartOptions,
         lock: PostmasterLock,
     ) -> Result<(EmbeddedCluster, PostgresDriver), Error> {
+        // A data directory copied from a live cluster carries that cluster's lock. Its postmaster
+        // serves the other directory, so it is not adopted here.
+        let same_dir = std::fs::canonicalize(&lock.data_dir).ok() == std::fs::canonicalize(data_dir).ok();
+        if !same_dir {
+            return Err(Error::new(format!(
+                "postmaster.pid in {} names postmaster {} on {}; stop it or remove the copied lock file",
+                data_dir.display(),
+                lock.pid,
+                lock.data_dir.display()
+            )));
+        }
         let major = pg_major(data_dir)?.unwrap_or(0);
         if major != SHIPPED_MAJOR {
             return Err(Error::new(format!(
@@ -229,14 +261,14 @@ mod cluster {
         launch(dir, data_dir, options, Some(lock.port))
     }
 
-    fn ensure_major_can_start(dir: &Path, data_dir: &Path) -> Result<(), Error> {
+    fn ensure_major_can_start(dir: &Path, install_root: &Path, data_dir: &Path) -> Result<(), Error> {
         let Some(major) = pg_major(data_dir)? else {
             return Ok(());
         };
         if major == SHIPPED_MAJOR {
             return Ok(());
         }
-        if old_install_present(dir) {
+        if old_install_present(dir, install_root) {
             Err(Error::new(format!(
                 "PG_VERSION is {major} and this build only ships theseus {SHIPPED_VERSION}; pg_upgrade will not run"
             )))
@@ -391,7 +423,7 @@ mod cluster {
         let pid: u32 = pid_line
             .parse()
             .map_err(|_| Error::new(format!("postmaster.pid pid {pid_line:?} is not a pid")))?;
-        let _data_directory = lines.next();
+        let lock_dir = PathBuf::from(lines.next().unwrap_or("").trim());
         let _started = lines.next();
         let port_line = lines
             .next()
@@ -400,7 +432,11 @@ mod cluster {
         let port: u16 = port_line
             .parse()
             .map_err(|_| Error::new(format!("postmaster.pid port {port_line:?} is not a port")))?;
-        Ok(Some(PostmasterLock { pid, port }))
+        Ok(Some(PostmasterLock {
+            pid,
+            port,
+            data_dir: lock_dir,
+        }))
     }
 
     /// True when `data_dir/postmaster.pid` names a live process.
@@ -460,12 +496,11 @@ mod cluster {
         text.contains(&pid.to_string()) && !text.to_ascii_lowercase().contains("no tasks")
     }
 
-    fn old_install_present(cluster_dir: &Path) -> bool {
+    fn old_install_present(cluster_dir: &Path, install_root: &Path) -> bool {
         // `PostgreSQL::new` appends the exact version, so this build's binaries live in
-        // `install/18.6.0`. Anything inside that tree is this theseus install.
-        let shipped_root = cluster_dir.join("install");
-        let shipped = shipped_root.join(SHIPPED_VERSION);
-        other_server(cluster_dir, &shipped, &shipped_root) || other_server(&shipped_root, &shipped, &shipped_root)
+        // `<install>/18.6.0`. Anything inside that tree is this theseus install.
+        let shipped = install_root.join(SHIPPED_VERSION);
+        other_server(cluster_dir, &shipped, install_root) || other_server(install_root, &shipped, install_root)
     }
 
     fn other_server(dir: &Path, shipped: &Path, shipped_root: &Path) -> bool {
@@ -784,6 +819,66 @@ mod cluster {
                 Path::new(&format!("/proc/{pid}")).exists(),
                 "refusing to adopt killed postmaster {pid}"
             );
+        }
+
+        #[test]
+        fn a_lock_copied_from_another_live_cluster_is_not_adopted() {
+            let live = prepared_dir();
+            let copy = prepared_dir();
+            let _guards = (DirGuard(live.clone()), DirGuard(copy.clone()));
+            let (cluster, driver) = EmbeddedCluster::start(&live, 20).unwrap();
+            drop(driver);
+            let (stopped, stopped_driver) = EmbeddedCluster::start(&copy, 20).unwrap();
+            drop(stopped_driver);
+            let copy_data = stopped.data_dir().to_path_buf();
+            drop(stopped);
+            let pid = postmaster_pid(cluster.data_dir());
+            std::fs::copy(
+                cluster.data_dir().join("postmaster.pid"),
+                copy_data.join("postmaster.pid"),
+            )
+            .unwrap();
+            let err = start_error(&copy);
+            assert!(err.message().contains(&pid.to_string()), "{err}");
+            assert!(err.message().contains("copied lock"), "{err}");
+            assert!(
+                Path::new(&format!("/proc/{pid}")).exists(),
+                "the live postmaster was touched"
+            );
+            drop(cluster);
+        }
+
+        #[test]
+        fn clusters_share_one_install_and_an_old_one_moves_there() {
+            let root = prepared_dir();
+            let _guard = DirGuard(root.clone());
+            let first = root.join("first");
+            // An install from an earlier build, inside the first cluster directory.
+            let (cluster, driver) = EmbeddedCluster::start(&first, 20).unwrap();
+            drop(driver);
+            drop(cluster);
+            assert!(first.join("install").join(SHIPPED_VERSION).is_dir());
+            let shared = shared_install_dir(&root, &first);
+            assert_eq!(shared, root.join("install"));
+            assert!(
+                shared.join(SHIPPED_VERSION).join("bin").is_dir(),
+                "the old install moved"
+            );
+            assert!(!first.join("install").exists());
+            let options = StartOptions {
+                install_dir: Some(shared.clone()),
+                ..StartOptions::new(20)
+            };
+            let (one, one_driver) = EmbeddedCluster::start_with(&first, &options).unwrap();
+            let (two, two_driver) = EmbeddedCluster::start_with(root.join("second"), &options).unwrap();
+            assert!(!root.join("second").join("install").exists());
+            for driver in [&one_driver, &two_driver] {
+                let rows = driver.connect_postgres().unwrap().query_once("SELECT 1", &[]).unwrap();
+                assert_eq!(rows.len(), 1);
+            }
+            drop((one_driver, two_driver));
+            drop(one);
+            drop(two);
         }
 
         #[test]
@@ -1250,7 +1345,7 @@ mod cluster {
 }
 
 #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
-pub use cluster::{load_save, save_db, ClusterRole, EmbeddedCluster, StartOptions};
+pub use cluster::{load_save, save_db, shared_install_dir, ClusterRole, EmbeddedCluster, StartOptions};
 #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
 pub(crate) use cluster::{pg_ctl_path, postmaster_live, process_live};
 

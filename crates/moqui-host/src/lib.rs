@@ -534,7 +534,8 @@ fn load_embedded(
         .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
     let opened = crate::db::entity_db::transactional_conf(&factory).and_then(|conf| {
         let pool = load_pool(&conf.pool);
-        crate::db::entity_db::open(conf, cluster_dir, pool.max).map(|db| (db, pool))
+        let install = crate::db::embedded::shared_install_dir(&runtime_dir.join("db"), cluster_dir);
+        crate::db::entity_db::open(conf, cluster_dir, &install, pool.max).map(|db| (db, pool))
     });
     let (db, pool) = match opened {
         Ok(opened) => opened,
@@ -736,7 +737,8 @@ fn boot_server(
     let conf = crate::db::entity_db::transactional_conf(&factory)?;
     // `(request cap + service cap) * 2` must fit in `max - reserve`; check_serve_caps below says so.
     let pool = conf.pool.clone();
-    let db = crate::db::entity_db::open(conf, &cluster_dir, pool.max)?;
+    let install = crate::db::embedded::shared_install_dir(&runtime_dir.join("db"), &cluster_dir);
+    let db = crate::db::entity_db::open(conf, &cluster_dir, &install, pool.max)?;
     let facade = crate::db::entity_facade::open_entity_facade_dialect(
         &framework_dir,
         Arc::clone(&db.driver),
@@ -744,8 +746,8 @@ fn boot_server(
         &db.conf.dialect,
     )?;
     crate::db::entity_facade::attach(&factory, facade.clone());
-    // The overlay starts on the first enter_sim, inside the cluster directory, on the entity install.
-    let sim = crate::db::sim::SimOverlay::install(&facade, &cluster_dir, Some(cluster_dir.join("install")));
+    // The overlay starts on the first enter_sim, inside the cluster directory, on the shared install.
+    let sim = crate::db::sim::SimOverlay::install(&facade, &cluster_dir, Some(install));
     // Same policy as `load`: indexing runs when search is up, and the server still starts when it is not.
     let search = match crate::search::attach_search(&factory, &facade, db.is_postgres()) {
         Ok(store) => Some(store),
