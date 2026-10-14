@@ -42,8 +42,10 @@ fn with_additional<'js, T>(
     push_context_frame();
     put_context_all(&entries);
     let result = body();
+    // Before the pop, so a list the body read under an additional name is not written over the caller's.
+    let flushed = flush_current(ctx, true);
     pop_context_frame();
-    flush_current(ctx, true)?;
+    flushed?;
     result
 }
 
@@ -298,6 +300,7 @@ fn l10n_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
 
 fn context_get<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
+        readopt_name(&name);
         flush_current(&ctx, false)?;
         match stack_get(&name) {
             Lookup::Value(value) => host_to_js(&ctx, value),
@@ -307,6 +310,7 @@ fn context_get<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<JsValue<'js
 }
 
 fn context_name<'js>(ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<JsValue<'js>> {
+    readopt_name(name);
     flush_current(ctx, false)?;
     match stack_get(name) {
         Lookup::Value(value) => host_to_js(ctx, value),

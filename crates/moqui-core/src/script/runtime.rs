@@ -189,6 +189,9 @@ struct Engine {
     /// Lists and maps a running script read by bare name. The script mutates these objects, so
     /// they are written back to the stack at the end of the run and before a host call.
     tracked: RefCell<HashMap<String, Persistent<JsValue<'static>>>>,
+    /// Tracked values a host call took off `tracked`, with the value written for each. The script may still hold
+    /// the object, so it is tracked again while the stack holds what was written. See [`flush_tracked`].
+    released: RefCell<HashMap<String, Released>>,
     templates: RefCell<HashMap<String, Persistent<Function<'static>>>>,
     /// Compiled screen units by unit id.
     units: RefCell<HashMap<u64, Persistent<Function<'static>>>>,
@@ -202,6 +205,23 @@ struct Engine {
     // The context and its persistents borrow this runtime. Drop order frees them first.
     #[allow(dead_code)]
     runtime: Runtime,
+}
+
+/// A list or map written back before a host call, kept so the script's object survives the call.
+struct Released {
+    value: Persistent<JsValue<'static>>,
+    written: Value,
+}
+
+/// What a flush does with the tracked values after writing them back.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Flush {
+    /// Keep tracking them, for a host call that only reads the stack.
+    Keep,
+    /// Release them, for a host call that may change the stack.
+    Release,
+    /// Forget them, at the end of a script or a screen unit.
+    End,
 }
 
 #[derive(Clone, Copy)]
@@ -375,7 +395,7 @@ fn with_context<R>(body: impl FnOnce(&Ctx) -> Result<R, Error>) -> Result<R, Err
     let _guard = DepthGuard;
     engine.context.with(|ctx| {
         let result = body(&ctx);
-        let flushed = flush_tracked(&ctx, &engine, true);
+        let flushed = flush_tracked(&ctx, &engine, Flush::End);
         match (result, flushed) {
             (Ok(value), Ok(())) => Ok(value),
             (Err(err), _) | (Ok(_), Err(err)) => Err(err),
@@ -383,10 +403,23 @@ fn with_context<R>(body: impl FnOnce(&Ctx) -> Result<R, Error>) -> Result<R, Err
     })
 }
 
-/// Write each tracked list and map back to the context stack. `clear` also forgets them, so the
-/// next bare read converts the stack's value again.
-fn flush_tracked(ctx: &Ctx<'_>, engine: &Engine, clear: bool) -> Result<(), Error> {
-    let entries: Vec<(String, Persistent<JsValue<'static>>)> = if clear {
+/// Write each tracked list and map back to the context stack.
+///
+/// A host call that may change the stack releases them: the next bare read must see what the call left. The
+/// script can still hold a released object, as `list.push(call())` evaluates `list` first, so a released value is
+/// tracked again, the same JS object, at its next read by name or at the end of the script while the stack still
+/// holds the value written. A host call that put a different value there wins and the held object is dropped,
+/// even when the script changed it after the call too: there is one value per name, and the host's is the later
+/// assignment, as when a Java callee replaces a list the script holds.
+///
+/// Released values are not checked at each flush: a list held across a loop of calls would be compared and
+/// converted at every call. So a change through a held object after a call, before its name is read again, is
+/// not on the stack for host code that reads the stack directly until the end of the script.
+fn flush_tracked(ctx: &Ctx<'_>, engine: &Engine, mode: Flush) -> Result<(), Error> {
+    if mode == Flush::End {
+        readopt_all(engine);
+    }
+    let entries: Vec<(String, Persistent<JsValue<'static>>)> = if mode != Flush::Keep {
         engine.tracked.borrow_mut().drain().collect()
     } else {
         engine
@@ -399,11 +432,19 @@ fn flush_tracked(ctx: &Ctx<'_>, engine: &Engine, clear: bool) -> Result<(), Erro
     let mut first = None;
     for (name, saved) in entries {
         let outcome = saved
+            .clone()
             .restore(ctx)
             .map_err(|err| js_caught(ctx, err))
             .and_then(|value| js_value_to_host(ctx, &value));
         match outcome {
             Ok(host) => {
+                if mode == Flush::Release {
+                    let written = host.clone();
+                    engine
+                        .released
+                        .borrow_mut()
+                        .insert(name.clone(), Released { value: saved, written });
+                }
                 STACK.with(|stack| {
                     let mut stack = stack.borrow_mut();
                     if !stack.put_existing(&name, host.clone()) {
@@ -422,12 +463,55 @@ fn flush_tracked(ctx: &Ctx<'_>, engine: &Engine, clear: bool) -> Result<(), Erro
     }
 }
 
-/// Flush the innermost script's tracked values, for a host call that reads the stack.
+/// Track a released value again when the stack still holds what was written for it. Returns its object.
+fn readopt(engine: &Engine, name: &str) -> Option<Persistent<JsValue<'static>>> {
+    let released = engine.released.borrow_mut().remove(name)?;
+    if !STACK.with(|stack| stack.borrow().holds(name, &released.written)) {
+        return None;
+    }
+    engine
+        .tracked
+        .borrow_mut()
+        .insert(name.to_string(), released.value.clone());
+    Some(released.value)
+}
+
+/// Track a released value of the innermost script again, for host code that reads that name from the stack.
+fn readopt_name(name: &str) {
+    if let Some(engine) = current_engine() {
+        readopt(&engine, name);
+    }
+}
+
+/// Track again each released value the stack still holds.
+fn readopt_all(engine: &Engine) {
+    let names: Vec<String> = engine.released.borrow().keys().cloned().collect();
+    for name in names {
+        readopt(engine, &name);
+    }
+}
+
+/// Flush the innermost script's tracked values, for a host call that reads the stack. `clear` releases them, for
+/// a host call that may also change it.
 fn flush_current(ctx: &Ctx<'_>, clear: bool) -> rquickjs::Result<()> {
+    let mode = if clear { Flush::Release } else { Flush::Keep };
     match current_engine() {
-        Some(engine) => flush_tracked(ctx, &engine, clear).map_err(|err| Exception::throw_message(ctx, err.message())),
+        Some(engine) => flush_tracked(ctx, &engine, mode).map_err(|err| Exception::throw_message(ctx, err.message())),
         None => Ok(()),
     }
+}
+
+/// Run a screen unit in the innermost script. The caller's values are released before and set aside, and what
+/// the unit read is written back and forgotten after, as at the end of a script: the unit's own variables are
+/// gone, and the next unit may run under a different context frame.
+fn in_unit_scope<T>(ctx: &Ctx<'_>, body: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
+    let engine = current_engine().ok_or_else(|| Error::new("no script engine is running"))?;
+    flush_tracked(ctx, &engine, Flush::Release)?;
+    let outer = engine.released.take();
+    let result = body();
+    let flushed = flush_tracked(ctx, &engine, Flush::End);
+    *engine.released.borrow_mut() = outer;
+    result.and_then(|value| flushed.map(|()| value))
 }
 
 /// The engine of the innermost running script.
@@ -449,6 +533,7 @@ impl Engine {
         let helpers = context.with(|ctx| install_context(&ctx))?;
         Ok(Self {
             tracked: RefCell::new(HashMap::new()),
+            released: RefCell::new(HashMap::new()),
             templates: RefCell::new(HashMap::new()),
             units: RefCell::new(HashMap::new()),
             runtimes: RefCell::new(std::collections::HashSet::new()),
@@ -535,7 +620,7 @@ fn proxy_get_inner<'js>(ctx: &Ctx<'js>, property: &ProxyProperty<'js>) -> rquick
     let name = property.to_string()?;
     if let Some(engine) = current_engine() {
         let saved = engine.tracked.borrow().get(&name).cloned();
-        if let Some(saved) = saved {
+        if let Some(saved) = saved.or_else(|| readopt(&engine, &name)) {
             return saved.restore(&ctx);
         }
     }
@@ -577,6 +662,7 @@ fn proxy_set_inner<'js>(ctx: &Ctx<'js>, property: &ProxyProperty<'js>, value: &J
     let name = property.to_string()?;
     if let Some(engine) = current_engine() {
         engine.tracked.borrow_mut().remove(&name);
+        engine.released.borrow_mut().remove(&name);
     }
     let host = js_to_host(&ctx, value)?;
     STACK.with(|stack| {
@@ -599,6 +685,9 @@ fn global_has_own(ctx: &Ctx<'_>, name: &str) -> rquickjs::Result<bool> {
 
 /// `context` reads as a plain object of every visible name. A write to it does not reach the stack.
 fn context_snapshot<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+    if let Some(engine) = current_engine() {
+        readopt_all(&engine);
+    }
     flush_current(ctx, false)?;
     let mut visible = STACK.with(|stack| stack.borrow().combined_map());
     visible.retain(|_, value| !matches!(value, Value::Bytes(_)));
@@ -610,6 +699,7 @@ fn context_snapshot<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
 fn put_name(ctx: &Ctx<'_>, name: &str, value: Value) -> rquickjs::Result<()> {
     if let Some(engine) = current_engine() {
         engine.tracked.borrow_mut().remove(name);
+        engine.released.borrow_mut().remove(name);
     }
     STACK.with(|stack| {
         stack
@@ -916,9 +1006,13 @@ pub fn eval_map(expression: &str) -> Result<std::collections::BTreeMap<String, V
 
 #[cfg(test)]
 mod tests {
-    use super::{clear_context_stack, eval_condition, expand, push_context_frame, set_context_name};
-    use crate::context::Error;
+    use super::{
+        clear_context_stack, eval_condition, eval_source, expand, flush_current, js_error, push_context_frame,
+        run_script, set_context_name, with_ctx, STACK,
+    };
+    use crate::context::{Error, ExecutionContextFactory};
     use moqui_lib::object::{basic_convert, Value};
+    use rquickjs::Ctx;
 
     const MAX_COEFFICIENT: &str = "79228162514264337593543950335";
 
@@ -986,6 +1080,133 @@ mod tests {
         assert_eq!(expand("no dollars")?, "no dollars");
         assert_eq!(expand("trailing$")?, "trailing$");
         assert_eq!(expand("${big}")?, MAX_COEFFICIENT);
+        Ok(())
+    }
+
+    fn holds(expression: &str) {
+        assert!(eval_condition(expression).unwrap(), "{expression}");
+    }
+
+    /// Evaluate `source` in the running script, as a statement between host calls.
+    fn step(ctx: &Ctx<'_>, source: &str) -> Result<bool, Error> {
+        eval_source::<bool>(ctx, source)
+    }
+
+    /// What a host call that may change the stack does first.
+    fn host_call(ctx: &Ctx<'_>) -> Result<(), Error> {
+        flush_current(ctx, true).map_err(js_error)
+    }
+
+    #[test]
+    fn a_push_of_a_host_call_result_reaches_the_list() -> Result<(), Error> {
+        clear_context_stack();
+        let context = ExecutionContextFactory::test_context();
+        let _entered = context.enter();
+        set_context_name("messages", Value::List(Vec::new()))?;
+        set_context_name("results", Value::List(Vec::new()))?;
+        set_context_name("rows", Value::List(Vec::new()))?;
+        run_script(
+            r#"messages.push(ec.resource.expand('Only ${n} rows.', '', {n: 3}));
+            messages.push(ec.resource.expand('${messages.length} before', '', {a: 1}));
+            sameScript = messages.length;
+            results.push(ec.service.sync().name('no.such.Services.run#Nothing').call());
+            {
+                const l = rows;
+                for (let i = 0; i < 3; i++) {
+                    ec.service.sync().name('no.such.Services.run#Nothing').call();
+                    l.push(i);
+                }
+            }"#,
+        )?;
+        holds("sameScript === 2 && messages[0] === 'Only 3 rows.' && messages[1] === '1 before'");
+        holds("results.length === 1 && results[0] === null");
+        holds("rows.length === 3 && rows[2] === 2");
+        clear_context_stack();
+        Ok(())
+    }
+
+    #[test]
+    fn a_held_list_survives_a_host_call_that_leaves_it() -> Result<(), Error> {
+        clear_context_stack();
+        set_context_name("keptList", Value::List(vec![Value::I32(1)]))?;
+        with_ctx(|ctx| {
+            assert!(step(ctx, "var heldKept = keptList; heldKept.push(2); true")?);
+            host_call(ctx)?;
+            // Not read again: the push after the call is written back at the end of the script.
+            assert!(step(ctx, "heldKept.push(3); true")?);
+            host_call(ctx)?;
+            assert!(step(ctx, "ec.context.get('keptList').length === 3")?);
+            host_call(ctx)?;
+            assert!(step(ctx, "keptList === heldKept && keptList.length === 3")?);
+            host_call(ctx)?;
+            step(ctx, "heldKept.push(4); heldKept = null; true")
+        })?;
+        holds("keptList.length === 4 && keptList[3] === 4");
+        clear_context_stack();
+        Ok(())
+    }
+
+    #[test]
+    fn a_host_call_that_changes_a_held_list_wins() -> Result<(), Error> {
+        clear_context_stack();
+        set_context_name("replacedList", Value::List(vec![Value::I32(1)]))?;
+        set_context_name("appendedList", Value::List(vec![Value::I32(1)]))?;
+        with_ctx(|ctx| {
+            assert!(step(
+                ctx,
+                "var heldReplaced = replacedList, heldAppended = appendedList; true"
+            )?);
+            host_call(ctx)?;
+            set_context_name("replacedList", Value::List(vec![Value::I32(9)]))?;
+            STACK.with(|stack| {
+                let mut stack = stack.borrow_mut();
+                if let moqui_lib::context_stack::Lookup::Value(Value::List(mut list)) = stack.get("appendedList") {
+                    list.push(Value::I32(8));
+                    stack.put_existing("appendedList", Value::List(list));
+                }
+            });
+            assert!(step(ctx, "heldReplaced.push(2); heldAppended.push(3); true")?);
+            assert!(step(
+                ctx,
+                "replacedList !== heldReplaced && replacedList.length === 1 && replacedList[0] === 9"
+            )?);
+            step(
+                ctx,
+                "heldReplaced = heldAppended = null; appendedList.length === 2 && appendedList[1] === 8",
+            )
+        })
+        .map(|seen| assert!(seen))?;
+        holds("replacedList.length === 1 && replacedList[0] === 9");
+        holds("appendedList.length === 2 && appendedList[1] === 8");
+        clear_context_stack();
+        Ok(())
+    }
+
+    #[test]
+    fn a_nested_script_that_changes_a_held_list_wins() -> Result<(), Error> {
+        clear_context_stack();
+        set_context_name("nestedChanged", Value::List(vec![Value::I32(1)]))?;
+        set_context_name("nestedRead", Value::List(vec![Value::I32(1)]))?;
+        with_ctx(|ctx| {
+            assert!(step(
+                ctx,
+                "var heldChanged = nestedChanged, heldRead = nestedRead; true"
+            )?);
+            host_call(ctx)?;
+            run_script("nestedChanged.push(5); nestedReadLength = nestedRead.length")?;
+            assert!(step(ctx, "heldChanged.push(7); heldRead.push(6); true")?);
+            assert!(step(
+                ctx,
+                "nestedChanged !== heldChanged && nestedChanged.length === 2 && nestedChanged[1] === 5"
+            )?);
+            step(
+                ctx,
+                "var same = nestedRead === heldRead && nestedReadLength === 1; heldChanged = heldRead = null; same",
+            )
+        })
+        .map(|same| assert!(same))?;
+        holds("nestedChanged.length === 2 && nestedRead.length === 2 && nestedRead[1] === 6");
+        clear_context_stack();
         Ok(())
     }
 }
