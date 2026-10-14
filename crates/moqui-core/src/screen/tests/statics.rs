@@ -538,6 +538,7 @@ fn write_screen(dir: &std::path::Path, field: &str) -> String {
 fn the_cached_template_follows_the_resolved_definition() {
     let context = ExecutionContextFactory::test_context();
     let factory = context.factory();
+    crate::screen::ScreenFacade::of(factory).set_check_interval(Some(std::time::Duration::ZERO));
     let dir = std::env::temp_dir().join(format!("moqui-static-identity-{}", std::process::id()));
     let root = write_screen(&dir, "alpha");
     let first = make_render(factory)

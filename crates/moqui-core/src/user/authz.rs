@@ -502,6 +502,19 @@ fn with_cache<T>(body: impl FnOnce(&mut AuthzCache) -> T) -> T {
     })
 }
 
+/// The current user's groups, `ALL_USERS` included, as `ec.user.userGroupIdSet`.
+///
+/// # Errors
+///
+/// Returns an error when the memberships cannot be read.
+pub(crate) fn current_user_groups() -> Result<Arc<HashSet<String>>, Error> {
+    let Some(facade) = ExecutionContext::with_current(|ec| ec.factory().entity()).flatten() else {
+        return Ok(Arc::new(HashSet::from(["ALL_USERS".to_string()])));
+    };
+    let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+    user_groups(&facade)
+}
+
 /// The user's groups: `ALL_USERS` and each group with an open membership.
 fn user_groups(facade: &EntityFacade) -> Result<Arc<HashSet<String>>, Error> {
     if let Some(groups) = with_cache(|cache| cache.groups.clone()) {

@@ -165,6 +165,11 @@ pub(crate) fn install_with(parameters: BTreeMap<String, Value>, base_url: String
     WebGuard { previous }
 }
 
+/// One request parameter, without copying the others.
+pub(crate) fn parameter(name: &str) -> Option<Value> {
+    WEB.with(|slot| slot.borrow().as_ref().and_then(|web| web.parameters.get(name).cloned()))
+}
+
 pub(crate) fn parameters() -> BTreeMap<String, Value> {
     WEB.with(|slot| {
         slot.borrow()

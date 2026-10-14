@@ -22,7 +22,7 @@ use moqui_lib::object::Value;
 
 use super::{fixture_root, request, World};
 use crate::context::{Error, ErrorKind, ExecutionContextFactory};
-use crate::screen::{make_render, serve_at, RenderOutput, ScreenFacade};
+use crate::screen::{make_render, serve_at, RenderOutput, ScreenFacade, ScreenUrlInfo};
 
 /// Render `path` in text mode unless the path names a mode. The screens render the screens below
 /// them, and html has no macro module until a later slice.
@@ -302,6 +302,7 @@ fn a_signed_in_user_without_an_allow_record_is_403_on_a_screen() {
 fn a_cached_definition_is_reused_and_reloaded_when_its_file_changes() {
     let context = ExecutionContextFactory::test_context();
     let facade = ScreenFacade::of(context.factory());
+    facade.set_check_interval(Some(Duration::ZERO));
     let dir = std::env::temp_dir().join(format!("moqui-screen-cache-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("Cached.xml");
@@ -344,6 +345,49 @@ fn a_cached_definition_is_reused_and_reloaded_when_its_file_changes() {
     file.set_modified(SystemTime::now() + Duration::from_secs(60)).unwrap();
     drop(file);
     assert!(facade.screen_def(context.factory(), &location).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn files_are_checked_once_per_interval_and_a_new_subscreen_file_is_seen() {
+    let context = ExecutionContextFactory::test_context();
+    let factory = context.factory();
+    let facade = ScreenFacade::of(factory);
+    facade.set_check_interval(Some(Duration::from_secs(3600)));
+    let dir = std::env::temp_dir().join(format!("moqui-screen-interval-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Top")).unwrap();
+    let top = dir.join("Top.xml");
+    std::fs::write(&top, r#"<screen require-authentication="false" default-menu-title="One"><widgets/></screen>"#).unwrap();
+    std::fs::write(dir.join("Top/A.xml"), r#"<screen require-authentication="false"><widgets/></screen>"#).unwrap();
+    let location = top.to_string_lossy().into_owned();
+    let bump = |path: &std::path::Path, seconds: u64| {
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(SystemTime::now() + Duration::from_secs(seconds)).unwrap();
+    };
+
+    let first = facade.screen_def(factory, &location).unwrap();
+    assert!(first.subscreens.get("A").is_some() && first.subscreens.get("B").is_none());
+    // Inside the interval the edit is not looked for, as a Java screen.location hit.
+    std::fs::write(&top, r#"<screen require-authentication="false" default-menu-title="Two"><widgets/></screen>"#).unwrap();
+    bump(&top, 30);
+    assert!(std::sync::Arc::ptr_eq(&first, &facade.screen_def(factory, &location).unwrap()));
+    let path = ScreenUrlInfo::resolve(factory, &location, &["A".to_string()], 0).unwrap();
+    let again = ScreenUrlInfo::resolve(factory, &location, &["A".to_string()], 0).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&path.target_screen, &again.target_screen));
+
+    // Past the interval the edit and a file added to the subscreen directory are both seen, and the resolved path follows.
+    facade.set_check_interval(Some(Duration::ZERO));
+    std::fs::write(dir.join("Top/B.xml"), r#"<screen require-authentication="false"><widgets/></screen>"#).unwrap();
+    let directory = std::fs::File::open(dir.join("Top")).unwrap();
+    directory.set_modified(SystemTime::now() + Duration::from_secs(40)).unwrap();
+    let changed = facade.screen_def(factory, &location).unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&first, &changed));
+    assert_eq!(changed.default_menu_title, "Two");
+    assert!(changed.subscreens.get("B").is_some());
+    let fresh = ScreenUrlInfo::resolve(factory, &location, &["B".to_string()], 0).unwrap();
+    assert!(fresh.target_screen.location.ends_with("Top/B.xml"));
+    assert!(std::sync::Arc::ptr_eq(&fresh.path_defs[0], &changed));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -486,5 +530,64 @@ fn a_transition_that_does_not_compile_fails_when_it_runs_not_when_the_screen_loa
         .render()
         .unwrap_err();
     assert_eq!(err.kind(), ErrorKind::General);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Timing for a form-list page: `cargo test -p moqui-core --release render_bench -- --ignored --nocapture`.
+#[test]
+#[ignore = "timing, run by hand"]
+fn render_bench_form_list_page() {
+    let context = ExecutionContextFactory::test_context();
+    let factory = context.factory();
+    let dir = std::env::temp_dir().join(format!("moqui-render-bench-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Bench/Apps")).unwrap();
+    std::fs::write(
+        dir.join("Bench.xml"),
+        r#"<screen require-authentication="false"><widgets><subscreens-active/></widgets></screen>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Bench/Apps.xml"),
+        r#"<screen require-authentication="false"><widgets><subscreens-menu/><subscreens-active/></widgets></screen>"#,
+    )
+    .unwrap();
+    for name in ["One", "Two", "Three"] {
+        std::fs::write(
+            dir.join(format!("Bench/Apps/{name}.xml")),
+            r#"<screen require-authentication="false"><widgets><label text="x"/></widgets></screen>"#,
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        dir.join("Bench/Apps/List.xml"),
+        r##"<screen require-authentication="false">
+            <transition name="edit"><default-response url="."/></transition>
+            <actions><script>rows = []; for (let i = 0; i &lt; 200; i++) rows.push({id: 'R' + i, name: 'Name ' + i, amount: i * 1.5})</script></actions>
+            <widgets><form-list name="Rows" list="rows">
+                <row-actions><set field="label" from="name + '!'"/></row-actions>
+                <field name="id"><default-field><link url="edit" text="${id}" parameter-map="({id: id})"/></default-field></field>
+                <field name="name"><default-field><display text="${label}"/></default-field></field>
+                <field name="amount"><default-field><display format="#,##0.00"/></default-field></field>
+            </form-list></widgets></screen>"##,
+    )
+    .unwrap();
+    let root = dir.join("Bench.xml").to_string_lossy().into_owned();
+    let render = || {
+        make_render(factory)
+            .root_screen(root.clone())
+            .screen_path("/Apps/List")
+            .render()
+            .unwrap()
+    };
+    let warm = render();
+    assert!(warm.body_text().contains("Name 199!"), "{}", warm.body_text());
+    let runs = 30;
+    let started = std::time::Instant::now();
+    for _ in 0..runs {
+        render();
+    }
+    let each = started.elapsed() / runs;
+    println!("render_bench: {runs} renders of a 200-row form-list, {each:?} each");
     let _ = std::fs::remove_dir_all(&dir);
 }

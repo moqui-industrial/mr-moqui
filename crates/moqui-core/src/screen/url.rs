@@ -27,7 +27,7 @@ use super::cache::{canonical_render_mode, ScreenFacade};
 use super::definition::{ParameterDef, ScreenDef, TransitionDef};
 use crate::context::{Error, ErrorKind, ExecutionContextFactory};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ScreenUrlInfo {
     /// Every screen from the root to the target, including defaults.
     pub path_defs: Vec<Arc<ScreenDef>>,
@@ -97,6 +97,11 @@ impl ScreenUrlInfo {
         last_standalone: i32,
     ) -> Result<Self, Error> {
         let facade = ScreenFacade::of(factory);
+        // A path that took no conditional default resolves the same way every time, as Java's `screen.url` cache.
+        let key = format!("{root_location}\u{1}{}\u{1}{last_standalone}", segments.join("/"));
+        if let Some(cached) = facade.cached_url(factory, &key) {
+            return Ok((*cached).clone());
+        }
         let root = facade.screen_def(factory, root_location)?;
         let mut walk = Walk {
             facade: &facade,
@@ -126,6 +131,9 @@ impl ScreenUrlInfo {
             },
         };
         walk.run(root)?;
+        if walk.info.reusable {
+            facade.put_url(key, Arc::new(walk.info.clone()));
+        }
         Ok(walk.info)
     }
 

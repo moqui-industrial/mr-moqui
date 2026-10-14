@@ -231,6 +231,9 @@ pub struct RenderState {
     pub dynamic_forms: RefCell<std::collections::HashMap<String, Arc<super::form::FormInstance>>>,
     /// Keys `sri.once` has seen, so a mode writes its document wrapper only for the outermost screen.
     pub once: RefCell<std::collections::HashSet<String>>,
+    /// The theme of this render and its resource values by type, found once as Java's `curThemeId`.
+    pub theme_id: RefCell<Option<String>>,
+    pub theme_values: RefCell<std::collections::HashMap<String, Vec<String>>>,
 }
 
 impl RenderState {
@@ -273,6 +276,8 @@ impl RenderState {
             form_lists: RefCell::new(Vec::new()),
             dynamic_forms: RefCell::new(std::collections::HashMap::new()),
             once: RefCell::new(std::collections::HashSet::new()),
+            theme_id: RefCell::new(None),
+            theme_values: RefCell::new(std::collections::HashMap::new()),
         }
     }
 }
@@ -841,7 +846,7 @@ pub(super) fn parameter_value(parameter: &ParameterDef) -> Result<Option<Value>,
     if let Some(value) = &parameter.value {
         return Ok(Some(Value::string(script::expand(value)?)));
     }
-    Ok(script::context_value(&parameter.name).or_else(|| web::parameters().get(&parameter.name).cloned()))
+    Ok(script::context_value(&parameter.name).or_else(|| web::parameter(&parameter.name)))
 }
 
 fn respond(info: &ScreenUrlInfo, response: &ResponseDef, json: bool) -> Result<(), Error> {

@@ -266,6 +266,8 @@ fn extends_node(
         return Err(Error::new("form extends of a DbForm is not supported"));
     }
     let other = facade.screen_def(factory, location)?;
+    // The assembled form is kept with this definition, so a change to the other screen makes this one stale.
+    def.generated.add_dependencies(&other.sources);
     assemble_node(facade, factory, &other, form_name, depth + 1, dynamic)
 }
 

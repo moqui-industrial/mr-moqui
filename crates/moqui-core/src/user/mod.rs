@@ -24,6 +24,7 @@ pub(crate) mod session;
 mod visit;
 
 pub use authz::{authorize, context_entered};
+pub(crate) use authz::current_user_groups;
 pub(crate) use authz::{denied, is_permitted, note_entity_write, AuthInfo, Permit};
 pub use filter::apply_entity_filters;
 #[cfg(test)]

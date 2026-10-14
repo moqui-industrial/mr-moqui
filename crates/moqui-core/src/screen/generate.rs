@@ -102,6 +102,8 @@ pub struct Generated {
     /// The server-static templates by request path, and whether the screen can be one, by macro module.
     statics: Mutex<HashMap<String, Arc<StaticTemplate>>>,
     eligibility: Mutex<HashMap<String, Arc<Eligibility>>>,
+    /// Files read while rendering, such as a form another screen's form extends. A change to one makes the definition stale.
+    dependencies: Mutex<Vec<super::definition::Source>>,
 }
 
 impl std::fmt::Debug for Generated {
@@ -111,6 +113,20 @@ impl std::fmt::Debug for Generated {
 }
 
 impl Generated {
+    pub(super) fn dependencies(&self) -> Vec<super::definition::Source> {
+        self.dependencies.lock().unwrap_or_else(|err| err.into_inner()).clone()
+    }
+
+    /// Record the sources of another definition this one's generated code was made from.
+    pub(super) fn add_dependencies(&self, sources: &[super::definition::Source]) {
+        let mut dependencies = self.dependencies.lock().unwrap_or_else(|err| err.into_inner());
+        for source in sources {
+            if !dependencies.iter().any(|known| known.location == source.location) {
+                dependencies.push(source.clone());
+            }
+        }
+    }
+
     pub(super) fn form(&self, name: &str) -> Option<Arc<FormInstance>> {
         self.forms
             .lock()
