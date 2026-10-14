@@ -35,7 +35,7 @@ mod sequence;
 mod share;
 mod value;
 
-pub use dbresource::{DbResourceChild, DbResourceInfo};
+pub use dbresource::{DbResourceChild, DbResourceInfo, DbResourceStat};
 pub use etl::EtlLoader;
 pub use exec::statement_stats;
 pub use facade::{EntityFacade, EntityFlags, EntityGroup};

@@ -372,6 +372,8 @@ interface MoquiWebFacade {
     sendJsonResponse(value: unknown): void;
     sendJsonError(status: number, message: string, error?: unknown): void;
     sendTextResponse(text: string): void;
+    /** The bytes at a resource location, inline or (the default) as an attachment. 404 when nothing is there. */
+    sendResourceResponse(location: string, inline?: boolean): void;
     saveScreenLastInfo(path?: string | null, parameters?: MoquiMap | null): void;
     getPageMessages(): MoquiPageMessage[];
     getScreenHistory(): { name: string; url: string; urlNoParams: string }[];

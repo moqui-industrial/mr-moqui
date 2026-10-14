@@ -25,6 +25,7 @@ use super::value::EntityValue;
 
 const DB_RESOURCE: &str = "moqui.resource.DbResource";
 const DB_FILE: &str = "moqui.resource.DbResourceFile";
+const DB_HISTORY: &str = "moqui.resource.DbResourceFileHistory";
 const SEQUENCE: &str = "moqui.entity.SequenceValueItem";
 
 /// One `dbresource` node. `exists` is false when a path segment has no row.
@@ -41,6 +42,14 @@ pub struct DbResourceInfo {
 pub struct DbResourceChild {
     pub name: String,
     pub is_file: bool,
+}
+
+/// What a file browser shows of a `dbresource` node: its kind, its last update in milliseconds, and its size.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DbResourceStat {
+    pub is_file: bool,
+    pub last_updated: Option<i64>,
+    pub size: u64,
 }
 
 struct Node {
@@ -117,11 +126,149 @@ impl EntityFacade {
         Ok(())
     }
 
+    /// The kind, time, and size of a `dbresource://` location, or `None` when a segment has no row. The root is a
+    /// directory with no time. A file's time is its `DbResourceFile` update, as `DbResourceReference.getLastModified`.
+    pub fn stat_db_resource(&self, location: &str) -> Result<Option<DbResourceStat>, Error> {
+        self.ensure_db_tables()?;
+        let parts = db_parts(location)?;
+        if parts.is_empty() {
+            return Ok(Some(DbResourceStat {
+                is_file: false,
+                last_updated: None,
+                size: 0,
+            }));
+        }
+        let Some(node) = self.node_at(&parts)? else {
+            return Ok(None);
+        };
+        let resource = self
+            .find(DB_RESOURCE)?
+            .eq("resourceId", Value::string(&node.id))
+            .one()?;
+        let mut last_updated = resource
+            .as_ref()
+            .and_then(|row| stamp_millis(row.get("lastUpdatedStamp")));
+        let mut size = 0;
+        if node.is_file {
+            if let Some(file) = self.find(DB_FILE)?.eq("resourceId", Value::string(&node.id)).one()? {
+                last_updated = stamp_millis(file.get("lastUpdatedStamp")).or(last_updated);
+                size = self.read_bytes(&node.id)?.len() as u64;
+            }
+        }
+        Ok(Some(DbResourceStat {
+            is_file: node.is_file,
+            last_updated,
+            size,
+        }))
+    }
+
+    /// Create the directories of a `dbresource://` location that are missing, as `findDirectoryId(path, true)`. A
+    /// file in the path is an error.
+    pub fn make_db_directory(&self, location: &str) -> Result<(), Error> {
+        self.ensure_db_tables()?;
+        let parts = db_parts(location)?;
+        self.directory_id(&parts).map(|_| ())
+    }
+
+    /// Delete a `dbresource://` node, with its file and history rows. A directory's children are not deleted here,
+    /// as in `DbResourceReference.delete`. False when there is no row.
+    pub fn delete_db_resource(&self, location: &str) -> Result<bool, Error> {
+        self.ensure_db_tables()?;
+        let parts = db_parts(location)?;
+        if parts.is_empty() {
+            return Err(Error::new(format!("cannot delete the dbresource root: {location}")));
+        }
+        let Some(node) = self.node_at(&parts)? else {
+            return Ok(false);
+        };
+        if node.is_file {
+            let histories = self
+                .find(DB_HISTORY)?
+                .eq("resourceId", Value::string(&node.id))
+                .list()?;
+            for history in histories.iter() {
+                history.delete(self)?;
+            }
+            if let Some(file) = self.find(DB_FILE)?.eq("resourceId", Value::string(&node.id)).one()? {
+                file.delete(self)?;
+            }
+        }
+        let mut value = EntityValue::make(self, DB_RESOURCE)?;
+        value.set("resourceId", Value::string(&node.id));
+        value.delete(self)?;
+        Ok(true)
+    }
+
+    /// Give a `dbresource://` node a new parent and name, creating the new parent directories, as
+    /// `DbResourceReference.move`. Nothing happens when there is no row at `location`.
+    pub fn move_db_resource(&self, location: &str, new_location: &str) -> Result<(), Error> {
+        self.ensure_db_tables()?;
+        let parts = db_parts(location)?;
+        let node = if parts.is_empty() { None } else { self.node_at(&parts)? };
+        let Some(node) = node else {
+            tracing::warn!("Could not find dbresource at [{location}]");
+            return Ok(());
+        };
+        let mut new_parts = db_parts(new_location)?;
+        let Some(new_name) = new_parts.pop() else {
+            return Err(Error::new(format!(
+                "No location specified, not moving resource at {location}"
+            )));
+        };
+        let parent = self.directory_id(&new_parts)?;
+        let mut value = EntityValue::make(self, DB_RESOURCE)?;
+        value.set("resourceId", Value::string(&node.id));
+        value.set("parentResourceId", parent.map_or(Value::Null, Value::string));
+        value.set("filename", Value::string(new_name));
+        value.set("isFile", Value::string(if node.is_file { "Y" } else { "N" }));
+        value.update(self)?;
+        Ok(())
+    }
+
+    /// The node at a path, walking from the root.
+    fn node_at(&self, parts: &[String]) -> Result<Option<Node>, Error> {
+        let mut parent: Option<String> = None;
+        let mut found = None;
+        for segment in parts {
+            let Some(node) = self.find_node(parent.as_deref(), segment)? else {
+                return Ok(None);
+            };
+            parent = Some(node.id.clone());
+            found = Some(node);
+        }
+        Ok(found)
+    }
+
+    /// The ID of the directory at a path, creating each missing one. `None` is the root.
+    fn directory_id(&self, parts: &[String]) -> Result<Option<String>, Error> {
+        let mut parent: Option<String> = None;
+        for segment in parts {
+            if let Some(node) = self.find_node(parent.as_deref(), segment)? {
+                if node.is_file {
+                    return Err(Error::new(format!(
+                        "Tried to find a directory in a path but found file instead at {segment} under DbResource {}",
+                        parent.as_deref().unwrap_or("root")
+                    )));
+                }
+                parent = Some(node.id);
+            } else {
+                parent = Some(self.ensure_node(parent.as_deref(), segment, false)?);
+            }
+        }
+        Ok(parent)
+    }
+
+    /// Skip the table check, for the in-memory test database, which has every table and no `information_schema`.
+    #[cfg(test)]
+    pub(crate) fn assume_db_tables(&self) {
+        self.inner.db_ready.store(true, Ordering::Release);
+    }
+
     fn ensure_db_tables(&self) -> Result<(), Error> {
         if self.inner.db_ready.load(Ordering::Acquire) {
             return Ok(());
         }
-        self.check_tables(&[SEQUENCE, DB_RESOURCE, DB_FILE])?;
+        self.check_tables(&[SEQUENCE, DB_RESOURCE, DB_FILE, DB_HISTORY])?;
         self.inner.db_ready.store(true, Ordering::Release);
         Ok(())
     }
@@ -240,6 +387,13 @@ impl EntityFacade {
             value.create(self)?;
         }
         Ok(())
+    }
+}
+
+fn stamp_millis(value: Option<&Value>) -> Option<i64> {
+    match basic_convert(value?, "Timestamp").value {
+        Value::Timestamp(stamp) => Some(stamp.as_millisecond()),
+        _ => None,
     }
 }
 

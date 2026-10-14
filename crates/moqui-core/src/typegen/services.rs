@@ -103,6 +103,7 @@ fn kind_name(kind: ServiceKind) -> &'static str {
         ServiceKind::RemoteRest => "remote-rest",
         ServiceKind::Mail => "script (mail)",
         ServiceKind::SystemSync => "script (system message, entity sync)",
+        ServiceKind::ElFinder => "script (elFinder connector)",
         ServiceKind::Unsupported => "script (not run by this port)",
     }
 }

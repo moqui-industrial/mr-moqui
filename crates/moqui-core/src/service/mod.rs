@@ -18,6 +18,7 @@ pub(crate) mod call;
 pub(crate) mod define;
 mod eca;
 mod eca_rules;
+mod elfinder;
 mod email_eca;
 mod jobs;
 mod mail;
