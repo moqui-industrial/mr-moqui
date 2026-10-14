@@ -60,7 +60,7 @@ Postgres `NOTIFY` can be another sender later, for peers that share the database
 
 ## Sessions
 
-The share is the `moqui.server.HttpSession` row through the entity one-cache. A second instance loads that row by id. Invalidation uses the entity-cache topic, which drops the one-cache entry. The receiver does not apply a copy of the attribute map. Session bytes still do not cross the cluster connection. The cookie signature is HMAC-SHA256 over the session id. That key is its own secret property (`session_cookie_key`), generated into `runtime/.env` when left at the `CHANGEME` default. It is not the cluster certificate. A bad MAC is an unknown session. The merge, the reserve connection, and the flush modes are Sessions and login in `plans/Architecture-Proposal.md`.
+The share is the `moqui.server.HttpSession` row through the entity one-cache. A second instance loads that row by id. Guarantee mode bypasses cached clean state with primary reads; it does not rely on invalidation delivery. Invalidation uses the entity-cache topic, which drops the one-cache entry. The receiver does not apply a copy of the attribute map. Session bytes still do not cross the cluster connection. The cookie signature is HMAC-SHA256 over the session id. That key is its own secret property (`session_cookie_key`), generated into `runtime/.env` when left at the `CHANGEME` default. It is not the cluster certificate. A bad MAC is an unknown session. The merge, the reserve connection, and the flush modes are Sessions and login in `plans/Architecture-Proposal.md`.
 
 ## When it lands
 

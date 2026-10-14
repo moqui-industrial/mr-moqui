@@ -147,7 +147,7 @@ FieldOp = Eq | In | Prefix | Wildcard | Range | Exists
 
 Scripts pass the same tree as maps: `"match_all"`, `{text: {terms, fields: "all" | [names], match}}`, `{field: {name, op, value, values, gt, gte, lt, lte, negate}}`, `{bool: {all, any, none, min_any}}`, `{child: {path, query}}`. A string in that place is a query string.
 
-`Text` is the scored clause. It replaces `elasticQueryAutoWildcard` and `*:`. An empty text query matches every document.
+`Text` is the scored clause. It replaces `elasticQueryAutoWildcard` and `*:`. An empty text query matches every document. `Phrase` preserves term order and adjacency after configured text analysis; quoted query-string input compiles to this variant. PostgreSQL compiles it with `phraseto_tsquery`, and OpenSearch uses an equivalent phrase query. Golden tests distinguish adjacent, reversed, and separated terms, including stop-word handling.
 
 How a clause matches depends on the field's kind. That is the Elastic behavior for `text` and `keyword` mappings, and the screens rely on it:
 
@@ -277,6 +277,59 @@ The feed itself stays. Entity create, update, and delete still register document
 
 Entity create, update, and delete register the written values during the transaction, keyed by the transaction frame, so a `force-new` commit takes only its own. After the transaction-cache flush and before commit, on the enlisted connection, the feed resolves each write to the documents it touches and inserts `moqui.entity.feed.DataFeedPending`: `dataDocumentId`, the primary entity, the document's record id, and the operation (`index` or `delete`). A write to the primary entity keys itself; a delete is a `delete` row. A write to a related entity is walked back along the document's relationship path, from the written values (so a deleted child still finds its parent), to the primary records it reaches, each an `index` row. Rollback drops the writes. `suspend` parks that client as the Transactions section of `plans/Architecture-Proposal.md` specifies. After commit the inserted row ids go to `org.moqui.EntityServices.process#DataFeedPending` on the service pool. That service assembles each document, calls the receive service of every real-time feed that has the document (`documentList`, defaulting to `index#DataDocuments`), calls the feed's delete service for a document that no longer assembles (gone, or now outside the document's conditions), and deletes the rows it delivered. Feeds that receive through their own service, such as `MyAccountNotifications`, run the same way. A full pool stores the call as a one-shot job. The `process_DataFeedPending_frequent` job delivers rows that remain, such as those left while search was not configured. Same-database Postgres, a second Postgres, and OpenSearch use this path. There is no XA. An index failure leaves the pending row and does not roll the entity change back. A later search can see the entity row before the document.
 
+## Universal Mantle search
+
+One universal search box spans authorized [Mantle UDM](https://github.com/moqui/mantle-udm) records: Party, Product, Order, Invoice, Shipment, Asset, Work Effort, and other business entities. It is an application service over `SearchFacade`, not another search backend or business data model. Mantle remains the source of truth; full details come from its entities, services, and relationships.
+
+### Documents, identity, and authorization
+
+Use the existing DataDocument definitions, per-document stores, and `Index(index name)` grouping. Extend the Mantle search feed with missing document types as needed. There is no separate universal `udm_search` table and no replacement of the nested document bodies. Display metadata such as code, title, subtitle, category, attributes, quality, and business URL belongs in the relevant DataDocument definition. Preserve the entity type and original primary-key fields, including composite keys; the facade hit's `(document_id, id)` identifies the stored document.
+
+The application derives identity, tenancy/organization scope, and permitted documents from the authenticated session. A scope or owner-org match alone is not record-level authorization. Apply trusted record-level permission predicates before candidate ranking, paging, counts, facets, and snippets. Use indexed permission relations or authorization-aware queries where appropriate; an allowed-ID array is suitable only for small populations. Do not fetch unauthorized candidates and hide them after ranking. Authorized links and fetched business details must enforce the same policy.
+
+Feed registration is transactional; document assembly and indexing remain eventual, exactly as Index and delete specifies. Index failures leave pending rows and do not roll business data back. PostgreSQL search data participates in the search database's crash recovery and PITR, but recovery must also resume pending feeds and reconcile/rebuild derived documents when the business and search databases are restored independently.
+
+### Retrieval features and facade boundary
+
+The baseline `Query`, `Agg`, sorting, highlighting, exact totals, and offset/limit paging above remain authoritative. Universal search uses `Text`, `Field`, `Child`, and `aggregate` through that contract; it does not send raw SQL or PostgreSQL query strings around the facade parser. OpenSearch remains optional, with one active backend and no dual indexing.
+
+Additional universal-search goals are typo recovery, proximity, relevance boosting, optional semantic/vector retrieval, hybrid reciprocal rank fusion (RRF), and multilingual analysis. These require explicit, opt-in facade capability extensions before an application exposes them. They are not silently new meanings for `Text` or query-time scripts. Define the typed inputs, ranking/filter semantics, and backend support for each extension; unsupported modes return a clear capability error, not a hidden fallback or a second backend. Existing lexical search works without embeddings or a hosted inference service. The initial English analysis and existing `ts_rank` behavior stay the defaults; multilingual configuration waits on a non-English corpus.
+
+For the PostgreSQL extensions, use independent indexed retrieval branches:
+
+- Exact identifiers and beginning-of-title prefixes use B-tree indexes on appropriately normalized fields. Escape literal `%` and `_` in user prefix input. Word-internal autocomplete needs a text-query prefix path or a separate suggestion projection, not just beginning-of-title matching.
+- Lexical retrieval uses native GIN vectors. Phrase parsing must preserve the facade's quoted-string semantics; PostgreSQL phrase/proximity primitives such as `phraseto_tsquery` and `tsquery_phrase` are compiler implementation details. `websearch_to_tsquery` must not replace the facade's field-aware grammar.
+- Fuzzy matching uses a measured GiST `pg_trgm` nearest-neighbor path on normalized display text, conditionally for typo recovery. It is not an unconditional branch on every request and does not replace the existing GIN trigram `Contains` path.
+- Optional semantic retrieval uses a locally generated query embedding and the document's matching embedding model/dimensions. No query embedding means no semantic branch. Filter every branch by the same authorization and business predicates.
+- Hybrid retrieval merges bounded branch candidates by full facade document identity, not record id alone. A reference RRF score is `sum(branch_weight / (60 + branch_rank))`; exact matches can receive a larger weight. Optional positive quality boosts apply before final top-K. Candidate limits, weights, and tie-breaking must be specified and benchmarked rather than treated as universal constants.
+
+The optional lexical ranking extension may use weighted vectors and `ts_rank_cd` for cover-density ranking; it does not change baseline `ts_rank`. Native GIN cannot directly return the highest text ranks, so broad queries may score large matching populations. Measure relevance and p95 latency instead of promising Elasticsearch-equivalent performance or introducing a custom BM25 layer.
+
+Fetch large business details or perform entity-specific relational joins only after authorized top-K, using the original entity keys. Exact totals and true facets require counting/aggregating the full authorized matching population, not only the returned page or bounded RRF candidates. Define that population explicitly for fuzzy/semantic/hybrid modes before claiming exact counts.
+
+### REST service and UI
+
+Expose a dedicated authenticated application service, for example `POST /api/search`. This is a proposed endpoint, not an existing Mantle endpoint. Its adapter always calls `SearchFacade` and maps entity types to DataDocument targets, filters to trusted query clauses, facets to aggregations, and display fields/highlights to results.
+
+```json
+{
+  "q": "industrial water pump",
+  "entityType": null,
+  "filters": {"status": "Active"},
+  "mode": "lexical",
+  "offset": 0,
+  "limit": 20,
+  "facets": ["entityType", "category"],
+  "highlight": true
+}
+```
+
+`lexical` avoids embedding inference; `autocomplete` uses the prefix/suggestion path. `semantic` and `hybrid` are exposed only when their facade capabilities are implemented and enabled. Quoted input requests a phrase. An explicit proximity request such as `"near": {"terms": ["water", "pump"], "distance": 3}` also requires the proximity capability. Empty input is handled as an authorized browse operation.
+
+The response includes the query, exact total (`totalRelation: "eq"`), results, and authorized facet counts. Each result includes entity type/key, title/subtitle, optional snippet, score, authorized URL, category, and attributes. It uses the facade's offset/limit paging and cap; cursor pagination stays deferred. Do not report page-only facets or approximate candidate counts as full result-set counts.
+
+Call this endpoint on submission and on debounced autocomplete requests. Render each result with its entity type's display template and navigate to its authorized business URL. All types and enabled modes share one input.
+
 ## Postgres
 
 Schema `search`, so the tables sit beside entity tables whenever both stores are the same Postgres, including the default embedded cluster and an external entity Postgres. One table per DataDocument. The table name is the physical document name (`mantle_party`). When search is its own cluster, the schema is still `search`.
@@ -321,6 +374,38 @@ Text rank is `ts_rank` of `all_text` against the query's positive term, prefix, 
 
 When the entity datasource is Postgres, embedded or external, the default is the `search` schema on that database. When the entity datasource is MySQL or another non-Postgres, the default is a separate embedded Postgres cluster, including on Windows, where that cluster connects over TCP to `127.0.0.1` on an ephemeral port, as `plans/EmbeddedPostgres.md` specifies. A `<postgres>` URL points search at a different Postgres. Placement and how many postmasters start are `plans/EmbeddedPostgres.md`. All Postgres traffic, including search SQL, goes through the synchronous drivers in `plans/Crate-Layout.md`. The default binary includes embedded Postgres for the embedded search cluster. A custom build may omit it only when search is an external Postgres or OpenSearch.
 
+### Optional analysis and vector indexes
+
+Keep dependencies minimal: native PostgreSQL full-text/JSON operators, bundled `pg_trgm`, optional `unaccent` for accent folding, and optional community `pgvector` for semantic retrieval. No custom BM25 implementation or separate search engine is needed for the PostgreSQL path; the optional OpenSearch backend is unchanged.
+
+Configure accent folding with a custom text-search configuration placing `unaccent` before the stemming dictionary; installing the extension alone does not activate it. Later multilingual support must store the selected language/configuration with the document metadata and use matching index/query analysis. Configured dictionaries or `ts_rewrite` can handle synonyms. Do not change initial English behavior without corpus tests.
+
+When semantic search is enabled, add embedding storage and indexes to the relevant per-DataDocument store through `ensure_index`, not another universal table. One candidate representation is `halfvec(1024)` with a partial HNSW index using `halfvec_cosine_ops` where the embedding is non-null; model choice determines the actual dimensions and representation. Omit the vector extension, storage, index, and worker when disabled. Provision compatible extensions for embedded and external databases before enabling the feature; do not assume `pgvector` is bundled.
+
+The embedding worker runs locally outside PostgreSQL. It writes derived embeddings through the selected search backend's indexing path and must not overwrite a newer document with an embedding computed from stale content. Measure filtered exact-vector scans against ANN: selective authorization and attribute predicates can substantially affect HNSW recall and execution. Typed filter columns and measured JSONB containment indexes serve attributes; nested `Child` semantics remain unchanged.
+
+### Read replicas and freshness
+
+The default single-node PostgreSQL deployment runs business data, document maintenance, and search reads together when both stores share the database. Search reads may move to a physical replica of the configured search database without changing document schemas or the facade/application API. Use a separate read-only pool; keep the existing PostgreSQL URL as the writable search primary. The replica is not a second active backend or a dual-indexing destination.
+
+| Operation | Single node | Physical-replica deployment |
+|---|---|---|
+| Document assembly/indexing and embeddings | Search primary | Search primary |
+| Index creation and schema maintenance | Search primary | Search primary |
+| Search and aggregation execution | Search primary | Search replica |
+| Search data | Per-DataDocument tables | Same tables replicated through WAL |
+| Freshness | After committed indexing | Indexing delay plus replication lag |
+
+`CREATE INDEX`, projection/embedding writes, and `REFRESH MATERIALIZED VIEW` (including `CONCURRENTLY`) run on the primary. A physical replica cannot perform them. Materialized views are optional, benchmark-driven read models, not a search prerequisite; refresh adds primary cost and freshness delay. Where entity and search stores share PostgreSQL, business data and permission relations replicate with the search tables. A separate search database must not assume those relations are available locally.
+
+Validate permissions against current authoritative state before returning hits, totals, facets, or snippets; stale replica ACLs alone are insufficient, especially after revocation. For read-your-writes, first wait for the relevant pending-feed indexing to complete, then wait for its search-commit WAL position on the replica with a bounded timeout or route to the search primary. Routing to the primary alone does not remove indexing delay. Permission-sensitive requests require equivalent authoritative checks on either route.
+
+Set query timeouts and monitor replication lag and standby query cancellations. Expensive search queries must not silently block recovery. A separately writable derived database is the existing separate-PostgreSQL placement, not a physical replica; moving maintenance there needs explicit feed consistency, authorization, and recovery rules. A replica offloads reads only and does not satisfy a topology that requires derived-index maintenance off the business write node.
+
+### Validation
+
+Benchmark representative Mantle corpora, broad and selective lexical queries, typo recovery, phrase/proximity, autocomplete, configured languages, and enabled vector/hybrid modes. Record relevance, p95 latency, primary maintenance cost, replication lag, and end-to-end freshness. Test authorization before ranking and aggregation, revocations during replica lag, pending-feed failures/recovery, read-after-write timeouts, and exact totals/facets independently of top-K. PostgreSQL stores and retrieves derived documents; Mantle owns business semantics and links; any optional local model only generates embeddings.
+
 ## OpenSearch
 
 The compiler emits the JSON the current services emit.
@@ -350,6 +435,11 @@ Each stored document carries `_indexed_at` (epoch millis), which a retention `de
     <postgres url="..." user="..." password="..."/>
 </search-facade>
 
+<!-- Optional read replica; url remains the writable search primary. -->
+<search-facade backend="postgres">
+    <postgres url="..." user="..." password="..." read-url="..."/>
+</search-facade>
+
 <search-facade backend="opensearch">
     <cluster url="${opensearch_url}" user="${opensearch_user}" password="${opensearch_password}"
              index-prefix="${opensearch_index_prefix}"/>
@@ -357,6 +447,8 @@ Each stored document carries `_indexed_at` (epoch millis), which a retention `de
 ```
 
 `backend` defaults to `postgres`. With no `postgres` element, tables live in the `search` schema of the entity Postgres, embedded or external. When the entity datasource is not Postgres, that default is a dedicated embedded cluster. With `backend="opensearch"` the cluster element is required and the Postgres search store is not opened.
+
+The optional `read-url` selects a physical replica of the search primary for reads only; it uses the configured credentials and a separate read-only pool. It never receives index/schema writes. Without it, reads use the primary. Primary fallback and bounded freshness waits follow Read replicas and freshness above.
 
 Service parameters named `clusterName` go away. There is one backend. The `logger` cluster name goes away with the logging entity group.
 
