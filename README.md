@@ -40,6 +40,9 @@ cargo build --release -p moqui
 # Tests (whole workspace) and lints
 cargo test
 cargo lint
+
+# The Gate 3 tests, left out of the default run (embedded Postgres per test, Chromium)
+cargo test -p moqui-host --test gate3 --test gate3_browser
 ```
 
 Run from the repo root (paths default to `MOQUI_RUNTIME=runtime`,

@@ -53,3 +53,13 @@ workspace = true
 indexmap = { workspace = true }
 # Same 0.29 handshake set axum's ws feature already links. No native-tls and no rustls.
 tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
+
+# Out of the default `cargo test`: each test boots its own embedded Postgres and seed, and the browser
+# tests drive Chromium. Run them by name: `cargo test -p moqui-host --test gate3 --test gate3_browser`.
+[[test]]
+name = "gate3"
+test = false
+
+[[test]]
+name = "gate3_browser"
+test = false
