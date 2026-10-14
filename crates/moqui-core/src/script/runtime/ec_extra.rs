@@ -417,59 +417,13 @@ fn web_field_values_encode_html_js_safe(ctx: Ctx<'_>, map: JsValue<'_>) -> rquic
     })
 }
 
-/// `WebUtilities.ipMatches`: comma separated patterns, each four dot separated parts of a number,
-/// `*`, or a `low-high` range; an IPv6 pattern must equal the address.
-fn ip_matches(patterns: &str, address: &str) -> bool {
-    let canon = canonical_ip(address);
-    if canon.is_empty() {
-        return false;
-    }
-    patterns.split(',').map(str::trim).filter(|raw| !raw.is_empty()).any(|raw| {
-        if raw == "*" || raw == "*.*.*.*" {
-            return true;
-        }
-        let pattern = canonical_ip(raw);
-        if pattern.contains(':') || canon.contains(':') {
-            return pattern.eq_ignore_ascii_case(&canon);
-        }
-        let (pattern_parts, address_parts): (Vec<&str>, Vec<&str>) = (pattern.split('.').collect(), canon.split('.').collect());
-        pattern_parts.len() == 4
-            && address_parts.len() == 4
-            && pattern_parts.iter().zip(&address_parts).all(|(part, value)| {
-                let Ok(number) = value.parse::<u32>() else {
-                    return false;
-                };
-                if *part == "*" {
-                    return true;
-                }
-                match part.split_once('-') {
-                    Some((low, high)) => matches!((low.parse::<u32>(), high.parse::<u32>()), (Ok(low), Ok(high)) if number >= low && number <= high),
-                    None => part.parse::<u32>().is_ok_and(|expected| expected == number),
-                }
-            })
-    })
-}
-
-fn canonical_ip(text: &str) -> String {
-    let mut text = text.trim().trim_start_matches('[').trim_end_matches(']').to_string();
-    if let Some(at) = text.find('%') {
-        text.truncate(at);
-    }
-    if let Some(rest) = text.to_ascii_lowercase().strip_prefix("::ffff:") {
-        if rest.contains('.') {
-            return rest.to_string();
-        }
-    }
-    text
-}
-
 fn web_ip_matches(patterns: Opt<String>, address: Opt<String>) -> bool {
     let patterns = patterns.0.unwrap_or_default();
     if patterns.is_empty() {
         return true;
     }
     let address = address.0.unwrap_or_default();
-    ip_matches(&patterns, &address)
+    crate::web::ip_matches(&patterns, &address)
 }
 
 fn web_is_safe_single_path_segment(name: Opt<String>) -> bool {

@@ -37,6 +37,15 @@ const USER_IMPACT_MIN_MILLIS: f64 = 1000.0;
 /// Rows per transaction in a flush, Java's `maxCreates`.
 const MAX_CREATES: usize = 1000;
 const FLUSH_RETRIES: u32 = 5;
+/// Hits held for the flush. Past this, until a tick takes them, a new hit is dropped and counted, so memory stays
+/// bounded when no tick runs.
+const MAX_QUEUED_HITS: usize = 10_000;
+/// Closed bins held for the flush, dropped and counted past this as hits are.
+const MAX_CLOSED_BINS: usize = 20_000;
+/// Distinct artifacts with counts. A new artifact past this is not binned, and is counted as dropped.
+const MAX_STATS: usize = 20_000;
+/// Exact parameter names, in lower case, left out of a hit's `parameterString` besides the web credential names.
+const SECRET_PARAMETER_NAMES: &[&str] = &["code", "moquisessiontoken", "sessiontoken", "sql", "sharedsecret"];
 
 /// Entities whose operations are not counted, so counting does not count itself.
 const ENTITIES_TO_SKIP: &[&str] = &[
@@ -92,6 +101,21 @@ struct State {
     closed: Vec<BinRow>,
     /// Hits waiting for the flush, Java's `deferredHitInfoQueue`.
     hits: Vec<HitRow>,
+    /// Hits, closed bins, and new artifacts dropped by the limits since the last flush.
+    dropped: u64,
+}
+
+impl State {
+    /// Count one thing dropped by a limit. The first, and every thousandth after, is logged.
+    fn drop_one(&mut self, what: &str) {
+        self.dropped += 1;
+        if self.dropped == 1 || self.dropped.is_multiple_of(1000) {
+            tracing::warn!(
+                dropped = self.dropped,
+                "Artifact hit {what} dropped, the in-memory limit is reached and no flush has run"
+            );
+        }
+    }
 }
 
 /// Java's `ArtifactStatsInfo`: counts since start for one artifact, and its current bin.
@@ -199,7 +223,12 @@ impl ArtifactHits {
                 Some(sub_type) if hit.artifact_type != "AT_SERVICE" => format!("{}{sub_type}", hit.name),
                 _ => hit.name.to_string(),
             };
+            if state.stats.len() >= MAX_STATS && !state.stats.contains_key(&key) {
+                state.drop_one("artifact");
+                return;
+            }
             let State { stats, closed, .. } = &mut *state;
+            let full = closed.len() >= MAX_CLOSED_BINS;
             let info = stats.entry(key).or_insert_with(|| StatsInfo {
                 artifact_type: hit.artifact_type.to_string(),
                 sub_type: hit.sub_type.map(str::to_string),
@@ -214,13 +243,21 @@ impl ArtifactHits {
                 .cur_bin
                 .as_ref()
                 .is_some_and(|bin| hit.start_ms > bin.start_ms + self.bin_length_ms);
+            let mut dropped_bin = false;
             if expired {
                 if let Some(row) = info.close_bin(self.bin_length_ms, None) {
-                    closed.push(row);
+                    if full {
+                        dropped_bin = true;
+                    } else {
+                        closed.push(row);
+                    }
                 }
                 info.cur_bin = Some(BinInfo::new(hit.start_ms));
             }
             is_slow = info.count_hit(hit.start_ms, hit.running_ms);
+            if dropped_bin {
+                state.drop_one("bin");
+            }
         }
         // Single hits of an entity are never written: too many, and they would count themselves.
         if is_entity || !((is_slow && hit.running_ms > USER_IMPACT_MIN_MILLIS) || persist_hit) {
@@ -238,7 +275,12 @@ impl ArtifactHits {
             parameter_string: hit.parameters.and_then(parameter_string),
             output_size: hit.output_size,
         };
-        self.state.lock().unwrap_or_else(|err| err.into_inner()).hits.push(row);
+        let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+        if state.hits.len() >= MAX_QUEUED_HITS {
+            state.drop_one("row");
+        } else {
+            state.hits.push(row);
+        }
     }
 
     /// Take what the flush writes: the waiting hits, the closed bins, and each current bin whose
@@ -246,7 +288,12 @@ impl ArtifactHits {
     fn take(&self, all: bool) -> (Vec<HitRow>, Vec<BinRow>) {
         let now = now_millis();
         let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
-        let State { stats, closed, hits } = &mut *state;
+        let State {
+            stats,
+            closed,
+            hits,
+            dropped,
+        } = &mut *state;
         for info in stats.values_mut() {
             let Some(start) = info.cur_bin.as_ref().map(|bin| bin.start_ms) else {
                 continue;
@@ -256,6 +303,13 @@ impl ArtifactHits {
             } else if all {
                 closed.extend(info.close_bin(self.bin_length_ms, Some(now)));
             }
+        }
+        if *dropped > 0 {
+            tracing::warn!(
+                dropped = *dropped,
+                "Artifact hits, bins, or artifacts were dropped since the last flush"
+            );
+            *dropped = 0;
         }
         (std::mem::take(hits), std::mem::take(closed))
     }
@@ -345,8 +399,7 @@ impl BinInfo {
     }
 }
 
-/// `key=value` pairs, without maps, lists, empty values and anything named like a password (in any
-/// case, so `newPassword` is left out too).
+/// `key=value` pairs, without maps, lists, empty values and [`secret_parameter`] names.
 /// Values are cut at 80 characters and the whole at 1000.
 fn parameter_string(parameters: &BTreeMap<String, Value>) -> Option<String> {
     if parameters.is_empty() {
@@ -354,9 +407,7 @@ fn parameter_string(parameters: &BTreeMap<String, Value>) -> Option<String> {
     }
     let mut out = String::new();
     for (key, value) in parameters {
-        if matches!(value, Value::Null | Value::Map(_) | Value::List(_) | Value::Object(_))
-            || key.to_ascii_lowercase().contains("password")
-        {
+        if matches!(value, Value::Null | Value::Map(_) | Value::List(_) | Value::Object(_)) || secret_parameter(key) {
             continue;
         }
         let text = to_plain_string(value);
@@ -371,6 +422,18 @@ fn parameter_string(parameters: &BTreeMap<String, Value>) -> Option<String> {
         out.push_str(&truncate(&text, 80));
     }
     Some(truncate(&out, 1000))
+}
+
+/// A parameter a hit row must not keep, compared without case: the web credential names, a second-factor `code`,
+/// session tokens, SQL text, a shared secret, and any name with `password`, `secret`, or `token` in it or ending in
+/// `_key`, `apikey`, or `loginkey`. Ids such as `primaryKeyId` or `monkeyId` are kept.
+/// Java left out only names with `password`.
+fn secret_parameter(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    crate::web::CREDENTIAL_PARAMETER_NAMES.contains(&lower.as_str())
+        || SECRET_PARAMETER_NAMES.contains(&lower.as_str())
+        || ["password", "secret", "token"].iter().any(|part| lower.contains(part))
+        || ["_key", "apikey", "loginkey"].iter().any(|end| lower.ends_with(end))
 }
 
 fn truncate(text: &str, max_chars: usize) -> String {
@@ -629,8 +692,62 @@ mod tests {
         parameters.insert("empty".to_string(), Value::string(""));
         parameters.insert("list".to_string(), Value::List(vec![Value::I64(1)]));
         parameters.insert("n".to_string(), Value::I64(5));
+        for secret in [
+            "code",
+            "moquiSessionToken",
+            "sql",
+            "sharedSecret",
+            "api_key",
+            "login_key",
+            "clientSecret",
+            "refreshToken",
+            "AUTH_TOKEN",
+            "privateApiKey",
+        ] {
+            parameters.insert(secret.to_string(), Value::string("no"));
+        }
+        // Ordinary ids are kept.
+        parameters.insert("primaryKeyId".to_string(), Value::string("k"));
+        parameters.insert("monkeyId".to_string(), Value::string("m"));
+        parameters.insert("codeId".to_string(), Value::string("c"));
         let text = parameter_string(&parameters).unwrap();
-        assert_eq!(text, format!("a={}, n=5", "x".repeat(80)));
+        assert_eq!(
+            text,
+            format!("a={}, codeId=c, monkeyId=m, n=5, primaryKeyId=k", "x".repeat(80))
+        );
+    }
+
+    #[test]
+    fn queued_hits_and_new_artifacts_stop_at_the_limits_until_a_flush_takes_them() {
+        let hits = ArtifactHits::from_conf(conf());
+        for index in 0..super::MAX_QUEUED_HITS + 5 {
+            hits.count(
+                &hit("AT_XML_SCREEN", "component://a/screen/A.xml", index as i64, 1.0),
+                HitContext::default,
+            );
+        }
+        {
+            let state = hits.state.lock().unwrap();
+            assert_eq!(state.hits.len(), super::MAX_QUEUED_HITS);
+            assert_eq!(state.dropped, 5);
+        }
+        let (taken, _) = hits.take(false);
+        assert_eq!(taken.len(), super::MAX_QUEUED_HITS);
+        assert_eq!(hits.state.lock().unwrap().dropped, 0);
+        hits.count(
+            &hit("AT_XML_SCREEN", "component://a/screen/A.xml", 0, 1.0),
+            HitContext::default,
+        );
+        assert_eq!(hits.state.lock().unwrap().hits.len(), 1);
+
+        let names: Vec<String> = (0..super::MAX_STATS + 3).map(|index| format!("svc.{index}")).collect();
+        for name in &names {
+            hits.count(&hit("AT_SERVICE", name, 0, 1.0), HitContext::default);
+        }
+        let state = hits.state.lock().unwrap();
+        // The screen artifact, then services up to the limit.
+        assert_eq!(state.stats.len(), super::MAX_STATS);
+        assert_eq!(state.dropped, 4);
     }
 
     /// A world with the conf's server stats, a pool to tick, screens, and a service.

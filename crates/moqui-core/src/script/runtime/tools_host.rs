@@ -820,6 +820,7 @@ fn load_data<'js>(ctx: Ctx<'js>, options: JsValue<'js>) -> rquickjs::Result<JsVa
                 .parse::<u64>()
                 .ok()
                 .map(std::time::Duration::from_secs),
+            restrict_sensitive_entities: flag("restrictSensitiveEntities"),
         };
         let before = facade.flags();
         facade.set_disable_entity_eca(flag("disableEntityEca") || before.disable_entity_eca);

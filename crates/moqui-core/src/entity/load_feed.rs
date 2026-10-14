@@ -89,7 +89,31 @@ pub struct LoadOptions {
     pub disable_fk_create: bool,
     /// Transaction timeout for each record. `None` uses the transaction manager default.
     pub timeout: Option<std::time::Duration>,
+    /// Java `restrictSensitiveEntities`: refuse every record, root or nested, whose entity is a
+    /// [`RESTRICTED_ENTITIES`] entity. Here service elements are refused too, a hardening beyond the Java, which ran
+    /// them and checked only root and CSV entity names.
+    pub restrict_sensitive_entities: bool,
 }
+
+/// The identity-admin and secret-config entities (`WebUtilities.isRestrictedGenericEntity`), by simple name in lower
+/// case.
+pub const RESTRICTED_ENTITIES: &[&str] = &[
+    "userloginkey",
+    "usergroupmember",
+    "usergrouppermission",
+    "userpermission",
+    "artifactauthz",
+    "artifactgroup",
+    "artifactgroupmember",
+    "artifacttarpit",
+    "usergrouppermissions",
+    "userpermissions",
+    "artifactgroups",
+    "userauthcfactor",
+    "userpasswordhistory",
+    "emailserver",
+    "systemmessageremote",
+];
 
 /// How many entity records were written. Held services are not included.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1206,7 +1230,7 @@ fn load_definition_document<R: BufRead>(
                 Some(Top::Record(record)) => {
                     total = total.saturating_add(store_record(facade, options, &record)?);
                 }
-                Some(Top::Service(service)) => hold_service(facade, service)?,
+                Some(Top::Service(service)) => hold_service(facade, options, service)?,
                 None => {}
             }
         }
@@ -1272,7 +1296,7 @@ fn load_xml_reader(
         let node = MNode::parse_text(location, &element)?;
         match parse_top(facade, location, &node)? {
             Some(Top::Record(record)) => total = total.saturating_add(store_record(facade, options, &record)?),
-            Some(Top::Service(service)) => hold_service(facade, service)?,
+            Some(Top::Service(service)) => hold_service(facade, options, service)?,
             None => {}
         }
     }
@@ -1370,6 +1394,7 @@ fn load_csv_reader(
             }
             hold_service(
                 facade,
+                options,
                 HeldService {
                     name: entity_name.clone(),
                     location: location.to_string(),
@@ -1473,6 +1498,7 @@ fn load_json_document(facade: &EntityFacade, location: &str, value: Json, option
     } else if entity_name.contains('#') {
         hold_service(
             facade,
+            options,
             HeldService {
                 name: entity_name,
                 location: location.to_string(),
@@ -1840,6 +1866,9 @@ fn inherit_pk_fields(
 }
 
 fn store_record(facade: &EntityFacade, options: &LoadOptions, record: &Record) -> Result<u64, Error> {
+    if options.restrict_sensitive_entities {
+        refuse_restricted(facade, record)?;
+    }
     let began = facade.begin(&record.entity, options.timeout)?;
     let result = write_tree(facade, options, record, &BTreeMap::new());
     match result {
@@ -1854,6 +1883,31 @@ fn store_record(facade: &EntityFacade, options: &LoadOptions, record: &Record) -
             Err(err)
         }
     }
+}
+
+/// Refuses the record when it or any nested record, by relationship name, short alias, or entity name, resolves to
+/// a [`RESTRICTED_ENTITIES`] entity. Checked before anything of the tree is written.
+fn refuse_restricted(facade: &EntityFacade, record: &Record) -> Result<(), Error> {
+    let full_name = canonical_name(facade, &record.entity).unwrap_or_else(|_| record.entity.clone());
+    if is_restricted_entity(&full_name) {
+        return Err(Error::new(format!(
+            "Entity {full_name} is not allowed in this data load"
+        )));
+    }
+    for child in &record.children {
+        refuse_restricted(facade, child)?;
+    }
+    Ok(())
+}
+
+/// `WebUtilities.isRestrictedGenericEntity`: the simple name, case-insensitive, is in [`RESTRICTED_ENTITIES`].
+pub fn is_restricted_entity(entity_name: &str) -> bool {
+    let simple = entity_name
+        .rsplit(['.', '#'])
+        .next()
+        .unwrap_or(entity_name)
+        .to_ascii_lowercase();
+    RESTRICTED_ENTITIES.contains(&simple.as_str())
 }
 
 fn write_tree(
@@ -2010,7 +2064,14 @@ fn value_from(
     Ok(value)
 }
 
-fn hold_service(facade: &EntityFacade, service: HeldService) -> Result<(), Error> {
+fn hold_service(facade: &EntityFacade, options: &LoadOptions, service: HeldService) -> Result<(), Error> {
+    // A restricted load takes records only: a service element could write anything.
+    if options.restrict_sensitive_entities {
+        return Err(Error::new(format!(
+            "Service {} is not allowed in this data load",
+            service.name
+        )));
+    }
     with_load_slot(facade, |slot| slot.services.push(service.clone()));
     crate::service::run_held_service(facade, &service)
 }

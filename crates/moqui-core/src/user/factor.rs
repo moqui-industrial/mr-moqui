@@ -38,6 +38,9 @@ const TOTP_SKEW: u16 = 1;
 /// `get#UserAuthcFactorRequired`: the user has a factor in date, or is in a group with
 /// `requireAuthcFactor` set. Login asks this before it sets the user.
 ///
+/// The service `get#UserAuthcFactorRequired` in `framework/service/org/moqui/impl/UserServices.xml` stays for the
+/// screens and `update#Password`, and is the same rule: change both together.
+///
 /// # Errors
 ///
 /// Returns an error when the factor or group rows cannot be read.

@@ -27,13 +27,10 @@ use std::time::{Duration, Instant};
 use common::{basic, exchange, http_request, start_with_data};
 
 /// The message type, the remote (this server, logged in as john.doe), the two syncs of the three EntitySyncArtifactAppl
-/// enumerations, and ADMIN access to the services the test calls and the entities it reads and patches.
+/// enumerations, and ADMIN access to the entities the test reads and patches through `/rest/e1`. The services under
+/// `/rest/s1/moqui` need no grant here: the seed MOQUI_API grant on the REST path is inherited.
 const DATA: &str = r#"<entity-facade-xml type="seed">
-    <moqui.security.ArtifactGroup artifactGroupId="GATE_SYNC" description="Gate system sync services and entities"/>
-    <moqui.security.ArtifactGroupMember artifactGroupId="GATE_SYNC" artifactName="org\.moqui\.impl\.SystemMessageServices\..*"
-        artifactTypeEnumId="AT_SERVICE" nameIsPattern="Y" inheritAuthz="Y"/>
-    <moqui.security.ArtifactGroupMember artifactGroupId="GATE_SYNC" artifactName="org\.moqui\.impl\.EntitySyncServices\..*"
-        artifactTypeEnumId="AT_SERVICE" nameIsPattern="Y" inheritAuthz="Y"/>
+    <moqui.security.ArtifactGroup artifactGroupId="GATE_SYNC" description="Gate system sync entities"/>
     <moqui.security.ArtifactGroupMember artifactGroupId="GATE_SYNC" artifactName="moqui\.service\.message\..*"
         artifactTypeEnumId="AT_ENTITY" nameIsPattern="Y" inheritAuthz="Y"/>
     <moqui.security.ArtifactGroupMember artifactGroupId="GATE_SYNC" artifactName="moqui\.entity\.sync\..*"

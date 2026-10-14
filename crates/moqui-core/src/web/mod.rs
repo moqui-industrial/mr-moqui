@@ -125,6 +125,8 @@ struct WebSlot {
     request_details: String,
     /// The names in the URL query string, which `getSecureRequestParameters` leaves out.
     query_names: Vec<String>,
+    /// [`client_ip`] of the request, for the login `ipAllowed` check.
+    client_ip: String,
     /// Scheme, host, and context path that links start with. Empty for a path-only link.
     base_url: String,
     sent: bool,
@@ -166,6 +168,7 @@ pub(crate) fn install_with(parameters: BTreeMap<String, Value>, base_url: String
             referrer: String::new(),
             request_details: String::new(),
             query_names: Vec::new(),
+            client_ip: String::new(),
             base_url,
             sent: false,
             status: 200,
@@ -265,8 +268,18 @@ pub(crate) fn set_request_info(request: &WebRequest) {
             web.referrer = referrer;
             web.request_details = details;
             web.query_names = request.query.iter().map(|(name, _)| name.clone()).collect();
+            web.client_ip = client_ip(request);
         }
     });
+}
+
+/// Java `getClientIp`: the [`client_ip`] of the current request. Empty with no request.
+pub(crate) fn current_client_ip() -> String {
+    WEB.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map_or_else(String::new, |web| web.client_ip.clone())
+    })
 }
 
 /// `getSecureRequestParameters`: the parameters that did not come in the URL query string (the body, a multipart
@@ -902,6 +915,52 @@ pub fn client_ip(request: &WebRequest) -> String {
         }
     }
     request.peer_ip.clone()
+}
+
+/// `WebUtilities.ipMatches`: comma separated patterns, each four dot separated parts of a number,
+/// `*`, or a `low-high` range; an IPv6 pattern must equal the address.
+pub(crate) fn ip_matches(patterns: &str, address: &str) -> bool {
+    let canon = canonical_ip(address);
+    if canon.is_empty() {
+        return false;
+    }
+    patterns.split(',').map(str::trim).filter(|raw| !raw.is_empty()).any(|raw| {
+        if raw == "*" || raw == "*.*.*.*" {
+            return true;
+        }
+        let pattern = canonical_ip(raw);
+        if pattern.contains(':') || canon.contains(':') {
+            return pattern.eq_ignore_ascii_case(&canon);
+        }
+        let (pattern_parts, address_parts): (Vec<&str>, Vec<&str>) = (pattern.split('.').collect(), canon.split('.').collect());
+        pattern_parts.len() == 4
+            && address_parts.len() == 4
+            && pattern_parts.iter().zip(&address_parts).all(|(part, value)| {
+                let Ok(number) = value.parse::<u32>() else {
+                    return false;
+                };
+                if *part == "*" {
+                    return true;
+                }
+                match part.split_once('-') {
+                    Some((low, high)) => matches!((low.parse::<u32>(), high.parse::<u32>()), (Ok(low), Ok(high)) if number >= low && number <= high),
+                    None => part.parse::<u32>().is_ok_and(|expected| expected == number),
+                }
+            })
+    })
+}
+
+fn canonical_ip(text: &str) -> String {
+    let mut text = text.trim().trim_start_matches('[').trim_end_matches(']').to_string();
+    if let Some(at) = text.find('%') {
+        text.truncate(at);
+    }
+    if let Some(rest) = text.to_ascii_lowercase().strip_prefix("::ffff:") {
+        if rest.contains('.') {
+            return rest.to_string();
+        }
+    }
+    text
 }
 
 pub(crate) fn require_session_token() -> bool {
