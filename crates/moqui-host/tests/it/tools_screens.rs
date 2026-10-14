@@ -20,12 +20,10 @@
 
 #![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
 
-mod common;
-
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use common::{basic, exchange, http_request, start_with_data};
+use crate::common::{basic, exchange, http_request, start_with_data};
 
 /// The records the detail screens show.
 const DATA: &str = r#"<entity-facade-xml type="seed">
@@ -141,8 +139,18 @@ fn failure(path: &str, status: u16, page: &str) -> String {
     format!("{path}: {status}: {snippet}")
 }
 
+/// The two checks share one server, and so one seed of [`DATA`] and [`SQL_DATA`]: a server start is most of what the SQL runner check costs.
 #[test]
-fn every_tools_screen_renders_in_html_for_an_admin() {
+fn tools_screens_render_and_the_sql_runners_run() {
+    let seed_end = "</entity-facade-xml>";
+    let sql_rows = SQL_DATA.split_once('>').map_or("", |(_, rows)| rows);
+    let data = format!("{}{sql_rows}", DATA.trim_end_matches(seed_end));
+    let gate = start_with_data("tools-screens", &data);
+    every_tools_screen_renders_in_html_for_an_admin(&gate);
+    the_sql_runners_run_for_an_admin_and_refuse_other_users(&gate);
+}
+
+fn every_tools_screen_renders_in_html_for_an_admin(gate: &crate::common::Gate) {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/tools/screen");
     let mut paths = Vec::new();
     for app in ["System", "Tools"] {
@@ -150,7 +158,6 @@ fn every_tools_screen_renders_in_html_for_an_admin() {
         screen_paths(&root.join(app), &format!("/{app}"), &mut paths);
     }
 
-    let gate = start_with_data("tools-screens", DATA);
     let address = gate.server.address();
     let john = basic("john.doe", "moqui");
     let mut failures = Vec::new();
@@ -277,9 +284,7 @@ fn run_sql(address: SocketAddr, auth: &str, screen: &str, sql: &str, limit: &str
     (status, page)
 }
 
-#[test]
-fn the_sql_runners_run_for_an_admin_and_refuse_other_users() {
-    let gate = start_with_data("tools-sql", SQL_DATA);
+fn the_sql_runners_run_for_an_admin_and_refuse_other_users(gate: &crate::common::Gate) {
     let address = gate.server.address();
     let john = basic("john.doe", "moqui");
     const UPDATE: &str = r#"update "Enumeration" set "description" = 'changed' where "enumId" = 'GATE_SQL'"#;

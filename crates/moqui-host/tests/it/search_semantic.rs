@@ -32,7 +32,7 @@ use moqui_core::transaction::{PoolConfig, TransactionManager};
 use moqui_lib::object::Value;
 
 #[test]
-#[ignore = "needs pgvector: PGVECTOR_URL=postgresql://127.0.0.1:5432/db?sslmode=disable cargo test -p moqui-host --test search_semantic -- --ignored"]
+#[ignore = "needs pgvector: PGVECTOR_URL=postgresql://127.0.0.1:5432/db?sslmode=disable cargo test -p moqui-host --test it -- search_semantic --ignored"]
 fn embeddings_are_stored_guarded_and_searched() {
     let url = std::env::var("PGVECTOR_URL").expect("set PGVECTOR_URL");
     let parsed = moqui_core::search::conf::parse_postgres_url(&url).unwrap();

@@ -27,6 +27,7 @@ use moqui_lib::object::Value;
 #[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
 #[test]
 fn framework_seed_and_fixture_load() {
+    let _shared = crate::common::shared();
     let runtime = temp_dir("moqui-rt");
     let cluster_dir = temp_dir("moqui-pg");
     let _runtime_guard = DirGuard(runtime.clone());
@@ -162,19 +163,25 @@ fn read_extra(framework: &Path, cluster_dir: &Path) -> Extra {
     }
 }
 
-/// `types` picks the data files, and `timeout` is accepted by a load that finishes inside it.
+/// `types` picks the data files, and `timeout` is accepted by a load that finishes inside it. The disable flags (audit, feed, foreign
+/// keys) are independent of the entity ECAs: they still run. One load covers both, as each flag has its own effect.
 #[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
 #[test]
 fn load_flag_types_selects_data_files() {
+    let _shared = crate::common::shared();
     let (runtime, cluster_dir, _guards) = fresh_dirs("flag-types");
     let framework = framework_dir();
     let flags = LoadFlags {
         data_types: Some(vec!["seed".to_string()]),
         timeout_seconds: Some(600),
+        disable_audit_log: true,
+        disable_data_feed: true,
+        disable_fk_create: true,
         ..LoadFlags::default()
     };
     let report = load_data(&runtime, &framework, &cluster_dir, &flags).unwrap();
     assert!(report.enumeration > 0, "enumerations are seed");
+    assert!(report.security_checks > 0, "entity ECAs stayed on");
     // CurrencyData is seed-initial, so its BTC unit of measure was not loaded.
     assert_eq!(read_extra(&framework, &cluster_dir).initial_uom, 0);
 }
@@ -183,6 +190,7 @@ fn load_flag_types_selects_data_files() {
 #[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
 #[test]
 fn load_flag_raw_skips_entity_ecas() {
+    let _shared = crate::common::shared();
     let (runtime, cluster_dir, _guards) = fresh_dirs("flag-raw");
     let framework = framework_dir();
     let flags = LoadFlags {
@@ -195,27 +203,12 @@ fn load_flag_raw_skips_entity_ecas() {
     assert!(report.user_group_permission > 0);
 }
 
-/// The disable flags are independent: audit and feed off, ECAs still run.
-#[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
-#[test]
-fn load_disable_flags_leave_entity_ecas_on() {
-    let (runtime, cluster_dir, _guards) = fresh_dirs("flag-disable");
-    let flags = LoadFlags {
-        disable_audit_log: true,
-        disable_data_feed: true,
-        disable_fk_create: true,
-        ..LoadFlags::default()
-    };
-    let report = load_data(&runtime, framework_dir(), &cluster_dir, &flags).unwrap();
-    assert!(report.security_checks > 0, "entity ECAs stayed on");
-    assert!(report.enumeration > 0);
-}
-
 /// The SQL the in-memory driver cannot prove: aggregates with GROUP BY and HAVING, DISTINCT, a
 /// locking read, UPPER() comparisons, and a search form.
 #[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
 #[test]
 fn sql_features_run_on_postgres() {
+    let _shared = crate::common::shared();
     use moqui_core::entity::{CompareOp, Condition};
     use moqui_host::db::embedded::EmbeddedCluster;
 
@@ -397,8 +390,9 @@ fn medium(facade: &moqui_core::entity::EntityFacade, test_id: &str) -> Option<St
 /// Run with `--ignored`; set `MOQUI_TEST_MYSQL=user:pass@host:port/database` for a non-default server.
 #[cfg(feature = "mysql")]
 #[test]
-#[ignore = "needs a MySQL server: cargo test --test gate1 -- --ignored"]
+#[ignore = "needs a MySQL server: cargo test -p moqui-host --test it -- gate1 --ignored"]
 fn mysql_metadata_insert_and_select() {
+    let _shared = crate::common::shared();
     let (host, port, user, password, database) =
         mysql_target().expect("MySQL is not reachable on 127.0.0.1:3306 and MOQUI_TEST_MYSQL is not set");
     let driver = moqui_host::db::mysql::MysqlDriver::new(host, port, user, password, database, false);

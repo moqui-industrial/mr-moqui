@@ -19,12 +19,10 @@
 
 #![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
 
-mod common;
-
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use common::{basic, exchange, http_request, start_with_data};
+use crate::common::{basic, exchange, http_request, start_with_data};
 
 /// The message type, the remote (this server, logged in as john.doe), the two syncs of the three EntitySyncArtifactAppl
 /// enumerations, and ADMIN access to the entities the test reads and patches through `/rest/e1`. The services under
@@ -99,9 +97,15 @@ fn renders(address: SocketAddr, path: &str, auth: &str) -> String {
     body
 }
 
+/// One server runs both: they use the same data, and a server start is most of what each costs.
 #[test]
-fn a_system_message_goes_out_over_rest_comes_back_at_rest_sm_and_is_consumed() {
-    let gate = start_with_data("smsg", DATA);
+fn system_messages_and_entity_syncs_run_over_rest() {
+    let gate = start_with_data("system-sync", DATA);
+    a_system_message_goes_out_over_rest_comes_back_at_rest_sm_and_is_consumed(&gate);
+    an_entity_sync_push_and_a_pull_complete_with_a_history_row(&gate);
+}
+
+fn a_system_message_goes_out_over_rest_comes_back_at_rest_sm_and_is_consumed(gate: &crate::common::Gate) {
     let address = gate.server.address();
     let john = basic("john.doe", "moqui");
     let send_url =
@@ -173,9 +177,7 @@ fn a_system_message_goes_out_over_rest_comes_back_at_rest_sm_and_is_consumed() {
     assert!(detail.contains(&received_id), "{detail}");
 }
 
-#[test]
-fn an_entity_sync_push_and_a_pull_complete_with_a_history_row() {
-    let gate = start_with_data("esync", DATA);
+fn an_entity_sync_push_and_a_pull_complete_with_a_history_row(gate: &crate::common::Gate) {
     let address = gate.server.address();
     let john = basic("john.doe", "moqui");
     let target = serde_json::json!({ "targetServerUrl": format!("http://{address}") }).to_string();

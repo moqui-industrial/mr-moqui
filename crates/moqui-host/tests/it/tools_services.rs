@@ -19,11 +19,9 @@
 
 #![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
 
-mod common;
-
 use std::net::SocketAddr;
 
-use common::{basic, exchange, http_request, start_with_data};
+use crate::common::{basic, exchange, http_request, start_with_data};
 
 const DATA: &str = r#"<entity-facade-xml type="seed">
     <moqui.basic.print.NetworkPrinter networkPrinterId="GATE_PRINTER" serverHost="127.0.0.1" serverPort="9" printerName="gate"/>

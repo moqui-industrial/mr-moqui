@@ -14,7 +14,7 @@
 
 //! The entity database a conf names (A3 of the plan): `entity_ds_db_conf=postgres` loads into that
 //! server, here a second embedded cluster reached through its socket directory, and starts no
-//! postmaster in the cluster directory. This binary sets process properties, so it has one test.
+//! postmaster in the cluster directory. It sets process properties, so it holds the serial lock.
 
 #![cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
 
@@ -28,6 +28,16 @@ use moqui_lib::object::Value;
 
 #[test]
 fn an_external_postgres_from_the_conf_is_loaded_and_no_postmaster_starts() {
+    let _serial = crate::common::serial();
+    // The properties name this test's server, and no other test may start on it.
+    let _properties = crate::common::PropertyReset::of(&[
+        "entity_ds_db_conf",
+        "entity_ds_host",
+        "entity_ds_port",
+        "entity_ds_user",
+        "entity_ds_password",
+        "entity_ds_database",
+    ]);
     let server_dir = temp_dir("moqui-ext");
     let runtime = temp_dir("moqui-ext-rt");
     let cluster_dir = temp_dir("moqui-ext-unused");

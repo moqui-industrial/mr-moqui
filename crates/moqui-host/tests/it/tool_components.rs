@@ -22,15 +22,13 @@
 
 #![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
 
-mod common;
-
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Cursor, Read, Write};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 
+use crate::common::{basic, exchange_bytes, header, http_request, start_with_data};
 use calamine::{Data, Reader};
-use common::{basic, exchange_bytes, header, http_request, start_with_data};
 use ipp::attribute::IppAttribute;
 use ipp::model::{DelimiterTag, IppVersion, Operation, StatusCode};
 use ipp::request::IppRequestResponse;

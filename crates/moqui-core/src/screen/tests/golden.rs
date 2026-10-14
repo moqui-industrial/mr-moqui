@@ -36,6 +36,21 @@ fn testdata() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/script/testdata/screen")
 }
 
+/// The generated unit parses, and declares no global: the names it declares start with `$`, so a screen field cannot be hidden.
+/// This runs on what each golden test generated, so it covers every fixture of every mode without generating them again.
+fn parses_and_declares_no_global(mode: &str, name: &str, body: &str) {
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        for keyword in ["let ", "const ", "var "] {
+            if let Some(rest) = trimmed.strip_prefix(keyword) {
+                assert!(rest.starts_with('$'), "{mode}/{name}: {line}");
+            }
+        }
+    }
+    let source = format!("(function () {{\n{body}}})");
+    crate::script::parse_js(&source).unwrap_or_else(|err| panic!("{mode}/{name}: {err}"));
+}
+
 fn check(mode: &str, name: &str, debug: bool) {
     let xml = std::fs::read_to_string(testdata().join(format!("{name}.xml"))).unwrap();
     let actual = generate_xml(mode, &xml, debug).unwrap_or_else(|err| panic!("{mode}/{name}: {err}"));
@@ -45,6 +60,9 @@ fn check(mode: &str, name: &str, debug: bool) {
         generate_xml(mode, &xml, debug).unwrap(),
         "{mode}/{name} is not repeatable"
     );
+    if !debug {
+        parses_and_declares_no_global(mode, name, &actual);
+    }
     let suffix = if debug { "-debug" } else { "" };
     let path = testdata().join(mode).join(format!("{name}{suffix}.js"));
     if std::env::var_os("UPDATE_GOLDEN").is_some() {
@@ -125,40 +143,4 @@ fn golden_qjs_and_qvue() {
 #[test]
 fn debug_comments_name_each_element() {
     check("text", "links-labels", true);
-}
-
-#[test]
-fn every_generated_unit_parses_and_declares_no_global() {
-    for mode in [
-        "text",
-        "csv",
-        "xml",
-        "html-print",
-        "html",
-        "qvt",
-        "qvt-static",
-        "qjs",
-        "qvue",
-    ] {
-        let extra: &[&str] = match mode {
-            "html" => HTML_FIXTURES,
-            "qvt" | "qvt-static" => &["html-containers", "html-fields", "html-form-list", "qvt-extras"],
-            _ => &[],
-        };
-        for name in FIXTURES.iter().chain(extra) {
-            let xml = std::fs::read_to_string(testdata().join(format!("{name}.xml"))).unwrap();
-            let body = generate_xml(mode, &xml, false).unwrap();
-            // Names the generated code declares start with $, so a screen field cannot be hidden.
-            for line in body.lines() {
-                let trimmed = line.trim_start();
-                for keyword in ["let ", "const ", "var "] {
-                    if let Some(rest) = trimmed.strip_prefix(keyword) {
-                        assert!(rest.starts_with('$'), "{mode}/{name}: {line}");
-                    }
-                }
-            }
-            let source = format!("(function () {{\n{body}}})");
-            crate::script::parse_js(&source).unwrap_or_else(|err| panic!("{mode}/{name}: {err}"));
-        }
-    }
 }

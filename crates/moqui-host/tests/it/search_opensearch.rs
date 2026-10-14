@@ -20,14 +20,12 @@
 
 #![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
 
-mod common;
-
 use std::time::{Duration, Instant};
 
-use common::{basic, exchange, http_request, start_with_data};
+use crate::common::{basic, exchange, http_request, start_with_data};
 
 #[test]
-#[ignore = "needs OpenSearch: OPENSEARCH_URL=http://127.0.0.1:9200 cargo test -p moqui-host --test search_opensearch -- --ignored"]
+#[ignore = "needs OpenSearch: OPENSEARCH_URL=http://127.0.0.1:9200 cargo test -p moqui-host --test it -- search_opensearch --ignored"]
 fn opensearch_backend_proxies_and_ships_logs() {
     let url = std::env::var("OPENSEARCH_URL").expect("set OPENSEARCH_URL to run this test");
     let prefix = format!("moqui_server_test_{}_", std::process::id());
@@ -49,7 +47,7 @@ fn opensearch_backend_proxies_and_ships_logs() {
     // The proxy: a login and ElasticRemote, then the cluster's own answer.
     let (status, headers, _) = exchange(address, &http_request("GET", "/elastic/", &[], ""));
     assert_eq!(status, 401);
-    assert!(common::header(&headers, "www-authenticate").is_some_and(|value| value.starts_with("Basic")));
+    assert!(crate::common::header(&headers, "www-authenticate").is_some_and(|value| value.starts_with("Basic")));
     let (status, _, body) = exchange(
         address,
         &http_request("GET", "/elastic/", &[("Authorization", &john)], ""),

@@ -30,6 +30,7 @@ use moqui_lib::object::Value;
 
 #[test]
 fn rest_enum_types_login_and_session_survive_restart() {
+    let _serial = crate::common::serial();
     let runtime = temp_dir("moqui-gate2-rt");
     let cluster_dir = temp_dir("moqui-gate2-pg");
     let _runtime_guard = DirGuard(runtime.clone());

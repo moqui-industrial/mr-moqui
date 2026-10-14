@@ -20,19 +20,17 @@
 
 #![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
 
-mod common;
-
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
+use crate::common::{exchange, http_request, merge_cookies, start_with_data};
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect};
 use axum::routing::{get, post};
 use axum::{Form, Json, Router};
 use base64::Engine;
-use common::{exchange, http_request, merge_cookies, start_with_data};
 use moqui_lib::object::{to_plain_string, Value};
 use p256::ecdsa::signature::Signer;
 use sha2::Digest;
@@ -226,7 +224,7 @@ fn data(idp: SocketAddr) -> String {
 }
 
 fn location(headers: &[(String, String)]) -> String {
-    common::header(headers, "location").unwrap_or_default()
+    crate::common::header(headers, "location").unwrap_or_default()
 }
 
 /// One browser login through the server and the provider; returns the cookie after the callback and its response.
@@ -285,7 +283,7 @@ fn an_oidc_login_creates_the_user_maps_groups_and_rotates_the_session() {
     let (cookie, status, headers, text) = sso_login(server, "/qapps/AppList", false);
     assert_eq!(status, 302, "{text}");
     assert_eq!(location(&headers), "/qapps/AppList");
-    let before = common::cookies_of(&headers);
+    let before = crate::common::cookies_of(&headers);
     assert!(
         before.contains("moqui.session="),
         "the callback set a new session cookie: {headers:?}"

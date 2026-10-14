@@ -1422,27 +1422,30 @@ pub mod xmlshim {
         let shim_dir = dir.join("xmlshim");
         std::fs::create_dir_all(&shim_dir)
             .map_err(|err| Error::new("could not create libxml2 shim dir").with_source(err))?;
-        let assembly = shim_dir.join("shim.s");
-        let map = shim_dir.join("ver.map");
-        let shared = shim_dir.join("libxml2.so.2");
-        std::fs::write(&assembly, shim_assembly())
-            .map_err(|err| Error::new("could not write libxml2 shim").with_source(err))?;
-        std::fs::write(&map, version_script())
-            .map_err(|err| Error::new("could not write libxml2 shim").with_source(err))?;
-        let output = std::process::Command::new("gcc")
-            .args(["-shared", "-fPIC", "-o"])
-            .arg(&shared)
-            .arg(&assembly)
-            .arg("-Wl,-soname,libxml2.so.2")
-            .arg(format!("-Wl,--version-script={}", map.display()))
-            .arg(host)
-            .output()
-            .map_err(|err| Error::new("gcc could not build the libxml2 shim").with_source(err))?;
-        if !output.status.success() {
-            return Err(Error::new(format!(
-                "libxml2 shim: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
+        // A directory copied from an earlier load already holds the built library.
+        if !shim_dir.join("libxml2.so.2").is_file() {
+            let assembly = shim_dir.join("shim.s");
+            let map = shim_dir.join("ver.map");
+            let shared = shim_dir.join("libxml2.so.2");
+            std::fs::write(&assembly, shim_assembly())
+                .map_err(|err| Error::new("could not write libxml2 shim").with_source(err))?;
+            std::fs::write(&map, version_script())
+                .map_err(|err| Error::new("could not write libxml2 shim").with_source(err))?;
+            let output = std::process::Command::new("gcc")
+                .args(["-shared", "-fPIC", "-o"])
+                .arg(&shared)
+                .arg(&assembly)
+                .arg("-Wl,-soname,libxml2.so.2")
+                .arg(format!("-Wl,--version-script={}", map.display()))
+                .arg(host)
+                .output()
+                .map_err(|err| Error::new("gcc could not build the libxml2 shim").with_source(err))?;
+            if !output.status.success() {
+                return Err(Error::new(format!(
+                    "libxml2 shim: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                )));
+            }
         }
         let shim = shim_dir.display().to_string();
         // Two loads in one process each add their directory. Read and write under one lock, or the

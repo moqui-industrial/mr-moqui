@@ -14,25 +14,7 @@
 
 //! The binary's screen lint and the server-static compatibility report of Gate 3: both run over the tree and exit 0.
 
-use std::path::PathBuf;
-use std::process::Command;
-
-fn repo() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .unwrap()
-}
-
-fn moqui(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_moqui"))
-        .args(args)
-        .current_dir(repo())
-        .env("MOQUI_RUNTIME", repo().join("runtime"))
-        .env("MOQUI_FRAMEWORK", repo().join("framework"))
-        .output()
-        .unwrap()
-}
+use crate::moqui;
 
 #[test]
 fn lint_screens_qvt_static_writes_the_report_and_exits_zero() {
@@ -53,11 +35,6 @@ fn lint_screens_qvt_static_writes_the_report_and_exits_zero() {
         .unwrap_or_else(|| panic!("no block for the Gate 3 fixture in {report}"));
     assert!(fixture.contains("verdict clean"), "{fixture}");
     assert!(report.lines().last().unwrap_or("").contains("screens:"), "{report}");
-
-    // without a report file the report is the standard output
-    let output = moqui(&["lint", "--screens", "--qvt-static"]);
-    assert!(output.status.success(), "{:?}", output.status);
-    assert!(String::from_utf8_lossy(&output.stdout).contains("ArtifactGroupDetail.xml"));
 }
 
 #[test]

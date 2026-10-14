@@ -18,12 +18,10 @@
 
 #![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
 
-mod common;
-
 use std::net::SocketAddr;
 
+use crate::common::{basic, exchange, header, http_request, start};
 use base64::Engine as _;
-use common::{basic, exchange, header, http_request, start};
 
 const SCREEN: &str = "/System/Resource/ElFinder";
 const ROOT: &str = "dbresource://gate-elfinder";

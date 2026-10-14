@@ -40,6 +40,7 @@ use moqui_lib::object::{to_plain_string, Value};
 
 #[test]
 fn postgres_backend_sales_and_party_parity() {
+    let _shared = crate::common::shared();
     let cluster_dir = temp_dir("moqui-pg-search");
     let _guard = DirGuard(cluster_dir.clone());
     std::fs::create_dir_all(&cluster_dir).unwrap();
@@ -71,8 +72,9 @@ fn postgres_backend_sales_and_party_parity() {
 
 /// The same parity checks against a live OpenSearch (or ElasticSearch 7+). Ignored unless asked for.
 #[test]
-#[ignore = "needs OpenSearch: OPENSEARCH_URL=http://127.0.0.1:9200 cargo test -p moqui-host --test search -- --ignored"]
+#[ignore = "needs OpenSearch: OPENSEARCH_URL=http://127.0.0.1:9200 cargo test -p moqui-host --test it -- search --ignored"]
 fn opensearch_backend_sales_and_party_parity() {
+    let _shared = crate::common::shared();
     let url = std::env::var("OPENSEARCH_URL").expect("set OPENSEARCH_URL to run this test");
     let conf = moqui_core::search::conf::ClusterConf {
         url,
@@ -1068,6 +1070,7 @@ fn accent(backend: PostgresBackend) {
 /// The data feed end to end, on a database loaded with framework seed.
 #[test]
 fn feed_indexes_and_deletes_through_search() {
+    let _shared = crate::common::shared();
     use moqui_core::context::ExecutionContextFactory;
 
     let runtime = temp_dir("moqui-rt-search-feed");
@@ -1107,6 +1110,7 @@ fn feed_indexes_and_deletes_through_search() {
 /// With an entity database that is not Postgres, search starts its own cluster under the runtime.
 #[test]
 fn a_non_postgres_entity_database_gets_a_dedicated_search_cluster() {
+    let _shared = crate::common::shared();
     use moqui_core::context::ExecutionContextFactory;
 
     let runtime = temp_dir("moqui-rt-search-own");

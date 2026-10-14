@@ -131,8 +131,20 @@ const STATIC_LIST: &str = r#"<screen require-authentication="false" server-stati
 /// The component of a deployment that marks the fixture screen server-static for qvt without editing the screen: a `screen-extend` file.
 const STATIC_EXTEND: &str = r#"<screen-extend server-static="qvt"/>"#;
 
-/// One embedded Postgres at a time: the tests set process-wide properties while they start.
-static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// The tests set process-wide properties while they start a server, so those take the write lock, and one runs at a time. A test
+/// that only boots a factory to load data, and sets no property, takes the read lock with the others like it: [`shared`].
+static SERIAL: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+/// The lock of the tests that start a server or set process properties, alone. Hold it for the whole test.
+pub fn serial() -> std::sync::RwLockWriteGuard<'static, ()> {
+    SERIAL.write().unwrap_or_else(|err| err.into_inner())
+}
+
+/// The lock of a test that loads data or runs a cluster without a server or a process property. It runs beside the others of its
+/// kind, and not beside a test that holds [`serial`]. Hold it for the whole test.
+pub fn shared() -> std::sync::RwLockReadGuard<'static, ()> {
+    SERIAL.read().unwrap_or_else(|err| err.into_inner())
+}
 
 /// The seeded server the gate tests share the setup of. Fields drop in order: the server stops before its directories go.
 pub struct Gate {
@@ -142,7 +154,7 @@ pub struct Gate {
     /// The embedded cluster directory: `data` is the socket directory, `pgpass` the password.
     pub cluster_dir: PathBuf,
     _properties: PropertyReset,
-    _serial: std::sync::MutexGuard<'static, ()>,
+    _serial: std::sync::RwLockWriteGuard<'static, ()>,
     _runtime: DirGuard,
     _cluster: DirGuard,
 }
@@ -177,6 +189,13 @@ pub fn start_with_conf(label: &str, extra_conf: &str, properties: &[(&str, &str)
 #[derive(Default)]
 pub struct PropertyReset(Vec<String>);
 
+impl PropertyReset {
+    /// Clears these properties when it drops.
+    pub fn of(names: &[&str]) -> Self {
+        Self(names.iter().map(|name| (*name).to_string()).collect())
+    }
+}
+
 impl Drop for PropertyReset {
     fn drop(&mut self) {
         for name in &self.0 {
@@ -185,57 +204,178 @@ impl Drop for PropertyReset {
     }
 }
 
-fn start_seeded(label: &str, static_fixture: bool, data: Option<&str>, extra_conf: &str) -> Gate {
-    let serial = SERIAL.lock().unwrap_or_else(|err| err.into_inner());
-    let runtime = temp_dir(&format!("moqui-gate3-rt-{label}"));
-    let cluster_dir = temp_dir(&format!("moqui-gate3-pg-{label}"));
-    let runtime_guard = DirGuard(runtime.clone());
-    let cluster_guard = DirGuard(cluster_dir.clone());
+/// The seeded cluster every gate starts from, built once and kept under `target/<profile>/moqui-test-template`.
+///
+/// Loading the seed (the framework files and each component's data), the demo users and the grants is most of the time a gate
+/// takes to start. Its result does not depend on the test, so it is loaded once into a template, and each gate copies the
+/// stopped cluster. The template is keyed by the inputs of the load, so an edit to the data, the framework or the sources of the
+/// crates builds a new one, and the old ones are removed.
+struct Template {
+    /// The fixture screens. The grants name them by location, so a gate's conf must point at these files.
+    companion: PathBuf,
+    widgets: PathBuf,
+    static_list: PathBuf,
+    /// The theseus install, unpacked once and shared by the runtime directory of every gate.
+    install: PathBuf,
+    /// The stopped cluster directory after the loads: `data`, `pgpass` and the libxml2 shim.
+    cluster: PathBuf,
+}
+
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// The files under `path` as a hash of names, sizes and modification times, for the key of the template.
+fn stamp_tree(path: &Path, hasher: &mut std::collections::hash_map::DefaultHasher) {
+    use std::hash::Hash;
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    path.file_name().hash(hasher);
+    if meta.is_dir() {
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(path)
+            .map(|dir| dir.flatten().map(|entry| entry.path()).collect())
+            .unwrap_or_default();
+        entries.sort();
+        for entry in entries {
+            if entry.file_name().is_some_and(|name| name == "target" || name == ".git") {
+                continue;
+            }
+            stamp_tree(&entry, hasher);
+        }
+    } else {
+        meta.len().hash(hasher);
+        meta.modified().ok().hash(hasher);
+    }
+}
+
+fn template_key() -> String {
+    use std::hash::{Hash, Hasher};
+    let root = repo_root();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (COMPANION, WIDGETS, STATIC_LIST).hash(&mut hasher);
+    for part in ["framework", "runtime/base-component", "Cargo.lock"] {
+        stamp_tree(&root.join(part), &mut hasher);
+    }
+    let mut crates: Vec<PathBuf> = std::fs::read_dir(root.join("crates"))
+        .map(|dir| dir.flatten().map(|entry| entry.path()).collect())
+        .unwrap_or_default();
+    crates.sort();
+    for krate in crates {
+        stamp_tree(&krate.join("src"), &mut hasher);
+    }
+    format!("{:016x}", hasher.finish())
+}
+
+/// `cp -a` of the contents of `from` into the existing directory `to`, as a reflink where the file system has them.
+fn copy_dir(from: &Path, to: &Path) {
+    let status = std::process::Command::new("cp")
+        .arg("-a")
+        .arg("--reflink=auto")
+        .arg(format!("{}/.", from.display()))
+        .arg(to)
+        .status()
+        .expect("cp");
+    assert!(status.success(), "cp {} {}", from.display(), to.display());
+}
+
+fn template() -> &'static Template {
+    static TEMPLATE: std::sync::OnceLock<Template> = std::sync::OnceLock::new();
+    TEMPLATE.get_or_init(build_template)
+}
+
+fn build_template() -> Template {
+    let exe = std::env::current_exe().unwrap();
+    // target/<profile>/deps/<test binary>
+    let profile_dir = exe.ancestors().nth(2).expect("target directory").to_path_buf();
+    let cache = profile_dir.join("moqui-test-template");
+    let key = template_key();
+    let fixtures = cache.join(format!("fixtures-{key}"));
+    let done = cache.join(&key);
+    std::fs::create_dir_all(&fixtures).unwrap();
+    let template = Template {
+        companion: fixtures.join("GateCompanion.xml"),
+        widgets: fixtures.join("GateWidgets.xml"),
+        static_list: fixtures.join("GateStaticList.xml"),
+        install: done.join("install"),
+        cluster: done.join("cluster"),
+    };
+    std::fs::write(&template.companion, COMPANION).unwrap();
+    std::fs::write(&template.widgets, WIDGETS).unwrap();
+    std::fs::write(&template.static_list, STATIC_LIST).unwrap();
+    if !done.is_dir() {
+        let building = cache.join(format!("{key}.building-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&building);
+        std::fs::create_dir_all(&building).unwrap();
+        // The cluster loads in a short path (a unix socket path has a length limit) and is copied in when it is done.
+        let cluster_dir = temp_dir("moqui-template-pg");
+        let cluster_guard = DirGuard(cluster_dir.clone());
+        std::fs::create_dir_all(&cluster_dir).unwrap();
+        let runtime = building.join("runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        seed(&runtime, &cluster_dir, &template, "");
+        std::fs::rename(runtime.join("db/install"), building.join("install")).unwrap();
+        std::fs::remove_dir_all(&runtime).unwrap();
+        std::fs::create_dir_all(building.join("cluster")).unwrap();
+        copy_dir(&cluster_dir, &building.join("cluster"));
+        drop(cluster_guard);
+        if std::fs::rename(&building, &done).is_err() {
+            // Another process built the same template first.
+            let _ = std::fs::remove_dir_all(&building);
+        }
+        // Templates and fixtures of other keys are stale.
+        for entry in std::fs::read_dir(&cache).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.contains(&key) {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+    template
+}
+
+/// Write the conf and the links of a runtime directory. `install` is shared, so the gate does not unpack Postgres again.
+fn prepare_runtime(runtime: &Path, fixtures: &Template, link_install: bool, extra_conf: &str) {
     std::fs::create_dir_all(runtime.join("conf")).unwrap();
-    std::fs::create_dir_all(&cluster_dir).unwrap();
-    let companion = runtime.join("GateCompanion.xml");
-    std::fs::write(&companion, COMPANION).unwrap();
-    let widgets = runtime.join("GateWidgets.xml");
-    std::fs::write(&widgets, WIDGETS).unwrap();
-    let static_list = runtime.join("GateStaticList.xml");
-    std::fs::write(&static_list, STATIC_LIST).unwrap();
     std::fs::write(
         runtime.join("conf/MoquiDevConf.xml"),
         conf(
-            &companion.display().to_string(),
-            &widgets.display().to_string(),
-            &static_list.display().to_string(),
+            &fixtures.companion.display().to_string(),
+            &fixtures.widgets.display().to_string(),
+            &fixtures.static_list.display().to_string(),
             extra_conf,
         ),
     )
     .unwrap();
-    if static_fixture {
-        let component = runtime.join("component/gate-static");
-        let extend = component.join("screen-extend/tools/screen/System/Security/ArtifactGroup");
-        std::fs::create_dir_all(&extend).unwrap();
-        std::fs::write(component.join("component.xml"), r#"<component name="gate-static"/>"#).unwrap();
-        std::fs::write(extend.join("ArtifactGroupDetail.xml"), STATIC_EXTEND).unwrap();
-    }
-    let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
     let base =
         std::fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component")).unwrap();
     std::os::unix::fs::symlink(&base, runtime.join("base-component")).unwrap();
+    if link_install {
+        std::fs::create_dir_all(runtime.join("db")).unwrap();
+        std::os::unix::fs::symlink(&fixtures.install, runtime.join("db/install")).unwrap();
+    }
+}
 
+/// Load the seed (the framework files and each component's `data` directory), the demo users, and the grants of the fixture.
+fn seed(runtime: &Path, cluster_dir: &Path, fixtures: &Template, extra_conf: &str) {
+    prepare_runtime(runtime, fixtures, false, extra_conf);
+    let framework = repo_root().join("framework");
+    let base = std::fs::canonicalize(repo_root().join("runtime/base-component")).unwrap();
     // The seed load reads the data directory of each component too: the default themes, the pagination text, the access to the
     // applications list (webroot) and the System and Tools app groups (tools).
-    let seed = load_data(&runtime, &framework, &cluster_dir, &LoadFlags::default()).unwrap();
-    assert!(seed.enumeration > 0, "enumeration {}", seed.enumeration);
+    let seeded = load_data(runtime, &framework, cluster_dir, &LoadFlags::default()).unwrap();
+    assert!(seeded.enumeration > 0, "enumeration {}", seeded.enumeration);
     let demo = base.join("webroot/data/WebrootSecurityDemoData.xml");
     let demo_flags = LoadFlags {
         location: Some(demo.display().to_string()),
         data_types: Some(vec!["demo".to_string()]),
         ..LoadFlags::default()
     };
-    load_data(&runtime, &framework, &cluster_dir, &demo_flags).unwrap();
+    load_data(runtime, &framework, cluster_dir, &demo_flags).unwrap();
     // The artifact group the screen shows (SYSTEM_APP, from the tools component's own security data) gets a second
     // authorization and a tarpit to list, and its member says N for the pattern flag the tools data leaves empty.
     // The screens of the browser smoke read entities, so ADMIN gets them as an artifact group that passes its authorization on.
-    let gate_members: String = [&widgets, &static_list]
+    let gate_members: String = [&fixtures.widgets, &fixtures.static_list]
         .iter()
         .map(|location| {
             format!(
@@ -267,7 +407,28 @@ fn start_seeded(label: &str, static_fixture: bool, data: Option<&str>, extra_con
         location: Some(grant.display().to_string()),
         ..LoadFlags::default()
     };
-    load_data(&runtime, &framework, &cluster_dir, &grant_flags).unwrap();
+    load_data(runtime, &framework, cluster_dir, &grant_flags).unwrap();
+}
+
+fn start_seeded(label: &str, static_fixture: bool, data: Option<&str>, extra_conf: &str) -> Gate {
+    let serial = serial();
+    let template = template();
+    let runtime = temp_dir(&format!("moqui-gate3-rt-{label}"));
+    let cluster_dir = temp_dir(&format!("moqui-gate3-pg-{label}"));
+    let runtime_guard = DirGuard(runtime.clone());
+    let cluster_guard = DirGuard(cluster_dir.clone());
+    std::fs::create_dir_all(&runtime).unwrap();
+    std::fs::create_dir_all(&cluster_dir).unwrap();
+    prepare_runtime(&runtime, template, true, extra_conf);
+    copy_dir(&template.cluster, &cluster_dir);
+    if static_fixture {
+        let component = runtime.join("component/gate-static");
+        let extend = component.join("screen-extend/tools/screen/System/Security/ArtifactGroup");
+        std::fs::create_dir_all(&extend).unwrap();
+        std::fs::write(component.join("component.xml"), r#"<component name="gate-static"/>"#).unwrap();
+        std::fs::write(extend.join("ArtifactGroupDetail.xml"), STATIC_EXTEND).unwrap();
+    }
+    let framework = repo_root().join("framework");
     if let Some(data) = data {
         let extra = runtime.join("test-data.xml");
         std::fs::write(&extra, data).unwrap();

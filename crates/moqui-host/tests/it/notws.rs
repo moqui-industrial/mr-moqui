@@ -34,6 +34,7 @@ const ONLY_TOPIC: &str = "Wave3Only";
 
 #[test]
 fn notws_push_and_one_cluster_invalidation() {
+    let _serial = crate::common::serial();
     let runtime = temp_dir("moqui-notws-rt");
     let cluster_dir = temp_dir("moqui-notws-pg");
     let _runtime_guard = DirGuard(runtime.clone());

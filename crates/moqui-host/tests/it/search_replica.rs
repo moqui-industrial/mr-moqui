@@ -37,6 +37,7 @@ const STANDBY_PORT: u16 = 5433;
 
 #[test]
 fn reads_go_to_the_replica_and_fresh_reads_wait_or_use_the_primary() {
+    let _shared = crate::common::shared();
     let primary_dir = temp_dir("moqui-pg-replica-primary");
     let standby_dir = temp_dir("moqui-pg-replica-standby");
     let _guards = (DirGuard(primary_dir.clone()), DirGuard(standby_dir.clone()));

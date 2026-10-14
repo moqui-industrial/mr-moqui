@@ -14,15 +14,9 @@
 
 //! `moqui types --out dir` writes the declarations and exits 0. The content and `tsc` are the host's `types` test.
 
-use std::path::PathBuf;
 use std::process::Command;
 
-fn repo() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .unwrap()
-}
+use crate::repo;
 
 #[test]
 fn types_writes_the_declarations_into_out() {

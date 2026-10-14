@@ -29,7 +29,7 @@ use moqui_core::transaction::PoolConfig;
 use moqui_host::db::embedded::EmbeddedCluster;
 
 #[test]
-#[ignore = "starts runtime/opensearch: OPENSEARCH_START_TEST=1 cargo test -p moqui-host --test opensearch_start -- --ignored"]
+#[ignore = "starts runtime/opensearch: OPENSEARCH_START_TEST=1 cargo test -p moqui-host --test it -- opensearch_start --ignored"]
 fn the_search_store_starts_and_stops_a_local_opensearch() {
     assert_eq!(
         std::env::var("OPENSEARCH_START_TEST").as_deref(),
@@ -47,6 +47,8 @@ fn the_search_store_starts_and_stops_a_local_opensearch() {
         "something answers on 9200; stop it first"
     );
 
+    let _serial = crate::common::serial();
+    let _properties = crate::common::PropertyReset::of(&["search_backend", "elasticsearch_url"]);
     let runtime = temp_dir("moqui-rt-os-start");
     let cluster_dir = temp_dir("moqui-pg-os-start");
     let _guards = (DirGuard(runtime.clone()), DirGuard(cluster_dir.clone()));

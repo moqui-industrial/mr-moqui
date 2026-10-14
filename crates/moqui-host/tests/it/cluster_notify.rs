@@ -18,8 +18,6 @@
 
 #![cfg(all(unix, feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
 
-mod common;
-
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -32,7 +30,7 @@ const CHANNEL: &str = "moqui_cluster";
 #[test]
 fn a_notify_member_applies_peer_notifies_and_sends_its_own() {
     moqui_lib::env::set_property("cluster_transport", "notify");
-    let gate = common::start("notify");
+    let gate = crate::common::start("notify");
     let factory = Arc::clone(gate.server.factory());
     let facade = factory.entity().unwrap();
 
@@ -99,7 +97,7 @@ fn a_notify_member_applies_peer_notifies_and_sends_its_own() {
     moqui_lib::env::set_property("cluster_transport", "");
 }
 
-fn raw_connection(gate: &common::Gate) -> PostgresConn {
+fn raw_connection(gate: &crate::common::Gate) -> PostgresConn {
     let data = std::fs::canonicalize(gate.cluster_dir.join("data")).unwrap();
     let password = std::fs::read_to_string(gate.cluster_dir.join("pgpass")).unwrap();
     PostgresDriver::unix_socket("postgres", "moqui", data)
@@ -116,7 +114,7 @@ fn notify(conn: &mut PostgresConn, payload: &str) {
     .unwrap();
 }
 
-fn wait_for_posts(gate: &common::Gate, count: usize) {
+fn wait_for_posts(gate: &crate::common::Gate, count: usize) {
     let until = Instant::now() + Duration::from_secs(10);
     while gate.server.cluster_posts().len() < count {
         assert!(Instant::now() < until, "posts {:?}", gate.server.cluster_posts());
