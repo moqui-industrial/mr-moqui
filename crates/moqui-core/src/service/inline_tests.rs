@@ -39,6 +39,16 @@ const SERVICES: &str = r#"<services>
         <in-parameters><parameter name="note"/></in-parameters>
         <out-parameters><parameter name="note"/></out-parameters>
     </service>
+    <service verb="inline" noun="IgnoreFail" authenticate="false" transaction="ignore">
+        <actions><return error="true" message="ignore failed"/></actions>
+    </service>
+    <service verb="inline" noun="NoCache" authenticate="false" no-tx-cache="true">
+        <in-parameters><parameter name="id"/></in-parameters>
+        <out-parameters><parameter name="found"/></out-parameters>
+        <actions>
+            <script>found = ec.entity.find("moqui.test.TestEntity").condition("testId", id).useCache(false).one() != null ? "Y" : "N"</script>
+        </actions>
+    </service>
 </services>"#;
 
 fn inline_context() -> (EntityFacade, ExecutionContext) {
@@ -176,4 +186,38 @@ fn an_inline_boot_starts_no_pool_and_no_deadline_timer() {
     drop(ctx);
     drop(factory);
     let _ = std::fs::remove_dir_all(&runtime);
+}
+
+#[test]
+fn an_ignore_service_runs_in_the_callers_transaction_and_its_error_marks_it() {
+    let (facade, ctx) = inline_context();
+    let _entered = ctx.enter();
+    let _authz = ctx.disable_authz();
+    let tx = facade.transactions_for("moqui.test.TestEntity").unwrap();
+    assert!(tx.begin(None).unwrap());
+    super::sync("inline#IgnoreFail", &BTreeMap::new()).unwrap();
+    assert!(tx.in_transaction(), "ignore left the caller's transaction in place");
+    let err = tx.commit().expect_err("the caller's transaction is rollback-only");
+    assert!(err.to_string().contains("inline#IgnoreFail"), "{err}");
+    ctx.message().clear();
+}
+
+#[test]
+fn a_no_tx_cache_service_sees_the_rows_the_caller_held() {
+    let (facade, ctx) = inline_context();
+    let _entered = ctx.enter();
+    let _authz = ctx.disable_authz();
+    let tx = facade.transactions_for("moqui.test.TestEntity").unwrap();
+    tx.run(crate::transaction::TransactionAttribute::Cache, None, || {
+        super::sync("inline#Mark", &mark("NC", "none"))?;
+        assert!(tx.transaction_cache_active());
+        let mut id = BTreeMap::new();
+        id.insert("id".into(), Value::string("NC"));
+        let out = super::sync("inline#NoCache", &id)?;
+        assert_eq!(out.get("found"), Some(&Value::string("Y")));
+        assert!(!tx.transaction_cache_active(), "no-tx-cache stops holding");
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(medium(&facade, "NC").as_deref(), Some("missing"));
 }

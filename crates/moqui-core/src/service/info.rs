@@ -99,6 +99,7 @@ pub fn service_definition_info(name: &str) -> Option<IndexMap<String, Value>> {
             TransactionAttribute::ForceNew | TransactionAttribute::ForceCache
         )),
     );
+    map.insert("noTxCache".to_string(), Value::Bool(def.no_tx_cache));
     map.insert(
         "txUseCache".to_string(),
         Value::Bool(matches!(

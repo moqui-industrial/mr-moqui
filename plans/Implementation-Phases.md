@@ -686,9 +686,8 @@ Fixed after the review against Java. Several of these predate phase 11:
   - Holding is on only for `cache` and `force-cache`. `use-transaction-cache="false"` turns it off.
   - `in_transaction()` is Java's `isTransactionInPlace`.
   - The ETL loader begins a transaction on every entity group it writes.
-  - Still different from Java:
-    - `ignore` suspends the outer transaction, where Java runs inside it.
-    - The `no-tx-cache` service attribute is not parsed.
+  - `ignore` runs inside the transaction in place, as in Java, and an error in it marks that transaction rollback-only. `ignore` plus `force-new` (`TransactionAttribute::IgnoreSuspend`) suspends it and runs with none.
+  - `no-tx-cache="true"` writes the frame's held rows and stops holding before the service runs, as Java's `flushAndDisableTransactionCache`. It acts on the manager of the service's entity group.
 - **Authorization.**
   - Service and entity REST push an `AT_REST_PATH` frame for each path segment, as `RestApi` does. The `/rest/s1/moqui` ADMIN rule and the grants it passes down now apply.
   - Login checks `ipAllowed` on the account and its groups.

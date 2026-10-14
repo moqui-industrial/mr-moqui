@@ -38,15 +38,22 @@ pub struct CallOptions {
 
 impl CallOptions {
     fn attribute(&self, base: TransactionAttribute) -> TransactionAttribute {
-        if self.ignore_transaction == Some(true) {
-            return TransactionAttribute::Ignore;
-        }
-        if base == TransactionAttribute::Ignore {
-            return base;
-        }
-        let base_new = matches!(base, TransactionAttribute::ForceNew | TransactionAttribute::ForceCache);
-        let base_cache = matches!(base, TransactionAttribute::Cache | TransactionAttribute::ForceCache);
+        let base_new = matches!(
+            base,
+            TransactionAttribute::ForceNew | TransactionAttribute::ForceCache | TransactionAttribute::IgnoreSuspend
+        );
         let new = self.require_new_transaction.unwrap_or(base_new);
+        // As Java: ignore stops the begin and force-new the join, independently.
+        let ignore = self.ignore_transaction == Some(true)
+            || matches!(base, TransactionAttribute::Ignore | TransactionAttribute::IgnoreSuspend);
+        if ignore {
+            return if new {
+                TransactionAttribute::IgnoreSuspend
+            } else {
+                TransactionAttribute::Ignore
+            };
+        }
+        let base_cache = matches!(base, TransactionAttribute::Cache | TransactionAttribute::ForceCache);
         let cache = self.use_transaction_cache.unwrap_or(base_cache);
         match (new, cache) {
             (false, false) => TransactionAttribute::UseOrBegin,
@@ -213,6 +220,9 @@ pub fn sync_with(
     let mut message_failed: Option<BTreeMap<String, Value>> = None;
     let outcome = tx.run(attribute, options.timeout.or(def.timeout), || {
         let _deadline = crate::script::DeadlineGuard::new(tx.time_remaining());
+        if def.no_tx_cache {
+            crate::entity::cache::flush_and_disable(&facade, &tx)?;
+        }
         // on_rollback is not a commit hook. tx-commit is last so a post-service
         // entity write can still register the feed schedule hook.
         register_tx_rollback(&tx, &def.name, &cleaned)?;
@@ -225,7 +235,10 @@ pub fn sync_with(
         super::seca::run_seca_rules(&def.name, "post-service", &cleaned, Some(&produced)).map_err(script_err)?;
         if message_has_error() {
             message_failed = Some(produced.clone());
-            tx.set_rollback_only(format!("Error running service {} (message)", def.name))?;
+            // Under `ignore` with nothing in place there is no transaction to mark.
+            if tx.in_transaction() {
+                tx.set_rollback_only(format!("Error running service {} (message)", def.name))?;
+            }
         } else {
             register_tx_commit(&tx, &def.name, &cleaned, &produced)?;
         }

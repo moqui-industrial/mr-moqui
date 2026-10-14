@@ -86,7 +86,10 @@ enum Prepared {
 /// How [`TransactionManager::run`] enlists the body. Service XML calls this in phase 6.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransactionAttribute {
+    /// Begin nothing: the body runs inside the transaction in place, if any, as Java's `ignore`.
     Ignore,
+    /// Suspend the transaction in place and run with none: `ignore` plus `force-new`, as Java.
+    IgnoreSuspend,
     UseOrBegin,
     ForceNew,
     Cache,
@@ -217,6 +220,7 @@ impl TransactionManager {
     {
         match attr {
             TransactionAttribute::Ignore => self.run_ignore(body),
+            TransactionAttribute::IgnoreSuspend => self.run_suspended(body),
             TransactionAttribute::UseOrBegin => self.run_bounded(false, false, timeout, body),
             TransactionAttribute::ForceNew => self.run_bounded(true, false, timeout, body),
             TransactionAttribute::Cache => self.run_bounded(false, true, timeout, body),
@@ -523,7 +527,7 @@ impl TransactionManager {
     }
 
     /// True when this thread has an active frame, as Java `isTransactionInPlace`. A thread whose
-    /// frames are all suspended, as in an `ignore` body, has no transaction in place.
+    /// frames are all suspended, as in an `ignore` plus `force-new` body, has no transaction in place.
     pub fn in_transaction(&self) -> bool {
         self.has_active()
     }
@@ -712,7 +716,22 @@ impl TransactionManager {
         Ok(())
     }
 
+    /// The body joins the transaction in place without a frame of its own. An error marks that
+    /// transaction rollback-only, as Java's `rollback(false, ...)` after a service that began nothing.
     fn run_ignore<T, F>(&self, body: F) -> Result<T, Error>
+    where
+        F: FnOnce() -> Result<T, Error>,
+    {
+        let result = body();
+        if let Err(err) = &result {
+            if self.has_active() {
+                let _ = self.store_rollback(err.to_string(), None);
+            }
+        }
+        result
+    }
+
+    fn run_suspended<T, F>(&self, body: F) -> Result<T, Error>
     where
         F: FnOnce() -> Result<T, Error>,
     {
@@ -766,7 +785,7 @@ impl TransactionManager {
         }
     }
 
-    fn set_cache_hold(&self, hold: bool) -> Result<(), Error> {
+    pub(crate) fn set_cache_hold(&self, hold: bool) -> Result<(), Error> {
         self.with_frames(|frames| {
             let frame = active_mut(frames).ok_or_else(|| Error::new("no transaction in place"))?;
             frame.cache_hold = hold;
