@@ -28,6 +28,7 @@ pub(crate) use authz::current_user_groups;
 pub(crate) use authz::{denied, is_permitted, note_entity_write, AuthInfo, Permit};
 pub use filter::apply_entity_filters;
 #[cfg(test)]
+#[cfg(all(test, feature = "cluster-tls"))]
 pub(crate) use login::stamp_value;
 pub use login::{
     apply_header_keys, change_password, internal_login_user, login_anonymous, login_user, login_user_key, logout,

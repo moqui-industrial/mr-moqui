@@ -51,21 +51,30 @@ struct HttpRef {
 
 impl HttpRef {
     fn fetch(&self) -> &Result<String, String> {
-        self.fetched.get_or_init(|| {
-            if !moqui_lib::http::sim_allows_http(self.sim, false) {
-                return Err(format!(
-                    "HTTP GET {} denied because sim mode is active",
-                    moqui_lib::http::redacted(&self.url)
-                ));
-            }
-            let client = crate::service::shared_http_client();
-            match client.get(self.url.clone()).send(false) {
-                Ok(response) if (200..300).contains(&response.status()) => Ok(response.body().to_string()),
-                Ok(response) => Err(format!("HTTP GET returned {}", response.status())),
-                Err(err) => Err(err.message().to_string()),
-            }
-        })
+        self.fetched.get_or_init(|| http_get(&self.url, self.sim))
     }
+}
+
+#[cfg(feature = "http")]
+fn http_get(url: &str, sim: bool) -> Result<String, String> {
+    if !moqui_lib::http::sim_allows_http(sim, false) {
+        return Err(format!(
+            "HTTP GET {} denied because sim mode is active",
+            moqui_lib::http::redacted(url)
+        ));
+    }
+    let client = crate::service::shared_http_client();
+    match client.get(url.to_string()).send(false) {
+        Ok(response) if (200..300).contains(&response.status()) => Ok(response.body().to_string()),
+        Ok(response) => Err(format!("HTTP GET returned {}", response.status())),
+        Err(err) => Err(err.message().to_string()),
+    }
+}
+
+/// The `http` feature is off (the browser build). The location still parses; reading it fails.
+#[cfg(not(feature = "http"))]
+fn http_get(url: &str, _sim: bool) -> Result<String, String> {
+    Err(format!("HTTP GET {url} is not built into this host"))
 }
 
 #[derive(Clone, Debug)]

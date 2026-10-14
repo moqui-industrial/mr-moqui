@@ -363,6 +363,11 @@ impl Pool {
         if timeout.is_zero() {
             return Ok(false);
         }
+        if super::manager::single_threaded() {
+            return Err(Error::new(
+                "no connection is free, and no other thread can return one (inline executor)",
+            ));
+        }
         let deadline = started + timeout;
         let now = Instant::now();
         if now >= deadline {

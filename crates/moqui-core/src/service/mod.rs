@@ -19,9 +19,13 @@ mod define;
 mod eca;
 mod eca_rules;
 mod email_eca;
+#[cfg(test)]
+mod inline_tests;
 mod jobs;
+#[cfg(feature = "mail")]
 mod mail;
 mod pool;
+#[cfg(feature = "http")]
 mod remote;
 mod request_pool;
 mod rest;
@@ -41,10 +45,10 @@ pub use email_eca::run_email_rules;
 #[cfg(test)]
 pub(crate) use jobs::send_job_error_notification;
 pub use jobs::{run_job_now, PassReport};
-#[cfg(test)]
+#[cfg(all(test, feature = "mail"))]
 pub(crate) use mail::SinkGuard;
 pub use pool::{start_pools, ServicePools};
-pub(crate) use remote::parse_json;
+#[cfg(feature = "http")]
 pub use remote::shared_http_client;
 pub use request_pool::{caps, check_serve_caps, RequestPool};
 #[cfg(test)]
@@ -55,6 +59,13 @@ pub use seca::run_seca_rules;
 pub use security_checks::security_checks_run;
 pub use semaphore::acquire;
 pub use validate::validate;
+
+/// A JSON body as a [`moqui_lib::object::Value`].
+pub(crate) fn parse_json(text: &str) -> Result<moqui_lib::object::Value, crate::context::Error> {
+    let json = serde_json::from_str::<serde_json::Value>(text)
+        .map_err(|err| crate::context::Error::new(format!("JSON: {err}")))?;
+    Ok(moqui_lib::json::from_json(&json))
+}
 
 /// An entity in the default group, to pick the transaction manager for work that has no entity of
 /// its own, such as a screen transition.

@@ -24,7 +24,8 @@ opensearch = []
 inbound-smtp = []
 
 [dependencies]
-moqui-core = { workspace = true }
+# The workspace entry has default features off (moqui-browser); the server wants all three.
+moqui-core = { workspace = true, features = ["mail", "http", "cluster-tls"] }
 moqui-lib = { workspace = true, features = ["http"] }
 tracing = { workspace = true }
 tokio = { workspace = true }

@@ -13,6 +13,15 @@
  */
 
 //! Per-factory service workers. Drop stops and joins only this guard's threads.
+//!
+//! [`ServicePools::inline`] is the executor with no threads (`plans/Wasm.md`). Async calls and
+//! `run_job_now` queue on the guard and run on the calling thread at a drain point:
+//! [`ExecutionContextFactory::run_pending`], or when the outermost execution context on the thread
+//! exits with no transaction in place. `callFuture()` runs at once, in a fresh context, under a new
+//! transaction. That new transaction suspends the caller's, so it needs a second connection: on a
+//! single-writer database (SQLite) a callee that writes while the caller holds a write
+//! transaction fails instead of waiting. The queue has no cap, so nothing spills to a one-shot job.
+//! There is no scheduler.
 
 use std::any::Any;
 use std::collections::{BTreeMap, VecDeque};
@@ -90,6 +99,14 @@ impl Drop for ReservedSlot {
 #[must_use = "dropping the guard stops and joins this pool's threads"]
 pub struct ServicePools {
     pub(crate) shared: Option<Arc<Shared>>,
+    inline: Option<Inline>,
+}
+
+/// Work waiting for a drain point on the inline executor.
+#[derive(Default)]
+struct Inline {
+    queue: Mutex<VecDeque<Work>>,
+    draining: std::sync::atomic::AtomicBool,
 }
 
 pub(crate) struct Shared {
@@ -177,7 +194,55 @@ impl Work {
 impl ServicePools {
     /// No workers. `test_context` stores this.
     pub fn idle() -> Self {
-        Self { shared: None }
+        Self {
+            shared: None,
+            inline: None,
+        }
+    }
+
+    /// No threads. Async work waits for a drain point on the calling thread. See the module docs.
+    pub fn inline() -> Self {
+        Self {
+            shared: None,
+            inline: Some(Inline::default()),
+        }
+    }
+
+    /// True for [`Self::inline`].
+    pub fn is_inline(&self) -> bool {
+        self.inline.is_some()
+    }
+
+    /// Queued inline work not yet run.
+    pub fn pending(&self) -> usize {
+        self.inline.as_ref().map_or(0, |inline| lock_mutex(&inline.queue).len())
+    }
+
+    /// Run queued inline work on this thread, oldest first, until the queue is empty. Work queued
+    /// while draining runs in the same pass. Returns how many ran.
+    ///
+    /// Runs nothing while a transaction is in place on this thread, or when this thread is already
+    /// draining. A failure is logged, as on a worker, and does not stop the rest.
+    pub fn run_pending(&self) -> usize {
+        let Some(inline) = &self.inline else {
+            return 0;
+        };
+        if crate::transaction::thread_in_transaction() {
+            return 0;
+        }
+        if inline.draining.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return 0;
+        }
+        let _done = DrainFlag(&inline.draining);
+        let mut ran = 0;
+        loop {
+            let Some(work) = lock_mutex(&inline.queue).pop_front() else {
+                break;
+            };
+            run_inline(work);
+            ran += 1;
+        }
+        ran
     }
 
     /// Called from the scheduler after the state lock is released. Idle pools ignore it.
@@ -215,6 +280,9 @@ impl ServicePools {
         name: &str,
         parameters: &BTreeMap<String, Value>,
     ) -> Result<BTreeMap<String, Value>, Error> {
+        if self.inline.is_some() {
+            return call_now(name, parameters);
+        }
         self.running()?.call_future(name, parameters)
     }
 
@@ -234,6 +302,13 @@ impl ServicePools {
         F: FnOnce() -> Result<T, Error> + Send + 'static,
     {
         let Some(shared) = &self.shared else {
+            if self.inline.is_some() {
+                if let Ok(factory) = capture_factory() {
+                    let ctx = factory.new_context();
+                    let _entered = ctx.enter();
+                    return job();
+                }
+            }
             return job();
         };
         let shared = Arc::clone(shared);
@@ -258,6 +333,11 @@ impl ServicePools {
         name: &str,
         parameters: &BTreeMap<String, Value>,
     ) -> Result<CallReceiver, Error> {
+        if self.inline.is_some() {
+            let (tx, rx) = mpsc::channel();
+            let _ = tx.send(call_now(name, parameters));
+            return Ok(rx);
+        }
         self.running()?.submit_future(name, parameters)
     }
 
@@ -271,6 +351,17 @@ impl ServicePools {
     /// Fire-and-forget. A full queue stores the call as a one-shot service job, which the scheduler
     /// pass submits when a worker is free. With no database to store it in, a full queue is an error.
     pub fn submit(&self, name: &str, parameters: &BTreeMap<String, Value>) -> Result<(), Error> {
+        if let Some(inline) = &self.inline {
+            let factory = capture_factory()?;
+            let user_name = crate::user::current_username().ok().flatten();
+            lock_mutex(&inline.queue).push_back(Work::service(
+                name.to_string(),
+                parameters.clone(),
+                factory,
+                user_name,
+            ));
+            return Ok(());
+        }
         let shared = self.running()?;
         let factory = capture_factory()?;
         let user_name = crate::user::current_username().ok().flatten();
@@ -300,6 +391,17 @@ impl ServicePools {
                 report
             }
             None => super::jobs::PassReport::default(),
+        }
+    }
+
+    /// Queue a job run on the inline executor. Returns it when this guard is not inline.
+    pub(crate) fn submit_inline_job(&self, run: Box<super::jobs::JobRun>) -> Result<(), Box<super::jobs::JobRun>> {
+        match &self.inline {
+            Some(inline) => {
+                lock_mutex(&inline.queue).push_back(Work::Job(run));
+                Ok(())
+            }
+            None => Err(run),
         }
     }
 
@@ -483,7 +585,10 @@ fn start(settings: Settings) -> Result<ServicePools, Error> {
     });
     let handles = spawn_all(&shared, settings.workers)?;
     *lock_mutex(&shared.handles) = handles;
-    Ok(ServicePools { shared: Some(shared) })
+    Ok(ServicePools {
+        shared: Some(shared),
+        inline: None,
+    })
 }
 
 fn spawn_all(shared: &Arc<Shared>, workers: usize) -> Result<Vec<JoinHandle<()>>, Error> {
@@ -614,6 +719,72 @@ fn invoke(
         crate::user::internal_login_user(user_name)?;
     }
     super::call::sync(name, parameters)
+}
+
+/// `callFuture()` on the inline executor: run now in a fresh context, as the caller, under a new
+/// transaction so the call does not join the caller's.
+fn call_now(name: &str, parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, Error> {
+    let factory = capture_factory()?;
+    let user_name = crate::user::current_username().ok().flatten();
+    let options = super::call::CallOptions {
+        require_new_transaction: Some(true),
+        ..super::call::CallOptions::default()
+    };
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let ctx = factory.new_context();
+        let _entered = ctx.enter();
+        if let Some(user_name) = user_name.as_deref() {
+            crate::user::internal_login_user(user_name)?;
+        }
+        super::call::sync_with(name, parameters, &options)
+    }));
+    unwind_result(result)
+}
+
+/// One queued item on the inline executor. Mirrors [`run_work`] without the worker flag: a nested
+/// `callFuture()` already runs inline. The script stack is cleared only when no context was entered,
+/// since otherwise it belongs to the caller.
+fn run_inline(work: Work) {
+    let _clear = ExecutionContext::current().is_none().then_some(ClearStack);
+    match work {
+        Work::Job(run) => {
+            if catch_unwind(AssertUnwindSafe(|| super::jobs::run_job(*run))).is_err() {
+                tracing::error!("inline service job panicked");
+            }
+        }
+        Work::Call(job) => {
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                invoke(&job.factory, &job.name, &job.parameters, job.user_name.as_deref())
+            }));
+            let outcome = unwind_result(result);
+            match job.reply {
+                Some(reply) => {
+                    let _ = reply.send(outcome);
+                }
+                None => {
+                    if let Err(err) = outcome {
+                        tracing::error!(service = %job.name, error = %err, "async service call failed");
+                    }
+                }
+            }
+        }
+        Work::Closure(job) => {
+            let ClosureJob { run, reply } = job;
+            let _ = reply.send(closure_outcome(catch_unwind(AssertUnwindSafe(run))));
+        }
+        #[cfg(test)]
+        Work::Task(task) => {
+            let _ = catch_unwind(AssertUnwindSafe(task));
+        }
+    }
+}
+
+struct DrainFlag<'a>(&'a std::sync::atomic::AtomicBool);
+
+impl Drop for DrainFlag<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 fn reserved(

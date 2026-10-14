@@ -65,7 +65,7 @@ pub fn run_email_rules(fields: &BTreeMap<String, Value>) -> Result<(), Error> {
     first.map_or(Ok(()), Err)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "mail"))]
 mod tests {
     use std::collections::BTreeMap;
 

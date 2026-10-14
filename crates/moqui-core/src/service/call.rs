@@ -464,13 +464,17 @@ fn execute(
     facade: &EntityFacade,
 ) -> Result<BTreeMap<String, Value>, LibError> {
     match def.kind {
+        #[cfg(feature = "mail")]
         ServiceKind::Mail => super::mail::run(&def.name, parameters, facade),
+        #[cfg(not(feature = "mail"))]
+        ServiceKind::Mail => Err(LibError::new(format!("service {}: mail is not built into this host", def.name))),
         ServiceKind::Interface => Err(LibError::new(format!("interface {} has no runner", def.name))),
         ServiceKind::Unsupported => Err(LibError::new(format!(
             "service {} runs {}, a script language this port does not run",
             def.name, def.location
         ))),
         ServiceKind::Script => run_script(def, parameters),
+        #[cfg(feature = "http")]
         ServiceKind::RemoteRest => super::remote::run_remote_rest(
             &def.name,
             &def.location,
@@ -480,6 +484,11 @@ fn execute(
             facade.sim_active(),
         )
         .map_err(|err| LibError::new(err.message())),
+        #[cfg(not(feature = "http"))]
+        ServiceKind::RemoteRest => Err(LibError::new(format!(
+            "service {}: remote-rest is not built into this host",
+            def.name
+        ))),
         ServiceKind::EntityAuto => run_entity(facade, &def.verb, &def.noun, parameters, 0),
         ServiceKind::Inline => run_inline(def, parameters),
     }
@@ -1424,6 +1433,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "http")]
     fn remote_rest_in_sim_mode_errors_before_a_socket() {
         let path = write_fixture(
             "remote",

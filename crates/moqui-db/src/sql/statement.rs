@@ -179,8 +179,11 @@ pub fn select_with(
 
 /// `FOR UPDATE`, or the database's `for-update` text.
 pub(crate) fn for_update(out: &mut Writer<'_>) {
-    out.push(" ");
     let text = out.dialect.for_update.as_deref().unwrap_or("FOR UPDATE").to_string();
+    if text.is_empty() {
+        return;
+    }
+    out.push(" ");
     out.push(&text);
 }
 

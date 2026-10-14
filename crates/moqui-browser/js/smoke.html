@@ -1,0 +1,33 @@
+<!doctype html>
+<!-- Browser smoke page: the module in a Worker through moqui-client.js. Serve the staged package
+     directory (scripts/wasm-build.sh) and open this page; #result reads SMOKE OK or SMOKE FAILED.
+     It persists to OPFS, so a second load reports the restored row. -->
+<meta charset="utf-8">
+<title>moqui-browser smoke</title>
+<pre id="log"></pre>
+<p id="result">running</p>
+<script type="module">
+import { startMoqui } from './moqui-client.js';
+
+const log = document.getElementById('log');
+const moqui = startMoqui();
+let failed = false;
+async function step(label, fields, test = () => true) {
+    const response = await moqui.request(fields);
+    const pass = response.ok && test(response.result);
+    if (!pass) failed = true;
+    log.textContent += `${pass ? 'ok  ' : 'FAIL'} ${label}: ${response.ok ? JSON.stringify(response.result).slice(0, 120) : response.error}\n`;
+}
+await step('init', { op: 'init', runtime: '/moqui/runtime', framework: '/moqui/framework', db: '/moqui/local.sqlite', persist: 'moqui-smoke.sqlite' });
+await step('checkTables', { op: 'checkTables' });
+// A second load of this page finds the row the first one flushed to OPFS.
+const before = await moqui.request({ op: 'find', entity: 'moqui.test.TestEntity', equals: { testId: 'C1' } });
+log.textContent += `restored ${before.ok ? before.result.length : 'error'} row(s) from OPFS\n`;
+await step('render', { op: 'render', root: '/moqui/runtime/screen/Hello.xml', path: '', parameters: { name: 'chrome' } },
+    (result) => result.body.includes('Hello chrome from Moqui in WASM'));
+await step('store', { op: 'store', entity: 'moqui.test.TestEntity', fields: { testId: 'C1', testMedium: 'chrome' } });
+await step('find', { op: 'find', entity: 'moqui.test.TestEntity', equals: { testId: 'C1' } },
+    (rows) => rows.length === 1 && rows[0].testMedium === 'chrome');
+await step('flush', { op: 'flush' }, (bytes) => bytes > 0);
+document.getElementById('result').textContent = failed ? 'SMOKE FAILED' : 'SMOKE OK';
+</script>

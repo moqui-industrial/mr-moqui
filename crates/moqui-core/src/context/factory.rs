@@ -63,9 +63,38 @@ pub struct ExecutionContextFactory {
     pools: crate::service::ServicePools,
     /// Idle until [`Self::start_request_pool`]. Drop joins the threads.
     requests: crate::service::RequestPool,
+    executor: Executor,
     pub(crate) sessions: std::sync::Mutex<crate::user::session::SessionTable>,
     /// True after this factory's cluster heartbeat hook is registered.
     pub(crate) cluster_heartbeat: AtomicBool,
+}
+
+/// How async service calls, `callFuture()`, and scheduled jobs run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Executor {
+    /// The service worker pool and the scheduler, on threads. The server.
+    Threads,
+    /// No threads. Async work runs on the calling thread at a drain point with no transaction in
+    /// place, `callFuture()` runs at once, and the scheduler does not run. The browser build
+    /// (`plans/Wasm.md`). See [`ExecutionContextFactory::run_pending`].
+    Inline,
+}
+
+impl Default for Executor {
+    /// `Threads`. Test builds read `MOQUI_EXECUTOR=inline`, so the suite can run once inline.
+    fn default() -> Self {
+        #[cfg(test)]
+        if std::env::var("MOQUI_EXECUTOR").is_ok_and(|value| value.eq_ignore_ascii_case("inline")) {
+            return Self::Inline;
+        }
+        Self::Threads
+    }
+}
+
+/// Options for [`ExecutionContextFactory::boot_with_options`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BootOptions {
+    pub executor: Executor,
 }
 
 impl ExecutionContextFactory {
@@ -84,6 +113,16 @@ impl ExecutionContextFactory {
     pub fn boot_with_framework(
         runtime_dir: impl AsRef<Path>,
         framework_dir: impl AsRef<Path>,
+    ) -> Result<Arc<Self>, Error> {
+        Self::boot_with_options(runtime_dir, framework_dir, BootOptions::default())
+    }
+
+    /// [`Self::boot_with_framework`] with an executor choice. The browser build passes
+    /// [`Executor::Inline`], which starts no thread (`plans/Wasm.md`).
+    pub fn boot_with_options(
+        runtime_dir: impl AsRef<Path>,
+        framework_dir: impl AsRef<Path>,
+        options: BootOptions,
     ) -> Result<Arc<Self>, Error> {
         assert_shareable::<Self>();
         let runtime_dir = canonicalize_dir(runtime_dir.as_ref())?;
@@ -104,7 +143,10 @@ impl ExecutionContextFactory {
         set_by_boot.keep();
         let conf_text = conf_node.write_string();
         let flush_mode = crate::user::session::flush_mode_from_property()?;
-        let pools = crate::service::start_pools(&conf_text)?;
+        let pools = match options.executor {
+            Executor::Threads => crate::service::start_pools(&conf_text)?,
+            Executor::Inline => crate::service::ServicePools::inline(),
+        };
         super::locate::remember(&framework_dir, &components);
         tracing::info!(
             runtime = %runtime_dir.display(),
@@ -125,6 +167,7 @@ impl ExecutionContextFactory {
             entity,
             pools,
             requests: crate::service::RequestPool::idle(),
+            executor: options.executor,
             sessions: std::sync::Mutex::new(crate::user::session::SessionTable::new(flush_mode)),
             cluster_heartbeat: AtomicBool::new(false),
         });
@@ -139,8 +182,29 @@ impl ExecutionContextFactory {
     /// # Errors
     ///
     /// Returns an error when a worker thread does not start.
+    ///
+    /// With [`Executor::Inline`] this does nothing: the pool stays idle and the host runs each
+    /// request on the calling thread.
     pub fn start_request_pool(&self) -> Result<(), Error> {
+        if self.executor == Executor::Inline {
+            return Ok(());
+        }
         self.requests.start_from_conf(&self.conf_text)
+    }
+
+    /// The executor this factory booted with.
+    pub fn executor(&self) -> Executor {
+        self.executor
+    }
+
+    /// Run queued async work now, on this thread. Only [`Executor::Inline`] queues work; the
+    /// threaded executor returns 0. The browser host calls this after each top-level request.
+    /// Leaving the outermost execution context on a thread drains too.
+    ///
+    /// Runs nothing while a transaction is in place on this thread. Each item gets a fresh context
+    /// and acts as the user who queued it. Returns how many ran.
+    pub fn run_pending(&self) -> usize {
+        self.pools.run_pending()
     }
 
     /// Write dirty `moqui.server.HttpSession` rows. The host calls this on shutdown so an
@@ -430,8 +494,12 @@ impl ExecutionContext {
             slot.set((std::ptr::from_ref(self), previous.1.saturating_add(1)));
             previous
         });
+        // Leaving the outermost context is an inline drain point.
+        let drain =
+            (previous.1 == 0 && self.factory().executor() == Executor::Inline).then(|| Arc::clone(self.factory()));
         ContextGuard {
             previous,
+            drain,
             _scope: PhantomData,
         }
     }
@@ -463,6 +531,8 @@ impl ExecutionContext {
 pub struct ContextGuard<'a> {
     /// What was current before this guard, put back on drop.
     previous: (*const ExecutionContext, u32),
+    /// Set on an outermost guard of an inline factory: queued async work runs when it drops.
+    drain: Option<Arc<ExecutionContextFactory>>,
     // A guard belongs to the thread it was made on: the raw pointer above already makes it !Send.
     _scope: PhantomData<&'a ExecutionContext>,
 }
@@ -470,6 +540,11 @@ pub struct ContextGuard<'a> {
 impl Drop for ContextGuard<'_> {
     fn drop(&mut self) {
         ENTERED.with(|slot| slot.set(self.previous));
+        if let Some(factory) = self.drain.take() {
+            if !std::thread::panicking() {
+                factory.run_pending();
+            }
+        }
     }
 }
 
@@ -597,6 +672,14 @@ fn install_tls_pair(
     };
     let cert_placeholder = cert.value.ends_with("CHANGEME");
     let key_placeholder = key.value.ends_with("CHANGEME");
+    // Without `cluster-tls` (the browser build) the pair stays unset, as if empty. Cluster start
+    // then fails on the missing cert; nothing else reads it.
+    #[cfg(not(feature = "cluster-tls"))]
+    if cert_placeholder && key_placeholder {
+        let _ = generated;
+        return Ok(());
+    }
+    #[cfg(feature = "cluster-tls")]
     if cert_placeholder && key_placeholder {
         let (cert_b64, key_b64) = crate::cluster::generate_cert_pair()?;
         remember_generated(generated, set_by_boot, "cluster_tls_cert", cert_b64);
@@ -614,6 +697,7 @@ fn install_tls_pair(
     Ok(())
 }
 
+#[cfg(feature = "cluster-tls")]
 fn remember_generated(
     generated: &mut Vec<(String, String)>,
     set_by_boot: &mut PropertyRollback,
@@ -833,6 +917,11 @@ impl ExecutionContextFactory {
             .unwrap_or_else(|| MNode::parse_text("test", "<moqui-conf/>").expect("conf"));
         let entity = Arc::new(RwLock::new(None));
         let runtime_dir = PathBuf::from(".");
+        let executor = if pools.is_inline() {
+            Executor::Inline
+        } else {
+            Executor::Threads
+        };
         let factory = Arc::new(Self {
             runtime_dir: runtime_dir.clone(),
             framework_dir,
@@ -847,6 +936,7 @@ impl ExecutionContextFactory {
             entity,
             pools,
             requests: crate::service::RequestPool::idle(),
+            executor,
             sessions: std::sync::Mutex::new(crate::user::session::SessionTable::new(
                 crate::user::session::FlushMode::Eventual,
             )),

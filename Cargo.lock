@@ -650,6 +650,8 @@ dependencies = [
  "cexpr",
  "clang-sys",
  "itertools 0.13.0",
+ "log",
+ "prettyplease 0.2.37",
  "proc-macro2",
  "quote",
  "regex",
@@ -4644,6 +4646,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "moqui-browser"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "moqui-core",
+ "moqui-lib",
+ "rusqlite",
+ "rust_decimal",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "moqui-core"
 version = "0.1.0"
 dependencies = [
@@ -7060,6 +7075,7 @@ version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cee271d0eeba64f0915b846cb7ae02e16faf3dfdffdca91731101d9d30fe3423"
 dependencies = [
+ "bindgen",
  "cc",
 ]
 

@@ -20,6 +20,11 @@ pub fn is_mysql(dialect: &Dialect) -> bool {
     starts_with_ignore(&dialect.name, "mysql")
 }
 
+/// The browser build's local database (`plans/Wasm.md`).
+pub fn is_sqlite(dialect: &Dialect) -> bool {
+    starts_with_ignore(&dialect.name, "sqlite")
+}
+
 fn starts_with_ignore(name: &str, prefix: &str) -> bool {
     name.len() >= prefix.len() && name[..prefix.len()].eq_ignore_ascii_case(prefix)
 }

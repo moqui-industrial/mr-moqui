@@ -72,6 +72,8 @@ These are the feature flags the resolve used. The unsafe defaults are called out
 | `croner` 4 | `default-features = false`, `jiff` | The default `chrono` feature. |
 | `totp-rs` 6 | `default-features = false`, `std`, `otpauth`, `gen_secret` | `qr` |
 | `rquickjs` 0.14 | defaults | |
+| `rquickjs` 0.14 on `wasm32-unknown-emscripten` | defaults plus `bindgen` (moqui-core target dependency) | No bindings ship for this target, so `rquickjs-sys` generates them at build with `bindgen` (BSD-3-Clause, build only, not linked) against the emsdk sysroot. |
+| `rusqlite` 0.38 | `bundled` (moqui-browser only) | `0.40`: `servo-net` (behind `pdf-servo`) pins 0.38, and two `libsqlite3-sys` versions cannot both link `sqlite3`. No `bundled-sqlcipher`, `loadable_extension`, or `serde_json` feature. |
 | `pulldown-cmark` | the Rust crate | `comrak` is BSD-2-Clause and is an acceptable alternate. Re-check it if a C regex backend is turned on. |
 | `pdf-servo` | absent from the default graph | The `servo` crate 0.7.0 is MPL-2.0. See below. |
 
@@ -148,6 +150,8 @@ Versions are what `cargo` locked on 2026-10-11 for the feature set above. "Stati
 | `flate2`, `miniz_oxide` | 1.1.10 / 0.9.1 | MIT OR Apache-2.0 / MIT OR Zlib OR Apache-2.0 | Compression. Pure Rust. `flate2` is on `rust_backend`. | Static | OK. `zlib-rs` and `libz-sys` are not enabled. |
 | `ammonia` | 4.2.3 | MIT OR Apache-2.0 | HTML cleaning for `allow-html="safe"`, with its default allow-list | Static. Pulls `html5ever` 0.40 and `markup5ever` (MIT OR Apache-2.0), `url`, `maplit`, `tendril`, `string_cache`, `phf`. Also pulls `cssparser` 0.38 and `dtoa-short` 0.3.5, both **MPL-2.0**. | OK with a narrow exception. MPL-2.0 is file-level copyleft: we do not modify those crates, so the duty is to keep their license notice and offer their source, which the crates.io release is. `deny.toml` allows MPL-2.0 for those two crates by name and no other. |
 | `servo` | 0.7.0 | MPL-2.0 | In-process PDF alternate | Would be static | Hold. Off by default. |
+| `rusqlite` | 0.38.0 | MIT | SQLite `DbDriver` of the browser build (`crates/moqui-browser`, `plans/Wasm.md`) | Static in the emscripten module. Natively it is only in `moqui-browser` tests and stub; the `moqui` binary does not link it. Pulls `hashlink` 0.11, `fallible-iterator` 0.3, `fallible-streaming-iterator` 0.1 (MIT OR Apache-2.0 / MIT). | OK |
+| `libsqlite3-sys` | 0.36.0 | MIT; the bundled SQLite amalgamation is public domain | Compiles SQLite with the target C compiler (emcc for the browser) | Static, same scope as `rusqlite` | OK. Public domain needs no notice; keep the MIT notice for the crate. |
 
 `cc`, `cmake`, `pkg-config`, and `find-msvc-tools` run at build to compile aws-lc and are not linked into the binary. Proc-macro crates (`serde_derive`, `sqlx-macros`, `tokio-macros`, and the rest) run at compile time and are not linked either. The code they expand is.
 

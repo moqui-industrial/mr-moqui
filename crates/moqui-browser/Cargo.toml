@@ -1,0 +1,26 @@
+[package]
+name = "moqui-browser"
+description = "Browser host: the framework on wasm32-unknown-emscripten with a local SQLite database."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The counterpart of moqui-host for the browser (plans/Wasm.md). moqui-core without its default
+# features links no socket, TLS (aws-lc), or blocking-HTTP code. The lib (driver and host) builds
+# and tests natively; the bin is the emscripten module and is a stub elsewhere.
+# Build: `. scripts/wasm-env.sh && cargo build -p moqui-browser --target wasm32-unknown-emscripten`.
+
+[dependencies]
+moqui-core = { workspace = true }
+moqui-lib = { workspace = true }
+rusqlite = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+jiff = { workspace = true }
+rust_decimal = { workspace = true }
+
+[lints]
+workspace = true

@@ -1002,7 +1002,28 @@ fn deadlines() -> &'static Mutex<Vec<DeadlineSlot>> {
     SLOTS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+/// True when any manager has a frame on this thread, active or suspended.
+pub fn thread_in_transaction() -> bool {
+    STACKS.with(|stacks| stacks.borrow().values().any(|frames| !frames.is_empty()))
+}
+
+/// True on a target without threads, or when the entered context's factory uses the inline
+/// executor. No other thread will return a connection or fire a deadline.
+pub(crate) fn single_threaded() -> bool {
+    cfg!(target_os = "emscripten")
+        || crate::context::ExecutionContext::with_current(|ctx| {
+            ctx.factory().executor() == crate::context::Executor::Inline
+        })
+        .unwrap_or(false)
+}
+
+/// Single-threaded, the timer thread does not start. A deadline is then only noticed by
+/// [`TransactionManager::poll_deadline`] and a running statement is not cancelled: statement
+/// timeouts are not enforced (`plans/Wasm.md`).
 fn ensure_deadline_timer() {
+    if single_threaded() {
+        return;
+    }
     static STARTED: OnceLock<()> = OnceLock::new();
     STARTED.get_or_init(|| {
         let spawned = std::thread::Builder::new()

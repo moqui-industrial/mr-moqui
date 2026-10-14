@@ -26,6 +26,7 @@ pub mod es_json;
 pub mod feed;
 pub mod highlight;
 pub mod mapping;
+#[cfg(feature = "http")]
 pub mod opensearch;
 pub mod parse;
 pub mod postgres;

@@ -19,7 +19,7 @@
 //! the live peers, as `plans/Cluster.md` says. Invalidations waiting together are sent once per entity, since a peer
 //! clears the entity's whole cache for one. The peer list is kept and read again on the heartbeat tick.
 
-#[cfg(test)]
+#[cfg(all(test, feature = "cluster-tls"))]
 mod tests;
 
 use std::cell::Cell;
@@ -164,7 +164,7 @@ pub fn start(factory: &Arc<ExecutionContextFactory>) -> Result<(), Error> {
 }
 
 /// Wait until the sender thread has posted everything queued, for tests.
-#[cfg(test)]
+#[cfg(all(test, feature = "cluster-tls"))]
 pub(crate) fn wait_for_sends(timeout: Duration) -> bool {
     let until = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < until {
@@ -225,6 +225,7 @@ pub(crate) fn note_write(
 }
 
 /// One self-signed pair. Both values are standard base64 of DER, one line each.
+#[cfg(feature = "cluster-tls")]
 pub(crate) fn generate_cert_pair() -> Result<(String, String), Error> {
     let key = rcgen::KeyPair::generate().map_err(cert_err)?;
     let mut params = rcgen::CertificateParams::new(vec!["moqui-cluster".to_string()]).map_err(cert_err)?;
@@ -243,18 +244,22 @@ pub(crate) fn generate_cert_pair() -> Result<(String, String), Error> {
     Ok((cert_b64, key_b64))
 }
 
+#[cfg(feature = "cluster-tls")]
 fn ymd_year(date: jiff::civil::Date) -> i32 {
     i32::from(date.year())
 }
 
+#[cfg(feature = "cluster-tls")]
 fn ymd_month(date: jiff::civil::Date) -> u8 {
     u8::try_from(date.month()).unwrap_or(1)
 }
 
+#[cfg(feature = "cluster-tls")]
 fn ymd_day(date: jiff::civil::Date) -> u8 {
     u8::try_from(date.day()).unwrap_or(1)
 }
 
+#[cfg(feature = "cluster-tls")]
 fn cert_err(err: impl std::fmt::Display) -> Error {
     Error::new(format!("could not generate cluster tls material: {err}"))
 }

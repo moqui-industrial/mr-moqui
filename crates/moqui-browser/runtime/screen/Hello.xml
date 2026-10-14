@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Smoke-test screen for the browser build: renders with no database. -->
+<screen require-authentication="false">
+    <parameter name="name"/>
+    <actions>
+        <set field="who" from="name || 'browser'"/>
+    </actions>
+    <widgets>
+        <label text="Hello ${who} from Moqui in WASM"/>
+    </widgets>
+</screen>

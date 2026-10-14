@@ -103,6 +103,21 @@ Each phase ends with a check that must pass.
 
 **W7 (optional). pthreads.** Serve COOP and COEP headers and run the `threads` executor on Emscripten pthreads. The non-pthread build stays.
 
+## Status (2026-10-14)
+
+W0 through W4 are in place. `scripts/wasm-build.sh` builds the module. `scripts/wasm-smoke.mjs` (Node, MEMFS) and `scripts/wasm-chrome-smoke.mjs` (headless Chrome worker, OPFS reload) pass. The release `.wasm` is 10.9 MB (3.9 MB gzipped). The `.data` preload is 1.7 MB.
+
+Findings that change the text above:
+
+- QuickJS needs rquickjs `bindgen` on this target; no prebuilt bindings ship. bindgen needs the emsdk sysroot, emsdk's clang builtin headers, and `-fvisibility=default`. `scripts/wasm-env.sh` sets them. Its build script does not rerun on an env change: `cargo clean -p rquickjs-sys --target wasm32-unknown-emscripten` after changing them.
+- `-sSTACK_SIZE=8MB`. Emscripten's 64 KB default trips QuickJS's stack check on the first eval.
+- The SQLite driver shares one handle. A `begin` while another logical connection has a transaction open is a savepoint inside it, so `callFuture()` and reserve transactions never wait on the single writer. A nested commit is undone if the outer transaction rolls back; that includes sequence refills and failed-login counts. Sequence ids stay unique because the refill floor is the in-memory bank.
+- Without cluster-tls, CHANGEME cluster cert slots are left unset instead of failing boot.
+- WasmFS OPFS needs pthreads or JSPI. Until then persistence is a snapshot: restore into MEMFS at `init`, write back on `flush` between requests. Per-commit durability needs a sahpool-style VFS or JSPI (W5).
+- rusqlite stays on 0.38: servo-net pins it, and two libsqlite3-sys versions cannot both link sqlite3.
+
+Open: no login flow in the browser host (calls run with authz disabled, except renders); Groovy services are skipped; `open_entity_facade` is copied from moqui-host and belongs in core; rustc passes a deprecated `WASM_BIGINT` link flag.
+
 ## Not in scope
 
 - Host features in the browser: axum, the Postgres and MySQL drivers, embedded Postgres, SSH, the SSO callback, PDF, and SMTP or IMAP.

@@ -171,10 +171,6 @@ fn response_map(body: &str) -> BTreeMap<String, Value> {
     }
 }
 
-pub(crate) fn parse_json(text: &str) -> Result<Value, Error> {
-    let json = serde_json::from_str::<serde_json::Value>(text).map_err(|err| Error::new(format!("JSON: {err}")))?;
-    Ok(from_json(&json))
-}
 
 #[cfg(test)]
 mod tests {
