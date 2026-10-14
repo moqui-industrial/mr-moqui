@@ -42,19 +42,27 @@ pub(super) fn email_rule_from(node: &MNode) -> EmailRule {
     }
 }
 
-/// Run email ECA actions whose condition passes. `fields` are placed on the script context.
+/// Run email ECA actions whose condition passes. `fields` are placed on the script context. A rule that fails is
+/// logged and the others still run; the first failure is returned, so the poll leaves that message on the server.
 pub fn run_email_rules(fields: &BTreeMap<String, Value>) -> Result<(), Error> {
     let Some(rules) = eca_rules::current() else {
         return Ok(());
     };
+    let mut first = None;
     for rule in &rules.email {
-        let _frame = super::rule_actions::publish_names(fields)?;
-        if !super::rule_actions::condition_allows(&rule.condition)? {
-            continue;
+        let ran = (|| -> Result<(), Error> {
+            let _frame = super::rule_actions::publish_names(fields)?;
+            if super::rule_actions::condition_allows(&rule.condition)? {
+                super::rule_actions::run_stored_actions(&rule.actions)?;
+            }
+            Ok(())
+        })();
+        if let Err(err) = ran {
+            tracing::error!("email ECA rule failed: {err}");
+            first.get_or_insert(err);
         }
-        super::rule_actions::run_stored_actions(&rule.actions)?;
     }
-    Ok(())
+    first.map_or(Ok(()), Err)
 }
 
 #[cfg(test)]

@@ -529,8 +529,11 @@ fn retain_domains(addresses: &mut Vec<String>, domains: &[String], skipped: &mut
     });
 }
 
+/// Whether the address's domain is one of `domains` or below one, case-insensitive: `example.com` allows
+/// `mail.example.com` but not `evilexample.com`. Java's `isDomainAllowed` compared the text after the `@` with
+/// `endsWith`, which allowed the second and refused `Name <a@example.com>` for its `>`.
 fn domain_allowed(address: &str, domains: &[String]) -> bool {
-    let address = address.trim();
+    let address = bare_address(address);
     if address.is_empty() {
         return false;
     }
@@ -540,7 +543,20 @@ fn domain_allowed(address: &str, domains: &[String]) -> bool {
     let Some((_, domain)) = address.rsplit_once('@') else {
         return false;
     };
-    domains.iter().any(|entry| domain.ends_with(entry))
+    let domain = domain.to_ascii_lowercase();
+    domains.iter().any(|entry| {
+        let entry = entry.trim().trim_start_matches(['@', '.']).to_ascii_lowercase();
+        !entry.is_empty() && (domain == entry || domain.ends_with(&format!(".{entry}")))
+    })
+}
+
+/// The address in `Name <address>`, or the text as it is.
+fn bare_address(text: &str) -> &str {
+    let text = text.trim();
+    match (text.rfind('<'), text.rfind('>')) {
+        (Some(open), Some(close)) if close > open => text[open + 1..close].trim(),
+        _ => text,
+    }
 }
 
 fn require_host(host: &str) -> Result<(), String> {
@@ -856,20 +872,23 @@ fn lettre_send(letter: &Letter, server: &EntityValue) -> Result<(), String> {
     let message = build_lettre(letter)?;
     let user = field_text(server, "mailUsername");
     let password = field_text(server, "mailPassword");
+    // smtpSsl is TLS from the start. smtpStartTls upgrades when the server offers it, as Java's setStartTLSEnabled
+    // (not required), so a server without STARTTLS still takes the mail. Both trust `email_tls_ca_file` too.
+    use lettre::transport::smtp::client::Tls;
     let transport = if field_text(server, "smtpSsl") == "Y" {
         creds(
-            lettre::SmtpTransport::relay(&host)
-                .map_err(|err| err.to_string())?
-                .port(port),
+            lettre::SmtpTransport::builder_dangerous(&host)
+                .port(port)
+                .tls(Tls::Wrapper(smtp_tls(&host)?)),
             &user,
             &password,
         )
         .build()
     } else if field_text(server, "smtpStartTls") == "Y" {
         creds(
-            lettre::SmtpTransport::starttls_relay(&host)
-                .map_err(|err| err.to_string())?
-                .port(port),
+            lettre::SmtpTransport::builder_dangerous(&host)
+                .port(port)
+                .tls(Tls::Opportunistic(smtp_tls(&host)?)),
             &user,
             &password,
         )
@@ -990,14 +1009,18 @@ fn content_type(name: &str) -> lettre::message::header::ContentType {
     lettre::message::header::ContentType::parse(name).unwrap_or(lettre::message::header::ContentType::TEXT_PLAIN)
 }
 
+/// An address as Java's `addTo` takes it: `a@example.com` or `Name <a@example.com>`. A `name` given separately wins.
 fn mailbox(address: &str, name: &str) -> Result<lettre::message::Mailbox, String> {
     let address = address.trim();
-    let email = address
+    let parsed: lettre::message::Mailbox = address
         .parse()
         .map_err(|err| format!("email address {address} is not valid: {err}"))?;
     let name = name.trim();
-    let name = if name.is_empty() { None } else { Some(name.to_string()) };
-    Ok(lettre::message::Mailbox::new(name, email))
+    if name.is_empty() {
+        Ok(parsed)
+    } else {
+        Ok(lettre::message::Mailbox::new(Some(name.to_string()), parsed.email))
+    }
 }
 
 fn new_message_id(from: &str) -> String {
@@ -1015,6 +1038,12 @@ fn new_message_id(from: &str) -> String {
 thread_local! {
     static SINK: RefCell<Option<Rc<RefCell<Vec<Letter>>>>> = const { RefCell::new(None) };
     static FAKE: RefCell<Option<Vec<Inbound>>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The ids the fake store was asked to delete.
+    static FAKE_DELETED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
 fn push_sink(letter: &Letter) -> bool {
@@ -1151,18 +1180,28 @@ fn poll_server(
         Ok(store) => store,
         Err(text) => return fail(text),
     };
-    let messages = match store.list() {
-        Ok(messages) => messages,
+    let ids = match store.list_ids() {
+        Ok(ids) => ids,
         Err(text) => return fail(text),
     };
-    for message in messages {
+    // One message at a time, as Java's poll: fetched, run through the rules, then marked or deleted. A message whose
+    // rules fail is left as it is, so the next poll sees it again instead of it being deleted unprocessed.
+    for id in ids {
+        let message = match store.fetch(&id) {
+            Ok(message) => message,
+            Err(text) => {
+                note_error(format!("Error reading message {id} from {}: {text}", settings.host));
+                break;
+            }
+        };
         if settings.skip_seen && message.seen {
             continue;
         }
         if let Err(err) = super::email_eca::run_email_rules(&eca_fields(&message, &server_id)) {
+            tracing::error!("email ECA rules failed for message {id} of {server_id}, left on the server: {err}");
             note_error(err.message());
+            continue;
         }
-        let id = message.id.clone();
         if settings.mark_seen {
             if let Err(err) = store.mark_seen(&id) {
                 note_error(err);
@@ -1209,14 +1248,21 @@ fn eca_fields(message: &Inbound, server_id: &str) -> BTreeMap<String, Value> {
     fields.insert("sentDate".into(), message.sent.clone());
     fields.insert("receivedDate".into(), message.received.clone());
     let mut flags = IndexMap::new();
-    flags.insert("answered".into(), Value::Bool(false));
-    flags.insert("deleted".into(), Value::Bool(false));
-    flags.insert("draft".into(), Value::Bool(false));
-    flags.insert("flagged".into(), Value::Bool(false));
-    flags.insert("recent".into(), Value::Bool(false));
+    flags.insert("answered".into(), Value::Bool(message.flags.answered));
+    flags.insert("deleted".into(), Value::Bool(message.flags.deleted));
+    flags.insert("draft".into(), Value::Bool(message.flags.draft));
+    flags.insert("flagged".into(), Value::Bool(message.flags.flagged));
+    flags.insert("recent".into(), Value::Bool(message.flags.recent));
     flags.insert("seen".into(), Value::Bool(message.seen));
+    // Java puts the MimeMessage here; this is the part of it the rules read: its id, size and raw text.
+    let mut raw = IndexMap::new();
+    raw.insert("messageId".into(), Value::string(header_one(&message.headers, "message-id")));
+    raw.insert("subject".into(), Value::string(&message.subject));
+    raw.insert("size".into(), Value::I64(i64::try_from(message.raw.len()).unwrap_or(i64::MAX)));
+    raw.insert("raw".into(), Value::string(String::from_utf8_lossy(&message.raw)));
     let mut out = BTreeMap::new();
     out.insert("emailServerId".into(), Value::string(server_id));
+    out.insert("message".into(), Value::Map(raw));
     out.insert("fields".into(), Value::Map(fields));
     out.insert("headers".into(), Value::Map(message.headers.clone()));
     out.insert("bodyPartList".into(), Value::List(message.parts.clone()));
@@ -1228,10 +1274,23 @@ fn string_list(values: &[String]) -> Value {
     Value::List(values.iter().cloned().map(Value::string).collect())
 }
 
+/// IMAP flags of a message other than seen.
+#[derive(Clone, Copy, Debug, Default)]
+struct Flags {
+    answered: bool,
+    deleted: bool,
+    draft: bool,
+    flagged: bool,
+    recent: bool,
+}
+
 #[derive(Clone, Debug)]
 struct Inbound {
     id: String,
     seen: bool,
+    flags: Flags,
+    /// The message as it came from the server.
+    raw: Vec<u8>,
     headers: IndexMap<String, Value>,
     parts: Vec<Value>,
     subject: String,
@@ -1248,6 +1307,8 @@ impl Inbound {
         Self {
             id: String::new(),
             seen: false,
+            flags: Flags::default(),
+            raw: Vec::new(),
             headers: IndexMap::new(),
             parts: Vec::new(),
             subject: String::new(),
@@ -1262,7 +1323,10 @@ impl Inbound {
 }
 
 trait Mailbox {
-    fn list(&mut self) -> Result<Vec<Inbound>, String>;
+    /// The ids of the messages to look at, in server order.
+    fn list_ids(&mut self) -> Result<Vec<String>, String>;
+    /// One message, with its flags.
+    fn fetch(&mut self, id: &str) -> Result<Inbound, String>;
     fn mark_seen(&mut self, id: &str) -> Result<(), String>;
     fn delete(&mut self, id: &str) -> Result<(), String>;
     fn close(&mut self) -> Result<(), String>;
@@ -1273,8 +1337,16 @@ struct FakeBox {
 }
 
 impl Mailbox for FakeBox {
-    fn list(&mut self) -> Result<Vec<Inbound>, String> {
-        Ok(self.messages.clone())
+    fn list_ids(&mut self) -> Result<Vec<String>, String> {
+        Ok(self.messages.iter().map(|message| message.id.clone()).collect())
+    }
+
+    fn fetch(&mut self, id: &str) -> Result<Inbound, String> {
+        self.messages
+            .iter()
+            .find(|message| message.id == id)
+            .cloned()
+            .ok_or_else(|| format!("no message {id}"))
     }
 
     fn mark_seen(&mut self, id: &str) -> Result<(), String> {
@@ -1286,6 +1358,8 @@ impl Mailbox for FakeBox {
 
     fn delete(&mut self, id: &str) -> Result<(), String> {
         self.messages.retain(|message| message.id != id);
+        #[cfg(test)]
+        FAKE_DELETED.with(|deleted| deleted.borrow_mut().push(id.to_string()));
         Ok(())
     }
 
@@ -1361,30 +1435,45 @@ impl ImapBox {
 }
 
 impl Mailbox for ImapBox {
-    fn list(&mut self) -> Result<Vec<Inbound>, String> {
+    fn list_ids(&mut self) -> Result<Vec<String>, String> {
         let query = if self.skip_seen {
             "UNSEEN NOT DELETED"
         } else {
             "NOT DELETED"
         };
-        let ids = self.session.search(query).map_err(|err| err.to_string())?;
-        let mut messages = Vec::new();
-        for id in ids {
-            let fetches = self
-                .session
-                .fetch(id.to_string(), "BODY.PEEK[] FLAGS INTERNALDATE")
-                .map_err(|err| err.to_string())?;
-            for fetch in fetches.iter() {
-                let mut message = parse_rfc822(fetch.body().unwrap_or_default());
-                message.id = fetch.message.to_string();
-                message.seen = fetch.flags().iter().any(|flag| matches!(flag, imap::types::Flag::Seen));
-                if let Some(date) = fetch.internal_date() {
-                    message.received = stamp_millis(date.timestamp_millis());
-                }
-                messages.push(message);
+        let mut ids: Vec<u32> = self
+            .session
+            .search(query)
+            .map_err(|err| err.to_string())?
+            .into_iter()
+            .collect();
+        ids.sort_unstable();
+        Ok(ids.into_iter().map(|id| id.to_string()).collect())
+    }
+
+    fn fetch(&mut self, id: &str) -> Result<Inbound, String> {
+        let fetches = self
+            .session
+            .fetch(id, "BODY.PEEK[] FLAGS INTERNALDATE")
+            .map_err(|err| err.to_string())?;
+        let fetch = fetches.iter().next().ok_or_else(|| format!("message {id} is not on the server"))?;
+        let mut message = parse_rfc822(fetch.body().unwrap_or_default());
+        message.id = id.to_string();
+        for flag in fetch.flags() {
+            match flag {
+                imap::types::Flag::Seen => message.seen = true,
+                imap::types::Flag::Answered => message.flags.answered = true,
+                imap::types::Flag::Deleted => message.flags.deleted = true,
+                imap::types::Flag::Draft => message.flags.draft = true,
+                imap::types::Flag::Flagged => message.flags.flagged = true,
+                imap::types::Flag::Recent => message.flags.recent = true,
+                _ => {}
             }
         }
-        Ok(messages)
+        if let Some(date) = fetch.internal_date() {
+            message.received = stamp_millis(date.timestamp_millis());
+        }
+        Ok(message)
     }
 
     fn mark_seen(&mut self, id: &str) -> Result<(), String> {
@@ -1459,45 +1548,40 @@ impl Pop3 {
         Ok(response)
     }
 
+    /// A multi-line answer up to the line with only a dot, as bytes: 8-bit mail is not text in any one charset.
     fn read_dot(&mut self) -> Result<Vec<u8>, String> {
         let mut raw = Vec::new();
         loop {
-            let line = read_line(&mut self.reader)?;
-            if line == "." {
+            let line = read_line_bytes(&mut self.reader)?;
+            if line == b"." {
                 break;
             }
-            let line = match line.strip_prefix("..") {
-                Some(rest) => format!(".{rest}"),
-                None => line,
-            };
-            raw.extend(line.as_bytes());
-            raw.extend(b"\r\n");
+            let line = line.strip_prefix(b".").filter(|rest| rest.starts_with(b".")).unwrap_or(&line);
+            raw.extend_from_slice(line);
+            raw.extend_from_slice(b"\r\n");
         }
         Ok(raw)
     }
 }
 
 impl Mailbox for Pop3 {
-    fn list(&mut self) -> Result<Vec<Inbound>, String> {
+    fn list_ids(&mut self) -> Result<Vec<String>, String> {
         self.command("LIST")?;
         let listing = self.read_dot()?;
-        let text = String::from_utf8_lossy(&listing);
-        let mut messages = Vec::new();
-        for line in text.lines() {
-            let Some(id) = line.split_whitespace().next() else {
-                continue;
-            };
-            if id.parse::<u32>().is_err() {
-                continue;
-            }
-            self.command(&format!("RETR {id}"))?;
-            let bytes = self.read_dot()?;
-            let mut message = parse_rfc822(&bytes);
-            message.id = id.to_string();
-            message.seen = false;
-            messages.push(message);
-        }
-        Ok(messages)
+        Ok(String::from_utf8_lossy(&listing)
+            .lines()
+            .filter_map(|line| line.split_whitespace().next())
+            .filter(|id| id.parse::<u32>().is_ok())
+            .map(str::to_string)
+            .collect())
+    }
+
+    fn fetch(&mut self, id: &str) -> Result<Inbound, String> {
+        self.command(&format!("RETR {id}"))?;
+        let bytes = self.read_dot()?;
+        let mut message = parse_rfc822(&bytes);
+        message.id = id.to_string();
+        Ok(message)
     }
 
     fn mark_seen(&mut self, _id: &str) -> Result<(), String> {
@@ -1508,14 +1592,13 @@ impl Mailbox for Pop3 {
         self.command(&format!("DELE {id}")).map(|_| ())
     }
 
+    /// `QUIT` is when a POP3 server removes the deleted messages, so its answer is read.
     fn close(&mut self) -> Result<(), String> {
         if self.closed {
             return Ok(());
         }
         self.closed = true;
-        let _ = writeln!(self.reader.get_mut(), "QUIT");
-        let _ = self.reader.get_mut().flush();
-        Ok(())
+        self.command("QUIT").map(|_| ())
     }
 }
 
@@ -1560,7 +1643,13 @@ impl Write for Net {
 }
 
 fn connect_net(host: &str, port: u16, tls: bool) -> Result<Net, String> {
-    let tcp = TcpStream::connect((host, port)).map_err(|err| format!("could not connect to {host}:{port}: {err}"))?;
+    // A blackholed host fails in 30 seconds instead of the system default of minutes.
+    let address = std::net::ToSocketAddrs::to_socket_addrs(&(host, port))
+        .map_err(|err| format!("could not resolve {host}:{port}: {err}"))?
+        .next()
+        .ok_or_else(|| format!("could not resolve {host}:{port}"))?;
+    let tcp = TcpStream::connect_timeout(&address, Duration::from_secs(30))
+        .map_err(|err| format!("could not connect to {host}:{port}: {err}"))?;
     let _ = tcp.set_read_timeout(Some(Duration::from_secs(60)));
     let _ = tcp.set_write_timeout(Some(Duration::from_secs(60)));
     if !tls {
@@ -1573,8 +1662,34 @@ fn connect_net(host: &str, port: u16, tls: bool) -> Result<Net, String> {
     Ok(Net::Tls(Box::new(rustls::StreamOwned::new(conn, tcp))))
 }
 
+/// The certificates of the PEM file `email_tls_ca_file` names, for a mail server with its own CA. Empty when unset.
+fn extra_ca_certificates() -> Result<Vec<rustls::pki_types::CertificateDer<'static>>, String> {
+    use rustls::pki_types::pem::PemObject;
+    let location = moqui_lib::env::get_prop_or_env("email_tls_ca_file");
+    if location.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let pem = std::fs::read(location.trim()).map_err(|err| format!("could not read email_tls_ca_file {location}: {err}"))?;
+    rustls::pki_types::CertificateDer::pem_slice_iter(&pem)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("email_tls_ca_file {location} is not PEM certificates: {err}"))
+}
+
+fn smtp_tls(host: &str) -> Result<lettre::transport::smtp::client::TlsParameters, String> {
+    let mut builder = lettre::transport::smtp::client::TlsParameters::builder(host.to_string());
+    for der in extra_ca_certificates()? {
+        let certificate =
+            lettre::transport::smtp::client::Certificate::from_der(der.to_vec()).map_err(|err| err.to_string())?;
+        builder = builder.add_root_certificate(certificate);
+    }
+    builder.build().map_err(|err| err.to_string())
+}
+
 fn tls_config() -> Result<Arc<rustls::ClientConfig>, String> {
-    let roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let mut roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    for der in extra_ca_certificates()? {
+        roots.add(der).map_err(|err| format!("email_tls_ca_file: {err}"))?;
+    }
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let config = rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
@@ -1584,16 +1699,21 @@ fn tls_config() -> Result<Arc<rustls::ClientConfig>, String> {
     Ok(Arc::new(config))
 }
 
+/// A status line, which is ASCII; any other byte is replaced.
 fn read_line(reader: &mut impl BufRead) -> Result<String, String> {
-    let mut line = String::new();
-    let read = reader.read_line(&mut line).map_err(|err| err.to_string())?;
+    read_line_bytes(reader).map(|line| String::from_utf8_lossy(&line).into_owned())
+}
+
+fn read_line_bytes(reader: &mut impl BufRead) -> Result<Vec<u8>, String> {
+    let mut line = Vec::new();
+    let read = reader.read_until(b'\n', &mut line).map_err(|err| err.to_string())?;
     if read == 0 {
         return Err("mail server closed the connection".to_string());
     }
-    if line.ends_with('\n') {
+    if line.ends_with(b"\n") {
         line.pop();
     }
-    if line.ends_with('\r') {
+    if line.ends_with(b"\r") {
         line.pop();
     }
     Ok(line)
@@ -1607,58 +1727,110 @@ fn expect_ok(line: &str) -> Result<(), String> {
     }
 }
 
+/// A message as the email-ECA rules see it, as Java's EmailEcaRule makes it from a MimeMessage: the decoded subject,
+/// the addresses as `Name <address>`, the header values as they were written (by lower-case name, a list when one
+/// repeats), and the leaf parts of every multipart in order, text in its charset as `contentText` and anything else as
+/// `contentBytes`.
 fn parse_rfc822(bytes: &[u8]) -> Inbound {
-    let text = String::from_utf8_lossy(bytes);
-    let (header_text, body) = split_header_body(&text);
-    let mut headers = IndexMap::new();
-    let mut name = String::new();
-    let mut value = String::new();
-    for line in header_text.lines() {
-        if line.starts_with(' ') || line.starts_with('\t') {
-            value.push(' ');
-            value.push_str(line.trim());
-            continue;
-        }
-        if !name.is_empty() {
-            push_header(&mut headers, &name, std::mem::take(&mut value));
-        }
-        match line.split_once(':') {
-            Some((left, right)) => {
-                name = left.trim().to_string();
-                value = right.trim().to_string();
-            }
-            None => {
-                name.clear();
-                value.clear();
-            }
-        }
-    }
-    if !name.is_empty() {
-        push_header(&mut headers, &name, value);
-    }
     let mut message = Inbound::blank();
-    message.subject = header_one(&headers, "subject");
-    message.from = header_addresses(&headers, "from")
-        .into_iter()
-        .next()
+    message.raw = bytes.to_vec();
+    let Some(parsed) = mail_parser::MessageParser::default().parse(bytes) else {
+        return message;
+    };
+    for header in parsed.headers() {
+        push_header(&mut message.headers, header.name(), raw_header_value(bytes, header));
+    }
+    message.subject = parsed.subject().unwrap_or_default().to_string();
+    message.from = parsed
+        .from()
+        .and_then(mail_parser::Address::first)
+        .map(address_text)
         .unwrap_or_default();
-    message.to = header_addresses(&headers, "to");
-    message.cc = header_addresses(&headers, "cc");
-    message.bcc = header_addresses(&headers, "bcc");
-    message.sent = date_header(&headers, "date");
-    message.parts = body_parts(&headers, body.as_bytes());
-    message.headers = headers;
+    let list = |address: Option<&mail_parser::Address<'_>>| -> Vec<String> {
+        address.map(|address| address.iter().map(address_text).collect()).unwrap_or_default()
+    };
+    message.to = list(parsed.to());
+    message.cc = list(parsed.cc());
+    message.bcc = list(parsed.bcc());
+    message.sent = parsed
+        .date()
+        .map_or(Value::Null, |date| stamp_millis(date.to_timestamp().saturating_mul(1000)));
+    leaf_parts(&parsed, bytes, 0, &mut message.parts, 0);
     message
 }
 
-fn split_header_body(text: &str) -> (&str, &str) {
-    if let Some(index) = text.find("\r\n\r\n") {
-        return (&text[..index], &text[index + 4..]);
+/// A header's value as written, unfolded: what JavaMail's `Header.getValue` gives.
+fn raw_header_value(bytes: &[u8], header: &mail_parser::Header<'_>) -> String {
+    let start = usize::try_from(header.offset_start).unwrap_or(0).min(bytes.len());
+    let end = usize::try_from(header.offset_end).unwrap_or(0).clamp(start, bytes.len());
+    let text = String::from_utf8_lossy(&bytes[start..end]);
+    let mut out = String::new();
+    for (index, line) in text.split('\n').enumerate() {
+        let line = line.trim_end_matches('\r');
+        if index == 0 {
+            out.push_str(line.trim());
+        } else if !line.trim().is_empty() {
+            out.push(' ');
+            out.push_str(line.trim());
+        }
     }
-    if let Some(index) = text.find("\n\n") {
-        return (&text[..index], &text[index + 2..]);
+    out
+}
+
+/// `InternetAddress.toString`: the name and the address in angle brackets, or the address alone.
+fn address_text(addr: &mail_parser::Addr<'_>) -> String {
+    let address = addr.address().unwrap_or_default();
+    match addr.name().filter(|name| !name.is_empty()) {
+        Some(name) if name.contains([',', '"', '<', '>', '@', ';', ':']) => {
+            format!("\"{}\" <{address}>", name.replace('"', "\\\""))
+        }
+        Some(name) => format!("{name} <{address}>"),
+        None => address.to_string(),
     }
-    (text, "")
+}
+
+/// The parts with content under `id`, depth first, as Java's `makeBodyPartList`. A nested message is skipped, as in Java.
+fn leaf_parts(message: &mail_parser::Message<'_>, raw: &[u8], id: u32, out: &mut Vec<Value>, depth: usize) {
+    use mail_parser::{MimeHeaders, PartType};
+    let Some(part) = message.part(id) else {
+        return;
+    };
+    if depth > 32 {
+        return;
+    }
+    match &part.body {
+        PartType::Multipart(children) => {
+            for child in children {
+                leaf_parts(message, raw, *child, out, depth + 1);
+            }
+            return;
+        }
+        PartType::Message(_) => return,
+        _ => {}
+    }
+    let mut map = IndexMap::new();
+    let content_type = part
+        .headers()
+        .iter()
+        .find(|header| header.name().eq_ignore_ascii_case("content-type"))
+        .map_or_else(|| "text/plain".to_string(), |header| raw_header_value(raw, header));
+    map.insert("contentType".into(), Value::string(content_type));
+    if let Some(name) = part.attachment_name() {
+        map.insert("filename".into(), Value::string(name));
+    }
+    if let Some(disposition) = part.content_disposition() {
+        map.insert("disposition".into(), Value::string(disposition.ctype().to_ascii_lowercase()));
+    }
+    match &part.body {
+        PartType::Text(text) | PartType::Html(text) => {
+            map.insert("contentText".into(), Value::string(text.as_ref()));
+        }
+        PartType::Binary(bytes) | PartType::InlineBinary(bytes) => {
+            map.insert("contentBytes".into(), Value::Bytes(bytes.to_vec()));
+        }
+        PartType::Multipart(_) | PartType::Message(_) => {}
+    }
+    out.push(Value::Map(map));
 }
 
 fn push_header(headers: &mut IndexMap<String, Value>, name: &str, value: String) {
@@ -1683,164 +1855,6 @@ fn header_one(headers: &IndexMap<String, Value>, name: &str) -> String {
         Some(value) => to_plain_string(value),
         None => String::new(),
     }
-}
-
-fn header_addresses(headers: &IndexMap<String, Value>, name: &str) -> Vec<String> {
-    match headers.get(name) {
-        Some(Value::List(items)) => items
-            .iter()
-            .flat_map(|item| split_addresses(&to_plain_string(item)))
-            .collect(),
-        Some(value) => split_addresses(&to_plain_string(value)),
-        None => Vec::new(),
-    }
-}
-
-fn date_header(headers: &IndexMap<String, Value>, name: &str) -> Value {
-    let text = header_one(headers, name);
-    if text.is_empty() {
-        return Value::Null;
-    }
-    match jiff::fmt::rfc2822::parse(text.trim()) {
-        Ok(zoned) => stamp_millis(zoned.timestamp().as_millisecond()),
-        Err(_) => Value::Null,
-    }
-}
-
-fn body_parts(headers: &IndexMap<String, Value>, body: &[u8]) -> Vec<Value> {
-    let content_type = header_one(headers, "content-type");
-    let disposition = header_one(headers, "content-disposition");
-    if content_type.to_ascii_lowercase().starts_with("multipart/") {
-        if let Some(boundary) = header_param(&content_type, "boundary") {
-            return multipart_parts(&boundary, body);
-        }
-    }
-    vec![one_part(
-        &content_type,
-        &disposition,
-        &transfer_encoding(headers, &content_type, &disposition),
-        body,
-    )]
-}
-
-fn multipart_parts(boundary: &str, body: &[u8]) -> Vec<Value> {
-    let text = String::from_utf8_lossy(body);
-    let marker = format!("--{boundary}");
-    let mut parts = Vec::new();
-    for chunk in text.split(&marker).skip(1) {
-        let chunk = chunk.trim_start_matches(['\r', '\n']);
-        if chunk.starts_with("--") {
-            break;
-        }
-        let (header_text, part_body) = split_header_body(chunk);
-        let mut headers = IndexMap::new();
-        for line in header_text.lines() {
-            if let Some((name, value)) = line.split_once(':') {
-                push_header(&mut headers, name.trim(), value.trim().to_string());
-            }
-        }
-        let content_type = header_one(&headers, "content-type");
-        let disposition = header_one(&headers, "content-disposition");
-        let encoding = transfer_encoding(&headers, &content_type, &disposition);
-        parts.push(one_part(&content_type, &disposition, &encoding, part_body.as_bytes()));
-    }
-    parts
-}
-
-fn transfer_encoding(headers: &IndexMap<String, Value>, content_type: &str, disposition: &str) -> String {
-    let named = header_one(headers, "content-transfer-encoding");
-    if named.is_empty() {
-        encoding_of(content_type, disposition)
-    } else {
-        named
-    }
-}
-
-fn one_part(content_type: &str, disposition: &str, encoding: &str, body: &[u8]) -> Value {
-    let bytes = decode_transfer(body, encoding);
-    let filename = header_param(disposition, "filename")
-        .or_else(|| header_param(content_type, "name"))
-        .unwrap_or_default();
-    let kind = disposition.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
-    let mut map = IndexMap::new();
-    if !content_type.is_empty() {
-        map.insert("contentType".into(), Value::string(content_type));
-    }
-    if !filename.is_empty() {
-        map.insert("filename".into(), Value::string(filename));
-    }
-    if !kind.is_empty() {
-        map.insert("disposition".into(), Value::string(kind));
-    }
-    let textual = content_type.is_empty() || content_type.to_ascii_lowercase().starts_with("text/");
-    if textual {
-        map.insert(
-            "contentText".into(),
-            Value::string(String::from_utf8_lossy(&bytes).to_string()),
-        );
-    } else {
-        map.insert("contentBytes".into(), Value::Bytes(bytes));
-    }
-    Value::Map(map)
-}
-
-fn encoding_of(content_type: &str, disposition: &str) -> String {
-    header_param(content_type, "encoding")
-        .or_else(|| header_param(disposition, "encoding"))
-        .unwrap_or_default()
-}
-
-fn decode_transfer(bytes: &[u8], encoding: &str) -> Vec<u8> {
-    match encoding.trim().to_ascii_lowercase().as_str() {
-        "base64" => {
-            let text: String = String::from_utf8_lossy(bytes)
-                .chars()
-                .filter(|ch| !ch.is_whitespace())
-                .collect();
-            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, text).unwrap_or_else(|_| bytes.to_vec())
-        }
-        "quoted-printable" => decode_qp(bytes),
-        _ => bytes.to_vec(),
-    }
-}
-
-fn decode_qp(bytes: &[u8]) -> Vec<u8> {
-    let mut out = Vec::new();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'=' && index + 1 < bytes.len() && (bytes[index + 1] == b'\n' || bytes[index + 1] == b'\r') {
-            index += 1;
-            if bytes[index] == b'\r' {
-                index += 1;
-            }
-            if index < bytes.len() && bytes[index] == b'\n' {
-                index += 1;
-            }
-            continue;
-        }
-        if bytes[index] == b'=' && index + 2 < bytes.len() {
-            if let Ok(value) = u8::from_str_radix(std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or(""), 16) {
-                out.push(value);
-                index += 3;
-                continue;
-            }
-        }
-        out.push(bytes[index]);
-        index += 1;
-    }
-    out
-}
-
-fn header_param(header: &str, name: &str) -> Option<String> {
-    let lower = header.to_ascii_lowercase();
-    let key = format!("{name}=");
-    let index = lower.find(&key)?;
-    let rest = header[index + key.len()..].trim();
-    if let Some(quoted) = rest.strip_prefix('"') {
-        let end = quoted.find('"').unwrap_or(quoted.len());
-        return Some(quoted[..end].to_string());
-    }
-    Some(rest.split([';', ' ', '\t']).next().unwrap_or("").trim().to_string())
 }
 
 fn find_one(facade: &EntityFacade, entity: &str, field: &str, value: &str) -> Result<Option<EntityValue>, LibError> {
@@ -1985,7 +1999,7 @@ mod tests {
 
     use indexmap::IndexMap;
 
-    use super::{host_allowed, FakeGuard, Inbound, SinkGuard};
+    use super::{header_one, host_allowed, parse_rfc822, read_line_bytes, FakeGuard, Inbound, SinkGuard, FAKE_DELETED};
     use crate::context::ExecutionContextFactory;
     use crate::entity::EntityFacade;
     use crate::screen::PDF_UNAVAILABLE;
@@ -2506,5 +2520,123 @@ mod tests {
         let messages = context.message().messages().to_vec();
         assert!(messages.iter().any(|text| text == "new mail"), "{messages:?}");
         assert!(!messages.iter().any(|text| text == "old mail"), "{messages:?}");
+    }
+
+    #[test]
+    fn an_inbound_message_reads_like_java_mail() {
+        let raw = b"From: =?UTF-8?B?SsO8cmdlbg==?= <j@example.com>\r\n\
+To: a@example.com, \"Two, B\" <b@example.com>\r\n\
+Subject: =?UTF-8?Q?Gr=C3=BC=C3=9Fe?= from\r\n the team\r\n\
+Message-ID: <m1@example.com>\r\n\
+Date: Tue, 5 Mar 2024 10:20:30 -0800\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: multipart/mixed; boundary=\"outer\"\r\n\
+\r\n\
+--outer\r\n\
+Content-Type: multipart/alternative; boundary=\"inner\"\r\n\
+\r\n\
+--inner\r\n\
+Content-Type: text/plain; charset=ISO-8859-1\r\n\
+Content-Transfer-Encoding: quoted-printable\r\n\
+\r\n\
+Caf=E9 au lait\r\n\
+--inner\r\n\
+Content-Type: text/html; charset=UTF-8\r\n\
+\r\n\
+<p>Caf\xc3\xa9</p>\r\n\
+--inner--\r\n\
+--outer\r\n\
+Content-Type: application/octet-stream; name=\"data.bin\"\r\n\
+Content-Disposition: attachment; filename=\"data.bin\"\r\n\
+Content-Transfer-Encoding: base64\r\n\
+\r\n\
+AAEC/w==\r\n\
+--outer--\r\n";
+        let message = parse_rfc822(raw);
+        assert_eq!(message.subject, "Gr\u{fc}\u{df}e from the team");
+        assert_eq!(message.from, "J\u{fc}rgen <j@example.com>");
+        assert_eq!(message.to, vec!["a@example.com".to_string(), "\"Two, B\" <b@example.com>".to_string()]);
+        assert_eq!(header_one(&message.headers, "message-id"), "<m1@example.com>");
+        assert!(!message.sent.is_null());
+        // The leaf parts of both multiparts, in order: text in its charset, the attachment as bytes.
+        assert_eq!(message.parts.len(), 3, "{:?}", message.parts);
+        let part = |index: usize, key: &str| match &message.parts[index] {
+            Value::Map(map) => map.get(key).cloned().unwrap_or(Value::Null),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(part(0, "contentText").as_str(), Some("Caf\u{e9} au lait"));
+        assert!(part(1, "contentType").as_str().unwrap().starts_with("text/html"));
+        assert_eq!(part(2, "filename").as_str(), Some("data.bin"));
+        assert_eq!(part(2, "disposition").as_str(), Some("attachment"));
+        assert!(matches!(part(2, "contentBytes"), Value::Bytes(bytes) if bytes == vec![0, 1, 2, 255]));
+    }
+
+    #[test]
+    fn a_pop3_line_with_8_bit_bytes_is_read() {
+        let mut reader = std::io::Cursor::new(b"Caf\xe9\r\n.\r\n".to_vec());
+        assert_eq!(read_line_bytes(&mut reader).unwrap(), b"Caf\xe9".to_vec());
+        assert_eq!(read_line_bytes(&mut reader).unwrap(), b".".to_vec());
+    }
+
+    #[test]
+    fn a_message_whose_rule_fails_is_not_marked_or_deleted() {
+        let _lock = lock_tests();
+        let (facade, context) = entered();
+        let _entered = context.enter();
+        crate::service::load_definitions().unwrap();
+        eca_rules::install(
+            context.factory(),
+            eca_rules::from_xml(
+                "",
+                r#"<emecas>
+                <emeca rule-name="Breaks"><condition><expression>fields.subject == 'bad'</expression></condition>
+                    <actions><script>throw new Error('rule broke')</script></actions></emeca>
+                <emeca rule-name="Notes"><actions><script>ec.message.addMessage('saw ' + fields.subject);</script></actions></emeca>
+            </emecas>"#,
+            ),
+        );
+        seed(
+            &facade,
+            &context,
+            "moqui.basic.email.EmailServer",
+            &[
+                ("emailServerId", "TEST_KEEP"),
+                ("storeHost", "imap.example.com"),
+                ("mailUsername", "inbox"),
+                ("mailPassword", "secret"),
+                ("storeProtocol", "imap"),
+                ("storeDelete", "Y"),
+            ],
+        );
+        let mut bad = Inbound::blank();
+        bad.id = "1".to_string();
+        bad.subject = "bad".to_string();
+        let mut good = Inbound::blank();
+        good.id = "2".to_string();
+        good.subject = "good".to_string();
+        let _store = FakeGuard::install(vec![bad, good]);
+        FAKE_DELETED.with(|deleted| deleted.borrow_mut().clear());
+        let mut params = std::collections::BTreeMap::new();
+        params.insert("emailServerId".into(), Value::string("TEST_KEEP"));
+        let _ = crate::service::sync("org.moqui.impl.EmailServices.poll#EmailServer", &params);
+        let messages = context.message().messages().to_vec();
+        // The second rule still ran for the failing message, and the next message was processed.
+        assert!(messages.iter().any(|text| text == "saw bad"), "{messages:?}");
+        assert!(messages.iter().any(|text| text == "saw good"), "{messages:?}");
+        let left = FAKE_DELETED.with(|deleted| deleted.borrow().clone());
+        assert_eq!(left, vec!["2".to_string()]);
+    }
+
+    #[test]
+    fn allowed_domains_match_the_domain_or_below_and_a_display_name_is_an_address() {
+        let domains = vec!["example.com".to_string()];
+        assert!(super::domain_allowed("a@example.com", &domains));
+        assert!(super::domain_allowed("Ann <a@Mail.Example.com>", &domains));
+        assert!(!super::domain_allowed("a@evilexample.com", &domains));
+        assert!(!super::domain_allowed("a@example.com.evil.org", &domains));
+        let mailbox = super::mailbox("Ann Smith <ann@example.com>", "").unwrap();
+        assert_eq!(mailbox.email.to_string(), "ann@example.com");
+        assert_eq!(mailbox.name.as_deref(), Some("Ann Smith"));
+        assert_eq!(super::mailbox("ann@example.com", "Named").unwrap().name.as_deref(), Some("Named"));
     }
 }
