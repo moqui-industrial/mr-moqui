@@ -234,6 +234,25 @@ impl Drop for ContextFrame {
     }
 }
 
+/// An isolated context that pops when dropped, as Java's `ContextStack.pushContext`: the names below it are hidden, so
+/// a service sees its own parameters and not its caller's.
+pub struct IsolatedContext;
+
+impl IsolatedContext {
+    pub fn push() -> Self {
+        STACK.with(|stack| stack.borrow_mut().push_context());
+        Self
+    }
+}
+
+impl Drop for IsolatedContext {
+    fn drop(&mut self) {
+        STACK.with(|stack| {
+            let _ = stack.borrow_mut().pop_context();
+        });
+    }
+}
+
 /// Put `value` in the top frame.
 pub fn set_context_name(name: &str, value: Value) -> Result<(), Error> {
     STACK.with(|stack| stack.borrow_mut().put(name, value).map(|_| ()).map_err(Error::from))

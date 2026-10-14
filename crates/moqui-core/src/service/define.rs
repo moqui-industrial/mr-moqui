@@ -34,6 +34,8 @@ pub(crate) enum ServiceKind {
     Interface,
     RemoteRest,
     Mail,
+    /// A system message or entity sync service whose body is Rust, in `system_sync`.
+    SystemSync,
     /// A script service whose language this port does not run, such as Groovy.
     Unsupported,
 }
@@ -476,7 +478,11 @@ fn load_service(prefix: &str, node: &MNode, services: &mut BTreeMap<String, Serv
         }
     }
     let location = node.attribute("location").unwrap_or_default();
-    let kind = kind_of(&type_name, &location);
+    let kind = if super::system_sync::runs(&name) {
+        ServiceKind::SystemSync
+    } else {
+        kind_of(&type_name, &location)
+    };
     let def = ServiceDef {
         name: name.clone(),
         verb,

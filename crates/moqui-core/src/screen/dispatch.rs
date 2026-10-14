@@ -25,7 +25,6 @@ use crate::entity::{query_rest, EntityFacade};
 use crate::user::{self, login_user, logout};
 use crate::web::{self, WebRequest};
 
-const SM_LATER: &str = "system messages not available until phase 11";
 const ENTITY_AUTH: &str = "Authentication required for entity REST operations";
 
 pub(crate) struct Call<'a> {
@@ -54,10 +53,7 @@ pub(crate) fn run(call: &Call<'_>) -> Result<Option<bool>, Error> {
         "logout" => logout_transition()?,
         "sendOtp" => send_otp(call)?,
         "verifyOtp" => verify_otp(call)?,
-        "sm" => {
-            web::send_json_error(501, SM_LATER);
-            true
-        }
+        "sm" => crate::service::receive_rest_message(call.request, call.extra)?,
         "entity.raml" | "master.raml" | "service.raml" => {
             web::send_json_error(404, "RAML is not built");
             true

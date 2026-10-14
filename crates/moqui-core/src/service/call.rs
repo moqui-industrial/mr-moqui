@@ -427,6 +427,7 @@ fn execute(
 ) -> Result<BTreeMap<String, Value>, LibError> {
     match def.kind {
         ServiceKind::Mail => super::mail::run(&def.name, parameters, facade),
+        ServiceKind::SystemSync => super::system_sync::run(&def.name, parameters, facade),
         ServiceKind::Interface => Err(LibError::new(format!("interface {} has no runner", def.name))),
         ServiceKind::Unsupported => Err(LibError::new(format!(
             "service {} runs {}, a script language this port does not run",
@@ -448,7 +449,7 @@ fn execute(
 }
 
 fn run_inline(def: &ServiceDef, parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, LibError> {
-    let _frame = crate::script::ContextFrame::push();
+    let _frame = crate::script::IsolatedContext::push();
     for (name, value) in parameters {
         crate::script::set_context_name(name, value.clone()).map_err(script_err)?;
     }
@@ -475,7 +476,7 @@ fn collect_outputs(def: &ServiceDef) -> BTreeMap<String, Value> {
 /// A script service whose body is a JavaScript file. It reads the parameters as bare names and
 /// leaves its results the same way, as inline actions do.
 fn run_script(def: &ServiceDef, parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, LibError> {
-    let _frame = crate::script::ContextFrame::push();
+    let _frame = crate::script::IsolatedContext::push();
     for (name, value) in parameters {
         crate::script::set_context_name(name, value.clone()).map_err(script_err)?;
     }

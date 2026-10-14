@@ -34,7 +34,7 @@ pub(crate) use runtime::{
     context_combined, pop_context_frame, put_context_all, value_entity_name, value_field, value_items, value_map,
     with_screen_runner,
 };
-pub use runtime::{eval_condition, expand_localized, ContextFrame, DeadlineGuard};
+pub use runtime::{eval_condition, expand_localized, ContextFrame, DeadlineGuard, IsolatedContext};
 
 #[cfg(test)]
 mod tests {
