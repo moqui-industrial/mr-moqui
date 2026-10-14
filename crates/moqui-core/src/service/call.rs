@@ -34,19 +34,28 @@ pub struct CallOptions {
     pub require_new_transaction: Option<bool>,
     pub use_transaction_cache: Option<bool>,
     pub timeout: Option<std::time::Duration>,
+    /// `multi(true)`: one call for each row of `name_N` parameters, as a multi form-list posts them.
+    pub multi: bool,
 }
 
 impl CallOptions {
     fn attribute(&self, base: TransactionAttribute) -> TransactionAttribute {
-        if self.ignore_transaction == Some(true) {
-            return TransactionAttribute::Ignore;
-        }
-        if base == TransactionAttribute::Ignore {
-            return base;
-        }
-        let base_new = matches!(base, TransactionAttribute::ForceNew | TransactionAttribute::ForceCache);
-        let base_cache = matches!(base, TransactionAttribute::Cache | TransactionAttribute::ForceCache);
+        let base_new = matches!(
+            base,
+            TransactionAttribute::ForceNew | TransactionAttribute::ForceCache | TransactionAttribute::IgnoreSuspend
+        );
         let new = self.require_new_transaction.unwrap_or(base_new);
+        // As Java: ignore stops the begin and force-new the join, independently.
+        let ignore = self.ignore_transaction == Some(true)
+            || matches!(base, TransactionAttribute::Ignore | TransactionAttribute::IgnoreSuspend);
+        if ignore {
+            return if new {
+                TransactionAttribute::IgnoreSuspend
+            } else {
+                TransactionAttribute::Ignore
+            };
+        }
+        let base_cache = matches!(base, TransactionAttribute::Cache | TransactionAttribute::ForceCache);
         let cache = self.use_transaction_cache.unwrap_or(base_cache);
         match (new, cache) {
             (false, false) => TransactionAttribute::UseOrBegin,
@@ -151,6 +160,89 @@ pub fn sync(name: &str, parameters: &BTreeMap<String, Value>) -> Result<BTreeMap
     sync_with(name, parameters, &CallOptions::default())
 }
 
+/// The multi call of Java's `ServiceCallSyncImpl`: for each row `N` (from 0, until a row has none of the in-parameters
+/// as `name_N`), the service is called with that row's values, then the plain parameters and the results so far for the
+/// rest. With `_useRowSubmit` (or `_useRowSubmit_N`) only rows with `_rowSubmit_N` run. All rows run in one transaction,
+/// which an error rolls back; the first error stops the rows. The results of the rows are merged.
+///
+/// # Errors
+///
+/// Returns an error when a call fails other than with error messages.
+pub fn sync_multi(
+    name: &str,
+    parameters: &BTreeMap<String, Value>,
+    options: &CallOptions,
+) -> Result<BTreeMap<String, Value>, Error> {
+    let name = canonical(name);
+    let in_names: Vec<String> = match service_in_parameter_names(&name) {
+        Some(names) => names,
+        None => match entity_auto_noun(&name) {
+            Some(entity) => current_facade()
+                .and_then(|facade| {
+                    facade
+                        .with_entity(&entity, |def, _, _| {
+                            Ok(def.field_names().into_iter().map(str::to_string).collect())
+                        })
+                        .ok()
+                })
+                .unwrap_or_default(),
+            None => Vec::new(),
+        },
+    };
+    let facade = current_facade().ok_or_else(|| Error::new("no entity facade is installed"))?;
+    let entity = entity_auto_noun(&name).unwrap_or_else(|| ServiceDef::semaphore_entity().to_string());
+    let tx = facade.transactions_for(&entity)?;
+    let single = CallOptions {
+        multi: false,
+        ..options.clone()
+    };
+    let flag = |key: &str| parameters.get(key).map(moqui_lib::object::to_plain_string).as_deref() == Some("true");
+    let mut result: BTreeMap<String, Value> = BTreeMap::new();
+    let outcome = tx.run(TransactionAttribute::UseOrBegin, None, || {
+        for index in 0.. {
+            let mut row: BTreeMap<String, Value> = BTreeMap::new();
+            for parameter in &in_names {
+                if let Some(value) = parameters.get(&format!("{parameter}_{index}")) {
+                    row.insert(parameter.clone(), value.clone());
+                }
+            }
+            if row.is_empty() {
+                break;
+            }
+            if (flag("_useRowSubmit") || flag(&format!("_useRowSubmit_{index}")))
+                && !flag(&format!("_rowSubmit_{index}"))
+            {
+                continue;
+            }
+            for parameter in &in_names {
+                if row.get(parameter).is_some_and(|value| !is_empty(value)) {
+                    continue;
+                }
+                if let Some(value) = parameters.get(parameter).filter(|value| !is_empty(value)) {
+                    row.insert(parameter.clone(), value.clone());
+                } else if let Some(value) = result.get(parameter).filter(|value| !is_empty(value)) {
+                    row.insert(parameter.clone(), value.clone());
+                }
+            }
+            let produced = sync_with(&name, &row, &single)?;
+            result.extend(produced);
+            if message_has_error() {
+                break;
+            }
+        }
+        if message_has_error() && tx.in_transaction() {
+            tx.set_rollback_only(format!("Error message found running service {name} in multi mode"))?;
+        }
+        Ok(())
+    });
+    match outcome {
+        Ok(()) => Ok(result),
+        // The rows' errors are messages; the rollback they cause is not a failure of the call.
+        Err(_) if message_has_error() => Ok(result),
+        Err(err) => Err(err.into()),
+    }
+}
+
 /// [`sync`] with per-call overrides of authorization and the transaction attribute.
 pub fn sync_with(
     name: &str,
@@ -213,6 +305,9 @@ pub fn sync_with(
     let mut message_failed: Option<BTreeMap<String, Value>> = None;
     let outcome = tx.run(attribute, options.timeout.or(def.timeout), || {
         let _deadline = crate::script::DeadlineGuard::new(tx.time_remaining());
+        if def.no_tx_cache {
+            crate::entity::cache::flush_and_disable(&facade, &tx)?;
+        }
         // on_rollback is not a commit hook. tx-commit is last so a post-service
         // entity write can still register the feed schedule hook.
         register_tx_rollback(&tx, &def.name, &cleaned)?;
@@ -225,7 +320,10 @@ pub fn sync_with(
         super::seca::run_seca_rules(&def.name, "post-service", &cleaned, Some(&produced)).map_err(script_err)?;
         if message_has_error() {
             message_failed = Some(produced.clone());
-            tx.set_rollback_only(format!("Error running service {} (message)", def.name))?;
+            // Under `ignore` with nothing in place there is no transaction to mark.
+            if tx.in_transaction() {
+                tx.set_rollback_only(format!("Error running service {} (message)", def.name))?;
+            }
         } else {
             register_tx_commit(&tx, &def.name, &cleaned, &produced)?;
         }
@@ -430,10 +528,37 @@ pub(crate) fn service_authz_action(name: &str) -> String {
     verb_action(verb).to_string()
 }
 
-/// The in-parameter names of a defined service, in definition order. None when no service has that name.
+/// The in-parameter names of a defined service, in definition order, with `auto-parameters` expanded. None when no
+/// service has that name.
 pub(crate) fn service_in_parameter_names(name: &str) -> Option<Vec<String>> {
+    let form = service_form_info(name)?;
+    Some(form.in_params.into_iter().map(|parameter| parameter.name).collect())
+}
+
+/// A defined service as a form builds fields from it (`auto-fields-service`, `auto-widget-service`): its noun, and its
+/// parameters with `auto-parameters` expanded. None when no service has that name.
+pub(crate) struct FormService {
+    pub name: String,
+    pub noun: String,
+    pub in_params: Vec<super::define::ParamDef>,
+    pub out_params: Vec<super::define::ParamDef>,
+}
+
+pub(crate) fn service_form_info(name: &str) -> Option<FormService> {
     let def = super::define::find(&canonical(name))?;
-    Some(def.in_params.iter().map(|parameter| parameter.name.clone()).collect())
+    let facade = crate::context::ExecutionContext::with_current(|ec| ec.factory().entity()).flatten();
+    let expand = |params: &[super::define::ParamDef]| {
+        super::validate::expand_params(&def, params, facade.as_ref()).unwrap_or_else(|err| {
+            tracing::warn!(service = %def.name, error = %err, "auto-parameters not expanded for a form");
+            params.iter().filter(|param| !param.name.is_empty()).cloned().collect()
+        })
+    };
+    Some(FormService {
+        in_params: expand(&def.in_params),
+        out_params: expand(&def.out_params),
+        name: def.name.clone(),
+        noun: def.noun.clone(),
+    })
 }
 
 /// The entity of an implicit entity-auto service name such as `create#moqui.basic.Enumeration`, when it has no

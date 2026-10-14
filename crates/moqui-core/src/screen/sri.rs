@@ -475,6 +475,17 @@ pub fn render_subscreen(state: &RenderState, runner: &dyn Runner) -> Result<(), 
     let defs = &state.url_info.path_defs;
     let index = state.screen_path_index.get();
     if index + 1 >= defs.len() {
+        // include-child-content: the file under the target screen is the subscreen, rendered as a template.
+        if let Some(file) = &state.url_info.file_resource {
+            let text = crate::script::template::TemplateRegistry::of(&state.factory).render_location_default(
+                &state.factory,
+                file,
+                None,
+                "",
+            )?;
+            write(state, &text);
+            return Ok(());
+        }
         let def = active_def(state);
         write(
             state,
@@ -1066,6 +1077,95 @@ pub fn render_dynamic_form(state: &RenderState, runner: &dyn Runner, name: &str)
     })
 }
 
+/// `sri.getUserFormListFinds(name)`: the saved finds the user may use for a form of the active screen.
+///
+/// # Errors
+///
+/// Returns an error when the saved find records cannot be read.
+pub fn user_form_list_finds(state: &RenderState, name: &str) -> Result<Vec<Value>, Error> {
+    let def = active_def(state);
+    let Some(form) = def.forms.get(name) else {
+        return Ok(Vec::new());
+    };
+    let location = super::saved_finds::form_location(&def.location, form.list, name);
+    super::saved_finds::user_form_list_finds(&super::saved_finds::saved_find_location(&location, form.dynamic))
+}
+
+/// `sri.getUserDefaultFormListFindId()`: the user's default saved find of the active screen.
+///
+/// # Errors
+///
+/// Returns an error when the record cannot be read.
+pub fn user_default_form_list_find_id(state: &RenderState) -> Result<Option<String>, Error> {
+    super::saved_finds::user_default_find_id(&active_def(state).location)
+}
+
+/// `sri.renderUserColumnsForm(name)`: a form-list whose columns the user chose (`FormConfig`, through the column dialog
+/// or the active saved find) is assembled with those columns, then generated and run as a dynamic form is. Returns
+/// false, rendering nothing, when the user has no columns for it, so the form's own code runs.
+///
+/// # Errors
+///
+/// Returns a security error. Any other error is written as text.
+pub fn render_user_columns_form(state: &RenderState, runner: &dyn Runner, name: &str) -> Result<bool, Error> {
+    let def = active_def(state);
+    let Some(form_def) = def.forms.get(name) else {
+        return Ok(false);
+    };
+    let location = super::saved_finds::form_location(&def.location, form_def.list, name);
+    let saved = super::saved_finds::saved_find_location(&location, form_def.dynamic);
+    let Some(columns) = super::saved_finds::user_columns(&location, &saved)? else {
+        return Ok(false);
+    };
+    let label = format!("form [{name}] in screen [{}]", def.location);
+    let mut rendered = false;
+    guarded(state, &label, || {
+        let base = if form_def.dynamic {
+            form::assemble_dynamic(&state.facade, &state.factory, &def, name)?
+        } else {
+            form::assemble(&state.facade, &state.factory, &def, name)?
+        };
+        let node = base.node()?;
+        let fields: Vec<String> = node
+            .children_named("field")
+            .iter()
+            .filter_map(|field| field.attribute("name"))
+            .collect();
+        node.remove_where(|child| {
+            child.name() == "form-list-column"
+                || (child.name() == "columns" && child.attribute("type").is_none_or(|kind| kind.is_empty()))
+        });
+        let config = moqui_lib::node::MNode::new("columns");
+        for column in &columns {
+            let column_node = config.append("column");
+            for field in column.iter().filter(|field| fields.contains(field)) {
+                column_node.append("field-ref").set_attribute("name", field.clone());
+            }
+        }
+        node.append_node(config);
+        let form = Arc::new(form::FormInstance::from_node(&def, &node)?);
+        let request = UnitRequest {
+            factory: &state.factory,
+            facade: &state.facade,
+            def: &def,
+            section: "",
+            fail: false,
+            mode: &state.render_mode,
+            macro_location: &state.macro_location,
+        };
+        let unit = runner.generate_dynamic(&request, &form)?;
+        let previous = state.dynamic_forms.borrow_mut().insert(name.to_string(), form);
+        let result = runner.run(&unit);
+        match previous {
+            Some(previous) => state.dynamic_forms.borrow_mut().insert(name.to_string(), previous),
+            None => state.dynamic_forms.borrow_mut().remove(name),
+        };
+        rendered = true;
+        result
+    })?;
+    Ok(rendered)
+}
+
 /// `sri.getFormInstance(name)`: the assembled form.
 ///
 /// # Errors
@@ -1142,7 +1242,56 @@ fn form_rows(form: &FormInstance) -> Result<Vec<IndexMap<String, Value>>, Error>
         ran?;
         rows.push(row);
     }
+    if let Some(aggregation) = &form.aggregation {
+        rows = aggregation.apply(rows, |row, name| {
+            row.get(name)
+                .cloned()
+                .or_else(|| script::context_value(name))
+                .unwrap_or(Value::Null)
+        });
+    }
     Ok(rows)
+}
+
+/// `sri.formListSubRowCount(info, index)`: the number of sub-list rows of a row of an aggregated form-list.
+pub fn form_list_sub_row_count(state: &RenderState, handle: usize, index: usize) -> usize {
+    let lists = state.form_lists.borrow();
+    match lists
+        .get(handle)
+        .and_then(Option::as_ref)
+        .and_then(|list| list.rows.get(index))
+        .and_then(|row| row.get("aggregateSubList"))
+    {
+        Some(Value::List(items)) => items.len(),
+        _ => 0,
+    }
+}
+
+/// `sri.startFormListSubRow(info, index, subIndex)`: a frame over the row's frame holding the sub-list entry and `_formMap`,
+/// as Java's `startFormListSubRow`. `sri.endFormListSubRow()` pops it.
+///
+/// # Errors
+///
+/// Returns an error for a row or a sub-row that is not there.
+pub fn start_form_list_sub_row(state: &RenderState, handle: usize, index: usize, sub: usize) -> Result<(), Error> {
+    let entry = {
+        let lists = state.form_lists.borrow();
+        let row = lists
+            .get(handle)
+            .and_then(Option::as_ref)
+            .and_then(|list| list.rows.get(index))
+            .ok_or_else(|| Error::new("form-list row is not available"))?;
+        match row.get("aggregateSubList") {
+            Some(Value::List(items)) => items.get(sub).cloned(),
+            _ => None,
+        }
+        .ok_or_else(|| Error::new("form-list sub-row is not available"))?
+    };
+    let fields = script::value_map(&entry).unwrap_or_default();
+    script::push_context_frame();
+    script::put_context_all(&fields);
+    let _ = script::set_context_name("_formMap", Value::Map(fields));
+    Ok(())
 }
 
 /// `sri.startFormListRow`: a frame holding the row and `_formMap`.
@@ -1615,6 +1764,104 @@ pub fn field_validation(sub: &NodeLit) -> Result<FieldValidation, Error> {
         }
     }
     Ok(out)
+}
+
+/// `getFieldValidationJsRules` for a field sub-node: the browser checks of its `validate-service` parameter, or for a
+/// numeric `validate-entity` field, each `(expression over value, localized message)`.
+///
+/// # Errors
+///
+/// Returns an error when the named entity does not exist.
+pub fn field_validation_js_rules(sub: &NodeLit) -> Result<Vec<(String, String)>, Error> {
+    let field_name = sub.parent.as_ref().map_or("", |field| field.attr("name"));
+    let service = sub.attr("validate-service");
+    let entity = sub.attr("validate-entity");
+    let rules = if !service.is_empty() {
+        let parameter = match sub.attr("validate-parameter") {
+            "" => field_name,
+            other => other,
+        };
+        crate::service::input_js_rules(service, parameter).unwrap_or_default()
+    } else if !entity.is_empty() {
+        let name = match sub.attr("validate-field") {
+            "" => field_name,
+            other => other,
+        };
+        let shape = form::entity_shape(entity)?;
+        match shape.fields.iter().find(|(field, _, _)| field == name) {
+            Some((_, kind, _)) if kind.starts_with("number-") || kind.starts_with("currency-") => {
+                if kind.ends_with("integer") {
+                    vec![(
+                        crate::service::VALIDATE_NUMBER_INT.to_string(),
+                        "Please enter a valid whole number".to_string(),
+                    )]
+                } else {
+                    vec![(
+                        crate::service::VALIDATE_NUMBER.to_string(),
+                        "Please enter a valid number".to_string(),
+                    )]
+                }
+            }
+            _ => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+    Ok(rules
+        .into_iter()
+        .map(|(expr, message)| (expr, l10n::localize(&message).unwrap_or(message)))
+        .collect())
+}
+
+/// `sri.getFieldTransitionValue(transition, node, term, labelField, alwaysGet)`: the label a transition gives for a
+/// value, as the widget's options would show it, by a test render of the transition with `term` and the node's
+/// parameters. None with no term (unless `alwaysGet`) or while a `depends-on` field is empty.
+///
+/// # Errors
+///
+/// Returns an error when the transition cannot be rendered.
+pub fn field_transition_value(
+    state: &RenderState,
+    transition: &str,
+    node: &NodeLit,
+    term: &str,
+    label_field: &str,
+    always_get: bool,
+) -> Result<Option<String>, Error> {
+    if !always_get && term.is_empty() {
+        return Ok(None);
+    }
+    let label_field = if label_field.is_empty() { "label" } else { label_field };
+    let (mut parameters, has_all_depends) = node_parameters_checked(node)?;
+    if !has_all_depends {
+        return Ok(None);
+    }
+    parameters.insert("term".to_string(), Value::string(term));
+    let url = super::urls::build_url(state, transition)?;
+    let root = state
+        .url_info
+        .path_defs
+        .first()
+        .map(|def| def.location.clone())
+        .ok_or_else(|| Error::new("no root screen"))?;
+    let parameters: std::collections::BTreeMap<String, Value> = parameters.into_iter().collect();
+    let rendered = super::screen_test::ScreenTest::new(&state.factory)
+        .root_screen(root)
+        .render(&url.path_with_params(), parameters)?;
+    let first_label = |item: &Value| match item {
+        Value::Map(entry) => entry.get(label_field).map(to_plain_string),
+        other => Some(to_plain_string(other)),
+    };
+    Ok(match rendered.json_value() {
+        Ok(Value::List(items)) => items.first().and_then(first_label),
+        Ok(Value::Map(entries)) => match entries.get("options") {
+            Some(Value::List(items)) if !items.is_empty() => items.first().and_then(first_label),
+            _ => entries.get(label_field).map(to_plain_string),
+        },
+        Ok(Value::Null) => None,
+        Ok(other) => Some(to_plain_string(&other)),
+        Err(_) => Some(rendered.text()),
+    })
 }
 
 /// One item of a screen's menu: a subscreen with the URL of its minimal path.

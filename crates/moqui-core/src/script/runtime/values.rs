@@ -61,12 +61,29 @@ pub(crate) fn value_entity_name(value: &Value) -> Option<String> {
     Some(guard.entity_name().to_string())
 }
 
+/// The rows of an entity list a script made, as they are now. `None` for any other value.
+pub fn script_list_values(value: &Value) -> Option<Vec<EntityValue>> {
+    let Value::Object(object) = value else {
+        return None;
+    };
+    object.downcast::<ScriptList>().map(|list| list.values())
+}
+
 /// The items of a list, an entity list, or the values of a map.
 pub(crate) fn value_items(value: &Value) -> Option<Vec<Value>> {
     match value {
         Value::List(items) => Some(items.clone()),
         Value::Map(entries) => Some(entries.values().cloned().collect()),
         Value::Object(object) => {
+            // A script's list hands out its own rows, so an `<iterate>` entry is the row of the list.
+            if let Some(list) = object.downcast::<ScriptList>() {
+                return Some(
+                    list.cells()
+                        .iter()
+                        .map(|cell| Value::Object(HostObject(Arc::clone(cell) as Arc<dyn std::any::Any + Send + Sync>)))
+                        .collect(),
+                );
+            }
             let list = object.downcast::<EntityList>()?;
             Some(list.values().iter().map(|item| entity_value(item.clone())).collect())
         }

@@ -87,6 +87,7 @@ pub enum Idiom {
     CollectionMethod,
     Catch,
     SafeNavigation,
+    ContextPlus,
 }
 
 impl Idiom {
@@ -112,6 +113,7 @@ impl Idiom {
             Idiom::CollectionMethod => "collection-method",
             Idiom::Catch => "catch",
             Idiom::SafeNavigation => "safe-navigation",
+            Idiom::ContextPlus => "context-plus",
         }
     }
 
@@ -173,6 +175,12 @@ pub struct ScreenLintReport {
     pub files: Vec<FileReport>,
     /// Path and reason of each file that matched [`KNOWN_EXCLUSIONS`].
     pub excluded: Vec<(PathBuf, &'static str)>,
+    /// `.groovy` files under the roots of a Groovy lint. They are listed and not parsed.
+    pub groovy_files: Vec<PathBuf>,
+    /// XML files a Groovy lint could not parse, with the error.
+    pub unparsed: Vec<(PathBuf, String)>,
+    /// The first line of the rendered report. Empty is the screen lint's.
+    pub title: &'static str,
 }
 
 impl ScreenLintReport {
@@ -235,7 +243,15 @@ impl ScreenLintReport {
         let failures = self.failures();
         let ftl: usize = self.files.iter().map(|file| file.ftl.len()).sum();
         let dialect: usize = self.files.iter().map(|file| file.dialect_bodies).sum();
-        let _ = writeln!(out, "Screen expression lint");
+        let _ = writeln!(
+            out,
+            "{}",
+            if self.title.is_empty() {
+                "Screen expression lint"
+            } else {
+                self.title
+            }
+        );
         let _ = writeln!(
             out,
             "files scanned: {} (excluded: {})",
@@ -264,6 +280,16 @@ impl ScreenLintReport {
         let _ = writeln!(out, "\nParse failures");
         for failure in &failures {
             let _ = writeln!(out, "  {failure}");
+        }
+        if !self.groovy_files.is_empty() || !self.unparsed.is_empty() {
+            let _ = writeln!(out, "\nGroovy files (not parsed): {}", self.groovy_files.len());
+            for path in &self.groovy_files {
+                let _ = writeln!(out, "  {}", path.display());
+            }
+            let _ = writeln!(out, "\nXML files that do not parse: {}", self.unparsed.len());
+            for (path, error) in &self.unparsed {
+                let _ = writeln!(out, "  {}: {error}", path.display());
+            }
         }
         let _ = writeln!(out, "\nKnown exclusions (not scanned)");
         for (path, reason) in &self.excluded {
@@ -346,6 +372,84 @@ pub fn lint_screens(roots: &[PathBuf]) -> Result<ScreenLintReport, Error> {
         report.files.push(file);
     }
     Ok(report)
+}
+
+/// Root elements a Groovy lint scans: screens and forms, services, ECA rules, and data files.
+const GROOVY_ROOTS: &[&str] = &[
+    "screen",
+    "forms",
+    "widget-template",
+    "widget-templates",
+    "services",
+    "secas",
+    "eecas",
+    "emecas",
+    "entity-facade-xml",
+    "seed-data",
+];
+
+/// `moqui lint --groovy`: the pre-scan of a component tree that has not been migrated, such as mantle. Every XML
+/// file under the roots whose root element is a screen, form, service, ECA or data file is scanned as the screen lint
+/// scans a screen, and the `.groovy` files are listed. Nothing fails: the report is what is left to convert.
+///
+/// # Errors
+///
+/// Returns an error when a directory cannot be read.
+pub fn lint_groovy(roots: &[PathBuf]) -> Result<ScreenLintReport, Error> {
+    let mut paths = Vec::new();
+    let mut groovy = Vec::new();
+    for root in roots {
+        collect_all(root, &mut paths, &mut groovy)?;
+    }
+    paths.sort();
+    groovy.sort();
+    let mut report = ScreenLintReport {
+        title: "Groovy idiom lint",
+        groovy_files: groovy,
+        ..ScreenLintReport::default()
+    };
+    for path in paths {
+        let text = std::fs::read_to_string(&path).map_err(|err| Error::new(format!("{}: {err}", path.display())))?;
+        let root = match MNode::parse_text(&path.display().to_string(), &text) {
+            Ok(root) => root,
+            Err(err) => {
+                report.unparsed.push((path, err.to_string()));
+                continue;
+            }
+        };
+        if !GROOVY_ROOTS.contains(&root.name().as_str()) {
+            continue;
+        }
+        let mut file = FileReport {
+            path,
+            ..FileReport::default()
+        };
+        scan_node(&root, false, &mut file);
+        report.files.push(file);
+    }
+    Ok(report)
+}
+
+/// Every `.xml` and `.groovy` file under `path`, skipping hidden directories and build output.
+pub(crate) fn collect_all(path: &Path, xml: &mut Vec<PathBuf>, groovy: &mut Vec<PathBuf>) -> Result<(), Error> {
+    if path.is_file() {
+        match path.extension().and_then(|ext| ext.to_str()) {
+            Some("xml") => xml.push(path.to_path_buf()),
+            Some("groovy") => groovy.push(path.to_path_buf()),
+            _ => {}
+        }
+        return Ok(());
+    }
+    let entries = std::fs::read_dir(path).map_err(|err| Error::new(format!("{}: {err}", path.display())))?;
+    for entry in entries {
+        let entry = entry.map_err(|err| Error::new(err.to_string()))?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') || name == "build" || name == "target" || name == "node_modules" {
+            continue;
+        }
+        collect_all(&entry.path(), xml, groovy)?;
+    }
+    Ok(())
 }
 
 fn collect(path: &Path, in_screen: bool, out: &mut Vec<PathBuf>) -> Result<(), Error> {
@@ -469,6 +573,8 @@ fn scan_attributes(node: &MNode, element: &str, file: &mut FileReport) {
         }
         if let Some(at) = dollar_name(text) {
             let mut found = site(line, element, &attr, SiteKind::Template, text, false);
+            // The text around a `$name` is not an expression, so it is not parsed: the idiom is the finding.
+            found.error = None;
             found
                 .idioms
                 .push((Idiom::GStringDollarName, text[at..].chars().take(24).collect()));
@@ -762,6 +868,9 @@ pub fn classify(text: &str) -> Vec<(Idiom, String)> {
             out.push((Idiom::NewType, name));
         }
     }
+    if let Some(at) = context_plus(m) {
+        out.push(sample(text, Idiom::ContextPlus, at));
+    }
     if let Some(at) = map_literal(bytes) {
         out.push(sample(text, Idiom::MapLiteral, at));
     }
@@ -874,6 +983,15 @@ fn map_literal(bytes: &[u8]) -> Option<usize> {
     None
 }
 
+/// Groovy's `context + [name: value]`, a copy of the context with entries added.
+fn context_plus(masked: &str) -> Option<usize> {
+    find_words(masked, "context").into_iter().find(|&at| {
+        let rest = masked[at + "context".len()..].trim_start();
+        rest.strip_prefix('+')
+            .is_some_and(|rest| rest.trim_start().starts_with('['))
+    })
+}
+
 fn static_calls(masked: &str) -> Vec<(String, usize)> {
     let bytes = masked.as_bytes();
     let mut out = Vec::new();
@@ -922,6 +1040,14 @@ mod tests {
 
     fn names(text: &str) -> Vec<&'static str> {
         classify(text).into_iter().map(|(idiom, _)| idiom.name()).collect()
+    }
+
+    #[test]
+    fn context_plus_is_its_own_idiom() {
+        assert!(names("context + [a: 1]").contains(&"context-plus"));
+        assert!(names("context+[a:b]").contains(&"context-plus"));
+        assert!(!names("mycontext + [a: 1]").contains(&"context-plus"));
+        assert!(!names("Object.assign({}, context, {a: 1})").contains(&"context-plus"));
     }
 
     #[test]

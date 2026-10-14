@@ -32,9 +32,9 @@
 //  - The background-message of a form is text. The Java client evaluated it as a JavaScript string.
 //  - An editor-type html or md text-area is an m-text-area (QEditor, or a textarea with a Marked preview).
 //  - lookup is a text line. The Java macros had it commented out.
-//  - A form-list with group-by sub-lists renders every column in the main row, the saved finds list and the
-//    screen documents are not written (the user finds are not read yet), and the navigation bar sits above the
-//    table of a form-list and not in a table row.
+//  - A form-list draws its sub-list fields (aggregate="sub-list") in rows under each main row, and the navigation bar sits above
+//    the table of a form-list and not in a table row. The saved finds are listed in the find dialog; the menu
+//    data has them and the screen documents.
 //  - The mask of a text-line is converted from the Inputmask patterns (9, a, *) to Quasar mask tokens.
 //  - In fields-initial a link does not replace the _display text of a display or display-entity before it in the same field.
 (function (T, S) {
@@ -217,9 +217,10 @@
         const rulesOf = (n, check) => {
             const rules = [];
             if (at(n, "rules")) rules.push(at(n, "rules"));
-            if (check.number) rules.push("value => !value || moqui.isStringNumber(value) || " + sq(L("Please enter a valid number")));
-            if (check.digits) rules.push("value => !value || /^\\d*$/.test(value) || " + sq(L("Please enter only digits")));
-            if (check.v.regexp) rules.push("value => !value || new RegExp(" + js_("^(?:" + check.v.regexp + ")$") + ").test(value) || " + sq(L(check.v.message || "Invalid format")));
+            // getFieldValidationJsRules; a required field is the widget's required prop.
+            const sub = n.parent;
+            const js = at(sub, "validate-service") || at(sub, "validate-entity") ? sri.getFieldValidationJsRules(sub) : [];
+            js.forEach((rule) => { if (rule.expr !== "!!value") rules.push("value => (" + rule.expr + ") || " + sq(rule.message)); });
             return rules.length ? "[" + rules.join(",") + "]" : null;
         };
         // Inputmask patterns (9 digit, a letter, * any) to the tokens Quasar's mask uses.
@@ -377,6 +378,14 @@
 
         const initial = (values) => js_(values);
 
+        // The validation errors a redirect saved for this form, which m-form shows by their fields. None writes no attribute.
+        const savedErrors = (formName) => {
+            const saved = (ec.web && ec.web.savedValidationErrors) || [];
+            const mine = [];
+            for (const ve of saved) if (ve && ve.field && (!ve.form || ve.form === formName)) mine.push(ve);
+            return mine.length ? js_(mine) : null;
+        };
+
         // ---- inputs ----
 
         const colorClass = (check) => null;
@@ -388,7 +397,8 @@
             const check = validate(n.parent);
             if (at(n, "ac-transition")) {
                 const remoteInfo = remote(n, at(n, "ac-transition"));
-                const initialText = at(n, "ac-initial-text") ? x(at(n, "ac-initial-text")) : value;
+                const initialText = at(n, "ac-initial-text") ? x(at(n, "ac-initial-text"))
+                    : (sri.getFieldTransitionValue(at(n, "ac-transition"), n, value, "label", false) || value);
                 w("<m-drop-down" + A(Object.assign({
                     name, id, label: label(n), form: owner(), disable: st.disabled || null, "allow-empty": true, "server-search": true,
                     "server-min-length": at(n, "ac-min-length") || null, "server-delay": at(n, "ac-delay") || null, combo: at(n, "ac-use-actual") === "true" ? true : null,
@@ -575,6 +585,9 @@
             let description = options.get(current);
             const optionsHasCurrent = !!description;
             if (!optionsHasCurrent && at(n, "current-description")) description = x(at(n, "current-description"));
+            else if (!optionsHasCurrent && dyn && current && !multiple) {
+                description = sri.getFieldTransitionValue(at(dyn, "transition"), dyn, current, at(dyn, "label-field") || "label", false);
+            }
             const check = validate(n.parent);
             const list = optionList(options);
             if (current && !multiple && !optionsHasCurrent) list.unshift({ value: current, label: description || current });
@@ -592,7 +605,7 @@
                     "depends-optional": at(dyn, "depends-optional") === "true" ? true : null, ":depends-on": js_(remoteInfo.dependsOn),
                     ":options-parameters": js_(remoteInfo.params), "server-search": at(dyn, "server-search") === "true" ? true : null,
                     ":server-delay": at(dyn, "delay") || null, ":server-min-length": at(dyn, "min-length") || null,
-                    "options-load-init": dyn.children.length > 1 || undefined
+                    "options-load-init": (dyn.children || []).length > 1 || undefined
                 });
                 if (!attrs["options-load-init"]) delete attrs["options-load-init"];
                 // the current value of a remote list shows its label when the page is written
@@ -971,7 +984,8 @@
                 "submit-hide-id": isForm ? at(n, "background-hide-id") || null : null,
                 "exclude-empty-fields": at(n, "exclude-empty-fields") === "true" ? true : null,
                 ":parent-checkbox-set": st.selectedForm ? "formProps" : null,
-                "v-slot:default": "formProps", ":fields-initial": initial(singleValues(n, formAttrs))
+                "v-slot:default": "formProps", ":fields-initial": initial(singleValues(n, formAttrs)),
+                ":validation-errors-initial": isForm ? savedErrors(at(n, "name")) : null
             };
             w((skipStart ? "" : '<div class="q-my-md"><' + tag + A(attrs) + ">"));
             return { skipStart, tag };
@@ -1096,6 +1110,28 @@
                 const current = sri.getScreenUrlInstance().cloneUrlInstance().removeParameter("pageIndex").removeParameter("moquiFormName").removeParameter("moquiSessionToken").removeParameter("lastStandalone").removeParameter("formListFindId");
                 const params = current.getParameterMap();
                 const saveUrl = sri.buildUrl("formSaveFind").path;
+                // The user's saved finds: a link that applies one, and buttons that update it to the current parameters,
+                // make it the screen's default or no longer, or delete it.
+                const finds = sri.getUserFormListFinds(at(n, "name"));
+                if (finds.length) {
+                    const activeId = ctx("formListFindId") || "";
+                    const defaultId = sri.getUserDefaultFormListFindId() || "";
+                    const base = sri.getScreenUrlInstance().path;
+                    w('<q-list dense class="q-my-sm">');
+                    finds.forEach((find) => {
+                        const id = find.formListFind.formListFindId;
+                        const label = (find.description || id) + (id === defaultId ? " (" + L("Default") + ")" : "");
+                        const fields = Object.assign({ formLocation: at(n, "name"), formListFindId: id }, params);
+                        const button = (name, text, color) => "<q-btn dense flat no-caps" + A({ type: "submit", name, value: name ? "Y" : null, color: color || null, label: text }) + "></q-btn>";
+                        w("<q-item" + A({ active: id === activeId ? true : null }) + "><q-item-section><m-link" + A({ href: base + "?formListFindId=" + encodeURIComponent(id) }) + ">" + t(label) + "</m-link></q-item-section>" +
+                            "<q-item-section side><m-form" + A({ class: "form-inline", action: saveUrl, ":fields-initial": js_(fields) }) + ">" +
+                            (find.isByUserId === "true" && Object.keys(params).length ? button(null, L("Update to Current")) : "") +
+                            (id === defaultId ? button("ClearDefault", L("Clear Default")) : button("MakeDefault", L("Make Default"))) +
+                            (find.isByUserId === "true" ? button("DeleteFind", L("Delete"), "negative") : "") +
+                            "</m-form></q-item-section></q-item>");
+                    });
+                    w("</q-list>");
+                }
                 if (Object.keys(params).length) {
                     w("<m-form" + A({
                         class: "form-inline", id: formId + "_NewFind", action: saveUrl, "v-slot:default": "formProps",
@@ -1226,7 +1262,10 @@
             const multi = !skipForm && at(n, "multi") === "true";
             cfg.savedFinds = at(n, "saved-finds") === "true" && !sri.buildUrl("formSaveFind").getDisableLink();
             cfg.selectColumns = at(n, "select-columns") === "true" && !sri.buildUrl("formSelectColumns").getDisableLink();
-            const visible = cols.map((col) => col.filter((f) => !f.hide || !f.hide())).filter((col) => col.length > 0);
+            const shown = cols.map((col) => col.filter((f) => !f.hide || !f.hide())).filter((col) => col.length > 0);
+            // The sub-list fields of an aggregated form-list have rows of their own under each main row.
+            const visible = shown.map((col) => col.filter((f) => !f.sub)).filter((col) => col.length > 0);
+            const subCols = shown.map((col) => col.filter((f) => f.sub)).filter((col) => col.length > 0);
             const listUrl = sri.makeUrlByType(at(n, "transition"), "transition", null, "false");
             const rowSel = cfg.rowSelection;
             const hidden = hiddenParams(n);
@@ -1274,7 +1313,7 @@
                     w("<m-checkbox-set" + A(Object.assign({ ":checkbox-count": String(info.count), "v-slot:default": "formProps" }, checkboxAttrs)) + ">");
                 }
                 w('<div class="q-my-sm q-table__container q-table__card q-table--horizontal-separator q-table--dense q-table--flat" :class="{\'q-table--dark\':$q.dark.isActive, \'q-table__card--dark\':$q.dark.isActive, \'q-dark\':$q.dark.isActive}">');
-                if (!skipHeader) nav(n, visible, cfg);
+                if (!skipHeader) nav(n, shown, cfg);
                 w(' <div class="' + cls("table q-table", xn(at(n, "style")) || null) + '" id="' + e(formId) + '_table">');
                 if (!skipHeader) {
                     w('<div class="thead"><div class="tr">');
@@ -1341,7 +1380,7 @@
             for (let i = 0; i < info.count; i++) {
                 sri.startFormListRow(info, i);
                 st.entry = String(i);
-                w('<div class="tr">');
+                w('<div class="tr' + (ctx("_moquiRowType") === "total" ? " text-weight-bold" : "") + '">');
                 if (rowSel) {
                     w('<div class="td">' + (ids[i] ? '<div class="q-my-auto"><input style="transform:scale(1.3)" type="checkbox" v-model="formProps.checkboxStates[' + i + ']" @click="formProps.clickCheckbox($event, ' + i + ')"></div>' : "") + "</div>");
                 }
@@ -1363,6 +1402,30 @@
                 });
                 if (!(multi || skipForm)) w("</m-form>");
                 w("</div>\n");
+                const subRows = subCols.length ? sri.formListSubRowCount(info, i) : 0;
+                if (subRows) {
+                    const was = st.inForm;
+                    st.inForm = false;
+                    w('<div class="tr sub-rows">' + (rowSel ? '<div class="td">&nbsp;</div>' : "") + '<div class="td"><div class="q-pl-lg">');
+                    w('<div class="row no-wrap q-col-gutter-sm text-weight-bold">');
+                    subCols.forEach((col) => w('<div class="col">' + col.map((f) => t(f.title())).join(" ") + "</div>"));
+                    w("</div>");
+                    for (let j = 0; j < subRows; j++) {
+                        sri.startFormListSubRow(info, i, j);
+                        st.entry = i + "_" + j;
+                        w('<div class="row no-wrap q-col-gutter-sm">');
+                        subCols.forEach((col) => {
+                            w('<div class="col">');
+                            col.forEach((f) => f.cell(0));
+                            w("</div>");
+                        });
+                        w("</div>");
+                        sri.endFormListSubRow();
+                        st.entry = String(i);
+                    }
+                    w("</div></div></div>\n");
+                    st.inForm = was;
+                }
                 st.entry = "";
                 sri.endFormListRow();
             }
@@ -1672,6 +1735,7 @@
                 "align": ${lit(attr(field, "align"))},
                 "headerStyle": ${noL10n(headerField ? attr(headerField, "container-style") : "")},
                 "orderBy": ${lit(orderBy)},
+                "sub": ${attr(field, "aggregate") === "sub-list"},
                 "submit": ${!!(header && child(header, "submit"))},
                 ${hide ? `"hide": () => (${raw(hide)}),` : ""}
                 "title": () => ${titleCode(header)},

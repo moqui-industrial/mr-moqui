@@ -98,7 +98,7 @@ along with this software (see the LICENSE.md file). If not, see
                     <row-col xs="7"><label text="${smap.Process.Threads}"/></row-col></container-row>
             </row-col><row-col md="4">
                 <container-row><row-col xs="5"><label text="System" type="strong"/></row-col>
-                    <row-col xs="7"><label text="Load: ${ec.l10n.format(loadPercent, '00.0')}%" style="${loadPercent.compare(basicConvert(70, 'BigDecimal')) &lt; 0 ? 'text-success' : (loadPercent.compare(basicConvert(90, 'BigDecimal')) &lt; 0 ? 'text-warn' : 'text-danger' )}"/></row-col></container-row>
+                    <row-col xs="7"><label text="Load: ${ec.l10n.format(loadPercent, '00.0')}%" style="${loadPercent.compare(70) &lt; 0 ? 'text-success' : (loadPercent.compare(90) &lt; 0 ? 'text-warn' : 'text-danger' )}"/></row-col></container-row>
                 <container-row><row-col xs="1"/><row-col xs="4"><label text="Load" type="strong"/></row-col>
                     <row-col xs="7"><label text="${ec.l10n.format(smap.System.Load, '#,##0.00')} (avg last minute)"/></row-col></container-row>
                 <container-row><row-col xs="1"/><row-col xs="4"><label text="CPU" type="strong"/></row-col>

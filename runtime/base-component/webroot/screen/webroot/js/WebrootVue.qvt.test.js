@@ -136,3 +136,37 @@ test("the QZ Tray component compiles and defines the print functions", () => {
     ["printUrlMain", "printUrlLabel", "printUrlFile", "getQzConfig", "isQzActive"].forEach((name) => assert.equal(typeof moqui[name], "function", name));
     delete globalThis.qz;
 });
+
+test("an m-form keeps its own field errors and leaves the rest to notify", () => {
+    const options = qvt.components["m-form"];
+    const form = options.data.call({ fieldsInitial: { moquiFormName: "EditThing", title: "x", note: "" } });
+    form.setFieldErrors = options.methods.setFieldErrors.bind(form);
+    const resp = {
+        errors: "Title needs a letter\nOther failure",
+        validationErrors: [
+            { form: "EditThing", field: "title", message: "Title needs a letter", fieldPretty: "Title" },
+            { form: "OtherForm", field: "title", message: "Other form" },
+            { field: "missing", message: "No such field" }
+        ]
+    };
+    const rest = moqui.placeFieldErrors(form, resp);
+    assert.deepEqual(form.fieldErrors, { title: "Title needs a letter" });
+    assert.equal(form.fieldErrorValues.title, "x");
+    assert.equal(rest.errors, "Other failure");
+    assert.deepEqual(rest.validationErrors.map((ve) => ve.message), ["Other form", "No such field"]);
+    assert.equal(resp.validationErrors.length, 3, "the response itself is not changed");
+    // a changed value drops its error
+    form.fields.title = "xy";
+    options.watch.fields.handler.call(form);
+    assert.deepEqual(form.fieldErrors, {});
+    // nothing placed is the same response
+    assert.equal(moqui.placeFieldErrors(form, { errors: "e" }).errors, "e");
+});
+
+test("a field widget puts its form's error on the Quasar field", () => {
+    const mixinOwner = qvt.components["m-text-line"];
+    const errorAttrs = mixinOwner.mixins.map((m) => m.computed && m.computed.errorAttrs).find((f) => f);
+    assert.deepEqual(errorAttrs.call({ name: "title", mForm: { fieldErrors: { title: "Bad" } } }), { error: true, errorMessage: "Bad" });
+    assert.deepEqual(errorAttrs.call({ name: "note", mForm: { fieldErrors: { title: "Bad" } } }), {});
+    assert.deepEqual(errorAttrs.call({ name: "note", mForm: null }), {});
+});

@@ -16,7 +16,8 @@
 //! `menuData` transition of the root screen. One entry for each screen on the path above the target with
 //! the subscreens the user may view, and a last entry for the target.
 //!
-//! Not ported: saved finds in the last entry (the list is there and empty) and screen documents.
+//! The last entry has the target's screen documents and the user's saved finds of its form-lists that say
+//! `saved-finds="true"`, as Java's.
 
 use indexmap::IndexMap;
 use moqui_lib::object::Value;
@@ -264,9 +265,51 @@ pub fn menu_data(state: &RenderState, path_names: &[String]) -> Result<Option<Va
     entry.insert("image".into(), image);
     entry.insert("imageType".into(), image_type);
     entry.insert("extraPathList".into(), Value::List(extra_encoded));
-    entry.insert("screenDocList".into(), Value::List(Vec::new()));
+    entry.insert(
+        "screenDocList".into(),
+        Value::List(super::saved_finds::screen_document_list(&info.target_screen.location)?),
+    );
     entry.insert("renderModes".into(), render_modes(&info.target_screen.render_modes));
-    entry.insert("savedFinds".into(), Value::List(Vec::new()));
+    let mut saved_finds = Vec::new();
+    for (name, form) in &info.target_screen.forms {
+        if !form.list || form.node.node()?.attribute("saved-finds").as_deref() != Some("true") {
+            continue;
+        }
+        let location = super::saved_finds::form_location(&info.target_screen.location, true, name);
+        let saved = super::saved_finds::saved_find_location(&location, form.dynamic);
+        let active = script::context_value("formListFindId")
+            .map(|value| moqui_lib::object::to_plain_string(&value))
+            .filter(|id| !id.is_empty())
+            .or(super::saved_finds::user_default_find_id(&info.target_screen.location)?);
+        for find in super::saved_finds::user_form_list_finds(&saved)? {
+            let Value::Map(find) = find else { continue };
+            let Some(Value::Map(row)) = find.get("formListFind") else {
+                continue;
+            };
+            let id = row
+                .get("formListFindId")
+                .map(moqui_lib::object::to_plain_string)
+                .unwrap_or_default();
+            let mut item = Item::new();
+            item.insert("name".into(), text(&id));
+            item.insert("title".into(), find.get("description").cloned().unwrap_or(Value::Null));
+            item.insert("image".into(), entry.get("image").cloned().unwrap_or(Value::Null));
+            item.insert(
+                "imageType".into(),
+                entry.get("imageType").cloned().unwrap_or(Value::Null),
+            );
+            item.insert("path".into(), text(&last_path));
+            item.insert(
+                "pathWithParams".into(),
+                text(&format!("{last_path}?formListFindId={id}")),
+            );
+            if active.as_deref() == Some(id.as_str()) {
+                item.insert("active".into(), Value::Bool(true));
+            }
+            saved_finds.push(Value::Map(item));
+        }
+    }
+    entry.insert("savedFinds".into(), Value::List(saved_finds));
     out.push(Value::Map(entry));
     Ok(Some(Value::List(out)))
 }

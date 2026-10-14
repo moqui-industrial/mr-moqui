@@ -38,7 +38,7 @@
         "container-row", "row-col", "container-panel", "panel-header", "panel-left", "panel-center",
         "panel-right", "panel-footer", "container-dialog", "dynamic-container", "dynamic-dialog", "button-menu",
         "tree", "tree-node", "tree-sub-node", "label", "link", "image", "parameter", "dialog",
-        "render-dynamic-form", "dynamic-form"
+        "render-dynamic-form", "dynamic-form", "form-list-user-columns"
     ];
     const formElements = [
         "form-single", "form-list", "row-actions", "field", "header-field", "first-row-field", "second-row-field",
@@ -216,6 +216,10 @@
             // A dynamic form is assembled when it renders: the call runs it, and its code is made then with the
             // dynamic-form element around the assembled form.
             "render-dynamic-form": stmt((node) => `sri.renderDynamicForm(${jsString(attr(node, "name"))});`),
+            // A form-list whose columns the user may choose: with a saved choice the render assembles it with those
+            // columns, and the code inside is the form as defined.
+            "form-list-user-columns": stmt((node, children) =>
+                `if (!sri.renderUserColumnsForm(${jsString(attr(node, "name"))})) {\n${children}}\n`),
             "subscreens-menu": noop,
             "subscreens-active": stmt(() => "sri.renderSubscreen();"),
             "subscreens-panel": stmt(() => "sri.renderSubscreen();"),

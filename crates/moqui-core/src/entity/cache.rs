@@ -348,6 +348,20 @@ pub fn register_cache_flush(facade: &EntityFacade, tx: &TransactionManager) -> R
     Ok(())
 }
 
+/// Write this frame's held rows now and stop holding, as Java's `flushAndDisableTransactionCache`
+/// (`makeReadOnly`): later writes in the frame go straight to the database. The commit hook that
+/// [`register_cache_flush`] added then finds nothing left. No transaction cache is a no-op.
+pub fn flush_and_disable(facade: &EntityFacade, tx: &TransactionManager) -> Result<(), Error> {
+    if !tx.transaction_cache_active() {
+        return Ok(());
+    }
+    let Some(token) = tx.frame_token() else {
+        return Ok(());
+    };
+    tx.with_connection(|conn| flush_held(facade, token, conn))?;
+    tx.set_cache_hold(false)
+}
+
 /// Open a sim schema on the overlay pool and mark sim active.
 ///
 /// A second call on this thread pushes another schema. Reads and writes use the innermost one.
@@ -1474,5 +1488,26 @@ mod tests {
         })
         .unwrap();
         assert!(found(&facade, TEST, "testId", "Off"));
+    }
+
+    #[test]
+    fn flush_and_disable_writes_the_held_rows_once_and_stops_holding() {
+        let tape = Arc::new(Mutex::new(Vec::new()));
+        let facade = testing::open_with_tape(Arc::clone(&tape));
+        let tx = facade.transactions_for(TEST).unwrap();
+        run(&tx, TransactionAttribute::Cache, || {
+            put(&facade, TEST, "testId", "Held");
+            assert_eq!(statements(&tape, "INSERT"), 0, "cache holds the insert");
+            super::flush_and_disable(&facade, &tx)?;
+            assert!(!tx.transaction_cache_active());
+            assert_eq!(statements(&tape, "INSERT"), 1, "the held insert is written now");
+            put(&facade, TEST, "testId", "After");
+            assert_eq!(statements(&tape, "INSERT"), 2, "a later write goes through");
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(statements(&tape, "INSERT"), 2, "the commit writes nothing twice");
+        assert!(found(&facade, TEST, "testId", "Held"));
+        assert!(found(&facade, TEST, "testId", "After"));
     }
 }

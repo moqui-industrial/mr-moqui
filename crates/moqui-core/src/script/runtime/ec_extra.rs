@@ -388,11 +388,29 @@ fn l10n_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
 
 // ---- ec.context and ec.screen ----
 
+/// `ec.context.get(name)`: the same list or map a bare `name` reads, so a write to it reaches the stack.
 fn context_get<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         readopt_name(&name);
         flush_current(&ctx, false)?;
+        let engine = current_engine();
+        if let Some(saved) = engine
+            .as_ref()
+            .and_then(|engine| engine.tracked.borrow().get(&name).cloned())
+        {
+            return saved.restore(&ctx);
+        }
         match stack_get(&name) {
+            Lookup::Value(value @ (Value::List(_) | Value::Map(_))) => {
+                let js = host_to_js(&ctx, value)?;
+                if let Some(engine) = engine {
+                    engine
+                        .tracked
+                        .borrow_mut()
+                        .insert(name, Persistent::save(&ctx, js.clone()));
+                }
+                Ok(js)
+            }
             Lookup::Value(value) => host_to_js(&ctx, value),
             _ => Null.into_js(&ctx),
         }

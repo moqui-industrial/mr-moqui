@@ -151,6 +151,11 @@ pub(crate) struct ParamDef {
     pub allow_html: AllowHtml,
     pub checks: Vec<Check>,
     pub auto: Option<AutoParams>,
+    /// `entity-name` and `field-name`: the entity field a form builds this parameter's widget from.
+    pub entity_name: Option<String>,
+    pub field_name: Option<String>,
+    /// `format`, for the date and number widgets of a form.
+    pub format: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -176,6 +181,8 @@ pub(crate) struct ServiceDef {
     pub authz_action: Option<String>,
     pub validate_input: bool,
     pub transaction: TransactionAttribute,
+    /// `no-tx-cache`: flush and stop the transaction cache in place before the service runs.
+    pub no_tx_cache: bool,
     pub timeout: Option<Duration>,
     pub semaphore: SemaphoreMode,
     pub semaphore_name: Option<String>,
@@ -203,6 +210,7 @@ impl ServiceDef {
             authz_action: None,
             validate_input: true,
             transaction: TransactionAttribute::UseOrBegin,
+            no_tx_cache: false,
             timeout: None,
             semaphore: SemaphoreMode::None,
             semaphore_name: None,
@@ -253,6 +261,103 @@ fn snapshot(shared: &Shared) -> Arc<Registry> {
 #[cfg(test)]
 pub(crate) fn is_registered(name: &str) -> bool {
     find(name).is_some()
+}
+
+const MSG_REQUIRED: &str = "Please enter a value";
+const MSG_NUMBER: &str = "Please enter a valid number";
+const MSG_NUMBER_INT: &str = "Please enter a valid whole number";
+const MSG_DIGITS: &str = "Please enter only numbers (digits)";
+const MSG_LETTERS: &str = "Please enter only letters";
+const MSG_EMAIL: &str = "Please enter a valid email address";
+const MSG_URL: &str = "Please enter a valid URL";
+pub(crate) const VALIDATE_NUMBER: &str = "!value || moqui.isStringNumber(value)";
+pub(crate) const VALIDATE_NUMBER_INT: &str = "!value || moqui.isStringInteger(value)";
+const VALIDATE_EMAIL: &str = r#"!value || /^(([^<>()\[\]\\.,;:\s@"]+(\.[^<>()\[\]\\.,;:\s@"]+)*)|(".+"))@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))$/.test(value)"#;
+const VALIDATE_URL: &str = r"!value || /((([A-Za-z]{3,9}:(?:\/\/)?)(?:[\-;:&=\+\$,\w]+@)?[A-Za-z0-9\.\-]+|(?:www\.|[\-;:&=\+\$,\w]+@)[A-Za-z0-9\.\-]+)((?:\/[\+~%\/\.\w\-_]*)?\??(?:[\-\+=&;%@\.\w_]*)#?(?:[\.\!\/\\\w]*))?)/.test(value)";
+
+/// `FormInstance.getFieldValidationJsRules` for a service parameter: `(expression over value, message)` for each rule the
+/// browser checks, the messages not localized yet. None when the service or parameter is not there.
+pub(crate) fn input_js_rules(service: &str, parameter: &str) -> Option<Vec<(String, String)>> {
+    let def = find(service)?;
+    let param = def.in_params.iter().find(|param| param.name == parameter)?;
+    let mut rules: Vec<(String, String)> = Vec::new();
+    let mut push = |expr: &str, message: &str| rules.push((expr.to_string(), message.to_string()));
+    if param.required == Required::True {
+        push("!!value", MSG_REQUIRED);
+    }
+    let mut found_number = false;
+    for check in &param.checks {
+        match check {
+            Check::NumberInteger if !found_number => {
+                push(VALIDATE_NUMBER_INT, MSG_NUMBER_INT);
+                found_number = true;
+            }
+            Check::NumberDecimal if !found_number => {
+                push(VALIDATE_NUMBER, MSG_NUMBER);
+                found_number = true;
+            }
+            Check::TextDigits if !found_number => {
+                push(r"!value || /^\d*$/.test(value)", MSG_DIGITS);
+                found_number = true;
+            }
+            Check::TextLetters => push("!value || /^[a-zA-Z]*$/.test(value)", MSG_LETTERS),
+            Check::TextEmail => push(VALIDATE_EMAIL, MSG_EMAIL),
+            Check::TextUrl => push(VALIDATE_URL, MSG_URL),
+            Check::Matches { regexp, message } => push(&format!("!value || /{regexp}/.test(value)"), message),
+            Check::NumberRange {
+                min,
+                min_eq,
+                max,
+                max_eq,
+                message,
+            } => {
+                let mut compare = String::new();
+                if let Some(min) = min.as_deref().filter(|text| !text.is_empty()) {
+                    compare.push_str(&format!(
+                        " && moqui.parseNumber(value) {} {min}",
+                        if *min_eq { ">=" } else { ">" }
+                    ));
+                }
+                if let Some(max) = max.as_deref().filter(|text| !text.is_empty()) {
+                    compare.push_str(&format!(
+                        " && moqui.parseNumber(value) {} {max}",
+                        if *max_eq { "<=" } else { "<" }
+                    ));
+                }
+                let message = message.clone().filter(|text| !text.is_empty()).unwrap_or_else(|| {
+                    match (
+                        min.as_deref().filter(|t| !t.is_empty()),
+                        max.as_deref().filter(|t| !t.is_empty()),
+                    ) {
+                        (Some(min), Some(max)) => format!("Enter a number between {min} and {max}"),
+                        (Some(min), None) => format!("Enter a number greater than {min}"),
+                        (None, Some(max)) => format!("Enter a number less than {max}"),
+                        (None, None) => MSG_NUMBER.to_string(),
+                    }
+                });
+                push(
+                    &format!("!value || (!Number.isNaN(moqui.parseNumber(value)){compare})"),
+                    &message,
+                );
+            }
+            _ => {}
+        }
+    }
+    let java_type = param.java_type.as_str();
+    if !found_number {
+        if ["BigInteger", "Long", "Integer"]
+            .iter()
+            .any(|suffix| java_type.ends_with(suffix))
+        {
+            push(VALIDATE_NUMBER_INT, MSG_NUMBER_INT);
+        } else if ["BigDecimal", "Double", "Float", "Number"]
+            .iter()
+            .any(|suffix| java_type.ends_with(suffix))
+        {
+            push(VALIDATE_NUMBER, MSG_NUMBER);
+        }
+    }
+    Some(rules)
 }
 
 /// What a form field shows of an input parameter's rules: the classes the macros turn into input attributes.
@@ -523,6 +628,7 @@ fn load_service(prefix: &str, node: &MNode, services: &mut BTreeMap<String, Serv
         authz_action: node.attribute("authz-action"),
         validate_input: bool_attr(node, "validate", true),
         transaction: transaction_of(node),
+        no_tx_cache: bool_attr(node, "no-tx-cache", false),
         timeout: timeout_of(node),
         semaphore: semaphore_of(node),
         semaphore_name: node.attribute("semaphore-name"),
@@ -687,6 +793,9 @@ fn parse_parameter(node: &MNode) -> ParamDef {
         allow_html: allow_html_of(node),
         checks: parse_checks(node),
         auto: None,
+        entity_name: node.attribute("entity-name").filter(|text| !text.is_empty()),
+        field_name: node.attribute("field-name").filter(|text| !text.is_empty()),
+        format: node.attribute("format").filter(|text| !text.is_empty()),
     }
 }
 
@@ -717,6 +826,9 @@ fn parse_auto(node: &MNode) -> ParamDef {
             exclude,
             required,
         }),
+        entity_name: None,
+        field_name: None,
+        format: None,
     }
 }
 

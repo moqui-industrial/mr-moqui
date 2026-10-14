@@ -68,9 +68,9 @@ along with this software (see the LICENSE.md file). If not, see
         <set field="gotMoquiStatus" from="false"/>
         <if condition="moquiStatusMap &amp;&amp; Object.keys(moquiStatusMap).length">
             <set field="gotMoquiStatus" from="true"/>
-            <set field="loadPercent" from="new BigDecimal(moquiStatusMap?.Utilization?.LoadPercent).setScale(0, BigDecimal.ROUND_HALF_UP)"/>
-            <set field="heapPercent" from="new BigDecimal(moquiStatusMap?.Utilization?.HeapPercent).setScale(0, BigDecimal.ROUND_HALF_UP)"/>
-            <set field="diskPercent" from="new BigDecimal(moquiStatusMap?.Utilization?.DiskPercent).setScale(0, BigDecimal.ROUND_HALF_UP)"/>
+            <set field="loadPercent" from="moquiStatusMap.Utilization?.LoadPercent != null ? toDecimal(Math.round(toDecimal(moquiStatusMap.Utilization.LoadPercent).toNumber())) : null"/>
+            <set field="heapPercent" from="moquiStatusMap.Utilization?.HeapPercent != null ? toDecimal(Math.round(toDecimal(moquiStatusMap.Utilization.HeapPercent).toNumber())) : null"/>
+            <set field="diskPercent" from="moquiStatusMap.Utilization?.DiskPercent != null ? toDecimal(Math.round(toDecimal(moquiStatusMap.Utilization.DiskPercent).toNumber())) : null"/>
         </if>
     </actions>
     <widgets><container-row><row-col md="7">

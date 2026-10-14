@@ -200,6 +200,15 @@ fn sri_render_dynamic_form(ctx: Ctx<'_>, name: String) -> rquickjs::Result<Strin
     .map(|()| String::new())
 }
 
+fn sri_render_user_columns_form(ctx: Ctx<'_>, name: String) -> rquickjs::Result<bool> {
+    host_guard(&ctx, || {
+        let runner = CtxRunner { ctx: &ctx };
+        with_render(&ctx, true, |state| {
+            logic::render_user_columns_form(state, &runner, &name)
+        })
+    })
+}
+
 fn sri_render_include_screen(ctx: Ctx<'_>, location: String, share_scope: Opt<String>) -> rquickjs::Result<String> {
     host_guard(&ctx, || {
         let runner = CtxRunner { ctx: &ctx };
@@ -449,6 +458,29 @@ fn sri_start_form_list_row(ctx: Ctx<'_>, info: JsValue<'_>, index: i32) -> rquic
     .map(|()| String::new())
 }
 
+fn sri_form_list_sub_row_count(ctx: Ctx<'_>, info: JsValue<'_>, index: i32) -> rquickjs::Result<i32> {
+    host_guard(&ctx, || {
+        let id = list_id(&ctx, &info)?;
+        let index = usize::try_from(index).map_err(|_| Exception::throw_message(&ctx, "bad row index"))?;
+        let count = with_render(&ctx, false, |state| {
+            Ok(logic::form_list_sub_row_count(state, id, index))
+        })?;
+        Ok(i32::try_from(count).unwrap_or(i32::MAX))
+    })
+}
+
+fn sri_start_form_list_sub_row(ctx: Ctx<'_>, info: JsValue<'_>, index: i32, sub: i32) -> rquickjs::Result<String> {
+    host_guard(&ctx, || {
+        let id = list_id(&ctx, &info)?;
+        let index = usize::try_from(index).map_err(|_| Exception::throw_message(&ctx, "bad row index"))?;
+        let sub = usize::try_from(sub).map_err(|_| Exception::throw_message(&ctx, "bad sub-row index"))?;
+        with_render(&ctx, true, |state| {
+            logic::start_form_list_sub_row(state, id, index, sub)
+        })
+    })
+    .map(|()| String::new())
+}
+
 fn sri_end_form_list_row(ctx: Ctx<'_>) -> rquickjs::Result<String> {
     sri_pop_context(ctx)
 }
@@ -529,6 +561,22 @@ fn sri_get_form_instance<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<O
     })
 }
 
+/// `sri.getUserFormListFinds(formName)`: the saved finds of the user and the user's groups for a form of the screen.
+fn sri_get_user_form_list_finds<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let finds = with_render(&ctx, false, |state| logic::user_form_list_finds(state, &name))?;
+        host_to_js(&ctx, Value::List(finds))
+    })
+}
+
+/// `sri.getUserDefaultFormListFindId()`: the user's default saved find of the screen, or null.
+fn sri_get_user_default_form_list_find_id<'js>(ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let id = with_render(&ctx, false, logic::user_default_form_list_find_id)?;
+        host_to_js(&ctx, id.map_or(Value::Null, Value::String))
+    })
+}
+
 fn sri_get_form_hidden_parameters<'js>(ctx: Ctx<'js>, form: JsValue<'js>) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let form = lit(&ctx, &form)?;
@@ -597,6 +645,54 @@ fn sri_get_field_validation<'js>(ctx: Ctx<'js>, sub: JsValue<'js>) -> rquickjs::
             object.set("message", message)?;
         }
         Ok(object)
+    })
+}
+
+/// `getFieldValidationJsRules(sub)`: `[{expr, message}]`, the browser checks of a field's validation.
+fn sri_get_field_validation_js_rules<'js>(ctx: Ctx<'js>, sub: JsValue<'js>) -> rquickjs::Result<Array<'js>> {
+    host_guard(&ctx, || {
+        let sub = lit(&ctx, &sub)?;
+        let rules = with_render(&ctx, false, |_| logic::field_validation_js_rules(&sub))?;
+        let out = Array::new(ctx.clone())?;
+        for (index, (expr, message)) in rules.into_iter().enumerate() {
+            let object = Object::new(ctx.clone())?;
+            object.set("expr", expr)?;
+            object.set("message", message)?;
+            out.set(index, object)?;
+        }
+        Ok(out)
+    })
+}
+
+/// `getFieldTransitionValue(transition, node, term, labelField, alwaysGet)`: the label a transition gives for a value.
+fn sri_get_field_transition_value<'js>(
+    ctx: Ctx<'js>,
+    transition: String,
+    node: JsValue<'js>,
+    term: Opt<JsValue<'js>>,
+    label_field: Opt<String>,
+    always_get: Opt<bool>,
+) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let node = lit(&ctx, &node)?;
+        let term = match term.0 {
+            Some(value) if !value.is_null() && !value.is_undefined() => {
+                moqui_lib::object::to_plain_string(&js_to_host(&ctx, &value)?)
+            }
+            _ => String::new(),
+        };
+        let label_field = label_field.0.unwrap_or_default();
+        let found = with_render(&ctx, false, |state| {
+            logic::field_transition_value(
+                state,
+                &transition,
+                &node,
+                &term,
+                &label_field,
+                always_get.0.unwrap_or(false),
+            )
+        })?;
+        host_to_js(&ctx, found.map_or(Value::Null, Value::String))
     })
 }
 
@@ -730,6 +826,7 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("renderSubscreen", sri_render_subscreen);
     method!("renderIncludeScreen", sri_render_include_screen);
     method!("renderDynamicForm", sri_render_dynamic_form);
+    method!("renderUserColumnsForm", sri_render_user_columns_form);
     method!("renderText", sri_render_text);
     method!("renderInlineText", sri_render_inline_text);
     method!("doBoundaryComments", sri_do_boundary_comments);
@@ -752,11 +849,16 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("openFormList", sri_open_form_list);
     method!("startFormListRow", sri_start_form_list_row);
     method!("endFormListRow", sri_end_form_list_row);
+    method!("formListSubRowCount", sri_form_list_sub_row_count);
+    method!("startFormListSubRow", sri_start_form_list_sub_row);
+    method!("endFormListSubRow", sri_end_form_list_row);
     method!("safeCloseList", sri_safe_close_list);
     method!("formListColumnCharWidths", sri_form_list_column_char_widths);
     method!("getFormNode", sri_get_form_node);
     method!("getFormInstance", sri_get_form_instance);
     method!("getFormHiddenParameters", sri_get_form_hidden_parameters);
+    method!("getUserFormListFinds", sri_get_user_form_list_finds);
+    method!("getUserDefaultFormListFindId", sri_get_user_default_form_list_find_id);
     method!("appendToAfterScreenWriter", sri_append_to_after_screen_writer);
     method!("appendToScriptWriter", sri_append_to_script_writer);
     method!("once", sri_once);
@@ -766,6 +868,8 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("getThemeValues", sri_get_theme_values);
     method!("getSectionIncludedNode", sri_get_section_included_node);
     method!("getFieldValidation", sri_get_field_validation);
+    method!("getFieldValidationJsRules", sri_get_field_validation_js_rules);
+    method!("getFieldTransitionValue", sri_get_field_transition_value);
     method!("getMenuItems", sri_get_menu_items);
     method!("getMenuData", sri_get_menu_data);
     method!("staticUrl", sri_static_url);

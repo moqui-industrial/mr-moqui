@@ -74,6 +74,7 @@ pub(crate) use screen_host::with_screen_runner;
 use search::*;
 use services::*;
 use upload::*;
+pub use values::script_list_values;
 pub(crate) use values::{
     context_combined, pop_context_frame, put_context_all, value_entity_name, value_field, value_items, value_map,
 };
@@ -87,7 +88,7 @@ use crate::service::call::CallOptions;
 const MAX_CACHED_TEMPLATES: usize = 4096;
 const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 const VALUE_OF_MESSAGE: &str =
-    "decimal valueOf is not supported; use add, subtract, multiply, divide, eq, compare, or isZero";
+    "decimal valueOf is not supported; use add, subtract, multiply, divide, eq, compare, isZero, or toNumber";
 
 thread_local! {
     /// While true, an expression of a widget runs with the `ec` of the server-static browser host: the compatibility report's full check.
@@ -952,10 +953,6 @@ fn with_ec<T>(ctx: &Ctx<'_>, body: impl FnOnce(&ExecutionContext) -> T) -> rquic
     ExecutionContext::with_current(body).ok_or_else(|| Exception::throw_message(ctx, "no execution context is entered"))
 }
 
-fn not_implemented(ctx: &Ctx<'_>, what: &str) -> rquickjs::Error {
-    Exception::throw_message(ctx, &format!("{what} is not implemented"))
-}
-
 fn js_error(err: impl ToString) -> Error {
     Error::new(err.to_string())
 }
@@ -1061,6 +1058,27 @@ mod tests {
         assert!(overflow.to_string().contains("overflow"), "{overflow}");
         let value_of = eval_condition("big + 1").expect_err("valueOf");
         assert!(value_of.to_string().contains("valueOf"), "{value_of}");
+        Ok(())
+    }
+
+    #[test]
+    fn decimal_methods_take_numbers_and_text_and_to_number_is_explicit() -> Result<(), Error> {
+        clear_context_stack();
+        set_context_name("price", decimal("10.25"))?;
+        holds("price.add(1).eq('11.25')");
+        holds("price.subtract(0.25).eq(10)");
+        holds("price.multiply('2').toString() === '20.50'");
+        holds("price.compare(70) === -1 && price.compare('10.250') === 0");
+        holds("price.toNumber() === 10.25 && Number(price.toString()) === 10.25");
+        holds("toDecimal(3).add(price).eq('13.25') && toDecimal('0.1').add(toDecimal('0.2')).eq('0.3')");
+        let nan = eval_condition("price.add(NaN)").expect_err("not finite");
+        assert!(nan.to_string().contains("a decimal method takes"), "{nan}");
+        let text = eval_condition("price.add('abc')").expect_err("not numeric");
+        assert!(text.to_string().contains("abc"), "{text}");
+        let null = eval_condition("toDecimal(null)").expect_err("null");
+        assert!(null.to_string().contains("toDecimal"), "{null}");
+        let number = eval_condition("Number(price) > 1").expect_err("valueOf still throws");
+        assert!(number.to_string().contains("toNumber"), "{number}");
         Ok(())
     }
 

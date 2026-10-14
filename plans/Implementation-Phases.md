@@ -181,7 +181,7 @@ These were decided while building phases 5 and 6 and are not defects.
 - **Service calls.** A service goes on the artifact stack. Message errors left by the body roll the transaction back and the call still returns its results. `post-commit` rules run after a failure and skip unless `run-on-error`. Authentication is not required while authorization is disabled, which is how a data load calls services.
 - **Parameters.** A value that cannot become the declared type is an error. `allow-html` defaults to `none`; `safe` cleans the value with `ammonia`'s default allow-list (disallowed tags and attributes are dropped, script and style content removed, unsafe URL schemes removed, links get `rel="noopener noreferrer"`), without Jsoup's removal messages. Text with no `<` is not touched. `default` is an expression and `default-value` is expanded text.
 - **Jobs.** `ServiceJob` rows with a cron expression run from a scheduler pass every `scheduled-job-check-time` seconds, in the server time zone. The lock is taken with a conditional write on a reserve connection, not `FOR UPDATE`. A fire-and-forget call that finds the pool queue full is stored as a `ServiceJob` named `ASYNC_QUEUE_<id>`, its parameters as text, and submitted when a worker is free. A script's `ec.service.async()...callFuture()` returns a future with `get()`, `get(timeoutMs)` and `isDone()`; Rust code has `service::start_future` and `service::call_future`. Service definitions belong to the factory, so `lint` and `load_definitions` need an entered context and two factories in one process no longer share services.
-- **XML actions.** `searchFormMap` (`search-form-inputs`), `requireSearchFormParameters`, `havingCondition`, `forUpdate(true)`, `distinct(true)`, `selectField`, `ignore-case` and `to-field-name` conditions are implemented, with SQL for view-entity aggregates (`GROUP BY`/`HAVING`), `DISTINCT`, `FOR UPDATE`, `UPPER()` comparison and field-to-field comparison. `cache` and `use-clone` hints are accepted and change nothing. Still not implemented: `multi` service calls, `distribute` (a load error), and `entity-data`. Deliberate gaps: `get` on a future has no default timeout (as in Java), the script runtime is per thread and depth rather than per execution context, and scripts are not strict-mode.
+- **XML actions.** `searchFormMap` (`search-form-inputs`), `requireSearchFormParameters`, `havingCondition`, `forUpdate(true)`, `distinct(true)`, `selectField`, `ignore-case` and `to-field-name` conditions are implemented, with SQL for view-entity aggregates (`GROUP BY`/`HAVING`), `DISTINCT`, `FOR UPDATE`, `UPPER()` comparison and field-to-field comparison. `cache` and `use-clone` hints are accepted and change nothing. `multi` service calls (`.multi(true)`, and the transition shortcut's default `multi="parameter"` when the request says `_isMulti`, as a multi form-list posts) run one call for each row of `name_N` parameters in one transaction, with `_useRowSubmit`/`_rowSubmit_N`, as Java's. Still not implemented: `distribute` (a load error) and `entity-data`, which is a TODO in Java's macros too and stays a load error rather than nothing. Deliberate gaps: `get` on a future has no default timeout (as in Java), the script runtime is per thread and depth rather than per execution context, and scripts are not strict-mode.
 - **Remote.** `remote-rest` sends GET, POST, PUT, PATCH, and DELETE with a typed JSON body. `RestClient` follows redirects only to the same host, refuses a response over 16 MiB, and can refuse internal addresses (`deny_internal_addresses`), which the caller turns on for URLs a user supplied. `http(s)://` resources are fetched on first read.
 
 Phase 6 then turns on the two callbacks phase 4 stored: ECA action execution, and data-file service elements (`sync()` on the mapped name). It also points the after-commit feed slot at the receive service. That service records that search is not up and leaves the pending row until phase 9.
@@ -281,11 +281,11 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
 - **Shape.** The plan held: one screen model (slice 1: definitions, cache, `ScreenUrlInfo`, `makeRender()` with no socket), one macro walker
   (slice 2), and a JavaScript macro module for each mode (`ScreenText.js`, `ScreenCsv.js`, `ScreenXml.js`, `ScreenHtmlPrint.js`, `ScreenHtml.js`,
   `ScreenQvt.js`, `ScreenPlain.js` for `qjs`/`qvue`, `ScreenQvtStatic.js`). Screen XML expressions were migrated from Groovy to JavaScript and are
-  linted (`moqui lint --screens`, slice 0); 3 Groovy screens still do not load and are named by the lint and the report. Templates are the `fancy`
+  linted (`moqui lint --screens`, slice 0); every screen of the tree loads. Templates are the `fancy`
   dialect (slice 3), not FreeMarker; a `.ftl` location is refused.
 - **Deviations that stay.** `html-print` writes its own document wrapper; `xsl-fo` is only an alias. The body of a `.qvt` response is a
   template the client wraps, not a component object (the Java shape). `/qapps` is html and loads `.qvt` from `/apps`. Request text in qvt uses
-  `&#123;` instead of `v-pre`. Server-static `include-screen` is inlined and tree JSON is a 501. The macro-level differences are listed at the top
+  `&#123;` instead of `v-pre`. Server-static `include-screen` is inlined. The macro-level differences are listed at the top
   of `ScreenHtml.js` and `ScreenQvt.js`.
 - **Fixed in slice 8 (found by the Gate 3 harness).** A transition's `service-call` (default `out-map="context"`) failed with `cannot put with key
   'context'`, so every form post through a transition shortcut was a 500: `XmlActions.js` now puts each result on the context by name. A
@@ -300,21 +300,55 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   `q-input`/`q-select`/`q-file`, which drop it; they now pass `for`, so the native input has the id. `m-static-form-list` reused the row
   components of the last page, and an `m-form` copies its `fields-initial` once, so page 2 showed the rows of page 1.
 - **Deferred.** PDF bytes (phase 12); `ScreenServices.xml` service bodies (mail screen bodies were done after slice 8, see phase 10's
-  "Screen mail after phase 8"); `vuet` and `/vapps` (dropped); the Assist panel; saved finds and screen documents (nothing reads the user finds yet); in a
+  "Screen mail after phase 8"); `vuet` and `/vapps` (dropped); the Assist panel; in a
   static template, row selection, first/second/last rows, aggregation, the column picker and the csv/text/pdf buttons; precompiled `m-*`
   templates, which `webapp_qvt_static_only=true` waits for; the `lookup` widget (a text line, as the Java macro was commented out). A static
   template is fetched once to read `X-Moqui-Qvt` and then loaded again by a script element (a URL without the query), so it downloads twice.
-- **Deferred after the Phase 8 and 10 review against Java.** Each is a Java feature no screen in this tree needs yet; the Java reference is
-  in `ScreenRenderImpl` (SRI), `ScreenDefinition` (SD), `ScreenForm` (SF) and `ScreenUrlInfo` (SUI):
-  - saved finds: `formListFindId`, `FormListFindUserDefault` and the `formSaveFind` transition (SRI:336-378, SD:1113-1135);
-  - the `formSelectColumns` transition (SD:1135-1165) and `screenDoc` (SD:1168-1193);
-  - the `screen.user.page.size` preference (SRI:391-404);
-  - `auto-fields-service` and `auto-widget-service` (SF:147-176), which `Tools/Service/ServiceRun.xml` needs;
-  - `DbForm` forms and `extends` of one (SF:72-80, 334-350), and `setSubFieldValidateAttrs` (SF:214-276), the client checks from a
-    transition's service;
-  - form-list aggregation (`group-by`, `sub-list`, `show-total`) and a select limited to the displayed and hidden fields (SF:2033-2139);
-  - tree node JSON (`sendSubNodeJson`, SD:1085-1088), `include-child-content` and template files under a screen (SRI:650-747),
-    transition names that are patterns (SD:509-515), and `section-include` copying only what the section holds (SD:366-390).
+- **Ported after the Phase 8 and 10 review against Java.** These Java features were deferred by that review and are now done; the Java
+  reference is `ScreenRenderImpl` (SRI), `ScreenDefinition` (SD), `ScreenForm` (SF) and `AggregationUtil`:
+  - `auto-fields-service` and `auto-widget-service` build fields from a service's parameters, with `auto-parameters` expanded, an entity
+    field's widget when the parameter is one and a widget by the parameter type otherwise; `Tools/Service/ServiceRun.xml` shows its
+    parameter form. `setSubFieldValidateAttrs` puts `validate-service` (or `validate-entity` for an implicit entity-auto service) on the
+    fields of a form whose transition calls one service, so the client checks follow the service.
+  - `extends="DbForm#id"` builds the form from the `DbForm` records (fields, attributes, options and entity options), and a form a
+    `DbForm` modifies for some group (`DbFormLookup`, read as `DbForm` and `DbFormUserGroup`) is assembled for each render with the
+    current user's `DbForm` fields merged in. The `DbForm` node is not cached as Java's `dbFormNodeByIdCache` is; the entity reads use
+    the entity cache. `formDisplayOnly` is not read.
+  - Saved finds and columns (`screen/saved_finds.rs`). Every screen has the implicit `formSaveFind`, `formSelectColumns` and `screenDoc`
+    transitions (`TransitionDef.implicit`), and a screen's own transition of the name wins. A render applies the request's
+    `formListFindId`, else the user's `FormListFindUserDefault` for the target screen, and `_clear`; the saved find's parameters and
+    `orderByField` apply when the request has none of its own. `pageSize` is kept as the `screen.user.page.size` preference and used
+    when a request has none. `formSaveFind` saves, updates, deletes, makes or clears the default and schedules (`ScreenScheduled`), as
+    `processFormSavedFind`; `formSelectColumns` keeps the column dialog's choice in a `FormConfig` of the user's own (or by `_uiType`),
+    and `ResetColumns` removes it. Form locations are Java's (`{screen}.form_list${name}`, with `#extension` for a dynamic form), so
+    records written by Java apply; the macros post the form name and the server makes the location. A form-list with `select-columns` or
+    `saved-finds` is generated inside `form-list-user-columns`: at render `sri.renderUserColumnsForm` assembles it with the user's columns
+    (the active saved find's `FormConfig`, else the user's, else a group's) when there are any, and the generated code runs otherwise,
+    in every server-merged mode. The find dialog lists the user's saved finds in html and qvt (`sri.getUserFormListFinds`,
+    `sri.getUserDefaultFormListFindId`), and the menu data has them and the target's screen documents. Differences: the
+    `DbFormLookup` and `FormConfigUserGroupView` views are read as their entities; a saved find's description defaults to the username and
+    the server time.
+  - Form-list aggregation (`screen/aggregate.rs`, a port of `AggregationUtil`): `aggregate="group-by"` merges the rows with the same
+    values, a function (`min`, `max`, `sum`, `avg`, `count`, `first`, `last`) aggregates over the group, `aggregate="sub-list"` fields
+    become the group's `aggregateSubList`, and `show-total` (`true` is `sum`) adds a last row marked `_moquiRowType: "total"` (and sub-list
+    totals). It runs in `sri.openFormList`, so every mode gets the grouped rows. html and qvt draw the sub-list fields in rows under the
+    main row (`sri.formListSubRowCount`, `sri.startFormListSubRow`, `sri.endFormListSubRow`) and mark the total row; the other modes show the
+    main fields. The group key is every `group-by` field, where Java takes only the displayed ones. A static template leaves out the
+    sub-list fields and the total row, which the `/actions/{form}` package does not carry. The select limited to the displayed and
+    hidden fields was done in phase 11.
+  - Tree node data (`screen/tree.rs`, `ScreenTree.sendSubNodeJson`): `{screen}/actions/{tree}` answers the jstree nodes for `treeNodeId`
+    (`#` is the root), `treeNodeName` and `treeOpenPath`, with each `tree-sub-node`'s and `tree-node`'s condition and actions, the
+    node's link URL and its children when it is on the open path. The static report no longer counts a tree as a 501.
+  - Child content: a text file or template under a screen that says `include-child-content="true"` renders inside the screen, as the
+    last subscreen (`sri.renderSubscreen`), with the request in the context; a binary file is still sent. A template under any other
+    screen stays refused, where Java renders it alone: a template is trusted code that sees the live context, so it is not reachable by
+    URL unless the screen asks for it.
+  - A transition name is also a Java regular expression the whole name may match, for a request with a method, first match wins (SD:509).
+  - `section-include` brings the sections, forms and trees inside the included section only, not every one of that screen (SD:366).
+  - `sri.getFieldTransitionValue(transition, node, term, labelField, alwaysGet)`: the label a transition gives for a value, by a test
+    render, used by html and qvt for a `dynamic-options` drop-down whose value has no option and by qvt for a text-line `ac-transition`
+    with no `ac-initial-text`. `sri.getFieldValidationJsRules(sub)` gives qvt the browser checks of the service parameter (required,
+    whole and decimal numbers, digits, letters, email, URL, `matches`, `number-range`) or the numeric entity field, with Java's messages.
 - **Differences that stay.** `disable-when` on a `subscreens-item` blocks the screen below the first level; Java defines `getDisable`
   but reads it nowhere. The `default-display` attribute of an entity field is not read (no entity in this tree or the Java components
   sets it).
@@ -343,9 +377,7 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   unit that names it), so a unit holds only the structure of its form and calls `$h.dropDown(...)` and the like. The
   attributes the client binds are listed in `webroot/js/README.md`. Differences: option text and labels are always
   encoded; a text-line `ac-transition` is a `select` that Tom Select fills, so `name_ac` is not posted; `lookup` is a text
-  line (the Java macro was commented out); a form-list with `group-by` sub-lists renders every column in the main row; the
-  saved-find and column dialogs show only when the screen has `formSaveFind` and `formSelectColumns`, which no screen has
-  yet; `show-pdf-button` links to the `html-print` page. No unit has a `<script>`.
+  line (the Java macro was commented out); `show-pdf-button` links to the `html-print` page. No unit has a `<script>`.
 - **Page shell.** `Header`, `Footer`, `navbar`, `Messages`, `Login` and `SecondFactor` are `.html.fancy` files, and the
   `webroot.xml`, `apps.xml`, `Login.xml`, `SecondFactor.xml`, error and `AppList` screens use them. `.ftl` locations are
   refused when rendered, so the `.ftl` files left are `WebrootVue.qvt.ftl` (qapps) and `AutoScreenMenu.qvt.ftl`, which
@@ -367,7 +399,11 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   `webapp_upload_executable_allow` is `true`.
 - **Messages and forms.** A response that redirects saves its messages and errors in the session, and its request
   parameters when it had errors (not passwords or the token). The next request that asks gets them once: `ec.web.getPageMessages()`
-  for the shell, `ec.web.errorParameters` and the field values of a form. Pages the user got in `html` go on the screen
+  for the shell, `ec.web.errorParameters` and the field values of a form. A validation error of a form's own field is shown by that field in every client, which goes beyond Java (its qvt client only
+  notified): the html page after a redirect, an html background submit (it asks for JSON and draws the same `.field-error` markup), and a qvt
+  `m-form`, whose `fieldErrors` the `m-*` wrappers put on the Quasar field until its value changes (from the JSON answer, or from
+  `validation-errors-initial` after a redirect). An error placed on a field is not also a notification. The `validationErrors` maps carry Java's
+  `formPretty`, `fieldPretty` and `serviceNamePretty`. Pages the user got in `html` go on the screen
   history, newest first, for `screen-last` and the navbar menu. A failure for a browser (`Accept: text/html`, not an API path) renders
   `error/*` with `errorCode`, `errorType`, `errorMessage`, `errorThrowable` and `showErrorDetail`.
 - **Slice 6, qvt server-merged, qjs, qvue.** `ScreenQvt.js` writes the Vue template of the target screen, as the html module does: a runtime
@@ -381,9 +417,7 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   at the top of `ScreenQvt.js`: `text-line` with `ac-transition` is an `m-drop-down` with `server-search` (the Java macro wrote an error),
   a confirmation is a `data-confirm` attribute the shell answers, the `background-message` is text and not evaluated, `editor-type` `html`
   and `md` are `m-text-area` (`QEditor`; a text area with a Marked preview), `lookup` is a text line, the Inputmask `mask` is converted to Quasar's
-  tokens, a form-list with `group-by` sub-lists keeps every column in the main row, the navigation bar of a form-list sits above the table, and
-  the saved finds list and the screen documents are not written (nothing reads the user finds yet). The saved find dialog has the save-new-find form
-  only, and the column dialog is `m-form-column-config`. `ScreenPlain.js` serves `qjs` and `qvue`: the text of the screen's own `render-mode`
+  tokens, and the navigation bar of a form-list sits above the table. The column dialog is `m-form-column-config`. `ScreenPlain.js` serves `qjs` and `qvue`: the text of the screen's own `render-mode`
   elements and the subscreen and section calls. The mode a unit is made for reaches a module that serves more than one mode as
   `T.options.mode`.
 - **Page shell and host.** `/qapps/**` is `webroot/screen/webroot/qapps.xml` (`allow-extra-path`) and renders `includes/WebrootVue.qvt.html.fancy`
@@ -422,13 +456,13 @@ A summary of slices 0 to 8 first, then the notes appended slice by slice.
   actions and the actions of the sections it reaches, and answers the package; `GET {screen}/actions/{form}` answers a form-list. `display-entity`, `entity-options`,
   `list-options` and `dynamic-options` without `server-search` are looked up on the server (`list-options` too, which the plan left in the template), and a `set` in a field runs
   there. Differences from the plan: credential names are stripped at any depth; `include-screen` is written inline in the including template (and its actions run in the
-  package) instead of a child component; tree node JSON is a 501 and form-list aggregation is not done (the report names screens that need them); first/second/last rows, row
+  package) instead of a child component; a static form-list leaves out sub-list fields and the total row (the report names screens that have them); first/second/last rows, row
   selection, saved finds, the column picker, the csv, text and pdf buttons, a multi form and `button-menu` are not written in a static template; the non-qvt modes get the cache header
   when the screen names them, and the automatic subscreens-only case gets it for qvt only (a page of html holds the navbar of the user). `webapp_qvt_static_only=true` loads
   `vue.runtime.global.prod.js`, and waits for the `m-*` components and the shell to be precompiled before it can be used: they still have string templates.
   The report is `moqui lint --screens --qvt-static [report-file]` (one block for each screen file: location, mode, verdict, reasons and violations; it does not fail the
-  process) and `screen::statics::static_report` with `full` for the render with the wrapped `ec`. Over this tree 128 screens: 73 clean, 38 with violations, 14 stay a server merge,
-  3 (the Groovy screens) do not load. `ArtifactGroupDetail` is clean, and Gate 3 marks it with a `screen-extend` in its own runtime.
+  process) and `screen::statics::static_report` with `full` for the render with the wrapped `ec`. Over this tree 128 screens (measured 2026-10-14): 76 clean, 38 with violations, 14 stay a server
+  merge. `ArtifactGroupDetail` is clean, and Gate 3 marks it with a `screen-extend` in its own runtime.
 - **Slice 8, the Gate 3 harness.** `tests/gate3.rs` and `tests/gate3_browser.rs` share the seeded server in `tests/common/mod.rs`: one embedded
   Postgres, the seed load (framework files and each component's `data` directory, so the themes, pagination text and the tools app groups are
   rows without a by-location load), the demo users, and three screens of the test runtime (`GateCompanion`, `GateWidgets` with click to edit,
@@ -635,6 +669,8 @@ Phase 11 was built in slices on branch `phase11`, then reviewed against the Java
   - `EdiHandler` in core, with a script global.
   - The `EtlLoader` try-insert is an upsert or `create_or_update`, as in the data loader, because a failed statement marks the transaction rollback-only.
   - EDI structure files are JavaScript expressions, so mantle's `X12*.groovy` grammars need that conversion. Script code calls `EdiHandler.makeAk3(segmentError)`.
+  - The Groovy pre-scan for a tree outside this repository is `moqui lint --groovy <dir> ...` (screens, forms, services, ECA rules and data files; it lists the `.groovy` files and fails nothing). `moqui convert --groovy [--write] <dir> ...` makes the mechanical rewrites in the expression places of XML: Groovy map literals become objects, `context + [...]` becomes `Object.assign({}, context, {...})`, Elvis becomes `||` (not before a ternary at its depth), and each grammar file gets a `.js` copy that the locations then name. A map after any other `+` is left, since in JavaScript it would join text. Without `--write` it prints each change. The six mantle-edi grammars, converted, are fixtures in `edi/testdata/mantle` and load in `EdiHandler`.
+  - Measured on 2026-10-14 against the mantle repositories, which were not changed. Lint sites (files): mantle-usl `context-plus` 85 (28), Elvis 629 (53), map literal 1598 (63); SimpleScreens `context-plus` 26 (18), Elvis 798 (164), map literal 976 (214); mantle-udm Elvis 41 (2); mantle-edi Elvis 16 (4), map literal 121 (4), and the 6 grammars. A dry `convert --groovy` over the four makes 2513 map-literal, 111 `context-plus` and 1504 Elvis rewrites in 326 files, rewrites 15 grammar locations, and leaves 72 places for review.
   - In Java, a configuration added with `addConfiguration` never runs. Here it runs.
 - **Type generation.**
   - `moqui types [--out dir]` sits beside `load` and `lint`, because there is no `run` command.
@@ -646,7 +682,7 @@ Phase 11 was built in slices on branch `phase11`, then reviewed against the Java
   - Entity lists index, have `length`, and support `for...of`, `map`, `filter` and `forEach`.
   - A method name wins over a field name.
   - Reading an unknown name gives `undefined`, where Java throws. Writing one throws, and so does `.set`.
-  - `list[0]` is a copy, so `list[0].x = y` does not change the list. `plans/ContextObjects.md` has the rules.
+  - `list[0]` is the row of the list, so `list[0].x = y` and a `<set>` on an `<iterate>` entry change the list, as in Groovy. `plans/ContextObjects.md` has the rules.
 - **Artifact hits.**
   - Hits are counted when an artifact frame pops (`context/hits.rs`), not by a `tracing` subscriber.
   - The scheduler tick writes `ArtifactHit` and `ArtifactHitBin` on a reserve connection, and shutdown flushes what is left.
@@ -686,9 +722,8 @@ Fixed after the review against Java. Several of these predate phase 11:
   - Holding is on only for `cache` and `force-cache`. `use-transaction-cache="false"` turns it off.
   - `in_transaction()` is Java's `isTransactionInPlace`.
   - The ETL loader begins a transaction on every entity group it writes.
-  - Still different from Java:
-    - `ignore` suspends the outer transaction, where Java runs inside it.
-    - The `no-tx-cache` service attribute is not parsed.
+  - `ignore` runs inside the transaction in place, as in Java, and an error in it marks that transaction rollback-only. `ignore` plus `force-new` (`TransactionAttribute::IgnoreSuspend`) suspends it and runs with none.
+  - `no-tx-cache="true"` writes the frame's held rows and stops holding before the service runs, as Java's `flushAndDisableTransactionCache`. It acts on the manager of the service's entity group.
 - **Authorization.**
   - Service and entity REST push an `AT_REST_PATH` frame for each path segment, as `RestApi` does. The `/rest/s1/moqui` ADMIN rule and the grants it passes down now apply.
   - Login checks `ipAllowed` on the account and its groups.

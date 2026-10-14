@@ -74,6 +74,8 @@ declare function compare(
 ): boolean;
 /** `ObjectUtilities.basicConvert`: `type` is a Java type name such as `BigDecimal`. */
 declare function basicConvert(value: unknown, type: string): unknown;
+/** A decimal from a decimal, a number or numeric text; anything else throws. */
+declare function toDecimal(value: Decimal | number | string): Decimal;
 declare function orderMapList(list: unknown[] | null, fields: string[]): void;
 declare function filterMapList(list: unknown[] | null, values: MoquiMap): void;
 declare function filterMapListByDate(

@@ -18,6 +18,7 @@
 //! `url` resolves a path against the tree, and `render` runs actions and sends the response.
 //! `dispatch` holds the Rust bodies for the `rest.xml` transitions. Widgets are slice 2.
 
+pub(crate) mod aggregate;
 mod cache;
 mod definition;
 mod dispatch;
@@ -27,12 +28,14 @@ pub mod info;
 pub(crate) mod menu;
 mod pdf;
 mod render;
+pub(crate) mod saved_finds;
 mod schema;
 mod screen_test;
 pub(crate) mod sri;
 pub mod static_ast;
 pub mod static_files;
 pub mod statics;
+pub(crate) mod tree;
 mod url;
 pub(crate) mod urls;
 pub mod vue_check;
@@ -49,8 +52,8 @@ use crate::web::{self, WebRequest, WebResponse};
 
 pub use cache::{canonical_render_mode, ConfScreen, ScreenConf, ScreenFacade, TextOutput};
 pub use definition::{
-    Actions, Authentication, Condition, FormDef, ParameterDef, ResponseDef, ResponseKind, ScreenDef, SectionDef,
-    SectionKind, Subscreens, SubscreensItem, TransitionDef, TreeDef, WebSettings, XmlFragment,
+    Actions, Authentication, Condition, FormDef, Implicit, ParameterDef, ResponseDef, ResponseKind, ScreenDef,
+    SectionDef, SectionKind, Subscreens, SubscreensItem, TransitionDef, TreeDef, WebSettings, XmlFragment,
 };
 #[cfg(test)]
 pub(crate) use pdf::pdf_test_lock;

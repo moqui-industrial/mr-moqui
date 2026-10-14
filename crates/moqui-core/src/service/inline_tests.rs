@@ -39,10 +39,32 @@ const SERVICES: &str = r#"<services>
         <in-parameters><parameter name="note"/></in-parameters>
         <out-parameters><parameter name="note"/></out-parameters>
     </service>
+    <service verb="inline" noun="MarkOrFail" authenticate="false">
+        <in-parameters><parameter name="id"/></in-parameters>
+        <actions>
+            <if condition="id == 'BAD'"><return error="true" message="bad row"/></if>
+            <entity-make-value entity-name="moqui.test.TestEntity" value-field="made"/>
+            <script>made.set("testId", id); made.set("testMedium", "made");</script>
+            <entity-create value-field="made"/>
+        </actions>
+    </service>
+    <service verb="inline" noun="IgnoreFail" authenticate="false" transaction="ignore">
+        <actions><return error="true" message="ignore failed"/></actions>
+    </service>
+    <service verb="inline" noun="NoCache" authenticate="false" no-tx-cache="true">
+        <in-parameters><parameter name="id"/></in-parameters>
+        <out-parameters><parameter name="found"/></out-parameters>
+        <actions>
+            <script>found = ec.entity.find("moqui.test.TestEntity").condition("testId", id).useCache(false).one() != null ? "Y" : "N"</script>
+        </actions>
+    </service>
 </services>"#;
 
 fn inline_context() -> (EntityFacade, ExecutionContext) {
-    let path = std::env::temp_dir().join(format!("moqui-svc-inline-executor-{}.xml", std::process::id()));
+    // A file of its own for each test: tests run at once, and one writing the file another reads is a parse error.
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("moqui-svc-inline-executor-{}-{next}.xml", std::process::id()));
     std::fs::write(&path, SERVICES).unwrap();
     let facade = crate::testing::open();
     let ctx = ExecutionContextFactory::test_context_with("", ServicePools::inline());
@@ -176,4 +198,74 @@ fn an_inline_boot_starts_no_pool_and_no_deadline_timer() {
     drop(ctx);
     drop(factory);
     let _ = std::fs::remove_dir_all(&runtime);
+}
+
+#[test]
+fn an_ignore_service_runs_in_the_callers_transaction_and_its_error_marks_it() {
+    let (facade, ctx) = inline_context();
+    let _entered = ctx.enter();
+    let _authz = ctx.disable_authz();
+    let tx = facade.transactions_for("moqui.test.TestEntity").unwrap();
+    assert!(tx.begin(None).unwrap());
+    super::sync("inline#IgnoreFail", &BTreeMap::new()).unwrap();
+    assert!(tx.in_transaction(), "ignore left the caller's transaction in place");
+    let err = tx.commit().expect_err("the caller's transaction is rollback-only");
+    assert!(err.to_string().contains("inline#IgnoreFail"), "{err}");
+    ctx.message().clear();
+}
+
+#[test]
+fn a_no_tx_cache_service_sees_the_rows_the_caller_held() {
+    let (facade, ctx) = inline_context();
+    let _entered = ctx.enter();
+    let _authz = ctx.disable_authz();
+    let tx = facade.transactions_for("moqui.test.TestEntity").unwrap();
+    tx.run(crate::transaction::TransactionAttribute::Cache, None, || {
+        super::sync("inline#Mark", &mark("NC", "none"))?;
+        assert!(tx.transaction_cache_active());
+        let mut id = BTreeMap::new();
+        id.insert("id".into(), Value::string("NC"));
+        let out = super::sync("inline#NoCache", &id)?;
+        assert_eq!(out.get("found"), Some(&Value::string("Y")));
+        assert!(!tx.transaction_cache_active(), "no-tx-cache stops holding");
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(medium(&facade, "NC").as_deref(), Some("missing"));
+}
+
+#[test]
+fn a_multi_call_runs_each_row_in_one_transaction() {
+    let (facade, ctx) = inline_context();
+    let _entered = ctx.enter();
+    let _authz = ctx.disable_authz();
+    crate::script::run_script(
+        r#"ec.service.sync().name("inline#Mark").parameters({id_0: "MU0", after_0: "none", id_1: "MU1", after_1: "MU0",
+            id_2: "MU2", after_2: "none", _useRowSubmit_2: "true"}).multi(true).call()"#,
+    )
+    .unwrap();
+    assert_eq!(medium(&facade, "MU0").as_deref(), Some("missing"));
+    assert_eq!(
+        medium(&facade, "MU1").as_deref(),
+        Some("seen"),
+        "row 1 sees row 0 in the same transaction"
+    );
+    assert_eq!(
+        medium(&facade, "MU2"),
+        None,
+        "a row that uses row submit without _rowSubmit_2 is skipped"
+    );
+    // An error in a row stops the rows and rolls back the ones before it.
+    crate::script::run_script(
+        r#"ec.service.sync().name("inline#MarkOrFail").parameters({id_0: "MV0", id_1: "BAD", id_2: "MV2"}).multi(true).call()"#,
+    )
+    .unwrap();
+    assert!(
+        ctx.message().errors().iter().any(|error| error.contains("bad row")),
+        "{:?}",
+        ctx.message().errors()
+    );
+    assert_eq!(medium(&facade, "MV0"), None, "row 0 rolled back with the failed row 1");
+    assert_eq!(medium(&facade, "MV2"), None, "the rows after the error do not run");
+    ctx.message().clear();
 }

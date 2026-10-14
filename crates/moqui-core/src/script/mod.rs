@@ -16,6 +16,7 @@
 
 mod actions;
 mod bounded;
+pub mod groovy_convert;
 mod parse;
 mod runtime;
 pub mod screen_lint;
@@ -30,7 +31,7 @@ pub use parse::parse_js;
 pub(crate) use runtime::with_ctx as walker_context;
 pub use runtime::{
     clear_context_stack, context_value, eval_map, eval_value, expand, push_context_frame, run_script,
-    run_script_location, set_context_name, set_widget_wrap,
+    run_script_location, script_list_values, set_context_name, set_widget_wrap,
 };
 pub(crate) use runtime::{
     context_combined, pop_context_frame, put_context_all, value_entity_name, value_field, value_items, value_map,

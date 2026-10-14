@@ -225,6 +225,16 @@ fn every_tools_screen_renders_in_html_for_an_admin() {
         "/System/Print/PrintJob/PrintJobDetail?printJobId=GATE_PJ",
     );
     assert!(job.contains("Gate job") && job.contains("Not Sent"), "{job}");
+    // ServiceRun's parameter form is auto-fields-service: a field for each in-parameter, the date one a date-time.
+    let (_, run) = get(
+        address,
+        &john,
+        "/Tools/Service/ServiceRun?serviceName=org.moqui.impl.BasicServices.convert%23Uom",
+    );
+    for name in ["amount", "uomId", "toUomId", "effectiveDate"] {
+        assert!(run.contains(&format!("name=\"{name}\"")), "{name}: {run}");
+    }
+    assert!(run.contains("type=\"datetime-local\""), "{run}");
 }
 
 /// Users for the SQL runners: one in ADMIN without ADMIN_ADV (the Tools app but not `SQL_RUNNER_WEB`), one in no

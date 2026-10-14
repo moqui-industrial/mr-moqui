@@ -275,14 +275,30 @@ pub fn unit_for(ctx: &Ctx<'_>, request: &UnitRequest<'_>) -> Result<Option<Arc<U
                         return Ok(None);
                     }
                     let form_name = node.attribute("name").unwrap_or_default();
-                    if request.def.forms.get(&form_name).is_some_and(|form| form.dynamic) {
-                        // Its fields depend on the context, so the call that renders it assembles it then.
+                    if request.def.forms.get(&form_name).is_some_and(|form| form.dynamic)
+                        || form::has_db_extensions(&request.def.location, &form_name)
+                    {
+                        // Its fields depend on the context or on the user's DbForms, so the call that renders it
+                        // assembles it then.
                         let call = MNode::new("render-dynamic-form");
                         call.set_attribute("name", form_name);
                         return Ok(Some(call));
                     }
                     let assembled = form::assemble(request.facade, request.factory, request.def, &form_name)?;
-                    assembled.node().map(Some)
+                    let node = assembled.node()?;
+                    // The user may have chosen this form-list's columns: the render asks, and runs this code only when not.
+                    if name == "form-list"
+                        && request.mode != super::statics::UNIT_MODE
+                        && (node.attribute("select-columns").as_deref() == Some("true")
+                            || node.attribute("saved-finds").as_deref() == Some("true"))
+                    {
+                        node.set_attribute("mq-assembled", "true");
+                        let wrapper = MNode::new("form-list-user-columns");
+                        wrapper.set_attribute("name", form_name);
+                        wrapper.append_node(node);
+                        return Ok(Some(wrapper));
+                    }
+                    Ok(Some(node))
                 };
                 let body = generate_body(ctx, &loaded, &root, Some(&resolve), request.mode).map_err(|err| {
                     Error::new(format!(

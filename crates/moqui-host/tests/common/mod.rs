@@ -74,6 +74,8 @@ const WIDGETS: &str = r#"<screen require-authentication="false">
         <default-response type="none"/></transition>
     <transition name="saveNote"><actions><script>ec.web.sendJsonResponse({note: note || '', when: when || '', kind: kind || '', tags: tags || ''})</script></actions>
         <default-response type="none"/></transition>
+    <transition name="checkCode"><actions><script>if (!/\d/.test(code || '')) ec.message.addValidationError(null, 'code', null, 'Code needs a digit', null)</script></actions>
+        <default-response url="."/></transition>
     <transition name="formSelectColumns"><actions><script>ec.web.sendJsonResponse({columnsTree: columnsTree || ''})</script></actions>
         <default-response type="none"/></transition>
     <actions>
@@ -91,6 +93,10 @@ const WIDGETS: &str = r#"<screen require-authentication="false">
             <field name="tags"><default-field title="Tags"><drop-down allow-multiple="true">
                 <option key="X" text="Ex"/><option key="Y" text="Why"/></drop-down></default-field></field>
             <field name="submitButton"><default-field title="Send"><submit/></default-field></field>
+        </form-single>
+        <form-single name="CodeForm" transition="checkCode" background-submit="true" background-message="Code saved">
+            <field name="code"><default-field title="Code"><text-line/></default-field></field>
+            <field name="checkButton"><default-field title="Check"><submit/></default-field></field>
         </form-single>
         <form-list name="EnumList" list="enumList" select-columns="true">
             <field name="enumId"><header-field title="Enum ID" show-order-by="true"/><default-field><display/></default-field></field>

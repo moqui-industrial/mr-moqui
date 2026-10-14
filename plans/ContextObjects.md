@@ -77,8 +77,8 @@ These are the types a script can hold. Plain maps and lists that are already pla
 | `ec` | Host object | The `ExecutionContext` and its facades |
 | `sri` | Host object, only while a server screen render is on the stack | The screen renderer. Absent in actions that are not a render, and absent in the browser |
 | entity value | Host object. Fields read and write as properties (`value.statusId`, `value['statusId']`, `value.statusId = x`, `value?.statusId`) and with `get` and `set` | The entity value. `unwrap` is what the locked-down template, JSON, and the browser receive instead. Property access follows Java `EntityValueBase.get` and `put` as Groovy map property syntax reaches them; see the rules below the table |
-| entity list | Host object, index, length, iterable, `size()`, `isEmpty()`, `map`, `filter`, `forEach` | The list. `map` returns a JavaScript array so `list.map(x => x.field)` works without copying first. An index or `get` returns a new host object over a copy of the value: a field set on `list[0]` is not kept in the list |
-| decimal, timestamp | Host values | `rust_decimal` and `jiff` from `moqui-lib`. Not JavaScript numbers. Operators are not overloaded. `valueOf` throws an error naming the method to use, and `toString` prints, so `` `${decimal}` `` interpolation works. `+`, relational operators, and `==` against a number or a string throw. `==` between two decimals does not call `valueOf` and is reference equality, so it returns false. A decimal is always truthy, including zero, so `if (amount)` and `amount || fallback` do not match Groovy. The host methods are `add`, `subtract`, `multiply`, `divide`, `eq`, `compare`, and `isZero`. `divide` uses scale `max(left, right, 10)`. Checked operations return a script error when the 28-digit coefficient overflows. The browser package and the locked-down template still receive a decimal as a string. A server-static expression that does decimal arithmetic is a compatibility-report violation (`plans/QvtServerStatic.md`). That is the migration rule in `plans/Architecture-Proposal.md` |
+| entity list | Host object, index, length, iterable, `size()`, `isEmpty()`, `map`, `filter`, `forEach` | The list. `map` returns a JavaScript array so `list.map(x => x.field)` works without copying first. Each row is shared: an index, `get`, `for...of`, `map`/`filter`/`forEach`, `getPartialList`, `filterByDate` and an `<iterate>` entry give the row itself, so a field set on `list[0]` is kept in the list, as in Groovy. The rows are copied from the find's result when the list reaches a script, so the entity cache's list does not change. `list[0] === list[0]` is still false: each read is a new host object over the same row |
+| decimal, timestamp | Host values | `rust_decimal` and `jiff` from `moqui-lib`. Not JavaScript numbers. Operators are not overloaded. `valueOf` throws an error naming the method to use, and `toString` prints, so `` `${decimal}` `` interpolation works. `+`, relational operators, and `==` against a number or a string throw. `==` between two decimals does not call `valueOf` and is reference equality, so it returns false. A decimal is always truthy, including zero, so `if (amount)` and `amount || fallback` do not match Groovy. The host methods are `add`, `subtract`, `multiply`, `divide`, `eq`, `compare`, `isZero`, and `toNumber`. The other side of `add` through `compare` is a decimal, a JavaScript number, or numeric text (`amount.compare(70)`); a number that is not finite or other text throws. `toNumber()` is the explicit way to a JavaScript number when float rounding is acceptable (`Math.round`, `Number` APIs); `Number(amount)` still throws. The global `toDecimal(x)` makes a decimal from the same inputs. `divide` uses scale `max(left, right, 10)`. Checked operations return a script error when the 28-digit coefficient overflows. The browser package and the locked-down template still receive a decimal as a string. A server-static expression that does decimal arithmetic is a compatibility-report violation (`plans/QvtServerStatic.md`). That is the migration rule in `plans/Architecture-Proposal.md` |
 | `ObjectUtilities`, `CollectionUtilities`, `StringUtilities` | The same helpers the generated script header calls today | Functions in lib, bound once per runtime. The proxy returns them when the stack has no such key. They are not own properties of `globalThis` |
 
 Entity value properties. The value is a QuickJS exotic class object (rquickjs `class(exotic)`), not a JavaScript `Proxy`, so it stays the same host object for `js_to_host` and costs one prototype lookup and one field map lookup for a field the value holds.
@@ -89,7 +89,7 @@ Entity value properties. The value is a QuickJS exotic class object (rquickjs `c
 - Any other name reads as undefined. Java throws there, but the engine and scripts look up names a value does not have (`toJSON`, `then`, `Symbol.toPrimitive`, `constructor`), and a throw would break `JSON.stringify`, `await`, and template text. `get` of an unknown name stays null.
 - Writing a name that is not a field of the entity is an error, `The field name x is not valid for entity y`, as Java `put` throws. `set` checks the same way. When no entity definition can be reached every name is set.
 - `name in value` is a prototype member or a field of the entity. `Object.keys`, `for...in`, spread and `JSON.stringify` see the fields the value holds, in name order. `delete value.field` does nothing.
-- An entity list is exotic too, for `list[0]` and `length`. Assigning to a list property is ignored.
+- An entity list is exotic too, for `list[0]` and `length`. Assigning to a list property is ignored. `ec.context.get(name)` gives the same list or map a bare `name` reads, so its writes reach the stack; `context.name` is still a snapshot.
 
 `ec.entity`, `ec.service`, and the rest of the facade surface are the Server host methods section. They exist only on this QuickJS object. The browser `ec` is the table in `plans/QvtServerStatic.md` and does not grow to match the server object. `sri` is not added to the browser.
 
@@ -202,13 +202,15 @@ template still works.
   `Enumeration.enumCode` of the theme type, which is simpler than Java: user group themes and the `DEFAULT` lookup
   are not read.
 
-`sri`, intentionally deferred to the html slices because only their macros call them: `getFieldTransitionValue` and
-the server-side `dynamic-options` (both run a transition as a test render), `makeFormListSingleMap`,
+`sri`, intentionally deferred to the html slices because only their macros call them: the server-side `dynamic-options`
+(which runs a transition as a test render, as `getFieldTransitionValue` now does), `makeFormListSingleMap`,
 `makeFormListMultiMap`, `getFormListHeaderValues`, `getFormFieldValues`, `startFormListSubRow`, `endFormListSubRow`,
 `getFormInstance().makeFormListRenderInfo()`, and the screen definition's `getMenuSubscreensItems`.
-Form-list `group-by`, `sub-list`, `show-total`, saved finds and `select-columns` are deferred with them.
-`auto-fields-service`, `auto-widget-service`, `DbForm` forms and `dynamic="true"` forms are not assembled. A related
-entity's drop-down in `auto-fields-entity` is a text widget.
+Form-list `group-by`, `sub-list` and `show-total`, saved finds and `select-columns` are done (`sri.formListSubRowCount`,
+`sri.startFormListSubRow`, `sri.endFormListSubRow`, `sri.getUserFormListFinds`, `sri.getUserDefaultFormListFindId`,
+`sri.renderUserColumnsForm`).
+`auto-fields-service`, `auto-widget-service`, `DbForm` forms and `dynamic="true"` forms are assembled (Phase 8 notes in
+`plans/Implementation-Phases.md`). A related entity's drop-down in `auto-fields-entity` is a text widget.
 
 `ec` and statics, added now:
 
@@ -304,8 +306,8 @@ The qvt mode, its shell and the menu data.
   is the render mode for a module that serves more than one (`ScreenPlain.js`).
 - Response headers of the qvt family: `Cache-Control: private, no-store`, and `X-Moqui-Qvt: merged-fragment` for `qvt`.
 - `screen::vue_check::compile_errors(compiler_source, templates)`: the vendored Vue compiler in a QuickJS runtime of its own, for tests and the compatibility report.
-- Still deferred: `getFieldTransitionValue` (a `dynamic-options` label for a value that has no option is the value), `getUserFormListFinds` and the saved find list,
-  `getFormInstance().getFieldValidationJsRules` (the rules come from `getFieldValidation`: number, digits and a pattern).
+- `sri.getFieldTransitionValue(transition, node, term, labelField, alwaysGet)` and `sri.getFieldValidationJsRules(sub)` (`[{expr, message}]`),
+  added after Phase 11 for the `dynamic-options` label and the qvt field rules.
 
 ### Added by phase 8 slice 7
 

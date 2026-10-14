@@ -638,19 +638,41 @@ fn deadline_timer_cancels_without_poll() {
 }
 
 #[test]
-fn run_ignore_suspends_and_cache_follows_the_attribute() {
+fn run_ignore_joins_ignore_suspend_suspends_and_cache_follows_the_attribute() {
     let (mgr, driver) = harness(small());
     let _clean = Clean(&mgr);
+    // Nothing in place: ignore begins nothing.
+    mgr.run(TransactionAttribute::Ignore, None, || {
+        assert!(!mgr.in_transaction());
+        Ok(())
+    })
+    .expect("ignore alone");
     assert!(mgr.begin(None).expect("begin"));
     let enlisted = mgr.with_connection(conn_id).expect("enlist");
+    // In place: ignore runs inside it, on the same connection, as Java.
     mgr.run(TransactionAttribute::Ignore, None, || {
+        assert!(mgr.in_transaction());
+        assert_eq!(mgr.with_connection(conn_id)?, enlisted);
+        Ok(())
+    })
+    .expect("ignore joins");
+    mgr.run(TransactionAttribute::IgnoreSuspend, None, || {
         assert!(!mgr.in_transaction());
         assert!(!mgr.transaction_cache_active());
         Ok(())
     })
-    .expect("ignore");
+    .expect("ignore suspend");
     assert_eq!(mgr.with_connection(conn_id).expect("resumed"), enlisted);
     mgr.commit().expect("commit");
+
+    // An error under ignore marks the transaction in place rollback-only.
+    assert!(mgr.begin(None).expect("begin"));
+    let failed = mgr.run(TransactionAttribute::Ignore, None, || -> Result<(), Error> {
+        Err(Error::new("body failed"))
+    });
+    assert!(failed.is_err());
+    let err = mgr.commit().expect_err("rollback-only commit");
+    assert!(err.to_string().contains("body failed"), "{err}");
 
     mgr.run(TransactionAttribute::UseOrBegin, None, || {
         assert!(!mgr.transaction_cache_active());

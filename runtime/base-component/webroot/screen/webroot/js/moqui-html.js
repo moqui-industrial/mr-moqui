@@ -173,16 +173,52 @@
         });
     };
 
+    // A background submit asks for JSON. The validation errors of this form's own fields are shown by the field, with the markup
+    // the html form macros write after a redirect; the other messages and errors become toasts.
+    const clearFieldErrors = (form) => {
+        $$(".field-error[data-bg-error]", form).forEach((node) => node.remove());
+        $$(".field[data-invalid][data-bg-error]", form).forEach((node) => { node.removeAttribute("data-invalid"); node.removeAttribute("data-bg-error"); });
+    };
+    const placeFieldErrors = (form, list) => {
+        const placed = [];
+        const formName = form.elements.moquiFormName ? form.elements.moquiFormName.value : null;
+        (list || []).forEach((ve) => {
+            if (!ve || !ve.field || (ve.form && formName && ve.form !== formName)) return;
+            const input = form.elements[ve.field];
+            const target = input && (input.length !== undefined && !input.tagName ? input[0] : input);
+            const box = target && target.closest ? target.closest(".field") : null;
+            if (!box) return;
+            if (!box.hasAttribute("data-invalid")) box.setAttribute("data-invalid", "");
+            box.setAttribute("data-bg-error", "");
+            const widget = box.querySelector(".widget") || box;
+            widget.appendChild(el("div", { class: "field-error", role: "alert", "data-bg-error": "" }, ve.message));
+            placed.push(ve.message);
+        });
+        return placed;
+    };
+    const notifyFromJson = (form, json) => {
+        (json.messageInfos || []).forEach((info) => notify(info.message, info.type === "danger" || info.type === "error" ? "danger" : info.type));
+        const placed = placeFieldErrors(form, json.validationErrors);
+        const errors = Array.isArray(json.errors) ? json.errors : (json.errors ? String(json.errors).split("\n") : []);
+        errors.filter((line) => line && placed.indexOf(line) === -1).forEach((line) => notify(line, "danger"));
+        return errors.length > 0;
+    };
+
     const submitBackground = (form, submitter) => {
         const data = new FormData(form, submitter);
         data.set("moquiSessionToken", sessionToken());
-        return request(form.action, { method: (form.method || "post").toUpperCase(), body: data }).then((response) => response.text().then((text) => {
-            notifyFromHtml(text);
-            if (!response.ok) { notify(response.status + " " + response.statusText, "danger"); return; }
-            if (form.dataset.msg) notify(form.dataset.msg, "success");
-            if (form.dataset.reload) { const target = doc.getElementById(form.dataset.reload); if (target) load(target); }
-            if (form.dataset.hide) { const dialog = doc.getElementById(form.dataset.hide); if (dialog && dialog.close) dialog.close(); }
-        })).catch((err) => notify(String(err.message || err), "danger"));
+        clearFieldErrors(form);
+        return request(form.action, { method: (form.method || "post").toUpperCase(), body: data, headers: { Accept: "application/json, text/html;q=0.9" } })
+            .then((response) => response.text().then((text) => {
+                const json = (response.headers.get("Content-Type") || "").indexOf("json") !== -1 ? parseJson(text, null) : null;
+                let failed = !response.ok;
+                if (json && typeof json === "object") failed = notifyFromJson(form, json) || failed;
+                else notifyFromHtml(text);
+                if (failed) { if (!json) notify(response.status + " " + response.statusText, "danger"); return; }
+                if (form.dataset.msg) notify(form.dataset.msg, "success");
+                if (form.dataset.reload) { const target = doc.getElementById(form.dataset.reload); if (target) load(target); }
+                if (form.dataset.hide) { const dialog = doc.getElementById(form.dataset.hide); if (dialog && dialog.close) dialog.close(); }
+            })).catch((err) => notify(String(err.message || err), "danger"));
     };
 
     const initForm = (form) => {
