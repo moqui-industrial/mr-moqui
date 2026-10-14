@@ -30,8 +30,8 @@ The application will support:
 | Runtime schema           | FlatBuffers `.bfbs`                                     |
 | Schema compiler          | `flatc`                                                 |
 | Rust reflection          | `flatbuffers-reflection`, extended only where necessary |
-| Browser client           | TypeScript, `flatbuffers` npm package                   |
-| Browser reflection       | Small shared runtime schema interpreter                 |
+| Browser client           | TypeScript UI + Emscripten-generated JavaScript bindings |
+| Browser reflection       | Shared Rust reader/writer compiled to Emscripten WASM    |
 | Schema registry          | Authoritative database + immutable in-memory caches     |
 | Fan-out payload          | `bytes::Bytes` with shared ownership                    |
 | Document synchronization | Snapshots + revisioned patches                          |
@@ -150,7 +150,7 @@ Binary WebSockets
 
 Browser clients
 
-TypeScript reflection · Schema cache · In-place document views
+Emscripten WASM reflection · Schema cache · Lazy document views
 
 Do not introduce a separate distributed schema-registry service initially unless the existing database cannot provide atomic schema publication. A versioned table and process-local immutable caches are sufficient to begin.
 
@@ -166,7 +166,7 @@ crates/moqui-host/src/gateway/   # sockets, routing, fan-out, backpressure, REST
 crates/moqui-host/src/schema/    # restricted flatc process execution
 ```
 
-These are logical modules inside the existing crates, not new independently deployed services. Framework-independent descriptors and readers/writers belong in lib; Moqui metadata resolution, authorization, registry persistence and compatibility policy belong in core. Host supplies compiler process execution. Schema publication is a command of the existing `moqui` binary, not a separate executable. Browser reflection, schema caching and document-store modules live in the existing browser source tree. Keep protocol schemas, cross-language fixtures and benchmarks alongside those modules.
+These are logical modules inside the existing crates, not new independently deployed services. Framework-independent descriptors and readers/writers belong in lib; Moqui metadata resolution, authorization, registry persistence and compatibility policy belong in core. Host supplies compiler process execution. Schema publication is a command of the existing `moqui` binary, not a separate executable. Browser JavaScript bindings, worker/host adapters and document-store modules live in the existing browser source tree; the shared reflection implementation stays in Rust lib and is compiled into the WASM module. Keep protocol schemas, cross-language fixtures and benchmarks alongside those modules.
 
 The essential interfaces should be small:
 
@@ -559,11 +559,38 @@ Validate declared outputs and encode directly from returned Rust/QuickJS values 
 
 ## 8. Implementing the dynamic browser reader and writer
 
+### Shared Rust runtime through Emscripten
+
+Follow `plans/Wasm.md`: compile the portable Rust core with `wasm32-unknown-emscripten`, and use Emscripten-generated JavaScript bindings for browser host integration, following the SQLite WASM pattern. Share the schema-driven FlatBuffers verifier, reader, writer and declarative constraints with the server rather than maintaining a separate TypeScript reflection implementation. TypeScript remains the UI and transport integration layer.
+
+Run the module in a dedicated Web Worker so verification, encoding and local framework execution do not block the UI. The flow is:
+
+```text
+Browser WebSocket/fetch → bounded worker message queue
+→ copy binary input into WASM-owned memory
+→ shared Rust schema verification and lazy field views
+→ local operation or UI projection
+→ Rust FlatBuffers encoding → JavaScript transport → authoritative server
+```
+
+Transfer `ArrayBuffer`s between workers where possible; transferring ownership does not eliminate the copy into WASM linear memory. Keep verified buffers and immutable descriptors alive behind explicit handles, expose field/batch access through generated bindings, and release handles when consumers finish. Do not retain JavaScript typed-array views across WASM memory growth without refreshing them. Structured reads are zero-copy within WASM memory, not end-to-end from browser networking; string decoding and UI projection still allocate. Bound worker queues, retained buffers and schema/storage caches.
+
+Emscripten supplies the interop machinery, not automatic portability of Tokio, native database drivers or thread-local transactions. Browser host adapters must explicitly provide:
+
+- **Networking:** JavaScript WebSocket/fetch adapters carry the same binary envelopes, schema IDs, request IDs and revision rules as native callers. Tokio/Axum remains server-only.
+- **Async execution:** Asyncify or JSPI suspends/resumes WASM when an adapter awaits a browser operation. Qualify browser support and build settings; do not assume native Tokio spawning works. Keep each execution context and transaction owned by its worker, serialize access while suspended, and clean up on completion, cancellation or failure.
+- **Storage:** An explicit filesystem/database adapter uses OPFS for local schema caches, snapshots and optional offline state, following the SQLite WASM pattern. Emscripten does not automatically make every filesystem write durable in OPFS. Define flush, quota, eviction and recovery behavior; local transactions are not server transactions.
+- **Threads:** Start with one execution worker. If pthreads are required, qualify Rust dependencies and Emscripten proxying, and serve the cross-origin-isolation headers needed for shared memory; retain a non-pthread path for unsupported deployments. JavaScript and execution-context values never cross workers directly.
+
+Only browser-portable framework operations run locally; server-only facades return explicit unsupported-operation errors or invoke authorized remote operations. Local validation and cached state never grant authority to commit writes: the server repeats verification, authorization, revision checks and transactional validation. Offline mutations are pending requests, not committed revisions; reconnect submits them through the existing conflict/idempotency path. `flatc` and schema publication remain server-side; browsers load immutable `.bfbs` without rebuilding WASM.
+
+### Reader and writer bindings
+
 The browser package needs two distinct capabilities.
 
 ### Reader
 
-Generate TypeScript bindings for `reflection.fbs` at build time. Those bindings decode the `.bfbs` descriptor, not the dynamic document itself.
+Load `.bfbs` through the shared Rust descriptor parser in WASM. Generated JavaScript bindings expose schema and document handles, not generated bindings for each dynamic document.
 
 The browser reader then performs these operations:
 
@@ -582,7 +609,7 @@ This is the desired custom API.
 
 Do not generate a JavaScript object graph during `open()`.
 
-The runtime stores the buffer, table location and schema descriptor. A nested field access creates a lightweight view.
+The WASM runtime stores the buffer, table location and schema descriptor; JavaScript holds an opaque document handle. A nested field access creates a lightweight view. The example API is an asynchronous worker facade; batch field reads where possible to avoid one worker round trip per scalar.
 
 ### Writer
 
@@ -604,7 +631,7 @@ encode(table_type, input):
 
 ```
 
-The official FlatBuffers builder should perform binary layout construction. The custom layer decides which field operations to invoke based on `.bfbs`.
+The shared Rust FlatBuffers builder performs binary layout construction in both native and WASM builds. The custom layer decides which field operations to invoke based on `.bfbs`; JavaScript bindings pass declared inputs without a JSON serialization intermediate.
 
 ### Limit the supported features deliberately
 
@@ -621,7 +648,7 @@ For the first production version, support:
 
 Postpone rarely needed features such as arbitrary unions, specialized fixed-layout structs, arrays and 64-bit vector layouts until the real Moqui metadata requires them.
 
-For large integer values, the browser must use `bigint`, not JavaScript `number`, to avoid precision loss.
+For large integer values, JavaScript bindings must preserve `bigint`, not coerce to JavaScript `number`; qualify Emscripten's 64-bit interop settings. Rust retains exact integer and decimal types inside WASM.
 
 ### Existing screen compatibility
 
@@ -1042,7 +1069,7 @@ For every fixture, benchmark:
 8. Memory allocated per stage.
 9. Delivery across many subscribers.
 
-Benchmarks must include both successful and malformed payloads.
+Benchmarks must include both successful and malformed payloads. Browser measurements include JavaScript-to-worker transfer, copying into/out of WASM memory, verification, binding calls, batched field reads and UI projection—not only Rust field access. Test memory growth, handle cleanup, async cancellation and OPFS quota/recovery failures.
 
 Add binary and JSON compatibility tests for REST, screen transitions and `/actions`, including descriptor retrieval, content negotiation, input/output schema mismatches, authentication/authorization, CSRF, parameter precedence, errors, redirects and revision conflicts. Verify that binary calls reach the same cached JavaScript and authoritative operations without a JSON intermediate. Cross-transport tests must verify that REST writes reach subscribers and that REST reads observe committed internal-message writes. Test lossless JSON/binary round trips for the new document APIs.
 
@@ -1096,7 +1123,7 @@ Use `cargo-fuzz` or equivalent fuzzing against the Rust reflective decoder and v
 
 Fuzz malformed buffers, malformed `.bfbs` files, deeply recursive descriptors, vector lengths, invalid unions and schema/version mismatches.
 
-Cross-language property tests should ensure that every valid document encoded in Rust can be read by TypeScript and vice versa.
+Native/WASM property tests should ensure that every valid document encoded in native Rust can be read by the browser WASM runtime and vice versa, including JavaScript binding round trips.
 
 ## 16. Explicit alternatives and decision rationale
 
@@ -1110,7 +1137,7 @@ Cross-language property tests should ensure that every valid document encoded in
 | Apache Avro                                       | Schema evolution is a core design feature                  | Not a general zero-copy object-traversal format                 |
 | Apache Arrow IPC                                  | Excellent columnar and batched zero-copy processing        | Poor fit for large numbers of small document mutations          |
 | Custom binary protocol                            | Maximum control and possibly less wire overhead            | Too much custom implementation for nested runtime-defined types |
-| Rust/WASM reflection shared by server and browser | One shared implementation of validation and interpretation | Copies into WASM memory and adds deployment complexity          |
+| Rust/Emscripten WASM reflection shared by server and browser | One shared verifier, reader, writer and constraint implementation | Chosen browser runtime; measure memory copies and host-call overhead |
 
 ### Why FlatBuffers wins here
 
@@ -1138,18 +1165,20 @@ Estimated single-developer engineering effort; external integration and testing 
 
 Phase 0 — Feasibility spike1–2 weeks
 
-- Pin compatible FlatBuffers, Rust and TypeScript versions
+- Pin compatible FlatBuffers, Rust, Emscripten and TypeScript versions
 - Compile a nested Moqui schema to .bfbs at runtime
-- Verify and read a document reflectively in Rust
-- Read the same buffer reflectively in TypeScript
-- Create a compatible document from both languages
+- Verify and read a document reflectively in native Rust
+- Compile the shared reader/writer to `wasm32-unknown-emscripten` and read the same buffer through generated JavaScript bindings in a browser worker
+- Create compatible documents from native Rust and browser WASM
+- Measure transfer/copy costs, host-call overhead, memory growth and retained-handle cleanup
+- Prove async adapter suspension/cancellation and OPFS persistence/recovery; test non-pthread browser support
 - Benchmark the safe verification and dynamic builder paths
 - Generate input/output schemas for one real service, bind verified inputs lazily in QuickJS, execute its precached JavaScript on a service worker, and encode its result natively
 - Test defaults, context assignments, nested read-only parameters, nested calls, cleanup and retained-view lifetime
 - Change an XML-action JavaScript macro and verify regeneration of affected schemas and cached service functions as one coherent generation; test incompatible changes, failed reloads and in-flight calls retaining their original generation
 - Compare verified binary-input → cached JS → binary-output against map-backed invocation with equally cached JS, including a large input whose service reads only a few fields
 
-Exit gate: New runtime-created nested type is encoded and read in both languages without recompilation, and a real service executes from binary-backed parameters without eager parameter-graph materialization or per-call JS compilation. Measure verification, host access, materialization fallbacks and output encoding; do not credit existing script caching or shared fan-out to FlatBuffers.
+Exit gate: New runtime-created nested type is encoded and read in native Rust and browser WASM without recompilation, and a real service executes from binary-backed parameters without eager parameter-graph materialization or per-call JS compilation. Measure verification, host access, materialization fallbacks and output encoding; do not credit existing script caching or shared fan-out to FlatBuffers.
 
 Phase 1 — Schema compiler and registry2–3 weeks
 
@@ -1202,7 +1231,7 @@ A Rust process and an already-running browser successfully read a newly introduc
 
 Proof 2: Both sides can write
 
-Rust and TypeScript independently encode a complex nested document that the other side can verify and read using the identical schema.
+Native Rust and browser Emscripten WASM independently encode a complex nested document that the other side can verify and read using the identical schema, through the generated JavaScript bindings.
 
 Proof 3: Schema versions coexist
 
@@ -1220,7 +1249,7 @@ I would approve this architecture conditionally:
 
 Selected production architecture
 
-## FlatBuffers + `.bfbs` + Rust + TypeScript
+## FlatBuffers + `.bfbs` + Rust + Emscripten WASM + TypeScript UI
 
 Schema control plane
 
@@ -1242,7 +1271,7 @@ Performance strategy
 
 Reflective, verified zero-copy reads · Cached descriptors · Revisioned patches · Shared immutable fan-out buffers
 
-The most important decision is to prove the dynamic writer and safe reflective reader early. Those are the two areas where FlatBuffers provides the binary foundations but not a complete plug-and-play Rust/TypeScript runtime-document solution.
+The most important decision is to prove the shared dynamic writer and safe reflective reader in native Rust and Emscripten WASM early. FlatBuffers provides the binary foundations, not a complete browser host adapter; qualify generated bindings, worker ownership, async suspension and OPFS separately.
 
 Once those are demonstrated, the remaining work becomes conventional systems engineering: schema publication, validation, synchronization, routing, backpressure and performance testing.
 
