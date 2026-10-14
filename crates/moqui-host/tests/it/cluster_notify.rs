@@ -29,8 +29,7 @@ const CHANNEL: &str = "moqui_cluster";
 
 #[test]
 fn a_notify_member_applies_peer_notifies_and_sends_its_own() {
-    moqui_lib::env::set_property("cluster_transport", "notify");
-    let gate = crate::common::start("notify");
+    let gate = crate::common::start_with_properties("notify", None, &[("cluster_transport", "notify")]);
     let factory = Arc::clone(gate.server.factory());
     let facade = factory.entity().unwrap();
 
@@ -94,7 +93,6 @@ fn a_notify_member_applies_peer_notifies_and_sends_its_own() {
     drop(listener);
     drop(peer);
     drop(gate);
-    moqui_lib::env::set_property("cluster_transport", "");
 }
 
 fn raw_connection(gate: &crate::common::Gate) -> PostgresConn {

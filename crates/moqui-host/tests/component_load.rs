@@ -12,7 +12,6 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-
 //! A component's entities, rules, services, and data load as Java loads Mantle's: the entity directory joins
 //! the model (an `extend-entity` of a framework entity too) and its `seed-data` loads before the data
 //! directory; entity ECA rules there run, with `entityValue` shared with a service found by its file path and
@@ -119,7 +118,11 @@ fn a_component_loads_its_entities_rules_services_and_data() {
             &[],
         )
         .unwrap();
-    assert_eq!(orgs.len(), 2, "ORG_A from data, ORG_B from the service the data file calls");
+    assert_eq!(
+        orgs.len(),
+        2,
+        "ORG_A from data, ORG_B from the service the data file calls"
+    );
     assert_eq!(text(&orgs[0], "flag"), "Y", "the rule's service set entityValue.flag");
     assert_eq!(text(&orgs[0], "location"), "HQ", "set-results");
     assert_eq!(text(&orgs[0], "limitAmount").parse::<f64>().unwrap(), 118_500.0);
@@ -132,9 +135,16 @@ fn a_component_loads_its_entities_rules_services_and_data() {
     assert_eq!(text(&notes[0], "noteSeqId"), "01");
 
     let enums = conn
-        .query("SELECT \"gateExtra\" FROM \"Enumeration\" WHERE \"enumId\" = 'GateEnum'", &[])
+        .query(
+            "SELECT \"gateExtra\" FROM \"Enumeration\" WHERE \"enumId\" = 'GateEnum'",
+            &[],
+        )
         .unwrap();
-    assert_eq!(text(&enums[0], "gateExtra"), "extended", "entity seed-data and extend-entity");
+    assert_eq!(
+        text(&enums[0], "gateExtra"),
+        "extended",
+        "entity seed-data and extend-entity"
+    );
     drop(conn);
     drop(cluster);
 }

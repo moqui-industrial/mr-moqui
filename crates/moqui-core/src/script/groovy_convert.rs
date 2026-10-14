@@ -453,7 +453,11 @@ fn entity_find_lists(text: &str) -> BTreeSet<String> {
             let after = &rest[at + tag.len()..];
             let end = after.find('>').unwrap_or(after.len());
             let attrs = &after[..end];
-            if let Some(start) = attrs.find(" list=\"").map(|at| at + 7).or_else(|| attrs.strip_prefix("list=\"").map(|_| 6)) {
+            if let Some(start) = attrs
+                .find(" list=\"")
+                .map(|at| at + 7)
+                .or_else(|| attrs.strip_prefix("list=\"").map(|_| 6))
+            {
                 if let Some(len) = attrs[start..].find('"') {
                     let name = &attrs[start..start + len];
                     if !name.is_empty() && name.bytes().all(is_ident) {
@@ -480,7 +484,9 @@ fn empty_list(text: &str, lists: &BTreeSet<String>) -> (String, usize) {
     while index < bytes.len() {
         let byte = bytes[index];
         if byte == b'\'' || byte == b'"' {
-            let end = text[index + 1..].find(byte as char).map_or(text.len(), |end| index + 1 + end + 1);
+            let end = text[index + 1..]
+                .find(byte as char)
+                .map_or(text.len(), |end| index + 1 + end + 1);
             out.push_str(&text[index..end]);
             index = end;
             continue;
@@ -497,9 +503,8 @@ fn empty_list(text: &str, lists: &BTreeSet<String>) -> (String, usize) {
         let name = &text[start..index];
         let before = text[..start].trim_end();
         let next = text[index..].trim_start().as_bytes().first().copied();
-        let used_as_object = matches!(next, Some(b'.' | b'[' | b'(' | b'?' | b'='))
-            || before.ends_with('.')
-            || before.ends_with("?.");
+        let used_as_object =
+            matches!(next, Some(b'.' | b'[' | b'(' | b'?' | b'=')) || before.ends_with('.') || before.ends_with("?.");
         if !lists.contains(name) || used_as_object || name.as_bytes()[0].is_ascii_digit() {
             out.push_str(name);
             continue;
@@ -1095,9 +1100,32 @@ mod tests {
             <if condition="fooList.size() &gt; 1 || fooList[0] || 'fooList'"><log message="x"/></if>
         </actions>"#;
         let converted = convert_xml(xml);
-        assert!(converted.text.contains(r#"<if condition="(fooList?.length > 0)">"#), "{}", converted.text);
-        assert!(converted.text.contains(r#"<if condition="!fooList?.length &amp;&amp; otherList">"#), "{}", converted.text);
-        assert!(converted.text.contains(r#"<if condition="fooList.size() &gt; 1 || fooList[0] || 'fooList'">"#), "{}", converted.text);
-        assert_eq!(converted.rewrites.iter().filter(|rewrite| rewrite.kinds == vec![RewriteKind::EmptyList]).count(), 2);
+        assert!(
+            converted.text.contains(r#"<if condition="(fooList?.length > 0)">"#),
+            "{}",
+            converted.text
+        );
+        assert!(
+            converted
+                .text
+                .contains(r#"<if condition="!fooList?.length &amp;&amp; otherList">"#),
+            "{}",
+            converted.text
+        );
+        assert!(
+            converted
+                .text
+                .contains(r#"<if condition="fooList.size() &gt; 1 || fooList[0] || 'fooList'">"#),
+            "{}",
+            converted.text
+        );
+        assert_eq!(
+            converted
+                .rewrites
+                .iter()
+                .filter(|rewrite| rewrite.kinds == vec![RewriteKind::EmptyList])
+                .count(),
+            2
+        );
     }
 }

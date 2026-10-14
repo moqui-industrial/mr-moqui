@@ -116,7 +116,11 @@ pub fn run_matched_eca(
             published.entry(name).or_insert(Value::Null);
         }
         let _frame = publish_names(&published).map_err(to_lib).map_err(in_rule)?;
-        let put = |name: &str, value: Value| crate::script::set_context_name(name, value).map_err(to_lib).map_err(in_rule);
+        let put = |name: &str, value: Value| {
+            crate::script::set_context_name(name, value)
+                .map_err(to_lib)
+                .map_err(in_rule)
+        };
         put("entityValue", Value::Object(HostObject(cell.clone())))?;
         put("originalValue", original)?;
         put("eecaOperation", Value::string(operation))?;

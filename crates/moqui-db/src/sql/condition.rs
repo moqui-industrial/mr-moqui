@@ -528,7 +528,10 @@ impl Column {
         };
         let simple = java_type.rsplit('.').next().unwrap_or(java_type);
         let temporal = matches!(simple, "Date" | "Timestamp" | "Time");
-        let number = matches!(simple, "BigDecimal" | "BigInteger" | "Long" | "Integer" | "Double" | "Float");
+        let number = matches!(
+            simple,
+            "BigDecimal" | "BigInteger" | "Long" | "Integer" | "Double" | "Float"
+        );
         if !temporal && !number {
             return value;
         }
@@ -901,10 +904,25 @@ mod typed_tests {
     fn text_is_converted_to_a_date_time_or_number_field() {
         let date = column("java.sql.Date").typed(Value::string("1791936000000"));
         assert!(matches!(date, Value::Date(_)), "{date:?}");
-        assert!(matches!(column("java.sql.Date").typed(Value::string("2026-10-14")), Value::Date(_)));
-        assert!(matches!(column("java.sql.Timestamp").typed(Value::string("1791936000000")), Value::Timestamp(_)));
-        assert!(matches!(column("java.math.BigDecimal").typed(Value::string("12.50")), Value::Decimal(_)));
-        assert_eq!(column("java.lang.String").typed(Value::string("1791936000000")), Value::string("1791936000000"));
-        assert_eq!(column("java.sql.Date").typed(Value::string("not a date")), Value::string("not a date"));
+        assert!(matches!(
+            column("java.sql.Date").typed(Value::string("2026-10-14")),
+            Value::Date(_)
+        ));
+        assert!(matches!(
+            column("java.sql.Timestamp").typed(Value::string("1791936000000")),
+            Value::Timestamp(_)
+        ));
+        assert!(matches!(
+            column("java.math.BigDecimal").typed(Value::string("12.50")),
+            Value::Decimal(_)
+        ));
+        assert_eq!(
+            column("java.lang.String").typed(Value::string("1791936000000")),
+            Value::string("1791936000000")
+        );
+        assert_eq!(
+            column("java.sql.Date").typed(Value::string("not a date")),
+            Value::string("not a date")
+        );
     }
 }

@@ -1718,7 +1718,9 @@ fn parse_top(facade: &EntityFacade, location: &str, node: &MNode) -> Result<Opti
     let key = element_key(&node.name());
     if entity_defined(facade, &key) {
         Ok(Some(Top::Record(parse_record(facade, &key, node)?)))
-    } else if let Some(name) = crate::service::define::defined_name(&key).or_else(|| key.contains('#').then(|| key.clone())) {
+    } else if let Some(name) =
+        crate::service::define::defined_name(&key).or_else(|| key.contains('#').then(|| key.clone()))
+    {
         Ok(Some(Top::Service(DataFileService {
             name,
             location: location.to_string(),
@@ -2007,7 +2009,9 @@ fn prepare_fields(
     convert_fields(facade, entity_name, fields)?;
     // `EntityAutoServiceRunner.storeEntity`, which Java's loader uses for nested records: a primary key
     // `fromDate` that is not given is now.
-    let from_date_pk = facade.with_entity(entity_name, |entity, _, _| Ok(entity.pk_field_names().contains(&"fromDate")))?;
+    let from_date_pk = facade.with_entity(entity_name, |entity, _, _| {
+        Ok(entity.pk_field_names().contains(&"fromDate"))
+    })?;
     if from_date_pk && !only_create && fields.get("fromDate").is_none_or(Value::is_null) {
         fields.insert("fromDate".to_string(), Value::Timestamp(jiff::Timestamp::now()));
     }

@@ -23,7 +23,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::common::start_with_data;
 use base64::Engine;
 use moqui_core::sftp::SftpClient;
 use moqui_lib::object::{to_plain_string, Value};
@@ -126,11 +125,16 @@ fn exec(address: std::net::SocketAddr, username: &str, password: &str, command: 
 fn sftp_and_the_admin_shell_run_on_the_built_in_server() {
     let user_key = key(USER_SEED);
     let seed = base64::engine::general_purpose::STANDARD.encode(HOST_SEED);
-    moqui_lib::env::set_property("ssh_port", "0");
-    moqui_lib::env::set_property("ssh_host_key", &seed);
-    moqui_lib::env::set_property("ssh_sftp_root", "dbresource://sftp");
-    moqui_lib::env::set_property("cluster_transport", "ssh");
-    let gate = start_with_data("ssh", &data(&user_key));
+    let gate = crate::common::start_with_properties(
+        "ssh",
+        Some(&data(&user_key)),
+        &[
+            ("ssh_port", "0"),
+            ("ssh_host_key", &seed),
+            ("ssh_sftp_root", "dbresource://sftp"),
+            ("cluster_transport", "ssh"),
+        ],
+    );
     let address = gate.server.ssh_address().expect("the SSH server listens");
     let host = format!("127.0.0.1:{}", address.port());
     let known_hosts = gate.runtime.join("conf/ssh_known_hosts");
@@ -428,6 +432,4 @@ fn sftp_and_the_admin_shell_run_on_the_built_in_server() {
     drop(authz);
     drop(_entered);
     drop(context);
-    moqui_lib::env::set_property("ssh_port", "");
-    moqui_lib::env::set_property("cluster_transport", "");
 }

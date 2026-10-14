@@ -25,6 +25,7 @@ fn repo() -> PathBuf {
 }
 
 #[test]
+#[ignore = "slow: cargo test-slow"]
 fn the_report_over_every_screen_and_the_verdict_of_the_gate_3_fixture() {
     let reports = qvt_static_reports(&repo().join("runtime"), &repo().join("framework")).unwrap();
     let text = render_reports(&reports);

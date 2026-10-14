@@ -1082,7 +1082,10 @@ fn resource_info_value(resource: &crate::context::ResourceRef, children: bool) -
     map.insert("file".to_string(), Value::Bool(resource.is_file()));
     // `ResourceReference.getContentType`, `isText`, `isBinary`: from the file name's extension.
     let content_type = moqui_lib::resource::content_type_for_name(&file_name);
-    map.insert("contentType".to_string(), content_type.map_or(Value::Null, Value::string));
+    map.insert(
+        "contentType".to_string(),
+        content_type.map_or(Value::Null, Value::string),
+    );
     map.insert(
         "text".to_string(),
         Value::Bool(content_type.is_some_and(moqui_lib::resource::is_text_content_type)),

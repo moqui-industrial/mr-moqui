@@ -29,6 +29,7 @@ use moqui_host::{load_data, start_server, LoadFlags};
 use moqui_lib::object::Value;
 
 #[test]
+#[ignore = "slow: cargo test-slow"]
 fn rest_enum_types_login_and_session_survive_restart() {
     let _serial = crate::common::serial();
     let runtime = temp_dir("moqui-gate2-rt");

@@ -306,7 +306,11 @@ impl EntityFacade {
         find.one()
     }
 
-    pub(crate) fn pk_map(&self, entity_name: &str, values: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, Error> {
+    pub(crate) fn pk_map(
+        &self,
+        entity_name: &str,
+        values: &BTreeMap<String, Value>,
+    ) -> Result<BTreeMap<String, Value>, Error> {
         self.with_entity(entity_name, |entity, _, _| pk_values(entity, values))
     }
 
