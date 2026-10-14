@@ -209,7 +209,9 @@ details.panel > .body { padding: 8px 10px; }
 .form-signin input { display: block; width: 100%; font-size: 1.15em; margin-bottom: 6px; padding: 8px 10px; }
 .form-signin button { width: 100%; margin: 4px 0; }
 .form-signin ul { padding-left: 24px; }
-.Login .tabs ul { justify-content: center; }
+.Login .tabs ul { justify-content: center; flex-wrap: nowrap; overflow-x: auto; padding: 0; }
+.Login .tabs li { flex: 1 0 auto; text-align: center; }
+.Login .tabs li > a { padding: 6px 8px; white-space: nowrap; }
 .Login { padding-top: 24px; }
 
 /* ---------- form-list ---------- */
