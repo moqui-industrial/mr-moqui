@@ -560,6 +560,16 @@ fn run_entity(
     Ok(out)
 }
 
+/// `EntityAutoServiceRunner.storeEntity` with no service around it: create or update the record
+/// and the records nested under it. Returns the primary key values. The ETL loader calls this.
+pub(crate) fn store_entity(
+    facade: &EntityFacade,
+    entity_name: &str,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<BTreeMap<String, Value>, LibError> {
+    run_entity(facade, "store", entity_name, parameters, 0)
+}
+
 fn assign_sequence(facade: &EntityFacade, record: &mut EntityValue, pk_names: &[String]) -> Result<(), LibError> {
     if pk_names.is_empty() || !pk_missing(record, pk_names) {
         return Ok(());

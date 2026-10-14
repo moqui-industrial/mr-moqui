@@ -22,6 +22,7 @@ pub mod load_feed;
 pub mod query_rest;
 
 mod dbresource;
+mod etl;
 pub(crate) mod exec;
 mod facade;
 mod find;
@@ -35,6 +36,7 @@ mod share;
 mod value;
 
 pub use dbresource::{DbResourceChild, DbResourceInfo};
+pub use etl::EtlLoader;
 pub use exec::statement_stats;
 pub use facade::{EntityFacade, EntityFlags, EntityGroup};
 pub use find::{EntityFind, EntityListIterator};

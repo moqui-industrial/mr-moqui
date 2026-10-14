@@ -17,6 +17,7 @@
 pub mod cluster;
 pub mod context;
 pub mod driver;
+pub mod edi;
 pub mod entity;
 pub mod l10n;
 pub mod notify;

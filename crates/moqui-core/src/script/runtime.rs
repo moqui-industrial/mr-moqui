@@ -44,6 +44,7 @@ mod convert;
 mod decimal;
 mod ec_extra;
 mod ec_screen;
+mod edi;
 mod entities;
 mod error_info;
 mod facades;
@@ -763,6 +764,7 @@ fn install_ec(ctx: &Ctx<'_>) -> Result<(), Error> {
     let property = Function::new(ctx.clone(), system_get_property).map_err(js_error)?;
     system.set("getProperty", property).map_err(js_error)?;
     caught(ctx, "globals", ctx.globals().set("System", system))?;
+    edi::install(ctx)?;
     Ok(())
 }
 

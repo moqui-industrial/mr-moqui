@@ -20,6 +20,8 @@
 
 mod parse;
 
+pub use parse::{XmlEvent, XmlEvents};
+
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::{Rc, Weak};
