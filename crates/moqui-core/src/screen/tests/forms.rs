@@ -709,6 +709,9 @@ fn an_aggregated_form_list_groups_rows_with_sub_rows_and_totals() {
         qvt.contains("tr sub-rows") && qvt.contains("Gear") && qvt.contains("text-weight-bold"),
         "{qvt}"
     );
+    // as Java: the sub-list titles once in the head, not over each row's sub-rows
+    assert_eq!(qvt.matches("tr sub-header").count(), 1, "{qvt}");
+    assert!(qvt.matches("tr sub-rows").count() > 1, "{qvt}");
     super::qvt::assert_compiles(&["aggregate".to_string()], &[qvt]);
     let _ = std::fs::remove_dir_all(&dir);
 }

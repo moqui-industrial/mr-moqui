@@ -289,6 +289,21 @@ test("Parity: a field accordion opens its active group, and a button-menu lists 
     assert.doesNotMatch(text, /hidden when qty is over 3/);
 });
 
+test("Parity: an aggregated list writes the sub-list titles once in the head and each row's sub-rows with their own values", async () => {
+    setup();
+    const { container } = await mountStatic("", "Parity");
+    const text = html(container);
+    const table = text.slice(text.indexOf("<div class='table q-table' id='OrderList_table'>"));
+    assert.equal((table.match(/class='tr sub-header'/g) || []).length, 1, table);
+    assert.match(table, /class='tr sub-header'.*Item.*Qty/);
+    assert.equal((table.match(/class='tr sub-rows'/g) || []).length, 2);
+    // the first order's sub-rows: Gear and Bolt, then the total of the quantities
+    const first = table.slice(table.indexOf("class='tr sub-rows'"));
+    assert.ok(first.indexOf("Gear") >= 0 && first.indexOf("Gear") < first.indexOf("Bolt"), first);
+    assert.match(first, /textContent='7'|>7</);
+    assert.match(table, /Nut/);
+});
+
 test("Parity: a paginated section-iterate shows its page and the page buttons over the package's keys", async () => {
     setup();
     const { container } = await mountStatic("", "Parity");

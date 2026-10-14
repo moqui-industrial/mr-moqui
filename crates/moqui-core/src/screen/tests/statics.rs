@@ -753,4 +753,12 @@ fn the_parity_fixture_is_a_template_with_its_data_in_the_packages() {
     // the accordion: a group of expansion items, the second open; the button-menu: a dropdown of its children
     assert!(html.contains("group=\"ProductForm_accordion\""), "{html}");
     assert!(html.contains("<q-btn-dropdown"), "{html}");
+    // the aggregated list: rows grouped by order, each with its sub-list of items and their total
+    let orders = render(context.factory(), "/Parity/actions/OrderList", &[]);
+    assert_eq!(orders.status, 200, "{}", orders.body_text());
+    let orders = json_of(&orders);
+    assert_eq!(orders["orderLines"].as_array().map(Vec::len), Some(2), "{orders}");
+    assert_eq!(orders["orderLines"][0]["aggregateSubList"][1]["item"], "Bolt", "{orders}");
+    golden("Parity.OrderList.json", &serde_json::to_string(&orders).unwrap());
+    assert!(html.contains("v-slot:subrow"), "{html}");
 }

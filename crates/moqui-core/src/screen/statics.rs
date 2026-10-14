@@ -849,9 +849,30 @@ fn form_package(state: &RenderState, def: &Arc<ScreenDef>, name: &str) -> Result
         instance.list_entry.clone()
     };
     let mut resolved = Ok(());
+    let sub_fields: Vec<String> = node
+        .children_named("field")
+        .iter()
+        .filter(|field| field.attribute("aggregate").as_deref() == Some("sub-list"))
+        .filter_map(|field| field.attribute("name"))
+        .collect();
     for (index, row) in rows.iter_mut().enumerate() {
         sri::start_form_list_row(state, handle, index)?;
-        let extras = row_extras(&node, name);
+        let extras = row_extras(&node, name, &|_| true);
+        // the sub-rows of an aggregated row get the lookups and sets of the sub-list fields, each over the row
+        if extras.is_ok() && !sub_fields.is_empty() {
+            if let Some(Value::List(entries)) = row.get_mut("aggregateSubList") {
+                for (sub, entry) in entries.iter_mut().enumerate() {
+                    sri::start_form_list_sub_row(state, handle, index, sub)?;
+                    let sub_extras = row_extras(&node, name, &|field| {
+                        sub_fields.contains(&field.attribute("name").unwrap_or_default())
+                    });
+                    script::pop_context_frame();
+                    if let (Value::Map(map), Ok(sub_extras)) = (entry, sub_extras) {
+                        map.extend(sub_extras);
+                    }
+                }
+            }
+        }
         script::pop_context_frame();
         match extras {
             Ok(extras) => row.extend(extras),
@@ -1055,9 +1076,9 @@ fn page_keys(form: &MNode, rows: usize) -> Result<Option<PageKeys>, Error> {
 }
 
 /// For one row, in the row's frame: the text of its `display-entity` fields and the fields its `set` elements make.
-fn row_extras(node: &MNode, form_name: &str) -> Result<IndexMap<String, Value>, Error> {
+fn row_extras(node: &MNode, form_name: &str, include: &dyn Fn(&MNode) -> bool) -> Result<IndexMap<String, Value>, Error> {
     let mut extras = IndexMap::new();
-    for field in node.children_named("field") {
+    for field in node.children_named("field").into_iter().filter(|field| include(field)) {
         let field_name = field.attribute("name").unwrap_or_default();
         for sub in field
             .children()

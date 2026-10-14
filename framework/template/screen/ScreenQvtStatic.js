@@ -1020,6 +1020,7 @@
                 const listed = kids(n, "field").filter((field) => kids(field, "default-field").concat(kids(field, "conditional-field")).some((sub) => !kids(sub, "hidden").length && !kids(sub, "ignored").length));
                 attrs[":column-fields"] = "[" + listed.map((field) => "{id:" + sq(at(field, "name")) + ",label:" + titleExpr(first(field, "header-field") || first(field, "default-field") || kids(field, "conditional-field")[0]) + "}").join(",") + "]";
                 attrs["columns-action"] = sri.staticUrl("formSelectColumns", "transition").path;
+                if (cfg.subFields && cfg.subFields.length) attrs[":sub-fields"] = js_(cfg.subFields);
                 attrs["form-location"] = name;
                 const headerFields = kids(n, "field").filter((f) => { const sub = first(f, "header-field"); return sub && sub.children.filter((x) => x.name !== "set").length; });
                 if (headerFields.length && at(n, "header-dialog") !== "true") attrs[":header-initial"] = "(_ctx, hs) => (" + initialOf(headerFields, "header-field", [["orderByField", "hs.orderByField"]]) + ")";
@@ -1400,7 +1401,8 @@
                 w("<template" + A({ ["v-slot:rc_" + fieldName]: "_ctx" }) + ">");
                 push();
                 st.inRow = true;
-                st.inForm = !skipForm;
+                // a sub-list field is a cell of a sub-row, which is outside the row's form
+                st.inForm = !skipForm && at(field, "aggregate") !== "sub-list";
                 st.owner = "";
                 cellBody(field, (sub) => {
                     if (kids(sub, "ignored").length) return;
@@ -1412,6 +1414,29 @@
                 pop();
                 w("</template>");
             });
+        };
+
+        // The sub-rows of an aggregated list: the titles of the sub-list columns for the head, and the cells of one sub-row over its entry.
+        const subSlots = (subLists) => {
+            w("<template v-slot:subhead>");
+            subLists.forEach((fields) => w('<div class="col">' + fields.map((field) => '<span v-text="' + e(titleExpr(first(field, "header-field") || first(field, "default-field") || kids(field, "conditional-field")[0])) + '"></span>').join(" ") + "</div>"));
+            w("</template>");
+            w('<template v-slot:subrow="_ctx">');
+            push();
+            st.inRow = true;
+            st.inForm = false;
+            subLists.forEach((fields) => {
+                w('<div class="col">');
+                fields.forEach((field) => cellBody(field, (sub) => {
+                    if (kids(sub, "ignored").length || kids(sub, "hidden").length) return;
+                    w("<div" + A({ class: cellStyle(at(sub, "container-style"), at(field, "align")) }) + ">");
+                    subWidgets(sub);
+                    w("</div>");
+                }));
+                w("</div>");
+            });
+            pop();
+            w("</template>");
         };
 
         const formList = (n, columnFieldLists, allFields) => {
@@ -1427,11 +1452,15 @@
                 text: at(n, "show-text-button") === "true", pdf: at(n, "show-pdf-button") === "true", columns: at(n, "select-columns") === "true"
             };
             cfg.headerDialog = flags.headerDialog;
+            // An aggregated list's sub-list fields are not main columns: they are the columns of the sub-rows under each row (Java's subColInfo).
+            const isSub = (field) => at(field, "aggregate") === "sub-list";
+            const subLists = columnFieldLists.map((fields) => fields.filter(isSub)).filter((fields) => fields.length);
+            columnFieldLists = columnFieldLists.map((fields) => fields.filter((field) => !isSub(field))).filter((fields) => fields.length);
+            cfg.subFields = kids(n, "field").filter(isSub).map((field) => at(field, "name"));
             const opened = formListOpen(n, columnFieldLists, cfg);
             const cols = columnFieldLists.map((fields) => columnOf(n, fields));
             const skipHeader = at(n, "skip-header") === "true";
             const headerFields = allFields.filter((f) => { const sub = first(f, "header-field"); return sub && sub.children.filter((x) => x.name !== "set").length; });
-            if (kids(n, "field").some((f) => at(f, "aggregate") === "sub-list")) note("form-list-aggregate", n, "the sub-list fields of form-list " + name + " are not written (the form request groups the rows)");
             if (!skipHeader) navSlot(n, cols, headerFields, flags);
             if (flags.columns) {
                 columnSlots(n, cols, headerFields, flags, cfg);
@@ -1482,6 +1511,7 @@
             // fields with only a hidden widget are not in a column but their values still start the form
             pop();
             w("</template>");
+            if (subLists.length) subSlots(subLists);
             w("</m-static-form-list>\n");
             pop();
         };

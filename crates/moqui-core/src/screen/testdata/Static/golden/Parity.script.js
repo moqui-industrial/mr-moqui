@@ -1,5 +1,5 @@
 (function(){var m=globalThis.moqui=globalThis.moqui||{};(m.qvtStatic=m.qvtStatic||{})["/Parity"]=function(Vue){
-const { toDisplayString: _toDisplayString, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, createElementVNode: _createElementVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, createVNode: _createVNode, createBlock: _createBlock, renderList: _renderList, Fragment: _Fragment } = Vue
+const { toDisplayString: _toDisplayString, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, createElementVNode: _createElementVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, createVNode: _createVNode, createBlock: _createBlock, normalizeClass: _normalizeClass, renderList: _renderList, Fragment: _Fragment } = Vue
 
 return function render(_ctx, _cache) {
   const _component_m_link = _resolveComponent("m-link")
@@ -12,6 +12,8 @@ return function render(_ctx, _cache) {
   const _component_m_text_area = _resolveComponent("m-text-area")
   const _component_m_form = _resolveComponent("m-form")
   const _component_m_scope = _resolveComponent("m-scope")
+  const _component_m_display = _resolveComponent("m-display")
+  const _component_m_static_form_list = _resolveComponent("m-static-form-list")
   const _component_m_form_paginate = _resolveComponent("m-form-paginate")
 
   return (_openBlock(), _createElementBlock(_Fragment, null, [
@@ -230,6 +232,135 @@ return function render(_ctx, _cache) {
       ]),
       _: 1
     }, 8, ["value", "extra"]),
+    _createVNode(_component_m_static_form_list, {
+      name: "OrderList",
+      id: "OrderList",
+      action: "/Parity",
+      "list-name": "orderLines",
+      "skip-form": ""
+    }, {
+      header: _withCtx((hs) => [
+        _createElementVNode("div", { class: "th text-left" }, [
+          _createElementVNode("div", null, [
+            _createElementVNode("div", { class: "form-title" }, [
+              _createElementVNode("span", {
+                textContent: _toDisplayString(_ctx.ec.l10n.localize('Order ID'))
+              }, null, 8, ["textContent"])
+            ])
+          ])
+        ]),
+        _createElementVNode("div", { class: "th text-left" }, [
+          _createElementVNode("div", null, [
+            _createElementVNode("div", { class: "form-title" }, [
+              _createElementVNode("span", {
+                textContent: _toDisplayString(_ctx.ec.l10n.localize('Customer'))
+              }, null, 8, ["textContent"])
+            ])
+          ])
+        ])
+      ]),
+      row: _withCtx((_ctx) => [
+        _createElementVNode("div", {
+          class: _normalizeClass(["tr", {'text-weight-bold': _ctx._moquiRowType === 'total'}])
+        }, [
+          _createElementVNode("div", { class: "td" }, [
+            _createElementVNode("div", { class: "form-group" }, [
+              _createVNode(_component_m_display, {
+                name: "orderId",
+                id: 'OrderList_orderId'+'_'+_ctx.rowIndex+'_display'
+              }, {
+                default: _withCtx(() => [
+                  _createElementVNode("span", {
+                    textContent: _toDisplayString(_ctx.$mq.str(_ctx.$scope['orderId']))
+                  }, null, 8, ["textContent"])
+                ]),
+                _: 1
+              }, 8, ["id"]),
+              _createElementVNode("input", {
+                type: "hidden",
+                name: "orderId",
+                value: _ctx.$mq.str(_ctx.$scope['orderId'])
+              }, null, 8, ["value"])
+            ])
+          ]),
+          _createElementVNode("div", { class: "td" }, [
+            _createElementVNode("div", { class: "form-group" }, [
+              _createVNode(_component_m_display, {
+                name: "customer",
+                id: 'OrderList_customer'+'_'+_ctx.rowIndex+'_display'
+              }, {
+                default: _withCtx(() => [
+                  _createElementVNode("span", {
+                    textContent: _toDisplayString(_ctx.$mq.str(_ctx.$scope['customer']))
+                  }, null, 8, ["textContent"])
+                ]),
+                _: 1
+              }, 8, ["id"]),
+              _createElementVNode("input", {
+                type: "hidden",
+                name: "customer",
+                value: _ctx.$mq.str(_ctx.$scope['customer'])
+              }, null, 8, ["value"])
+            ])
+          ])
+        ], 2)
+      ]),
+      subhead: _withCtx(() => [
+        _createElementVNode("div", { class: "col" }, [
+          _createElementVNode("span", {
+            textContent: _toDisplayString(_ctx.ec.l10n.localize('Item'))
+          }, null, 8, ["textContent"])
+        ]),
+        _createElementVNode("div", { class: "col" }, [
+          _createElementVNode("span", {
+            textContent: _toDisplayString(_ctx.ec.l10n.localize('Qty'))
+          }, null, 8, ["textContent"])
+        ])
+      ]),
+      subrow: _withCtx((_ctx) => [
+        _createElementVNode("div", { class: "col" }, [
+          _createElementVNode("div", { class: "form-group" }, [
+            _createVNode(_component_m_display, {
+              name: "item",
+              id: 'OrderList_item'+'_'+_ctx.rowIndex+'_display'
+            }, {
+              default: _withCtx(() => [
+                _createElementVNode("span", {
+                  textContent: _toDisplayString(_ctx.$mq.str(_ctx.$scope['item']))
+                }, null, 8, ["textContent"])
+              ]),
+              _: 1
+            }, 8, ["id"]),
+            _createElementVNode("input", {
+              type: "hidden",
+              name: "item",
+              value: _ctx.$mq.str(_ctx.$scope['item'])
+            }, null, 8, ["value"])
+          ])
+        ]),
+        _createElementVNode("div", { class: "col" }, [
+          _createElementVNode("div", { class: "form-group" }, [
+            _createVNode(_component_m_display, {
+              name: "qty",
+              id: 'OrderList_qty'+'_'+_ctx.rowIndex+'_display'
+            }, {
+              default: _withCtx(() => [
+                _createElementVNode("span", {
+                  textContent: _toDisplayString(_ctx.$mq.str(_ctx.$scope['qty']))
+                }, null, 8, ["textContent"])
+              ]),
+              _: 1
+            }, 8, ["id"]),
+            _createElementVNode("input", {
+              type: "hidden",
+              name: "qty",
+              value: _ctx.$mq.str(_ctx.$scope['qty'])
+            }, null, 8, ["value"])
+          ])
+        ])
+      ]),
+      _: 1
+    }),
     (_ctx.$scope['linesCount'])
       ? (_openBlock(), _createBlock(_component_m_form_paginate, {
           key: 4,

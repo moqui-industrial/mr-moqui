@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- The XML screen and form features at parity with Java Moqui, written in a server-static template: a condition element, section-iterate paging, text-map, an accordion, a button-menu. -->
+<!-- The XML screen and form features at parity with Java Moqui, written in a server-static template: a condition element, section-iterate paging, text-map, an accordion, a button-menu, an aggregated list. -->
 <screen require-authentication="false" server-static="qvt" default-menu-title="Parity">
     <actions>
         <set field="status" value="ACTIVE"/>
@@ -7,6 +7,7 @@
         <set field="lines" from="Array.from({length: 25}, (_, i) => ({lineId: 'L' + (i + 1)}))"/>
         <set field="product" from="{productName: 'Widget X', price: 9}"/>
         <set field="productName" value="the context's name"/>
+        <set field="orderLines" from="[{orderId: 'O1', customer: 'Ada', item: 'Gear', qty: 2}, {orderId: 'O1', customer: 'Ada', item: 'Bolt', qty: 5}, {orderId: 'O2', customer: 'Bo', item: 'Nut', qty: 1}]"/>
     </actions>
     <transition name="viewProduct" read-only="true"><default-response type="none"/></transition>
     <transition name="saveProduct"><default-response type="none"/></transition>
@@ -37,6 +38,12 @@
                 <field-group title="Amounts"><field-ref name="price"/><field-ref name="note"/></field-group>
             </field-accordion></field-layout>
         </form-single>
+        <form-list name="OrderList" list="orderLines" skip-form="true">
+            <field name="orderId" aggregate="group-by"><default-field><display/></default-field></field>
+            <field name="customer" aggregate="group-by"><default-field><display/></default-field></field>
+            <field name="item" aggregate="sub-list"><default-field><display/></default-field></field>
+            <field name="qty" aggregate="sub-list" show-total="sum"><default-field><display/></default-field></field>
+        </form-list>
         <section-iterate name="Lines" list="lines" entry="line" paginate="true">
             <widgets><label text="line ${line.lineId}" type="div"/></widgets>
         </section-iterate>

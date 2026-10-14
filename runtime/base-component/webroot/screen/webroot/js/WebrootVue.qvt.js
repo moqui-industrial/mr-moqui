@@ -603,7 +603,7 @@
         inject: { mqScope: { default: null }, mqScreen: { default: null } },
         props: { name: { type: String, required: true }, id: String, action: String, listName: String, multi: Boolean, skipForm: Boolean, skipHeader: Boolean,
             rowInitial: Function, formLocation: String, findAction: String, defaultColumns: Array, columnFields: Array, columnsAction: String,
-            headerInitial: Function },
+            headerInitial: Function, subFields: Array },
         data() { return { pkg: null, searchObj: {}, loading: false, generation: 0 }; },
         computed: {
             idVal() { return this.id && this.id.length ? this.id : this.name; },
@@ -662,10 +662,27 @@
                     columnsAction: this.columnsAction || "", columnsTree: this.columnsTree()
                 };
             },
-            // The columns shown: the user's from the package, else the template's.
+            // The columns shown: the user's from the package, else the template's, without the sub-list fields, which are the sub columns.
             shownColumns() {
                 const chosen = this.pkg && this.pkg.mqColumns;
-                return Array.isArray(chosen) && chosen.length ? chosen : this.defaultColumns || [];
+                const all = Array.isArray(chosen) && chosen.length ? chosen : this.defaultColumns || [];
+                const sub = this.subFields || [];
+                return all.map((column) => column.filter((field) => !sub.includes(field))).filter((column) => column.length);
+            },
+            // The sub-list fields in the user's columns (or each in a column of its own), for the sub-rows of an aggregated list.
+            subColumns() {
+                const sub = this.subFields || [];
+                if (!sub.length) return [];
+                const chosen = this.pkg && this.pkg.mqColumns;
+                const all = Array.isArray(chosen) && chosen.length ? chosen : (this.defaultColumns || []).concat(sub.map((field) => [field]));
+                return all.map((column) => column.filter((field) => sub.includes(field))).filter((column) => column.length);
+            },
+            // The scope of a sub-row: its entry over the row's scope, with the sub index, as Java's startFormListSubRow.
+            subScope(entry, subIndex, count, rowScope) {
+                const extra = { _formMap: entry };
+                extra[this.listKey + "_sub_index"] = subIndex;
+                extra[this.listKey + "_sub_has_next"] = subIndex + 1 < count;
+                return qvt.makeScope(() => Object.assign({}, entry, extra), rowScope);
             },
             // What the column dialog edits: the fields not shown, then each column with its fields, labelled as the server-merged dialog has them.
             columnsTree() {
@@ -742,8 +759,20 @@
                 return h("div", { class: rowClass, key: this.generation + "_" + rowIndex }, [h(V.resolveComponent("m-form"), { name: this.idVal + "_" + rowIndex, id: this.idVal + "_" + rowIndex, action: this.action, fieldsInitial: initial },
                     { default: (formProps) => cellsOf(this.rowScope(rowIndex, formScope, null, formProps)) })]);
             };
-            const rowsOf = (multiProps) => this.rows.map((row, rowIndex) => (columnsMode ? columnsRow(rowIndex, multiProps) :
-                h(V.Fragment, { key: this.generation + "_" + rowIndex }, slots.row ? slots.row(this.rowScope(rowIndex, formScope, multiProps)) : [])));
+            // The sub-rows of an aggregated row, under it: each entry of its aggregateSubList as a row of the sub columns.
+            const subColumns = columnsMode ? this.subColumns() : null;
+            const subRowsOf = (rowIndex) => {
+                const entries = this.rows[rowIndex] && this.rows[rowIndex].aggregateSubList;
+                if (!Array.isArray(entries) || !entries.length || !(columnsMode ? subColumns.length : slots.subrow)) return null;
+                const parent = this.rowScope(rowIndex, formScope, null, null);
+                const cells = (scope) => (columnsMode
+                    ? subColumns.map((column) => h("div", { class: "col" }, column.map((field) => (slots["rc_" + field] ? slots["rc_" + field](scope) : null))))
+                    : slots.subrow(scope));
+                return h("div", { class: "tr sub-rows" }, [h("div", { class: "td" }, [h("div", { class: "q-pl-lg" },
+                    entries.map((entry, subIndex) => h("div", { class: "row no-wrap q-col-gutter-sm" }, cells(this.subScope(entry, subIndex, entries.length, parent)))))])]);
+            };
+            const rowsOf = (multiProps) => this.rows.map((row, rowIndex) => h(V.Fragment, { key: this.generation + "_" + rowIndex },
+                [columnsMode ? columnsRow(rowIndex, multiProps) : h(V.Fragment, slots.row ? slots.row(this.rowScope(rowIndex, formScope, multiProps)) : []), subRowsOf(rowIndex)]));
             const multiForm = this.multi && !this.skipForm;
             const rowNodes = multiForm ? [] : rowsOf(null);
             const nav = h("div", { class: "form-list-nav-row row items-center" }, [
@@ -757,8 +786,15 @@
                 ? h(V.resolveComponent("m-form"), { key: "multi_" + this.generation, name: this.idVal, id: this.idVal, action: this.action, fieldsInitial: this.multiFields(formScope) },
                     { default: (multiProps) => (this.rows.length || this.loading ? rowsOf(multiProps) : empty) })
                 : rowNodes.length || this.loading ? rowNodes : empty;
+            // as Java: the titles of the sub-list columns once in the head
+            const labelOf = (field) => { const found = (this.columnFields || []).find((item) => item.id === field); return found ? found.label : field; };
+            const subHead = columnsMode
+                ? (subColumns.length ? subColumns.map((column) => h("div", { class: "col" }, column.map(labelOf).join(" "))) : null)
+                : (slots.subhead ? slots.subhead() : null);
+            const subHeader = subHead ? h("div", { class: "tr sub-header" }, [h("div", { class: "th" }, [h("div", { class: "q-pl-lg" },
+                [h("div", { class: "row no-wrap q-col-gutter-sm text-weight-bold" }, subHead)])])]) : null;
             const table = h("div", { class: "table q-table", id: this.idVal + "_table" }, [
-                this.skipHeader ? null : h("div", { class: "thead" }, [h("div", { class: "tr" }, header)]),
+                this.skipHeader ? null : h("div", { class: "thead" }, [h("div", { class: "tr" }, header), subHeader]),
                 h("div", { class: "tbody" }, multiForm ? [body] : body)
             ]);
             return h("div", { class: "q-my-sm q-table__container q-table__card q-table--horizontal-separator q-table--dense q-table--flat" }, [nav, table]);
