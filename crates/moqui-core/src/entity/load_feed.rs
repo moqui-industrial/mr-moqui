@@ -1927,8 +1927,6 @@ fn write_tree(
     let mut fields = record.fields.clone();
     inherit_pk_fields(facade, &record.entity, ancestor, &mut fields)?;
     prepare_fields(facade, &record.entity, &mut fields, options.only_create)?;
-    // `prepare_fields` may have assigned a sequenced primary key. Children need that value.
-    let shared = stored_pks(facade, &record.entity, &fields, ancestor)?;
     let partial = options.only_create && !pk_complete(facade, &record.entity, &fields)?;
     if partial {
         tracing::info!(entity = %record.entity, "onlyCreate skipped a partial primary key");
@@ -1941,11 +1939,16 @@ fn write_tree(
             write_upsert(facade, &record.entity, &fields)?;
         } else if options.only_create {
             value_from(facade, &record.entity, &fields)?.create(facade)?;
+        } else if !record.children.is_empty() || !ancestor.is_empty() {
+            // Nested maps use entity-auto defaults and sequencing, just like ETL entries.
+            fields.extend(crate::service::call::store_entity(facade, &record.entity, &fields)?);
         } else {
             value_from(facade, &record.entity, &fields)?.create_or_update(facade)?;
         }
         total = 1;
     }
+    // Include keys assigned by either prepare_fields or entity-auto before visiting children.
+    let shared = stored_pks(facade, &record.entity, &fields, ancestor)?;
     for child in &record.children {
         total = total.saturating_add(write_tree(facade, options, child, &shared)?);
     }
@@ -2015,7 +2018,20 @@ fn convert_fields(facade: &EntityFacade, entity_name: &str, fields: &mut BTreeMa
             else {
                 continue;
             };
-            updates.insert(field.name.clone(), basic_convert(value, &java).value);
+            let number = value
+                .as_str()
+                .filter(|_| {
+                    matches!(
+                        java.rsplit('.').next(),
+                        Some("BigDecimal" | "BigInteger" | "Long" | "Integer" | "Double" | "Float")
+                    )
+                })
+                .and_then(|text| moqui_lib::format::parse_decimal(text, &facade.locale()))
+                .map(Value::Decimal);
+            updates.insert(
+                field.name.clone(),
+                basic_convert(number.as_ref().unwrap_or(value), &java).value,
+            );
         }
         Ok(updates)
     })?;

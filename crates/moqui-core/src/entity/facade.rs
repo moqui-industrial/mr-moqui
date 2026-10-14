@@ -139,18 +139,34 @@ impl EntityFacade {
 
     /// Load the framework entity model and attach one transaction manager per group.
     pub fn open(framework_dir: &Path, default_group: &str, groups: Vec<EntityGroup>) -> Result<Self, Error> {
+        let conf = MNode::parse_file(framework_dir.join("conf/MoquiDefaultConf.xml"))?;
+        Self::open_with_conf(
+            framework_dir,
+            &conf,
+            &[framework_dir.join("entity")],
+            default_group,
+            groups,
+        )
+    }
+
+    /// Load all component entity directories together with the merged configuration.
+    pub fn open_with_conf(
+        framework_dir: &Path,
+        conf: &MNode,
+        directories: &[std::path::PathBuf],
+        default_group: &str,
+        groups: Vec<EntityGroup>,
+    ) -> Result<Self, Error> {
         if groups.is_empty() {
             return Err(Error::new("entity facade needs a transaction manager"));
         }
-        let conf_path = framework_dir.join("conf/MoquiDefaultConf.xml");
-        let conf = MNode::parse_file(&conf_path)?;
         let started = std::time::Instant::now();
         tracing::info!(
             "Loading entity definitions from {}",
             framework_dir.join("entity").display()
         );
-        let model = EntityModel::load_directory(&conf, &framework_dir.join("entity"))?;
-        let dialects = Dialects::load(&conf)?;
+        let model = EntityModel::load_directories(conf, directories)?;
+        let dialects = Dialects::load(conf)?;
         let all = model.entities();
         let views = all.iter().filter(|entity| entity.is_view).count();
         tracing::info!(
@@ -381,7 +397,7 @@ impl EntityFacade {
         query_rest::write_data(self, entity_name, records)
     }
 
-    pub(crate) fn with_model<T>(&self, body: impl FnOnce(&EntityModel) -> T) -> T {
+    pub fn with_model<T>(&self, body: impl FnOnce(&EntityModel) -> T) -> T {
         body(self.inner.model.model())
     }
 

@@ -48,6 +48,28 @@ pub fn open_entity_facade_dialect(
     EntityFacade::open_with_driver(framework_dir, driver, pool, dialect, &["transactional"])
 }
 
+/// Open all discovered component entity definitions on the transactional group.
+pub fn open_component_entity_facade(
+    factory: &ExecutionContextFactory,
+    driver: Arc<dyn DbDriver>,
+    pool: PoolConfig,
+    dialect: &str,
+) -> Result<EntityFacade, Error> {
+    let conf = moqui_lib::node::MNode::parse_text("merged-conf", factory.conf_text())?;
+    let tx = moqui_core::transaction::TransactionManager::new(driver, pool)?;
+    tx.configure_from_conf(&conf)?;
+    let dirs: Vec<_> = factory
+        .components()
+        .iter()
+        .map(|c| c.location.join("entity"))
+        .filter(|p| p.is_dir())
+        .collect();
+    let group = moqui_core::entity::EntityGroup::new("transactional", dialect, tx);
+    let facade = EntityFacade::open_with_conf(factory.framework_dir(), &conf, &dirs, "transactional", vec![group])?;
+    facade.crypt_from_conf(&conf)?;
+    Ok(facade)
+}
+
 /// Install the facade so `dbresource://` reads and writes through it.
 pub fn attach(factory: &ExecutionContextFactory, facade: EntityFacade) {
     factory.set_entity(facade);

@@ -752,6 +752,9 @@ pub(crate) fn store_entity(
 }
 
 fn assign_sequence(facade: &EntityFacade, record: &mut EntityValue, pk_names: &[String]) -> Result<(), LibError> {
+    if pk_names.iter().any(|name| name == "fromDate") && record.get("fromDate").is_none_or(Value::is_null) {
+        record.set("fromDate", Value::Timestamp(jiff::Timestamp::now()));
+    }
     if pk_names.is_empty() || !pk_missing(record, pk_names) {
         return Ok(());
     }

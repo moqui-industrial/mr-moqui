@@ -593,8 +593,8 @@ fn load_with_factory(
     flags: &LoadFlags,
 ) -> Result<LoadReport, moqui_lib::error::Error> {
     let entity_started = std::time::Instant::now();
-    let facade = crate::db::entity_facade::open_entity_facade_dialect(
-        framework_dir,
+    let facade = crate::db::entity_facade::open_component_entity_facade(
+        factory,
         std::sync::Arc::clone(&db.driver),
         pool,
         &db.conf.dialect,
@@ -804,8 +804,8 @@ fn boot_server(
         db_started.elapsed().as_secs_f64()
     );
     let entity_started = std::time::Instant::now();
-    let facade = crate::db::entity_facade::open_entity_facade_dialect(
-        &framework_dir,
+    let facade = crate::db::entity_facade::open_component_entity_facade(
+        &factory,
         Arc::clone(&db.driver),
         pool,
         &db.conf.dialect,
@@ -1011,7 +1011,18 @@ fn load_in_context(
         "{} Service ECA rules are active",
         moqui_core::service::info::seca_rule_count()
     );
-    let entities = framework_entity_names(framework_dir)?;
+    let mut entities = framework_entity_names(framework_dir)?;
+    facade.with_model(|model| {
+        for e in model
+            .entities()
+            .iter()
+            .filter(|e| !e.is_view && e.group.as_deref().unwrap_or("transactional") == "transactional")
+        {
+            if !entities.contains(&e.full_name) {
+                entities.push(e.full_name.clone());
+            }
+        }
+    });
     if !entities.iter().any(|name| name == "moqui.test.TestFts") {
         return Err(moqui_lib::error::Error::new(
             "framework entity list has no moqui.test.TestFts",
@@ -1022,7 +1033,7 @@ fn load_in_context(
         "Checking tables for {} framework entities in group transactional",
         refs.len()
     );
-    facade.check_tables(&refs)?;
+    facade.check_tables_cached(&refs)?;
     let test_fts_before_load = facade.table_exists("moqui.test.TestFts")?;
     if !test_fts_before_load {
         return Err(moqui_lib::error::Error::new(
@@ -1112,7 +1123,7 @@ fn same_dir(left: &std::path::Path, right: &std::path::Path) -> bool {
     left == right || matches!((std::fs::canonicalize(left), std::fs::canonicalize(right)), (Ok(a), Ok(b)) if a == b)
 }
 
-/// `component://name/data/file` for each `.xml`, `.csv` and `.json` file in the `data` directory of each component, by file name.
+/// Inline entity seeds followed by `.xml`, `.csv` and `.json` files in each component's data directory.
 /// The framework is not here: its files come from the conf. Only the components in `flags.components` when it names some.
 fn component_data_locations(factory: &moqui_core::context::ExecutionContextFactory, flags: &LoadFlags) -> Vec<String> {
     let mut locations = Vec::new();
@@ -1122,6 +1133,16 @@ fn component_data_locations(factory: &moqui_core::context::ExecutionContextFacto
         {
             continue;
         }
+        let mut entities: Vec<_> = std::fs::read_dir(info.location.join("entity"))
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "xml"))
+            .map(|path| path.display().to_string())
+            .collect();
+        entities.sort();
+        locations.extend(entities);
         let Ok(read) = std::fs::read_dir(info.location.join("data")) else {
             continue;
         };

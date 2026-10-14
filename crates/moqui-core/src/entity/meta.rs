@@ -43,6 +43,41 @@ impl EntityFacade {
         self.meta().check(names)
     }
 
+    /// Skip catalog walks when the model fingerprint matches the stored stamp.
+    /// Set `entity_check_schema=true` to force a full re-check.
+    #[allow(clippy::format_collect)]
+    pub fn check_tables_cached(&self, names: &[&str]) -> Result<(), Error> {
+        use sha2::{Digest, Sha256};
+        let Some(first) = names.first() else { return Ok(()) };
+        let mut h = Sha256::new();
+        h.update(b"moqui-schema-v1");
+        let flags = self.flags();
+        for n in names {
+            self.with_group(n, |e, d, m, _| {
+                h.update(format!("{e:?}{d:?}{:?}{flags:?}", m.dictionary_types()).as_bytes());
+                Ok(())
+            })?;
+        }
+        let fp = Value::string(format!("{:x}", h.finalize()));
+        let tx = self.transactions_for(first)?;
+        let hit = tx.with_connection(|c| {
+            c.execute(
+                "CREATE TABLE IF NOT EXISTS moqui_startup_schema (fingerprint VARCHAR(64) PRIMARY KEY)",
+                &[],
+            )?;
+            let r = c.query_once("SELECT fingerprint FROM moqui_startup_schema", &[])?;
+            Ok(r.len() == 1 && r[0].get("fingerprint") == Some(&fp))
+        })?;
+        if hit && moqui_lib::env::get_prop_or_env("entity_check_schema") != "true" {
+            tracing::info!("Entity schema unchanged, skipping startup catalog check");
+            return Ok(());
+        }
+        tx.with_connection(|c| c.execute("DELETE FROM moqui_startup_schema", &[]))?;
+        self.check_tables(names)?;
+        tx.with_connection(|c| c.execute("INSERT INTO moqui_startup_schema (fingerprint) VALUES (?)", &[fp]))?;
+        Ok(())
+    }
+
     pub fn check_all_tables(&self) -> Result<(), Error> {
         self.meta().check_all()
     }

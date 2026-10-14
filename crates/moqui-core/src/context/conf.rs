@@ -21,13 +21,25 @@ use moqui_lib::node::MNode;
 use super::error::Error;
 
 pub fn load_merged_conf(framework_dir: &Path, runtime_dir: &Path) -> Result<MNode, Error> {
+    // Component conf is discovered from framework+dev so it sees the component-list,
+    // then the final merge is framework < components < dev (runtime overrides components).
     let base = MNode::parse_file(framework_dir.join("conf/MoquiDefaultConf.xml"))?;
     let dev = runtime_dir.join("conf/MoquiDevConf.xml");
     if dev.is_file() {
-        let over = MNode::parse_file(&dev)?;
-        merge_conf(&base, &over);
+        merge_conf(&base, &MNode::parse_file(&dev)?);
     }
-    Ok(base)
+    let components = super::component::discover(runtime_dir, framework_dir, &base)?;
+    let merged = MNode::parse_file(framework_dir.join("conf/MoquiDefaultConf.xml"))?;
+    for c in &components {
+        let p = c.location.join("MoquiConf.xml");
+        if p.is_file() {
+            merge_conf(&merged, &MNode::parse_file(p)?);
+        }
+    }
+    if dev.is_file() {
+        merge_conf(&merged, &MNode::parse_file(dev)?);
+    }
+    Ok(merged)
 }
 
 /// Merge `over` into `base`. `component-list` children are appended.

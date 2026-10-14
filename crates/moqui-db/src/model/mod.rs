@@ -358,7 +358,15 @@ impl EntityModel {
 
     /// Every `*.xml` in `directory` whose root is `entities`. `*.eecas.xml` has another root and is skipped.
     pub fn load_directory(conf: &MNode, directory: &Path) -> Result<Self, Error> {
-        let documents = entity_documents(directory)?;
+        Self::load_directories(conf, &[directory.to_path_buf()])
+    }
+
+    /// Resolve all component definitions and extensions together, before completing relationships and views.
+    pub fn load_directories(conf: &MNode, directories: &[std::path::PathBuf]) -> Result<Self, Error> {
+        let mut documents = Vec::new();
+        for directory in directories {
+            documents.extend(entity_documents(directory)?);
+        }
         Self::load(conf, &documents)
     }
 
