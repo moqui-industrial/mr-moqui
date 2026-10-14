@@ -634,7 +634,7 @@ fn run_inline(def: &ServiceDef, parameters: &BTreeMap<String, Value>) -> Result<
         crate::script::set_context_name(name, value.clone()).map_err(script_err)?;
     }
     if !def.actions.trim().is_empty() {
-        crate::script::run_actions(&def.actions).map_err(script_err)?;
+        crate::script::run_actions(&def.actions).map_err(|err| in_service(def, &err))?;
     }
     Ok(collect_outputs(def))
 }
@@ -660,8 +660,18 @@ fn run_script(def: &ServiceDef, parameters: &BTreeMap<String, Value>) -> Result<
     for (name, value) in parameters {
         crate::script::set_context_name(name, value.clone()).map_err(script_err)?;
     }
-    crate::script::run_script_location(&def.location).map_err(script_err)?;
+    crate::script::run_script_location(&def.location).map_err(|err| in_service(def, &err))?;
     Ok(collect_outputs(def))
+}
+
+/// A failure in a service's body, with the service named after it (Java logs "Error running service ..."): a script
+/// error alone gives only a line in the generated code.
+fn in_service(def: &ServiceDef, err: &crate::context::Error) -> LibError {
+    let message = err.message();
+    if message.contains("\n    in service ") {
+        return LibError::new(message);
+    }
+    LibError::new(format!("{}\n    in service {}", message.trim_end(), def.name))
 }
 
 fn script_err(err: crate::context::Error) -> LibError {

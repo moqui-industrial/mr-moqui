@@ -362,6 +362,16 @@ impl EntityModel {
         Self::load(conf, &documents)
     }
 
+    /// [`Self::load_directory`] over several directories in order, the framework's first and then each
+    /// component's `entity` directory, as one model: a component's `extend-entity` applies to any of them.
+    pub fn load_directories(conf: &MNode, directories: &[&Path]) -> Result<Self, Error> {
+        let mut documents = Vec::new();
+        for directory in directories {
+            documents.extend(entity_documents(directory)?);
+        }
+        Self::load(conf, &documents)
+    }
+
     pub fn dictionary_types(&self) -> &[DictionaryType] {
         &self.dictionary
     }

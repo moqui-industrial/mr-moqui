@@ -194,7 +194,10 @@ pub(super) fn logger_log(
         };
         match level.as_str() {
             "off" => {}
-            "warn" | "warning" | "error" => tracing::warn!("{message}"),
+            "error" => tracing::error!("{message}"),
+            "warn" | "warning" => tracing::warn!("{message}"),
+            "debug" => tracing::debug!("{message}"),
+            "trace" => tracing::trace!("{message}"),
             _ => tracing::info!("{message}"),
         }
         Ok(())
@@ -204,6 +207,35 @@ pub(super) fn logger_log(
 pub(super) fn logger_warn(ctx: Ctx<'_>, message: String) -> rquickjs::Result<()> {
     host_guard(&ctx, || {
         tracing::warn!("{message}");
+        Ok(())
+    })
+}
+
+/// `ec.logger.info(message)`, and `error`, `debug`, `trace` below: Java `LoggerFacade` by level.
+pub(super) fn logger_info(ctx: Ctx<'_>, message: String) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        tracing::info!("{message}");
+        Ok(())
+    })
+}
+
+pub(super) fn logger_error(ctx: Ctx<'_>, message: String, _thrown: Opt<JsValue<'_>>) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        tracing::error!("{message}");
+        Ok(())
+    })
+}
+
+pub(super) fn logger_debug(ctx: Ctx<'_>, message: String) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        tracing::debug!("{message}");
+        Ok(())
+    })
+}
+
+pub(super) fn logger_trace(ctx: Ctx<'_>, message: String) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        tracing::trace!("{message}");
         Ok(())
     })
 }

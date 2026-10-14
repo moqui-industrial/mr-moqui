@@ -269,8 +269,8 @@ impl EntityFind {
     }
 
     /// Java `oneInternal`: a find one whose field equalities hold the full primary key, with more besides (a
-    /// `condition(context)` puts every field of the context in), finds by the primary key alone. Other kinds of
-    /// condition stay.
+    /// `condition(context)` puts every field of the context in, nulls as `IS NULL`), finds by the primary key alone.
+    /// Other kinds of condition stay.
     fn narrow_to_full_pk(&mut self) {
         let pk_names: Vec<String> = match self.facade.with_entity(&self.entity_name, |entity, _, _| {
             Ok(entity.pk_field_names().iter().map(|name| (*name).to_string()).collect())
@@ -288,16 +288,22 @@ impl EntityFind {
             && pk_names
                 .iter()
                 .all(|name| self.conditions.iter().any(|condition| equals_on(condition, name)));
+        // A null in the map is an `IS NULL` here; Java keeps it in the same simple map as the equalities.
         let equalities = self
             .conditions
             .iter()
-            .filter(|condition| matches!(condition, Condition::Equals(..)))
+            .filter(|condition| matches!(condition, Condition::Equals(..) | Condition::IsNull(..)))
             .count();
         if !has_full_pk || equalities <= pk_names.len() {
             return;
         }
         let mut kept: Vec<Condition> = Vec::new();
         for condition in std::mem::take(&mut self.conditions) {
+            if let Condition::IsNull(field) = &condition {
+                if field.entity_alias.is_none() {
+                    continue;
+                }
+            }
             let Condition::Equals(field, _) = &condition else {
                 kept.push(condition);
                 continue;

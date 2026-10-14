@@ -270,6 +270,7 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     wrappers.Resource = (ref) => Object.assign(ref, {
         getLocation: () => ref.location, getFileName: () => ref.fileName, getExists: () => ref.exists,
         isDirectory: () => ref.directory, isFile: () => ref.file, getSize: () => ref.size,
+        isText: () => ref.text, isBinary: () => ref.binary, getContentType: () => ref.contentType,
         getLastModified: () => ref.lastModified, length: () => ref.size || 0, getName: () => ref.fileName,
         getDirectoryEntries: () => (ref.children || []).map((child) => wrap("Resource", child)),
         getText: () => host.resourceText(ref.location),
@@ -1075,10 +1076,21 @@ fn resource_info_value(resource: &crate::context::ResourceRef, children: bool) -
     let file_name = location.rsplit('/').next().unwrap_or_default().to_string();
     let mut map = indexmap::IndexMap::new();
     map.insert("location".to_string(), Value::string(&location));
-    map.insert("fileName".to_string(), Value::string(file_name));
+    map.insert("fileName".to_string(), Value::string(&file_name));
     map.insert("exists".to_string(), Value::Bool(resource.exists()));
     map.insert("directory".to_string(), Value::Bool(resource.is_directory()));
     map.insert("file".to_string(), Value::Bool(resource.is_file()));
+    // `ResourceReference.getContentType`, `isText`, `isBinary`: from the file name's extension.
+    let content_type = moqui_lib::resource::content_type_for_name(&file_name);
+    map.insert("contentType".to_string(), content_type.map_or(Value::Null, Value::string));
+    map.insert(
+        "text".to_string(),
+        Value::Bool(content_type.is_some_and(moqui_lib::resource::is_text_content_type)),
+    );
+    map.insert(
+        "binary".to_string(),
+        Value::Bool(content_type.is_some_and(moqui_lib::resource::is_binary_content_type)),
+    );
     map.insert(
         "size".to_string(),
         resource

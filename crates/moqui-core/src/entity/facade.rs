@@ -82,6 +82,8 @@ pub(crate) struct GroupRuntime {
 pub(crate) struct Inner {
     pub(crate) model: SharedModel,
     pub(crate) framework_dir: std::path::PathBuf,
+    /// The `entity` directories of the components, after the framework's: definitions and `*.eecas.xml`.
+    pub(crate) component_entity_dirs: Vec<std::path::PathBuf>,
     pub(crate) default_group: String,
     pub(crate) groups: HashMap<String, GroupRuntime>,
     pub(crate) banks: Mutex<HashMap<String, SequenceBank>>,
@@ -122,6 +124,24 @@ impl EntityFacade {
         dialect: &str,
         groups: &[&str],
     ) -> Result<Self, Error> {
+        Self::open_with_driver_components(framework_dir, &[], driver, pool, dialect, groups)
+    }
+
+    /// [`Self::open_with_driver`] with the `entity` directories of the components: their entities,
+    /// `extend-entity` elements, and entity ECA rules join the framework's.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the conf or the entity model cannot be read, `dialect` is not
+    /// defined, or `groups` is empty.
+    pub fn open_with_driver_components(
+        framework_dir: &Path,
+        component_entity_dirs: &[std::path::PathBuf],
+        driver: Arc<dyn crate::driver::DbDriver>,
+        pool: crate::transaction::PoolConfig,
+        dialect: &str,
+        groups: &[&str],
+    ) -> Result<Self, Error> {
         let Some(default_group) = groups.first() else {
             return Err(Error::new("open_with_driver needs at least one entity group"));
         };
@@ -132,24 +152,41 @@ impl EntityFacade {
             .iter()
             .map(|group| EntityGroup::new(*group, dialect, transactions.clone()))
             .collect();
-        let facade = Self::open(framework_dir, default_group, groups)?;
+        let facade = Self::open_components(framework_dir, component_entity_dirs, default_group, groups)?;
         facade.crypt_from_conf(&conf)?;
         Ok(facade)
     }
 
     /// Load the framework entity model and attach one transaction manager per group.
     pub fn open(framework_dir: &Path, default_group: &str, groups: Vec<EntityGroup>) -> Result<Self, Error> {
+        Self::open_components(framework_dir, &[], default_group, groups)
+    }
+
+    /// [`Self::open`] with the `entity` directories of the components after the framework's.
+    pub fn open_components(
+        framework_dir: &Path,
+        component_entity_dirs: &[std::path::PathBuf],
+        default_group: &str,
+        groups: Vec<EntityGroup>,
+    ) -> Result<Self, Error> {
         if groups.is_empty() {
             return Err(Error::new("entity facade needs a transaction manager"));
         }
         let conf_path = framework_dir.join("conf/MoquiDefaultConf.xml");
         let conf = MNode::parse_file(&conf_path)?;
         let started = std::time::Instant::now();
+        let framework_entities = framework_dir.join("entity");
+        let mut directories: Vec<&Path> = vec![framework_entities.as_path()];
+        directories.extend(component_entity_dirs.iter().map(std::path::PathBuf::as_path));
         tracing::info!(
             "Loading entity definitions from {}",
-            framework_dir.join("entity").display()
+            directories
+                .iter()
+                .map(|dir| dir.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
         );
-        let model = EntityModel::load_directory(&conf, &framework_dir.join("entity"))?;
+        let model = EntityModel::load_directories(&conf, &directories)?;
         let dialects = Dialects::load(&conf)?;
         let all = model.entities();
         let views = all.iter().filter(|entity| entity.is_view).count();
@@ -185,6 +222,7 @@ impl EntityFacade {
             inner: Arc::new(Inner {
                 model: SharedModel::new(model),
                 framework_dir: framework_dir.to_path_buf(),
+                component_entity_dirs: component_entity_dirs.to_vec(),
                 default_group: default_group.to_string(),
                 groups: runtimes,
                 banks: Mutex::new(HashMap::new()),
@@ -202,6 +240,13 @@ impl EntityFacade {
     /// The framework directory this facade was opened from.
     pub fn framework_dir(&self) -> &Path {
         &self.inner.framework_dir
+    }
+
+    /// Every `entity` directory of the model: the framework's, then each component's.
+    pub fn entity_dirs(&self) -> Vec<std::path::PathBuf> {
+        let mut out = vec![self.inner.framework_dir.join("entity")];
+        out.extend(self.inner.component_entity_dirs.iter().cloned());
+        out
     }
 
     /// Hook-module state. `init` runs once per `T`. Do not call `with_slot` from `body`.

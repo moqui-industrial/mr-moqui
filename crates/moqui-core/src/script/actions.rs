@@ -46,7 +46,32 @@ pub fn run_actions(actions: &str) -> Result<(), Error> {
     let previous = super::runtime::set_widget_wrap(false);
     let result = super::runtime::eval_script(&source);
     super::runtime::set_widget_wrap(previous);
-    result
+    result.map_err(|err| with_source_line(err, &source))
+}
+
+/// An error at `eval_script:LINE:COL` with that line of the generated script after it, so a failure in actions points at
+/// the statement. With `MOQUI_ACTIONS_DEBUG` set, the element comment above it is shown too.
+fn with_source_line(err: Error, source: &str) -> Error {
+    let message = err.message();
+    let Some(at) = message.find("eval_script:") else {
+        return err;
+    };
+    let line: Option<usize> = message[at + "eval_script:".len()..]
+        .split(':')
+        .next()
+        .and_then(|number| number.parse().ok());
+    let Some(line) = line.filter(|line| *line > 0) else {
+        return err;
+    };
+    let lines: Vec<&str> = source.lines().collect();
+    let Some(text) = lines.get(line - 1) else {
+        return err;
+    };
+    let mut detail = format!("\n    at generated line {line}: {}", text.trim());
+    if let Some(comment) = lines[..line - 1].iter().rev().map(|text| text.trim()).find(|text| text.starts_with("//")) {
+        detail.push_str(&format!("\n    after {comment}"));
+    }
+    Error::new(format!("{}{detail}", message.trim_end()))
 }
 
 /// Generate the script for `xml` and parse it, without running anything. Definition load calls
@@ -397,6 +422,20 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("no execution context is entered"), "{err}");
+    }
+
+    #[test]
+    fn a_pushed_context_list_keeps_its_rows() {
+        clear_context_stack();
+        let ctx = ExecutionContextFactory::test_context();
+        let _guard = ctx.enter();
+        run_actions(
+            r#"<actions><set field="xs" from="[]"/><script>xs.push(1)</script><script>xs.push(2)</script>
+                <set field="n" from="xs.length"/></actions>"#,
+        )
+        .unwrap();
+        assert_eq!(crate::script::context_value("n"), Some(Value::I32(2)));
+        clear_context_stack();
     }
 
     #[test]

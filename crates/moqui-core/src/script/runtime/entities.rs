@@ -179,11 +179,11 @@ impl HostFind {
                     "entity condition needs a field and a value",
                 ));
             };
-            // A map such as `context` carries names that are not fields. Only fields apply.
+            // A map such as `context` carries names that are not fields. Only fields (a view's aliases) apply.
             let facade = facade_of(&ctx)?;
             let known: std::collections::BTreeSet<String> = facade
                 .with_entity(find.entity_name(), |entity, _, _| {
-                    Ok(entity.fields.iter().map(|field| field.name.clone()).collect())
+                    Ok(entity.field_names().into_iter().map(str::to_string).collect())
                 })
                 .map_err(|err| throw_lib(&ctx, &err))?;
             for key in object.keys::<String>() {
@@ -925,6 +925,15 @@ impl HostEntity {
         host_guard(&ctx, || Ok(self.val().entity_name().to_string()))
     }
 
+    /// `cloneValue()`: a separate value with the same entity and fields, as Java's `EntityValue.cloneValue`. Changes to
+    /// either do not reach the other.
+    fn clone_value<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            let copy = self.val().clone();
+            entity_to_js(&ctx, HostEntity::new(copy))
+        })
+    }
+
     /// `getMap()`: the fields as a plain map.
     fn get_map<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || {
@@ -1327,6 +1336,17 @@ mod tests {
                 return child.extra === "e" && child[0] === "zero" && list[0].enumId === "E1"
                     && list.extra === undefined && child.length === 3;
             })()"#,
+        );
+    }
+
+    #[test]
+    fn clone_value_is_a_separate_copy() {
+        let ctx = enumerations();
+        let _entered = ctx.enter();
+        holds(
+            r#"(() => { const a = ec.entity.makeValue("moqui.basic.Enumeration"); a.enumId = "X"; a.description = "one";
+                const b = a.cloneValue(); b.description = "two";
+                return a.description === "one" && b.description === "two" && b.enumId === "X"; })()"#,
         );
     }
 

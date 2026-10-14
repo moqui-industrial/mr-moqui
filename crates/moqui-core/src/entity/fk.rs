@@ -40,7 +40,15 @@ pub(crate) fn enforce(
     }
     let jobs = facade.with_entity(entity_name, |entity, _, model| fk_jobs(entity, model, values))?;
     let dummy = facade.flags().dummy_fks;
+    let own_keys = facade.pk_map(entity_name, values).ok();
+    let own_name = facade.with_entity(entity_name, |entity, _, _| Ok(entity.full_name.clone()))?;
     for job in jobs {
+        // A row that names itself (an organization that owns itself) is satisfied by its own insert, as the
+        // database's foreign key is.
+        let related_name = facade.with_entity(&job.related, |entity, _, _| Ok(entity.full_name.clone()))?;
+        if related_name == own_name && own_keys.as_ref() == Some(&job.keys) {
+            continue;
+        }
         if row_exists(facade, &job.related, &job.keys)? {
             continue;
         }

@@ -34,6 +34,7 @@ use moqui_lib::object::{to_plain_string, Value};
 use crate::context::ExecutionContext;
 use crate::entity::document::{self, Document};
 use crate::entity::{Condition, EntityFacade};
+use crate::transaction::TransactionAttribute;
 
 pub const DEFAULT_RECEIVE: &str = "org.moqui.search.SearchServices.index#DataDocuments";
 pub const DEFAULT_DELETE: &str = "org.moqui.search.SearchServices.delete#DataDocument";
@@ -113,19 +114,29 @@ pub fn process_pending(ids: Option<&[String]>) -> Result<FeedReport, Error> {
             continue;
         }
         let record_ids: Vec<String> = records.keys().cloned().collect();
-        match deliver(&facade, &document_id, &record_ids, &document_feeds) {
-            Ok((indexed, deleted)) => {
-                report.documents_indexed += indexed;
-                report.documents_deleted += deleted;
+        // Each document type in its own transaction: a type that fails (a manual data service that errors, say) rolls
+        // back only its own delivery and keeps only its own rows, not the other types' in this batch.
+        let delivered = facade.transactions_for(PENDING).and_then(|tx| {
+            tx.run(TransactionAttribute::ForceNew, None, || {
+                let (indexed, deleted) = deliver(&facade, &document_id, &record_ids, &document_feeds)?;
                 for pending_ids in records.values() {
                     for pending_id in pending_ids {
                         delete_pending(&facade, pending_id)?;
                     }
                 }
+                Ok((indexed, deleted))
+            })
+        });
+        match delivered {
+            Ok((indexed, deleted)) => {
+                report.documents_indexed += indexed;
+                report.documents_deleted += deleted;
                 report.rows_done += row_count;
             }
             Err(err) => {
                 tracing::warn!(document = %document_id, error = %err, "data feed delivery failed; pending rows stay");
+                // The failure is logged; its message errors would stop the next document type's services.
+                ExecutionContext::with_current(|ec| ec.message().clear_errors());
                 report.rows_left += row_count;
             }
         }

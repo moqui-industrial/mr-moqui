@@ -60,6 +60,14 @@ pub struct EcaRule {
     pub on_update: bool,
     pub on_delete: bool,
     pub run_before: bool,
+    /// Fill fields the write does not set from the database row, for update and delete.
+    pub get_entire_entity: bool,
+    /// Put the database row before the write in `originalValue`, for update and delete.
+    pub get_original_value: bool,
+    /// Copy context names the actions set that are non-primary-key fields onto the value.
+    pub set_results: bool,
+    /// Run even when the message facade has errors.
+    pub run_on_error: bool,
     pub condition: String,
     pub actions: String,
 }
@@ -236,9 +244,9 @@ pub(crate) fn match_rules_with(
     let frame = tx.as_ref().and_then(TransactionManager::frame_token);
     let keep_fields =
         !facade.flags().disable_data_feed && entity_name != SKIP_FEED_ENTITY && entity_name != PENDING_ENTITY;
-    let framework = facade.framework_dir().to_path_buf();
+    let dirs = facade.entity_dirs();
     with_load_slot(facade, |slot| {
-        ensure_rules(slot, &framework);
+        ensure_rules(slot, &dirs);
         if in_tx {
             slot.touches.push(Touch {
                 thread: std::thread::current().id(),
@@ -265,9 +273,9 @@ pub(crate) fn match_rules_with(
 
 /// Rules stored for `entity_name`. This lookup does not run them; `service::run_matched_eca` does.
 pub fn eca_rules(facade: &EntityFacade, entity_name: &str) -> Vec<EcaRule> {
-    let framework = facade.framework_dir().to_path_buf();
+    let dirs = facade.entity_dirs();
     with_load_slot(facade, |slot| {
-        ensure_rules(slot, &framework);
+        ensure_rules(slot, &dirs);
         slot.eca_rules
             .iter()
             .filter(|rule| rule.entity_name == entity_name)
@@ -278,9 +286,9 @@ pub fn eca_rules(facade: &EntityFacade, entity_name: &str) -> Vec<EcaRule> {
 
 /// How many entity ECA rules are loaded, for the tools artifact stats.
 pub fn eca_rule_count(facade: &EntityFacade) -> usize {
-    let framework = facade.framework_dir().to_path_buf();
+    let dirs = facade.entity_dirs();
     with_load_slot(facade, |slot| {
-        ensure_rules(slot, &framework);
+        ensure_rules(slot, &dirs);
         slot.eca_rules.len()
     })
 }
@@ -376,34 +384,37 @@ fn rule_matches(rule: &EcaRule, entity_name: &str, operation: &str) -> bool {
     }
 }
 
-fn ensure_rules(slot: &mut LoadSlot, framework: &Path) {
+fn ensure_rules(slot: &mut LoadSlot, dirs: &[PathBuf]) {
     if slot.eca_loaded {
         return;
     }
     slot.eca_loaded = true;
-    let dir = framework.join("entity");
-    let read = match std::fs::read_dir(&dir) {
-        Ok(read) => read,
-        Err(err) => {
-            tracing::warn!(error = %err, dir = %dir.display(), "could not read eeca directory");
-            return;
-        }
-    };
-    let mut paths: Vec<PathBuf> = read
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(".eecas.xml"))
-        })
-        .collect();
-    paths.sort();
-    let files = paths.len();
-    for path in paths {
-        match MNode::parse_file(&path) {
-            Ok(root) => ingest_eecas(&root, slot),
-            Err(err) => tracing::warn!(error = %err, path = %path.display(), "could not parse eeca file"),
+    // The framework's rules, then each component's, as Java loads `*.eecas.xml` from every entity directory.
+    let mut files = 0;
+    for dir in dirs {
+        let read = match std::fs::read_dir(dir) {
+            Ok(read) => read,
+            Err(err) => {
+                tracing::warn!(error = %err, dir = %dir.display(), "could not read eeca directory");
+                continue;
+            }
+        };
+        let mut paths: Vec<PathBuf> = read
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(".eecas.xml"))
+            })
+            .collect();
+        paths.sort();
+        files += paths.len();
+        for path in paths {
+            match MNode::parse_file(&path) {
+                Ok(root) => ingest_eecas(&root, slot),
+                Err(err) => tracing::warn!(error = %err, path = %path.display(), "could not parse eeca file"),
+            }
         }
     }
     tracing::info!(
@@ -422,6 +433,10 @@ fn ingest_eecas(root: &MNode, slot: &mut LoadSlot) {
             on_update: attr_true(&node, "on-update"),
             on_delete: attr_true(&node, "on-delete"),
             run_before: attr_true(&node, "run-before"),
+            get_entire_entity: attr_true(&node, "get-entire-entity"),
+            get_original_value: attr_true(&node, "get-original-value"),
+            set_results: attr_true(&node, "set-results"),
+            run_on_error: attr_true(&node, "run-on-error"),
             condition: node
                 .first_named("condition")
                 .map(|child| child.write_string())
@@ -1703,17 +1718,26 @@ fn parse_top(facade: &EntityFacade, location: &str, node: &MNode) -> Result<Opti
     let key = element_key(&node.name());
     if entity_defined(facade, &key) {
         Ok(Some(Top::Record(parse_record(facade, &key, node)?)))
-    } else if key.contains('#') {
+    } else if let Some(name) = crate::service::define::defined_name(&key).or_else(|| key.contains('#').then(|| key.clone())) {
         Ok(Some(Top::Service(DataFileService {
-            name: key,
+            name,
             location: location.to_string(),
             parameters: service_parameters(node),
         })))
     } else {
-        Err(Error::new(format!(
-            "{location} element {} is not an entity or a service",
-            node.name()
-        )))
+        let failures = crate::service::define::registration_failures(&key);
+        if failures.is_empty() {
+            Err(Error::new(format!(
+                "{location} element {} is not an entity or a service",
+                node.name()
+            )))
+        } else {
+            Err(Error::new(format!(
+                "{location} element {} is a service that did not register: {}",
+                node.name(),
+                failures.join("; ")
+            )))
+        }
     }
 }
 
@@ -1981,11 +2005,32 @@ fn prepare_fields(
     only_create: bool,
 ) -> Result<(), Error> {
     convert_fields(facade, entity_name, fields)?;
-    let (single, missing) = facade.with_entity(entity_name, |entity, _, _| {
+    // `EntityAutoServiceRunner.storeEntity`, which Java's loader uses for nested records: a primary key
+    // `fromDate` that is not given is now.
+    let from_date_pk = facade.with_entity(entity_name, |entity, _, _| Ok(entity.pk_field_names().contains(&"fromDate")))?;
+    if from_date_pk && !only_create && fields.get("fromDate").is_none_or(Value::is_null) {
+        fields.insert("fromDate".to_string(), Value::Timestamp(jiff::Timestamp::now()));
+    }
+    let (single, missing, only_last) = facade.with_entity(entity_name, |entity, _, _| {
         let names = entity.pk_field_names();
-        let missing = names.iter().any(|name| fields.get(*name).is_none_or(Value::is_null));
-        Ok((names.len() == 1, missing))
+        let absent = |name: &&str| fields.get(*name).is_none_or(Value::is_null);
+        let missing = names.iter().any(absent);
+        // Every key but the last given: the last is a secondary sequence (`setSequencedIdSecondary`).
+        let only_last = names.len() > 1
+            && names.last().is_some_and(absent)
+            && names[..names.len() - 1].iter().all(|name| !absent(name));
+        Ok((names.len() == 1, missing, only_last))
     })?;
+    if only_last && !only_create {
+        let mut value = value_from(facade, entity_name, fields)?;
+        value.set_sequenced_id_secondary(facade)?;
+        let pk_name = facade.with_entity(entity_name, |entity, _, _| {
+            Ok(entity.pk_field_names().last().copied().unwrap_or("").to_string())
+        })?;
+        if let Some(value) = value.get(&pk_name).cloned() {
+            fields.insert(pk_name, value);
+        }
+    }
     if missing && single && !only_create {
         let mut value = value_from(facade, entity_name, fields)?;
         value.set_sequenced_id_primary(facade)?;
@@ -2015,12 +2060,30 @@ fn convert_fields(facade: &EntityFacade, entity_name: &str, fields: &mut BTreeMa
             else {
                 continue;
             };
-            updates.insert(field.name.clone(), basic_convert(value, &java).value);
+            let mut converted = basic_convert(value, &java);
+            // Java parses number text with the locale (`L10nFacade.parseNumber`), so `118,500` is 118500.
+            if let Value::String(text) = value {
+                if !converted.changed && text.contains(',') && is_number_type(&java) {
+                    let plain = Value::String(text.replace(',', ""));
+                    let retried = basic_convert(&plain, &java);
+                    if retried.changed {
+                        converted = retried;
+                    }
+                }
+            }
+            updates.insert(field.name.clone(), converted.value);
         }
         Ok(updates)
     })?;
     fields.extend(updates);
     Ok(())
+}
+
+fn is_number_type(java_type: &str) -> bool {
+    matches!(
+        java_type.rsplit('.').next().unwrap_or(java_type),
+        "BigDecimal" | "BigInteger" | "Long" | "Integer" | "Double" | "Float" | "long" | "int" | "double" | "float"
+    )
 }
 
 fn pk_complete(facade: &EntityFacade, entity_name: &str, fields: &BTreeMap<String, Value>) -> Result<bool, Error> {

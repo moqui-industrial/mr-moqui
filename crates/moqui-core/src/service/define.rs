@@ -237,6 +237,11 @@ impl ServiceDef {
 struct Registry {
     services: BTreeMap<String, ServiceDef>,
     failures: Vec<String>,
+    /// The files the services came from, so a file found by service name can be added and the whole set
+    /// built again (`implements` and `include` resolve across files).
+    paths: Vec<PathBuf>,
+    /// Files looked for by service name, found or not, so a miss is not searched again.
+    searched: BTreeSet<PathBuf>,
 }
 
 struct ServiceInclude {
@@ -417,7 +422,82 @@ pub(crate) fn input_hints(service: &str, parameter: &str) -> Option<ParamHints> 
 /// A service of the entered context's factory. `None` when it is not defined or no context is entered.
 pub(crate) fn find(name: &str) -> Option<ServiceDef> {
     let shared = entered().ok()?;
-    snapshot(&shared).services.get(name).cloned()
+    if let Some(def) = snapshot(&shared).services.get(name) {
+        return Some(def.clone());
+    }
+    load_by_name(&shared, name)
+}
+
+/// The registered name of a service, as Java's `isServiceDefined` takes it: the name itself, or for a name
+/// with no `#` the combined form split at its first capital (`a.b.C.initPartyConfig` is `a.b.C.init#PartyConfig`).
+/// `None` when neither is a service.
+pub(crate) fn defined_name(name: &str) -> Option<String> {
+    if find(name).is_some() {
+        return Some(name.to_string());
+    }
+    if name.contains('#') {
+        return None;
+    }
+    let (path, verb_noun) = name.rsplit_once('.')?;
+    let split = verb_noun.find(|ch: char| ch.is_ascii_uppercase())?;
+    if split == 0 {
+        return None;
+    }
+    let candidate = format!("{path}.{}#{}", &verb_noun[..split], &verb_noun[split..]);
+    find(&candidate).map(|_| candidate)
+}
+
+/// Why `name` (or its combined camel-case form, as [`defined_name`] reads it) did not register, when its
+/// file was read and the service failed there: the registration failures that name it.
+pub(crate) fn registration_failures(name: &str) -> Vec<String> {
+    let Ok(shared) = entered() else {
+        return Vec::new();
+    };
+    let mut names = vec![name.to_string()];
+    if let Some((path, verb_noun)) = name.rsplit_once('.').filter(|_| !name.contains('#')) {
+        if let Some(split) = verb_noun.find(|ch: char| ch.is_ascii_uppercase()).filter(|split| *split > 0) {
+            names.push(format!("{path}.{}#{}", &verb_noun[..split], &verb_noun[split..]));
+        }
+    }
+    snapshot(&shared)
+        .failures
+        .iter()
+        .filter(|failure| names.iter().any(|name| failure.contains(&format!("service {name} "))))
+        .cloned()
+        .collect()
+}
+
+/// Java's lookup by name: `a.b.C.verb#noun` is defined in `service/a/b/C.xml` of the framework or a
+/// component, the first that has the file. The file joins the registry, which is built again with it.
+fn load_by_name(shared: &Shared, name: &str) -> Option<ServiceDef> {
+    let path_name = name.split('#').next()?;
+    let (file, _) = path_name.rsplit_once('.')?;
+    let relative = format!("{}.xml", file.replace('.', "/"));
+    let factory = ExecutionContext::with_current(|ctx| Arc::clone(ctx.factory()))?;
+    let mut roots = vec![factory.framework_dir().to_path_buf()];
+    roots.extend(factory.components().iter().map(|info| info.location.clone()));
+    let path = roots
+        .iter()
+        .map(|root| root.join("service").join(&relative))
+        .find(|candidate| candidate.is_file())?;
+    let current = snapshot(shared);
+    if current.searched.contains(&path) || current.paths.contains(&path) {
+        return None;
+    }
+    let mut paths = current.paths.clone();
+    paths.push(path.clone());
+    let mut next = match build(&paths) {
+        Ok(registry) => registry,
+        Err(err) => {
+            tracing::warn!(error = %err, path = %path.display(), "could not read the service file for {name}");
+            return None;
+        }
+    };
+    next.searched = current.searched.clone();
+    next.searched.insert(path);
+    let found = next.services.get(name).cloned();
+    *shared.write().unwrap_or_else(|err| err.into_inner()) = Arc::new(next);
+    found
 }
 
 /// Every service registered with the entered context's factory, by name. Type generation reads these.
@@ -509,7 +589,12 @@ fn build(paths: &[PathBuf]) -> Result<Registry, Error> {
     // Includes first, so a service can implement a name that is only an include alias.
     resolve_includes(&includes, &mut services, &mut failures);
     resolve_implements(&mut services, &mut failures);
-    Ok(Registry { services, failures })
+    Ok(Registry {
+        services,
+        failures,
+        paths: paths.to_vec(),
+        searched: BTreeSet::new(),
+    })
 }
 
 fn load_file(
