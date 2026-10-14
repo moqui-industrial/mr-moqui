@@ -146,13 +146,26 @@ async fn metrics(State(state): State<Arc<HttpState>>, ConnectInfo(peer): Connect
     let depth = state.factory.request_pool().queue_depth();
     let (statements, statement_ms) = moqui_core::entity::statement_stats();
     let idle = stats.ordinary_idle.saturating_add(stats.reserve_idle);
-    plain(
-        200,
-        &format!(
-            "checked_out {}\nparked {}\nwaiting {}\nidle {}\ncheckouts {}\nrequest_queue {}\nstatements {}\nstatement_ms {}\n",
-            stats.checked_out, stats.parked, stats.waiting, idle, stats.checkouts, depth, statements, statement_ms
-        ),
-    )
+    let mut text = format!(
+        "checked_out {}\nparked {}\nwaiting {}\nidle {}\ncheckouts {}\nrequest_queue {}\nstatements {}\nstatement_ms {}\n",
+        stats.checked_out, stats.parked, stats.waiting, idle, stats.checkouts, depth, statements, statement_ms
+    );
+    // With a search read replica: its replay lag (-1 when it cannot be read) and the reads that ran on the primary.
+    let factory = Arc::clone(&state.factory);
+    let replica = tokio::task::spawn_blocking(move || {
+        moqui_core::search::installed(&factory).and_then(|facade| facade.backend().replica_status())
+    })
+    .await
+    .ok()
+    .flatten();
+    if let Some(replica) = replica {
+        let lag = replica.lag_seconds.unwrap_or(-1.0);
+        text.push_str(&format!(
+            "search_replica_lag_seconds {lag}\nsearch_replica_primary_fallbacks {}\n",
+            replica.primary_fallbacks
+        ));
+    }
+    plain(200, &text)
 }
 
 async fn dispatch_screen(

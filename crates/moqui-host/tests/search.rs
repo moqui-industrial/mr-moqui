@@ -1024,6 +1024,28 @@ fn feed_scenario(facade: &moqui_core::entity::EntityFacade) {
     let enumerations = facade.find("moqui.basic.Enumeration").unwrap().count().unwrap();
     assert_eq!(number(&out["documentsIndexed"]), enumerations.to_string());
     assert!(search.get_document("TestEnum", "TcRed").unwrap().is_some());
+
+    // Read-your-writes: a fresh search right after the commit waits for this context's pending
+    // rows to be delivered, with no wait_drained.
+    facade.begin(entity, None).unwrap();
+    create(
+        facade,
+        "moqui.basic.Enumeration",
+        &[
+            ("enumId", "TcGreen"),
+            ("enumTypeId", "TestColor"),
+            ("description", "Emerald Green"),
+        ],
+    );
+    facade.commit(entity).unwrap();
+    let mut fresh = SearchRequest::new(parse_query_string("*:emerald*").unwrap());
+    fresh.fresh_by = Some(Instant::now() + Duration::from_secs(10));
+    let page = search
+        .search(&moqui_core::search::Target::Index("test_enums".into()), &fresh)
+        .unwrap();
+    let mut ids: Vec<String> = page.hits.into_iter().map(|hit| hit.id).collect();
+    ids.sort();
+    assert_eq!(ids, vec!["TcGreen", "TestColor"]);
 }
 
 fn pool() -> PoolConfig {

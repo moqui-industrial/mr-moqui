@@ -19,9 +19,10 @@
 //! in `crate::search::query` and `crate::search::agg`; a query may also be a query string.
 //!
 //! ```text
-//! ec.search.search({indexName, documentType, query, queryString, sort, offset, limit, highlight})
+//! ec.search.search({indexName, documentType, query, queryString, sort, offset, limit, highlight,
+//!         consistency, freshTimeout})
 //!     -> {hits: [{documentId, id, score, body, highlights}], total}
-//! ec.search.aggregate({documentType, filter, aggs}) -> {name: result, ..}
+//! ec.search.aggregate({documentType, filter, aggs, consistency, freshTimeout}) -> {name: result, ..}
 //! ec.search.parseQuery(text), ec.search.elasticQuery(mapOrJson) -> query tree
 //! ec.search.indexDocuments(documentList) -> count
 //! ec.search.deleteDocument(documentType, id) -> boolean
@@ -36,6 +37,9 @@
 //! ec.search.rebuildFeed({dataFeedId, dataDocumentId, fromUpdateStamp, thruUpdateStamp, batchSize}) -> count
 //! ec.entity.getDataDocuments(dataDocumentId, condition?, fromUpdateStamp?, thruUpdateStamp?) -> list
 //! ```
+//!
+//! `consistency: "readYourWrites"` waits up to `freshTimeout` milliseconds (default 5000) for this
+//! session's writes to be indexed and, with a read replica, replayed there; see `search::fresh`.
 
 use super::*;
 use crate::search::{self, Agg, Query, SearchRequest, SortField, Target};
@@ -161,6 +165,7 @@ pub(super) fn search_search<'js>(ctx: Ctx<'js>, args: JsValue<'js>) -> rquickjs:
         request.offset = number(map.get("offset"), 0);
         request.limit = number(map.get("limit"), 20);
         request.highlight = text_list(map.get("highlight").or_else(|| map.get("highlightFields")));
+        request.fresh_by = fresh_by(&map);
         let page = lib(&ctx, facade.search(&target, &request))?;
         let mut hits = Vec::with_capacity(page.hits.len());
         for hit in page.hits {
@@ -188,13 +193,23 @@ pub(super) fn search_search<'js>(ctx: Ctx<'js>, args: JsValue<'js>) -> rquickjs:
     })
 }
 
+/// The read-your-writes deadline from `consistency` and `freshTimeout`.
+fn fresh_by(map: &indexmap::IndexMap<String, Value>) -> Option<std::time::Instant> {
+    let consistency = map.get("consistency").map(moqui_lib::object::to_plain_string)?;
+    if !consistency.eq_ignore_ascii_case("readYourWrites") {
+        return None;
+    }
+    let millis = number(map.get("freshTimeout"), 5000);
+    Some(std::time::Instant::now() + std::time::Duration::from_millis(u64::try_from(millis).unwrap_or(5000)))
+}
+
 pub(super) fn search_aggregate<'js>(ctx: Ctx<'js>, args: JsValue<'js>) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let map = options(&ctx, &args)?;
         let target = target_of(&ctx, &map)?;
         let filter = query_of(&ctx, map.get("filter").or_else(|| map.get("query")))?;
         let aggs = lib(&ctx, Agg::map_from_value(map.get("aggs").unwrap_or(&Value::Null)))?;
-        let results = lib(&ctx, facade(&ctx)?.aggregate(&target, &filter, &aggs))?;
+        let results = lib(&ctx, facade(&ctx)?.aggregate_fresh(&target, &filter, &aggs, fresh_by(&map)))?;
         host_to_js(&ctx, Value::Map(results))
     })
 }

@@ -17,6 +17,7 @@
 //! ```xml
 //! <search-facade backend="postgres"/>
 //! <search-facade backend="postgres"><postgres url="postgresql://host:5432/db" user=".." password=".."/></search-facade>
+//! <search-facade backend="postgres"><postgres url=".." read-url="postgresql://replica:5432/db" read-statement-timeout="30"/></search-facade>
 //! <search-facade backend="opensearch"><cluster url=".." user=".." password=".." index-prefix=".."/></search-facade>
 //! ```
 
@@ -37,6 +38,10 @@ pub struct PostgresConf {
     pub user: Option<String>,
     pub password: Option<String>,
     pub schema: Option<String>,
+    /// A physical replica of `url` for searches and aggregations only, with the same credentials.
+    pub read_url: Option<String>,
+    /// `statement_timeout` on replica sessions, in seconds. `None` is 30.
+    pub read_statement_timeout: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -89,6 +94,8 @@ impl SearchConf {
                 user: attr(&child, "user"),
                 password: attr(&child, "password"),
                 schema: attr(&child, "schema"),
+                read_url: attr(&child, "read-url"),
+                read_statement_timeout: attr(&child, "read-statement-timeout").and_then(|text| text.parse().ok()),
             })
             .unwrap_or_default();
         let cluster = match node.first_named("cluster") {

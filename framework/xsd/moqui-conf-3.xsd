@@ -609,6 +609,14 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:attribute name="user" type="xs:string"/>
                 <xs:attribute name="password" type="xs:string"/>
                 <xs:attribute name="schema" type="xs:string" default="search"/>
+                <xs:attribute name="read-url" type="xs:string"><xs:annotation><xs:documentation>
+                    postgresql://host:port/database of a physical replica of url. Searches and aggregations run there on a
+                    separate read-only pool, with the same user and password; index and schema writes stay on url. A search
+                    that asks for read-your-writes waits for the replica to replay the primary, or runs on url.
+                </xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="read-statement-timeout" type="xs:positiveInteger" default="30"><xs:annotation><xs:documentation>
+                    statement_timeout in seconds on replica sessions, so a long search does not hold back replay.
+                </xs:documentation></xs:annotation></xs:attribute>
             </xs:complexType></xs:element>
             <xs:element name="cluster" minOccurs="0"><xs:complexType>
                 <xs:annotation><xs:documentation>The cluster for the opensearch backend.</xs:documentation></xs:annotation>

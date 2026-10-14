@@ -46,6 +46,8 @@ mod driver {
         database: String,
         password: Option<String>,
         target: Target,
+        /// libpq `options`: server settings for each session, such as `-c statement_timeout=30000`.
+        options: Option<String>,
     }
 
     #[derive(Clone)]
@@ -104,6 +106,7 @@ mod driver {
                 user: user.into(),
                 database: database.into(),
                 password: None,
+                options: None,
                 target: Target::Unix {
                     socket_dir: socket_dir.into(),
                     port: 5432,
@@ -135,6 +138,7 @@ mod driver {
                 user: user.into(),
                 database: database.into(),
                 password: None,
+                options: None,
                 target: Target::TcpNoTls {
                     host: host.into(),
                     port,
@@ -159,12 +163,21 @@ mod driver {
                 user: user.into(),
                 database: database.into(),
                 password: None,
+                options: None,
                 target: Target::Tcp {
                     host: host.into(),
                     port,
                     tls,
                 },
             })
+        }
+
+        /// Server settings sent with each new session, the libpq `options` string
+        /// (`-c statement_timeout=30000 -c default_transaction_read_only=on`).
+        #[must_use]
+        pub fn options(mut self, options: impl Into<String>) -> Self {
+            self.options = Some(options.into());
+            self
         }
 
         /// Password for the role. Embedded initdb uses password auth.
@@ -184,6 +197,9 @@ mod driver {
             config.user(&self.user).dbname(&self.database);
             if let Some(password) = &self.password {
                 config.password(password);
+            }
+            if let Some(options) = &self.options {
+                config.options(options);
             }
             let (mut client, tls) = match &self.target {
                 #[cfg(unix)]

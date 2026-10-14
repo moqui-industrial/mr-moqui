@@ -98,7 +98,10 @@ pub fn attach_search(
             } else {
                 embedded_tx(factory.runtime_dir(), &mut store)?
             };
-            let backend = PostgresBackend::open(tx, conf.postgres.schema.as_deref())?;
+            let mut backend = PostgresBackend::open(tx, conf.postgres.schema.as_deref())?;
+            if let Some(read_url) = &conf.postgres.read_url {
+                backend = backend.with_read_replica(read_tx(read_url, &conf.postgres)?);
+            }
             moqui_core::search::install(factory, SearchFacade::new(Arc::new(backend), entity.clone()));
             Ok(store)
         }
@@ -117,6 +120,37 @@ fn external_tx(url: &str, user: Option<&str>, password: Option<&str>) -> Result<
         url.tls,
     )?;
     TransactionManager::new(Arc::new(driver), search_pool())
+}
+
+/// The pool for a `read-url` replica: its own connections, read-only sessions, and a statement
+/// timeout so a long search is cancelled instead of holding back replay. No reserve: it takes no
+/// writes.
+#[cfg(feature = "postgres")]
+fn read_tx(url: &str, conf: &moqui_core::search::conf::PostgresConf) -> Result<TransactionManager, Error> {
+    let parsed = moqui_core::search::conf::parse_postgres_url(url)?;
+    let timeout_ms = conf.read_statement_timeout.unwrap_or(30).saturating_mul(1000);
+    let driver = crate::db::entity_db::postgres_server_driver(
+        conf.user.as_deref().unwrap_or("postgres"),
+        conf.password.as_deref(),
+        &parsed.database,
+        &parsed.host,
+        parsed.port,
+        parsed.tls,
+    )?
+    .options(format!(
+        "-c default_transaction_read_only=on -c statement_timeout={timeout_ms}"
+    ));
+    let pool = PoolConfig {
+        reserve: 0,
+        idle_timeout: Some(Duration::from_secs(60)),
+        ..search_pool()
+    };
+    TransactionManager::new(Arc::new(driver), pool)
+}
+
+#[cfg(not(feature = "postgres"))]
+fn read_tx(_url: &str, _conf: &moqui_core::search::conf::PostgresConf) -> Result<TransactionManager, Error> {
+    Err(Error::new("the postgres driver is not in this build"))
 }
 
 #[cfg(not(feature = "postgres"))]

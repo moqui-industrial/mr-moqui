@@ -117,6 +117,8 @@ pub fn schedule_feed_receive(facade: &EntityFacade, pending_ids: Vec<String>) ->
     if pending_ids.is_empty() || !crate::user::context_entered() {
         return Ok(());
     }
+    // A later search of this session that asks for read-your-writes waits for these rows.
+    crate::search::fresh::remember_pending(&pending_ids);
     let mut params = BTreeMap::new();
     params.insert(
         "dataFeedPendingIds".to_string(),

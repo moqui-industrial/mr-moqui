@@ -24,6 +24,7 @@ pub mod agg;
 pub mod conf;
 pub mod es_json;
 pub mod feed;
+pub mod fresh;
 pub mod highlight;
 pub mod logs;
 pub mod mapping;
@@ -95,6 +96,10 @@ pub struct SearchRequest {
     pub limit: usize,
     /// Field names to return highlighted fragments for.
     pub highlight: Vec<String>,
+    /// Read-your-writes: until this deadline, wait for this session's pending feed rows to be
+    /// indexed and for a read replica to replay them; then run on the primary. `None` reads
+    /// whatever the store has, which on a replica can be behind.
+    pub fresh_by: Option<std::time::Instant>,
 }
 
 impl SearchRequest {
@@ -105,6 +110,7 @@ impl SearchRequest {
             offset: 0,
             limit: 20,
             highlight: Vec::new(),
+            fresh_by: None,
         }
     }
 }
@@ -129,6 +135,15 @@ pub struct SearchPage {
     pub total: u64,
 }
 
+/// A read replica's state, for `/metrics`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ReplicaStatus {
+    /// Seconds since the last replayed transaction, `None` when the replica cannot be read.
+    pub lag_seconds: Option<f64>,
+    /// Reads that ran on the primary: a fresh read that timed out, or a replica error.
+    pub primary_fallbacks: u64,
+}
+
 /// One search store. The facade resolves targets and mappings; a backend compiles and runs.
 pub trait SearchBackend: Send + Sync {
     fn name(&self) -> &'static str;
@@ -149,6 +164,21 @@ pub trait SearchBackend: Send + Sync {
         aggs: &IndexMap<String, Agg>,
     ) -> Result<IndexMap<String, Value>, Error>;
     fn drop_index(&self, mapping: &DocumentMapping) -> Result<(), Error>;
+    /// [`Self::aggregate`] for read-your-writes, as [`SearchRequest::fresh_by`] describes. A backend
+    /// with no read replica reads its one store.
+    fn aggregate_fresh(
+        &self,
+        mapping: &DocumentMapping,
+        filter: &Query,
+        aggs: &IndexMap<String, Agg>,
+        _fresh_by: Option<std::time::Instant>,
+    ) -> Result<IndexMap<String, Value>, Error> {
+        self.aggregate(mapping, filter, aggs)
+    }
+    /// Replica lag and how many reads fell back to the primary, when reads go to a replica.
+    fn replica_status(&self) -> Option<ReplicaStatus> {
+        None
+    }
     /// Whether this backend keeps the log indexes (`search::logs`). Only OpenSearch does.
     fn keeps_log_indexes(&self) -> bool {
         false
@@ -372,6 +402,9 @@ impl SearchFacade {
         if mappings.is_empty() {
             return Ok(SearchPage::default());
         }
+        if let Some(deadline) = request.fresh_by {
+            fresh::wait_for_pending(deadline)?;
+        }
         self.backend.search(&mappings, request)
     }
 
@@ -386,6 +419,21 @@ impl SearchFacade {
         filter: &Query,
         aggs: &IndexMap<String, Agg>,
     ) -> Result<IndexMap<String, Value>, Error> {
+        self.aggregate_fresh(target, filter, aggs, None)
+    }
+
+    /// [`Self::aggregate`] with read-your-writes until `fresh_by`, as [`SearchRequest::fresh_by`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the target is not one document, or a tree does not compile.
+    pub fn aggregate_fresh(
+        &self,
+        target: &Target,
+        filter: &Query,
+        aggs: &IndexMap<String, Agg>,
+        fresh_by: Option<std::time::Instant>,
+    ) -> Result<IndexMap<String, Value>, Error> {
         let ids = self.target_documents(target)?;
         let [id] = ids.as_slice() else {
             return Err(Error::new(format!(
@@ -397,7 +445,10 @@ impl SearchFacade {
         if !self.backend.index_exists(&mapping)? {
             return Ok(agg_empty_results(aggs));
         }
-        self.backend.aggregate(&mapping, filter, aggs)
+        if let Some(deadline) = fresh_by {
+            fresh::wait_for_pending(deadline)?;
+        }
+        self.backend.aggregate_fresh(&mapping, filter, aggs, fresh_by)
     }
 
     /// Drop a document's store. The next index call makes it again.

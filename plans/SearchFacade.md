@@ -400,6 +400,8 @@ The default single-node PostgreSQL deployment runs business data, document maint
 
 Validate permissions against current authoritative state before returning hits, totals, facets, or snippets; stale replica ACLs alone are insufficient, especially after revocation. For read-your-writes, first wait for the relevant pending-feed indexing to complete, then wait for its search-commit WAL position on the replica with a bounded timeout or route to the search primary. Routing to the primary alone does not remove indexing delay. Permission-sensitive requests require equivalent authoritative checks on either route.
 
+In the code, `PostgresBackend::with_read_replica` takes the replica's pool. Searches, aggregations, and `get_document` run there. Index and schema writes, the `document_index` registry, and any read inside a transaction already open on the primary stay on the primary. A request asks for read-your-writes with `SearchRequest::fresh_by`, a deadline; scripts pass `consistency: "readYourWrites"` and `freshTimeout` (milliseconds, default 5000). `schedule_feed_receive` remembers the pending row ids a session's transactions inserted (`search::fresh`, the newest 200). A fresh read first waits for those rows to be delivered. It then reads `pg_current_wal_lsn()` on the primary, which covers every commit it waited for, and polls the replica's `pg_last_wal_replay_lsn()` until it reaches that position. If the deadline passes first, or the replica fails, the read runs on the primary and a counter goes up. A rows-still-pending timeout still runs the search; the primary has whatever is indexed. Replica sessions are `default_transaction_read_only` with `statement_timeout` (`read-statement-timeout`, 30 seconds). `/metrics` reports `search_replica_lag_seconds` (`now() - pg_last_xact_replay_timestamp()`, -1 when the replica cannot be read) and `search_replica_primary_fallbacks`.
+
 Set query timeouts and monitor replication lag and standby query cancellations. Expensive search queries must not silently block recovery. A separately writable derived database is the existing separate-PostgreSQL placement, not a physical replica; moving maintenance there needs explicit feed consistency, authorization, and recovery rules. A replica offloads reads only and does not satisfy a topology that requires derived-index maintenance off the business write node.
 
 ### Validation
@@ -452,7 +454,7 @@ Each stored document carries `_indexed_at` (epoch millis), which a retention `de
 
 A `postgres` url uses TLS unless it carries `?sslmode=disable`, the same rule as the entity datasource's `sslmode`. A host that is an absolute path is a Unix socket directory.
 
-The optional `read-url` selects a physical replica of the search primary for reads only; it uses the configured credentials and a separate read-only pool. It never receives index/schema writes. Without it, reads use the primary. Primary fallback and bounded freshness waits follow Read replicas and freshness above.
+The optional `read-url` selects a physical replica of the search primary for reads only; it uses the configured credentials (the `postgres` element's `user` and `password`) and a separate read-only pool. `read-statement-timeout` is seconds, default 30. It never receives index/schema writes. Without it, reads use the primary. Primary fallback and bounded freshness waits follow Read replicas and freshness above.
 
 Service parameters named `clusterName` go away. There is one backend. The `logger` cluster name goes away with the logging entity group.
 

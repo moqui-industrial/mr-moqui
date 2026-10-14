@@ -27,7 +27,9 @@ pub mod agg;
 pub mod compile;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use indexmap::IndexMap;
 use jiff::Timestamp;
@@ -39,7 +41,7 @@ use compile::{column, column_type, ident, literal, typed_param, Compiler, Locate
 use super::highlight::highlights;
 use super::mapping::{DocumentMapping, FieldKind};
 use super::query::Query;
-use super::{lock, Agg, SearchBackend, SearchHit, SearchPage, SearchRequest};
+use super::{lock, Agg, ReplicaStatus, SearchBackend, SearchHit, SearchPage, SearchRequest};
 use crate::driver::DbRow;
 use crate::entity::document::Document;
 use crate::transaction::{TransactionAttribute, TransactionManager};
@@ -48,11 +50,25 @@ pub const DEFAULT_SCHEMA: &str = "search";
 
 pub struct PostgresBackend {
     tx: TransactionManager,
+    /// A physical replica of the store for searches, aggregations, and `get_document`.
+    read: Option<TransactionManager>,
+    /// Reads that ran on the primary because a fresh read timed out or the replica failed.
+    fallbacks: AtomicU64,
     schema: String,
     trigram: bool,
     /// Signature of each table known to exist.
     known: Mutex<HashMap<String, String>>,
 }
+
+/// Where one read runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Route {
+    Primary,
+    Replica,
+}
+
+/// How often a fresh read asks the replica how far it has replayed.
+const REPLAY_POLL: Duration = Duration::from_millis(20);
 
 impl PostgresBackend {
     /// Open the store: create the schema, `pg_trgm` when it can, and the registry table.
@@ -84,10 +100,90 @@ impl PostgresBackend {
         })?;
         Ok(Self {
             tx,
+            read: None,
+            fallbacks: AtomicU64::new(0),
             schema,
             trigram,
             known: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Run searches, aggregations, and `get_document` on `read`, a physical replica of this store
+    /// (`read-url`). Index and schema writes, the registry, and reads inside a transaction on the
+    /// primary stay on the primary.
+    #[must_use]
+    pub fn with_read_replica(mut self, read: TransactionManager) -> Self {
+        self.read = Some(read);
+        self
+    }
+
+    /// Where a read runs. With no replica, or inside a transaction on the primary, the primary.
+    /// Otherwise the replica; for read-your-writes (`fresh_by`) only once it has replayed the
+    /// primary's WAL position as of now, which covers each commit the caller already waited for.
+    /// A read that cannot be fresh by the deadline runs on the primary.
+    fn read_route(&self, fresh_by: Option<Instant>) -> Route {
+        let Some(read) = &self.read else {
+            return Route::Primary;
+        };
+        if self.tx.in_transaction() {
+            return Route::Primary;
+        }
+        let Some(deadline) = fresh_by else {
+            return Route::Replica;
+        };
+        let lsn = match self
+            .tx
+            .with_connection(|conn| conn.query("SELECT pg_current_wal_lsn()::text AS lsn", &[]))
+        {
+            Ok(rows) => rows.first().and_then(|row| row.get("lsn")).map(to_plain_string),
+            Err(err) => {
+                tracing::warn!(error = %err, "could not read the primary WAL position; the read runs on the primary");
+                None
+            }
+        };
+        let Some(lsn) = lsn else {
+            self.fallbacks.fetch_add(1, Ordering::Relaxed);
+            return Route::Primary;
+        };
+        // A read-url that is not in recovery has no replay position; it is as current as it gets.
+        let check = "SELECT COALESCE(pg_last_wal_replay_lsn() >= ?::pg_lsn, true) AS caught_up";
+        loop {
+            match read.with_connection(|conn| conn.query(check, &[Value::string(&lsn)])) {
+                Ok(rows) if rows.first().and_then(|row| row.get("caught_up")) == Some(&Value::Bool(true)) => {
+                    return Route::Replica;
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    tracing::warn!(error = %err, "the search replica cannot be read; the read runs on the primary");
+                    break;
+                }
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(REPLAY_POLL);
+        }
+        self.fallbacks.fetch_add(1, Ordering::Relaxed);
+        Route::Primary
+    }
+
+    /// Run a read where `route` says. A replica error, such as a statement cancelled for replay,
+    /// runs it again on the primary.
+    fn query_on(&self, route: Route, sql: &Sql) -> Result<Vec<DbRow>, Error> {
+        match (route, &self.read) {
+            (Route::Replica, Some(read)) => {
+                tracing::debug!(sql = %sql.text, "search query on the replica");
+                match read.with_connection(|conn| conn.query(&sql.text, &sql.params)) {
+                    Ok(rows) => Ok(rows),
+                    Err(err) => {
+                        tracing::warn!(error = %err, "search query failed on the replica; running it on the primary");
+                        self.fallbacks.fetch_add(1, Ordering::Relaxed);
+                        self.query(sql)
+                    }
+                }
+            }
+            _ => self.query(sql),
+        }
     }
 
     pub fn schema(&self) -> &str {
@@ -325,21 +421,22 @@ impl SearchBackend for PostgresBackend {
             self.table(mapping)
         ));
         sql.param(Value::string(id));
-        let rows = self.query(&sql)?;
+        let rows = self.query_on(self.read_route(None), &sql)?;
         rows.first().map(|row| parse_body(row.get("body"))).transpose()
     }
 
     fn search(&self, mappings: &[Arc<DocumentMapping>], request: &SearchRequest) -> Result<SearchPage, Error> {
         let plan = search_sql(&self.schema, mappings, request)?;
+        let route = self.read_route(request.fresh_by);
         let total = self
-            .query(&plan.count)?
+            .query_on(route, &plan.count)?
             .first()
             .and_then(|row| row.get("total"))
             .map(|value| to_plain_string(value).parse::<u64>().unwrap_or(0))
             .unwrap_or(0);
         let mut hits = Vec::new();
         if request.limit > 0 && total > 0 {
-            for row in self.query(&plan.select)? {
+            for row in self.query_on(route, &plan.select)? {
                 let body = parse_body(row.get("body"))?;
                 let highlights = if request.highlight.is_empty() {
                     IndexMap::new()
@@ -368,9 +465,38 @@ impl SearchBackend for PostgresBackend {
         filter: &Query,
         aggs: &IndexMap<String, Agg>,
     ) -> Result<IndexMap<String, Value>, Error> {
+        self.aggregate_fresh(mapping, filter, aggs, None)
+    }
+
+    fn aggregate_fresh(
+        &self,
+        mapping: &DocumentMapping,
+        filter: &Query,
+        aggs: &IndexMap<String, Agg>,
+        fresh_by: Option<Instant>,
+    ) -> Result<IndexMap<String, Value>, Error> {
         let table = self.table(mapping);
-        let mut run = |sql: &Sql| self.query(sql);
+        let route = self.read_route(fresh_by);
+        let mut run = |sql: &Sql| self.query_on(route, sql);
         agg::aggregate(&table, mapping, filter, aggs, &mut run)
+    }
+
+    fn replica_status(&self) -> Option<ReplicaStatus> {
+        let read = self.read.as_ref()?;
+        let lag_seconds = read
+            .with_connection(|conn| {
+                conn.query(
+                    "SELECT EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp()))::float8 AS lag",
+                    &[],
+                )
+            })
+            .ok()
+            .and_then(|rows| rows.first().and_then(|row| row.get("lag")).cloned())
+            .and_then(|value| to_plain_string(&value).parse::<f64>().ok());
+        Some(ReplicaStatus {
+            lag_seconds,
+            primary_fallbacks: self.fallbacks.load(Ordering::Relaxed),
+        })
     }
 
     fn drop_index(&self, mapping: &DocumentMapping) -> Result<(), Error> {
