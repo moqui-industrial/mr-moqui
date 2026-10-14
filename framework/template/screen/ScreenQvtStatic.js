@@ -1025,6 +1025,14 @@
                 const headerFields = kids(n, "field").filter((f) => { const sub = first(f, "header-field"); return sub && sub.children.filter((x) => x.name !== "set").length; });
                 if (headerFields.length && at(n, "header-dialog") !== "true") attrs[":header-initial"] = "(_ctx, hs) => (" + initialOf(headerFields, "header-field", [["orderByField", "hs.orderByField"]]) + ")";
             }
+            const kinds = Object.keys(cfg.special || {});
+            if (kinds.length) {
+                attrs[":special-rows"] = "{" + kinds.map((kind) => {
+                    const { tag, transition } = cfg.special[kind];
+                    const action = transition ? sq(sri.staticUrl(transition, "transition").path) : "null";
+                    return kind + ":{action:" + action + ",initial:(_ctx) => (" + initialOf(kids(n, "field"), tag, []) + ")}";
+                }).join(",") + "}";
+            }
             if (at(n, "saved-finds") === "true") {
                 attrs["form-location"] = name;
                 attrs["find-action"] = sri.staticUrl("formSaveFind", "transition").path;
@@ -1396,6 +1404,19 @@
                     w("</template>");
                 });
             }
+            Object.keys(cfg.special || {}).forEach((kind) => {
+                const { tag, transition } = cfg.special[kind];
+                kids(n, "field").forEach((field) => {
+                    const sub = first(field, tag);
+                    if (!sub || !sub.children.length || kids(sub, "hidden").length) return;
+                    w("<template" + A({ ["v-slot:rc" + kind.charAt(0) + "_" + at(field, "name")]: "_ctx" }) + ">");
+                    push();
+                    Object.assign(st, { inRow: false, inForm: !!transition, fieldForm: name + "_" + kind, owner: "" });
+                    specialCell(field, tag);
+                    pop();
+                    w("</template>");
+                });
+            });
             kids(n, "field").forEach((field) => {
                 const fieldName = at(field, "name");
                 w("<template" + A({ ["v-slot:rc_" + fieldName]: "_ctx" }) + ">");
@@ -1416,6 +1437,15 @@
             });
         };
 
+        // A cell of a first, second or last row: the field's *-row-field widgets. One that holds a hidden widget writes nothing; its value is
+        // in the row form's starting values.
+        const specialCell = (field, tag) => {
+            const sub = first(field, tag);
+            if (!sub || !sub.children.length || kids(sub, "hidden").length) return;
+            w("<div" + A({ class: cellStyle(at(sub, "container-style"), at(field, "align")) }) + ">");
+            subWidgets(sub);
+            w("</div>");
+        };
         // The sub-rows of an aggregated list: the titles of the sub-list columns for the head, and the cells of one sub-row over its entry.
         const subSlots = (subLists) => {
             w("<template v-slot:subhead>");
@@ -1442,8 +1472,11 @@
         const formList = (n, columnFieldLists, allFields) => {
             const cfg = {};
             const name = at(n, "name");
-            ["first-row-field", "second-row-field", "last-row-field"].forEach((tag) => {
-                if (allFields.some((f) => { const sub = first(f, tag); return sub && sub.children.length; })) note("form-list-row", n, "the " + tag + " row of form-list " + name + " is not written");
+            // the first, second and last rows: the fields' *-row-field widgets over the map-*-row map, in a form when transition-*-row names one
+            cfg.special = {};
+            ["first", "second", "last"].forEach((kind) => {
+                const tag = kind + "-row-field";
+                if (allFields.some((f) => { const sub = first(f, tag); return sub && sub.children.length; })) cfg.special[kind] = { tag, transition: at(n, "transition-" + kind + "-row") };
             });
             if (first(n, "row-selection")) note("row-selection", n, "row-selection of form-list " + name + " is not written");
             const flags = {
@@ -1511,6 +1544,17 @@
             // fields with only a hidden widget are not in a column but their values still start the form
             pop();
             w("</template>");
+            Object.keys(cfg.special).forEach((kind) => {
+                const { tag, transition } = cfg.special[kind];
+                w('<template v-slot:row_' + kind + '="_ctx">');
+                push();
+                Object.assign(st, { inRow: false, inForm: !!transition, fieldForm: name + "_" + kind, owner: "" });
+                w('<div class="tr ' + kind + '">');
+                columnFieldLists.forEach((fields) => { w('<div class="td">'); fields.forEach((field) => specialCell(field, tag)); w("</div>"); });
+                w("</div>");
+                pop();
+                w("</template>");
+            });
             if (subLists.length) subSlots(subLists);
             w("</m-static-form-list>\n");
             pop();

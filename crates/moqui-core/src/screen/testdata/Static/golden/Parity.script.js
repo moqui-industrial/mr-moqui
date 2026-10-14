@@ -13,6 +13,7 @@ return function render(_ctx, _cache) {
   const _component_m_form = _resolveComponent("m-form")
   const _component_m_scope = _resolveComponent("m-scope")
   const _component_m_display = _resolveComponent("m-display")
+  const _component_q_btn = _resolveComponent("q-btn")
   const _component_m_static_form_list = _resolveComponent("m-static-form-list")
   const _component_m_form_paginate = _resolveComponent("m-form-paginate")
 
@@ -232,6 +233,182 @@ return function render(_ctx, _cache) {
       ]),
       _: 1
     }, 8, ["value", "extra"]),
+    _createVNode(_component_m_static_form_list, {
+      name: "EditList",
+      id: "EditList",
+      action: "/Parity/saveProduct",
+      "list-name": "itemsForEdit",
+      "special-rows": {first:{action:'/Parity/createItem',initial:(_ctx) => ({'itemId':_ctx.$mq.str(_ctx.$scope['itemId']),'name':_ctx.$mq.str(_ctx.$scope['name']),'secret':_ctx.$mq.str(_ctx.$mq.dflt(_ctx.$scope['secret'],'S1'))})},last:{action:null,initial:(_ctx) => ({'name':_ctx.$mq.str(_ctx.$scope['name']),'name_display':_ctx.ec.l10n.localize('the last row')})}}
+    }, {
+      header: _withCtx((hs) => [
+        _createElementVNode("div", { class: "th text-left" }, [
+          _createElementVNode("div", null, [
+            _createElementVNode("div", { class: "form-title" }, [
+              _createElementVNode("span", {
+                textContent: _toDisplayString(_ctx.ec.l10n.localize('Item ID'))
+              }, null, 8, ["textContent"])
+            ])
+          ])
+        ]),
+        _createElementVNode("div", { class: "th text-left" }, [
+          _createElementVNode("div", null, [
+            _createElementVNode("div", { class: "form-title" }, [
+              _createElementVNode("span", {
+                textContent: _toDisplayString(_ctx.ec.l10n.localize('Name'))
+              }, null, 8, ["textContent"])
+            ])
+          ])
+        ]),
+        _createElementVNode("div", { class: "th text-left" }, [
+          _createElementVNode("div", null, [
+            _createElementVNode("div", { class: "form-title" })
+          ])
+        ])
+      ]),
+      row: _withCtx((_ctx) => [
+        _createElementVNode("div", {
+          class: _normalizeClass(["tr", {'text-weight-bold': _ctx._moquiRowType === 'total'}])
+        }, [
+          _createVNode(_component_m_form, {
+            name: 'EditList_'+_ctx.rowIndex,
+            id: 'EditList_'+_ctx.rowIndex,
+            action: "/Parity/saveProduct",
+            "fields-initial": {'itemId':_ctx.$mq.str(_ctx.$scope['itemId']),'itemId_display':_ctx.$mq.str(_ctx.$scope['itemId']),'name':_ctx.$mq.str(_ctx.$scope['name']),'secret':_ctx.$mq.str(_ctx.$scope['secret']),'moquiFormName':'EditList','pageIndex':_ctx.$mq.str(_ctx.$scope['pageIndex']||0)}
+          }, {
+            default: _withCtx((formProps) => [
+              _createElementVNode("div", { class: "td" }, [
+                _createElementVNode("div", { class: "form-group" }, [
+                  _createVNode(_component_m_display, {
+                    name: "itemId",
+                    id: 'EditList_itemId'+'_'+_ctx.rowIndex+'_display',
+                    modelValue: formProps.fields.itemId,
+                    "onUpdate:modelValue": $event => ((formProps.fields.itemId) = $event),
+                    display: formProps.fields.itemId_display,
+                    fields: formProps.fields
+                  }, null, 8, ["id", "modelValue", "onUpdate:modelValue", "display", "fields"])
+                ])
+              ]),
+              _createElementVNode("div", { class: "td" }, [
+                _createElementVNode("div", { class: "form-group" }, [
+                  _createVNode(_component_m_text_line, {
+                    id: 'EditList_name'+'_'+_ctx.rowIndex,
+                    type: "text",
+                    name: "name",
+                    size: "20",
+                    label: _ctx.ec.l10n.localize('Name'),
+                    modelValue: formProps.fields.name,
+                    "onUpdate:modelValue": $event => ((formProps.fields.name) = $event),
+                    fields: formProps.fields
+                  }, null, 8, ["id", "label", "modelValue", "onUpdate:modelValue", "fields"])
+                ])
+              ]),
+              _createElementVNode("div", { class: "td" }, [
+                _createElementVNode("div", { class: "form-group" }, [
+                  _createVNode(_component_q_btn, {
+                    dense: "",
+                    outline: !formProps.hasFieldsChanged,
+                    "no-caps": "",
+                    type: "submit",
+                    name: "go",
+                    value: "go",
+                    color: "primary",
+                    id: 'EditList_go'+'_'+_ctx.rowIndex
+                  }, {
+                    default: _withCtx(() => [
+                      _createElementVNode("span", {
+                        textContent: _toDisplayString(_ctx.ec.l10n.localize('Save'))
+                      }, null, 8, ["textContent"])
+                    ]),
+                    _: 1
+                  }, 8, ["outline", "id"])
+                ])
+              ])
+            ]),
+            _: 1
+          }, 8, ["name", "id", "fields-initial"])
+        ], 2)
+      ]),
+      row_first: _withCtx((_ctx) => [
+        _createElementVNode("div", { class: "tr first" }, [
+          _createElementVNode("div", { class: "td" }, [
+            _createElementVNode("div", { class: "form-group" }, [
+              _createVNode(_component_m_text_line, {
+                id: "EditList_first_itemId",
+                type: "text",
+                name: "itemId",
+                size: "10",
+                label: _ctx.ec.l10n.localize('Item ID'),
+                modelValue: _ctx.formProps.fields.itemId,
+                "onUpdate:modelValue": $event => ((_ctx.formProps.fields.itemId) = $event),
+                fields: _ctx.formProps.fields
+              }, null, 8, ["label", "modelValue", "onUpdate:modelValue", "fields"])
+            ])
+          ]),
+          _createElementVNode("div", { class: "td" }, [
+            _createElementVNode("div", { class: "form-group" }, [
+              _createVNode(_component_m_text_line, {
+                id: "EditList_first_name",
+                type: "text",
+                name: "name",
+                size: "20",
+                label: _ctx.ec.l10n.localize('Name'),
+                modelValue: _ctx.formProps.fields.name,
+                "onUpdate:modelValue": $event => ((_ctx.formProps.fields.name) = $event),
+                fields: _ctx.formProps.fields
+              }, null, 8, ["label", "modelValue", "onUpdate:modelValue", "fields"])
+            ])
+          ]),
+          _createElementVNode("div", { class: "td" }, [
+            _createElementVNode("div", { class: "form-group" }, [
+              _createVNode(_component_q_btn, {
+                dense: "",
+                outline: !_ctx.formProps.hasFieldsChanged,
+                "no-caps": "",
+                type: "submit",
+                name: "go",
+                value: "go",
+                color: "primary",
+                id: "EditList_first_go"
+              }, {
+                default: _withCtx(() => [
+                  _createElementVNode("span", {
+                    textContent: _toDisplayString(_ctx.ec.l10n.localize('Create'))
+                  }, null, 8, ["textContent"])
+                ]),
+                _: 1
+              }, 8, ["outline"])
+            ])
+          ])
+        ])
+      ]),
+      row_last: _withCtx((_ctx) => [
+        _createElementVNode("div", { class: "tr last" }, [
+          _createElementVNode("div", { class: "td" }),
+          _createElementVNode("div", { class: "td" }, [
+            _createElementVNode("div", { class: "form-group" }, [
+              _createVNode(_component_m_display, {
+                name: "name",
+                id: "EditList_last_name_display"
+              }, {
+                default: _withCtx(() => [
+                  _createElementVNode("span", {
+                    textContent: _toDisplayString(_ctx.ec.l10n.localize('the last row'))
+                  }, null, 8, ["textContent"])
+                ]),
+                _: 1
+              }),
+              _createElementVNode("input", {
+                type: "hidden",
+                name: "name",
+                value: _ctx.$mq.str(_ctx.$scope['name'])
+              }, null, 8, ["value"])
+            ])
+          ]),
+          _createElementVNode("div", { class: "td" })
+        ])
+      ]),
+      _: 1
+    }, 8, ["special-rows"]),
     _createVNode(_component_m_static_form_list, {
       name: "OrderList",
       id: "OrderList",

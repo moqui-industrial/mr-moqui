@@ -304,6 +304,25 @@ test("Parity: an aggregated list writes the sub-list titles once in the head and
     assert.match(table, /Nut/);
 });
 
+test("Parity: the first row is a form of its own over map-first-row, and the last row follows the rows", async () => {
+    setup();
+    const { container } = await mountStatic("", "Parity");
+    const text = html(container);
+    const table = text.slice(text.indexOf("<div class='table q-table' id='EditList_table'>"));
+    const firstForm = table.match(/<m-form name='EditList_first' fields='([^']*)'/);
+    assert.ok(firstForm, table);
+    const fields = JSON.parse(firstForm[1]);
+    assert.equal(fields.itemId, "NEW");
+    assert.equal(fields.name, "new item name");
+    assert.equal(fields.secret, "S1");
+    assert.equal(fields.moquiFormName, "EditList");
+    // the first row comes before the data rows, the last after them
+    assert.ok(table.indexOf("EditList_first") < table.indexOf("EditList_0"), table);
+    assert.ok(table.indexOf("the last row") > table.indexOf("EditList_1"), table);
+    assert.match(table, /class='tr first'/);
+    assert.match(table, /class='tr last'/);
+});
+
 test("Parity: a paginated section-iterate shows its page and the page buttons over the package's keys", async () => {
     setup();
     const { container } = await mountStatic("", "Parity");

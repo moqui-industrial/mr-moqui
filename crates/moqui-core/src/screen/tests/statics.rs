@@ -761,4 +761,10 @@ fn the_parity_fixture_is_a_template_with_its_data_in_the_packages() {
     assert_eq!(orders["orderLines"][0]["aggregateSubList"][1]["item"], "Bolt", "{orders}");
     golden("Parity.OrderList.json", &serde_json::to_string(&orders).unwrap());
     assert!(html.contains("v-slot:subrow"), "{html}");
+    // first and last rows: the map-first-row map in the form request, and slots of their own in the template
+    let edits = json_of(&render(context.factory(), "/Parity/actions/EditList", &[]));
+    assert_eq!(edits["itemsForEditFirst"]["itemId"], "NEW", "{edits}");
+    assert!(edits.get("itemsForEditLast").is_some(), "{edits}");
+    golden("Parity.EditList.json", &serde_json::to_string(&edits).unwrap());
+    assert!(html.contains("v-slot:row_first") && html.contains("v-slot:row_last"), "{html}");
 }

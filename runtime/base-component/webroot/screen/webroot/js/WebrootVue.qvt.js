@@ -603,7 +603,7 @@
         inject: { mqScope: { default: null }, mqScreen: { default: null } },
         props: { name: { type: String, required: true }, id: String, action: String, listName: String, multi: Boolean, skipForm: Boolean, skipHeader: Boolean,
             rowInitial: Function, formLocation: String, findAction: String, defaultColumns: Array, columnFields: Array, columnsAction: String,
-            headerInitial: Function, subFields: Array },
+            headerInitial: Function, subFields: Array, specialRows: Object },
         data() { return { pkg: null, searchObj: {}, loading: false, generation: 0 }; },
         computed: {
             idVal() { return this.id && this.id.length ? this.id : this.name; },
@@ -781,6 +781,24 @@
                 h(V.resolveComponent("m-form-paginate"), { paginate: this.paginate, formList: this }),
                 h(V.resolveComponent("m-form-go-page"), { idVal: this.idVal, formList: this })
             ]);
+            // The first, second and last rows: the map the form request answers for each (listFirst, ...), in a form of their own when the
+            // template gives the transition, as Java's name_first form; outside a multi form, whose rows are the list's.
+            const specialRow = (kind) => {
+                const spec = this.specialRows && this.specialRows[kind];
+                if (!spec || !this.pkg) return null;
+                const map = this.pkg[this.listKey + kind.charAt(0).toUpperCase() + kind.slice(1)] || {};
+                const scopeOf = (formProps) => qvt.makeScope(() => Object.assign({}, map, { _formMap: map }, formProps ? { formProps } : {}), formScope);
+                const content = (scope) => (columnsMode
+                    ? h("div", { class: "tr " + kind }, columns.map((column) => h("div", { class: "td" },
+                        column.map((field) => (slots["rc" + kind.charAt(0) + "_" + field] ? slots["rc" + kind.charAt(0) + "_" + field](scope) : null)))))
+                    : (slots["row_" + kind] ? slots["row_" + kind](scope) : null));
+                if (!spec.action) return h(V.Fragment, { key: kind + "_" + this.generation }, [content(scopeOf(null))]);
+                const initial = Object.assign({}, spec.initial ? spec.initial(scopeOf(null)) : {}, { moquiFormName: this.name, pageIndex: String(this.pkg.pageIndex || 0) });
+                const order = this.searchObj.orderByField || this.pkg.orderByField;
+                if (order) initial.orderByField = String(order);
+                return h(V.resolveComponent("m-form"), { key: kind + "_" + this.generation, name: this.idVal + "_" + kind, id: this.idVal + "_" + kind, action: spec.action, fieldsInitial: initial },
+                    { default: (formProps) => content(scopeOf(formProps)) });
+            };
             const empty = [h("div", { class: "tr" }, [h("div", { class: "td" }, moqui.l10n.localize("No results found"))])];
             const body = multiForm
                 ? h(V.resolveComponent("m-form"), { key: "multi_" + this.generation, name: this.idVal, id: this.idVal, action: this.action, fieldsInitial: this.multiFields(formScope) },
@@ -795,7 +813,7 @@
                 [h("div", { class: "row no-wrap q-col-gutter-sm text-weight-bold" }, subHead)])])]) : null;
             const table = h("div", { class: "table q-table", id: this.idVal + "_table" }, [
                 this.skipHeader ? null : h("div", { class: "thead" }, [h("div", { class: "tr" }, header), subHeader]),
-                h("div", { class: "tbody" }, multiForm ? [body] : body)
+                h("div", { class: "tbody" }, [specialRow("first"), specialRow("second")].concat(multiForm ? [body] : body, [specialRow("last")]))
             ]);
             return h("div", { class: "q-my-sm q-table__container q-table__card q-table--horizontal-separator q-table--dense q-table--flat" }, [nav, table]);
         }

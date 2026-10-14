@@ -900,6 +900,30 @@ fn form_package(state: &RenderState, def: &Arc<ScreenDef>, name: &str) -> Result
     if let Some(total) = &total {
         body.insert(format!("{}Total", instance.list_name), unwrap_map(total));
     }
+    // The first, second and last rows: the map-*-row map (an empty one without), with the lookups and sets of the *-row-field
+    // widgets over it, as Java pushes the map for those rows.
+    for (kind, suffix) in [("first", "First"), ("second", "Second"), ("last", "Last")] {
+        let tag = format!("{kind}-row-field");
+        let has = node
+            .children_named("field")
+            .iter()
+            .any(|field| field.first_named(&tag).is_some_and(|sub| !sub.children().is_empty()));
+        if !has {
+            continue;
+        }
+        let expression = node.attribute(&format!("map-{kind}-row")).unwrap_or_default();
+        let map = if expression.trim().is_empty() {
+            Value::Map(IndexMap::new())
+        } else {
+            script::eval_value(&expression)?
+        };
+        sri::push_single_form_map_context(&map);
+        let extras = row_extras_of(&node, name, &|_| true, &[tag.as_str()]);
+        script::pop_context_frame();
+        let mut fields = script::value_map(&map).unwrap_or_default();
+        fields.extend(extras?);
+        body.insert(format!("{}{suffix}", instance.list_name), unwrap_map(&fields));
+    }
     let mut headers = Vec::new();
     if let Some(pages) = page_keys(&node, rows.len())? {
         for (suffix, header, number) in pages.numbers() {
@@ -1077,13 +1101,23 @@ fn page_keys(form: &MNode, rows: usize) -> Result<Option<PageKeys>, Error> {
 
 /// For one row, in the row's frame: the text of its `display-entity` fields and the fields its `set` elements make.
 fn row_extras(node: &MNode, form_name: &str, include: &dyn Fn(&MNode) -> bool) -> Result<IndexMap<String, Value>, Error> {
+    row_extras_of(node, form_name, include, &["default-field", "conditional-field"])
+}
+
+/// [`row_extras`] for the widgets of the named sub-nodes of each field.
+fn row_extras_of(
+    node: &MNode,
+    form_name: &str,
+    include: &dyn Fn(&MNode) -> bool,
+    subs: &[&str],
+) -> Result<IndexMap<String, Value>, Error> {
     let mut extras = IndexMap::new();
     for field in node.children_named("field").into_iter().filter(|field| include(field)) {
         let field_name = field.attribute("name").unwrap_or_default();
         for sub in field
             .children()
             .into_iter()
-            .filter(|sub| matches!(sub.name().as_str(), "default-field" | "conditional-field"))
+            .filter(|sub| subs.contains(&sub.name().as_str()))
         {
             for set in sub.children_named("set") {
                 let target = set.attribute("field").unwrap_or_default();
