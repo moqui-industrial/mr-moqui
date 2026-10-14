@@ -109,6 +109,7 @@ mod overlay {
                 max: POOL_MAX,
                 reserve: 0,
                 acquire_timeout: Duration::from_secs(30),
+                ..Default::default()
             };
             let transactions = TransactionManager::new(Arc::new(driver), pool)?;
             *running = Some(Running { cluster, dir });

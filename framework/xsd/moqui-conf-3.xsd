@@ -827,9 +827,14 @@ along with this software (see the LICENSE.md file). If not, see
             <xs:attribute name="isolation-level" type="isolation-level"/>
             <xs:attribute name="pool-maxsize" type="xs:nonNegativeInteger" default="50"/>
             <xs:attribute name="pool-minsize" type="xs:nonNegativeInteger" default="5"/>
+            <xs:attribute name="pool-reserve" type="xs:nonNegativeInteger" default="8">
+                <xs:annotation><xs:documentation>Connections inside pool-maxsize that only the framework's own short
+                    work takes (sequence banks, sessions, login, hits, job and semaphore records, cluster membership),
+                    so a full pool cannot block it.</xs:documentation></xs:annotation>
+            </xs:attribute>
             <xs:attribute name="pool-time-idle" type="xs:nonNegativeInteger">
                 <xs:annotation><xs:documentation>Maximum time in seconds that unused excess connections should stay in
-                    the pool.</xs:documentation></xs:annotation>
+                    the pool. Defaults to 60 seconds.</xs:documentation></xs:annotation>
             </xs:attribute>
             <xs:attribute name="pool-time-reap" type="xs:nonNegativeInteger">
                 <xs:annotation><xs:documentation>Time in seconds that the connection pool will allow a connection to be

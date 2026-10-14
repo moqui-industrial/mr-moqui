@@ -75,6 +75,7 @@ pub(crate) fn open_with(framework_dir: &std::path::Path, options: Options) -> En
             max: 8,
             reserve: 2,
             acquire_timeout: Duration::from_secs(5),
+            ..Default::default()
         },
     )
     .expect("memory pool");
@@ -105,6 +106,7 @@ pub(crate) fn open_two_groups() -> EntityFacade {
                 max: 4,
                 reserve: 1,
                 acquire_timeout: Duration::from_secs(5),
+                ..Default::default()
             },
         )
         .expect("memory pool")

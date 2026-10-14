@@ -290,7 +290,9 @@ mod cluster {
         #[cfg(unix)]
         {
             let socket = settings.socket_dir.clone().unwrap_or_else(|| settings.data_dir.clone());
-            PostgresDriver::unix_socket(BOOTSTRAP_SUPERUSER, DATABASE, socket).password(password)
+            PostgresDriver::unix_socket(BOOTSTRAP_SUPERUSER, DATABASE, socket)
+                .port(settings.port)
+                .password(password)
         }
         #[cfg(not(unix))]
         {

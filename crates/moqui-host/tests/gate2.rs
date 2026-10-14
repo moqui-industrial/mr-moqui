@@ -172,6 +172,7 @@ fn password_hash_type(framework: &Path, cluster_dir: &Path) -> Option<String> {
             max: 4,
             reserve: 1,
             acquire_timeout: Duration::from_secs(30),
+            ..Default::default()
         },
     )
     .unwrap();

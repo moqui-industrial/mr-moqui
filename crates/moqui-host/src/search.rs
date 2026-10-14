@@ -57,6 +57,7 @@ fn search_pool() -> PoolConfig {
         max: 8,
         reserve: 1,
         acquire_timeout: std::time::Duration::from_secs(30),
+        ..Default::default()
     }
 }
 

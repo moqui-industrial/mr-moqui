@@ -16,6 +16,7 @@
 
 pub mod embedded;
 pub mod entity_cache;
+pub mod entity_db;
 pub mod entity_facade;
 pub mod field_rw;
 pub mod jdbc_extract;

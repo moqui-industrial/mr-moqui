@@ -27,16 +27,22 @@ use moqui_lib::object::Value;
 
 use crate::driver::{DbCancel, DbConnection, DbDriver, DbRow};
 
-const TEST_SQL: &str = "SELECT 1";
+/// The checkout test when the conf names none.
+pub const DEFAULT_TEST_QUERY: &str = "SELECT 1";
 
 /// Datasource pool settings. `reserve` sits inside `max`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PoolConfig {
     pub min: u32,
     pub max: u32,
     pub reserve: u32,
     /// `pool-time-wait`. Zero does not wait.
     pub acquire_timeout: Duration,
+    /// `pool-time-idle`: an idle connection past this is closed at the next checkout or return,
+    /// while more than `min` are open. `None` keeps idle connections.
+    pub idle_timeout: Option<Duration>,
+    /// `pool-test-query`, else the database's `default-test-query`. `None` is [`DEFAULT_TEST_QUERY`].
+    pub test_query: Option<String>,
 }
 
 impl Default for PoolConfig {
@@ -46,7 +52,18 @@ impl Default for PoolConfig {
             max: 50,
             reserve: 8,
             acquire_timeout: Duration::from_secs(30),
+            idle_timeout: None,
+            test_query: None,
         }
+    }
+}
+
+impl PoolConfig {
+    fn test_sql(&self) -> &str {
+        self.test_query
+            .as_deref()
+            .filter(|sql| !sql.trim().is_empty())
+            .unwrap_or(DEFAULT_TEST_QUERY)
     }
 }
 
@@ -143,11 +160,17 @@ pub(super) struct PooledConn {
 struct Tracked {
     conn: Box<dyn DbConnection>,
     in_tx: bool,
+    /// When it last went back on an idle list.
+    idle_since: Instant,
 }
 
 impl Tracked {
     fn new(conn: Box<dyn DbConnection>) -> Self {
-        Self { conn, in_tx: false }
+        Self {
+            conn,
+            in_tx: false,
+            idle_since: Instant::now(),
+        }
     }
 }
 
@@ -259,7 +282,7 @@ impl Pool {
     }
 
     pub fn config(&self) -> PoolConfig {
-        self.inner.config
+        self.inner.config.clone()
     }
 
     /// Errors when `(request_cap + service_cap) * 2 > max - reserve`.
@@ -302,15 +325,18 @@ impl Pool {
         let mut budget: Option<usize> = None;
         let started = Instant::now();
         loop {
-            let step = {
+            let (step, expired) = {
                 let mut state = self.lock();
+                let expired = self.take_expired(&mut state);
                 if budget.is_none() {
                     budget = Some(idle_len(&state, class));
                 }
-                decide(&mut state, class, self.inner.config, failures, budget.unwrap_or(0))
+                let step = decide(&mut state, class, &self.inner.config, failures, budget.unwrap_or(0));
+                (step, expired)
             };
+            drop(expired);
             match step {
-                Step::Test(tracked) => match test_connection(tracked) {
+                Step::Test(tracked) => match test_connection(tracked, self.inner.config.test_sql()) {
                     Ok(tracked) => {
                         self.finish_test(class, true);
                         return Ok(self.wrap(tracked, class));
@@ -335,7 +361,7 @@ impl Pool {
                             return Err(err);
                         }
                     };
-                    match tracked.query_once(TEST_SQL, &[]) {
+                    match tracked.query_once(self.inner.config.test_sql(), &[]) {
                         Ok(_) => {
                             self.finish_create(class);
                             return Ok(self.wrap(tracked, class));
@@ -469,15 +495,40 @@ impl Pool {
                 return;
             }
         }
+        tracked.idle_since = Instant::now();
         let mut state = self.lock();
         release_hold(&mut state, class, parked);
         match class {
             Class::Ordinary => state.ordinary_idle.push(tracked),
             Class::Reserve => state.reserve_idle.push(tracked),
         }
+        let expired = self.take_expired(&mut state);
         publish(&state, Duration::ZERO);
         drop(state);
         self.inner.available.notify_all();
+        // Closing a client can block on its runtime, so it happens off the lock.
+        drop(expired);
+    }
+
+    /// Idle connections past `idle_timeout`, while more than `min` stay open. The idle lists hand
+    /// out from the end, so the oldest sit at the front.
+    fn take_expired(&self, state: &mut State) -> Vec<Tracked> {
+        let Some(timeout) = self.inner.config.idle_timeout else {
+            return Vec::new();
+        };
+        let now = Instant::now();
+        let mut closable = state.total().saturating_sub(self.inner.config.min) as usize;
+        let mut expired = Vec::new();
+        for list in [&mut state.ordinary_idle, &mut state.reserve_idle] {
+            let stale = list
+                .iter()
+                .take_while(|tracked| now.duration_since(tracked.idle_since) >= timeout)
+                .count()
+                .min(closable);
+            closable -= stale;
+            expired.extend(list.drain(..stale));
+        }
+        expired
     }
 
     fn discard_hold(&self, class: Class, parked: bool) {
@@ -567,7 +618,7 @@ fn idle_len(state: &State, class: Class) -> usize {
     }
 }
 
-fn decide(state: &mut State, class: Class, config: PoolConfig, failures: usize, budget: usize) -> Step {
+fn decide(state: &mut State, class: Class, config: &PoolConfig, failures: usize, budget: usize) -> Step {
     if budget > 0 && failures >= budget {
         return Step::Fail(Error::new("connection test failed"));
     }
@@ -595,7 +646,7 @@ fn pop_idle(state: &mut State, class: Class) -> Option<Tracked> {
     }
 }
 
-fn can_create(state: &State, class: Class, config: PoolConfig) -> bool {
+fn can_create(state: &State, class: Class, config: &PoolConfig) -> bool {
     if state.total() >= config.max {
         return false;
     }
@@ -614,8 +665,8 @@ fn might_return(state: &State, class: Class) -> bool {
     }
 }
 
-fn test_connection(mut tracked: Tracked) -> Result<Tracked, (Tracked, Error)> {
-    match tracked.query_once(TEST_SQL, &[]) {
+fn test_connection(mut tracked: Tracked, sql: &str) -> Result<Tracked, (Tracked, Error)> {
+    match tracked.query_once(sql, &[]) {
         Ok(_) => Ok(tracked),
         Err(err) => {
             let err = Error::new("connection test failed").with_source(err);

@@ -516,12 +516,6 @@ fn load_embedded(
     cluster_dir: &std::path::Path,
     flags: &LoadFlags,
 ) -> Result<LoadReport, moqui_lib::error::Error> {
-    use std::sync::Arc;
-
-    use moqui_core::driver::DbDriver;
-
-    use crate::db::embedded::EmbeddedCluster;
-
     std::fs::create_dir_all(runtime_dir).map_err(|err| {
         moqui_lib::error::Error::new(format!("could not create {}", runtime_dir.display())).with_source(err)
     })?;
@@ -534,27 +528,24 @@ fn load_embedded(
     let framework_dir = std::fs::canonicalize(framework_dir).map_err(|err| {
         moqui_lib::error::Error::new(format!("could not resolve {}", framework_dir.display())).with_source(err)
     })?;
-    // The cluster is declared outside the factory so the worker pool joins before the postmaster stops.
-    xmlshim::provide_libxml2_soname(cluster_dir)?;
-    let (cluster, driver) = EmbeddedCluster::start(cluster_dir, 20)?;
-    let driver: Arc<dyn DbDriver> = Arc::new(driver);
-    let result = load_after_cluster(&runtime_dir, &framework_dir, &driver, flags);
-    drop(driver);
-    drop(cluster);
-    result
-}
-
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
-fn load_after_cluster(
-    runtime_dir: &std::path::Path,
-    framework_dir: &std::path::Path,
-    driver: &std::sync::Arc<dyn moqui_core::driver::DbDriver>,
-    flags: &LoadFlags,
-) -> Result<LoadReport, moqui_lib::error::Error> {
-    let factory = moqui_core::context::ExecutionContextFactory::boot_with_framework(runtime_dir, framework_dir)
+    // The factory boots first: its default properties name the datasource. It is dropped, and its
+    // worker pool joined, before the database closes.
+    let factory = moqui_core::context::ExecutionContextFactory::boot_with_framework(&runtime_dir, &framework_dir)
         .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
-    let outcome = load_with_factory(&factory, framework_dir, driver, flags);
+    let opened = crate::db::entity_db::transactional_conf(&factory).and_then(|conf| {
+        let pool = load_pool(&conf.pool);
+        crate::db::entity_db::open(conf, cluster_dir, pool.max).map(|db| (db, pool))
+    });
+    let (db, pool) = match opened {
+        Ok(opened) => opened,
+        Err(err) => {
+            drop(factory);
+            return Err(err);
+        }
+    };
+    let outcome = load_with_factory(&factory, &framework_dir, &db, pool, flags);
     drop(factory);
+    drop(db);
     outcome
 }
 
@@ -562,13 +553,19 @@ fn load_after_cluster(
 fn load_with_factory(
     factory: &std::sync::Arc<moqui_core::context::ExecutionContextFactory>,
     framework_dir: &std::path::Path,
-    driver: &std::sync::Arc<dyn moqui_core::driver::DbDriver>,
+    db: &crate::db::entity_db::EntityDb,
+    pool: moqui_core::transaction::PoolConfig,
     flags: &LoadFlags,
 ) -> Result<LoadReport, moqui_lib::error::Error> {
-    let facade = crate::db::entity_facade::open_entity_facade(framework_dir, std::sync::Arc::clone(driver), pool())?;
+    let facade = crate::db::entity_facade::open_entity_facade_dialect(
+        framework_dir,
+        std::sync::Arc::clone(&db.driver),
+        pool,
+        &db.conf.dialect,
+    )?;
     crate::db::entity_facade::attach(factory, facade.clone());
     // Feeds index through search when it is up; a load still runs when it is not.
-    let _search = match crate::search::attach_search(factory, &facade, true) {
+    let _search = match crate::search::attach_search(factory, &facade, db.is_postgres()) {
         Ok(store) => Some(store),
         Err(err) => {
             eprintln!("search is not available during this load: {err}");
@@ -586,25 +583,14 @@ fn load_with_factory(
     outcome
 }
 
+/// A load is one thread and a few workers: four connections of the conf's pool, one of them reserve.
 #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
-fn pool() -> moqui_core::transaction::PoolConfig {
+fn load_pool(conf: &moqui_core::transaction::PoolConfig) -> moqui_core::transaction::PoolConfig {
     moqui_core::transaction::PoolConfig {
         min: 0,
         max: 4,
         reserve: 1,
-        acquire_timeout: std::time::Duration::from_secs(30),
-    }
-}
-
-/// `(request cap + service cap) * 2` is 80. `max - reserve` must be at least that.
-/// The load path keeps a pool of 4, which is too small to serve.
-#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
-fn serve_pool() -> moqui_core::transaction::PoolConfig {
-    moqui_core::transaction::PoolConfig {
-        min: 0,
-        max: 90,
-        reserve: 8,
-        acquire_timeout: std::time::Duration::from_secs(30),
+        ..conf.clone()
     }
 }
 
@@ -728,10 +714,6 @@ fn boot_server(
 ) -> Result<ServeProcess, moqui_lib::error::Error> {
     use std::sync::Arc;
 
-    use moqui_core::driver::DbDriver;
-
-    use crate::db::embedded::EmbeddedCluster;
-
     std::fs::create_dir_all(runtime_dir).map_err(|err| {
         moqui_lib::error::Error::new(format!("could not create {}", runtime_dir.display())).with_source(err)
     })?;
@@ -747,18 +729,25 @@ fn boot_server(
     let cluster_dir = std::fs::canonicalize(cluster_dir).map_err(|err| {
         moqui_lib::error::Error::new(format!("could not resolve {}", cluster_dir.display())).with_source(err)
     })?;
-    // The cluster stays on this thread. Its clients are dropped here, after the axum runtime.
-    xmlshim::provide_libxml2_soname(&cluster_dir)?;
-    let (cluster, driver) = EmbeddedCluster::start(&cluster_dir, 100)?;
-    let driver: Arc<dyn DbDriver> = Arc::new(driver);
+    // The factory boots first: its default properties name the datasource. The database stays on
+    // this thread, and its clients are dropped here, after the axum runtime.
     let factory = moqui_core::context::ExecutionContextFactory::boot_with_framework(&runtime_dir, &framework_dir)
         .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
-    let facade = crate::db::entity_facade::open_entity_facade(&framework_dir, Arc::clone(&driver), serve_pool())?;
+    let conf = crate::db::entity_db::transactional_conf(&factory)?;
+    // `(request cap + service cap) * 2` must fit in `max - reserve`; check_serve_caps below says so.
+    let pool = conf.pool.clone();
+    let db = crate::db::entity_db::open(conf, &cluster_dir, pool.max)?;
+    let facade = crate::db::entity_facade::open_entity_facade_dialect(
+        &framework_dir,
+        Arc::clone(&db.driver),
+        pool,
+        &db.conf.dialect,
+    )?;
     crate::db::entity_facade::attach(&factory, facade.clone());
     // The overlay starts on the first enter_sim, inside the cluster directory, on the entity install.
     let sim = crate::db::sim::SimOverlay::install(&facade, &cluster_dir, Some(cluster_dir.join("install")));
     // Same policy as `load`: indexing runs when search is up, and the server still starts when it is not.
-    let search = match crate::search::attach_search(&factory, &facade, true) {
+    let search = match crate::search::attach_search(&factory, &facade, db.is_postgres()) {
         Ok(store) => Some(store),
         Err(err) => {
             eprintln!("search is not available: {err}");
@@ -813,14 +802,13 @@ fn boot_server(
         factory: Some(factory),
         search,
         facade: Some(facade),
-        driver: Some(driver),
         sim: Some(sim),
-        cluster: Some(cluster),
+        db: Some(db),
     })
 }
 
 /// Drop order is the axum runtime, the PDF browser, the SSH server, the cluster listener (while the request pool is still up),
-/// the factory, the search store, the facade, the sim overlay, the driver, then the database cluster. The search store
+/// the factory, the search store, the facade, the sim overlay, then the entity database (its driver, then its cluster). The search store
 /// outlives the factory so a dedicated postmaster stops after the facade's clients, and the overlay outlives the facade
 /// for its sim pool.
 #[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
@@ -832,9 +820,8 @@ struct ServeProcess {
     factory: Option<std::sync::Arc<moqui_core::context::ExecutionContextFactory>>,
     search: Option<crate::search::SearchStore>,
     facade: Option<moqui_core::entity::EntityFacade>,
-    driver: Option<std::sync::Arc<dyn moqui_core::driver::DbDriver>>,
     sim: Option<std::sync::Arc<crate::db::sim::SimOverlay>>,
-    cluster: Option<crate::db::embedded::EmbeddedCluster>,
+    db: Option<crate::db::entity_db::EntityDb>,
 }
 
 #[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
@@ -848,8 +835,7 @@ impl Drop for ServeProcess {
         self.search.take();
         self.facade.take();
         self.sim.take();
-        self.driver.take();
-        self.cluster.take();
+        self.db.take();
     }
 }
 

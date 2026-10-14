@@ -82,6 +82,7 @@ pub fn qvt_static_reports(runtime: &Path, framework: &Path) -> Result<Vec<FileRe
         max: 1,
         reserve: 0,
         acquire_timeout: std::time::Duration::from_millis(10),
+        ..Default::default()
     };
     let facade = open_entity_facade(framework, Arc::new(ModelOnly), pool)?;
     attach(&factory, facade);

@@ -49,7 +49,7 @@ mod driver {
 
     enum Target {
         #[cfg(unix)]
-        Unix { socket_dir: PathBuf },
+        Unix { socket_dir: PathBuf, port: u16 },
         /// Loopback TCP with [`NoTls`]. Embedded Postgres on Windows uses this.
         TcpNoTls { host: String, port: u16 },
         Tcp {
@@ -104,8 +104,20 @@ mod driver {
                 password: None,
                 target: Target::Unix {
                     socket_dir: socket_dir.into(),
+                    port: 5432,
                 },
             }
+        }
+
+        /// The port that names the socket file (`.s.PGSQL.<port>`) of a [`Self::unix_socket`]
+        /// driver. A TCP driver keeps the port it was made with.
+        #[cfg(unix)]
+        #[must_use]
+        pub fn port(mut self, value: u16) -> Self {
+            if let Target::Unix { port, .. } = &mut self.target {
+                *port = value;
+            }
+            self
         }
 
         /// TCP host and [`NoTls`]. Embedded Windows uses `127.0.0.1` and the ephemeral port.
@@ -173,8 +185,9 @@ mod driver {
             }
             let (mut client, tls) = match &self.target {
                 #[cfg(unix)]
-                Target::Unix { socket_dir } => {
+                Target::Unix { socket_dir, port } => {
                     config.host_path(socket_dir);
+                    config.port(*port);
                     config.ssl_mode(SslMode::Disable);
                     let client = config.connect(NoTls).map_err(|err| pg("connect", err))?;
                     (client, TlsMode::None)

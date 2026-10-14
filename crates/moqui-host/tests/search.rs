@@ -682,6 +682,33 @@ fn feed_indexes_and_deletes_through_search() {
     drop(cluster);
 }
 
+/// With an entity database that is not Postgres, search starts its own cluster under the runtime.
+#[test]
+fn a_non_postgres_entity_database_gets_a_dedicated_search_cluster() {
+    use moqui_core::context::ExecutionContextFactory;
+
+    let runtime = temp_dir("moqui-rt-search-own");
+    let cluster_dir = temp_dir("moqui-pg-search-own");
+    let _guards = (DirGuard(runtime.clone()), DirGuard(cluster_dir.clone()));
+    std::fs::create_dir_all(&runtime).unwrap();
+    moqui_host::xmlshim::provide_libxml2_soname(&cluster_dir).unwrap();
+    let (cluster, driver) = EmbeddedCluster::start(&cluster_dir, 30).unwrap();
+    let driver: Arc<dyn DbDriver> = Arc::new(driver);
+    let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
+    let factory = ExecutionContextFactory::boot_with_framework(&runtime, &framework).unwrap();
+    let facade = moqui_host::db::entity_facade::open_entity_facade(&framework, Arc::clone(&driver), pool()).unwrap();
+    moqui_host::db::entity_facade::attach(&factory, facade.clone());
+    // The entity side stands in for MySQL: false is what attach_search gets for one.
+    let store = moqui_host::search::attach_search(&factory, &facade, false).unwrap();
+    assert!(store.has_own_cluster());
+    assert!(runtime.join("db/search/data/PG_VERSION").is_file());
+    drop(store);
+    drop(factory);
+    drop(facade);
+    drop(driver);
+    drop(cluster);
+}
+
 fn create(facade: &moqui_core::entity::EntityFacade, entity: &str, pairs: &[(&str, &str)]) {
     let mut value = facade.make_value(entity).unwrap();
     for (name, text) in pairs {
@@ -930,6 +957,7 @@ fn pool() -> PoolConfig {
         max: 8,
         reserve: 2,
         acquire_timeout: Duration::from_secs(30),
+        ..Default::default()
     }
 }
 

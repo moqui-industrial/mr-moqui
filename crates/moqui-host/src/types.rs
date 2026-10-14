@@ -39,6 +39,7 @@ pub fn generate_types(runtime: &Path, framework: &Path) -> Result<TypeFiles, Err
         max: 1,
         reserve: 0,
         acquire_timeout: std::time::Duration::from_millis(10),
+        ..Default::default()
     };
     let facade = open_entity_facade(framework, Arc::new(ModelOnly), pool)?;
     attach(&factory, facade);

@@ -48,6 +48,7 @@ fn pool() -> PoolConfig {
         max: 16,
         reserve: 2,
         acquire_timeout: Duration::ZERO,
+        ..Default::default()
     }
 }
 

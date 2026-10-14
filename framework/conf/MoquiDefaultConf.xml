@@ -94,6 +94,8 @@
     <default-property name="entity_ds_schema" value=""/>
     <default-property name="entity_ds_user" value="sa"/>
     <default-property name="entity_ds_password" value="sa" is-secret="true"/>
+    <!-- An external postgres or mysql server is reached over TLS. "disable" connects without it, for a local dev server. -->
+    <default-property name="entity_ds_sslmode" value=""/>
     <default-property name="entity_ds_crypt_pass" value="MoquiDefaultPassword:CHANGEME" is-secret="true"/>
     <default-property name="entity_ds_crypt_pass_old" value="MoquiDefaultPassword:CHANGEME" is-secret="true"/>
     <!-- Phase 7 signs the session cookie with this key. Phase 2 generates it. -->
@@ -962,7 +964,8 @@
             <!-- default max connections for MySQL is 151 -->
             <inline-jdbc pool-maxsize="140"><xa-properties serverName="${entity_ds_host}" port="${entity_ds_port?:'3306'}"
                     pinGlobalTxToPhysicalConnection="true" autoReconnectForPools="true" useUnicode="true" encoding="UTF-8" useCursorFetch="true"
-                    databaseName="${entity_ds_database}" user="${entity_ds_user}" password="${entity_ds_password}"/></inline-jdbc>
+                    databaseName="${entity_ds_database}" user="${entity_ds_user}" password="${entity_ds_password}"
+                    sslMode="${entity_ds_sslmode}"/></inline-jdbc>
         </database>
         <database name="mysql8" fts-style="mysql-fulltext" lb-name="mysql" join-style="ansi-no-parenthesis" offset-style="limit" from-lateral-style="lateral"
                 never-nulls="true" table-engine="InnoDB" character-set="utf8" collate="utf8_general_ci" fk-style="name_fk"
@@ -999,8 +1002,9 @@
             <!-- default max connections for MySQL is 151 -->
             <inline-jdbc pool-maxsize="140"><xa-properties serverName="${entity_ds_host}" port="${entity_ds_port?:'3306'}"
                     pinGlobalTxToPhysicalConnection="true" autoReconnectForPools="true" useCursorFetch="true"
-                    serverTimezone="${database_time_zone ?: default_time_zone}" useSSL="false" allowPublicKeyRetrieval="true"
-                    databaseName="${entity_ds_database}" user="${entity_ds_user}" password="${entity_ds_password}"/></inline-jdbc>
+                    serverTimezone="${database_time_zone ?: default_time_zone}" allowPublicKeyRetrieval="true"
+                    databaseName="${entity_ds_database}" user="${entity_ds_user}" password="${entity_ds_password}"
+                    sslMode="${entity_ds_sslmode}"/></inline-jdbc>
         </database>
         <!--
         * Oracle:
@@ -1072,7 +1076,8 @@
 
             <!-- default max connections for PostgreSQL is 100 -->
             <inline-jdbc pool-maxsize="90"><xa-properties serverName="${entity_ds_host}" portNumber="${entity_ds_port?:'5432'}"
-                    databaseName="${entity_ds_database}" user="${entity_ds_user}" password="${entity_ds_password}"/></inline-jdbc>
+                    databaseName="${entity_ds_database}" user="${entity_ds_user}" password="${entity_ds_password}"
+                    sslmode="${entity_ds_sslmode}"/></inline-jdbc>
         </database>
         <!--
         * SQLite: the browser build's local database (crates/moqui-browser, plans/Wasm.md). Not a server datasource.

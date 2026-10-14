@@ -317,6 +317,7 @@ fn open_recording(tape: Arc<Mutex<Tape>>, dialect: &str) -> EntityFacade {
             max: 2,
             reserve: 1,
             acquire_timeout: Duration::from_secs(5),
+            ..Default::default()
         },
     )
     .unwrap();
@@ -350,6 +351,7 @@ fn enter_sim_starts_the_overlay_once_and_stays_on_this_thread() {
                 max: 2,
                 reserve: 0,
                 acquire_timeout: Duration::from_secs(5),
+                ..Default::default()
             },
         )
     })));
@@ -376,6 +378,7 @@ fn open_fake() -> EntityFacade {
             max: 2,
             reserve: 1,
             acquire_timeout: Duration::from_secs(5),
+            ..Default::default()
         },
     )
     .unwrap();
@@ -489,6 +492,7 @@ fn iterator_streams_committed_rows_and_hides_a_held_delete() {
             max: 2,
             reserve: 1,
             acquire_timeout: Duration::from_secs(5),
+            ..Default::default()
         },
     )
     .unwrap();
@@ -1031,6 +1035,7 @@ fn the_sql_runner_reads_a_query_through_a_cursor_to_one_row_past_the_limit() {
             max: 2,
             reserve: 1,
             acquire_timeout: Duration::from_secs(5),
+            ..Default::default()
         },
     )
     .unwrap();

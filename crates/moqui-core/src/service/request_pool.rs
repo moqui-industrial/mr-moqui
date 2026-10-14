@@ -496,6 +496,7 @@ mod tests {
             max: 4,
             reserve: 0,
             acquire_timeout: Duration::from_secs(1),
+            ..Default::default()
         }));
         let err = check_serve_caps(factory).unwrap_err();
         assert!(err.to_string().contains("80"), "{err}");
@@ -505,6 +506,7 @@ mod tests {
             max: 90,
             reserve: 8,
             acquire_timeout: Duration::from_secs(1),
+            ..Default::default()
         }));
         check_serve_caps(factory).unwrap();
     }
@@ -570,6 +572,7 @@ mod tests {
                 max: 4,
                 reserve: 0,
                 acquire_timeout: Duration::from_secs(1),
+                ..Default::default()
             },
         )
         .unwrap()

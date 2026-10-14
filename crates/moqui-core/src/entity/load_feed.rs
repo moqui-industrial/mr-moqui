@@ -4129,6 +4129,7 @@ mod tests {
                 max: 2,
                 reserve: 1,
                 acquire_timeout: Duration::from_secs(5),
+                ..Default::default()
             },
         )
         .unwrap();

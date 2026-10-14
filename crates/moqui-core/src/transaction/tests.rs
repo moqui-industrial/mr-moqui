@@ -228,6 +228,7 @@ fn small() -> PoolConfig {
         max: 8,
         reserve: 2,
         acquire_timeout: Duration::from_secs(2),
+        ..Default::default()
     }
 }
 
@@ -403,6 +404,7 @@ fn ordinary_checkout_fails_when_only_reserve_is_idle() {
         max: 2,
         reserve: 1,
         acquire_timeout: Duration::from_secs(30),
+        ..Default::default()
     });
     let _clean = Clean(&mgr);
     assert!(mgr.begin(None).expect("begin"));
@@ -549,6 +551,47 @@ fn failed_checkout_test_discards_the_idle_connection() {
     assert_eq!(driver.connects(), 1);
     assert_eq!(mgr.stats().ordinary_idle, 0);
     assert_eq!(mgr.stats().checked_out, 0);
+}
+
+#[test]
+fn idle_connections_past_the_idle_time_close_down_to_min() {
+    let config = PoolConfig {
+        idle_timeout: Some(Duration::from_millis(30)),
+        ..small()
+    };
+    let (mgr, driver) = harness(config);
+    let _clean = Clean(&mgr);
+    mgr.with_connection(|_| Ok(())).expect("warm");
+    std::thread::sleep(Duration::from_millis(60));
+    mgr.with_connection(|_| Ok(())).expect("after idle");
+    assert_eq!(driver.connects(), 2, "the stale client was closed and a new one opened");
+    assert_eq!(mgr.stats().ordinary_idle, 1);
+
+    let kept = PoolConfig {
+        min: 1,
+        idle_timeout: Some(Duration::from_millis(30)),
+        ..small()
+    };
+    let (mgr, driver) = harness(kept);
+    let _clean = Clean(&mgr);
+    mgr.with_connection(|_| Ok(())).expect("warm");
+    std::thread::sleep(Duration::from_millis(60));
+    mgr.with_connection(|_| Ok(())).expect("after idle");
+    assert_eq!(driver.connects(), 1, "min keeps the one client");
+}
+
+#[test]
+fn checkout_runs_the_configured_test_query() {
+    let config = PoolConfig {
+        test_query: Some("SELECT 42".to_string()),
+        ..small()
+    };
+    let (mgr, driver) = harness(config);
+    let _clean = Clean(&mgr);
+    mgr.with_connection(|_| Ok(())).expect("connect");
+    mgr.with_connection(|_| Ok(())).expect("reuse");
+    assert_eq!(driver.event_count("sql:SELECT 42"), 2);
+    assert_eq!(driver.event_count("sql:SELECT 1"), 0);
 }
 
 #[test]

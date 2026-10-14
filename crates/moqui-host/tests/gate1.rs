@@ -474,6 +474,7 @@ fn pool() -> PoolConfig {
         max: 4,
         reserve: 1,
         acquire_timeout: Duration::from_secs(30),
+        ..Default::default()
     }
 }
 
