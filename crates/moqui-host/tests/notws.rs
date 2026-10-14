@@ -93,7 +93,7 @@ fn notws_push_and_one_cluster_invalidation() {
     drain(&mut other);
     let mut extra = open_socket(http, &cookie_all);
     extra.send(Message::Text("subscribe:ALL".into())).unwrap();
-    // the subscription of the extra socket is applied on the service pool, so send until it arrives
+    // the subscription of the extra socket arrives with the next frame the server reads, so send until it is in
     let deadline = Instant::now() + Duration::from_secs(8);
     let mut saw_extra = false;
     while Instant::now() < deadline && !saw_extra {
@@ -102,7 +102,8 @@ fn notws_push_and_one_cluster_invalidation() {
     }
     assert!(saw_extra, "the second socket of the session got nothing");
     let frame = read_until(&mut all, ONLY_TOPIC, Duration::from_secs(3));
-    assert!(frame.contains(&user_id), "{frame}");
+    // The client gets Java's wrapped message: who else it went to is not in it.
+    assert!(!frame.contains("userIds") && !frame.contains(&user_id), "{frame}");
     assert_absent(&mut other, ONLY_TOPIC, Duration::from_millis(400));
     drop(all);
     drop(other);

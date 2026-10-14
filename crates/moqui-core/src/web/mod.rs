@@ -821,8 +821,41 @@ fn allow_origins() -> Vec<String> {
         .collect()
 }
 
-fn origin_allowed(origin: &str) -> bool {
-    allow_origins().iter().any(|allowed| allowed == origin)
+/// Java's `WebUtilities.webSocketOriginAllowed`, which CORS follows too: no Origin, `*`, the request's own host, an
+/// allowed origin or domain, or a subdomain of an allowed domain on a dot boundary (`moqui.org` allows `www.moqui.org`,
+/// not `foo-moqui.org`). Case-insensitive.
+pub fn origin_allowed_for(origin: Option<&str>, host: Option<&str>) -> bool {
+    let Some(origin) = origin.map(str::trim).filter(|text| !text.is_empty()) else {
+        return true;
+    };
+    let origin = origin.to_ascii_lowercase();
+    let allow: Vec<String> = allow_origins().iter().map(|text| text.to_ascii_lowercase()).collect();
+    if allow.iter().any(|entry| entry == "*") {
+        return true;
+    }
+    let origin_domain = origin_host(&origin);
+    if allow.iter().any(|entry| *entry == origin || *entry == origin_domain) {
+        return true;
+    }
+    if host.is_some_and(|host| !origin_domain.is_empty() && origin_host(host) == origin_domain) {
+        return true;
+    }
+    allow.iter().any(|entry| {
+        let domain = origin_host(entry);
+        !domain.is_empty()
+            && (origin_domain == domain || (domain.contains('.') && origin_domain.ends_with(&format!(".{domain}"))))
+    })
+}
+
+/// The host of an origin or `Host` value, without scheme, path or port.
+fn origin_host(text: &str) -> String {
+    let text = text.trim().to_ascii_lowercase();
+    let text = text.split_once("://").map_or(text.as_str(), |(_, rest)| rest);
+    let text = text.split('/').next().unwrap_or("");
+    if let Some(bracketed) = text.strip_prefix('[') {
+        return format!("[{}]", bracketed.split(']').next().unwrap_or(""));
+    }
+    text.split(':').next().unwrap_or("").to_string()
 }
 
 /// Screen-render headers, and CORS when the origin is allowed.
@@ -844,7 +877,7 @@ pub fn finish_response(request: &WebRequest, mut response: WebResponse, prefligh
     }
     if handle_cors() {
         if let Some(origin) = request.header("origin").filter(|text| !text.is_empty()) {
-            if origin_allowed(origin) {
+            if origin_allowed_for(Some(origin), request.header("host")) {
                 apply_cors(&mut response.headers, origin, preflight);
             }
         }
@@ -959,8 +992,22 @@ pub(crate) fn record_login_error(message: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{cookie_value, form_pairs, pairs_to_parameters, percent_decode};
+    use super::{cookie_value, form_pairs, origin_allowed_for, pairs_to_parameters, percent_decode};
     use moqui_lib::object::Value;
+
+    #[test]
+    fn an_origin_is_allowed_as_java_allows_it() {
+        let _lock = crate::user::session::cookie_property_lock();
+        moqui_lib::env::set_property("webapp_allow_origins", "moqui.org, https://app.example:8443");
+        // No Origin (not a browser), the request's own host, an allowed origin, and a subdomain on a dot boundary.
+        assert!(origin_allowed_for(None, Some("site.test")));
+        assert!(origin_allowed_for(Some("https://site.test"), Some("site.test:8080")));
+        assert!(origin_allowed_for(Some("https://app.example:8443"), Some("other")));
+        assert!(origin_allowed_for(Some("https://www.MOQUI.org"), Some("other")));
+        assert!(!origin_allowed_for(Some("https://foo-moqui.org"), Some("other")));
+        assert!(!origin_allowed_for(Some("https://evil.test"), Some("site.test")));
+        moqui_lib::env::clear_property("webapp_allow_origins");
+    }
 
     #[test]
     fn a_repeated_name_becomes_a_list() {

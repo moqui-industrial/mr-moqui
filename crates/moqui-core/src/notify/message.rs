@@ -249,12 +249,19 @@ impl NotificationMessage {
             sent.as_ref(),
         );
         let message_id = self.notification_message_id.clone().unwrap_or(new_id()?);
+        // The topic carries who the message is for, beside Java's wrapped message, so a socket (here or on a cluster
+        // peer) can pick its users. The socket sends the client the wrapped message without it.
+        let mut routed = wrapped.clone();
+        routed.insert(
+            ROUTE_USER_IDS.to_string(),
+            Value::List(self.notify_user_ids.iter().map(Value::string).collect()),
+        );
         topic::publish(
             NOTIFICATION_MESSAGE,
             &TopicMessage {
                 origin_id: topic::origin_id().to_string(),
                 message_id,
-                body: moqui_lib::json::to_json(&Value::Map(wrapped.clone())),
+                body: moqui_lib::json::to_json(&Value::Map(routed)),
             },
         )?;
         self.email_message_id_by_user_id = send_emails(
@@ -470,6 +477,9 @@ fn persist_rows(
     .map_err(Error::from)
 }
 
+/// The key of the recipients in a `notification-message` topic body. It is for routing and is not sent to a client.
+pub const ROUTE_USER_IDS: &str = "userIds";
+
 #[allow(clippy::too_many_arguments)]
 fn wrapped_message(
     message: &NotificationMessage,
@@ -521,10 +531,6 @@ fn wrapped_message(
     wrapped.insert("persistOnSend".to_string(), Value::Bool(persist));
     wrapped.insert("showAlert".to_string(), Value::Bool(show_alert));
     wrapped.insert("alertNoAutoHide".to_string(), Value::Bool(alert_no_auto_hide));
-    wrapped.insert(
-        "userIds".to_string(),
-        Value::List(message.notify_user_ids.iter().map(Value::string).collect()),
-    );
     wrapped
 }
 
