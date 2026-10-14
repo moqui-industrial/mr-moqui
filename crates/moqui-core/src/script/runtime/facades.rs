@@ -414,6 +414,13 @@ impl HostWeb {
         })
     }
 
+    fn send_resource_response(&self, ctx: Ctx<'_>, location: String, inline: Opt<bool>) -> rquickjs::Result<()> {
+        host_guard(&ctx, || {
+            crate::web::send_resource_response(&location, inline.0.unwrap_or(false));
+            Ok(())
+        })
+    }
+
     /// Remember the current screen path (or `path`) so a login can go back to it.
     fn save_screen_last_info(
         &self,

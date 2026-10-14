@@ -203,6 +203,10 @@ pub(super) fn js_value_to_host(ctx: &Ctx<'_>, value: &JsValue<'_>) -> Result<Val
         if let Some(class) = object.as_class::<HostList>() {
             return Ok(Value::Object(HostObject(class.borrow().inner.clone())));
         }
+        // An uploaded file passed to a service stays the file, as the Java FileItem in `ec.web.parameters` does.
+        if let Some(class) = object.as_class::<HostUpload>() {
+            return Ok(Value::Object(HostObject(class.borrow().inner.clone())));
+        }
         if is_js_set(object) {
             // The value's own context, so the lifetimes of the call agree.
             let own = value.ctx().clone();

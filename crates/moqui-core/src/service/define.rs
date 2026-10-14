@@ -36,6 +36,8 @@ pub(crate) enum ServiceKind {
     Mail,
     /// A system message or entity sync service whose body is Rust, in `system_sync`.
     SystemSync,
+    /// The elFinder connector service, whose body is Rust, in `elfinder`.
+    ElFinder,
     /// A script service whose language this port does not run, such as Groovy.
     Unsupported,
 }
@@ -480,6 +482,8 @@ fn load_service(prefix: &str, node: &MNode, services: &mut BTreeMap<String, Serv
     let location = node.attribute("location").unwrap_or_default();
     let kind = if super::system_sync::runs(&name) {
         ServiceKind::SystemSync
+    } else if super::elfinder::runs(&name) {
+        ServiceKind::ElFinder
     } else {
         kind_of(&type_name, &location)
     };

@@ -320,6 +320,66 @@ pub(crate) fn send_text_response(text: &str) {
     send_bytes(200, "text/plain", text.as_bytes().to_vec());
 }
 
+/// `ec.web.sendResourceResponse(location, inline)`: the bytes at a resource location with the type of its file name,
+/// shown inline or as an attachment. Nothing at the location, or a directory, is 404.
+pub(crate) fn send_resource_response(location: &str, inline: bool) {
+    let bytes = ExecutionContext::with_current(|ec| {
+        let resource = ec.factory().resource().get(location).ok()?;
+        if !resource.exists() {
+            return None;
+        }
+        resource.read_bytes().ok()
+    })
+    .flatten();
+    let Some(bytes) = bytes else {
+        tracing::warn!("Sending not found response, resource not found at: {location}");
+        send_bytes(
+            404,
+            "text/plain",
+            format!("Resource not found at {location}").into_bytes(),
+        );
+        return;
+    };
+    let file_name = location.trim_end_matches('/').rsplit('/').next().unwrap_or(location);
+    let mut headers = Vec::new();
+    if let Some(content_type) = moqui_lib::resource::content_type_for_name(file_name) {
+        headers.push(("Content-Type".to_string(), content_type.to_string()));
+    }
+    if inline {
+        headers.push(("Content-Disposition".to_string(), "inline".to_string()));
+        headers.push((
+            "Cache-Control".to_string(),
+            "max-age=86400, must-revalidate, public".to_string(),
+        ));
+    } else {
+        let safe: String = file_name
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_graphic() && !matches!(ch, '"' | '\\' | ';') {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let encoded: String = file_name
+            .bytes()
+            .map(|byte| {
+                if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+                    char::from(byte).to_string()
+                } else {
+                    format!("%{byte:02X}")
+                }
+            })
+            .collect();
+        headers.push((
+            "Content-Disposition".to_string(),
+            format!("attachment; filename=\"{safe}\"; filename*=utf-8''{encoded}"),
+        ));
+    }
+    send_bytes_with_headers(200, headers, bytes);
+}
+
 /// The signer for QZ Tray, from `qz-private-key.pem`. Java reads it once from the classpath at class load. This
 /// looks in `classpath://` (the framework directory), then `classes/` and `conf/` under the runtime directory,
 /// and keeps the first signer that loaded, so a key added later is found without a restart.
