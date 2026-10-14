@@ -31,11 +31,12 @@ use common::{basic, exchange, http_request, start_with_data};
 const DATA: &str = r#"<entity-facade-xml type="seed">
     <moqui.security.UserAccount userId="GATE_TOTP_USER" username="gate.totp" userFullName="Gate Totp"/>
     <moqui.basic.print.NetworkPrinter networkPrinterId="GATE_PRINTER" serverHost="localhost" printerName="gate" description="Gate printer"/>
-    <!-- A created date ahead, so the seed job clean_PrintJobData_daily, which runs on the first scheduler pass, keeps it. -->
+    <!-- Dates ahead, so the seed jobs clean_PrintJobData_daily and clean_ServiceJobRun_daily, which run on the first
+         scheduler pass, keep these rows. -->
     <moqui.basic.print.PrintJob printJobId="GATE_PJ" networkPrinterId="GATE_PRINTER" statusId="PtjNotSent" jobName="Gate job"
         contentType="text/plain" createdDate="2999-01-02 03:04:05"/>
     <moqui.service.job.ServiceJobRun jobRunId="GATE_RUN" jobName="clean_ArtifactData_daily" hasError="N"
-        startTime="2026-01-02 03:04:05" endTime="2026-01-02 03:04:06"/>
+        startTime="2999-01-02 03:04:05" endTime="2999-01-02 03:04:06"/>
     <moqui.service.message.SystemMessageType systemMessageTypeId="GateSmsg" description="Gate message type"/>
     <moqui.service.message.SystemMessageRemote systemMessageRemoteId="GateRemote" description="Gate remote"/>
     <moqui.service.message.SystemMessage systemMessageId="GATE_MSG" systemMessageTypeId="GateSmsg" statusId="SmsgProduced"
