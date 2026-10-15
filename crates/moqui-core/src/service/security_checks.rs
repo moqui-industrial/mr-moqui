@@ -18,12 +18,12 @@
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use moqui_lib::error::Error;
-use moqui_lib::object::{basic_convert, Value};
+use moqui_lib::object::Value;
 
 use super::eca::to_lib;
+use super::util::now_stamp;
 use crate::context::ExecutionContext;
 use crate::entity::{EntityFacade, EntityValue};
 
@@ -216,15 +216,6 @@ fn membership_open(from: Option<&Value>, thru: Option<&Value>, now: &Value) -> b
         None | Some(Value::Null) => true,
         Some(thru) => moqui_lib::object::compare_obj(thru, now).ok() == Some(std::cmp::Ordering::Greater),
     }
-}
-
-fn now_stamp() -> Value {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
-        .unwrap_or(0);
-    basic_convert(&Value::I64(millis), "java.sql.Timestamp").value
 }
 
 pub(super) fn map_text(values: &BTreeMap<String, Value>, field: &str) -> String {

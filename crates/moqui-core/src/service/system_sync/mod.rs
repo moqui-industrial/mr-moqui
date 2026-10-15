@@ -21,10 +21,11 @@ use std::collections::BTreeMap;
 
 use indexmap::IndexMap;
 use moqui_lib::error::Error as LibError;
-use moqui_lib::object::{basic_convert, is_empty, to_plain_string, Value};
+use moqui_lib::object::{basic_convert, Value};
 
 use crate::context::ExecutionContext;
 use crate::entity::EntityFacade;
+use crate::service::util::{has_error, now_millis, param_text, text_of};
 
 mod entity_sync;
 mod message;
@@ -69,17 +70,6 @@ pub(super) fn run(
     }
 }
 
-fn text_of(value: Option<&Value>) -> String {
-    match value {
-        Some(value) if !is_empty(value) => to_plain_string(value),
-        _ => String::new(),
-    }
-}
-
-fn param_text(parameters: &BTreeMap<String, Value>, name: &str) -> String {
-    text_of(parameters.get(name))
-}
-
 fn map_text(map: &IndexMap<String, Value>, name: &str) -> String {
     text_of(map.get(name))
 }
@@ -103,17 +93,9 @@ fn stamp(millis: i64) -> Value {
     jiff::Timestamp::from_millisecond(millis).map_or(Value::Null, Value::Timestamp)
 }
 
-fn now_millis() -> i64 {
-    jiff::Timestamp::now().as_millisecond()
-}
-
 fn add_error(text: impl Into<String>) {
     let text = text.into();
     ExecutionContext::with_current(|ctx| ctx.message().add_error(text));
-}
-
-fn has_error() -> bool {
-    ExecutionContext::with_current(|ctx| !ctx.message().errors().is_empty()).unwrap_or(false)
 }
 
 /// The errors joined by newlines, as `getErrorsString`, then cleared with the messages, as `clearErrors`.

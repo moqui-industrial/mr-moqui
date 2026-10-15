@@ -15,15 +15,15 @@
 //! Service semaphore. The lock row is written with SQL on a reserve connection.
 
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use moqui_db::sql::{insert, select, update, CompareOp, Condition, FieldRef, LimitOffset};
-use moqui_lib::error::Error as LibError;
-use moqui_lib::object::{basic_convert, is_empty, to_plain_string, Value};
+use moqui_lib::object::{is_empty, to_plain_string, Value};
 
 use super::define::{SemaphoreMode, ServiceDef};
+use super::util::{now_millis, now_stamp, reserve};
 use crate::context::Error;
-use crate::driver::{DbConnection, DbRow};
+use crate::driver::DbRow;
 use crate::entity::EntityFacade;
 use crate::transaction::TransactionManager;
 
@@ -214,43 +214,9 @@ fn owner_label() -> Value {
     Value::string(format!("{label}#{number}"))
 }
 
-fn now_stamp() -> Value {
-    basic_convert(&Value::I64(now_millis()), "Timestamp").value
-}
-
-fn now_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
-}
-
 fn stamp_millis(value: &Value) -> Option<i64> {
     if value.is_null() || is_empty(value) {
         return None;
     }
     to_plain_string(value).parse().ok()
-}
-
-fn reserve<T>(
-    tx: &TransactionManager,
-    body: impl FnOnce(&mut dyn DbConnection) -> Result<T, LibError>,
-) -> Result<T, Error> {
-    tx.with_reserve(|conn| {
-        conn.begin()?;
-        match body(conn) {
-            Ok(value) => {
-                if let Err(err) = conn.commit() {
-                    let _ = conn.rollback();
-                    return Err(err);
-                }
-                Ok(value)
-            }
-            Err(err) => {
-                let _ = conn.rollback();
-                Err(err)
-            }
-        }
-    })
-    .map_err(Error::from)
 }

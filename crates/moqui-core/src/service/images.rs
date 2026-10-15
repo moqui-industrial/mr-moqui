@@ -33,6 +33,8 @@
 use std::collections::BTreeMap;
 use std::io::Cursor;
 
+use super::util::param_text;
+
 use ::image::imageops::FilterType;
 use ::image::{DynamicImage, ImageFormat, ImageReader, Limits};
 use moqui_lib::error::Error as LibError;
@@ -106,13 +108,6 @@ pub(super) fn run(
     }
 }
 
-fn text(parameters: &BTreeMap<String, Value>, name: &str) -> String {
-    match parameters.get(name) {
-        Some(value) if !is_empty(value) => to_plain_string(value),
-        _ => String::new(),
-    }
-}
-
 /// A resource location given as text, or as a resource reference (a map with its `location`).
 fn location_of(value: Option<&Value>) -> Option<String> {
     match value? {
@@ -140,7 +135,7 @@ fn input_bytes(parameters: &BTreeMap<String, Value>, name: &str, location_name: 
     let location = match parameters.get(name) {
         Some(Value::Bytes(bytes)) if !bytes.is_empty() => return Ok(bytes.clone()),
         Some(Value::String(location)) if !location.is_empty() => location.clone(),
-        _ => text(parameters, location_name),
+        _ => param_text(parameters, location_name),
     };
     if location.is_empty() {
         return Err(LibError::new(format!("No image given in {name} or {location_name}")));
@@ -281,7 +276,7 @@ fn write_image(
 }
 
 fn convert_image(parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, LibError> {
-    let output_format = text(parameters, "outputImageFormat");
+    let output_format = param_text(parameters, "outputImageFormat");
     if output_format.is_empty() {
         return Err(LibError::new("outputImageFormat is required"));
     }
@@ -329,13 +324,13 @@ fn convert_image(parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String
 fn write_image_service(parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, LibError> {
     let location = location_of(parameters.get("outputResourceReference"))
         .ok_or_else(|| LibError::new("outputResourceReference is required"))?;
-    let output_format = text(parameters, "outputImageFormat");
+    let output_format = param_text(parameters, "outputImageFormat");
     let bytes = input_bytes(parameters, "image", "inputLocation")?;
     let (image, found_format) = decode(&bytes)?;
-    let input_format = Some(text(parameters, "inputImageFormat"))
+    let input_format = Some(param_text(parameters, "inputImageFormat"))
         .filter(|name| !name.is_empty())
         .unwrap_or(found_format);
-    let retry = !matches!(text(parameters, "retryIfFail").as_str(), "false" | "N");
+    let retry = !matches!(param_text(parameters, "retryIfFail").as_str(), "false" | "N");
     let written = write_image(&image, &location, &output_format, &input_format, retry)?;
     let mut out = BTreeMap::new();
     out.insert("contentLocation".to_string(), Value::String(written));

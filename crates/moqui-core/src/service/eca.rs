@@ -26,6 +26,7 @@ use moqui_lib::object::{HostObject, Value};
 
 use super::rule_actions::{condition_allows, publish_names, run_stored_actions};
 use super::security_checks::{assert_privileged_group_membership, assert_sealed_permission_grant, map_text};
+use super::util::has_error;
 use crate::context::ExecutionContext;
 use crate::entity::load_feed::{self, DataFileService, EcaRule};
 use crate::entity::EntityFacade;
@@ -71,7 +72,7 @@ pub fn run_matched_eca(
             continue;
         }
         // The security checks are checks, not business rules, so an earlier error does not skip them.
-        if !rule.run_on_error && has_message_error() && security_check_of(&rule.actions).is_none() {
+        if !rule.run_on_error && has_error() && security_check_of(&rule.actions).is_none() {
             continue;
         }
         // Name the rule in a failure: an action error alone does not say where it came from.
@@ -165,10 +166,6 @@ pub fn run_matched_eca(
 /// A value scripts see as an entity value.
 fn entity_object(value: crate::entity::EntityValue) -> Value {
     Value::Object(HostObject(std::sync::Arc::new(std::sync::Mutex::new(value))))
-}
-
-fn has_message_error() -> bool {
-    ExecutionContext::with_current(|ctx| !ctx.message().errors().is_empty()).unwrap_or(false)
 }
 
 /// Run one data-file service element through [`crate::service::call::sync`].

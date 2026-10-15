@@ -28,14 +28,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use moqui_db::sql::{insert, update, CompareOp, Condition};
-use moqui_lib::error::Error as LibError;
 use moqui_lib::object::{basic_convert, to_plain_string, Value};
 use moqui_lib::sync::lock;
 
 use super::call::CallOptions;
 use super::pool::{Shared, Work};
+use super::util::{field_text, now_stamp, reserve};
 use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
-use crate::driver::DbConnection;
 use crate::entity::{EntityFacade, EntityValue};
 use crate::transaction::{TransactionAttribute, TransactionManager};
 
@@ -124,9 +123,9 @@ fn pass(shared: &Arc<Shared>, factory: &Arc<ExecutionContextFactory>) -> Result<
         .order_by("jobName", false)
         .list()?;
     for job in jobs.values() {
-        let job_name = text(job, "jobName");
+        let job_name = field_text(job, "jobName");
         let queued = job_name.starts_with(QUEUE_PREFIX);
-        let cron_text = text(job, "cronExpression");
+        let cron_text = field_text(job, "cronExpression");
         if !queued && cron_text.is_empty() {
             continue;
         }
@@ -176,7 +175,7 @@ fn readiness(
     let mut last_run_time = Value::Null;
     let mut last_run_ms = None;
     if let Some(lock) = &lock {
-        let run_id = text(lock, "jobRunId");
+        let run_id = field_text(lock, "jobRunId");
         last_run_time = lock.get("lastRunTime").cloned().unwrap_or(Value::Null);
         last_run_ms = millis_of(&last_run_time);
         expect = if run_id.is_empty() {
@@ -214,7 +213,7 @@ fn readiness(
             .order_by("startTime", true)
             .limit(1)
             .list()?;
-        if let Some(last) = runs.values().first().filter(|run| text(run, "hasError") == "Y") {
+        if let Some(last) = runs.values().first().filter(|run| field_text(run, "hasError") == "Y") {
             let stamp = millis_of(last.get("endTime").unwrap_or(&Value::Null))
                 .or_else(|| millis_of(last.get("startTime").unwrap_or(&Value::Null)));
             let retry = number(job, "minRetryTime").unwrap_or(DEFAULT_RETRY_MINUTES);
@@ -238,7 +237,7 @@ fn dispatch(
     ready: Ready,
     now_stamp: &Value,
 ) -> Result<bool, Error> {
-    let job_name = text(job, "jobName");
+    let job_name = field_text(job, "jobName");
     let run_id = create_run(facade, &job_name, None, &BTreeMap::new())?;
     if !plan.claim(&job_name, &run_id, now_stamp, &ready.expect)? {
         // Another instance took it. Its run row would only confuse the history.
@@ -249,7 +248,7 @@ fn dispatch(
     let previous_run_time = ready.last_run_time.clone();
     let run = JobRun {
         job_name: job_name.clone(),
-        service_name: text(job, "serviceName"),
+        service_name: field_text(job, "serviceName"),
         parameters: job_parameters(facade, &job_name)?,
         timeout: Duration::from_secs(
             number(job, "transactionTimeout").map_or(DEFAULT_JOB_TIMEOUT_SECONDS, |secs| {
@@ -286,7 +285,7 @@ pub(crate) fn persist_queued(
     // A sequence number makes the name unique without inserting anything.
     let mut numbered = facade.make_value(JOB_RUN)?;
     numbered.set_sequenced_id_primary(&facade)?;
-    let id = text(&numbered, "jobRunId");
+    let id = field_text(&numbered, "jobRunId");
     let name = format!("{QUEUE_PREFIX}{id}");
     let _authz = ExecutionContext::with_current(|ctx| ctx.disable_authz());
     let tx = facade.transactions_for(SERVICE_JOB)?;
@@ -341,7 +340,7 @@ pub fn run_job_now(job_name: &str, extra: &BTreeMap<String, Value>) -> Result<St
     let shared = pools.shared.clone();
     let run = JobRun {
         job_name: job_name.to_string(),
-        service_name: text(&job, "serviceName"),
+        service_name: field_text(&job, "serviceName"),
         parameters,
         timeout: Duration::from_secs(
             number(&job, "transactionTimeout")
@@ -403,7 +402,7 @@ pub(crate) fn run_job(job: JobRun) {
     record(
         &facade,
         &job.job_run_id,
-        &[("startTime", now_value()), ("runThread", Value::string(thread))],
+        &[("startTime", now_stamp()), ("runThread", Value::string(thread))],
     );
     let end = RunEnd {
         facade: &facade,
@@ -495,7 +494,7 @@ fn finish_run(facade: &EntityFacade, job: &JobRun, outcome: &RunOutcome) {
         let restored = if outcome.has_error {
             job.last_run_time.clone()
         } else {
-            now_value()
+            now_stamp()
         };
         release_lock(facade, job, &restored);
     }
@@ -503,7 +502,7 @@ fn finish_run(facade: &EntityFacade, job: &JobRun, outcome: &RunOutcome) {
         facade,
         &job.job_run_id,
         &[
-            ("endTime", now_value()),
+            ("endTime", now_stamp()),
             ("results", outcome.results.clone().map_or(Value::Null, Value::String)),
             ("messages", Value::string(&outcome.messages)),
             ("hasError", Value::string(if outcome.has_error { "Y" } else { "N" })),
@@ -545,7 +544,7 @@ pub(crate) fn abandon(job: JobRun) {
         &facade,
         &job.job_run_id,
         &[
-            ("endTime", now_value()),
+            ("endTime", now_stamp()),
             ("hasError", Value::string("Y")),
             (
                 "errors",
@@ -605,7 +604,7 @@ fn create_run(
             ));
             run.set("parameters", Value::string(json.to_string()));
         }
-        let id = text(&run, "jobRunId");
+        let id = field_text(&run, "jobRunId");
         run.create(facade)?;
         Ok(id)
     })?;
@@ -652,7 +651,12 @@ fn job_parameters(facade: &EntityFacade, job_name: &str) -> Result<BTreeMap<Stri
     Ok(rows
         .values()
         .iter()
-        .map(|row| (text(row, "parameterName"), Value::string(text(row, "parameterValue"))))
+        .map(|row| {
+            (
+                field_text(row, "parameterName"),
+                Value::string(field_text(row, "parameterValue")),
+            )
+        })
         .collect())
 }
 
@@ -681,7 +685,7 @@ fn within_dates(job: &EntityValue, now_ms: i64) -> bool {
 
 /// Active when `paused` is null or `N`.
 fn paused_ok(job: &EntityValue) -> bool {
-    let paused = text(job, "paused");
+    let paused = field_text(job, "paused");
     paused.is_empty() || paused == "N"
 }
 
@@ -764,38 +768,7 @@ impl LockPlan {
     }
 }
 
-fn reserve<T>(
-    tx: &TransactionManager,
-    body: impl FnOnce(&mut dyn DbConnection) -> Result<T, LibError>,
-) -> Result<T, Error> {
-    tx.with_reserve(|conn| {
-        conn.begin()?;
-        match body(conn) {
-            Ok(value) => {
-                if let Err(err) = conn.commit() {
-                    let _ = conn.rollback();
-                    return Err(err);
-                }
-                Ok(value)
-            }
-            Err(err) => {
-                let _ = conn.rollback();
-                Err(err)
-            }
-        }
-    })
-    .map_err(Error::from)
-}
-
 // ---- values -------------------------------------------------------------------------------
-
-fn text(row: &EntityValue, field: &str) -> String {
-    match row.get(field) {
-        Some(Value::String(value)) => value.clone(),
-        Some(other) if !other.is_null() => to_plain_string(other),
-        _ => String::new(),
-    }
-}
 
 fn number(row: &EntityValue, field: &str) -> Option<i64> {
     match basic_convert(row.get(field)?, "Long").value {
@@ -814,10 +787,6 @@ fn millis_of(value: &Value) -> Option<i64> {
 
 fn timestamp_value(millis: i64) -> Value {
     basic_convert(&Value::I64(millis), "java.sql.Timestamp").value
-}
-
-fn now_value() -> Value {
-    timestamp_value(jiff::Timestamp::now().as_millisecond())
 }
 
 fn clip(text: &str) -> String {
@@ -876,7 +845,7 @@ mod tests {
         let mut lock = facade.make_value(JOB_LOCK).unwrap();
         lock.set("jobName", Value::string(job));
         lock.set("jobRunId", Value::string(run_id));
-        lock.set("lastRunTime", super::now_value());
+        lock.set("lastRunTime", super::now_stamp());
         lock.create(facade).unwrap();
         JobRun {
             job_name: job.to_string(),

@@ -25,6 +25,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::util::param_text;
+
 use moqui_lib::error::Error as LibError;
 use moqui_lib::object::{is_empty, to_plain_string, Value};
 
@@ -86,14 +88,6 @@ fn base() -> String {
         .unwrap_or_default()
         .trim_end_matches('/')
         .to_string()
-}
-
-fn text(parameters: &BTreeMap<String, Value>, name: &str) -> String {
-    parameters
-        .get(name)
-        .filter(|value| !is_empty(value))
-        .map(to_plain_string)
-        .unwrap_or_default()
 }
 
 fn field(row: &EntityValue, name: &str) -> String {
@@ -192,9 +186,9 @@ fn load_flow(facade: &EntityFacade, auth_flow_id: &str) -> Result<(EntityValue, 
 
 /// `login#User`: keep a same-origin `returnTo`, start the flow, keep its state in the session, and redirect.
 fn login(parameters: &BTreeMap<String, Value>, facade: &EntityFacade) -> Result<(), LibError> {
-    let auth_flow_id = text(parameters, "authFlowId");
+    let auth_flow_id = param_text(parameters, "authFlowId");
     let (_, flow) = load_flow(facade, &auth_flow_id)?;
-    match safe_return_to(&text(parameters, "returnTo")) {
+    match safe_return_to(&param_text(parameters, "returnTo")) {
         Some(url) => set_session_attribute(RETURN_TO, Some(&url)),
         None => set_session_attribute(RETURN_TO, None),
     }
@@ -257,7 +251,7 @@ fn callback(facade: &EntityFacade) -> Result<(), LibError> {
 /// else to a same-origin `returnTo` or `/Login`.
 fn logout(parameters: &BTreeMap<String, Value>, facade: &EntityFacade) -> Result<(), LibError> {
     let base = base();
-    let after = safe_return_to(&text(parameters, "returnTo")).unwrap_or_else(|| format!("{base}/Login"));
+    let after = safe_return_to(&param_text(parameters, "returnTo")).unwrap_or_else(|| format!("{base}/Login"));
     let after = if after.starts_with('/') {
         format!("{base}{after}")
     } else {

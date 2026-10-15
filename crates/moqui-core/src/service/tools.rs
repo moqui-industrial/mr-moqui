@@ -22,6 +22,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::util::{has_error, map_text, param_text};
+
 use indexmap::IndexMap;
 use moqui_lib::error::Error as LibError;
 use moqui_lib::object::{is_empty, to_plain_string, Value};
@@ -87,20 +89,9 @@ pub(super) fn run(
     }
 }
 
-fn text(parameters: &BTreeMap<String, Value>, name: &str) -> String {
-    match parameters.get(name) {
-        Some(value) if !is_empty(value) => to_plain_string(value),
-        _ => String::new(),
-    }
-}
-
 fn add_error(text: impl Into<String>) {
     let text = text.into();
     ExecutionContext::with_current(|ctx| ctx.message().add_error(text));
-}
-
-fn has_error() -> bool {
-    ExecutionContext::with_current(|ctx| !ctx.message().errors().is_empty()).unwrap_or(false)
 }
 
 /// A service call from a body, as an XML `service-call`: a failure is left as a message error.
@@ -188,7 +179,7 @@ fn print_document(parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<Strin
 
 /// `print#ResourceDocument`: the bytes at a resource location, printed and not stored.
 fn print_resource_document(parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, LibError> {
-    let location = text(parameters, "resourceLocation");
+    let location = param_text(parameters, "resourceLocation");
     let found = ExecutionContext::with_current(|ctx| ctx.factory().resource().get(&location))
         .ok_or_else(|| LibError::new("no execution context is entered"))?;
     let resource = match found {
@@ -212,7 +203,7 @@ fn print_resource_document(parameters: &BTreeMap<String, Value>) -> Result<BTree
 /// to `print#Document`, which stores the `PrintJob` and sends it. The screen parameters are `screenParameters` plus the
 /// map `screenParametersStr` evaluates to; the job name defaults to the screen name and those parameter values.
 fn print_screen_document(parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, LibError> {
-    let location = text(parameters, "screenLocation");
+    let location = param_text(parameters, "screenLocation");
     let Some(factory) = ExecutionContext::with_current(|ctx| ctx.factory().clone()) else {
         return Err(LibError::new("no execution context is entered"));
     };
@@ -225,13 +216,13 @@ fn print_screen_document(parameters: &BTreeMap<String, Value>) -> Result<BTreeMa
     if let Some(Value::Map(given)) = parameters.get("screenParameters") {
         screen_parameters.extend(given.iter().map(|(name, value)| (name.clone(), value.clone())));
     }
-    let expression = text(parameters, "screenParametersStr");
+    let expression = param_text(parameters, "screenParametersStr");
     if !expression.is_empty() {
         let evaluated = crate::script::eval_map(&expression)
             .map_err(|err| LibError::new(format!("screenParametersStr: {}", err.message())))?;
         screen_parameters.extend(evaluated);
     }
-    let content_type = match text(parameters, "contentType") {
+    let content_type = match param_text(parameters, "contentType") {
         found if found.is_empty() => "application/pdf".to_string(),
         found => found,
     };
@@ -269,7 +260,7 @@ fn print_screen_document(parameters: &BTreeMap<String, Value>) -> Result<BTreeMa
     };
     let mut print = parameters.clone();
     print.extend(screen_parameters.clone());
-    if text(parameters, "jobName").is_empty() {
+    if param_text(parameters, "jobName").is_empty() {
         let mut job_name = def.screen_name.clone();
         for value in screen_parameters.values() {
             job_name.push(' ');
@@ -301,13 +292,6 @@ fn update_print_job(print_job_id: &str, fields: &[(&str, Value)], options: &Call
         update.insert((*name).to_string(), value.clone());
     }
     call(&format!("update#{PRINT_JOB}"), &update, options);
-}
-
-fn map_text(map: &IndexMap<String, Value>, name: &str) -> String {
-    match map.get(name) {
-        Some(value) if !is_empty(value) => to_plain_string(value),
-        _ => String::new(),
-    }
 }
 
 fn server_of(printer: &IndexMap<String, Value>) -> PrintServer {
@@ -468,8 +452,8 @@ fn get_server_printers(
     parameters: &BTreeMap<String, Value>,
     facade: &EntityFacade,
 ) -> Result<BTreeMap<String, Value>, LibError> {
-    let host = text(parameters, "serverHost");
-    let port = text(parameters, "serverPort").parse().unwrap_or(IPP_PORT);
+    let host = param_text(parameters, "serverHost");
+    let port = param_text(parameters, "serverPort").parse().unwrap_or(IPP_PORT);
     let existing = facade
         .find(NETWORK_PRINTER)?
         .eq("serverHost", Value::string(&host))
@@ -529,7 +513,7 @@ fn get_print_job_details(
     parameters: &BTreeMap<String, Value>,
     facade: &EntityFacade,
 ) -> Result<BTreeMap<String, Value>, LibError> {
-    let print_job_id = text(parameters, "printJobId");
+    let print_job_id = param_text(parameters, "printJobId");
     let Some((job, server)) = job_and_server(facade, &print_job_id)? else {
         return Ok(BTreeMap::new());
     };
@@ -587,7 +571,7 @@ fn job_action(
     facade: &EntityFacade,
     action: JobAction,
 ) -> Result<BTreeMap<String, Value>, LibError> {
-    let print_job_id = text(parameters, "printJobId");
+    let print_job_id = param_text(parameters, "printJobId");
     let Some((job, server)) = job_and_server(facade, &print_job_id)? else {
         return Ok(BTreeMap::new());
     };
@@ -715,7 +699,7 @@ fn rewrite_encrypted_fields(
     parameters: &BTreeMap<String, Value>,
     facade: &EntityFacade,
 ) -> Result<BTreeMap<String, Value>, LibError> {
-    let entity_name = text(parameters, "entityName");
+    let entity_name = param_text(parameters, "entityName");
     let (full_name, pk_names, encrypt_names) = facade.with_entity(&entity_name, |entity, _, _| {
         Ok((
             entity.full_name.clone(),

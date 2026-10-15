@@ -22,6 +22,7 @@ use moqui_lib::error::Error as LibError;
 use moqui_lib::object::{is_empty, Value};
 
 use super::define::{Authenticate, ServiceDef, ServiceKind};
+use super::util::has_error;
 use super::validate;
 use crate::context::Error;
 use crate::entity::{EntityFacade, EntityValue};
@@ -227,11 +228,11 @@ pub fn sync_multi(
             }
             let produced = sync_with(&name, &row, &single)?;
             result.extend(produced);
-            if message_has_error() {
+            if has_error() {
                 break;
             }
         }
-        if message_has_error() && tx.in_transaction() {
+        if has_error() && tx.in_transaction() {
             tx.set_rollback_only(format!("Error message found running service {name} in multi mode"))?;
         }
         Ok(())
@@ -239,7 +240,7 @@ pub fn sync_multi(
     match outcome {
         Ok(()) => Ok(result),
         // The rows' errors are messages; the rollback they cause is not a failure of the call.
-        Err(_) if message_has_error() => Ok(result),
+        Err(_) if has_error() => Ok(result),
         Err(err) => Err(err.into()),
     }
 }
@@ -318,13 +319,13 @@ pub fn sync_with(
         // entity write can still register the feed schedule hook.
         register_tx_rollback(&tx, &def.name, &cleaned)?;
         super::seca::run_seca_rules(&def.name, "pre-service", &cleaned, None).map_err(script_err)?;
-        if message_has_error() {
+        if has_error() {
             tracing::warn!(service = %def.name, "errors before the service ran, so it was not run");
             return Ok(BTreeMap::new());
         }
         let produced = execute(&def, &cleaned, &facade)?;
         super::seca::run_seca_rules(&def.name, "post-service", &cleaned, Some(&produced)).map_err(script_err)?;
-        if message_has_error() {
+        if has_error() {
             message_failed = Some(produced.clone());
             // Under `ignore` with nothing in place there is no transaction to mark.
             if tx.in_transaction() {
@@ -352,10 +353,6 @@ pub fn sync_with(
     let produced = produced?;
     post?;
     Ok(project(&def, produced))
-}
-
-fn message_has_error() -> bool {
-    crate::context::ExecutionContext::with_current(|ctx| !ctx.message().errors().is_empty()).unwrap_or(false)
 }
 
 /// The artifact frame for a running service. It pops when dropped, and ends an anonymous login the

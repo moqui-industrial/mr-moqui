@@ -22,7 +22,8 @@ use moqui_lib::node::MNode;
 use moqui_lib::object::Value;
 
 use super::eca_rules;
-use crate::context::{Error, ExecutionContext};
+use super::util::has_error;
+use crate::context::Error;
 
 #[derive(Clone, Debug)]
 pub(super) struct SecaRule {
@@ -50,7 +51,7 @@ pub fn run_seca_rules(
     };
     for &position in rules.seca_index.matching(&rules.seca, service, when).iter() {
         let rule = &rules.seca[position];
-        if !rule.run_on_error && message_has_error() {
+        if !rule.run_on_error && has_error() {
             continue;
         }
         let _frame = super::rule_actions::publish_names(parameters)?;
@@ -202,10 +203,6 @@ fn pattern_matches(rule: &SecaRule, plain: &str) -> bool {
         "String",
     )
     .unwrap_or(false)
-}
-
-fn message_has_error() -> bool {
-    ExecutionContext::with_current(|ctx| !ctx.message().errors().is_empty()).unwrap_or(false)
 }
 
 #[cfg(test)]

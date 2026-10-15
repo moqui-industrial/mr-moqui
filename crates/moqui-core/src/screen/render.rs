@@ -41,6 +41,7 @@ use super::dispatch;
 use super::url::{encode_path, parse_last_standalone, resolve_screen_path, ScreenUrlInfo};
 use crate::context::{Error, ErrorKind, ExecutionContext, ExecutionContextFactory};
 use crate::script::{self, ContextFrame};
+use crate::service::util::has_error;
 use crate::user;
 use crate::web::{self, WebRequest};
 
@@ -1077,7 +1078,7 @@ fn run_transition_steps(
     }
     reject_html_for_entity_auto(transition);
     if let Some(actions) = &transition.actions {
-        if !has_errors() {
+        if !has_error() {
             run_transition_actions(actions)?;
         }
     }
@@ -1233,7 +1234,7 @@ fn run_transition_actions(actions: &Actions) -> Result<(), Error> {
 /// The error response when there are errors, else the last conditional response that holds (Java checks them all
 /// and keeps the last), else the default response.
 fn pick_response(transition: &TransitionDef) -> Result<&ResponseDef, Error> {
-    if has_errors() {
+    if has_error() {
         if let Some(response) = &transition.error_response {
             return Ok(response);
         }
@@ -1283,7 +1284,7 @@ fn respond(info: &ScreenUrlInfo, response: &ResponseDef, json: bool) -> Result<(
         if response.save_parameters {
             save_parameters();
         }
-        if has_errors() {
+        if has_error() {
             save_error_parameters();
         }
         return Ok(());
@@ -1295,7 +1296,7 @@ fn respond(info: &ScreenUrlInfo, response: &ResponseDef, json: bool) -> Result<(
     if !json {
         save_messages();
     }
-    if has_errors() {
+    if has_error() {
         save_error_parameters();
     }
     let mut url = script::expand(&response.url)?;
@@ -1597,10 +1598,6 @@ fn save_error_parameters() {
     }
 }
 
-fn has_errors() -> bool {
-    ExecutionContext::with_current(|ec| !ec.message().errors().is_empty()).unwrap_or(false)
-}
-
 fn save_parameters() {
     for (name, value) in web::parameters() {
         user::session::save_parameter(&name, &moqui_lib::object::to_plain_string(&value));
@@ -1676,7 +1673,7 @@ fn in_transaction<T>(begin: bool, timeout: Option<i64>, body: impl FnOnce() -> R
     let outcome = tx.run(crate::transaction::TransactionAttribute::UseOrBegin, timeout, || {
         let _deadline = script::DeadlineGuard::new(tx.time_remaining());
         kept = Some(body()?);
-        if has_errors() {
+        if has_error() {
             rolled_back = true;
             tx.set_rollback_only("Errors running screen actions")?;
         }

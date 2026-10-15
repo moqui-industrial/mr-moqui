@@ -22,6 +22,8 @@
 use std::collections::BTreeMap;
 use std::io::Cursor;
 
+use super::util::{has_error, param_text};
+
 use calamine::{Cell, Data, DataRef, Range, Reader, Sheets};
 use indexmap::IndexMap;
 use moqui_lib::error::Error as LibError;
@@ -57,13 +59,6 @@ pub(super) fn run(
     }
 }
 
-fn text(parameters: &BTreeMap<String, Value>, name: &str) -> String {
-    match parameters.get(name) {
-        Some(value) if !is_empty(value) => to_plain_string(value),
-        _ => String::new(),
-    }
-}
-
 fn flag(parameters: &BTreeMap<String, Value>, name: &str, default: bool) -> bool {
     match parameters.get(name) {
         Some(Value::Bool(flag)) => *flag,
@@ -95,7 +90,7 @@ fn read_sheet(parameters: &BTreeMap<String, Value>) -> Result<Sheet, LibError> {
     let bytes = match parameters.get("contentBytes") {
         Some(Value::Bytes(bytes)) if !bytes.is_empty() => bytes.clone(),
         _ => {
-            let location = text(parameters, "location");
+            let location = param_text(parameters, "location");
             if location.is_empty() {
                 return Err(LibError::new("A spreadsheet needs contentBytes or a location"));
             }
@@ -112,7 +107,7 @@ fn read_sheet(parameters: &BTreeMap<String, Value>) -> Result<Sheet, LibError> {
     let mut book = calamine::open_workbook_auto_from_rs(Cursor::new(bytes))
         .map_err(|err| LibError::new(format!("Could not read spreadsheet: {err}")))?;
     let names = book.sheet_names();
-    let sheet_name = text(parameters, "sheetName");
+    let sheet_name = param_text(parameters, "sheetName");
     let chosen = if sheet_name.is_empty() {
         let index = number(parameters, "sheetIndex").unwrap_or(0);
         names
@@ -291,11 +286,11 @@ fn row_map(headers: &[String], row: &[Value]) -> IndexMap<String, Value> {
 /// auto service, so authorization, ECAs, and the caller's transaction apply. A column's field is its header unless
 /// `fieldMap` names another; a column that is not a field of the entity is not set.
 fn load_spreadsheet_entity(parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, LibError> {
-    let entity_name = text(parameters, "entityName");
+    let entity_name = param_text(parameters, "entityName");
     if entity_name.is_empty() {
         return Err(LibError::new("load#SpreadsheetEntity needs an entityName"));
     }
-    let verb = match text(parameters, "loadMode").as_str() {
+    let verb = match param_text(parameters, "loadMode").as_str() {
         "" | "store" => "store",
         "create" => "create",
         other => return Err(LibError::new(format!("loadMode {other} is not create or store"))),
@@ -323,7 +318,7 @@ fn load_spreadsheet_entity(parameters: &BTreeMap<String, Value>) -> Result<BTree
             .filter(|(_, value)| !value.is_null())
             .collect();
         sync_with(&service, &values, &CallOptions::default()).map_err(|err| LibError::new(err.message()))?;
-        if ExecutionContext::with_current(|ctx| !ctx.message().errors().is_empty()).unwrap_or(false) {
+        if has_error() {
             break;
         }
         count += 1;

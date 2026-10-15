@@ -32,6 +32,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::util::{field_text, has_error, map_text, now_stamp, param_text};
+
 use indexmap::IndexMap;
 use moqui_lib::codec::hex_encode;
 use moqui_lib::error::Error as LibError;
@@ -1269,7 +1271,7 @@ fn poll_server(
     if password.is_empty() {
         note_error(format!("EmailServer [{server_id}] has no mailPassword"));
     }
-    if message_has_error() {
+    if has_error() {
         return Ok(BTreeMap::new());
     }
     if let Err(text) = require_host(&host) {
@@ -2050,27 +2052,6 @@ fn find_one(facade: &EntityFacade, entity: &str, field: &str, value: &str) -> Re
     facade.find(entity)?.eq(field, Value::string(value)).one()
 }
 
-fn field_text(row: &EntityValue, name: &str) -> String {
-    match row.get(name) {
-        Some(value) if !is_empty(value) => to_plain_string(value),
-        _ => String::new(),
-    }
-}
-
-fn param_text(parameters: &BTreeMap<String, Value>, name: &str) -> String {
-    match parameters.get(name) {
-        Some(value) if !is_empty(value) => to_plain_string(value),
-        _ => String::new(),
-    }
-}
-
-fn map_text(map: &IndexMap<String, Value>, name: &str) -> String {
-    match map.get(name) {
-        Some(value) if !is_empty(value) => to_plain_string(value),
-        _ => String::new(),
-    }
-}
-
 fn body_parameters(parameters: &BTreeMap<String, Value>) -> Option<&IndexMap<String, Value>> {
     match parameters.get("bodyParameters") {
         Some(Value::Map(map)) => Some(map),
@@ -2161,18 +2142,6 @@ fn note_error(text: impl Into<String>) {
 fn note_message(text: impl Into<String>) {
     let text = text.into();
     ExecutionContext::with_current(|ctx| ctx.message().add_message(text));
-}
-
-fn message_has_error() -> bool {
-    ExecutionContext::with_current(|ctx| !ctx.message().errors().is_empty()).unwrap_or(false)
-}
-
-fn now_stamp() -> Value {
-    basic_convert(
-        &Value::I64(jiff::Timestamp::now().as_millisecond()),
-        "java.sql.Timestamp",
-    )
-    .value
 }
 
 fn stamp_millis(millis: i64) -> Value {
