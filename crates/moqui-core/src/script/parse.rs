@@ -14,6 +14,7 @@
 
 //! JavaScript parse through `oxc_parser`. Groovy leftovers are rejected by the service loader.
 
+use oxc_ast::ast::{SourceType, Statement};
 use oxc_parser::{ParseOptions, Parser};
 
 use crate::context::Error;
@@ -82,6 +83,47 @@ fn parse_program(source: &str) -> Result<(), Error> {
         return Err(Error::new("not JavaScript"));
     }
     Ok(())
+}
+
+/// A script file as the body of a function called at once, the way the action macros run a `<script>` body.
+///
+/// The thread's engine keeps global code's declarations: a top-level `let` or `const` would fail as a redeclaration at
+/// the next run, and a `var` or `function` would become a global that hides the context name for every later script on
+/// the thread. In the function they are the file's own. A bare assignment still sets the context, `return` ends the
+/// script with its value, and a last expression statement is returned, as Groovy returns the last expression. The
+/// wrapper opens on the file's first line, so a line number in an error is the file's.
+pub(crate) fn file_function(source: &str) -> String {
+    let allocator = std::default::Default::default();
+    // Not a module: the file runs as sloppy script code.
+    let source_type = SourceType::script();
+    let options = ParseOptions {
+        allow_return_outside_function: true,
+        ..ParseOptions::default()
+    };
+    let parsed = Parser::new(&allocator, source, source_type)
+        .with_options(options)
+        .parse();
+    // A file that does not parse is wrapped as it is, and QuickJS reports the error at its line.
+    let last = if parsed.panicked || parsed.diagnostics.has_errors() {
+        None
+    } else {
+        match parsed.program.body.last() {
+            Some(Statement::ExpressionStatement(statement)) => usize::try_from(statement.span.start).ok(),
+            _ => None,
+        }
+    };
+    let mut out = String::with_capacity(source.len() + 32);
+    out.push_str("(function(){");
+    match last.filter(|at| source.is_char_boundary(*at)) {
+        Some(at) => {
+            out.push_str(&source[..at]);
+            out.push_str("return ");
+            out.push_str(&source[at..]);
+        }
+        None => out.push_str(source),
+    }
+    out.push_str("\n})()");
+    out
 }
 
 /// Why a failed parse looks like Groovy, to make the message useful. It never decides a parse.

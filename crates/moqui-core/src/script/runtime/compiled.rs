@@ -21,10 +21,11 @@
 //! rquickjs does not wrap these two calls for scripts, so they are made through `rquickjs::qjs`.
 
 use std::ffi::CString;
+use std::panic::AssertUnwindSafe;
 
 use rquickjs::{qjs, CatchResultExt, Ctx, FromJs, Persistent, Value as JsValue};
 
-use super::{current_engine, Error};
+use super::{current_engine, panic_message, Error};
 
 /// Compiled scripts kept per engine.
 pub(super) const MAX_COMPILED_SCRIPTS: usize = 4096;
@@ -94,9 +95,22 @@ fn run_compiled<'js>(ctx: &Ctx<'js>, compiled: &JsValue<'js>) -> Result<JsValue<
 }
 
 /// Wrap an owned value from the C API, or turn its pending exception into an error.
+///
+/// A callback panic rquickjs caught is kept in the runtime until one of its own wrappers sees an exception, and these
+/// calls are not one: left there, it would be resumed by the next exception of some later, unrelated script. So it is
+/// taken here, through the one public conversion that looks for it, and becomes this script's error.
 fn owned_or_exception<'js>(ctx: &Ctx<'js>, raw: qjs::JSValue) -> Result<JsValue<'js>, Error> {
     // SAFETY: `raw` is an owned value just returned by the C API for this context.
     if unsafe { qjs::JS_IsException(raw) } {
+        // SAFETY: the exception marker is not reference counted, so this value owns nothing.
+        let marker = unsafe { JsValue::from_raw(ctx.clone(), raw) };
+        let parked = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            <rquickjs::Result<JsValue> as FromJs>::from_js(ctx, marker).map(|_| ())
+        }));
+        if let Err(payload) = parked {
+            drop(ctx.catch());
+            return Err(Error::new(panic_message(payload)));
+        }
         return Err(Err::<(), _>(rquickjs::Error::Exception).catch(ctx).map_or_else(
             |caught| Error::new(caught.to_string()),
             |()| Error::new("script failed"),

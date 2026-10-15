@@ -31,83 +31,89 @@ pub(super) struct HostUrl {
 #[rquickjs::methods(rename_all = "camelCase")]
 impl HostUrl {
     #[qjs(get, rename = "path")]
-    fn path_property(&self) -> String {
-        self.inner.borrow().path()
+    fn path_property(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(self.inner.borrow().path()))
     }
 
     #[qjs(get, rename = "url")]
-    fn url_property(&self) -> String {
-        self.inner.borrow().url()
+    fn url_property(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(self.inner.borrow().url()))
     }
 
     #[qjs(get, rename = "pathWithParams")]
-    fn path_with_params_property(&self) -> String {
-        self.inner.borrow().path_with_params()
+    fn path_with_params_property(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(self.inner.borrow().path_with_params()))
     }
 
     #[qjs(get, rename = "readOnly")]
-    fn read_only_property(&self) -> bool {
-        self.inner.borrow().read_only
+    fn read_only_property(&self, ctx: Ctx<'_>) -> rquickjs::Result<bool> {
+        host_guard(&ctx, || Ok(self.inner.borrow().read_only))
     }
 
-    fn get_path(&self) -> String {
-        self.inner.borrow().path()
+    fn get_path(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(self.inner.borrow().path()))
     }
 
-    fn get_url(&self) -> String {
-        self.inner.borrow().url()
+    fn get_url(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(self.inner.borrow().url()))
     }
 
-    fn get_path_with_params(&self) -> String {
-        self.inner.borrow().path_with_params()
+    fn get_path_with_params(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(self.inner.borrow().path_with_params()))
     }
 
-    fn get_url_with_params(&self, extension: Opt<String>) -> String {
-        self.inner
-            .borrow()
-            .url_with_params(extension.0.as_deref().unwrap_or(""))
+    fn get_url_with_params(&self, ctx: Ctx<'_>, extension: Opt<String>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || {
+            Ok(self
+                .inner
+                .borrow()
+                .url_with_params(extension.0.as_deref().unwrap_or("")))
+        })
     }
 
-    fn get_minimal_path_url(&self) -> String {
-        self.inner.borrow().minimal_path_url()
+    fn get_minimal_path_url(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(self.inner.borrow().minimal_path_url()))
     }
 
-    fn is_read_only(&self) -> bool {
-        self.inner.borrow().read_only
+    fn is_read_only(&self, ctx: Ctx<'_>) -> rquickjs::Result<bool> {
+        host_guard(&ctx, || Ok(self.inner.borrow().read_only))
     }
 
     /// A screen or transition of this server, not a plain URL.
-    fn is_screen_url(&self) -> bool {
-        self.inner.borrow().plain.is_none()
+    fn is_screen_url(&self, ctx: Ctx<'_>) -> rquickjs::Result<bool> {
+        host_guard(&ctx, || Ok(self.inner.borrow().plain.is_none()))
     }
 
-    fn is_transition(&self) -> bool {
-        self.inner.borrow().is_transition
+    fn is_transition(&self, ctx: Ctx<'_>) -> rquickjs::Result<bool> {
+        host_guard(&ctx, || Ok(self.inner.borrow().is_transition))
     }
 
-    fn get_transition_method(&self) -> String {
-        self.inner.borrow().transition_method.clone()
+    fn get_transition_method(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(self.inner.borrow().transition_method.clone()))
     }
 
     fn get_disable_link(&self, ctx: Ctx<'_>) -> rquickjs::Result<bool> {
-        let exists = self.inner.borrow().exists;
-        let disabled = match self.inner.borrow().disable_link() {
-            Ok(disabled) => disabled,
-            Err(err) => return Err(Exception::throw_message(&ctx, err.message())),
-        };
-        if !exists {
-            // A static template does not write a disabled link, so a report records that the merged page did.
-            crate::screen::statics::record_note(
-                "disable-link",
-                "link",
-                &format!("{} is not a screen or transition", self.inner.borrow().path()),
-            );
-        }
-        Ok(disabled)
+        host_guard(&ctx, || {
+            let exists = self.inner.borrow().exists;
+            let disabled = self
+                .inner
+                .borrow()
+                .disable_link()
+                .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
+            if !exists {
+                // A static template does not write a disabled link, so a report records that the merged page did.
+                crate::screen::statics::record_note(
+                    "disable-link",
+                    "link",
+                    &format!("{} is not a screen or transition", self.inner.borrow().path()),
+                );
+            }
+            Ok(disabled)
+        })
     }
 
     fn clone_url_instance<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<Class<'js, HostUrl>> {
-        wrap(&ctx, self.inner.borrow().clone())
+        host_guard(&ctx, || wrap(&ctx, self.inner.borrow().clone()))
     }
 
     /// Returns the URL, so calls chain as they do on a Java `UrlInstance`.
@@ -147,9 +153,15 @@ impl HostUrl {
         })
     }
 
-    fn remove_parameter<'js>(this: This<Class<'js, HostUrl>>, name: String) -> Class<'js, HostUrl> {
-        this.0.borrow().inner.borrow_mut().remove_parameter(&name);
-        this.0.clone()
+    fn remove_parameter<'js>(
+        this: This<Class<'js, HostUrl>>,
+        ctx: Ctx<'js>,
+        name: String,
+    ) -> rquickjs::Result<Class<'js, HostUrl>> {
+        host_guard(&ctx, || {
+            this.0.borrow().inner.borrow_mut().remove_parameter(&name);
+            Ok(this.0.clone())
+        })
     }
 
     fn get_parameter_map<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {

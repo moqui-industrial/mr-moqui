@@ -26,10 +26,15 @@ use moqui_lib::node::MNode;
 const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     // ---- collections ----
     // `context` is a read-only view of the stack here, so the page values are set on the stack by name.
+    // A list that is already a page, `{page}AlreadyPaginated` or a `{page}Count` from a paginated find (which sets the
+    // range of the whole result), is the page as it is, as `paginateParameters` marks it and the screen's paginate does.
     cu.paginateList = function (listName, pageListName, context) {
         pageListName = pageListName || listName;
-        if (context[pageListName + "AlreadyPaginated"] != null) return;
         const theList = Array.from(context[listName] || []);
+        if (context[pageListName + "AlreadyPaginated"] != null || context[pageListName + "Count"] != null) {
+            if (pageListName !== listName) globalThis[pageListName] = theList;
+            return;
+        }
         const values = Object.assign({}, context);
         if (values[pageListName + "PageRangeLow"] == null || values[pageListName + "PageRangeHigh"] == null) {
             cu.paginateParameters(theList.length, pageListName, values);
@@ -1144,12 +1149,12 @@ fn resource_put_text(ctx: Ctx<'_>, location: String, text: String) -> rquickjs::
 
 /// `putBytes`: a `Uint8Array` or `ArrayBuffer`, written as `putText` writes.
 fn resource_put_bytes<'js>(ctx: Ctx<'js>, location: String, bytes: JsValue<'js>) -> rquickjs::Result<()> {
-    let Some(bytes) = bytes.as_object().and_then(super::convert::js_bytes) else {
-        return Err(Exception::throw_message(
-            &ctx,
-            "putBytes needs a Uint8Array or an ArrayBuffer",
-        ));
-    };
+    let bytes = host_guard(&ctx, || {
+        bytes
+            .as_object()
+            .and_then(super::convert::js_bytes)
+            .ok_or_else(|| Exception::throw_message(&ctx, "putBytes needs a Uint8Array or an ArrayBuffer"))
+    })?;
     put_resource_bytes(&ctx, &location, &bytes)
 }
 
@@ -1300,12 +1305,21 @@ fn get_available_time_zones<'js>(ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>
     })
 }
 
-fn camel_case_to_pretty(text: Opt<JsValue<'_>>) -> String {
-    moqui_lib::string::camel_case_to_pretty(&opt_text(&text))
+fn camel_case_to_pretty(ctx: Ctx<'_>, text: Opt<JsValue<'_>>) -> rquickjs::Result<String> {
+    host_guard(&ctx, || Ok(moqui_lib::string::camel_case_to_pretty(&opt_text(&text))))
 }
 
-fn pretty_to_camel_case(text: Opt<JsValue<'_>>, first_upper: Opt<JsValue<'_>>) -> String {
-    moqui_lib::string::pretty_to_camel_case(&opt_text(&text), opt_flag(&first_upper))
+fn pretty_to_camel_case(
+    ctx: Ctx<'_>,
+    text: Opt<JsValue<'_>>,
+    first_upper: Opt<JsValue<'_>>,
+) -> rquickjs::Result<String> {
+    host_guard(&ctx, || {
+        Ok(moqui_lib::string::pretty_to_camel_case(
+            &opt_text(&text),
+            opt_flag(&first_upper),
+        ))
+    })
 }
 
 /// Add the tools calls to `ec` and the helper objects. `ec` is a global by now.

@@ -1081,12 +1081,15 @@
             if (!(multi || skipForm) && info.count > 0) {
                 for (let i = 0; i < info.count; i++) {
                     sri.startFormListRow(info, i);
-                    st.entry = String(i);
-                    w("<form" + A({ name: formId + "_" + i, id: formId + "_" + i, method: "post", action: listUrl.url }) + ">" + hiddenInput("moquiSessionToken", token()) + hiddenInputs());
-                    hiddenRows(cfg.hiddenCells);
-                    w("</form>\n");
-                    st.entry = "";
-                    sri.endFormListRow();
+                    try {
+                        st.entry = String(i);
+                        w("<form" + A({ name: formId + "_" + i, id: formId + "_" + i, method: "post", action: listUrl.url }) + ">" + hiddenInput("moquiSessionToken", token()) + hiddenInputs());
+                        hiddenRows(cfg.hiddenCells);
+                        w("</form>\n");
+                        st.entry = "";
+                    } finally {
+                        sri.endFormListRow();
+                    }
                 }
             }
             if (!skipStart) {
@@ -1101,12 +1104,15 @@
                     if (!has || !transition) return;
                     const url = sri.makeUrlByType(transition, "transition", null, "false");
                     sri.pushSingleFormMapContext(mapName || "");
-                    st.entry = suffix;
-                    w("<form" + A({ name: formId + "_" + suffix, id: formId + "_" + suffix, method: "post", action: url.url }) + ">" + hiddenInput("moquiSessionToken", token()) + orderInput() + hiddenInputs());
-                    cells.forEach((cell) => cell());
-                    w("</form>\n");
-                    st.entry = "";
-                    sri.popContext();
+                    try {
+                        st.entry = suffix;
+                        w("<form" + A({ name: formId + "_" + suffix, id: formId + "_" + suffix, method: "post", action: url.url }) + ">" + hiddenInput("moquiSessionToken", token()) + orderInput() + hiddenInputs());
+                        cells.forEach((cell) => cell());
+                        w("</form>\n");
+                        st.entry = "";
+                    } finally {
+                        sri.popContext();
+                    }
                 };
                 rowForm("first", cfg.hasFirst, at(n, "transition-first-row"), at(n, "map-first-row"), cfg.hiddenFirstCells);
                 rowForm("second", cfg.hasSecond, at(n, "transition-second-row"), at(n, "map-second-row"), cfg.hiddenSecondCells);
@@ -1115,10 +1121,13 @@
                     w("<form" + A({ name: formId, id: formId, method: "post", action: listUrl.url }) + ">" + hiddenInput("moquiFormName", at(n, "name")) + hiddenInput("moquiSessionToken", token()) + hiddenInput("_isMulti", "true") + hiddenInputs());
                     for (let i = 0; i < info.count; i++) {
                         sri.startFormListRow(info, i);
-                        st.entry = String(i);
-                        hiddenRows(cfg.hiddenCells);
-                        st.entry = "";
-                        sri.endFormListRow();
+                        try {
+                            st.entry = String(i);
+                            hiddenRows(cfg.hiddenCells);
+                            st.entry = "";
+                        } finally {
+                            sri.endFormListRow();
+                        }
                     }
                     w("</form>\n");
                 }
@@ -1161,51 +1170,60 @@
             }
             const cells = (kind, suffix, mapName) => {
                 sri.pushSingleFormMapContext(mapName || "");
-                st.owner = formId + "_" + suffix;
-                st.entry = suffix;
-                w('<tr class="' + suffix + '">');
-                visible.forEach((col) => {
-                    w("<td>");
-                    col.forEach((f) => { if (f[kind]) f[kind](); });
-                    w("</td>");
-                });
-                w("</tr>\n");
-                st.entry = "";
-                st.owner = formId;
-                sri.popContext();
+                try {
+                    st.owner = formId + "_" + suffix;
+                    st.entry = suffix;
+                    w('<tr class="' + suffix + '">');
+                    visible.forEach((col) => {
+                        w("<td>");
+                        col.forEach((f) => { if (f[kind]) f[kind](); });
+                        w("</td>");
+                    });
+                    w("</tr>\n");
+                    st.entry = "";
+                    st.owner = formId;
+                } finally {
+                    sri.popContext();
+                }
             };
             if (cfg.hasFirst) cells("first", "first", at(n, "map-first-row"));
             if (cfg.hasSecond) cells("second", "second", at(n, "map-second-row"));
             for (let i = 0; i < info.count; i++) {
                 sri.startFormListRow(info, i);
-                st.entry = String(i);
-                if (!(multi || skipForm)) st.owner = formId + "_" + i;
-                w("<tr" + A({ "data-total": ec.context.get("_moquiRowType") === "total" ? "" : null }) + ">");
-                visible.forEach((col) => {
-                    w("<td>");
-                    col.forEach((f) => f.cell(multi ? 1 : 0));
-                    w("</td>");
-                });
-                w("</tr>\n");
-                const subRows = subCols.length ? sri.formListSubRowCount(info, i) : 0;
-                if (subRows) {
-                    w('<tr class="sub-rows"><td colspan="' + Math.max(visible.length, 1) + '"><table class="form-list-sub"><tbody>');
-                    for (let j = 0; j < subRows; j++) {
-                        sri.startFormListSubRow(info, i, j);
-                        st.entry = i + "_" + j;
-                        w("<tr>");
-                        subCols.forEach((col) => {
-                            w("<td>");
-                            col.forEach((f) => f.cell(multi ? 1 : 0));
-                            w("</td>");
-                        });
-                        w("</tr>");
-                        sri.endFormListSubRow();
-                        st.entry = String(i);
+                try {
+                    st.entry = String(i);
+                    if (!(multi || skipForm)) st.owner = formId + "_" + i;
+                    w("<tr" + A({ "data-total": ec.context.get("_moquiRowType") === "total" ? "" : null }) + ">");
+                    visible.forEach((col) => {
+                        w("<td>");
+                        col.forEach((f) => f.cell(multi ? 1 : 0));
+                        w("</td>");
+                    });
+                    w("</tr>\n");
+                    const subRows = subCols.length ? sri.formListSubRowCount(info, i) : 0;
+                    if (subRows) {
+                        w('<tr class="sub-rows"><td colspan="' + Math.max(visible.length, 1) + '"><table class="form-list-sub"><tbody>');
+                        for (let j = 0; j < subRows; j++) {
+                            sri.startFormListSubRow(info, i, j);
+                            try {
+                                st.entry = i + "_" + j;
+                                w("<tr>");
+                                subCols.forEach((col) => {
+                                    w("<td>");
+                                    col.forEach((f) => f.cell(multi ? 1 : 0));
+                                    w("</td>");
+                                });
+                                w("</tr>");
+                            } finally {
+                                sri.endFormListSubRow();
+                            }
+                            st.entry = String(i);
+                        }
+                        w("</tbody></table></td></tr>\n");
                     }
-                    w("</tbody></table></td></tr>\n");
+                } finally {
+                    sri.endFormListRow();
                 }
-                sri.endFormListRow();
             }
             st.entry = "";
             st.owner = skipStart ? "" : formId;
@@ -1308,9 +1326,12 @@
                     const $title = ${titleCode(sub)};
                     const $open = $h.fieldOpen(${lit(attr(field, "name"))}, $title, ${isSubmit}, ${style ? noL10n(style) : '""'}, ${!!bigRow});
                     sri.pushContext();
-                    ${setCode(sub)}
-                    ${subWidgets(sub)}
-                    sri.popContext();
+                    try {
+                        ${setCode(sub)}
+                        ${subWidgets(sub)}
+                    } finally {
+                        sri.popContext();
+                    }
                     $h.fieldClose($open, ${!!bigRow});
                 }
             `;
@@ -1404,10 +1425,13 @@
         return js`
             if (sri.doBoundaryComments()) sri.write(${lit(`<!-- BEGIN form-single[@name=${attr(node, "name")}] -->\n`)});
             sri.pushSingleFormMapContext(${raw(map)});
-            $h.formOpen(${bareLit(node)}, ${hasFile(node)});
-            ${body}
-            $h.formClose(${bareLit(node)});
-            sri.popContext();
+            try {
+                $h.formOpen(${bareLit(node)}, ${hasFile(node)});
+                ${body}
+                $h.formClose(${bareLit(node)});
+            } finally {
+                sri.popContext();
+            }
             if (sri.doBoundaryComments()) sri.write(${lit(`<!-- END   form-single[@name=${attr(node, "name")}] -->\n`)});
         `;
     });
@@ -1426,9 +1450,12 @@
             const inner = isHidden ? subWidgets(sub) : js`
                 $h.rowCellOpen(${style ? noL10n(style) : '""'}, ${lit(align)}, $m === 2);
                 sri.pushContext();
-                ${setCode(sub)}
-                ${subWidgets(sub)}
-                sri.popContext();
+                try {
+                    ${setCode(sub)}
+                    ${subWidgets(sub)}
+                } finally {
+                    sri.popContext();
+                }
                 $h.rowCellClose($m === 2);
             `;
             const guard = isSubmit ? "$m !== 1" : "$m !== 2";
@@ -1450,9 +1477,12 @@
         const hide = attr(field, "hide");
         const body = child(sub, "hidden") ? subWidgets(sub) : js`
             sri.pushContext();
-            ${setCode(sub)}
-            ${subWidgets(sub)}
-            sri.popContext();
+            try {
+                ${setCode(sub)}
+                ${subWidgets(sub)}
+            } finally {
+                sri.popContext();
+            }
         `;
         return `() => {\n${hide ? `if (ec.resource.condition(${lit(hide)}, "")) return;\n` : ""}${body}}`;
     };
@@ -1467,9 +1497,12 @@
                 const $title = ${titleCode(sub)};
                 const $open = $h.fieldOpen(${lit(attr(field, "name"))}, $title, ${!!child(sub, "submit")}, ${style ? noL10n(style) : '""'}, false);
                 sri.pushContext();
-                ${setCode(sub)}
-                ${subWidgets(sub)}
-                sri.popContext();
+                try {
+                    ${setCode(sub)}
+                    ${subWidgets(sub)}
+                } finally {
+                    sri.popContext();
+                }
                 $h.fieldClose($open, false);
             }
         `;
@@ -1486,7 +1519,7 @@
         const second = sideCode(field, "second-row-field", false);
         const last = sideCode(field, "last-row-field", false);
         const summary = headerField && headerField.children.length && !child(headerField, "hidden") && !child(headerField, "ignored") ?
-            `() => { let $v = ""; sri.pushContext(); ${setCode(headerField)} ${headerField.children.filter((w) => w.name !== "set" && w.name !== "link").map((w) => `$v += $h.valueText(${wlit(w, true)});`).join(" ")} sri.popContext(); return $v.trim(); }` : "null";
+            `() => { let $v = ""; sri.pushContext(); try { ${setCode(headerField)} ${headerField.children.filter((w) => w.name !== "set" && w.name !== "link").map((w) => `$v += $h.valueText(${wlit(w, true)});`).join(" ")} } finally { sri.popContext(); } return $v.trim(); }` : "null";
         return js`
             {
                 "name": ${lit(attr(field, "name"))},

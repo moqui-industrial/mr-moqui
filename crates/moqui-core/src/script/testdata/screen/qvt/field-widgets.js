@@ -1,8 +1,9 @@
 if (sri.doBoundaryComments()) sri.write("<!-- BEGIN screen[@location=" + sri.getActiveScreenDef().location + "].widgets -->\n");
 if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-single[@name=AllFields] -->\n");
 sri.pushSingleFormMapContext(fv);
-{
-    const $form = $v.formOpen({"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}, [{"name": "firstName", "field": {"name":"field","attrs":{"name":"firstName"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}, "subs": [{"cond": null, "sets": [], "widgets": [{"name":"text-line","attrs":{"size":"20"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"firstName"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}}}]}]},
+try {
+    {
+        const $form = $v.formOpen({"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}, [{"name": "firstName", "field": {"name":"field","attrs":{"name":"firstName"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}, "subs": [{"cond": null, "sets": [], "widgets": [{"name":"text-line","attrs":{"size":"20"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"firstName"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}}}]}]},
 {"name": "bio", "field": {"name":"field","attrs":{"name":"bio"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}, "subs": [{"cond": null, "sets": [], "widgets": [{"name":"text-area","attrs":{"rows":"3"},"parent":{"name":"default-field","attrs":{"title":"About"},"parent":{"name":"field","attrs":{"name":"bio"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}}}]}]},
 {"name": "userGroupId", "field": {"name":"field","attrs":{"name":"userGroupId"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}, "subs": [{"cond": null, "sets": [], "widgets": [{"name":"text-find","attrs":{"hide-options":"true"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"userGroupId"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}}}]}]},
 {"name": "status", "field": {"name":"field","attrs":{"name":"status"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}, "subs": [{"cond": null, "sets": [], "widgets": [{"name":"drop-down","attrs":{"no-current-selected-key":"N/A"},"children":[{"name":"option","attrs":{"key":"A","text":"Active"}},{"name":"option","attrs":{"key":"${k}"}}],"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"status"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}}}]}]},
@@ -28,24 +29,32 @@ sri.pushSingleFormMapContext(fv);
 {"name": "mix", "field": {"name":"field","attrs":{"name":"mix"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}, "subs": [{"cond": "mode == 'a'", "sets": [], "widgets": [{"name":"text-line","attrs":{},"parent":{"name":"conditional-field","attrs":{"condition":"mode == 'a'"},"parent":{"name":"field","attrs":{"name":"mix"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}}}]},{"cond": "mode == 'b'", "sets": [], "widgets": [{"name":"hidden","attrs":{},"parent":{"name":"conditional-field","attrs":{"condition":"mode == 'b'"},"parent":{"name":"field","attrs":{"name":"mix"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}}}]},{"cond": null, "sets": [], "widgets": [{"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"mix"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}}}]}]},
 {"name": "withSet", "field": {"name":"field","attrs":{"name":"withSet"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}, "subs": [{"cond": null, "sets": [{"name":"set","attrs":{"field":"shown","value":"x${y}"}}], "widgets": [{"name":"display","attrs":{"text":"${shown}"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"withSet"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}}}]}]},
 {"name": "hidden1", "field": {"name":"field","attrs":{"name":"hidden1","hide":"true"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}, "subs": [{"cond": null, "sets": [], "widgets": [{"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"hidden1","hide":"true"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}}}]}]}]);
-    sri.write("<div class=\"row\">");
-    sri.write("<div class=\"col-sm-6\">");
-    $v.fieldBox(null, "", false);
-    sri.pushContext();
-    $v.textLine({"name":"text-line","attrs":{"size":"20"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"firstName"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}}});
+        sri.write("<div class=\"row\">");
+        sri.write("<div class=\"col-sm-6\">");
+        $v.fieldBox(null, "", false);
+        sri.pushContext();
+        try {
+            $v.textLine({"name":"text-line","attrs":{"size":"20"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"firstName"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}}});
+        } finally {
+            sri.popContext();
+        }
+        sri.write("</div>");
+        sri.write("</div>");
+        sri.write("<div class=\"col-sm-6\">");
+        $v.fieldBox(null, "", false);
+        sri.pushContext();
+        try {
+            $v.textArea({"name":"text-area","attrs":{"rows":"3"},"parent":{"name":"default-field","attrs":{"title":"About"},"parent":{"name":"field","attrs":{"name":"bio"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}}});
+        } finally {
+            sri.popContext();
+        }
+        sri.write("</div>");
+        sri.write("</div>");
+        sri.write("</div>\n");
+        $v.formClose({"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}, $form);
+    }
+} finally {
     sri.popContext();
-    sri.write("</div>");
-    sri.write("</div>");
-    sri.write("<div class=\"col-sm-6\">");
-    $v.fieldBox(null, "", false);
-    sri.pushContext();
-    $v.textArea({"name":"text-area","attrs":{"rows":"3"},"parent":{"name":"default-field","attrs":{"title":"About"},"parent":{"name":"field","attrs":{"name":"bio"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}}});
-    sri.popContext();
-    sri.write("</div>");
-    sri.write("</div>");
-    sri.write("</div>\n");
-    $v.formClose({"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}, $form);
 }
-sri.popContext();
 if (sri.doBoundaryComments()) sri.write("<!-- END   form-single[@name=AllFields] -->\n");
 if (sri.doBoundaryComments()) sri.write("<!-- END   screen[@location=" + sri.getActiveScreenDef().location + "].widgets -->\n");

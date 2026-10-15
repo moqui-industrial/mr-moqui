@@ -98,18 +98,11 @@ pub struct LockedRenderer {
 impl TemplateRenderer for FancyRenderer {
     fn render(&self, source: &str, data: Option<&Value>) -> Result<String, Error> {
         let compiled = compiled(source, self.escape, Scope::Live)?;
-        let framed = data.is_some();
+        let _frame = data.is_some().then(super::ContextFrame::push);
         if let Some(Value::Map(entries)) = data {
-            super::push_context_frame();
             super::put_context_all(entries);
-        } else if framed {
-            super::push_context_frame();
         }
-        let result = super::runtime::run_template_function(&compiled);
-        if framed {
-            super::pop_context_frame();
-        }
-        result
+        super::runtime::run_template_function(&compiled)
     }
 
     fn check(&self, source: &str) -> Result<(), Error> {

@@ -173,12 +173,14 @@ impl HostEdiHandler {
 }
 
 fn edi_new(ctx: Ctx<'_>) -> rquickjs::Result<Class<'_, HostEdiHandler>> {
-    Class::instance(
-        ctx.clone(),
-        HostEdiHandler {
-            inner: RefCell::new(EdiHandler::new()),
-        },
-    )
+    host_guard(&ctx, || {
+        Class::instance(
+            ctx.clone(),
+            HostEdiHandler {
+                inner: RefCell::new(EdiHandler::new()),
+            },
+        )
+    })
 }
 
 fn edi_make_ak3<'js>(ctx: Ctx<'js>, segment_error: JsValue<'js>) -> rquickjs::Result<JsValue<'js>> {

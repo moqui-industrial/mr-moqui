@@ -77,12 +77,17 @@ fn run_unit(ctx: &Ctx<'_>, unit: &Unit) -> Result<(), Error> {
         }
     };
     LAST_KIND.with(|kind| kind.set(ErrorKind::General));
-    in_unit_scope(ctx, || {
+    let mark = StackMark::new();
+    let result = in_unit_scope(ctx, || {
         function.call::<_, ()>(()).catch(ctx).map_err(|caught| {
             let kind = LAST_KIND.with(Cell::take);
             Error::of_kind(kind, caught.to_string())
         })
-    })
+    });
+    if result.is_ok() {
+        mark.keep();
+    }
+    result
 }
 
 /// Throw an error to the script, remembering a security kind.
@@ -253,20 +258,17 @@ fn sri_get_render_mode(ctx: Ctx<'_>) -> rquickjs::Result<String> {
     host_guard(&ctx, || with_render(&ctx, false, |state| Ok(state.render_mode.clone())))
 }
 
-fn sri_encode_html(text: String) -> String {
-    logic::encode_html(&text)
+fn sri_encode_html(ctx: Ctx<'_>, text: String) -> rquickjs::Result<String> {
+    host_guard(&ctx, || Ok(logic::encode_html(&text)))
 }
 
 fn screen_def_object<'js>(ctx: &Ctx<'js>, def: &crate::screen::ScreenDef) -> rquickjs::Result<Object<'js>> {
     let object = Object::new(ctx.clone())?;
     object.set("location", def.location.as_str())?;
     object.set("screenName", def.screen_name.as_str())?;
-    let name = def.screen_name.clone();
-    object.set("getScreenName", Function::new(ctx.clone(), move || name.clone())?)?;
-    let location = def.location.clone();
-    object.set("getLocation", Function::new(ctx.clone(), move || location.clone())?)?;
-    let title = def.default_menu_title.clone();
-    object.set("getDefaultMenuName", Function::new(ctx.clone(), move || title.clone())?)?;
+    object.set("getScreenName", text_getter(ctx, def.screen_name.clone())?)?;
+    object.set("getLocation", text_getter(ctx, def.location.clone())?)?;
+    object.set("getDefaultMenuName", text_getter(ctx, def.default_menu_title.clone())?)?;
     Ok(object)
 }
 

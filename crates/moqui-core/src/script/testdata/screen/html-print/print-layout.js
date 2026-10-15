@@ -61,40 +61,43 @@ sri.write("<div>");
 }
 sri.write("</div>\n");
 sri.pushSingleFormMapContext(item);
-sri.write('<div class="group-title">' + $e(ec.l10n.localize("Group")) + "</div>\n");
-sri.write('<table class="field-row"><tr>');
-sri.write("<td>");
-sri.write('<table class="field"><tr><td class="field-title">' + $e(ec.l10n.localize("A")) + '</td><td class="field-value">');
-sri.write($e(sri.getFieldValueString({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{"title":"A"},"parent":{"name":"field","attrs":{"name":"a"},"parent":{"name":"form-single","attrs":{"name":"LayoutForm","map":"item"},"parent":{"name":"widgets","attrs":{}}}}}})));
-sri.write("</td></tr></table>\n");
-sri.write("</td>");
-sri.write("<td>");
-sri.write('<table class="field"><tr><td class="field-title">' + $e(ec.l10n.localize("B")) + '</td><td class="field-value">');
-sri.write($e(sri.getFieldValueString({"name":"text-line","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"b"},"parent":{"name":"form-single","attrs":{"name":"LayoutForm","map":"item"},"parent":{"name":"widgets","attrs":{}}}}}})));
-sri.write("</td></tr></table>\n");
-sri.write("</td>");
-sri.write("</tr></table>\n");
-sri.write('<table class="field-row"><tr>');
-sri.write('<td class="field-title">' + $e(ec.resource.expand("Big ${who}")) + "</td>");
-sri.write("<td>");
-sri.write('<table class="field"><tr><td class="field-title">' + $e(ec.l10n.localize("C")) + '</td><td class="field-value">');
-sri.write($e(sri.getFieldValueString({"name":"field","attrs":{"name":"c"},"parent":{"name":"form-single","attrs":{"name":"LayoutForm","map":"item"},"parent":{"name":"widgets","attrs":{}}}}, "", "yyyy-MM-dd", "date")));
-sri.write("</td></tr></table>\n");
-sri.write("</td>");
-sri.write("<td>");
-sri.write('<table class="field"><tr><td class="field-title">' + $e(ec.l10n.localize("D")) + '</td><td class="field-value">');
-{
-    const $options = sri.getFieldOptions({"name":"drop-down","attrs":{"no-current-selected-key":"N"},"children":[{"name":"option","attrs":{"key":"N","text":"No"}}],"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"d"},"parent":{"name":"form-single","attrs":{"name":"LayoutForm","map":"item"},"parent":{"name":"widgets","attrs":{}}}}}});
-    let $current = sri.getFieldValueString({"name":"drop-down","attrs":{"no-current-selected-key":"N"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"d"},"parent":{"name":"form-single","attrs":{"name":"LayoutForm","map":"item"},"parent":{"name":"widgets","attrs":{}}}}}});
-    if (!$current) $current = "N";
-    const $text = $options.get($current);
-    sri.write($e($text != null ? $text : $current));
+try {
+    sri.write('<div class="group-title">' + $e(ec.l10n.localize("Group")) + "</div>\n");
+    sri.write('<table class="field-row"><tr>');
+    sri.write("<td>");
+    sri.write('<table class="field"><tr><td class="field-title">' + $e(ec.l10n.localize("A")) + '</td><td class="field-value">');
+    sri.write($e(sri.getFieldValueString({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{"title":"A"},"parent":{"name":"field","attrs":{"name":"a"},"parent":{"name":"form-single","attrs":{"name":"LayoutForm","map":"item"},"parent":{"name":"widgets","attrs":{}}}}}})));
+    sri.write("</td></tr></table>\n");
+    sri.write("</td>");
+    sri.write("<td>");
+    sri.write('<table class="field"><tr><td class="field-title">' + $e(ec.l10n.localize("B")) + '</td><td class="field-value">');
+    sri.write($e(sri.getFieldValueString({"name":"text-line","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"b"},"parent":{"name":"form-single","attrs":{"name":"LayoutForm","map":"item"},"parent":{"name":"widgets","attrs":{}}}}}})));
+    sri.write("</td></tr></table>\n");
+    sri.write("</td>");
+    sri.write("</tr></table>\n");
+    sri.write('<table class="field-row"><tr>');
+    sri.write('<td class="field-title">' + $e(ec.resource.expand("Big ${who}")) + "</td>");
+    sri.write("<td>");
+    sri.write('<table class="field"><tr><td class="field-title">' + $e(ec.l10n.localize("C")) + '</td><td class="field-value">');
+    sri.write($e(sri.getFieldValueString({"name":"field","attrs":{"name":"c"},"parent":{"name":"form-single","attrs":{"name":"LayoutForm","map":"item"},"parent":{"name":"widgets","attrs":{}}}}, "", "yyyy-MM-dd", "date")));
+    sri.write("</td></tr></table>\n");
+    sri.write("</td>");
+    sri.write("<td>");
+    sri.write('<table class="field"><tr><td class="field-title">' + $e(ec.l10n.localize("D")) + '</td><td class="field-value">');
+    {
+        const $options = sri.getFieldOptions({"name":"drop-down","attrs":{"no-current-selected-key":"N"},"children":[{"name":"option","attrs":{"key":"N","text":"No"}}],"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"d"},"parent":{"name":"form-single","attrs":{"name":"LayoutForm","map":"item"},"parent":{"name":"widgets","attrs":{}}}}}});
+        let $current = sri.getFieldValueString({"name":"drop-down","attrs":{"no-current-selected-key":"N"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"d"},"parent":{"name":"form-single","attrs":{"name":"LayoutForm","map":"item"},"parent":{"name":"widgets","attrs":{}}}}}});
+        if (!$current) $current = "N";
+        const $text = $options.get($current);
+        sri.write($e($text != null ? $text : $current));
+    }
+    sri.write("</td></tr></table>\n");
+    sri.write("</td>");
+    sri.write("</tr></table>\n");
+    sri.write("<div>Error: could not find field with name missing referred to in a field-ref.name attribute.</div>\n");
+} finally {
+    sri.popContext();
 }
-sri.write("</td></tr></table>\n");
-sri.write("</td>");
-sri.write("</tr></table>\n");
-sri.write("<div>Error: could not find field with name missing referred to in a field-ref.name attribute.</div>\n");
-sri.popContext();
 {
     const $url = sri.makeUrlByType("/img/logo.png", "plain", null, "true");
     sri.write('<img src="' + $e($url.url) + '" alt="' + $e("Logo") + '"' + ' id="' + $e("logo") + '"' + ' width="' + $e("10") + '"' + ' height="' + $e("20") + '"' + "/>\n");

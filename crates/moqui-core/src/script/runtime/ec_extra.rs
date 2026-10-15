@@ -39,12 +39,12 @@ fn with_additional<'js, T>(
         return body();
     };
     flush_current(ctx, true)?;
-    push_context_frame();
+    let frame = ContextFrame::push();
     put_context_all(&entries);
     let result = body();
     // Before the pop, so a list the body read under an additional name is not written over the caller's.
     let flushed = flush_current(ctx, true);
-    pop_context_frame();
+    drop(frame);
     flushed?;
     result
 }
@@ -536,12 +536,12 @@ fn js_safe_map(entries: &indexmap::IndexMap<String, Value>) -> String {
     format!("{{{}}}", parts.join(","))
 }
 
-fn web_encode_html(text: Opt<String>) -> String {
-    crate::screen::encode_html(text.0.as_deref().unwrap_or(""))
+fn web_encode_html(ctx: Ctx<'_>, text: Opt<String>) -> rquickjs::Result<String> {
+    host_guard(&ctx, || Ok(crate::screen::encode_html(text.0.as_deref().unwrap_or(""))))
 }
 
-fn web_encode_html_js_safe(text: Opt<String>) -> String {
-    encode_html_js_safe(text.0.as_deref().unwrap_or(""))
+fn web_encode_html_js_safe(ctx: Ctx<'_>, text: Opt<String>) -> rquickjs::Result<String> {
+    host_guard(&ctx, || Ok(encode_html_js_safe(text.0.as_deref().unwrap_or(""))))
 }
 
 fn web_field_values_encode_html_js_safe(ctx: Ctx<'_>, map: JsValue<'_>) -> rquickjs::Result<String> {
@@ -551,56 +551,81 @@ fn web_field_values_encode_html_js_safe(ctx: Ctx<'_>, map: JsValue<'_>) -> rquic
     })
 }
 
-fn web_ip_matches(patterns: Opt<String>, address: Opt<String>) -> bool {
-    let patterns = patterns.0.unwrap_or_default();
-    if patterns.is_empty() {
-        return true;
-    }
-    let address = address.0.unwrap_or_default();
-    crate::web::ip_matches(&patterns, &address)
+fn web_ip_matches(ctx: Ctx<'_>, patterns: Opt<String>, address: Opt<String>) -> rquickjs::Result<bool> {
+    host_guard(&ctx, || {
+        let patterns = patterns.0.unwrap_or_default();
+        let address = address.0.unwrap_or_default();
+        Ok(patterns.is_empty() || crate::web::ip_matches(&patterns, &address))
+    })
 }
 
-fn web_is_safe_single_path_segment(name: Opt<String>) -> bool {
-    name.0.as_deref().is_some_and(url_safe_chars)
+fn web_is_safe_single_path_segment(ctx: Ctx<'_>, name: Opt<String>) -> rquickjs::Result<bool> {
+    host_guard(&ctx, || Ok(name.0.as_deref().is_some_and(url_safe_chars)))
 }
 
 /// The second argument is the configured host name. Java passes the request there, which a script
 /// cannot hold, so anything else means the host of the web app's own URL.
-fn web_is_same_origin_redirect(url: Opt<String>, configured_host: Opt<JsValue<'_>>) -> bool {
-    let configured = configured_host
-        .0
-        .as_ref()
-        .and_then(|value| value.as_string().and_then(|text| text.to_string().ok()));
-    crate::web::is_same_origin_redirect(&url.0.unwrap_or_default(), configured.as_deref())
+fn web_is_same_origin_redirect(
+    ctx: Ctx<'_>,
+    url: Opt<String>,
+    configured_host: Opt<JsValue<'_>>,
+) -> rquickjs::Result<bool> {
+    host_guard(&ctx, || {
+        let configured = configured_host
+            .0
+            .as_ref()
+            .and_then(|value| value.as_string().and_then(|text| text.to_string().ok()));
+        Ok(crate::web::is_same_origin_redirect(
+            &url.0.unwrap_or_default(),
+            configured.as_deref(),
+        ))
+    })
 }
 
-fn web_last_path_segment(name: Opt<String>) -> Option<String> {
-    let name = name.0?.replace('\\', "/");
-    Some(name.rsplit('/').next().unwrap_or("").to_string())
+fn web_last_path_segment(ctx: Ctx<'_>, name: Opt<String>) -> rquickjs::Result<Option<String>> {
+    host_guard(&ctx, || {
+        Ok(name.0.map(|name| {
+            let name = name.replace('\\', "/");
+            name.rsplit('/').next().unwrap_or("").to_string()
+        }))
+    })
 }
 
-fn string_encode_for_xml_attribute(original: Opt<JsValue<'_>>, zero_width: Opt<bool>) -> String {
-    let text = original
-        .0
-        .as_ref()
-        .and_then(|value| value.as_string().and_then(|text| text.to_string().ok()))
-        .unwrap_or_default();
-    moqui_lib::string::encode_for_xml_attribute(&text, zero_width.0.unwrap_or(false))
+fn string_encode_for_xml_attribute(
+    ctx: Ctx<'_>,
+    original: Opt<JsValue<'_>>,
+    zero_width: Opt<bool>,
+) -> rquickjs::Result<String> {
+    host_guard(&ctx, || {
+        let text = original
+            .0
+            .as_ref()
+            .and_then(|value| value.as_string().and_then(|text| text.to_string().ok()))
+            .unwrap_or_default();
+        Ok(moqui_lib::string::encode_for_xml_attribute(
+            &text,
+            zero_width.0.unwrap_or(false),
+        ))
+    })
 }
 
-fn string_base64_url_encode(text: Opt<String>) -> String {
+fn string_base64_url_encode(ctx: Ctx<'_>, text: Opt<String>) -> rquickjs::Result<String> {
     use base64::Engine;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(text.0.unwrap_or_default().as_bytes())
+    host_guard(&ctx, || {
+        Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(text.0.unwrap_or_default().as_bytes()))
+    })
 }
 
 fn string_base64_url_decode(ctx: Ctx<'_>, text: Opt<String>) -> rquickjs::Result<String> {
     use base64::Engine;
-    let text = text.0.unwrap_or_default();
-    let trimmed = text.trim_end_matches('=');
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(trimmed)
-        .map_err(|err| Exception::throw_message(&ctx, &format!("not base64url text: {err}")))?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    host_guard(&ctx, || {
+        let text = text.0.unwrap_or_default();
+        let trimmed = text.trim_end_matches('=');
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(trimmed)
+            .map_err(|err| Exception::throw_message(&ctx, &format!("not base64url text: {err}")))?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    })
 }
 
 fn collection_paginate_parameters<'js>(

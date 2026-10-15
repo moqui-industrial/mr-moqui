@@ -76,33 +76,36 @@ const $formList = (name, cols) => {
     headerRows();
     for (let index = 0; index < info.count; index++) {
         sri.startFormListRow(info, index);
-        for (let fieldIndex = 0; fieldIndex < 6; fieldIndex++) {
-            let more = false;
-            for (let wrap = 0; wrap <= 10; wrap++) {
-                $cellOverflow = false;
-                $cellWrapLine = wrap;
-                visible.forEach((col, ci) => {
-                    const width = widths[ci];
-                    $cellWidth = width;
-                    if (width <= 0) return;
-                    if (ci > 0) sri.write("|");
-                    if (fieldIndex >= col.length) sri.write(" ".repeat(width));
-                    else {
-                        $cellLeftPad = rightAlign(col[fieldIndex]);
-                        col[fieldIndex].cell();
-                    }
-                    if (col.length > fieldIndex + 1) more = true;
-                });
-                sri.write("\\n");
-                if ($pageLines > 0 && $lineCount === $pageLines) {
-                    $lineCount = 1;
-                    headerRows();
-                } else $lineCount++;
-                if (!$cellOverflow || !$lineWrap) break;
+        try {
+            for (let fieldIndex = 0; fieldIndex < 6; fieldIndex++) {
+                let more = false;
+                for (let wrap = 0; wrap <= 10; wrap++) {
+                    $cellOverflow = false;
+                    $cellWrapLine = wrap;
+                    visible.forEach((col, ci) => {
+                        const width = widths[ci];
+                        $cellWidth = width;
+                        if (width <= 0) return;
+                        if (ci > 0) sri.write("|");
+                        if (fieldIndex >= col.length) sri.write(" ".repeat(width));
+                        else {
+                            $cellLeftPad = rightAlign(col[fieldIndex]);
+                            col[fieldIndex].cell();
+                        }
+                        if (col.length > fieldIndex + 1) more = true;
+                    });
+                    sri.write("\\n");
+                    if ($pageLines > 0 && $lineCount === $pageLines) {
+                        $lineCount = 1;
+                        headerRows();
+                    } else $lineCount++;
+                    if (!$cellOverflow || !$lineWrap) break;
+                }
+                if (!more) break;
             }
-            if (!more) break;
+        } finally {
+            sri.endFormListRow();
         }
-        sri.endFormListRow();
     }
     sri.safeCloseList(info);
     $cellWidth = 0;
@@ -207,8 +210,11 @@ const $formList = (name, cols) => {
         }).join("");
         return js`
             sri.pushSingleFormMapContext(${raw(map)});
-            ${fields}
-            sri.popContext();
+            try {
+                ${fields}
+            } finally {
+                sri.popContext();
+            }
             $cellWidth = 0;
             sri.write("\\n");
         `;

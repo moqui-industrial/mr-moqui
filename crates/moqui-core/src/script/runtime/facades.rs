@@ -102,7 +102,8 @@ pub(super) fn sri_send_redirect_and_stop_render(ctx: Ctx<'_>, url: String) -> rq
     })
 }
 
-/// `ec.resource.script(location)`: run the file in the script's own names and return its value, as Java does.
+/// `ec.resource.script(location)`: run the file in the script's own names and return its value, as Java does: what it
+/// returns, or its last expression statement.
 pub(super) fn resource_script<'js>(ctx: Ctx<'js>, location: String) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let source = read_script(&location).map_err(|err| Exception::throw_message(&ctx, err.message()))?;
@@ -110,7 +111,8 @@ pub(super) fn resource_script<'js>(ctx: Ctx<'js>, location: String) -> rquickjs:
     })
 }
 
-/// A script file's text by location, with the modified time it had and when that was last checked.
+/// A script file's text by location, as the function [`crate::script::parse::file_function`] makes of it, with the
+/// modified time it had and when that was last checked.
 struct ScriptText {
     path: std::path::PathBuf,
     modified: Option<std::time::SystemTime>,
@@ -130,8 +132,9 @@ fn modified_of(path: &std::path::Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|meta| meta.modified()).ok()
 }
 
-/// The text of a script file, kept by location as Java's `resource.script*.location` caches and read again when the file
-/// changes. The compiled form is kept by the runtime by text.
+/// A script file to run, kept by location as Java's `resource.script*.location` caches and read again when the file
+/// changes: its text as the body of a function called at once (see [`crate::script::parse::file_function`]), so it runs
+/// in names of its own and evaluates to what it returns. The compiled form is kept by the runtime by text.
 pub(super) fn read_script(location: &str) -> Result<Arc<str>, Error> {
     let production = moqui_lib::env::get_prop_or_env("instance_purpose") == "production";
     {
@@ -148,9 +151,9 @@ pub(super) fn read_script(location: &str) -> Result<Arc<str>, Error> {
     }
     let path = crate::context::locate(location)?;
     let modified = modified_of(&path);
-    let text: Arc<str> = std::fs::read_to_string(&path)
-        .map_err(|err| Error::new(format!("could not read script {location}")).with_source(err))?
-        .into();
+    let text = std::fs::read_to_string(&path)
+        .map_err(|err| Error::new(format!("could not read script {location}")).with_source(err))?;
+    let text: Arc<str> = crate::script::parse::file_function(&text).into();
     script_texts().lock().unwrap_or_else(|err| err.into_inner()).insert(
         location.to_string(),
         ScriptText {
@@ -495,8 +498,10 @@ fn user_preference(key: &str) -> Result<Option<String>, crate::context::Error> {
 }
 
 /// `System.getProperty(name)`: a property or environment value, null when it is not set.
-pub(super) fn system_get_property(name: String) -> Option<String> {
-    Some(moqui_lib::env::get_prop_or_env(&name)).filter(|value| !value.is_empty())
+pub(super) fn system_get_property(ctx: Ctx<'_>, name: String) -> rquickjs::Result<Option<String>> {
+    host_guard(&ctx, || {
+        Ok(Some(moqui_lib::env::get_prop_or_env(&name)).filter(|value| !value.is_empty()))
+    })
 }
 
 /// `ec.web` for the request installed on this thread.

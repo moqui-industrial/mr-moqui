@@ -43,10 +43,8 @@ pub fn run_actions(actions: &str) -> Result<(), Error> {
     }
     let source = generated(actions)?;
     // Data preparation may do what a browser cannot, so a widget check in progress stands down while the actions run.
-    let previous = super::runtime::set_widget_wrap(false);
-    let result = super::runtime::eval_script(&source);
-    super::runtime::set_widget_wrap(previous);
-    result.map_err(|err| with_source_line(err, &source))
+    let _unchecked = super::runtime::WidgetWrap::set(false);
+    super::runtime::eval_script(&source).map_err(|err| with_source_line(err, &source))
 }
 
 /// An error at `eval_script:LINE:COL` with that line of the generated script after it, so a failure in actions points at

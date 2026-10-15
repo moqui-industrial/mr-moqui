@@ -108,9 +108,12 @@
                 ${headers}
                 for (let $index = 0; $index < $info.count; $index++) {
                     sri.startFormListRow($info, $index);
-                    ${cells}
-                    sri.xlsxEndRow();
-                    sri.endFormListRow();
+                    try {
+                        ${cells}
+                        sri.xlsxEndRow();
+                    } finally {
+                        sri.endFormListRow();
+                    }
                 }
                 sri.safeCloseList($info);
             }

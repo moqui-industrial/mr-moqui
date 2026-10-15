@@ -32,6 +32,7 @@ use moqui_lib::object::{HostObject, Value};
 use rquickjs::class::Trace;
 use rquickjs::context::EvalOptions;
 use rquickjs::function::{Opt, Rest, This};
+use rquickjs::object::Property;
 use rquickjs::proxy::{Proxy, ProxyHandler, ProxyProperty, ProxyReceiver, ProxyTarget};
 use rquickjs::Error as JsError;
 use rquickjs::{
@@ -104,6 +105,43 @@ pub fn set_widget_wrap(on: bool) -> bool {
     WIDGET_WRAP.with(|cell| cell.replace(on))
 }
 
+/// The widget check set for a scope. Dropped, also by an error or a panic, it puts back the setting it replaced.
+pub(crate) struct WidgetWrap {
+    previous: bool,
+}
+
+impl WidgetWrap {
+    pub(crate) fn set(on: bool) -> Self {
+        Self {
+            previous: set_widget_wrap(on),
+        }
+    }
+}
+
+impl Drop for WidgetWrap {
+    fn drop(&mut self) {
+        set_widget_wrap(self.previous);
+    }
+}
+
+/// The real `ec` put back on `globalThis` when dropped, after a widget expression ran with the wrapper.
+struct RealEc<'js> {
+    ctx: Ctx<'js>,
+    real: JsValue<'js>,
+}
+
+impl Drop for RealEc<'_> {
+    fn drop(&mut self) {
+        let _ = set_ec(&self.ctx, self.real.clone());
+    }
+}
+
+/// Replace the global `ec`. It is read-only to scripts (see [`freeze_host_globals`]), so it is defined again.
+fn set_ec<'js>(ctx: &Ctx<'js>, value: JsValue<'js>) -> rquickjs::Result<()> {
+    ctx.globals()
+        .prop("ec", Property::from(value).enumerable().configurable())
+}
+
 /// The `ec` of the browser host as a wrapper over the real one: the members `plans/archive/QvtServerStatic.md` lists are the real members,
 /// and any other area is reported through `deny` and throws.
 const WRAPPED_EC: &str = r#"(function (real, deny) {
@@ -141,8 +179,11 @@ fn with_widget_ec<'js, R>(
     crate::screen::statics::set_expression(expression);
     let globals = ctx.globals();
     let real: JsValue = globals.get("ec").map_err(js_error)?;
-    let deny = Function::new(ctx.clone(), |area: String| {
-        crate::screen::statics::record_wrapped(&area)
+    let deny = Function::new(ctx.clone(), |ctx: Ctx<'_>, area: String| {
+        host_guard(&ctx, || {
+            crate::screen::statics::record_wrapped(&area);
+            Ok(())
+        })
     })
     .map_err(js_error)?;
     let make: Function = eval_js(ctx, WRAPPED_EC)?;
@@ -150,12 +191,11 @@ fn with_widget_ec<'js, R>(
         .call((real.clone(), deny))
         .catch(ctx)
         .map_err(|caught| Error::new(caught.to_string()))?;
-    globals.set("ec", wrapper).map_err(js_error)?;
+    set_ec(ctx, wrapper).map_err(js_error)?;
+    let _real = RealEc { ctx: ctx.clone(), real };
     // The expression may call back into the host (expand inside an expression): that is not checked twice.
-    WIDGET_WRAP.with(|cell| cell.set(false));
+    let _unchecked = WidgetWrap::set(false);
     let result = body();
-    WIDGET_WRAP.with(|cell| cell.set(true));
-    globals.set("ec", real).map_err(js_error)?;
     match (result, fallback) {
         (Err(_), Some(value)) => Ok(value),
         (other, _) => other,
@@ -269,6 +309,37 @@ impl Drop for ContextFrame {
         STACK.with(|stack| {
             let _ = stack.borrow_mut().pop();
         });
+    }
+}
+
+/// The context stack's depth when made. Dropped without [`StackMark::keep`], it pops the frames pushed since: a script
+/// that threw between its `sri.pushContext()` and `sri.popContext()` leaves the stack as it found it.
+struct StackMark {
+    depth: Option<(usize, usize)>,
+}
+
+impl StackMark {
+    fn new() -> Self {
+        Self {
+            depth: Some(STACK.with(|stack| stack.borrow().depth())),
+        }
+    }
+
+    /// Leave the frames pushed since as they are.
+    fn keep(mut self) {
+        self.depth = None;
+    }
+}
+
+impl Drop for StackMark {
+    fn drop(&mut self) {
+        if let Some(depth) = self.depth {
+            STACK.with(|stack| {
+                if let Ok(mut stack) = stack.try_borrow_mut() {
+                    stack.truncate(depth);
+                }
+            });
+        }
     }
 }
 
@@ -408,6 +479,10 @@ fn with_context<R>(body: impl FnOnce(&Ctx) -> Result<R, Error>) -> Result<R, Err
     DEPTH.with(|current| current.set(depth + 1));
     let _guard = DepthGuard;
     engine.context.with(|ctx| {
+        let _run = RunValues {
+            engine: &engine,
+            outer: None,
+        };
         let result = body(&ctx);
         let flushed = flush_tracked(&ctx, &engine, Flush::End);
         match (result, flushed) {
@@ -521,11 +596,33 @@ fn flush_current(ctx: &Ctx<'_>, clear: bool) -> rquickjs::Result<()> {
 fn in_unit_scope<T>(ctx: &Ctx<'_>, body: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
     let engine = current_engine().ok_or_else(|| Error::new("no script engine is running"))?;
     flush_tracked(ctx, &engine, Flush::Release)?;
-    let outer = engine.released.take();
+    let scope = RunValues {
+        engine: &engine,
+        outer: Some(engine.released.take()),
+    };
     let result = body();
     let flushed = flush_tracked(ctx, &engine, Flush::End);
-    *engine.released.borrow_mut() = outer;
+    drop(scope);
     result.and_then(|value| flushed.map(|()| value))
+}
+
+/// The tracked and released values of a script run or a screen unit, forgotten when it ends, also by an error or a
+/// panic: a value left behind would be what the next script on this thread's engine reads by that name. A unit puts
+/// back the released values of the script around it.
+struct RunValues<'a> {
+    engine: &'a Engine,
+    outer: Option<HashMap<String, Released>>,
+}
+
+impl Drop for RunValues<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut tracked) = self.engine.tracked.try_borrow_mut() {
+            tracked.clear();
+        }
+        if let Ok(mut released) = self.engine.released.try_borrow_mut() {
+            *released = self.outer.take().unwrap_or_default();
+        }
+    }
 }
 
 /// The engine of the innermost running script.
@@ -574,11 +671,13 @@ fn install_context(ctx: &Ctx<'_>) -> Result<Helpers, Error> {
     let collection_utilities = Object::new(ctx.clone()).map_err(js_error)?;
     let string_utilities = Object::new(ctx.clone()).map_err(js_error)?;
     let web_utilities = Object::new(ctx.clone()).map_err(js_error)?;
+    let builtins = eval_js::<JsValue>(ctx, "Object.getOwnPropertyNames(globalThis)")?;
     ec_extra::fill_helpers(ctx, &string_utilities, &collection_utilities, &web_utilities)?;
     install_ec(ctx)?;
     install_helpers(ctx)?;
     tools_host::install(ctx, &string_utilities, &collection_utilities, &web_utilities)?;
     install_entity_prototypes(ctx)?;
+    freeze_host_globals(ctx, builtins)?;
     install_proxy(ctx)?;
     Ok(Helpers {
         object_utilities: Persistent::save(ctx, object_utilities),
@@ -586,6 +685,24 @@ fn install_context(ctx: &Ctx<'_>) -> Result<Helpers, Error> {
         string_utilities: Persistent::save(ctx, string_utilities),
         web_utilities: Persistent::save(ctx, web_utilities),
     })
+}
+
+/// Make the globals the host installed (`ec`, `sri`, `compare`, `toDecimal` and the rest) read-only, so an assignment
+/// in one script does not change them for the later scripts on the thread. `ec` stays configurable for the wrapper a
+/// widget check puts in its place (see [`set_ec`]).
+const FREEZE_HOST_GLOBALS: &str = r#"(function (builtins) {
+    const known = new Set(builtins);
+    for (const name of Object.getOwnPropertyNames(globalThis)) {
+        if (!known.has(name)) Object.defineProperty(globalThis, name, { writable: false, configurable: name === "ec" });
+    }
+})"#;
+
+fn freeze_host_globals<'js>(ctx: &Ctx<'js>, builtins: JsValue<'js>) -> Result<(), Error> {
+    let freeze: Function = eval_js(ctx, FREEZE_HOST_GLOBALS)?;
+    freeze
+        .call::<_, ()>((builtins,))
+        .catch(ctx)
+        .map_err(|caught| Error::new(format!("host globals: {caught}")))
 }
 
 fn install_proxy(ctx: &Ctx<'_>) -> Result<(), Error> {
@@ -850,6 +967,11 @@ fn host_guard<'js, T>(ctx: &Ctx<'js>, body: impl FnOnce() -> rquickjs::Result<T>
     }
 }
 
+/// A function that returns `text`, for the Java getters of an object made for a script.
+fn text_getter<'js>(ctx: &Ctx<'js>, text: String) -> rquickjs::Result<Function<'js>> {
+    Function::new(ctx.clone(), move |ctx: Ctx<'_>| host_guard(&ctx, || Ok(text.clone())))
+}
+
 fn panic_message(payload: Box<dyn Any + Send>) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
         return (*message).to_string();
@@ -1075,8 +1197,9 @@ pub fn eval_map(expression: &str) -> Result<std::collections::BTreeMap<String, V
 #[cfg(test)]
 mod tests {
     use super::{
-        clear_context_stack, context_value, eval_condition, eval_source, eval_value, expand, flush_current, js_error,
-        push_context_frame, run_script, set_context_name, with_ctx, MAX_NESTING, STACK, TOO_DEEP,
+        clear_context_stack, context_value, eval_compiled, eval_condition, eval_source, eval_value, expand,
+        flush_current, js_error, push_context_frame, run_script, run_script_location, set_context_name, with_ctx,
+        with_screen_runner, MAX_NESTING, STACK, TOO_DEEP,
     };
     use crate::context::{Error, ExecutionContextFactory};
     use moqui_lib::object::{basic_convert, Value};
@@ -1375,6 +1498,135 @@ mod tests {
         assert!(err.message().contains("too large"), "{}", err.message());
         set_context_name("safe", Value::I64(-9_007_199_254_740_991))?;
         assert!(eval_condition("safe === -Number.MAX_SAFE_INTEGER")?);
+        Ok(())
+    }
+
+    fn plain(name: &str) -> Option<String> {
+        context_value(name).map(|value| moqui_lib::object::to_plain_string(&value))
+    }
+
+    #[test]
+    fn a_script_file_runs_in_names_of_its_own() -> Result<(), Error> {
+        let context = ExecutionContextFactory::test_context();
+        let _entered = context.enter();
+        clear_context_stack();
+        let dir = std::env::temp_dir().join(format!("moqui-file-scope-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).map_err(js_error)?;
+        let write = |name: &str, text: &str| -> Result<String, Error> {
+            let path = dir.join(name);
+            std::fs::write(&path, text).map_err(js_error)?;
+            Ok(path.to_string_lossy().into_owned())
+        };
+        let declares = write(
+            "Declares.js",
+            "const base = n * 2;\nlet more = base + 1;\nvar shadow = 'file';\nfunction twice(x) { return x * 2; }\nresult = twice(more);\n",
+        )?;
+        let stops = write("Stops.js", "if (stop) return;\nreached = true;\n")?;
+        let throws = write("Throws.js", "thrown = 1;\n\nthrow new Error('on line three');\n")?;
+
+        // The same declarations run again on this thread's engine, and the bare assignment reaches the context.
+        set_context_name("n", Value::I32(1))?;
+        run_script_location(&declares)?;
+        assert_eq!(plain("result"), Some("6".to_string()));
+        set_context_name("n", Value::I32(2))?;
+        run_script_location(&declares)?;
+        assert_eq!(plain("result"), Some("10".to_string()));
+        // A `var` or `function` of the file is not a global that hides the context name in a later script.
+        set_context_name("shadow", Value::string("context"))?;
+        holds("shadow === 'context' && twice === null && base === null");
+
+        set_context_name("stop", Value::Bool(true))?;
+        run_script_location(&stops)?;
+        assert_eq!(plain("reached"), None);
+        set_context_name("stop", Value::Bool(false))?;
+        run_script_location(&stops)?;
+        assert_eq!(plain("reached"), Some("true".to_string()));
+
+        let err = run_script_location(&throws).expect_err("throws");
+        assert!(err.message().contains("eval_script:3"), "{}", err.message());
+        assert_eq!(plain("thrown"), Some("1".to_string()));
+
+        // The host's globals are read-only: an assignment does not replace them for the later scripts of the thread.
+        run_script("toNumber = null; compare = null; ec = null;")?;
+        holds("typeof toNumber === 'function' && typeof compare === 'function' && ec !== null && ec.resource != null");
+        clear_context_stack();
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn an_error_or_a_panic_out_of_a_run_leaves_no_tracked_values() -> Result<(), Error> {
+        clear_context_stack();
+        set_context_name("heldRows", Value::List(vec![Value::I32(1)]))?;
+        let failed = with_ctx(|ctx| -> Result<(), Error> {
+            assert!(step(ctx, "heldRows.push(2); true")?);
+            Err(Error::new("stopped"))
+        });
+        assert!(failed.is_err());
+        holds("heldRows.length === 2");
+        let panicked = std::panic::catch_unwind(|| {
+            with_ctx(|ctx| -> Result<(), Error> {
+                assert!(step(ctx, "heldRows.length === 2")?);
+                panic!("out of the body");
+            })
+        });
+        assert!(panicked.is_err());
+        set_context_name("heldRows", Value::List(Vec::new()))?;
+        holds("heldRows.length === 0");
+        clear_context_stack();
+        Ok(())
+    }
+
+    #[test]
+    fn a_callback_panic_in_a_compiled_script_is_that_scripts_error() -> Result<(), Error> {
+        clear_context_stack();
+        with_ctx(|ctx| {
+            let unguarded =
+                rquickjs::Function::new(ctx.clone(), || -> i32 { panic!("unguarded callback") }).map_err(js_error)?;
+            // Defined, not set: a set on `globalThis` goes to the context stack.
+            ctx.globals()
+                .prop("unguardedPanic", rquickjs::object::Property::from(unguarded))
+                .map_err(js_error)?;
+            let err = eval_compiled::<rquickjs::Value>(ctx, "unguardedPanic()", false).expect_err("panics");
+            assert!(err.message().contains("unguarded callback"), "{}", err.message());
+            // A panic left in the runtime would be resumed at the next exception rquickjs sees.
+            let later = eval_source::<rquickjs::Value>(ctx, "throw new Error('a later error')").expect_err("throws");
+            assert!(later.message().contains("a later error"), "{}", later.message());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn paginate_list_leaves_a_page_from_a_paginated_find_as_it_is() -> Result<(), Error> {
+        clear_context_stack();
+        // Page 2 of a paginated find: the list is the page, and the count and range are those of the whole result.
+        run_script(
+            "rows = [{a: 21}, {a: 22}]; rowsCount = 22; rowsPageRangeLow = 21; rowsPageRangeHigh = 22;
+            CollectionUtilities.paginateList('rows', null, context)",
+        )?;
+        holds("rows.length === 2 && rows[0].a === 21");
+        run_script(
+            "all = [1, 2, 3]; pageSize = 2; pageIndex = 1; CollectionUtilities.paginateList('all', 'allPage', context)",
+        )?;
+        holds("allPage.length === 1 && allPage[0] === 3 && allPageCount === 3 && all.length === 3");
+        clear_context_stack();
+        Ok(())
+    }
+
+    #[test]
+    fn a_unit_that_throws_after_a_push_leaves_the_stack_as_it_found_it() -> Result<(), Error> {
+        clear_context_stack();
+        set_context_name("level", Value::string("outer"))?;
+        let unit = crate::screen::generate::Unit {
+            id: u64::MAX - 1,
+            source: "(function () { sri.pushContext(); level = 'inner'; throw new Error('in the unit'); })".to_string(),
+            runtime: std::sync::Arc::from(""),
+            runtime_id: 0,
+        };
+        let err = with_screen_runner(|runner| runner.run(&unit)).expect_err("throws");
+        assert!(err.message().contains("in the unit"), "{}", err.message());
+        holds("level === 'outer'");
+        clear_context_stack();
         Ok(())
     }
 }

@@ -109,6 +109,24 @@ impl ContextStack {
         Ok(frame)
     }
 
+    /// The saved contexts and the frames pushed on the current one: a mark for [`Self::truncate`].
+    pub fn depth(&self) -> (usize, usize) {
+        (self.saved.len(), self.index)
+    }
+
+    /// Pop the frames pushed on the current context since `depth` was read. Nothing changes when a different context
+    /// is current than then.
+    pub fn truncate(&mut self, depth: (usize, usize)) {
+        let (saved, index) = depth;
+        if self.saved.len() != saved {
+            return;
+        }
+        while self.index > index {
+            self.frames.pop();
+            self.index -= 1;
+        }
+    }
+
     /// Save the whole stack and start an isolated empty one.
     pub fn push_context(&mut self) {
         self.saved.push(Saved {
@@ -348,5 +366,25 @@ mod tests {
         assert_eq!(stack.get("b"), Lookup::Value(Value::I32(2)));
         assert_eq!(stack.get("c"), Lookup::Missing);
         assert!(stack.pop_context().is_err());
+    }
+
+    #[test]
+    fn truncate_pops_back_to_a_depth_of_the_same_context() {
+        let mut stack = ContextStack::new();
+        stack.put("a", Value::I32(1)).unwrap();
+        let mark = stack.depth();
+        stack.push();
+        stack.push();
+        stack.put("a", Value::I32(2)).unwrap();
+        stack.push_context();
+        stack.push();
+        stack.truncate(mark);
+        assert_eq!(stack.depth(), (1, 1));
+        stack.pop_context().unwrap();
+        stack.truncate(mark);
+        assert_eq!(stack.depth(), mark);
+        assert_eq!(stack.get("a"), Lookup::Value(Value::I32(1)));
+        stack.truncate((0, 5));
+        assert_eq!(stack.depth(), mark);
     }
 }

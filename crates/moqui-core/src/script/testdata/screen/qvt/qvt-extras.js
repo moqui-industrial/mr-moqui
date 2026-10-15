@@ -14,24 +14,33 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Selectable] 
             "find": () => {
         $v.rowCellOpen("", "", false);
         sri.pushContext();
-        $v.textFind({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"case-insensitive"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Selectable"}}}}});
-        sri.popContext();
+        try {
+            $v.textFind({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"case-insensitive"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Selectable"}}}}});
+        } finally {
+            sri.popContext();
+        }
         $v.rowCellClose(false);
         },
             "dialogField": () => {
         $v.fieldBox(null, "", false);
         sri.pushContext();
-        $v.textFind({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"case-insensitive"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Selectable"}}}}});
-        sri.popContext();
+        try {
+            $v.textFind({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"case-insensitive"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Selectable"}}}}});
+        } finally {
+            sri.popContext();
+        }
         sri.write("</div>");
         },
-            "summary": () => { let $t = ""; sri.pushContext();  $t += $v.valueText({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"case-insensitive"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Selectable"}}}}}); sri.popContext(); return $t.trim(); },
+            "summary": () => { let $t = ""; sri.pushContext(); try {  $t += $v.valueText({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"case-insensitive"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Selectable"}}}}}); } finally { sri.popContext(); } return $t.trim(); },
             "cell": ($m) => {
                 if ($m !== 2) {
                     $v.rowCellOpen("", "", $m === 2);
                     sri.pushContext();
-                    $v.display({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Selectable"}}}}});
-                    sri.popContext();
+                    try {
+                        $v.display({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Selectable"}}}}});
+                    } finally {
+                        sri.popContext();
+                    }
                     $v.rowCellClose($m === 2);
                 }
             }
@@ -51,8 +60,11 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Selectable] 
                 if ($m !== 2) {
                     $v.rowCellOpen("", "", $m === 2);
                     sri.pushContext();
-                    $v.textLine({"name":"text-line","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"title"},"parent":{"name":"form-list","attrs":{"name":"Selectable"}}}}});
-                    sri.popContext();
+                    try {
+                        $v.textLine({"name":"text-line","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"title"},"parent":{"name":"form-list","attrs":{"name":"Selectable"}}}}});
+                    } finally {
+                        sri.popContext();
+                    }
                     $v.rowCellClose($m === 2);
                 }
             }
@@ -71,23 +83,32 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Selectable] 
             "first": () => {
             $v.rowCellOpen("", "", false);
             sri.pushContext();
-            $v.textLine({"name":"text-line","attrs":{},"parent":{"name":"first-row-field","attrs":{},"parent":{"name":"field","attrs":{"name":"note"},"parent":{"name":"form-list","attrs":{"name":"Selectable"}}}}});
-            sri.popContext();
+            try {
+                $v.textLine({"name":"text-line","attrs":{},"parent":{"name":"first-row-field","attrs":{},"parent":{"name":"field","attrs":{"name":"note"},"parent":{"name":"form-list","attrs":{"name":"Selectable"}}}}});
+            } finally {
+                sri.popContext();
+            }
             $v.rowCellClose(false);
             },
             "last": () => {
             $v.rowCellOpen("", "", false);
             sri.pushContext();
-            $v.display({"name":"display","attrs":{"text":"end"},"parent":{"name":"last-row-field","attrs":{},"parent":{"name":"field","attrs":{"name":"note"},"parent":{"name":"form-list","attrs":{"name":"Selectable"}}}}});
-            sri.popContext();
+            try {
+                $v.display({"name":"display","attrs":{"text":"end"},"parent":{"name":"last-row-field","attrs":{},"parent":{"name":"field","attrs":{"name":"note"},"parent":{"name":"form-list","attrs":{"name":"Selectable"}}}}});
+            } finally {
+                sri.popContext();
+            }
             $v.rowCellClose(false);
             },
             "cell": ($m) => {
                 if ($m !== 2) {
                     $v.rowCellOpen("", "", $m === 2);
                     sri.pushContext();
-                    $v.display({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"note"},"parent":{"name":"form-list","attrs":{"name":"Selectable"}}}}});
-                    sri.popContext();
+                    try {
+                        $v.display({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"note"},"parent":{"name":"form-list","attrs":{"name":"Selectable"}}}}});
+                    } finally {
+                        sri.popContext();
+                    }
                     $v.rowCellClose($m === 2);
                 }
             }
@@ -100,22 +121,31 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Selectable] 
     "rowSelection": {"idField": "id", "parameter": "ids", "listMode": "", "actions": [{"dialog": {"name":"dialog","attrs":{"button-text":"Update All","title":"Update Selected"}}, "render": () => {
 if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-single[@name=UpdateSelected] -->\n");
 sri.pushSingleFormMapContext(fieldValues);
-{
-    const $form = $v.formOpen({"name":"form-single","attrs":{"name":"UpdateSelected","transition":"save"}}, [{"name": "status", "field": {"name":"field","attrs":{"name":"status"},"parent":{"name":"form-single","attrs":{"name":"UpdateSelected"}}}, "subs": [{"cond": null, "sets": [], "widgets": [{"name":"text-line","attrs":{},"parent":{"name":"default-field","attrs":{"title":"Status"},"parent":{"name":"field","attrs":{"name":"status"},"parent":{"name":"form-single","attrs":{"name":"UpdateSelected"}}}}}]}]},
+try {
+    {
+        const $form = $v.formOpen({"name":"form-single","attrs":{"name":"UpdateSelected","transition":"save"}}, [{"name": "status", "field": {"name":"field","attrs":{"name":"status"},"parent":{"name":"form-single","attrs":{"name":"UpdateSelected"}}}, "subs": [{"cond": null, "sets": [], "widgets": [{"name":"text-line","attrs":{},"parent":{"name":"default-field","attrs":{"title":"Status"},"parent":{"name":"field","attrs":{"name":"status"},"parent":{"name":"form-single","attrs":{"name":"UpdateSelected"}}}}}]}]},
 {"name": "go", "field": {"name":"field","attrs":{"name":"go"},"parent":{"name":"form-single","attrs":{"name":"UpdateSelected"}}}, "subs": [{"cond": null, "sets": [], "widgets": [{"name":"submit","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"go"},"parent":{"name":"form-single","attrs":{"name":"UpdateSelected"}}}}}]}]}]);
-    $v.fieldBox(null, "", false);
-    sri.pushContext();
-    $v.textLine({"name":"text-line","attrs":{},"parent":{"name":"default-field","attrs":{"title":"Status"},"parent":{"name":"field","attrs":{"name":"status"},"parent":{"name":"form-single","attrs":{"name":"UpdateSelected"}}}}});
+        $v.fieldBox(null, "", false);
+        sri.pushContext();
+        try {
+            $v.textLine({"name":"text-line","attrs":{},"parent":{"name":"default-field","attrs":{"title":"Status"},"parent":{"name":"field","attrs":{"name":"status"},"parent":{"name":"form-single","attrs":{"name":"UpdateSelected"}}}}});
+        } finally {
+            sri.popContext();
+        }
+        sri.write("</div>");
+        $v.fieldBox(null, "", false);
+        sri.pushContext();
+        try {
+            $v.submit({"name":"submit","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"go"},"parent":{"name":"form-single","attrs":{"name":"UpdateSelected"}}}}});
+        } finally {
+            sri.popContext();
+        }
+        sri.write("</div>");
+        $v.formClose({"name":"form-single","attrs":{"name":"UpdateSelected","transition":"save"}}, $form);
+    }
+} finally {
     sri.popContext();
-    sri.write("</div>");
-    $v.fieldBox(null, "", false);
-    sri.pushContext();
-    $v.submit({"name":"submit","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"go"},"parent":{"name":"form-single","attrs":{"name":"UpdateSelected"}}}}});
-    sri.popContext();
-    sri.write("</div>");
-    $v.formClose({"name":"form-single","attrs":{"name":"UpdateSelected","transition":"save"}}, $form);
 }
-sri.popContext();
 if (sri.doBoundaryComments()) sri.write("<!-- END   form-single[@name=UpdateSelected] -->\n");
 }}]},
     "valueDescs": {
@@ -154,8 +184,11 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Everyone] --
                 if ($m !== 2) {
                     $v.rowCellOpen("", "", $m === 2);
                     sri.pushContext();
-                    $v.textLine({"name":"text-line","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"title"},"parent":{"name":"form-list","attrs":{"name":"Everyone"}}}}});
-                    sri.popContext();
+                    try {
+                        $v.textLine({"name":"text-line","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"title"},"parent":{"name":"form-list","attrs":{"name":"Everyone"}}}}});
+                    } finally {
+                        sri.popContext();
+                    }
                     $v.rowCellClose($m === 2);
                 }
             }
@@ -175,8 +208,11 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Everyone] --
                 if ($m !== 1) {
                     $v.rowCellOpen("", "", $m === 2);
                     sri.pushContext();
-                    $v.submit({"name":"submit","attrs":{},"parent":{"name":"default-field","attrs":{"title":"Save All"},"parent":{"name":"field","attrs":{"name":"go"},"parent":{"name":"form-list","attrs":{"name":"Everyone"}}}}});
-                    sri.popContext();
+                    try {
+                        $v.submit({"name":"submit","attrs":{},"parent":{"name":"default-field","attrs":{"title":"Save All"},"parent":{"name":"field","attrs":{"name":"go"},"parent":{"name":"form-list","attrs":{"name":"Everyone"}}}}});
+                    } finally {
+                        sri.popContext();
+                    }
                     $v.rowCellClose($m === 2);
                 }
             }
@@ -205,52 +241,76 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Everyone] --
 if (sri.doBoundaryComments()) sri.write("<!-- END   form-list[@name=Everyone] -->\n");
 if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-single[@name=Choices] -->\n");
 sri.pushSingleFormMapContext(fv);
-{
-    const $form = $v.formOpen({"name":"form-single","attrs":{"name":"Choices","map":"fv","transition":"save"}}, [{"name": "pick", "field": {"name":"field","attrs":{"name":"pick"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}, "subs": [{"cond": null, "sets": [], "widgets": [{"name":"drop-down","attrs":{"allow-multiple":"true","show-not":"true","submit-on-select":"true"},"children":[{"name":"option","attrs":{"key":"A"}},{"name":"option","attrs":{"key":"B"}}],"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"pick"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}}}]}]},
+try {
+    {
+        const $form = $v.formOpen({"name":"form-single","attrs":{"name":"Choices","map":"fv","transition":"save"}}, [{"name": "pick", "field": {"name":"field","attrs":{"name":"pick"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}, "subs": [{"cond": null, "sets": [], "widgets": [{"name":"drop-down","attrs":{"allow-multiple":"true","show-not":"true","submit-on-select":"true"},"children":[{"name":"option","attrs":{"key":"A"}},{"name":"option","attrs":{"key":"B"}}],"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"pick"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}}}]}]},
 {"name": "dep", "field": {"name":"field","attrs":{"name":"dep"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}, "subs": [{"cond": null, "sets": [], "widgets": [{"name":"text-line","attrs":{"default-transition":"treeItems"},"children":[{"name":"depends-on","attrs":{"field":"pick"}}],"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"dep"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}}}]}]},
 {"name": "who", "field": {"name":"field","attrs":{"name":"who"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}, "subs": [{"cond": null, "sets": [], "widgets": [{"name":"display-entity","attrs":{"entity-name":"moqui.basic.Enumeration","text":"${description}","default-text":"nobody"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"who"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}}}]}]},
 {"name": "shown", "field": {"name":"field","attrs":{"name":"shown"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}, "subs": [{"cond": null, "sets": [], "widgets": [{"name":"text-line","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"shown"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}}},{"name":"visible-when","attrs":{"field":"pick","value":"B,C"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"shown"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}}}]}]},
 {"name": "watch", "field": {"name":"field","attrs":{"name":"watch"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}, "subs": [{"cond": null, "sets": [], "widgets": [{"name":"display","attrs":{"dynamic-transition":"treeItems"},"children":[{"name":"depends-on","attrs":{"field":"pick","parameter":"p"}}],"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"watch"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}}}]}]},
 {"name": "between", "field": {"name":"field","attrs":{"name":"between"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}, "subs": [{"cond": null, "sets": [], "widgets": [{"name":"date-find","attrs":{"type":"time"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"between"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}}}]}]},
 {"name": "note", "field": {"name":"field","attrs":{"name":"note"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}, "subs": [{"cond": null, "sets": [], "widgets": [{"name":"text-area","attrs":{"editor-type":"md","rows":"5"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"note"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}}}]}]}]);
-    $v.fieldBox(null, "", false);
-    sri.pushContext();
-    $v.dropDown({"name":"drop-down","attrs":{"allow-multiple":"true","show-not":"true","submit-on-select":"true"},"children":[{"name":"option","attrs":{"key":"A"}},{"name":"option","attrs":{"key":"B"}}],"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"pick"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}}});
+        $v.fieldBox(null, "", false);
+        sri.pushContext();
+        try {
+            $v.dropDown({"name":"drop-down","attrs":{"allow-multiple":"true","show-not":"true","submit-on-select":"true"},"children":[{"name":"option","attrs":{"key":"A"}},{"name":"option","attrs":{"key":"B"}}],"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"pick"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}}});
+        } finally {
+            sri.popContext();
+        }
+        sri.write("</div>");
+        $v.fieldBox(null, "", false);
+        sri.pushContext();
+        try {
+            $v.textLine({"name":"text-line","attrs":{"default-transition":"treeItems"},"children":[{"name":"depends-on","attrs":{"field":"pick"}}],"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"dep"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}}});
+        } finally {
+            sri.popContext();
+        }
+        sri.write("</div>");
+        $v.fieldBox(null, "", false);
+        sri.pushContext();
+        try {
+            $v.displayEntity({"name":"display-entity","attrs":{"entity-name":"moqui.basic.Enumeration","text":"${description}","default-text":"nobody"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"who"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}}});
+        } finally {
+            sri.popContext();
+        }
+        sri.write("</div>");
+        $v.fieldBox({"name":"visible-when","attrs":{"field":"pick","value":"B,C"}}, "", false);
+        sri.pushContext();
+        try {
+            $v.textLine({"name":"text-line","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"shown"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}}});
+        } finally {
+            sri.popContext();
+        }
+        sri.write("</div>");
+        $v.fieldBox(null, "", false);
+        sri.pushContext();
+        try {
+            $v.display({"name":"display","attrs":{"dynamic-transition":"treeItems"},"children":[{"name":"depends-on","attrs":{"field":"pick","parameter":"p"}}],"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"watch"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}}});
+        } finally {
+            sri.popContext();
+        }
+        sri.write("</div>");
+        $v.fieldBox(null, "", false);
+        sri.pushContext();
+        try {
+            $v.dateFind({"name":"date-find","attrs":{"type":"time"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"between"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}}});
+        } finally {
+            sri.popContext();
+        }
+        sri.write("</div>");
+        $v.fieldBox(null, "", false);
+        sri.pushContext();
+        try {
+            $v.textArea({"name":"text-area","attrs":{"editor-type":"md","rows":"5"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"note"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}}});
+        } finally {
+            sri.popContext();
+        }
+        sri.write("</div>");
+        $v.formClose({"name":"form-single","attrs":{"name":"Choices","map":"fv","transition":"save"}}, $form);
+    }
+} finally {
     sri.popContext();
-    sri.write("</div>");
-    $v.fieldBox(null, "", false);
-    sri.pushContext();
-    $v.textLine({"name":"text-line","attrs":{"default-transition":"treeItems"},"children":[{"name":"depends-on","attrs":{"field":"pick"}}],"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"dep"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}}});
-    sri.popContext();
-    sri.write("</div>");
-    $v.fieldBox(null, "", false);
-    sri.pushContext();
-    $v.displayEntity({"name":"display-entity","attrs":{"entity-name":"moqui.basic.Enumeration","text":"${description}","default-text":"nobody"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"who"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}}});
-    sri.popContext();
-    sri.write("</div>");
-    $v.fieldBox({"name":"visible-when","attrs":{"field":"pick","value":"B,C"}}, "", false);
-    sri.pushContext();
-    $v.textLine({"name":"text-line","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"shown"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}}});
-    sri.popContext();
-    sri.write("</div>");
-    $v.fieldBox(null, "", false);
-    sri.pushContext();
-    $v.display({"name":"display","attrs":{"dynamic-transition":"treeItems"},"children":[{"name":"depends-on","attrs":{"field":"pick","parameter":"p"}}],"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"watch"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}}});
-    sri.popContext();
-    sri.write("</div>");
-    $v.fieldBox(null, "", false);
-    sri.pushContext();
-    $v.dateFind({"name":"date-find","attrs":{"type":"time"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"between"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}}});
-    sri.popContext();
-    sri.write("</div>");
-    $v.fieldBox(null, "", false);
-    sri.pushContext();
-    $v.textArea({"name":"text-area","attrs":{"editor-type":"md","rows":"5"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"note"},"parent":{"name":"form-single","attrs":{"name":"Choices","map":"fv"}}}}});
-    sri.popContext();
-    sri.write("</div>");
-    $v.formClose({"name":"form-single","attrs":{"name":"Choices","map":"fv","transition":"save"}}, $form);
 }
-sri.popContext();
 if (sri.doBoundaryComments()) sri.write("<!-- END   form-single[@name=Choices] -->\n");
 $v.sectionPaginate("entries");
 sri.renderSection("Rows");

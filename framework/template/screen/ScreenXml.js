@@ -76,9 +76,12 @@
                 for (let $index = 0; $index < $info.count; $index++) {
                     sri.write(${jsString("        <" + name + "Entry")});
                     sri.startFormListRow($info, $index);
-                    ${fields}
-                    sri.write("/>\\n");
-                    sri.endFormListRow();
+                    try {
+                        ${fields}
+                        sri.write("/>\\n");
+                    } finally {
+                        sri.endFormListRow();
+                    }
                 }
                 sri.safeCloseList($info);
                 sri.write(${jsString("    </" + name + ">\n")});
