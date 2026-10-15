@@ -452,7 +452,7 @@ fn assemble_node(
         match sub.name().as_str() {
             "field" => {
                 let copy = sub.deep_copy();
-                expand_field_node(facade, factory, &assembled, &copy)?;
+                expand_field_node(factory, &assembled, &copy)?;
                 merge_field_node(&assembled, &copy, false);
             }
             "auto-fields-entity" => {
@@ -692,13 +692,7 @@ fn add_field_to_layout(form: &MNode, field: &MNode) {
 }
 
 /// Replace `widget-template-include` and `auto-widget-entity` in the sub-nodes of a field.
-fn expand_field_node(
-    facade: &ScreenFacade,
-    factory: &ExecutionContextFactory,
-    form: &MNode,
-    field: &MNode,
-) -> Result<(), Error> {
-    let _ = facade;
+fn expand_field_node(factory: &ExecutionContextFactory, form: &MNode, field: &MNode) -> Result<(), Error> {
     for sub in field.children() {
         if !matches!(
             sub.name().as_str(),

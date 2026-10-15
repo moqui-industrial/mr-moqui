@@ -455,8 +455,8 @@ pub(crate) fn process_saved_find(transition_screen: &str) -> Result<Option<Strin
         add_error("No user logged in, cannot process saved find");
         return Ok(None);
     };
-    let mut find_id = context_text("formListFindId");
-    let mut existing = if find_id.is_empty() {
+    let find_id = context_text("formListFindId");
+    let existing = if find_id.is_empty() {
         None
     } else {
         rows(
@@ -469,109 +469,13 @@ pub(crate) fn process_saved_find(transition_screen: &str) -> Result<Option<Strin
     };
 
     if context_has("DeleteFind") {
-        if existing.is_none() {
-            add_error(&format!("Saved find with ID {find_id} not found, not deleting"));
-            return Ok(None);
-        }
-        delete_all(
-            &facade,
-            "moqui.screen.form.FormListFindUserDefault",
-            &[("userId", &user), ("formListFindId", &find_id)],
-        )?;
-        let mine = rows(
-            &facade,
-            "moqui.screen.form.FormListFindUser",
-            &[("userId", &user), ("formListFindId", &find_id)],
-        )?;
-        let Some(mine) = mine.into_iter().next() else {
-            return Ok(None);
-        };
-        mine.delete(&facade)?;
-        let users = rows(
-            &facade,
-            "moqui.screen.form.FormListFindUser",
-            &[("formListFindId", &find_id)],
-        )?;
-        let groups = rows(
-            &facade,
-            "moqui.screen.form.FormListFindUserGroup",
-            &[("formListFindId", &find_id)],
-        )?;
-        if users.is_empty() && groups.is_empty() {
-            delete_all(
-                &facade,
-                "moqui.screen.form.FormListFindField",
-                &[("formListFindId", &find_id)],
-            )?;
-            delete_all(
-                &facade,
-                "moqui.screen.form.FormListFind",
-                &[("formListFindId", &find_id)],
-            )?;
-        }
-        return Ok(None);
+        return delete_find(&facade, &user, &find_id, existing.is_some());
     }
-
     if context_has("ScheduleFind") {
-        let Some(find) = &existing else {
-            add_error(&format!("Saved find with ID {find_id} not found, not scheduling"));
-            return Ok(None);
-        };
-        if !find_by_user(&facade, &find_id, &user)? && !find_by_group(&facade, &find_id)? {
-            add_error(&format!(
-                "You are not associated with Saved Find {find_id}, not scheduling"
-            ));
-            return Ok(None);
-        }
-        let render_mode = Some(context_text("renderMode"))
-            .filter(|mode| !mode.is_empty())
-            .unwrap_or_else(|| "csv".into());
-        let screen_path = context_text("screenPath");
-        let cron = context_text("cronSelected");
-        if screen_path.is_empty() {
-            add_error(&format!(
-                "Screen Path not specified, not scheduling saved find with ID {find_id}"
-            ));
-            return Ok(Some(find_id));
-        }
-        if cron.is_empty() {
-            add_error(&format!(
-                "Cron Schedule not specified, not scheduling saved find with ID {find_id}"
-            ));
-            return Ok(Some(find_id));
-        }
-        let mut scheduled = facade.make_value("moqui.screen.ScreenScheduled")?;
-        scheduled.set_sequenced_id_primary(&facade)?;
-        for (name, value) in [
-            ("screenPath", screen_path),
-            ("formListFindId", find_id.clone()),
-            ("renderMode", render_mode),
-            ("noResultsAbort", "Y".to_string()),
-            ("cronExpression", cron),
-            ("emailTemplateId", "SCREEN_RENDER".to_string()),
-            (
-                "emailSubject",
-                format!(
-                    "{} ${{ec.l10n.format(ec.user.nowTimestamp, null)}}",
-                    template_literal(&text(find, "description"))
-                ),
-            ),
-            ("userId", user.clone()),
-        ] {
-            scheduled.set(name, Value::string(value));
-        }
-        scheduled.create(&facade)?;
-        ExecutionContext::with_current(|ec| ec.message().add_message("Saved find scheduled to send by email"));
-        return Ok(Some(find_id));
+        return schedule_find(&facade, &user, find_id, existing.as_ref());
     }
-
     if context_has("ClearDefault") {
-        delete_all(
-            &facade,
-            "moqui.screen.form.FormListFindUserDefault",
-            &[("userId", &user), ("formListFindId", &find_id)],
-        )?;
-        return Ok(None);
+        return clear_default(&facade, &user, &find_id);
     }
 
     let posted = context_text("formLocation");
@@ -589,43 +493,188 @@ pub(crate) fn process_saved_find(transition_screen: &str) -> Result<Option<Strin
     }
 
     if context_has("MakeDefault") {
-        if existing.is_none() {
-            add_error(&format!("Saved find with ID {find_id} not found, not making default"));
-            return Ok(None);
-        }
-        if !find_by_user(&facade, &find_id, &user)? && !find_by_group(&facade, &find_id)? {
-            add_error(&format!(
-                "You are not associated with Saved Find {find_id}, not making default"
-            ));
-            return Ok(None);
-        }
-        let current = rows(
-            &facade,
-            "moqui.screen.form.FormListFindUserDefault",
-            &[("userId", &user), ("screenLocation", &screen_location)],
-        )?;
-        match current.into_iter().next() {
-            Some(mut row) => {
-                row.set("formListFindId", Value::string(find_id.clone()));
-                row.update(&facade)?;
-            }
-            None => {
-                create(
-                    &facade,
-                    "moqui.screen.form.FormListFindUserDefault",
-                    &[
-                        ("userId", Value::string(user.clone())),
-                        ("screenLocation", Value::string(screen_location.clone())),
-                        ("formListFindId", Value::string(find_id.clone())),
-                    ],
-                )?;
-            }
-        }
+        return make_default(&facade, &user, &find_id, existing.is_some(), &screen_location);
+    }
+    let form = SavedForm {
+        location,
+        screen_location,
+        form_name,
+    };
+    save_find(&facade, &user, find_id, existing, &form)
+}
+
+/// `DeleteFind`: drop the user's link to the find and default, and the find itself once no user or group has it.
+fn delete_find(facade: &EntityFacade, user: &str, find_id: &str, exists: bool) -> Result<Option<String>, Error> {
+    if !exists {
+        add_error(&format!("Saved find with ID {find_id} not found, not deleting"));
         return Ok(None);
     }
+    delete_all(
+        facade,
+        "moqui.screen.form.FormListFindUserDefault",
+        &[("userId", user), ("formListFindId", find_id)],
+    )?;
+    let mine = rows(
+        facade,
+        "moqui.screen.form.FormListFindUser",
+        &[("userId", user), ("formListFindId", find_id)],
+    )?;
+    let Some(mine) = mine.into_iter().next() else {
+        return Ok(None);
+    };
+    mine.delete(facade)?;
+    let users = rows(
+        facade,
+        "moqui.screen.form.FormListFindUser",
+        &[("formListFindId", find_id)],
+    )?;
+    let groups = rows(
+        facade,
+        "moqui.screen.form.FormListFindUserGroup",
+        &[("formListFindId", find_id)],
+    )?;
+    if users.is_empty() && groups.is_empty() {
+        delete_all(
+            facade,
+            "moqui.screen.form.FormListFindField",
+            &[("formListFindId", find_id)],
+        )?;
+        delete_all(facade, "moqui.screen.form.FormListFind", &[("formListFindId", find_id)])?;
+    }
+    Ok(None)
+}
 
-    let form = assembled_form(&screen_location, &form_name)?;
-    let form_base_location = location.split('#').next().unwrap_or(&location).to_string();
+/// `ScheduleFind`: a `ScreenScheduled` that renders the find's screen and sends it by email on a cron schedule.
+fn schedule_find(
+    facade: &EntityFacade,
+    user: &str,
+    find_id: String,
+    existing: Option<&EntityValue>,
+) -> Result<Option<String>, Error> {
+    let Some(find) = existing else {
+        add_error(&format!("Saved find with ID {find_id} not found, not scheduling"));
+        return Ok(None);
+    };
+    if !find_by_user(facade, &find_id, user)? && !find_by_group(facade, &find_id)? {
+        add_error(&format!(
+            "You are not associated with Saved Find {find_id}, not scheduling"
+        ));
+        return Ok(None);
+    }
+    let render_mode = Some(context_text("renderMode"))
+        .filter(|mode| !mode.is_empty())
+        .unwrap_or_else(|| "csv".into());
+    let screen_path = context_text("screenPath");
+    let cron = context_text("cronSelected");
+    if screen_path.is_empty() {
+        add_error(&format!(
+            "Screen Path not specified, not scheduling saved find with ID {find_id}"
+        ));
+        return Ok(Some(find_id));
+    }
+    if cron.is_empty() {
+        add_error(&format!(
+            "Cron Schedule not specified, not scheduling saved find with ID {find_id}"
+        ));
+        return Ok(Some(find_id));
+    }
+    let mut scheduled = facade.make_value("moqui.screen.ScreenScheduled")?;
+    scheduled.set_sequenced_id_primary(facade)?;
+    for (name, value) in [
+        ("screenPath", screen_path),
+        ("formListFindId", find_id.clone()),
+        ("renderMode", render_mode),
+        ("noResultsAbort", "Y".to_string()),
+        ("cronExpression", cron),
+        ("emailTemplateId", "SCREEN_RENDER".to_string()),
+        (
+            "emailSubject",
+            format!(
+                "{} ${{ec.l10n.format(ec.user.nowTimestamp, null)}}",
+                template_literal(&text(find, "description"))
+            ),
+        ),
+        ("userId", user.to_string()),
+    ] {
+        scheduled.set(name, Value::string(value));
+    }
+    scheduled.create(facade)?;
+    ExecutionContext::with_current(|ec| ec.message().add_message("Saved find scheduled to send by email"));
+    Ok(Some(find_id))
+}
+
+/// `ClearDefault`: the find is no longer the user's default.
+fn clear_default(facade: &EntityFacade, user: &str, find_id: &str) -> Result<Option<String>, Error> {
+    delete_all(
+        facade,
+        "moqui.screen.form.FormListFindUserDefault",
+        &[("userId", user), ("formListFindId", find_id)],
+    )?;
+    Ok(None)
+}
+
+/// `MakeDefault`: the find becomes the user's default for the screen.
+fn make_default(
+    facade: &EntityFacade,
+    user: &str,
+    find_id: &str,
+    exists: bool,
+    screen_location: &str,
+) -> Result<Option<String>, Error> {
+    if !exists {
+        add_error(&format!("Saved find with ID {find_id} not found, not making default"));
+        return Ok(None);
+    }
+    if !find_by_user(facade, find_id, user)? && !find_by_group(facade, find_id)? {
+        add_error(&format!(
+            "You are not associated with Saved Find {find_id}, not making default"
+        ));
+        return Ok(None);
+    }
+    let current = rows(
+        facade,
+        "moqui.screen.form.FormListFindUserDefault",
+        &[("userId", user), ("screenLocation", screen_location)],
+    )?;
+    match current.into_iter().next() {
+        Some(mut row) => {
+            row.set("formListFindId", Value::string(find_id));
+            row.update(facade)?;
+        }
+        None => {
+            create(
+                facade,
+                "moqui.screen.form.FormListFindUserDefault",
+                &[
+                    ("userId", Value::string(user)),
+                    ("screenLocation", Value::string(screen_location)),
+                    ("formListFindId", Value::string(find_id)),
+                ],
+            )?;
+        }
+    }
+    Ok(None)
+}
+
+/// The form a find is saved for, from the posted `formLocation`.
+struct SavedForm {
+    location: String,
+    screen_location: String,
+    form_name: String,
+}
+
+/// Save the form's current find fields: update the user's find, or create one (also in place of a group's find, which
+/// is copied for this user rather than changed for the group).
+fn save_find(
+    facade: &EntityFacade,
+    user: &str,
+    mut find_id: String,
+    mut existing: Option<EntityValue>,
+    saved: &SavedForm,
+) -> Result<Option<String>, Error> {
+    let location = &saved.location;
+    let form = assembled_form(&saved.screen_location, &saved.form_name)?;
+    let form_base_location = location.split('#').next().unwrap_or(location).to_string();
     let mut config_id = user_form_config_id(&form_base_location)?;
     if config_id.is_none() {
         config_id = existing
@@ -634,19 +683,19 @@ pub(crate) fn process_saved_find(transition_screen: &str) -> Result<Option<Strin
             .filter(|id| !id.is_empty());
     }
     let config_fields = match &config_id {
-        Some(id) => rows(&facade, "moqui.screen.form.FormConfigField", &[("formConfigId", id)])?,
+        Some(id) => rows(facade, "moqui.screen.form.FormConfigField", &[("formConfigId", id)])?,
         None => Vec::new(),
     };
 
     if let Some(find) = &existing {
-        if text(find, "formLocation") != location {
+        if text(find, "formLocation") != *location {
             add_error(&format!(
                 "Specified form location did not match form on Saved Find {find_id}, not updating"
             ));
             return Ok(None);
         }
-        if !find_by_user(&facade, &find_id, &user)? {
-            if !find_by_group(&facade, &find_id)? {
+        if !find_by_user(facade, &find_id, user)? {
+            if !find_by_group(facade, &find_id)? {
                 add_error(&format!(
                     "You are not associated with Saved Find {find_id}, cannot update"
                 ));
@@ -666,13 +715,13 @@ pub(crate) fn process_saved_find(transition_screen: &str) -> Result<Option<Strin
             if find_config.is_empty() {
                 let mut config = facade.make_value("moqui.screen.form.FormConfig")?;
                 config.set("formLocation", Value::string(location.clone()));
-                config.set_sequenced_id_primary(&facade)?;
-                config.create(&facade)?;
+                config.set_sequenced_id_primary(facade)?;
+                config.create(facade)?;
                 find_config = text(&config, "formConfigId");
                 find.set("formConfigId", Value::string(find_config.clone()));
             } else {
                 delete_all(
-                    &facade,
+                    facade,
                     "moqui.screen.form.FormConfigField",
                     &[("formConfigId", &find_config)],
                 )?;
@@ -680,12 +729,12 @@ pub(crate) fn process_saved_find(transition_screen: &str) -> Result<Option<Strin
             for field in &config_fields {
                 let mut copy = field.clone();
                 copy.set("formConfigId", Value::string(find_config.clone()));
-                copy.create(&facade)?;
+                copy.create(facade)?;
             }
         } else if !find_config.is_empty() {
             find.set("formConfigId", Value::Null);
             delete_all(
-                &facade,
+                facade,
                 "moqui.screen.form.FormConfigField",
                 &[("formConfigId", &find_config)],
             )?;
@@ -696,9 +745,9 @@ pub(crate) fn process_saved_find(transition_screen: &str) -> Result<Option<Strin
         if !order.is_empty() {
             find.set("orderByField", Value::string(order));
         }
-        find.update(&facade)?;
+        find.update(facade)?;
         delete_all(
-            &facade,
+            facade,
             "moqui.screen.form.FormListFindField",
             &[("formListFindId", &find_id)],
         )?;
@@ -707,13 +756,13 @@ pub(crate) fn process_saved_find(transition_screen: &str) -> Result<Option<Strin
         if !config_fields.is_empty() {
             let mut config = facade.make_value("moqui.screen.form.FormConfig")?;
             config.set("formLocation", Value::string(location.clone()));
-            config.set_sequenced_id_primary(&facade)?;
-            config.create(&facade)?;
+            config.set_sequenced_id_primary(facade)?;
+            config.create(facade)?;
             let id = text(&config, "formConfigId");
             for field in &config_fields {
                 let mut copy = field.clone();
                 copy.set("formConfigId", Value::string(id.clone()));
-                copy.create(&facade)?;
+                copy.create(facade)?;
             }
             config_id_new = Some(id);
         }
@@ -733,15 +782,15 @@ pub(crate) fn process_saved_find(transition_screen: &str) -> Result<Option<Strin
         if let Some(id) = config_id_new {
             find.set("formConfigId", Value::string(id));
         }
-        find.set_sequenced_id_primary(&facade)?;
-        find.create(&facade)?;
+        find.set_sequenced_id_primary(facade)?;
+        find.create(facade)?;
         find_id = text(&find, "formListFindId");
         create(
-            &facade,
+            facade,
             "moqui.screen.form.FormListFindUser",
             &[
                 ("formListFindId", Value::string(find_id.clone())),
-                ("userId", Value::string(user.clone())),
+                ("userId", Value::string(user)),
             ],
         )?;
     }
@@ -751,7 +800,7 @@ pub(crate) fn process_saved_find(transition_screen: &str) -> Result<Option<Strin
             .iter()
             .map(|(name, value)| (name.as_str(), value.clone()))
             .collect();
-        create(&facade, "moqui.screen.form.FormListFindField", &fields)?;
+        create(facade, "moqui.screen.form.FormListFindField", &fields)?;
     }
     Ok(Some(find_id))
 }

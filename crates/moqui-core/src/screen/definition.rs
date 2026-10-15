@@ -1425,16 +1425,7 @@ fn subscreens_item_of(
         .unwrap_or_else(|| {
             // The target's own default-menu-title, else the pretty file name. The title is read again when the target changes.
             sources.push(Source::of(factory, &location));
-            factory
-                .resource()
-                .get(&location)
-                .ok()
-                .filter(|resource| resource.exists() && resource.is_file())
-                .and_then(|resource| resource.read_text().ok())
-                .and_then(|text| MNode::parse_root_only(&location, &text).ok())
-                .and_then(|root| root.attribute("default-menu-title"))
-                .filter(|text| !text.is_empty())
-                .unwrap_or_else(|| pretty_menu_name(&location))
+            target_menu_title(factory, &location)
         });
     Some(SubscreensItem {
         name,

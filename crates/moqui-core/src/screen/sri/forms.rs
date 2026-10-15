@@ -22,8 +22,9 @@ use moqui_lib::object::Value;
 use super::sections::guarded;
 use super::{active_def, FormRows, Runner};
 use crate::context::Error;
+use crate::screen::definition::ScreenDef;
 use crate::screen::form::{self, FormInstance};
-use crate::screen::generate::UnitRequest;
+use crate::screen::generate::{Unit, UnitRequest};
 use crate::screen::render::RenderState;
 use crate::script;
 use crate::script::ContextFrame;
@@ -47,24 +48,39 @@ pub fn render_dynamic_form(state: &RenderState, runner: &dyn Runner, name: &str)
     let label = format!("form [{name}] in screen [{}]", def.location);
     guarded(state, &label, || {
         let form = form::assemble_dynamic(&state.facade, &state.factory, &def, name)?;
-        let request = UnitRequest {
-            factory: &state.factory,
-            facade: &state.facade,
-            def: &def,
-            section: "",
-            fail: false,
-            mode: &state.render_mode,
-            macro_location: &state.macro_location,
-        };
-        let unit = runner.generate_dynamic(&request, &form)?;
-        let previous = state.dynamic_forms.borrow_mut().insert(name.to_string(), form);
-        let result = runner.run(&unit);
-        match previous {
-            Some(previous) => state.dynamic_forms.borrow_mut().insert(name.to_string(), previous),
-            None => state.dynamic_forms.borrow_mut().remove(name),
-        };
-        result
+        let unit = runner.generate_dynamic(&form_unit_request(state, &def), &form)?;
+        run_form_unit(state, runner, name, form, &unit)
     })
+}
+
+/// The request for the code of a form assembled for this render.
+fn form_unit_request<'a>(state: &'a RenderState, def: &'a Arc<ScreenDef>) -> UnitRequest<'a> {
+    UnitRequest {
+        factory: &state.factory,
+        facade: &state.facade,
+        def,
+        section: "",
+        fail: false,
+        mode: &state.render_mode,
+        macro_location: &state.macro_location,
+    }
+}
+
+/// Run the generated code of a form assembled for this render, with that form in place of `name` while it runs.
+fn run_form_unit(
+    state: &RenderState,
+    runner: &dyn Runner,
+    name: &str,
+    form: Arc<FormInstance>,
+    unit: &Unit,
+) -> Result<(), Error> {
+    let previous = state.dynamic_forms.borrow_mut().insert(name.to_string(), form);
+    let result = runner.run(unit);
+    match previous {
+        Some(previous) => state.dynamic_forms.borrow_mut().insert(name.to_string(), previous),
+        None => state.dynamic_forms.borrow_mut().remove(name),
+    };
+    result
 }
 
 /// `sri.getUserFormListFinds(name)`: the saved finds the user may use for a form of the active screen.
@@ -137,24 +153,9 @@ pub fn render_user_columns_form(state: &RenderState, runner: &dyn Runner, name: 
         }
         node.append_node(config);
         let form = Arc::new(form::FormInstance::from_node(&def, &node)?);
-        let request = UnitRequest {
-            factory: &state.factory,
-            facade: &state.facade,
-            def: &def,
-            section: "",
-            fail: false,
-            mode: &state.render_mode,
-            macro_location: &state.macro_location,
-        };
-        let unit = runner.generate_dynamic(&request, &form)?;
-        let previous = state.dynamic_forms.borrow_mut().insert(name.to_string(), form);
-        let result = runner.run(&unit);
-        match previous {
-            Some(previous) => state.dynamic_forms.borrow_mut().insert(name.to_string(), previous),
-            None => state.dynamic_forms.borrow_mut().remove(name),
-        };
+        let unit = runner.generate_dynamic(&form_unit_request(state, &def), &form)?;
         rendered = true;
-        result
+        run_form_unit(state, runner, name, form, &unit)
     })?;
     Ok(rendered)
 }
