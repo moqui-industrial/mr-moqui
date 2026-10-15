@@ -95,6 +95,66 @@ fn a_notify_member_applies_peer_notifies_and_sends_its_own() {
     drop(gate);
 }
 
+#[test]
+fn a_notify_that_arrives_while_the_request_queue_is_full_is_applied_once_there_is_room() {
+    let gate = crate::common::start_with_properties("notify-busy", None, &[("cluster_transport", "notify")]);
+    let factory = Arc::clone(gate.server.factory());
+
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let record = Arc::clone(&seen);
+    let _subscription = moqui_core::notify::subscribe(
+        moqui_core::notify::ENTITY_CACHE_INVALIDATE,
+        Arc::new(move |message: &moqui_core::notify::TopicMessage| {
+            record.lock().unwrap().push(message.message_id.clone());
+        }),
+    )
+    .unwrap();
+    let applied = || seen.lock().unwrap().iter().any(|id| id == "m-busy");
+
+    // One worker held by a job that waits, and a queue of one that is full.
+    let pool = factory.request_pool();
+    pool.start(1, 1).unwrap();
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let blocker = pool
+        .try_submit(Arc::clone(&factory), move || {
+            held.recv().ok();
+            Ok(())
+        })
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    while pool.queue_depth() > 0 {
+        assert!(Instant::now() < until, "the worker did not take the blocking job");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let filler = pool.try_submit(Arc::clone(&factory), || Ok(())).unwrap();
+    assert!(
+        pool.try_submit(Arc::clone(&factory), || Ok(())).is_err(),
+        "the queue is full"
+    );
+
+    let mut peer = raw_connection(&gate);
+    let invalidate =
+        r#"{"origin_id": "peer-busy", "message_id": "m-busy", "body": {"entityName": "moqui.basic.Enumeration"}}"#;
+    notify(&mut peer, &format!("entity-cache-invalidate\npeer-busy\n{invalidate}"));
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(!applied(), "applied while every worker was busy");
+
+    release.send(()).unwrap();
+    blocker.recv().unwrap().unwrap();
+    filler.recv().unwrap().unwrap();
+    let until = Instant::now() + Duration::from_secs(10);
+    while !applied() {
+        assert!(
+            Instant::now() < until,
+            "the invalidation was dropped while the queue was full"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    drop(peer);
+    drop(gate);
+}
+
 fn raw_connection(gate: &crate::common::Gate) -> PostgresConn {
     let data = std::fs::canonicalize(gate.cluster_dir.join("data")).unwrap();
     let password = std::fs::read_to_string(gate.cluster_dir.join("pgpass")).unwrap();

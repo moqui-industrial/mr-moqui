@@ -25,7 +25,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -44,10 +44,16 @@ const HEADER_LIMIT: usize = 16 * 1024;
 /// How often a connection with nothing to read checks whether the listener is stopping.
 const READ_IDLE: Duration = Duration::from_millis(250);
 const CLIENT_IO: Duration = Duration::from_secs(10);
+/// How long a kept-alive connection may sit between exchanges. The listener closes it then, so the sender drops its
+/// end too, which also lets go of a member that has left the cluster.
+const CONNECTION_IDLE: Duration = Duration::from_secs(60);
 /// Connections served at once; one more is closed, and the peer's post tries again.
 const MAX_CONNECTIONS: usize = 64;
 /// Topics kept for [`ClusterEdge::posts`], newest last.
 const POSTS_KEPT: usize = 256;
+/// The first and the longest wait between submits in [`apply_topic_patiently`].
+const BUSY_BACKOFF_MIN: Duration = Duration::from_millis(5);
+const BUSY_BACKOFF_MAX: Duration = Duration::from_millis(250);
 
 type HostError = moqui_lib::error::Error;
 type CoreError = moqui_core::context::Error;
@@ -260,7 +266,7 @@ struct ConnLimits {
 impl ConnLimits {
     const DEFAULT: Self = Self {
         first: CLIENT_IO,
-        idle: Duration::from_secs(60),
+        idle: CONNECTION_IDLE,
         partial: CLIENT_IO,
     };
 }
@@ -330,25 +336,55 @@ pub(crate) fn apply_topic(
     topic: &str,
     body: &[u8],
 ) -> u16 {
-    if topic != moqui_core::notify::ENTITY_CACHE_INVALIDATE && topic != moqui_core::notify::NOTIFICATION_MESSAGE {
-        return 404;
+    match accept_topic(posts, topic, body) {
+        Ok(message) => apply_on_pool(factory, topic, &message),
+        Err(status) => status,
     }
-    let message = match topic_message(body) {
+}
+
+/// [`apply_topic`] for a transport whose sender cannot try again, such as `NOTIFY`. While the request queue is full
+/// the submit is tried again with backoff, until `stop` is set or `patience` has passed; only then is 503 returned.
+pub(crate) fn apply_topic_patiently(
+    factory: &Arc<ExecutionContextFactory>,
+    posts: &Mutex<Vec<String>>,
+    topic: &str,
+    body: &[u8],
+    stop: &AtomicBool,
+    patience: Duration,
+) -> u16 {
+    let message = match accept_topic(posts, topic, body) {
         Ok(message) => message,
-        Err(err) => {
-            tracing::debug!(error = %err, "cluster body was rejected");
-            return 400;
-        }
+        Err(status) => return status,
     };
-    // Count before apply so the peer's post returns with this request already visible. Only the newest are kept.
-    {
-        let mut kept = lock(posts);
-        if kept.len() >= POSTS_KEPT {
-            kept.remove(0);
+    let until = Instant::now() + patience;
+    let mut backoff = BUSY_BACKOFF_MIN;
+    loop {
+        let status = apply_on_pool(factory, topic, &message);
+        let left = until.saturating_duration_since(Instant::now());
+        if status != 503 || stop.load(Ordering::Acquire) || left.is_zero() {
+            return status;
         }
-        kept.push(topic.to_string());
+        thread::sleep(backoff.min(left));
+        backoff = (backoff * 2).min(BUSY_BACKOFF_MAX);
     }
-    apply_on_pool(factory, topic, message)
+}
+
+/// Check and count one topic message. The error is the HTTP status: 404 an unknown topic, 400 a bad body.
+fn accept_topic(posts: &Mutex<Vec<String>>, topic: &str, body: &[u8]) -> Result<TopicMessage, u16> {
+    if topic != moqui_core::notify::ENTITY_CACHE_INVALIDATE && topic != moqui_core::notify::NOTIFICATION_MESSAGE {
+        return Err(404);
+    }
+    let message = topic_message(body).map_err(|err| {
+        tracing::debug!(error = %err, "cluster body was rejected");
+        400_u16
+    })?;
+    // Count before apply so the peer's post returns with this request already visible. Only the newest are kept.
+    let mut kept = lock(posts);
+    if kept.len() >= POSTS_KEPT {
+        kept.remove(0);
+    }
+    kept.push(topic.to_string());
+    Ok(message)
 }
 
 fn cluster_topic<'a>(method: &str, path: &'a str) -> Option<&'a str> {
@@ -381,8 +417,9 @@ fn topic_message(body: &[u8]) -> Result<TopicMessage, String> {
     })
 }
 
-fn apply_on_pool(factory: &Arc<ExecutionContextFactory>, topic: &str, message: TopicMessage) -> u16 {
+fn apply_on_pool(factory: &Arc<ExecutionContextFactory>, topic: &str, message: &TopicMessage) -> u16 {
     let topic = topic.to_string();
+    let message = message.clone();
     let owner = Arc::clone(factory);
     let submitted = factory.request_pool().try_submit(Arc::clone(factory), move || {
         let facade = owner
@@ -408,9 +445,26 @@ fn apply_on_pool(factory: &Arc<ExecutionContextFactory>, topic: &str, message: T
     }
 }
 
+type PeerStream = rustls::StreamOwned<rustls::ClientConnection, TcpStream>;
+
 struct PeerSender {
     config: Arc<rustls::ClientConfig>,
-    live: Mutex<HashMap<String, rustls::StreamOwned<rustls::ClientConnection, TcpStream>>>,
+    /// The kept-alive connection to each peer and when it was last used.
+    live: Mutex<HashMap<String, (PeerStream, Instant)>>,
+}
+
+impl PeerSender {
+    /// The kept connection to `base_url`, when it has not sat idle past [`CONNECTION_IDLE`]. Every connection that has
+    /// is dropped, so one to a member that left is not kept.
+    fn take_live(&self, base_url: &str) -> Option<PeerStream> {
+        let mut live = lock(&self.live);
+        live.retain(|_, (_, used)| used.elapsed() < CONNECTION_IDLE);
+        live.remove(base_url).map(|(stream, _)| stream)
+    }
+
+    fn keep(&self, base_url: &str, stream: PeerStream) {
+        lock(&self.live).insert(base_url.to_string(), (stream, Instant::now()));
+    }
 }
 
 impl Sender for PeerSender {
@@ -418,18 +472,17 @@ impl Sender for PeerSender {
         if !topic_segment(topic) {
             return Err(CoreError::new("cluster topic is not a path segment"));
         }
-        let kept = lock(&self.live).remove(base_url);
-        if let Some(mut stream) = kept {
+        if let Some(mut stream) = self.take_live(base_url) {
             if write_post(&mut stream, base_url, topic, payload).is_ok() {
-                lock(&self.live).insert(base_url.to_string(), stream);
+                self.keep(base_url, stream);
                 return Ok(());
             }
-            // The peer closes a connection left idle; a fresh one is tried once before the post fails.
+            // The peer may close a connection early; a fresh one is tried once before the post fails.
         }
         let mut stream = connect_peer(&self.config, base_url)?;
         let sent = write_post(&mut stream, base_url, topic, payload);
         if sent.is_ok() {
-            lock(&self.live).insert(base_url.to_string(), stream);
+            self.keep(base_url, stream);
         }
         sent
     }

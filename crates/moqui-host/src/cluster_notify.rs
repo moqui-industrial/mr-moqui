@@ -43,6 +43,8 @@ const INLINE_LIMIT: usize = 7_900;
 const WAIT: Duration = Duration::from_millis(500);
 const PRUNE_EVERY: Duration = Duration::from_secs(60);
 const RECONNECT_MAX: Duration = Duration::from_secs(5);
+/// How long one notification waits for room in the request queue.
+const BUSY_PATIENCE: Duration = Duration::from_secs(30);
 
 /// Install the sender that routes each peer's base URL to its transport.
 ///
@@ -234,7 +236,7 @@ fn listen_loop(
                     return;
                 };
                 for payload in payloads {
-                    apply(&factory, posts, &payload);
+                    apply(&factory, posts, &payload, stop);
                 }
             }
             Err(err) => {
@@ -256,7 +258,10 @@ fn listen_loop(
 }
 
 /// One `NOTIFY` payload: skipped when this member sent it, else applied as a `POST /cluster/{topic}` would be.
-fn apply(factory: &Arc<ExecutionContextFactory>, posts: &Mutex<Vec<String>>, payload: &str) {
+///
+/// No sender is told to try again, so a full request queue is waited out on this thread, which is the listener's own;
+/// an invalidation still refused after [`BUSY_PATIENCE`] clears every entity list cache instead.
+fn apply(factory: &Arc<ExecutionContextFactory>, posts: &Mutex<Vec<String>>, payload: &str, stop: &AtomicBool) {
     let mut lines = payload.splitn(3, '\n');
     let (Some(topic), Some(origin), Some(body)) = (lines.next(), lines.next(), lines.next()) else {
         tracing::warn!("cluster NOTIFY payload is not topic, origin and body");
@@ -287,16 +292,21 @@ fn apply(factory: &Arc<ExecutionContextFactory>, posts: &Mutex<Vec<String>>, pay
     } else {
         body
     };
-    let status = crate::cluster_edge::apply_topic(factory, posts, topic, body.as_bytes());
+    let status =
+        crate::cluster_edge::apply_topic_patiently(factory, posts, topic, body.as_bytes(), stop, BUSY_PATIENCE);
     if status != 204 {
         tracing::warn!("cluster NOTIFY for {topic} was not applied: status {status}");
     }
+    if status == 503 && topic == moqui_core::notify::ENTITY_CACHE_INVALIDATE {
+        clear_entity_caches(factory);
+    }
 }
 
+/// Clear every entity list cache, for an invalidation that may have been missed.
 fn clear_entity_caches(factory: &ExecutionContextFactory) {
     if let Some(facade) = factory.entity() {
         if let Err(err) = moqui_core::entity::cache::clear_all_list_caches(&facade) {
-            tracing::warn!("could not clear the entity caches after the cluster LISTEN reconnected: {err}");
+            tracing::warn!("could not clear the entity caches after a missed cluster invalidation: {err}");
         }
     }
 }

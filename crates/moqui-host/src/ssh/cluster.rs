@@ -24,7 +24,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use moqui_core::cluster::Sender;
 use moqui_core::context::{Error as CoreError, ExecutionContextFactory};
@@ -40,6 +40,8 @@ pub const CLUSTER_USER: &str = "moqui-cluster";
 /// Largest frame accepted.
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a peer's session is kept with nothing sent on it.
+const PEER_IDLE: Duration = Duration::from_secs(600);
 
 /// The login key every member derives from the shared `cluster_tls_key`.
 ///
@@ -92,11 +94,14 @@ struct Peer {
     channels: HashMap<String, BufReader<ChannelStream<client::Msg>>>,
 }
 
+type PeerSlot = Arc<tokio::sync::Mutex<Option<Peer>>>;
+
 pub struct SshSender {
     factory: Weak<ExecutionContextFactory>,
     https: Arc<dyn Sender>,
     key: Arc<PrivateKey>,
-    peers: Mutex<HashMap<String, Arc<tokio::sync::Mutex<Option<Peer>>>>>,
+    /// The session slot of each peer and when it was last used.
+    peers: Mutex<HashMap<String, (PeerSlot, Instant)>>,
 }
 
 impl Sender for SshSender {
@@ -105,13 +110,7 @@ impl Sender for SshSender {
             return self.https.post(base_url, topic, payload);
         };
         let fingerprint = self.pinned(base_url)?;
-        let slot = Arc::clone(
-            self.peers
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .entry(base_url.to_string())
-                .or_default(),
-        );
+        let slot = self.slot(base_url);
         let (address, topic, payload, key) = (
             address.to_string(),
             topic.to_string(),
@@ -147,6 +146,24 @@ impl Drop for SshSender {
 }
 
 impl SshSender {
+    /// The session slot of `base_url`, now marked used. A slot unused for [`PEER_IDLE`] is dropped, closing its
+    /// session, so one to a member that left the cluster is not kept.
+    fn slot(&self, base_url: &str) -> PeerSlot {
+        let mut peers = self.peers.lock().unwrap_or_else(PoisonError::into_inner);
+        let idle: Vec<_> = peers.extract_if(|_, (_, used)| used.elapsed() >= PEER_IDLE).collect();
+        let (slot, used) = peers
+            .entry(base_url.to_string())
+            .or_insert_with(|| (PeerSlot::default(), Instant::now()));
+        *used = Instant::now();
+        let slot = Arc::clone(slot);
+        drop(peers);
+        if !idle.is_empty() {
+            // As in `Drop`: the sessions close on the runtime they were opened on.
+            crate::edge::handle().spawn(async move { drop(idle) });
+        }
+        slot
+    }
+
     /// The host key fingerprint the peer registered on its `ClusterMember` row.
     fn pinned(&self, base_url: &str) -> Result<String, CoreError> {
         let factory = self
@@ -306,5 +323,52 @@ pub(super) async fn serve_channel(
             return;
         }
         let _ = stream.get_mut().flush().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, Weak};
+    use std::time::{Duration, Instant};
+
+    use moqui_core::cluster::Sender;
+    use moqui_core::context::Error as CoreError;
+    use russh::keys::PrivateKey;
+
+    use super::{PeerSlot, SshSender, PEER_IDLE};
+
+    struct NoSender;
+
+    impl Sender for NoSender {
+        fn post(&self, _base_url: &str, _topic: &str, _payload: &[u8]) -> Result<(), CoreError> {
+            Err(CoreError::new("not in this test"))
+        }
+    }
+
+    #[test]
+    fn a_peer_left_idle_is_dropped_on_the_next_post() {
+        let sender = SshSender {
+            factory: Weak::new(),
+            https: Arc::new(NoSender),
+            key: Arc::new(PrivateKey::from(
+                russh::keys::ssh_key::private::Ed25519Keypair::from_seed(&[7; 32]),
+            )),
+            peers: Mutex::new(HashMap::new()),
+        };
+        let long_ago = Instant::now()
+            .checked_sub(PEER_IDLE + Duration::from_secs(1))
+            .expect("an instant before the idle limit");
+        sender
+            .peers
+            .lock()
+            .unwrap()
+            .insert("ssh://gone:22".to_string(), (PeerSlot::default(), long_ago));
+        let first = sender.slot("ssh://live:22");
+        let again = sender.slot("ssh://live:22");
+        assert!(Arc::ptr_eq(&first, &again));
+        let peers = sender.peers.lock().unwrap();
+        assert!(!peers.contains_key("ssh://gone:22"));
+        assert!(peers.contains_key("ssh://live:22"));
     }
 }
