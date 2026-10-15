@@ -507,6 +507,23 @@ fn destroy_all_in_thread_commits_open_and_parked_frames() {
 }
 
 #[test]
+fn rollback_all_in_thread_rolls_back_open_joined_and_parked_frames() {
+    let (mgr, driver) = harness(small());
+    assert!(mgr.begin(None).expect("outer"));
+    mgr.with_connection(|_| Ok(())).expect("outer work");
+    assert!(!mgr.begin(None).expect("joined"));
+    assert!(mgr.force_new(None).expect("inner"));
+    mgr.with_connection(|_| Ok(())).expect("inner work");
+    mgr.rollback_all_in_thread().expect("rollback all");
+    assert!(!mgr.in_transaction());
+    assert_eq!(driver.event_count("commit:"), 0);
+    assert_eq!(driver.event_count("rollback:"), 2);
+    assert_eq!(mgr.stats().parked, 0);
+    assert_eq!(mgr.stats().checked_out, 0);
+    mgr.rollback_all_in_thread().expect("empty");
+}
+
+#[test]
 fn managers_do_not_share_a_stack() {
     let (first, _) = harness(small());
     let (second, _) = harness(small());

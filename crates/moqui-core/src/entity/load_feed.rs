@@ -256,6 +256,11 @@ fn drop_frame_touches(frame: u64) {
     TOUCHES.with(|touches| touches.borrow_mut().remove(&frame));
 }
 
+/// Forget the touches of every frame on this thread. Only for a thread with no transaction frame left.
+pub(super) fn clear_frame_touches() {
+    TOUCHES.with(|touches| touches.borrow_mut().clear());
+}
+
 /// Rules stored for `entity_name`. This lookup does not run them; `service::run_matched_eca` does.
 pub fn eca_rules(facade: &EntityFacade, entity_name: &str) -> Vec<EcaRule> {
     let dirs = facade.entity_dirs();

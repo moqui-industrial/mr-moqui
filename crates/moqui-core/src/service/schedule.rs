@@ -45,6 +45,7 @@ pub(crate) fn scheduler_loop(shared: Arc<Shared>) {
         }
         if last_pass.elapsed() >= shared.check_interval {
             last_pass = Instant::now();
+            let _cleanup = super::pool::WorkCleanup::new(shared.factory());
             super::jobs::run_scheduled(&shared);
             super::pool::run_tick_hook(&shared);
         }

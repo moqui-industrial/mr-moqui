@@ -35,6 +35,8 @@ use moqui_lib::node::MNode;
 use moqui_lib::object::Value;
 
 use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
+use crate::entity::EntityFacade;
+use crate::transaction::TransactionManager;
 
 const DEFAULT_WORKERS: usize = 32;
 const DEFAULT_QUEUE: usize = 65_535;
@@ -65,12 +67,64 @@ impl Drop for WorkerFlag {
     }
 }
 
-struct ClearStack;
+/// Ends what one unit of work left on a pool thread when it drops: the script context stack, any transaction frame
+/// still open on the factory's managers, which is rolled back, and the entity layer's thread state. Request and
+/// service workers, reserved threads and the scheduler pass hold one for each item, as Java runs `destroyAllInThread`
+/// in `finally`. It goes outside the item's `catch_unwind`, so it never runs during an unwind.
+pub(crate) struct WorkCleanup {
+    factory: Option<Arc<ExecutionContextFactory>>,
+    /// False for an inline item run under the caller's context, whose script stack and sim session stay.
+    outermost: bool,
+}
 
-impl Drop for ClearStack {
-    fn drop(&mut self) {
-        crate::script::clear_context_stack();
+impl WorkCleanup {
+    pub(crate) fn new(factory: Option<Arc<ExecutionContextFactory>>) -> Self {
+        Self {
+            factory,
+            outermost: true,
+        }
     }
+}
+
+impl Drop for WorkCleanup {
+    fn drop(&mut self) {
+        if self.outermost {
+            crate::script::clear_context_stack();
+        }
+        let Some(facade) = self.factory.as_ref().and_then(|factory| factory.entity()) else {
+            return;
+        };
+        rollback_frames(&facade);
+        crate::entity::clear_thread_state(&facade, self.outermost);
+    }
+}
+
+/// Roll back every transaction frame left on this thread for the facade's managers, the sim overlay's included.
+///
+/// A frame still open after a unit of work was never ended by the code that began it, so nothing decided to keep
+/// its writes; Java's `destroyAllInThread` commits it, and this rolls it back.
+pub(crate) fn rollback_frames(facade: &EntityFacade) {
+    for runtime in facade.inner.groups.values() {
+        rollback_manager(&runtime.transactions);
+    }
+    if let Some(sim) = facade.sim_transactions() {
+        rollback_manager(&sim);
+    }
+}
+
+fn rollback_manager(manager: &TransactionManager) {
+    if let Err(err) = manager.rollback_all_in_thread() {
+        tracing::warn!(error = %err, "transaction cleanup after a unit of work failed");
+    }
+}
+
+/// The message of a caught panic, for the log.
+pub(crate) fn panic_text(payload: &(dyn Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|text| (*text).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_default()
 }
 
 struct ReservedSlot(Arc<Shared>);
@@ -295,7 +349,8 @@ impl ServicePools {
     }
 
     /// Test pool. `workers` is at least 1. Same Drop as a booted pool.
-    pub fn bounded(workers: usize, queue: usize) -> Self {
+    #[cfg(test)]
+    pub(crate) fn bounded(workers: usize, queue: usize) -> Self {
         start(Settings::test(workers.max(1), queue)).expect("service worker pool")
     }
 
@@ -574,6 +629,7 @@ struct Settings {
     check_interval: Duration,
 }
 
+#[cfg(test)]
 impl Settings {
     fn test(workers: usize, queue: usize) -> Self {
         Self {
@@ -703,11 +759,14 @@ fn run_work(shared: &Arc<Shared>, work: Work) {
     lock_mutex(&shared.state).active += 1;
     match work {
         Work::Job(run) => {
-            let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _cleanup = WorkCleanup::new(Some(Arc::clone(run.factory())));
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
                 let _flag = WorkerFlag::enter();
-                let _clear = ClearStack;
                 super::jobs::run_job(*run);
             }));
+            if let Err(payload) = outcome {
+                tracing::error!(panic = %panic_text(payload.as_ref()), "service job panicked");
+            }
         }
         Work::Closure(job) => run_closure(shared, job),
         other => {
@@ -733,20 +792,22 @@ fn call_job(work: Work) -> Option<CallJob> {
 
 #[cfg(test)]
 fn run_task(task: Box<dyn FnOnce() + Send>) {
+    let _cleanup = WorkCleanup::new(None);
     let _ = catch_unwind(AssertUnwindSafe(|| {
         let _flag = WorkerFlag::enter();
-        let _clear = ClearStack;
         task();
     }));
 }
 
 fn run_call(job: CallJob) {
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        let _flag = WorkerFlag::enter();
-        let _clear = ClearStack;
-        invoke(&job.factory, &job.name, &job.parameters, job.user_name.as_deref())
-    }));
-    let outcome = unwind_result(result);
+    // The cleanup ends before the reply, so the caller hears only after it.
+    let outcome = {
+        let _cleanup = WorkCleanup::new(Some(Arc::clone(&job.factory)));
+        unwind_result(catch_unwind(AssertUnwindSafe(|| {
+            let _flag = WorkerFlag::enter();
+            invoke(&job.factory, &job.name, &job.parameters, job.user_name.as_deref())
+        })))
+    };
     match job.reply {
         Some(reply) => {
             let _ = reply.send(outcome);
@@ -795,14 +856,21 @@ fn call_now(name: &str, parameters: &BTreeMap<String, Value>) -> Result<BTreeMap
 }
 
 /// One queued item on the inline executor. Mirrors [`run_work`] without the worker flag: a nested
-/// `callFuture()` already runs inline. The script stack is cleared only when no context was entered,
-/// since otherwise it belongs to the caller.
+/// `callFuture()` already runs inline. The drain runs only with no transaction on the thread, so a frame
+/// left after the item is the item's and is rolled back. The script stack and sim session are cleared only
+/// when no context was entered, since otherwise they belong to the caller.
 fn run_inline(work: Work) {
-    let _clear = ExecutionContext::current().is_none().then_some(ClearStack);
+    let factory = match &work {
+        Work::Job(run) => Some(Arc::clone(run.factory())),
+        Work::Call(job) => Some(Arc::clone(&job.factory)),
+        _ => None,
+    };
+    let mut cleanup = WorkCleanup::new(factory);
+    cleanup.outermost = ExecutionContext::current().is_none();
     match work {
         Work::Job(run) => {
-            if catch_unwind(AssertUnwindSafe(|| super::jobs::run_job(*run))).is_err() {
-                tracing::error!("inline service job panicked");
+            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| super::jobs::run_job(*run))) {
+                tracing::error!(panic = %panic_text(payload.as_ref()), "inline service job panicked");
             }
         }
         Work::Call(job) => {
@@ -810,6 +878,7 @@ fn run_inline(work: Work) {
                 invoke(&job.factory, &job.name, &job.parameters, job.user_name.as_deref())
             }));
             let outcome = unwind_result(result);
+            drop(cleanup);
             match job.reply {
                 Some(reply) => {
                     let _ = reply.send(outcome);
@@ -857,12 +926,14 @@ fn reserved(
         .name("moqui-reserved".to_string())
         .spawn(move || {
             let _slot = slot;
-            let result = catch_unwind(AssertUnwindSafe(|| {
-                let _flag = WorkerFlag::enter();
-                let _clear = ClearStack;
-                invoke(&factory, &name, &parameters, user_name.as_deref())
-            }));
-            let _ = tx.send(unwind_result(result));
+            let outcome = {
+                let _cleanup = WorkCleanup::new(Some(Arc::clone(&factory)));
+                unwind_result(catch_unwind(AssertUnwindSafe(|| {
+                    let _flag = WorkerFlag::enter();
+                    invoke(&factory, &name, &parameters, user_name.as_deref())
+                })))
+            };
+            let _ = tx.send(outcome);
         })
         .map_err(|err| Error::new(format!("reserved worker did not start: {err}")))?;
     Ok(rx)
@@ -900,7 +971,7 @@ fn fail_one(work: Work) {
         Work::Closure(job) => {
             let _ = job.reply.send(Err(stopped));
         }
-        Work::Job(_) => {}
+        Work::Job(run) => super::jobs::abandon(*run),
         #[cfg(test)]
         Work::Task(_) => {}
     }
@@ -930,14 +1001,16 @@ fn reserve_closure(shared: &Arc<Shared>, run: ClosureFn) -> Result<mpsc::Receive
         .name("moqui-reserved".to_string())
         .spawn(move || {
             let _slot = slot;
-            let result = catch_unwind(AssertUnwindSafe(|| {
-                let _flag = WorkerFlag::enter();
-                let _clear = ClearStack;
-                let ctx = factory.new_context();
-                let _entered = ctx.enter();
-                run()
-            }));
-            let _ = tx.send(closure_outcome(result));
+            let outcome = {
+                let _cleanup = WorkCleanup::new(Some(Arc::clone(&factory)));
+                closure_outcome(catch_unwind(AssertUnwindSafe(|| {
+                    let _flag = WorkerFlag::enter();
+                    let ctx = factory.new_context();
+                    let _entered = ctx.enter();
+                    run()
+                })))
+            };
+            let _ = tx.send(outcome);
         })
         .map_err(|err| Error::new(format!("reserved worker did not start: {err}")))?;
     Ok(rx)
@@ -945,13 +1018,15 @@ fn reserve_closure(shared: &Arc<Shared>, run: ClosureFn) -> Result<mpsc::Receive
 
 fn run_closure(shared: &Shared, job: ClosureJob) {
     let ClosureJob { run, reply } = job;
-    let result = catch_unwind(AssertUnwindSafe(|| enter_and_run(shared, run)));
-    let _ = reply.send(closure_outcome(result));
+    let outcome = {
+        let _cleanup = WorkCleanup::new(attached_factory(shared).ok());
+        closure_outcome(catch_unwind(AssertUnwindSafe(|| enter_and_run(shared, run))))
+    };
+    let _ = reply.send(outcome);
 }
 
 fn enter_and_run(shared: &Shared, run: ClosureFn) -> ClosureOut {
     let _flag = WorkerFlag::enter();
-    let _clear = ClearStack;
     let factory = attached_factory(shared)?;
     let ctx = factory.new_context();
     let _entered = ctx.enter();
@@ -1018,6 +1093,44 @@ mod tests {
             ServicePools::idle().check_interval(),
             Duration::from_secs(DEFAULT_CHECK_SECONDS)
         );
+    }
+
+    #[test]
+    fn a_frame_and_sim_flag_left_by_one_job_do_not_reach_the_next() {
+        use crate::context::{ExecutionContext, ExecutionContextFactory};
+        use moqui_lib::object::Value;
+
+        let ctx = ExecutionContextFactory::test_context_with("", ServicePools::bounded(1, 4));
+        let facade = crate::testing::open();
+        ctx.factory().set_entity(facade.clone());
+        let pools = ctx.factory().service_pools();
+        let left = facade.clone();
+        pools
+            .call(move || {
+                let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+                assert!(left.begin("moqui.test.TestEntity", None)?);
+                let mut row = left.make_value("moqui.test.TestEntity")?;
+                row.set("testId", Value::string("left-open"));
+                row.create(&left)?;
+                left.set_sim_active(true);
+                Ok(())
+            })
+            .unwrap();
+        let next = facade.clone();
+        let (in_transaction, sim, found) = pools
+            .call(move || {
+                let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+                let found = next
+                    .find("moqui.test.TestEntity")?
+                    .eq("testId", Value::string("left-open"))
+                    .one()?
+                    .is_some();
+                Ok((crate::transaction::thread_in_transaction(), next.sim_active(), found))
+            })
+            .unwrap();
+        assert!(!in_transaction, "the next job joined the frame the last one left");
+        assert!(!sim, "the sim flag outlived its job");
+        assert!(!found, "the frame left open was committed");
     }
 
     #[test]

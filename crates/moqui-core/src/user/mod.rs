@@ -33,6 +33,7 @@ pub use factor::{
     random_code, random_string, second_factor_required, single_use_hash, totp_code_valid, totp_secret, totp_uri,
 };
 pub use filter::{apply_entity_filters, find_filters_for_user};
+pub(crate) use login::login_user_local;
 pub(crate) use login::stamp_value;
 pub use login::{
     apply_header_keys, change_password, get_login_key, internal_login_user, login_anonymous, login_external_user,

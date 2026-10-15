@@ -511,14 +511,26 @@ impl TransactionManager {
 
     /// Commits a frame left open, resumes and commits parked frames, and returns parked connections.
     ///
-    /// Closes an open stream first. An open stream is the enlisted connection. Phase 6 and phase 7
-    /// call this from `finally` on request, job, and async-service threads. Does nothing when this
-    /// thread has no frame for this manager.
+    /// Closes an open stream first. An open stream is the enlisted connection. This is Java's
+    /// `destroyAllInThread`; the request and service pools use [`Self::rollback_all_in_thread`]. Does
+    /// nothing when this thread has no frame for this manager.
     pub fn destroy_all_in_thread(&self) -> Result<(), Error> {
         if self.depth() > 0 {
             tracing::warn!("thread ending with a transaction in place; committing");
         }
-        let result = self.destroy_frames();
+        let result = self.destroy_frames(true);
+        self.clear_thread_locks();
+        result
+    }
+
+    /// [`Self::destroy_all_in_thread`], rolling back in place of committing. The request and service pools call this
+    /// after each unit of work: a frame still open then was never ended by the code that began it, which `run` and
+    /// [`TxScope`] always do, so it holds writes nobody decided to keep.
+    pub fn rollback_all_in_thread(&self) -> Result<(), Error> {
+        if self.depth() > 0 {
+            tracing::error!("thread ending its work with a transaction in place; rolling back");
+        }
+        let result = self.destroy_frames(false);
         self.clear_thread_locks();
         result
     }
@@ -923,7 +935,8 @@ impl TransactionManager {
         })
     }
 
-    fn destroy_frames(&self) -> Result<(), Error> {
+    /// Ends every frame on this thread, innermost first: a joined frame gives back each join, so its owner ends it.
+    fn destroy_frames(&self, commit: bool) -> Result<(), Error> {
         loop {
             match self.top() {
                 Top::Empty => return Ok(()),
@@ -933,11 +946,14 @@ impl TransactionManager {
                         let _ = self.set_rollback_only(err.to_string());
                     }
                     let before = self.depth();
-                    if let Err(err) = self.commit() {
+                    let ended = if commit { self.commit() } else { self.rollback() };
+                    if let Err(err) = ended {
                         if self.depth() >= before {
                             return Err(err);
                         }
-                        tracing::warn!(error = %err, "destroy_all_in_thread rolled back a transaction");
+                        if commit {
+                            tracing::warn!(error = %err, "destroy_all_in_thread rolled back a transaction");
+                        }
                     }
                 }
             }

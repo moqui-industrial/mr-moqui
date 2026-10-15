@@ -29,18 +29,6 @@ use crate::transaction::TransactionManager;
 
 const COLUMNS: [&str; 4] = ["serviceName", "parameterValue", "lockThread", "lockTime"];
 
-pub fn acquire(name: &str) -> Result<(), Error> {
-    let Some(def) = super::define::find(name) else {
-        return Ok(());
-    };
-    if def.semaphore == SemaphoreMode::None {
-        return Ok(());
-    }
-    let facade = current_facade().ok_or_else(|| Error::new("no entity facade is installed"))?;
-    let _guard = take(&def, &BTreeMap::new(), &facade)?;
-    Ok(())
-}
-
 /// `None` when the service has no semaphore. The guard clears the row on drop.
 pub(crate) fn take(
     def: &ServiceDef,
@@ -265,8 +253,4 @@ fn reserve<T>(
         }
     })
     .map_err(Error::from)
-}
-
-fn current_facade() -> Option<EntityFacade> {
-    crate::context::ExecutionContext::with_current(|ctx| ctx.factory().entity()).flatten()
 }

@@ -64,7 +64,6 @@ pub(crate) use rest::openapi_document;
 pub use rest::{root_resource_infos, run};
 pub use seca::run_seca_rules;
 pub use security_checks::security_checks_run;
-pub use semaphore::acquire;
 pub(crate) use system_sync::receive_rest_message;
 pub use validate::validate;
 pub(crate) use validate::{auto_entity_name, auto_fields};

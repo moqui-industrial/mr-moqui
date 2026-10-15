@@ -54,5 +54,19 @@ pub(crate) use sequence::uuid_v4;
 pub use sequence::{fill_bank, stagger_step, take_id, SequenceBank};
 pub use value::{EntityList, EntityValue};
 
+/// Forget what the entity layer keeps on this thread once a unit of work is over. With `sim`, ends every sim
+/// session still open and clears the sim flag, so a missed `exit_sim` does not send the thread's later writes to a
+/// throwaway schema. With no transaction frame left on the thread, also drops the per-frame held rows, written
+/// entities and data-feed touches. The request and service pools call this after rolling back what the work left.
+pub(crate) fn clear_thread_state(facade: &EntityFacade, sim: bool) {
+    if sim {
+        cache::clear_sim(facade);
+    }
+    if !crate::transaction::thread_in_transaction() {
+        cache::clear_frame_state();
+        load_feed::clear_frame_touches();
+    }
+}
+
 #[cfg(test)]
 mod tests;
