@@ -189,3 +189,16 @@ The third iteration (the search callers) needed:
   - Mantle's `filterMap` values were Groovy map literals. They are JavaScript objects now, in `MantleSetupData.xml`.
 
 The earlier load work (component entity directories, rules, and data; services by path; `fromDate` and secondary ids on nested records) is in `plans/archive/Implementation-Phases.md`, after the gate's note on loading `mantle-udm`.
+
+## Fourth iteration: `in` lists, more casts, multi-line maps
+
+Phase 0a of the next round. Rules added to `moqui convert --groovy`, run on `mantle-usl` (own commit on the `mr-moqui` branch):
+
+- **`in-list` (143):** `x in [..]` becomes `[..].includes(x)`, so `!(x in [..])` becomes `!([..].includes(x))`. `x` is one postfix expression (name chain, calls, indexes, or a group) and the text before it must be a boundary: start, `(`, `,`, `[`, `{`, `?`, `:`, `=`, `==`, `!=`, `&&`, `||`, `return`. Groovy's `in` binds like `<`, tighter than `==` and `&&`. These are left: `!x in [..]` and `a + x in [..]`, which group differently; `for (x in [..])` and `for (String x in [..])`, which are loops; `x in someList`, whose type is unknown; and a list followed by `.`, `[`, or an operator. The result is a call, so it is safe in any position.
+- **`cast`, more operand shapes (+8):**
+  - `as String` now takes any postfix operand, such as `a.b(c)[0].d as String` or `x.movePointRight(2).longValue() as String`, and becomes `?.toString()`.
+  - `as int` and `as BigDecimal` now take an index, or a parenthesized group with no call, string, assignment, or ternary: `(a || 60) as int`, `(itemTotal + discountTotal) as BigDecimal`, `list[0].qty as BigDecimal`. The operand is repeated for the null test, which is why a call is left alone.
+  - The boundary test no longer counts `&gt;` and `&lt;` as a place an operand may start, since the XML text has them where a source file has `>`.
+- **Multi-line and nested map literals:** the map rule already spans lines and nests; this iteration adds tests for both. What is still left are the 52 `map + [..]` places, which need the type of the left operand.
+
+`moqui lint --groovy` on mantle-usl: parse failures 582 to 580, idiom sites 1959 to 1825. Whole `<script>` blocks that fail for another reason stay failures.

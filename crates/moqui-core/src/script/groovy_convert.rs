@@ -24,9 +24,11 @@
 //!   becomes `(name?.length > 0)`, and `!name` becomes `!name?.length`: an empty list is false in Groovy and an object
 //!   (always true) in JavaScript. `?.length` holds for an entity list, an array, and null;
 //! - `'lit'.equals(x)` and `x.equals('lit')` (a name chain) become `('lit' === x)` and `(x === 'lit')`;
-//! - `x as String` becomes `x?.toString()`; `x as BigDecimal` and `x as int` (or `Integer`, `long`, `Long`) of a name
-//!   chain become `(x == null ? null : toDecimal(x))` and `(x == null ? null : Math.trunc(toDecimal(x).toNumber()))`,
+//! - `x as String` becomes `x?.toString()` (of any postfix expression); `x as BigDecimal` and `x as int` (or `Integer`,
+//!   `long`, `Long`) of a name chain, an index, or a parenthesized group with no call in it become `(x == null ? null : toDecimal(x))` and `(x == null ? null : Math.trunc(toDecimal(x).toNumber()))`,
 //!   as a Groovy cast of null is null; a numeric cast of anything else is left for review;
+//! - `x in [..]` becomes `[..].includes(x)` where `x` is one postfix expression that starts at a boundary (so
+//!   `!(x in [..])` and `a && x in [..]` work, and `!x in [..]`, `a + x in [..]`, and `for (x in [..])` are left);
 //! - `.contains(` becomes `.includes(` on a string literal or a name that is a found list of the file;
 //! - `new ArrayList()` becomes `[]`, and `new HashMap()` or `new LinkedHashMap()` becomes `{}` (generics or not);
 //! - an EDI grammar file (a `.groovy` file that is one list literal) gets a `.js` copy in JavaScript, and an XML
@@ -49,6 +51,7 @@ pub enum RewriteKind {
     EmptyList,
     StringEquals,
     Cast,
+    InList,
     ListIncludes,
     EmptyCollection,
     QuotedProperty,
@@ -66,6 +69,7 @@ impl RewriteKind {
             RewriteKind::EmptyList => "empty-list",
             RewriteKind::StringEquals => "string-equals",
             RewriteKind::Cast => "cast",
+            RewriteKind::InList => "in-list",
             RewriteKind::ListIncludes => "list-includes",
             RewriteKind::EmptyCollection => "empty-collection",
             RewriteKind::QuotedProperty => "quoted-property",
@@ -134,6 +138,7 @@ impl ConvertReport {
             RewriteKind::EmptyList,
             RewriteKind::StringEquals,
             RewriteKind::Cast,
+            RewriteKind::InList,
             RewriteKind::ListIncludes,
             RewriteKind::EmptyCollection,
             RewriteKind::QuotedProperty,
@@ -692,23 +697,9 @@ fn casts(text: &str) -> (String, usize, usize) {
         let (as_at, type_end, kind) = found;
         let before = out[..as_at].trim_end();
         let operand_end = before.len();
-        let operand_start = if before.ends_with(')') {
-            let open = matching_back(&out, operand_end - 1, b'(', b')');
-            match open {
-                Some(open) => chain_start(&out, open).unwrap_or(open),
-                None => {
-                    from = type_end;
-                    continue;
-                }
-            }
-        } else {
-            match chain_start(&out, operand_end) {
-                Some(start) => start,
-                None => {
-                    from = type_end;
-                    continue;
-                }
-            }
+        let Some(operand_start) = postfix_start(&out, operand_end).filter(|start| !in_spans(&spans, *start)) else {
+            from = type_end;
+            continue;
         };
         // `as` binds looser than arithmetic and ordering in Groovy (`a + b as String` casts the sum), so the operand must
         // start where an expression at that level starts.
@@ -718,11 +709,12 @@ fn casts(text: &str) -> (String, usize, usize) {
             continue;
         }
         let operand = out[operand_start..operand_end].to_string();
-        let simple = chain_start(&operand, operand.len()) == Some(0);
+        let simple = pure_operand(&operand);
         let replacement = match kind {
             "String" => {
                 let wrapped = operand.starts_with('(') && matching(&operand, 0, b'(', b')') == Some(operand.len() - 1);
-                if simple || wrapped {
+                // The operand is one postfix expression, so `?.toString()` applies to all of it.
+                if wrapped || postfix_start(&operand, operand.len()) == Some(0) {
                     format!("{operand}?.toString()")
                 } else {
                     format!("({operand})?.toString()")
@@ -758,7 +750,14 @@ fn starts_cast_operand(before: &str) -> bool {
     if before.is_empty() {
         return true;
     }
-    if before.ends_with("<=") || before.ends_with(">=") {
+    // `&lt;`, `&gt;` and their `=` forms are ordering operators in XML text; `&amp;&amp;` still ends in `;` as `&&` does.
+    if before.ends_with("<=")
+        || before.ends_with(">=")
+        || before.ends_with("&lt;")
+        || before.ends_with("&gt;")
+        || before.ends_with("&lt;=")
+        || before.ends_with("&gt;=")
+    {
         return false;
     }
     ["(", ",", "[", "{", "?", ":", "=", "&&", "||", ";", "return"]
@@ -795,6 +794,171 @@ fn find_cast(text: &str, from: usize, spans: &[(usize, usize)]) -> Option<(usize
                 return Some((as_at, type_end, kind));
             }
         }
+    }
+    None
+}
+
+/// The start of the postfix expression (`a.b(c)[0]?.d`, a parenthesized group, a name) that ends at `end`.
+fn postfix_start(text: &str, end: usize) -> Option<usize> {
+    let mut pos = end;
+    loop {
+        pos = element_start(text, pos)?;
+        let before = &text[..pos];
+        if before.ends_with("?.") {
+            pos -= 2;
+        } else if before.ends_with('.') {
+            pos -= 1;
+        } else {
+            return Some(pos);
+        }
+    }
+}
+
+/// The start of one element ending at `pos`: a name, optionally followed by call and index suffixes, or a bare group.
+fn element_start(text: &str, pos: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut at = pos;
+    loop {
+        let last = *bytes.get(at.checked_sub(1)?)?;
+        if last == b')' {
+            at = matching_back(text, at - 1, b'(', b')')?;
+            if at > 0 && is_ident(bytes[at - 1]) {
+                return name_start(text, at);
+            }
+            return Some(at);
+        } else if last == b']' {
+            at = matching_back(text, at - 1, b'[', b']')?;
+            let prev = *bytes.get(at.checked_sub(1)?)?;
+            if !(is_ident(prev) || prev == b')' || prev == b']') {
+                return None;
+            }
+        } else if is_ident(last) {
+            return name_start(text, at);
+        } else {
+            return None;
+        }
+    }
+}
+
+fn name_start(text: &str, end: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut start = end;
+    while start > 0 && is_ident(bytes[start - 1]) {
+        start -= 1;
+    }
+    let first = *bytes.get(start)?;
+    (first.is_ascii_alphabetic() || first == b'_' || first == b'$').then_some(start)
+}
+
+/// True when evaluating the operand twice is the same as once: names, dots, indexes, grouping, and arithmetic or logic
+/// on them, with no call, assignment, string, or ternary.
+fn pure_operand(operand: &str) -> bool {
+    let bytes = operand.as_bytes();
+    if operand.contains("//") || operand.contains("/*") || operand.contains("++") || operand.contains("--") {
+        return false;
+    }
+    for (index, byte) in bytes.iter().enumerate() {
+        let allowed = is_ident(*byte)
+            || matches!(
+                *byte,
+                b'.' | b'?' | b' ' | b'|' | b'&' | b'+' | b'-' | b'*' | b'/' | b'%' | b'(' | b')' | b'[' | b']'
+            );
+        if !allowed {
+            return false;
+        }
+        if *byte == b'(' || *byte == b'[' {
+            let prev = operand[..index].trim_end().bytes().last();
+            if *byte == b'(' && prev.is_some_and(|p| is_ident(p) || p == b')' || p == b']') {
+                return false;
+            }
+        }
+        if *byte == b'?' && !(bytes.get(index + 1) == Some(&b'.') || index > 0 && bytes[index - 1] == b'?') {
+            return false;
+        }
+    }
+    !operand.trim().is_empty()
+}
+
+/// `x in [..]` to `[..].includes(x)`. See the module notes.
+fn in_lists(text: &str) -> (String, usize) {
+    let mut out = text.to_string();
+    let mut count = 0;
+    let mut from = 0;
+    loop {
+        let spans = string_spans(&out);
+        let Some((at, open, close)) = find_in(&out, from, &spans) else {
+            return (out, count);
+        };
+        from = at + 2;
+        let after = &out[close + 1..];
+        let rest = after.trim_start();
+        let gap = &after[..after.len() - rest.len()];
+        let follows = rest.is_empty()
+            || [")", ",", "]", "}", ";", "&&", "||", "&amp;&amp;", ":"]
+                .iter()
+                .any(|s| rest.starts_with(s))
+            || (rest.starts_with('?') && !rest.starts_with("?."))
+            || (gap.contains('\n') && rest.starts_with(|c: char| c.is_ascii_alphabetic() || c == '}'));
+        if !follows {
+            continue;
+        }
+        let end = out[..at].trim_end().len();
+        let Some(start) = postfix_start(&out, end).filter(|start| !in_spans(&spans, *start)) else {
+            continue;
+        };
+        let before = out[..start].trim_end();
+        // `for (x in [..])` and `for (String x in [..])` are loops, not tests.
+        let last_word: String = before
+            .chars()
+            .rev()
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        if (!last_word.is_empty() && last_word != "return")
+            || before.trim_end_matches('(').trim_end().ends_with("for") && before.ends_with('(')
+            || !starts_cast_operand(before)
+        {
+            continue;
+        }
+        let replacement = format!("{}.includes({})", &out[open..=close], &out[start..end]);
+        out = format!("{}{replacement}{}", &out[..start], &out[close + 1..]);
+        from = start;
+        count += 1;
+    }
+}
+
+/// The next `x in [..]` operator outside a string or `//` comment from `from`: where `in` starts, and the list's
+/// brackets. A map literal is not a list.
+fn find_in(text: &str, from: usize, spans: &[(usize, usize)]) -> Option<(usize, usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut search = from;
+    while let Some(found) = text[search..].find("in") {
+        let at = search + found;
+        search = at + 2;
+        if at == 0 || !(bytes[at - 1].is_ascii_whitespace() || bytes[at - 1] == b')') || in_spans(spans, at) {
+            continue;
+        }
+        if !bytes.get(at + 2).is_some_and(|b| b.is_ascii_whitespace() || *b == b'[') {
+            continue;
+        }
+        let line_start = text[..at].rfind('\n').map_or(0, |n| n + 1);
+        if text[line_start..at].contains("//") {
+            continue;
+        }
+        let rest = text[at + 2..].trim_start();
+        if !rest.starts_with('[') {
+            continue;
+        }
+        let open = text.len() - rest.len();
+        let Some(close) = matching(text, open, b'[', b']') else {
+            continue;
+        };
+        if is_map(&text[open + 1..close]) {
+            continue;
+        }
+        return Some((at, open, close));
     }
     None
 }
@@ -1026,6 +1190,11 @@ pub fn rewrite_expression_with(text: &str, lists: &BTreeSet<String>) -> (String,
     }
     if skipped > 0 {
         left.push("cast of an expression that is not a name chain, or under a tighter operator");
+    }
+    current = next;
+    let (next, count) = in_lists(&current);
+    if count > 0 {
+        kinds.push(RewriteKind::InList);
     }
     current = next;
     let (next, count) = list_includes(&current, lists);
@@ -1658,8 +1827,8 @@ mod tests {
             "the sum is cast in Groovy"
         );
         assert_eq!(rewrite("x = count as String"), "x = count?.toString()");
-        let (text, _, left) = rewrite_expression_with("(a + b) as BigDecimal", &lists);
-        assert_eq!(text, "(a + b) as BigDecimal");
+        let (text, _, left) = rewrite_expression_with("foo(a) as BigDecimal", &lists);
+        assert_eq!(text, "foo(a) as BigDecimal");
         assert_eq!(
             left,
             vec!["cast of an expression that is not a name chain, or under a tighter operator"]
@@ -1695,5 +1864,89 @@ mod tests {
             rewrite("x = new ArrayList<String>(); m = new LinkedHashMap(); n = new HashMap(map)"),
             "x = []; m = {}; n = new HashMap(map)"
         );
+    }
+
+    #[test]
+    fn multi_line_and_nested_maps_become_objects() {
+        assert_eq!(
+            rewrite("[\n    a: 1,\n    b: [c: 2,\n         d: [e: 3]],\n    (k): v\n]"),
+            "{\n    a: 1,\n    b: {c: 2,\n         d: {e: 3}},\n    [k]: v\n}"
+        );
+        assert_eq!(
+            rewrite("[a: [1, 2,\n  3], b: [:],\n // note: [x: 1]\n c: 'x']"),
+            "{a: [1, 2,\n  3], b: {},\n // note: [x: 1]\n c: 'x'}"
+        );
+        let once = rewrite("[\n a: 1,\n b: [c: 2]\n]");
+        assert_eq!(rewrite(&once), once, "idempotent");
+    }
+
+    #[test]
+    fn in_a_list_literal_becomes_includes() {
+        assert_eq!(rewrite("statusId in ['A', 'B']"), "['A', 'B'].includes(statusId)");
+        assert_eq!(rewrite("!(statusId in ['A', 'B'])"), "!(['A', 'B'].includes(statusId))");
+        assert_eq!(
+            rewrite("statusChanged &amp;&amp; payment.statusId in ['A','B'] &amp;&amp; x == 1"),
+            "statusChanged &amp;&amp; ['A','B'].includes(payment.statusId) &amp;&amp; x == 1"
+        );
+        assert_eq!(
+            rewrite("a && (b?.c in ['A']) || d in [1, 2]"),
+            "a && (['A'].includes(b?.c)) || [1, 2].includes(d)"
+        );
+        assert_eq!(rewrite("x.get('k') in ['A']"), "['A'].includes(x.get('k'))");
+        assert_eq!(
+            rewrite("ok = oldStatusId in [\n 'A',\n 'B']"),
+            "ok = [\n 'A',\n 'B'].includes(oldStatusId)"
+        );
+        assert_eq!(rewrite("c ? x in ['A'] : y"), "c ? ['A'].includes(x) : y");
+        assert_eq!(rewrite("return x in ['A']"), "return ['A'].includes(x)");
+        // Left alone: other precedence, loops, non-literals, strings.
+        for same in [
+            "!x in ['A']",
+            "a + x in ['A']",
+            "a &lt; x in ['A']",
+            "for (x in ['A', 'B']) { f(x) }",
+            "for (String x in ['A', 'B']) { f(x) }",
+            "x in someList",
+            "x in {a: 1}",
+            "'x in [1]'",
+            "x in ['A'].size()",
+            "// x in ['A']",
+        ] {
+            assert_eq!(rewrite(same), same);
+        }
+        let once = rewrite("!(a in ['A']) && b in ['B']");
+        assert_eq!(rewrite(&once), once, "idempotent");
+        let (_, kinds, _) = rewrite_expression("x in ['A']");
+        assert_eq!(kinds, vec![RewriteKind::InList]);
+    }
+
+    #[test]
+    fn more_cast_operand_shapes() {
+        assert_eq!(
+            rewrite("(convertDurOut.convertedAmount || 60) as int"),
+            "((convertDurOut.convertedAmount || 60) == null ? null : Math.trunc(toDecimal((convertDurOut.convertedAmount || 60)).toNumber()))"
+        );
+        assert_eq!(
+            rewrite("f(((a + b) as BigDecimal).divide(c, 3))"),
+            "f(((a + b) == null ? null : toDecimal((a + b))).divide(c, 3))"
+        );
+        assert_eq!(
+            rewrite("x = list[0].qty as BigDecimal"),
+            "x = (list[0].qty == null ? null : toDecimal(list[0].qty))"
+        );
+        assert_eq!(rewrite("x = foo(a).bar as String"), "x = foo(a).bar?.toString()");
+        assert_eq!(rewrite("x = a.b(c)[0]?.d as String"), "x = a.b(c)[0]?.d?.toString()");
+        // A call would run twice, and a tighter operator before the operand moves the cast.
+        assert_eq!(rewrite("x = foo(a) as int"), "x = foo(a) as int");
+        assert_eq!(
+            rewrite("x = (f(a) || 1) as BigDecimal"),
+            "x = (f(a) || 1) as BigDecimal"
+        );
+        assert_eq!(rewrite("x = (a ? 1 : 2) as int"), "x = (a ? 1 : 2) as int");
+        assert_eq!(rewrite("x = 1 + (a || 1) as int"), "x = 1 + (a || 1) as int");
+        assert_eq!(rewrite("a &gt; b as int"), "a &gt; b as int");
+        assert_eq!(rewrite("a &gt;= b as int"), "a &gt;= b as int");
+        let once = rewrite("x = (a || 60) as int");
+        assert_eq!(rewrite(&once), once, "idempotent");
     }
 }
