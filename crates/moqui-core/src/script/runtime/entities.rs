@@ -29,6 +29,30 @@ pub(super) fn entity_find<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<
     })
 }
 
+/// `ec.entity.sequencedIdPrimary(seqName, staggerMax, bankSize)`: the next id of a sequence, as text.
+pub(super) fn entity_sequenced_id_primary<'js>(
+    ctx: Ctx<'js>,
+    name: String,
+    stagger: Opt<JsValue<'js>>,
+    bank_size: Opt<JsValue<'js>>,
+) -> rquickjs::Result<String> {
+    host_guard(&ctx, || {
+        let facade = facade_of(&ctx)?;
+        let number = |value: &Opt<JsValue<'js>>| -> rquickjs::Result<Option<u64>> {
+            match value
+                .0
+                .as_ref()
+                .filter(|value| !value.is_null() && !value.is_undefined())
+            {
+                Some(value) => Ok(u64::try_from(js_i64(&ctx, value)?).ok()),
+                None => Ok(None),
+            }
+        };
+        crate::entity::sequenced_id_primary(&facade, &name, number(&stagger)?, number(&bank_size)?)
+            .map_err(|err| throw_lib(&ctx, &err))
+    })
+}
+
 pub(super) fn entity_make_value<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let facade = facade_of(&ctx)?;
@@ -158,9 +182,22 @@ impl HostFind {
         ctx: Ctx<'js>,
         first: JsValue<'js>,
         second: Opt<JsValue<'js>>,
+        third: Opt<JsValue<'js>>,
     ) -> rquickjs::Result<Class<'js, HostFind>> {
         host_guard(&ctx, || {
             let mut find = take_find(&ctx, &self.inner)?;
+            // `condition(field, operator, value)`: the operator is a name Java's factory knows, an empty one is equals.
+            if let (Some(operator), Some(value)) = (second.0.as_ref(), third.0.as_ref()) {
+                let field = js_string(&ctx, &first)?;
+                let operator = if operator.is_null() || operator.is_undefined() {
+                    String::new()
+                } else {
+                    js_string(&ctx, operator)?
+                };
+                let host = js_to_host(&ctx, value)?;
+                let condition = comparison(&field, &operator, host).map_err(|err| throw_lib(&ctx, &err))?;
+                return wrap_find(&ctx, find.condition(condition));
+            }
             if second.0.is_none() {
                 if first.is_null() || first.is_undefined() {
                     return wrap_find(&ctx, find);
@@ -221,11 +258,104 @@ impl HostFind {
         })
     }
 
-    fn offset<'js>(&self, ctx: Ctx<'js>, value: JsValue<'js>) -> rquickjs::Result<Class<'js, HostFind>> {
+    /// `offset(offset)`, or `offset(pageIndex, pageSize)` for the offset `pageIndex * pageSize`, as Java's. The page
+    /// size is not kept: `limit` sets it.
+    fn offset<'js>(
+        &self,
+        ctx: Ctx<'js>,
+        value: JsValue<'js>,
+        page_size: Opt<JsValue<'js>>,
+    ) -> rquickjs::Result<Class<'js, HostFind>> {
         host_guard(&ctx, || {
-            let number = js_i64(&ctx, &value)?;
+            let mut number = js_i64(&ctx, &value)?;
+            if let Some(size) = page_size.0.as_ref().filter(|size| !size.is_undefined()) {
+                number = number.saturating_mul(js_i64(&ctx, size)?);
+            }
             let find = take_find(&ctx, &self.inner)?.offset(number);
             wrap_find(&ctx, find)
+        })
+    }
+
+    /// `conditionDate(fromField, thruField, moment)`: the rows in effect at the moment, or now when it is empty.
+    fn condition_date<'js>(
+        &self,
+        ctx: Ctx<'js>,
+        from_field: String,
+        thru_field: String,
+        moment: Opt<JsValue<'js>>,
+    ) -> rquickjs::Result<Class<'js, HostFind>> {
+        host_guard(&ctx, || {
+            let moment = match moment.0.as_ref() {
+                Some(value) => js_to_host(&ctx, value)?,
+                None => Value::Null,
+            };
+            let mut find = take_find(&ctx, &self.inner)?;
+            if let Some(condition) = date_range_condition(&from_field, &thru_field, moment, false) {
+                find = find.condition(condition);
+            }
+            wrap_find(&ctx, find)
+        })
+    }
+
+    /// `getPageIndex()`: `offset / pageSize`, 0 with no offset.
+    fn get_page_index<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            let find = self.peek(&ctx)?;
+            let size = find.limit_value().filter(|limit| *limit != 0).unwrap_or(20);
+            i64_to_js(&ctx, find.offset_value().map_or(0, |offset| offset / size))
+        })
+    }
+
+    /// `getPageSize()`: the limit, 20 with none.
+    fn get_page_size<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || i64_to_js(&ctx, self.peek(&ctx)?.limit_value().unwrap_or(20)))
+    }
+
+    /// `updateAll(fieldsToSet)`: set the fields on each row found and update the ones that change. Returns how many
+    /// rows were updated. The find is not cached, so every row is read and its entity ECA rules run.
+    fn update_all<'js>(&self, ctx: Ctx<'js>, fields: JsValue<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            let facade = facade_of(&ctx)?;
+            let Value::Map(fields) = js_to_host(&ctx, &fields)? else {
+                return Err(Exception::throw_message(&ctx, "updateAll needs a map of fields to set"));
+            };
+            let find = take_find(&ctx, &self.inner)?.use_cache(false);
+            let entity = find.entity_name().to_string();
+            let create_only = facade
+                .with_entity(&entity, |definition, _, _| {
+                    Ok((definition.create_only, definition.full_name.clone()))
+                })
+                .map_err(|err| throw_lib(&ctx, &err))?;
+            if create_only.0 {
+                return Err(Exception::throw_message(
+                    &ctx,
+                    &format!(
+                        "Entity {} is create-only (immutable), cannot be updated.",
+                        create_only.1
+                    ),
+                ));
+            }
+            let list = find.list().map_err(|err| throw_lib(&ctx, &err))?;
+            let mut updated = 0_i64;
+            for value in list.values() {
+                let mut changed = value.clone();
+                let mut modified = false;
+                for (name, new_value) in &fields {
+                    let same = value.get(name).is_some_and(|old| {
+                        old == new_value
+                            || moqui_lib::object::to_plain_string(old) == moqui_lib::object::to_plain_string(new_value)
+                    });
+                    if !same {
+                        modified = true;
+                    }
+                    changed.set(name.clone(), new_value.clone());
+                }
+                if modified {
+                    changed.update(&facade).map_err(|err| throw_lib(&ctx, &err))?;
+                    updated += 1;
+                }
+            }
+            i64_to_js(&ctx, updated)
         })
     }
 
@@ -745,7 +875,7 @@ pub(super) struct HostEntity {
 pub(super) type EntityCell = Mutex<EntityValue>;
 
 impl HostEntity {
-    fn new(value: EntityValue) -> Self {
+    pub(super) fn new(value: EntityValue) -> Self {
         Self::of(Arc::new(Mutex::new(value)))
     }
 
@@ -938,6 +1068,124 @@ impl HostEntity {
 
     fn get_entity_name(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
         host_guard(&ctx, || Ok(self.val().entity_name().to_string()))
+    }
+
+    /// `getEntityNamePretty()` (Java's `resolveEntityNamePretty`): the entity's short name in words, `OrderPart` as
+    /// `Order Part`.
+    #[qjs(rename = "getEntityNamePretty")]
+    fn entity_name_pretty(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || {
+            let facade = facade_of(&ctx)?;
+            let name = self.val().entity_name().to_string();
+            facade
+                .with_entity(&name, |entity, _, _| {
+                    Ok(moqui_lib::string::camel_case_to_pretty(&entity.entity_name))
+                })
+                .map_err(|err| throw_lib(&ctx, &err))
+        })
+    }
+
+    #[qjs(rename = "resolveEntityNamePretty")]
+    fn resolve_entity_name_pretty(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        self.entity_name_pretty(ctx)
+    }
+
+    /// `refresh()`: read the row of this value's primary key again and replace the fields with it. False, and the
+    /// value as it was, when there is no such row.
+    fn refresh(&self, ctx: Ctx<'_>) -> rquickjs::Result<bool> {
+        host_guard(&ctx, || {
+            let facade = facade_of(&ctx)?;
+            let current = self.snapshot();
+            let keys = facade
+                .pk_map(current.entity_name(), current.fields())
+                .map_err(|err| throw_lib(&ctx, &err))?;
+            match facade
+                .find_by_pk(current.entity_name(), &keys)
+                .map_err(|err| throw_lib(&ctx, &err))?
+            {
+                Some(fresh) => {
+                    *self.val() = fresh;
+                    Ok(true)
+                }
+                None => Ok(false),
+            }
+        })
+    }
+
+    /// `entrySet()`: each field as an entry with `key` and `value`, and `getKey()` and `getValue()`.
+    fn entry_set<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            let entries: Vec<(String, Value)> = self
+                .val()
+                .fields()
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect();
+            let list = rquickjs::Array::new(ctx.clone())?;
+            for (index, (name, value)) in entries.into_iter().enumerate() {
+                let entry = Object::new(ctx.clone())?;
+                let key = host_to_js(&ctx, Value::string(&name))?;
+                let held = host_to_js(&ctx, value)?;
+                entry.set("key", key.clone())?;
+                entry.set("value", held.clone())?;
+                entry.set("getKey", Function::new(ctx.clone(), move || key.clone()))?;
+                entry.set("getValue", Function::new(ctx.clone(), move || held.clone()))?;
+                list.set(index, entry)?;
+            }
+            Ok(list.into_value())
+        })
+    }
+
+    /// `findRelatedFk(skipEntities)`: every row of the entities that hold a foreign key to this value (a `many`
+    /// relationship whose reverse is a `one` of the related entity), as one list. The names to skip are full names,
+    /// short aliases, or entity names, in an array or a set.
+    fn find_related_fk<'js>(&self, ctx: Ctx<'js>, skip: Opt<JsValue<'js>>) -> rquickjs::Result<Class<'js, HostList>> {
+        host_guard(&ctx, || {
+            let skip: Vec<String> = match skip
+                .0
+                .as_ref()
+                .filter(|value| !value.is_null() && !value.is_undefined())
+            {
+                Some(value) => host_texts(js_to_host(&ctx, value)?),
+                None => Vec::new(),
+            };
+            let facade = facade_of(&ctx)?;
+            let parent = self.val().entity_name().to_string();
+            let names: Vec<String> = facade
+                .with_entity(&parent, |entity, _, model| {
+                    let mut names = Vec::new();
+                    for relationship in &entity.relationships {
+                        let Some(related) = model.entity_full(&relationship.related) else {
+                            continue;
+                        };
+                        // The reverse: a one relationship of the related entity back to this one, with the same title.
+                        let reverse_is_one = related.relationships.iter().any(|back| {
+                            back.relationship_type.starts_with("one")
+                                && back.title == relationship.title
+                                && (back.related == entity.full_name || back.related_entity_name == entity.entity_name)
+                        });
+                        let skipped = skip.iter().any(|name| {
+                            *name == related.full_name
+                                || *name == related.entity_name
+                                || related.short_alias.as_deref() == Some(name.as_str())
+                        });
+                        if reverse_is_one && !skipped {
+                            names.push(relationship.name.clone());
+                        }
+                    }
+                    Ok(names)
+                })
+                .map_err(|err| throw_lib(&ctx, &err))?;
+            let mut rows = Vec::new();
+            for name in names {
+                let list = self
+                    .related_find(&ctx, &name)?
+                    .list()
+                    .map_err(|err| throw_lib(&ctx, &err))?;
+                rows.extend(list.into_values());
+            }
+            Class::instance(ctx.clone(), HostList::of_list(EntityList::new(rows)))
+        })
     }
 
     /// `cloneValue()`: a separate value with the same entity and fields, as Java's `EntityValue.cloneValue`. Changes to
@@ -1216,6 +1464,14 @@ const LIST_PROTOTYPE_JS: &str = r#"(function (list) {
     define("filter", function (callback, self) { return Array.from(this).filter(callback, self); });
     define("forEach", function (callback, self) { Array.from(this).forEach(callback, self); });
     define("toJSON", function () { return Array.from(this); });
+    // The rest of the Array prototype runs on an array copy of the rows. The rows are the same values, so a field set
+    // on one is kept in the list; a method that reorders (`sort`, `reverse`) returns the reordered copy and leaves the
+    // list as it was.
+    for (const name of ["find", "findIndex", "findLast", "findLastIndex", "some", "every", "reduce", "reduceRight",
+            "sort", "reverse", "includes", "indexOf", "lastIndexOf", "slice", "concat", "join", "flatMap", "flat",
+            "entries", "keys", "values", "at", "toSorted", "toReversed"]) {
+        define(name, function (...args) { return Array.prototype[name].apply(Array.from(this), args); });
+    }
 })"#;
 
 /// Add the JavaScript members of the entity list prototype. Lists made after this share it.

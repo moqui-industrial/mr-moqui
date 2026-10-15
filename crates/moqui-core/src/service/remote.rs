@@ -399,6 +399,7 @@ mod tests {
             Ok(Response {
                 status: 200,
                 body: body.to_string(),
+                ..Default::default()
             })
         }
 
@@ -475,6 +476,7 @@ mod tests {
             let status = install(Ok(Response {
                 status: 503,
                 body: "busy".to_string(),
+                ..Default::default()
             }));
             let refused = run_remote_rest(
                 "example.get#Item",

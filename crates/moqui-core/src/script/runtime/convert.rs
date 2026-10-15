@@ -329,7 +329,7 @@ fn js_value_to_host_in<'js>(ctx: &Ctx<'_>, value: &JsValue<'js>, path: &mut Vec<
 
 /// A script `Set` is held on the context stack as a one-key map holding its items, so a Set one
 /// action block makes in a context name is a Set again in the next block.
-const SET_KEY: &str = "__set__";
+pub(super) const SET_KEY: &str = "__set__";
 
 /// The key of a map whose JavaScript form is a tools object: the name of the wrapper that adds its methods.
 pub(super) const WRAP_KEY: &str = "__wrap";
@@ -343,4 +343,14 @@ fn is_js_set(object: &Object<'_>) -> bool {
 
 pub(super) fn js_caught(ctx: &Ctx<'_>, err: JsError) -> Error {
     Error::new(rquickjs::CaughtError::from_error(ctx, err).to_string())
+}
+
+/// The texts of an array or a `Set` as the host holds it, or of one value.
+pub(super) fn host_texts(value: Value) -> Vec<String> {
+    match value {
+        Value::List(items) => items.iter().map(moqui_lib::object::to_plain_string).collect(),
+        Value::Map(mut map) if map.contains_key(SET_KEY) => host_texts(map.swap_remove(SET_KEY).unwrap_or(Value::Null)),
+        Value::Null => Vec::new(),
+        other => vec![moqui_lib::object::to_plain_string(&other)],
+    }
 }

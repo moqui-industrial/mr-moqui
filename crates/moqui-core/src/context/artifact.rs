@@ -67,6 +67,8 @@ pub(super) struct Popped {
 pub(super) struct ArtifactStack {
     frames: Vec<Frame>,
     authz_depth: Rc<Cell<u32>>,
+    /// Java's `entityEcaDisabled` of the `ArtifactExecutionFacade`: entity ECA rules do not run for this context.
+    entity_eca_disabled: Cell<bool>,
 }
 
 impl ArtifactStack {
@@ -119,6 +121,16 @@ impl ArtifactStack {
             .join(", ")
     }
 
+    /// The artifact names, top first, joined with ", ": Java's `getStackNameString`.
+    pub(super) fn name_string(&self) -> String {
+        self.frames
+            .iter()
+            .rev()
+            .map(|frame| frame.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     pub(super) fn top_info_mut(&mut self) -> Option<&mut AuthInfo> {
         self.frames.last_mut().map(|frame| &mut frame.info)
     }
@@ -160,6 +172,19 @@ impl ArtifactStack {
         AuthzGuard {
             depth: Rc::clone(&self.authz_depth),
         }
+    }
+
+    /// Disable entity ECA rules; whether they were already disabled, as Java's `disableEntityEca`.
+    pub(super) fn disable_entity_eca(&self) -> bool {
+        self.entity_eca_disabled.replace(true)
+    }
+
+    pub(super) fn enable_entity_eca(&self) {
+        self.entity_eca_disabled.set(false);
+    }
+
+    pub(super) fn entity_eca_disabled(&self) -> bool {
+        self.entity_eca_disabled.get()
     }
 
     pub(super) fn authz_disabled(&self) -> bool {

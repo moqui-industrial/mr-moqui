@@ -144,6 +144,29 @@ impl HostService {
         })
     }
 
+    /// `distribute(true)`: Java sends the call to another server of a cluster. This port runs a call on this server's
+    /// service workers, so the call is the same as without it.
+    fn distribute<'js>(
+        this: This<Class<'js, HostService>>,
+        ctx: Ctx<'js>,
+        _flag: Opt<JsValue<'js>>,
+    ) -> rquickjs::Result<Class<'js, HostService>> {
+        host_guard(&ctx, || Ok(this.0))
+    }
+
+    /// `softValidate(true)`: input that fails validation is danger messages, not errors, and the call returns no results.
+    fn soft_validate<'js>(
+        this: This<Class<'js, HostService>>,
+        ctx: Ctx<'js>,
+        flag: JsValue<'js>,
+    ) -> rquickjs::Result<Class<'js, HostService>> {
+        host_guard(&ctx, || {
+            changed(this, &ctx, |call| {
+                call.options.soft_validate = flag.as_bool().unwrap_or(true)
+            })
+        })
+    }
+
     fn use_transaction_cache<'js>(
         this: This<Class<'js, HostService>>,
         ctx: Ctx<'js>,

@@ -84,6 +84,14 @@ impl HostUpload {
         host_guard(&ctx, || Ok(String::from_utf8_lossy(&self.inner.bytes).into_owned()))
     }
 
+    /// The bytes as a stream, as the Java `FileItem.getInputStream`. A script hands it to `putStream` of a resource
+    /// reference and closes it.
+    fn get_input_stream<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<Class<'js, HostStream>> {
+        host_guard(&ctx, || {
+            Class::instance(ctx.clone(), HostStream::new(self.inner.bytes.clone()))
+        })
+    }
+
     /// Store the bytes at a `dbresource://` location.
     fn write(&self, ctx: Ctx<'_>, location: String) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
@@ -97,5 +105,51 @@ impl HostUpload {
     #[qjs(rename = "toString")]
     fn to_string_text(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
         host_guard(&ctx, || Ok(self.inner.file_name.clone()))
+    }
+}
+
+/// The bytes of an uploaded file or a resource, as the Java `InputStream` a script passes to `putStream`. A script
+/// cannot read it a byte at a time: it reads all of it as text or a `Uint8Array`, or writes it to a location.
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class]
+pub(super) struct HostStream {
+    #[qjs(skip_trace)]
+    bytes: Vec<u8>,
+}
+
+impl HostStream {
+    pub(super) fn new(bytes: Vec<u8>) -> Self {
+        Self { bytes }
+    }
+}
+
+#[rquickjs::methods(rename_all = "camelCase")]
+impl HostStream {
+    /// Nothing is held open, so closing is only for the script's `try`/`finally`.
+    fn close(&self) {}
+
+    fn available<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            i64_to_js(&ctx, i64::try_from(self.bytes.len()).unwrap_or(i64::MAX))
+        })
+    }
+
+    fn read_all_bytes<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            rquickjs::TypedArray::<u8>::new(ctx.clone(), self.bytes.clone()).map(rquickjs::TypedArray::into_value)
+        })
+    }
+
+    /// The bytes as UTF-8 text.
+    fn get_text(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(String::from_utf8_lossy(&self.bytes).into_owned()))
+    }
+
+    /// Store the bytes at a location, as `putStream` of that location's reference does.
+    fn write(&self, ctx: Ctx<'_>, location: String) -> rquickjs::Result<()> {
+        host_guard(&ctx, || {
+            with_ec(&ctx, |ec| ec.factory().resource().write_bytes(&location, &self.bytes))?
+                .map_err(|err| Exception::throw_message(&ctx, err.message()))
+        })
     }
 }

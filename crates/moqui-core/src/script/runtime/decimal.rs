@@ -59,7 +59,16 @@ impl HostDecimal {
         host_arith(&ctx, &self.inner, &other, Arith::Multiply)
     }
 
-    fn divide<'js>(&self, ctx: Ctx<'js>, other: JsValue<'js>) -> rquickjs::Result<HostDecimal> {
+    fn divide<'js>(
+        &self,
+        ctx: Ctx<'js>,
+        other: JsValue<'js>,
+        scale: Opt<u32>,
+        mode: Opt<JsValue<'js>>,
+    ) -> rquickjs::Result<HostDecimal> {
+        if let Some(scale) = scale.0 {
+            return self.divide_scaled(ctx, other, scale, mode);
+        }
         let other = operand(&ctx, &other)?;
         host_arith(&ctx, &self.inner, &other, Arith::Divide)
     }
@@ -92,28 +101,7 @@ impl HostDecimal {
             let Some(number) = self.inner.as_decimal() else {
                 return Err(Exception::throw_message(&ctx, "not a decimal"));
             };
-            let mode = match mode.0.as_ref() {
-                Some(value) if !value.is_null() && !value.is_undefined() => {
-                    moqui_lib::object::to_plain_string(&js_to_host(&ctx, value)?)
-                }
-                _ => String::new(),
-            };
-            let strategy = match mode.as_str() {
-                "UP" | "0" => Some(RoundingStrategy::AwayFromZero),
-                "DOWN" | "1" => Some(RoundingStrategy::ToZero),
-                "CEILING" | "2" => Some(RoundingStrategy::ToPositiveInfinity),
-                "FLOOR" | "3" => Some(RoundingStrategy::ToNegativeInfinity),
-                "HALF_UP" | "4" => Some(RoundingStrategy::MidpointAwayFromZero),
-                "HALF_DOWN" | "5" => Some(RoundingStrategy::MidpointTowardZero),
-                "HALF_EVEN" | "6" => Some(RoundingStrategy::MidpointNearestEven),
-                "" | "UNNECESSARY" | "7" => None,
-                other => {
-                    return Err(Exception::throw_message(
-                        &ctx,
-                        &format!("rounding mode {other} is not known"),
-                    ))
-                }
-            };
+            let strategy = rounding_strategy(&ctx, mode.0.as_ref())?;
             let mut scaled = match strategy {
                 Some(strategy) => number.round_dp_with_strategy(scale, strategy),
                 None => {
@@ -135,6 +123,70 @@ impl HostDecimal {
         })
     }
 
+    /// `abs()`, with the scale kept, as Java's `BigDecimal.abs`.
+    fn abs(&self, ctx: Ctx<'_>) -> rquickjs::Result<HostDecimal> {
+        host_guard(&ctx, || {
+            let Some(number) = self.inner.as_decimal() else {
+                return Err(Exception::throw_message(&ctx, "not a decimal"));
+            };
+            Ok(HostDecimal {
+                inner: Value::Decimal(number.abs()),
+            })
+        })
+    }
+
+    /// `negate()`, with the scale kept.
+    fn negate(&self, ctx: Ctx<'_>) -> rquickjs::Result<HostDecimal> {
+        host_guard(&ctx, || {
+            let Some(number) = self.inner.as_decimal() else {
+                return Err(Exception::throw_message(&ctx, "not a decimal"));
+            };
+            Ok(HostDecimal {
+                inner: Value::Decimal(-number),
+            })
+        })
+    }
+
+    /// `divide(other, scale, roundingMode)`, as Java's `BigDecimal.divide`: the quotient rounded to `scale` places by
+    /// the mode, without the intermediate rounding of `divide(other)`.
+    fn divide_scaled<'js>(
+        &self,
+        ctx: Ctx<'js>,
+        other: JsValue<'js>,
+        scale: u32,
+        mode: Opt<JsValue<'js>>,
+    ) -> rquickjs::Result<HostDecimal> {
+        host_guard(&ctx, || {
+            let other = operand(&ctx, &other)?;
+            let (Some(left), Some(right)) = (self.inner.as_decimal(), other.as_decimal()) else {
+                return Err(Exception::throw_message(&ctx, "not a decimal"));
+            };
+            if moqui_lib::object::decimal_is_zero(right) {
+                return Err(Exception::throw_message(&ctx, "BigInteger divide by zero"));
+            }
+            let quotient = left
+                .checked_div(right)
+                .ok_or_else(|| Exception::throw_message(&ctx, "decimal overflow"))?;
+            let strategy = rounding_strategy(&ctx, mode.0.as_ref())?
+                .unwrap_or(moqui_lib::format::RoundingStrategy::MidpointNearestEven);
+            let mut scaled = quotient.round_dp_with_strategy(scale, strategy);
+            scaled.rescale(scale);
+            Ok(HostDecimal {
+                inner: Value::Decimal(scaled),
+            })
+        })
+    }
+
+    /// `scale()`: the digits after the decimal point.
+    fn scale(&self, ctx: Ctx<'_>) -> rquickjs::Result<u32> {
+        host_guard(&ctx, || {
+            self.inner
+                .as_decimal()
+                .map(|number| number.scale())
+                .ok_or_else(|| Exception::throw_message(&ctx, "not a decimal"))
+        })
+    }
+
     fn is_zero<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<bool> {
         host_guard(&ctx, || {
             let Some(number) = self.inner.as_decimal() else {
@@ -143,6 +195,38 @@ impl HostDecimal {
             Ok(moqui_lib::object::decimal_is_zero(number))
         })
     }
+}
+
+/// A `RoundingMode` name, or the old `BigDecimal.ROUND_*` number, as a strategy. `None` is `UNNECESSARY`, also the
+/// meaning of no mode.
+pub(super) fn rounding_strategy<'js>(
+    ctx: &Ctx<'js>,
+    mode: Option<&JsValue<'js>>,
+) -> rquickjs::Result<Option<moqui_lib::format::RoundingStrategy>> {
+    use moqui_lib::format::RoundingStrategy;
+    let mode = match mode {
+        Some(value) if !value.is_null() && !value.is_undefined() => {
+            moqui_lib::object::to_plain_string(&js_to_host(ctx, value)?)
+        }
+        _ => String::new(),
+    };
+    let strategy = match mode.as_str() {
+        "UP" | "0" => Some(RoundingStrategy::AwayFromZero),
+        "DOWN" | "1" => Some(RoundingStrategy::ToZero),
+        "CEILING" | "2" => Some(RoundingStrategy::ToPositiveInfinity),
+        "FLOOR" | "3" => Some(RoundingStrategy::ToNegativeInfinity),
+        "HALF_UP" | "4" => Some(RoundingStrategy::MidpointAwayFromZero),
+        "HALF_DOWN" | "5" => Some(RoundingStrategy::MidpointTowardZero),
+        "HALF_EVEN" | "6" => Some(RoundingStrategy::MidpointNearestEven),
+        "" | "UNNECESSARY" | "7" => None,
+        other => {
+            return Err(Exception::throw_message(
+                ctx,
+                &format!("rounding mode {other} is not known"),
+            ))
+        }
+    };
+    Ok(strategy)
 }
 
 /// The other side of a decimal method: a decimal, or a JavaScript number or numeric string converted as

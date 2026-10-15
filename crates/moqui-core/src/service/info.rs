@@ -59,13 +59,46 @@ pub fn seca_rule_texts(service: &str) -> Vec<String> {
 pub fn is_last_run_before_last_schedule(
     cron: &str,
     last_run_millis: Option<i64>,
+    now_millis: Option<i64>,
 ) -> Result<bool, crate::context::Error> {
     let cron = super::schedule::parse_cron(cron)?;
-    let now = jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::system());
+    let now = now_millis
+        .and_then(|millis| jiff::Timestamp::from_millisecond(millis).ok())
+        .unwrap_or_else(jiff::Timestamp::now)
+        .to_zoned(jiff::tz::TimeZone::system());
     let Ok(last_schedule) = cron.find_previous_occurrence(&now, true) else {
         return Ok(false);
     };
     Ok(last_run_millis.is_none_or(|last_run| last_run < last_schedule.timestamp().as_millisecond()))
+}
+
+/// An English description of a Quartz cron expression, Java's `ScheduledJobRunner.getCronDescription`. The locale and
+/// short format are not used: the text is the cron parser's own.
+///
+/// # Errors
+///
+/// Returns an error when the cron expression does not parse.
+pub fn cron_description(cron: &str) -> Result<String, crate::context::Error> {
+    Ok(super::schedule::parse_cron(cron)?.describe())
+}
+
+/// The first time a Quartz cron expression (seconds field first) is due strictly after `after_millis`, as epoch
+/// millis, as Quartz's `CronExpression.getNextValidTimeAfter` in the server's time zone. `None` when it is never due
+/// again.
+///
+/// # Errors
+///
+/// Returns an error when the cron expression does not parse.
+pub fn next_cron_execution(cron: &str, after_millis: i64) -> Result<Option<i64>, crate::context::Error> {
+    let cron = super::schedule::parse_cron(cron)?;
+    let Ok(after) = jiff::Timestamp::from_millisecond(after_millis) else {
+        return Ok(None);
+    };
+    let zoned = after.to_zoned(jiff::tz::TimeZone::system());
+    Ok(cron
+        .find_next_occurrence(&zoned, false)
+        .ok()
+        .map(|next| next.timestamp().as_millisecond()))
 }
 
 /// The definition of `name` as the service detail screen reads a `ServiceDefinition`: the names, type, location,

@@ -221,8 +221,10 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
         const l = {};
         for (const name of ["location", "xmlText", "csvText", "jsonText", "dummyFks", "useTryInsert", "onlyCreate",
                 "disableEntityEca", "disableAuditLog", "disableFkCreate", "disableDataFeed", "transactionTimeout",
-                "messageNoActionFiles", "restrictSensitiveEntities", "csvEntityName"])
+                "messageNoActionFiles", "restrictSensitiveEntities", "csvEntityName", "defaultValues"])
             l[name] = (value) => { options[name] = value; return l; };
+        // the fields of a CSV text with no header line
+        l.csvFieldNames = (names) => { options.csvFieldNames = Array.from(names || []); return l; };
         l.dataTypes = (types) => { options.dataTypes.push(...Array.from(types || [])); return l; };
         l.componentNameList = (names) => { options.componentNames.push(...Array.from(names || [])); return l; };
         l.load = (messages) => {
@@ -294,6 +296,7 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
             getLastModified: () => ref.lastModified, length: () => ref.size || 0, getName: () => ref.fileName,
             getDirectoryEntries: () => host.resourceEntries(ref.location).map((child) => wrap("Resource", child)),
             // null for a file that is not there, as Java's (the stream is null)
+            getInputStream: () => ref.openStream(),
             getText: function (versionName) {
                 if (versionName) return host.resourceVersionText(ref.location, String(versionName));
                 const info = host.resourceInfo(ref.location);
@@ -303,6 +306,17 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
             putBytes: (bytes) => host.resourcePutBytes(ref.location, bytes),
             // Java's `putStream(fileItem.getInputStream())` and `putStream(other.openStream())`
             putUpload: (fileItem) => fileItem.write(ref.location),
+            // `putStream(stream)`: the stream of `fileItem.getInputStream()` or `openStream()`, or the bytes of a Uint8Array.
+            putStream: function (stream) {
+                if (stream == null) throw new Error("putStream needs a stream");
+                if (typeof stream.write === "function") stream.write(ref.location);
+                else host.resourcePutBytes(ref.location, stream);
+            },
+            // `openStream()` and `getInputStream()`: the file's bytes as a stream; null for a file that is not there
+            openStream: function () {
+                const info = host.resourceInfo(ref.location);
+                return info != null && info.exists && info.file ? host.resourceStream(ref.location) : null;
+            },
             copyFrom: (source) => host.resourceCopy(typeof source === "string" ? source : source.location, ref.location),
             delete: () => host.resourceDelete(ref.location),
             // nothing to move is not an error, as in Java (a page often has no matching directory)
@@ -439,6 +453,9 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
             walkFileTree(childRef, childPath, allChildFileFlatList, curChildResourceList);
     };
     const makeRef = (location) => wrap("Resource", host.resourceInfo(location));
+    // `ResourceReference.isTextFilename(filename)` (static): the file name's content type is text
+    ec.resource.isTextFilename = (filename) => host.isTextFilename(filename == null ? "" : String(filename));
+    globalThis.ResourceReference = { isTextFilename: ec.resource.isTextFilename };
     ec.resource.getLocationReference = (location) => makeRef(String(location));
     ec.resource.getLocationText = (location) => host.resourceText(String(location));
     // the registry token of a Docker image (InstanceImage.authTokenCmd): the command's first output line, no shell
@@ -463,7 +480,17 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
         this.reasonPhrase = sent.reasonPhrase;
         this.client = client;
         this.body = sent.text;
+        this.bytesValue = sent.bytes;
+        // the headers by lower case name, each with the list of its values
+        this.headerMap = {};
+        for (const [name, value] of sent.headers || []) (this.headerMap[name.toLowerCase()] ||= []).push(value);
     }
+    // the body as received, a Uint8Array: use it for a body that is not text, such as a label image
+    RestResponse.prototype.bytes = function () { return this.bytesValue; };
+    RestResponse.prototype.headerList = function (name) { return (this.headerMap[String(name).toLowerCase()] || []).slice(); };
+    RestResponse.prototype.headerFirst = function (name) { return (this.headerMap[String(name).toLowerCase()] || [null])[0]; };
+    RestResponse.prototype.getContentType = function () { return this.headerFirst("content-type"); };
+    RestResponse.prototype.getHeaders = function () { return this.headerMap; };
     RestResponse.prototype.getStatusCode = function () { return this.statusCode; };
     RestResponse.prototype.getReasonPhrase = function () { return this.reasonPhrase; };
     RestResponse.prototype.text = function () { return this.body; };
@@ -550,11 +577,17 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     };
     ec.service.rest = () => new RestClient();
     ec.service.isLastRunBeforeLastSchedule = host.isLastRunBeforeLastSchedule;
+    ec.service.nextCronExecution = host.nextCronExecution;
+    // (expression, locale, shortFormat): English text only, from the cron parser
+    ec.service.getCronDescription = (expression) => host.cronDescription(String(expression));
     ec.service.restApi = { getFreshRootResources: host.restRootResources, getRootResources: host.restRootResources };
     ec.entity.getAllEntityNamesWithMaster = host.getAllEntityNamesWithMaster;
 
     // `ScreenUrlInfo.isPermitted(ec, null, AUTHZA_ALL)` as a check of one artifact: the screen, the type, the action.
-    ec.artifactExecution = { isPermitted: host.isPermitted, getFindFiltersForUser: host.getFindFiltersForUser };
+    ec.artifactExecution = { isPermitted: host.isPermitted, getFindFiltersForUser: host.getFindFiltersForUser,
+        // Java's: disable returns whether entity ECA was already disabled, and the caller that found it so leaves it so
+        disableEntityEca: host.disableEntityEca, enableEntityEca: host.enableEntityEca,
+        entityEcaDisabled: host.entityEcaDisabled, getStackNameString: host.stackNameString };
 
     // `Locale.getAvailableLocales()` with English display names. Java lists every JVM locale; the port has no locale
     // database, so this is a fixed list of the common ones.
@@ -571,6 +604,22 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     // the user's locale; the audit log keeps the text, so it is shown as stored here.
     ec.entity.formatFieldString = (entityName, fieldName, text) => text == null ? "" : String(text);
     ec.l10n.getAvailableLocales = () => Object.entries(localeNames).map(([locale, name]) => ({ locale: locale, name: name }));
+
+    // ---- the execution context's shared map: one per execution context, whatever the context stack holds ----
+    // A proxy over the host's map, so `sharedMap[key]`, `sharedMap[key] = value`, `delete sharedMap[key]`, `key in
+    // sharedMap`, and `Object.keys(sharedMap)` work. A value is copied in and out, so change an object in it by
+    // assigning the key again.
+    const sharedMap = new Proxy({}, {
+        get: (target, key) => typeof key === "symbol" ? undefined : host.sharedGet(key),
+        set: (target, key, value) => { if (typeof key !== "symbol") host.sharedSet(key, value); return true; },
+        deleteProperty: (target, key) => { if (typeof key !== "symbol") host.sharedDelete(key); return true; },
+        has: (target, key) => typeof key !== "symbol" && host.sharedHas(key),
+        ownKeys: () => host.sharedKeys(),
+        getOwnPropertyDescriptor: (target, key) => typeof key !== "symbol" && host.sharedHas(key)
+            ? { value: host.sharedGet(key), enumerable: true, configurable: true, writable: true } : undefined
+    });
+    Object.defineProperty(ec.context, "sharedMap", { get: () => sharedMap, enumerable: false, configurable: true });
+    ec.context.getSharedMap = () => sharedMap;
 
     // ---- user and messages ----
     // `getPeriodRange(baseName, inputs)`: from `{base}_period`, `_poffset`, and `_pdate`, else `_from` and `_thru`.
@@ -1077,6 +1126,16 @@ fn load_data<'js>(ctx: Ctx<'js>, options: JsValue<'js>) -> rquickjs::Result<JsVa
                 .ok()
                 .map(std::time::Duration::from_secs),
             restrict_sensitive_entities: flag("restrictSensitiveEntities"),
+            csv_entity_name: Some(text("csvEntityName")).filter(|name| !name.is_empty()),
+            csv_field_names: list("csvFieldNames"),
+            default_values: match options.get("defaultValues") {
+                Some(Value::Map(entries)) => entries
+                    .iter()
+                    .filter(|(_, value)| !value.is_null())
+                    .map(|(name, value)| (name.clone(), moqui_lib::object::to_plain_string(value)))
+                    .collect(),
+                _ => Vec::new(),
+            },
         };
         let before = facade.flags();
         facade.set_disable_entity_eca(flag("disableEntityEca") || before.disable_entity_eca);
@@ -1395,6 +1454,14 @@ fn missing_info_value(location: &str) -> Value {
         "contentType".to_string(),
         content_type.map_or(Value::Null, Value::string),
     );
+    map.insert(
+        "text".to_string(),
+        Value::Bool(content_type.is_some_and(moqui_lib::resource::is_text_content_type)),
+    );
+    map.insert(
+        "binary".to_string(),
+        Value::Bool(content_type.is_some_and(moqui_lib::resource::is_binary_content_type)),
+    );
     map.insert("size".to_string(), Value::Null);
     map.insert("lastModified".to_string(), Value::Null);
     Value::Map(map)
@@ -1411,6 +1478,21 @@ fn resource_text(ctx: Ctx<'_>, location: String) -> rquickjs::Result<String> {
 /// `putText`: a `dbresource://` row, or a file for the file-backed schemes.
 fn resource_put_text(ctx: Ctx<'_>, location: String, text: String) -> rquickjs::Result<()> {
     put_resource_bytes(&ctx, &location, text.as_bytes())
+}
+
+/// The file's bytes as a stream (`openStream`, `getInputStream`).
+fn resource_stream<'js>(ctx: Ctx<'js>, location: String) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let bytes = resource_ref(&ctx, &location)?
+            .read_bytes()
+            .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
+        Class::instance(ctx.clone(), super::upload::HostStream::new(bytes)).and_then(|class| class.into_js(&ctx))
+    })
+}
+
+/// `ResourceReference.isTextFilename`: the content type of the file name is a text type.
+fn is_text_filename(filename: String) -> bool {
+    moqui_lib::resource::content_type_for_name(&filename).is_some_and(moqui_lib::resource::is_text_content_type)
 }
 
 /// `putBytes`: a `Uint8Array` or `ArrayBuffer`, written as `putText` writes.
@@ -1777,7 +1859,24 @@ fn rest_send<'js>(ctx: Ctx<'js>, request: JsValue<'js>) -> rquickjs::Result<JsVa
             "reasonPhrase".to_string(),
             Value::string(reason_phrase(response.status)),
         );
+        // A sender that kept no bytes sent text: the text is the bytes.
+        let bytes = if response.bytes.is_empty() {
+            response.body.as_bytes().to_vec()
+        } else {
+            response.bytes
+        };
         map.insert("text".to_string(), Value::string(response.body));
+        map.insert("bytes".to_string(), Value::Bytes(bytes));
+        map.insert(
+            "headers".to_string(),
+            Value::List(
+                response
+                    .headers
+                    .iter()
+                    .map(|(name, value)| Value::List(vec![Value::string(name), Value::string(value)]))
+                    .collect(),
+            ),
+        );
         host_to_js(&ctx, Value::Map(map))
     })
 }
@@ -1837,20 +1936,124 @@ fn form_xml(ctx: Ctx<'_>, location: String) -> rquickjs::Result<String> {
 
 /// `ScheduledJobRunner.isLastRunBeforeLastSchedule`: no last run, or the last run is before the latest time the cron
 /// expression came due.
-fn is_last_run_before_last_schedule(ctx: Ctx<'_>, cron: String, last_run: Opt<JsValue<'_>>) -> rquickjs::Result<bool> {
+fn is_last_run_before_last_schedule(
+    ctx: Ctx<'_>,
+    cron: String,
+    last_run: Opt<JsValue<'_>>,
+    _description: Opt<JsValue<'_>>,
+    now: Opt<JsValue<'_>>,
+) -> rquickjs::Result<bool> {
     host_guard(&ctx, || {
-        let last = match last_run.0.as_ref() {
+        // Java's `(cron, lastRun, description, nowTimestamp)`: the last two are optional here
+        let millis = |value: Option<&JsValue<'_>>| -> rquickjs::Result<Option<i64>> {
+            match value.filter(|value| !value.is_null() && !value.is_undefined()) {
+                Some(value) => Ok(
+                    match moqui_lib::object::basic_convert(&js_to_host(&ctx, value)?, "java.sql.Timestamp").value {
+                        Value::Timestamp(stamp) => Some(stamp.as_millisecond()),
+                        _ => None,
+                    },
+                ),
+                None => Ok(None),
+            }
+        };
+        crate::service::info::is_last_run_before_last_schedule(
+            &cron,
+            millis(last_run.0.as_ref())?,
+            millis(now.0.as_ref())?,
+        )
+        .map_err(|err| Exception::throw_message(&ctx, err.message()))
+    })
+}
+
+/// `ec.service.getCronDescription(cron)`.
+fn cron_description(ctx: Ctx<'_>, cron: String) -> rquickjs::Result<String> {
+    host_guard(&ctx, || {
+        crate::service::info::cron_description(&cron).map_err(|err| Exception::throw_message(&ctx, err.message()))
+    })
+}
+
+/// `ec.service.nextCronExecution(cron, after)`: epoch millis of the next time the Quartz cron expression is due after
+/// the moment (epoch millis, a timestamp, or null for now), or null when it never is.
+fn next_cron_execution<'js>(ctx: Ctx<'js>, cron: String, after: Opt<JsValue<'js>>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let after = match after
+            .0
+            .as_ref()
+            .filter(|value| !value.is_null() && !value.is_undefined())
+        {
             Some(value) => {
                 match moqui_lib::object::basic_convert(&js_to_host(&ctx, value)?, "java.sql.Timestamp").value {
-                    Value::Timestamp(stamp) => Some(stamp.as_millisecond()),
-                    _ => None,
+                    Value::Timestamp(stamp) => stamp.as_millisecond(),
+                    _ => {
+                        return Err(Exception::throw_message(
+                            &ctx,
+                            "nextCronExecution needs a moment to start after",
+                        ))
+                    }
                 }
             }
-            None => None,
+            None => jiff::Timestamp::now().as_millisecond(),
         };
-        crate::service::info::is_last_run_before_last_schedule(&cron, last)
-            .map_err(|err| Exception::throw_message(&ctx, err.message()))
+        match crate::service::info::next_cron_execution(&cron, after)
+            .map_err(|err| Exception::throw_message(&ctx, err.message()))?
+        {
+            Some(millis) => i64_to_js(&ctx, millis),
+            None => Null.into_js(&ctx),
+        }
     })
+}
+
+/// `ec.artifactExecution.disableEntityEca()`: entity ECA rules do not run for this execution context's writes until
+/// `enableEntityEca()`. Returns whether they were already disabled.
+fn disable_entity_eca(ctx: Ctx<'_>) -> rquickjs::Result<bool> {
+    host_guard(&ctx, || with_ec(&ctx, ExecutionContext::disable_entity_eca))
+}
+
+fn enable_entity_eca(ctx: Ctx<'_>) -> rquickjs::Result<()> {
+    host_guard(&ctx, || with_ec(&ctx, ExecutionContext::enable_entity_eca))
+}
+
+fn shared_get<'js>(ctx: Ctx<'js>, key: String) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let found = with_ec(&ctx, |ec| ec.shared_map().get(&key).cloned())?;
+        match found {
+            Some(value) => host_to_js(&ctx, value),
+            None => Undefined.into_js(&ctx),
+        }
+    })
+}
+
+fn shared_set<'js>(ctx: Ctx<'js>, key: String, value: JsValue<'js>) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        let host = js_to_host(&ctx, &value)?;
+        with_ec(&ctx, |ec| {
+            ec.shared_map().insert(key, host);
+        })
+    })
+}
+
+fn shared_delete(ctx: Ctx<'_>, key: String) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        with_ec(&ctx, |ec| {
+            ec.shared_map().shift_remove(&key);
+        })
+    })
+}
+
+fn shared_has(ctx: Ctx<'_>, key: String) -> rquickjs::Result<bool> {
+    host_guard(&ctx, || with_ec(&ctx, |ec| ec.shared_map().contains_key(&key)))
+}
+
+fn shared_keys(ctx: Ctx<'_>) -> rquickjs::Result<Vec<String>> {
+    host_guard(&ctx, || with_ec(&ctx, |ec| ec.shared_map().keys().cloned().collect()))
+}
+
+fn stack_name_string(ctx: Ctx<'_>) -> rquickjs::Result<String> {
+    host_guard(&ctx, || with_ec(&ctx, ExecutionContext::artifact_stack_names))
+}
+
+fn entity_eca_disabled(ctx: Ctx<'_>) -> rquickjs::Result<bool> {
+    host_guard(&ctx, || with_ec(&ctx, ExecutionContext::entity_eca_disabled))
 }
 
 /// Whether the user may do `action` on the artifact, checked as a push would check it, without pushing it.
@@ -2017,12 +2220,23 @@ pub(super) fn install<'js>(
     method!("resourceInfo", resource_info);
     method!("restRootResources", rest_root_resources);
     method!("isPermitted", is_permitted);
+    method!("disableEntityEca", disable_entity_eca);
+    method!("enableEntityEca", enable_entity_eca);
+    method!("entityEcaDisabled", entity_eca_disabled);
+    method!("stackNameString", stack_name_string);
+    method!("sharedGet", shared_get);
+    method!("sharedSet", shared_set);
+    method!("sharedDelete", shared_delete);
+    method!("sharedHas", shared_has);
+    method!("sharedKeys", shared_keys);
     method!("getFindFiltersForUser", get_find_filters_for_user);
     method!("getAllEntityNamesWithMaster", get_all_entity_names_with_master);
     method!("periodRange", period_range);
     method!("messageInfos", message_infos);
     method!("resourceText", resource_text);
     method!("resourcePutText", resource_put_text);
+    method!("resourceStream", resource_stream);
+    method!("isTextFilename", is_text_filename);
     method!("resourcePutBytes", resource_put_bytes);
     method!("resourceDelete", resource_delete);
     method!("resourceEntries", resource_entries);
@@ -2039,6 +2253,8 @@ pub(super) fn install<'js>(
     method!("runSqlUpdateConf", run_sql_update_conf);
     method!("formXml", form_xml);
     method!("isLastRunBeforeLastSchedule", is_last_run_before_last_schedule);
+    method!("nextCronExecution", next_cron_execution);
+    method!("cronDescription", cron_description);
     method!("prettyToCamelCase", pretty_to_camel_case);
     let define: Function = eval_js(ctx, TOOLS_JS)?;
     let ec: Object = caught(ctx, "ec", ctx.globals().get("ec"))?;

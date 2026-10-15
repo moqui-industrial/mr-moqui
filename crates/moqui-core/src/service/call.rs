@@ -38,6 +38,9 @@ pub struct CallOptions {
     pub timeout: Option<std::time::Duration>,
     /// `multi(true)`: one call for each row of `name_N` parameters, as a multi form-list posts them.
     pub multi: bool,
+    /// `softValidate(true)`: input that fails validation is reported as danger messages, not errors, and the service
+    /// does not run, as Java's.
+    pub soft_validate: bool,
 }
 
 impl CallOptions {
@@ -262,8 +265,20 @@ pub fn sync_with(
     super::seca::run_seca_rules(&def.name, "pre-validate", parameters, None)?;
     // Input that fails its checks is validation errors in the message facade and no run, as in Java: the caller sees
     // the errors (a screen shows them by their fields) instead of a failed call.
+    let mark = crate::context::ExecutionContext::with_current(|ctx| ctx.message().error_mark());
     let cleaned = match validate::clean(&def, parameters, facade.as_ref()) {
         Ok(cleaned) => cleaned,
+        Err(err) if err.kind() == crate::context::ErrorKind::Validation && options.soft_validate => {
+            if let Some(mark) = mark {
+                crate::context::ExecutionContext::with_current(|ctx| {
+                    let mut messages = ctx.message();
+                    for text in messages.take_errors_since(mark) {
+                        messages.add_message_typed(text, "danger");
+                    }
+                });
+            }
+            return Ok(BTreeMap::new());
+        }
         Err(err) if err.kind() == crate::context::ErrorKind::Validation => {
             tracing::warn!(service = %def.name, "not run, input failed validation: {}", err.message());
             return Ok(BTreeMap::new());

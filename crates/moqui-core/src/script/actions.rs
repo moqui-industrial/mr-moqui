@@ -470,11 +470,14 @@ mod tests {
     }
 
     #[test]
-    fn service_async_has_no_distribute_method() {
+    fn service_async_distribute_is_accepted_and_runs_on_this_server() {
         clear_context_stack();
-        let present =
-            eval_condition("typeof ec.service.async === \"function\" && ec.service.async().distribute == null")
-                .unwrap();
+        // Java sends a distributed call to another server of a cluster. A call here always runs on this server's workers,
+        // so `distribute(true)` returns the builder unchanged and the call is the same as without it.
+        let present = eval_condition(
+            "(function () { const b = ec.service.async(); return b.distribute(true) === b; })()",
+        )
+        .unwrap();
         assert!(present);
     }
 

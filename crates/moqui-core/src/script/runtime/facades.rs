@@ -182,9 +182,10 @@ pub(super) fn logger_log(
     ctx: Ctx<'_>,
     level: JsValue<'_>,
     message: String,
-    _extra: Opt<JsValue<'_>>,
+    thrown: Opt<JsValue<'_>>,
 ) -> rquickjs::Result<()> {
     host_guard(&ctx, || {
+        let message = with_thrown(message, thrown.0.as_ref());
         let level = match level.as_number() {
             Some(0.0) => "off".to_string(),
             Some(number) if number <= 300.0 || number >= f64::from(i32::MAX) => "warn".to_string(),
@@ -207,37 +208,65 @@ pub(super) fn logger_log(
     })
 }
 
-pub(super) fn logger_warn(ctx: Ctx<'_>, message: String) -> rquickjs::Result<()> {
+pub(super) fn logger_warn(ctx: Ctx<'_>, message: String, thrown: Opt<JsValue<'_>>) -> rquickjs::Result<()> {
     host_guard(&ctx, || {
+        let message = with_thrown(message, thrown.0.as_ref());
         tracing::warn!("{message}");
         Ok(())
     })
 }
 
-/// `ec.logger.info(message)`, and `error`, `debug`, `trace` below: Java `LoggerFacade` by level.
-pub(super) fn logger_info(ctx: Ctx<'_>, message: String) -> rquickjs::Result<()> {
+/// The message with the exception a script passed as the last argument of a log call, as `message: name: text`.
+fn with_thrown(message: String, thrown: Option<&JsValue<'_>>) -> String {
+    let Some(thrown) = thrown.filter(|value| !value.is_null() && !value.is_undefined()) else {
+        return message;
+    };
+    let text = match thrown.as_object() {
+        Some(object) => {
+            let name: Option<String> = object.get("name").ok();
+            let detail: Option<String> = object.get("message").ok();
+            match (name, detail) {
+                (Some(name), Some(detail)) => format!("{name}: {detail}"),
+                (_, Some(detail)) => detail,
+                _ => String::from("(exception)"),
+            }
+        }
+        None => thrown
+            .as_string()
+            .and_then(|text| text.to_string().ok())
+            .unwrap_or_default(),
+    };
+    format!("{message}: {text}")
+}
+
+/// `ec.logger.info(message, thrown)`, and `error`, `debug`, `trace`, `warn`: Java `LoggerFacade` by level.
+pub(super) fn logger_info(ctx: Ctx<'_>, message: String, thrown: Opt<JsValue<'_>>) -> rquickjs::Result<()> {
     host_guard(&ctx, || {
+        let message = with_thrown(message, thrown.0.as_ref());
         tracing::info!("{message}");
         Ok(())
     })
 }
 
-pub(super) fn logger_error(ctx: Ctx<'_>, message: String, _thrown: Opt<JsValue<'_>>) -> rquickjs::Result<()> {
+pub(super) fn logger_error(ctx: Ctx<'_>, message: String, thrown: Opt<JsValue<'_>>) -> rquickjs::Result<()> {
     host_guard(&ctx, || {
+        let message = with_thrown(message, thrown.0.as_ref());
         tracing::error!("{message}");
         Ok(())
     })
 }
 
-pub(super) fn logger_debug(ctx: Ctx<'_>, message: String) -> rquickjs::Result<()> {
+pub(super) fn logger_debug(ctx: Ctx<'_>, message: String, thrown: Opt<JsValue<'_>>) -> rquickjs::Result<()> {
     host_guard(&ctx, || {
+        let message = with_thrown(message, thrown.0.as_ref());
         tracing::debug!("{message}");
         Ok(())
     })
 }
 
-pub(super) fn logger_trace(ctx: Ctx<'_>, message: String) -> rquickjs::Result<()> {
+pub(super) fn logger_trace(ctx: Ctx<'_>, message: String, thrown: Opt<JsValue<'_>>) -> rquickjs::Result<()> {
     host_guard(&ctx, || {
+        let message = with_thrown(message, thrown.0.as_ref());
         tracing::trace!("{message}");
         Ok(())
     })

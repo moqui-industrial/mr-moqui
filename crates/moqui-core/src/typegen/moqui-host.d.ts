@@ -19,6 +19,14 @@ interface Decimal {
     /** -1, 0 or 1. */
     compare(other: Decimal | number | string): number;
     isZero(): boolean;
+    abs(): Decimal;
+    negate(): Decimal;
+    /** The digits after the decimal point. */
+    scale(): number;
+    /** Java's `divide(other, scale, roundingMode)`: the quotient rounded to `scale` places. The mode is a `RoundingMode` name or an old `ROUND_*` number. */
+    divide(other: Decimal | number | string, scale: number, roundingMode?: string | number | null): Decimal;
+    /** Java's `setScale`. Without a mode a value that needs rounding is an error. */
+    setScale(scale: number, roundingMode?: string | number | null): Decimal;
     /** A JavaScript number, with float rounding. */
     toNumber(): number;
     toString(): string;
@@ -103,6 +111,16 @@ interface EntityValueMethods<N extends string = string> {
     setFields(fields: MoquiMap, setIfEmpty?: boolean, namePrefix?: string | null, pks?: boolean | null): void;
     setSequencedIdPrimary(): void;
     setSequencedIdSecondary(): void;
+    /** Reads the row of the primary key again and replaces the fields. False, and unchanged, when there is no row. */
+    refresh(): boolean;
+    /** Each field as an entry: `{key, value, getKey(), getValue()}`. */
+    entrySet(): { key: string; value: unknown; getKey(): string; getValue(): unknown }[];
+    /** The short entity name in words (`OrderPart` is `Order Part`). */
+    getEntityNamePretty(): string;
+    resolveEntityNamePretty(): string;
+    /** The rows of every entity that holds a foreign key to this value, as one list. Skip by full name, short alias or entity name; an array or a Set. */
+    findRelatedFk(skipEntities?: string[] | Set<string> | null): EntityList;
+    getMap(): MoquiMap;
     create(): void;
     createOrUpdate(): void;
     update(): void;
@@ -130,6 +148,19 @@ interface EntityList<N extends string = string> extends Iterable<EntityValue<N>>
     readonly length: number;
     readonly pageIndex: number;
     readonly pageSize: number;
+    /** The rest of the Array prototype runs on an array copy of the rows, so `sort` and `reverse` return the reordered copy and leave the list. */
+    find(callback: (value: EntityValue<N>, index: number) => unknown): EntityValue<N> | undefined;
+    findIndex(callback: (value: EntityValue<N>, index: number) => unknown): number;
+    some(callback: (value: EntityValue<N>, index: number) => unknown): boolean;
+    every(callback: (value: EntityValue<N>, index: number) => unknown): boolean;
+    reduce<T>(callback: (accumulator: T, value: EntityValue<N>, index: number) => T, initial: T): T;
+    sort(compare?: (left: EntityValue<N>, right: EntityValue<N>) => number): EntityValue<N>[];
+    includes(value: EntityValue<N>): boolean;
+    indexOf(value: EntityValue<N>): number;
+    slice(start?: number, end?: number): EntityValue<N>[];
+    concat(...items: unknown[]): unknown[];
+    join(separator?: string): string;
+    forEach(callback: (value: EntityValue<N>, index: number) => void): void;
     get(index: number): EntityValue<N> | null;
     size(): number;
     getPartialList(offset: number, size: number, countLimit?: boolean): EntityList<N>;
@@ -147,11 +178,17 @@ interface EntityList<N extends string = string> extends Iterable<EntityValue<N>>
 /** A condition made by `ec.entity.conditionFactory`. */
 interface EntityCondition {
     readonly __moquiCondition: never;
+    /** Compare text without regard to case. */
+    ignoreCase(): EntityCondition;
 }
 
 /** A find builder. Each chain method returns the builder; a builder runs once. */
 interface EntityFind<N extends string = string> {
     condition(field: MoquiFieldName<N>, value: unknown): EntityFind<N>;
+    /** The operator is a name of Java's factory: `equals`, `not-equals`, `less-than`, `greater`, `<=`, `like`, `in`, `between`, `is-null` and the rest. An unknown one is an error. */
+    condition(field: MoquiFieldName<N>, operator: string | null, value: unknown): EntityFind<N>;
+    /** Rows in effect at the moment (now when empty): from is null or not after it, thru is null or after it. */
+    conditionDate(fromField: string, thruField: string, moment?: TimestampInput | null): EntityFind<N>;
     condition(fields: MoquiMap | null): EntityFind<N>;
     condition(condition: EntityCondition | null): EntityFind<N>;
     havingCondition(condition: EntityCondition | null): EntityFind<N>;
@@ -163,6 +200,10 @@ interface EntityFind<N extends string = string> {
     distinct(flag?: boolean | null): EntityFind<N>;
     disableAuthz(): EntityFind<N>;
     offset(offset: number | null): EntityFind<N>;
+    /** The offset `pageIndex * pageSize`; Java's does not set the limit. */
+    offset(pageIndex: number, pageSize: number): EntityFind<N>;
+    /** Set the fields on each row found and update the ones that change. How many were updated. */
+    updateAll(fieldsToSet: MoquiMap): number;
     limit(limit: number | null): EntityFind<N>;
     selectField(field: string): EntityFind<N>;
     /** Comma separated fields; `-` descending, `^` case-insensitive. */
@@ -176,7 +217,9 @@ interface EntityFind<N extends string = string> {
     deleteAll(): number;
     getLimit(): number | null;
     getOffset(): number | null;
+    /** `offset / pageSize`, 0 with no offset. */
     getPageIndex(): number;
+    /** The limit, 20 with none. */
     getPageSize(): number;
 }
 
@@ -243,6 +286,10 @@ interface ServiceCallOptions<Self> {
     requireNewTransaction(flag?: boolean): Self;
     transactionTimeout(seconds: number | null): Self;
     useTransactionCache(flag?: boolean): Self;
+    /** Input that fails validation is danger messages, not errors, and the call returns no results. */
+    softValidate(flag?: boolean): Self;
+    /** Java sends the call to another server of the cluster; here it is the same call. */
+    distribute(flag?: boolean): Self;
 }
 
 interface ServiceCallSync extends ServiceCallOptions<ServiceCallSync> {
@@ -277,8 +324,15 @@ interface MoquiEntityFacade {
     find<N extends (keyof MoquiEntityMap & string) | (string & {})>(entityName: N): EntityFind<N>;
     makeValue<N extends (keyof MoquiEntityMap & string) | (string & {})>(entityName: N): EntityValue<N>;
     getDataDocuments(...args: unknown[]): MoquiMap[];
+    /** The next id of a sequence name, as text. No stagger is 0, no bank size 50. */
+    sequencedIdPrimary(seqName: string, staggerMax?: number | null, bankSize?: number | null): string;
+    /** The time zone of the database timestamps: UTC. Accepted and ignored as the fourth argument of `ec.l10n.format`. */
+    readonly databaseTimeZone: string;
     readonly conditionFactory: {
-        makeCondition(field: string, operator: string, value: unknown, ignoreCase?: boolean): EntityCondition;
+        /** The fourth argument is Java's `orNull` (or the field is null); the fifth makes the comparison ignore case. `condition.ignoreCase()` does the same. */
+        makeCondition(field: string, operator: string, value: unknown, orNull?: boolean, ignoreCase?: boolean): EntityCondition;
+        /** A SQL fragment used as written, as in a view entity's aliases; null for empty text. */
+        makeConditionWhere(sql: string): EntityCondition | null;
         makeCondition(conditions: EntityCondition[], joinOperator?: string): EntityCondition;
         makeCondition(fields: MoquiMap): EntityCondition;
         makeConditionDate(
@@ -317,6 +371,7 @@ interface MoquiResourceFacade {
 interface MoquiL10nFacade {
     localize(text: string): string;
     format(value: unknown, pattern?: string | null): string;
+    roundCurrency(amount: unknown, uomId?: string | null, precise?: boolean, roundingMode?: string | number | null): Decimal | null;
     formatCurrency(amount: unknown, uomId?: string | null, fractionDigits?: number | null): string;
     formatCurrencyNoSymbol(amount: unknown, uomId?: string | null, fractionDigits?: number | null): string;
     parseTimestamp(text: string, format?: string | null): Timestamp | null;
@@ -432,6 +487,35 @@ interface MoquiScreenFacade {
 
 interface MoquiEcContext {
     get(name: string): unknown;
+    /** One map for the execution context, shared by every service call in it. Values are copied in and out. */
+    readonly sharedMap: Record<string, unknown>;
+    getSharedMap(): Record<string, unknown>;
+}
+
+interface MoquiNotificationMessage {
+    topic(topic: string): MoquiNotificationMessage;
+    subTopic(subTopic: string): MoquiNotificationMessage;
+    userId(userId: string): MoquiNotificationMessage;
+    userIds(userIds: string[] | Set<string>): MoquiNotificationMessage;
+    userGroupId(userGroupId: string): MoquiNotificationMessage;
+    message(message: MoquiMap | string): MoquiNotificationMessage;
+    title(title: string): MoquiNotificationMessage;
+    link(link: string): MoquiNotificationMessage;
+    type(type: "info" | "success" | "warning" | "danger"): MoquiNotificationMessage;
+    showAlert(show?: boolean): MoquiNotificationMessage;
+    alertNoAutoHide(flag?: boolean): MoquiNotificationMessage;
+    persistOnSend(flag?: boolean): MoquiNotificationMessage;
+    emailTemplateId(id: string): MoquiNotificationMessage;
+    emailMessageSave(flag?: boolean): MoquiNotificationMessage;
+    send(persist?: boolean): MoquiNotificationMessage;
+    getTopic(): string;
+    /** The `NotificationTopic` value of the topic, or null. */
+    getNotificationTopic(): EntityValue | null;
+    /** Expanded by the last send, null before. */
+    getTitle(): string | null;
+    getLink(): string | null;
+    getNotificationMessageId(): string | null;
+    getNotifyUserIds(): string[];
 }
 
 /**
@@ -440,7 +524,15 @@ interface MoquiEcContext {
  */
 interface MoquiServerEc {
     readonly entity: MoquiEntityFacade;
-    readonly service: { sync(): ServiceCallSync; async(): ServiceCallAsync };
+    readonly service: {
+        sync(): ServiceCallSync;
+        async(): ServiceCallAsync;
+        /** Epoch millis of the next time a Quartz cron expression (seconds first) is due after the moment, or null when never. */
+        nextCronExecution(cron: string, after?: TimestampInput | null): number | null;
+        /** English text; the locale and short format are not used. */
+        getCronDescription(cron: string, locale?: unknown, shortFormat?: boolean): string;
+        isLastRunBeforeLastSchedule(cron: string, lastRun?: TimestampInput | null, description?: string | null, now?: TimestampInput | null): boolean;
+    };
     readonly resource: MoquiResourceFacade;
     readonly l10n: MoquiL10nFacade;
     readonly message: MoquiMessageFacade;
@@ -455,7 +547,17 @@ interface MoquiServerEc {
      * The tools calls (phase 11): cache admin, the entity and service model, screen statistics, the server status,
      * the SQL runner, the data writer and loader. They are outside the Server host methods list and typed loosely.
      */
-    readonly artifactExecution: { isPermitted(name: string, artifactType?: string, action?: string): boolean };
+    readonly artifactExecution: {
+        isPermitted(name: string, artifactType?: string, action?: string): boolean;
+        /** Entity ECA rules do not run for this execution context's writes. Returns whether they were already disabled. */
+        disableEntityEca(): boolean;
+        enableEntityEca(): void;
+        entityEcaDisabled(): boolean;
+        /** The artifact names on the stack, top first, joined with ", ". */
+        getStackNameString(): string;
+    };
+    /** A notification builder: `ec.makeNotificationMessage().topic("T").message({..}).userIds([..]).send()`. */
+    makeNotificationMessage(): MoquiNotificationMessage;
     readonly search: { [method: string]: (...args: unknown[]) => unknown };
 }
 

@@ -94,6 +94,10 @@ pub(super) fn install_helpers(ctx: &Ctx<'_>) -> Result<(), Error> {
     globals.set("basicConvert", convert).map_err(js_error)?;
     let to_decimal = Function::new(ctx.clone(), js_to_decimal).map_err(js_error)?;
     globals.set("toDecimal", to_decimal).map_err(js_error)?;
+    let words = Function::new(ctx.clone(), js_number_to_words_with_decimal).map_err(js_error)?;
+    globals.set("numberToWordsWithDecimal", words).map_err(js_error)?;
+    let words = Function::new(ctx.clone(), js_number_to_words).map_err(js_error)?;
+    globals.set("numberToWords", words).map_err(js_error)?;
     let order = Function::new(ctx.clone(), js_compare_order).map_err(js_error)?;
     globals.set("__compareOrder", order).map_err(js_error)?;
     let in_range = Function::new(ctx.clone(), js_in_date_range).map_err(js_error)?;
@@ -165,6 +169,45 @@ pub(super) fn js_to_decimal<'js>(ctx: Ctx<'js>, value: JsValue<'js>) -> rquickjs
                 ),
             )),
         }
+    })
+}
+
+/// `numberToWords(value, useAnd)` for a whole number.
+pub(super) fn js_number_to_words<'js>(
+    ctx: Ctx<'js>,
+    value: JsValue<'js>,
+    use_and: Opt<bool>,
+) -> rquickjs::Result<String> {
+    host_guard(&ctx, || {
+        let whole = js_i64(&ctx, &value)?;
+        Ok(moqui_lib::string::number_to_words(whole, use_and.0.unwrap_or(false)))
+    })
+}
+
+/// `numberToWordsWithDecimal(amount)`: the whole part in words, then `and NN/100` of the amount rounded to cents, as
+/// Java's: `1234.5` is `One thousand two hundred  thirty four and 50/100`.
+pub(super) fn js_number_to_words_with_decimal<'js>(ctx: Ctx<'js>, value: JsValue<'js>) -> rquickjs::Result<String> {
+    host_guard(&ctx, || {
+        let host = js_to_host(&ctx, &value)?;
+        let Some(Value::Decimal(amount)) = super::decimal::decimal_of(&host) else {
+            return Err(Exception::throw_message(
+                &ctx,
+                "numberToWordsWithDecimal takes a decimal or a number",
+            ));
+        };
+        let whole: i64 = amount
+            .trunc()
+            .to_string()
+            .parse()
+            .map_err(|_| Exception::throw_message(&ctx, "the amount is too large"))?;
+        let mut cents = amount.round_dp_with_strategy(2, moqui_lib::format::RoundingStrategy::MidpointAwayFromZero);
+        cents.rescale(2);
+        let text = cents.to_string();
+        let fraction = text.rsplit('.').next().unwrap_or("00");
+        Ok(format!(
+            "{} and {fraction}/100",
+            moqui_lib::string::number_to_words(whole, false)
+        ))
     })
 }
 

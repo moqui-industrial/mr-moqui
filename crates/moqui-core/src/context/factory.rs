@@ -309,6 +309,7 @@ impl ExecutionContextFactory {
                 artifacts: RefCell::new(ArtifactStack::new()),
                 session: RefCell::new(crate::user::Memory::default()),
                 user_context: RefCell::new(std::collections::BTreeMap::new()),
+                shared_map: RefCell::new(indexmap::IndexMap::new()),
             }),
         }
     }
@@ -482,6 +483,8 @@ struct ContextState {
     /// `ec.user.context`: values for this execution context's user, such as the organizations `setup#UserOrganizationInfo`
     /// finds, that entity filter maps read.
     user_context: RefCell<std::collections::BTreeMap<String, moqui_lib::object::Value>>,
+    /// `ec.context.sharedMap`: one map for the execution context, shared by every service call and script in it.
+    shared_map: RefCell<indexmap::IndexMap<String, moqui_lib::object::Value>>,
 }
 
 impl ExecutionContext {
@@ -496,6 +499,12 @@ impl ExecutionContext {
     /// The `ec.user.context` map.
     pub fn user_context(&self) -> RefMut<'_, std::collections::BTreeMap<String, moqui_lib::object::Value>> {
         self.state.user_context.borrow_mut()
+    }
+
+    /// Java's `ExecutionContext.getContext().getSharedMap()`: a map that lives as long as this execution context, whatever
+    /// the context stack does, so a script can keep a re-entrancy guard in it.
+    pub fn shared_map(&self) -> RefMut<'_, indexmap::IndexMap<String, moqui_lib::object::Value>> {
+        self.state.shared_map.borrow_mut()
     }
 
     pub fn message(&self) -> RefMut<'_, MessageFacade> {
@@ -628,6 +637,26 @@ impl ExecutionContext {
 
     pub fn disable_authz(&self) -> AuthzGuard {
         self.state.artifacts.borrow().disable_authz()
+    }
+
+    /// Java's `disableEntityEca`: entity ECA rules do not run for writes of this context until
+    /// [`Self::enable_entity_eca`]. Returns whether they were already disabled; a caller that found them disabled
+    /// leaves them so.
+    pub fn disable_entity_eca(&self) -> bool {
+        self.state.artifacts.borrow().disable_entity_eca()
+    }
+
+    pub fn enable_entity_eca(&self) {
+        self.state.artifacts.borrow().enable_entity_eca();
+    }
+
+    pub fn entity_eca_disabled(&self) -> bool {
+        self.state.artifacts.borrow().entity_eca_disabled()
+    }
+
+    /// Java's `getStackNameString`: the names on the artifact stack, top first.
+    pub fn artifact_stack_names(&self) -> String {
+        self.state.artifacts.borrow().name_string()
     }
 
     pub fn authz_disabled(&self) -> bool {

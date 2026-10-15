@@ -50,7 +50,10 @@ mod edi;
 mod entities;
 mod error_info;
 mod facades;
+#[cfg(test)]
+mod framework_gaps_tests;
 mod helpers;
+mod notification;
 mod screen_host;
 mod search;
 mod services;
@@ -1220,6 +1223,8 @@ fn install_ec(ctx: &Ctx<'_>) -> Result<(), Error> {
     ec.set("search", search_object(ctx)?).map_err(js_error)?;
     ec.set("transaction", transaction_object(ctx)?).map_err(js_error)?;
     ec_extra::install_ec_extras(ctx, &ec)?;
+    let make_notification = Function::new(ctx.clone(), notification::make_notification_message).map_err(js_error)?;
+    ec.set("makeNotificationMessage", make_notification).map_err(js_error)?;
     caught(ctx, "globals", ctx.globals().set("ec", ec))?;
     ec_screen::install_builder(ctx)?;
     caught(ctx, "globals", ctx.globals().set("sri", screen_host::sri_object(ctx)?))?;
@@ -1300,9 +1305,18 @@ fn entity_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
         Function::new(ctx.clone(), entity_get_data_documents),
     )?;
     entity.set("getDataDocuments", documents).map_err(js_error)?;
+    let sequenced = caught(
+        ctx,
+        "entity.sequencedIdPrimary",
+        Function::new(ctx.clone(), entities::entity_sequenced_id_primary),
+    )?;
+    entity.set("sequencedIdPrimary", sequenced).map_err(js_error)?;
     let factory = Object::new(ctx.clone()).map_err(js_error)?;
     let make_condition = Function::new(ctx.clone(), make_condition).map_err(js_error)?;
     factory.set("makeCondition", make_condition).map_err(js_error)?;
+    let make_where = Function::new(ctx.clone(), make_condition_where).map_err(js_error)?;
+    factory.set("makeConditionWhere", make_where).map_err(js_error)?;
+    entity.set("databaseTimeZone", "UTC").map_err(js_error)?;
     let make_date = Function::new(ctx.clone(), make_condition_date).map_err(js_error)?;
     factory.set("makeConditionDate", make_date).map_err(js_error)?;
     let make_direct = Function::new(ctx.clone(), make_action_condition).map_err(js_error)?;

@@ -24,6 +24,24 @@ pub(super) struct HostCondition {
     pub(super) inner: Condition,
 }
 
+#[rquickjs::methods(rename_all = "camelCase")]
+impl HostCondition {
+    /// Java's `EntityCondition.ignoreCase()`: compare text without regard to case. A null test is as it was.
+    fn ignore_case<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            let inner = self.inner.clone();
+            condition_js(
+                &ctx,
+                Some(if ignorable(&inner) {
+                    Condition::ignore_case(inner)
+                } else {
+                    inner
+                }),
+            )
+        })
+    }
+}
+
 pub(super) fn condition_js<'js>(ctx: &Ctx<'js>, condition: Option<Condition>) -> rquickjs::Result<JsValue<'js>> {
     match condition {
         Some(inner) => Class::instance(ctx.clone(), HostCondition { inner }).and_then(|class| class.into_js(ctx)),
@@ -47,8 +65,31 @@ pub(super) fn list_values(value: Value) -> Vec<Value> {
     }
 }
 
+/// The name this port compares by for any name Java's `stringComparisonOperatorMap` has: `less-than`, `not-equal`,
+/// `IS NULL`, and the other spellings. A name that is in neither is returned as it is, for the error to name.
+fn normalized_operator(operator: &str) -> &str {
+    match operator {
+        "" => "equals",
+        "not-equal" => "not-equals",
+        "less-than" => "less",
+        "greater-than" => "greater",
+        "less-than-equal-to" => "less-equals",
+        "greater-than-equal-to" => "greater-equals",
+        "IN" => "in",
+        "NOT IN" => "not-in",
+        "BETWEEN" => "between",
+        "NOT BETWEEN" => "not-between",
+        "LIKE" => "like",
+        "NOT LIKE" => "not-like",
+        "IS NULL" => "is-null",
+        "IS NOT NULL" => "is-not-null",
+        other => other,
+    }
+}
+
 /// One comparison from an operator name. Equality with null is `IS NULL`, as the Java factory does.
 pub(super) fn comparison(field: &str, operator: &str, value: Value) -> Result<Condition, moqui_lib::error::Error> {
+    let operator = normalized_operator(operator);
     let condition = match operator {
         "equals" | "=" if value.is_null() => Condition::is_null(field),
         "equals" | "=" => Condition::equals(field, value),
@@ -90,13 +131,15 @@ pub(super) fn join(conditions: Vec<Condition>, operator: &str) -> Option<Conditi
     }
 }
 
-/// `makeCondition(field, operator, value)`, `makeCondition(listOfConditions, "and"|"or")`,
+/// `makeCondition(field, operator, value, orNull)`, `makeCondition(listOfConditions, "and"|"or")`,
 /// or `makeCondition(map)` as an AND of equalities.
 pub(super) fn make_condition<'js>(
     ctx: Ctx<'js>,
     first: JsValue<'js>,
     second: Opt<JsValue<'js>>,
     third: Opt<JsValue<'js>>,
+    or_null: Opt<JsValue<'js>>,
+    ignore_case: Opt<JsValue<'js>>,
 ) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let as_text = |value: &Option<JsValue<'js>>| -> rquickjs::Result<String> {
@@ -122,7 +165,15 @@ pub(super) fn make_condition<'js>(
                 Some(value) => js_to_host(&ctx, value)?,
                 None => Value::Null,
             };
-            let condition = comparison(&field, &operator, value).map_err(|err| throw_lib(&ctx, &err))?;
+            let mut condition = comparison(&field, &operator, value).map_err(|err| throw_lib(&ctx, &err))?;
+            // The fifth argument is not Java's: `makeCondition(...).ignoreCase()` is, and does the same.
+            if ignore_case.0.as_ref().and_then(JsValue::as_bool) == Some(true) && ignorable(&condition) {
+                condition = Condition::ignore_case(condition);
+            }
+            // Java's fourth argument: `orNull`.
+            if or_null.0.as_ref().and_then(JsValue::as_bool) == Some(true) {
+                condition = Condition::or(vec![condition, Condition::is_null(field.as_str())]);
+            }
             return condition_js(&ctx, Some(condition));
         }
         if let Some(object) = first.as_object() {
@@ -139,6 +190,20 @@ pub(super) fn make_condition<'js>(
             &ctx,
             "makeCondition needs a field, a list, or a map",
         ))
+    })
+}
+
+/// `makeConditionWhere(sql)`: a SQL fragment used as written, null for empty text.
+pub(super) fn make_condition_where<'js>(ctx: Ctx<'js>, sql: Opt<JsValue<'js>>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let text = match sql.0.as_ref() {
+            Some(value) if !value.is_null() && !value.is_undefined() => js_string(&ctx, value)?,
+            _ => String::new(),
+        };
+        if text.is_empty() {
+            return Null.into_js(&ctx);
+        }
+        condition_js(&ctx, Some(Condition::where_sql(text)))
     })
 }
 
@@ -160,24 +225,38 @@ pub(super) fn make_condition_date<'js>(
             return Null.into_js(&ctx);
         }
         let valid = js_to_host(&ctx, &valid)?;
-        let valid = if moqui_lib::object::is_empty(&valid) {
-            if ignore_if_empty.0.unwrap_or(false) {
-                return Null.into_js(&ctx);
-            }
-            now_timestamp()
-        } else {
-            timestamp_of(&valid)
-        };
-        let started = Condition::or(vec![
-            Condition::is_null(from_name.as_str()),
-            Condition::less_equal(from_name.as_str(), valid.clone()),
-        ]);
-        let open = Condition::or(vec![
-            Condition::is_null(thru_name.as_str()),
-            Condition::greater(thru_name.as_str(), valid),
-        ]);
-        condition_js(&ctx, Some(Condition::and(vec![started, open])))
+        condition_js(
+            &ctx,
+            date_range_condition(&from_name, &thru_name, valid, ignore_if_empty.0.unwrap_or(false)),
+        )
     })
+}
+
+/// `(from is null or from <= valid) and (thru is null or thru > valid)`. An empty `valid` is now, or no condition with
+/// `ignore_if_empty`.
+pub(super) fn date_range_condition(
+    from_name: &str,
+    thru_name: &str,
+    valid: Value,
+    ignore_if_empty: bool,
+) -> Option<Condition> {
+    let valid = if moqui_lib::object::is_empty(&valid) {
+        if ignore_if_empty {
+            return None;
+        }
+        now_timestamp()
+    } else {
+        timestamp_of(&valid)
+    };
+    let started = Condition::or(vec![
+        Condition::is_null(from_name),
+        Condition::less_equal(from_name, valid.clone()),
+    ]);
+    let open = Condition::or(vec![
+        Condition::is_null(thru_name),
+        Condition::greater(thru_name, valid),
+    ]);
+    Some(Condition::and(vec![started, open]))
 }
 
 /// The condition one `econdition` element describes. A skipped condition is null.

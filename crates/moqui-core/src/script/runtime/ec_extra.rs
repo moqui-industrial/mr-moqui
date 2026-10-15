@@ -365,12 +365,20 @@ fn l10n_round_currency<'js>(
     amount: JsValue<'js>,
     uom_id: Opt<JsValue<'js>>,
     precise: Opt<JsValue<'js>>,
+    mode: Opt<JsValue<'js>>,
 ) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let amount = js_to_host(&ctx, &amount)?;
         let uom = optional_text(&ctx, uom_id.0.as_ref())?.unwrap_or_else(|| "USD".to_string());
         let precise = precise.0.as_ref().and_then(JsValue::as_bool).unwrap_or(false);
-        let rounded = l10n::round_currency(&amount, &uom, precise).map_err(|err| throw_error(&ctx, &err))?;
+        // The fourth argument is a `RoundingMode` name or an old `ROUND_*` number; none is HALF_UP, as Java.
+        let strategy = match mode.0.as_ref().filter(|mode| !mode.is_null() && !mode.is_undefined()) {
+            Some(mode) => super::decimal::rounding_strategy(&ctx, Some(mode))?
+                .ok_or_else(|| Exception::throw_message(&ctx, "rounding necessary"))?,
+            None => moqui_lib::format::RoundingStrategy::MidpointAwayFromZero,
+        };
+        let rounded =
+            l10n::round_currency_with(&amount, &uom, precise, strategy).map_err(|err| throw_error(&ctx, &err))?;
         host_to_js(&ctx, rounded)
     })
 }
