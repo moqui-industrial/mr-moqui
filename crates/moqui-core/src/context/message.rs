@@ -23,6 +23,13 @@ pub struct MessageFacade {
     validation_errors: Vec<ValidationError>,
 }
 
+/// How many errors a [`MessageFacade`] had, so the ones added after can be taken back out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ErrorMark {
+    errors: usize,
+    validation_errors: usize,
+}
+
 /// `ValidationError`: an error for one field of a form or service. Its text is also in the error list, so whatever
 /// asks whether there are errors sees it, as Java's `hasError` counts validation errors.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -101,10 +108,44 @@ impl MessageFacade {
         self.validation_errors.clear();
     }
 
+    /// A mark for [`Self::take_errors_since`].
+    pub fn error_mark(&self) -> ErrorMark {
+        ErrorMark {
+            errors: self.errors.len(),
+            validation_errors: self.validation_errors.len(),
+        }
+    }
+
+    /// Removes the errors and validation errors added since `mark` and returns the error texts. The earlier ones stay.
+    pub fn take_errors_since(&mut self, mark: ErrorMark) -> Vec<String> {
+        self.validation_errors.truncate(mark.validation_errors);
+        self.errors.split_off(mark.errors.min(self.errors.len()))
+    }
+
     pub fn clear(&mut self) {
         self.messages.clear();
         self.message_types.clear();
         self.errors.clear();
         self.validation_errors.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MessageFacade;
+
+    #[test]
+    fn take_errors_since_leaves_the_earlier_errors_and_the_messages() {
+        let mut facade = MessageFacade::new();
+        facade.add_error("before");
+        let mark = facade.error_mark();
+        facade.add_message("info");
+        facade.add_validation_error("", "field", "", "after");
+        assert_eq!(facade.take_errors_since(mark), ["after"]);
+        assert_eq!(facade.errors(), ["before"]);
+        assert!(facade.validation_errors().is_empty());
+        assert_eq!(facade.messages(), ["info"]);
+        facade.clear_errors();
+        assert!(facade.take_errors_since(mark).is_empty());
     }
 }

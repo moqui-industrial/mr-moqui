@@ -576,7 +576,17 @@ fn profile(
         (FlowKind::Oauth(_), None) => vec!["preferred_username", "username", "login", "email"],
         (FlowKind::Oidc(_), _) => vec!["preferred_username", "email"],
     };
-    let username = username_keys.iter().find_map(|key| text_of(attributes.get(*key)));
+    // The email is a username only when `email_verified` says so, or, without that claim, when it is the known
+    // provider's own username field.
+    let email_verified = attributes
+        .get("email_verified")
+        .map(|value| matches!(value, Json::Bool(true)) || value.as_str() == Some("true"));
+    let email_trusted = email_verified
+        .unwrap_or_else(|| matches!((&flow.kind, provider), (FlowKind::Oauth(_), Some(p)) if p.username == "email"));
+    let username = username_keys
+        .iter()
+        .filter(|key| **key != "email" || email_trusted)
+        .find_map(|key| text_of(attributes.get(*key)));
     let mut roles = Vec::new();
     let mut add_roles = |value: Option<&Json>| {
         if let Some(Json::Array(items)) = value {
@@ -656,5 +666,71 @@ impl SsoClient for HuskarlSso {
         query.append_pair("client_id", &config.client_id);
         let separator = if end_session.contains('?') { '&' } else { '?' };
         Ok(Some(format!("{end_session}{separator}{}", query.finish())))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use moqui_core::sso::{FlowConfig, FlowKind, OauthConfig, OidcConfig};
+    use serde_json::json;
+
+    use super::{profile, provider};
+
+    fn username(kind: FlowKind, client_type: &str, claims: serde_json::Value) -> Option<String> {
+        let flow = FlowConfig {
+            auth_flow_id: "F".to_string(),
+            kind,
+        };
+        let serde_json::Value::Object(claims) = claims else {
+            unreachable!()
+        };
+        profile(&flow, claims, provider(client_type).as_ref(), None).username
+    }
+
+    #[test]
+    fn an_email_is_a_username_only_when_verified_or_the_provider_names_it() {
+        let oidc = || FlowKind::Oidc(OidcConfig::default());
+        let claims =
+            |verified: serde_json::Value| json!({"sub": "s1", "email": "a@example.com", "email_verified": verified});
+        assert_eq!(
+            username(oidc(), "", claims(json!(true))).as_deref(),
+            Some("a@example.com")
+        );
+        assert_eq!(username(oidc(), "", claims(json!(false))), None);
+        assert_eq!(
+            username(oidc(), "", json!({"sub": "s1", "email": "a@example.com"})),
+            None
+        );
+        assert_eq!(
+            username(
+                oidc(),
+                "",
+                json!({"sub": "s1", "preferred_username": "ann", "email": "a@example.com"})
+            )
+            .as_deref(),
+            Some("ann")
+        );
+        let oauth = |client_type: &str| {
+            FlowKind::Oauth(OauthConfig {
+                client_type: client_type.to_string(),
+                ..OauthConfig::default()
+            })
+        };
+        // Facebook's username is its email, and it sends no email_verified.
+        let facebook = json!({"id": "1", "email": "a@example.com"});
+        assert_eq!(
+            username(oauth("OctFacebook"), "OctFacebook", facebook).as_deref(),
+            Some("a@example.com")
+        );
+        let unverified = json!({"id": "1", "email": "a@example.com", "email_verified": false});
+        assert_eq!(username(oauth("OctGoogle"), "OctGoogle", unverified), None);
+        assert_eq!(
+            username(
+                oauth("OctGitHub"),
+                "OctGitHub",
+                json!({"id": 1, "email": "a@example.com"})
+            ),
+            None
+        );
     }
 }

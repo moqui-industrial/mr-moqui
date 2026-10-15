@@ -148,6 +148,10 @@ fn send_template(
     if let Err(text) = require_host(&host) {
         return fail_with(text, &email_message_id);
     }
+    let message_id = match new_message_id(&headers.from_address) {
+        Ok(message_id) => message_id,
+        Err(text) => return fail_with(text, &email_message_id),
+    };
     let mut letter = Letter {
         subject: headers.subject.clone(),
         from_address: headers.from_address.clone(),
@@ -160,7 +164,7 @@ fn send_template(
         body,
         body_text,
         attachments: Vec::new(),
-        message_id: new_message_id(&headers.from_address),
+        message_id,
     };
     if !filter_recipients(&mut letter, &field_text(&server, "allowedToDomains"), &email_message_id) {
         return Ok(ids(&email_message_id, ""));
@@ -230,6 +234,10 @@ fn send_message(
         Some(row) => (field_text(row, "replyToAddresses"), field_text(row, "bounceAddress")),
         None => (String::new(), String::new()),
     };
+    let message_id = match new_message_id(&from_address) {
+        Ok(message_id) => message_id,
+        Err(text) => return fail(text),
+    };
     let mut letter = Letter {
         subject: field_text(&message, "subject"),
         from_address,
@@ -242,7 +250,7 @@ fn send_message(
         body,
         body_text,
         attachments: Vec::new(),
-        message_id: new_message_id(&field_text(&message, "fromAddress")),
+        message_id,
     };
     if !filter_recipients(&mut letter, &field_text(&server, "allowedToDomains"), &email_message_id) {
         return Ok(ids(&email_message_id, ""));
@@ -1073,16 +1081,17 @@ fn mailbox(address: &str, name: &str) -> Result<lettre::message::Mailbox, String
     }
 }
 
-fn new_message_id(from: &str) -> String {
+/// A random `<hex@host>` Message-ID, the host the domain of the from address.
+fn new_message_id(from: &str) -> Result<String, String> {
     let mut bytes = [0u8; 12];
-    let _ = getrandom::fill(&mut bytes);
-    let host = from
-        .rsplit_once('@')
-        .map(|(_, host)| host.trim())
+    getrandom::fill(&mut bytes).map_err(|err| format!("could not make a Message-ID: {err}"))?;
+    let host = mailbox(from, "")
+        .map(|parsed| parsed.email.domain().to_string())
+        .ok()
         .filter(|host| !host.is_empty())
-        .unwrap_or("localhost");
+        .unwrap_or_else(|| "localhost".to_string());
     let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-    format!("<{hex}@{host}>")
+    Ok(format!("<{hex}@{host}>"))
 }
 
 thread_local! {
@@ -1306,39 +1315,68 @@ fn poll_server(
         Ok(ids) => ids,
         Err(text) => return fail(text),
     };
-    // One message at a time, as Java's poll: fetched, run through the rules, then marked or deleted. A message whose
-    // rules fail is left as it is, so the next poll sees it again instead of it being deleted unprocessed.
+    // One message at a time, as Java's poll: fetched, run through the rules, then marked or deleted. Each message's
+    // rules run in their own transaction, and the message is marked or deleted only once that has committed, so a later
+    // failure or the poll's timeout cannot roll back a message already gone from the server. A message whose rules fail
+    // is rolled back and left as it is, so the next poll sees it again. The errors are reported once all are done, so
+    // one message's errors do not stop the services the next one's rules call.
+    let mut errors = Vec::new();
     for id in ids {
         let message = match store.fetch(&id) {
             Ok(message) => message,
             Err(text) => {
-                note_error(format!("Error reading message {id} from {}: {text}", settings.host));
+                errors.push(format!("Error reading message {id} from {}: {text}", settings.host));
                 break;
             }
         };
         if settings.skip_seen && message.seen {
             continue;
         }
-        if let Err(err) = super::email_eca::run_email_rules(&eca_fields(&message, &server_id)) {
-            tracing::error!("email ECA rules failed for message {id} of {server_id}, left on the server: {err}");
-            note_error(err.message());
+        if let Err(text) = receive(facade, &message, &server_id) {
+            tracing::error!("email ECA rules failed for message {id} of {server_id}, left on the server: {text}");
+            errors.push(text);
             continue;
         }
         if settings.mark_seen {
             if let Err(err) = store.mark_seen(&id) {
-                note_error(err);
+                errors.push(err);
             }
         }
         if settings.delete {
             if let Err(err) = store.delete(&id) {
-                note_error(err);
+                errors.push(err);
             }
         }
     }
     if let Err(err) = store.close() {
-        note_error(err);
+        errors.push(err);
+    }
+    for text in errors {
+        note_error(text);
     }
     Ok(BTreeMap::new())
+}
+
+/// Runs the email ECA rules for one message in a new transaction. A rule that fails, or an error a rule leaves in the
+/// message facade, rolls it back; the errors are taken out of the facade and returned.
+fn receive(facade: &EntityFacade, message: &Inbound, server_id: &str) -> Result<(), String> {
+    let mark = ExecutionContext::with_current(|ctx| ctx.message().error_mark()).unwrap_or_default();
+    force_new(facade, || {
+        let ran = super::email_eca::run_email_rules(&eca_fields(message, server_id));
+        let mut errors =
+            ExecutionContext::with_current(|ctx| ctx.message().take_errors_since(mark)).unwrap_or_default();
+        if let Err(err) = ran {
+            if !errors.iter().any(|text| text == err.message()) {
+                errors.insert(0, err.message().to_string());
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(LibError::new(errors.join("\n")))
+        }
+    })
+    .map_err(|err| err.message().to_string())
 }
 
 struct StoreSettings {
@@ -1657,6 +1695,13 @@ impl Pop3 {
         if settings.folder != "INBOX" {
             return Err(format!("No {} folder found", settings.folder));
         }
+        // They go into the USER and PASS lines as they are.
+        if [&settings.user, &settings.password]
+            .iter()
+            .any(|text| text.contains(['\r', '\n']))
+        {
+            return Err("the POP3 username or password has a line break".to_string());
+        }
         let net = connect_net(
             &settings.host,
             settings.port,
@@ -1672,7 +1717,7 @@ impl Pop3 {
     }
 
     fn command(&mut self, line: &str) -> Result<String, String> {
-        writeln!(self.reader.get_mut(), "{line}").map_err(|err| err.to_string())?;
+        write!(self.reader.get_mut(), "{line}\r\n").map_err(|err| err.to_string())?;
         self.reader.get_mut().flush().map_err(|err| err.to_string())?;
         let response = read_line(&mut self.reader)?;
         expect_ok(&response)?;
@@ -1739,7 +1784,7 @@ impl Mailbox for Pop3 {
 impl Drop for Pop3 {
     fn drop(&mut self) {
         if !self.closed {
-            let _ = writeln!(self.reader.get_mut(), "QUIT");
+            let _ = self.reader.get_mut().write_all(b"QUIT\r\n");
             let _ = self.reader.get_mut().flush();
             self.closed = true;
         }
@@ -2839,6 +2884,81 @@ AAEC/w==\r\n\
         assert!(messages.iter().any(|text| text == "saw good"), "{messages:?}");
         let left = FAKE_DELETED.with(|deleted| deleted.borrow().clone());
         assert_eq!(left, vec!["2".to_string()]);
+    }
+
+    #[test]
+    fn a_failed_message_keeps_the_ones_before_it_committed_and_deleted() {
+        let _lock = lock_tests();
+        let (facade, context) = entered();
+        let _entered = context.enter();
+        crate::service::load_definitions().unwrap();
+        eca_rules::install(
+            context.factory(),
+            eca_rules::from_xml(
+                "",
+                r#"<emecas>
+                <emeca rule-name="Save"><actions>
+                    <service-call name="org.moqui.impl.EmailServices.save#EcaEmailMessage" in-map="context"/></actions></emeca>
+                <emeca rule-name="Breaks"><condition><expression>fields.subject == 'bad'</expression></condition>
+                    <actions><script>throw new Error('rule broke')</script></actions></emeca>
+            </emecas>"#,
+            ),
+        );
+        seed(
+            &facade,
+            &context,
+            "moqui.basic.email.EmailServer",
+            &[
+                ("emailServerId", "TEST_EACH"),
+                ("storeHost", "imap.example.com"),
+                ("mailUsername", "inbox"),
+                ("mailPassword", "secret"),
+                ("storeProtocol", "imap"),
+                ("storeDelete", "Y"),
+            ],
+        );
+        let inbound = |id: &str, subject: &str| {
+            let mut message = Inbound::blank();
+            message.id = id.to_string();
+            message.subject = subject.to_string();
+            message
+                .headers
+                .insert("message-id".into(), Value::string(format!("<each-{id}@example.com>")));
+            message
+        };
+        let _store = FakeGuard::install(vec![inbound("1", "first"), inbound("2", "bad"), inbound("3", "third")]);
+        FAKE_DELETED.with(|deleted| deleted.borrow_mut().clear());
+        let mut params = std::collections::BTreeMap::new();
+        params.insert("emailServerId".into(), Value::string("TEST_EACH"));
+        let _ = crate::service::sync("org.moqui.impl.EmailServices.poll#EmailServer", &params);
+        let errors = context.message().errors().join("\n");
+        assert!(errors.contains("rule broke"), "{errors}");
+        // The poll's own transaction rolled back on that error; the saved messages were committed before it.
+        let saved = |id: &str| {
+            let _authz = context.disable_authz();
+            facade
+                .find("moqui.basic.email.EmailMessage")
+                .unwrap()
+                .eq("messageId", Value::string(format!("<each-{id}@example.com>")))
+                .one()
+                .unwrap()
+                .is_some()
+        };
+        assert!(saved("1"));
+        assert!(!saved("2"), "the failed message's row rolled back");
+        assert!(saved("3"));
+        let deleted = FAKE_DELETED.with(|deleted| deleted.borrow().clone());
+        assert_eq!(deleted, vec!["1".to_string(), "3".to_string()]);
+    }
+
+    #[test]
+    fn the_message_id_host_is_the_domain_of_the_from_address() {
+        let id = super::new_message_id("Ann Smith <ann@example.com>").unwrap();
+        assert!(id.starts_with('<') && id.ends_with("@example.com>"), "{id}");
+        assert_eq!(id.matches('>').count(), 1, "{id}");
+        assert!(super::new_message_id("not an address")
+            .unwrap()
+            .ends_with("@localhost>"));
     }
 
     #[test]

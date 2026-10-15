@@ -16,10 +16,12 @@
 //! `AuthenticationFlow` and `MoquiSecurityGrantedAccessAdapter`, on the host's [`crate::sso::SsoClient`].
 //!
 //! The account sync is Java's: the `AuthFlowFieldMap` rules map the profile attributes (an expression, or a mapping
-//! service), the `UserAccount` with the profile's username is updated through `update#UserAccount` or created, and
-//! `UserGroupMember` follows `AuthFlowRoleMap`: a mapped role adds its group, a current group no mapped role names is
-//! ended unless it is the flow's `defaultUserGroupId`, and a user left with no group gets the default group. The login
-//! replaces the session id. A failure is logged and the browser goes back to `/Login`, as in Java.
+//! service), the `UserAccount` is updated through `update#UserAccount` or created, and `UserGroupMember` follows
+//! `AuthFlowRoleMap`: a mapped role adds its group, a current group no mapped role names is ended unless it is the
+//! flow's `defaultUserGroupId`, and a user left with no group gets the default group. Unlike Java, the account is first
+//! the one whose `externalUserId` is the provider's id, and only then the one with the profile's username; an account
+//! linked to a different provider id is refused. The sync runs in its own transaction, so a failure part way changes
+//! nothing. The login replaces the session id. A failure is logged and the browser goes back to `/Login`, as in Java.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -30,7 +32,10 @@ use crate::context::ExecutionContext;
 use crate::entity::{EntityFacade, EntityValue};
 use crate::service::call::{sync_with, CallOptions};
 use crate::sso::{FlowConfig, FlowKind, OauthConfig, OidcConfig, SsoProfile};
+use crate::transaction::TransactionAttribute;
 use crate::user::session::{session_attribute, set_session_attribute};
+
+const ACCOUNT: &str = "moqui.security.UserAccount";
 
 const LOGIN: &str = "org.moqui.sso.AuthServices.login#User";
 const CALLBACK: &str = "org.moqui.sso.AuthServices.handle#Callback";
@@ -235,7 +240,7 @@ fn callback(facade: &EntityFacade) -> Result<(), LibError> {
         .clone()
         .filter(|name| !name.is_empty())
         .ok_or_else(|| LibError::new(format!("AuthFlow {auth_flow_id}: the provider gave no username")))?;
-    sync_account(facade, &flow_row, &profile, &username)?;
+    let username = sync_account(facade, &flow_row, &profile, &username)?;
     crate::user::login_external_user(&username).map_err(|err| LibError::new(err.message()))?;
     set_session_attribute(EXTERNAL_LOGOUT, Some("true"));
     set_session_attribute(FLOW_ID, Some(&auth_flow_id));
@@ -285,14 +290,10 @@ fn call(name: &str, parameters: BTreeMap<String, Value>) -> Result<BTreeMap<Stri
         disable_authz: true,
         ..CallOptions::default()
     };
+    let mark = ExecutionContext::with_current(|ctx| ctx.message().error_mark()).unwrap_or_default();
     let result = sync_with(name, &parameters, &options);
-    let errors = ExecutionContext::with_current(|ctx| {
-        let mut message = ctx.message();
-        let text = message.errors().join("\n");
-        message.clear();
-        text
-    })
-    .unwrap_or_default();
+    let errors =
+        ExecutionContext::with_current(|ctx| ctx.message().take_errors_since(mark).join("\n")).unwrap_or_default();
     match result {
         Ok(_) if !errors.is_empty() => Err(LibError::new(format!("{name}: {errors}"))),
         Ok(out) => Ok(out),
@@ -368,34 +369,67 @@ fn now_value() -> Value {
     crate::user::now_value()
 }
 
-/// `MoquiSecurityGrantedAccessAdapter.adapt` for one profile.
+/// `MoquiSecurityGrantedAccessAdapter.adapt` for one profile, in its own transaction, so a failure part way leaves the
+/// account and its groups as they were. Returns the username to log in as.
 fn sync_account(
     facade: &EntityFacade,
     flow: &EntityValue,
     profile: &SsoProfile,
     username: &str,
-) -> Result<(), LibError> {
+) -> Result<String, LibError> {
+    let tx = facade.transactions_for(ACCOUNT)?;
+    tx.run(TransactionAttribute::ForceNew, None, || {
+        sync_account_rows(facade, flow, profile, username)
+    })
+}
+
+fn sync_account_rows(
+    facade: &EntityFacade,
+    flow: &EntityValue,
+    profile: &SsoProfile,
+    username: &str,
+) -> Result<String, LibError> {
     let auth_flow_id = field(flow, "authFlowId");
     let mapped = map_fields(facade, &auth_flow_id, &profile.attributes)?;
-    let existing = facade
-        .find("moqui.security.UserAccount")?
-        .disable_authz()
-        .eq("username", Value::string(username))
-        .use_cache(false)
-        .one()?;
+    let find_by = |name: &str, value: &str| -> Result<Option<EntityValue>, LibError> {
+        facade
+            .find(ACCOUNT)?
+            .disable_authz()
+            .eq(name, Value::string(value))
+            .use_cache(false)
+            .one()
+    };
+    let linked = if profile.id.is_empty() {
+        None
+    } else {
+        find_by("externalUserId", &profile.id)?
+    };
+    let existing = match linked {
+        Some(account) => Some(account),
+        None => find_by("username", username)?,
+    };
     let mut parameters = mapped;
     parameters.insert("externalUserId".to_string(), Value::string(&profile.id));
-    parameters.insert("username".to_string(), Value::string(username));
-    let user_id = match existing {
+    let (user_id, username) = match existing {
         Some(account) => {
+            let linked_id = field(&account, "externalUserId");
+            if !linked_id.is_empty() && linked_id != profile.id {
+                return Err(LibError::new(format!(
+                    "AuthFlow {auth_flow_id}: the account {username} is linked to another user of the provider"
+                )));
+            }
             let user_id = field(&account, "userId");
+            let username = field(&account, "username");
             parameters.insert("userId".to_string(), Value::string(&user_id));
+            parameters.insert("username".to_string(), Value::string(&username));
             call("org.moqui.impl.UserServices.update#UserAccount", parameters)?;
-            user_id
+            (user_id, username)
         }
         None => {
+            parameters.insert("username".to_string(), Value::string(username));
             let created = call("create#moqui.security.UserAccount", parameters)?;
-            created.get("userId").map(to_plain_string).unwrap_or_default()
+            let user_id = created.get("userId").map(to_plain_string).unwrap_or_default();
+            (user_id, username.to_string())
         }
     };
     if user_id.is_empty() {
@@ -438,7 +472,7 @@ fn sync_account(
     if !default_group.is_empty() && active_members(facade, &user_id)?.is_empty() {
         add_member(&default_group, &user_id, &now)?;
     }
-    Ok(())
+    Ok(username)
 }
 
 fn add_member(group: &str, user_id: &str, now: &Value) -> Result<(), LibError> {
@@ -468,4 +502,195 @@ fn active_members(facade: &EntityFacade, user_id: &str) -> Result<Vec<EntityValu
         })
         .cloned()
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use moqui_lib::object::Value;
+
+    use super::{active_members, call, field, sync_account, ACCOUNT};
+    use crate::context::ExecutionContextFactory;
+    use crate::entity::{EntityFacade, EntityValue};
+    use crate::service::eca_rules;
+    use crate::sso::SsoProfile;
+
+    fn entered() -> (EntityFacade, crate::context::ExecutionContext) {
+        let facade = crate::testing::open();
+        let context = ExecutionContextFactory::test_context_in(
+            "",
+            crate::service::ServicePools::idle(),
+            crate::context::framework_dir(),
+        );
+        context.factory().set_entity(facade.clone());
+        (facade, context)
+    }
+
+    fn seed(facade: &EntityFacade, entity: &str, fields: &[(&str, Value)]) -> EntityValue {
+        let mut row = facade.make_value(entity).expect("make");
+        for (name, value) in fields {
+            row.set(*name, value.clone());
+        }
+        row.create(facade).expect("create");
+        row
+    }
+
+    fn profile(id: &str, username: &str, roles: &[&str]) -> SsoProfile {
+        let mut attributes = BTreeMap::new();
+        attributes.insert("name".to_string(), Value::string("New Name"));
+        SsoProfile {
+            id: id.to_string(),
+            username: Some(username.to_string()),
+            attributes,
+            roles: roles.iter().map(|role| (*role).to_string()).collect(),
+            id_token: None,
+        }
+    }
+
+    fn account(facade: &EntityFacade, user_id: &str) -> EntityValue {
+        facade
+            .find(ACCOUNT)
+            .unwrap()
+            .disable_authz()
+            .eq("userId", Value::string(user_id))
+            .use_cache(false)
+            .one()
+            .unwrap()
+            .unwrap()
+    }
+
+    /// A flow mapping `name` to `userFullName`, and roles `a` and `b` to the groups `NEW_GROUP` and `BROKEN`.
+    fn flow(facade: &EntityFacade) -> EntityValue {
+        let flow = seed(
+            facade,
+            "moqui.security.sso.AuthFlow",
+            &[("authFlowId", Value::string("TEST_FLOW"))],
+        );
+        seed(
+            facade,
+            "moqui.security.sso.AuthFlowFieldMap",
+            &[
+                ("authFlowId", Value::string("TEST_FLOW")),
+                ("ruleSeqId", Value::string("01")),
+                ("srcFieldName", Value::string("name")),
+                ("dstFieldName", Value::string("userFullName")),
+            ],
+        );
+        for (role, group) in [("a", "NEW_GROUP"), ("b", "BROKEN")] {
+            seed(
+                facade,
+                "moqui.security.sso.AuthFlowRoleMap",
+                &[
+                    ("authFlowId", Value::string("TEST_FLOW")),
+                    ("roleName", Value::string(role)),
+                    ("userGroupId", Value::string(group)),
+                ],
+            );
+        }
+        flow
+    }
+
+    #[test]
+    fn a_failure_part_way_leaves_the_account_and_its_groups_as_they_were() {
+        let (facade, context) = entered();
+        let _entered = context.enter();
+        let _authz = context.disable_authz();
+        crate::service::load_definitions().unwrap();
+        eca_rules::install(
+            context.factory(),
+            eca_rules::from_xml(
+                r#"<secas>
+                    <seca service="create#moqui.security.UserGroupMember" when="post-service">
+                        <condition><expression>userGroupId == 'BROKEN'</expression></condition>
+                        <actions><script>ec.message.addError('group broke')</script></actions>
+                    </seca>
+                </secas>"#,
+                "",
+            ),
+        );
+        let flow = flow(&facade);
+        seed(
+            &facade,
+            ACCOUNT,
+            &[
+                ("userId", Value::string("SSO_ANN")),
+                ("username", Value::string("sso.ann")),
+                ("userFullName", Value::string("Old Name")),
+            ],
+        );
+        seed(
+            &facade,
+            "moqui.security.UserGroupMember",
+            &[
+                ("userGroupId", Value::string("OLD_GROUP")),
+                ("userId", Value::string("SSO_ANN")),
+                ("fromDate", crate::user::now_value()),
+            ],
+        );
+        let err = sync_account(&facade, &flow, &profile("sub-ann", "sso.ann", &["a", "b"]), "sso.ann").unwrap_err();
+        assert!(err.message().contains("group broke"), "{}", err.message());
+        // The account update and the NEW_GROUP membership made before the failure rolled back.
+        let groups: Vec<String> = active_members(&facade, "SSO_ANN")
+            .unwrap()
+            .iter()
+            .map(|member| field(member, "userGroupId"))
+            .collect();
+        assert_eq!(groups, ["OLD_GROUP"]);
+        let account = account(&facade, "SSO_ANN");
+        assert_eq!(field(&account, "userFullName"), "Old Name");
+        assert_eq!(field(&account, "externalUserId"), "");
+        assert!(
+            context.message().errors().is_empty(),
+            "{:?}",
+            context.message().errors()
+        );
+    }
+
+    #[test]
+    fn a_username_linked_to_another_provider_id_is_refused_and_a_linked_id_wins() {
+        let (facade, context) = entered();
+        let _entered = context.enter();
+        let _authz = context.disable_authz();
+        crate::service::load_definitions().unwrap();
+        let flow = flow(&facade);
+        seed(
+            &facade,
+            ACCOUNT,
+            &[
+                ("userId", Value::string("SSO_ADMIN")),
+                ("username", Value::string("admin")),
+                ("externalUserId", Value::string("sub-admin")),
+                ("userFullName", Value::string("Admin")),
+            ],
+        );
+        let err = sync_account(&facade, &flow, &profile("sub-other", "admin", &[]), "admin").unwrap_err();
+        assert!(err.message().contains("linked to another user"), "{}", err.message());
+        let admin = account(&facade, "SSO_ADMIN");
+        assert_eq!(field(&admin, "externalUserId"), "sub-admin");
+        assert_eq!(field(&admin, "userFullName"), "Admin");
+
+        // The account already linked to the provider's id is the one logged in, whatever username the provider sends.
+        let username = sync_account(&facade, &flow, &profile("sub-admin", "renamed", &[]), "renamed").unwrap();
+        assert_eq!(username, "admin");
+        assert_eq!(field(&account(&facade, "SSO_ADMIN"), "userFullName"), "New Name");
+    }
+
+    #[test]
+    fn a_call_takes_only_the_errors_it_added() {
+        let (_facade, context) = entered();
+        let _entered = context.enter();
+        crate::service::load_definitions().unwrap();
+        context.message().add_message("kept");
+        let mut parameters = BTreeMap::new();
+        parameters.insert("userId".to_string(), Value::string("NOBODY"));
+        let err = call("org.moqui.impl.UserServices.update#UserAccount", parameters.clone()).unwrap_err();
+        assert!(err.message().contains("not found"), "{}", err.message());
+        assert!(context.message().errors().is_empty());
+        assert_eq!(context.message().messages(), ["kept"]);
+        // An earlier error stops the service, as in any call, and is not cleared.
+        context.message().add_error("from before");
+        call("org.moqui.impl.UserServices.update#UserAccount", parameters).unwrap();
+        assert_eq!(context.message().errors(), ["from before"]);
+    }
 }

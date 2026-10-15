@@ -37,7 +37,7 @@ pub(crate) use factory::standard_base64;
 pub use factory::{BootOptions, ContextGuard, ExecutionContext, ExecutionContextFactory, Executor};
 pub(crate) use hits::Hit;
 pub use locate::{framework_dir, locate};
-pub use message::{MessageFacade, ValidationError};
+pub use message::{ErrorMark, MessageFacade, ValidationError};
 pub use resource::{ResourceEntry, ResourceFacade, ResourceRef, ResourceStat};
 
 #[cfg(test)]
