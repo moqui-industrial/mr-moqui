@@ -41,7 +41,7 @@ use super::mapping::{DocumentMapping, FieldKind, ObjectMapping, Resolved};
 use super::postgres::body_json;
 use super::postgres::compile::parse_date_bound;
 use super::query::{FieldOp, FieldQuery, Query, TextFields, TextMatch};
-use super::{lock, Capability, Rank, SearchBackend, SearchHit, SearchPage, SearchRequest};
+use super::{lock, Capability, Rank, SearchBackend, SearchHit, SearchPage, SearchRequest, SortField};
 use crate::entity::document::Document;
 
 /// The index-time field each stored document carries.
@@ -383,29 +383,65 @@ fn positive_terms(query: &Query, negated: bool, out: &mut Vec<String>) {
 
 /// The `_search` body for a request.
 pub fn search_json(mapping: &DocumentMapping, request: &SearchRequest) -> Json {
+    search_body(&[mapping], request)
+}
+
+/// The `_search` body over several document types: the query is the first type's, and each sort
+/// key is resolved against every type, see [`sort_json`].
+fn search_body(mappings: &[&DocumentMapping], request: &SearchRequest) -> Json {
     let mut body = Map::new();
-    body.insert("query".into(), request_query(mapping, request));
+    if let Some(first) = mappings.first() {
+        body.insert("query".into(), request_query(first, request));
+    }
     body.insert("from".into(), Json::from(request.offset));
     body.insert("size".into(), Json::from(request.limit));
     body.insert("track_total_hits".into(), Json::Bool(true));
     if !request.sort.is_empty() {
-        let sort: Vec<Json> = request
-            .sort
-            .iter()
-            .map(|sort| {
-                let order = if sort.descending { "desc" } else { "asc" };
-                let name = field_name(mapping, &sort.field, true);
-                if name == "_score" {
-                    json!({"_score": {"order": order}})
-                } else {
-                    let mode = if sort.descending { "max" } else { "min" };
-                    json!({name: {"order": order, "missing": "_last", "mode": mode}})
-                }
-            })
-            .collect();
+        let sort: Vec<Json> = request.sort.iter().map(|sort| sort_json(mappings, sort)).collect();
         body.insert("sort".into(), Json::Array(sort));
     }
     Json::Object(body)
+}
+
+/// One sort clause. The name is the `.keyword` subfield when any type maps the field as sortable
+/// text, since sorting a text field fails. `unmapped_type` is the field's kind (keyword when the
+/// types disagree, as the Postgres backend does), so an index without the field sorts its hits
+/// last instead of failing its shards.
+fn sort_json(mappings: &[&DocumentMapping], sort: &SortField) -> Json {
+    let order = if sort.descending { "desc" } else { "asc" };
+    let mut name: Option<String> = None;
+    let mut kind: Option<FieldKind> = None;
+    for mapping in mappings {
+        let Some(found) = kind_of(mapping, sort.field.strip_suffix(".keyword").unwrap_or(&sort.field)) else {
+            continue;
+        };
+        let resolved = field_name(mapping, &sort.field, true);
+        if name.is_none() || resolved.ends_with(".keyword") {
+            name = Some(resolved);
+        }
+        kind = match kind {
+            None => Some(found),
+            Some(existing) if existing == found => Some(existing),
+            Some(_) => Some(FieldKind::Keyword),
+        };
+    }
+    let name = name.unwrap_or_else(|| {
+        mappings
+            .first()
+            .map_or_else(|| sort.field.clone(), |mapping| field_name(mapping, &sort.field, true))
+    });
+    match name.as_str() {
+        "_score" => json!({"_score": {"order": order}}),
+        "_id" => json!({"_id": {"order": order}}),
+        _ => {
+            let mode = if sort.descending { "max" } else { "min" };
+            let unmapped = match kind {
+                Some(FieldKind::Text) | None => "keyword",
+                Some(kind) => kind.search_type(),
+            };
+            json!({name: {"order": order, "missing": "_last", "mode": mode, "unmapped_type": unmapped}})
+        }
+    }
 }
 
 /// Named aggregations as Elastic JSON.
@@ -604,15 +640,21 @@ impl OpenSearchBackend {
     fn checked(&self, method: &str, path: &str, body: Option<Body>) -> Result<Json, Error> {
         let (status, json) = self.send(method, path, body)?;
         if status >= 300 {
-            let reason = json
-                .pointer("/error/reason")
-                .and_then(Json::as_str)
-                .map_or_else(|| json.to_string(), str::to_string);
-            return Err(Error::new(format!(
-                "OpenSearch {method} {path} returned {status}: {reason}"
-            )));
+            return Err(status_error(method, path, status, &json));
         }
         Ok(json)
+    }
+
+    /// [`Self::checked`] for a `_search`. A response where some shards failed is an error: its
+    /// hits, total, and aggregations miss those shards' documents, and no caller can tell.
+    fn searched(&self, path: &str, body: Json) -> Result<Json, Error> {
+        let response = self.checked("POST", path, Some(Body::Json(body)))?;
+        if let Some(reason) = shard_failure(&response) {
+            return Err(Error::new(format!(
+                "OpenSearch POST {path} failed on some shards: {reason}"
+            )));
+        }
+        Ok(response)
     }
 
     fn create(&self, mapping: &DocumentMapping) -> Result<(), Error> {
@@ -622,13 +664,20 @@ impl OpenSearchBackend {
         if let Some(service) = &mapping.manual_mapping_service {
             let mut params = std::collections::BTreeMap::new();
             params.insert("mapping".to_string(), moqui_lib::json::from_json(&mappings));
-            if let Ok(result) = crate::service::sync(service, &params) {
-                if let Some(changed) = result.get("mapping").filter(|value| !value.is_null()) {
-                    mappings = moqui_lib::json::to_json(changed);
-                }
-                if let Some(given) = result.get("settings").filter(|value| !value.is_null()) {
-                    settings = moqui_lib::json::to_json(given);
-                }
+            // A failure fails the index creation, so a later ensure tries again instead of keeping
+            // an index made with the default mapping under this signature.
+            let result = super::feed::call_checked(service, &params).map_err(|err| {
+                Error::new(format!(
+                    "manual mapping service for {} failed: {}",
+                    mapping.document_id,
+                    err.message()
+                ))
+            })?;
+            if let Some(changed) = result.get("mapping").filter(|value| !value.is_null()) {
+                mappings = moqui_lib::json::to_json(changed);
+            }
+            if let Some(given) = result.get("settings").filter(|value| !value.is_null()) {
+                settings = moqui_lib::json::to_json(given);
             }
         }
         if let Some(needed) = settings_json(mapping) {
@@ -656,13 +705,7 @@ impl OpenSearchBackend {
         // Another thread or node made it between the mapping check and here: the same definition.
         let exists = json.pointer("/error/type").and_then(Json::as_str) == Some("resource_already_exists_exception");
         if status >= 300 && !exists {
-            let reason = json
-                .pointer("/error/reason")
-                .and_then(Json::as_str)
-                .map_or_else(|| json.to_string(), str::to_string);
-            return Err(Error::new(format!(
-                "OpenSearch PUT {index} returned {status}: {reason}"
-            )));
+            return Err(status_error("PUT", &index, status, &json));
         }
         Ok(())
     }
@@ -715,7 +758,7 @@ impl SearchBackend for OpenSearchBackend {
             tracing::warn!(index = %index, "search index shape changed; the index is rebuilt and must be reindexed");
             self.checked("DELETE", &index, None)?;
         } else if status != 404 {
-            return Err(Error::new(format!("OpenSearch GET {index}/_mapping returned {status}")));
+            return Err(status_error("GET", &format!("{index}/_mapping"), status, &json));
         }
         self.create(mapping)?;
         lock(&self.known).insert(mapping.document_id.clone(), signature);
@@ -726,8 +769,15 @@ impl SearchBackend for OpenSearchBackend {
         if lock(&self.known).contains_key(&mapping.document_id) {
             return Ok(true);
         }
-        let (status, _) = self.send("GET", &format!("{}/_mapping", self.index_name(mapping)), None)?;
-        Ok(status == 200)
+        // Only a 404 is a missing index. An unreachable, overloaded, or unauthorized cluster is an
+        // error, so a search does not come back empty and a feed delete is not taken as done.
+        let path = format!("{}/_mapping", self.index_name(mapping));
+        let (status, json) = self.send("GET", &path, None)?;
+        match status {
+            404 => Ok(false),
+            300.. => Err(status_error("GET", &path, status, &json)),
+            _ => Ok(true),
+        }
     }
 
     fn index_documents(&self, mapping: &DocumentMapping, documents: &[(String, Document)]) -> Result<usize, Error> {
@@ -806,7 +856,31 @@ impl SearchBackend for OpenSearchBackend {
         let path = format!("{}/_delete_by_query?refresh=true", self.index_name(mapping));
         let body = json!({"query": query_json(mapping, filter)});
         let response = self.checked("POST", &path, Some(Body::Json(body)))?;
-        Ok(response.get("deleted").and_then(Json::as_u64).unwrap_or(0))
+        let deleted = response.get("deleted").and_then(Json::as_u64).unwrap_or(0);
+        // A delete that stopped part way answers 200 with its failures. It is an error, so a
+        // retention run reports it and the next run deletes the rest.
+        if let Some(failures) = response
+            .get("failures")
+            .and_then(Json::as_array)
+            .filter(|failures| !failures.is_empty())
+        {
+            let first = failures.first().map_or_else(String::new, |failure| {
+                failure
+                    .pointer("/cause/reason")
+                    .and_then(Json::as_str)
+                    .map_or_else(|| failure.to_string(), str::to_string)
+            });
+            return Err(Error::new(format!(
+                "OpenSearch POST {path} deleted {deleted} and had {} failures: {first}",
+                failures.len()
+            )));
+        }
+        if response.get("timed_out").and_then(Json::as_bool) == Some(true) {
+            return Err(Error::new(format!(
+                "OpenSearch POST {path} timed out after deleting {deleted}"
+            )));
+        }
+        Ok(deleted)
     }
 
     fn get_document(&self, mapping: &DocumentMapping, id: &str) -> Result<Option<Document>, Error> {
@@ -822,11 +896,12 @@ impl SearchBackend for OpenSearchBackend {
     }
 
     fn search(&self, mappings: &[Arc<DocumentMapping>], request: &SearchRequest) -> Result<SearchPage, Error> {
-        let Some(first) = mappings.first() else {
+        if mappings.is_empty() {
             return Ok(SearchPage::default());
-        };
+        }
         let indexes: Vec<String> = mappings.iter().map(|mapping| self.index_name(mapping)).collect();
-        let mut body = search_json(first, request);
+        let refs: Vec<&DocumentMapping> = mappings.iter().map(|mapping| &**mapping).collect();
+        let mut body = search_body(&refs, request);
         if mappings.len() > 1 {
             // Each type's fields and roles differ: its own query, only on its own index.
             let should: Vec<Json> = mappings
@@ -843,11 +918,7 @@ impl SearchBackend for OpenSearchBackend {
                 );
             }
         }
-        let response = self.checked(
-            "POST",
-            &format!("{}/_search", indexes.join(",")),
-            Some(Body::Json(body)),
-        )?;
+        let response = self.searched(&format!("{}/_search", indexes.join(",")), body)?;
         let total = response
             .pointer("/hits/total/value")
             .and_then(Json::as_u64)
@@ -898,11 +969,7 @@ impl SearchBackend for OpenSearchBackend {
     ) -> Result<IndexMap<String, Value>, Error> {
         let body = json!({"size": 0, "query": {"bool": {"filter": [query_json(mapping, filter)]}},
             "aggs": aggs_json(mapping, aggs)?});
-        let response = self.checked(
-            "POST",
-            &format!("{}/_search", self.index_name(mapping)),
-            Some(Body::Json(body)),
-        )?;
+        let response = self.searched(&format!("{}/_search", self.index_name(mapping)), body)?;
         Ok(read_aggs(aggs, response.get("aggregations").unwrap_or(&Json::Null)))
     }
 
@@ -917,6 +984,32 @@ impl SearchBackend for OpenSearchBackend {
         }
         Ok(())
     }
+}
+
+/// The error for a status at or above 300, with the cluster's reason when it gave one.
+fn status_error(method: &str, path: &str, status: u16, json: &Json) -> Error {
+    let reason = json
+        .pointer("/error/reason")
+        .and_then(Json::as_str)
+        .map_or_else(|| json.to_string(), str::to_string);
+    Error::new(format!("OpenSearch {method} {path} returned {status}: {reason}"))
+}
+
+/// How many shards failed and the first one's reason, when `_shards.failed` is above zero.
+fn shard_failure(response: &Json) -> Option<String> {
+    let failed = response.pointer("/_shards/failed").and_then(Json::as_u64).unwrap_or(0);
+    if failed == 0 {
+        return None;
+    }
+    Some(
+        match response
+            .pointer("/_shards/failures/0/reason/reason")
+            .and_then(Json::as_str)
+        {
+            Some(reason) => format!("{failed} failed, {reason}"),
+            None => format!("{failed} failed"),
+        },
+    )
 }
 
 fn source_of(source: Option<&Json>) -> Document {
@@ -1040,7 +1133,7 @@ mod tests {
         let body = search_json(&mapping, &request);
         assert_eq!(
             body["sort"],
-            json!([{"combinedName.keyword": {"order": "desc", "missing": "_last", "mode": "max"}}])
+            json!([{"combinedName.keyword": {"order": "desc", "missing": "_last", "mode": "max", "unmapped_type": "keyword"}}])
         );
         assert_eq!(body["track_total_hits"], json!(true));
     }
@@ -1070,5 +1163,183 @@ mod tests {
         assert_eq!(to_plain_string(&bucket["s"]), "130.5");
         let Value::Map(filter) = &bucket["F"] else { panic!() };
         assert_eq!(filter["doc_count"], Value::I64(1));
+    }
+
+    #[test]
+    fn a_sort_resolves_against_every_type_and_names_an_unmapped_type() {
+        let sales = sales();
+        let mut party = sales.clone();
+        party.document_id = "MantleParty".into();
+        party.physical_name = "mantle_party".into();
+        party.root.fields.clear();
+        party.root.fields.insert(
+            "pseudoId".into(),
+            FieldMapping {
+                kind: FieldKind::Keyword,
+                sortable: false,
+            },
+        );
+        let mut request = SearchRequest::new(Query::MatchAll);
+        request.sort = ["combinedName", "-placedDate", "pseudoId", "_score"]
+            .iter()
+            .map(|text| SortField::parse(text).unwrap())
+            .collect();
+        // The party type is first and has none of the sales fields.
+        let body = search_body(&[&party, &sales], &request);
+        assert_eq!(
+            body["sort"],
+            json!([
+                {"combinedName.keyword": {"order": "asc", "missing": "_last", "mode": "min", "unmapped_type": "keyword"}},
+                {"placedDate": {"order": "desc", "missing": "_last", "mode": "max", "unmapped_type": "date"}},
+                {"pseudoId": {"order": "asc", "missing": "_last", "mode": "min", "unmapped_type": "keyword"}},
+                {"_score": {"order": "asc"}}
+            ])
+        );
+    }
+
+    /// A one-request-per-connection HTTP server that answers `replies` in order, then stops.
+    /// Joining it gives the request lines it saw.
+    fn serve(replies: Vec<(u16, Json)>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for (status, body) in replies {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut buf = Vec::new();
+                let mut chunk = [0_u8; 4096];
+                loop {
+                    if let Some(split) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&buf[..split]).to_ascii_lowercase();
+                        let length = head
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                            .unwrap_or(0);
+                        if buf.len() >= split + 4 + length {
+                            break;
+                        }
+                    }
+                    match stream.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(size) => buf.extend_from_slice(&chunk[..size]),
+                    }
+                }
+                let text = String::from_utf8_lossy(&buf);
+                seen.push(text.lines().next().unwrap_or_default().to_string());
+                let body = body.to_string();
+                let reply = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(reply.as_bytes());
+                let _ = stream.flush();
+            }
+            seen
+        });
+        (url, handle)
+    }
+
+    fn backend(url: &str) -> OpenSearchBackend {
+        OpenSearchBackend::new(&ClusterConf {
+            url: url.to_string(),
+            user: None,
+            password: None,
+            index_prefix: None,
+        })
+    }
+
+    #[test]
+    fn index_exists_is_false_only_for_a_404() {
+        let (url, server) = serve(vec![
+            (404, json!({"error": {"type": "index_not_found_exception"}})),
+            (503, json!({"error": {"reason": "cluster_block_exception"}})),
+            (401, json!({"error": {"reason": "unauthorized"}})),
+            (200, json!({"mantle_sales_order_item": {"mappings": {}}})),
+        ]);
+        let backend = backend(&url);
+        let mapping = sales();
+        assert!(!backend.index_exists(&mapping).unwrap());
+        let err = backend.index_exists(&mapping).unwrap_err();
+        assert!(err.message().contains("503"), "{err}");
+        assert!(backend.index_exists(&mapping).is_err());
+        assert!(backend.index_exists(&mapping).unwrap());
+        assert_eq!(server.join().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn shard_failures_and_partial_deletes_are_errors() {
+        let (url, server) = serve(vec![
+            (
+                200,
+                json!({"_shards": {"total": 2, "successful": 1, "failed": 1,
+                    "failures": [{"reason": {"reason": "No mapping found for [x] in order to sort on"}}]},
+                    "hits": {"total": {"value": 1}, "hits": []}}),
+            ),
+            (
+                200,
+                json!({"_shards": {"total": 1, "successful": 0, "failed": 1}, "aggregations": {}}),
+            ),
+            (
+                200,
+                json!({"deleted": 3, "timed_out": false,
+                    "failures": [{"cause": {"reason": "version conflict"}}]}),
+            ),
+            (
+                200,
+                json!({"_shards": {"total": 2, "successful": 2, "failed": 0},
+                    "hits": {"total": {"value": 0}, "hits": []}}),
+            ),
+        ]);
+        let backend = backend(&url);
+        let mapping = Arc::new(sales());
+        let err = backend
+            .search(&[Arc::clone(&mapping)], &SearchRequest::new(Query::MatchAll))
+            .unwrap_err();
+        assert!(err.message().contains("No mapping found"), "{err}");
+        let err = backend
+            .aggregate(&mapping, &Query::MatchAll, &IndexMap::new())
+            .unwrap_err();
+        assert!(err.message().contains("1 failed"), "{err}");
+        let err = backend.delete_matching(&mapping, &Query::MatchAll).unwrap_err();
+        assert!(err.message().contains("deleted 3"), "{err}");
+        assert!(err.message().contains("version conflict"), "{err}");
+        let page = backend
+            .search(&[Arc::clone(&mapping)], &SearchRequest::new(Query::MatchAll))
+            .unwrap();
+        assert_eq!(page.total, 0);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_failing_manual_mapping_service_fails_the_ensure_and_is_tried_again() {
+        let ctx = crate::context::ExecutionContextFactory::test_context();
+        ctx.factory().set_entity(crate::testing::open());
+        let _entered = ctx.enter();
+        let missing = || (404, json!({"error": {"type": "index_not_found_exception"}}));
+        let (url, server) = serve(vec![missing(), missing()]);
+        let backend = backend(&url);
+        let mut mapping = sales();
+        mapping.manual_mapping_service = Some("moqui.test.NoSuchServices.make#Mapping".into());
+        let err = backend.ensure_index(&mapping).unwrap_err();
+        assert!(err.message().contains("manual mapping service"), "{err}");
+        assert!(lock(&backend.known).is_empty());
+        assert!(backend.ensure_index(&mapping).is_err());
+        // Each ensure looked again and neither made the index.
+        let seen = server.join().unwrap();
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert!(
+            seen.iter()
+                .all(|line| line.starts_with("GET /mantle_sales_order_item/_mapping")),
+            "{seen:?}"
+        );
+        let errors = ctx.message().errors().to_vec();
+        assert!(errors.is_empty(), "{errors:?}");
     }
 }

@@ -154,8 +154,8 @@ pub enum Query {
     Suggest {
         text: String,
     },
-    /// A Lucene query string sent to OpenSearch as written. Only a log index search makes one (the
-    /// log viewer). The Postgres backend reads it with the facade query-string grammar, which covers
+    /// A Lucene query string sent to OpenSearch as written. A log index search makes one (the log
+    /// viewer); its map form is `{lucene: text}`. The Postgres backend reads it with the facade query-string grammar, which covers
     /// fields, ranges, AND/OR/NOT, groups and phrases, and rejects the rest.
     Lucene(String),
 }
@@ -324,6 +324,10 @@ impl Query {
                 };
                 match key.as_str() {
                     "match_all" => Ok(Self::MatchAll),
+                    "lucene" => match body {
+                        Value::String(text) => Ok(Self::Lucene(text.clone())),
+                        _ => Err(Error::new("query lucene needs a string")),
+                    },
                     "text" => {
                         let inner = body_map()?;
                         let terms = string_at(inner, "terms").unwrap_or_default();
@@ -601,6 +605,8 @@ mod tests {
             Query::eq("partyClassificationId", Value::string("X")),
         );
         assert_eq!(Query::from_value(&child.to_value()).unwrap(), child);
+        let lucene = Query::Lucene("level:ERROR AND message:timeout".into());
+        assert_eq!(Query::from_value(&lucene.to_value()).unwrap(), lucene);
     }
 
     #[test]

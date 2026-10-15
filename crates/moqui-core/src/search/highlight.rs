@@ -16,13 +16,16 @@
 //!
 //! Matching words are wrapped in `<em>` and `</em>`, which `FindParty.xml` rewrites to
 //! `<strong>`. Only scored text clauses highlight, and only on the fields they name (or every
-//! field for an all-fields clause). The text is not HTML-escaped, as Elastic does not escape it.
+//! field for an all-fields clause). The stored text is HTML-escaped around the tags, as Elastic's
+//! `encoder: html` does, so a fragment is safe to render as HTML and a renderer must not escape it
+//! again.
 
 use indexmap::IndexMap;
 use moqui_lib::object::{to_plain_string, Value};
 
 use super::query::{Query, TextFields, TextMatch};
 use crate::entity::document::Document;
+use crate::screen::sri::encode_html;
 
 const MAX_FRAGMENTS: usize = 5;
 
@@ -166,13 +169,13 @@ fn mark(value: &str, terms: &[&Term]) -> Option<String> {
     let mut out = String::with_capacity(value.len() + 16);
     let mut last = 0;
     for ((start, word), _) in spans.iter().zip(&marked).filter(|(_, marked)| **marked) {
-        out.push_str(&value[last..*start]);
+        out.push_str(&encode_html(&value[last..*start]));
         out.push_str("<em>");
-        out.push_str(word);
+        out.push_str(&encode_html(word));
         out.push_str("</em>");
         last = start + word.len();
     }
-    out.push_str(&value[last..]);
+    out.push_str(&encode_html(&value[last..]));
     Some(out)
 }
 
@@ -224,5 +227,20 @@ mod tests {
             vec!["Pump water, then the <em>water</em> <em>pump</em>".to_string()]
         );
         assert!(!out.contains_key("title"));
+    }
+
+    #[test]
+    fn stored_text_is_escaped_around_the_marks() {
+        let mut body = Document::new();
+        body.insert(
+            "combinedName".into(),
+            Value::string("<img src=x onerror=alert(1)> Smith & \"Jones\""),
+        );
+        let query = Query::text("smith", TextMatch::Term);
+        let out = highlights(&query, &["combinedName".to_string()], &body);
+        assert_eq!(
+            out["combinedName"],
+            vec!["&lt;img src=x onerror=alert(1)&gt; <em>Smith</em> &amp; &quot;Jones&quot;".to_string()]
+        );
     }
 }

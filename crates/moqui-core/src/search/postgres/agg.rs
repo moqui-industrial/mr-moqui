@@ -330,22 +330,29 @@ fn from_list(arrays: &[(String, String)]) -> String {
         .join(", ")
 }
 
-fn safe_zone(zone: &TimeZone) -> Result<String, Error> {
-    let name = zone_name(zone);
-    if name
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '_' | '+' | '-' | ':'))
-    {
-        Ok(name)
-    } else {
-        Err(Error::new(format!("time zone {name} cannot be used in a histogram")))
+/// The zone for `AT TIME ZONE`: its IANA name, or an interval for a fixed offset. Postgres reads a
+/// text offset such as `'+05:00'` as a POSIX zone, east of Greenwich negative, so an offset is
+/// never sent as text.
+fn zone_sql(zone: &TimeZone) -> Result<String, Error> {
+    if let Some(name) = zone.iana_name() {
+        if name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '_' | '+' | '-'))
+        {
+            return Ok(literal(name));
+        }
+        return Err(Error::new(format!("time zone {name} cannot be used in a histogram")));
     }
+    let offset = zone
+        .to_fixed_offset()
+        .map_err(|_| Error::new(format!("time zone {} has no name or fixed offset", zone_name(zone))))?;
+    Ok(format!("interval '{} seconds'", offset.seconds()))
 }
 
 fn histogram_key(compiler: &Compiler<'_>, histogram: &DateHistogram, depth: usize) -> Result<KeyDef, Error> {
     let zone = histogram_zone(histogram.time_zone.as_deref())?;
-    let zone_text = literal(&safe_zone(&zone)?);
-    let offset = format!("interval '{} seconds'", histogram.offset.as_secs());
+    let zone_text = zone_sql(&zone)?;
+    let offset = format!("interval '{} milliseconds'", histogram.offset.as_millis());
     let (value, lateral) = date_value(compiler, &histogram.field, depth)?;
     let select = format!(
         "((date_trunc('{}', ({value} AT TIME ZONE {zone_text}) - {offset}) + {offset}) AT TIME ZONE {zone_text})",
@@ -662,7 +669,7 @@ mod tests {
         let level = &statements[1].text;
         // JSON object keys come back sorted, so ItemProduct is collected before orderCount.
         assert!(level.starts_with(
-            "SELECT ((date_trunc('week', (\"f_placedDate\" AT TIME ZONE 'UTC') - interval '-86400 seconds') + interval '-86400 seconds') AT TIME ZONE 'UTC') AS k0, count(*) AS dc, "
+            "SELECT ((date_trunc('week', (\"f_placedDate\" AT TIME ZONE 'UTC') - interval '-86400000 milliseconds') + interval '-86400000 milliseconds') AT TIME ZONE 'UTC') AS k0, count(*) AS dc, "
         ), "{level}");
         assert!(
             level.contains("count(*) FILTER (WHERE COALESCE(\"f_itemTypeEnumId\" = ?, FALSE)) AS c0"),
@@ -749,6 +756,79 @@ mod tests {
         );
         let Value::Map(gap) = &buckets[1] else { panic!() };
         assert!(matches!(gap["t"], Value::Decimal(_)));
+    }
+
+    #[test]
+    fn a_fixed_offset_zone_is_an_interval_and_buckets_at_its_midnight() {
+        let aggs = tree(
+            r#"{"D":{"date_histogram":{"field":"placedDate","unit":"day","time_zone":"+05:00","offset":"500ms"}}}"#,
+        );
+        let mut statements = Vec::new();
+        let mut run = |sql: &Sql| -> Result<Vec<DbRow>, Error> {
+            statements.push(sql.text.clone());
+            Ok(Vec::new())
+        };
+        aggregate(
+            "\"search\".\"t\"",
+            &sales(),
+            &TextSetup::default(),
+            &Query::MatchAll,
+            &aggs,
+            &mut run,
+        )
+        .unwrap();
+        assert!(statements[1].starts_with(
+            "SELECT ((date_trunc('day', (\"f_placedDate\" AT TIME ZONE interval '18000 seconds') - interval '500 milliseconds') + interval '500 milliseconds') AT TIME ZONE interval '18000 seconds') AS k0"
+        ), "{}", statements[1]);
+        assert_eq!(
+            zone_sql(&TimeZone::fixed(jiff::tz::offset(-5))).unwrap(),
+            "interval '-18000 seconds'"
+        );
+        assert_eq!(
+            zone_sql(&TimeZone::get("Asia/Karachi").unwrap()).unwrap(),
+            "'Asia/Karachi'"
+        );
+
+        // The keys Postgres makes, local midnight at +05:00, match the gap filling's own buckets.
+        let Agg::DateHistogram(histogram) = &aggs["D"] else {
+            panic!()
+        };
+        let key = |text: &str| Value::Timestamp(text.parse().unwrap());
+        let count = |n: i64| IndexMap::from([("doc_count".to_string(), Value::I64(n))]);
+        let buckets = histogram_buckets(
+            histogram,
+            vec![
+                (key("2026-01-01T19:00:00.5Z"), count(2)),
+                (key("2026-01-03T19:00:00.5Z"), count(1)),
+            ],
+        )
+        .unwrap();
+        let keys: Vec<(String, i64)> = buckets
+            .iter()
+            .map(|bucket| {
+                let Value::Map(bucket) = bucket else { panic!() };
+                let Value::I64(count) = bucket["doc_count"] else {
+                    panic!()
+                };
+                (to_plain_string(&bucket["key"]), count)
+            })
+            .collect();
+        assert_eq!(keys.len(), 3, "{keys:?}");
+        assert_eq!(keys[1].1, 0);
+        assert_eq!(
+            buckets
+                .iter()
+                .map(|bucket| {
+                    let Value::Map(bucket) = bucket else { panic!() };
+                    timestamp_of(&bucket["key"]).unwrap().to_string()
+                })
+                .collect::<Vec<_>>(),
+            [
+                "2026-01-01T19:00:00.5Z",
+                "2026-01-02T19:00:00.5Z",
+                "2026-01-03T19:00:00.5Z"
+            ]
+        );
     }
 
     #[test]

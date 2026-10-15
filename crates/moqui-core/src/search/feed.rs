@@ -40,7 +40,7 @@ pub const DEFAULT_RECEIVE: &str = "org.moqui.search.SearchServices.index#DataDoc
 pub const DEFAULT_DELETE: &str = "org.moqui.search.SearchServices.delete#DataDocument";
 const PENDING: &str = "moqui.entity.feed.DataFeedPending";
 const REALTIME_PUSH: &str = "DTFDTP_RT_PUSH";
-/// Pending rows one drain call reads.
+/// Pending rows one drain page reads.
 const DRAIN_BATCH: i64 = 1000;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -57,7 +57,14 @@ struct Feed {
     delete: String,
 }
 
-/// Deliver pending rows: the given ids, or a batch of every row when `ids` is `None`.
+impl Feed {
+    /// False when the feed goes to search and search is not configured.
+    fn deliverable(&self, search_up: bool) -> bool {
+        search_up || (self.receive != DEFAULT_RECEIVE && self.delete != DEFAULT_DELETE)
+    }
+}
+
+/// Deliver pending rows: the given ids, or every row, a page at a time, when `ids` is `None`.
 ///
 /// # Errors
 ///
@@ -68,18 +75,75 @@ pub fn process_pending(ids: Option<&[String]>) -> Result<FeedReport, Error> {
         .flatten()
         .ok_or_else(|| Error::new("data feed processing needs an entity facade"))?;
     let _authz = ExecutionContext::with_current(|ec| ec.disable_authz());
-    let mut find = facade.find(PENDING)?;
-    match ids {
-        Some([]) => return Ok(FeedReport::default()),
-        Some(ids) => {
-            find = find.condition(Condition::is_in(
+    if matches!(ids, Some([])) {
+        return Ok(FeedReport::default());
+    }
+    let feeds = realtime_feeds(&facade)?;
+    let search_up = ExecutionContext::with_current(|ec| super::installed(ec.factory()).is_some()).unwrap_or(false);
+    let mut report = FeedReport::default();
+    if let Some(ids) = ids {
+        let rows = facade
+            .find(PENDING)?
+            .condition(Condition::is_in(
                 "dataFeedPendingId",
                 ids.iter().map(Value::string).collect(),
-            ));
-        }
-        None => find = find.limit(DRAIN_BATCH),
+            ))
+            .list()?;
+        deliver_rows(&facade, &rows, &feeds, search_up, &mut report);
+        return Ok(report);
     }
-    let rows = find.list()?;
+    // The drain leaves out the types that cannot be delivered now, reads in id order, and pages
+    // past the rows that stay, so rows that keep failing never hide the rows behind them.
+    let held: Vec<Value> = feeds
+        .iter()
+        .filter(|(_, list)| !list.iter().all(|feed| feed.deliverable(search_up)))
+        .map(|(document_id, _)| Value::string(document_id))
+        .collect();
+    if !held.is_empty() {
+        let kept = facade
+            .find(PENDING)?
+            .condition(Condition::is_in("dataDocumentId", held.clone()))
+            .count()?;
+        if kept > 0 {
+            tracing::debug!(rows = kept, "search is not configured; data feed rows stay");
+            report.rows_left += usize::try_from(kept).unwrap_or(usize::MAX);
+        }
+    }
+    let mut after: Option<String> = None;
+    loop {
+        let mut find = facade
+            .find(PENDING)?
+            .order_by("dataFeedPendingId", false)
+            .limit(DRAIN_BATCH);
+        if !held.is_empty() {
+            find = find.condition(Condition::not_in("dataDocumentId", held.clone()));
+        }
+        if let Some(after) = &after {
+            find = find.condition(Condition::greater("dataFeedPendingId", Value::string(after)));
+        }
+        let rows = find.list()?;
+        let last = rows
+            .values()
+            .last()
+            .and_then(|row| row.get("dataFeedPendingId"))
+            .map(to_plain_string);
+        deliver_rows(&facade, &rows, &feeds, search_up, &mut report);
+        match last {
+            Some(last) if i64::try_from(rows.len()).unwrap_or(i64::MAX) >= DRAIN_BATCH => after = Some(last),
+            _ => break,
+        }
+    }
+    Ok(report)
+}
+
+/// Deliver pending rows by document type, each type in its own transaction, adding to `report`.
+fn deliver_rows(
+    facade: &EntityFacade,
+    rows: &crate::entity::EntityList,
+    feeds: &IndexMap<String, Vec<Feed>>,
+    search_up: bool,
+    report: &mut FeedReport,
+) {
     // Document id, then record id to the pending row ids for it.
     let mut by_document: IndexMap<String, IndexMap<String, Vec<String>>> = IndexMap::new();
     for row in rows.iter() {
@@ -96,19 +160,13 @@ pub fn process_pending(ids: Option<&[String]>) -> Result<FeedReport, Error> {
             .or_default()
             .push(pending_id);
     }
-    let feeds = realtime_feeds(&facade)?;
-    let search_up = ExecutionContext::with_current(|ec| super::installed(ec.factory()).is_some()).unwrap_or(false);
-    let mut report = FeedReport::default();
     for (document_id, records) in by_document {
         let row_count: usize = records.values().map(Vec::len).sum();
         let document_feeds: Vec<&Feed> = feeds
             .get(&document_id)
             .map(|list| list.iter().collect())
             .unwrap_or_default();
-        let deliverable = document_feeds
-            .iter()
-            .all(|feed| search_up || (feed.receive != DEFAULT_RECEIVE && feed.delete != DEFAULT_DELETE));
-        if !deliverable {
+        if !document_feeds.iter().all(|feed| feed.deliverable(search_up)) {
             tracing::debug!(document = %document_id, "search is not configured; data feed rows stay");
             report.rows_left += row_count;
             continue;
@@ -116,12 +174,13 @@ pub fn process_pending(ids: Option<&[String]>) -> Result<FeedReport, Error> {
         let record_ids: Vec<String> = records.keys().cloned().collect();
         // Each document type in its own transaction: a type that fails (a manual data service that errors, say) rolls
         // back only its own delivery and keeps only its own rows, not the other types' in this batch.
+        let mark = ExecutionContext::with_current(|ec| ec.message().error_mark());
         let delivered = facade.transactions_for(PENDING).and_then(|tx| {
             tx.run(TransactionAttribute::ForceNew, None, || {
-                let (indexed, deleted) = deliver(&facade, &document_id, &record_ids, &document_feeds)?;
+                let (indexed, deleted) = deliver(facade, &document_id, &record_ids, &document_feeds)?;
                 for pending_ids in records.values() {
                     for pending_id in pending_ids {
-                        delete_pending(&facade, pending_id)?;
+                        delete_pending(facade, pending_id)?;
                     }
                 }
                 Ok((indexed, deleted))
@@ -135,13 +194,15 @@ pub fn process_pending(ids: Option<&[String]>) -> Result<FeedReport, Error> {
             }
             Err(err) => {
                 tracing::warn!(document = %document_id, error = %err, "data feed delivery failed; pending rows stay");
-                // The failure is logged; its message errors would stop the next document type's services.
-                ExecutionContext::with_current(|ec| ec.message().clear_errors());
+                // The failure is logged; its message errors would stop the next document type's services. The
+                // caller's earlier errors stay.
+                if let Some(mark) = mark {
+                    ExecutionContext::with_current(|ec| ec.message().take_errors_since(mark));
+                }
                 report.rows_left += row_count;
             }
         }
     }
-    Ok(report)
 }
 
 fn deliver(
@@ -180,24 +241,18 @@ fn deliver(
     Ok((documents.len(), gone.len()))
 }
 
-/// Call a service; an error message it leaves is a failure, and is cleared so it does not fail
-/// the caller.
-fn call_checked(name: &str, params: &BTreeMap<String, Value>) -> Result<(), Error> {
-    let before = ExecutionContext::with_current(|ec| ec.message().errors().len()).unwrap_or(0);
+/// Call a service and return its results. An error message it leaves is a failure, and is taken
+/// back out so it does not fail the caller; the caller's earlier messages and errors stay.
+pub(super) fn call_checked(name: &str, params: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, Error> {
+    let mark = ExecutionContext::with_current(|ec| ec.message().error_mark());
     let result = crate::service::call::sync(name, params);
-    let errors: Vec<String> = ExecutionContext::with_current(|ec| {
-        let mut messages = ec.message();
-        let errors = messages.errors()[before.min(messages.errors().len())..].to_vec();
-        if !errors.is_empty() {
-            messages.clear();
-        }
-        errors
-    })
-    .unwrap_or_default();
+    let errors: Vec<String> = mark
+        .and_then(|mark| ExecutionContext::with_current(|ec| ec.message().take_errors_since(mark)))
+        .unwrap_or_default();
     match result {
         Err(err) => Err(Error::new(format!("{name}: {}", err.message()))),
         Ok(_) if !errors.is_empty() => Err(Error::new(format!("{name}: {}", errors.join("; ")))),
-        Ok(_) => Ok(()),
+        Ok(results) => Ok(results),
     }
 }
 
@@ -302,4 +357,88 @@ pub fn rebuild_feed(
         })?;
     }
     Ok(total)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::ExecutionContextFactory;
+
+    fn create_row(facade: &EntityFacade, entity: &str, pairs: &[(&str, &str)]) {
+        let mut row = facade.make_value(entity).unwrap();
+        for (name, value) in pairs {
+            row.set(*name, Value::string(*value));
+        }
+        row.create(facade).unwrap();
+    }
+
+    fn pending(facade: &EntityFacade, id: &str, document_id: &str) {
+        create_row(
+            facade,
+            PENDING,
+            &[
+                ("dataFeedPendingId", id),
+                ("dataDocumentId", document_id),
+                ("primaryKey", "F1"),
+                ("operation", "index"),
+            ],
+        );
+    }
+
+    #[test]
+    fn the_drain_pages_past_rows_that_stay() {
+        let ctx = ExecutionContextFactory::test_context();
+        let facade = crate::testing::open();
+        ctx.factory().set_entity(facade.clone());
+        let _entered = ctx.enter();
+        // GOOD assembles (its record is gone, so it is a delete with no feed to tell); BAD has no
+        // definition, so its delivery fails; HELD goes to search, which is not configured.
+        create_row(
+            &facade,
+            "moqui.entity.document.DataDocument",
+            &[("dataDocumentId", "GOOD"), ("primaryEntityName", "moqui.test.Foo")],
+        );
+        create_row(
+            &facade,
+            "moqui.entity.feed.DataFeed",
+            &[("dataFeedId", "SEARCH"), ("dataFeedTypeEnumId", REALTIME_PUSH)],
+        );
+        create_row(
+            &facade,
+            "moqui.entity.feed.DataFeedDocument",
+            &[("dataFeedId", "SEARCH"), ("dataDocumentId", "HELD")],
+        );
+        pending(&facade, "A0000", "HELD");
+        let bad = usize::try_from(DRAIN_BATCH).unwrap() + 1;
+        for index in 0..bad {
+            pending(&facade, &format!("P{index:05}"), "BAD");
+        }
+        pending(&facade, "Q00000", "GOOD");
+
+        let report = process_pending(None).unwrap();
+        assert_eq!(report.rows_done, 1, "{report:?}");
+        assert_eq!(report.documents_deleted, 1, "{report:?}");
+        assert_eq!(report.rows_left, bad + 1, "{report:?}");
+        let left = facade.find(PENDING).unwrap().count().unwrap();
+        assert_eq!(left, i64::try_from(bad + 1).unwrap());
+        let good = facade
+            .find(PENDING)
+            .unwrap()
+            .eq("dataFeedPendingId", Value::string("Q00000"))
+            .one()
+            .unwrap();
+        assert!(good.is_none());
+    }
+
+    #[test]
+    fn a_failed_call_takes_back_only_its_own_errors() {
+        let ctx = ExecutionContextFactory::test_context();
+        ctx.factory().set_entity(crate::testing::open());
+        let _entered = ctx.enter();
+        ctx.message().add_message("kept");
+        ctx.message().add_error("earlier");
+        assert!(call_checked("moqui.test.NoSuchServices.receive#Documents", &BTreeMap::new()).is_err());
+        assert_eq!(ctx.message().errors(), ["earlier"]);
+        assert_eq!(ctx.message().messages(), ["kept"]);
+    }
 }

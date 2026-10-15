@@ -49,6 +49,8 @@ use crate::entity::document::Document;
 use crate::transaction::{TransactionAttribute, TransactionManager};
 
 pub const DEFAULT_SCHEMA: &str = "search";
+/// How long a missing table is believed without looking again.
+const ABSENT_TTL: Duration = Duration::from_secs(10);
 
 pub struct PostgresBackend {
     tx: TransactionManager,
@@ -66,6 +68,9 @@ pub struct PostgresBackend {
     vectors: Option<VectorStore>,
     /// Signature of each table known to exist.
     known: Mutex<HashMap<String, String>>,
+    /// When each document id was last found to have no table. Trusted for [`ABSENT_TTL`], since
+    /// another node may make the table.
+    absent: Mutex<HashMap<String, Instant>>,
     /// One `ensure_index` at a time in this process; the advisory lock covers other processes.
     ensuring: Mutex<()>,
 }
@@ -191,6 +196,7 @@ impl PostgresBackend {
             accent: false,
             vectors: None,
             known: Mutex::new(HashMap::new()),
+            absent: Mutex::new(HashMap::new()),
             ensuring: Mutex::new(()),
         })
     }
@@ -437,9 +443,18 @@ impl PostgresBackend {
         self.tx.with_connection(|conn| conn.query(&sql.text, &sql.params))
     }
 
+    /// The signature the table of `document_id` was made with, `None` when there is no table. A
+    /// missing table is remembered for [`ABSENT_TTL`], so a search over a type that was never
+    /// indexed does not take a reserve connection each time.
     fn registered(&self, document_id: &str) -> Result<Option<String>, Error> {
         if let Some(signature) = lock(&self.known).get(document_id) {
             return Ok(Some(signature.clone()));
+        }
+        if lock(&self.absent)
+            .get(document_id)
+            .is_some_and(|at| at.elapsed() < ABSENT_TTL)
+        {
+            return Ok(None);
         }
         let mut sql = Sql::new(format!(
             "SELECT signature FROM {}.document_index WHERE document_id = ",
@@ -448,8 +463,14 @@ impl PostgresBackend {
         sql.param(Value::string(document_id));
         let rows = self.tx.with_reserve(|conn| conn.query(&sql.text, &sql.params))?;
         let found = rows.first().and_then(|row| row.get("signature")).map(to_plain_string);
-        if let Some(signature) = &found {
-            lock(&self.known).insert(document_id.to_string(), signature.clone());
+        match &found {
+            Some(signature) => {
+                lock(&self.absent).remove(document_id);
+                lock(&self.known).insert(document_id.to_string(), signature.clone());
+            }
+            None => {
+                lock(&self.absent).insert(document_id.to_string(), Instant::now());
+            }
         }
         Ok(found)
     }
@@ -641,13 +662,14 @@ impl SearchBackend for PostgresBackend {
         if self.vectors.is_none() {
             return Ok(Vec::new());
         }
+        // A row marked failed has the model and the index time and no vector: not pending until it is indexed again.
         let mut sql = Sql::new(format!(
             "SELECT doc_id, indexed_at::text AS seen, body::text AS body FROM {} \
-             WHERE embedding IS NULL OR embedding_model IS DISTINCT FROM ",
+             WHERE embedding_model IS DISTINCT FROM ",
             self.table(mapping)
         ));
         sql.param(Value::string(model)).push(&format!(
-            " OR embedding_indexed_at < indexed_at ORDER BY indexed_at LIMIT {limit}"
+            " OR embedding_indexed_at IS NULL OR embedding_indexed_at < indexed_at ORDER BY indexed_at LIMIT {limit}"
         ));
         let rows = self.query(&sql)?;
         rows.iter()
@@ -673,6 +695,13 @@ impl SearchBackend for PostgresBackend {
             .vectors
             .as_ref()
             .ok_or_else(|| super::capability_error(Capability::Semantic, "postgres"))?;
+        if vector.len() != store.dimensions {
+            return Err(Error::new(format!(
+                "an embedding of {} dimensions does not fit the search store's {}",
+                vector.len(),
+                store.dimensions
+            )));
+        }
         let statement = format!(
             "UPDATE {} SET embedding = ?::{}, embedding_model = ?, embedding_indexed_at = indexed_at \
              WHERE doc_id = ? AND indexed_at = ?::timestamptz",
@@ -691,6 +720,28 @@ impl SearchBackend for PostgresBackend {
         Ok(count > 0)
     }
 
+    fn mark_embedding_failed(
+        &self,
+        mapping: &DocumentMapping,
+        id: &str,
+        seen: &str,
+        model: &str,
+    ) -> Result<bool, Error> {
+        if self.vectors.is_none() {
+            return Err(super::capability_error(Capability::Semantic, "postgres"));
+        }
+        let statement = format!(
+            "UPDATE {} SET embedding = NULL, embedding_model = ?, embedding_indexed_at = indexed_at \
+             WHERE doc_id = ? AND indexed_at = ?::timestamptz",
+            self.table(mapping)
+        );
+        let params = [Value::string(model), Value::string(id), Value::string(seen)];
+        let count = self.tx.run(TransactionAttribute::UseOrBegin, None, || {
+            self.tx.with_connection(|conn| conn.execute(&statement, &params))
+        })?;
+        Ok(count > 0)
+    }
+
     fn ensure_index(&self, mapping: &DocumentMapping) -> Result<(), Error> {
         let signature = self.signature(mapping);
         if self.registered(&mapping.document_id)?.as_deref() == Some(signature.as_str()) {
@@ -699,6 +750,7 @@ impl SearchBackend for PostgresBackend {
         // Feed workers index documents of one type at once; only one makes the table.
         let _ensuring = lock(&self.ensuring);
         lock(&self.known).remove(&mapping.document_id);
+        lock(&self.absent).remove(&mapping.document_id);
         let current = self.registered(&mapping.document_id)?;
         if current.as_deref() == Some(signature.as_str()) {
             return Ok(());
@@ -969,6 +1021,7 @@ impl SearchBackend for PostgresBackend {
             Ok(())
         })?;
         lock(&self.known).remove(&mapping.document_id);
+        lock(&self.absent).remove(&mapping.document_id);
         Ok(())
     }
 }
@@ -1298,5 +1351,99 @@ mod tests {
         );
         assert_eq!(sql.params[0], Value::string("[0.5,0.25,0]"));
         assert_eq!(sql.params[1], Value::string("moqui-hash"));
+    }
+
+    /// A database with no rows that counts the registry lookups it is sent.
+    struct Registry(Arc<std::sync::atomic::AtomicUsize>);
+
+    struct RegistryConn(Arc<std::sync::atomic::AtomicUsize>);
+
+    struct NoCancel;
+
+    impl crate::driver::DbCancel for NoCancel {
+        fn cancel(&self) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    impl crate::driver::DbDriver for Registry {
+        fn connect(&self) -> Result<Box<dyn crate::driver::DbConnection>, Error> {
+            Ok(Box::new(RegistryConn(Arc::clone(&self.0))))
+        }
+    }
+
+    impl crate::driver::DbConnection for RegistryConn {
+        fn execute(&mut self, _sql: &str, _params: &[Value]) -> Result<u64, Error> {
+            Ok(0)
+        }
+        fn query(&mut self, sql: &str, _params: &[Value]) -> Result<Vec<DbRow>, Error> {
+            if sql.contains("document_index WHERE") {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(Vec::new())
+        }
+        fn query_once(&mut self, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
+            self.query(sql, params)
+        }
+        fn open_stream(&mut self, _sql: &str, _params: &[Value]) -> Result<(), Error> {
+            Ok(())
+        }
+        fn next_row(&mut self) -> Result<Option<DbRow>, Error> {
+            Ok(None)
+        }
+        fn close_stream(&mut self) -> Result<(), Error> {
+            Ok(())
+        }
+        fn stream_open(&self) -> bool {
+            false
+        }
+        fn begin(&mut self) -> Result<(), Error> {
+            Ok(())
+        }
+        fn commit(&mut self) -> Result<(), Error> {
+            Ok(())
+        }
+        fn rollback(&mut self) -> Result<(), Error> {
+            Ok(())
+        }
+        fn savepoint(&mut self, _name: &str) -> Result<(), Error> {
+            Ok(())
+        }
+        fn rollback_to_savepoint(&mut self, _name: &str) -> Result<(), Error> {
+            Ok(())
+        }
+        fn release_savepoint(&mut self, _name: &str) -> Result<(), Error> {
+            Ok(())
+        }
+        fn canceller(&self) -> Box<dyn crate::driver::DbCancel> {
+            Box::new(NoCancel)
+        }
+    }
+
+    #[test]
+    fn a_missing_table_is_remembered_until_ensure_or_drop() {
+        let lookups = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tx = TransactionManager::new(
+            Arc::new(Registry(Arc::clone(&lookups))),
+            crate::transaction::PoolConfig {
+                min: 0,
+                max: 2,
+                reserve: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let backend = PostgresBackend::open(tx, None).unwrap();
+        let party = mapping("MantleParty", "mantle_party");
+        assert!(!backend.index_exists(&party).unwrap());
+        assert!(!backend.index_exists(&party).unwrap());
+        assert_eq!(lookups.load(Ordering::SeqCst), 1);
+        backend.drop_index(&party).unwrap();
+        assert!(!backend.index_exists(&party).unwrap());
+        assert_eq!(lookups.load(Ordering::SeqCst), 2);
+        // Past its time a missing table is looked up again, as another node may have made it.
+        lock(&backend.absent).insert(party.document_id.clone(), Instant::now() - ABSENT_TTL);
+        assert!(!backend.index_exists(&party).unwrap());
+        assert_eq!(lookups.load(Ordering::SeqCst), 3);
     }
 }

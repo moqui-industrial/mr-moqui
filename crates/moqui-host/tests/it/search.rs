@@ -411,6 +411,21 @@ fn sales_parity(backend: &dyn SearchBackend) {
     assert_eq!(to_plain_string(map_at(&quarters[0], "key_display")), "2026-01-01");
     assert_eq!(number(map_at(&quarters[0], "doc_count")), "4");
 
+    // A fixed ISO offset east of UTC: 2026-01-05T10:00Z is the 5th at 15:00 local, in the day that starts at
+    // 2026-01-04T19:00Z. Postgres reads a text '+05:00' as POSIX (west), which would make it 2026-01-05T05:00Z.
+    let fixed = tree(
+        r#"{"D":{"date_histogram":{"field":"placedDate","unit":"day","time_zone":"+05:00","format":"yyyy-MM-dd",
+            "min_doc_count":1}}}"#,
+    );
+    let out = backend.aggregate(&mapping, &filter, &fixed).unwrap();
+    let days = buckets(&out["D"]);
+    assert_eq!(
+        to_plain_string(map_at(&days[0], "key")),
+        to_plain_string(&ts("2026-01-04T19:00:00Z"))
+    );
+    assert_eq!(to_plain_string(map_at(&days[0], "key_display")), "2026-01-05");
+    assert_eq!(number(map_at(&days[0], "doc_count")), "2");
+
     // get#SalesTopProduct: terms by product, ordered by a metric, null product left out.
     let top = tree(
         r#"{"TopTerms":{"terms":{"field":"productId","size":15,"order":{"totalSales":"desc"}},"aggs":{

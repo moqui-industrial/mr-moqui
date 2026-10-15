@@ -555,6 +555,59 @@ pub fn set_session_attribute(name: &str, value: Option<&str>) {
     });
 }
 
+/// Change one session attribute from its latest text: `update` gets the current text and returns
+/// the new one, `None` to remove it.
+///
+/// For a bound web session the change is made on the live session, under the table lock, so
+/// requests of the same session running at once each build on the other's change. This thread's
+/// copy takes the result but is not marked changed, so its write-back at the end of the request
+/// does not put an older value back.
+pub fn update_session_attribute(name: &str, update: impl FnOnce(Option<String>) -> Option<String>) {
+    let (bound, own) = with_session(|session| {
+        let bound = session.bound_id.clone().zip(session.factory.clone());
+        // A value this thread set and has not written back is the latest one.
+        let own = session
+            .dirty_json
+            .contains(name)
+            .then(|| attribute_text(session.attributes.get(name)));
+        (bound, own)
+    });
+    let mut update = Some(update);
+    let updated = bound.and_then(|(id, factory)| {
+        let mut table = lock_sessions(&factory);
+        let live = table.sessions.get_mut(&id).filter(|live| !live.retired)?;
+        let current = own.unwrap_or_else(|| attribute_text(live.attributes.get(name)));
+        let updated = update.take()?(current);
+        match &updated {
+            Some(text) => {
+                live.attributes.insert(name.to_string(), Json::String(text.clone()));
+            }
+            None => {
+                live.attributes.remove(name);
+            }
+        }
+        live.dirty_json.insert(name.to_string());
+        live.revision = next_revision();
+        Some(updated)
+    });
+    match (updated, update) {
+        (Some(updated), _) => with_session(|session| {
+            match updated {
+                Some(text) => {
+                    session.attributes.insert(name.to_string(), Json::String(text));
+                }
+                None => {
+                    session.attributes.remove(name);
+                }
+            }
+            session.dirty_json.remove(name);
+        }),
+        // No live session to change: this thread's copy, written back when the request ends.
+        (None, Some(update)) => set_session_attribute(name, update(session_attribute(name)).as_deref()),
+        (None, None) => {}
+    }
+}
+
 /// True when the attribute is a boolean true or the text `true` or `Y`.
 pub fn session_attribute_flag(name: &str) -> bool {
     with_session(|session| match session.attributes.get(name) {
@@ -2158,6 +2211,45 @@ mod tests {
             saved_parameters().unwrap().get("color").map(String::as_str),
             Some("blue")
         );
+    }
+
+    #[test]
+    fn concurrent_requests_build_on_each_others_attribute_updates() {
+        let (_lock, ctx, _facade, _key) = setup();
+        let _entered = ctx.enter();
+        let factory = Arc::clone(ctx.factory());
+        let append = |item: &'static str| {
+            move |current: Option<String>| {
+                Some(current.map_or_else(|| item.to_string(), |text| format!("{text},{item}")))
+            }
+        };
+        let guard = bind(&factory, None, None, false).unwrap();
+        let id = guard.session_id();
+        let cookie = guard.session_cookie_header().unwrap();
+        update_session_attribute("ids", append("a"));
+        // A second request of the session, while this one is still bound.
+        std::thread::spawn({
+            let factory = Arc::clone(&factory);
+            move || {
+                let ctx = factory.new_context();
+                let _entered = ctx.enter();
+                let _guard = bind(&factory, Some(cookie_value(&cookie)), None, false).unwrap();
+                update_session_attribute("ids", append("b"));
+            }
+        })
+        .join()
+        .unwrap();
+        update_session_attribute("ids", append("c"));
+        assert_eq!(session_attribute("ids").as_deref(), Some("a,b,c"));
+        drop(guard);
+        let live = lock_sessions(&factory)
+            .sessions
+            .get(&id)
+            .unwrap()
+            .attributes
+            .get("ids")
+            .cloned();
+        assert_eq!(live, Some(Json::String("a,b,c".into())));
     }
 
     #[test]

@@ -338,6 +338,18 @@ pub trait SearchBackend: Send + Sync {
     ) -> Result<bool, Error> {
         Err(capability_error(Capability::Semantic, self.name()))
     }
+    /// Record that `model` could not embed the body indexed at `seen`, so the document is not
+    /// pending again until it is indexed again, and it has no vector. False when it was indexed
+    /// again since.
+    fn mark_embedding_failed(
+        &self,
+        _mapping: &DocumentMapping,
+        _id: &str,
+        _seen: &str,
+        _model: &str,
+    ) -> Result<bool, Error> {
+        Err(capability_error(Capability::Semantic, self.name()))
+    }
     /// Whether this backend keeps the log indexes (`search::logs`). OpenSearch and Postgres do.
     fn keeps_log_indexes(&self) -> bool {
         false
@@ -385,9 +397,13 @@ impl SearchFacade {
     /// type. Returns how many were stored. Nothing when no embedder is installed or the backend
     /// has no semantic search.
     ///
+    /// A document the model fails on, or gets a vector of the wrong length or with a non-finite
+    /// value for, is logged and marked failed while others of its batch embed, so it does not
+    /// stop the documents behind it. It is tried again when it is indexed again.
+    ///
     /// # Errors
     ///
-    /// Returns an error when the model or a store write fails.
+    /// Returns an error when the model fails on every document of a batch, or a store write fails.
     pub fn embed_pending(&self, target: &Target, batch: usize, max_chars: usize) -> Result<usize, Error> {
         let Some(embedder) = self.embedder() else {
             return Ok(0);
@@ -409,13 +425,31 @@ impl SearchFacade {
                 .iter()
                 .map(|item| semantic::embedding_text(&mapping, &item.body, max_chars))
                 .collect();
-            let vectors = embedder.embed(&texts)?;
-            for (item, vector) in pending.iter().zip(vectors) {
-                if self
-                    .backend
-                    .store_embedding(&mapping, &item.id, &item.seen, embedder.model(), &vector)?
-                {
-                    stored += 1;
+            let results = embed_each(&*embedder, &texts)?;
+            // No document of the batch embedded: the model is failing, not a document.
+            if !results.iter().any(Result::is_ok) {
+                let reason = results.into_iter().find_map(Result::err).unwrap_or_default();
+                return Err(Error::new(format!(
+                    "embedding {} failed: {reason}",
+                    mapping.document_id
+                )));
+            }
+            for (item, result) in pending.iter().zip(results) {
+                match result {
+                    Ok(vector) => {
+                        if self
+                            .backend
+                            .store_embedding(&mapping, &item.id, &item.seen, embedder.model(), &vector)?
+                        {
+                            stored += 1;
+                        }
+                    }
+                    Err(reason) => {
+                        tracing::warn!(document = %mapping.document_id, id = %item.id, error = %reason,
+                            "embedding failed; the document is skipped until it is indexed again");
+                        self.backend
+                            .mark_embedding_failed(&mapping, &item.id, &item.seen, embedder.model())?;
+                    }
                 }
             }
         }
@@ -859,6 +893,40 @@ pub fn agg_empty(agg: &Agg) -> Value {
     }
 }
 
+/// One vector or the reason there is none, for each text. A batch the model fails is embedded
+/// again a text at a time, to find the texts it fails on. A vector of the wrong length or with a
+/// non-finite value is a failure, since the store would refuse it.
+///
+/// # Errors
+///
+/// Returns the model's error for a batch of one text.
+fn embed_each(embedder: &dyn semantic::Embedder, texts: &[String]) -> Result<Vec<Result<Vec<f32>, String>>, Error> {
+    let vectors: Vec<Result<Vec<f32>, String>> = match embedder.embed(texts) {
+        Ok(vectors) => vectors.into_iter().map(Ok).collect(),
+        Err(err) if texts.len() <= 1 => return Err(err),
+        Err(_) => texts
+            .iter()
+            .map(|text| match embedder.embed(std::slice::from_ref(text)) {
+                Ok(mut one) => one.pop().ok_or_else(|| "the model returned no vector".to_string()),
+                Err(err) => Err(err.message().to_string()),
+            })
+            .collect(),
+    };
+    let dimensions = embedder.dimensions();
+    Ok(vectors
+        .into_iter()
+        .map(|vector| match vector {
+            Ok(vector) if vector.len() != dimensions => {
+                Err(format!("the vector has {} dimensions, not {dimensions}", vector.len()))
+            }
+            Ok(vector) if !vector.iter().all(|value| value.is_finite()) => {
+                Err("the vector has a value that is not finite".to_string())
+            }
+            other => other,
+        })
+        .collect())
+}
+
 fn control_text(doc: &Document, name: &str) -> Option<String> {
     match doc.get(name) {
         None | Some(Value::Null) => None,
@@ -931,5 +999,153 @@ mod tests {
         let Value::Map(filter) = &empty["P"] else { panic!() };
         assert_eq!(filter.keys().next().map(String::as_str), Some("doc_count"));
         assert_eq!(filter["n"], Value::I64(0));
+    }
+
+    /// A semantic store holding the given pending bodies, recording what is stored and marked.
+    struct EmbedStore {
+        pending: Vec<&'static str>,
+        stored: Mutex<Vec<String>>,
+        failed: Mutex<Vec<String>>,
+    }
+
+    impl SearchBackend for EmbedStore {
+        fn name(&self) -> &'static str {
+            "embed-test"
+        }
+        fn keeps_log_indexes(&self) -> bool {
+            true
+        }
+        fn capabilities(&self) -> Vec<Capability> {
+            vec![Capability::Semantic]
+        }
+        fn ensure_index(&self, _mapping: &DocumentMapping) -> Result<(), Error> {
+            Ok(())
+        }
+        fn index_exists(&self, _mapping: &DocumentMapping) -> Result<bool, Error> {
+            Ok(true)
+        }
+        fn index_documents(
+            &self,
+            _mapping: &DocumentMapping,
+            _documents: &[(String, Document)],
+        ) -> Result<usize, Error> {
+            Ok(0)
+        }
+        fn delete_document(&self, _mapping: &DocumentMapping, _id: &str) -> Result<bool, Error> {
+            Ok(false)
+        }
+        fn delete_matching(&self, _mapping: &DocumentMapping, _filter: &Query) -> Result<u64, Error> {
+            Ok(0)
+        }
+        fn get_document(&self, _mapping: &DocumentMapping, _id: &str) -> Result<Option<Document>, Error> {
+            Ok(None)
+        }
+        fn search(&self, _mappings: &[Arc<DocumentMapping>], _request: &SearchRequest) -> Result<SearchPage, Error> {
+            Ok(SearchPage::default())
+        }
+        fn aggregate(
+            &self,
+            _mapping: &DocumentMapping,
+            _filter: &Query,
+            _aggs: &IndexMap<String, Agg>,
+        ) -> Result<IndexMap<String, Value>, Error> {
+            Ok(IndexMap::new())
+        }
+        fn drop_index(&self, _mapping: &DocumentMapping) -> Result<(), Error> {
+            Ok(())
+        }
+        fn pending_embeddings(
+            &self,
+            _mapping: &DocumentMapping,
+            _model: &str,
+            _limit: usize,
+        ) -> Result<Vec<semantic::PendingEmbedding>, Error> {
+            Ok(self
+                .pending
+                .iter()
+                .map(|text| semantic::PendingEmbedding {
+                    id: (*text).to_string(),
+                    seen: "t1".to_string(),
+                    body: Document::from([("message".to_string(), Value::string(*text))]),
+                })
+                .collect())
+        }
+        fn store_embedding(
+            &self,
+            _mapping: &DocumentMapping,
+            id: &str,
+            _seen: &str,
+            _model: &str,
+            _vector: &[f32],
+        ) -> Result<bool, Error> {
+            lock(&self.stored).push(id.to_string());
+            Ok(true)
+        }
+        fn mark_embedding_failed(
+            &self,
+            _mapping: &DocumentMapping,
+            id: &str,
+            _seen: &str,
+            _model: &str,
+        ) -> Result<bool, Error> {
+            lock(&self.failed).push(id.to_string());
+            Ok(true)
+        }
+    }
+
+    /// Fails a batch with `poison` in it, and gives `nan` and `short` bad vectors.
+    struct PickyModel;
+
+    impl semantic::Embedder for PickyModel {
+        fn model(&self) -> &str {
+            "picky"
+        }
+        fn dimensions(&self) -> usize {
+            2
+        }
+        fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, Error> {
+            if texts.iter().any(|text| text.contains("poison")) {
+                return Err(Error::new("the model cannot read poison"));
+            }
+            Ok(texts
+                .iter()
+                .map(|text| {
+                    if text.starts_with("nan") {
+                        vec![f32::NAN, 0.0]
+                    } else if text.starts_with("short") {
+                        vec![1.0]
+                    } else {
+                        vec![1.0, 0.0]
+                    }
+                })
+                .collect())
+        }
+    }
+
+    fn embed_with(pending: Vec<&'static str>) -> (Result<usize, Error>, Vec<String>, Vec<String>) {
+        let store = Arc::new(EmbedStore {
+            pending,
+            stored: Mutex::new(Vec::new()),
+            failed: Mutex::new(Vec::new()),
+        });
+        let facade = SearchFacade::new(Arc::clone(&store) as Arc<dyn SearchBackend>, crate::testing::open());
+        facade.set_embedder(Some(Arc::new(PickyModel)));
+        let result = facade.embed_pending(&Target::Documents(vec![logs::APP_LOG.to_string()]), 10, 100);
+        let stored = lock(&store.stored).clone();
+        let failed = lock(&store.failed).clone();
+        (result, stored, failed)
+    }
+
+    #[test]
+    fn a_document_the_model_fails_on_is_marked_and_the_rest_embed() {
+        let (result, stored, failed) = embed_with(vec!["first", "poison", "nan", "short", "last"]);
+        assert_eq!(result.unwrap(), 2);
+        assert_eq!(stored, ["first", "last"]);
+        assert_eq!(failed, ["poison", "nan", "short"]);
+
+        // A model that fails on everything is the model's error, and nothing is marked.
+        let (result, stored, failed) = embed_with(vec!["poison one", "poison two"]);
+        assert!(result.unwrap_err().message().contains("cannot read poison"));
+        assert!(stored.is_empty() && failed.is_empty());
     }
 }

@@ -343,17 +343,38 @@ pub fn parse_offset(text: &str) -> Result<SignedDuration, Error> {
     Ok(if negative { -duration } else { duration })
 }
 
-/// The zone for a histogram. `None` is the server's system zone.
+/// The zone for a histogram: an IANA name, or a fixed ISO offset such as `+05:00` as Elastic
+/// takes. `None` is the server's system zone, or UTC with a warning when that zone has no IANA
+/// name and is not a fixed offset (a copied `/etc/localtime`, say): its rules could not be given
+/// to the search store, and an offset taken from today would lose DST.
 pub fn histogram_zone(name: Option<&str>) -> Result<TimeZone, Error> {
     match name {
-        None => Ok(TimeZone::system()),
+        None => {
+            let zone = TimeZone::system();
+            if zone.iana_name().is_some() || zone.to_fixed_offset().is_ok() {
+                return Ok(zone);
+            }
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                tracing::warn!("the system time zone has no IANA name; date histograms with no time_zone use UTC");
+            });
+            Ok(TimeZone::UTC)
+        }
+        Some(name) if name.starts_with(['+', '-']) => {
+            static PARSER: jiff::fmt::temporal::DateTimeParser = jiff::fmt::temporal::DateTimeParser::new();
+            PARSER
+                .parse_time_zone(name)
+                .ok()
+                .filter(|zone| zone.to_fixed_offset().is_ok())
+                .ok_or_else(|| Error::new(format!("time zone offset {name} is not +HH:MM or -HH:MM")))
+        }
         Some(name) => {
             TimeZone::get(name).map_err(|err| Error::new(format!("time zone {name} is not known")).with_source(err))
         }
     }
 }
 
-/// The IANA name of the zone, for SQL and Elastic. A zone with no name is its fixed offset.
+/// The IANA name of the zone, for Elastic. A zone with no name is its ISO offset, `+05:00`.
 pub fn zone_name(zone: &TimeZone) -> String {
     match zone.iana_name() {
         Some(name) => name.to_string(),

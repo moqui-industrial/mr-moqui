@@ -419,7 +419,16 @@ impl MemConn {
             }
             None => matched.into_iter().skip(start).collect(),
         };
-        let projected: Vec<DbRow> = window.iter().map(|row| project(row, &query.columns)).collect();
+        let projected: Vec<DbRow> = window
+            .iter()
+            .map(|row| {
+                let mut out = project(row, &query.columns);
+                for (column, name) in out.columns.iter_mut().zip(&query.names) {
+                    column.0.clone_from(name);
+                }
+                out
+            })
+            .collect();
         let n = u64::try_from(projected.len()).unwrap_or(u64::MAX);
         Ok((n, projected))
     }
@@ -477,7 +486,7 @@ fn eval_pred(pred: &Pred, row: &Row, params: &[Value], idx: &mut usize) -> Resul
             let left = row.get(field).cloned().unwrap_or(Value::Null);
             Ok(compare(&left, *op, param))
         }
-        Pred::In { field, slots } => {
+        Pred::In { field, slots, negated } => {
             let left = row.get(field).cloned().unwrap_or(Value::Null);
             let mut found = false;
             for _ in 0..*slots {
@@ -485,7 +494,7 @@ fn eval_pred(pred: &Pred, row: &Row, params: &[Value], idx: &mut usize) -> Resul
                     found = true;
                 }
             }
-            Ok(found)
+            Ok(if *negated { !found && !left.is_null() } else { found })
         }
         Pred::IsNull { field, negated } => {
             let is_null = row.get(field).is_none_or(Value::is_null);
@@ -605,6 +614,8 @@ enum Stmt {
 struct SelectQuery {
     count: bool,
     columns: Vec<String>,
+    /// The name each column is returned as.
+    names: Vec<String>,
     table: String,
     pred: Option<Pred>,
     order: Vec<OrderKey>,
@@ -617,10 +628,12 @@ enum Pred {
         field: String,
         op: Op,
     },
-    /// `IN (?, ...)` with `slots` placeholders. An empty list is false.
+    /// `IN (?, ...)` with `slots` placeholders, or `NOT IN` when `negated`. An empty list is false.
+    /// A null never matches either, as in SQL.
     In {
         field: String,
         slots: usize,
+        negated: bool,
     },
     IsNull {
         field: String,
@@ -730,7 +743,11 @@ fn parse_select(cur: &mut Cur) -> Result<Stmt, Error> {
     } else {
         false
     };
-    let columns = if count { Vec::new() } else { parse_columns(cur)? };
+    let (columns, names): (Vec<String>, Vec<String>) = if count {
+        (Vec::new(), Vec::new())
+    } else {
+        parse_columns(cur)?.into_iter().unzip()
+    };
     cur.expect_keyword("FROM")?;
     let table = cur.quoted()?;
     // A view select aliases its member table: FROM "Product" "PROD".
@@ -783,6 +800,7 @@ fn parse_select(cur: &mut Cur) -> Result<Stmt, Error> {
     Ok(Stmt::Select(SelectQuery {
         count,
         columns,
+        names,
         table,
         pred,
         order,
@@ -791,13 +809,20 @@ fn parse_select(cur: &mut Cur) -> Result<Stmt, Error> {
     }))
 }
 
-fn parse_columns(cur: &mut Cur) -> Result<Vec<String>, Error> {
+/// Each column and the name it is returned as: its own, or the `AS` alias.
+fn parse_columns(cur: &mut Cur) -> Result<Vec<(String, String)>, Error> {
     let mut columns = Vec::new();
     loop {
         if cur.peek_keyword("FROM") {
             break;
         }
-        columns.push(cur.quoted()?);
+        let column = cur.quoted()?;
+        let name = if cur.eat_keyword("AS") {
+            cur.quoted()?
+        } else {
+            column.clone()
+        };
+        columns.push((column, name));
         if !cur.eat_symbol(b',') {
             break;
         }
@@ -877,6 +902,7 @@ fn parse_primary(cur: &mut Cur) -> Result<Pred, Error> {
         cur.expect_keyword("NULL")?;
         return Ok(Pred::IsNull { field, negated });
     }
+    let negated = cur.eat_keyword("NOT");
     if cur.eat_keyword("IN") {
         cur.expect_symbol(b'(')?;
         let mut slots = 0;
@@ -885,7 +911,10 @@ fn parse_primary(cur: &mut Cur) -> Result<Pred, Error> {
             slots += 1;
             cur.eat_symbol(b',');
         }
-        return Ok(Pred::In { field, slots });
+        return Ok(Pred::In { field, slots, negated });
+    }
+    if negated {
+        return Err(cur.fail("expected IN after NOT"));
     }
     let Some(op) = cur.eat_op() else {
         return Err(cur.fail("expected comparison"));
