@@ -1180,6 +1180,34 @@ fn complex_alias_case_and_java_column_references() {
 }
 
 #[test]
+fn a_complex_alias_operator_outside_the_allow_list_is_an_error() {
+    let view = |operator: &str| {
+        sample_model(&format!(
+            r#"{ORDERS}
+            <view-entity entity-name="ItemValue" package="sample">
+                <member-entity entity-alias="OI" entity-name="sample.OrderItem"/>
+                <alias name="orderId" entity-alias="OI"/>
+                <alias name="combined" type="text-medium"><complex-alias operator="{operator}">
+                    <complex-alias-field entity-alias="OI" field="quantity"/>
+                    <complex-alias-field entity-alias="OI" field="unitAmount"/>
+                </complex-alias></alias>
+            </view-entity>"#
+        ))
+    };
+    let postgres = sample_postgres();
+    for operator in ["-", "/", "||", ","] {
+        let model = view(operator);
+        let entity = model.entity("sample.ItemValue").unwrap();
+        let sql = select_view(entity, &model, &postgres, &values(), None, &[], LimitOffset::default()).unwrap();
+        assert!(sql.sql.contains(&format!(" {operator} ")), "{}", sql.sql);
+    }
+    let model = view("; DROP TABLE x; --");
+    let entity = model.entity("sample.ItemValue").unwrap();
+    let err = select_view(entity, &model, &postgres, &values(), None, &[], LimitOffset::default()).unwrap_err();
+    assert!(err.to_string().contains("is not supported"), "{err}");
+}
+
+#[test]
 fn a_view_member_is_a_sub_select_of_that_view() {
     let model = sample_model(&format!(
         r#"{ORDERS}

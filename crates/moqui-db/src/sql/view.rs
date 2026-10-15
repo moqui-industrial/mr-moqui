@@ -437,6 +437,7 @@ impl<'a> Renderer<'a> {
             return Ok(());
         }
         let operator = complex.operator.as_deref().unwrap_or("+");
+        check_operator(operator)?;
         let parens = add_parens && complex.parts.len() > 1;
         if parens {
             sql.push('(');
@@ -1152,6 +1153,18 @@ fn check_word(function: &str) -> Result<(), Error> {
         Ok(())
     } else {
         Err(Error::new(format!("alias function {function} is not supported")))
+    }
+}
+
+/// A `complex-alias` operator: arithmetic, `||` concatenation, or `,` for the arguments of an
+/// enclosing alias function such as `concat_ws`.
+fn check_operator(operator: &str) -> Result<(), Error> {
+    if matches!(operator.trim(), "+" | "-" | "*" | "/" | "%" | "||" | ",") {
+        Ok(())
+    } else {
+        Err(Error::new(format!(
+            "complex-alias operator {operator} is not supported"
+        )))
     }
 }
 
