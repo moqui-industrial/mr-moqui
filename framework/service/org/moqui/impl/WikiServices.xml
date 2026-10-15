@@ -905,10 +905,26 @@ along with this software (see the LICENSE.md file). If not, see
         <implements service="org.moqui.EntityServices.add#ManualDocumentData"/>
         <actions>
             <!-- primaryEntityValue is a WikiPage entity value, fields will be in the root document Map -->
-            <service-call name="org.moqui.impl.WikiServices.get#WikiPageInfo" out-map="wikiPageInfo"
-                    in-map="[wikiSpaceId:document.wikiSpaceId, pagePath:document.pagePath]"/>
+            <!-- The page text is all the search document needs, so this finds the page file the way get#WikiPageReference
+                does (findChildFile under the root page's directory) without the rest of get#WikiPageInfo. -->
             <!-- TODO: add attachments too (for indexing)? -->
-            <set field="document.content" from="ec.resource.getLocationText(wikiPageInfo.pageLocation, false)"/>
+            <script><![CDATA[
+                const wikiSpace = ec.entity.find("moqui.resource.wiki.WikiSpace").condition("wikiSpaceId", document.wikiSpaceId)
+                        .useCache(true).one();
+                if (wikiSpace == null || !wikiSpace.rootPageLocation) return;
+                let pageLocation = wikiSpace.rootPageLocation;
+                if (document.pagePath) {
+                    // the child pages are under a directory named as the root page without its extension
+                    const segments = String(document.pagePath).split("/");
+                    const pageName = segments.pop();
+                    const directory = [pageLocation.replace(/\.[^/.]*$/, "")].concat(segments).join("/");
+                    const page = ec.resource.getLocationReference(directory).getDirectoryEntries().find((entry) => entry.isFile() &&
+                            (entry.getFileName() === pageName || entry.getFileName().replace(/\.[^.]*$/, "") === pageName));
+                    if (page == null) return;
+                    pageLocation = page.getLocation();
+                }
+                document.content = ec.resource.getLocationText(pageLocation);
+            ]]></script>
         </actions>
     </service>
 

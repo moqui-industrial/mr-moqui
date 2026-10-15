@@ -30,7 +30,7 @@ pub mod status;
 pub use artifact::AuthzGuard;
 pub use cache::CacheFacade;
 pub use component::ComponentInfo;
-pub use conf::{load_merged_conf, merge_conf};
+pub use conf::{load_merged_conf, merge_component_confs, merge_conf};
 pub use error::{Error, ErrorKind};
 #[cfg(feature = "cluster-tls")]
 pub(crate) use factory::standard_base64;
@@ -110,6 +110,42 @@ mod tests {
     fn repo_env_stamp(root: &Path) -> Option<(u64, SystemTime)> {
         let meta = std::fs::metadata(root.join("runtime/.env")).ok()?;
         Some((meta.len(), meta.modified().unwrap_or(SystemTime::UNIX_EPOCH)))
+    }
+
+    #[test]
+    fn component_conf_mounts_and_runtime_conf_wins() {
+        let root = workspace_root();
+        let runtime = TempRuntime::new("component-conf");
+        let component = runtime.path().join("component/app");
+        std::fs::create_dir_all(&component).unwrap();
+        std::fs::write(
+            component.join("MoquiConf.xml"),
+            r#"<moqui-conf><default-property name="instance_purpose" value="component"/>
+                <screen-facade><screen location="component://webroot/screen/webroot/apps.xml">
+                    <subscreens-item name="app" location="component://app/screen/App.xml"/></screen></screen-facade></moqui-conf>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            runtime.path().join("conf/MoquiDevConf.xml"),
+            r#"<moqui-conf><default-property name="instance_purpose" value="dev"/></moqui-conf>"#,
+        )
+        .unwrap();
+        let none = super::merge_component_confs(&root.join("framework"), runtime.path(), &[root.join("framework")]);
+        assert!(none.unwrap().is_none());
+        let conf = super::merge_component_confs(&root.join("framework"), runtime.path(), &[component])
+            .unwrap()
+            .expect("a component conf");
+        let item = conf
+            .first_named("screen-facade")
+            .unwrap()
+            .first_named_attrs("screen", &[("location", "component://webroot/screen/webroot/apps.xml")])
+            .unwrap()
+            .first_named_attrs("subscreens-item", &[("name", "app")]);
+        assert!(item.is_some());
+        let purpose = conf
+            .first_named_attrs("default-property", &[("name", "instance_purpose")])
+            .unwrap();
+        assert_eq!(purpose.attribute("value").as_deref(), Some("dev"));
     }
 
     #[test]

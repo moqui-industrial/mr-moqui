@@ -5,7 +5,7 @@ This is how `mantle-udm` and `mantle-usl` were converted until all their data lo
 ## Result
 
 - `moqui load types=all` with entity ECAs on exits 0. It loads 8040 records and creates 571 tables. It also runs the data-file service calls `initPartyAccountingConfiguration` (fiscal periods) and `createVariantProducts` (12 variants), and the entity ECA rules that set GL account flags and asset totals.
-- The search feed indexes `MantleParty`, `MantleProduct`, `MantleFacility`, and `MantleInventoryAsset`. The 8 `MantleWikiPage` rows stay pending, because the framework's wiki services are deliberately not ported (`get#WikiPageManualDocumentData` says so).
+- The search feed indexes `MantleParty`, `MantleProduct`, `MantleFacility`, and `MantleInventoryAsset`. The 8 `MantleWikiPage` rows stayed pending in this trial, because the framework's wiki services were not ported. The third iteration below ports the wiki document's manual data service, and nothing stays pending.
 - Not done:
   - 532 service expressions still fail `moqui lint` in 62 service files, and 52 `map + [..]` places are flagged by the converter.
   - `moqui lint --groovy` counts 2083 sites with a Groovy idiom: decimal literals 702, collection methods 676, `new` of a Java type 301, `*.` 174, `in` 143, and so on.
@@ -129,6 +129,27 @@ What is left needs a decision, not more safe rewrites:
 - `plans/Architecture-Proposal.md` says JDK types such as `BigDecimal` and `TreeSet` are small host helpers with the same call shape. Following it would mean script globals `HashSet`, `TreeSet`, `ArrayList`, and `HashMap` with Java's methods. The converter would then only strip generics, and `*.name` could become `.map((it) => it.name)`.
 - That is a choice about the script environment, so it is noted here rather than made. The ports so far use plain JavaScript.
 
+## Third iteration: the search callers
+
+This iteration put the search and sales report callers on `SearchFacade`. It covers mantle-usl, mantle-udm, and the ironstone-boss screens, on the `mr-moqui` branches. Each repository has the converter's output and the hand ports in separate commits.
+
+Two converter rules were added:
+
+- **`quoted-property` (58 in mantle-usl, 22 in ironstone-boss):** `value.'Rel#entity'` becomes `value['Rel#entity']`, and `value?.'name'` becomes `value?.['name']`. An entity value reads a relationship name as the related value or list, and `get(name)` now does the same, as Java's `EntityValue.get` does.
+- **`gstring` (53 in mantle-usl):** a double-quoted or triple-double-quoted Groovy string with `${..}` becomes a template literal. One with a bare `$name`, a double quote inside an interpolation, or a backtick is left for review.
+
+Places the converter does not reach:
+
+- **Document expressions.** A `DataDocumentField.fieldPath` in parentheses is an expression, and the Mantle documents had Groovy there: `?:`, closures, `.sum`, `*.`, `.time`, and `CollectionUtilities` calls. They are hand ported in mantle-udm.
+  - A decimal field reaches the expression as a host decimal, so arithmetic goes through the new `toNumber(x)` global.
+  - Groovy's `x ?: 1.0` treats 0 as false, so it becomes `toNumber(x) || 1`.
+  - A `date` expression field may return epoch millis, the form dates take in scripts, and the document stores a timestamp.
+- **FreeMarker templates.** The fancy dialect has `if`, `list`, and `assign`, and no macros. So the sales summary's stats panels are built as data in the screen actions, and the `.fancy` template loops over them. Its `${}` output is not escaped, so attribute values go through `WebUtilities.encodeHtml`.
+- **Java-only values in the context.** A service future from `callFuture()` is not a context value, so QuickSearch calls the lookup synchronously.
+- **Smaller idioms:** `{..}.get(key)` on a map literal becomes `[key]`, and `char.letter` becomes a regex test.
+
+The org limit in the search services moved out of the query string. `search#DataDocuments` takes a `filter` map, which goes to `SearchRequest.filter`. It is a trusted constraint: it does not score, and the user's query cannot widen it.
+
 ## Framework changes the trial needed
 
 Each of these is Java behavior the port lacked. All are in the framework commit for this trial.
@@ -150,5 +171,16 @@ Each of these is Java behavior the port lacked. All are in the framework commit 
 - **Search feed and load:**
   - Each document type is delivered in its own transaction, so one type that fails (the wiki manual data service) rolls back and leaves pending only its own rows. Its message errors are cleared.
   - A load waits, up to 120 seconds, for the service workers (the feed) to finish before the database closes.
+
+The third iteration (the search callers) needed:
+
+- `elasticQueryAutoWildcard` and `toNumber` as script globals.
+- `ec.artifactExecution.getFindFiltersForUser(entityName)`. It returns null when no filter applies, as Java does.
+- `ec.user.context`, a map for the execution context's user. Entity filter maps and apply conditions see it, as Java pushes the user context to evaluate them.
+- `ec.user.getPeriodRange(period, offset, date)`, Java's other form. The date may be epoch millis.
+- `ec.l10n.format` reads a whole number with a date pattern as epoch millis.
+- `filter-map-list` on an entity list. The filter runs on an array copy, and the name is set after it.
+- Component `MoquiConf.xml` files merge between the default and runtime confs, as in Java. The tools component mounts `tools` and `system` under `apps` through its own.
+- `org.moqui.impl.WikiServices.get#WikiPageManualDocumentData` runs: it reads the page text by its space's root location. The other wiki services are still not ported.
 
 The earlier load work (component entity directories, rules, and data; services by path; `fromDate` and secondary ids on nested records) is in `plans/Implementation-Phases.md`, after the gate's note on loading `mantle-udm`.

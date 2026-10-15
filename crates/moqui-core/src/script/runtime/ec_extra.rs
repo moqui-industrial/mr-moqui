@@ -236,8 +236,30 @@ fn l10n_format(ctx: Ctx<'_>, value: JsValue<'_>, pattern: Opt<JsValue<'_>>) -> r
             }
             _ => None,
         };
+        let host = match pattern.as_deref() {
+            Some(pattern) if is_date_pattern(pattern) => epoch_millis_timestamp(&host).unwrap_or(host),
+            _ => host,
+        };
         l10n::format_value(&host, pattern.as_deref()).map_err(|err| throw_error(&ctx, &Error::new(err.message())))
     })
+}
+
+/// A date pattern such as `dd MMM yyyy` or `HH:mm`, not a number pattern such as `#,##0.00`.
+fn is_date_pattern(pattern: &str) -> bool {
+    pattern.contains(['y', 'd', 'H', 'E']) && !pattern.contains(['#', '0'])
+}
+
+/// A date or timestamp reaches a script as epoch millis, so a whole number formatted with a date pattern is a
+/// timestamp.
+fn epoch_millis_timestamp(value: &Value) -> Option<Value> {
+    let millis = match value {
+        Value::I64(millis) => *millis,
+        Value::I32(millis) => i64::from(*millis),
+        Value::F64(millis) if millis.fract() == 0.0 => *millis as i64,
+        Value::String(text) => text.trim().parse::<i64>().ok()?,
+        _ => return None,
+    };
+    Some(moqui_lib::object::basic_convert(&Value::I64(millis), "java.sql.Timestamp").value)
 }
 
 fn currency(
@@ -715,6 +737,16 @@ mod tests {
             r#"WebUtilities.fieldValuesEncodeHtmlJsSafe({a: "x'y", b: [1, true, null]}) === "{'a':'x\\'y','b':[1,true,null]}""#,
         );
         holds(r#"WebUtilities.encodeHtml("<&>") === "&lt;&amp;&gt;""#);
+        holds(
+            r#"ec.l10n.format("1791979200000", "yyyy") === "2026" && ec.l10n.format(1791979200000 - 1, "yyyy") === "2026""#,
+        );
+        holds(r##"ec.l10n.format(1234.5, "#,##0.00") === "1,234.50""##);
+        holds(
+            r#"toNumber(toDecimal("2.5")) * 2 === 5 && toNumber("3") === 3 && toNumber(null) === null && toNumber(4) === 4"#,
+        );
+        holds(r#"elasticQueryAutoWildcard(" john  smith ", true) === "*:john* *:smith*""#);
+        holds(r#"elasticQueryAutoWildcard("pump AND name:x 10.5 a-b", false) === "pump* AND name:x 10.5 a-b""#);
+        holds(r#"elasticQueryAutoWildcard("  ", true) === "*" && elasticQueryAutoWildcard(null, false) === "*""#);
         holds(r#"WebUtilities.ipMatches("10.1.*.*,192.168.0.1-5", "10.1.2.3")"#);
         holds(r#"WebUtilities.ipMatches("10.1.*.*,192.168.0.1-5", "192.168.0.4")"#);
         holds(r#"!WebUtilities.ipMatches("10.1.*.*,192.168.0.1-5", "192.168.0.9")"#);

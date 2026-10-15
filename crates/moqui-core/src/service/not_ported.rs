@@ -14,7 +14,8 @@
 
 //! Framework services that are defined but not run yet: LLM and A2A wait for phase 13, and the Docker app instance
 //! provisioning of `InstanceServices` is not ported (Decisions in `plans/Implementation-Phases.md`). `WikiServices`
-//! is Groovy throughout and its screens live in HiveMind, outside this tree. `verify#ReCaptcha` calls Google with the
+//! is Groovy throughout and its screens live in HiveMind, outside this tree; only the search document's manual data
+//! service runs. `verify#ReCaptcha` calls Google with the
 //! Groovy `RestClient`, which has no script binding here. The definitions keep their parameters; a call fails with a
 //! message that names the service, rather than running nothing.
 
@@ -22,6 +23,8 @@ const LLM: &str = "org.moqui.impl.LlmServices.";
 const A2A: &str = "org.moqui.impl.A2AServices.";
 const INSTANCE: &str = "org.moqui.impl.InstanceServices.";
 const WIKI: &str = "org.moqui.impl.WikiServices.";
+/// The `MantleWikiPage` search document's manual data service, which is ported so wiki pages index.
+const WIKI_DOCUMENT: &str = "org.moqui.impl.WikiServices.get#WikiPageManualDocumentData";
 const RECAPTCHA: &str = "org.moqui.impl.GoogleServices.verify#ReCaptcha";
 
 /// True for a service that is defined but not available in this port.
@@ -43,7 +46,7 @@ pub(super) fn reason(name: &str) -> Option<String> {
         Some(format!(
             "service {name} is not available: Docker app instance provisioning is not ported"
         ))
-    } else if name.starts_with(WIKI) {
+    } else if name.starts_with(WIKI) && name != WIKI_DOCUMENT {
         Some(format!(
             "service {name} is not available: the wiki services are not ported (the wiki screens are in HiveMind)"
         ))

@@ -342,9 +342,10 @@
         }),
         "filter-map-list": stmt((node) => {
             const list = attr(node, "list");
-            const toList = has(node, "to-list")
-                ? `var _listToFilter = ${attr(node, "to-list")} = ${list}.slice();`
-                : `var _listToFilter = ${list};`;
+            // an entity list has no slice or splice, so the filter runs on an array copy. A context name holds a copy of
+            // an array of entity values, so the name is set after the filter.
+            const toList = `var _listToFilter = Array.from(${list});`;
+            const assign = `${has(node, "to-list") ? attr(node, "to-list") : list} = _listToFilter;`;
             const maps = childrenNamed(node, "field-map");
             const fieldFilter = maps.length
                 ? `filterMapList(_listToFilter, {${maps.map((kid) => `${jsString(attr(kid, "field-name"))}: ${fieldExpr(kid)}`).join(", ")}});`
@@ -356,6 +357,7 @@
                     ${toList}
                     ${fieldFilter}
                     ${dateFilters}
+                    ${assign}
                 }
             `;
         }),

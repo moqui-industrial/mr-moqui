@@ -298,7 +298,7 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     ec.entity.getAllEntityNamesWithMaster = host.getAllEntityNamesWithMaster;
 
     // `ScreenUrlInfo.isPermitted(ec, null, AUTHZA_ALL)` as a check of one artifact: the screen, the type, the action.
-    ec.artifactExecution = { isPermitted: host.isPermitted };
+    ec.artifactExecution = { isPermitted: host.isPermitted, getFindFiltersForUser: host.getFindFiltersForUser };
 
     // `Locale.getAvailableLocales()` with English display names. Java lists every JVM locale; the port has no locale
     // database, so this is a fixed list of the common ones.
@@ -318,7 +318,11 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
 
     // ---- user and messages ----
     // `getPeriodRange(baseName, inputs)`: from `{base}_period`, `_poffset`, and `_pdate`, else `_from` and `_thru`.
-    ec.user.getPeriodRange = function (baseName, inputs) {
+    // `getPeriodRange(period, poffset, pdate)`, Java's other form: the range itself, from a date (epoch millis or
+    // yyyy-MM-dd) or today.
+    ec.user.getPeriodRange = function (baseName, inputs, pdate) {
+        if (arguments.length >= 3 || (inputs != null && typeof inputs !== "object"))
+            return host.periodRange(String(baseName), String(inputs ?? ""), String(pdate ?? ""));
         inputs = inputs || {};
         const period = inputs[baseName + "_period"];
         if (period) return host.periodRange(String(period), String(inputs[baseName + "_poffset"] ?? ""), String(inputs[baseName + "_pdate"] ?? ""));
@@ -1082,7 +1086,10 @@ fn resource_info_value(resource: &crate::context::ResourceRef, children: bool) -
     map.insert("file".to_string(), Value::Bool(resource.is_file()));
     // `ResourceReference.getContentType`, `isText`, `isBinary`: from the file name's extension.
     let content_type = moqui_lib::resource::content_type_for_name(&file_name);
-    map.insert("contentType".to_string(), content_type.map_or(Value::Null, Value::string));
+    map.insert(
+        "contentType".to_string(),
+        content_type.map_or(Value::Null, Value::string),
+    );
     map.insert(
         "text".to_string(),
         Value::Bool(content_type.is_some_and(moqui_lib::resource::is_text_content_type)),
@@ -1211,6 +1218,29 @@ fn is_permitted(ctx: Ctx<'_>, name: String, artifact_type: Opt<String>, action: 
     })
 }
 
+/// `getFindFiltersForUser(entityName)`: the `EntityFilter` records that apply to a find on the entity now, or null
+/// when none do, as Java returns (an empty list would be true in a script condition).
+fn get_find_filters_for_user<'js>(ctx: Ctx<'js>, entity_name: String) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let filters = crate::user::find_filters_for_user(&entity_name)
+            .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
+        if filters.is_empty() {
+            return Ok(JsValue::new_null(ctx.clone()));
+        }
+        let rows = filters
+            .iter()
+            .map(|filter| {
+                filter
+                    .fields()
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .collect()
+            })
+            .collect();
+        js_list(&ctx, rows)
+    })
+}
+
 fn rest_root_resources<'js>(ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let roots =
@@ -1329,6 +1359,7 @@ pub(super) fn install<'js>(
     method!("resourceInfo", resource_info);
     method!("restRootResources", rest_root_resources);
     method!("isPermitted", is_permitted);
+    method!("getFindFiltersForUser", get_find_filters_for_user);
     method!("getAllEntityNamesWithMaster", get_all_entity_names_with_master);
     method!("periodRange", period_range);
     method!("messageInfos", message_infos);

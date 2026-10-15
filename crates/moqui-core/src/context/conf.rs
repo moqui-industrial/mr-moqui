@@ -30,6 +30,33 @@ pub fn load_merged_conf(framework_dir: &Path, runtime_dir: &Path) -> Result<MNod
     Ok(base)
 }
 
+/// The conf with each component's `MoquiConf.xml` merged in component order, then the runtime conf on top again, as
+/// Java merges them: default, components, runtime. `components` come from the conf `load_merged_conf` returned.
+pub fn merge_component_confs(
+    framework_dir: &Path,
+    runtime_dir: &Path,
+    components: &[std::path::PathBuf],
+) -> Result<Option<MNode>, Error> {
+    let files: Vec<_> = components
+        .iter()
+        .map(|dir| dir.join("MoquiConf.xml"))
+        .filter(|file| file.is_file())
+        .collect();
+    if files.is_empty() {
+        return Ok(None);
+    }
+    let base = MNode::parse_file(framework_dir.join("conf/MoquiDefaultConf.xml"))?;
+    for file in &files {
+        tracing::info!("Merging component conf {}", file.display());
+        merge_conf(&base, &MNode::parse_file(file)?);
+    }
+    let dev = runtime_dir.join("conf/MoquiDevConf.xml");
+    if dev.is_file() {
+        merge_conf(&base, &MNode::parse_file(&dev)?);
+    }
+    Ok(Some(base))
+}
+
 /// Merge `over` into `base`. `component-list` children are appended.
 pub fn merge_conf(base: &MNode, over: &MNode) {
     merge_config_component_nodes(base, over);

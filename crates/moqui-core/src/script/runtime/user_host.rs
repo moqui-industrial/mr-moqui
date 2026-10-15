@@ -71,6 +71,35 @@ const SESSION_ATTRIBUTES: &str = r#"(function (snapshot, write) {
     });
 })"#;
 
+/// `ec.user.context`: a map for the current execution context's user. Each read and write goes to the host, so the
+/// entity filters see what `setup#UserOrganizationInfo` puts there. A list read from it is a copy: put it back to
+/// change it.
+const USER_CONTEXT: &str = r#"(function (read, write, names) {
+    const methods = {
+        get: (name) => read(String(name)),
+        put: (name, value) => { const old = read(String(name)); write(String(name), value); return old; },
+        putAll: (map) => { for (const [key, value] of Object.entries(map || {})) write(key, value); },
+        remove: (name) => { const old = read(String(name)); write(String(name), undefined); return old; },
+        containsKey: (name) => names().includes(String(name))
+    };
+    return new Proxy({}, {
+        get(target, key) {
+            if (typeof key !== "string") return undefined;
+            if (Object.prototype.hasOwnProperty.call(methods, key)) return methods[key];
+            const value = read(key);
+            return value === null && !names().includes(key) ? undefined : value;
+        },
+        set(target, key, value) { write(String(key), value); return true; },
+        deleteProperty(target, key) { write(String(key), undefined); return true; },
+        has(target, key) { return typeof key === "string" && names().includes(key); },
+        ownKeys() { return names(); },
+        getOwnPropertyDescriptor(target, key) {
+            return typeof key === "string" && names().includes(key)
+                ? { value: read(key), writable: true, enumerable: true, configurable: true } : undefined;
+        }
+    });
+})"#;
+
 pub(super) fn install_user_extras<'js>(ctx: &Ctx<'js>, user: &Object<'js>) -> Result<(), Error> {
     macro_rules! method {
         ($name:literal, $function:expr) => {
@@ -94,6 +123,12 @@ pub(super) fn install_user_extras<'js>(ctx: &Ctx<'js>, user: &Object<'js>) -> Re
     method!("timestampMillis", user_timestamp_millis);
     let rules = Accessor::from(|ctx: Ctx<'js>| host_guard(&ctx, || login_rules(&ctx))).enumerable();
     caught(ctx, "loginRules", user.prop("loginRules", rules))?;
+    let read = caught(ctx, "context", Function::new(ctx.clone(), user_context_read))?;
+    let write = caught(ctx, "context", Function::new(ctx.clone(), user_context_write))?;
+    let names = caught(ctx, "context", Function::new(ctx.clone(), user_context_names))?;
+    let make: Function = eval_js(ctx, USER_CONTEXT)?;
+    let context: JsValue = caught(ctx, "context", make.call((read, write, names)))?;
+    caught(ctx, "context", user.set("context", context))?;
     let all = caught(ctx, "getPreferences", Function::new(ctx.clone(), user_all_preferences))?;
     let install: Function = eval_js(ctx, GET_PREFERENCES)?;
     caught(ctx, "getPreferences", install.call::<_, ()>((user.clone(), all)))
@@ -110,6 +145,40 @@ pub(super) fn session_attributes_js<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<JsV
     let make: Function =
         eval_js(ctx, SESSION_ATTRIBUTES).map_err(|err| Exception::throw_message(ctx, err.message()))?;
     make.call((snapshot, write))
+}
+
+fn user_context_read<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let value = with_ec(&ctx, |ec| ec.user_context().get(&name).cloned())?;
+        host_to_js(&ctx, value.unwrap_or(Value::Null))
+    })
+}
+
+/// Undefined removes the name; null keeps it with a null value, as a Java map put of null does.
+fn user_context_write(ctx: Ctx<'_>, name: String, value: Opt<JsValue<'_>>) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        let value = match value.0 {
+            None => None,
+            Some(value) if value.is_undefined() => None,
+            Some(value) => Some(js_to_host(&ctx, &value)?),
+        };
+        with_ec(&ctx, |ec| {
+            let mut map = ec.user_context();
+            match value {
+                Some(value) => map.insert(name, value),
+                None => map.remove(&name),
+            };
+        })
+    })
+}
+
+fn user_context_names<'js>(ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let names: Vec<Value> = with_ec(&ctx, |ec| {
+            ec.user_context().keys().cloned().map(Value::String).collect()
+        })?;
+        host_to_js(&ctx, Value::List(names))
+    })
 }
 
 fn write_session_attribute(ctx: Ctx<'_>, name: String, value: Opt<JsValue<'_>>) -> rquickjs::Result<()> {

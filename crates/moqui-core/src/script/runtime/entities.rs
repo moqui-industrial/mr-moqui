@@ -914,10 +914,20 @@ impl HostEntity {
 
 #[rquickjs::methods(rename_all = "camelCase")]
 impl HostEntity {
+    /// `get(name)`: a field, or as Java's `EntityValue.get` the related value or list for a relationship name.
     fn get<'js>(&self, ctx: Ctx<'js>, field: String) -> rquickjs::Result<JsValue<'js>> {
-        host_guard(&ctx, || match self.val().get(&field) {
-            Some(value) => value_to_js(&ctx, value),
-            None => Null.into_js(&ctx),
+        host_guard(&ctx, || {
+            // the held value is cloned so the value is not locked while a relationship find runs
+            let held = self.val().get(&field).cloned();
+            if let Some(value) = held {
+                return value_to_js(&ctx, &value);
+            }
+            let found = self.read_member(&ctx, &field)?;
+            if found.is_undefined() {
+                Null.into_js(&ctx)
+            } else {
+                Ok(found)
+            }
         })
     }
 
@@ -1377,6 +1387,33 @@ mod tests {
         );
         holds(r#"ec.entity.find("moqui.basic.Enumeration").condition("enumId", "E1").one().parent === null"#);
         holds(r#"ec.entity.find("moqui.basic.Enumeration").condition("enumId", "E1").one().groupMembers.length === 0"#);
+        // get(name) reads a relationship the same way, as Java's EntityValue.get does
+        holds(
+            r#"ec.entity.find("moqui.basic.Enumeration").condition("enumId", "E1").one().get("moqui.basic.EnumerationType").enumTypeId === "T1""#,
+        );
+        holds(r#"ec.entity.find("moqui.basic.Enumeration").condition("enumId", "E1").one().get("parent") === null"#);
+        holds(
+            r#"ec.entity.find("moqui.basic.Enumeration").condition("enumId", "E1").one().get("noSuchName") === null"#,
+        );
+    }
+
+    #[test]
+    fn filter_map_list_copies_or_filters_an_entity_list() {
+        let context = enumerations();
+        let _entered = context.enter();
+        seed();
+        crate::script::run_actions(
+            r#"<actions>
+                <entity-find entity-name="moqui.basic.Enumeration" list="all"/>
+                <filter-map-list list="all" to-list="firsts"><field-map field-name="enumId" value="E1"/></filter-map-list>
+                <set field="allBefore" from="all.length"/>
+                <filter-map-list list="all"><field-map field-name="enumId" value="E2"/></filter-map-list>
+                <set field="seen" from="allBefore + ':' + firsts.length + firsts[0].enumId + ':' + all.length + all[0].enumId"/>
+            </actions>"#,
+        )
+        .unwrap();
+        let seen = crate::script::context_value("seen").map(|value| moqui_lib::object::to_plain_string(&value));
+        assert_eq!(seen.as_deref(), Some("3:1E1:1E2"));
     }
 
     #[test]

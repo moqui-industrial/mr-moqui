@@ -68,7 +68,12 @@ fn with_source_line(err: Error, source: &str) -> Error {
         return err;
     };
     let mut detail = format!("\n    at generated line {line}: {}", text.trim());
-    if let Some(comment) = lines[..line - 1].iter().rev().map(|text| text.trim()).find(|text| text.starts_with("//")) {
+    if let Some(comment) = lines[..line - 1]
+        .iter()
+        .rev()
+        .map(|text| text.trim())
+        .find(|text| text.starts_with("//"))
+    {
         detail.push_str(&format!("\n    after {comment}"));
     }
     Error::new(format!("{}{detail}", message.trim_end()))

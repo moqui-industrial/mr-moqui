@@ -51,6 +51,8 @@ pub enum RewriteKind {
     Cast,
     ListIncludes,
     EmptyCollection,
+    QuotedProperty,
+    GString,
     GrammarFile,
     GrammarLocation,
 }
@@ -66,6 +68,8 @@ impl RewriteKind {
             RewriteKind::Cast => "cast",
             RewriteKind::ListIncludes => "list-includes",
             RewriteKind::EmptyCollection => "empty-collection",
+            RewriteKind::QuotedProperty => "quoted-property",
+            RewriteKind::GString => "gstring",
             RewriteKind::GrammarFile => "grammar-file",
             RewriteKind::GrammarLocation => "grammar-location",
         }
@@ -132,6 +136,8 @@ impl ConvertReport {
             RewriteKind::Cast,
             RewriteKind::ListIncludes,
             RewriteKind::EmptyCollection,
+            RewriteKind::QuotedProperty,
+            RewriteKind::GString,
             RewriteKind::GrammarFile,
             RewriteKind::GrammarLocation,
         ] {
@@ -477,7 +483,11 @@ fn string_spans(text: &str) -> Vec<(usize, usize)> {
         let byte = bytes[index];
         if byte == b'\'' || byte == b'"' {
             let triple = text[index..].starts_with(if byte == b'"' { "\"\"\"" } else { "\'\'\'" });
-            let (open, close) = if triple { (3, if byte == b'"' { "\"\"\"" } else { "\'\'\'" }) } else { (1, if byte == b'"' { "\"" } else { "'" }) };
+            let (open, close) = if triple {
+                (3, if byte == b'"' { "\"\"\"" } else { "\'\'\'" })
+            } else {
+                (1, if byte == b'"' { "\"" } else { "'" })
+            };
             let mut end = index + open;
             loop {
                 match text[end..].find(close) {
@@ -519,7 +529,8 @@ fn chain_start(text: &str, end: usize) -> Option<usize> {
     }
     let chain = &text[start..end];
     let first = chain.as_bytes().first().copied()?;
-    if !(first.is_ascii_alphabetic() || first == b'_' || first == b'$') || chain.ends_with('.') || chain.ends_with('?') {
+    if !(first.is_ascii_alphabetic() || first == b'_' || first == b'$') || chain.ends_with('.') || chain.ends_with('?')
+    {
         return None;
     }
     // A chain right after a `.`, `)` or `]` is the end of a longer expression; leave it.
@@ -559,7 +570,8 @@ fn string_equals(text: &str) -> (String, usize) {
                 let call = start - ".equals(".len();
                 if let Some(chain) = chain_start(&out, call) {
                     let close = end + out[*end..].find(')').unwrap_or(0);
-                    let compared = parenthesize(&out, chain, close + 1, &format!("{} === {literal}", &out[chain..call]));
+                    let compared =
+                        parenthesize(&out, chain, close + 1, &format!("{} === {literal}", &out[chain..call]));
                     out = format!("{}{compared}{}", &out[..chain], &out[close + 1..]);
                     count += 1;
                     done = false;
@@ -571,6 +583,88 @@ fn string_equals(text: &str) -> (String, usize) {
             return (out, count);
         }
     }
+}
+
+/// `value.'Rel#entity'` and `value?.'name'`: a Groovy property named by a string is a bracket access in JavaScript,
+/// `value['Rel#entity']` and `value?.['name']`.
+fn quoted_properties(text: &str) -> (String, usize) {
+    let mut out = String::with_capacity(text.len());
+    let mut count = 0;
+    let mut last = 0;
+    for (start, end) in string_spans(text) {
+        let literal = &text[start..end];
+        if literal.contains("${") || literal.len() < 2 || literal.starts_with("\"\"\"") || literal.starts_with("'''") {
+            continue;
+        }
+        let before = &text[last..start];
+        let (dot, safe) = if before.ends_with("?.") {
+            (start - 2, true)
+        } else if before.ends_with('.') {
+            (start - 1, false)
+        } else {
+            continue;
+        };
+        let owner = text[..dot].chars().next_back();
+        if !owner.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == ')' || c == ']') {
+            continue;
+        }
+        out.push_str(&text[last..dot]);
+        out.push_str(if safe { "?.[" } else { "[" });
+        out.push_str(literal);
+        out.push(']');
+        last = end;
+        count += 1;
+    }
+    out.push_str(&text[last..]);
+    (out, count)
+}
+
+/// `"a ${b} c"`: a double-quoted Groovy string with `${...}` interpolates, so it is a JavaScript template literal,
+/// `` `a ${b} c` ``. Triple double quotes are the same. One with a bare `$name`, a double quote inside an
+/// interpolation, or a backtick is left.
+fn gstrings(text: &str) -> (String, usize, usize) {
+    let mut out = String::with_capacity(text.len());
+    let (mut count, mut skipped) = (0, 0);
+    let mut last = 0;
+    for (start, end) in string_spans(text) {
+        let literal = &text[start..end];
+        let quote = if literal.starts_with("\"\"\"") && literal.len() >= 6 && literal.ends_with("\"\"\"") {
+            3
+        } else if literal.starts_with('"') && literal.len() >= 2 && literal.ends_with('"') {
+            1
+        } else {
+            continue;
+        };
+        let body = &literal[quote..literal.len() - quote];
+        if !body.contains('$') {
+            continue;
+        }
+        let bytes = body.as_bytes();
+        let bare_name = (0..bytes.len()).any(|at| {
+            bytes[at] == b'$'
+                && (at == 0 || bytes[at - 1] != b'\\')
+                && bytes
+                    .get(at + 1)
+                    .is_some_and(|next| next.is_ascii_alphabetic() || *next == b'_')
+        });
+        // a double quote inside an interpolation ends the span early, so the span is not the whole literal
+        let nested_quote = quote == 1 && text[end..].starts_with(|c: char| c.is_alphanumeric());
+        if bare_name || body.contains('`') || nested_quote {
+            skipped += 1;
+            continue;
+        }
+        if !body.contains("${") {
+            continue;
+        }
+        out.push_str(&text[last..start]);
+        out.push('`');
+        out.push_str(body);
+        out.push('`');
+        last = end;
+        count += 1;
+    }
+    out.push_str(&text[last..]);
+    (out, count, skipped)
 }
 
 /// `inner` in parentheses, unless the text it replaces (`start..end` of `text`) is already the whole of a parenthesized
@@ -802,7 +896,11 @@ fn entity_find_lists(text: &str) -> BTreeSet<String> {
             let after = &rest[at + tag.len()..];
             let end = after.find('>').unwrap_or(after.len());
             let attrs = &after[..end];
-            if let Some(start) = attrs.find(" list=\"").map(|at| at + 7).or_else(|| attrs.strip_prefix("list=\"").map(|_| 6)) {
+            if let Some(start) = attrs
+                .find(" list=\"")
+                .map(|at| at + 7)
+                .or_else(|| attrs.strip_prefix("list=\"").map(|_| 6))
+            {
                 if let Some(len) = attrs[start..].find('"') {
                     let name = &attrs[start..start + len];
                     if !name.is_empty() && name.bytes().all(is_ident) {
@@ -829,7 +927,9 @@ fn empty_list(text: &str, lists: &BTreeSet<String>) -> (String, usize) {
     while index < bytes.len() {
         let byte = bytes[index];
         if byte == b'\'' || byte == b'"' {
-            let end = text[index + 1..].find(byte as char).map_or(text.len(), |end| index + 1 + end + 1);
+            let end = text[index + 1..]
+                .find(byte as char)
+                .map_or(text.len(), |end| index + 1 + end + 1);
             out.push_str(&text[index..end]);
             index = end;
             continue;
@@ -846,9 +946,8 @@ fn empty_list(text: &str, lists: &BTreeSet<String>) -> (String, usize) {
         let name = &text[start..index];
         let before = text[..start].trim_end();
         let next = text[index..].trim_start().as_bytes().first().copied();
-        let used_as_object = matches!(next, Some(b'.' | b'[' | b'(' | b'?' | b'='))
-            || before.ends_with('.')
-            || before.ends_with("?.");
+        let used_as_object =
+            matches!(next, Some(b'.' | b'[' | b'(' | b'?' | b'=')) || before.ends_with('.') || before.ends_with("?.");
         if !lists.contains(name) || used_as_object || name.as_bytes()[0].is_ascii_digit() {
             out.push_str(name);
             continue;
@@ -937,6 +1036,19 @@ pub fn rewrite_expression_with(text: &str, lists: &BTreeSet<String>) -> (String,
     let (next, count) = empty_collections(&current);
     if count > 0 {
         kinds.push(RewriteKind::EmptyCollection);
+    }
+    current = next;
+    let (next, count) = quoted_properties(&current);
+    if count > 0 {
+        kinds.push(RewriteKind::QuotedProperty);
+    }
+    current = next;
+    let (next, count, skipped) = gstrings(&current);
+    if count > 0 {
+        kinds.push(RewriteKind::GString);
+    }
+    if skipped > 0 {
+        left.push("GString with a bare $name, a nested double quote, or a backtick");
     }
     kinds.sort();
     kinds.dedup();
@@ -1479,34 +1591,109 @@ mod tests {
             <if condition="fooList.size() &gt; 1 || fooList[0] || 'fooList'"><log message="x"/></if>
         </actions>"#;
         let converted = convert_xml(xml);
-        assert!(converted.text.contains(r#"<if condition="(fooList?.length > 0)">"#), "{}", converted.text);
-        assert!(converted.text.contains(r#"<if condition="!fooList?.length &amp;&amp; otherList">"#), "{}", converted.text);
-        assert!(converted.text.contains(r#"<if condition="fooList.size() &gt; 1 || fooList[0] || 'fooList'">"#), "{}", converted.text);
-        assert_eq!(converted.rewrites.iter().filter(|rewrite| rewrite.kinds == vec![RewriteKind::EmptyList]).count(), 2);
+        assert!(
+            converted.text.contains(r#"<if condition="(fooList?.length > 0)">"#),
+            "{}",
+            converted.text
+        );
+        assert!(
+            converted
+                .text
+                .contains(r#"<if condition="!fooList?.length &amp;&amp; otherList">"#),
+            "{}",
+            converted.text
+        );
+        assert!(
+            converted
+                .text
+                .contains(r#"<if condition="fooList.size() &gt; 1 || fooList[0] || 'fooList'">"#),
+            "{}",
+            converted.text
+        );
+        assert_eq!(
+            converted
+                .rewrites
+                .iter()
+                .filter(|rewrite| rewrite.kinds == vec![RewriteKind::EmptyList])
+                .count(),
+            2
+        );
     }
 
     #[test]
     fn string_equals_casts_includes_and_empty_collections() {
         let lists: BTreeSet<String> = ["orderList".to_string()].into_iter().collect();
         let rewrite = |text: &str| rewrite_expression_with(text, &lists).0;
-        assert_eq!(rewrite("'DEBIT'.equals(rootId) ? 'N' : 'Y'"), "('DEBIT' === rootId) ? 'N' : 'Y'");
-        assert_eq!(rewrite("party.partyTypeEnumId.equals(\"PtyPerson\")"), "(party.partyTypeEnumId === \"PtyPerson\")");
+        assert_eq!(
+            rewrite("'DEBIT'.equals(rootId) ? 'N' : 'Y'"),
+            "('DEBIT' === rootId) ? 'N' : 'Y'"
+        );
+        assert_eq!(
+            rewrite("party.partyTypeEnumId.equals(\"PtyPerson\")"),
+            "(party.partyTypeEnumId === \"PtyPerson\")"
+        );
         assert_eq!(rewrite("foo(a).equals('x')"), "foo(a).equals('x')", "not a name chain");
         assert_eq!(rewrite("curYear as String"), "curYear?.toString()");
         assert_eq!(rewrite("(curYear + 1) as String"), "(curYear + 1)?.toString()");
-        assert_eq!(rewrite("item.quantity as BigDecimal"), "(item.quantity == null ? null : toDecimal(item.quantity))");
-        assert_eq!(rewrite("x as int"), "(x == null ? null : Math.trunc(toDecimal(x).toNumber()))");
-        assert_eq!(rewrite("if ('A'.equals(x)) y"), "if ('A' === x) y", "already in parentheses");
-        assert_eq!(rewrite("(total as BigDecimal).add(1)"), "(total == null ? null : toDecimal(total)).add(1)");
-        assert_eq!(rewrite("'n' + count as String"), "'n' + count as String", "the sum is cast in Groovy");
+        assert_eq!(
+            rewrite("item.quantity as BigDecimal"),
+            "(item.quantity == null ? null : toDecimal(item.quantity))"
+        );
+        assert_eq!(
+            rewrite("x as int"),
+            "(x == null ? null : Math.trunc(toDecimal(x).toNumber()))"
+        );
+        assert_eq!(
+            rewrite("if ('A'.equals(x)) y"),
+            "if ('A' === x) y",
+            "already in parentheses"
+        );
+        assert_eq!(
+            rewrite("(total as BigDecimal).add(1)"),
+            "(total == null ? null : toDecimal(total)).add(1)"
+        );
+        assert_eq!(
+            rewrite("'n' + count as String"),
+            "'n' + count as String",
+            "the sum is cast in Groovy"
+        );
         assert_eq!(rewrite("x = count as String"), "x = count?.toString()");
         let (text, _, left) = rewrite_expression_with("(a + b) as BigDecimal", &lists);
         assert_eq!(text, "(a + b) as BigDecimal");
-        assert_eq!(left, vec!["cast of an expression that is not a name chain, or under a tighter operator"]);
+        assert_eq!(
+            left,
+            vec!["cast of an expression that is not a name chain, or under a tighter operator"]
+        );
         assert_eq!(rewrite("'a as String'"), "'a as String'", "strings are left");
-        assert_eq!(rewrite("orderList.contains(id) || 'ab'.contains(c) || other.contains(d)"),
-            "orderList.includes(id) || 'ab'.includes(c) || other.contains(d)");
-        assert_eq!(rewrite("x = new ArrayList<String>(); m = new LinkedHashMap(); n = new HashMap(map)"),
-            "x = []; m = {}; n = new HashMap(map)");
+        assert_eq!(
+            rewrite("asset.'mantle.product.Product'"),
+            "asset['mantle.product.Product']"
+        );
+        assert_eq!(
+            rewrite("srs?.'Origin#mantle.facility.Facility'?.facilityName"),
+            "srs?.['Origin#mantle.facility.Facility']?.facilityName"
+        );
+        assert_eq!(
+            rewrite("x + '.' + 'y'"),
+            "x + '.' + 'y'",
+            "a string after a string is not a property"
+        );
+        assert_eq!(rewrite("\"${a} 00:00:00.000\""), "`${a} 00:00:00.000`");
+        assert_eq!(rewrite("\"plain\""), "\"plain\"", "no interpolation");
+        assert_eq!(rewrite("\"\"\"${a}\n${b}\"\"\""), "`${a}\n${b}`");
+        let (text, _, left) = rewrite_expression_with("\"Hi $name\"", &lists);
+        assert_eq!(text, "\"Hi $name\"");
+        assert_eq!(
+            left,
+            vec!["GString with a bare $name, a nested double quote, or a backtick"]
+        );
+        assert_eq!(
+            rewrite("orderList.contains(id) || 'ab'.contains(c) || other.contains(d)"),
+            "orderList.includes(id) || 'ab'.includes(c) || other.contains(d)"
+        );
+        assert_eq!(
+            rewrite("x = new ArrayList<String>(); m = new LinkedHashMap(); n = new HashMap(map)"),
+            "x = []; m = {}; n = new HashMap(map)"
+        );
     }
 }

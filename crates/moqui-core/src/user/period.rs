@@ -28,7 +28,7 @@ use crate::context::Error;
 ///
 /// # Errors
 ///
-/// Returns an error when `offset` is not a whole number or `basis` is not a `yyyy-MM-dd` date.
+/// Returns an error when `offset` is not a whole number or `basis` is not a `yyyy-MM-dd` date or epoch millis.
 pub fn period_range(period: &str, offset: &str, basis: &str) -> Result<(Value, Value), Error> {
     let offset = if offset.trim().is_empty() {
         0
@@ -41,11 +41,17 @@ pub fn period_range(period: &str, offset: &str, basis: &str) -> Result<(Value, V
     let zone = zone();
     let basis = if basis.trim().is_empty() {
         Timestamp::now().to_zoned(zone.clone()).date()
+    } else if let Ok(millis) = basis.trim().parse::<i64>() {
+        // a Date or Timestamp parameter reaches a script as epoch millis
+        Timestamp::from_millisecond(millis)
+            .map_err(|_| Error::new(format!("period date {basis} is out of range")))?
+            .to_zoned(zone.clone())
+            .date()
     } else {
         basis
             .trim()
             .parse::<Date>()
-            .map_err(|_| Error::new(format!("period date {basis} is not yyyy-MM-dd")))?
+            .map_err(|_| Error::new(format!("period date {basis} is not yyyy-MM-dd or epoch millis")))?
     };
     let (from, thru) = range_dates(period, offset, basis)?;
     Ok((stamp(from, &zone)?, stamp(thru, &zone)?))
@@ -214,6 +220,15 @@ mod tests {
         assert_eq!(
             range("year", -1, "2026-10-14"),
             ("2025-01-01".into(), "2026-01-01".into())
+        );
+    }
+
+    #[test]
+    fn an_epoch_millis_basis_is_the_date_it_falls_on() {
+        // noon UTC on 2026-10-14 is that date in every zone within eleven hours of UTC
+        assert_eq!(
+            super::period_range("month", "0", "1791979200000").unwrap(),
+            super::period_range("month", "0", "2026-10-14").unwrap()
         );
     }
 

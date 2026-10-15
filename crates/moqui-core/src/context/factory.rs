@@ -147,8 +147,6 @@ impl ExecutionContextFactory {
         let phase = std::time::Instant::now();
         let conf_node = conf::load_merged_conf(&framework_dir, &runtime_dir)?;
         tracing::info!("Merged configuration in {}ms", phase.elapsed().as_millis());
-        let env_path = runtime_dir.join(".env");
-        let (property_names, mut set_by_boot) = apply_default_properties(&conf_node, &env_path)?;
         let phase = std::time::Instant::now();
         let components = component::discover(&runtime_dir, &framework_dir, &conf_node)?;
         tracing::info!(
@@ -156,6 +154,11 @@ impl ExecutionContextFactory {
             components.len(),
             phase.elapsed().as_millis()
         );
+        let component_dirs: Vec<_> = components.iter().map(|info| info.location.clone()).collect();
+        let conf_node =
+            conf::merge_component_confs(&framework_dir, &runtime_dir, &component_dirs)?.unwrap_or(conf_node);
+        let env_path = runtime_dir.join(".env");
+        let (property_names, mut set_by_boot) = apply_default_properties(&conf_node, &env_path)?;
         let entity = Arc::new(RwLock::new(None));
         let resource = ResourceFacade::new(runtime_dir.clone(), component_roots(&components), Arc::clone(&entity));
         tracing::info!("Resource Facade initialized");
@@ -273,6 +276,7 @@ impl ExecutionContextFactory {
             messages: RefCell::new(MessageFacade::new()),
             artifacts: RefCell::new(ArtifactStack::new()),
             session: RefCell::new(crate::user::Memory::default()),
+            user_context: RefCell::new(std::collections::BTreeMap::new()),
         }
     }
 
@@ -431,6 +435,9 @@ pub struct ExecutionContext {
     messages: RefCell<MessageFacade>,
     artifacts: RefCell<ArtifactStack>,
     session: RefCell<crate::user::Memory>,
+    /// `ec.user.context`: values for this execution context's user, such as the organizations `setup#UserOrganizationInfo`
+    /// finds, that entity filter maps read.
+    user_context: RefCell<std::collections::BTreeMap<String, moqui_lib::object::Value>>,
 }
 
 impl ExecutionContext {
@@ -440,6 +447,11 @@ impl ExecutionContext {
 
     pub(crate) fn session(&self) -> RefMut<'_, crate::user::Memory> {
         self.session.borrow_mut()
+    }
+
+    /// The `ec.user.context` map.
+    pub fn user_context(&self) -> RefMut<'_, std::collections::BTreeMap<String, moqui_lib::object::Value>> {
+        self.user_context.borrow_mut()
     }
 
     pub fn message(&self) -> RefMut<'_, MessageFacade> {

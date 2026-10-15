@@ -39,7 +39,7 @@ pub fn apply_entity_filters(entity_name: &str, condition: Option<Condition>) -> 
     if !authz_enabled_for("AT_ENTITY") {
         return condition;
     }
-    match extra_conditions(entity_name) {
+    match with_user_context(|| extra_conditions(entity_name)) {
         Ok(extra) => combine(condition, extra),
         Err(err) => {
             tracing::error!(error = %err, "entity filter failed closed");
@@ -48,7 +48,61 @@ pub fn apply_entity_filters(entity_name: &str, condition: Option<Condition>) -> 
     }
 }
 
+/// Run `body` with the `ec.user.context` values on top of the context, as Java pushes the user context to evaluate
+/// apply conditions and filter maps.
+fn with_user_context<T>(body: impl FnOnce() -> T) -> T {
+    let entries = ExecutionContext::with_current(|ec| ec.user_context().clone()).unwrap_or_default();
+    let _frame = crate::script::ContextFrame::push();
+    for (name, value) in entries {
+        if let Err(err) = crate::script::set_context_name(&name, value) {
+            tracing::warn!(error = %err, name = %name, "could not add a user context value for the entity filters");
+        }
+    }
+    body()
+}
+
 fn extra_conditions(entity_name: &str) -> Result<Vec<Condition>, Error> {
+    let facade = entity_facade()?;
+    let mut extra = Vec::new();
+    for (allow_missing, filter) in applicable_filters()? {
+        if let Some(condition) = one_filter(&facade, entity_name, &filter, allow_missing)? {
+            extra.push(condition);
+        }
+    }
+    Ok(extra)
+}
+
+/// `ec.artifactExecution.getFindFiltersForUser(entityName)`: the `EntityFilter` records that apply to a find on
+/// `entity_name` now, each with its `entityFilterSetId`. Empty when authz is off, nothing authorized the current
+/// artifact by a record, or the entity is a framework (`moqui.*`) entity.
+pub fn find_filters_for_user(entity_name: &str) -> Result<Vec<EntityValue>, Error> {
+    if entity_name.starts_with("moqui.") || ExecutionContext::with_current(|ctx| ctx.authz_disabled()).unwrap_or(true) {
+        return Ok(Vec::new());
+    }
+    let facade = entity_facade()?;
+    let mut found = Vec::new();
+    for (_, filter) in with_user_context(applicable_filters)? {
+        let filter_entity = text(&filter, "entityName");
+        let applies = facade
+            .with_entity(entity_name, |entity, _, _| {
+                Ok(entity.full_name == filter_entity
+                    || (entity.is_view
+                        && entity
+                            .member_entities
+                            .iter()
+                            .any(|member| member.entity_name == filter_entity)))
+            })
+            .map_err(Error::from)?;
+        if applies {
+            found.push(filter);
+        }
+    }
+    Ok(found)
+}
+
+/// The `EntityFilter` records of every filter set the authorizing record names whose apply conditions pass, each with
+/// its set's `allowMissingAlias`.
+fn applicable_filters() -> Result<Vec<(bool, EntityValue)>, Error> {
     // The filters come from the record that authorized this find, the frame on top of the stack.
     // A find that was not authorized by a record, or was inherited from no record, has none.
     let Some(authz_id) = ExecutionContext::with_current(|ec| ec.top_authz_info())
@@ -58,17 +112,15 @@ fn extra_conditions(entity_name: &str) -> Result<Vec<Condition>, Error> {
     else {
         return Ok(Vec::new());
     };
-    let ids = [authz_id];
     let facade = entity_facade()?;
     let _guard =
         ExecutionContext::with_current(|ctx| ctx.disable_authz()).ok_or_else(|| Error::new("no execution context"))?;
     let authz_filters = facade.find("moqui.security.ArtifactAuthzFilter")?.list()?;
     let sets = facade.find("moqui.security.EntityFilterSet")?.list()?;
     let filters = facade.find("moqui.security.EntityFilter")?.list()?;
-    let mut extra = Vec::new();
+    let mut applicable = Vec::new();
     for authz_filter in authz_filters.values() {
-        let authz_id = text(authz_filter, "artifactAuthzId");
-        if !ids.iter().any(|id| id == &authz_id) {
+        if text(authz_filter, "artifactAuthzId") != authz_id {
             continue;
         }
         let set_id = text(authz_filter, "entityFilterSetId");
@@ -84,15 +136,12 @@ fn extra_conditions(entity_name: &str) -> Result<Vec<Condition>, Error> {
         }
         let allow_missing = text(set, "allowMissingAlias") == "Y";
         for filter in filters.values() {
-            if text(filter, "entityFilterSetId") != set_id {
-                continue;
-            }
-            if let Some(condition) = one_filter(&facade, entity_name, filter, allow_missing)? {
-                extra.push(condition);
+            if text(filter, "entityFilterSetId") == set_id {
+                applicable.push((allow_missing, filter.clone()));
             }
         }
     }
-    Ok(extra)
+    Ok(applicable)
 }
 
 fn condition_passes(expression: &str) -> Result<bool, Error> {
@@ -368,6 +417,29 @@ mod tests {
         let both = super::apply_entity_filters(VIEW, None).expect("both filters");
         assert!(has_in(&both, "ownerPartyId", &["ORG1", "ORG2"]), "{both:?}");
         assert!(has_equals(&both, "ownerPartyId", "ORG9"), "{both:?}");
+
+        // `getFindFiltersForUser` lists the filters behind those terms, by set
+        let sets: Vec<String> = super::find_filters_for_user(VIEW)
+            .unwrap()
+            .iter()
+            .map(|filter| super::text(filter, "entityFilterSetId"))
+            .collect();
+        assert!(sets.contains(&"MANTLE_USER_ORG".to_string()), "{sets:?}");
+        assert!(sets.contains(&"MANTLE_ACTIVE_ORG".to_string()), "{sets:?}");
+        assert!(super::find_filters_for_user("moqui.security.UserAccount")
+            .unwrap()
+            .is_empty());
+
+        // the orgs may come from ec.user.context, as setup#UserOrganizationInfo puts them, instead of the context
+        clear_context_stack();
+        assert!(crate::script::eval_condition(
+            "(ec.user.context.filterOrgIds = ['ORG7']) && ec.user.context.filterOrgIds[0] === 'ORG7' \
+                && Object.keys(ec.user.context).includes('filterOrgIds') && ec.user.context.missing === undefined"
+        )
+        .unwrap());
+        let from_user = super::apply_entity_filters(VIEW, None).expect("user org filter from the user context");
+        assert!(has_in(&from_user, "ownerPartyId", &["ORG7"]), "{from_user:?}");
+        context.user_context().clear();
 
         context.pop().unwrap();
 

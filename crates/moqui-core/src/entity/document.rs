@@ -800,7 +800,7 @@ fn run_expressions(facade: &EntityFacade, node: &FieldNode, doc: &mut Document, 
         match crate::script::eval_value(&field.path_element) {
             Ok(Value::Null) => {}
             Ok(value) => {
-                doc.insert(field.alias.clone(), value);
+                doc.insert(field.alias.clone(), expression_value(field, value));
             }
             Err(err) => tracing::error!(
                 expression = %field.path_element,
@@ -810,6 +810,25 @@ fn run_expressions(facade: &EntityFacade, node: &FieldNode, doc: &mut Document, 
         }
     }
     let _ = facade;
+}
+
+/// A `date` expression field's value as a timestamp: a date or timestamp reaches a script as epoch millis, so an
+/// expression that returns one returns millis, as text or a number.
+fn expression_value(field: &DocField, value: Value) -> Value {
+    if field.field_type.as_deref() != Some("date") {
+        return value;
+    }
+    let millis = match &value {
+        Value::String(text) => text.trim().parse::<i64>().ok(),
+        Value::I64(millis) => Some(*millis),
+        Value::I32(millis) => Some(i64::from(*millis)),
+        Value::F64(millis) if millis.fract() == 0.0 => Some(*millis as i64),
+        _ => None,
+    };
+    match millis {
+        Some(millis) => moqui_lib::object::basic_convert(&Value::I64(millis), "java.sql.Timestamp").value,
+        None => value,
+    }
 }
 
 /// A post-query condition must find `fieldValue` among the values of that alias anywhere in the
@@ -868,6 +887,32 @@ fn text(value: Option<&Value>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::field_path_to_list;
+
+    #[test]
+    fn a_date_expression_returning_epoch_millis_is_a_timestamp() {
+        use moqui_lib::object::Value;
+        let field = |field_type: &str| super::DocField {
+            path_element: "(x)".into(),
+            alias: "x".into(),
+            field_type: Some(field_type.into()),
+            entity_type: None,
+            sortable: false,
+            function: None,
+            is_expression: true,
+            search_role: None,
+            search_weight: None,
+        };
+        let stamp = super::expression_value(&field("date"), Value::string("1791979200000"));
+        assert!(matches!(stamp, Value::Timestamp(_)), "{stamp:?}");
+        assert!(matches!(
+            super::expression_value(&field("date"), Value::F64(1791979200000.0)),
+            Value::Timestamp(_)
+        ));
+        assert_eq!(
+            super::expression_value(&field("double"), Value::string("12")),
+            Value::string("12")
+        );
+    }
 
     #[test]
     fn field_paths_keep_expression_colons() {

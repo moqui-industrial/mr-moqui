@@ -91,6 +91,8 @@ along with this software (see the LICENSE.md file). If not, see
             nestedQueryMap keys are child list paths (or empty for a top-level clause); each value is a query that one element
             must satisfy: an Elastic-style bool/term/terms/match/range/exists map or JSON string, or a SearchFacade query map.
             query is an optional SearchFacade query map that must also match.
+            filter is an optional SearchFacade query map that limits what may match at all, such as an organization limit.
+            It does not score and it applies before totals and highlights.
 
             orderByFields entries are field names with an optional leading + or -; a trailing .keyword names the unanalyzed value.
         </description>
@@ -102,6 +104,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="nestedQueryMap" type="Map"><description>For explicit field constraints and such; key is path and
                 may be null for a general query; value is a query JSON String (parsed to Map) or a query Map object</description></parameter>
             <parameter name="query" type="Map"><description>A SearchFacade query map, AND-ed with the queryString.</description></parameter>
+            <parameter name="filter" type="Map"><description>A SearchFacade query map that limits the documents searched, not scored.</description></parameter>
             <parameter name="orderByFields" type="List"><parameter name="orderByField"/></parameter>
             <parameter name="highlightFields" type="List"><parameter name="highlightField"/></parameter>
             <parameter name="pageIndex" type="Integer" default="0"/>
@@ -150,7 +153,7 @@ along with this software (see the LICENSE.md file). If not, see
                     }
                 }
                 if (query) clauses.push(query);
-                result = ec.search.search(Object.assign({}, target, {query: {bool: {all: clauses}}, sort: orderByFields,
+                result = ec.search.search(Object.assign({}, target, {query: {bool: {all: clauses}}, filter: filter, sort: orderByFields,
                         highlight: highlightFields, offset: fromOffset, limit: sizeLimit}));
             } catch (err) {
                 ec.message.addMessage(`Invalid search: ${queryString} (${err && err.message ? err.message : err})`, "danger");

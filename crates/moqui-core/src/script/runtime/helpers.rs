@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Global helper functions: `compare`, `basicConvert`, list ordering and filtering.
+//! Global helper functions: `compare`, `basicConvert`, list ordering and filtering, and the query-string wildcard.
 
 use super::*;
 
@@ -56,6 +56,29 @@ pub(super) const HELPERS_JS: &str = r#"
         for (var i = list.length - 1; i >= 0; i--) {
             if (!__inDateRange(field(list[i], fromName), field(list[i], thruName), valid)) list.splice(i, 1);
         }
+    };
+    // `StringUtilities.elasticQueryAutoWildcard`: a trailing `*` on each plain word so partial words match, and with
+    // `allFieldPrefix` a `*:` before it. AND, OR, NOT and words with query syntax characters are left as they are.
+    var plainWord = /^[^*:\\?_~\/.\[\]{}+><="^-]*$/;
+    // `toNumber(x)`: a JavaScript number from a decimal, a number or numeric text, and null from null, as a document
+    // expression that works in numbers wants; a decimal does not convert itself, so arithmetic on one is an error.
+    globalThis.toNumber = function (value) {
+        if (value == null || value === "") return null;
+        if (typeof value === "number") return value;
+        return toDecimal(value).toNumber();
+    };
+    globalThis.elasticQueryAutoWildcard = function (query, allFieldPrefix) {
+        if (query == null) return "*";
+        var text = String(query).trim();
+        if (text.length === 0) return "*";
+        var out = [];
+        text.split(" ").forEach(function (word) {
+            var term = word.trim();
+            if (term.length === 0) return;
+            if (term === "AND" || term === "OR" || term === "NOT" || !plainWord.test(term)) out.push(term);
+            else out.push((allFieldPrefix ? "*:" : "") + term + "*");
+        });
+        return out.join(" ");
     };
 })();
 "#;
