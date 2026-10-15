@@ -96,6 +96,11 @@ fn password_login(username: &str, password: &str) -> Result<bool, Error> {
         password::burn_verify(password);
         return Err(err);
     }
+    // A legacy hash checks in microseconds; the argon2 burn keeps it as slow as an unknown user, so
+    // the time does not tell which usernames exist.
+    if legacy_hash(&account) {
+        password::burn_verify(password);
+    }
     if !password_ok(&account, password)? {
         let user_id = text_field(&account, "userId");
         if !user_id.is_empty() {

@@ -41,8 +41,9 @@ static AUTHZ_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Entity writes call this. Only the authorization tables, the entity filter tables among them, change the generation.
 ///
-/// The generation moves at once, and again when the write's transaction commits: a session that
-/// reloaded in between read the rows from before the commit, and must not keep them.
+/// The generation moves at once, and again when the write's transaction ends: a session that
+/// reloaded in between read the rows from before the commit, or the writer's own rows that a
+/// rollback then undid, and must not keep them.
 pub(crate) fn note_entity_write(entity_name: &str) {
     if !matches!(
         entity_name,
@@ -64,6 +65,9 @@ pub(crate) fn note_entity_write(entity_name: &str) {
     if let Some(tx) = tx {
         if let Err(err) = tx.on_commit(bump_generation) {
             tracing::warn!(error = %err, "could not move the authorization generation on commit");
+        }
+        if let Err(err) = tx.on_rollback(bump_generation) {
+            tracing::warn!(error = %err, "could not move the authorization generation on rollback");
         }
     }
 }
@@ -911,6 +915,24 @@ mod tests {
         assert!(
             super::with_cache(|cache| cache.checks.is_none()),
             "the commit drops what was read before it"
+        );
+    }
+
+    #[test]
+    fn an_authorization_write_moves_the_generation_again_when_it_rolls_back() {
+        let world = world();
+        let _entered = world.context.enter();
+        let tx = world.facade.transactions_for("moqui.security.ArtifactAuthz").unwrap();
+        assert!(tx.begin(None).unwrap());
+        grant(&world, "GEN_ROLLBACK", "AT_ENTITY", ENTITY, "AUTHZT_ALLOW", "N");
+        // The writer reloads and reads its own row, which the rollback then undoes.
+        super::with_cache(|cache| cache.checks = Some(std::sync::Arc::new(Vec::new())));
+        let written = super::generation();
+        tx.rollback().unwrap();
+        assert!(super::generation() > written);
+        assert!(
+            super::with_cache(|cache| cache.checks.is_none()),
+            "the rollback drops what was read before it"
         );
     }
 

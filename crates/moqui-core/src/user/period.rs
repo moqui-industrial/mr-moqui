@@ -74,7 +74,9 @@ fn stamp(date: Date, zone: &TimeZone) -> Result<Value, Error> {
 }
 
 fn add_days(date: Date, days: i32) -> Result<Date, Error> {
-    date.checked_add(Span::new().days(days))
+    Span::new()
+        .try_days(days)
+        .and_then(|span| date.checked_add(span))
         .map_err(|err| Error::new(format!("period date out of range: {err}")))
 }
 
@@ -83,7 +85,9 @@ fn add_weeks(date: Date, weeks: i32) -> Result<Date, Error> {
 }
 
 fn add_months(date: Date, months: i32) -> Result<Date, Error> {
-    date.checked_add(Span::new().months(months))
+    Span::new()
+        .try_months(months)
+        .and_then(|span| date.checked_add(span))
         .map_err(|err| Error::new(format!("period date out of range: {err}")))
 }
 
@@ -103,12 +107,16 @@ fn range_dates(period: &str, offset: i32, basis: Date) -> Result<(Date, Date), E
         return if offset < 0 {
             Ok((add_days(basis, offset.saturating_mul(days))?, add_days(basis, 1)?))
         } else {
-            Ok((basis, add_days(basis, (offset + 1).saturating_mul(days))?))
+            let count = offset.checked_add(1).ok_or_else(|| offset_error(offset))?;
+            Ok((basis, add_days(basis, count.saturating_mul(days))?))
         };
     }
     if numbered && period.ends_with('r') {
         let days = days_of(&period)?;
-        let around = offset.abs().saturating_mul(days);
+        let around = offset
+            .checked_abs()
+            .ok_or_else(|| offset_error(offset))?
+            .saturating_mul(days);
         return Ok((add_days(basis, -around)?, add_days(basis, around)?));
     }
     match period.as_str() {
@@ -159,6 +167,10 @@ fn range_dates(period: &str, offset: i32, basis: Date) -> Result<(Date, Date), E
     }
 }
 
+fn offset_error(offset: i32) -> Error {
+    Error::new(format!("period offset {offset} is out of range"))
+}
+
 fn days_of(period: &str) -> Result<i32, Error> {
     period[..period.len() - 1]
         .parse::<i32>()
@@ -176,6 +188,18 @@ mod tests {
     fn range(period: &str, offset: i32, basis: &str) -> (String, String) {
         let (from, thru) = range_dates(period, offset, d(basis)).unwrap();
         (from.to_string(), thru.to_string())
+    }
+
+    #[test]
+    fn an_extreme_offset_is_an_error_not_an_overflow() {
+        for period in ["7d", "7r", "day", "week", "weeks", "month", "months", "quarter", "year"] {
+            for offset in [i32::MAX, i32::MIN] {
+                assert!(
+                    range_dates(period, offset, d("2024-03-15")).is_err(),
+                    "{period} {offset}"
+                );
+            }
+        }
     }
 
     #[test]

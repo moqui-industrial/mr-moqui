@@ -248,7 +248,10 @@ impl NotificationMessage {
             alert_no_auto_hide,
             sent.as_ref(),
         );
-        let message_id = self.notification_message_id.clone().unwrap_or(new_id()?);
+        let message_id = match self.notification_message_id.clone() {
+            Some(id) => id,
+            None => new_id()?,
+        };
         // The topic carries who the message is for, beside Java's wrapped message, so a socket (here or on a cluster
         // peer) can pick its users. The socket sends the client the wrapped message without it.
         let mut routed = wrapped.clone();
