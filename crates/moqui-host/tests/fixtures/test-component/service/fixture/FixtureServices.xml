@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
+    <!-- An enumeration stamped with the effective time, for the harness's own tests. -->
+    <service verb="create" noun="StampedEnum">
+        <in-parameters><parameter name="enumTypeId" required="true"/><parameter name="description"/></in-parameters>
+        <out-parameters><parameter name="enumId"/><parameter name="stamp"/></out-parameters>
+        <actions><script><![CDATA[
+            const value = ec.entity.makeValue("moqui.basic.Enumeration")
+            value.enumTypeId = enumTypeId
+            value.description = description
+            value.enumCode = ec.user.nowTimestamp
+            value.setSequencedIdPrimary()
+            value.create()
+            enumId = value.enumId
+            stamp = ec.user.nowTimestamp
+        ]]></script></actions>
+    </service>
+</services>

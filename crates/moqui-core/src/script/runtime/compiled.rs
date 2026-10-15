@@ -136,6 +136,27 @@ fn compile_global<'js>(ctx: &Ctx<'js>, source: &str, strict: bool) -> Result<JsV
     owned_or_exception(ctx, raw)
 }
 
+/// Run `source` once as sloppy global code, not kept, with `file_name` as its name in stack traces: a test spec file,
+/// so an error names the file and line.
+pub(super) fn eval_named<'js>(ctx: &Ctx<'js>, source: &str, file_name: &str) -> Result<JsValue<'js>, Error> {
+    let text = CString::new(source).map_err(|_| Error::new("script source contains a null byte"))?;
+    let name = CString::new(file_name).map_err(|_| Error::new("file name contains a null byte"))?;
+    let flags = i32::try_from(qjs::JS_EVAL_TYPE_GLOBAL | qjs::JS_EVAL_FLAG_COMPILE_ONLY)
+        .map_err(|_| Error::new("bad eval flags"))?;
+    // SAFETY: as in `compile_global`; the file name is a NUL-terminated copy that outlives the call.
+    let raw = unsafe {
+        qjs::JS_Eval(
+            ctx.as_raw().as_ptr(),
+            text.as_ptr(),
+            text.as_bytes().len() as _,
+            name.as_ptr(),
+            flags,
+        )
+    };
+    let compiled = owned_or_exception(ctx, raw)?;
+    run_compiled(ctx, &compiled)
+}
+
 fn run_compiled<'js>(ctx: &Ctx<'js>, compiled: &JsValue<'js>) -> Result<JsValue<'js>, Error> {
     // SAFETY: `JS_EvalFunction` takes ownership of the object it is given, so it gets a new
     // reference and the cached bytecode keeps its own.

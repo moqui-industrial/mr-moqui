@@ -533,6 +533,38 @@ fn dynamic_options_come_from_a_transition_called_as_a_test_render() {
 }
 
 #[test]
+fn a_screen_test_render_collects_errors_under_a_base_path_and_counts() {
+    let world = super::World::open("");
+    let context = world.factory.new_context();
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    let test = ScreenTest::new(&world.factory)
+        .root_screen(render_root())
+        .base_screen_path("/Options/");
+    let rendered = test.test_render("roleOptions", strings(&[("company", "Initech")]), Some("post"));
+    assert_eq!(rendered.status(), Some(200));
+    assert!(rendered.error_messages.is_empty(), "{:?}", rendered.error_messages);
+    assert!(rendered.contains("R1-Initech"), "{}", rendered.text());
+    // The caller's own errors stay on the context; a render's are taken off it. (An error already on the context
+    // stops a transition's actions, as in Java, so it is added after the transition render.)
+    context.message().add_error("an error from before the render");
+    // A failed render is an error message, not an error.
+    let missing = test.test_render("nothing", BTreeMap::new(), None);
+    assert!(missing.output.is_none());
+    assert_eq!(missing.error_messages.len(), 1, "{:?}", missing.error_messages);
+    assert!(
+        missing.error_messages[0].starts_with("Exception in render of nothing: "),
+        "{:?}",
+        missing.error_messages
+    );
+    let stats = test.stats();
+    assert_eq!((stats.render_count, stats.error_count), (2, 1));
+    assert_eq!(stats.total_chars, rendered.text().chars().count() as u64);
+    // The errors the caller had before are still there; the render's own are not.
+    assert_eq!(context.message().errors(), ["an error from before the render"]);
+}
+
+#[test]
 fn a_screen_test_renders_a_transition_with_parameters_and_reads_its_json() {
     let world = super::World::open("");
     let context = world.factory.new_context();

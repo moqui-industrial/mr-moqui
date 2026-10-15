@@ -447,6 +447,27 @@ impl HostUser {
         host_guard(&ctx, || host_to_js(&ctx, now_timestamp()))
     }
 
+    /// `setEffectiveTime(time)`: `nowTimestamp`, date filters with no date and the defaults Java takes from it use
+    /// `time` (epoch millis, a `Date` or time stamp text) for this execution context. Null goes back to the clock.
+    fn set_effective_time<'js>(&self, ctx: Ctx<'js>, time: Opt<JsValue<'js>>) -> rquickjs::Result<()> {
+        host_guard(&ctx, || {
+            let value = match time.0.as_ref() {
+                Some(value) => js_to_host(&ctx, value)?,
+                None => Value::Null,
+            };
+            let millis = if moqui_lib::object::is_empty(&value) {
+                None
+            } else {
+                let stamp = timestamp_of(&value);
+                let millis = crate::user::value_millis(&stamp).ok_or_else(|| {
+                    Exception::throw_message(&ctx, &format!("setEffectiveTime: {value:?} is not a time"))
+                })?;
+                Some(millis)
+            };
+            with_ec(&ctx, |ec| ec.set_effective_time(millis))
+        })
+    }
+
     #[qjs(get)]
     fn username<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || match crate::user::current_username() {

@@ -63,7 +63,7 @@ pub use render::{
     make_render, save_screen_last_info, send_redirect_and_stop_render, with_current_render, RenderOutput, RenderState,
     ScreenRender,
 };
-pub use screen_test::{ScreenTest, TestRender};
+pub use screen_test::{ScreenTest, ScreenTestRender, ScreenTestStats, TestRender};
 pub use sri::encode_html;
 pub use url::{parse_last_standalone, resolve_screen_path, ScreenUrlInfo};
 

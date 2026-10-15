@@ -402,6 +402,25 @@ impl EntityFacade {
         self.transactions_for(entity_name)?.rollback()
     }
 
+    /// `tempSetSequencedIdPrimary`: pin the next primary ids of `seq_name` (an entity name or any sequence name) to
+    /// `next` through `next + bank_size`. Factory wide, as Java. Tests use it so generated ids can be asserted.
+    pub fn temp_set_sequenced_id_primary(&self, seq_name: &str, next: i64, bank_size: i64) {
+        let seq_name = self.sequence_name(seq_name);
+        super::sequence::temp_set_sequenced_id_primary(self, &seq_name, next, bank_size);
+    }
+
+    /// `tempResetSequencedIdPrimary`: the next id of `seq_name` comes from the database again.
+    pub fn temp_reset_sequenced_id_primary(&self, seq_name: &str) {
+        let seq_name = self.sequence_name(seq_name);
+        super::sequence::temp_reset_sequenced_id_primary(self, &seq_name);
+    }
+
+    /// The bank name of a sequence: the full name of an entity, or the name as given.
+    fn sequence_name(&self, seq_name: &str) -> String {
+        self.with_entity(seq_name, |entity, _, _| Ok(entity.full_name.clone()))
+            .unwrap_or_else(|_| seq_name.to_string())
+    }
+
     pub fn make_value(&self, entity_name: &str) -> Result<EntityValue, Error> {
         EntityValue::make(self, entity_name)
     }

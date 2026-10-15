@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The component the harness's own tests run: `moqui test` over its test directory (crates/moqui/tests/cli/test.rs). -->
+<component name="moqui-test-fixture" version="1.0.0"/>

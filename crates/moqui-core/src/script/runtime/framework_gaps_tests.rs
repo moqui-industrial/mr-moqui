@@ -454,3 +454,139 @@ fn soft_validate_makes_danger_messages_and_logger_takes_an_exception() {
     holds(r#"ec.service.async().name("needs#Number").distribute(true) != null"#);
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn temp_sequenced_ids_pin_and_reset() {
+    let context = database();
+    let _entered = context.enter();
+    holds(
+        r#"(function () {
+            ec.entity.tempSetSequencedIdPrimary("moqui.basic.Enumeration", 55500, 2);
+            const ids = [1, 2, 3].map(() => ec.entity.sequencedIdPrimary("moqui.basic.Enumeration", null, null));
+            ec.entity.tempResetSequencedIdPrimary("moqui.basic.Enumeration");
+            const after = ec.entity.sequencedIdPrimary("moqui.basic.Enumeration", null, null);
+            return ids.join(",") === "55500,55501,55502" && Number(after) >= 100000;
+        })()"#,
+    );
+}
+
+#[test]
+fn effective_time_moves_now_date_filters_and_entity_auto_from_date() {
+    let context = database();
+    let _entered = context.enter();
+    // Time stamps reach a script as epoch millis text. 2010-02-03 12:00 UTC:
+    holds(r#"(ec.user.setEffectiveTime(1265198400000), ec.user.nowTimestamp === "1265198400000")"#);
+    assert_eq!(context.effective_time(), Some(1_265_198_400_000));
+    holds(r#"(ec.user.setEffectiveTime(new Date(1265284800000)), ec.user.nowTimestamp === "1265284800000")"#);
+    holds(
+        r#"(function () {
+            ec.artifactExecution.disableAuthz();
+            const out = ec.service.sync().name("create#moqui.security.UserGroupMember")
+                .parameters({userGroupId: "G1", userId: "U1"}).call();
+            if (!out) throw new Error(ec.message.getErrorsString());
+            const row = ec.entity.find("moqui.security.UserGroupMember").condition("userGroupId", "G1").one();
+            return String(out.fromDate) === "1265284800000" && String(row.fromDate) === "1265284800000";
+        })()"#,
+    );
+    // in effect at the effective time, and not yet an hour before it
+    holds(
+        r#"ec.entity.find("moqui.security.UserGroupMember").condition("userGroupId", "G1").conditionDate("fromDate", "thruDate", null).list().size() === 1"#,
+    );
+    holds(
+        r#"(ec.user.setEffectiveTime(1265281200000), ec.entity.find("moqui.security.UserGroupMember").condition("userGroupId", "G1").conditionDate("fromDate", "thruDate", null).list().size() === 0)"#,
+    );
+    holds(r#"(ec.user.setEffectiveTime(null), Number(ec.user.nowTimestamp) > 1700000000000)"#);
+    assert_eq!(context.effective_time(), None);
+}
+
+#[test]
+fn script_disable_and_enable_authz() {
+    let context = database();
+    let _entered = context.enter();
+    holds(r#"ec.artifactExecution.disableAuthz() === false && ec.artifactExecution.disableAuthz() === true"#);
+    assert!(context.authz_disabled());
+    run_script("ec.artifactExecution.enableAuthz()").unwrap();
+    assert!(!context.authz_disabled());
+    let _held = context.disable_authz();
+    run_script("ec.artifactExecution.enableAuthz()").unwrap();
+    assert!(context.authz_disabled(), "a guard Rust code holds stays in force");
+}
+
+#[test]
+fn wait_worker_pool_empty_with_no_work() {
+    let context = database();
+    let _entered = context.enter();
+    holds("ec.factory.waitWorkerPoolEmpty(1) === true");
+}
+
+#[test]
+fn data_loader_check_compares_records_and_nested_records() {
+    let context = database();
+    let _entered = context.enter();
+    run_script(
+        r#"ec.artifactExecution.disableAuthz();
+        ec.entity.makeDataLoader().xmlText(`<entity-facade-xml>
+            <moqui.service.job.ServiceJob jobName="check_job" serviceName="example" cronExpression="0 0 2 * * ?"
+                    transactionTimeout="1800" lastUpdatedStamp="1265198400000">
+                <parameters parameterName="daysToKeep" parameterValue="1"/>
+            </moqui.service.job.ServiceJob>
+            <moqui.service.job.ServiceJobRun jobRunId="R1" jobName="check_job" startTime="1265198400000"/>
+        </entity-facade-xml>`).load();"#,
+    )
+    .unwrap();
+    // A match: numbers by value, a time stamp as epoch millis, nested records with the parent's key, and an empty
+    // attribute is not compared.
+    let matched = crate::script::eval_value(
+        r#"ec.entity.makeDataLoader().xmlText(`<entity-facade-xml>
+            <moqui.service.job.ServiceJob jobName="check_job" serviceName="example" transactionTimeout="1800.0" paused="">
+                <parameters parameterName="daysToKeep" parameterValue="1"/>
+            </moqui.service.job.ServiceJob>
+            <moqui.service.job.ServiceJobRun jobRunId="R1" startTime="1265198400000"/>
+        </entity-facade-xml>`).check()"#,
+    )
+    .unwrap();
+    assert_eq!(matched, moqui_lib::object::Value::List(Vec::new()), "{matched:?}");
+    let messages = crate::script::eval_value(
+        r#"ec.entity.makeDataLoader().xmlText(`<entity-facade-xml>
+            <moqui.service.job.ServiceJob jobName="check_job" serviceName="other">
+                <parameters parameterName="daysToKeep" parameterValue="2"/>
+                <parameters parameterName="missing" parameterValue="3"/>
+            </moqui.service.job.ServiceJob>
+            <moqui.service.job.ServiceJobRun jobRunId="R1" startTime="1265198400001"/>
+        </entity-facade-xml>`).check()"#,
+    )
+    .unwrap();
+    let messages: Vec<String> = match messages {
+        moqui_lib::object::Value::List(items) => items.iter().map(moqui_lib::object::to_plain_string).collect(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(messages.len(), 4, "{messages:#?}");
+    assert_eq!(
+        messages[0],
+        "Field moqui.service.job.ServiceJob.serviceName did not match; check (file) value [other], db value [example] for primary key {jobName=check_job}"
+    );
+    assert!(
+        messages[1].starts_with("Field moqui.service.job.ServiceJobParameter.parameterValue did not match; check (file) value [2], db value [1]"),
+        "{}",
+        messages[1]
+    );
+    assert_eq!(
+        messages[2],
+        "Entity moqui.service.job.ServiceJobParameter record not found for primary key {jobName=check_job, parameterName=missing}"
+    );
+    assert!(
+        messages[3].contains("ServiceJobRun.startTime did not match; check (file) value [2010-02-03T12:00:00.001Z], db value [2010-02-03T12:00:00Z]"),
+        "{}",
+        messages[3]
+    );
+    // check(messages) adds to the list and returns the fields checked; nothing was written
+    holds(
+        r#"(function () {
+            const list = [];
+            const checked = ec.entity.makeDataLoader().xmlText(`<entity-facade-xml>
+                <moqui.service.job.ServiceJob jobName="check_job" serviceName="other"/></entity-facade-xml>`).check(list);
+            return list.length === 1 && checked > 3
+                && ec.entity.find("moqui.service.job.ServiceJob").condition("jobName", "check_job").one().serviceName === "example";
+        })()"#,
+    );
+}

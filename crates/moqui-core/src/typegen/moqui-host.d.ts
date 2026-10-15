@@ -326,6 +326,10 @@ interface MoquiEntityFacade {
     getDataDocuments(...args: unknown[]): MoquiMap[];
     /** The next id of a sequence name, as text. No stagger is 0, no bank size 50. */
     sequencedIdPrimary(seqName: string, staggerMax?: number | null, bankSize?: number | null): string;
+    /** Pin the next primary ids of an entity or sequence name to `nextSeqNum` through `nextSeqNum + bankSize`, factory wide. For tests. */
+    tempSetSequencedIdPrimary(seqName: string, nextSeqNum: number, bankSize: number): void;
+    /** The next id of the sequence comes from the database again. */
+    tempResetSequencedIdPrimary(seqName: string): void;
     /** The time zone of the database timestamps: UTC. Accepted and ignored as the fourth argument of `ec.l10n.format`. */
     readonly databaseTimeZone: string;
     readonly conditionFactory: {
@@ -401,7 +405,10 @@ interface MoquiUserFacade {
     getTimeZone(): string;
     /** The signed-in `UserAccount` without its credential columns. */
     readonly userAccount: MoquiMap | null;
+    /** The effective time when one is set, else now. */
     readonly nowTimestamp: Timestamp;
+    /** `nowTimestamp`, date filters with no date, and the entity-auto `fromDate` and audit log stamps use this time for this execution context; null clears it. */
+    setEffectiveTime(time: TimestampInput | null): void;
     readonly passwordRules: { minLength: number; minDigits: number; minOthers: number };
     getPreference(key: string): string | null;
     loginUser(username: string, password: string): boolean;
@@ -475,6 +482,44 @@ interface MoquiScreenRenderBuilder {
     renderBytes(): Uint8Array;
 }
 
+/** One render of a `ScreenTest`. A failed render does not throw: its errors are in `errorMessages`. */
+interface MoquiScreenTestRender {
+    readonly screenPath: string;
+    /** The response text, null when the render raised an error. */
+    readonly output: string | null;
+    readonly errorMessages: string[];
+    readonly renderTime: number;
+    readonly status: number | null;
+    /** The output parsed as JSON, null when it is not JSON. */
+    readonly jsonObject: unknown;
+    assertContains(text: string): boolean;
+    assertNotContains(text: string): boolean;
+    assertNoErrors(): boolean;
+    getOutput(): string | null;
+    getErrorMessages(): string[];
+    getRenderTime(): number;
+}
+
+interface MoquiScreenTest {
+    rootScreen(location: string): MoquiScreenTest;
+    /** Render paths are under this path of the root screen, such as `rest` or `apps/my`. */
+    baseScreenPath(path: string): MoquiScreenTest;
+    renderMode(mode: string): MoquiScreenTest;
+    baseLinkUrl(url: string): MoquiScreenTest;
+    /** Render as the current user; `requestMethod` is GET when not given. */
+    render(screenPath: string, parameters?: MoquiMap | null, requestMethod?: string | null): MoquiScreenTestRender;
+    renderAll(screenPaths: string[], parameters?: MoquiMap | null, requestMethod?: string | null): void;
+    readonly renderCount: number;
+    readonly errorCount: number;
+    readonly renderTotalChars: number;
+    /** Epoch millis when the test was made. */
+    readonly startTime: number;
+    getRenderCount(): number;
+    getErrorCount(): number;
+    getRenderTotalChars(): number;
+    getStartTime(): number;
+}
+
 interface MoquiScreenFacade {
     isRenderModeValid(mode: string): boolean;
     isRenderModeText(mode: string): boolean;
@@ -483,6 +528,10 @@ interface MoquiScreenFacade {
     getMimeTypeByMode(mode: string): string | null;
     render(options: MoquiScreenRenderOptions): { status: number; contentType: string; text: string; bytes: Uint8Array };
     makeRender(): MoquiScreenRenderBuilder;
+    /** Java's ScreenTest: renders whose errors are collected instead of thrown. */
+    makeTest(): MoquiScreenTest;
+    /** The host call under `makeTest().render()`. */
+    testRender(options: MoquiScreenRenderOptions & { method?: string; baseScreenPath?: string }): { output: string | null; errorMessages: string[]; renderTime: number; status: number | null };
 }
 
 interface MoquiEcContext {
@@ -541,7 +590,11 @@ interface MoquiServerEc {
     readonly web: MoquiWebFacade;
     readonly screen: MoquiScreenFacade;
     readonly context: MoquiEcContext;
-    readonly factory: { readonly moquiVersion: string };
+    readonly factory: {
+        readonly moquiVersion: string;
+        /** Wait up to `retryLimit` (default 50) times 100 ms for async service work to finish; whether the pool is empty. */
+        waitWorkerPoolEmpty(retryLimit?: number): boolean;
+    };
     readonly cache: { getCache(name: string): { get(key: string): unknown; put(key: string, value: unknown): void; remove(key: string): boolean; containsKey(key: string): boolean; clear(): void } };
     /**
      * The tools calls (phase 11): cache admin, the entity and service model, screen statistics, the server status,
@@ -555,6 +608,9 @@ interface MoquiServerEc {
         entityEcaDisabled(): boolean;
         /** The artifact names on the stack, top first, joined with ", ". */
         getStackNameString(): string;
+        /** Authorization is not checked for this execution context until `enableAuthz()`. Returns whether it was already disabled. */
+        disableAuthz(): boolean;
+        enableAuthz(): void;
     };
     /** A notification builder: `ec.makeNotificationMessage().topic("T").message({..}).userIds([..]).send()`. */
     makeNotificationMessage(): MoquiNotificationMessage;

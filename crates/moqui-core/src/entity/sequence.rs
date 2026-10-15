@@ -124,6 +124,32 @@ impl SequenceBanks {
             *bank = refill(bank.current)?;
         }
     }
+
+    /// Java's `tempSetSequencedIdPrimary`: the next ids of `seq_name` are `next` through `next + bank_size`, then
+    /// the bank refills from the database as usual. Used by tests to pin generated ids.
+    fn temp_set(&self, seq_name: &str, next: i64, bank_size: i64) {
+        let bank = self.bank(seq_name);
+        *bank.lock().unwrap_or_else(PoisonError::into_inner) = SequenceBank {
+            current: next,
+            end: next.saturating_add(bank_size),
+        };
+    }
+
+    /// Java's `tempResetSequencedIdPrimary`: drop the bank, so the next id comes from a database refill.
+    fn temp_reset(&self, seq_name: &str) {
+        let bank = self.bank(seq_name);
+        *bank.lock().unwrap_or_else(PoisonError::into_inner) = SequenceBank { current: 0, end: -1 };
+    }
+}
+
+/// `EntityFacade.tempSetSequencedIdPrimary(seqName, nextSeqNum, bankSize)`. Factory wide, as Java.
+pub(crate) fn temp_set_sequenced_id_primary(facade: &EntityFacade, seq_name: &str, next: i64, bank_size: i64) {
+    facade.inner.banks.temp_set(seq_name, next, bank_size);
+}
+
+/// `EntityFacade.tempResetSequencedIdPrimary(seqName)`.
+pub(crate) fn temp_reset_sequenced_id_primary(facade: &EntityFacade, seq_name: &str) {
+    facade.inner.banks.temp_reset(seq_name);
 }
 
 struct PrimarySpec {
@@ -475,6 +501,28 @@ mod tests {
         release_tx.send(()).unwrap();
         assert_eq!(blocked.join().unwrap().unwrap(), 100_000);
         other.join().unwrap();
+    }
+
+    #[test]
+    fn temp_set_pins_ids_and_reset_refills() {
+        let banks = SequenceBanks::default();
+        banks.temp_set("A", 55_500, 2);
+        let mut refills = 0;
+        let mut next = |banks: &SequenceBanks| {
+            banks
+                .next_id("A", 1, |hint| {
+                    refills += 1;
+                    Ok(fill_bank(Some(100_050), 10, hint))
+                })
+                .unwrap()
+        };
+        assert_eq!(next(&banks), 55_500);
+        assert_eq!(next(&banks), 55_501);
+        assert_eq!(next(&banks), 55_502);
+        banks.temp_reset("A");
+        assert_eq!(next(&banks), 100_051);
+        drop(next);
+        assert_eq!(refills, 1);
     }
 
     #[test]

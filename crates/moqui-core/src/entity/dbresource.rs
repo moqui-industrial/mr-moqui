@@ -426,7 +426,7 @@ impl EntityFacade {
         let mut history = EntityValue::make(self, DB_HISTORY)?;
         history.set("resourceId", Value::string(resource_id));
         history.set("previousVersionName", previous.map_or(Value::Null, Value::string));
-        history.set("versionDate", crate::user::now_value());
+        history.set("versionDate", crate::user::now_effective_value());
         let user_id = crate::user::current_user_id().ok().flatten();
         history.set("userId", user_id.map_or(Value::Null, Value::string));
         history.set("isDiff", Value::string("N"));

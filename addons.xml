@@ -40,8 +40,8 @@
     <component name="start" group="moqui" version="" branch="master"/>
 
     <!-- Mantle Business Artifact Components, on their mr-moqui branches (no MR Moqui releases yet) -->
-    <component name="mantle-udm" group="moqui" version="" branch="mr-moqui"/>
-    <component name="mantle-usl" group="moqui" version="" branch="mr-moqui"/>
+    <component name="mr-mantle-udm" group="moqui" version="" branch="master"/>
+    <component name="mr-mantle-usl" group="moqui" version="" branch="master"/>
     <!-- Applications -->
     <component name="ironstone-boss" group="moqui" version="" branch="master"/>
 

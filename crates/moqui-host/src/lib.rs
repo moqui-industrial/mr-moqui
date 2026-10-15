@@ -13,8 +13,8 @@
  */
 
 //! Process edge. [`pdf`] is the Chromium engine behind `PdfRenderer`; [`edge`] is the runtime for the async clients.
-//! `load` reads framework data files. `lint` checks service definitions. `types` writes TypeScript declarations.
-//! No arguments start the plain HTTP listener. Database drivers live in [`db`].
+//! `load` reads framework data files. `test` runs component JavaScript specs. `lint` checks service definitions.
+//! `types` writes TypeScript declarations. No arguments start the plain HTTP listener. Database drivers live in [`db`].
 //! The search store and backend are placed by [`search`].
 
 pub mod db;
@@ -27,6 +27,8 @@ pub mod qvt_report;
 pub mod search;
 pub mod ssh;
 pub mod sso;
+#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+pub mod test_cmd;
 pub mod types;
 pub mod usage;
 
@@ -201,7 +203,8 @@ pub fn load_save(
 /// No arguments start the HTTP server. With no command, `--port`, `--conf`, `--no-run-es`, and `-D name=value`
 /// set the listen port, the runtime conf, and other properties for that run. `help`, `--help`, `-h`, and `-?`
 /// print the command list ([`usage::overview`]). `save-db` and `load-save` take a cluster directory and a dump file.
-/// `load` takes `name=value` pairs. `lint` takes an optional service file. `lint --screens` checks the screen and form XML and may write a report file.
+/// `load` takes `name=value` pairs. `test` runs the JavaScript specs in each component's `test` directory.
+/// `lint` takes an optional service file. `lint --screens` checks the screen and form XML and may write a report file.
 /// `lint --groovy` reports the Groovy idioms left in a component tree such as mantle, and `convert --groovy` makes the
 /// mechanical rewrites (map literals, `context + [...]`, Elvis, EDI grammar files), printing them, and writes them with `--write`.
 /// `types` writes TypeScript declarations for the loaded definitions, by default into `types/` in the runtime directory.
@@ -237,6 +240,20 @@ where
         [command, rest @ ..] if command == "types" => {
             dispatch_types(rest)?;
             Ok(None)
+        }
+        [command, rest @ ..] if command == "test" => {
+            #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+            {
+                test_cmd::dispatch_test(rest)?;
+                Ok(None)
+            }
+            #[cfg(not(all(feature = "embedded-postgres", feature = "postgres")))]
+            {
+                let _ = rest;
+                Err(moqui_lib::error::Error::new(
+                    "moqui test needs the embedded-postgres and postgres features",
+                ))
+            }
         }
         [command, rest @ ..] if command == "load" => {
             let flags = parse_load_args(rest)?;
@@ -288,7 +305,9 @@ where
 /// A known command with the wrong arguments names that command. Anything else is an unknown command.
 fn usage_error(args: &[String]) -> moqui_lib::error::Error {
     match args.first().map(String::as_str) {
-        Some(name @ ("save-db" | "load-save" | "lint" | "convert" | "types" | "load")) => usage::command_usage(name),
+        Some(name @ ("save-db" | "load-save" | "lint" | "convert" | "types" | "load" | "test")) => {
+            usage::command_usage(name)
+        }
         Some(name) => usage::unknown_command(name),
         None => usage::unknown_command(""),
     }
@@ -1747,6 +1766,8 @@ mod tests {
             "lint",
             "convert",
             "types",
+            "test",
+            "[component ...]",
             "MOQUI_CONF",
             "webapp_http_port",
             "--port",
@@ -1788,6 +1809,33 @@ mod tests {
         let types = dispatch(["help", "types"]).unwrap().unwrap();
         assert!(types.contains("--out"), "{types}");
         assert_eq!(dispatch(["types", "--help"]).unwrap().unwrap(), types);
+    }
+
+    #[test]
+    fn usage_test_page_names_the_options() {
+        let text = dispatch(["help", "test"]).unwrap().unwrap();
+        assert_eq!(dispatch(["test", "--help"]).unwrap().unwrap(), text);
+        assert_eq!(dispatch(["test", "-h"]).unwrap().unwrap(), text);
+        assert_eq!(dispatch(["--help", "test"]).unwrap().unwrap(), text);
+        for needle in [
+            "--spec",
+            "--feature",
+            "--db",
+            "fresh",
+            "snapshot",
+            "existing",
+            "--junit",
+            "--keep",
+            "--log-level",
+            "suite.js",
+            "dependsOn",
+            "test/*.spec.js",
+        ] {
+            assert!(text.contains(needle), "{needle} missing from {text}");
+        }
+        let bogus = dispatch(["test", "--bogus"]).unwrap_err();
+        assert!(bogus.message().contains("unknown option"), "{bogus}");
+        assert!(bogus.message().contains("moqui help test"), "{bogus}");
     }
 
     #[test]

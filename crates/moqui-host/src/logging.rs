@@ -76,6 +76,12 @@ thread_local! {
 /// Install the stderr subscriber once per process. Later calls, and a process that already has a
 /// global subscriber, change nothing.
 pub fn install() {
+    install_with_console(None);
+}
+
+/// [`install`], with stderr limited to `console` and above while the log files still get every line at
+/// `moqui_log_level`: `moqui test` keeps its report readable this way.
+pub fn install_with_console(console: Option<Level>) {
     static INSTALLED: OnceLock<()> = OnceLock::new();
     INSTALLED.get_or_init(|| {
         let level = match moqui_lib::env::get_prop_or_env("moqui_log_level")
@@ -96,6 +102,7 @@ pub fn install() {
         );
         let _ = tracing::subscriber::set_global_default(LineSubscriber {
             level,
+            console: console.unwrap_or(level),
             next_span: AtomicU64::new(1),
             color,
         });
@@ -498,6 +505,8 @@ pub fn host_name() -> &'static str {
 
 struct LineSubscriber {
     level: Level,
+    /// The lowest level written to stderr; the files take every line at `level`.
+    console: Level,
     next_span: AtomicU64,
     /// Stderr uses the colored console header. Decided once in [`install`].
     color: bool,
@@ -535,7 +544,9 @@ impl Subscriber for LineSubscriber {
             message: &fields.message,
             extra: &fields.extra,
         };
-        let _ = writeln!(std::io::stderr(), "{}", console_line(&text, self.color));
+        if level <= self.console {
+            let _ = writeln!(std::io::stderr(), "{}", console_line(&text, self.color));
+        }
         write_file_line(level, &plain_line(&text));
 
         // Queued from the start, so the boot lines ship once search attaches.

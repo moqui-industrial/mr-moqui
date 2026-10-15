@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 mod lint;
+mod test;
 mod types;
 
 fn repo() -> PathBuf {

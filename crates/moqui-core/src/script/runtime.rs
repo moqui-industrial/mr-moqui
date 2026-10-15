@@ -1313,6 +1313,20 @@ fn entity_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
         Function::new(ctx.clone(), entities::entity_sequenced_id_primary),
     )?;
     entity.set("sequencedIdPrimary", sequenced).map_err(js_error)?;
+    let temp_set = caught(
+        ctx,
+        "entity.tempSetSequencedIdPrimary",
+        Function::new(ctx.clone(), entities::entity_temp_set_sequenced_id_primary),
+    )?;
+    entity.set("tempSetSequencedIdPrimary", temp_set).map_err(js_error)?;
+    let temp_reset = caught(
+        ctx,
+        "entity.tempResetSequencedIdPrimary",
+        Function::new(ctx.clone(), entities::entity_temp_reset_sequenced_id_primary),
+    )?;
+    entity
+        .set("tempResetSequencedIdPrimary", temp_reset)
+        .map_err(js_error)?;
     let factory = Object::new(ctx.clone()).map_err(js_error)?;
     let make_condition = Function::new(ctx.clone(), make_condition).map_err(js_error)?;
     factory.set("makeCondition", make_condition).map_err(js_error)?;
@@ -1410,6 +1424,18 @@ pub fn eval_value(expression: &str) -> Result<Value, Error> {
             let evaluated = eval_compiled::<JsValue>(ctx, &as_expression(expression), true)?;
             js_value_to_host(ctx, &evaluated)
         })
+    })
+}
+
+/// Run a script once, not kept, named `file_name` in stack traces, and return its value as a host value. The test
+/// harness runs a spec file with it, so an error names the spec file and line.
+pub(crate) fn eval_named_value(source: &str, file_name: &str) -> Result<Value, Error> {
+    if source.as_bytes().contains(&0) {
+        return Err(Error::new("script source contains a null byte"));
+    }
+    with_context(|ctx| {
+        let evaluated = compiled::eval_named(ctx, source, file_name)?;
+        js_value_to_host(ctx, &evaluated)
     })
 }
 

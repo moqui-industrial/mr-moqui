@@ -300,6 +300,10 @@ fn js_value_to_host_in<'js>(ctx: &Ctx<'_>, value: &JsValue<'js>, path: &mut Vec<
         if let Some(class) = object.as_class::<HostUpload>() {
             return Ok(Value::Object(HostObject(class.borrow().inner.clone())));
         }
+        // A `Date` has no own properties; it is a time stamp, as a Java `Date` passed to a service is.
+        if let Some(millis) = js_date_millis(object) {
+            return Ok(moqui_lib::object::basic_convert(&Value::I64(millis), "java.sql.Timestamp").value);
+        }
         enter_nested(path, value)?;
         if is_js_set(object) {
             // The value's own context, so the lifetimes of the call agree.
@@ -339,6 +343,22 @@ fn is_js_set(object: &Object<'_>) -> bool {
         .get::<_, Object>("constructor")
         .and_then(|constructor| constructor.get::<_, String>("name"))
         .is_ok_and(|name| name == "Set")
+}
+
+/// The epoch millis of a script `Date`, or `None` for any other object. An invalid date is `None` too, so it converts
+/// as the empty object it is.
+fn js_date_millis(object: &Object<'_>) -> Option<i64> {
+    let is_date = object
+        .get::<_, Object>("constructor")
+        .and_then(|constructor| constructor.get::<_, String>("name"))
+        .is_ok_and(|name| name == "Date");
+    if !is_date {
+        return None;
+    }
+    let get_time: rquickjs::Function = object.get("getTime").ok()?;
+    let millis: f64 = get_time.call((rquickjs::function::This(object.clone()),)).ok()?;
+    #[allow(clippy::cast_possible_truncation)]
+    millis.is_finite().then_some(millis as i64)
 }
 
 pub(super) fn js_caught(ctx: &Ctx<'_>, err: JsError) -> Error {

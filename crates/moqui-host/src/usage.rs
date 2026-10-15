@@ -36,6 +36,9 @@ Check
   convert          --groovy [--write] <dir> ...             Mechanical Groovy rewrites
   types            [--out dir]                              TypeScript declarations from the loaded definitions
 
+Test
+  test             [component ...] [options]                Run component JavaScript specs
+
 Help
   help             [command]                                This list, or the detail for one command
 
@@ -168,6 +171,36 @@ set the directory. The default is types/ inside the runtime directory. This does
   moqui types --out=runtime/types
 ";
 
+const TEST: &str = "\
+moqui test [component ...] [options]
+    Run the JavaScript specs in each component's test directory.
+
+With no component, this runs every component under the runtime that has test/*.spec.js. Specs in a
+component run in the order named by test/suite.js, then the other *.spec.js files by name. Components
+run in the order they load. --spec adds the specs named in dependsOn, in that same order. Each spec
+runs in its own execution context on one database. Any failed feature exits 1.
+
+  moqui test
+  moqui test mantle-usl
+  moqui test mantle-usl --spec OrderToCashBasicFlow
+  moqui test --db snapshot --junit runtime/log/junit --keep
+
+Options:
+  --spec Name[,Name]              Specs to run. The name is the file name without .spec.js.
+                                  Specs named in dependsOn are included, in suite order.
+  --feature text                  Run features whose names contain this text.
+  --db MODE                       fresh, snapshot, or existing. The default is fresh.
+                                  fresh loads every data type into a scratch runtime and removes
+                                  it at the end.
+                                  snapshot saves that load under runtime/save and restores it
+                                  while the entity and data files and this binary are unchanged.
+                                  existing uses the runtime's embedded database and changes its data.
+  --junit dir                     Write TEST-<component>.<Spec>.xml into this directory.
+  --keep                          Leave the scratch runtime in place.
+  --log-level level               Console level: trace, debug, info, warn, or error.
+                                  The default is warn. The run prints the moqui.log path.
+";
+
 const HELP: &str = "\
 moqui help [command]
     This list, or the detail for one command.
@@ -196,6 +229,7 @@ pub fn command_help(name: &str) -> Option<&'static str> {
         "lint" => Some(LINT),
         "convert" => Some(CONVERT),
         "types" => Some(TYPES),
+        "test" => Some(TEST),
         "help" => Some(HELP),
         _ => None,
     }
@@ -240,7 +274,7 @@ pub fn is_server_invocation(args: &[String]) -> bool {
 fn is_known_command(name: &str) -> bool {
     matches!(
         name,
-        "help" | "--help" | "-h" | "-?" | "load" | "save-db" | "load-save" | "lint" | "convert" | "types"
+        "help" | "--help" | "-h" | "-?" | "load" | "save-db" | "load-save" | "lint" | "convert" | "types" | "test"
     )
 }
 
@@ -400,6 +434,7 @@ pub fn command_usage(command: &str) -> Error {
         "lint" => "moqui lint [file | --screens | --groovy <dir> ...]",
         "convert" => "moqui convert --groovy [--write] <dir> ...",
         "types" => "moqui types [--out dir]",
+        "test" => "moqui test [component ...] [options]",
         "help" => "moqui help [command]",
         _ => "moqui [command] [args...]",
     };
@@ -584,6 +619,8 @@ mod tests {
         assert!(is_server_invocation(&owned(&["no-run-es"])));
         assert!(is_server_invocation(&owned(&["foo=bar"])));
         assert!(!is_server_invocation(&owned(&["nope"])));
+        assert!(!is_server_invocation(&owned(&["test"])));
+        assert!(!is_server_invocation(&owned(&["test", "--spec", "Basics"])));
         assert!(!is_server_invocation(&owned(&["load", "types=seed"])));
         assert!(!is_server_invocation(&owned(&["load", "--conf", "x"])));
     }
