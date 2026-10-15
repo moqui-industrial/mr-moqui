@@ -13,26 +13,35 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Rows] -->\n"
             "title": () => ec.l10n.localize("ID"),
             "find": () => {
         sri.pushContext();
-        $h.textFind({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"true"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}});
-        sri.popContext();
+        try {
+            $h.textFind({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"true"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}});
+        } finally {
+            sri.popContext();
+        }
         },
             "dialogField": () => {
         {
             const $title = ec.l10n.localize("ID");
             const $open = $h.fieldOpen("id", $title, false, "", false);
             sri.pushContext();
-            $h.textFind({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"true"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}});
-            sri.popContext();
+            try {
+                $h.textFind({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"true"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}});
+            } finally {
+                sri.popContext();
+            }
             $h.fieldClose($open, false);
         }
         },
-            "summary": () => { let $v = ""; sri.pushContext();  $v += $h.valueText({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"true"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}}); sri.popContext(); return $v.trim(); },
+            "summary": () => { let $v = ""; sri.pushContext(); try {  $v += $h.valueText({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"true"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}}); } finally { sri.popContext(); } return $v.trim(); },
             "cell": ($m) => {
                 if ($m !== 2) {
                     $h.rowCellOpen("", "", $m === 2);
                     sri.pushContext();
-                    $h.display({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}});
-                    sri.popContext();
+                    try {
+                        $h.display({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}});
+                    } finally {
+                        sri.popContext();
+                    }
                     $h.rowCellClose($m === 2);
                 }
             }
@@ -52,8 +61,11 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Rows] -->\n"
                 if ($m !== 2) {
                     $h.rowCellOpen("", "", $m === 2);
                     sri.pushContext();
-                    $h.textLine({"name":"text-line","attrs":{},"parent":{"name":"default-field","attrs":{"title":"The Title"},"parent":{"name":"field","attrs":{"name":"title","print-width":"30","print-width-type":"characters"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}});
-                    sri.popContext();
+                    try {
+                        $h.textLine({"name":"text-line","attrs":{},"parent":{"name":"default-field","attrs":{"title":"The Title"},"parent":{"name":"field","attrs":{"name":"title","print-width":"30","print-width-type":"characters"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}});
+                    } finally {
+                        sri.popContext();
+                    }
                     $h.rowCellClose($m === 2);
                 }
             }
@@ -73,8 +85,11 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Rows] -->\n"
                 if ($m !== 2) {
                     $h.rowCellOpen("", "right", $m === 2);
                     sri.pushContext();
-                    $h.display({"name":"display","attrs":{"format":"0.0"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"qty","align":"right","print-width":"20"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}});
-                    sri.popContext();
+                    try {
+                        $h.display({"name":"display","attrs":{"format":"0.0"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"qty","align":"right","print-width":"20"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}});
+                    } finally {
+                        sri.popContext();
+                    }
                     $h.rowCellClose($m === 2);
                 }
             }
@@ -95,8 +110,11 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Rows] -->\n"
                 if ($m !== 2 && !ec.resource.condition("hideAmt", "")) {
                     $h.rowCellOpen("", "", $m === 2);
                     sri.pushContext();
-                    $h.display({"name":"display","attrs":{"currency-unit-field":"'USD'"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"amt","hide":"hideAmt"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}});
-                    sri.popContext();
+                    try {
+                        $h.display({"name":"display","attrs":{"currency-unit-field":"'USD'"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"amt","hide":"hideAmt"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}});
+                    } finally {
+                        sri.popContext();
+                    }
                     $h.rowCellClose($m === 2);
                 }
             }
@@ -117,16 +135,22 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Rows] -->\n"
                     if ($m !== 2) {
                         $h.rowCellOpen("", "", $m === 2);
                         sri.pushContext();
-                        $h.display({"name":"display","attrs":{"text":"Excluded"},"parent":{"name":"conditional-field","attrs":{"condition":"status == 'X'"},"parent":{"name":"field","attrs":{"name":"status"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}});
-                        sri.popContext();
+                        try {
+                            $h.display({"name":"display","attrs":{"text":"Excluded"},"parent":{"name":"conditional-field","attrs":{"condition":"status == 'X'"},"parent":{"name":"field","attrs":{"name":"status"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}});
+                        } finally {
+                            sri.popContext();
+                        }
                         $h.rowCellClose($m === 2);
                     }
                 } else {
                     if ($m !== 2) {
                         $h.rowCellOpen("", "", $m === 2);
                         sri.pushContext();
-                        $h.display({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"status"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}});
-                        sri.popContext();
+                        try {
+                            $h.display({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"status"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}});
+                        } finally {
+                            sri.popContext();
+                        }
                         $h.rowCellClose($m === 2);
                     }
                 }
@@ -147,8 +171,11 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Rows] -->\n"
                 if ($m !== 2) {
                     $h.rowCellOpen("", "", $m === 2);
                     sri.pushContext();
-                    $h.link({"name":"link","attrs":{"url":"open","text":"Open ${id}","link-type":"anchor"},"parent":{"name":"default-field","attrs":{"title":"Open"},"parent":{"name":"field","attrs":{"name":"link"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}}, true);
-                    sri.popContext();
+                    try {
+                        $h.link({"name":"link","attrs":{"url":"open","text":"Open ${id}","link-type":"anchor"},"parent":{"name":"default-field","attrs":{"title":"Open"},"parent":{"name":"field","attrs":{"name":"link"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}}, true);
+                    } finally {
+                        sri.popContext();
+                    }
                     $h.rowCellClose($m === 2);
                 }
             }
@@ -168,8 +195,11 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Rows] -->\n"
                 if ($m !== 1) {
                     $h.rowCellOpen("", "", $m === 2);
                     sri.pushContext();
-                    $h.submit({"name":"submit","attrs":{},"parent":{"name":"default-field","attrs":{"title":"Do"},"parent":{"name":"field","attrs":{"name":"b"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}}, ec.l10n.localize("Do"));
-                    sri.popContext();
+                    try {
+                        $h.submit({"name":"submit","attrs":{},"parent":{"name":"default-field","attrs":{"title":"Do"},"parent":{"name":"field","attrs":{"name":"b"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}}, ec.l10n.localize("Do"));
+                    } finally {
+                        sri.popContext();
+                    }
                     $h.rowCellClose($m === 2);
                 }
             }
@@ -226,8 +256,11 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Cols] -->\n"
                 if ($m !== 2) {
                     $h.rowCellOpen("", "", $m === 2);
                     sri.pushContext();
-                    $h.display({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"a"},"parent":{"name":"form-list","attrs":{"name":"Cols"}}}}});
-                    sri.popContext();
+                    try {
+                        $h.display({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"a"},"parent":{"name":"form-list","attrs":{"name":"Cols"}}}}});
+                    } finally {
+                        sri.popContext();
+                    }
                     $h.rowCellClose($m === 2);
                 }
             }
@@ -247,8 +280,11 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Cols] -->\n"
                 if ($m !== 2) {
                     $h.rowCellOpen("", "", $m === 2);
                     sri.pushContext();
-                    $h.display({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"b"},"parent":{"name":"form-list","attrs":{"name":"Cols"}}}}});
-                    sri.popContext();
+                    try {
+                        $h.display({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"b"},"parent":{"name":"form-list","attrs":{"name":"Cols"}}}}});
+                    } finally {
+                        sri.popContext();
+                    }
                     $h.rowCellClose($m === 2);
                 }
             }
@@ -268,8 +304,11 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Cols] -->\n"
                 if ($m !== 2) {
                     $h.rowCellOpen("", "", $m === 2);
                     sri.pushContext();
-                    $h.display({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"c"},"parent":{"name":"form-list","attrs":{"name":"Cols"}}}}});
-                    sri.popContext();
+                    try {
+                        $h.display({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"c"},"parent":{"name":"form-list","attrs":{"name":"Cols"}}}}});
+                    } finally {
+                        sri.popContext();
+                    }
                     $h.rowCellClose($m === 2);
                 }
             }

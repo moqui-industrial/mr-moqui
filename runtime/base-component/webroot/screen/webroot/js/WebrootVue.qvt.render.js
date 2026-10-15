@@ -2,7 +2,7 @@
 
 // Generated from the component templates of WebrootVue.qvt.js; do not edit. Make it again with
 //   UPDATE_GOLDEN=1 cargo test -p moqui-core --lib client_components_are_precompiled
-// qvt.applyRenders uses an entry only while its hash matches the template (plans/QvtServerStatic.md, Page build).
+// qvt.applyRenders uses an entry only while its hash matches the template (plans/archive/QvtServerStatic.md, Page build).
 (function (moqui) {
     "use strict";
     moqui.qvtRenders = {

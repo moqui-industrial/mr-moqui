@@ -488,6 +488,24 @@ pub fn sim_entered() -> bool {
     sim_session_open()
 }
 
+/// End every sim session this thread still has open, dropping its schema, and clear the sim flag. A failed drop is
+/// logged; the session is gone from the thread either way.
+pub(super) fn clear_sim(facade: &EntityFacade) {
+    while sim_session_open() {
+        if let Err(err) = exit_sim(facade) {
+            tracing::warn!(error = %err, "could not drop a sim schema left open");
+        }
+    }
+    SIM_FLAG.with(|flag| flag.set(false));
+}
+
+/// Forget the held rows and written entities of every transaction frame on this thread. Only for a thread with no
+/// frame left, when these belong to frames that ended without their hooks.
+pub(super) fn clear_frame_state() {
+    TX_HOLD.with(|slot| slot.borrow_mut().clear());
+    TX_WRITTEN.with(|slot| slot.borrow_mut().clear());
+}
+
 pub(super) fn set_sim_flag(value: bool) {
     SIM_FLAG.with(|flag| flag.set(value));
 }

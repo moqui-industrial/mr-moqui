@@ -89,9 +89,11 @@ fn opt_text(ctx: &Ctx<'_>, value: Option<&JsValue<'_>>) -> rquickjs::Result<Stri
 #[rquickjs::methods(rename_all = "camelCase")]
 impl HostSftpClient {
     fn password<'js>(&self, ctx: Ctx<'js>, password: Opt<JsValue<'js>>) -> rquickjs::Result<()> {
-        let password = opt_text(&ctx, password.0.as_ref())?;
-        self.inner.borrow_mut().password(&password);
-        Ok(())
+        host_guard(&ctx, || {
+            let password = opt_text(&ctx, password.0.as_ref())?;
+            self.inner.borrow_mut().password(&password);
+            Ok(())
+        })
     }
 
     fn public_key_pkcs8<'js>(
@@ -100,20 +102,28 @@ impl HostSftpClient {
         private_key: JsValue<'js>,
         public_key: Opt<JsValue<'js>>,
     ) -> rquickjs::Result<()> {
-        let private_key = opt_text(&ctx, Some(&private_key))?;
-        let public_key = opt_text(&ctx, public_key.0.as_ref())?;
-        self.inner
-            .borrow_mut()
-            .public_key_pkcs8(&private_key, Some(public_key.as_str()));
-        Ok(())
+        host_guard(&ctx, || {
+            let private_key = opt_text(&ctx, Some(&private_key))?;
+            let public_key = opt_text(&ctx, public_key.0.as_ref())?;
+            self.inner
+                .borrow_mut()
+                .public_key_pkcs8(&private_key, Some(public_key.as_str()));
+            Ok(())
+        })
     }
 
-    fn preserve_attributes(&self, preserve: bool) {
-        self.inner.borrow_mut().preserve_attributes(preserve);
+    fn preserve_attributes(&self, ctx: Ctx<'_>, preserve: bool) -> rquickjs::Result<()> {
+        host_guard(&ctx, || {
+            self.inner.borrow_mut().preserve_attributes(preserve);
+            Ok(())
+        })
     }
 
-    fn host_key_fingerprint(&self, fingerprint: String) {
-        self.inner.borrow_mut().host_key_fingerprint(&fingerprint);
+    fn host_key_fingerprint(&self, ctx: Ctx<'_>, fingerprint: String) -> rquickjs::Result<()> {
+        host_guard(&ctx, || {
+            self.inner.borrow_mut().host_key_fingerprint(&fingerprint);
+            Ok(())
+        })
     }
 
     fn connect(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
@@ -126,8 +136,8 @@ impl HostSftpClient {
         })
     }
 
-    fn is_connected(&self) -> bool {
-        self.inner.borrow().is_connected()
+    fn is_connected(&self, ctx: Ctx<'_>) -> rquickjs::Result<bool> {
+        host_guard(&ctx, || Ok(self.inner.borrow().is_connected()))
     }
 
     fn ls_files<'js>(&self, ctx: Ctx<'js>, path: String) -> rquickjs::Result<JsValue<'js>> {
@@ -351,8 +361,11 @@ impl HostSftpClient {
         })
     }
 
-    fn close(&self) {
-        self.inner.borrow_mut().close();
+    fn close(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
+        host_guard(&ctx, || {
+            self.inner.borrow_mut().close();
+            Ok(())
+        })
     }
 }
 
@@ -412,21 +425,23 @@ fn sftp_new<'js>(
     username: String,
     port: Opt<JsValue<'js>>,
 ) -> rquickjs::Result<Class<'js, HostSftpClient>> {
-    let port = match port.0.as_ref().and_then(JsValue::as_number) {
-        Some(number) if (1.0..=65535.0).contains(&number) =>
-        {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            Some(number as u16)
-        }
-        _ => None,
-    };
-    let client = SftpClient::new(&host, &username, port).map_err(|err| throw_lib(&ctx, &err))?;
-    Class::instance(
-        ctx.clone(),
-        HostSftpClient {
-            inner: RefCell::new(client),
-        },
-    )
+    host_guard(&ctx, || {
+        let port = match port.0.as_ref().and_then(JsValue::as_number) {
+            Some(number) if (1.0..=65535.0).contains(&number) =>
+            {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                Some(number as u16)
+            }
+            _ => None,
+        };
+        let client = SftpClient::new(&host, &username, port).map_err(|err| throw_lib(&ctx, &err))?;
+        Class::instance(
+            ctx.clone(),
+            HostSftpClient {
+                inner: RefCell::new(client),
+            },
+        )
+    })
 }
 
 /// Define the global `SftpClient`.

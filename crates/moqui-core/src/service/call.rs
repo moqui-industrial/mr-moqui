@@ -269,13 +269,18 @@ pub fn sync_with(
         Err(err) => return Err(err),
     };
     super::seca::run_seca_rules(&def.name, "pre-auth", &cleaned, None)?;
-    // A call with credentials logs in first, as Java does with authUsername and authPassword.
-    if let Some((username, password)) = auth_credentials(parameters) {
-        if let Err(err) = crate::user::login_user(&username, &password) {
-            add_error(err.message());
-            return Ok(BTreeMap::new());
-        }
-    }
+    // A call with credentials logs in first, as Java does with authUsername and authPassword, and the caller's user
+    // is back when the call returns, as Java's logoutLocal in finally.
+    let _login = match auth_credentials(parameters) {
+        Some((username, password)) => match crate::user::login_user_local(&username, &password) {
+            Ok(login) => Some(login),
+            Err(err) => {
+                add_error(err.message());
+                return Ok(BTreeMap::new());
+            }
+        },
+        None => None,
+    };
     // Internal work with authorization disabled, a data load for one, needs no logged-in user.
     let authz_off = crate::context::ExecutionContext::with_current(|ctx| ctx.authz_disabled()).unwrap_or(true);
     if def.authenticate == Authenticate::Required

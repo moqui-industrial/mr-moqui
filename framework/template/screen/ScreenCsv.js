@@ -115,10 +115,13 @@ const $sep = () => { if ($hasPrev) sri.write(","); else $hasPrev = true; };
                 sri.write("\\n");
                 for (let $index = 0; $index < $info.count; $index++) {
                     sri.startFormListRow($info, $index);
-                    $hasPrev = false;
-                    ${cells}
-                    sri.write("\\n");
-                    sri.endFormListRow();
+                    try {
+                        $hasPrev = false;
+                        ${cells}
+                        sri.write("\\n");
+                    } finally {
+                        sri.endFormListRow();
+                    }
                 }
                 sri.safeCloseList($info);
             }

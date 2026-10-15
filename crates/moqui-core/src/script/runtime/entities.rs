@@ -68,8 +68,8 @@ pub(super) fn entity_stop_tx_cache(ctx: Ctx<'_>) -> rquickjs::Result<()> {
 }
 
 /// `ec.entity.isTxCacheActive()`.
-pub(super) fn entity_is_tx_cache_active() -> bool {
-    crate::entity::cache::sim_entered()
+pub(super) fn entity_is_tx_cache_active(ctx: Ctx<'_>) -> rquickjs::Result<bool> {
+    host_guard(&ctx, || Ok(crate::entity::cache::sim_entered()))
 }
 
 /// An entity value as a script sees it.

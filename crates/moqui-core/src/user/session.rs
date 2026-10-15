@@ -796,6 +796,62 @@ pub(crate) fn clear_login() {
     });
 }
 
+/// Who is logged in on this context, with what a login changes beside the user, for [`restore_identity`].
+pub(crate) struct Identity {
+    user_id: Option<String>,
+    username: Option<String>,
+    anonymous: bool,
+    locale: Option<String>,
+    time_zone: Option<String>,
+    csrf_token: Option<String>,
+    authz: AuthzCache,
+    pre_authc: Option<Json>,
+    factor_required: Option<Json>,
+}
+
+pub(crate) fn identity() -> Identity {
+    with_session(|session| Identity {
+        user_id: session.user_id.clone(),
+        username: session.username.clone(),
+        anonymous: session.anonymous,
+        locale: session.locale.clone(),
+        time_zone: session.time_zone.clone(),
+        csrf_token: session.csrf_token.clone(),
+        authz: session.authz.clone(),
+        pre_authc: session.attributes.get(super::login::PRE_AUTHC_USERNAME).cloned(),
+        factor_required: session.attributes.get(super::login::AUTHC_FACTOR_REQUIRED).cloned(),
+    })
+}
+
+/// Put back an [`identity`], as Java's `logoutLocal` pops the user. The session id and visit stay as they are.
+pub(crate) fn restore_identity(identity: &Identity) {
+    with_session(|session| {
+        session.user_id.clone_from(&identity.user_id);
+        session.username.clone_from(&identity.username);
+        session.anonymous = identity.anonymous;
+        session.locale.clone_from(&identity.locale);
+        session.time_zone.clone_from(&identity.time_zone);
+        session.csrf_token.clone_from(&identity.csrf_token);
+        session.authz = identity.authz.clone();
+        mark_column(session, Column::UserId);
+        mark_column(session, Column::Locale);
+        mark_column(session, Column::TimeZone);
+        for (key, value) in [
+            (super::login::PRE_AUTHC_USERNAME, &identity.pre_authc),
+            (super::login::AUTHC_FACTOR_REQUIRED, &identity.factor_required),
+        ] {
+            match value {
+                Some(value) => put_json(session, key, value.clone()),
+                None => {
+                    if session.attributes.remove(key).is_some() && session.bound_id.is_some() {
+                        session.dirty_json.insert(key.to_string());
+                    }
+                }
+            }
+        }
+    });
+}
+
 #[allow(dead_code)]
 pub(crate) fn reset_session() {
     with_session(|session| *session = Memory::default());

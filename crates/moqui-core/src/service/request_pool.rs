@@ -23,8 +23,8 @@ use std::thread::{self, JoinHandle};
 
 use moqui_lib::node::MNode;
 
+use super::pool::WorkCleanup;
 use crate::context::{Error, ErrorKind, ExecutionContextFactory};
-use crate::transaction::TransactionManager;
 
 const DEFAULT_REQUEST_WORKERS: u32 = 8;
 const DEFAULT_REQUEST_QUEUE: u32 = 64;
@@ -60,25 +60,6 @@ struct Work {
     factory: Arc<ExecutionContextFactory>,
     run: JobRun,
     finish: JobFinish,
-}
-
-struct RequestCleanup<'a> {
-    factory: &'a ExecutionContextFactory,
-}
-
-impl Drop for RequestCleanup<'_> {
-    fn drop(&mut self) {
-        crate::script::clear_context_stack();
-        let Some(facade) = self.factory.entity() else {
-            return;
-        };
-        for runtime in facade.inner.groups.values() {
-            destroy_manager(&runtime.transactions);
-        }
-        if let Some(sim) = facade.sim_transactions() {
-            destroy_manager(&sim);
-        }
-    }
 }
 
 impl RequestPool {
@@ -200,12 +181,6 @@ pub fn check_serve_caps(factory: &ExecutionContextFactory) -> Result<(), Error> 
     Ok(())
 }
 
-fn destroy_manager(manager: &TransactionManager) {
-    if let Err(err) = manager.destroy_all_in_thread() {
-        tracing::warn!("request worker transaction cleanup failed: {err}");
-    }
-}
-
 fn pack<T, F>(factory: Arc<ExecutionContextFactory>, job: F, tx: Sender<Result<T, Error>>) -> Work
 where
     T: Send + 'static,
@@ -318,18 +293,18 @@ fn next_work(shared: &Shared) -> Option<Work> {
 
 fn run_work(work: Work) {
     let Work { factory, run, finish } = work;
-    let outcome = catch_unwind(AssertUnwindSafe(move || {
-        let ctx = factory.new_context();
-        let _entered = ctx.enter();
-        // Drop the guard before this closure yields, so the waiter hears only after cleanup.
-        {
-            let _clean = RequestCleanup { factory: &factory };
+    // The cleanup ends before `finish`, so the waiter hears only after it.
+    let result = {
+        let _cleanup = WorkCleanup::new(Some(Arc::clone(&factory)));
+        let outcome = catch_unwind(AssertUnwindSafe(move || {
+            let ctx = factory.new_context();
+            let _entered = ctx.enter();
             run()
+        }));
+        match outcome {
+            Ok(result) => result,
+            Err(_) => Err(Error::new("request worker panicked")),
         }
-    }));
-    let result = match outcome {
-        Ok(result) => result,
-        Err(_) => Err(Error::new("request worker panicked")),
     };
     finish(result);
 }
@@ -546,6 +521,27 @@ mod tests {
         assert_returned(&primary);
         assert_returned(&other);
         assert_returned(&sim);
+    }
+
+    #[test]
+    fn the_sim_flag_ends_with_its_request() {
+        let pool = RequestPool::idle();
+        pool.start(1, 2).unwrap();
+        let factory = test_factory();
+        let facade = crate::testing::open();
+        factory.set_entity(facade.clone());
+        let first = facade.clone();
+        let done = pool
+            .try_submit(Arc::clone(&factory), move || {
+                first.set_sim_active(true);
+                Ok::<(), Error>(())
+            })
+            .unwrap();
+        done.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        let next = pool
+            .try_submit(factory, move || Ok::<bool, Error>(facade.sim_active()))
+            .unwrap();
+        assert!(!next.recv_timeout(Duration::from_secs(5)).unwrap().unwrap());
     }
 
     fn test_factory() -> Arc<ExecutionContextFactory> {

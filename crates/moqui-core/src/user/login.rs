@@ -49,6 +49,38 @@ const EXPIRED_CREDENTIALS: &str = "moquiExpiredCredentials";
 /// and this returns `Ok` with no current user, as Java's `loginUser` returns false without an
 /// error. The code then comes through `validate#ExternalUserAuthcCode` and [`internal_login_user`].
 pub fn login_user(username: &str, password: &str) -> Result<(), Error> {
+    if password_login(username, password)? {
+        session::rotate_on_password_login()?;
+    }
+    Ok(())
+}
+
+/// Check the password and set the user for one piece of work, as Java's `loginUser` paired with `logoutLocal`. The
+/// bound session keeps its id, and dropping the returned guard puts back the user, locale and time zone the context
+/// had before. A failed login is undone the same way.
+///
+/// # Errors
+///
+/// Returns the [`login_user`] errors.
+pub(crate) fn login_user_local(username: &str, password: &str) -> Result<LocalLogin, Error> {
+    let restore = LocalLogin(session::identity());
+    password_login(username, password)?;
+    Ok(restore)
+}
+
+/// The identity a [`login_user_local`] replaced. Dropping it puts that identity back.
+#[must_use = "dropping the guard logs the local user out"]
+pub(crate) struct LocalLogin(session::Identity);
+
+impl Drop for LocalLogin {
+    fn drop(&mut self) {
+        session::restore_identity(&self.0);
+    }
+}
+
+/// The password check and login of [`login_user`]. True when the session id should rotate: the password was right
+/// and the session did not already hold this user.
+fn password_login(username: &str, password: &str) -> Result<bool, Error> {
     clear_pre_authc();
     if username.is_empty() || password.is_empty() {
         return Err(Error::new(INVALID_LOGIN));
@@ -79,15 +111,12 @@ pub fn login_user(username: &str, password: &str) -> Result<(), Error> {
         let account_username = text_field(&account, "username");
         session::set_session_attribute(PRE_AUTHC_USERNAME, Some(&account_username));
         session::set_session_attribute(AUTHC_FACTOR_REQUIRED, Some("true"));
-        return session::rotate_on_password_login();
+        return Ok(true);
     }
     // A request repeating Basic credentials for the user its session already holds keeps its id.
     let same_user = session::current_username()?.as_deref() == Some(username);
     finish_login(&facade, &account, Some(password), true)?;
-    if same_user {
-        return Ok(());
-    }
-    session::rotate_on_password_login()
+    Ok(!same_user)
 }
 
 /// Every login starts by forgetting an earlier pre-authenticated user, so a finished login does
@@ -1123,6 +1152,46 @@ mod tests {
         );
         assert!(session::current_username().unwrap().is_none());
         session::reset_session();
+    }
+
+    #[test]
+    fn a_service_call_with_credentials_puts_the_callers_user_back() {
+        let (ctx, facade) = open_ctx();
+        let _guard = ctx.enter();
+        create_user(&facade, "ada", "Secret1!", |value| {
+            value.set("locale", Value::string("en"));
+        });
+        create_user(&facade, "bob", "Secret2!", |value| {
+            value.set("locale", Value::string("fr"));
+        });
+        let path = std::env::temp_dir().join(format!("moqui-login-local-{}.xml", std::process::id()));
+        std::fs::write(
+            &path,
+            r#"<services>
+                <service verb="who" noun="Am" authenticate="true" transaction="ignore">
+                    <out-parameters><parameter name="who"/></out-parameters>
+                    <actions><set field="who" from="ec.user.username"/></actions>
+                </service>
+            </services>"#,
+        )
+        .unwrap();
+        let failures = crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+        login_user("ada", "Secret1!").unwrap();
+        let token = session::csrf_token().unwrap();
+        let mut parameters = std::collections::BTreeMap::new();
+        parameters.insert("authUsername".to_string(), Value::string("bob"));
+        parameters.insert("authPassword".to_string(), Value::string("Secret2!"));
+        let out = crate::service::sync("who#Am", &parameters).unwrap();
+        assert_eq!(out.get("who").and_then(Value::as_str), Some("bob"));
+        assert_eq!(session::current_username().unwrap().as_deref(), Some("ada"));
+        assert_eq!(session::current_user_id().unwrap().as_deref(), Some("ada"));
+        assert_eq!(session::locale().unwrap().as_deref(), Some("en"));
+        assert_eq!(session::csrf_token().unwrap(), token);
+
+        parameters.insert("authPassword".to_string(), Value::string("wrong"));
+        assert!(crate::service::sync("who#Am", &parameters).unwrap().is_empty());
+        assert_eq!(session::current_username().unwrap().as_deref(), Some("ada"));
     }
 
     fn open_ctx() -> (crate::context::ExecutionContext, EntityFacade) {

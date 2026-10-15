@@ -512,11 +512,23 @@ impl SftpClient {
 }
 
 impl Drop for SftpClient {
-    /// Java's `finalize` closes a client the caller forgot, with an error in the log.
+    /// Java's `finalize` closes a client the caller forgot, with an error in the log. The close is network I/O with no
+    /// time limit, and a script's client is dropped by the QuickJS garbage collector at any allocation, so it is done on
+    /// a thread of its own.
     fn drop(&mut self) {
-        if self.is_connected() {
-            tracing::error!("SftpClient not closed for host {}, closing it", self.config.target());
-            self.close();
+        let Some(mut session) = self.session.take() else {
+            return;
+        };
+        let target = self.config.target();
+        if session.is_connected() {
+            tracing::error!("SftpClient not closed for host {target}, closing it");
+        }
+        // Even a session that reads as disconnected may still close its channel when dropped.
+        let closer = std::thread::Builder::new()
+            .name("sftp-close".to_string())
+            .spawn(move || session.close());
+        if let Err(err) = closer {
+            tracing::error!("could not start a thread to close the SFTP session to {target}: {err}");
         }
     }
 }
@@ -586,6 +598,8 @@ pub(crate) mod tests {
         pub files: BTreeMap<String, Vec<u8>>,
         pub dirs: std::collections::BTreeSet<String>,
         pub chmods: Vec<String>,
+        /// The name of the thread each session closed on.
+        pub closed_on: Vec<String>,
     }
 
     pub(crate) struct MemorySession {
@@ -729,7 +743,10 @@ pub(crate) mod tests {
             Ok(())
         }
         fn close(&mut self) {
-            self.open = false;
+            if std::mem::take(&mut self.open) {
+                let thread = std::thread::current().name().unwrap_or_default().to_string();
+                self.disk.lock().unwrap().closed_on.push(thread);
+            }
         }
         fn is_connected(&self) -> bool {
             self.open
@@ -834,6 +851,21 @@ pub(crate) mod tests {
             client.ls_files("/in").unwrap_err().message(),
             "SFTP Client not connected"
         );
+        clear_sftp_connector();
+    }
+
+    #[test]
+    fn a_client_dropped_open_closes_on_a_thread_of_its_own() {
+        let _lock = sftp_test_lock();
+        let connector = memory();
+        let mut client = SftpClient::new("example.com", "joe", None).unwrap();
+        client.password("pw").connect().unwrap();
+        drop(client);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while connector.disk.lock().unwrap().closed_on.is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(connector.disk.lock().unwrap().closed_on, ["sftp-close"]);
         clear_sftp_connector();
     }
 }

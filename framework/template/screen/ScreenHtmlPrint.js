@@ -53,18 +53,21 @@ const $formList = (name, range, cols) => {
     sri.write("</tr></thead>\\n<tbody>\\n");
     for (let index = 0; index < info.count; index++) {
         sri.startFormListRow(info, index);
-        sri.write("<tr>");
-        shown.forEach((pair) => {
-            sri.write("<td>");
-            pair[0].forEach((f) => {
-                sri.write('<div style="text-align:' + (f.align || "left") + '">');
-                f.cell();
-                sri.write("</div>");
+        try {
+            sri.write("<tr>");
+            shown.forEach((pair) => {
+                sri.write("<td>");
+                pair[0].forEach((f) => {
+                    sri.write('<div style="text-align:' + (f.align || "left") + '">');
+                    f.cell();
+                    sri.write("</div>");
+                });
+                sri.write("</td>");
             });
-            sri.write("</td>");
-        });
-        sri.write("</tr>\\n");
-        sri.endFormListRow();
+            sri.write("</tr>\\n");
+        } finally {
+            sri.endFormListRow();
+        }
     }
     sri.write("</tbody>\\n</table>\\n");
     sri.safeCloseList(info);
@@ -262,8 +265,11 @@ a { color: blue; }
             Object.keys(fields).map((name) => singleFieldCode(fields[name])).join("");
         return js`
             sri.pushSingleFormMapContext(${raw(map)});
-            ${body}
-            sri.popContext();
+            try {
+                ${body}
+            } finally {
+                sri.popContext();
+            }
         `;
     });
 

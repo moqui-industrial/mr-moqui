@@ -31,44 +31,48 @@ pub(super) struct HostUpload {
 #[rquickjs::methods(rename_all = "camelCase")]
 impl HostUpload {
     #[qjs(get, rename = "name")]
-    fn name_property(&self) -> String {
-        self.inner.file_name.clone()
+    fn name_property(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(self.inner.file_name.clone()))
     }
 
     #[qjs(get, rename = "fileName")]
-    fn file_name_property(&self) -> String {
-        self.inner.file_name.clone()
+    fn file_name_property(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(self.inner.file_name.clone()))
     }
 
     #[qjs(get, rename = "fieldName")]
-    fn field_name_property(&self) -> String {
-        self.inner.field_name.clone()
+    fn field_name_property(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(self.inner.field_name.clone()))
     }
 
     #[qjs(get, rename = "contentType")]
-    fn content_type_property(&self) -> String {
-        self.inner.content_type.clone()
+    fn content_type_property(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(self.inner.content_type.clone()))
     }
 
     #[qjs(get, rename = "size")]
     fn size_property<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
-        i64_to_js(&ctx, i64::try_from(self.inner.bytes.len()).unwrap_or(i64::MAX))
+        host_guard(&ctx, || {
+            i64_to_js(&ctx, i64::try_from(self.inner.bytes.len()).unwrap_or(i64::MAX))
+        })
     }
 
-    fn get_name(&self) -> String {
-        self.inner.file_name.clone()
+    fn get_name(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(self.inner.file_name.clone()))
     }
 
-    fn get_field_name(&self) -> String {
-        self.inner.field_name.clone()
+    fn get_field_name(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(self.inner.field_name.clone()))
     }
 
-    fn get_content_type(&self) -> String {
-        self.inner.content_type.clone()
+    fn get_content_type(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(self.inner.content_type.clone()))
     }
 
     fn get_size<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
-        i64_to_js(&ctx, i64::try_from(self.inner.bytes.len()).unwrap_or(i64::MAX))
+        host_guard(&ctx, || {
+            i64_to_js(&ctx, i64::try_from(self.inner.bytes.len()).unwrap_or(i64::MAX))
+        })
     }
 
     fn is_in_memory(&self) -> bool {
@@ -76,8 +80,8 @@ impl HostUpload {
     }
 
     /// The bytes as UTF-8 text.
-    fn get_string(&self) -> String {
-        String::from_utf8_lossy(&self.inner.bytes).into_owned()
+    fn get_string(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(String::from_utf8_lossy(&self.inner.bytes).into_owned()))
     }
 
     /// Store the bytes at a `dbresource://` location.
@@ -91,7 +95,7 @@ impl HostUpload {
     }
 
     #[qjs(rename = "toString")]
-    fn to_string_text(&self) -> String {
-        self.inner.file_name.clone()
+    fn to_string_text(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(self.inner.file_name.clone()))
     }
 }

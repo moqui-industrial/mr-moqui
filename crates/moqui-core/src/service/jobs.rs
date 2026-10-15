@@ -64,6 +64,13 @@ pub(crate) struct JobRun {
     factory: Arc<ExecutionContextFactory>,
 }
 
+impl JobRun {
+    /// The factory the run belongs to.
+    pub(crate) fn factory(&self) -> &Arc<ExecutionContextFactory> {
+        &self.factory
+    }
+}
+
 /// What one pass did.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PassReport {
@@ -238,6 +245,7 @@ fn dispatch(
         return Ok(false);
     }
     let queued = job_name.starts_with(QUEUE_PREFIX);
+    let previous_run_time = ready.last_run_time.clone();
     let run = JobRun {
         job_name: job_name.clone(),
         service_name: text(job, "serviceName"),
@@ -258,7 +266,9 @@ fn dispatch(
         return Ok(true);
     }
     // The pool filled between the slot count and the submit. Put everything back.
-    let _ = plan.release(&job_name, &run_id, &Value::Null);
+    if let Err(err) = plan.release(&job_name, &run_id, &previous_run_time) {
+        tracing::warn!(job = %job_name, run = %run_id, error = %err, "could not clear the job lock");
+    }
     delete_run(facade, &run_id);
     Ok(false)
 }
@@ -372,6 +382,9 @@ pub(crate) fn send_job_error_notification(job_name: &str, job_run_id: &str, erro
 }
 
 /// The worker side: run the service and record what happened.
+///
+/// A run that unwinds is still ended, by [`RunEnd`]: the lock goes back with the previous run time and the run is
+/// recorded with an error, so the job does not wait out `expireLockTime`.
 pub(crate) fn run_job(job: JobRun) {
     let factory = Arc::clone(&job.factory);
     let context = factory.new_context();
@@ -391,6 +404,11 @@ pub(crate) fn run_job(job: JobRun) {
         &job.job_run_id,
         &[("startTime", now_value()), ("runThread", Value::string(thread))],
     );
+    let end = RunEnd {
+        facade: &facade,
+        job: &job,
+        done: false,
+    };
     let mut parameters = job.parameters.clone();
     if !job.last_run_time.is_null() {
         parameters.insert("lastRunTime".to_string(), job.last_run_time.clone());
@@ -416,53 +434,130 @@ pub(crate) fn run_job(job: JobRun) {
             clip(&messages.errors().join("\n")),
         )
     };
-    let result_text = serde_json::to_string(&moqui_lib::json::to_json(&Value::Map(
+    let results = serde_json::to_string(&moqui_lib::json::to_json(&Value::Map(
         results.into_iter().collect::<indexmap::IndexMap<_, _>>(),
     )))
     .ok();
+    end.finish(&RunOutcome {
+        has_error,
+        results,
+        messages,
+        errors,
+    });
+}
+
+/// What a job run produced, for [`finish_run`].
+struct RunOutcome {
+    has_error: bool,
+    /// The results as JSON.
+    results: Option<String>,
+    messages: String,
+    errors: String,
+}
+
+/// Ends a job run on every path. [`run_job`] hands it the outcome; a run that unwinds first ends as failed.
+struct RunEnd<'a> {
+    facade: &'a EntityFacade,
+    job: &'a JobRun,
+    done: bool,
+}
+
+impl RunEnd<'_> {
+    fn finish(mut self, outcome: &RunOutcome) {
+        self.done = true;
+        finish_run(self.facade, self.job, outcome);
+    }
+}
+
+impl Drop for RunEnd<'_> {
+    fn drop(&mut self) {
+        if self.done {
+            return;
+        }
+        tracing::error!(job = %self.job.job_name, run = %self.job.job_run_id, "service job panicked");
+        let outcome = RunOutcome {
+            has_error: true,
+            results: None,
+            messages: String::new(),
+            errors: "The service job panicked".to_string(),
+        };
+        super::pool::cleanup_step("job run end", || finish_run(self.facade, self.job, &outcome));
+    }
+}
+
+/// Release the lock, record the run's end, and report errors. A queued call is removed whether or not it worked.
+fn finish_run(facade: &EntityFacade, job: &JobRun, outcome: &RunOutcome) {
+    // Frames the service left open are rolled back first, so the records below do not join them.
+    super::pool::rollback_frames(facade);
     // The lock goes first: a failure restores the previous run time so the job is due again.
     if !job.delete_when_done {
-        match LockPlan::new(&facade) {
-            Ok(plan) => {
-                let restored = if has_error {
-                    job.last_run_time.clone()
-                } else {
-                    now_value()
-                };
-                if let Err(err) = plan.release(&job.job_name, &job.job_run_id, &restored) {
-                    tracing::warn!(job = %job.job_name, error = %err, "could not clear the job lock");
-                }
-            }
-            Err(err) => tracing::warn!(job = %job.job_name, error = %err, "could not clear the job lock"),
-        }
+        let restored = if outcome.has_error {
+            job.last_run_time.clone()
+        } else {
+            now_value()
+        };
+        release_lock(facade, job, &restored);
     }
     record(
-        &facade,
+        facade,
         &job.job_run_id,
         &[
             ("endTime", now_value()),
-            ("results", result_text.map_or(Value::Null, Value::String)),
-            ("messages", Value::string(messages)),
-            ("hasError", Value::string(if has_error { "Y" } else { "N" })),
+            ("results", outcome.results.clone().map_or(Value::Null, Value::String)),
+            ("messages", Value::string(&outcome.messages)),
+            ("hasError", Value::string(if outcome.has_error { "Y" } else { "N" })),
             (
                 "errors",
-                if has_error {
-                    Value::string(errors.clone())
+                if outcome.has_error {
+                    Value::string(&outcome.errors)
                 } else {
                     Value::Null
                 },
             ),
         ],
     );
-    if has_error {
-        tracing::warn!(job = %job.job_name, run = %job.job_run_id, errors = %errors, "service job ended with errors");
-        send_job_error_notification(&job.job_name, &job.job_run_id, &errors);
+    if outcome.has_error {
+        tracing::warn!(job = %job.job_name, run = %job.job_run_id, errors = %outcome.errors, "service job ended with errors");
+        send_job_error_notification(&job.job_name, &job.job_run_id, &outcome.errors);
     }
     if job.delete_when_done {
-        delete_queued(&facade, &job.job_name);
-        if let Ok(plan) = LockPlan::new(&facade) {
-            let _ = plan.delete_lock(&job.job_name);
+        delete_queued(facade, &job.job_name);
+        if let Err(err) = LockPlan::new(facade).and_then(|plan| plan.delete_lock(&job.job_name)) {
+            tracing::warn!(job = %job.job_name, error = %err, "could not remove a queued job's lock");
         }
+    }
+}
+
+/// A run the pool dropped at shutdown before a worker took it. Its lock goes back with the previous run time and the
+/// run is recorded as failed, so neither waits out the lock's expiry. A queued call stays, for the next start.
+pub(crate) fn abandon(job: JobRun) {
+    let factory = Arc::clone(&job.factory);
+    let context = factory.new_context();
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    let Some(facade) = factory.entity() else {
+        return;
+    };
+    tracing::warn!(job = %job.job_name, run = %job.job_run_id, "service worker pool stopped before the job ran");
+    release_lock(&facade, &job, &job.last_run_time);
+    record(
+        &facade,
+        &job.job_run_id,
+        &[
+            ("endTime", now_value()),
+            ("hasError", Value::string("Y")),
+            (
+                "errors",
+                Value::string("The service worker pool stopped before the job ran"),
+            ),
+        ],
+    );
+}
+
+/// Clear this run's hold on the job lock and set `lastRunTime`. A failure is logged.
+fn release_lock(facade: &EntityFacade, job: &JobRun, last_run: &Value) {
+    if let Err(err) = LockPlan::new(facade).and_then(|plan| plan.release(&job.job_name, &job.job_run_id, last_run)) {
+        tracing::warn!(job = %job.job_name, run = %job.job_run_id, error = %err, "could not clear the job lock");
     }
 }
 
@@ -753,5 +848,122 @@ impl Shared {
         }
         self.wake.notify_all();
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use moqui_lib::object::{to_plain_string, Value};
+
+    use super::{abandon, timestamp_value, JobRun, RunEnd, JOB_LOCK, JOB_RUN};
+    use crate::context::{ExecutionContext, ExecutionContextFactory};
+    use crate::entity::{EntityFacade, EntityValue};
+
+    const PREVIOUS: i64 = 1_700_000_000_000;
+
+    /// A run whose lock row is claimed, as the pass leaves it before a worker takes the run.
+    fn claimed(ctx: &ExecutionContext, facade: &EntityFacade, job: &str, run_id: &str) -> JobRun {
+        let mut run = facade.make_value(JOB_RUN).unwrap();
+        run.set("jobRunId", Value::string(run_id));
+        run.set("jobName", Value::string(job));
+        run.create(facade).unwrap();
+        let mut lock = facade.make_value(JOB_LOCK).unwrap();
+        lock.set("jobName", Value::string(job));
+        lock.set("jobRunId", Value::string(run_id));
+        lock.set("lastRunTime", super::now_value());
+        lock.create(facade).unwrap();
+        JobRun {
+            job_name: job.to_string(),
+            service_name: "never#Called".to_string(),
+            parameters: BTreeMap::new(),
+            timeout: Duration::from_secs(60),
+            job_run_id: run_id.to_string(),
+            last_run_time: timestamp_value(PREVIOUS),
+            delete_when_done: false,
+            user_name: None,
+            factory: Arc::clone(ctx.factory()),
+        }
+    }
+
+    fn one(facade: &EntityFacade, entity: &str, field: &str, id: &str) -> EntityValue {
+        facade
+            .find(entity)
+            .unwrap()
+            .eq(field, Value::string(id))
+            .one()
+            .unwrap()
+            .unwrap_or_else(|| panic!("no {entity} {id}"))
+    }
+
+    fn text(row: &EntityValue, field: &str) -> String {
+        row.get(field).map(to_plain_string).unwrap_or_default()
+    }
+
+    /// The lock is free with the run time from before, and the run ended with an error.
+    fn assert_released_and_failed(facade: &EntityFacade, job: &str, run_id: &str) {
+        let lock = one(facade, JOB_LOCK, "jobName", job);
+        assert_eq!(text(&lock, "jobRunId"), "");
+        assert_eq!(
+            super::millis_of(lock.get("lastRunTime").unwrap_or(&Value::Null)),
+            Some(PREVIOUS)
+        );
+        let run = one(facade, JOB_RUN, "jobRunId", run_id);
+        assert_eq!(text(&run, "hasError"), "Y");
+        assert!(!text(&run, "endTime").is_empty());
+    }
+
+    #[test]
+    fn a_run_that_unwinds_releases_its_lock_and_records_an_error() {
+        let ctx = ExecutionContextFactory::test_context();
+        let facade = crate::testing::open();
+        ctx.factory().set_entity(facade.clone());
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        let run = claimed(&ctx, &facade, "PanicJob", "R1");
+        let unwound = catch_unwind(AssertUnwindSafe(|| {
+            let _end = RunEnd {
+                facade: &facade,
+                job: &run,
+                done: false,
+            };
+            // A frame the service began and never ended: the records must not join it.
+            assert!(facade.begin("moqui.test.TestEntity", None).unwrap());
+            let mut row = facade.make_value("moqui.test.TestEntity").unwrap();
+            row.set("testId", Value::string("from-panicked-job"));
+            row.create(&facade).unwrap();
+            panic!("stand-in service panic");
+        }));
+        assert!(unwound.is_err());
+        assert!(!crate::transaction::thread_in_transaction());
+        assert_released_and_failed(&facade, "PanicJob", "R1");
+        assert!(text(&one(&facade, JOB_RUN, "jobRunId", "R1"), "errors").contains("panicked"));
+        let kept = facade
+            .find("moqui.test.TestEntity")
+            .unwrap()
+            .eq("testId", Value::string("from-panicked-job"))
+            .one()
+            .unwrap();
+        assert!(kept.is_none(), "the panicked job's frame was committed");
+    }
+
+    #[test]
+    fn a_run_dropped_at_shutdown_releases_its_lock() {
+        let ctx = ExecutionContextFactory::test_context();
+        let facade = crate::testing::open();
+        ctx.factory().set_entity(facade.clone());
+        let run = {
+            let _entered = ctx.enter();
+            let _authz = ctx.disable_authz();
+            claimed(&ctx, &facade, "DroppedJob", "R2")
+        };
+        abandon(run);
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        assert_released_and_failed(&facade, "DroppedJob", "R2");
     }
 }

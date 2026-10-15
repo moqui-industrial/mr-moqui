@@ -66,7 +66,6 @@ pub use rest::{root_resource_infos, run};
 pub use seca::run_seca_rules;
 pub use security_checks::security_checks_run;
 pub(crate) use security_checks::{assert_privileged_group_membership, assert_sealed_permission_grant};
-pub use semaphore::acquire;
 pub(crate) use system_sync::receive_rest_message;
 pub(crate) use validate::clean_safe_html;
 pub use validate::validate;
