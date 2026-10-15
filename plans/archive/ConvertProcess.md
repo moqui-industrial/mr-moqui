@@ -202,3 +202,23 @@ Phase 0a of the next round. Rules added to `moqui convert --groovy`, run on `man
 - **Multi-line and nested map literals:** the map rule already spans lines and nests; this iteration adds tests for both. What is still left are the 52 `map + [..]` places, which need the type of the left operand.
 
 `moqui lint --groovy` on mantle-usl: parse failures 582 to 580, idiom sites 1959 to 1825. Whole `<script>` blocks that fail for another reason stay failures.
+
+## Fifth iteration: the hand port of mantle-usl services (2026-10-15)
+
+Every service file of mantle-usl is now hand ported. `moqui lint --groovy runtime/component/mantle-usl` reports 0 parse failures (582 before this iteration); the idiom sites left (about 430) are lint false positives such as decimal `.add(`, `new Date`, and `?.`. The data load is unchanged (8136 records, exit 0). Drools/KIE was removed from the component rather than ported (the `kie/` module, the `ProductPriceKS` registration and service, and the KIE call in `get#OrderShippingRateLocal`).
+
+The work ran in phases, each worker owning disjoint files and committing by path: ECA and data files; small services; medium services; then the six large files (`OrderServices`, `ReturnServices`, `PaymentServices`, `InvoiceServices`, `ShipmentServices`, `AssetServices`). A framework worker added the host features the ports needed, and flow workers then ran the Spock flows (`plans/MantleFlowTests.md`) and fixed what lint cannot see. Eight flows pass in Rust; `OrderTenantAccess` (data commented out), `RestApiTests` (the `s1/mantle` screen cases need a ScreenTest harness) and `MantleUslSuite` stay ignored.
+
+What lint does not catch, found only by running (check these first in any further port):
+
+- **Decimals.** A host decimal is always truthy and its `valueOf` throws: `!amount`, `x || 1.0`, `<`, `>`, `+`, and `!=` between decimals need `isZero()`, `compare`, `add`, and `compare(..) != 0`. Seven payment services had `!amount` that never fired.
+- **Find results are read-only host lists.** They have `map`, `filter`, `find`, `some`, `reduce`, `sort` (on a copy) and index access, but no `push`, `add`, `first()`, or `each`. Copy with `Array.from` before changing one.
+- **Empty arrays and objects are truthy.** Test `.length` or `Object.keys(..).length`; an `x in list` is a key test in JavaScript, so it must be `list.includes(x)`.
+- **Maps and lists passed to a service are copies.** A callee that filled the caller's map now returns it as an out-parameter (`get#GlAccountClassReportInfo` and its `classInfoById`).
+- **The converter does not reach** `in-map="[k:v]"` attribute map literals (11 sites), elvis in `<set from>` (7), and `&&` in XML text, which must be `&amp;&amp;` (two files were not well-formed XML and lint did not say so; run `xmllint --noout` on every touched file).
+- **Dates** are epoch-millis text. Compare through `Number(..)` or `dateOf(..)`; the ports use UTC where Java used the JVM or user zone, so results differ only where the server zone is not UTC.
+- **Behavior changes** where the Groovy was wrong are listed in the commit messages of each file; the main ones: `set#MissingGlAccountFlags` (`is-null`, not `is-not-null`), `<while>` on an empty object, `reject#OrderItem` still tests an undefined `checkCancelPart` (left as it was), and EFW2 still never sets `fileText`.
+
+Framework changes this iteration: entity-auto updates return `oldStatusId` and `statusChanged` and check `StatusFlowTransition`; `<iterate>` with `<continue/>` no longer loops forever; multi-line SECA and EECA `<condition><expression>` text evaluates; delete ECA after-rules see the whole row; `entity-find-one` takes the first row of a partial key; `auto-parameters` in `<out-parameters>`; `${}` in `order-by` and `select-field`; script nesting limit 64; `implements` loads the implemented file on demand; and the script surface listed in `moqui-host.d.ts` (`ec.context.sharedMap`, `sequencedIdPrimary`, `makeNotificationMessage`, decimal `divide(x, scale, mode)`/`abs`/`negate`/`scale`, `nextCronExecution`, min and max aggregations, REST `bytes()`, and others).
+
+Known open items: `asset_reservation_multiple_threads` can fail with a Postgres deadlock in `set#OrderBillingShippingInfo` when it runs after other flows (it passes alone); `moqui lint --screens` fails on 18 expressions in ironstone-boss screens, which this iteration did not touch; services the flows do not reach (payroll, EFW2, Nacha, PositivePay, BAI, OFX, budget and financial-ratio reports, most of `work/`) are ported but have never run.

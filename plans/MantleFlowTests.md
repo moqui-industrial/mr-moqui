@@ -10,7 +10,7 @@ Files:
 ## Running
 
 ```sh
-cargo test -p moqui-host --test mantle_flows                              # service_readiness only (the flows are ignored)
+cargo test -p moqui-host --test mantle_flows -- --test-threads=1            # the flows that pass, and service_readiness
 cargo test -p moqui-host --test mantle_flows -- --ignored                 # every flow, in parallel threads, serialized by a lock
 cargo test -p moqui-host --test mantle_flows order_to_cash -- --ignored --nocapture    # one flow, with its service calls printed
 cargo test -p moqui-host --test mantle_flows service_readiness -- --nocapture          # which services register

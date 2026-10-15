@@ -147,7 +147,7 @@ Configured service hooks also leave the source graph:
 - promotion implementations in `PromotionServices.xml`;
 - payment/carrier interfaces implemented by other components.
 
-`PriceServices.run#ProductPriceKS` (`:34`) calls KIE if configured. No KIE replacement was found in the inspected Rust architecture/implementation plans. Its missing-tool fallback is not evidence of equivalent production pricing.
+`PriceServices.run#ProductPriceKS` (`:34`, since removed with all Drools/KIE from the component) called KIE if configured. No KIE replacement was found in the inspected Rust architecture/implementation plans. Its missing-tool fallback is not evidence of equivalent production pricing.
 
 `ShipmentServices.complete#ShipmentPack` (`:1934`) calls normalization and packing with `force-new` (`:1950,1956`) before optional downstream processing. `print#ShipmentLabels` downloads missing labels and calls the print service (`:1909,1927`). Google-party services perform outbound HTTP. These waits need isolation from writing workers, but acknowledging an accepted processing job is not equivalent to acknowledging completed business work.
 

@@ -36,7 +36,7 @@ Summary derived from the archived plans on 2026-10-14. Phases 0–12 and gates 1
 
 ## Mantle conversion follow-up
 
-[ConvertProcess](archive/ConvertProcess.md) left a decision, not more mechanical rewrites: Java collections used as collections in Groovy scripts (`new HashSet`/`TreeSet`/`ArrayList` ~230 sites, `.add(` 366, `.put(` 204, `.contains(` 86, `*.` spreads 174). Either keep plain JavaScript (current ports) or add script globals `HashSet`, `TreeSet`, `ArrayList`, `HashMap` with Java's methods, as [Architecture-Proposal](archive/Architecture-Proposal.md) suggests. The third iteration added the `quoted-property` and `gstring` rules and hand ported the search callers, invoice and payment totals, and Mantle's entity filter maps. After that, about 500 service expressions (mostly whole Groovy script blocks) still fail to parse. Application migration of mantle-usl scripts is outside this repository's gates.
+mantle-usl services are hand ported to JavaScript and lint clean (see the fifth iteration in [ConvertProcess](archive/ConvertProcess.md)); eight of the Spock flows pass as Rust tests ([MantleFlowTests](MantleFlowTests.md)). Open: run the services the flows do not reach (payroll, EFW2, Nacha, PositivePay, BAI, OFX, budget and ratio reports, `work/`); a ScreenTest harness for `RestApiTests`; the deadlock flake in `asset_reservation_multiple_threads`; the 18 `moqui lint --screens` failures in ironstone-boss; Drools is removed rather than ported. Application migration of other components' scripts is outside this repository's gates.
 
 ## Related active plans
 [Future-Plans](Future-Plans.md) (unbuilt proposals) and [Performance-Summary](Performance-Summary.md).
