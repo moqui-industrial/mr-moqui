@@ -23,6 +23,8 @@
 
 use std::collections::HashSet;
 
+use super::runtime::js_error;
+
 use moqui_lib::node::MNode;
 use rquickjs::{Array, CatchResultExt, Ctx, Function, Object};
 
@@ -70,16 +72,16 @@ pub(crate) fn load_chain_for<'js>(
     mode: &str,
 ) -> Result<Vec<Object<'js>>, Error> {
     let support: Object = super::runtime::eval_source(ctx, support)?;
-    let options: Object = support.get("options").map_err(js_err)?;
-    options.set("debug", debug).map_err(js_err)?;
-    options.set("mode", mode).map_err(js_err)?;
+    let options: Object = support.get("options").map_err(js_error)?;
+    options.set("debug", debug).map_err(js_error)?;
+    options.set("mode", mode).map_err(js_error)?;
     let mut results = vec![support];
     let mut built = Vec::new();
     for module in modules {
         let function: Function = super::runtime::eval_source(ctx, module)?;
         let mut call = rquickjs::function::Args::new(ctx.clone(), results.len());
         for earlier in &results {
-            call.push_arg(earlier.clone()).map_err(js_err)?;
+            call.push_arg(earlier.clone()).map_err(js_error)?;
         }
         let made: Object = call
             .apply(&function)
@@ -123,58 +125,56 @@ fn build<'js>(
     };
     let node = replaced.as_ref().unwrap_or(node);
     let name = node.name();
-    let node_obj = Object::new(ctx.clone()).map_err(js_err)?;
-    node_obj.set("name", name.as_str()).map_err(js_err)?;
-    node_obj.set("text", node.text().unwrap_or_default()).map_err(js_err)?;
-    node_obj.set("attrs", attrs_object(ctx, node)?).map_err(js_err)?;
-    node_obj.set("inert", inert).map_err(js_err)?;
+    let node_obj = Object::new(ctx.clone()).map_err(js_error)?;
+    node_obj.set("name", name.as_str()).map_err(js_error)?;
+    node_obj
+        .set("text", node.text().unwrap_or_default())
+        .map_err(js_error)?;
+    node_obj.set("attrs", attrs_object(ctx, node)?).map_err(js_error)?;
+    node_obj.set("inert", inert).map_err(js_error)?;
     if let Some(parent) = parent {
-        node_obj.set("parent", parent.clone()).map_err(js_err)?;
+        node_obj.set("parent", parent.clone()).map_err(js_error)?;
     }
-    let children = Array::new(ctx.clone()).map_err(js_err)?;
-    node_obj.set("children", children.clone()).map_err(js_err)?;
+    let children = Array::new(ctx.clone()).map_err(js_error)?;
+    node_obj.set("children", children.clone()).map_err(js_error)?;
     let inert_children = inert || walk.opaque.contains(&name);
     for (index, child) in node.children().iter().enumerate() {
         let child_obj = build(ctx, walk, child, Some(&node_obj), inert_children)?;
-        children.set(index, child_obj).map_err(js_err)?;
+        children.set(index, child_obj).map_err(js_error)?;
     }
     Ok(node_obj)
 }
 
 fn run<'js>(ctx: &Ctx<'js>, walk: &Walk<'_, 'js>, node_obj: &Object<'js>) -> Result<String, Error> {
-    let inert: bool = node_obj.get("inert").map_err(js_err)?;
+    let inert: bool = node_obj.get("inert").map_err(js_error)?;
     if inert {
-        node_obj.set("source", "").map_err(js_err)?;
+        node_obj.set("source", "").map_err(js_error)?;
         return Ok(String::new());
     }
-    let children: Array = node_obj.get("children").map_err(js_err)?;
+    let children: Array = node_obj.get("children").map_err(js_error)?;
     let mut combined = String::new();
     for child in children.iter::<Object>() {
-        combined.push_str(&run(ctx, walk, &child.map_err(js_err)?)?);
+        combined.push_str(&run(ctx, walk, &child.map_err(js_error)?)?);
     }
-    let name: String = node_obj.get("name").map_err(js_err)?;
-    if !walk.macros.contains_key(name.as_str()).map_err(js_err)? {
+    let name: String = node_obj.get("name").map_err(js_error)?;
+    if !walk.macros.contains_key(name.as_str()).map_err(js_error)? {
         return Err(Error::new(format!("no {} for {name}", walk.missing)));
     }
-    let function: Function = walk.macros.get(name.as_str()).map_err(js_err)?;
+    let function: Function = walk.macros.get(name.as_str()).map_err(js_error)?;
     let source: String = function
         .call((node_obj.clone(), combined))
         .catch(ctx)
         .map_err(|caught| Error::new(caught.to_string()))?;
-    node_obj.set("source", source.clone()).map_err(js_err)?;
+    node_obj.set("source", source.clone()).map_err(js_error)?;
     Ok(source)
 }
 
 fn attrs_object<'js>(ctx: &Ctx<'js>, node: &MNode) -> Result<Object<'js>, Error> {
-    let attrs = Object::new(ctx.clone()).map_err(js_err)?;
+    let attrs = Object::new(ctx.clone()).map_err(js_error)?;
     for (key, value) in node.attributes() {
-        attrs.set(key, value).map_err(js_err)?;
+        attrs.set(key, value).map_err(js_error)?;
     }
     Ok(attrs)
-}
-
-fn js_err(err: impl ToString) -> Error {
-    Error::new(err.to_string())
 }
 
 /// The elements in a JavaScript array of names.
@@ -185,7 +185,7 @@ fn js_err(err: impl ToString) -> Error {
 pub(crate) fn names_of(array: &Array<'_>) -> Result<HashSet<String>, Error> {
     let mut names = HashSet::new();
     for item in array.iter::<String>() {
-        names.insert(item.map_err(js_err)?);
+        names.insert(item.map_err(js_error)?);
     }
     Ok(names)
 }

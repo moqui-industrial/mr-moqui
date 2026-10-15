@@ -24,6 +24,8 @@ use std::cell::{Cell, RefCell};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use super::runtime::js_error;
+
 use moqui_lib::object::Value;
 use rquickjs::function::Opt;
 use rquickjs::{CatchResultExt, Context, Ctx, Exception, Function, Persistent, Runtime, Value as JsValue};
@@ -956,10 +958,6 @@ impl Sandbox {
             runtime,
         })
     }
-}
-
-fn js_error(err: impl ToString) -> Error {
-    Error::new(err.to_string())
 }
 
 fn locked_format(ctx: Ctx<'_>, value: JsValue<'_>, pattern: Opt<String>) -> rquickjs::Result<String> {

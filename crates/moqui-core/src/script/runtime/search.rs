@@ -85,12 +85,8 @@ fn lib<T>(ctx: &Ctx<'_>, result: Result<T, moqui_lib::error::Error>) -> rquickjs
     result.map_err(|err| throw_lib(ctx, &err))
 }
 
-fn host(ctx: &Ctx<'_>, value: &JsValue<'_>) -> rquickjs::Result<Value> {
-    js_value_to_host(ctx, value).map_err(|err| Exception::throw_message(ctx, err.message()))
-}
-
 fn options(ctx: &Ctx<'_>, value: &JsValue<'_>) -> rquickjs::Result<indexmap::IndexMap<String, Value>> {
-    match host(ctx, value)? {
+    match js_to_host(ctx, value)? {
         Value::Map(map) => Ok(map),
         Value::Null => Ok(indexmap::IndexMap::new()),
         _ => Err(Exception::throw_message(ctx, "ec.search takes an options map")),
@@ -319,7 +315,7 @@ pub(super) fn search_parse_query<'js>(ctx: Ctx<'js>, text: String) -> rquickjs::
 
 pub(super) fn search_elastic_query<'js>(ctx: Ctx<'js>, value: JsValue<'js>) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
-        let value = host(&ctx, &value)?;
+        let value = js_to_host(&ctx, &value)?;
         let query = lib(&ctx, search::es_json::from_es(&value))?;
         host_to_js(&ctx, query.to_value())
     })
@@ -327,7 +323,7 @@ pub(super) fn search_elastic_query<'js>(ctx: Ctx<'js>, value: JsValue<'js>) -> r
 
 pub(super) fn search_index_documents<'js>(ctx: Ctx<'js>, list: JsValue<'js>) -> rquickjs::Result<i64> {
     host_guard(&ctx, || {
-        let documents: Vec<crate::entity::document::Document> = match host(&ctx, &list)? {
+        let documents: Vec<crate::entity::document::Document> = match js_to_host(&ctx, &list)? {
             Value::List(items) => items
                 .into_iter()
                 .filter_map(|item| match item {
@@ -432,7 +428,7 @@ pub(super) fn search_backend_name<'js>(ctx: Ctx<'js>) -> rquickjs::Result<JsValu
 }
 
 pub(super) fn search_flatten<'js>(ctx: Ctx<'js>, value: JsValue<'js>) -> rquickjs::Result<JsValue<'js>> {
-    host_guard(&ctx, || match host(&ctx, &value)? {
+    host_guard(&ctx, || match js_to_host(&ctx, &value)? {
         Value::Map(map) => host_to_js(&ctx, Value::Map(moqui_lib::collection::flatten_nested_map(&map))),
         other => host_to_js(&ctx, other),
     })
@@ -445,7 +441,7 @@ pub(super) fn search_process_feed_pending<'js>(
     host_guard(&ctx, || {
         flush_current(&ctx, true)?;
         let ids = match ids.0 {
-            Some(value) => match host(&ctx, &value)? {
+            Some(value) => match js_to_host(&ctx, &value)? {
                 Value::Null => None,
                 other => Some(text_list(Some(&other))),
             },
@@ -508,7 +504,7 @@ pub(super) fn entity_get_data_documents<'js>(
             Some(value) if value.is_null() || value.is_undefined() => None,
             Some(value) => match condition_of(value) {
                 Some(condition) => Some(condition),
-                None => match host(&ctx, value)? {
+                None => match js_to_host(&ctx, value)? {
                     Value::Map(map) => join(
                         map.into_iter()
                             .map(|(field, value)| Condition::equals(field.as_str(), value))
@@ -527,7 +523,7 @@ pub(super) fn entity_get_data_documents<'js>(
         let stamp = |index: usize| -> rquickjs::Result<Option<jiff::Timestamp>> {
             match rest.0.get(index) {
                 None => Ok(None),
-                Some(value) => Ok(timestamp_at(Some(&host(&ctx, value)?))),
+                Some(value) => Ok(timestamp_at(Some(&js_to_host(&ctx, value)?))),
             }
         };
         let (from, thru) = (stamp(1)?, stamp(2)?);

@@ -74,12 +74,10 @@ pub fn open_entity_facade_components(
 /// The `entity` directory of each component the factory found, in its load order, the framework
 /// left out (its directory is always read).
 pub fn component_entity_dirs(factory: &ExecutionContextFactory) -> Vec<std::path::PathBuf> {
-    let framework =
-        std::fs::canonicalize(factory.framework_dir()).unwrap_or_else(|_| factory.framework_dir().to_path_buf());
     factory
         .components()
         .iter()
-        .filter(|info| std::fs::canonicalize(&info.location).unwrap_or_else(|_| info.location.clone()) != framework)
+        .filter(|info| !crate::same_dir(&info.location, factory.framework_dir()))
         .map(|info| info.location.join("entity"))
         .filter(|dir| dir.is_dir())
         .collect()

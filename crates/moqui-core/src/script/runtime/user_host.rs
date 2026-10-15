@@ -193,19 +193,6 @@ fn user_error(ctx: &Ctx<'_>, err: &Error) -> JsError {
     Exception::throw_message(ctx, err.message())
 }
 
-/// The text of a script value, `None` for null and undefined.
-fn optional_text(ctx: &Ctx<'_>, value: Option<&JsValue<'_>>) -> rquickjs::Result<Option<String>> {
-    match value {
-        None => Ok(None),
-        Some(value) if value.is_null() || value.is_undefined() => Ok(None),
-        Some(value) => Ok(Some(moqui_lib::object::to_plain_string(&js_to_host(ctx, value)?))),
-    }
-}
-
-fn text_or_empty(ctx: &Ctx<'_>, value: Option<&JsValue<'_>>) -> rquickjs::Result<String> {
-    Ok(optional_text(ctx, value)?.unwrap_or_default())
-}
-
 fn user_has_permission(ctx: Ctx<'_>, permission: JsValue<'_>) -> rquickjs::Result<bool> {
     host_guard(&ctx, || {
         let permission = text_or_empty(&ctx, Some(&permission))?;

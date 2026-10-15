@@ -102,6 +102,21 @@ pub(super) fn js_to_host(ctx: &Ctx<'_>, value: &JsValue<'_>) -> rquickjs::Result
     js_value_to_host(ctx, value).map_err(|err| Exception::throw_message(ctx, err.message()))
 }
 
+/// The plain text of a script argument. `None` when it is missing, `null` or `undefined`.
+pub(super) fn optional_text(ctx: &Ctx<'_>, value: Option<&JsValue<'_>>) -> rquickjs::Result<Option<String>> {
+    match value {
+        Some(value) if !value.is_null() && !value.is_undefined() => {
+            Ok(Some(moqui_lib::object::to_plain_string(&js_to_host(ctx, value)?)))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// [`optional_text`], empty when the argument is missing, `null` or `undefined`.
+pub(super) fn text_or_empty(ctx: &Ctx<'_>, value: Option<&JsValue<'_>>) -> rquickjs::Result<String> {
+    Ok(optional_text(ctx, value)?.unwrap_or_default())
+}
+
 pub(super) fn js_truthy(value: &JsValue<'_>) -> bool {
     if value.is_null() || value.is_undefined() {
         return false;

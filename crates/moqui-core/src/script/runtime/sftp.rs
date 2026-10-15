@@ -77,20 +77,11 @@ pub(super) struct HostSftpClient {
     inner: RefCell<SftpClient>,
 }
 
-fn opt_text(ctx: &Ctx<'_>, value: Option<&JsValue<'_>>) -> rquickjs::Result<String> {
-    match value {
-        Some(value) if !value.is_null() && !value.is_undefined() => {
-            Ok(moqui_lib::object::to_plain_string(&js_to_host(ctx, value)?))
-        }
-        _ => Ok(String::new()),
-    }
-}
-
 #[rquickjs::methods(rename_all = "camelCase")]
 impl HostSftpClient {
     fn password<'js>(&self, ctx: Ctx<'js>, password: Opt<JsValue<'js>>) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
-            let password = opt_text(&ctx, password.0.as_ref())?;
+            let password = text_or_empty(&ctx, password.0.as_ref())?;
             self.inner.borrow_mut().password(&password);
             Ok(())
         })
@@ -103,8 +94,8 @@ impl HostSftpClient {
         public_key: Opt<JsValue<'js>>,
     ) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
-            let private_key = opt_text(&ctx, Some(&private_key))?;
-            let public_key = opt_text(&ctx, public_key.0.as_ref())?;
+            let private_key = text_or_empty(&ctx, Some(&private_key))?;
+            let public_key = text_or_empty(&ctx, public_key.0.as_ref())?;
             self.inner
                 .borrow_mut()
                 .public_key_pkcs8(&private_key, Some(public_key.as_str()));
@@ -195,7 +186,7 @@ impl HostSftpClient {
 
     fn get_text<'js>(&self, ctx: Ctx<'js>, path: String, charset: Opt<JsValue<'js>>) -> rquickjs::Result<String> {
         host_guard(&ctx, || {
-            let charset = opt_text(&ctx, charset.0.as_ref())?;
+            let charset = text_or_empty(&ctx, charset.0.as_ref())?;
             self.inner
                 .borrow_mut()
                 .get_text(&path, &charset)
@@ -217,7 +208,7 @@ impl HostSftpClient {
             let create_dir = create_dir.0.unwrap_or(false);
             if let Some(text) = data.as_string() {
                 let text = text.to_string()?;
-                let charset = opt_text(&ctx, charset.0.as_ref())?;
+                let charset = text_or_empty(&ctx, charset.0.as_ref())?;
                 return self
                     .inner
                     .borrow_mut()
@@ -323,7 +314,7 @@ impl HostSftpClient {
 
     fn read_all_text<'js>(&self, ctx: Ctx<'js>, handle: f64, charset: Opt<JsValue<'js>>) -> rquickjs::Result<String> {
         host_guard(&ctx, || {
-            let charset = opt_text(&ctx, charset.0.as_ref())?;
+            let charset = text_or_empty(&ctx, charset.0.as_ref())?;
             let encoding = crate::sftp::encoding_for(&charset).map_err(|err| throw_lib(&ctx, &err))?;
             let bytes = self.read_rest(handle).map_err(|err| throw_lib(&ctx, &err))?;
             Ok(crate::sftp::decode(encoding, &bytes))
@@ -339,7 +330,7 @@ impl HostSftpClient {
     ) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
             let bytes = if let Some(text) = data.as_string() {
-                let charset = opt_text(&ctx, charset.0.as_ref())?;
+                let charset = text_or_empty(&ctx, charset.0.as_ref())?;
                 let encoding = crate::sftp::encoding_for(&charset).map_err(|err| throw_lib(&ctx, &err))?;
                 crate::sftp::encode(encoding, &text.to_string()?)
             } else {

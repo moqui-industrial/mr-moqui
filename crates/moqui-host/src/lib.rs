@@ -1168,7 +1168,8 @@ fn load_one(
     Ok(records)
 }
 
-fn same_dir(left: &std::path::Path, right: &std::path::Path) -> bool {
+/// True when `left` and `right` name the same directory, directly or once canonicalized.
+pub(crate) fn same_dir(left: &std::path::Path, right: &std::path::Path) -> bool {
     left == right || matches!((std::fs::canonicalize(left), std::fs::canonicalize(right)), (Ok(a), Ok(b)) if a == b)
 }
 

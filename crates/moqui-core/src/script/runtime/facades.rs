@@ -267,14 +267,7 @@ impl HostMessage {
         message: Opt<JsValue<'_>>,
     ) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
-            let text = |value: Opt<JsValue<'_>>| -> rquickjs::Result<String> {
-                match value.0 {
-                    Some(value) if !value.is_null() && !value.is_undefined() => {
-                        Ok(moqui_lib::object::to_plain_string(&js_to_host(&ctx, &value)?))
-                    }
-                    _ => Ok(String::new()),
-                }
-            };
+            let text = |value: Opt<JsValue<'_>>| text_or_empty(&ctx, value.0.as_ref());
             let (form, field, service, message) = (text(form)?, text(field)?, text(service)?, text(message)?);
             with_ec(&ctx, |ec| {
                 ec.message().add_validation_error(&form, &field, &service, &message)

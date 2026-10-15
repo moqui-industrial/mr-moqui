@@ -123,7 +123,7 @@ fn resource_expression<'js>(
         }
         flush_current(&ctx, false)?;
         let value = with_additional(&ctx, &map, || {
-            with_widget_ec(&ctx, &expression, None, || {
+            with_widget_ec(&ctx, &expression, || {
                 eval_compiled::<JsValue>(&ctx, &as_expression(&expression), true)
             })
             .map_err(|err| Exception::throw_message(&ctx, err.message()))
@@ -147,7 +147,7 @@ fn resource_condition<'js>(
         }
         flush_current(&ctx, false)?;
         let holds = with_additional(&ctx, &map, || {
-            let value = with_widget_ec(&ctx, &expression, None, || {
+            let value = with_widget_ec(&ctx, &expression, || {
                 eval_compiled::<JsValue>(&ctx, &as_expression(&expression), true)
             })
             .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
@@ -219,7 +219,7 @@ fn resource_template(ctx: Ctx<'_>, location: String, data: Opt<JsValue<'_>>) -> 
 fn l10n_localize(ctx: Ctx<'_>, original: JsValue<'_>, locale: Opt<JsValue<'_>>) -> rquickjs::Result<String> {
     host_guard(&ctx, || {
         let text = moqui_lib::object::to_plain_string(&js_to_host(&ctx, &original)?);
-        let localized = match optional_text(&ctx, &locale)?.filter(|locale| !locale.is_empty()) {
+        let localized = match optional_text(&ctx, locale.0.as_ref())?.filter(|locale| !locale.is_empty()) {
             Some(locale) => l10n::localize_in(&text, &locale.replace('-', "_")),
             None => l10n::localize(&text),
         };
@@ -306,16 +306,6 @@ fn l10n_format_currency_no_symbol(
     host_guard(&ctx, || currency(&ctx, &amount, &uom_id, &digits, true))
 }
 
-/// The optional text argument of an `ec.l10n` call: null or missing is none.
-fn optional_text(ctx: &Ctx<'_>, value: &Opt<JsValue<'_>>) -> rquickjs::Result<Option<String>> {
-    match value.0.as_ref() {
-        Some(found) if !found.is_null() && !found.is_undefined() => {
-            Ok(Some(moqui_lib::object::to_plain_string(&js_to_host(ctx, found)?)))
-        }
-        _ => Ok(None),
-    }
-}
-
 fn parsed_or_null<'js>(ctx: &Ctx<'js>, value: Option<Value>) -> rquickjs::Result<JsValue<'js>> {
     match value {
         Some(value) => host_to_js(ctx, value),
@@ -330,7 +320,7 @@ fn l10n_parse_timestamp<'js>(
 ) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let input = moqui_lib::object::to_plain_string(&js_to_host(&ctx, &input)?);
-        let format = optional_text(&ctx, &format)?;
+        let format = optional_text(&ctx, format.0.as_ref())?;
         parsed_or_null(&ctx, l10n::parse_timestamp_format(&input, format.as_deref()))
     })
 }
@@ -342,7 +332,7 @@ fn l10n_parse_date<'js>(
 ) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let input = moqui_lib::object::to_plain_string(&js_to_host(&ctx, &input)?);
-        let format = optional_text(&ctx, &format)?;
+        let format = optional_text(&ctx, format.0.as_ref())?;
         parsed_or_null(&ctx, l10n::parse_date_format(&input, format.as_deref()))
     })
 }
@@ -354,7 +344,7 @@ fn l10n_parse_time<'js>(
 ) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let input = moqui_lib::object::to_plain_string(&js_to_host(&ctx, &input)?);
-        let format = optional_text(&ctx, &format)?;
+        let format = optional_text(&ctx, format.0.as_ref())?;
         parsed_or_null(&ctx, l10n::parse_time_format(&input, format.as_deref()))
     })
 }
@@ -378,7 +368,7 @@ fn l10n_round_currency<'js>(
 ) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let amount = js_to_host(&ctx, &amount)?;
-        let uom = optional_text(&ctx, &uom_id)?.unwrap_or_else(|| "USD".to_string());
+        let uom = optional_text(&ctx, uom_id.0.as_ref())?.unwrap_or_else(|| "USD".to_string());
         let precise = precise.0.as_ref().and_then(JsValue::as_bool).unwrap_or(false);
         let rounded = l10n::round_currency(&amount, &uom, precise).map_err(|err| throw_error(&ctx, &err))?;
         host_to_js(&ctx, rounded)

@@ -189,7 +189,6 @@ const WRAPPED_EC: &str = r#"(function (real, deny) {
 fn with_widget_ec<'js, R>(
     ctx: &Ctx<'js>,
     expression: &str,
-    fallback: Option<R>,
     body: impl FnOnce() -> Result<R, Error>,
 ) -> Result<R, Error> {
     if !WIDGET_WRAP.with(Cell::get) {
@@ -214,11 +213,7 @@ fn with_widget_ec<'js, R>(
     let _real = RealEc { ctx: ctx.clone(), real };
     // The expression may call back into the host (expand inside an expression): that is not checked twice.
     let _unchecked = WidgetWrap::set(false);
-    let result = body();
-    match (result, fallback) {
-        (Err(_), Some(value)) => Ok(value),
-        (other, _) => other,
-    }
+    body()
 }
 
 /// Bounds script time on this thread to a transaction's remaining time.
@@ -573,7 +568,7 @@ pub fn eval_condition(expression: &str) -> Result<bool, Error> {
         return Err(Error::new("script source contains a null byte"));
     }
     with_context(|ctx| {
-        with_widget_ec(ctx, expression, None, || {
+        with_widget_ec(ctx, expression, || {
             let value = eval_compiled::<JsValue>(ctx, &as_expression(expression), true)?;
             Ok(js_truthy(&value))
         })
@@ -1094,11 +1089,11 @@ where
 
 fn expand_in(ctx: &Ctx<'_>, template: &str) -> Result<String, Error> {
     if let Some(function) = restore_template(ctx, template)? {
-        return with_widget_ec(ctx, template, None, || call_template(ctx, function));
+        return with_widget_ec(ctx, template, || call_template(ctx, function));
     }
     let function = eval_js::<Function>(ctx, &template_source(template))?;
     save_template(ctx, template, &function);
-    with_widget_ec(ctx, template, None, || call_template(ctx, function))
+    with_widget_ec(ctx, template, || call_template(ctx, function))
 }
 
 /// Run a compiled fancy template function and return its text. The function is kept per engine.
@@ -1364,7 +1359,7 @@ fn with_ec<T>(ctx: &Ctx<'_>, body: impl FnOnce(&ExecutionContext) -> T) -> rquic
     ExecutionContext::with_current(body).ok_or_else(|| Exception::throw_message(ctx, "no execution context is entered"))
 }
 
-fn js_error(err: impl ToString) -> Error {
+pub(super) fn js_error(err: impl ToString) -> Error {
     Error::new(err.to_string())
 }
 
@@ -1386,7 +1381,7 @@ pub fn eval_value(expression: &str) -> Result<Value, Error> {
         return Err(Error::new("script source contains a null byte"));
     }
     with_context(|ctx| {
-        with_widget_ec(ctx, expression, None, || {
+        with_widget_ec(ctx, expression, || {
             let evaluated = eval_compiled::<JsValue>(ctx, &as_expression(expression), true)?;
             js_value_to_host(ctx, &evaluated)
         })
@@ -1399,7 +1394,7 @@ pub fn eval_map(expression: &str) -> Result<std::collections::BTreeMap<String, V
         return Err(Error::new("script source contains a null byte"));
     }
     with_context(|ctx| {
-        with_widget_ec(ctx, expression, None, || {
+        with_widget_ec(ctx, expression, || {
             let evaluated = eval_compiled::<JsValue>(ctx, &as_expression(expression), true)?;
             object_map(ctx, &evaluated)
         })

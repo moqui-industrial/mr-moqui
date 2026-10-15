@@ -373,16 +373,6 @@ fn factory_of(ctx: &Ctx<'_>) -> rquickjs::Result<Arc<crate::context::ExecutionCo
     with_ec(ctx, |ec| Arc::clone(ec.factory()))
 }
 
-fn opt_text(value: &Opt<JsValue<'_>>) -> String {
-    match value.0.as_ref() {
-        Some(value) if value.is_string() => value
-            .as_string()
-            .and_then(|text| text.to_string().ok())
-            .unwrap_or_default(),
-        _ => String::new(),
-    }
-}
-
 fn opt_flag(value: &Opt<JsValue<'_>>) -> bool {
     value.0.as_ref().is_some_and(js_truthy)
 }
@@ -475,13 +465,13 @@ fn get_all_caches_info<'js>(
     filter: Opt<JsValue<'js>>,
 ) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
-        let filter = opt_text(&filter);
+        let filter = text_or_empty(&ctx, filter.0.as_ref())?;
         let mut rows: Vec<_> = all_cache_infos(&ctx)?
             .iter()
             .filter(|info| crate::entity::info::name_matches(&info.name, &filter))
             .map(cache_info_row)
             .collect();
-        order_maps(&mut rows, &opt_text(&order_by));
+        order_maps(&mut rows, &text_or_empty(&ctx, order_by.0.as_ref())?);
         js_list(&ctx, rows)
     })
 }
@@ -543,7 +533,7 @@ fn make_element_info_list<'js>(
                 row
             })
             .collect();
-        order_maps(&mut rows, &opt_text(&order_by));
+        order_maps(&mut rows, &text_or_empty(&ctx, order_by.0.as_ref())?);
         js_list(&ctx, rows)
     })
 }
@@ -553,14 +543,20 @@ fn make_element_info_list<'js>(
 fn is_entity_defined(ctx: Ctx<'_>, name: Opt<JsValue<'_>>) -> rquickjs::Result<bool> {
     host_guard(&ctx, || {
         let facade = facade_of(&ctx)?;
-        Ok(crate::entity::info::is_entity_defined(&facade, &opt_text(&name)))
+        Ok(crate::entity::info::is_entity_defined(
+            &facade,
+            &text_or_empty(&ctx, name.0.as_ref())?,
+        ))
     })
 }
 
 fn get_all_entity_names<'js>(ctx: Ctx<'js>, filter: Opt<JsValue<'js>>) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let facade = facade_of(&ctx)?;
-        js_texts(&ctx, crate::entity::info::all_entity_names(&facade, &opt_text(&filter)))
+        js_texts(
+            &ctx,
+            crate::entity::info::all_entity_names(&facade, &text_or_empty(&ctx, filter.0.as_ref())?),
+        )
     })
 }
 
@@ -575,8 +571,8 @@ fn get_all_entities_info<'js>(
         let facade = facade_of(&ctx)?;
         let rows = crate::entity::info::all_entities_info(
             &facade,
-            &opt_text(&order_by),
-            &opt_text(&filter),
+            &text_or_empty(&ctx, order_by.0.as_ref())?,
+            &text_or_empty(&ctx, filter.0.as_ref())?,
             opt_flag(&master_only),
             opt_flag(&exclude_views),
         );
@@ -599,7 +595,7 @@ fn get_all_entity_info<'js>(
 fn entity_definition_info<'js>(ctx: Ctx<'js>, name: Opt<JsValue<'js>>) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let facade = facade_of(&ctx)?;
-        match crate::entity::info::definition_info(&facade, &opt_text(&name)) {
+        match crate::entity::info::definition_info(&facade, &text_or_empty(&ctx, name.0.as_ref())?) {
             Some(info) => host_to_js(&ctx, Value::Map(info)),
             None => Null.into_js(&ctx),
         }
@@ -613,8 +609,8 @@ fn pretty_name(
     base_name: Opt<JsValue<'_>>,
 ) -> rquickjs::Result<String> {
     host_guard(&ctx, || {
-        let title = opt_text(&title);
-        let base = opt_text(&base_name);
+        let title = text_or_empty(&ctx, title.0.as_ref())?;
+        let base = text_or_empty(&ctx, base_name.0.as_ref())?;
         Ok(crate::entity::info::pretty_name(
             &entity_name,
             Some(title.as_str()).filter(|text| !text.is_empty()),
@@ -775,8 +771,8 @@ fn write_data<'js>(
                 _ => {}
             }
         }
-        let first = opt_text(&first);
-        let second = opt_text(&second);
+        let first = text_or_empty(&ctx, first.0.as_ref())?;
+        let second = text_or_empty(&ctx, second.0.as_ref())?;
         let mut out = indexmap::IndexMap::new();
         let lib = |result: Result<u64, moqui_lib::error::Error>| result.map_err(|err| throw_lib(&ctx, &err));
         let count = match mode.as_str() {
@@ -947,7 +943,7 @@ fn seca_rule_texts<'js>(ctx: Ctx<'js>, service: String) -> rquickjs::Result<JsVa
 
 fn service_definition_info<'js>(ctx: Ctx<'js>, name: Opt<JsValue<'js>>) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
-        match crate::service::info::service_definition_info(&opt_text(&name)) {
+        match crate::service::info::service_definition_info(&text_or_empty(&ctx, name.0.as_ref())?) {
             Some(info) => host_to_js(&ctx, Value::Map(info)),
             None => Null.into_js(&ctx),
         }
@@ -1306,7 +1302,12 @@ fn get_available_time_zones<'js>(ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>
 }
 
 fn camel_case_to_pretty(ctx: Ctx<'_>, text: Opt<JsValue<'_>>) -> rquickjs::Result<String> {
-    host_guard(&ctx, || Ok(moqui_lib::string::camel_case_to_pretty(&opt_text(&text))))
+    host_guard(&ctx, || {
+        Ok(moqui_lib::string::camel_case_to_pretty(&text_or_empty(
+            &ctx,
+            text.0.as_ref(),
+        )?))
+    })
 }
 
 fn pretty_to_camel_case(
@@ -1316,7 +1317,7 @@ fn pretty_to_camel_case(
 ) -> rquickjs::Result<String> {
     host_guard(&ctx, || {
         Ok(moqui_lib::string::pretty_to_camel_case(
-            &opt_text(&text),
+            &text_or_empty(&ctx, text.0.as_ref())?,
             opt_flag(&first_upper),
         ))
     })
