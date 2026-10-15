@@ -260,16 +260,20 @@ pub fn gate_write(
 }
 
 /// Counts writes to the screen configuration entities (`SubscreensItem`, `SubscreensDefault`), here or from a cluster
-/// peer, so a screen definition read before the last one is loaded again.
-static SCREEN_CONFIG_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// peer, so a screen definition read before the last one is loaded again. Kept with the facade: the rows are its
+/// database's, and another facade's writes do not make these screens stale.
+#[derive(Default)]
+struct ScreenConfigGeneration(u64);
 
-pub(crate) fn screen_config_generation() -> u64 {
-    SCREEN_CONFIG_GENERATION.load(std::sync::atomic::Ordering::Acquire)
+pub(crate) fn screen_config_generation(facade: &EntityFacade) -> u64 {
+    facade.with_slot(ScreenConfigGeneration::default, |generation| generation.0)
 }
 
-fn note_screen_config(full_name: &str) {
+fn note_screen_config(facade: &EntityFacade, full_name: &str) {
     if full_name.starts_with("moqui.screen.Subscreens") {
-        SCREEN_CONFIG_GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        facade.with_slot(ScreenConfigGeneration::default, |generation| {
+            generation.0 = generation.0.wrapping_add(1);
+        });
     }
 }
 
@@ -284,14 +288,14 @@ pub fn on_write(
     let _ = operation;
     let meta = read_meta(facade, entity_name)?;
     clear_named(facade, &meta.full_name)?;
-    note_screen_config(&meta.full_name);
+    note_screen_config(facade, &meta.full_name);
     crate::cluster::note_write(facade, entity_name, &meta.pk_fields, values).map_err(Error::from)
 }
 
 /// Clear this entity's one-cache and do not publish. Remote apply uses this.
 pub(crate) fn clear_one_cache(facade: &EntityFacade, entity_name: &str) -> Result<(), Error> {
     let meta = read_meta(facade, entity_name)?;
-    note_screen_config(&meta.full_name);
+    note_screen_config(facade, &meta.full_name);
     clear_named(facade, &meta.full_name)
 }
 

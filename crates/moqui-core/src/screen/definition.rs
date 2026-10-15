@@ -660,6 +660,13 @@ impl ScreenDef {
     }
 }
 
+/// The count of screen configuration writes of the factory's database, 0 with none installed.
+pub(super) fn screen_config_generation(factory: &ExecutionContextFactory) -> u64 {
+    factory
+        .entity()
+        .map_or(0, |facade| crate::entity::screen_config_generation(&facade))
+}
+
 impl ScreenDef {
     pub fn parameter(&self, name: &str) -> Option<&ParameterDef> {
         self.parameters.iter().find(|parameter| parameter.name == name)
@@ -845,7 +852,7 @@ impl ScreenDef {
         }
 
         // Read before the rows, so a write while they load makes this definition stale.
-        let config_generation = crate::entity::screen_config_generation();
+        let config_generation = screen_config_generation(factory);
         let subscreens = load_subscreens(facade, factory, node, location, &mut sources)?;
         let mut macro_templates = BTreeMap::new();
         for template in node.children_named("macro-template") {
