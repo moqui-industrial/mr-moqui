@@ -116,11 +116,35 @@ pub(super) async fn run(factory: &Weak<ExecutionContextFactory>, username: &str,
 fn in_tools_app<T>(body: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
     ExecutionContext::with_current(|ec| ec.push_checked("AT_XML_SCREEN", TOOLS_SCREEN, "view", true, false, None))
         .ok_or_else(|| Error::new("no execution context is entered"))??;
+    let frame = ToolsFrame { pushed: true };
     let result = body();
-    let popped = ExecutionContext::with_current(ExecutionContext::pop).transpose();
+    let popped = frame.pop();
     let value = result?;
     popped?;
     Ok(value)
+}
+
+/// The pushed Tools app frame: [`ToolsFrame::pop`] pops it and gives the error, and a drop that comes first (when
+/// `body` panics) pops it too.
+struct ToolsFrame {
+    pushed: bool,
+}
+
+impl ToolsFrame {
+    fn pop(mut self) -> Result<(), Error> {
+        self.pushed = false;
+        ExecutionContext::with_current(ExecutionContext::pop)
+            .transpose()
+            .map(|_| ())
+    }
+}
+
+impl Drop for ToolsFrame {
+    fn drop(&mut self) {
+        if self.pushed {
+            let _ = ExecutionContext::with_current(ExecutionContext::pop);
+        }
+    }
 }
 
 fn execute(factory: &ExecutionContextFactory, username: &str, command: &str, rest: &str) -> Result<Outcome, Error> {

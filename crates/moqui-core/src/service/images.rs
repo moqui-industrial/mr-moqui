@@ -26,10 +26,9 @@
 //! retry did, and `contentLocation` names that file.
 //!
 //! Differences from Java: each width is resampled from the original, where Java resampled each from the one before;
-//! an image narrower than a width keeps its size, where Java scaled it up; the input and output sizes are limited
-//! (see [`MAX_INPUT_SIDE`], [`MAX_OUTPUT_SIDE`] and [`MAX_OUTPUT_PIXELS`]), where Java had none; the writes run in the
-//! call, where Java started a service for each; and `write#Image` takes the image as encoded bytes in `image`, where
-//! Java took an `IIOImage`.
+//! the input and output sizes are limited (see [`MAX_INPUT_SIDE`], [`MAX_OUTPUT_SIDE`] and [`MAX_OUTPUT_PIXELS`]), where
+//! Java had none; the writes run in the call, where Java started a service for each; and `write#Image` takes the image
+//! as encoded bytes in `image`, where Java took an `IIOImage`.
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -226,11 +225,11 @@ fn on_white(image: &DynamicImage) -> DynamicImage {
     DynamicImage::ImageRgb8(rgb)
 }
 
-/// `width` wide, with the height that keeps the aspect ratio (the integer division Java did). An image no wider than
-/// `width` keeps its size. A size past [`MAX_OUTPUT_SIDE`] a side or [`MAX_OUTPUT_PIXELS`] in all is an error.
+/// `width` wide, with the height that keeps the aspect ratio (the integer division Java did); a narrower image is
+/// scaled up, as in Java. A size past [`MAX_OUTPUT_SIDE`] a side or [`MAX_OUTPUT_PIXELS`] in all is an error.
 fn resized(image: &DynamicImage, width: u32) -> Result<DynamicImage, LibError> {
     let (from_width, from_height) = (image.width(), image.height());
-    let width = width.min(from_width).max(1);
+    let width = width.max(1);
     let height = (u64::from(width) * u64::from(from_height) / u64::from(from_width.max(1))).max(1);
     if width > MAX_OUTPUT_SIDE || height > u64::from(MAX_OUTPUT_SIDE) || u64::from(width) * height > MAX_OUTPUT_PIXELS {
         return Err(LibError::new(format!(
@@ -370,9 +369,9 @@ mod tests {
         assert_eq!(format, "png");
         let small = resized(&image, 10).unwrap();
         assert_eq!((small.width(), small.height()), (10, 5));
-        // never wider than the original
-        let same = resized(&image, 2160).unwrap();
-        assert_eq!((same.width(), same.height()), (40, 20));
+        // a narrower image is scaled up, as in Java
+        let large = resized(&image, 2160).unwrap();
+        assert_eq!((large.width(), large.height()), (2160, 1080));
     }
 
     #[test]
