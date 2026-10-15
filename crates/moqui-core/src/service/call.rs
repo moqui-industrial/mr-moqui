@@ -597,19 +597,10 @@ fn execute(
     facade: &EntityFacade,
 ) -> Result<BTreeMap<String, Value>, LibError> {
     match def.kind {
-        #[cfg(feature = "mail")]
-        ServiceKind::Mail => super::mail::run(&def.name, parameters, facade),
-        #[cfg(not(feature = "mail"))]
-        ServiceKind::Mail => Err(LibError::new(format!(
-            "service {}: mail is not built into this host",
-            def.name
-        ))),
-        ServiceKind::SystemSync => super::system_sync::run(&def.name, parameters, facade),
-        ServiceKind::ElFinder => super::elfinder::run(&def.name, parameters, facade),
-        ServiceKind::Sso => super::sso::run(&def.name, parameters, facade),
-        ServiceKind::Tools => super::tools::run(&def.name, parameters, facade),
-        ServiceKind::Spreadsheet => super::spreadsheet::run(&def.name, parameters, facade),
-        ServiceKind::Image => super::images::run(&def.name, parameters, facade),
+        ServiceKind::Rust => match def.rust_fn {
+            Some(run) => run(parameters, facade),
+            None => Err(LibError::new(format!("service {} has no rust function", def.name))),
+        },
         ServiceKind::Interface => Err(LibError::new(format!("interface {} has no runner", def.name))),
         ServiceKind::Unsupported => Err(LibError::new(format!(
             "service {} runs {}, a script language this port does not run",

@@ -29,14 +29,16 @@ along with this software (see the LICENSE.md file). If not, see
             </iterate>
         </actions>
     </service>
-    <service verb="run" noun="EntitySync" authenticate="anonymous-all">
+    <service verb="run" noun="EntitySync" type="rust" location="moqui_core::service::system_sync::entity_sync::run_sync"
+            authenticate="anonymous-all">
         <description>Lock the EntitySync record (only one sync at a time), quit if it is already running (unless its
             lastStartDate is more than 24 hours ago) or if delayBufferMillis have not passed since lastSuccessfulSyncTime,
             then mark it running, call internalRun#EntitySync in its own transaction, save the result status, record an
             EntitySyncHistory row, and if not yet up to delayBufferMillis start another run async.</description>
         <in-parameters><parameter name="entitySyncId" required="true"/></in-parameters>
     </service>
-    <service verb="internalRun" noun="EntitySync" transaction="force-new">
+    <service verb="internalRun" noun="EntitySync" type="rust"
+            location="moqui_core::service::system_sync::entity_sync::internal_run" transaction="force-new">
         <description>For a pull get the data from the remote (get#EntitySyncData) and store it here (put#EntitySyncData);
             for a push get it here and store it on the remote. Errors are returned in errorMessage and cleared.</description>
         <in-parameters>
@@ -50,7 +52,8 @@ along with this software (see the LICENSE.md file). If not, see
         </out-parameters>
     </service>
 
-    <service verb="put" noun="EntitySyncData" transaction="ignore" allow-remote="true">
+    <service verb="put" noun="EntitySyncData" type="rust" location="moqui_core::service::system_sync::entity_sync::put_data"
+            transaction="ignore" allow-remote="true">
         <description>Load entity-facade-xml text, refusing the identity-admin and secret-config entities as the
             restrictSensitiveEntities option of the Java data loader does.</description>
         <in-parameters>
@@ -63,7 +66,8 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="recordsStored" type="Long"/>
         </out-parameters>
     </service>
-    <service verb="get" noun="EntitySyncData" allow-remote="true">
+    <service verb="get" noun="EntitySyncData" type="rust" location="moqui_core::service::system_sync::entity_sync::get_data"
+            allow-remote="true">
         <description>The records of each entity in entityIncludeList with a lastUpdatedStamp in time splits of
             syncSplitMillis after lastSuccessfulSyncTime, until recordThreshold records or delayBufferMillis before now,
             as entity-facade-xml text. The query of each split streams through an entity list iterator.</description>
@@ -91,7 +95,8 @@ along with this software (see the LICENSE.md file). If not, see
         </out-parameters>
     </service>
 
-    <service verb="get" noun="EntitySyncIncludeList">
+    <service verb="get" noun="EntitySyncIncludeList" type="rust"
+            location="moqui_core::service::system_sync::entity_sync::include_list">
         <description>The entities of the EntitySyncArtifact groups (AT_ENTITY members, a name pattern matched against every
             non-view entity), with excluded entities removed and always-include entries added. A member filterMap is a
             JavaScript object expression.</description>

@@ -25,6 +25,14 @@ use crate::entity::{EntityFacade, EntityValue};
 use crate::service::call::{sync_with, CallOptions};
 use crate::sftp::SftpClient;
 
+pub(super) fn register(
+    map: &mut BTreeMap<&'static str, crate::service::rust_services::RustServiceFn>,
+) -> Result<(), String> {
+    rust_service!(map, send)?;
+    rust_service!(map, poll)?;
+    Ok(())
+}
+
 const MESSAGE: &str = "moqui.service.message.SystemMessage";
 const MESSAGE_TYPE: &str = "moqui.service.message.SystemMessageType";
 const REMOTE: &str = "moqui.service.message.SystemMessageRemote";

@@ -12,7 +12,8 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Outbound SMTP and inbound IMAP/POP3 for the email services, selected by name in `define.rs`.
+//! Outbound SMTP and inbound IMAP/POP3 for the email services. `mail` registers [`send_template`], [`send_message`],
+//! and [`poll_server`] by those function paths.
 //!
 //! `send#EmailTemplate` follows `sendEmailTemplate.groovy`. A template with `bodyScreenLocation` renders
 //! that screen with `makeRender()` (no socket, its own web slot, so a request in progress is not touched)
@@ -46,22 +47,7 @@ const SERVER: &str = "moqui.basic.email.EmailServer";
 const MESSAGE: &str = "moqui.basic.email.EmailMessage";
 const ATTACHMENT: &str = "moqui.basic.email.EmailTemplateAttachment";
 
-pub(super) fn run(
-    name: &str,
-    parameters: &BTreeMap<String, Value>,
-    facade: &EntityFacade,
-) -> Result<BTreeMap<String, Value>, LibError> {
-    match name {
-        "org.moqui.impl.EmailServices.send#Email" | "org.moqui.impl.EmailServices.send#EmailTemplate" => {
-            send_template(parameters, facade)
-        }
-        "org.moqui.impl.EmailServices.send#EmailMessage" => send_message(parameters, facade),
-        "org.moqui.impl.EmailServices.poll#EmailServer" => poll_server(parameters, facade),
-        other => Err(LibError::new(format!("mail service {other} is not implemented"))),
-    }
-}
-
-fn send_template(
+pub(super) fn send_template(
     parameters: &BTreeMap<String, Value>,
     facade: &EntityFacade,
 ) -> Result<BTreeMap<String, Value>, LibError> {
@@ -183,7 +169,7 @@ fn send_template(
     Ok(ids(&email_message_id, &letter.message_id))
 }
 
-fn send_message(
+pub(super) fn send_message(
     parameters: &BTreeMap<String, Value>,
     facade: &EntityFacade,
 ) -> Result<BTreeMap<String, Value>, LibError> {
@@ -1247,7 +1233,7 @@ impl Drop for SinkGuard {
     }
 }
 
-fn poll_server(
+pub(super) fn poll_server(
     parameters: &BTreeMap<String, Value>,
     facade: &EntityFacade,
 ) -> Result<BTreeMap<String, Value>, LibError> {
@@ -1362,7 +1348,7 @@ fn poll_server(
 fn receive(facade: &EntityFacade, message: &Inbound, server_id: &str) -> Result<(), String> {
     let mark = ExecutionContext::with_current(|ctx| ctx.message().error_mark()).unwrap_or_default();
     force_new(facade, || {
-        let ran = super::email_eca::run_email_rules(&eca_fields(message, server_id));
+        let ran = crate::service::run_email_rules(&eca_fields(message, server_id));
         let mut errors =
             ExecutionContext::with_current(|ctx| ctx.message().take_errors_since(mark)).unwrap_or_default();
         if let Err(err) = ran {

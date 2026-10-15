@@ -14,16 +14,18 @@ along with this software (see the LICENSE.md file). If not, see
 -->
 <services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
 
-    <!-- send#Email, send#EmailTemplate, send#EmailMessage and poll#EmailServer run in Rust (moqui-core service/mail.rs),
-         selected by service name; they have no script location. -->
-    <service verb="send" noun="Email" allow-remote="false">
+    <!-- send#Email and send#EmailTemplate are moqui_core::service::mail::send_template.
+         send#EmailMessage is moqui_core::service::mail::send_message.
+         poll#EmailServer is moqui_core::service::mail::poll_server. -->
+    <service verb="send" noun="Email" type="rust" location="moqui_core::service::mail::send_template" allow-remote="false">
         <implements service="org.moqui.EmailServices.send#EmailTemplate"/>
         <in-parameters>
             <parameter name="body" allow-html="any"/>
             <parameter name="bodyText" allow-html="any"/>
         </in-parameters>
     </service>
-    <service verb="send" noun="EmailTemplate" authenticate="anonymous-view" allow-remote="false">
+    <service verb="send" noun="EmailTemplate" type="rust" location="moqui_core::service::mail::send_template"
+            authenticate="anonymous-view" allow-remote="false">
         <description>NOTE: this service is meant for internal use and authentication is not required. Do not export or
             allow this service to be called remotely.</description>
         <implements service="org.moqui.EmailServices.send#EmailTemplate"/>
@@ -32,11 +34,12 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="bodyText" allow-html="any"/>
         </in-parameters>
     </service>
-    <service verb="send" noun="EmailMessage">
+    <service verb="send" noun="EmailMessage" type="rust" location="moqui_core::service::mail::send_message">
         <in-parameters><parameter name="emailMessageId" required="true"/></in-parameters>
     </service>
 
-    <service verb="poll" noun="EmailServer" authenticate="anonymous-all" transaction-timeout="600"
+    <service verb="poll" noun="EmailServer" type="rust" location="moqui_core::service::mail::poll_server"
+            authenticate="anonymous-all" transaction-timeout="600"
             semaphore="fail" semaphore-parameter="emailServerId">
         <!-- org.moqui.impl.EmailServices.poll#EmailServer -->
         <description>

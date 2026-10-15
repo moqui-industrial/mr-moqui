@@ -20,11 +20,9 @@
 use std::collections::BTreeMap;
 
 use indexmap::IndexMap;
-use moqui_lib::error::Error as LibError;
 use moqui_lib::object::{basic_convert, is_empty, to_plain_string, Value};
 
 use crate::context::ExecutionContext;
-use crate::entity::EntityFacade;
 
 mod entity_sync;
 mod message;
@@ -34,39 +32,19 @@ mod tests;
 
 pub(crate) use message::receive_rest_message;
 
-const SEND_REST: &str = "org.moqui.impl.SystemMessageServices.send#SystemMessageRest";
-const SEND_SFTP: &str = "org.moqui.sftp.SftpMessageServices.send#SystemMessageSftp";
-const POLL_SFTP: &str = "org.moqui.sftp.SftpMessageServices.poll#SystemMessageSftp";
 const RUN_SYNC: &str = "org.moqui.impl.EntitySyncServices.run#EntitySync";
 const INTERNAL_RUN: &str = "org.moqui.impl.EntitySyncServices.internalRun#EntitySync";
 const PUT_DATA: &str = "org.moqui.impl.EntitySyncServices.put#EntitySyncData";
 const GET_DATA: &str = "org.moqui.impl.EntitySyncServices.get#EntitySyncData";
 const INCLUDE_LIST: &str = "org.moqui.impl.EntitySyncServices.get#EntitySyncIncludeList";
 
-/// True for a service this module runs. The definition keeps its parameters and has no actions.
-pub(super) fn runs(name: &str) -> bool {
-    matches!(
-        name,
-        SEND_REST | SEND_SFTP | POLL_SFTP | RUN_SYNC | INTERNAL_RUN | PUT_DATA | GET_DATA | INCLUDE_LIST
-    )
-}
-
-pub(super) fn run(
-    name: &str,
-    parameters: &BTreeMap<String, Value>,
-    facade: &EntityFacade,
-) -> Result<BTreeMap<String, Value>, LibError> {
-    match name {
-        SEND_REST => message::send_rest(parameters, facade),
-        SEND_SFTP => sftp::send(parameters, facade),
-        POLL_SFTP => sftp::poll(parameters, facade),
-        RUN_SYNC => entity_sync::run_sync(parameters, facade),
-        INTERNAL_RUN => entity_sync::internal_run(parameters, facade),
-        PUT_DATA => entity_sync::put_data(parameters, facade),
-        GET_DATA => entity_sync::get_data(parameters, facade),
-        INCLUDE_LIST => entity_sync::include_list(parameters, facade),
-        other => Err(LibError::new(format!("system sync service {other} is not implemented"))),
-    }
+pub(in crate::service) fn register(
+    map: &mut BTreeMap<&'static str, crate::service::rust_services::RustServiceFn>,
+) -> Result<(), String> {
+    message::register(map)?;
+    sftp::register(map)?;
+    entity_sync::register(map)?;
+    Ok(())
 }
 
 fn text_of(value: Option<&Value>) -> String {

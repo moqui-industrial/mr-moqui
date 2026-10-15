@@ -14,6 +14,8 @@
 
 //! Service facade: definitions, synchronous calls, ECAs, pools, jobs, and REST. JSON-RPC is not part of this port.
 
+#[macro_use]
+mod rust_services;
 pub(crate) mod call;
 pub(crate) mod define;
 mod eca;
@@ -25,7 +27,6 @@ pub mod info;
 #[cfg(test)]
 mod inline_tests;
 mod jobs;
-#[cfg(feature = "mail")]
 mod mail;
 mod pool;
 mod remote;

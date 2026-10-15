@@ -17,7 +17,7 @@ along with this software (see the LICENSE.md file). If not, see
     <!-- Spreadsheet import, with the moqui-poi port (the Java component only wrote xlsx). The bodies are Rust
         (crates/moqui-core/src/service/spreadsheet.rs), on calamine: xlsx, xlsm, xlsb, xls and ods, found from the content. -->
 
-    <service verb="read" noun="Spreadsheet">
+    <service verb="read" noun="Spreadsheet" type="rust" location="moqui_core::service::spreadsheet::read_spreadsheet">
         <description>Read one sheet of a spreadsheet. With headerRow the first row names the columns and each row is a
             map by those names; without it each row is a list of the cells. A cell is text, a number (a whole number is
             a Long), a boolean, or a date as a Timestamp in the user's time zone; an empty cell is null, and a row of
@@ -37,7 +37,7 @@ along with this software (see the LICENSE.md file). If not, see
         </out-parameters>
     </service>
 
-    <service verb="load" noun="SpreadsheetEntity">
+    <service verb="load" noun="SpreadsheetEntity" type="rust" location="moqui_core::service::spreadsheet::load_spreadsheet_entity">
         <description>Store (or create) a record of entityName for each row of a sheet with a header row. A column sets
             the field its header names, or the field fieldMap gives for that header; a column that is not a field is
             not set, and an empty cell is not set. Each row goes through the entity auto service, so authorization and

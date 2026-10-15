@@ -69,6 +69,7 @@ along with this software (see the LICENSE.md file). If not, see
                         <xs:enumeration value="entity-auto"/>
                         <xs:enumeration value="script"/>
                         <xs:enumeration value="java"/>
+                        <xs:enumeration value="rust"/>
                         <xs:enumeration value="interface"/>
                         <xs:enumeration value="remote-json-rpc"/>
                         <xs:enumeration value="remote-rest"/>
@@ -78,10 +79,11 @@ along with this software (see the LICENSE.md file). If not, see
             </xs:attribute>
             <xs:attribute name="location" type="xs:string" use="optional">
                 <xs:annotation><xs:documentation>The location of the service. For scripts this is the Resource Facade
-                    location of the file. For Java class methods this is the full class name. For remote services this
-                    is the URL of the remote service. Instead of an actual location can also refer to a pre-defined
-                    location from the service-facade.service-location element in the Moqui Conf XML file. This is
-                    especially useful for remote service URLs.</xs:documentation></xs:annotation>
+                    location of the file. For Java class methods this is the full class name. For rust services this
+                    is the Rust path of the registered function, such as moqui_core::service::mail::send_template.
+                    For remote services this is the URL of the remote service. Instead of an actual location can also
+                    refer to a pre-defined location from the service-facade.service-location element in the Moqui Conf
+                    XML file. This is especially useful for remote service URLs.</xs:documentation></xs:annotation>
             </xs:attribute>
             <xs:attribute name="method" type="xs:string" use="optional">
                 <xs:annotation><xs:documentation>The method within the location, if applicable to the service type.</xs:documentation></xs:annotation>

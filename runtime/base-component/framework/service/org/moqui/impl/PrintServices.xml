@@ -14,7 +14,7 @@ along with this software (see the LICENSE.md file). If not, see
 -->
 <services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
 
-    <service verb="get" noun="ServerPrinters">
+    <service verb="get" noun="ServerPrinters" type="rust" location="moqui_core::service::tools::get_server_printers">
         <description>Get printers from print server and create a moqui.basic.print.NetworkPrinter record for each.
             The body is Rust (crates/moqui-core/src/service/tools.rs), on the host's IPP client.</description>
         <in-parameters>
@@ -40,7 +40,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="jobId" type="Integer"/>
         </out-parameters>
     </service>
-    <service verb="print" noun="Document">
+    <service verb="print" noun="Document" type="rust" location="moqui_core::service::tools::print_document">
         <description>Create a moqui.basic.print.PrintJob record and send it to the specified NetworkPrinter.
             The body is Rust (crates/moqui-core/src/service/tools.rs).</description>
         <implements service="org.moqui.impl.PrintServices.print#DocumentInterface"/>
@@ -54,7 +54,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <description>Use SerialBlob as a wrapper for byte[].</description></parameter>
         </in-parameters>
     </service>
-    <service verb="print" noun="ResourceDocument">
+    <service verb="print" noun="ResourceDocument" type="rust" location="moqui_core::service::tools::print_resource_document">
         <description>The body is Rust (crates/moqui-core/src/service/tools.rs).</description>
         <!-- org.moqui.impl.PrintServices.print#ResourceDocument -->
         <implements service="org.moqui.impl.PrintServices.print#DocumentInterface"/>
@@ -62,7 +62,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="resourceLocation" required="true"/>
         </in-parameters>
     </service>
-    <service verb="print" noun="ScreenDocument">
+    <service verb="print" noun="ScreenDocument" type="rust" location="moqui_core::service::tools::print_screen_document">
         <description>The body is Rust (crates/moqui-core/src/service/tools.rs). The screen renders as html-print and
             PdfRenderer makes the PDF; without a Chromium binary the call reports that PDF is not available.</description>
         <!-- org.moqui.impl.PrintServices.print#ScreenDocument -->
@@ -85,7 +85,7 @@ along with this software (see the LICENSE.md file). If not, see
                     in-map="{printJob: printJob}" out-map="context"/>
         </actions>
     </service>
-    <service verb="send" noun="PrintJobInternal">
+    <service verb="send" noun="PrintJobInternal" type="rust" location="moqui_core::service::tools::send_print_job_internal">
         <description>Send the job's document to its NetworkPrinter over IPP (the moqui-cups port): taken, the job is
             PtjPending with the server's jobId; refused or unreachable, it is PtjSendFailed with the errorMessage and the
             call returns the error. The body is Rust (crates/moqui-core/src/service/tools.rs).</description>
@@ -95,7 +95,7 @@ along with this software (see the LICENSE.md file). If not, see
         </out-parameters>
     </service>
 
-    <service verb="get" noun="PrintJobDetailsFromServer">
+    <service verb="get" noun="PrintJobDetailsFromServer" type="rust" location="moqui_core::service::tools::get_print_job_details">
         <!-- org.moqui.impl.PrintServices.get#PrintJobDetailsFromServer: the body is Rust (crates/moqui-core/src/service/tools.rs) -->
         <description>Gets known local job details (from PrintJob record) job details/attributes from the print server,
             updating PrintJob record for status and just returning the rest.</description>
@@ -112,15 +112,15 @@ along with this software (see the LICENSE.md file). If not, see
         </out-parameters>
     </service>
 
-    <service verb="hold" noun="PrintJob">
+    <service verb="hold" noun="PrintJob" type="rust" location="moqui_core::service::tools::hold_print_job">
         <!-- org.moqui.impl.PrintServices.hold#PrintJob: the body is Rust (crates/moqui-core/src/service/tools.rs) -->
         <in-parameters><parameter name="printJobId"/></in-parameters>
     </service>
-    <service verb="release" noun="PrintJob">
+    <service verb="release" noun="PrintJob" type="rust" location="moqui_core::service::tools::release_print_job">
         <!-- org.moqui.impl.PrintServices.release#PrintJob: the body is Rust (crates/moqui-core/src/service/tools.rs) -->
         <in-parameters><parameter name="printJobId"/></in-parameters>
     </service>
-    <service verb="cancel" noun="PrintJob">
+    <service verb="cancel" noun="PrintJob" type="rust" location="moqui_core::service::tools::cancel_print_job">
         <!-- org.moqui.impl.PrintServices.cancel#PrintJob: the body is Rust (crates/moqui-core/src/service/tools.rs) -->
         <in-parameters><parameter name="printJobId"/></in-parameters>
     </service>

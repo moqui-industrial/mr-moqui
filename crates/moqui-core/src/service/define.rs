@@ -33,20 +33,8 @@ pub(crate) enum ServiceKind {
     Script,
     Interface,
     RemoteRest,
-    /// An email service (`EmailServices` send and poll) whose body is Rust, in `mail`.
-    Mail,
-    /// A system message or entity sync service whose body is Rust, in `system_sync`.
-    SystemSync,
-    /// The elFinder connector service, whose body is Rust, in `elfinder`.
-    ElFinder,
-    /// An SSO service of `moqui-sso` whose body is Rust, in `sso`.
-    Sso,
-    /// A tools service (print jobs, entity data snapshots, data document notifications) whose body is Rust, in `tools`.
-    Tools,
-    /// A spreadsheet read or load (`SpreadsheetServices`), whose body is Rust, in `spreadsheet`.
-    Spreadsheet,
-    /// An image service of `moqui-image` whose body is Rust, in `images`.
-    Image,
+    /// A service whose body is a function in the Rust service registry. `location` is that function's path.
+    Rust,
     /// A script service whose language this port does not run, such as Groovy.
     Unsupported,
 }
@@ -178,6 +166,8 @@ pub(crate) struct ServiceDef {
     /// `no-remember-parameters`: the hit does not keep the parameters. An implemented service passes it on.
     pub no_remember_parameters: bool,
     pub location: String,
+    /// The registered function when `kind` is [`ServiceKind::Rust`].
+    pub rust_fn: Option<super::rust_services::RustServiceFn>,
     /// `<actions>` XML, or empty when the service has none.
     pub actions: String,
     pub authenticate: Authenticate,
@@ -208,6 +198,7 @@ impl ServiceDef {
             service_type: "entity-implicit".to_string(),
             no_remember_parameters: false,
             location: String::new(),
+            rust_fn: None,
             actions: String::new(),
             authenticate: Authenticate::Required,
             authz_action: None,
@@ -669,9 +660,15 @@ fn load_service(prefix: &str, node: &MNode, services: &mut BTreeMap<String, Serv
     }
     if !matches!(
         type_name.as_str(),
-        "inline" | "entity-auto" | "script" | "interface" | "remote-rest"
+        "inline" | "entity-auto" | "script" | "interface" | "remote-rest" | "rust"
     ) {
         failures.push(format!("service {name} has unknown type {type_name}"));
+        return;
+    }
+    if type_name == "rust" && node.first_named("actions").is_some() {
+        failures.push(format!(
+            "service {name} type rust has actions; the registered function is the body"
+        ));
         return;
     }
     let mut expression_errors = Vec::new();
@@ -688,20 +685,23 @@ fn load_service(prefix: &str, node: &MNode, services: &mut BTreeMap<String, Serv
         }
     }
     let location = node.attribute("location").unwrap_or_default();
-    let kind = if super::tools::runs(&name) {
-        ServiceKind::Tools
-    } else if super::system_sync::runs(&name) {
-        ServiceKind::SystemSync
-    } else if super::elfinder::runs(&name) {
-        ServiceKind::ElFinder
-    } else if super::sso::runs(&name) {
-        ServiceKind::Sso
-    } else if super::spreadsheet::runs(&name) {
-        ServiceKind::Spreadsheet
-    } else if super::images::runs(&name) {
-        ServiceKind::Image
-    } else if is_mail_service(&name) {
-        ServiceKind::Mail
+    let rust_fn = if type_name == "rust" {
+        if location.is_empty() {
+            failures.push(format!("service {name} type rust is missing a location"));
+            return;
+        }
+        match super::rust_services::get(&location) {
+            Some(run) => Some(run),
+            None => {
+                failures.push(format!("service {name} rust location {location} is not registered"));
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    let kind = if rust_fn.is_some() {
+        ServiceKind::Rust
     } else {
         kind_of(&type_name, &location)
     };
@@ -713,6 +713,7 @@ fn load_service(prefix: &str, node: &MNode, services: &mut BTreeMap<String, Serv
         service_type: type_name,
         no_remember_parameters: bool_attr(node, "no-remember-parameters", false),
         location,
+        rust_fn,
         actions: node
             .first_named("actions")
             .map(|node| node.write_string())
@@ -763,18 +764,6 @@ fn kind_of(type_name: &str, location: &str) -> ServiceKind {
         "remote-rest" => ServiceKind::RemoteRest,
         _ => ServiceKind::Inline,
     }
-}
-
-/// The email services `mail::run` implements. Named here, outside the `mail` feature, so a host built without it
-/// still selects them and reports that mail is not built in.
-fn is_mail_service(name: &str) -> bool {
-    matches!(
-        name,
-        "org.moqui.impl.EmailServices.send#Email"
-            | "org.moqui.impl.EmailServices.send#EmailTemplate"
-            | "org.moqui.impl.EmailServices.send#EmailMessage"
-            | "org.moqui.impl.EmailServices.poll#EmailServer"
-    )
 }
 
 /// A Groovy script, as a component written for Java Moqui names it, is not runnable here.
@@ -1238,7 +1227,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn email_services_are_mail_by_name_with_no_script_location() {
+    fn email_services_resolve_rust_locations() {
         let service_dir =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework/service/org/moqui");
         let paths = [
@@ -1247,22 +1236,58 @@ mod tests {
         ];
         let (defs, failures) = super::definitions_in(&paths).unwrap();
         assert!(failures.is_empty(), "{failures:?}");
-        for name in [
-            "send#Email",
-            "send#EmailTemplate",
-            "send#EmailMessage",
-            "poll#EmailServer",
-        ] {
+        let expect = [
+            ("send#Email", "moqui_core::service::mail::send_template"),
+            ("send#EmailTemplate", "moqui_core::service::mail::send_template"),
+            ("send#EmailMessage", "moqui_core::service::mail::send_message"),
+            ("poll#EmailServer", "moqui_core::service::mail::poll_server"),
+        ];
+        for (name, location) in expect {
             let full = format!("org.moqui.impl.EmailServices.{name}");
             let def = defs.iter().find(|def| def.name == full).expect(name);
-            assert_eq!(def.kind, super::ServiceKind::Mail, "{full}");
-            assert!(def.location.is_empty(), "{full} location {}", def.location);
+            assert_eq!(def.kind, super::ServiceKind::Rust, "{full}");
+            assert_eq!(def.location, location, "{full}");
+            assert!(def.rust_fn.is_some(), "{full}");
+        }
+        for name in ["save#EcaEmailMessage", "send#ScreenRenderEmail"] {
+            let full = format!("org.moqui.impl.EmailServices.{name}");
+            let def = defs.iter().find(|def| def.name == full).expect(name);
+            assert_eq!(def.kind, super::ServiceKind::Inline, "{full}");
         }
         // A Groovy script location from a component written for Java Moqui is still not runnable.
         assert_eq!(
             super::kind_of("script", "component://x/Send.groovy"),
             super::ServiceKind::Unsupported
         );
+    }
+
+    #[test]
+    fn rust_service_with_a_bad_location_stays_out_and_keeps_the_neighbor() {
+        let ctx = crate::context::ExecutionContextFactory::test_context();
+        let _entered = ctx.enter();
+        let path = write_fixture(
+            "rust",
+            r#"<services>
+                <service verb="missing" noun="Location" type="rust"/>
+                <service verb="unknown" noun="Location" type="rust" location="moqui_core::service::mail::no_such"/>
+                <service verb="has" noun="Actions" type="rust" location="moqui_core::service::mail::send_template">
+                    <actions><set field="x" value="y"/></actions>
+                </service>
+                <service verb="plain" noun="Neighbor"/>
+            </services>"#,
+        );
+        let failures = super::lint(&[path]).unwrap();
+        let text = failures.join("\n");
+        assert!(text.contains("missing#Location"), "{text}");
+        assert!(text.contains("missing a location"), "{text}");
+        assert!(text.contains("unknown#Location"), "{text}");
+        assert!(text.contains("is not registered"), "{text}");
+        assert!(text.contains("has#Actions"), "{text}");
+        assert!(text.contains("has actions"), "{text}");
+        assert!(super::is_registered("plain#Neighbor"), "{text}");
+        assert!(!super::is_registered("missing#Location"));
+        assert!(!super::is_registered("unknown#Location"));
+        assert!(!super::is_registered("has#Actions"));
     }
 
     #[test]

@@ -199,7 +199,7 @@ along with this software (see the LICENSE.md file). If not, see
             <return error="true" message="System message ${systemMessageId} not sent: send#SystemMessageJsonRpc is not available because JSON-RPC is not part of this port, use send#SystemMessageRest"/>
         </actions>
     </service>
-    <service verb="send" noun="SystemMessageRest">
+    <service verb="send" noun="SystemMessageRest" type="rust" location="moqui_core::service::system_sync::message::send_rest">
         <description>POST the message text to SystemMessageRemote.sendUrl, expanded with remoteMessageId,
             systemMessageTypeId, and systemMessageRemoteId, with the auth of SystemMessageRemote.messageAuthEnumId (basic
             auth for SmatLogin or none set, an HMAC header for SmatHmacSha256 and SmatHmacSha256Timestamp, nothing for
