@@ -38,7 +38,7 @@ use serde_json::{json, Map, Value as Json};
 use super::agg::{histogram_zone, zone_name, Agg, DateHistogram, Terms, TermsOrder};
 use super::conf::ClusterConf;
 use super::mapping::{DocumentMapping, FieldKind, ObjectMapping, Resolved};
-use super::postgres::body_json;
+use super::postgres::body_json_map;
 use super::postgres::compile::parse_date_bound;
 use super::query::{FieldOp, FieldQuery, Query, TextFields, TextMatch};
 use super::{lock, Capability, Rank, SearchBackend, SearchHit, SearchPage, SearchRequest, SortField};
@@ -810,7 +810,7 @@ impl SearchBackend for OpenSearchBackend {
             };
             text.push_str(&action.to_string());
             text.push('\n');
-            let mut source = body_json(&Value::Map(body.clone()));
+            let mut source = body_json_map(body);
             if let Json::Object(map) = &mut source {
                 map.insert(INDEXED_AT.into(), Json::from(now));
             }

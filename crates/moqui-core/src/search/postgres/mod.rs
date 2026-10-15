@@ -562,21 +562,98 @@ impl PostgresBackend {
         out.extend(indexes);
         out
     }
+}
 
-    fn row_values(mapping: &DocumentMapping, body: &Document) -> Vec<(String, Option<(Value, &'static str)>)> {
-        let mut out = Vec::new();
-        for (name, field) in &mapping.root.fields {
-            if column_type(field.kind).is_none() {
-                continue;
-            }
-            let value = match body.get(name) {
-                None | Some(Value::Null) | Some(Value::List(_)) | Some(Value::Map(_)) => None,
-                Some(value) => typed_param(field.kind, value),
-            };
-            out.push((name.clone(), value));
-        }
-        out
+/// Bind parameters in one statement. The protocol counts them in 16 bits, and the client takes no more than `i16::MAX`.
+const MAX_INSERT_PARAMS: usize = 32_767;
+/// Documents in one `INSERT`, below the parameter limit.
+const MAX_INSERT_ROWS: usize = 1000;
+
+/// A typed column of a document table: the root field it holds, its kind, and the cast its insert parameter takes.
+struct InsertColumn<'a> {
+    name: &'a str,
+    kind: FieldKind,
+    cast: &'static str,
+}
+
+/// The typed columns of a mapping's table, in table order.
+fn insert_columns(mapping: &DocumentMapping) -> Vec<InsertColumn<'_>> {
+    mapping
+        .root
+        .fields
+        .iter()
+        .filter(|(_, field)| column_type(field.kind).is_some())
+        .map(|(name, field)| InsertColumn {
+            name,
+            kind: field.kind,
+            cast: match field.kind {
+                FieldKind::Long => "::bigint",
+                FieldKind::Double => "::numeric",
+                FieldKind::Date => "::timestamptz",
+                FieldKind::Boolean => "::boolean",
+                _ => "",
+            },
+        })
+        .collect()
+}
+
+/// One `INSERT ... ON CONFLICT` of `rows` documents. With `if_newer`, a stored row read later than the one given is kept.
+fn insert_sql(table: &str, columns: &[InsertColumn<'_>], rows: usize, if_newer: bool) -> String {
+    let mut statement = format!("INSERT INTO {table} (doc_id, indexed_at, body");
+    for item in columns {
+        statement.push_str(", ");
+        statement.push_str(&column(item.name));
     }
+    let mut row = String::from("(?, ?::timestamptz, ?::jsonb");
+    for item in columns {
+        row.push_str(", ?");
+        row.push_str(item.cast);
+    }
+    row.push(')');
+    statement.push_str(") VALUES ");
+    for index in 0..rows {
+        if index > 0 {
+            statement.push_str(", ");
+        }
+        statement.push_str(&row);
+    }
+    statement.push_str(" ON CONFLICT (doc_id) DO UPDATE SET indexed_at = EXCLUDED.indexed_at, body = EXCLUDED.body");
+    for item in columns {
+        let col = column(item.name);
+        statement.push_str(&format!(", {col} = EXCLUDED.{col}"));
+    }
+    if if_newer {
+        statement.push_str(&format!(" WHERE {table}.indexed_at <= EXCLUDED.indexed_at"));
+    }
+    statement
+}
+
+/// The parameters of one document's row, in the order of [`insert_sql`].
+fn push_insert_params(
+    columns: &[InsertColumn<'_>],
+    id: &str,
+    at: Timestamp,
+    body: &Document,
+    out: &mut Vec<Value>,
+) -> Result<(), Error> {
+    let json = serde_json::to_string(&body_json_map(body))
+        .map_err(|err| Error::new(format!("document {id} is not JSON: {err}")))?;
+    out.extend([Value::string(id), Value::Timestamp(at), Value::String(json)]);
+    for item in columns {
+        let value = match body.get(item.name) {
+            None | Some(Value::Null) | Some(Value::List(_)) | Some(Value::Map(_)) => None,
+            Some(value) => typed_param(item.kind, value),
+        };
+        out.push(match value {
+            // A long column takes a whole number; numeric text like 3.0 would not cast.
+            Some((Value::Decimal(decimal), _)) if item.cast == "::bigint" => {
+                Value::String(decimal.trunc().normalize().to_string())
+            }
+            Some((value, _)) => value,
+            None => Value::Null,
+        });
+    }
+    Ok(())
 }
 
 /// 13 hex digits of epoch millis then 12 random ones, so rows sort by arrival and ids do not collide.
@@ -830,71 +907,38 @@ impl SearchBackend for PostgresBackend {
             return Ok(0);
         }
         let table = self.table(mapping);
-        let names: Vec<String> = Self::row_values(mapping, &Document::new())
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect();
-        let mut statement = format!("INSERT INTO {table} (doc_id, indexed_at, body");
-        for name in &names {
-            statement.push_str(", ");
-            statement.push_str(&column(name));
-        }
-        statement.push_str(") VALUES (?, ?::timestamptz, ?::jsonb");
-        let mut casts = Vec::new();
-        for (name, field) in &mapping.root.fields {
-            if column_type(field.kind).is_none() {
-                continue;
-            }
-            let cast = match field.kind {
-                FieldKind::Long => "::bigint",
-                FieldKind::Double => "::numeric",
-                FieldKind::Date => "::timestamptz",
-                FieldKind::Boolean => "::boolean",
-                _ => "",
-            };
-            let _ = name;
-            casts.push(cast);
-            statement.push_str(&format!(", ?{cast}"));
-        }
-        statement
-            .push_str(") ON CONFLICT (doc_id) DO UPDATE SET indexed_at = EXCLUDED.indexed_at, body = EXCLUDED.body");
-        for name in &names {
-            let col = column(name);
-            statement.push_str(&format!(", {col} = EXCLUDED.{col}"));
-        }
-        if read_at.is_some() {
-            statement.push_str(&format!(" WHERE {table}.indexed_at <= EXCLUDED.indexed_at"));
-        }
+        let columns = insert_columns(mapping);
         let now = read_at.unwrap_or_else(Timestamp::now);
-        let mut rows = Vec::with_capacity(documents.len());
+        // One statement holds a row once, so a document given twice is written as its last copy, as one statement per
+        // document would leave it.
+        let mut latest: IndexMap<&str, &Document> = IndexMap::with_capacity(documents.len());
+        let mut generated = Vec::new();
         for (given, body) in documents {
-            // A log entry has no id: a time-ordered one is made here, as OpenSearch makes its own.
-            let generated;
-            let id = if given.is_empty() {
-                generated = generated_doc_id();
-                &generated
+            if given.is_empty() {
+                // A log entry has no id: a time-ordered one is made here, as OpenSearch makes its own.
+                generated.push((generated_doc_id(), body));
             } else {
-                given
-            };
-            let json = serde_json::to_string(&body_json(&Value::Map(body.clone())))
-                .map_err(|err| Error::new(format!("document {id} is not JSON: {err}")))?;
-            let mut params = vec![Value::string(id), Value::Timestamp(now), Value::String(json)];
-            for ((_, value), cast) in Self::row_values(mapping, body).into_iter().zip(&casts) {
-                params.push(match value {
-                    // A long column takes a whole number; numeric text like 3.0 would not cast.
-                    Some((Value::Decimal(decimal), _)) if *cast == "::bigint" => {
-                        Value::String(decimal.trunc().normalize().to_string())
-                    }
-                    Some((value, _)) => value,
-                    None => Value::Null,
-                });
+                latest.insert(given.as_str(), body);
             }
-            rows.push(params);
+        }
+        let rows: Vec<(&str, &Document)> = latest
+            .into_iter()
+            .chain(generated.iter().map(|(id, body)| (id.as_str(), *body)))
+            .collect();
+        let per_row = 3 + columns.len();
+        let chunk_rows = (MAX_INSERT_PARAMS / per_row).clamp(1, MAX_INSERT_ROWS);
+        let mut statements = Vec::new();
+        for chunk in rows.chunks(chunk_rows) {
+            let mut params = Vec::with_capacity(chunk.len() * per_row);
+            for (id, body) in chunk {
+                push_insert_params(&columns, id, now, body, &mut params)?;
+            }
+            statements.push((insert_sql(&table, &columns, chunk.len(), read_at.is_some()), params));
         }
         self.tx.run(TransactionAttribute::UseOrBegin, None, || {
             self.tx.with_connection(|conn| {
-                for params in &rows {
-                    conn.execute(&statement, params)?;
+                for (statement, params) in &statements {
+                    conn.execute(statement, params)?;
                 }
                 Ok(())
             })
@@ -1222,15 +1266,20 @@ pub fn body_json(value: &Value) -> serde_json::Value {
         Value::Date(date) => serde_json::Value::String(date.to_string()),
         Value::Time(time) => serde_json::Value::String(time.to_string()),
         Value::List(items) => serde_json::Value::Array(items.iter().map(body_json).collect()),
-        Value::Map(entries) => serde_json::Value::Object(
-            entries
-                .iter()
-                .filter(|(_, item)| !item.is_null())
-                .map(|(key, item)| (key.clone(), body_json(item)))
-                .collect(),
-        ),
+        Value::Map(entries) => body_json_map(entries),
         other => moqui_lib::json::to_json(other),
     }
+}
+
+/// [`body_json`] of a document's fields, without wrapping them in a [`Value::Map`].
+pub fn body_json_map(entries: &Document) -> serde_json::Value {
+    serde_json::Value::Object(
+        entries
+            .iter()
+            .filter(|(_, item)| !item.is_null())
+            .map(|(key, item)| (key.clone(), body_json(item)))
+            .collect(),
+    )
 }
 
 #[cfg(test)]
@@ -1307,6 +1356,62 @@ mod tests {
             .text
             .starts_with("SELECT (SELECT count(*) FROM \"search\".\"mantle_party\" WHERE"));
         let _ = Target::Index("mantle".into());
+    }
+
+    #[test]
+    fn documents_insert_as_rows_of_one_statement_with_a_cast_per_typed_column() {
+        let mut mapping = (*mapping("MantleParty", "mantle_party")).clone();
+        for (name, kind) in [
+            ("partyCount", FieldKind::Long),
+            ("photo", FieldKind::Binary),
+            ("active", FieldKind::Boolean),
+        ] {
+            mapping
+                .root
+                .fields
+                .insert(name.into(), FieldMapping { kind, sortable: false });
+        }
+        let columns = insert_columns(&mapping);
+        let names: Vec<(&str, &str)> = columns.iter().map(|item| (item.name, item.cast)).collect();
+        assert_eq!(
+            names,
+            [
+                ("combinedName", ""),
+                ("partyCount", "::bigint"),
+                ("active", "::boolean")
+            ]
+        );
+        let row = "(?, ?::timestamptz, ?::jsonb, ?, ?::bigint, ?::boolean)";
+        let update = "ON CONFLICT (doc_id) DO UPDATE SET indexed_at = EXCLUDED.indexed_at, body = EXCLUDED.body, \
+             \"f_combinedName\" = EXCLUDED.\"f_combinedName\", \"f_partyCount\" = EXCLUDED.\"f_partyCount\", \
+             \"f_active\" = EXCLUDED.\"f_active\"";
+        assert_eq!(
+            insert_sql("t", &columns, 2, false),
+            format!(
+                "INSERT INTO t (doc_id, indexed_at, body, \"f_combinedName\", \"f_partyCount\", \"f_active\") \
+                 VALUES {row}, {row} {update}"
+            )
+        );
+        assert!(insert_sql("t", &columns, 1, true).ends_with(" WHERE t.indexed_at <= EXCLUDED.indexed_at"));
+
+        let at: Timestamp = "2026-01-05T10:00:00Z".parse().unwrap();
+        let mut body = Document::new();
+        body.insert("combinedName".into(), Value::string("Ada"));
+        body.insert("partyCount".into(), Value::string("3.0"));
+        body.insert("active".into(), Value::Null);
+        let mut params = Vec::new();
+        push_insert_params(&columns, "P1", at, &body, &mut params).unwrap();
+        assert_eq!(
+            params,
+            [
+                Value::string("P1"),
+                Value::Timestamp(at),
+                Value::string(r#"{"combinedName":"Ada","partyCount":"3.0"}"#),
+                Value::string("Ada"),
+                Value::string("3"),
+                Value::Null,
+            ]
+        );
     }
 
     #[test]
