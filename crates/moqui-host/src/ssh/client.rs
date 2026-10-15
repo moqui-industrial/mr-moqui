@@ -21,11 +21,12 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use moqui_core::sftp::{SftpAttributes, SftpConfig, SftpConnector, SftpEntry, SftpKind, SftpSession};
 use moqui_lib::error::Error;
+use moqui_lib::sync::lock;
 use russh::client;
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate};
 use russh_sftp::client::error::Error as SftpError;
@@ -83,7 +84,7 @@ impl KeyCheck {
                 ))
             };
         }
-        let _lock = KNOWN_HOSTS_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+        let _lock = lock(&KNOWN_HOSTS_LOCK);
         match russh::keys::check_known_hosts_path(&self.host, self.port, key, &self.known_hosts) {
             Ok(true) => Ok(()),
             Ok(false) => {
@@ -127,7 +128,7 @@ impl client::Handler for KeyCheck {
         match self.verdict(&server_public_key.public_key()) {
             Ok(()) => Ok(true),
             Err(reason) => {
-                *self.refused.lock().unwrap_or_else(PoisonError::into_inner) = Some(reason);
+                *lock(&self.refused) = Some(reason);
                 Ok(false)
             }
         }
@@ -163,7 +164,7 @@ async fn open(config: SftpConfig, known_hosts: PathBuf) -> Result<RusshSession, 
     let mut handle = match tokio::time::timeout(TIMEOUT, connecting).await {
         Ok(Ok(handle)) => handle,
         Ok(Err(err)) => {
-            let reason = refused.lock().unwrap_or_else(PoisonError::into_inner).take();
+            let reason = lock(&refused).take();
             return Err(Error::new(
                 reason.unwrap_or_else(|| format!("could not connect to {target}: {err}")),
             ));

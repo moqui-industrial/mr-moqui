@@ -354,12 +354,7 @@ impl PostgresBackend {
             self.trigram,
             self.vectors.as_ref().map(VectorStore::column_type).unwrap_or_default()
         );
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-        for byte in text.bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x0100_0000_01b3);
-        }
-        format!("{hash:016x}")
+        format!("{:016x}", moqui_lib::codec::fnv1a(text.as_bytes()))
     }
 
     /// Run searches, aggregations, and `get_document` on `read`, a physical replica of this store

@@ -21,6 +21,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use hmac::{Hmac, Mac};
 use indexmap::IndexMap;
+use moqui_lib::codec::hex_encode;
 use moqui_lib::error::Error as LibError;
 use moqui_lib::object::Value;
 use sha2::Sha256;
@@ -382,10 +383,7 @@ fn hmac_base64(secret: &str, message: &str) -> String {
 }
 
 fn hmac_hex(secret: &str, message: &str) -> String {
-    hmac_bytes(secret, message)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    hex_encode(&hmac_bytes(secret, message))
 }
 
 /// The Stripe-style `t=<epochSeconds>,v1=<hex>` header of `SmatHmacSha256Timestamp`.

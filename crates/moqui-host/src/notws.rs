@@ -30,6 +30,7 @@ use moqui_core::notify::{TopicMessage, NOTIFICATION_MESSAGE};
 use moqui_core::user::{verify_session_cookie, SESSION_COOKIE_NAME};
 use moqui_core::web::cookie_value;
 use moqui_lib::object::Value;
+use moqui_lib::sync::lock;
 
 use crate::http::{plain, HttpState};
 
@@ -389,8 +390,4 @@ fn register(slot: &Arc<Slot>) {
 
 fn unregister(id: u64) {
     lock(sockets()).remove(&id);
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|err| err.into_inner())
 }

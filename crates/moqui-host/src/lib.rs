@@ -44,6 +44,8 @@ mod search_proxy;
 /// # Errors
 ///
 /// Returns an error when this build has no HTTP server, the port does not parse, or startup fails.
+use moqui_lib::sync::lock;
+
 pub fn serve() -> Result<(), moqui_lib::error::Error> {
     #[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
     {
@@ -85,11 +87,7 @@ impl Server {
     #[must_use]
     pub fn ssh_address(&self) -> Option<std::net::SocketAddr> {
         let factory = self.factory.as_ref()?;
-        *factory
-            .extension(|_| ssh::server::SshAddress::default())
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *lock(&factory.extension(|_| ssh::server::SshAddress::default()).0)
     }
 
     /// The cluster HTTPS listener. Empty `cluster_https_port` binds 8443. `0` is ephemeral, and this
@@ -108,7 +106,7 @@ impl Server {
     /// Topics accepted from cluster peers (`POST /cluster/{topic}` or the SSH channel), in arrival order.
     #[must_use]
     pub fn cluster_posts(&self) -> Vec<String> {
-        self.posts.lock().unwrap_or_else(|err| err.into_inner()).clone()
+        lock(&self.posts).clone()
     }
 
     /// Block until the listener exits. Ctrl-c is handled on the server thread. This does not drop
@@ -1474,7 +1472,7 @@ pub(crate) mod xmlshim {
         // Two clusters sharing one install may start at once. The library is built aside and renamed into
         // place, so a postmaster never maps a half-written file.
         static BUILD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _lock = BUILD_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _lock = moqui_lib::sync::lock(&BUILD_LOCK);
         let shared = lib_dir.join("libxml2.so.2");
         if shared.is_file() {
             return Ok(());

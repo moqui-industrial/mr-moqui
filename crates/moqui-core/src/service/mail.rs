@@ -33,8 +33,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use indexmap::IndexMap;
+use moqui_lib::codec::hex_encode;
 use moqui_lib::error::Error as LibError;
 use moqui_lib::object::{basic_convert, is_empty, to_plain_string, Value};
+#[cfg(test)]
+use moqui_lib::sync::lock;
 
 use crate::context::{ExecutionContext, ExecutionContextFactory};
 use crate::entity::{EntityFacade, EntityValue};
@@ -1090,8 +1093,7 @@ fn new_message_id(from: &str) -> Result<String, String> {
         .ok()
         .filter(|host| !host.is_empty())
         .unwrap_or_else(|| "localhost".to_string());
-    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-    Ok(format!("<{hex}@{host}>"))
+    Ok(format!("<{}@{host}>", hex_encode(&bytes)))
 }
 
 thread_local! {
@@ -1126,14 +1128,11 @@ static SHARED_SINK: std::sync::Mutex<Option<Arc<std::sync::Mutex<Vec<Letter>>>>>
 
 #[cfg(test)]
 fn push_shared_sink(letter: &Letter) -> bool {
-    let shared = SHARED_SINK.lock().unwrap_or_else(|err| err.into_inner()).clone();
+    let shared = lock(&SHARED_SINK).clone();
     let Some(shared) = shared else {
         return false;
     };
-    shared
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
-        .push(letter.clone());
+    lock(&shared).push(letter.clone());
     true
 }
 
@@ -1204,15 +1203,15 @@ pub(crate) struct SharedSinkGuard {
 impl SharedSinkGuard {
     pub(crate) fn install() -> Self {
         static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let turn = TURN.lock().unwrap_or_else(|err| err.into_inner());
+        let turn = lock(&TURN);
         let current = Arc::new(std::sync::Mutex::new(Vec::new()));
-        *SHARED_SINK.lock().unwrap_or_else(|err| err.into_inner()) = Some(Arc::clone(&current));
+        *lock(&SHARED_SINK) = Some(Arc::clone(&current));
         Self { current, _turn: turn }
     }
 
     /// The mail kept so far to `address`.
     pub(crate) fn sent_to(&self, address: &str) -> Vec<SentMail> {
-        let letters = self.current.lock().unwrap_or_else(|err| err.into_inner()).clone();
+        let letters = lock(&self.current).clone();
         letters
             .into_iter()
             .filter(|letter| letter.to.iter().any(|to| to == address))
@@ -1236,7 +1235,7 @@ impl SharedSinkGuard {
 #[cfg(test)]
 impl Drop for SharedSinkGuard {
     fn drop(&mut self) {
-        *SHARED_SINK.lock().unwrap_or_else(|err| err.into_inner()) = None;
+        *lock(&SHARED_SINK) = None;
     }
 }
 

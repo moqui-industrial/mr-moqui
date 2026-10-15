@@ -41,6 +41,7 @@ use std::time::Duration;
 use moqui_core::context::ExecutionContextFactory;
 use moqui_core::entity::document::Document;
 use moqui_lib::object::Value;
+use moqui_lib::sync::lock;
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
 use tracing::{Event, Level, Metadata, Subscriber};
@@ -124,7 +125,7 @@ pub fn ship_to_search(factory: &Arc<ExecutionContextFactory>) -> bool {
         });
     match spawned {
         Ok(handle) => {
-            *SHIPPER.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
+            *lock(&SHIPPER) = Some(handle);
             tracing::info!(
                 "Shipping log events to the {backend_name} search backend indexes {} and {}",
                 moqui_core::search::logs::APP_LOG,
@@ -142,7 +143,7 @@ pub fn ship_to_search(factory: &Arc<ExecutionContextFactory>) -> bool {
 /// Send what is queued and end the shipper thread, so it no longer holds the search facade and its
 /// database connections. Does nothing when shipping never started.
 pub fn stop_shipping() {
-    let handle = SHIPPER.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    let handle = lock(&SHIPPER).take();
     if let Some(handle) = handle {
         STOP_SHIPPING.store(true, Ordering::SeqCst);
         let _ = handle.join();
@@ -158,7 +159,7 @@ pub fn flush(facade: &moqui_core::search::SearchFacade) {
     ] {
         loop {
             let batch: Vec<Document> = {
-                let mut queue = queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut queue = lock(queue);
                 let count = queue.len().min(BATCH);
                 queue.drain(..count).collect()
             };
@@ -186,7 +187,7 @@ pub fn queue_http_request(entry: Document) {
 }
 
 fn push(queue: &Mutex<VecDeque<Document>>, entry: Document) {
-    let mut queue = queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut queue = lock(queue);
     if queue.len() < QUEUE_LIMIT {
         queue.push_back(entry);
     }
@@ -383,7 +384,7 @@ impl FileSinks {
 }
 
 fn write_file_line(level: Level, line: &str) {
-    let mut state = FILES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut state = lock(&FILES);
     match &mut *state {
         FileState::Pending(lines) => {
             if lines.len() < PENDING_LINE_LIMIT {
@@ -399,7 +400,7 @@ fn write_file_line(level: Level, line: &str) {
 /// `moqui_log_max_size_mb` and `moqui_log_max_files`, and write the lines logged so far. The first call
 /// decides; later calls change nothing. Returns the directory when files are being written.
 pub fn attach_files(runtime_dir: &Path) -> Option<PathBuf> {
-    let mut state = FILES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut state = lock(&FILES);
     let FileState::Pending(pending) = &mut *state else {
         return None;
     };

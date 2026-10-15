@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 
 use moqui_lib::error::Error;
 use moqui_lib::node::MNode;
+use moqui_lib::sync::lock;
 
 use crate::driver::{DbCancel, DbConnection, DbDriver};
 
@@ -1031,7 +1032,7 @@ impl TransactionManager {
         if frame == 0 {
             return;
         }
-        let mut map = lock_map().lock().unwrap_or_else(|err| err.into_inner());
+        let mut map = lock(lock_map());
         let key = (entity.to_string(), pk.to_string());
         if let Some(existing) = map.get(&key) {
             if existing.thread != thread || existing.frame != frame {
@@ -1051,13 +1052,13 @@ impl TransactionManager {
             return;
         }
         let thread = std::thread::current().id();
-        let mut map = lock_map().lock().unwrap_or_else(|err| err.into_inner());
+        let mut map = lock(lock_map());
         map.retain(|_, hit| !(hit.thread == thread && hit.frame == frame));
     }
 
     fn clear_thread_locks(&self) {
         let thread = std::thread::current().id();
-        let mut map = lock_map().lock().unwrap_or_else(|err| err.into_inner());
+        let mut map = lock(lock_map());
         map.retain(|_, hit| hit.thread != thread);
     }
 }
@@ -1303,7 +1304,7 @@ fn ensure_deadline_timer() {
 
 fn register_deadline(token: u64, when: Instant, fired: Arc<AtomicBool>) {
     ensure_deadline_timer();
-    let mut slots = deadlines().lock().unwrap_or_else(|err| err.into_inner());
+    let mut slots = lock(deadlines());
     slots.insert(
         token,
         DeadlineSlot {
@@ -1317,17 +1318,17 @@ fn register_deadline(token: u64, when: Instant, fired: Arc<AtomicBool>) {
 /// True while the deadline timer has a slot for the frame `token` names.
 #[cfg(test)]
 pub(super) fn deadline_registered(token: u64) -> bool {
-    let slots = deadlines().lock().unwrap_or_else(|err| err.into_inner());
+    let slots = lock(deadlines());
     slots.contains_key(&token)
 }
 
 fn unregister_deadline(token: u64) {
-    let mut slots = deadlines().lock().unwrap_or_else(|err| err.into_inner());
+    let mut slots = lock(deadlines());
     slots.remove(&token);
 }
 
 fn deadline_set_cancel(token: u64, cancel: Box<dyn DbCancel>) {
-    let mut slots = deadlines().lock().unwrap_or_else(|err| err.into_inner());
+    let mut slots = lock(deadlines());
     if let Some(slot) = slots.get_mut(&token) {
         slot.cancel = Some(cancel);
     }
@@ -1335,7 +1336,7 @@ fn deadline_set_cancel(token: u64, cancel: Box<dyn DbCancel>) {
 
 fn fire_due_deadlines() {
     let now = Instant::now();
-    let mut slots = deadlines().lock().unwrap_or_else(|err| err.into_inner());
+    let mut slots = lock(deadlines());
     let mut due = Vec::new();
     for slot in slots.values_mut() {
         if now >= slot.when && !slot.fired.swap(true, Ordering::SeqCst) {

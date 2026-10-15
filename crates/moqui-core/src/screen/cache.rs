@@ -30,6 +30,7 @@ use std::sync::{Arc, Mutex, TryLockError};
 
 use moqui_lib::cache::{CacheConfig, MCache};
 use moqui_lib::node::MNode;
+use moqui_lib::sync::lock;
 
 use super::definition::ScreenDef;
 use super::url::ScreenUrlInfo;
@@ -75,10 +76,7 @@ impl Drop for LoadingMark<'_> {
             LOADING.with(|loading| loading.borrow_mut().remove(self.key));
         }
         if self.locked {
-            self.locks
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .remove(self.key);
+            lock(self.locks).remove(self.key);
         }
     }
 }
@@ -360,26 +358,18 @@ impl ScreenFacade {
             let loading = loading.borrow();
             (loading.contains(location), !loading.is_empty())
         });
-        let lock = (!reentrant).then(|| {
-            Arc::clone(
-                self.loading
-                    .lock()
-                    .unwrap_or_else(|err| err.into_inner())
-                    .entry(key.clone())
-                    .or_default(),
-            )
-        });
+        let location_lock = (!reentrant).then(|| Arc::clone(lock(&self.loading).entry(key.clone()).or_default()));
         // Only a load that holds no other location's lock waits for one, so two threads loading screens that include
         // each other cannot wait on each other. An include whose location another thread is loading is loaded again here.
-        let held = lock.as_ref().and_then(|lock| {
+        let held = location_lock.as_ref().and_then(|mutex| {
             if nested {
-                match lock.try_lock() {
+                match mutex.try_lock() {
                     Ok(guard) => Some(guard),
                     Err(TryLockError::Poisoned(err)) => Some(err.into_inner()),
                     Err(TryLockError::WouldBlock) => None,
                 }
             } else {
-                Some(lock.lock().unwrap_or_else(|err| err.into_inner()))
+                Some(lock(mutex))
             }
         });
         // Another request may have loaded it while this one waited.

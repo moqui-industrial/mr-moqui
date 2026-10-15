@@ -26,6 +26,7 @@ use moqui_db::model::{EntityDefinition, EntityModel};
 use moqui_lib::error::Error;
 use moqui_lib::node::MNode;
 use moqui_lib::object::Value;
+use moqui_lib::sync::{lock, read, write};
 
 use super::crypto::CryptConfig;
 use super::find::EntityFind;
@@ -264,7 +265,7 @@ impl EntityFacade {
     where
         T: Any + Send + 'static,
     {
-        let mut slots = self.inner.slots.lock().unwrap_or_else(|err| err.into_inner());
+        let mut slots = lock(&self.inner.slots);
         let entry = slots.entry(TypeId::of::<T>()).or_insert_with(|| Box::new(init()));
         let value = entry.downcast_mut::<T>().expect("slot type matches its TypeId");
         body(value)
@@ -282,18 +283,18 @@ impl EntityFacade {
 
     /// Overlay pool for sim mode. `None` with no starter means sim cannot be entered.
     pub fn set_sim_transactions(&self, transactions: Option<TransactionManager>) {
-        let mut slot = self.inner.sim_tx.write().unwrap_or_else(|err| err.into_inner());
+        let mut slot = write(&self.inner.sim_tx);
         *slot = transactions;
     }
 
     pub fn sim_transactions(&self) -> Option<TransactionManager> {
-        self.inner.sim_tx.read().unwrap_or_else(|err| err.into_inner()).clone()
+        read(&self.inner.sim_tx).clone()
     }
 
     /// The host's start of the overlay cluster, run once by the first `enter_sim` that finds no
     /// overlay pool. Core does not start a cluster itself.
     pub fn set_sim_starter(&self, starter: Option<SimStarter>) {
-        *self.inner.sim_starter.lock().unwrap_or_else(|err| err.into_inner()) = starter;
+        *lock(&self.inner.sim_starter) = starter;
     }
 
     /// The overlay pool, started through the starter when there is none yet. A failed start is
@@ -302,7 +303,7 @@ impl EntityFacade {
         if let Some(sim) = self.sim_transactions() {
             return Ok(sim);
         }
-        let starter = self.inner.sim_starter.lock().unwrap_or_else(|err| err.into_inner());
+        let starter = lock(&self.inner.sim_starter);
         if let Some(sim) = self.sim_transactions() {
             return Ok(sim);
         }
@@ -315,17 +316,17 @@ impl EntityFacade {
     }
 
     pub fn set_locale(&self, locale: impl Into<String>) {
-        let mut slot = self.inner.locale.write().unwrap_or_else(|err| err.into_inner());
+        let mut slot = write(&self.inner.locale);
         *slot = locale.into();
     }
 
     pub fn locale(&self) -> String {
-        self.inner.locale.read().unwrap_or_else(|err| err.into_inner()).clone()
+        read(&self.inner.locale).clone()
     }
 
     /// Primary field cipher plus decrypt-only alternates. `None` until the caller sets them.
     pub fn set_crypt(&self, primary: CryptConfig, alts: Vec<CryptConfig>) {
-        let mut slot = self.inner.crypt.write().unwrap_or_else(|err| err.into_inner());
+        let mut slot = write(&self.inner.crypt);
         *slot = Some((primary, alts));
     }
 
@@ -357,11 +358,11 @@ impl EntityFacade {
     }
 
     pub fn crypt(&self) -> Option<(CryptConfig, Vec<CryptConfig>)> {
-        self.inner.crypt.read().unwrap_or_else(|err| err.into_inner()).clone()
+        read(&self.inner.crypt).clone()
     }
 
     pub fn flags(&self) -> EntityFlags {
-        *self.inner.flags.read().unwrap_or_else(|err| err.into_inner())
+        *read(&self.inner.flags)
     }
 
     pub fn set_disable_entity_eca(&self, value: bool) {
@@ -473,7 +474,7 @@ impl EntityFacade {
     }
 
     fn edit_flags(&self, edit: impl FnOnce(&mut EntityFlags)) {
-        let mut flags = self.inner.flags.write().unwrap_or_else(|err| err.into_inner());
+        let mut flags = write(&self.inner.flags);
         edit(&mut flags);
     }
 }

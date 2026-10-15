@@ -33,7 +33,6 @@ pub use component::ComponentInfo;
 pub use conf::{load_merged_conf, merge_component_confs, merge_conf};
 pub use error::{DeniedArtifact, Error, ErrorKind};
 #[cfg(feature = "cluster-tls")]
-pub(crate) use factory::standard_base64;
 pub use factory::{BootOptions, ContextGuard, ExecutionContext, ExecutionContextFactory, Executor};
 pub(crate) use hits::{secret_parameter, Hit};
 pub use locate::{framework_dir, locate};

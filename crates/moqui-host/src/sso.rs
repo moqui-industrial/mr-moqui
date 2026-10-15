@@ -25,7 +25,7 @@
 //! `secret`.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
@@ -40,6 +40,7 @@ use huskarl::core::EndpointUrl;
 use huskarl::grant::authorization_code::{AuthorizationCodeGrant, CompleteInput, PendingState, StartInput};
 use moqui_core::sso::{FlowConfig, FlowKind, OidcConfig, SsoClient, SsoProfile, SsoStart};
 use moqui_lib::error::Error;
+use moqui_lib::sync::lock;
 use serde_json::Value as Json;
 
 /// Largest provider response read.
@@ -325,10 +326,7 @@ fn client_auth(secret: String) -> ClientSecret {
 impl Inner {
     async fn built(&self, flow: &FlowConfig, redirect_uri: &str) -> Result<Arc<Built>, Error> {
         let key = format!("{flow:?}|{redirect_uri}");
-        if let Some(found) = self
-            .grants
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        if let Some(found) = lock(&self.grants)
             .get(&flow.auth_flow_id)
             .filter(|built| built.key == key && built.at.elapsed() < GRANT_LIFE)
         {
@@ -426,10 +424,7 @@ impl Inner {
             }
         };
         let built = Arc::new(built);
-        self.grants
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(flow.auth_flow_id.clone(), Arc::clone(&built));
+        lock(&self.grants).insert(flow.auth_flow_id.clone(), Arc::clone(&built));
         Ok(built)
     }
 
@@ -649,13 +644,7 @@ impl SsoClient for HuskarlSso {
         let FlowKind::Oidc(config) = &flow.kind else {
             return Ok(None);
         };
-        let built = self
-            .inner
-            .grants
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&flow.auth_flow_id)
-            .cloned();
+        let built = lock(&self.inner.grants).get(&flow.auth_flow_id).cloned();
         let end_session = built.and_then(|built| built.metadata.clone()).and_then(|metadata| {
             metadata
                 .end_session_endpoint

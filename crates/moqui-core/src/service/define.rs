@@ -16,10 +16,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use moqui_lib::node::MNode;
+use moqui_lib::sync::{lock, read, write};
 
 use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
 use crate::transaction::TransactionAttribute;
@@ -284,11 +285,11 @@ fn registry_of(factory: &Arc<ExecutionContextFactory>) -> Arc<Shared> {
 }
 
 fn snapshot(shared: &Shared) -> Arc<Registry> {
-    Arc::clone(&shared.current.read().unwrap_or_else(PoisonError::into_inner))
+    Arc::clone(&read(&shared.current))
 }
 
 fn replace(shared: &Shared, registry: Registry) {
-    *shared.current.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(registry);
+    *write(&shared.current) = Arc::new(registry);
 }
 
 #[cfg(test)]
@@ -508,7 +509,7 @@ fn load_by_name(shared: &Shared, name: &str) -> Option<Arc<ServiceDef>> {
         .iter()
         .map(|root| root.join("service").join(&relative))
         .find(|candidate| candidate.is_file())?;
-    let _loading = shared.load.lock().unwrap_or_else(PoisonError::into_inner);
+    let _loading = lock(&shared.load);
     // Another thread may have merged the file while this one waited.
     let current = snapshot(shared);
     if let Some(def) = current.services.get(name) {
@@ -600,7 +601,7 @@ pub fn check(paths: &[PathBuf]) -> Result<Vec<String>, Error> {
 
 fn install(paths: &[PathBuf]) -> Result<(), Error> {
     let shared = entered()?;
-    let _loading = shared.load.lock().unwrap_or_else(PoisonError::into_inner);
+    let _loading = lock(&shared.load);
     replace(&shared, build(paths)?);
     Ok(())
 }

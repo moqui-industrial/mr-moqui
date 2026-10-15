@@ -16,7 +16,9 @@
 //! and print): one long-lived Chromium. Core has no browser, so the host installs a [`PdfEngine`] at startup. With
 //! none installed, or a build without the `pdf` feature, a request for PDF bytes reports that PDF is not available.
 
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, RwLock};
+
+use moqui_lib::sync::{read, write};
 
 use crate::context::Error;
 
@@ -45,17 +47,17 @@ fn slot() -> &'static RwLock<Option<Installed>> {
 
 /// Use `engine` for every PDF in this process.
 pub fn install_pdf_engine(engine: Arc<dyn PdfEngine>) {
-    *slot().write().unwrap_or_else(PoisonError::into_inner) = Some(Installed::Engine(engine));
+    *write(slot()) = Some(Installed::Engine(engine));
 }
 
 /// No engine; every caller gets `reason`, for example that the build left out the `pdf` feature.
 pub fn install_pdf_unavailable(reason: impl Into<String>) {
-    *slot().write().unwrap_or_else(PoisonError::into_inner) = Some(Installed::Unavailable(reason.into()));
+    *write(slot()) = Some(Installed::Unavailable(reason.into()));
 }
 
 /// Remove the installed engine or reason.
 pub fn clear_pdf_engine() {
-    *slot().write().unwrap_or_else(PoisonError::into_inner) = None;
+    *write(slot()) = None;
 }
 
 /// The PDF renderer: the installed engine.
@@ -65,10 +67,7 @@ impl PdfRenderer {
     /// Whether an engine is installed.
     #[must_use]
     pub fn available() -> bool {
-        matches!(
-            *slot().read().unwrap_or_else(PoisonError::into_inner),
-            Some(Installed::Engine(_))
-        )
+        matches!(*read(slot()), Some(Installed::Engine(_)))
     }
 
     /// PDF bytes for an `html-print` document.
@@ -77,7 +76,7 @@ impl PdfRenderer {
     ///
     /// Returns [`PDF_UNAVAILABLE`] (or the installed reason) when there is no engine, else the engine's error.
     pub fn render(html_print_document: &str) -> Result<Vec<u8>, Error> {
-        let engine = match &*slot().read().unwrap_or_else(PoisonError::into_inner) {
+        let engine = match &*read(slot()) {
             Some(Installed::Engine(engine)) => Arc::clone(engine),
             Some(Installed::Unavailable(reason)) => return Err(Error::new(reason.clone())),
             None => return Err(Error::new(PDF_UNAVAILABLE)),
@@ -90,5 +89,5 @@ impl PdfRenderer {
 #[cfg(test)]
 pub(crate) fn pdf_test_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+    moqui_lib::sync::lock(&LOCK)
 }

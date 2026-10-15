@@ -23,6 +23,7 @@
 use std::sync::{Arc, Mutex};
 
 use indexmap::IndexMap;
+use moqui_lib::codec::{fnv1a, fnv1a_extend};
 use moqui_lib::node::MNode;
 use moqui_lib::object::{is_empty, Value};
 
@@ -213,30 +214,22 @@ pub(crate) struct StaticTemplate {
     pub etag: String,
 }
 
-fn fnv(bytes: &[u8], mut hash: u64) -> u64 {
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
-    }
-    hash
-}
-
 /// A number for the resolved definition of a screen: its merged XML (`screen-extend` included), each form and its
 /// extensions, the files it was read from, and the macro module. A change to any of them changes the validator.
 fn identity(def: &ScreenDef) -> u64 {
-    let mut hash = fnv(def.source.text().as_bytes(), 0xcbf2_9ce4_8422_2325);
+    let mut hash = fnv1a(def.source.text().as_bytes());
     for (name, form) in &def.forms {
-        hash = fnv(name.as_bytes(), hash);
-        hash = fnv(form.node.text().as_bytes(), hash);
+        hash = fnv1a_extend(hash, name.as_bytes());
+        hash = fnv1a_extend(hash, form.node.text().as_bytes());
         for extension in &form.extensions {
-            hash = fnv(extension.text().as_bytes(), hash);
+            hash = fnv1a_extend(hash, extension.text().as_bytes());
         }
     }
     for source in &def.sources {
-        hash = fnv(source.location.as_bytes(), hash);
-        hash = fnv(&source.modified.unwrap_or(0).to_le_bytes(), hash);
+        hash = fnv1a_extend(hash, source.location.as_bytes());
+        hash = fnv1a_extend(hash, &source.modified.unwrap_or(0).to_le_bytes());
     }
-    fnv(STATIC_MODULE_SOURCE.as_bytes(), hash)
+    fnv1a_extend(hash, STATIC_MODULE_SOURCE.as_bytes())
 }
 
 /// The compiler's text, read once for the factory.
@@ -350,7 +343,7 @@ fn build_template(
     let code = super::vue_check::compile_render(&compiler_source(&state.factory)?, &html)
         .map_err(|err| Error::new(format!("{}: {}", def.location, err.message())))?;
     let script = wrap_script(key, &code);
-    let etag = format!("W/\"{:x}\"", fnv(script.as_bytes(), identity(def)));
+    let etag = format!("W/\"{:x}\"", fnv1a_extend(identity(def), script.as_bytes()));
     Ok(Arc::new(StaticTemplate { html, script, etag }))
 }
 

@@ -18,10 +18,12 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use moqui_lib::sync::lock;
+
 use croner::parser::{CronParser, Seconds};
 use croner::Cron;
 
-use super::pool::{lock_mutex, Shared};
+use super::pool::Shared;
 use crate::context::Error;
 
 /// How often the thread looks at the stop flag. A pass runs every `check_interval`.
@@ -31,7 +33,7 @@ pub(crate) fn scheduler_loop(shared: Arc<Shared>) {
     let mut last_pass = Instant::now();
     loop {
         {
-            let state = lock_mutex(&shared.state);
+            let state = lock(&shared.state);
             if state.stop {
                 return;
             }

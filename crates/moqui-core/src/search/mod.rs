@@ -42,6 +42,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use indexmap::IndexMap;
 use moqui_lib::error::Error;
 use moqui_lib::object::Value;
+use moqui_lib::sync::{read, write};
 
 pub use agg::Agg;
 pub use mapping::{DocumentMapping, FieldKind, FieldMapping};
@@ -383,14 +384,11 @@ impl SearchFacade {
 
     /// Install (or remove) the embedding model semantic search and the embedding worker use.
     pub fn set_embedder(&self, embedder: Option<semantic::SharedEmbedder>) {
-        *self.embedder.write().unwrap_or_else(std::sync::PoisonError::into_inner) = embedder;
+        *write(&self.embedder) = embedder;
     }
 
     pub fn embedder(&self) -> Option<semantic::SharedEmbedder> {
-        self.embedder
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        read(&self.embedder).clone()
     }
 
     /// Embed documents of `target` that have no current embedding, at most `batch` per document
@@ -934,9 +932,7 @@ fn control_text(doc: &Document, name: &str) -> Option<String> {
     }
 }
 
-pub(crate) fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|err| err.into_inner())
-}
+pub(crate) use moqui_lib::sync::lock;
 
 #[derive(Default)]
 struct Slot {
@@ -946,13 +942,13 @@ struct Slot {
 /// Install the search facade on a factory. Feed receive and `ec.search` use it from then on.
 pub fn install(factory: &ExecutionContextFactory, facade: SearchFacade) {
     let slot = factory.extension(|_| Slot::default());
-    *slot.facade.write().unwrap_or_else(|err| err.into_inner()) = Some(Arc::new(facade));
+    *write(&slot.facade) = Some(Arc::new(facade));
 }
 
 /// The facade installed on a factory.
 pub fn installed(factory: &ExecutionContextFactory) -> Option<Arc<SearchFacade>> {
     let slot = factory.extension(|_| Slot::default());
-    let found = slot.facade.read().unwrap_or_else(|err| err.into_inner()).clone();
+    let found = read(&slot.facade).clone();
     found
 }
 

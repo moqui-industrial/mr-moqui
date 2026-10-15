@@ -27,7 +27,7 @@ mod tests;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD;
@@ -36,8 +36,10 @@ use moqui_db::sql::{
     delete as sql_delete, insert as sql_insert, select as sql_select, update as sql_update, Condition, FieldRef,
     LimitOffset,
 };
+use moqui_lib::codec::hex_encode;
 use moqui_lib::env;
 use moqui_lib::object::Value;
+use moqui_lib::sync::lock;
 use sha2::{Digest, Sha256};
 
 use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
@@ -290,8 +292,8 @@ pub(crate) fn generate_cert_pair() -> Result<(String, String), Error> {
     params.not_before = rcgen::date_time_ymd(ymd_year(today), ymd_month(today), ymd_day(today));
     params.not_after = rcgen::date_time_ymd(ymd_year(until), ymd_month(until), ymd_day(until));
     let cert = params.self_signed(&key).map_err(cert_err)?;
-    let cert_b64 = crate::context::standard_base64(cert.der().as_ref());
-    let key_b64 = crate::context::standard_base64(key.serialized_der());
+    let cert_b64 = STANDARD.encode(cert.der());
+    let key_b64 = STANDARD.encode(key.serialized_der());
     Ok((cert_b64, key_b64))
 }
 
@@ -382,14 +384,7 @@ fn decode_der(name: &str, text: &str) -> Result<Vec<u8>, Error> {
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut out = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        let hex = b"0123456789abcdef";
-        out.push(hex[(byte >> 4) as usize] as char);
-        out.push(hex[(byte & 0x0f) as usize] as char);
-    }
-    out
+    hex_encode(&Sha256::digest(bytes))
 }
 
 /// The property the host sets to this member's SSH host key fingerprint, for the member row.
@@ -968,8 +963,4 @@ pub fn prune_messages(factory: &ExecutionContextFactory, facade: &EntityFacade) 
 
 fn entered_authz() -> Option<crate::context::AuthzGuard> {
     ExecutionContext::with_current(ExecutionContext::disable_authz)
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|err| err.into_inner())
 }

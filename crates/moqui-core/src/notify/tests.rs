@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use indexmap::IndexMap;
 use moqui_lib::object::{basic_convert, Value};
+use moqui_lib::sync::lock;
 
 use super::{
     install, mark_sent, mark_viewed, origin_id, publish, subscribe, NotificationMessage, TopicMessage,
@@ -122,7 +123,7 @@ fn kept(body_title: &str) -> (super::Subscription, Arc<Mutex<Vec<TopicMessage>>>
         NOTIFICATION_MESSAGE,
         Arc::new(move |message| {
             if message.body.get("title").and_then(|value| value.as_str()) == Some(title.as_str()) {
-                keep.lock().unwrap_or_else(|err| err.into_inner()).push(message.clone());
+                lock(&keep).push(message.clone());
             }
         }),
     )
@@ -156,7 +157,7 @@ fn recipients_dedup_group_explicit_terminated_and_all() {
         "eve",
         &[("allNotifications", "Y"), ("receiveNotifications", "N")],
     );
-    let before = tape.lock().unwrap_or_else(|err| err.into_inner()).len();
+    let before = lock(&tape).len();
     let mut note = NotificationMessage::new();
     note.topic(topic)
         .user_group_id("OPS")
@@ -172,7 +173,7 @@ fn recipients_dedup_group_explicit_terminated_and_all() {
         note.notify_user_ids(),
         ["alice", "bob", "carol", "eve", "ghost"].as_slice()
     );
-    let sqls = tape.lock().unwrap_or_else(|err| err.into_inner())[before..].to_vec();
+    let sqls = lock(&tape)[before..].to_vec();
     assert_eq!(select_count(&sqls, "NotificationTopic"), 1, "{sqls:?}");
     assert_eq!(select_count(&sqls, "NotificationTopicUser"), 1, "{sqls:?}");
     assert_eq!(select_count(&sqls, "UserGroupMember"), 1, "{sqls:?}");
@@ -273,7 +274,7 @@ fn subscriber_receives_one_message() {
     crate::script::set_context_name("label", Value::string("changed")).unwrap();
     assert_eq!(note.title_text(), Some(title.as_str()));
     assert_eq!(note.link_text(), Some(format!("go/{label}").as_str()));
-    let got = seen.lock().unwrap_or_else(|err| err.into_inner());
+    let got = lock(&seen);
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].origin_id, origin_id());
     assert!(!got[0].message_id.is_empty());
@@ -317,7 +318,7 @@ fn same_message_id_delivers_once() {
         NOTIFICATION_MESSAGE,
         Arc::new(move |message| {
             if message.message_id == watch {
-                *count.lock().unwrap_or_else(|err| err.into_inner()) += 1;
+                *lock(&count) += 1;
             }
         }),
     )
@@ -329,7 +330,7 @@ fn same_message_id_delivers_once() {
     };
     publish(NOTIFICATION_MESSAGE, &message).unwrap();
     publish(NOTIFICATION_MESSAGE, &message).unwrap();
-    assert_eq!(*seen.lock().unwrap_or_else(|err| err.into_inner()), 1);
+    assert_eq!(*lock(&seen), 1);
 
     let cache_id = unique("cache");
     let cache_seen = Arc::new(Mutex::new(0_u32));
@@ -339,7 +340,7 @@ fn same_message_id_delivers_once() {
         ENTITY_CACHE_INVALIDATE,
         Arc::new(move |message| {
             if message.message_id == watch {
-                *cache_count.lock().unwrap_or_else(|err| err.into_inner()) += 1;
+                *lock(&cache_count) += 1;
             }
         }),
     )
@@ -351,7 +352,7 @@ fn same_message_id_delivers_once() {
     };
     publish(ENTITY_CACHE_INVALIDATE, &cache).unwrap();
     publish(ENTITY_CACHE_INVALIDATE, &cache).unwrap();
-    assert_eq!(*cache_seen.lock().unwrap_or_else(|err| err.into_inner()), 2);
+    assert_eq!(*lock(&cache_seen), 2);
     let err = publish(
         "no-such",
         &TopicMessage {
@@ -386,7 +387,7 @@ fn email_failure_does_not_fail_send() {
         .send()
         .unwrap();
     assert_eq!(ctx.message().errors(), ["keep-me".to_string()]);
-    assert_eq!(seen.lock().unwrap_or_else(|err| err.into_inner()).len(), 1);
+    assert_eq!(lock(&seen).len(), 1);
     drop(sub);
 }
 
@@ -409,13 +410,13 @@ fn job_error_publishes_danger_with_job_name() {
                 .and_then(|value| value.get("jobName"))
                 .and_then(|value| value.as_str());
             if name == Some(watch.as_str()) {
-                keep.lock().unwrap_or_else(|err| err.into_inner()).push(message.clone());
+                lock(&keep).push(message.clone());
             }
         }),
     )
     .unwrap();
     crate::service::send_job_error_notification(&job, "run-1", &error);
-    let got = seen.lock().unwrap_or_else(|err| err.into_inner());
+    let got = lock(&seen);
     assert_eq!(got.len(), 1);
     assert_eq!(
         got[0].body.get("topic").and_then(|value| value.as_str()),

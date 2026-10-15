@@ -17,6 +17,7 @@
 //! Feature `http` links blocking `reqwest`. It is off unless a dependent enables it.
 
 pub mod cache;
+pub mod codec;
 pub mod collection;
 pub mod context_stack;
 pub mod datefmt;
@@ -34,6 +35,7 @@ pub mod resource;
 pub mod sgml;
 pub mod signer;
 pub mod string;
+pub mod sync;
 
 /// Marker so a downstream crate links this one.
 pub fn candidate() -> &'static str {

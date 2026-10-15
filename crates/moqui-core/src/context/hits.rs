@@ -22,6 +22,7 @@ use std::sync::{Mutex, OnceLock};
 use moqui_db::sql::insert as sql_insert;
 use moqui_lib::node::MNode;
 use moqui_lib::object::{to_plain_string, Value};
+use moqui_lib::sync::lock;
 
 use super::error::Error;
 use super::factory::ExecutionContextFactory;
@@ -215,7 +216,7 @@ impl ArtifactHits {
         if is_entity && ENTITIES_TO_SKIP.contains(&hit.name) {
             return;
         }
-        let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+        let mut state = lock(&self.state);
         let mut is_slow = false;
         if persist_bin {
             // Artifact names are unique enough that the type is not in the key.
@@ -275,7 +276,7 @@ impl ArtifactHits {
             parameter_string: hit.parameters.and_then(parameter_string),
             output_size: hit.output_size,
         };
-        let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+        let mut state = lock(&self.state);
         if state.hits.len() >= MAX_QUEUED_HITS {
             state.drop_one("row");
         } else {
@@ -287,7 +288,7 @@ impl ArtifactHits {
     /// time is over. `all` also takes the current bins that are still open, as Java's `destroy`.
     fn take(&self, all: bool) -> (Vec<HitRow>, Vec<BinRow>) {
         let now = now_millis();
-        let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+        let mut state = lock(&self.state);
         let State {
             stats,
             closed,

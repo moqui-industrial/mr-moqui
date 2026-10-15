@@ -14,6 +14,8 @@
 
 //! Password hashing. New passwords are argon2id PHC strings. Legacy checks use Shiro SimpleHash.
 
+use moqui_lib::codec::{constant_time_eq, hex_encode};
+
 use argon2::{
     password_hash::{PasswordHasher, PasswordVerifier},
     Argon2,
@@ -45,7 +47,7 @@ pub fn simple_hash(password: &str, salt: &str, hash_type: &str, base64_encode: b
     if base64_encode {
         Ok(base64::engine::general_purpose::STANDARD.encode(digest))
     } else {
-        Ok(encode_hex(&digest))
+        Ok(hex_encode(&digest))
     }
 }
 
@@ -74,14 +76,6 @@ pub(crate) fn passwords_match(
     }
     let hashed = simple_hash(plain, salt, hash_type, base64_encode)?;
     Ok(constant_time_eq(hashed.as_bytes(), stored.as_bytes()))
-}
-
-/// Compare without stopping at the first difference.
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    left.iter().zip(right).fold(0_u8, |acc, (a, b)| acc | (a ^ b)) == 0
 }
 
 /// Run a verification that always fails, so an unknown or locked account takes as long as a wrong password.
@@ -121,16 +115,6 @@ fn digest_with<D: Digest>(salt: &[u8], password: &[u8]) -> Vec<u8> {
     hasher.update(salt);
     hasher.update(password);
     hasher.finalize().to_vec()
-}
-
-pub(crate) fn encode_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(char::from(HEX[usize::from(byte >> 4)]));
-        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    out
 }
 
 #[cfg(test)]

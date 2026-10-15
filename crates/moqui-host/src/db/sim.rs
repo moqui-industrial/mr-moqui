@@ -21,12 +21,13 @@
 #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
 mod overlay {
     use std::path::{Path, PathBuf};
-    use std::sync::{Arc, Mutex, PoisonError, Weak};
+    use std::sync::{Arc, Mutex, Weak};
     use std::time::Duration;
 
     use moqui_core::entity::EntityFacade;
     use moqui_core::transaction::{PoolConfig, TransactionManager};
     use moqui_lib::error::Error;
+    use moqui_lib::sync::lock;
 
     use super::super::embedded::{ClusterRole, EmbeddedCluster, StartOptions};
 
@@ -73,21 +74,19 @@ mod overlay {
         /// True once the overlay cluster has started.
         #[must_use]
         pub fn started(&self) -> bool {
-            self.running.lock().unwrap_or_else(PoisonError::into_inner).is_some()
+            lock(&self.running).is_some()
         }
 
         /// The overlay's data directory, once started.
         #[must_use]
         pub fn data_dir(&self) -> Option<PathBuf> {
-            self.running
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
+            lock(&self.running)
                 .as_ref()
                 .map(|running| running.cluster.data_dir().to_path_buf())
         }
 
         fn start(&self) -> Result<TransactionManager, Error> {
-            let mut running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut running = lock(&self.running);
             if running.is_some() {
                 return Err(Error::new("the sim overlay already started"));
             }
@@ -119,7 +118,7 @@ mod overlay {
 
     impl Drop for SimOverlay {
         fn drop(&mut self) {
-            let Some(mut running) = self.running.lock().unwrap_or_else(PoisonError::into_inner).take() else {
+            let Some(mut running) = lock(&self.running).take() else {
                 return;
             };
             if let Err(err) = running.cluster.stop() {
@@ -181,5 +180,4 @@ mod overlay {
     }
 }
 
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
 pub use overlay::SimOverlay;

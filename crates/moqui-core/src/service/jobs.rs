@@ -30,9 +30,10 @@ use std::time::Duration;
 use moqui_db::sql::{insert, update, CompareOp, Condition};
 use moqui_lib::error::Error as LibError;
 use moqui_lib::object::{basic_convert, to_plain_string, Value};
+use moqui_lib::sync::lock;
 
 use super::call::CallOptions;
-use super::pool::{lock_mutex, Shared, Work};
+use super::pool::{Shared, Work};
 use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
 use crate::driver::DbConnection;
 use crate::entity::{EntityFacade, EntityValue};
@@ -826,12 +827,12 @@ fn clip(text: &str) -> String {
 impl Shared {
     /// The factory this pool serves. `None` before boot attaches it or after it is dropped.
     pub(crate) fn factory(&self) -> Option<Arc<ExecutionContextFactory>> {
-        lock_mutex(&self.factory).upgrade()
+        lock(&self.factory).upgrade()
     }
 
     /// Room for more jobs: workers plus the conf's job queue, less what is running or waiting.
     pub(crate) fn job_slots(&self) -> i64 {
-        let state = lock_mutex(&self.state);
+        let state = lock(&self.state);
         let total = i64::try_from(self.workers + self.job_queue_max).unwrap_or(i64::MAX);
         let busy = i64::try_from(state.active + state.queue.len()).unwrap_or(i64::MAX);
         total - busy
@@ -840,7 +841,7 @@ impl Shared {
     /// Queue a job run. False when the queue is full or the pool stopped.
     pub(crate) fn submit_job(&self, run: JobRun) -> bool {
         {
-            let mut state = lock_mutex(&self.state);
+            let mut state = lock(&self.state);
             if state.stop || state.queue.len() >= self.queue_cap {
                 return false;
             }

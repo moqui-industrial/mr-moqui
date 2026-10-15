@@ -23,8 +23,12 @@ use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
+
 use moqui_lib::env;
 use moqui_lib::node::MNode;
+use moqui_lib::sync::{lock, read, write};
 
 use super::artifact::{ArtifactStack, AuthzGuard};
 
@@ -336,18 +340,13 @@ impl ExecutionContextFactory {
     /// not ask for another extension of its own type.
     pub fn extension<T: std::any::Any + Send + Sync>(&self, init: impl FnOnce(&Self) -> T) -> Arc<T> {
         let key = std::any::TypeId::of::<T>();
-        let existing = self
-            .extensions
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .get(&key)
-            .cloned();
+        let existing = lock(&self.extensions).get(&key).cloned();
         let value: Arc<dyn std::any::Any + Send + Sync> = match existing {
             Some(value) => value,
             None => {
                 // Not under the lock, so init can read other extensions.
                 let made: Arc<dyn std::any::Any + Send + Sync> = Arc::new(init(self));
-                let mut map = self.extensions.lock().unwrap_or_else(|err| err.into_inner());
+                let mut map = lock(&self.extensions);
                 Arc::clone(map.entry(key).or_insert(made))
             }
         };
@@ -415,9 +414,7 @@ impl ExecutionContextFactory {
 
     /// Hit times recorded for a tarpit key, oldest first.
     pub fn tarpit_times(&self, key: &str) -> Vec<i64> {
-        self.tarpit_hits
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
+        lock(&self.tarpit_hits)
             .by_key
             .get(key)
             .map(|(times, _)| times.clone())
@@ -428,7 +425,7 @@ impl ExecutionContextFactory {
     /// doubled since the last sweep, keys with no hit within their own `keep_ms` are dropped too.
     pub fn record_tarpit_hit(&self, key: &str, now_ms: i64, keep_ms: i64) {
         let keep_ms = keep_ms.max(1);
-        let mut hits = self.tarpit_hits.lock().unwrap_or_else(|err| err.into_inner());
+        let mut hits = lock(&self.tarpit_hits);
         let (list, keep) = hits.by_key.entry(key.to_string()).or_default();
         list.retain(|time| now_ms - *time < keep_ms);
         list.push(now_ms);
@@ -441,21 +438,13 @@ impl ExecutionContextFactory {
     }
 
     pub fn clear_tarpit_hits(&self, key: &str) {
-        self.tarpit_hits
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .by_key
-            .remove(key);
+        lock(&self.tarpit_hits).by_key.remove(key);
     }
 
     /// The number of keys with recorded tarpit hits, for tests.
     #[cfg(test)]
     pub(crate) fn tarpit_key_count(&self) -> usize {
-        self.tarpit_hits
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .by_key
-            .len()
+        lock(&self.tarpit_hits).by_key.len()
     }
 
     pub fn conf_text(&self) -> &str {
@@ -464,12 +453,12 @@ impl ExecutionContextFactory {
 
     /// Install the entity facade. `dbresource://` reads and writes through it.
     pub fn set_entity(&self, facade: EntityFacade) {
-        *self.entity.write().unwrap_or_else(|err| err.into_inner()) = Some(facade);
+        *write(&self.entity) = Some(facade);
     }
 
     /// The installed entity facade, when the host has registered one.
     pub fn entity(&self) -> Option<EntityFacade> {
-        self.entity.read().unwrap_or_else(|err| err.into_inner()).clone()
+        read(&self.entity).clone()
     }
 }
 
@@ -949,38 +938,7 @@ fn generate_secret() -> Result<String, Error> {
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes)
         .map_err(|err| Error::new(format!("could not read random bytes for a secret property: {err}")))?;
-    Ok(standard_base64(&bytes))
-}
-
-pub(crate) fn standard_base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    let mut index = 0;
-    while index + 3 <= bytes.len() {
-        let chunk = ((bytes[index] as u32) << 16) | ((bytes[index + 1] as u32) << 8) | (bytes[index + 2] as u32);
-        push_base64(&mut out, ALPHABET, chunk, 4);
-        index += 3;
-    }
-    let rest = bytes.len() - index;
-    if rest == 1 {
-        let chunk = (bytes[index] as u32) << 16;
-        push_base64(&mut out, ALPHABET, chunk, 2);
-        out.push('=');
-        out.push('=');
-    } else if rest == 2 {
-        let chunk = ((bytes[index] as u32) << 16) | ((bytes[index + 1] as u32) << 8);
-        push_base64(&mut out, ALPHABET, chunk, 3);
-        out.push('=');
-    }
-    out
-}
-
-fn push_base64(out: &mut String, alphabet: &[u8], chunk: u32, count: usize) {
-    let shifts = [18, 12, 6, 0];
-    for shift in shifts.into_iter().take(count) {
-        let piece = ((chunk >> shift) & 63) as usize;
-        out.push(alphabet[piece] as char);
-    }
+    Ok(STANDARD.encode(bytes))
 }
 
 fn append_env_secrets(path: &Path, pairs: &[(String, String)]) -> Result<(), Error> {
@@ -1145,7 +1103,7 @@ mod tests {
     use std::rc::Rc;
     use std::sync::Arc;
 
-    use super::{standard_base64, ExecutionContext, ExecutionContextFactory, ENTERED};
+    use super::{ExecutionContext, ExecutionContextFactory, ENTERED};
 
     /// The entered context's factory is `factory`, read through the context's own state.
     fn current_is(factory: &Arc<ExecutionContextFactory>) -> Option<bool> {
@@ -1212,16 +1170,6 @@ mod tests {
             assert_eq!(kept, Some(true));
         }
         assert!(!ExecutionContext::is_entered());
-    }
-
-    #[test]
-    fn standard_base64_matches_padded_vectors() {
-        assert_eq!(standard_base64(b"foobar"), "Zm9vYmFy");
-        assert_eq!(standard_base64(b"fooba"), "Zm9vYmE=");
-        assert_eq!(standard_base64(b"foob"), "Zm9vYg==");
-        assert_eq!(standard_base64(b"f"), "Zg==");
-        assert_eq!(standard_base64(&[0_u8; 32]).len(), 44);
-        assert!(standard_base64(&[0_u8; 32]).ends_with('='));
     }
 
     #[test]

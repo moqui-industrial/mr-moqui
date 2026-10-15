@@ -15,6 +15,8 @@
 //! Reading context-stack values from Rust: entity values and lists as maps and items, and frame
 //! calls the screen renderer makes between its own steps.
 
+use moqui_lib::sync::lock;
+
 use indexmap::IndexMap;
 
 use super::*;
@@ -25,7 +27,7 @@ pub(crate) fn value_map(value: &Value) -> Option<IndexMap<String, Value>> {
         Value::Map(entries) => Some(entries.clone()),
         Value::Object(object) => {
             let cell = object.downcast::<EntityCell>()?;
-            let guard = cell.lock().unwrap_or_else(|err| err.into_inner());
+            let guard = lock(&cell);
             Some(
                 guard
                     .fields()
@@ -44,7 +46,7 @@ pub(crate) fn value_field(value: &Value, field: &str) -> Option<Value> {
         Value::Map(entries) => entries.get(field).cloned(),
         Value::Object(object) => {
             let cell = object.downcast::<EntityCell>()?;
-            let guard = cell.lock().unwrap_or_else(|err| err.into_inner());
+            let guard = lock(&cell);
             guard.get(field).cloned()
         }
         _ => None,
@@ -57,7 +59,7 @@ pub(crate) fn value_entity_name(value: &Value) -> Option<String> {
         return None;
     };
     let cell = object.downcast::<EntityCell>()?;
-    let guard = cell.lock().unwrap_or_else(|err| err.into_inner());
+    let guard = lock(&cell);
     Some(guard.entity_name().to_string())
 }
 

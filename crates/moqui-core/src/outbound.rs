@@ -20,9 +20,10 @@
 //! (`plans/archive/Wasm.md` W5). Sim denial and URL redaction are the caller's, before [`send`].
 
 use std::fmt;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use moqui_lib::error::Error;
+use moqui_lib::sync::InstallSlot;
 
 /// The methods `remote-rest` sends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,23 +87,16 @@ pub trait HttpSender: Send + Sync {
     fn send(&self, request: Request) -> Result<Response, Error>;
 }
 
-fn slot() -> &'static RwLock<Option<Arc<dyn HttpSender>>> {
-    static SLOT: RwLock<Option<Arc<dyn HttpSender>>> = RwLock::new(None);
-    &SLOT
-}
+static SENDER: InstallSlot<dyn HttpSender> = InstallSlot::new();
 
 /// Use `sender` for every outbound call in this process.
 pub fn install_http_sender(sender: Arc<dyn HttpSender>) {
-    *slot().write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sender);
+    SENDER.install(sender);
 }
 
 /// Remove the installed sender. The `http` feature's client is used again, if built.
 pub fn clear_http_sender() {
-    *slot().write().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-}
-
-fn installed() -> Option<Arc<dyn HttpSender>> {
-    slot().read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    SENDER.clear();
 }
 
 /// Send `request` on the installed sender, else on reqwest when the `http` feature is built.
@@ -122,7 +116,7 @@ pub fn send(request: Request) -> Result<Response, Error> {
             redacted(&request.url)
         )));
     }
-    if let Some(sender) = installed() {
+    if let Some(sender) = SENDER.get() {
         return sender.send(request);
     }
     send_default(request)

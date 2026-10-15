@@ -21,12 +21,13 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use crate::error::Error;
+use crate::sync::lock;
 
 static PROPERTIES: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 static DOTENV: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
 fn with_properties<T>(f: impl FnOnce(&mut HashMap<String, String>) -> T) -> T {
-    let mut guard = PROPERTIES.lock().unwrap_or_else(|err| err.into_inner());
+    let mut guard = lock(&PROPERTIES);
     let map = guard.get_or_insert_with(HashMap::new);
     f(map)
 }
@@ -70,7 +71,7 @@ fn lookup_one(name: &str) -> Option<String> {
 }
 
 fn with_dotenv<T>(f: impl FnOnce(&mut HashMap<String, String>) -> T) -> T {
-    let mut guard = DOTENV.lock().unwrap_or_else(|err| err.into_inner());
+    let mut guard = lock(&DOTENV);
     let map = guard.get_or_insert_with(HashMap::new);
     f(map)
 }
@@ -112,7 +113,7 @@ pub fn load_dotenv(text: &str) {
 
 /// Drop parsed dotenv values so the next [`load_dotenv`] or [`load_dotenv_file`] is the only source.
 pub fn clear_dotenv() {
-    let mut guard = DOTENV.lock().unwrap_or_else(|err| err.into_inner());
+    let mut guard = lock(&DOTENV);
     if let Some(map) = guard.as_mut() {
         map.clear();
     }

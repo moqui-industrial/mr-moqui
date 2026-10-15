@@ -29,7 +29,9 @@ use moqui_db::sql::{
     delete as sql_delete, insert as sql_insert, select as sql_select, update as sql_update, CompareOp, Condition,
     FieldRef, LimitOffset,
 };
+use moqui_lib::codec::hex_encode;
 use moqui_lib::object::Value;
+use moqui_lib::sync::lock;
 use serde_json::Value as Json;
 use sha2::Sha256;
 
@@ -979,7 +981,7 @@ pub(crate) fn with_session<T>(body: impl FnOnce(&mut Memory) -> T) -> T {
 }
 
 fn lock_sessions(factory: &ExecutionContextFactory) -> MutexGuard<'_, SessionTable> {
-    factory.sessions.lock().unwrap_or_else(|err| err.into_inner())
+    lock(&factory.sessions)
 }
 
 /// A new [`LiveSession::revision`]. Unique in the process, so a session put back under the same
@@ -992,17 +994,7 @@ fn next_revision() -> u64 {
 fn random_hex(size: usize) -> Result<String, Error> {
     let mut bytes = vec![0_u8; size];
     getrandom::fill(&mut bytes).map_err(|err| Error::new(format!("could not read random bytes: {err}")))?;
-    Ok(encode_hex(&bytes))
-}
-
-fn encode_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(char::from(HEX[usize::from(byte >> 4)]));
-        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    out
+    Ok(hex_encode(&bytes))
 }
 
 fn presented_id(session_cookie: Option<&str>) -> Result<Option<String>, Error> {
@@ -2059,7 +2051,7 @@ fn parse_attributes(text: &str) -> Result<BTreeMap<String, Json>, Error> {
 #[cfg(test)]
 pub(crate) fn cookie_property_lock() -> MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|err| err.into_inner())
+    lock(&LOCK)
 }
 
 #[cfg(test)]
@@ -2653,9 +2645,7 @@ mod tests {
 
     /// Called by [`flush_id`] after it copied what it writes and before its SQL.
     pub(super) fn flush_hook(id: &str) {
-        let hook = FLUSH_HOOK
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
+        let hook = lock(&FLUSH_HOOK)
             .as_ref()
             .filter(|(hook_id, _)| hook_id == id)
             .map(|(_, hook)| Arc::clone(hook));
@@ -2677,14 +2667,14 @@ mod tests {
             let release_rx = std::sync::Mutex::new(release_rx);
             let hook: FlushHook = Arc::new(move || {
                 let _ = entered_tx.send(());
-                let _ = release_rx.lock().unwrap_or_else(|err| err.into_inner()).recv();
+                let _ = lock(&release_rx).recv();
             });
-            *FLUSH_HOOK.lock().unwrap_or_else(|err| err.into_inner()) = Some((id.to_string(), hook));
+            *lock(&FLUSH_HOOK) = Some((id.to_string(), hook));
             Self { entered, release }
         }
 
         fn release(self) {
-            *FLUSH_HOOK.lock().unwrap_or_else(|err| err.into_inner()) = None;
+            *lock(&FLUSH_HOOK) = None;
             let _ = self.release.send(());
         }
     }

@@ -27,6 +27,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use moqui_lib::sync::lock;
+
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use moqui_core::cluster::Sender;
@@ -883,10 +885,6 @@ fn join_handle(name: &str, handle: JoinHandle<()>) {
     if handle.join().is_err() {
         tracing::error!("{name} thread panicked");
     }
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|err| err.into_inner())
 }
 
 #[cfg(test)]

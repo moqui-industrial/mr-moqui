@@ -14,6 +14,8 @@
 
 //! Entity finds, lists, and values as scripts see them.
 
+use moqui_lib::sync::lock;
+
 use rquickjs::class::{PropertyDescriptor, PropertyName};
 use rquickjs::Atom;
 
@@ -546,10 +548,7 @@ impl ScriptList {
 
     /// The rows as they are now.
     pub(crate) fn values(&self) -> Vec<EntityValue> {
-        self.cells
-            .iter()
-            .map(|cell| cell.lock().unwrap_or_else(|err| err.into_inner()).clone())
-            .collect()
+        self.cells.iter().map(|cell| lock(cell).clone()).collect()
     }
 }
 
@@ -713,7 +712,7 @@ impl HostList {
                     .cells()
                     .iter()
                     .filter(|cell| {
-                        let row = cell.lock().unwrap_or_else(|err| err.into_inner());
+                        let row = lock(cell);
                         let from = timestamp_of(row.get(&from_name).unwrap_or(&Value::Null));
                         let thru = timestamp_of(row.get(&thru_name).unwrap_or(&Value::Null));
                         let started = from.is_null()
@@ -755,7 +754,7 @@ impl HostEntity {
     }
 
     fn val(&self) -> MutexGuard<'_, EntityValue> {
-        self.inner.lock().unwrap_or_else(|err| err.into_inner())
+        lock(&self.inner)
     }
 
     /// A copy of the value, for a write: the write runs entity ECA rules, and a rule that reads this same value

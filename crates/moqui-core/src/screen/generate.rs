@@ -28,6 +28,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use moqui_lib::node::MNode;
+use moqui_lib::sync::lock;
 use rquickjs::{Array, Ctx, Object};
 
 use super::cache::ScreenFacade;
@@ -141,12 +142,12 @@ impl std::fmt::Debug for Generated {
 
 impl Generated {
     pub(super) fn dependencies(&self) -> Vec<super::definition::Source> {
-        self.dependencies.lock().unwrap_or_else(|err| err.into_inner()).clone()
+        lock(&self.dependencies).clone()
     }
 
     /// Record the sources of another definition this one's generated code was made from.
     pub(super) fn add_dependencies(&self, sources: &[super::definition::Source]) {
-        let mut dependencies = self.dependencies.lock().unwrap_or_else(|err| err.into_inner());
+        let mut dependencies = lock(&self.dependencies);
         for source in sources {
             if !dependencies.iter().any(|known| known.location == source.location) {
                 dependencies.push(source.clone());
@@ -155,105 +156,71 @@ impl Generated {
     }
 
     pub(super) fn form(&self, name: &str) -> Option<Arc<FormInstance>> {
-        self.forms
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .get(name)
-            .cloned()
+        lock(&self.forms).get(name).cloned()
     }
 
     pub(super) fn put_form(&self, name: &str, form: Arc<FormInstance>) {
-        self.forms
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .insert(name.to_string(), form);
+        lock(&self.forms).insert(name.to_string(), form);
     }
 
     pub(super) fn static_template(&self, key: &str) -> Option<Arc<StaticTemplate>> {
-        self.statics.lock().unwrap_or_else(|err| err.into_inner()).get(key)
+        lock(&self.statics).get(key)
     }
 
     pub(super) fn put_static_template(&self, key: String, template: Arc<StaticTemplate>) {
         // One for each path the screen was requested by: many odd paths for one screen do not grow without end.
-        self.statics
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .insert(key, template);
+        lock(&self.statics).insert(key, template);
     }
 
     pub(super) fn static_failure(&self, key: &str) -> Option<String> {
-        self.static_failures
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .get(key)
-            .cloned()
+        lock(&self.static_failures).get(key).cloned()
     }
 
     pub(super) fn put_static_failure(&self, key: String, reason: String) {
-        let mut failures = self.static_failures.lock().unwrap_or_else(|err| err.into_inner());
+        let mut failures = lock(&self.static_failures);
         if failures.len() < MAX_STATIC_TEMPLATES {
             failures.insert(key, reason);
         }
     }
 
     pub(super) fn static_build_lock(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.static_build.lock().unwrap_or_else(|err| err.into_inner())
+        lock(&self.static_build)
     }
 
     pub(super) fn eligibility(&self, key: &str) -> Option<Arc<Eligibility>> {
-        self.eligibility
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .get(key)
-            .cloned()
+        lock(&self.eligibility).get(key).cloned()
     }
 
     pub(super) fn put_eligibility(&self, key: String, value: Arc<Eligibility>) {
-        self.eligibility
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .insert(key, value);
+        lock(&self.eligibility).insert(key, value);
     }
 
     fn unit(&self, key: &str) -> Option<Option<Arc<Unit>>> {
-        self.units
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .get(key)
-            .cloned()
+        lock(&self.units).get(key).cloned()
     }
 
     fn put_unit(&self, key: String, unit: Option<Arc<Unit>>) {
-        self.units
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .insert(key, unit);
+        lock(&self.units).insert(key, unit);
     }
 
     fn dynamic_unit(&self, key: &str) -> Option<Arc<Unit>> {
-        self.dynamic_units
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .get(key)
+        lock(&self.dynamic_units).get(key)
     }
 
     fn put_dynamic_unit(&self, key: String, unit: Arc<Unit>) {
-        self.dynamic_units
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .insert(key, unit);
+        lock(&self.dynamic_units).insert(key, unit);
     }
 
     /// The number of units generated, for tests.
     #[cfg(test)]
     pub fn unit_count(&self) -> usize {
-        self.units.lock().unwrap_or_else(|err| err.into_inner()).len() + self.dynamic_unit_count()
+        lock(&self.units).len() + self.dynamic_unit_count()
     }
 
     /// The number of dynamic form units kept, for tests.
     #[cfg(test)]
     pub fn dynamic_unit_count(&self) -> usize {
-        self.dynamic_units.lock().unwrap_or_else(|err| err.into_inner()).len()
+        lock(&self.dynamic_units).len()
     }
 }
 

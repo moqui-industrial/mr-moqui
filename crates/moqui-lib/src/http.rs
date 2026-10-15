@@ -37,6 +37,7 @@ use reqwest::header::{HeaderName, HeaderValue};
 use serde::Serialize;
 
 use crate::error::Error;
+use crate::sync::lock;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -493,7 +494,7 @@ impl Lookup {
         let shared = std::sync::Arc::new(std::sync::Mutex::new(LookupState::default()));
         let filled = std::sync::Arc::clone(&shared);
         let finish = move |result: LookupResult| {
-            let mut state = filled.lock().unwrap_or_else(|err| err.into_inner());
+            let mut state = lock(&filled);
             state.result = Some(result);
             if let Some(waker) = state.waker.take() {
                 waker.wake();
@@ -514,7 +515,7 @@ impl std::future::Future for Lookup {
     type Output = LookupResult;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
-        let mut state = self.shared.lock().unwrap_or_else(|err| err.into_inner());
+        let mut state = lock(&self.shared);
         match state.result.take() {
             Some(result) => std::task::Poll::Ready(result),
             None => {

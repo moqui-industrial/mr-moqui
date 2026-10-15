@@ -74,11 +74,7 @@ impl Embedder for HashEmbedder {
                     .split(|ch: char| !ch.is_alphanumeric())
                     .filter(|word| !word.is_empty())
                 {
-                    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-                    for byte in word.to_lowercase().bytes() {
-                        hash ^= u64::from(byte);
-                        hash = hash.wrapping_mul(0x0100_0000_01b3);
-                    }
+                    let hash = moqui_lib::codec::fnv1a(word.to_lowercase().as_bytes());
                     let slot = usize::try_from(hash % self.dimensions as u64).unwrap_or(0);
                     vector[slot] += 1.0;
                 }

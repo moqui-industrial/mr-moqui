@@ -18,10 +18,11 @@ use std::any::Any;
 use std::collections::VecDeque;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
 use moqui_lib::node::MNode;
+use moqui_lib::sync::lock;
 
 use super::pool::WorkCleanup;
 use crate::context::{Error, ErrorKind, ExecutionContextFactory};
@@ -348,10 +349,6 @@ fn join_one(handle: JoinHandle<()>) {
     let _ = handle.join();
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|err| err.into_inner())
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -657,8 +654,8 @@ mod tests {
 
     impl Drop for NotifyOnDrop {
         fn drop(&mut self) {
-            let (lock, cv) = self.0.as_ref();
-            *lock.lock().unwrap_or_else(|err| err.into_inner()) = true;
+            let (flag, cv) = self.0.as_ref();
+            *moqui_lib::sync::lock(flag) = true;
             cv.notify_all();
         }
     }

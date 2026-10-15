@@ -17,11 +17,12 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use moqui_lib::error::Error;
+use moqui_lib::sync::lock;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
@@ -150,19 +151,16 @@ impl Connection {
             message["sessionId"] = Value::String(session.to_string());
         }
         let (tx, rx) = oneshot::channel();
-        self.pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(id, tx);
+        lock(&self.pending).insert(id, tx);
         if self.outgoing.send(message.to_string()).is_err() {
-            self.pending.lock().unwrap_or_else(PoisonError::into_inner).remove(&id);
+            lock(&self.pending).remove(&id);
             return Err(Error::new("the browser connection is closed"));
         }
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(Error::new(format!("the browser closed before answering {method}"))),
             Err(_) => {
-                self.pending.lock().unwrap_or_else(PoisonError::into_inner).remove(&id);
+                lock(&self.pending).remove(&id);
                 Err(Error::new(format!(
                     "the browser did not answer {method} in {} seconds",
                     timeout.as_secs()
@@ -174,7 +172,7 @@ impl Connection {
     /// The events of `session`, including any that arrived before this call.
     pub(super) fn events(&self, session: &str) -> mpsc::UnboundedReceiver<Value> {
         let (tx, rx) = mpsc::unbounded_channel();
-        let mut routes = self.routes.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut routes = lock(&self.routes);
         for event in routes.early.remove(session).unwrap_or_default() {
             let _ = tx.send(event);
         }
@@ -184,15 +182,12 @@ impl Connection {
 
     /// Stop routing the events of `session`.
     pub(super) fn forget(&self, session: &str) {
-        self.routes
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .forget(session);
+        lock(&self.routes).forget(session);
     }
 
     fn dispatch(&self, message: Value) {
         if let Some(id) = message.get("id").and_then(Value::as_u64) {
-            let waiter = self.pending.lock().unwrap_or_else(PoisonError::into_inner).remove(&id);
+            let waiter = lock(&self.pending).remove(&id);
             if let Some(waiter) = waiter {
                 let result = match message.get("error") {
                     Some(error) => Err(Error::new(format!(
@@ -209,7 +204,7 @@ impl Connection {
             return;
         };
         let session = session.as_str();
-        let mut routes = self.routes.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut routes = lock(&self.routes);
         match routes.listeners.get(session) {
             Some(listener) => {
                 let _ = listener.send(message);
@@ -221,21 +216,11 @@ impl Connection {
 
     fn close(&self) {
         self.closed.store(true, Ordering::Release);
-        let waiters: Vec<_> = self
-            .pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .drain()
-            .map(|(_, waiter)| waiter)
-            .collect();
+        let waiters: Vec<_> = lock(&self.pending).drain().map(|(_, waiter)| waiter).collect();
         for waiter in waiters {
             let _ = waiter.send(Err(Error::new("the browser connection closed")));
         }
-        self.routes
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .listeners
-            .clear();
+        lock(&self.routes).listeners.clear();
     }
 }
 

@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use moqui_lib::error::Error;
 use moqui_lib::object::{compare_obj, Value};
+use moqui_lib::sync::lock;
 
 use crate::driver::{DbCancel, DbConnection, DbDriver, DbRow};
 use crate::entity::{EntityFacade, EntityGroup};
@@ -199,7 +200,7 @@ impl DbConnection for MemConn {
 
     fn begin(&mut self) -> Result<(), Error> {
         if self.local.is_none() {
-            let committed = self.store.lock().unwrap_or_else(|err| err.into_inner()).clone();
+            let committed = lock(&self.store).clone();
             self.local = Some(committed);
             self.dirty.clear();
         }
@@ -211,7 +212,7 @@ impl DbConnection for MemConn {
             return Ok(());
         };
         let dirty = std::mem::take(&mut self.dirty);
-        let mut committed = self.store.lock().unwrap_or_else(|err| err.into_inner());
+        let mut committed = lock(&self.store);
         for table in dirty {
             let rows = local.get(&table).cloned().unwrap_or_default();
             committed.insert(table, rows);
@@ -248,7 +249,7 @@ impl MemConn {
         // The pool checks out a connection with `SELECT 1`.
         if let Some(tape) = &self.tape {
             if !sql.eq_ignore_ascii_case("SELECT 1") {
-                tape.lock().unwrap_or_else(|err| err.into_inner()).push(sql.to_string());
+                lock(tape).push(sql.to_string());
             }
         }
         if sql.eq_ignore_ascii_case("SELECT 1") {
@@ -443,12 +444,7 @@ impl MemConn {
         if let Some(local) = &self.local {
             return local.get(table).cloned().unwrap_or_default();
         }
-        self.store
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .get(table)
-            .cloned()
-            .unwrap_or_default()
+        lock(&self.store).get(table).cloned().unwrap_or_default()
     }
 
     fn put_table(&mut self, table: &str, rows: Vec<Row>) {
@@ -457,10 +453,7 @@ impl MemConn {
             self.dirty.insert(table.to_string());
             return;
         }
-        self.store
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .insert(table.to_string(), rows);
+        lock(&self.store).insert(table.to_string(), rows);
     }
 }
 

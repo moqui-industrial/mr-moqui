@@ -19,16 +19,18 @@
 //! (`crate::service::sso`). SAML flows are defined and report that SAML is not available.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, PoisonError, RwLock};
+use std::fmt;
+use std::sync::Arc;
 
 use moqui_lib::error::Error;
 use moqui_lib::object::Value;
+use moqui_lib::sync::InstallSlot;
 
 /// What a caller sees when SSO is used and the host installed no client.
 pub const SSO_UNAVAILABLE: &str = "SSO is not available in this build";
 
-/// One `OidcFlow` row.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// One `OidcFlow` row. `Debug` leaves out the secret.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct OidcConfig {
     /// `OctApple`, `OctAzureAd`, `OctGoogle`, `OctKeycloak`, or `OctOther`.
     pub client_type: String,
@@ -46,8 +48,8 @@ pub struct OidcConfig {
     pub apple_key_id: String,
 }
 
-/// One `OauthFlow` row.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// One `OauthFlow` row. `Debug` leaves out the secret.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct OauthConfig {
     /// `OctGitHub`, `OctGoogle`, ..., or `OctOauth20` with the URLs set.
     pub client_type: String,
@@ -57,6 +59,46 @@ pub struct OauthConfig {
     pub token_url: String,
     pub user_info_url: String,
     pub scope: String,
+}
+
+impl fmt::Debug for OidcConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OidcConfig")
+            .field("client_type", &self.client_type)
+            .field("client_id", &self.client_id)
+            .field("secret", &redacted(&self.secret))
+            .field("discovery_uri", &self.discovery_uri)
+            .field("realm", &self.realm)
+            .field("base_uri", &self.base_uri)
+            .field("preferred_jws_algorithm", &self.preferred_jws_algorithm)
+            .field("use_nonce", &self.use_nonce)
+            .field("apple_team_id", &self.apple_team_id)
+            .field("apple_key_id", &self.apple_key_id)
+            .finish()
+    }
+}
+
+impl fmt::Debug for OauthConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OauthConfig")
+            .field("client_type", &self.client_type)
+            .field("client_id", &self.client_id)
+            .field("secret", &redacted(&self.secret))
+            .field("authorize_url", &self.authorize_url)
+            .field("token_url", &self.token_url)
+            .field("user_info_url", &self.user_info_url)
+            .field("scope", &self.scope)
+            .finish()
+    }
+}
+
+/// What `Debug` shows for a secret: whether one is set, never its value.
+fn redacted(secret: &str) -> &'static str {
+    if secret.is_empty() {
+        ""
+    } else {
+        "<redacted>"
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -129,25 +171,40 @@ pub trait SsoClient: Send + Sync {
     ) -> Result<Option<String>, Error>;
 }
 
-fn slot() -> &'static RwLock<Option<Arc<dyn SsoClient>>> {
-    static SLOT: RwLock<Option<Arc<dyn SsoClient>>> = RwLock::new(None);
-    &SLOT
-}
+static CLIENT: InstallSlot<dyn SsoClient> = InstallSlot::new();
 
 /// Use `client` for every SSO flow in this process.
 pub fn install_sso_client(client: Arc<dyn SsoClient>) {
-    *slot().write().unwrap_or_else(PoisonError::into_inner) = Some(client);
+    CLIENT.install(client);
 }
 
 /// Remove the installed client.
 pub fn clear_sso_client() {
-    *slot().write().unwrap_or_else(PoisonError::into_inner) = None;
+    CLIENT.clear();
 }
 
 pub(crate) fn client() -> Result<Arc<dyn SsoClient>, Error> {
-    slot()
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone()
-        .ok_or_else(|| Error::new(SSO_UNAVAILABLE))
+    CLIENT.get().ok_or_else(|| Error::new(SSO_UNAVAILABLE))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OauthConfig, OidcConfig};
+
+    #[test]
+    fn debug_leaves_out_the_client_secret() {
+        let oidc = OidcConfig {
+            client_id: "app".into(),
+            secret: "oidc-secret-value".into(),
+            ..OidcConfig::default()
+        };
+        let oauth = OauthConfig {
+            client_id: "app".into(),
+            secret: "oauth-secret-value".into(),
+            ..OauthConfig::default()
+        };
+        let shown = format!("{oidc:?} {oauth:?}");
+        assert!(shown.contains("client_id: \"app\"") && shown.contains("<redacted>"));
+        assert!(!shown.contains("secret-value"));
+    }
 }

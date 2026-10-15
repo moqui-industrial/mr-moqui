@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use moqui_lib::node::MNode;
+use moqui_lib::sync::{read, write};
 
 use super::feed::note_touch;
 use crate::entity::facade::EntityFacade;
@@ -86,7 +87,7 @@ pub(crate) fn add_eca_rules(facade: &EntityFacade, eecas: &str) -> Result<(), mo
     let root = MNode::parse_text("eecas", eecas)?;
     let mut index = (*eca_index(facade)).clone();
     index.ingest(&root);
-    *facade.inner.eca_rules.write().unwrap_or_else(|err| err.into_inner()) = Some(Arc::new(index));
+    *write(&facade.inner.eca_rules) = Some(Arc::new(index));
     Ok(())
 }
 
@@ -203,10 +204,10 @@ impl EcaIndex {
 /// The facade's ECA rules, read from the entity directories on first use.
 fn eca_index(facade: &EntityFacade) -> Arc<EcaIndex> {
     let rules = &facade.inner.eca_rules;
-    if let Some(index) = rules.read().unwrap_or_else(|err| err.into_inner()).as_ref() {
+    if let Some(index) = read(rules).as_ref() {
         return Arc::clone(index);
     }
-    let mut slot = rules.write().unwrap_or_else(|err| err.into_inner());
+    let mut slot = write(rules);
     Arc::clone(slot.get_or_insert_with(|| Arc::new(EcaIndex::load(&facade.entity_dirs()))))
 }
 

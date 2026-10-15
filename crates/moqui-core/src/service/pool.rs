@@ -27,12 +27,13 @@ use std::any::Any;
 use std::collections::{BTreeMap, VecDeque};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use moqui_lib::node::MNode;
 use moqui_lib::object::Value;
+use moqui_lib::sync::lock;
 
 use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
 use crate::entity::EntityFacade;
@@ -220,7 +221,7 @@ pub struct PoolStatus {
 
 impl Shared {
     pub(crate) fn note_pass(&self, report: &super::jobs::PassReport) {
-        let mut stats = lock_mutex(&self.runner);
+        let mut stats = lock(&self.runner);
         stats.last_execute_millis = jiff::Timestamp::now().as_millisecond();
         stats.execute_count += 1;
         stats.total_jobs_run += u64::try_from(report.jobs_run).unwrap_or(0);
@@ -318,7 +319,7 @@ impl ServicePools {
 
     /// Queued inline work not yet run.
     pub fn pending(&self) -> usize {
-        self.inline.as_ref().map_or(0, |inline| lock_mutex(&inline.queue).len())
+        self.inline.as_ref().map_or(0, |inline| lock(&inline.queue).len())
     }
 
     /// Run queued inline work on this thread, oldest first, until the queue is empty. Work queued
@@ -339,7 +340,7 @@ impl ServicePools {
         let _done = DrainFlag(&inline.draining);
         let mut ran = 0;
         loop {
-            let Some(work) = lock_mutex(&inline.queue).pop_front() else {
+            let Some(work) = lock(&inline.queue).pop_front() else {
                 break;
             };
             run_inline(work);
@@ -353,7 +354,7 @@ impl ServicePools {
         let Some(shared) = &self.shared else {
             return;
         };
-        lock_mutex(&shared.tick_hook).push(Arc::new(hook));
+        lock(&shared.tick_hook).push(Arc::new(hook));
     }
 
     /// Scheduler pass interval. Idle pools report [`DEFAULT_CHECK_SECONDS`].
@@ -375,7 +376,7 @@ impl ServicePools {
         let Some(shared) = self.shared.as_ref() else {
             return PoolStatus::default();
         };
-        let state = lock_mutex(&shared.state);
+        let state = lock(&shared.state);
         PoolStatus {
             workers: shared.workers,
             active: state.active,
@@ -386,7 +387,7 @@ impl ServicePools {
 
     /// The scheduler pass counters, or `None` when the pool is idle and runs no scheduler.
     pub fn runner_stats(&self) -> Option<RunnerStats> {
-        self.shared.as_ref().map(|shared| lock_mutex(&shared.runner).clone())
+        self.shared.as_ref().map(|shared| lock(&shared.runner).clone())
     }
 
     /// Worker count and queue capacity. Idle is `(0, 0)`.
@@ -467,7 +468,7 @@ impl ServicePools {
     /// Tell the pool which factory it serves. Boot calls this once the factory is built.
     pub fn attach(&self, factory: &Arc<ExecutionContextFactory>) {
         if let Some(shared) = &self.shared {
-            *lock_mutex(&shared.factory) = Arc::downgrade(factory);
+            *lock(&shared.factory) = Arc::downgrade(factory);
         }
     }
 
@@ -477,19 +478,14 @@ impl ServicePools {
         if let Some(inline) = &self.inline {
             let factory = capture_factory()?;
             let user_name = crate::user::current_username().ok().flatten();
-            lock_mutex(&inline.queue).push_back(Work::service(
-                name.to_string(),
-                parameters.clone(),
-                factory,
-                user_name,
-            ));
+            lock(&inline.queue).push_back(Work::service(name.to_string(), parameters.clone(), factory, user_name));
             return Ok(());
         }
         let shared = self.running()?;
         let factory = capture_factory()?;
         let user_name = crate::user::current_username().ok().flatten();
         {
-            let mut state = lock_mutex(&shared.state);
+            let mut state = lock(&shared.state);
             if state.stop {
                 return Err(Error::new("service worker pool is not running"));
             }
@@ -521,7 +517,7 @@ impl ServicePools {
     pub(crate) fn submit_inline_job(&self, run: Box<super::jobs::JobRun>) -> Result<(), Box<super::jobs::JobRun>> {
         match &self.inline {
             Some(inline) => {
-                lock_mutex(&inline.queue).push_back(Work::Job(run));
+                lock(&inline.queue).push_back(Work::Job(run));
                 Ok(())
             }
             None => Err(run),
@@ -532,7 +528,7 @@ impl ServicePools {
     pub(crate) fn submit_task(&self, task: impl FnOnce() + Send + 'static) -> Result<(), Error> {
         let shared = self.running()?;
         {
-            let mut state = lock_mutex(&shared.state);
+            let mut state = lock(&shared.state);
             if state.stop {
                 return Err(Error::new("service worker pool is not running"));
             }
@@ -564,7 +560,7 @@ impl Drop for ServicePools {
         };
         fail_pending(&shared);
         let handles = {
-            let mut guard = lock_mutex(&shared.handles);
+            let mut guard = lock(&shared.handles);
             std::mem::take(&mut *guard)
         };
         join_all(handles);
@@ -574,7 +570,7 @@ impl Drop for ServicePools {
 /// Run each scheduler hook after a pass. Hooks are not called under the state lock.
 /// One panic does not skip the rest.
 pub(crate) fn run_tick_hook(shared: &Shared) {
-    let hooks = lock_mutex(&shared.tick_hook).clone();
+    let hooks = lock(&shared.tick_hook).clone();
     for hook in hooks {
         if catch_unwind(AssertUnwindSafe(|| hook())).is_err() {
             tracing::warn!("scheduler tick hook panicked");
@@ -604,7 +600,7 @@ impl Shared {
         }
         let (tx, rx) = mpsc::channel();
         {
-            let mut state = lock_mutex(&self.state);
+            let mut state = lock(&self.state);
             if state.stop {
                 return Err(Error::new("service worker pool is not running"));
             }
@@ -657,10 +653,6 @@ impl Settings {
     }
 }
 
-pub(crate) fn lock_mutex<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|err| err.into_inner())
-}
-
 pub(crate) fn capture_factory() -> Result<Arc<ExecutionContextFactory>, Error> {
     ExecutionContext::with_current(|ctx| Arc::clone(ctx.factory()))
         .ok_or_else(|| Error::new("no execution context is entered"))
@@ -709,7 +701,7 @@ fn start(settings: Settings) -> Result<ServicePools, Error> {
         handles: Mutex::new(Vec::new()),
     });
     let handles = spawn_all(&shared, settings.workers)?;
-    *lock_mutex(&shared.handles) = handles;
+    *lock(&shared.handles) = handles;
     Ok(ServicePools {
         shared: Some(shared),
         inline: None,
@@ -759,7 +751,7 @@ fn worker_loop(shared: Arc<Shared>) {
 }
 
 fn next_work(shared: &Shared) -> Option<Work> {
-    let mut state = lock_mutex(&shared.state);
+    let mut state = lock(&shared.state);
     loop {
         if state.stop {
             return None;
@@ -772,7 +764,7 @@ fn next_work(shared: &Shared) -> Option<Work> {
 }
 
 fn run_work(shared: &Arc<Shared>, work: Work) {
-    lock_mutex(&shared.state).active += 1;
+    lock(&shared.state).active += 1;
     match work {
         Work::Job(run) => {
             let _cleanup = WorkCleanup::new(Some(Arc::clone(run.factory())));
@@ -791,7 +783,7 @@ fn run_work(shared: &Arc<Shared>, work: Work) {
             }
         }
     }
-    lock_mutex(&shared.state).active -= 1;
+    lock(&shared.state).active -= 1;
 }
 
 fn call_job(work: Work) -> Option<CallJob> {
@@ -966,7 +958,7 @@ fn unwind_result(
 
 fn fail_pending(shared: &Shared) {
     let pending = {
-        let mut state = lock_mutex(&shared.state);
+        let mut state = lock(&shared.state);
         state.stop = true;
         std::mem::take(&mut state.queue)
     };
@@ -996,7 +988,7 @@ fn fail_one(work: Work) {
 fn queue_closure(shared: &Arc<Shared>, run: ClosureFn) -> Result<mpsc::Receiver<ClosureOut>, Error> {
     let (tx, rx) = mpsc::channel();
     {
-        let mut state = lock_mutex(&shared.state);
+        let mut state = lock(&shared.state);
         if state.stop {
             return Err(Error::new("service worker pool is not running"));
         }
@@ -1057,7 +1049,7 @@ fn closure_outcome(result: Result<ClosureOut, Box<dyn Any + Send>>) -> ClosureOu
 }
 
 fn attached_factory(shared: &Shared) -> Result<Arc<ExecutionContextFactory>, Error> {
-    lock_mutex(&shared.factory)
+    lock(&shared.factory)
         .upgrade()
         .ok_or_else(|| Error::new("service worker pool has no factory"))
 }

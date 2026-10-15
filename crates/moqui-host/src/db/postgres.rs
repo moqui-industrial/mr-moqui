@@ -22,6 +22,7 @@ mod driver {
     use std::path::PathBuf;
 
     use moqui_core::driver::{DbCancel, DbConnection, DbDriver, DbRow};
+    use moqui_lib::codec::hex_encode;
     use moqui_lib::error::Error;
     use moqui_lib::object::{basic_convert, Value};
     use postgres::config::SslMode;
@@ -700,16 +701,6 @@ mod driver {
         text.push_str("\\x");
         text.push_str(&hex_encode(bytes));
         text
-    }
-
-    fn hex_encode(raw: &[u8]) -> String {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let mut out = String::with_capacity(raw.len() * 2);
-        for byte in raw {
-            out.push(char::from(HEX[usize::from(byte >> 4)]));
-            out.push(char::from(HEX[usize::from(byte & 0x0f)]));
-        }
-        out
     }
 
     fn map_row(row: &postgres::Row) -> Result<DbRow, Error> {

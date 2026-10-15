@@ -222,7 +222,7 @@ pub fn to_plain_string(value: &Value) -> String {
         Value::Timestamp(timestamp) => timestamp.as_millisecond().to_string(),
         Value::Date(date) => date_epoch_millis(*date).to_string(),
         Value::Time(time) => time_epoch_millis(*time).to_string(),
-        Value::Bytes(bytes) => bytes.iter().map(|byte| format!("{byte:02x}")).collect(),
+        Value::Bytes(bytes) => crate::codec::hex_encode(bytes),
         Value::List(items) => {
             let mut out = String::new();
             for item in items {

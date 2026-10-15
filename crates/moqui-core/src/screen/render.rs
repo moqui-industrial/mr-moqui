@@ -29,6 +29,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
+use moqui_lib::codec::constant_time_eq;
 use moqui_lib::object::Value;
 
 use super::cache::{canonical_render_mode, ScreenFacade};
@@ -1737,10 +1738,6 @@ fn csrf_rejected(job: &Job<'_>, transition: &TransitionDef) -> Result<bool, Erro
         presented
     };
     Ok(!constant_time_eq(presented.as_bytes(), expected.as_bytes()))
-}
-
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    left.len() == right.len() && left.iter().zip(right).fold(0_u8, |acc, (a, b)| acc | (a ^ b)) == 0
 }
 
 pub(super) fn text_of(value: Option<&Value>) -> String {

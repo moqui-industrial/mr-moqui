@@ -32,12 +32,13 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
+use std::sync::{Arc, Condvar, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant};
 
 use indexmap::IndexMap;
 
 use crate::error::Error;
+use crate::sync::{lock, read, write};
 
 /// Time source for cache expiry. [`ManualClock`] lets a test move time without sleeping.
 pub trait Clock: Send + Sync {
@@ -335,7 +336,7 @@ where
         let now = self.inner.clock.now_millis();
         let mut expired = false;
         let len = {
-            let mut entries = write_map(&self.inner.entries);
+            let mut entries = write(&self.inner.entries);
             if entries.get(&key).is_some_and(|entry| self.entry_expired(entry, now)) {
                 entries.remove(&key);
                 expired = true;
@@ -367,7 +368,7 @@ where
         let now = self.inner.clock.now_millis();
         let mut expired = false;
         let len = {
-            let mut entries = write_map(&self.inner.entries);
+            let mut entries = write(&self.inner.entries);
             if entries.get(&key).is_some_and(|entry| self.entry_expired(entry, now)) {
                 entries.remove(&key);
                 expired = true;
@@ -390,20 +391,20 @@ where
     pub fn contains_key(&self, key: &K) -> Result<bool, Error> {
         self.ensure_open()?;
         let now = self.inner.clock.now_millis();
-        let stale = match read_map(&self.inner.entries).get(key) {
+        let stale = match read(&self.inner.entries).get(key) {
             None => return Ok(false),
             Some(entry) => self.entry_expired(entry, now),
         };
         if stale && self.remove_if_expired(key, now) {
             return Ok(false);
         }
-        Ok(read_map(&self.inner.entries).contains_key(key))
+        Ok(read(&self.inner.entries).contains_key(key))
     }
 
     pub fn remove(&self, key: &K) -> Result<bool, Error> {
         self.ensure_open()?;
         let now = self.inner.clock.now_millis();
-        let mut entries = write_map(&self.inner.entries);
+        let mut entries = write(&self.inner.entries);
         if entries.get(key).is_some_and(|entry| self.entry_expired(entry, now)) {
             entries.remove(key);
             drop(entries);
@@ -420,12 +421,12 @@ where
 
     pub fn clear(&self) -> Result<(), Error> {
         self.ensure_open()?;
-        write_map(&self.inner.entries).clear();
+        write(&self.inner.entries).clear();
         Ok(())
     }
 
     pub fn len(&self) -> usize {
-        read_map(&self.inner.entries).len()
+        read(&self.inner.entries).len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -463,7 +464,7 @@ where
 
     /// Every entry with its times and hit count, in no order. Reading this is not an access.
     pub fn entry_infos(&self) -> Vec<EntryInfo<K, V>> {
-        read_map(&self.inner.entries)
+        read(&self.inner.entries)
             .iter()
             .map(|(key, entry)| EntryInfo {
                 key: key.clone(),
@@ -493,7 +494,7 @@ where
             return 0;
         }
         let mut ranked: Vec<(u64, i64, u64, K)> = {
-            let entries = read_map(&self.inner.entries);
+            let entries = read(&self.inner.entries);
             if entries.len() <= max {
                 return 0;
             }
@@ -515,7 +516,7 @@ where
                 .then(left.1.cmp(&right.1))
                 .then(left.2.cmp(&right.2))
         });
-        let mut entries = write_map(&self.inner.entries);
+        let mut entries = write(&self.inner.entries);
         let remove_count = entries.len().saturating_sub(max);
         let mut removed = 0;
         for (_, _, seq, key) in ranked {
@@ -539,7 +540,7 @@ where
             return Ok(0);
         }
         let now = self.inner.clock.now_millis();
-        let stale: Vec<K> = read_map(&self.inner.entries)
+        let stale: Vec<K> = read(&self.inner.entries)
             .iter()
             .filter(|(_, entry)| self.entry_expired(entry, now))
             .map(|(key, _)| key.clone())
@@ -547,7 +548,7 @@ where
         if stale.is_empty() {
             return Ok(0);
         }
-        let mut entries = write_map(&self.inner.entries);
+        let mut entries = write(&self.inner.entries);
         let mut count = 0;
         for key in stale {
             // Checked again, since a put may have refreshed the entry after the snapshot.
@@ -566,7 +567,7 @@ where
             return Err(Error::new(format!("cache {} is already closed", self.inner.name)));
         }
         self.inner.stop.store(true, Ordering::SeqCst);
-        write_map(&self.inner.entries).clear();
+        write(&self.inner.entries).clear();
         if self.inner.evictor_active.load(Ordering::SeqCst) {
             EVICTOR.wake.notify_all();
         }
@@ -588,7 +589,7 @@ where
             Arc::clone(&entry.value)
         };
         let mut expired = false;
-        let found = match read_map(&self.inner.entries).get(key) {
+        let found = match read(&self.inner.entries).get(key) {
             Some(entry) if !stale(entry) => Some(touch(entry)),
             Some(_) => None,
             None => {
@@ -602,7 +603,7 @@ where
             None => {
                 // Stale under the read lock. Checked again under the write lock, since a put
                 // may have replaced it in between.
-                let mut entries = write_map(&self.inner.entries);
+                let mut entries = write(&self.inner.entries);
                 match entries.get(key) {
                     Some(entry) if stale(entry) => {
                         entries.remove(key);
@@ -625,7 +626,7 @@ where
 
     /// Remove `key` when it is still expired under the write lock. True when it was removed.
     fn remove_if_expired(&self, key: &K, now: i64) -> bool {
-        let mut entries = write_map(&self.inner.entries);
+        let mut entries = write(&self.inner.entries);
         if !entries.get(key).is_some_and(|entry| self.entry_expired(entry, now)) {
             return false;
         }
@@ -658,18 +659,6 @@ where
 
 fn duration_expired(last: i64, duration_ms: Option<i64>, now: i64) -> bool {
     duration_ms.is_some_and(|duration| last.saturating_add(duration) < now)
-}
-
-fn lock_map<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|err| err.into_inner())
-}
-
-fn read_map<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
-    lock.read().unwrap_or_else(|err| err.into_inner())
-}
-
-fn write_map<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
-    lock.write().unwrap_or_else(|err| err.into_inner())
 }
 
 impl<K, V> Drop for CacheInner<K, V> {
@@ -738,7 +727,7 @@ static EVICTOR: Evictor = Evictor {
 /// Add a cache to the shared evict thread, starting the thread when none runs. False when the
 /// thread could not start, so the cache evicts in `put` instead.
 fn register_evictor(target: Arc<dyn EvictTarget>, period: Duration) -> bool {
-    let mut state = lock_map(&EVICTOR.state);
+    let mut state = lock(&EVICTOR.state);
     state.registrations.push(Registration {
         target,
         period,
@@ -766,7 +755,7 @@ fn register_evictor(target: Arc<dyn EvictTarget>, period: Duration) -> bool {
 
 /// Run each due pass outside the lock, then wait until the soonest next one or a wake.
 fn run_evictor() {
-    let mut state = lock_map(&EVICTOR.state);
+    let mut state = lock(&EVICTOR.state);
     loop {
         state.registrations.retain(|registration| registration.target.is_live());
         let Some(soonest) = state.registrations.iter().map(|registration| registration.due).min() else {
@@ -795,7 +784,7 @@ fn run_evictor() {
         for target in due {
             target.run_pass();
         }
-        state = lock_map(&EVICTOR.state);
+        state = lock(&EVICTOR.state);
     }
 }
 
@@ -827,7 +816,7 @@ impl MCacheManager {
     {
         self.ensure_open()?;
         let name = name.into();
-        let mut slots = lock_map(&self.slots);
+        let mut slots = lock(&self.slots);
         if let Some(slot) = slots.get(&name) {
             return downcast_cache(&name, Arc::clone(&slot.typed));
         }
@@ -856,7 +845,7 @@ impl MCacheManager {
         V: Clone + Send + Sync + 'static,
     {
         self.ensure_open()?;
-        let slots = lock_map(&self.slots);
+        let slots = lock(&self.slots);
         match slots.get(name) {
             Some(slot) => downcast_cache(name, Arc::clone(&slot.typed)).map(Some),
             None => Ok(None),
@@ -865,19 +854,19 @@ impl MCacheManager {
 
     pub fn cache_names(&self) -> Result<Vec<String>, Error> {
         self.ensure_open()?;
-        Ok(lock_map(&self.slots).keys().cloned().collect())
+        Ok(lock(&self.slots).keys().cloned().collect())
     }
 
     /// The info of each cache, whatever its key and value types, in creation order.
     pub fn infos(&self) -> Result<Vec<CacheInfo>, Error> {
         self.ensure_open()?;
-        Ok(lock_map(&self.slots).values().map(|slot| (slot.info)()).collect())
+        Ok(lock(&self.slots).values().map(|slot| (slot.info)()).collect())
     }
 
     /// Clear one cache by name. `false` when there is no cache of that name.
     pub fn clear(&self, name: &str) -> Result<bool, Error> {
         self.ensure_open()?;
-        let slots = lock_map(&self.slots);
+        let slots = lock(&self.slots);
         match slots.get(name) {
             Some(slot) => (slot.clear)().map(|()| true),
             None => Ok(false),
@@ -887,7 +876,7 @@ impl MCacheManager {
     /// Clear every cache, as `CacheFacade.clearAllCaches`.
     pub fn clear_all(&self) -> Result<(), Error> {
         self.ensure_open()?;
-        for slot in lock_map(&self.slots).values() {
+        for slot in lock(&self.slots).values() {
             (slot.clear)()?;
         }
         Ok(())
@@ -895,7 +884,7 @@ impl MCacheManager {
 
     pub fn destroy(&self, name: &str) -> Result<(), Error> {
         self.ensure_open()?;
-        let mut slots = lock_map(&self.slots);
+        let mut slots = lock(&self.slots);
         let Some(slot) = slots.shift_remove(name) else {
             return Err(Error::new(format!("cache {name} does not exist")));
         };
@@ -906,7 +895,7 @@ impl MCacheManager {
 
     pub fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
-        let slots = std::mem::take(&mut *lock_map(&self.slots));
+        let slots = std::mem::take(&mut *lock(&self.slots));
         for (_, slot) in slots {
             (slot.close)();
         }

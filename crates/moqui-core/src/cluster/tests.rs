@@ -22,6 +22,7 @@ use base64::Engine;
 use moqui_lib::env;
 use moqui_lib::node::MNode;
 use moqui_lib::object::Value;
+use moqui_lib::sync;
 
 use super::{Member, Sender};
 use crate::context::{Error, ExecutionContextFactory};
@@ -65,7 +66,7 @@ struct Posted {
 
 impl Sender for Recording {
     fn post(&self, base_url: &str, topic: &str, payload: &[u8]) -> Result<(), Error> {
-        self.calls.lock().unwrap_or_else(|err| err.into_inner()).push(Posted {
+        sync::lock(&self.calls).push(Posted {
             base: base_url.to_string(),
             topic: topic.to_string(),
             payload: payload.to_vec(),
@@ -169,7 +170,7 @@ fn first_start_upserts_one_member_and_does_not_post() {
     assert_eq!(members.len(), 1);
     assert_eq!(members[0].instance_id, "inst-first");
     assert_eq!(members[0].base_url, "https://127.0.0.1:8443");
-    assert!(recording.calls.lock().unwrap_or_else(|err| err.into_inner()).is_empty());
+    assert!(sync::lock(&recording.calls).is_empty());
 }
 
 #[test]
@@ -195,10 +196,10 @@ fn commit_posts_once_and_remote_apply_does_not_repost() {
     assert_eq!(super::load_members(&facade).unwrap().len(), 2);
     write_visitor(&facade, "V1", false);
     assert!(super::wait_for_sends(ctx.factory(), Duration::from_secs(5)));
-    assert!(recording.calls.lock().unwrap_or_else(|err| err.into_inner()).is_empty());
+    assert!(sync::lock(&recording.calls).is_empty());
     write_visitor(&facade, "V2", true);
     assert!(super::wait_for_sends(ctx.factory(), Duration::from_secs(5)));
-    let calls = recording.calls.lock().unwrap_or_else(|err| err.into_inner());
+    let calls = sync::lock(&recording.calls);
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].base, "https://peer.example:8443");
     assert_eq!(calls[0].topic, "entity-cache-invalidate");
@@ -220,7 +221,7 @@ fn commit_posts_once_and_remote_apply_does_not_repost() {
     super::apply_remote(&facade, "entity-cache-invalidate", &message).unwrap();
     super::apply_remote(&facade, "entity-cache-invalidate", &message).unwrap();
     assert!(super::wait_for_sends(ctx.factory(), Duration::from_secs(5)));
-    assert_eq!(recording.calls.lock().unwrap_or_else(|err| err.into_inner()).len(), 1);
+    assert_eq!(sync::lock(&recording.calls).len(), 1);
     let err = super::apply_remote(&facade, "not-a-topic", &message).unwrap_err();
     assert!(err.to_string().contains("unknown topic"));
 }
@@ -258,12 +259,8 @@ fn a_second_factory_does_not_post_through_the_first_ones_sender() {
     }
     assert!(super::wait_for_sends(first.factory(), Duration::from_secs(5)));
     assert!(super::wait_for_sends(second.factory(), Duration::from_secs(5)));
-    assert!(first_recording
-        .calls
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
-        .is_empty());
-    let calls = second_recording.calls.lock().unwrap_or_else(|err| err.into_inner());
+    assert!(sync::lock(&first_recording.calls).is_empty());
+    let calls = sync::lock(&second_recording.calls);
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].base, "https://second-peer.example:8443");
 }
@@ -338,7 +335,7 @@ fn a_stale_peer_is_not_posted() {
     );
     write_visitor(&facade, "V3", true);
     assert!(super::wait_for_sends(ctx.factory(), Duration::from_secs(5)));
-    assert!(recording.calls.lock().unwrap_or_else(|err| err.into_inner()).is_empty());
+    assert!(sync::lock(&recording.calls).is_empty());
 }
 
 #[test]
@@ -429,10 +426,7 @@ fn many_writes_in_one_wait_reach_a_peer_as_one_invalidation_and_the_commit_does_
     impl Sender for Slow {
         fn post(&self, _base_url: &str, _topic: &str, payload: &[u8]) -> Result<(), Error> {
             std::thread::sleep(Duration::from_millis(200));
-            self.0
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .push(String::from_utf8_lossy(payload).to_string());
+            sync::lock(&self.0).push(String::from_utf8_lossy(payload).to_string());
             Ok(())
         }
     }
@@ -464,7 +458,7 @@ fn many_writes_in_one_wait_reach_a_peer_as_one_invalidation_and_the_commit_does_
         started.elapsed()
     );
     assert!(super::wait_for_sends(ctx.factory(), Duration::from_secs(10)));
-    let posted = slow.0.lock().unwrap_or_else(|err| err.into_inner());
+    let posted = sync::lock(&slow.0);
     let visitor_posts = posted
         .iter()
         .filter(|text| text.contains("moqui.server.Visitor"))

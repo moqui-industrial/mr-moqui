@@ -17,9 +17,10 @@
 //! `NetworkPrinter` records and call it. With no client installed a call reports that network printing is not
 //! installed.
 
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::Arc;
 
 use moqui_lib::error::Error;
+use moqui_lib::sync::InstallSlot;
 
 /// The message when no client is installed.
 pub const PRINTING_UNAVAILABLE: &str = "Network printing support not installed (no print client in this build)";
@@ -134,32 +135,25 @@ pub enum JobAction {
     Cancel,
 }
 
-fn slot() -> &'static RwLock<Option<Arc<dyn PrintClient>>> {
-    static SLOT: RwLock<Option<Arc<dyn PrintClient>>> = RwLock::new(None);
-    &SLOT
-}
+static CLIENT: InstallSlot<dyn PrintClient> = InstallSlot::new();
 
 /// Use `client` for network printing in this process.
 pub fn install_print_client(client: Arc<dyn PrintClient>) {
-    *slot().write().unwrap_or_else(PoisonError::into_inner) = Some(client);
+    CLIENT.install(client);
 }
 
 /// Remove the installed client.
 pub fn clear_print_client() {
-    *slot().write().unwrap_or_else(PoisonError::into_inner) = None;
+    CLIENT.clear();
 }
 
 pub(crate) fn client() -> Result<Arc<dyn PrintClient>, Error> {
-    slot()
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone()
-        .ok_or_else(|| Error::new(PRINTING_UNAVAILABLE))
+    CLIENT.get().ok_or_else(|| Error::new(PRINTING_UNAVAILABLE))
 }
 
 /// Tests that install a client hold this, so they do not see each other's.
 #[cfg(test)]
 pub(crate) fn print_test_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+    moqui_lib::sync::lock(&LOCK)
 }

@@ -31,11 +31,12 @@
 //! A stream reads its whole result when it opens. There is no statement cancel.
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
 use moqui_core::driver::{DbCancel, DbConnection, DbDriver, DbRow};
 use moqui_lib::error::Error;
 use moqui_lib::object::Value;
+use moqui_lib::sync::lock;
 use rusqlite::types::{Value as SqlValue, ValueRef};
 
 /// Prepared statements kept per database, keyed by SQL text. The driver contract caps it at 100.
@@ -406,10 +407,6 @@ pub fn to_sql(value: &Value) -> Result<SqlValue, Error> {
             return Err(Error::new("a list, map, or object is not a SQL parameter"));
         }
     })
-}
-
-fn lock(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
-    shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn sqlite_err(err: rusqlite::Error) -> Error {
