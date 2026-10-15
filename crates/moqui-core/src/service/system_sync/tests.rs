@@ -532,6 +532,21 @@ fn install_sftp(setup: &Setup) {
     assert!(failures.is_empty(), "{failures:?}");
 }
 
+/// Wait for the asynchronous consume of every received message of the type. The in-memory database commits a table
+/// whole, so a consume still open when the test writes the table would put back its own copy of it.
+fn consumed(facade: &EntityFacade, type_id: &str) -> bool {
+    wait_until(|| {
+        facade
+            .find(MESSAGE)
+            .unwrap()
+            .eq("systemMessageTypeId", Value::string(type_id))
+            .list()
+            .unwrap()
+            .iter()
+            .all(|row| row.get("statusId").map(to_plain_string).as_deref() == Some("SmsgConsumed"))
+    })
+}
+
 fn received(facade: &EntityFacade, type_id: &str) -> Vec<(String, String)> {
     facade
         .find(MESSAGE)
@@ -643,6 +658,7 @@ fn a_message_goes_out_by_sftp_and_a_poll_receives_moves_and_skips() {
         ("systemMessageRemoteId", "SftpServer"),
     ]);
     let polled = crate::service::sync("org.moqui.sftp.SftpMessageServices.poll#SystemMessageSftp", &poll).unwrap();
+    assert!(consumed(facade, "SftpIn"), "{:?}", received(facade, "SftpIn"));
     assert_eq!(errors(&setup.context), "");
     assert_eq!(polled.get("fileCount").map(to_plain_string).as_deref(), Some("1"));
     let name = file.trim_start_matches("/in/").to_string();
@@ -692,11 +708,13 @@ fn a_message_goes_out_by_sftp_and_a_poll_receives_moves_and_skips() {
     let mut limited = poll.clone();
     limited.insert("fileCountLimit".to_string(), Value::I32(2));
     let polled = crate::service::sync("org.moqui.sftp.SftpMessageServices.poll#SystemMessageSftp", &limited).unwrap();
+    assert!(consumed(facade, "SftpIn"), "{:?}", received(facade, "SftpIn"));
     assert_eq!(polled.get("fileCount").map(to_plain_string).as_deref(), Some("2"));
     let names: Vec<String> = received(facade, "SftpIn").into_iter().map(|(name, _)| name).collect();
     assert!(
         names.contains(&"SftpOut-a.txt".to_string()) && names.contains(&name),
-        "{names:?}"
+        "{names:?} {}",
+        errors(&setup.context)
     );
     assert!(!names.contains(&"SftpOut-c.txt".to_string()), "{names:?}");
 
