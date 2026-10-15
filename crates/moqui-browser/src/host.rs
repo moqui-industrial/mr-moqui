@@ -19,7 +19,7 @@
 //! [`ExecutionContextFactory::run_pending`].
 //!
 //! There is no login flow yet. Service calls and entity finds run with authorization disabled, the
-//! way the data loader does. Local results are never authority over server data (`plans/Wasm.md`).
+//! way the data loader does. Local results are never authority over server data (`plans/archive/Wasm.md`).
 
 use std::collections::BTreeMap;
 use std::path::Path;

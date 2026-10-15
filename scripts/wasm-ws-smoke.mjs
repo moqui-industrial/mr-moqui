@@ -1,4 +1,4 @@
-// Headless Chrome smoke for the browser WebSocket transport (plans/Wasm.md W6).
+// Headless Chrome smoke for the browser WebSocket transport (plans/archive/Wasm.md W6).
 //   CARGO_TARGET_DIR=target/browser scripts/wasm-build.sh --release && node scripts/wasm-ws-smoke.mjs target/browser/wasm-pkg/release
 // Serves the package and a /notws mock on one origin, loads js/ws-smoke.html, and polls #result.
 // The mock speaks /notws: after `subscribe:ALL` it pushes a notification (with the server-side

@@ -15,7 +15,7 @@
 //! `SearchFacade`: data documents searched and aggregated through one backend.
 //!
 //! Callers pass a [`Query`] tree and named [`Agg`] trees. A backend compiles them: Postgres SQL in
-//! [`postgres`], or Elastic JSON on the OpenSearch backend. The design is `plans/SearchFacade.md`.
+//! [`postgres`], or Elastic JSON on the OpenSearch backend. The design is `plans/archive/SearchFacade.md`.
 //!
 //! The facade is installed per factory by the host ([`install`]) and found from the entered
 //! execution context ([`current`]).

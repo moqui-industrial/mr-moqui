@@ -451,7 +451,7 @@
         <!-- renderer class needs to implement the org.moqui.context.TemplateRenderer interface -->
 
         <!-- fancy templates: if, list and assign tags plus ${expr}, compiled to a cached JavaScript function. The
-            -locked renderers see only the plain snapshot of the map passed in. See Templating in plans/Architecture-Proposal.md -->
+            -locked renderers see only the plain snapshot of the map passed in. See Templating in plans/archive/Architecture-Proposal.md -->
         <template-renderer extension="fancy" class="fancy"/>
         <template-renderer extension="html.fancy" class="fancy-html"/>
         <template-renderer extension="fancy-locked" class="fancy-locked"/>
@@ -1103,7 +1103,7 @@
                     sslmode="${entity_ds_sslmode}"/></inline-jdbc>
         </database>
         <!--
-        * SQLite: the browser build's local database (crates/moqui-browser, plans/Wasm.md). Not a server datasource.
+        * SQLite: the browser build's local database (crates/moqui-browser, plans/archive/Wasm.md). Not a server datasource.
         * Column types pick SQLite affinities. Date, time, and date-time are TEXT in a fixed UTC format the driver writes,
           so they sort and compare as text. Decimals have NUMERIC affinity, exact to about 15 significant digits.
         * for-update is empty: SQLite has no row locks; a write transaction holds the database.

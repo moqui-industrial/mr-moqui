@@ -17,7 +17,7 @@
 //! A host may install an [`HttpSender`]; it is used first. Without one, the `http` feature sends
 //! with the blocking reqwest [`moqui_lib::http::RestClient`] (the server). Without either, a call
 //! fails with "not built into this host". The browser installs a sender over `fetch`
-//! (`plans/Wasm.md` W5). Sim denial and URL redaction are the caller's, before [`send`].
+//! (`plans/archive/Wasm.md` W5). Sim denial and URL redaction are the caller's, before [`send`].
 
 use std::fmt;
 use std::sync::{Arc, RwLock};

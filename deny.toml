@@ -1,4 +1,4 @@
-# License gate for the static graph. The accepted set is plans/License-Review.md.
+# License gate for the static graph. The accepted set is plans/archive/License-Review.md.
 # `cargo deny check` is the default feature graph on x86_64-unknown-linux-gnu.
 # `pdf-servo` is off here. MPL-2.0 is not in the allow list, so that feature
 # fails this check until it has its own review.
@@ -14,7 +14,7 @@ yanked = "deny"
 unmaintained = "workspace"
 ignore = [
     # rsa 0.10.0-rc.18 via russh and huskarl. No patched release as of this
-    # advisory. plans/License-Review.md accepts those crates.
+    # advisory. plans/archive/License-Review.md accepts those crates.
     { id = "RUSTSEC-2023-0071", reason = "Marvin timing in rsa. No safe upgrade. Used by russh and huskarl." },
 ]
 
@@ -39,7 +39,7 @@ allow = [
 ]
 # ammonia (HTML cleaning for allow-html="safe") needs cssparser and dtoa-short, which are
 # MPL-2.0. Unmodified static use only asks for those files' source, which crates.io serves.
-# No other crate may be MPL-2.0. plans/License-Review.md records the exception.
+# No other crate may be MPL-2.0. plans/archive/License-Review.md records the exception.
 exceptions = [
     { allow = ["MPL-2.0"], crate = "cssparser" },
     { allow = ["MPL-2.0"], crate = "dtoa-short" },

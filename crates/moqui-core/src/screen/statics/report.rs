@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The compatibility report of `plans/QvtServerStatic.md`: for one screen, whether it can be a static qvt template and what in it
+//! The compatibility report of `plans/archive/QvtServerStatic.md`: for one screen, whether it can be a static qvt template and what in it
 //! would not work in the browser. One report has the location, the mode, and each violation with its screen, element and
 //! operation. It is made by `moqui lint --screens --qvt-static` and by tests. A clean report changes no default.
 //!

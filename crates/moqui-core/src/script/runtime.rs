@@ -104,7 +104,7 @@ pub fn set_widget_wrap(on: bool) -> bool {
     WIDGET_WRAP.with(|cell| cell.replace(on))
 }
 
-/// The `ec` of the browser host as a wrapper over the real one: the members `plans/QvtServerStatic.md` lists are the real members,
+/// The `ec` of the browser host as a wrapper over the real one: the members `plans/archive/QvtServerStatic.md` lists are the real members,
 /// and any other area is reported through `deny` and throws.
 const WRAPPED_EC: &str = r#"(function (real, deny) {
     const pick = (source, names) => {

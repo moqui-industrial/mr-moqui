@@ -1,4 +1,4 @@
-// Node smoke test for the browser module (plans/Wasm.md).
+// Node smoke test for the browser module (plans/archive/Wasm.md).
 //   CARGO_TARGET_DIR=target/browser scripts/wasm-build.sh
 //   ~/emsdk/node/*/bin/node --experimental-wasm-jspi scripts/wasm-smoke.mjs target/browser/wasm-pkg/debug
 // The module needs JSPI. Node 22 has none; emsdk's Node 24 has it behind --experimental-wasm-jspi.

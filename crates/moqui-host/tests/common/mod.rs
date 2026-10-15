@@ -165,24 +165,31 @@ pub fn start(label: &str) -> Gate {
 
 /// [`start`] with one more `entity-facade-xml` document loaded after the grants, for the rows a test needs.
 pub fn start_with_data(label: &str, data: &str) -> Gate {
-    start_seeded(label, false, Some(data), "")
+    start_seeded(label, false, Some(data), "", &[])
 }
 
 /// Load the seed (the framework files and each component's `data` directory), the demo users, and the grants of the fixture, then serve on an
 /// ephemeral port. With `static_fixture` a `screen-extend` marks the fixture server-static for qvt.
 pub fn start_with(label: &str, static_fixture: bool) -> Gate {
-    start_seeded(label, static_fixture, None, "")
+    start_seeded(label, static_fixture, None, "", &[])
 }
 
 /// [`start`] with more conf in the runtime's `MoquiDevConf.xml`, such as a response header of this server only, and process properties
 /// that hold while the gate does. They are set once the gate has the one-server lock, and cleared when it drops.
 pub fn start_with_conf(label: &str, extra_conf: &str, properties: &[(&str, &str)]) -> Gate {
-    let mut gate = start_seeded(label, false, None, extra_conf);
+    let mut gate = start_seeded(label, false, None, extra_conf, &[]);
     for (name, value) in properties {
         moqui_lib::env::set_property(name, (*value).to_string());
     }
     gate._properties = PropertyReset(properties.iter().map(|(name, _)| (*name).to_string()).collect());
     gate
+}
+
+/// [`start_with_data`] with process properties the server reads while it starts, such as the cluster transport. They are set once the
+/// gate has the one-server lock, before the load, and cleared when the gate drops. Setting them before the lock would change
+/// the properties of a server another test still runs.
+pub fn start_with_properties(label: &str, data: Option<&str>, properties: &[(&str, &str)]) -> Gate {
+    start_seeded(label, false, data, "", properties)
 }
 
 /// Clears the properties a gate set, before the gate gives up the lock.
@@ -410,8 +417,18 @@ fn seed(runtime: &Path, cluster_dir: &Path, fixtures: &Template, extra_conf: &st
     load_data(runtime, &framework, cluster_dir, &grant_flags).unwrap();
 }
 
-fn start_seeded(label: &str, static_fixture: bool, data: Option<&str>, extra_conf: &str) -> Gate {
+fn start_seeded(
+    label: &str,
+    static_fixture: bool,
+    data: Option<&str>,
+    extra_conf: &str,
+    properties: &[(&str, &str)],
+) -> Gate {
     let serial = serial();
+    let reset = PropertyReset::of(&properties.iter().map(|(name, _)| *name).collect::<Vec<_>>());
+    for (name, value) in properties {
+        moqui_lib::env::set_property(name, (*value).to_string());
+    }
     let template = template();
     let runtime = temp_dir(&format!("moqui-gate3-rt-{label}"));
     let cluster_dir = temp_dir(&format!("moqui-gate3-pg-{label}"));
@@ -447,7 +464,7 @@ fn start_seeded(label: &str, static_fixture: bool, data: Option<&str>, extra_con
         server,
         runtime: runtime.clone(),
         cluster_dir: cluster_dir.clone(),
-        _properties: PropertyReset::default(),
+        _properties: reset,
         _serial: serial,
         _runtime: runtime_guard,
         _cluster: cluster_guard,

@@ -9,7 +9,7 @@ publish.workspace = true
 # No direct tokio, axum, postgres, mysql, or postgresql_embedded.
 # moqui-lib http is blocking reqwest. rquickjs, croner, argon2,
 # pulldown-cmark, and totp-rs stay workspace pins. totp-rs is the second
-# factor of phase 11, with qr off as in plans/License-Review.md.
+# factor of phase 11, with qr off as in plans/archive/License-Review.md.
 # lettre SMTP is blocking (tokio1 off). imap is blocking (native-tls off).
 
 [dependencies]
@@ -53,7 +53,7 @@ image = { workspace = true }
 [target.'cfg(target_os = "emscripten")'.dependencies]
 rquickjs = { workspace = true, features = ["bindgen"] }
 
-# Default on. The browser build (crates/moqui-browser, plans/Wasm.md) turns all three off so no
+# Default on. The browser build (crates/moqui-browser, plans/archive/Wasm.md) turns all three off so no
 # socket, TLS (aws-lc), or blocking-HTTP code is linked.
 [features]
 default = ["mail", "http", "cluster-tls"]

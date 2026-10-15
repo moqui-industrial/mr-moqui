@@ -2,7 +2,7 @@
 
 An SFTP client with the `moqui-sftp` services, an SSH server with an SFTP subsystem and an admin shell, and an optional SSH cluster channel. Built in phase 12.
 
-This follows Tool components and print in `plans/Architecture-Proposal.md`. The cluster default stays the HTTPS POST in `plans/Cluster.md`.
+This follows Tool components and print in `plans/archive/Architecture-Proposal.md`. The cluster default stays the HTTPS POST in `plans/archive/Cluster.md`.
 
 ## Decision
 
@@ -31,7 +31,7 @@ Host keys: Java accepted any key. `SystemMessageRemote.sshHostKeyFingerprint` pi
 
 ## SSH server
 
-Off unless `ssh_port` is set (`0` binds an ephemeral port). `ssh_host` defaults to `127.0.0.1`. The host key is `ssh_host_key`, a secret property: the base64 of a 32-byte Ed25519 seed, which the `CHANGEME` generator writes into `runtime/.env` (`plans/MimoReview.md` Decision 1), or an OpenSSH private key. It is not a database row. At most `ssh_max_sessions` (8) connections are open at once.
+Off unless `ssh_port` is set (`0` binds an ephemeral port). `ssh_host` defaults to `127.0.0.1`. The host key is `ssh_host_key`, a secret property: the base64 of a 32-byte Ed25519 seed, which the `CHANGEME` generator writes into `runtime/.env` (`plans/archive/MimoReview.md` Decision 1), or an OpenSSH private key. It is not a database row. At most `ssh_max_sessions` (8) connections are open at once.
 
 Authentication goes through the user facade: a password through `loginUser` (failures count toward the lockout; an account that needs a second factor cannot log in here), or a public key that is an active `moqui.security.UserSshKey` of that user, matched by fingerprint.
 
@@ -40,7 +40,7 @@ Authentication goes through the user facade: a password through `loginUser` (fai
 
 ## Cluster channel
 
-`cluster_transport=ssh` makes the cluster sender an SSH client. A member advertises `ssh://host:port` (its SSH server; the default when `cluster_base_url` is empty) and records its host key fingerprint on its `ClusterMember` row (`sshHostKeyFingerprint`), which peers pin. A peer logs in as `moqui-cluster` with an Ed25519 key derived from the shared `cluster_tls_key`, keeps one session to each peer and one `exec` channel for each topic, and writes length-prefixed frames of the same topic JSON as the HTTPS body. The receiver applies each frame through the same path as `POST /cluster/{topic}` and answers with that status. It is not an SSH tunnel with HTTPS inside it. A peer whose base URL is `https://` still gets the pooled HTTPS POST, which stays the default, as `plans/Cluster.md` specifies. A bulk update that invalidates one cache many times collapses to one message on either sender. Peers that cannot open a direct connection use the `NOTIFY` transport in `plans/Cluster.md`.
+`cluster_transport=ssh` makes the cluster sender an SSH client. A member advertises `ssh://host:port` (its SSH server; the default when `cluster_base_url` is empty) and records its host key fingerprint on its `ClusterMember` row (`sshHostKeyFingerprint`), which peers pin. A peer logs in as `moqui-cluster` with an Ed25519 key derived from the shared `cluster_tls_key`, keeps one session to each peer and one `exec` channel for each topic, and writes length-prefixed frames of the same topic JSON as the HTTPS body. The receiver applies each frame through the same path as `POST /cluster/{topic}` and answers with that status. It is not an SSH tunnel with HTTPS inside it. A peer whose base URL is `https://` still gets the pooled HTTPS POST, which stays the default, as `plans/archive/Cluster.md` specifies. A bulk update that invalidates one cache many times collapses to one message on either sender. Peers that cannot open a direct connection use the `NOTIFY` transport in `plans/archive/Cluster.md`.
 
 ## `remotefs-ssh`
 

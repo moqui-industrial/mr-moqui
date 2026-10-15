@@ -158,7 +158,7 @@ The shell gives Quasar a stand-in for `vue-router` (`$router.resolve`, `push`, `
 
 ## Server-static screens
 
-`plans/QvtServerStatic.md` is the plan. A screen whose `server-static` names `qvt` (or that has only subscreens placeholders) answers `<path>.qvt` with
+`plans/archive/QvtServerStatic.md` is the plan. A screen whose `server-static` names `qvt` (or that has only subscreens placeholders) answers `<path>.qvt` with
 a script and `X-Moqui-Qvt: static-template`, `Cache-Control: max-age=86400, must-revalidate, public` and an `ETag`. The script is
 `(m.qvtStatic = m.qvtStatic || {})[path] = function (Vue) { ...; return function render(_ctx, _cache) { ... } }`, the Vue compiler's
 `prefixIdentifiers` output of a template that holds no request data (no `with`, no `new Function`). The handler loads it with a script element

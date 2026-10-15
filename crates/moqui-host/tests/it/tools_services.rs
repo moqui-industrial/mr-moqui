@@ -21,7 +21,7 @@
 
 use std::net::SocketAddr;
 
-use crate::common::{basic, exchange, http_request, start_with_data};
+use crate::common::{basic, exchange, http_request};
 
 const DATA: &str = r#"<entity-facade-xml type="seed">
     <moqui.basic.print.NetworkPrinter networkPrinterId="GATE_PRINTER" serverHost="127.0.0.1" serverPort="9" printerName="gate"/>
@@ -91,10 +91,11 @@ fn browser() -> Option<String> {
 #[test]
 fn tools_services_run_on_postgres() {
     let browser = browser();
-    if let Some(binary) = &browser {
-        moqui_lib::env::set_property("pdf_chromium_path", binary);
-    }
-    let gate = start_with_data("tools-services", DATA);
+    let chromium: Vec<(&str, &str)> = browser
+        .iter()
+        .map(|binary| ("pdf_chromium_path", binary.as_str()))
+        .collect();
+    let gate = crate::common::start_with_properties("tools-services", Some(DATA), &chromium);
     let address = gate.server.address();
     let john = basic("john.doe", "moqui");
 
@@ -158,7 +159,6 @@ fn tools_services_run_on_postgres() {
             document.is_some_and(|bytes| bytes.starts_with(b"%PDF-")),
             "no PDF on a print job"
         );
-        moqui_lib::env::set_property("pdf_chromium_path", "");
     }
 
     // The clean services compare a time basis with the stamp columns.

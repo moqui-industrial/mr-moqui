@@ -2,7 +2,7 @@
 
 How a screen marked server-static for `qvt` is sent as a cacheable Vue template, and how the browser fills it. The XML screen schema stays. The `server-static` attribute stays the switch.
 
-This follows Screen Render Modes in `plans/Architecture-Proposal.md`. The library choices there stand: Vue 3.5, Quasar 2.35, the qvt JavaScript macro module emitting a component object, no jQuery, no Moment, no `http-vue-loader`. This plan is the data split, the browser host, and the compatibility check.
+This follows Screen Render Modes in `plans/archive/Architecture-Proposal.md`. The library choices there stand: Vue 3.5, Quasar 2.35, the qvt JavaScript macro module emitting a component object, no jQuery, no Moment, no `http-vue-loader`. This plan is the data split, the browser host, and the compatibility check.
 
 The Java behavior this is built on lives in `../moqui`: `ScreenDefinition` (`serverStatic`, `ActionsTransitionItem`), `ScreenRenderImpl.doActualRender`, `ScreenForm.FormInstance.isServerStatic`, `DefaultScreenMacros.qvt.ftl`, and `WebrootVue.qvt.js`.
 
@@ -54,7 +54,7 @@ The form-list header, order-by, page size, and the CSV, text, and PDF links bind
 
 Static qvt macros transcribe the screen. They do not call `expand` or `condition` on request data.
 
-Expressions are JavaScript, the same language the server evaluator uses. A decimal in the package is a string, as `plans/ContextObjects.md` specifies. An expression that does decimal arithmetic, or that calls `ObjectUtilities` for it, is a compatibility-report violation. Formatting goes through `ec.l10n`. In the template, expressions run against a scope chain that matches the server context stack:
+Expressions are JavaScript, the same language the server evaluator uses. A decimal in the package is a string, as `plans/archive/ContextObjects.md` specifies. An expression that does decimal arithmetic, or that calls `ObjectUtilities` for it, is a compatibility-report violation. Formatting goes through `ec.l10n`. In the template, expressions run against a scope chain that matches the server context stack:
 
 - The screen template sees the screen package.
 - `form-single` pushes `@map` (default `fieldValues`).
@@ -81,7 +81,7 @@ The browser `ec` is a small object implemented in the qvt client runtime. It is 
 | Member | Behavior in the browser |
 |---|---|
 | `ec.l10n.localize` | Looks up the string in the locale catalog. A missing entry returns the original string, as the server does. |
-| `ec.l10n.format` | Formats a date, time, or number with the session locale and time zone. The pattern subset and `HALF_EVEN` rounding are the phase 8 rule above and in `plans/Implementation-Phases.md`. |
+| `ec.l10n.format` | Formats a date, time, or number with the session locale and time zone. The pattern subset and `HALF_EVEN` rounding are the phase 8 rule above and in `plans/archive/Implementation-Phases.md`. |
 | `ec.l10n.formatCurrency` | Formats a currency amount, with the currency symbol. |
 | `ec.l10n.formatCurrencyNoSymbol` | Formats a currency amount, without the symbol. |
 | `ec.user.userId`, `username`, `locale`, `timeZone` | The logged-in session. |

@@ -2,7 +2,7 @@
 
 The `moqui-poi`, `moqui-image`, and `moqui-cups` components in the framework. Built in phase 12, after SFTP and SSO.
 
-This follows Tool components and print in `plans/Architecture-Proposal.md`. The three were outside the Java framework for the size of `moqui.war`. Here they are always linked. They are not Cargo features. Their pure-Rust crates are small next to embedded Postgres: together they added 4.3 MB to the x86_64 release binary (58.8 MB to 63.2 MB).
+This follows Tool components and print in `plans/archive/Architecture-Proposal.md`. The three were outside the Java framework for the size of `moqui.war`. Here they are always linked. They are not Cargo features. Their pure-Rust crates are small next to embedded Postgres: together they added 4.3 MB to the x86_64 release binary (58.8 MB to 63.2 MB).
 
 ## Decision
 

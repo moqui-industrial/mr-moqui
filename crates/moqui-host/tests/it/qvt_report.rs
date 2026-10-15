@@ -13,7 +13,7 @@
  */
 
 //! `moqui lint --screens --qvt-static` over the framework, tools and webroot screens: the compatibility report of
-//! `plans/QvtServerStatic.md`. The verdict of the Gate 3 fixture is checked in here. The report changes no default: nothing in the tree is
+//! `plans/archive/QvtServerStatic.md`. The verdict of the Gate 3 fixture is checked in here. The report changes no default: nothing in the tree is
 //! marked server-static for qvt because a report is clean.
 
 use std::path::PathBuf;
@@ -25,6 +25,7 @@ fn repo() -> PathBuf {
 }
 
 #[test]
+#[ignore = "slow: cargo test-slow"]
 fn the_report_over_every_screen_and_the_verdict_of_the_gate_3_fixture() {
     let reports = qvt_static_reports(&repo().join("runtime"), &repo().join("framework")).unwrap();
     let text = render_reports(&reports);

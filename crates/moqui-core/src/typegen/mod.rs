@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! TypeScript declarations from the loaded definitions (`plans/TypeGeneration.md`). A tool on the definition caches: it
+//! TypeScript declarations from the loaded definitions (`plans/archive/TypeGeneration.md`). A tool on the definition caches: it
 //! reads the entity model, the service registry and the screen definitions the runtime uses, and is not on the request
 //! path. `moqui types` is the entry point.
 //!
@@ -121,7 +121,7 @@ fn host_text() -> String {
     )
 }
 
-/// `shape.ts`: the server-static qvt package keys (`plans/QvtServerStatic.md`) as values.
+/// `shape.ts`: the server-static qvt package keys (`plans/archive/QvtServerStatic.md`) as values.
 fn shape_text() -> String {
     format!(
         "{HEADER}// The server-static qvt package keys as values, for client code that reads a package or a form-list package.\n\n\

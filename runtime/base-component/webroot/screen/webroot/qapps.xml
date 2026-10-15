@@ -23,7 +23,7 @@ along with this software (see the LICENSE.md file). If not, see
         // The libraries and the client, in the order they load. footer_scripts is written by Footer.html.fancy after the page.
         // vue.global.prod.js is the build with the template compiler, which server-merged qvt and the string templates of the m-* components need
         // (and unsafe-eval in a CSP). vue.runtime.global.prod.js has no compiler: webapp_qvt_static_only=true loads it, for a deployment whose pages
-        // get only server-static templates and whose components are precompiled (plans/QvtServerStatic.md, Server compile).
+        // get only server-static templates and whose components are precompiled (plans/archive/QvtServerStatic.md, Server compile).
         const quasarLangs = ['en-US', 'de', 'es', 'fr', 'it', 'pt-BR', 'ja', 'zh-CN', 'ru', 'nl']
         const localeTag = String(ec.user.locale || 'en_US').replace('_', '-')
         const language = localeTag.split('-')[0]

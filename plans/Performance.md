@@ -2,6 +2,8 @@
 
 Source discussion: https://chatgpt.com/share/6ace4f8e-ffd4-83e8-8648-6014b19ade13
 
+High-level implementation goals, illustrative Rust algorithms/tests, and recorded performance numbers with their measurement context: [Performance-Implementation.md](Performance-Implementation.md). These two documents are self-contained; the recorded experiments are not full acceptance results.
+
 ## Architecture: one-node and maximum-scale setups
 
 Support two deployment setups with the same application features and transaction semantics:
@@ -24,7 +26,7 @@ The metric counts New-Order transactions only; other transaction types run along
 
 ## Target: 100,000 commits / reads of transactional business data per second
 
-The existing plan has not demonstrated this target; reproducible measurements must be included before making measured-capacity claims. [Executed durable-WAL follow-up](../experiments/mantle-execution/WAL-FOLLOWUP.md) reaches approximately 26k/s on the faithful extracted 100-line invoice path, 35.8k/s over 15 minutes on a reduced mixed 100-line fused-SQL path, and a repeated median 53.5k/s on a lighter one-line diagnostic. These reduced, write-only experiments omit full framework semantics and do not pass this target; complete startup/reload/edit-to-ready acceptance remains unmeasured.
+The existing plan has not demonstrated this target; reproducible measurements must be included before making measured-capacity claims. Recorded durable-WAL follow-up experiments reached approximately 26k/s on the faithful extracted 100-line invoice path, 35.8k/s over 15 minutes on a reduced mixed 100-line fused-SQL path, and a repeated median 53.5k/s on a lighter one-line diagnostic. These reduced, write-only experiments omit full framework semantics and do not pass this target; complete startup/reload/edit-to-ready acceptance remains unmeasured.
 
 Aim for 100,000 durable commits / completed reads of transactional business data per second through the Rust framework and PostgreSQL. Specify the commit/read mix and report both rates separately; internal SQL reads, row writes, accepted messages, and business processes are not this metric. Include validation, configured authorization/ECA/audit/feed behavior, indexes, and successful durable commit before acknowledging a write. Use independent keys for the initial capacity test; hot-row contention is a separate limit.
 

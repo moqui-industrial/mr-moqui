@@ -141,6 +141,7 @@ fn failure(path: &str, status: u16, page: &str) -> String {
 
 /// The two checks share one server, and so one seed of [`DATA`] and [`SQL_DATA`]: a server start is most of what the SQL runner check costs.
 #[test]
+#[ignore = "slow: cargo test-slow"]
 fn tools_screens_render_and_the_sql_runners_run() {
     let seed_end = "</entity-facade-xml>";
     let sql_rows = SQL_DATA.split_once('>').map_or("", |(_, rows)| rows);

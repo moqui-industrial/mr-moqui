@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The sim overlay cluster (Overlay in `plans/EmbeddedPostgres.md`). The first `enter_sim` of the
+//! The sim overlay cluster (Overlay in `plans/archive/EmbeddedPostgres.md`). The first `enter_sim` of the
 //! process starts it through the facade's sim starter, and it runs until the process stops. Each
 //! sim is a schema on it. Its data directory is `sim-<pid>` under the runtime `db` directory and is
 //! removed at stop. A directory left by a process that is gone is removed at the next install, after

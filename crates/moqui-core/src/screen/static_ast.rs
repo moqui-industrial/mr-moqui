@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The static half of the server-static compatibility check (`plans/QvtServerStatic.md`): an expression the static macros
+//! The static half of the server-static compatibility check (`plans/archive/QvtServerStatic.md`): an expression the static macros
 //! write into a template is parsed with `oxc_parser`, and its ESTree JSON is walked for what the browser host cannot do.
 //! The walk is static. A method chosen at runtime is not seen, and the full check (a render with the wrapped `ec`) is
 //! the other half.

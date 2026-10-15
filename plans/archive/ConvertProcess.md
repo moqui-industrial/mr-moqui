@@ -126,7 +126,7 @@ What is left needs a decision, not more safe rewrites:
 - JavaScript arrays, JavaScript `Set`, and Java's `Set` have different method shapes:
   - `add`/`contains` on Java's `Set`; `add`/`has` and a `size` property on a JS `Set`; `push`/`includes` on an array.
   - So rewriting call sites one by one needs the type at each call.
-- `plans/Architecture-Proposal.md` says JDK types such as `BigDecimal` and `TreeSet` are small host helpers with the same call shape. Following it would mean script globals `HashSet`, `TreeSet`, `ArrayList`, and `HashMap` with Java's methods. The converter would then only strip generics, and `*.name` could become `.map((it) => it.name)`.
+- `plans/archive/Architecture-Proposal.md` says JDK types such as `BigDecimal` and `TreeSet` are small host helpers with the same call shape. Following it would mean script globals `HashSet`, `TreeSet`, `ArrayList`, and `HashMap` with Java's methods. The converter would then only strip generics, and `*.name` could become `.map((it) => it.name)`.
 - That is a choice about the script environment, so it is noted here rather than made. The ports so far use plain JavaScript.
 
 ## Third iteration: the search callers
@@ -188,4 +188,4 @@ The third iteration (the search callers) needed:
   - A filter's map is evaluated only for a find on its entity, or on a view with it as a member. Before, one map that did not evaluate closed every find.
   - Mantle's `filterMap` values were Groovy map literals. They are JavaScript objects now, in `MantleSetupData.xml`.
 
-The earlier load work (component entity directories, rules, and data; services by path; `fromDate` and secondary ids on nested records) is in `plans/Implementation-Phases.md`, after the gate's note on loading `mantle-udm`.
+The earlier load work (component entity directories, rules, and data; services by path; `fromDate` and secondary ids on nested records) is in `plans/archive/Implementation-Phases.md`, after the gate's note on loading `mantle-udm`.

@@ -1,4 +1,4 @@
-# Source this before building for wasm32-unknown-emscripten (plans/Wasm.md).
+# Source this before building for wasm32-unknown-emscripten (plans/archive/Wasm.md).
 #   . scripts/wasm-env.sh && cargo check -p moqui-core --no-default-features --target wasm32-unknown-emscripten
 # EMSDK defaults to ~/emsdk. LIBCLANG_PATH defaults to the newest /usr/lib/llvm-*/lib.
 : "${EMSDK:=$HOME/emsdk}"

@@ -711,7 +711,7 @@ mod cluster {
             );
         }
 
-        /// The figures in plans/EmbeddedPostgres.md: `cargo test -p moqui-host --lib postmaster_memory -- --nocapture`.
+        /// The figures in plans/archive/EmbeddedPostgres.md: `cargo test -p moqui-host --lib postmaster_memory -- --nocapture`.
         /// PSS splits shared_buffers across the processes that map it, so its sum is the cluster's share of RAM.
         #[cfg(target_os = "linux")]
         #[test]

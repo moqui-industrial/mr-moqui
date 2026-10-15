@@ -7,7 +7,7 @@
 //   node refresh.mjs --work DIR       use DIR (must be empty or absent) as the scratch directory
 //
 // To upgrade a library, change its `version` below, run with --write, review the diff and
-// plans/License-Review.md, and commit. Nothing here runs a package script: every install is
+// plans/archive/License-Review.md, and commit. Nothing here runs a package script: every install is
 // `--ignore-scripts`, tarballs come from `npm pack`, and the tarball sha512 (npm `integrity`) is recorded.
 // Node 18 or later and npm are needed. This is a maintainer tool. The Rust build and the server never run it.
 

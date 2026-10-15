@@ -43,7 +43,7 @@ One interaction to enforce in code, not just at startup: `force-new` park budget
 
 Key material moves out of the database and into the known `entity_ds_crypt_pass` pattern: a `<default-property>` in `MoquiDefaultConf.xml` with a `CHANGEME` default and `is-secret="true"`, referenced as `${name}` from the conf, settable by config file or environment. Rationale: keys stored separate from the data, blast radius of database read access reduced, and one established pattern instead of a new key-distribution mechanism (`../moqui/framework/src/main/resources/MoquiDefaultConf.xml:67-69` is the reference; resolution order today is system property, then env var, then the conf `value` — `ExecutionContextFactoryImpl.groovy:407-442`, `SystemBinding.getPropOrEnv`).
 
-What this replaces in the plans: the `moqui.server.HttpSession` HMAC key row, the cluster client-certificate row (the pair that `plans/Cluster.md` had the first instance generate into the database), and the SSH host key row in `plans/Ssh.md`. The keys stay distinct from each other.
+What this replaces in the plans: the `moqui.server.HttpSession` HMAC key row, the cluster client-certificate row (the pair that `plans/archive/Cluster.md` had the first instance generate into the database), and the SSH host key row in `plans/archive/Ssh.md`. The keys stay distinct from each other.
 
 Proposed property names (settle on final names at implementation; follow the existing prefix convention):
 
@@ -54,7 +54,7 @@ Proposed property names (settle on final names at implementation; follow the exi
 | `cluster_tls_key` | Private key for that certificate | `CHANGEME` sentinel | Generated with `cluster_tls_cert` |
 | `entity_ds_crypt_pass` | Field encryption key (existing) | `MoquiDefaultPassword:CHANGEME` | Generated (Decision 3) |
 | `entity_ds_crypt_pass_old` | Rotation input via `decrypt-alt` (existing) | unchanged | Left alone; migration input only |
-| `ssh_host_key` | SSH server host key (when the `plans/Ssh.md` server is built) | `CHANGEME` sentinel | Generated (Decision 3) |
+| `ssh_host_key` | SSH server host key (when the `plans/archive/Ssh.md` server is built) | `CHANGEME` sentinel | Generated (Decision 3) |
 
 Detail decisions:
 

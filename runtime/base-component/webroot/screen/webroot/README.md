@@ -23,7 +23,7 @@ has each license text. `libs/refresh.mjs` rebuilds the tree from the pinned vers
 the manifest, `node libs/refresh.mjs --write` rewrites the tree, manifest and notices). It needs Node and npm, runs no package
 script, and is a maintainer tool: the server and the Rust build never run it. The test
 `crates/moqui-core/tests/browser_libs.rs` checks that every manifest file exists with the recorded sha256 and that nothing else
-is in `libs/`. To upgrade, change the version in `refresh.mjs`, run with `--write`, and update `plans/License-Review.md`.
+is in `libs/`. To upgrade, change the version in `refresh.mjs`, run with `--write`, and update `plans/archive/License-Review.md`.
 
 | Library | Version | Paths under `/libs/` | Loaded by |
 |---|---|---|---|

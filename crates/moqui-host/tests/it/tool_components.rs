@@ -145,6 +145,7 @@ fn ipp_stub() -> (u16, Seen) {
 }
 
 #[test]
+#[ignore = "slow: cargo test-slow"]
 fn xlsx_spreadsheets_images_and_ipp_printing() {
     let gate = start_with_data("tool-components", DATA);
     let address = gate.server.address();

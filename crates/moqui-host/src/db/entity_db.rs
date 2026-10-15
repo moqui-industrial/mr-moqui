@@ -14,7 +14,7 @@
 
 //! The entity database a conf names. The `transactional` datasource is the embedded cluster unless
 //! `entity_ds_db_conf` (or the datasource) names `postgres`, `mysql` or `mysql8`; then it is that
-//! server, and no postmaster starts for it (`plans/EmbeddedPostgres.md`).
+//! server, and no postmaster starts for it (`plans/archive/EmbeddedPostgres.md`).
 
 use std::path::Path;
 use std::sync::Arc;

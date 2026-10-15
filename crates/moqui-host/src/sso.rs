@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The SSO relying party behind `moqui_core::sso` (`plans/Sso.md`): `huskarl` runs the authorization code grant with
+//! The SSO relying party behind `moqui_core::sso` (`plans/archive/Sso.md`): `huskarl` runs the authorization code grant with
 //! PKCE, the state and nonce checks, and the ID token validation against the provider's JWKS; this module gives it an
 //! HTTP client (async reqwest on the edge runtime, 1 MiB bodies, no redirects), builds a grant for each `AuthFlow`, and
 //! reads the user info.

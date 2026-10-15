@@ -13,7 +13,7 @@
  */
 
 //! `PdfRenderer`'s engine: one long-lived headless Chromium, driven over the DevTools Protocol
-//! (`plans/Architecture-Proposal.md`, Tool components and print).
+//! (`plans/archive/Architecture-Proposal.md`, Tool components and print).
 //!
 //! The binary is `pdf_chromium_path`, else `chromium` then `chromium-browser` on the `PATH`. It is not vendored and not
 //! downloaded. When none is found the server still starts and PDF reports that it is not available. The browser starts

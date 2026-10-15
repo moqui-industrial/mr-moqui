@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The SSO relying party of the `moqui-sso` component (`plans/Sso.md`): OpenID Connect and OAuth 2 authorization code
+//! The SSO relying party of the `moqui-sso` component (`plans/archive/Sso.md`): OpenID Connect and OAuth 2 authorization code
 //! logins configured by `moqui.security.sso.AuthFlow` rows. Core has no HTTP or JOSE stack; the host installs an
 //! [`SsoClient`] (`huskarl`) that builds the authorization URL, completes the code exchange and validates the ID token,
 //! and reads the user info. The account sync, the group sync, and the login are core

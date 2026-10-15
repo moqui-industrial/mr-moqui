@@ -33,6 +33,7 @@ const SHARED_TOPIC: &str = "Wave3Shared";
 const ONLY_TOPIC: &str = "Wave3Only";
 
 #[test]
+#[ignore = "slow: cargo test-slow"]
 fn notws_push_and_one_cluster_invalidation() {
     let _serial = crate::common::serial();
     let runtime = temp_dir("moqui-notws-rt");

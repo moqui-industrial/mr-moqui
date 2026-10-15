@@ -1,5 +1,5 @@
-# Candidate workspace. Crate cut: plans/Crate-Layout.md.
-# Feature rows: plans/License-Review.md (resolved 2026-10-11).
+# Candidate workspace. Crate cut: plans/archive/Crate-Layout.md.
+# Feature rows: plans/archive/License-Review.md (resolved 2026-10-11).
 # `cargo tree -p moqui` is the default binary. Cargo.lock is the exact resolve.
 #
 # license is CC0-1.0. The patent grant in LICENSE.md has no SPDX identifier.
@@ -69,7 +69,7 @@ sha1 = "0.10"
 base64 = "0.22"
 # SimpleSigner (RSA SHA1withRSA, PKCS#1 v1.5). The rsa release candidate is the one russh and huskarl already
 # resolve, so the graph has one rsa. It needs digest 0.11, so its SHA-1 is sha1 0.11 under another name and the
-# SHA-2 variants come from rsa's own re-export. plans/License-Review.md records RUSTSEC-2023-0071.
+# SHA-2 variants come from rsa's own re-export. plans/archive/License-Review.md records RUSTSEC-2023-0071.
 rsa = { version = "0.10.0-rc.18", features = ["sha2"] }
 sha1-digest-011 = { package = "sha1", version = "0.11", features = ["oid"] }
 rand_core = "0.10"
@@ -210,7 +210,7 @@ huskarl = "0.11"
 ipp = { version = "7", default-features = false }
 
 # --- moqui-browser ---
-# The browser's local database (plans/Wasm.md). bundled compiles the SQLite amalgamation with the
+# The browser's local database (plans/archive/Wasm.md). bundled compiles the SQLite amalgamation with the
 # target C compiler, which is emcc for wasm32-unknown-emscripten. SQLite is public domain.
 # 0.38, not 0.40: servo-net (pdf-servo) pins it, and two libsqlite3-sys cannot link sqlite3 in one graph.
 rusqlite = { version = "0.38", features = ["bundled"] }

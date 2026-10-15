@@ -1,8 +1,8 @@
 # Context objects
 
-Which values QuickJS and the browser can see, and which Rust types those environments share. Server text goes through one of the template renderers in `plans/Architecture-Proposal.md`. The macro modules that expand XML are the same runtime, with a narrower input.
+Which values QuickJS and the browser can see, and which Rust types those environments share. Server text goes through one of the template renderers in `plans/archive/Architecture-Proposal.md`. The macro modules that expand XML are the same runtime, with a narrower input.
 
-This follows Templating in `plans/Architecture-Proposal.md` and the browser host in `plans/QvtServerStatic.md`. The method list on server `ec` facades and on `sri` is Server host methods, below.
+This follows Templating in `plans/archive/Architecture-Proposal.md` and the browser host in `plans/archive/QvtServerStatic.md`. The method list on server `ec` facades and on `sri` is Server host methods, below.
 
 ## Decision
 
@@ -13,7 +13,7 @@ There are four places a value is visible. The three server places are one QuickJ
 | QuickJS scripts, `JsTemplateLiteral`, and the trusted fancy renderer | Every server evaluation: XML actions, `<script>`, attribute expressions, `ec.resource.expand()`, a trusted fancy template, and a server screen render (html, html-print, text, csv, xml, and qvt when it is not server-static; the name xsl-fo is html-print). | The live context stack, `ec`, and during a screen render `sri`. Entity values and lists stay host objects. |
 | XML action and screen macro modules | Once, when an action or screen definition is compiled. The generated text is cached. | The element being compiled: attribute strings, child element text, and the already-rendered output of its children (or a `visit` function). No `ExecutionContext`, no context stack, no entity value. |
 | Locked-down fancy renderer | When a template is rendered with the restricted renderer. | A plain snapshot of the map the caller passed. Format and localize functions. No `ec`, no `sri`, no live entity. |
-| Browser | A server-static qvt screen, after the template is cached. | The JSON package from `plans/QvtServerStatic.md`, plus the restricted browser `ec` that plan already lists. |
+| Browser | A server-static qvt screen, after the template is cached. | The JSON package from `plans/archive/QvtServerStatic.md`, plus the restricted browser `ec` that plan already lists. |
 
 String expansion (`ResourceFacade.expand`) is `JsTemplateLiteral` on that runtime. A string with no `$`, or with `$` as the last character, is returned as itself. Localization of an input shorter than 256 characters still happens first, as `ResourceFacadeImpl.expand` does. The `${name}` expansion in `moqui-lib` stays string replacement against the environment and does not see the context stack. On the server, embedded expressions run in QuickJS. In the browser, `ec.resource.expand` uses the restricted host.
 
@@ -52,7 +52,7 @@ The server runtime sets the prototype of `globalThis` to a `Proxy` for that `Exe
 
 Macros emit bare names. They do not rewrite reads to `context.foo`. `context.foo` still works because `context` is on the stack. Server-static qvt expressions are Vue template expressions against the JSON package. A missing key renders empty there. A new client script that mentions an unset name can still throw. That is acceptable. The proxy is not how the browser works.
 
-Expression hazards that change what a macro emits, including Elvis versus `??`, empty collections, `==`, and Groovy ranges, are the table in `plans/Architecture-Proposal.md` (What changes in expressions). Macros follow that table. `??` is only for a null check. An empty string or a zero uses logical or. An empty list or map tests length. `==` stays `==`. A Groovy inclusive range becomes `slice` with an exclusive end.
+Expression hazards that change what a macro emits, including Elvis versus `??`, empty collections, `==`, and Groovy ranges, are the table in `plans/archive/Architecture-Proposal.md` (What changes in expressions). Macros follow that table. `??` is only for a null check. An empty string or a zero uses logical or. An empty list or map tests length. `==` stays `==`. A Groovy inclusive range becomes `slice` with an exclusive end.
 
 The locked-down fancy renderer and the browser see a snapshot, not the stack. The snapshot is the same projection as `ContextJavaUtil.unwrapMap`:
 
@@ -63,7 +63,7 @@ The locked-down fancy renderer and the browser see a snapshot, not the stack. Th
 
 The locked-down template's plain values and the browser's JSON are two sinks of that one projection. The projection is the shared code. QuickJS host objects are not.
 
-The browser package is that projection plus two filters from `plans/QvtServerStatic.md`: credential parameters are stripped, and form-list lists and pagination keys are removed. A server-static expression that does decimal arithmetic, or that calls `ObjectUtilities` for it, is a compatibility-report violation. Formatting goes through `ec.l10n`. On the server, a decimal stays a host value.
+The browser package is that projection plus two filters from `plans/archive/QvtServerStatic.md`: credential parameters are stripped, and form-list lists and pagination keys are removed. A server-static expression that does decimal arithmetic, or that calls `ObjectUtilities` for it, is a compatibility-report violation. Formatting goes through `ec.l10n`. On the server, a decimal stays a host value.
 
 A live entity value inside the locked-down template would let it walk a relationship and read through to the database. The snapshot is that boundary. Callers pass the map the template is allowed to see. Format and localize call the same functions as `ec.l10n` on the server. They do not take an `ExecutionContext`. `JsTemplateLiteral`, the trusted fancy renderer, and scripts are not this path. They see the live context, which is the same trust as a component-authored script.
 
@@ -78,7 +78,7 @@ These are the types a script can hold. Plain maps and lists that are already pla
 | `sri` | Host object, only while a server screen render is on the stack | The screen renderer. Absent in actions that are not a render, and absent in the browser |
 | entity value | Host object. Fields read and write as properties (`value.statusId`, `value['statusId']`, `value.statusId = x`, `value?.statusId`) and with `get` and `set` | The entity value. `unwrap` is what the locked-down template, JSON, and the browser receive instead. Property access follows Java `EntityValueBase.get` and `put` as Groovy map property syntax reaches them; see the rules below the table |
 | entity list | Host object, index, length, iterable, `size()`, `isEmpty()`, `map`, `filter`, `forEach` | The list. `map` returns a JavaScript array so `list.map(x => x.field)` works without copying first. Each row is shared: an index, `get`, `for...of`, `map`/`filter`/`forEach`, `getPartialList`, `filterByDate` and an `<iterate>` entry give the row itself, so a field set on `list[0]` is kept in the list, as in Groovy. The rows are copied from the find's result when the list reaches a script, so the entity cache's list does not change. `list[0] === list[0]` is still false: each read is a new host object over the same row |
-| decimal, timestamp | Host values | `rust_decimal` and `jiff` from `moqui-lib`. Not JavaScript numbers. Operators are not overloaded. `valueOf` throws an error naming the method to use, and `toString` prints, so `` `${decimal}` `` interpolation works. `+`, relational operators, and `==` against a number or a string throw. `==` between two decimals does not call `valueOf` and is reference equality, so it returns false. A decimal is always truthy, including zero, so `if (amount)` and `amount || fallback` do not match Groovy. The host methods are `add`, `subtract`, `multiply`, `divide`, `eq`, `compare`, `isZero`, and `toNumber`. The other side of `add` through `compare` is a decimal, a JavaScript number, or numeric text (`amount.compare(70)`); a number that is not finite or other text throws. `toNumber()` is the explicit way to a JavaScript number when float rounding is acceptable (`Math.round`, `Number` APIs); `Number(amount)` still throws. The global `toDecimal(x)` makes a decimal from the same inputs. `divide` uses scale `max(left, right, 10)`. Checked operations return a script error when the 28-digit coefficient overflows. The browser package and the locked-down template still receive a decimal as a string. A server-static expression that does decimal arithmetic is a compatibility-report violation (`plans/QvtServerStatic.md`). That is the migration rule in `plans/Architecture-Proposal.md` |
+| decimal, timestamp | Host values | `rust_decimal` and `jiff` from `moqui-lib`. Not JavaScript numbers. Operators are not overloaded. `valueOf` throws an error naming the method to use, and `toString` prints, so `` `${decimal}` `` interpolation works. `+`, relational operators, and `==` against a number or a string throw. `==` between two decimals does not call `valueOf` and is reference equality, so it returns false. A decimal is always truthy, including zero, so `if (amount)` and `amount || fallback` do not match Groovy. The host methods are `add`, `subtract`, `multiply`, `divide`, `eq`, `compare`, `isZero`, and `toNumber`. The other side of `add` through `compare` is a decimal, a JavaScript number, or numeric text (`amount.compare(70)`); a number that is not finite or other text throws. `toNumber()` is the explicit way to a JavaScript number when float rounding is acceptable (`Math.round`, `Number` APIs); `Number(amount)` still throws. The global `toDecimal(x)` makes a decimal from the same inputs. `divide` uses scale `max(left, right, 10)`. Checked operations return a script error when the 28-digit coefficient overflows. The browser package and the locked-down template still receive a decimal as a string. A server-static expression that does decimal arithmetic is a compatibility-report violation (`plans/archive/QvtServerStatic.md`). That is the migration rule in `plans/archive/Architecture-Proposal.md` |
 | `ObjectUtilities`, `CollectionUtilities`, `StringUtilities` | The same helpers the generated script header calls today | Functions in lib, bound once per runtime. The proxy returns them when the stack has no such key. They are not own properties of `globalThis` |
 
 Entity value properties. The value is a QuickJS exotic class object (rquickjs `class(exotic)`), not a JavaScript `Proxy`, so it stays the same host object for `js_to_host` and costs one prototype lookup and one field map lookup for a field the value holds.
@@ -91,7 +91,7 @@ Entity value properties. The value is a QuickJS exotic class object (rquickjs `c
 - `name in value` is a prototype member or a field of the entity. `Object.keys`, `for...in`, spread and `JSON.stringify` see the fields the value holds, in name order. `delete value.field` does nothing.
 - An entity list is exotic too, for `list[0]` and `length`. Assigning to a list property is ignored. `ec.context.get(name)` gives the same list or map a bare `name` reads, so its writes reach the stack; `context.name` is still a snapshot.
 
-`ec.entity`, `ec.service`, and the rest of the facade surface are the Server host methods section. They exist only on this QuickJS object. The browser `ec` is the table in `plans/QvtServerStatic.md` and does not grow to match the server object. `sri` is not added to the browser.
+`ec.entity`, `ec.service`, and the rest of the facade surface are the Server host methods section. They exist only on this QuickJS object. The browser `ec` is the table in `plans/archive/QvtServerStatic.md` and does not grow to match the server object. `sri` is not added to the browser.
 
 Generated screen JavaScript for a server render calls `sri` and writes to the render writer. Generated server-static qvt does not. It transcribes expressions into the Vue template, and the browser evaluates them against the package and the restricted `ec`.
 
@@ -110,7 +110,7 @@ Generated screen JavaScript for a server render calls `sri` and writes to the re
 
 ## Server host methods
 
-Measured 2026-10-11 from `framework/template/XmlActions.groovy.ftl` and the kept screen macros in `runtime/template/screen-macro/` (`any`, `html`, `qvt`, `text`, `csv`, `xml`, `xsl-fo`, `plain`). `vuet` is excluded. The `xsl-fo` file is the one that was counted; the mode that replaces it is `html-print`. These are the calls the generated JavaScript makes. The browser `ec` keeps `l10n` format and localize, `resource.expand`, and the user allowlist from `plans/QvtServerStatic.md`. It does not gain the rest of this list. `sri` stays off the browser.
+Measured 2026-10-11 from `framework/template/XmlActions.groovy.ftl` and the kept screen macros in `runtime/template/screen-macro/` (`any`, `html`, `qvt`, `text`, `csv`, `xml`, `xsl-fo`, `plain`). `vuet` is excluded. The `xsl-fo` file is the one that was counted; the mode that replaces it is `html-print`. These are the calls the generated JavaScript makes. The browser `ec` keeps `l10n` format and localize, `resource.expand`, and the user allowlist from `plans/archive/QvtServerStatic.md`. It does not gain the rest of this list. `sri` stays off the browser.
 
 ### `sri`, during a server screen render
 
@@ -210,7 +210,7 @@ Form-list `group-by`, `sub-list` and `show-total`, saved finds and `select-colum
 `sri.startFormListSubRow`, `sri.endFormListSubRow`, `sri.getUserFormListFinds`, `sri.getUserDefaultFormListFindId`,
 `sri.renderUserColumnsForm`).
 `auto-fields-service`, `auto-widget-service`, `DbForm` forms and `dynamic="true"` forms are assembled (Phase 8 notes in
-`plans/Implementation-Phases.md`). A related entity's drop-down in `auto-fields-entity` is a text widget.
+`plans/archive/Implementation-Phases.md`). A related entity's drop-down in `auto-fields-entity` is a text widget.
 
 `ec` and statics, added now:
 
@@ -237,7 +237,7 @@ Form-list `group-by`, `sub-list` and `show-total`, saved finds and `select-colum
 ### Added by phase 8 slice 3
 
 The fancy renderers, the print mode, and the render calls services use. Dialect and registration are Template
-renderers in `plans/Architecture-Proposal.md`.
+renderers in `plans/archive/Architecture-Proposal.md`.
 
 - The locked-down renderer runs in its own QuickJS runtime on the thread, with no `ec`, `sri`, context stack or host
   objects. The snapshot is JSON of the map passed in (`unwrap_json`: a decimal is a string, an entity value is its
@@ -311,7 +311,7 @@ The qvt mode, its shell and the menu data.
 
 ### Added by phase 8 slice 7
 
-Server-static qvt (`plans/QvtServerStatic.md`).
+Server-static qvt (`plans/archive/QvtServerStatic.md`).
 
 - `sri.staticUrl(text, urlType)`: where a link of a static template goes, with no parameters: `{path, exists, isTransition, isScreen, readOnly, method}`. The
   name is resolved against the screen being rendered, and a name that is a transition of the active screen is found when the screen is not mounted. A
@@ -325,7 +325,7 @@ Server-static qvt (`plans/QvtServerStatic.md`).
   two indexes are the places of the field's sub-node among the field's children and of the widget in the sub-node. `GET {screen}/actions/{form}` answers the same
   kind of map for a form-list: the list under its name, the page keys, the values of the header fields, the option lists, and each row with `{field}_display` and the
   fields its `set` elements made.
-- Browser `ec` (`qvt.makeEc`): the table in `plans/QvtServerStatic.md`. `ec.resource.expand(text, table)` and `expandNoL10n` take the table of functions by
+- Browser `ec` (`qvt.makeEc`): the table in `plans/archive/QvtServerStatic.md`. `ec.resource.expand(text, table)` and `expandNoL10n` take the table of functions by
   expression text that the compiled template carries; there is no `eval`. `$mq` is the helper object (`str`, `dflt`, `nul`, `cur`, `fmt`, `merge`, `qs`, `url`,
   `shown`). `$scope` is the scope chain. The compatibility report's wrapped `ec` has the same members.
 - Report: `screen::statics::static_report`, `static_reports_for_files`, `StaticReport`, `Violation`. `script::set_widget_wrap` turns the wrapped `ec` on for widget
@@ -360,11 +360,11 @@ The calls the tools screens and services make (`script/runtime/tools_host.rs`). 
   wrote to an `OutputStream` argument, which a script has none of. A stylesheet or another content type is an error.
 - A resource reference from `ec.resource.getLocationReference` has `putBytes(bytes)` beside `putText`.
 - `SftpClient`, a global like `EdiHandler`: `new SftpClient(host, username, port?)` for the Groovy `new org.moqui.sftp.SftpClient(...)`, with the Java
-  methods (`plans/Ssh.md`). Bytes are `Uint8Array`; `openStream` and `putStream` return stream objects with `read`, `readAllBytes`, `readText`, `write`,
+  methods (`plans/archive/Ssh.md`). Bytes are `Uint8Array`; `openStream` and `putStream` return stream objects with `read`, `readAllBytes`, `readText`, `write`,
   and `close`.
 
 ## Out of scope
 
 - QuickJS operator overloading for decimals. QuickJS-NG ties it to the built-in `BigDecimal` and `BigFloat` classes (`CONFIG_BIGNUM`). It does not extend to a host class, so the build flag does not give a host decimal `+`. The browser cannot share that flag either.
 - Running the macro module per request so a screen function can read the context stack. Request data is read by the generated script.
-- A second script or template engine. V8 is the later option in `plans/Architecture-Proposal.md`, and only as a replacement for this runtime if a profile says the JavaScript is the heavy part.
+- A second script or template engine. V8 is the later option in `plans/archive/Architecture-Proposal.md`, and only as a replacement for this runtime if a profile says the JavaScript is the heavy part.
