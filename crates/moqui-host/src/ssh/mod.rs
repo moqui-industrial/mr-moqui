@@ -65,8 +65,8 @@ where
     .await
 }
 
-/// Install the SFTP client into core. First-use host keys go in `runtime/conf/ssh_known_hosts`.
-pub fn install_client(runtime_dir: &Path) {
+/// Install the SFTP client on `factory`. First-use host keys go in its `runtime/conf/ssh_known_hosts`.
+pub fn install_client(factory: &ExecutionContextFactory, runtime_dir: &Path) {
     let known_hosts = runtime_dir.join("conf").join("ssh_known_hosts");
-    moqui_core::sftp::install_sftp_connector(Arc::new(client::RusshConnector::new(known_hosts)));
+    moqui_core::sftp::install_sftp_connector(factory, Arc::new(client::RusshConnector::new(known_hosts)));
 }

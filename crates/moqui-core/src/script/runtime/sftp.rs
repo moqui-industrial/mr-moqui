@@ -446,13 +446,14 @@ pub(super) fn install(ctx: &Ctx<'_>) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use crate::script::eval_value;
-    use crate::sftp::tests::{memory, sftp_test_lock};
+    use crate::sftp::tests::memory;
     use moqui_lib::object::{to_plain_string, Value};
 
     #[test]
     fn a_script_uses_sftp_client_as_groovy_did() {
-        let _lock = sftp_test_lock();
-        let connector = memory();
+        let context = crate::context::ExecutionContextFactory::test_context();
+        let _entered = context.enter();
+        let connector = memory(context.factory());
         let script = r#"(function () {
             var out = [];
             var c = new SftpClient("files.example.com", "joe");
@@ -478,7 +479,6 @@ mod tests {
             return out;
         })()"#;
         let result = eval_value(script);
-        crate::sftp::clear_sftp_connector();
         let Value::List(items) = result.unwrap() else {
             panic!("not a list");
         };
@@ -487,7 +487,7 @@ mod tests {
             texts,
             [
                 "SFTP Client not connected",
-                "No password or KeyProvider specified, cannot connect to joe@files.example.com:115",
+                "No password or KeyProvider specified, cannot connect to joe@files.example.com:22",
                 "a.txt,b.bin",
                 "a.txt:/in/a.txt:true:4",
                 "caf\u{e9}",

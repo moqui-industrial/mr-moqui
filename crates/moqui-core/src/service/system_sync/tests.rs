@@ -551,9 +551,8 @@ fn received(facade: &EntityFacade, type_id: &str) -> Vec<(String, String)> {
 
 #[test]
 fn a_message_goes_out_by_sftp_and_a_poll_receives_moves_and_skips() {
-    let _lock = crate::sftp::tests::sftp_test_lock();
-    let connector = crate::sftp::tests::memory();
     let setup = setup("sftp");
+    let connector = crate::sftp::tests::memory(setup.context.factory());
     let _entered = setup.context.enter();
     let _authz = setup.context.disable_authz();
     install_sftp(&setup);
@@ -715,5 +714,4 @@ fn a_message_goes_out_by_sftp_and_a_poll_receives_moves_and_skips() {
         "{}",
         errors(&setup.context)
     );
-    crate::sftp::clear_sftp_connector();
 }

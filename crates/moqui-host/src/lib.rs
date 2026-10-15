@@ -917,7 +917,7 @@ fn boot_server(
     notws::install_push().map_err(moqui_lib::error::Error::from)?;
     tracing::info!("Cluster, cluster edge listener and notification WebSocket push initialized");
     let pdf = install_pdf(&runtime_dir);
-    ssh::install_client(&runtime_dir);
+    ssh::install_client(&factory, &runtime_dir);
     sso::install();
     ipp::install();
     tracing::info!("PDF, SSH client, SSO and IPP integrations installed");

@@ -13,9 +13,9 @@
  */
 
 //! The SFTP client of the `moqui-sftp` component, `org.moqui.sftp.SftpClient`. Core has no SSH stack: the host
-//! installs an [`SftpConnector`] (russh and russh-sftp) that does the protocol calls, and [`SftpClient`] keeps the
-//! Java behavior on top of them: `host:port` parsing and Java's default port, the directory-or-file target of `put`,
-//! `createDir`, `moveFile`, `renameFile`, charsets, and the messages a script sees.
+//! installs an [`SftpConnector`] (russh and russh-sftp) on each factory that does the protocol calls, and [`SftpClient`]
+//! keeps the Java behavior on top of them: `host:port` parsing (port 22 by default, where Java used 115), the
+//! directory-or-file target of `put`, `createDir`, `moveFile`, `renameFile`, charsets, and the messages a script sees.
 //!
 //! Java accepted any host key. Here a connection checks the remote's pinned SHA-256 fingerprint when one is given,
 //! else trusts the key on first use and refuses a key that changed (`runtime/conf/ssh_known_hosts`); the host does
@@ -25,16 +25,19 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use moqui_lib::error::Error;
 
-/// Java's `SftpClient.SFTP_PORT`, the default when the host string has no port.
+use crate::context::{ExecutionContext, ExecutionContextFactory};
+
+/// Java's `SftpClient.SFTP_PORT`. Java made it the default port, but 115 is the old Simple File Transfer Protocol, not
+/// SSH; the default here is [`SSH_PORT`].
 pub const SFTP_PORT: u16 = 115;
-/// `SftpClient.SSH_PORT`.
+/// `SftpClient.SSH_PORT`, the default when the host string has no port.
 pub const SSH_PORT: u16 = 22;
 
 /// What a caller sees when it uses SFTP and the host installed no connector.
 pub const SFTP_UNAVAILABLE: &str = "SFTP is not available in this build";
 
-/// How to reach and log in to one server.
-#[derive(Clone, Debug, Default)]
+/// How to reach and log in to one server. `Debug` leaves out the password and the private keys.
+#[derive(Clone, Default)]
 pub struct SftpConfig {
     pub host: String,
     pub port: u16,
@@ -47,10 +50,34 @@ pub struct SftpConfig {
     pub host_key_fingerprint: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct SftpKey {
     pub private_key: String,
     pub public_key: Option<String>,
+}
+
+const REDACTED: &str = "<redacted>";
+
+impl std::fmt::Debug for SftpConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SftpConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| REDACTED))
+            .field("keys", &self.keys)
+            .field("host_key_fingerprint", &self.host_key_fingerprint)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for SftpKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SftpKey")
+            .field("private_key", &REDACTED)
+            .field("public_key", &self.public_key)
+            .finish()
+    }
 }
 
 impl SftpConfig {
@@ -151,7 +178,7 @@ pub trait SftpSession: Send {
     fn is_connected(&self) -> bool;
 }
 
-/// Opens sessions. The host installs one.
+/// Opens sessions. The host installs one on each factory.
 pub trait SftpConnector: Send + Sync {
     /// Connect, check the host key, authenticate, and start the `sftp` subsystem.
     ///
@@ -161,27 +188,60 @@ pub trait SftpConnector: Send + Sync {
     fn connect(&self, config: &SftpConfig) -> Result<Box<dyn SftpSession>, Error>;
 }
 
-fn slot() -> &'static RwLock<Option<Arc<dyn SftpConnector>>> {
-    static SLOT: RwLock<Option<Arc<dyn SftpConnector>>> = RwLock::new(None);
-    &SLOT
+/// The factory's connector. A connector carries the runtime's own state (its `ssh_known_hosts`), so each factory
+/// has its own.
+#[derive(Default)]
+struct Slot {
+    connector: RwLock<Option<Arc<dyn SftpConnector>>>,
 }
 
-/// Use `connector` for every SFTP connection in this process.
-pub fn install_sftp_connector(connector: Arc<dyn SftpConnector>) {
-    *slot().write().unwrap_or_else(PoisonError::into_inner) = Some(connector);
+/// Use `connector` for the SFTP connections made under `factory`.
+pub fn install_sftp_connector(factory: &ExecutionContextFactory, connector: Arc<dyn SftpConnector>) {
+    let slot = factory.extension(|_| Slot::default());
+    *slot.connector.write().unwrap_or_else(PoisonError::into_inner) = Some(connector);
 }
 
-/// Remove the installed connector.
-pub fn clear_sftp_connector() {
-    *slot().write().unwrap_or_else(PoisonError::into_inner) = None;
+/// Remove the connector installed on `factory`.
+pub fn clear_sftp_connector(factory: &ExecutionContextFactory) {
+    let slot = factory.extension(|_| Slot::default());
+    *slot.connector.write().unwrap_or_else(PoisonError::into_inner) = None;
 }
 
+/// The connector of the entered context's factory.
 fn connector() -> Result<Arc<dyn SftpConnector>, Error> {
-    slot()
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone()
-        .ok_or_else(|| Error::new(SFTP_UNAVAILABLE))
+    ExecutionContext::with_current(|ec| {
+        let slot = ec.factory().extension(|_| Slot::default());
+        let found = slot.connector.read().unwrap_or_else(PoisonError::into_inner).clone();
+        found
+    })
+    .flatten()
+    .ok_or_else(|| Error::new(SFTP_UNAVAILABLE))
+}
+
+/// `host`, `host:port`, `[v6]`, or `[v6]:port`. A host with more than one colon and no brackets is an IPv6 address
+/// without a port.
+fn split_host_port(text: &str, default_port: u16) -> Result<(String, u16), Error> {
+    let parse_port = |port: &str| {
+        port.trim()
+            .parse::<u16>()
+            .map_err(|_| Error::new(format!("SFTP port {port} in {text} is not a number")))
+    };
+    if let Some(rest) = text.strip_prefix('[') {
+        let Some((address, after)) = rest.split_once(']') else {
+            return Err(Error::new(format!("SFTP host {text} has no closing bracket")));
+        };
+        return match after.strip_prefix(':') {
+            Some(port) => Ok((address.to_string(), parse_port(port)?)),
+            None if after.is_empty() => Ok((address.to_string(), default_port)),
+            None => Err(Error::new(format!("SFTP host {text} has text after the bracket"))),
+        };
+    }
+    match text.find(':') {
+        Some(index) if index > 0 && text.matches(':').count() == 1 => {
+            Ok((text[..index].to_string(), parse_port(&text[index + 1..])?))
+        }
+        _ => Ok((text.to_string(), default_port)),
+    }
 }
 
 /// The Java client: build it, `connect`, call, `close`.
@@ -192,23 +252,14 @@ pub struct SftpClient {
 }
 
 impl SftpClient {
-    /// `SftpClient(host, username, port)`: a `host:port` string wins over `port`, which defaults to [`SFTP_PORT`].
+    /// `SftpClient(host, username, port)`: a `host:port` string wins over `port`, which defaults to [`SSH_PORT`]. An
+    /// IPv6 address takes a port as `[address]:port`; one without brackets is all host.
     ///
     /// # Errors
     ///
     /// Returns an error when the port after the colon is not a number.
     pub fn new(host: &str, username: &str, port: Option<u16>) -> Result<Self, Error> {
-        let (host, port) = match host.find(':') {
-            Some(index) if index > 0 => {
-                let text = &host[index + 1..];
-                let port = text
-                    .trim()
-                    .parse::<u16>()
-                    .map_err(|_| Error::new(format!("SFTP port {text} in {host} is not a number")))?;
-                (host[..index].to_string(), port)
-            }
-            _ => (host.to_string(), port.unwrap_or(SFTP_PORT)),
-        };
+        let (host, port) = split_host_port(host, port.unwrap_or(SSH_PORT))?;
         Ok(Self {
             config: SftpConfig {
                 host,
@@ -771,31 +822,25 @@ pub(crate) mod tests {
         }
     }
 
-    /// Tests that install a connector hold this, since the slot is process-wide.
-    pub(crate) fn sftp_test_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: Mutex<()> = Mutex::new(());
-        LOCK.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Install a fresh memory connector with `/in` as a directory.
-    pub(crate) fn memory() -> Arc<MemoryConnector> {
+    /// Install a fresh memory connector with `/in` as a directory on `factory`.
+    pub(crate) fn memory(factory: &ExecutionContextFactory) -> Arc<MemoryConnector> {
         let connector = Arc::new(MemoryConnector::default());
         connector.disk.lock().unwrap().dirs.insert("/in".to_string());
-        install_sftp_connector(connector.clone());
+        install_sftp_connector(factory, connector.clone());
         connector
     }
 
     #[test]
     fn the_client_keeps_the_java_behavior() {
-        let _lock = sftp_test_lock();
-        clear_sftp_connector();
+        let context = ExecutionContextFactory::test_context();
+        let _entered = context.enter();
         let mut client = SftpClient::new("example.com", "joe", None).unwrap();
-        assert_eq!(client.config().port, SFTP_PORT);
+        assert_eq!(client.config().port, SSH_PORT);
         assert_eq!(SftpClient::new("h:2222", "joe", Some(22)).unwrap().config().port, 2222);
         let err = client.connect().err().unwrap();
         assert_eq!(
             err.message(),
-            "No password or KeyProvider specified, cannot connect to joe@example.com:115"
+            "No password or KeyProvider specified, cannot connect to joe@example.com:22"
         );
         let err = SftpClient::new("", "joe", None)
             .unwrap()
@@ -812,7 +857,7 @@ pub(crate) mod tests {
         client.password("pw");
         assert_eq!(client.connect().err().unwrap().message(), SFTP_UNAVAILABLE);
 
-        let connector = memory();
+        let connector = memory(context.factory());
         client.connect().unwrap();
         // A directory target uses the file name; a file target is the path.
         assert_eq!(
@@ -851,13 +896,13 @@ pub(crate) mod tests {
             client.ls_files("/in").unwrap_err().message(),
             "SFTP Client not connected"
         );
-        clear_sftp_connector();
     }
 
     #[test]
     fn a_client_dropped_open_closes_on_a_thread_of_its_own() {
-        let _lock = sftp_test_lock();
-        let connector = memory();
+        let context = ExecutionContextFactory::test_context();
+        let _entered = context.enter();
+        let connector = memory(context.factory());
         let mut client = SftpClient::new("example.com", "joe", None).unwrap();
         client.password("pw").connect().unwrap();
         drop(client);
@@ -866,6 +911,54 @@ pub(crate) mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         assert_eq!(connector.disk.lock().unwrap().closed_on, ["sftp-close"]);
-        clear_sftp_connector();
+    }
+
+    #[test]
+    fn each_factory_uses_its_own_connector() {
+        let first = ExecutionContextFactory::test_context();
+        let second = ExecutionContextFactory::test_context();
+        let connector = memory(first.factory());
+        {
+            let _entered = second.enter();
+            let mut client = SftpClient::new("example.com", "joe", None).unwrap();
+            assert_eq!(
+                client.password("pw").connect().err().unwrap().message(),
+                SFTP_UNAVAILABLE
+            );
+        }
+        let _entered = first.enter();
+        let mut client = SftpClient::new("example.com", "joe", None).unwrap();
+        client.password("pw").connect().unwrap();
+        assert_eq!(connector.seen.lock().unwrap().len(), 1);
+        client.close();
+        clear_sftp_connector(first.factory());
+        assert_eq!(client.connect().err().unwrap().message(), SFTP_UNAVAILABLE);
+    }
+
+    #[test]
+    fn hosts_split_with_ipv6_brackets() {
+        let split = |text: &str| split_host_port(text, SSH_PORT).unwrap();
+        assert_eq!(split("example.com"), ("example.com".to_string(), 22));
+        assert_eq!(split("example.com:2222"), ("example.com".to_string(), 2222));
+        assert_eq!(split("[::1]:2222"), ("::1".to_string(), 2222));
+        assert_eq!(split("[::1]"), ("::1".to_string(), 22));
+        assert_eq!(split("fe80::1"), ("fe80::1".to_string(), 22));
+        assert!(split_host_port("[::1", SSH_PORT).is_err());
+        assert!(split_host_port("[::1]x", SSH_PORT).is_err());
+        assert!(split_host_port("host:port", SSH_PORT).is_err());
+    }
+
+    #[test]
+    fn debug_leaves_out_the_password_and_private_key() {
+        let mut client = SftpClient::new("example.com", "joe", None).unwrap();
+        client
+            .password("hunter2")
+            .public_key_pkcs8("PRIVATE-PEM", Some("ssh-ed25519 AAAA"));
+        let shown = format!("{:?}", client.config());
+        assert!(!shown.contains("hunter2") && !shown.contains("PRIVATE-PEM"), "{shown}");
+        assert!(
+            shown.contains("ssh-ed25519 AAAA") && shown.contains("example.com"),
+            "{shown}"
+        );
     }
 }
