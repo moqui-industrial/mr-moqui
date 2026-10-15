@@ -522,13 +522,9 @@ impl EntityFind {
 pub(crate) struct FindValues;
 
 impl ConditionValues for FindValues {
+    /// Java's `ec.user.nowTimestamp`, so a date filter follows the effective time.
     fn now(&self) -> Value {
-        let millis = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .and_then(|duration| i64::try_from(duration.as_millis()).ok())
-            .unwrap_or(0);
-        basic_convert(&Value::I64(millis), "java.sql.Timestamp").value
+        basic_convert(&Value::I64(crate::user::now_effective_millis()), "java.sql.Timestamp").value
     }
 
     fn expand(&self, text: &str) -> Result<String, Error> {

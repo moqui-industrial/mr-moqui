@@ -36,6 +36,42 @@ const BUILDER: &str = r#"(function (ec) {
         };
         return b;
     };
+    // Java's ScreenTest: render paths under a base screen path as the current user, with the errors of each render
+    // collected on the result instead of thrown, and counts over the renders.
+    ec.screen.makeTest = () => {
+        const o = {};
+        const t = {
+            rootScreen: (v) => { o.rootScreen = v; return t; },
+            baseScreenPath: (v) => { o.baseScreenPath = v; return t; },
+            renderMode: (v) => { o.renderMode = v; return t; },
+            baseLinkUrl: (v) => { o.baseLinkUrl = v; return t; },
+            renderCount: 0, errorCount: 0, renderTotalChars: 0, startTime: Date.now(),
+            render: (screenPath, parameters, requestMethod) => {
+                const r = ec.screen.testRender(Object.assign({}, o,
+                    { screenPath: String(screenPath), parameters: parameters || {}, method: requestMethod || "" }));
+                t.renderCount++;
+                t.errorCount += r.errorMessages.length;
+                t.renderTotalChars += r.output ? r.output.length : 0;
+                const str = {
+                    screenPath: String(screenPath), output: r.output, errorMessages: r.errorMessages,
+                    renderTime: r.renderTime, status: r.status,
+                    assertContains: (text) => !!r.output && r.output.includes(text),
+                    assertNotContains: (text) => !r.output || !r.output.includes(text),
+                    assertNoErrors: () => r.errorMessages.length === 0,
+                    getOutput: () => r.output, getErrorMessages: () => r.errorMessages, getRenderTime: () => r.renderTime
+                };
+                // the response parsed as JSON, or null when it is not JSON
+                Object.defineProperty(str, "jsonObject", { get: () => { try { return JSON.parse(r.output); } catch (e) { return null; } } });
+                return str;
+            },
+            renderAll: (screenPaths, parameters, requestMethod) => {
+                for (const screenPath of screenPaths) t.render(screenPath, parameters, requestMethod);
+            },
+            getRenderCount: () => t.renderCount, getErrorCount: () => t.errorCount,
+            getRenderTotalChars: () => t.renderTotalChars, getStartTime: () => t.startTime
+        };
+        return t;
+    };
 })"#;
 
 /// `ec.screen.render(options)`: `{screenPath, renderMode, rootScreen, baseLinkUrl, lastStandalone,
@@ -156,9 +192,72 @@ pub(super) fn resource_xsl_fo_transform<'js>(
     })
 }
 
+/// `ec.screen.testRender({screenPath, parameters, method, rootScreen, baseScreenPath, renderMode, baseLinkUrl})`, the
+/// host side of `makeTest().render()`: `{output, errorMessages, renderTime, status}`. It does not throw for a failed
+/// render; the failure is in `errorMessages`.
+fn screen_test_render<'js>(ctx: Ctx<'js>, options: JsValue<'js>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let Value::Map(options) = js_to_host(&ctx, &options)? else {
+            return Err(Exception::throw_message(
+                &ctx,
+                "ec.screen.testRender needs an options map",
+            ));
+        };
+        let text = |name: &str| {
+            options
+                .get(name)
+                .map(moqui_lib::object::to_plain_string)
+                .unwrap_or_default()
+        };
+        let mut parameters = std::collections::BTreeMap::new();
+        if let Some(Value::Map(given)) = options.get("parameters") {
+            parameters.extend(given.iter().map(|(key, value)| (key.clone(), value.clone())));
+        }
+        let factory = with_ec(&ctx, |ec| Arc::clone(ec.factory()))?;
+        let mut test = crate::screen::ScreenTest::new(&factory)
+            .base_screen_path(text("baseScreenPath"))
+            .base_url(text("baseLinkUrl"));
+        if !text("rootScreen").is_empty() {
+            test = test.root_screen(text("rootScreen"));
+        }
+        if !text("renderMode").is_empty() {
+            test = test.render_mode(text("renderMode"));
+        }
+        let method = text("method");
+        let rendered = test.test_render(&text("screenPath"), parameters, Some(method.as_str()));
+        let mut out = indexmap::IndexMap::new();
+        out.insert(
+            "output".to_string(),
+            if rendered.output.is_some() {
+                Value::String(rendered.text())
+            } else {
+                Value::Null
+            },
+        );
+        out.insert(
+            "errorMessages".to_string(),
+            Value::List(rendered.error_messages.into_iter().map(Value::String).collect()),
+        );
+        out.insert(
+            "renderTime".to_string(),
+            Value::I64(i64::try_from(rendered.render_time_ms).unwrap_or(i64::MAX)),
+        );
+        out.insert(
+            "status".to_string(),
+            rendered
+                .output
+                .as_ref()
+                .map_or(Value::Null, |output| Value::I64(i64::from(output.status))),
+        );
+        host_to_js(&ctx, Value::Map(out))
+    })
+}
+
 pub(super) fn install<'js>(ctx: &Ctx<'js>, screen: &Object<'js>) -> Result<(), Error> {
     let render = caught(ctx, "screen.render", Function::new(ctx.clone(), screen_render))?;
     caught(ctx, "screen.render", screen.set("render", render))?;
+    let test_render = caught(ctx, "screen.testRender", Function::new(ctx.clone(), screen_test_render))?;
+    caught(ctx, "screen.testRender", screen.set("testRender", test_render))?;
     let mime = caught(
         ctx,
         "screen.getMimeTypeByMode",

@@ -371,6 +371,18 @@ pub(crate) fn stamp_value(millis: i64) -> Value {
     basic_convert(&Value::I64(millis), "java.sql.Timestamp").value
 }
 
+/// Java's `ec.user.nowTimestamp`: the entered context's effective time, or the clock.
+pub(crate) fn now_effective_value() -> Value {
+    stamp_value(now_effective_millis())
+}
+
+/// [`now_effective_value`] as epoch millis.
+pub(crate) fn now_effective_millis() -> i64 {
+    ExecutionContext::with_current(ExecutionContext::effective_time)
+        .flatten()
+        .unwrap_or_else(now_millis)
+}
+
 pub(crate) fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

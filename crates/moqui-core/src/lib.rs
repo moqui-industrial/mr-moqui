@@ -31,6 +31,7 @@ pub mod sftp;
 pub mod sso;
 #[cfg(test)]
 mod testing;
+pub mod testkit;
 pub mod transaction;
 pub mod typegen;
 pub mod user;

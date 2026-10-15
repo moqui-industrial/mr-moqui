@@ -27,6 +27,8 @@ pub mod qvt_report;
 pub mod search;
 pub mod ssh;
 pub mod sso;
+#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+pub mod test_cmd;
 pub mod types;
 
 mod cluster_edge;
@@ -197,7 +199,7 @@ pub fn load_save(
     db::embedded::load_save(dir.as_ref(), dump.as_ref())
 }
 
-const USAGE: &str = "usage: moqui [save-db <cluster-dir> <dump-file> | load-save <cluster-dir> <dump-file> | load [name=value ...] | lint [file] | lint --screens [report-file] | lint --screens --qvt-static [report-file] | lint --groovy <dir> ... | convert --groovy [--write] <dir> ... | types [--out dir]]";
+const USAGE: &str = "usage: moqui [save-db <cluster-dir> <dump-file> | load-save <cluster-dir> <dump-file> | load [name=value ...] | test [component ...] [--spec Name[,Name]] [--feature text] [--db fresh|snapshot|existing] [--junit dir] [--keep] | lint [file] | lint --screens [report-file] | lint --screens --qvt-static [report-file] | lint --groovy <dir> ... | convert --groovy [--write] <dir> ... | types [--out dir]]";
 
 /// No arguments start the HTTP server. `save-db` and `load-save` take a cluster directory and a dump file.
 /// `load` takes `name=value` pairs. `lint` takes an optional service file. `lint --screens` checks the screen and form XML and may write a report file.
@@ -230,6 +232,20 @@ where
         [command, rest @ ..] if command == "types" => {
             dispatch_types(rest)?;
             Ok(None)
+        }
+        [command, rest @ ..] if command == "test" => {
+            #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+            {
+                test_cmd::dispatch_test(rest)?;
+                Ok(None)
+            }
+            #[cfg(not(all(feature = "embedded-postgres", feature = "postgres")))]
+            {
+                let _ = rest;
+                Err(moqui_lib::error::Error::new(
+                    "moqui test needs the embedded-postgres and postgres features",
+                ))
+            }
         }
         [command, rest @ ..] if command == "load" => {
             let flags = parse_load_args(rest)?;

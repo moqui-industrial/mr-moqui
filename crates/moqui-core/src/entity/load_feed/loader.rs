@@ -313,6 +313,9 @@ pub(super) fn inherit_pk_fields(
 }
 
 pub(super) fn store_record(facade: &EntityFacade, options: &LoadOptions, record: &Record) -> Result<u64, Error> {
+    if super::check::checking() {
+        return super::check::check_record(facade, record);
+    }
     if options.restrict_sensitive_entities {
         refuse_restricted(facade, record)?;
     }
@@ -419,7 +422,8 @@ fn prepare_fields(
         Ok(entity.pk_field_names().contains(&"fromDate"))
     })?;
     if from_date_pk && !only_create && fields.get("fromDate").is_none_or(Value::is_null) {
-        fields.insert("fromDate".to_string(), Value::Timestamp(jiff::Timestamp::now()));
+        // `ec.user.nowTimestamp`, so it follows the effective time.
+        fields.insert("fromDate".to_string(), crate::user::now_effective_value());
     }
     let (single, missing, only_last) = facade.with_entity(entity_name, |entity, _, _| {
         let names = entity.pk_field_names();
@@ -454,7 +458,11 @@ fn prepare_fields(
     Ok(())
 }
 
-fn convert_fields(facade: &EntityFacade, entity_name: &str, fields: &mut BTreeMap<String, Value>) -> Result<(), Error> {
+pub(super) fn convert_fields(
+    facade: &EntityFacade,
+    entity_name: &str,
+    fields: &mut BTreeMap<String, Value>,
+) -> Result<(), Error> {
     let updates = facade.with_entity(entity_name, |entity, _, model| {
         let mut updates = BTreeMap::new();
         for field in &entity.fields {
@@ -550,6 +558,10 @@ pub(super) fn call_data_file_service(
     options: &LoadOptions,
     service: DataFileService,
 ) -> Result<(), Error> {
+    if super::check::checking() {
+        super::check::skip_service(&service);
+        return Ok(());
+    }
     // A restricted load takes records only: a service element could write anything.
     if options.restrict_sensitive_entities {
         tracing::warn!(

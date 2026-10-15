@@ -32,6 +32,7 @@ argon2 = { workspace = true }
 sha1 = { workspace = true }
 oxc_parser = { workspace = true }
 oxc_ast = { workspace = true }
+oxc_span = { workspace = true }
 ammonia = { workspace = true }
 croner = { workspace = true }
 indexmap = { workspace = true }

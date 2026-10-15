@@ -19,6 +19,7 @@
 //! Feed receive and delete service names are recorded, and `service::schedule_feed_receive` hands
 //! the pending rows to a service worker after commit. Documents are indexed only when search is attached.
 
+mod check;
 mod csv;
 mod eca;
 mod feed;
@@ -38,6 +39,7 @@ use moqui_lib::node::MNode;
 
 use super::facade::EntityFacade;
 
+pub use check::{check_entity_data, check_entity_xml_text, check_with, CheckResult};
 #[cfg(test)]
 pub(crate) use eca::add_eca_rules;
 pub use eca::{eca_rule_count, eca_rules, match_rules, EcaRule};

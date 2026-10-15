@@ -20,7 +20,6 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
@@ -775,7 +774,7 @@ fn prepare_value(
     if verb != Verb::Update && snap.fields.iter().any(|field| field.is_pk && field.name == "fromDate") {
         let missing = parameters.get("fromDate").is_none_or(is_empty);
         if missing {
-            value.set("fromDate", now_stamp());
+            value.set("fromDate", crate::user::now_effective_value());
         }
     }
     for field in &snap.fields {
@@ -2263,15 +2262,6 @@ fn value_map(entries: Vec<(String, Value)>) -> Value {
         Ok(cell) => cell.into_inner(),
         Err(frame) => frame.borrow().clone(),
     })
-}
-
-fn now_stamp() -> Value {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
-        .unwrap_or(0);
-    basic_convert(&Value::I64(millis), "java.sql.Timestamp").value
 }
 
 #[cfg(test)]

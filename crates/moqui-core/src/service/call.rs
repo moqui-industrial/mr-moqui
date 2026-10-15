@@ -726,6 +726,16 @@ fn run_entity(
         }
         record.set(key, value.clone());
     }
+    // `EntityAutoServiceRunner.checkFromDate`: a `fromDate` primary key left out of a create or store is
+    // `ec.user.nowTimestamp`.
+    if matches!(verb, "create" | "store")
+        && pk_names.iter().any(|name| name == "fromDate")
+        && record
+            .get("fromDate")
+            .is_none_or(|value| value.is_null() || is_empty(value))
+    {
+        record.set("fromDate", crate::user::now_effective_value());
+    }
     let mut status_out = BTreeMap::new();
     match verb {
         "delete" => record.delete(facade)?,

@@ -4695,6 +4695,7 @@ dependencies = [
  "moqui-lib",
  "oxc_ast",
  "oxc_parser",
+ "oxc_span",
  "pbkdf2 0.12.2",
  "rcgen",
  "rquickjs",

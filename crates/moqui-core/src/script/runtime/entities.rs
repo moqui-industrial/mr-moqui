@@ -53,6 +53,28 @@ pub(super) fn entity_sequenced_id_primary<'js>(
     })
 }
 
+pub(super) fn entity_temp_set_sequenced_id_primary<'js>(
+    ctx: Ctx<'js>,
+    name: String,
+    next: JsValue<'js>,
+    bank_size: JsValue<'js>,
+) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        let facade = facade_of(&ctx)?;
+        let next = js_i64(&ctx, &next)?;
+        let bank_size = js_i64(&ctx, &bank_size)?;
+        facade.temp_set_sequenced_id_primary(&name, next, bank_size);
+        Ok(())
+    })
+}
+
+pub(super) fn entity_temp_reset_sequenced_id_primary<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        facade_of(&ctx)?.temp_reset_sequenced_id_primary(&name);
+        Ok(())
+    })
+}
+
 pub(super) fn entity_make_value<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let facade = facade_of(&ctx)?;

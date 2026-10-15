@@ -232,6 +232,13 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
             if (Array.isArray(messages)) messages.push(...result.messages);
             return result.records;
         };
+        // Java's check(): compare the data with the database and write nothing. With no argument the messages of
+        // what did not match come back; check(messages) adds them to the list and returns the fields checked.
+        l.check = (messages) => {
+            const result = host.loadData(Object.assign({}, options, { check: true }));
+            if (Array.isArray(messages)) { messages.push(...result.messages); return result.fieldsChecked; }
+            return result.messages;
+        };
         return l;
     };
 
@@ -587,7 +594,9 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     ec.artifactExecution = { isPermitted: host.isPermitted, getFindFiltersForUser: host.getFindFiltersForUser,
         // Java's: disable returns whether entity ECA was already disabled, and the caller that found it so leaves it so
         disableEntityEca: host.disableEntityEca, enableEntityEca: host.enableEntityEca,
-        entityEcaDisabled: host.entityEcaDisabled, getStackNameString: host.stackNameString };
+        entityEcaDisabled: host.entityEcaDisabled, getStackNameString: host.stackNameString,
+        // Java's: disable returns whether authorization was already disabled; it stays so until enable
+        disableAuthz: host.disableAuthz, enableAuthz: host.enableAuthz };
 
     // `Locale.getAvailableLocales()` with English display names. Java lists every JVM locale; the port has no locale
     // database, so this is a fixed list of the common ones.
@@ -642,6 +651,7 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     Object.defineProperty(ec.factory, "workerPool", { get: poolInfo });
     Object.defineProperty(ec.factory, "versionMap", { get: () => ({ moqui: ec.factory.moquiVersion }) });
     ec.factory.getThreadList = host.getThreadList;
+    ec.factory.waitWorkerPoolEmpty = host.waitWorkerPoolEmpty;
     ec.web.getRequestDetails = host.getRequestDetails;
     Object.defineProperty(ec.web, "secureRequestParameters", { get: host.secureRequestParameters });
     su.camelCaseToPretty = host.camelCaseToPretty;
@@ -1142,7 +1152,19 @@ fn load_data<'js>(ctx: Ctx<'js>, options: JsValue<'js>) -> rquickjs::Result<JsVa
         facade.set_disable_audit_log(flag("disableAuditLog") || before.disable_audit_log);
         facade.set_disable_data_feed(flag("disableDataFeed") || before.disable_data_feed);
         let factory = factory_of(&ctx)?;
-        let loaded = load_source(&facade, &factory, &text, &load_options);
+        let check = flag("check");
+        let mut fields_checked = 0_u64;
+        let loaded = if check {
+            // `check()`: the messages are what did not match, not what was loaded.
+            crate::entity::load_feed::check_with(|| load_source(&facade, &factory, &text, &load_options)).map(
+                |((records, _), result)| {
+                    fields_checked = result.fields_checked;
+                    (records, result.messages)
+                },
+            )
+        } else {
+            load_source(&facade, &factory, &text, &load_options)
+        };
         facade.set_disable_entity_eca(before.disable_entity_eca);
         facade.set_disable_audit_log(before.disable_audit_log);
         facade.set_disable_data_feed(before.disable_data_feed);
@@ -1155,6 +1177,10 @@ fn load_data<'js>(ctx: Ctx<'js>, options: JsValue<'js>) -> rquickjs::Result<JsVa
         out.insert(
             "messages".to_string(),
             Value::List(messages.into_iter().map(Value::String).collect()),
+        );
+        out.insert(
+            "fieldsChecked".to_string(),
+            Value::I64(i64::try_from(fields_checked).unwrap_or(i64::MAX)),
         );
         host_to_js(&ctx, Value::Map(out))
     })
@@ -1362,6 +1388,14 @@ fn get_component_info_list<'js>(ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>>
 
 fn get_runtime_path(ctx: Ctx<'_>) -> rquickjs::Result<String> {
     host_guard(&ctx, || Ok(factory_of(&ctx)?.runtime_dir().display().to_string()))
+}
+
+/// `ec.factory.waitWorkerPoolEmpty(retryLimit)`: wait up to `retryLimit` (default 50) times 100 ms for async service
+/// work to finish. Returns whether the pool is empty.
+fn wait_worker_pool_empty(ctx: Ctx<'_>, retry_limit: Opt<u32>) -> rquickjs::Result<bool> {
+    host_guard(&ctx, || {
+        Ok(factory_of(&ctx)?.wait_worker_pool_empty(retry_limit.0.unwrap_or(50)))
+    })
 }
 
 fn get_thread_list<'js>(ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
@@ -2013,6 +2047,16 @@ fn enable_entity_eca(ctx: Ctx<'_>) -> rquickjs::Result<()> {
     host_guard(&ctx, || with_ec(&ctx, ExecutionContext::enable_entity_eca))
 }
 
+/// `ec.artifactExecution.disableAuthz()`: authorization is not checked for this execution context until
+/// `enableAuthz()`. Returns whether it was already disabled, as Java.
+fn disable_authz(ctx: Ctx<'_>) -> rquickjs::Result<bool> {
+    host_guard(&ctx, || with_ec(&ctx, ExecutionContext::script_disable_authz))
+}
+
+fn enable_authz(ctx: Ctx<'_>) -> rquickjs::Result<()> {
+    host_guard(&ctx, || with_ec(&ctx, ExecutionContext::script_enable_authz))
+}
+
 fn shared_get<'js>(ctx: Ctx<'js>, key: String) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let found = with_ec(&ctx, |ec| ec.shared_map().get(&key).cloned())?;
@@ -2213,6 +2257,7 @@ pub(super) fn install<'js>(
     method!("getComponentInfoList", get_component_info_list);
     method!("getRuntimePath", get_runtime_path);
     method!("getThreadList", get_thread_list);
+    method!("waitWorkerPoolEmpty", wait_worker_pool_empty);
     method!("getRequestDetails", get_request_details);
     method!("secureRequestParameters", secure_request_parameters);
     method!("camelCaseToPretty", camel_case_to_pretty);
@@ -2222,6 +2267,8 @@ pub(super) fn install<'js>(
     method!("isPermitted", is_permitted);
     method!("disableEntityEca", disable_entity_eca);
     method!("enableEntityEca", enable_entity_eca);
+    method!("disableAuthz", disable_authz);
+    method!("enableAuthz", enable_authz);
     method!("entityEcaDisabled", entity_eca_disabled);
     method!("stackNameString", stack_name_string);
     method!("sharedGet", shared_get);

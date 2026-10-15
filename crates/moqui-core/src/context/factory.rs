@@ -267,6 +267,22 @@ impl ExecutionContextFactory {
         self.pools.run_pending()
     }
 
+    /// Java's `waitWorkerPoolEmpty(retryLimit)`: wait up to `retry_limit` times 100 ms for the async service work to
+    /// finish. Queued inline work runs here. Returns whether the pool is empty.
+    pub fn wait_worker_pool_empty(&self, retry_limit: u32) -> bool {
+        for attempt in 0..=retry_limit {
+            self.pools.run_pending();
+            let status = self.pools.status();
+            if status.active == 0 && status.queued == 0 && self.pools.pending() == 0 {
+                return true;
+            }
+            if attempt < retry_limit {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+        false
+    }
+
     /// Write dirty `moqui.server.HttpSession` rows. The host calls this on shutdown so an
     /// `eventual` session is on disk before the entity facade drops.
     ///
@@ -310,6 +326,8 @@ impl ExecutionContextFactory {
                 session: RefCell::new(crate::user::Memory::default()),
                 user_context: RefCell::new(std::collections::BTreeMap::new()),
                 shared_map: RefCell::new(indexmap::IndexMap::new()),
+                effective_time: std::cell::Cell::new(None),
+                script_authz: RefCell::new(None),
             }),
         }
     }
@@ -485,9 +503,25 @@ struct ContextState {
     user_context: RefCell<std::collections::BTreeMap<String, moqui_lib::object::Value>>,
     /// `ec.context.sharedMap`: one map for the execution context, shared by every service call and script in it.
     shared_map: RefCell<indexmap::IndexMap<String, moqui_lib::object::Value>>,
+    /// Java's `UserFacade.setEffectiveTime`: epoch millis that `ec.user.nowTimestamp` returns instead of the clock.
+    effective_time: std::cell::Cell<Option<i64>>,
+    /// The guard of a script's `ec.artifactExecution.disableAuthz()`, held until `enableAuthz()` or the context ends.
+    script_authz: RefCell<Option<AuthzGuard>>,
 }
 
 impl ExecutionContext {
+    /// Java's `ec.user.setEffectiveTime`: from now on `ec.user.nowTimestamp`, date filters with no date, and the
+    /// defaults Java takes from it (entity-auto `fromDate`, audit log `changedDate`) use `millis`. `None` goes back to
+    /// the clock. Timing, login and job scheduling keep the clock.
+    pub fn set_effective_time(&self, millis: Option<i64>) {
+        self.state.effective_time.set(millis);
+    }
+
+    /// The effective time set on this context, if any.
+    pub fn effective_time(&self) -> Option<i64> {
+        self.state.effective_time.get()
+    }
+
     pub fn factory(&self) -> &Arc<ExecutionContextFactory> {
         &self.state.factory
     }
@@ -637,6 +671,24 @@ impl ExecutionContext {
 
     pub fn disable_authz(&self) -> AuthzGuard {
         self.state.artifacts.borrow().disable_authz()
+    }
+
+    /// Java's `ArtifactExecutionFacade.disableAuthz()` for a script, which has no guard to hold: authorization stays
+    /// disabled until [`Self::script_enable_authz`] or the context ends. Returns whether it was already disabled.
+    pub fn script_disable_authz(&self) -> bool {
+        let already = self.authz_disabled();
+        let mut held = self.state.script_authz.borrow_mut();
+        if held.is_none() {
+            *held = Some(self.disable_authz());
+        }
+        already
+    }
+
+    /// Java's `enableAuthz()` for a script: drops the guard of [`Self::script_disable_authz`]. A guard Rust code
+    /// holds stays in force.
+    pub fn script_enable_authz(&self) {
+        let guard = self.state.script_authz.borrow_mut().take();
+        drop(guard);
     }
 
     /// Java's `disableEntityEca`: entity ECA rules do not run for writes of this context until

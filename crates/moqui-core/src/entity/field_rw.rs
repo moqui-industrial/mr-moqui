@@ -17,11 +17,10 @@
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use moqui_db::model::{EntityDefinition, EntityModel};
 use moqui_lib::error::Error;
-use moqui_lib::object::{basic_convert, decimal_compare, to_plain_string, Value};
+use moqui_lib::object::{decimal_compare, to_plain_string, Value};
 
 use super::crypto::{decrypt_with_alts, encrypt};
 use super::facade::EntityFacade;
@@ -358,13 +357,9 @@ fn plain_text(value: Option<&Value>) -> Option<String> {
     present(value).map(to_plain_string)
 }
 
+/// Java's audit log stamps `ec.user.nowTimestamp`, so it follows the effective time.
 fn changed_now() -> Value {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
-        .unwrap_or(0);
-    basic_convert(&Value::I64(millis), "java.sql.Timestamp").value
+    crate::user::now_effective_value()
 }
 
 struct LocalTarget {

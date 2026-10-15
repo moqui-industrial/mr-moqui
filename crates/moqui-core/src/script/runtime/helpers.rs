@@ -233,13 +233,9 @@ pub(super) fn timestamp_of(value: &Value) -> Value {
     moqui_lib::object::basic_convert(value, "java.sql.Timestamp").value
 }
 
+/// `ec.user.nowTimestamp`: the context's effective time, or the clock.
 pub(super) fn now_timestamp() -> Value {
-    let millis = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
-        .unwrap_or(0);
-    timestamp_of(&Value::I64(millis))
+    timestamp_of(&Value::I64(crate::user::now_effective_millis()))
 }
 
 pub(super) fn js_in_date_range<'js>(

@@ -142,6 +142,8 @@ rquickjs = "=0.14.0"
 oxc_parser = "0.139"
 # The ESTree JSON of a parsed expression, for the server-static compatibility walk. Already in the tree under oxc_parser.
 oxc_ast = { version = "0.139", features = ["serialize"] }
+# Spans of parsed nodes, for the test harness power-assert rewrite. Already in the tree under oxc_parser.
+oxc_span = "0.139"
 # HTML cleaning for allow-html="safe" service parameters. MIT OR Apache-2.0. Builder::default() is the
 # conservative maintained allow-list; there is no custom list in this repo.
 ammonia = "4"
