@@ -764,6 +764,16 @@ impl SearchBackend for PostgresBackend {
     }
 
     fn index_documents(&self, mapping: &DocumentMapping, documents: &[(String, Document)]) -> Result<usize, Error> {
+        self.index_documents_at(mapping, documents, None)
+    }
+
+    /// `indexed_at` is the read time when there is one, and a row read later than this one is not replaced.
+    fn index_documents_at(
+        &self,
+        mapping: &DocumentMapping,
+        documents: &[(String, Document)],
+        read_at: Option<Timestamp>,
+    ) -> Result<usize, Error> {
         if documents.is_empty() {
             return Ok(0);
         }
@@ -800,7 +810,10 @@ impl SearchBackend for PostgresBackend {
             let col = column(name);
             statement.push_str(&format!(", {col} = EXCLUDED.{col}"));
         }
-        let now = Timestamp::now();
+        if read_at.is_some() {
+            statement.push_str(&format!(" WHERE {table}.indexed_at <= EXCLUDED.indexed_at"));
+        }
+        let now = read_at.unwrap_or_else(Timestamp::now);
         let mut rows = Vec::with_capacity(documents.len());
         for (given, body) in documents {
             // A log entry has no id: a time-ordered one is made here, as OpenSearch makes its own.

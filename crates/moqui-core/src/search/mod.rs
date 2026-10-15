@@ -57,6 +57,9 @@ pub const MAX_WINDOW: usize = 10_000;
 /// Control fields a document carries that are not stored in its body.
 pub const CONTROL_FIELDS: [&str; 4] = ["_index", "_type", "_id", "_timestamp"];
 
+/// A document type and the time its documents' data was read.
+type ReadGroup = (String, Option<jiff::Timestamp>);
+
 /// What a search runs over.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
@@ -260,6 +263,17 @@ pub trait SearchBackend: Send + Sync {
     fn index_exists(&self, mapping: &DocumentMapping) -> Result<bool, Error>;
     /// Insert or replace documents. Control fields are already removed from each body.
     fn index_documents(&self, mapping: &DocumentMapping, documents: &[(String, Document)]) -> Result<usize, Error>;
+    /// Index documents whose data was read at `read_at`. A stored document read later is kept, so two deliveries
+    /// of one record that finish out of order leave the newer read. Without `read_at` this is `index_documents`.
+    fn index_documents_at(
+        &self,
+        mapping: &DocumentMapping,
+        documents: &[(String, Document)],
+        read_at: Option<jiff::Timestamp>,
+    ) -> Result<usize, Error> {
+        let _ = read_at;
+        self.index_documents(mapping, documents)
+    }
     fn delete_document(&self, mapping: &DocumentMapping, id: &str) -> Result<bool, Error>;
     fn delete_matching(&self, mapping: &DocumentMapping, filter: &Query) -> Result<u64, Error>;
     fn get_document(&self, mapping: &DocumentMapping, id: &str) -> Result<Option<Document>, Error>;
@@ -550,20 +564,22 @@ impl SearchFacade {
     ///
     /// Returns an error when a document has no `_type` or `_id`, or the store write fails.
     pub fn index_documents(&self, documents: &[Document]) -> Result<usize, Error> {
-        let mut grouped: IndexMap<String, Vec<(String, Document)>> = IndexMap::new();
+        // By type, and by the time the document's data was read (`_timestamp`, set when a document is assembled).
+        let mut grouped: IndexMap<ReadGroup, Vec<(String, Document)>> = IndexMap::new();
         for doc in documents {
             let doc_type = control_text(doc, "_type").ok_or_else(|| Error::new("a document to index has no _type"))?;
             let id = control_text(doc, "_id").ok_or_else(|| Error::new(format!("a {doc_type} document has no _id")))?;
+            let read_at = control_text(doc, "_timestamp").and_then(|text| text.parse::<jiff::Timestamp>().ok());
             let mut body = doc.clone();
             for name in CONTROL_FIELDS {
                 body.shift_remove(name);
             }
-            grouped.entry(doc_type).or_default().push((id, body));
+            grouped.entry((doc_type, read_at)).or_default().push((id, body));
         }
         let mut count = 0;
-        for (doc_type, docs) in grouped {
+        for ((doc_type, read_at), docs) in grouped {
             let mapping = self.ensure_cached(&doc_type)?;
-            count += self.backend.index_documents(&mapping, &docs)?;
+            count += self.backend.index_documents_at(&mapping, &docs, read_at)?;
         }
         Ok(count)
     }

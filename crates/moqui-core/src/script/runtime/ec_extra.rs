@@ -742,6 +742,10 @@ mod tests {
         );
         holds(r##"ec.l10n.format(1234.5, "#,##0.00") === "1,234.50""##);
         holds(
+            r#"toDecimal("2.345").setScale(2, "HALF_UP").toString() === "2.35" && toDecimal("2.5").setScale(0, 6).toString() === "2""#,
+        );
+        holds(r#"toDecimal("2").setScale(2).toString() === "2.00""#);
+        holds(
             r#"toNumber(toDecimal("2.5")) * 2 === 5 && toNumber("3") === 3 && toNumber(null) === null && toNumber(4) === 4"#,
         );
         holds(r#"elasticQueryAutoWildcard(" john  smith ", true) === "*:john* *:smith*""#);

@@ -84,6 +84,57 @@ impl HostDecimal {
         })
     }
 
+    /// `setScale(scale, roundingMode)`, as Java's `BigDecimal.setScale`. The mode is a `RoundingMode` name such as
+    /// `HALF_UP`, or the old `BigDecimal.ROUND_*` number. Without a mode, a value that would need rounding is an error.
+    fn set_scale<'js>(&self, ctx: Ctx<'js>, scale: u32, mode: Opt<JsValue<'js>>) -> rquickjs::Result<HostDecimal> {
+        use moqui_lib::format::RoundingStrategy;
+        host_guard(&ctx, || {
+            let Some(number) = self.inner.as_decimal() else {
+                return Err(Exception::throw_message(&ctx, "not a decimal"));
+            };
+            let mode = match mode.0.as_ref() {
+                Some(value) if !value.is_null() && !value.is_undefined() => {
+                    moqui_lib::object::to_plain_string(&js_to_host(&ctx, value)?)
+                }
+                _ => String::new(),
+            };
+            let strategy = match mode.as_str() {
+                "UP" | "0" => Some(RoundingStrategy::AwayFromZero),
+                "DOWN" | "1" => Some(RoundingStrategy::ToZero),
+                "CEILING" | "2" => Some(RoundingStrategy::ToPositiveInfinity),
+                "FLOOR" | "3" => Some(RoundingStrategy::ToNegativeInfinity),
+                "HALF_UP" | "4" => Some(RoundingStrategy::MidpointAwayFromZero),
+                "HALF_DOWN" | "5" => Some(RoundingStrategy::MidpointTowardZero),
+                "HALF_EVEN" | "6" => Some(RoundingStrategy::MidpointNearestEven),
+                "" | "UNNECESSARY" | "7" => None,
+                other => {
+                    return Err(Exception::throw_message(
+                        &ctx,
+                        &format!("rounding mode {other} is not known"),
+                    ))
+                }
+            };
+            let mut scaled = match strategy {
+                Some(strategy) => number.round_dp_with_strategy(scale, strategy),
+                None => {
+                    let rounded = number.round_dp_with_strategy(scale, RoundingStrategy::ToZero);
+                    if rounded != number {
+                        return Err(Exception::throw_message(
+                            &ctx,
+                            "rounding necessary; give setScale a rounding mode",
+                        ));
+                    }
+                    rounded
+                }
+            };
+            // a larger scale adds trailing zeros, as Java's does
+            scaled.rescale(scale);
+            Ok(HostDecimal {
+                inner: Value::Decimal(scaled),
+            })
+        })
+    }
+
     fn is_zero<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<bool> {
         host_guard(&ctx, || {
             let Some(number) = self.inner.as_decimal() else {

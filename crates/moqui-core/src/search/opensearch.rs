@@ -731,17 +731,30 @@ impl SearchBackend for OpenSearchBackend {
     }
 
     fn index_documents(&self, mapping: &DocumentMapping, documents: &[(String, Document)]) -> Result<usize, Error> {
+        self.index_documents_at(mapping, documents, None)
+    }
+
+    /// With a read time, the version is its epoch millis with `external_gte`, so a document read earlier than the
+    /// stored one is refused, and that refusal is not an error.
+    fn index_documents_at(
+        &self,
+        mapping: &DocumentMapping,
+        documents: &[(String, Document)],
+        read_at: Option<Timestamp>,
+    ) -> Result<usize, Error> {
         if documents.is_empty() {
             return Ok(0);
         }
         let index = self.index_name(mapping);
-        let now = Timestamp::now().as_millisecond();
+        let now = read_at.unwrap_or_else(Timestamp::now).as_millisecond();
         let mut text = String::new();
         // Log entries come without ids: OpenSearch makes them, and the write does not wait for a refresh.
         let generated_ids = documents.iter().all(|(id, _)| id.is_empty());
         for (id, body) in documents {
             let action = if id.is_empty() {
                 json!({"index": {"_index": index}})
+            } else if read_at.is_some() {
+                json!({"index": {"_index": index, "_id": id, "version": now, "version_type": "external_gte"}})
             } else {
                 json!({"index": {"_index": index, "_id": id}})
             };
@@ -761,12 +774,18 @@ impl SearchBackend for OpenSearchBackend {
         };
         let response = self.checked("POST", path, Some(Body::NdJson(text)))?;
         if response.get("errors").and_then(Json::as_bool) == Some(true) {
-            let first = response
-                .get("items")
-                .and_then(Json::as_array)
-                .and_then(|items| items.iter().find_map(|item| item.pointer("/index/error/reason")))
-                .map_or_else(String::new, Json::to_string);
-            return Err(Error::new(format!("OpenSearch bulk index failed: {first}")));
+            // A version conflict is a document already stored from a later read; it stays.
+            let first = response.get("items").and_then(Json::as_array).and_then(|items| {
+                items.iter().find_map(|item| {
+                    let error = item.pointer("/index/error")?;
+                    let conflict =
+                        error.get("type").and_then(Json::as_str) == Some("version_conflict_engine_exception");
+                    (!conflict).then(|| error.get("reason").cloned().unwrap_or(Json::Null))
+                })
+            });
+            if let Some(reason) = first {
+                return Err(Error::new(format!("OpenSearch bulk index failed: {reason}")));
+            }
         }
         Ok(documents.len())
     }

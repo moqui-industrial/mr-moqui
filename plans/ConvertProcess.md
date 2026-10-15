@@ -182,5 +182,10 @@ The third iteration (the search callers) needed:
 - `filter-map-list` on an entity list. The filter runs on an array copy, and the name is set after it.
 - Component `MoquiConf.xml` files merge between the default and runtime confs, as in Java. The tools component mounts `tools` and `system` under `apps` through its own.
 - `org.moqui.impl.WikiServices.get#WikiPageManualDocumentData` runs: it reads the page text by its space's root location. The other wiki services are still not ported.
+- `setScale(scale, roundingMode)` on decimals, as Java's `BigDecimal.setScale`. The mode is a `RoundingMode` name or the old `ROUND_*` number. The invoice and payment total services use it.
+- Entity filter maps:
+  - `_join`, `_list`, and `_comp` work as in Java's `makeCondition(Map)`.
+  - A filter's map is evaluated only for a find on its entity, or on a view with it as a member. Before, one map that did not evaluate closed every find.
+  - Mantle's `filterMap` values were Groovy map literals. They are JavaScript objects now, in `MantleSetupData.xml`.
 
 The earlier load work (component entity directories, rules, and data; services by path; `fromDate` and secondary ids on nested records) is in `plans/Implementation-Phases.md`, after the gate's note on loading `mantle-udm`.

@@ -56,6 +56,7 @@ fn postgres_backend_sales_and_party_parity() {
     extensions_parity(&backend);
     universal_parity(&backend);
     hybrid_parity(&backend);
+    read_order_parity(&backend);
     accent(
         PostgresBackend::open(
             TransactionManager::new(Arc::clone(&driver), pool()).unwrap(),
@@ -89,6 +90,42 @@ fn opensearch_backend_sales_and_party_parity() {
     extensions_parity(&backend);
     universal_parity(&backend);
     hybrid_parity(&backend);
+    read_order_parity(&backend);
+}
+
+/// Two deliveries of one record that finish out of order: the document read later stays, whichever is written last.
+fn read_order_parity(backend: &dyn SearchBackend) {
+    let mut mapping = catalog_mapping();
+    mapping.document_id = "TestReadOrder".into();
+    mapping.physical_name = "test_read_order".into();
+    backend.ensure_index(&mapping).unwrap();
+    let earlier: jiff::Timestamp = "2026-10-01T00:00:00Z".parse().unwrap();
+    let later: jiff::Timestamp = "2026-10-01T00:00:01Z".parse().unwrap();
+    backend
+        .index_documents_at(&mapping, &[catalog_item("ITEM", "Newer title", "")], Some(later))
+        .unwrap();
+    backend
+        .index_documents_at(&mapping, &[catalog_item("ITEM", "Older title", "")], Some(earlier))
+        .unwrap();
+    let stored = backend.get_document(&mapping, "ITEM").unwrap().expect("the document");
+    assert_eq!(
+        stored.get("title").map(to_plain_string).as_deref(),
+        Some("Newer title"),
+        "{}",
+        backend.name()
+    );
+    // A read at the same time or later replaces it.
+    backend
+        .index_documents_at(&mapping, &[catalog_item("ITEM", "Same time", "")], Some(later))
+        .unwrap();
+    let stored = backend.get_document(&mapping, "ITEM").unwrap().expect("the document");
+    assert_eq!(
+        stored.get("title").map(to_plain_string).as_deref(),
+        Some("Same time"),
+        "{}",
+        backend.name()
+    );
+    backend.drop_index(&mapping).unwrap();
 }
 
 fn field(kind: FieldKind) -> FieldMapping {

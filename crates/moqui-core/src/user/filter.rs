@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 
 use moqui_db::model::EntityDefinition;
 use moqui_db::sql::Condition;
-use moqui_lib::object::Value;
+use moqui_lib::object::{to_plain_string, Value};
 
 use super::authz::{authz_enabled_for, context_entered};
 use super::login::entity_facade;
@@ -84,14 +84,7 @@ pub fn find_filters_for_user(entity_name: &str) -> Result<Vec<EntityValue>, Erro
     for (_, filter) in with_user_context(applicable_filters)? {
         let filter_entity = text(&filter, "entityName");
         let applies = facade
-            .with_entity(entity_name, |entity, _, _| {
-                Ok(entity.full_name == filter_entity
-                    || (entity.is_view
-                        && entity
-                            .member_entities
-                            .iter()
-                            .any(|member| member.entity_name == filter_entity)))
-            })
+            .with_entity(entity_name, |entity, _, _| Ok(applies_to(entity, &filter_entity)))
             .map_err(Error::from)?;
         if applies {
             found.push(filter);
@@ -162,6 +155,14 @@ fn one_filter(
     if filter_entity.is_empty() || expression.is_empty() {
         return Ok(None);
     }
+    // Only a filter on this entity, or on a member of this view, is evaluated, as in Java: the map of a filter on
+    // another entity does not run, and an error in it does not close this find.
+    let applies = facade
+        .with_entity(entity_name, |entity, _, _| Ok(applies_to(entity, &filter_entity)))
+        .map_err(Error::from)?;
+    if !applies {
+        return Ok(None);
+    }
     let map = match crate::script::eval_map(&expression) {
         Ok(map) => map,
         Err(err) if allow_missing => {
@@ -177,6 +178,16 @@ fn one_filter(
             conditions_for(entity, &filter_entity, &map, (join_or, &comparison), allow_missing)
         })
         .map_err(Error::from)
+}
+
+/// A filter on `filter_entity` applies to a find on `entity`: the same entity, or a member of the view.
+fn applies_to(entity: &EntityDefinition, filter_entity: &str) -> bool {
+    entity.full_name == filter_entity
+        || (entity.is_view
+            && entity
+                .member_entities
+                .iter()
+                .any(|member| member.entity_name == filter_entity))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -208,8 +219,55 @@ fn conditions_for(
     if relation == Relation::None {
         return Ok(None);
     }
+    map_conditions(
+        entity,
+        filter_entity,
+        relation,
+        map,
+        (join_or, comparison),
+        allow_missing,
+    )
+}
+
+/// The condition of one filter map, as Java's `makeCondition(Map)`: `_comp` is the comparison for this map's fields,
+/// `_join` (`or` or `and`) joins them, and `_list` holds more maps, each its own condition in that join.
+fn map_conditions(
+    entity: &EntityDefinition,
+    filter_entity: &str,
+    relation: Relation,
+    map: &BTreeMap<String, Value>,
+    (join_or, comparison): (bool, &str),
+    allow_missing: bool,
+) -> Result<Option<Condition>, moqui_lib::error::Error> {
+    let comparison = match map.get("_comp").map(to_plain_string) {
+        Some(operator) => comparison_enum(&operator)?,
+        None => comparison.to_string(),
+    };
+    let join_or = match map.get("_join").map(|join| to_plain_string(join).to_ascii_lowercase()) {
+        Some(join) => join == "or",
+        None => join_or,
+    };
     let mut parts = Vec::new();
+    if let Some(Value::List(items)) = map.get("_list") {
+        for item in items {
+            let Value::Map(entries) = item else {
+                continue;
+            };
+            let inner: BTreeMap<String, Value> = entries
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            if let Some(condition) =
+                map_conditions(entity, filter_entity, relation, &inner, (false, ""), allow_missing)?
+            {
+                parts.push(condition);
+            }
+        }
+    }
     for (field, value) in map {
+        if field.starts_with('_') {
+            continue;
+        }
         let names = match relation {
             Relation::Direct => vec![field.clone()],
             Relation::Member => member_aliases(entity, filter_entity, field),
@@ -225,10 +283,36 @@ fn conditions_for(
             )));
         }
         for name in names {
-            parts.push(value_condition(&name, value, comparison)?);
+            parts.push(value_condition(&name, value, &comparison)?);
         }
     }
     Ok(join_conditions(parts, join_or))
+}
+
+/// The `ENTCO_` id of a `_comp` operator, by symbol or name as Java's `ComparisonOperator` reads them.
+fn comparison_enum(operator: &str) -> Result<String, moqui_lib::error::Error> {
+    Ok(match operator.trim().to_ascii_lowercase().as_str() {
+        "=" | "==" | "equals" => "ENTCO_EQUALS",
+        "!=" | "<>" | "not-equals" | "not_equals" => "ENTCO_NOT_EQUALS",
+        "<" | "less" | "less-than" => "ENTCO_LESS",
+        ">" | "greater" | "greater-than" => "ENTCO_GREATER",
+        "<=" | "less-equals" | "less-than-equal-to" => "ENTCO_LESS_EQ",
+        ">=" | "greater-equals" | "greater-than-equal-to" => "ENTCO_GREATER_EQ",
+        "in" => "ENTCO_IN",
+        "not-in" | "not_in" => "ENTCO_NOT_IN",
+        "between" => "ENTCO_BETWEEN",
+        "not-between" => "ENTCO_NOT_BETWEEN",
+        "like" => "ENTCO_LIKE",
+        "not-like" | "not_like" => "ENTCO_NOT_LIKE",
+        "is-null" => "ENTCO_IS_NULL",
+        "is-not-null" => "ENTCO_IS_NOT_NULL",
+        other => {
+            return Err(moqui_lib::error::Error::new(format!(
+                "unknown filter comparison _comp {other}"
+            )));
+        }
+    }
+    .to_string())
 }
 
 /// View aliases that read `field` of the member entity `member_name`. `aliases` already holds
@@ -379,6 +463,50 @@ mod tests {
     }
 
     #[test]
+    fn a_filter_map_joins_a_list_of_maps_with_their_own_comparisons() {
+        let (facade, _model_dir) = product_facade();
+        let map = |pairs: Vec<(&str, Value)>| -> std::collections::BTreeMap<String, Value> {
+            pairs.into_iter().map(|(key, value)| (key.to_string(), value)).collect()
+        };
+        let as_map = |pairs: Vec<(&str, Value)>| {
+            Value::Map(pairs.into_iter().map(|(key, value)| (key.to_string(), value)).collect())
+        };
+        // [_join:'or', _list:[[ownerPartyId:'ORG1'], [productId:'P%', _comp:'like']]]
+        let filter = map(vec![
+            ("_join", Value::string("or")),
+            (
+                "_list",
+                Value::List(vec![
+                    as_map(vec![("ownerPartyId", Value::string("ORG1"))]),
+                    as_map(vec![
+                        ("productId", Value::string("P%")),
+                        ("_comp", Value::string("like")),
+                    ]),
+                ]),
+            ),
+        ]);
+        let condition = facade
+            .with_entity("mantle.product.Product", |entity, _, _| {
+                super::map_conditions(
+                    entity,
+                    "mantle.product.Product",
+                    super::Relation::Direct,
+                    &filter,
+                    (false, ""),
+                    false,
+                )
+            })
+            .unwrap()
+            .expect("a condition");
+        let text = format!("{condition:?}");
+        assert!(text.starts_with("Or"), "{text}");
+        assert!(text.contains("ORG1") && text.contains("Like"), "{text}");
+        assert!(!text.contains("_join") && !text.contains("_list"), "{text}");
+        assert_eq!(super::comparison_enum("!=").unwrap(), "ENTCO_NOT_EQUALS");
+        assert!(super::comparison_enum("sounds-like").is_err());
+    }
+
+    #[test]
     fn view_find_applies_user_org_and_skips_active_org_until_set() {
         session::reset_session();
         clear_context_stack();
@@ -520,6 +648,17 @@ mod tests {
                 ("entityFilterSetId", "MANTLE_USER_ORG"),
                 ("entityName", "mantle.product.Product"),
                 ("filterMap", "({ ownerPartyId: filterOrgIds })"),
+            ],
+        );
+        // a filter on another entity whose map does not evaluate; finds on the product view do not run it
+        create(
+            facade,
+            "moqui.security.EntityFilter",
+            &[
+                ("entityFilterId", "MANTLE_USER_ORG_BROKEN"),
+                ("entityFilterSetId", "MANTLE_USER_ORG"),
+                ("entityName", "mantle.party.Party"),
+                ("filterMap", "[ownerPartyId:(['_NA_']+"),
             ],
         );
         create(
