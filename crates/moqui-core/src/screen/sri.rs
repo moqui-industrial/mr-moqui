@@ -33,6 +33,7 @@ use super::generate::{Unit, UnitRequest};
 use super::render::{check_condition, Frames, RenderState};
 use super::url::ScreenUrlInfo;
 use crate::context::{Error, ErrorKind, ExecutionContext};
+use crate::script::ContextFrame;
 use crate::{l10n, script, user, web};
 
 /// Generates and runs the code of a section on the script runtime that is running the render.
@@ -326,24 +327,12 @@ fn render_section_of(state: &RenderState, runner: &dyn Runner, def: &Arc<ScreenD
             if is_empty(&value) {
                 return Ok(());
             }
-            let items = iteration_entries(&value);
-            let paginated = *paginate;
-            let mut items = items;
-            if paginated {
-                script::push_context_frame();
-                items = match paginate_items(list, items) {
-                    Ok(page) => page,
-                    Err(err) => {
-                        script::pop_context_frame();
-                        return Err(err);
-                    }
-                };
+            let mut items = iteration_entries(&value);
+            let _frame = paginate.then(ContextFrame::push);
+            if *paginate {
+                items = paginate_items(list, items)?;
             }
-            let result = iterate_section(state, runner, def, section, name, entry, key.as_deref(), &items);
-            if paginated {
-                script::pop_context_frame();
-            }
-            result
+            iterate_section(state, runner, def, section, name, entry, key.as_deref(), &items)
         }
         _ => render_single(state, runner, def, section, name),
     }
@@ -365,14 +354,22 @@ pub(super) fn iteration_entries(value: &Value) -> Vec<(Option<String>, Value)> {
 }
 
 /// `CollectionUtilities.paginateList`: the page of `items` named by `pageIndex` and `pageSize`, with
-/// the list's count and page variables put in the context.
+/// the list's count and page variables put in the context. A list that is already a page (`{list}AlreadyPaginated`,
+/// or a `{list}Count` from a paginated find) is returned as it is.
 pub(super) fn paginate_items(
     list_name: &str,
     items: Vec<(Option<String>, Value)>,
 ) -> Result<Vec<(Option<String>, Value)>, Error> {
     let mut context = script::context_combined();
+    let already = format!("{list_name}AlreadyPaginated");
+    if context.contains_key(&already) {
+        return Ok(items);
+    }
     let size = i32::try_from(items.len()).map_err(|_| Error::new("list is too long to paginate"))?;
     moqui_lib::collection::paginate_parameters(size, list_name, &mut context)?;
+    if context.contains_key(&already) {
+        return Ok(items);
+    }
     for suffix in [
         "Count",
         "PageIndex",
@@ -411,7 +408,7 @@ fn iterate_section(
     items: &[(Option<String>, Value)],
 ) -> Result<(), Error> {
     for (index, (item_key, item)) in items.iter().enumerate() {
-        script::push_context_frame();
+        let frame = ContextFrame::push();
         let _ = script::set_context_name(entry, item.clone());
         if let (Some(key_name), Some(item_key)) = (key, item_key) {
             let _ = script::set_context_name(key_name, Value::string(item_key));
@@ -420,7 +417,7 @@ fn iterate_section(
         let _ = script::set_context_name(&format!("{entry}_index"), Value::I64(index as i64));
         let _ = script::set_context_name(&format!("{entry}_has_next"), Value::Bool(index + 1 < items.len()));
         let result = render_single(state, runner, def, section, name);
-        script::pop_context_frame();
+        drop(frame);
         result?;
         if state.dont_do_render.get() {
             break;
@@ -548,9 +545,7 @@ pub fn render_include_screen(
     location: &str,
     share_scope: bool,
 ) -> Result<(), Error> {
-    if !share_scope {
-        script::push_context_frame();
-    }
+    let _frame = (!share_scope).then(ContextFrame::push);
     let previous = state.override_def.borrow().clone();
     let result = guarded(state, &format!("screen [{location}]"), || {
         let def = state.facade.screen_def(&state.factory, location)?;
@@ -558,9 +553,6 @@ pub fn render_include_screen(
         render_def(state, runner, &def, false)
     });
     *state.override_def.borrow_mut() = previous;
-    if !share_scope {
-        script::pop_context_frame();
-    }
     result
 }
 
@@ -593,9 +585,10 @@ pub fn render_text(state: &RenderState, location: &str, template: &str) -> Resul
     }
     // As Java's renderText: the renderer of the location's extension, else of the `template` value as an extension,
     // else the file's text as it is, so a .js or .css file is not run as a template.
-    script::push_context_frame();
-    let rendered = registry.render_location_default(&state.factory, location, None, template);
-    script::pop_context_frame();
+    let rendered = {
+        let _frame = ContextFrame::push();
+        registry.render_location_default(&state.factory, location, None, template)
+    };
     write(state, &rendered?);
     Ok(String::new())
 }
@@ -829,11 +822,9 @@ pub fn get_field_entity_value(widget: &NodeLit) -> Result<String, Error> {
     let text = widget.attr("text");
     if !text.is_empty() {
         let fields: IndexMap<String, Value> = found.fields().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        script::push_context_frame();
+        let _frame = ContextFrame::push();
         script::put_context_all(&fields);
-        let expanded = script::expand_localized(text);
-        script::pop_context_frame();
-        return expanded;
+        return script::expand_localized(text);
     }
     if shape.description_field.is_empty() {
         return Ok(String::new());
@@ -977,20 +968,18 @@ fn find_list(find: &NodeLit) -> Result<Vec<Value>, Error> {
     let mut find = find.clone();
     find.attrs.insert("list".to_string(), LIST.to_string());
     let xml = format!("<actions>{}</actions>", find.to_xml());
-    script::push_context_frame();
-    let ran = script::run_actions(&xml);
-    let list = script::context_value(LIST);
-    script::pop_context_frame();
+    let (ran, list) = {
+        let _frame = ContextFrame::push();
+        (script::run_actions(&xml), script::context_value(LIST))
+    };
     ran?;
     Ok(list.and_then(|value| script::value_items(&value)).unwrap_or_default())
 }
 
 /// `ScreenForm.addFieldOption`: the key and text of one option, or None when it has no key.
 fn field_option(field_name: &str, option: &NodeLit, item: &Value) -> Result<Option<(String, String)>, Error> {
-    script::push_context_frame();
-    let result = field_option_in(field_name, option, item);
-    script::pop_context_frame();
-    result
+    let _frame = ContextFrame::push();
+    field_option_in(field_name, option, item)
 }
 
 fn field_option_in(field_name: &str, option: &NodeLit, item: &Value) -> Result<Option<(String, String)>, Error> {
@@ -1181,10 +1170,19 @@ pub fn get_form(state: &RenderState, name: &str) -> Result<Arc<FormInstance>, Er
 
 /// `sri.pushSingleFormMapContext(map)`: a frame holding the map's fields and `_formMap`.
 pub fn push_single_form_map_context(map: &Value) {
-    let fields = script::value_map(map).unwrap_or_default();
-    script::push_context_frame();
+    single_form_map_frame(map).keep();
+}
+
+/// A frame holding the map's fields and `_formMap`, popped when dropped.
+pub(super) fn single_form_map_frame(map: &Value) -> ContextFrame {
+    form_map_frame(script::value_map(map).unwrap_or_default())
+}
+
+fn form_map_frame(fields: IndexMap<String, Value>) -> ContextFrame {
+    let frame = ContextFrame::push();
     script::put_context_all(&fields);
     let _ = script::set_context_name("_formMap", Value::Map(fields));
+    frame
 }
 
 /// `sri.openFormList(name)`: run the form's list and row actions. Returns the handle and the row count.
@@ -1216,7 +1214,7 @@ fn form_rows(form: &FormInstance) -> Result<Vec<IndexMap<String, Value>>, Error>
     let mut rows = Vec::with_capacity(count);
     for (index, item) in items.into_iter().enumerate() {
         let fields = script::value_map(&item).unwrap_or_default();
-        script::push_context_frame();
+        let frame = ContextFrame::push();
         script::put_context_all(&fields);
         let index_value = Value::I64(index as i64);
         let has_next = Value::Bool(index + 1 < count);
@@ -1242,7 +1240,7 @@ fn form_rows(form: &FormInstance) -> Result<Vec<IndexMap<String, Value>>, Error>
             }
             Ok(())
         })();
-        let row = script::pop_context_frame();
+        let row = frame.take();
         ran?;
         rows.push(row);
     }
@@ -1278,6 +1276,16 @@ pub fn form_list_sub_row_count(state: &RenderState, handle: usize, index: usize)
 ///
 /// Returns an error for a row or a sub-row that is not there.
 pub fn start_form_list_sub_row(state: &RenderState, handle: usize, index: usize, sub: usize) -> Result<(), Error> {
+    form_list_sub_row_frame(state, handle, index, sub).map(ContextFrame::keep)
+}
+
+/// The frame of `sri.startFormListSubRow`, popped when dropped.
+pub(super) fn form_list_sub_row_frame(
+    state: &RenderState,
+    handle: usize,
+    index: usize,
+    sub: usize,
+) -> Result<ContextFrame, Error> {
     let entry = {
         let lists = state.form_lists.borrow();
         let row = lists
@@ -1291,11 +1299,7 @@ pub fn start_form_list_sub_row(state: &RenderState, handle: usize, index: usize,
         }
         .ok_or_else(|| Error::new("form-list sub-row is not available"))?
     };
-    let fields = script::value_map(&entry).unwrap_or_default();
-    script::push_context_frame();
-    script::put_context_all(&fields);
-    let _ = script::set_context_name("_formMap", Value::Map(fields));
-    Ok(())
+    Ok(form_map_frame(script::value_map(&entry).unwrap_or_default()))
 }
 
 /// `sri.startFormListRow`: a frame holding the row and `_formMap`.
@@ -1304,6 +1308,11 @@ pub fn start_form_list_sub_row(state: &RenderState, handle: usize, index: usize,
 ///
 /// Returns an error for a list that was closed or a row past the end.
 pub fn start_form_list_row(state: &RenderState, handle: usize, index: usize) -> Result<(), Error> {
+    form_list_row_frame(state, handle, index).map(ContextFrame::keep)
+}
+
+/// The frame of `sri.startFormListRow`, popped when dropped.
+pub(super) fn form_list_row_frame(state: &RenderState, handle: usize, index: usize) -> Result<ContextFrame, Error> {
     let row = {
         let lists = state.form_lists.borrow();
         lists
@@ -1313,10 +1322,7 @@ pub fn start_form_list_row(state: &RenderState, handle: usize, index: usize) -> 
             .cloned()
             .ok_or_else(|| Error::new("form-list row is not available"))?
     };
-    script::push_context_frame();
-    script::put_context_all(&row);
-    let _ = script::set_context_name("_formMap", Value::Map(row));
-    Ok(())
+    Ok(form_map_frame(row))
 }
 
 /// `sri.safeCloseList`: drop a form-list's rows.
@@ -1953,7 +1959,7 @@ pub fn menu_items(state: &RenderState, screen_path: Option<&str>) -> Result<Vec<
 }
 
 /// Whether the user may view a screen: a screen that requires authentication needs a user and
-/// an authorization record.
+/// an authorization record. Without an execution context nothing is permitted.
 pub(super) fn screen_permitted(def: &ScreenDef) -> bool {
     let required = def.authentication == super::definition::Authentication::Required;
     if required && user::current_username().ok().flatten().is_none() {
@@ -1970,12 +1976,34 @@ pub(super) fn screen_permitted(def: &ScreenDef) -> bool {
             Err(_) => false,
         }
     })
-    .unwrap_or(true)
+    .unwrap_or(false)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_html, form_list_column_char_widths};
+    use super::{encode_html, form_list_column_char_widths, paginate_items};
+    use crate::script::{self, ContextFrame};
+    use moqui_lib::object::Value;
+
+    #[test]
+    fn paginate_items_cuts_a_page_unless_the_list_is_already_one() {
+        let items =
+            |count: i32| -> Vec<(Option<String>, Value)> { (0..count).map(|n| (None, Value::I32(n))).collect() };
+        let _frame = ContextFrame::push();
+        script::set_context_name("pageIndex", Value::I32(1)).unwrap();
+        let page = paginate_items("all", items(45)).unwrap();
+        assert_eq!(page.first().map(|item| &item.1), Some(&Value::I32(20)));
+        assert_eq!(page.len(), 20);
+        assert_eq!(script::context_value("allPageRangeLow"), Some(Value::I32(21)));
+
+        // page 2 of a paginated find: the count and range are of all the rows, and the list is the page
+        script::set_context_name("ordersCount", Value::I32(45)).unwrap();
+        script::set_context_name("ordersPageRangeLow", Value::I32(21)).unwrap();
+        script::set_context_name("ordersPageRangeHigh", Value::I32(40)).unwrap();
+        assert_eq!(paginate_items("orders", items(20)).unwrap().len(), 20);
+        script::set_context_name("itemsAlreadyPaginated", Value::Bool(true)).unwrap();
+        assert_eq!(paginate_items("items", items(7)).unwrap().len(), 7);
+    }
 
     fn columns(specs: &[(&str, &str)]) -> Vec<Vec<(String, String)>> {
         specs

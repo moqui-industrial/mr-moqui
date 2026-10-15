@@ -392,6 +392,23 @@ fn a_cached_definition_is_reused_and_reloaded_when_its_file_changes() {
 }
 
 #[test]
+fn screen_permission_checks_fail_closed_without_an_execution_context() {
+    let context = ExecutionContextFactory::test_context();
+    let def = ScreenFacade::of(context.factory())
+        .screen_def(context.factory(), &fixture_root())
+        .unwrap();
+    std::thread::spawn(move || {
+        assert!(!crate::screen::sri::screen_permitted(&def));
+        let err = crate::screen::render::Frames::default()
+            .push_screen(&def, false)
+            .unwrap_err();
+        assert!(err.to_string().contains("no execution context"), "{err}");
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn files_are_checked_once_per_interval_and_a_new_subscreen_file_is_seen() {
     let context = ExecutionContextFactory::test_context();
     let factory = context.factory();

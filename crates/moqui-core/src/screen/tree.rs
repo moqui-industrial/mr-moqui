@@ -27,7 +27,7 @@ use super::definition::{Actions, Condition, TreeDef};
 use super::render::RenderState;
 use super::sri::NodeLit;
 use crate::context::Error;
-use crate::script;
+use crate::script::{self, ContextFrame};
 
 struct SubNode {
     node_name: String,
@@ -185,7 +185,7 @@ fn child_nodes(
         let items = script::value_items(&list).unwrap_or_default();
         let count = items.len();
         for (index, entry) in items.into_iter().enumerate() {
-            script::push_context_frame();
+            let frame = ContextFrame::push();
             let built = (|| -> Result<Option<Value>, Error> {
                 script::set_context_name("nodeList_entry", entry.clone())?;
                 script::set_context_name("nodeList_index", Value::I64(i64::try_from(index).unwrap_or(i64::MAX)))?;
@@ -225,7 +225,7 @@ fn child_nodes(
                         Value::string(if load_id.is_empty() {
                             url_text.clone()
                         } else {
-                            format!("javascript:{{$('#{load_id}').load('{url_text}'); void(0);}}")
+                            load_href(&load_id, &url_text)
                         }),
                     );
                     attrs.insert("loadId".to_string(), Value::string(load_id));
@@ -234,11 +234,9 @@ fn child_nodes(
                 }
                 let open = !open_path.is_empty() && !id.is_empty() && open_path.starts_with(&id);
                 let children = if recurse {
-                    script::push_context_frame();
-                    let result = script::set_context_name("treeNodeId", Value::string(id.clone()))
-                        .and_then(|()| child_nodes(state, tree, &tree_node.sub_nodes, open_path, open));
-                    script::pop_context_frame();
-                    Some(result?)
+                    let _frame = ContextFrame::push();
+                    script::set_context_name("treeNodeId", Value::string(id.clone()))?;
+                    Some(child_nodes(state, tree, &tree_node.sub_nodes, open_path, open)?)
                 } else {
                     None
                 };
@@ -263,11 +261,39 @@ fn child_nodes(
                 }
                 Ok(Some(Value::Map(node)))
             })();
-            script::pop_context_frame();
+            drop(frame);
             if let Some(node) = built? {
                 out.push(node);
             }
         }
     }
     Ok(out)
+}
+
+/// The `javascript:` href that loads `url_text` into the element `load_id`, as Java's ScreenTree makes it. Both values are
+/// JSON strings in the script, and a browser percent-decodes a `javascript:` URL before it runs it, so each `%` is encoded.
+fn load_href(load_id: &str, url_text: &str) -> String {
+    let quote = |text: &str| serde_json::Value::from(text).to_string().replace('%', "%25");
+    format!(
+        "javascript:{{$('#' + {}).load({}); void(0);}}",
+        quote(load_id),
+        quote(url_text)
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_href;
+
+    #[test]
+    fn load_href_quotes_the_url_as_a_js_string() {
+        assert_eq!(
+            load_href("Tree", "/apps/x/Edit/a');alert(1);//?q=%22"),
+            r#"javascript:{$('#' + "Tree").load("/apps/x/Edit/a');alert(1);//?q=%2522"); void(0);}"#
+        );
+        assert_eq!(
+            load_href("T", "/a?x=\"b\""),
+            r#"javascript:{$('#' + "T").load("/a?x=\"b\""); void(0);}"#
+        );
+    }
 }

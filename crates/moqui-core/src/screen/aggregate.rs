@@ -311,8 +311,11 @@ fn apply_function(function: Function, map: &mut IndexMap<String, Value>, name: &
             let total = map.get(&total_name).and_then(decimal_of);
             match (count, total) {
                 (Some(count), Some(total)) => {
-                    let total = total + number;
-                    let count = count + Decimal::ONE;
+                    let (Some(total), Some(count)) = (total.checked_add(number), count.checked_add(Decimal::ONE))
+                    else {
+                        tracing::warn!("Tried to average value {number} of field {name}: the total overflows");
+                        return;
+                    };
                     let average = moqui_lib::object::decimal_divide(total, count).unwrap_or(total);
                     map.insert(name.to_string(), Value::Decimal(average));
                     map.insert(count_name, Value::Decimal(count));
@@ -434,5 +437,17 @@ mod tests {
         ))
         .unwrap_err();
         assert!(err.to_string().contains("no group-by"), "{err}");
+    }
+
+    #[test]
+    fn avg_skips_a_value_whose_total_overflows() {
+        let mut map = IndexMap::new();
+        let max = Value::Decimal(Decimal::MAX);
+        apply_function(Function::Avg, &mut map, "n", &max);
+        apply_function(Function::Avg, &mut map, "n", &max);
+        assert_eq!(map.get("n"), Some(&max));
+        assert_eq!(map.get("nCount"), Some(&Value::Decimal(Decimal::ONE)));
+        apply_function(Function::Avg, &mut map, "n", &Value::Decimal(Decimal::from(-1)));
+        assert_eq!(map.get("nCount"), Some(&Value::Decimal(Decimal::TWO)));
     }
 }

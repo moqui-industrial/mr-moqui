@@ -32,7 +32,7 @@ use super::generate::UnitRequest;
 use super::render::{check_condition, Frames, RenderState};
 use super::sri::{self, NodeLit, Runner};
 use crate::context::{Error, ErrorKind, ExecutionContextFactory};
-use crate::script;
+use crate::script::{self, ContextFrame};
 use crate::web::{self, WebRequest};
 
 /// The unit mode the static macros generate for, and the module that writes it.
@@ -601,7 +601,7 @@ fn prepare_section(
         let mut kept = Vec::with_capacity(items.len());
         let count = items.len();
         for (index, (item_key, item)) in items.into_iter().enumerate() {
-            script::push_context_frame();
+            let frame = ContextFrame::push();
             let outcome = (|| -> Result<Value, Error> {
                 script::set_context_name(entry, item.clone())?;
                 if let (Some(key_name), Some(item_key)) = (key, &item_key) {
@@ -619,7 +619,7 @@ fn prepare_section(
                 }
                 Ok(script::context_value(entry).unwrap_or(item))
             })();
-            script::pop_context_frame();
+            drop(frame);
             kept.push(outcome?);
         }
         // The list is what the per-entry actions left, when the list is a name the package holds.
@@ -703,12 +703,12 @@ fn single_form_extras(
         .filter(|text| !text.is_empty())
         .unwrap_or_else(|| "fieldValues".to_string());
     let map = script::eval_value(&map_expression).unwrap_or(Value::Null);
-    sri::push_single_form_map_context(&map);
+    let _frame = sri::single_form_map_frame(&map);
     let mut extras = serde_json::Map::new();
     for field in node.children_named("field") {
         let field_name = field.attribute("name").unwrap_or_default();
         for (sub_index, sub) in sub_nodes(&field) {
-            script::push_context_frame();
+            let _sub_frame = ContextFrame::push();
             for set in sub.children_named("set") {
                 let target = set.attribute("field").unwrap_or_default();
                 let outcome = sri::set_in_context(&lit_of(&set, false));
@@ -724,10 +724,8 @@ fn single_form_extras(
             for (widget_index, widget) in sub.children().into_iter().enumerate() {
                 collect_widget(state, &widget, name, &field_name, sub_index, widget_index, &mut extras);
             }
-            script::pop_context_frame();
         }
     }
-    script::pop_context_frame();
     Ok(extras)
 }
 
@@ -856,24 +854,25 @@ fn form_package(state: &RenderState, def: &Arc<ScreenDef>, name: &str) -> Result
         .filter_map(|field| field.attribute("name"))
         .collect();
     for (index, row) in rows.iter_mut().enumerate() {
-        sri::start_form_list_row(state, handle, index)?;
+        let row_frame = sri::form_list_row_frame(state, handle, index)?;
         let extras = row_extras(&node, name, &|_| true);
         // the sub-rows of an aggregated row get the lookups and sets of the sub-list fields, each over the row
         if extras.is_ok() && !sub_fields.is_empty() {
             if let Some(Value::List(entries)) = row.get_mut("aggregateSubList") {
                 for (sub, entry) in entries.iter_mut().enumerate() {
-                    sri::start_form_list_sub_row(state, handle, index, sub)?;
-                    let sub_extras = row_extras(&node, name, &|field| {
-                        sub_fields.contains(&field.attribute("name").unwrap_or_default())
-                    });
-                    script::pop_context_frame();
+                    let sub_extras = {
+                        let _sub_frame = sri::form_list_sub_row_frame(state, handle, index, sub)?;
+                        row_extras(&node, name, &|field| {
+                            sub_fields.contains(&field.attribute("name").unwrap_or_default())
+                        })
+                    };
                     if let (Value::Map(map), Ok(sub_extras)) = (entry, sub_extras) {
                         map.extend(sub_extras);
                     }
                 }
             }
         }
-        script::pop_context_frame();
+        drop(row_frame);
         match extras {
             Ok(extras) => row.extend(extras),
             Err(err) => {
@@ -917,9 +916,10 @@ fn form_package(state: &RenderState, def: &Arc<ScreenDef>, name: &str) -> Result
         } else {
             script::eval_value(&expression)?
         };
-        sri::push_single_form_map_context(&map);
-        let extras = row_extras_of(&node, name, &|_| true, &[tag.as_str()]);
-        script::pop_context_frame();
+        let extras = {
+            let _frame = sri::single_form_map_frame(&map);
+            row_extras_of(&node, name, &|_| true, &[tag.as_str()])
+        };
         let mut fields = script::value_map(&map).unwrap_or_default();
         fields.extend(extras?);
         body.insert(format!("{}{suffix}", instance.list_name), unwrap_map(&fields));
@@ -1087,10 +1087,13 @@ fn page_keys(form: &MNode, rows: usize) -> Result<Option<PageKeys>, Error> {
         });
         let actions = MNode::new("actions");
         actions.append_node(counter);
-        script::push_context_frame();
-        let ran = script::run_actions(&actions.write_string());
-        let counted = script::context_value("mqFormCount");
-        script::pop_context_frame();
+        let (ran, counted) = {
+            let _frame = ContextFrame::push();
+            (
+                script::run_actions(&actions.write_string()),
+                script::context_value("mqFormCount"),
+            )
+        };
         ran?;
         counted
             .and_then(|value| moqui_lib::object::to_plain_string(&value).parse().ok())

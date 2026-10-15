@@ -26,7 +26,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, TryLockError};
 
 use moqui_lib::cache::{CacheConfig, MCache};
 use moqui_lib::node::MNode;
@@ -44,6 +44,43 @@ const ICON_EXPIRE_MS: i64 = 300_000;
 thread_local! {
     /// Locations this thread is loading, so an include cycle does not wait on its own load lock.
     static LOADING: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+}
+
+/// A load in progress on this thread. When dropped, also by a panic, it takes the location out of [`LOADING`] when it
+/// put it there, and out of the facade's lock map when this thread holds that location's lock.
+struct LoadingMark<'a> {
+    locks: &'a Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    key: &'a str,
+    marked: bool,
+    locked: bool,
+}
+
+impl<'a> LoadingMark<'a> {
+    fn new(locks: &'a Mutex<HashMap<String, Arc<Mutex<()>>>>, key: &'a str, mark: bool, locked: bool) -> Self {
+        if mark {
+            LOADING.with(|loading| loading.borrow_mut().insert(key.to_string()));
+        }
+        Self {
+            locks,
+            key,
+            marked: mark,
+            locked,
+        }
+    }
+}
+
+impl Drop for LoadingMark<'_> {
+    fn drop(&mut self) {
+        if self.marked {
+            LOADING.with(|loading| loading.borrow_mut().remove(self.key));
+        }
+        if self.locked {
+            self.locks
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .remove(self.key);
+        }
+    }
 }
 
 pub(super) fn now_millis() -> i64 {
@@ -319,7 +356,10 @@ impl ScreenFacade {
             }
         }
         // A cycle of includes comes back to a location this thread is loading: the depth limit stops it.
-        let reentrant = LOADING.with(|loading| loading.borrow().contains(location));
+        let (reentrant, nested) = LOADING.with(|loading| {
+            let loading = loading.borrow();
+            (loading.contains(location), !loading.is_empty())
+        });
         let lock = (!reentrant).then(|| {
             Arc::clone(
                 self.loading
@@ -329,20 +369,27 @@ impl ScreenFacade {
                     .or_default(),
             )
         });
-        let _held = lock
-            .as_ref()
-            .map(|lock| lock.lock().unwrap_or_else(|err| err.into_inner()));
+        // Only a load that holds no other location's lock waits for one, so two threads loading screens that include
+        // each other cannot wait on each other. An include whose location another thread is loading is loaded again here.
+        let held = lock.as_ref().and_then(|lock| {
+            if nested {
+                match lock.try_lock() {
+                    Ok(guard) => Some(guard),
+                    Err(TryLockError::Poisoned(err)) => Some(err.into_inner()),
+                    Err(TryLockError::WouldBlock) => None,
+                }
+            } else {
+                Some(lock.lock().unwrap_or_else(|err| err.into_inner()))
+            }
+        });
         // Another request may have loaded it while this one waited.
         let stale = match self.definitions.get(&key)? {
-            Some(cached) if lock.is_some() && self.is_current(factory, &cached) => return Ok(cached),
+            Some(cached) if held.is_some() && self.is_current(factory, &cached) => return Ok(cached),
             Some(_) => true,
             None => false,
         };
-        LOADING.with(|loading| loading.borrow_mut().insert(key.clone()));
+        let mark = LoadingMark::new(&self.loading, &key, !reentrant, held.is_some());
         let loaded = ScreenDef::load(self, factory, location, depth).map(Arc::new);
-        if !reentrant {
-            LOADING.with(|loading| loading.borrow_mut().remove(&key));
-        }
         let stored = loaded.and_then(|loaded| {
             // A put in the same millisecond as the last one keeps the old value, so clear the key first.
             self.definitions.remove(&key)?;
@@ -350,9 +397,8 @@ impl ScreenFacade {
             Ok(loaded)
         });
         // Waiters find the new definition in the cache once the lock entry is gone.
-        if lock.is_some() {
-            self.loading.lock().unwrap_or_else(|err| err.into_inner()).remove(&key);
-        }
+        drop(mark);
+        drop(held);
         let loaded = stored?;
         if stale {
             // Resolved paths hold the old definition.
@@ -474,5 +520,98 @@ fn configured_check_interval() -> i64 {
         -1
     } else {
         DEFAULT_CHECK_INTERVAL_MS
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_panic_in_a_load_leaves_no_loading_mark_or_lock_entry() {
+        let locks: Mutex<HashMap<String, Arc<Mutex<()>>>> = Mutex::new(HashMap::new());
+        let key = "component://x/Panics.xml";
+        locks.lock().unwrap().insert(key.to_string(), Arc::default());
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _mark = LoadingMark::new(&locks, key, true, true);
+            assert!(LOADING.with(|loading| loading.borrow().contains(key)));
+            panic!("load failed");
+        }));
+        assert!(caught.is_err());
+        assert!(LOADING.with(|loading| loading.borrow().is_empty()));
+        assert!(locks.lock().unwrap().is_empty());
+    }
+
+    /// Two screens whose transitions include each other, in a new directory: their locations.
+    fn mutual_includes(tag: &str) -> (std::path::PathBuf, String, String) {
+        let dir = std::env::temp_dir().join(format!("moqui-screen-mutual-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (x, y) = (dir.join("X.xml"), dir.join("Y.xml"));
+        let (x, y) = (x.to_string_lossy().into_owned(), y.to_string_lossy().into_owned());
+        let screen = |other: &str| {
+            format!(
+                "<screen require-authentication=\"false\"><transition-include name=\"t\" location=\"{other}\"/><widgets/></screen>"
+            )
+        };
+        std::fs::write(&x, screen(&y)).unwrap();
+        std::fs::write(&y, screen(&x)).unwrap();
+        (dir, x, y)
+    }
+
+    /// Load `location` on a new thread: the receiver gets the result, with the error as text.
+    fn load_on_thread(
+        factory: &Arc<ExecutionContextFactory>,
+        location: &str,
+        start: Option<Arc<std::sync::Barrier>>,
+    ) -> std::sync::mpsc::Receiver<Result<(), String>> {
+        let (factory, location) = (Arc::clone(factory), location.to_string());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let context = factory.new_context();
+            let _entered = context.enter();
+            if let Some(start) = start {
+                start.wait();
+            }
+            let loaded = ScreenFacade::of(&factory).screen_def(&factory, &location);
+            let _ = sender.send(loaded.map(|_| ()).map_err(|err| err.to_string()));
+        });
+        receiver
+    }
+
+    #[test]
+    fn an_include_whose_location_another_thread_is_loading_does_not_wait_for_it() {
+        let context = ExecutionContextFactory::test_context();
+        let factory = context.factory();
+        let facade = ScreenFacade::of(factory);
+        let (dir, x, y) = mutual_includes("held");
+        // Another thread is loading Y, and Y includes X.
+        let y_lock = Arc::clone(facade.loading.lock().unwrap().entry(y.clone()).or_default());
+        let held = y_lock.lock().unwrap();
+        let result = load_on_thread(factory, &x, None)
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("the load of X waits on the lock of Y");
+        drop(held);
+        let err = result.unwrap_err();
+        assert!(err.contains("nested too deeply"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_threads_loading_screens_that_include_each_other_both_finish() {
+        let context = ExecutionContextFactory::test_context();
+        let factory = context.factory();
+        let (dir, x, y) = mutual_includes("race");
+        for _ in 0..20 {
+            let start = Arc::new(std::sync::Barrier::new(2));
+            let first = load_on_thread(factory, &x, Some(Arc::clone(&start)));
+            let second = load_on_thread(factory, &y, Some(start));
+            for receiver in [first, second] {
+                let result = receiver
+                    .recv_timeout(std::time::Duration::from_secs(60))
+                    .expect("a load of mutually including screens hangs");
+                assert!(result.is_err());
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -837,7 +837,11 @@ impl Frames {
             }
             Ok::<(), Error>(())
         })
-        .unwrap_or(Ok(()))?;
+        .unwrap_or_else(|| {
+            Err(Error::new(
+                "no execution context is entered; the screen artifact is not checked",
+            ))
+        })?;
         self.pushed += 1;
         Ok(())
     }

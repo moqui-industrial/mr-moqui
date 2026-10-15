@@ -251,6 +251,17 @@ impl ContextFrame {
         push_context_frame();
         Self
     }
+
+    /// Pop the frame and return what it holds.
+    pub fn take(self) -> indexmap::IndexMap<String, Value> {
+        std::mem::forget(self);
+        pop_context_frame()
+    }
+
+    /// Leave the frame on the stack, for a host call that pushes it and a later one (`sri.popContext`) that pops it.
+    pub fn keep(self) {
+        std::mem::forget(self);
+    }
 }
 
 impl Drop for ContextFrame {
