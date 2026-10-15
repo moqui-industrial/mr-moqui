@@ -42,7 +42,7 @@ No flow passes yet. Every flow stops at its first Groovy service; steps after th
 | OrderToCashBasicFlow | ignored, fails | `mantle.product.PriceServices.get#ProductPrice` | `for (priceModify in ...)` block, and `get#ProductPriceByType` has `findAll({ ... })` |
 | OrderProcureToPayBasicFlow | ignored, fails | `mantle.product.PriceServices.get#ProductPrice` | same |
 | ReturnToResponseBasicFlow | ignored, fails | `mantle.product.PriceServices.get#ProductPrice` | through the sales order it returns from |
-| WorkPlanToCashBasicFlow | ignored, fails | `mantle.party.ContactServices.store#PartyContactInfo` | calls `create#TelecomNumber`, not registered; `TaskServices.add#TaskTime` implements the unknown `TimeServices.store#TimeEntry` |
+| WorkPlanToCashBasicFlow | passes (runs by default) | | the worker and client invoices, GL transactions, payments and bill-through are asserted |
 | AccountingActivities | ignored, fails | `mantle.ledger.LedgerServices.get#OrganizationFiscalTimePeriods` | registers, but `new java.sql.Date(filterDate.time)` fails at run time (`cannot read property 'sql' of null`); `post#AcctgTrans` is Groovy |
 | OrderToCashTime | ignored, fails | `mantle.order.OrderServices.add#OrderProductQuantity` | generated script is not JavaScript (`Expected , or ] but found :`) |
 | AssetReservationMultipleThreads | ignored, fails | `mantle.order.OrderServices.add#OrderProductQuantity` | same; five threads each with their own context |
@@ -61,7 +61,7 @@ Port coverage: OrderToCashBasicFlow (all 18 features, the five posting and invoi
 | OrderToCashBasicFlow | 14 / 25 |
 | OrderProcureToPayBasicFlow | 14 / 23 |
 | ReturnToResponseBasicFlow | 7 / 11 |
-| WorkPlanToCashBasicFlow | 13 / 15 |
+| WorkPlanToCashBasicFlow | passes (runs by default) | | the worker and client invoices, GL transactions, payments and bill-through are asserted |
 | AccountingActivities | 6 / 7 |
 | OrderToCashTime | 1 / 5 |
 | AssetReservationMultipleThreads | 1 / 4 |

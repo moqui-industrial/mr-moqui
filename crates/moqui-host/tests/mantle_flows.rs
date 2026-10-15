@@ -2349,6 +2349,18 @@ fn flow_work_plan_to_cash(f: &Flow) {
     }
     let times = list(f, "mantle.work.time.TimeEntry", &[("workEffortId", "TEST-001B")]);
     assert_eq!(times.len(), 2, "{times:?}");
+    let xml = format!(
+        r#"<entity-facade-xml>
+        <mantle.work.effort.WorkEffort workEffortId="TEST-001" resolutionEnumId="WerCompleted" statusId="WeComplete" estimatedWorkTime="10" remainingWorkTime="3" actualWorkTime="6"/>
+        <mantle.work.effort.WorkEffort workEffortId="TEST-001A" resolutionEnumId="WerCompleted" statusId="WeComplete" estimatedWorkTime="2" remainingWorkTime="1" actualWorkTime="1.5"/>
+        <mantle.work.effort.WorkEffort workEffortId="TEST-001B" resolutionEnumId="WerCompleted" statusId="WeComplete" estimatedWorkTime="2" remainingWorkTime="0.5" actualWorkTime="6"/>
+        <mantle.work.time.TimeEntry partyId="{worker}" rateTypeEnumId="RatpStandard" hours="6" workEffortId="TEST-001"/>
+        <mantle.work.time.TimeEntry partyId="{worker}" rateTypeEnumId="RatpStandard" hours="1.5" breakHours="0.5" workEffortId="TEST-001A"/>
+        <mantle.work.time.TimeEntry partyId="{worker}" rateTypeEnumId="RatpStandard" hours="2" breakHours="1" workEffortId="TEST-001B"/>
+        <mantle.work.time.TimeEntry partyId="{worker}" rateTypeEnumId="RatpNoCharge" hours="4" breakHours="1" workEffortId="TEST-001B"/>
+        </entity-facade-xml>"#
+    );
+    assert_clean(check(f, &xml), "record TimeEntries and complete Tasks");
 
     // create Request and Task for Request
     let request = call(
@@ -2455,6 +2467,41 @@ fn flow_work_plan_to_cash(f: &Flow) {
     );
     let expense_invoice = one(f, "mantle.account.invoice.Invoice", &[("invoiceId", &expense_id)]).unwrap();
     assert_eq!(number(expense_invoice.get("invoiceTotal")), 1009.12);
+    let xml = format!(
+        r#"<entity-facade-xml>
+        <mantle.account.invoice.Invoice invoiceId="{expense_id}" invoiceTypeEnumId="InvoiceSales" fromPartyId="{worker}" toPartyId="{vendor_id}" statusId="InvoicePmtSent" currencyUomId="USD"/>
+        <mantle.account.invoice.InvoiceItem invoiceId="{expense_id}" itemTypeEnumId="ItemExpTravAir" quantity="1" amount="345.67" description="United SFO-LAX"/>
+        <mantle.account.invoice.InvoiceItem invoiceId="{expense_id}" itemTypeEnumId="ItemExpTravLodging" quantity="1" amount="123.45" description="Fleabag Inn 2 nights"/>
+        <mantle.account.invoice.InvoiceItem invoiceId="{expense_id}" itemTypeEnumId="ItemTimeEntry" quantity="2" amount="40"/>
+        <mantle.account.invoice.InvoiceItem invoiceId="{expense_id}" itemTypeEnumId="ItemTimeEntry" quantity="6" amount="40"/>
+        <mantle.account.invoice.InvoiceItem invoiceId="{expense_id}" itemTypeEnumId="ItemTimeEntry" quantity="4" amount="40"/>
+        <mantle.account.invoice.InvoiceItem invoiceId="{expense_id}" itemTypeEnumId="ItemTimeEntry" quantity="1.5" amount="40"/>
+        <mantle.ledger.transaction.AcctgTrans acctgTransTypeEnumId="AttPurchaseInvoice" organizationPartyId="{vendor_id}" isPosted="Y" glFiscalTypeEnumId="GLFT_ACTUAL" amountUomId="USD" otherPartyId="{worker}" invoiceId="{expense_id}"/>
+        <mantle.account.payment.Payment paymentTypeEnumId="PtInvoicePayment" fromPartyId="{vendor_id}" toPartyId="{worker}" paymentInstrumentEnumId="PiCompanyCheck" statusId="PmntDelivered" paymentRefNum="1234" amount="1009.12" amountUomId="USD"/>
+        <mantle.account.payment.PaymentApplication invoiceId="{expense_id}" amountApplied="1009.12"/>
+        </entity-facade-xml>"#
+    );
+    assert_clean(check(f, &xml), "create Worker Time and Expense Invoice and record Payment");
+    let trans = list(
+        f,
+        "mantle.ledger.transaction.AcctgTrans",
+        &[("invoiceId", &expense_id), ("acctgTransTypeEnumId", "AttPurchaseInvoice")],
+    );
+    assert_eq!(trans.len(), 1, "{trans:?}");
+    let entries = list(
+        f,
+        "mantle.ledger.transaction.AcctgTransEntry",
+        &[("acctgTransId", &text(&trans[0], "acctgTransId"))],
+    );
+    let sum = |flag: &str| -> f64 {
+        entries
+            .iter()
+            .filter(|e| text(e, "debitCreditFlag") == flag)
+            .map(|e| number(e.get("amount")))
+            .sum()
+    };
+    assert_eq!(entries.len(), 7, "{entries:?}");
+    assert!((sum("D") - 1009.12).abs() < 0.001 && (sum("C") - 1009.12).abs() < 0.001, "{entries:?}");
 
     // create Client Time and Expense Invoice and Finalize; record Payment
     let client_invoice = call(
@@ -2492,6 +2539,36 @@ fn flow_work_plan_to_cash(f: &Flow) {
     )
     .unwrap();
     assert_eq!(text(&paid, "statusId"), "InvoicePmtRecvd");
+    let xml = format!(
+        r#"<entity-facade-xml>
+        <mantle.account.invoice.Invoice invoiceId="{client_invoice_id}" invoiceTypeEnumId="InvoiceSales" fromPartyId="{vendor_id}" toPartyId="{client_id}" statusId="InvoicePmtRecvd" currencyUomId="USD"/>
+        <mantle.account.invoice.Invoice invoiceId="{expense_id}" statusId="InvoiceBilledThrough"/>
+        <mantle.account.invoice.InvoiceItem invoiceId="{client_invoice_id}" itemTypeEnumId="ItemTimeEntry" quantity="2" amount="60"/>
+        <mantle.account.invoice.InvoiceItem invoiceId="{client_invoice_id}" itemTypeEnumId="ItemTimeEntry" quantity="6" amount="60"/>
+        <mantle.account.invoice.InvoiceItem invoiceId="{client_invoice_id}" itemTypeEnumId="ItemTimeEntry" quantity="4" amount="0"/>
+        <mantle.account.invoice.InvoiceItem invoiceId="{client_invoice_id}" itemTypeEnumId="ItemTimeEntry" quantity="1.5" amount="60"/>
+        <mantle.account.invoice.InvoiceItem invoiceId="{client_invoice_id}" itemTypeEnumId="ItemExpTravAir" quantity="1" amount="345.67" description="United SFO-LAX"/>
+        <mantle.account.invoice.InvoiceItem invoiceId="{client_invoice_id}" itemTypeEnumId="ItemExpTravLodging" quantity="1" amount="123.45" description="Fleabag Inn 2 nights"/>
+        <mantle.account.invoice.InvoiceItemAssoc invoiceId="{expense_id}" toInvoiceId="{client_invoice_id}" invoiceItemAssocTypeEnumId="IiatBillThrough" quantity="1" amount="345.67"/>
+        <mantle.account.invoice.InvoiceItemAssoc invoiceId="{expense_id}" toInvoiceId="{client_invoice_id}" invoiceItemAssocTypeEnumId="IiatBillThrough" quantity="1" amount="123.45"/>
+        <mantle.ledger.transaction.AcctgTrans acctgTransTypeEnumId="AttSalesInvoice" organizationPartyId="{vendor_id}" isPosted="Y" glFiscalTypeEnumId="GLFT_ACTUAL" amountUomId="USD" otherPartyId="{client_id}" invoiceId="{client_invoice_id}"/>
+        <mantle.account.payment.Payment paymentTypeEnumId="PtInvoicePayment" fromPartyId="{client_id}" toPartyId="{vendor_id}" paymentInstrumentEnumId="PiCompanyCheck" statusId="PmntDelivered" paymentRefNum="54321" amount="1039.12" amountUomId="USD"/>
+        <mantle.account.payment.PaymentApplication invoiceId="{client_invoice_id}" amountApplied="1039.12"/>
+        </entity-facade-xml>"#
+    );
+    assert_clean(check(f, &xml), "client invoice and payment");
+    let trans = list(
+        f,
+        "mantle.ledger.transaction.AcctgTrans",
+        &[("invoiceId", &client_invoice_id), ("acctgTransTypeEnumId", "AttSalesInvoice")],
+    );
+    assert_eq!(trans.len(), 1, "{trans:?}");
+    let entries = list(
+        f,
+        "mantle.ledger.transaction.AcctgTransEntry",
+        &[("acctgTransId", &text(&trans[0], "acctgTransId"))],
+    );
+    assert_eq!(entries.len(), 6, "{entries:?}");
 }
 
 // ---------------------------------------------------------------------------------------------------------------
