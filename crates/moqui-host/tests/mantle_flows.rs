@@ -419,6 +419,17 @@ fn o2c_create_sales_order(f: &Flow, st: &mut O2c) {
     );
 }
 
+/// Asset 55400 of the Spock files, the 400 DEMO_1_1 (lot A1111) that OrderProcureToPayBasicFlow receives; its id is
+/// sequenced here.
+fn asset_55400(f: &Flow) -> String {
+    let assets: Vec<_> = list(f, "mantle.product.asset.Asset", &[("productId", "DEMO_1_1")])
+        .into_iter()
+        .filter(|asset| !text(asset, "assetId").starts_with("DEMO") && text(asset, "locationSeqId") == "01010101")
+        .collect();
+    assert_eq!(assets.len(), 1, "the received DEMO_1_1 asset at 01010101: {assets:?}");
+    text(&assets[0], "assetId")
+}
+
 fn o2c_validate_asset_reservation(f: &Flow, st: &mut O2c) {
     let oid = &st.order_id;
     // reservations by order item; asset ids of the generated Asset (55500) are sequenced, so look it up
@@ -431,9 +442,10 @@ fn o2c_validate_asset_reservation(f: &Flow, st: &mut O2c) {
     };
     let r1 = res("01");
     assert_eq!(r1.len(), 1, "{r1:?}");
-    assert_eq!(text(&r1[0], "assetId"), "55400");
+    let asset_55400 = asset_55400(f);
+    assert_eq!(text(&r1[0], "assetId"), asset_55400);
     assert_eq!(number(r1[0].get("quantity")), 1.0);
-    let a = one(f, "mantle.product.asset.Asset", &[("assetId", "55400")]).unwrap();
+    let a = one(f, "mantle.product.asset.Asset", &[("assetId", &asset_55400)]).unwrap();
     assert_eq!(number(a.get("quantityOnHandTotal")), 400.0);
     assert_eq!(number(a.get("availableToPromiseTotal")), 187.0);
     let r2 = res("03");
@@ -547,7 +559,7 @@ fn o2c_close_partial_filled_order(f: &Flow, st: &mut O2c) {
 }
 
 fn o2c_validate_asset_issuance(f: &Flow, st: &mut O2c) {
-    let a = one(f, "mantle.product.asset.Asset", &[("assetId", "55400")]).unwrap();
+    let a = one(f, "mantle.product.asset.Asset", &[("assetId", &asset_55400(f))]).unwrap();
     assert_eq!(number(a.get("quantityOnHandTotal")), 397.0);
     assert_eq!(number(a.get("availableToPromiseTotal")), 187.0);
     let a3 = one(f, "mantle.product.asset.Asset", &[("assetId", "DEMO_3_1A")]).unwrap();
@@ -583,6 +595,12 @@ fn o2c_validate_issuance_accounting(f: &Flow, st: &mut O2c) {
             "mantle.ledger.transaction.AcctgTrans",
             &[("assetIssuanceId", &text(issuance, "assetIssuanceId"))],
         );
+        // An auto-created asset (DEMO_2_1, DEMO_PA) has no acquireCost, so its issuance posts nothing
+        if text(issuance, "acctgTransResultEnumId") == "AtrNoAcquireCost" {
+            assert!(trans.is_empty(), "no AcctgTrans for an asset without acquire cost: {trans:?}");
+            assert!(["DEMO_2_1", "DEMO_PA"].contains(&text(issuance, "productId").as_str()), "{issuance:?}");
+            continue;
+        }
         assert_eq!(trans.len(), 1, "one AttInventoryIssuance per issuance: {issuance:?}");
         assert_eq!(text(&trans[0], "acctgTransTypeEnumId"), "AttInventoryIssuance");
         assert_eq!(text(&trans[0], "isPosted"), "Y");
@@ -805,7 +823,11 @@ fn o2c_apply_credit_memo(f: &Flow, st: &mut O2c) {
 fn o2c_receive_overpayment(f: &Flow, st: &mut O2c) {
     call(
         "mantle.account.PaymentServices.update#Payment",
-        &[("paymentId", s(&st.b2b_payment_id)), ("amount", n("1500.0"))],
+        &[
+            ("paymentId", s(&st.b2b_payment_id)),
+            ("amount", n("1500.0")),
+            ("effectiveDate", s(&utc_now_text())),
+        ],
     );
     call(
         "mantle.account.PaymentServices.update#Payment",
@@ -968,7 +990,7 @@ fn o2c_ship_inventory_and_cancel(f: &Flow, st: &mut O2c, partial: bool) {
 fn o2c_reserve_with_displace(f: &Flow) {
     // The orders come from AssetReservationMultipleThreads (base id 53000); without that flow's data the step has
     // nothing to displace, so it ports as written and fails at the missing reservation.
-    let before = list(f, "mantle.product.issuance.AssetReservation", &[("assetId", "55400")]);
+    let before = list(f, "mantle.product.issuance.AssetReservation", &[("assetId", &asset_55400(f))]);
     let sixty = before
         .iter()
         .find(|r| number(r.get("quantity")) == 60.0)
