@@ -1790,7 +1790,14 @@ fn flow_order_procure_to_pay(f: &Flow) {
     );
 
     // receive Purchase Order Shipment
-    let eol = "2027-01-01";
+    // depreciate over 5 years from the acquired date (today), as the Spock file adds 5 years to the effective time
+    let eol_date = jiff::Timestamp::now()
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .date()
+        .checked_add(jiff::Span::new().years(5))
+        .expect("eol date");
+    let eol = eol_date.to_string();
+    let eol = eol.as_str();
     let receive = |extra: Vec<(&str, Value)>| {
         let mut params = vec![("shipmentId", s(&shipment_id)), ("facilityId", s(FACILITY))];
         params.extend(extra);
@@ -2067,6 +2074,7 @@ fn flow_order_procure_to_pay(f: &Flow) {
                 ("amountUomId", s("USD")),
                 ("amount", n(&invoice_total.to_string())),
                 ("paymentInstrumentEnumId", s("PiPersonalCheck")),
+                ("effectiveDate", s(&utc_now_text())),
                 ("paymentRefNum", s("123456")),
             ],
         );
