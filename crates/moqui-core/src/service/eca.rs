@@ -51,7 +51,8 @@ pub fn search_not_up(facade: &EntityFacade) -> bool {
 /// `originalValue` (the row before an update or delete, with `get-original-value`, before rules only), and
 /// `eecaOperation`. `get-entire-entity` fills unset fields from the row for an update or delete. With
 /// `set-results`, non-primary-key fields the actions set in the rule's context are set on the values. A rule
-/// is skipped while the message facade has errors unless it has `run-on-error`.
+/// is skipped while the message facade has errors unless it has `run-on-error` or is one of the Rust security
+/// checks.
 pub fn run_matched_eca(
     facade: &EntityFacade,
     entity_name: &str,
@@ -69,7 +70,8 @@ pub fn run_matched_eca(
         if rule.run_before != before {
             continue;
         }
-        if !rule.run_on_error && has_message_error() {
+        // The security checks are checks, not business rules, so an earlier error does not skip them.
+        if !rule.run_on_error && has_message_error() && security_check_of(&rule.actions).is_none() {
             continue;
         }
         // Name the rule in a failure: an action error alone does not say where it came from.
@@ -353,6 +355,26 @@ mod tests {
         assert!(text.contains("authorized"), "{text}");
         assert!(text.contains("ADMIN_PASSWORD"), "{text}");
         assert!(sealed_grant_entered());
+        assert_eq!(permission_count(&facade, "ADMIN", "ADMIN_PASSWORD"), 0);
+    }
+
+    #[test]
+    fn sealed_permission_check_runs_while_the_message_facade_has_errors() {
+        let (facade, context, _runtime) = boot_security();
+        let _entered = context.enter();
+        {
+            let _authz = context.disable_authz();
+            seed_entity_allow(&facade);
+            seed_user(&facade, "plain", "Secret-12");
+        }
+        login_user("plain", "Secret-12").expect("login");
+        context.message().add_error("an earlier error");
+        reset_sealed_grant();
+        let err = permission_row(&facade, "ADMIN", "ADMIN_PASSWORD")
+            .create(&facade)
+            .expect_err("sealed permission");
+        assert!(err.to_string().contains("ADMIN_PASSWORD"), "{err}");
+        assert!(sealed_grant_entered(), "the check is not skipped for the earlier error");
         assert_eq!(permission_count(&facade, "ADMIN", "ADMIN_PASSWORD"), 0);
     }
 

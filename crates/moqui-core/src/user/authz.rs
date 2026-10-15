@@ -278,11 +278,22 @@ pub(crate) fn is_permitted(
             {
                 continue;
             }
-            if check.name_is_pattern && !pattern_matches(&check.artifact_name, name) {
-                continue;
-            }
-            if !check.filter_map.is_empty() && !filter_map_matches(&check.filter_map, permit.parameters) {
-                continue;
+            match record_applies(check, name, permit.parameters) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(err) => {
+                    // A record that cannot be evaluated fails closed: a deny applies, anything else does not.
+                    tracing::error!(
+                        artifact_authz_id = %check.artifact_authz_id,
+                        authz_type = %check.authz_type,
+                        error = %err,
+                        "authz record did not evaluate; a deny applies and an allow does not"
+                    );
+                    if check.authz_type == AUTHZT_DENY {
+                        deny = Some(Arc::clone(check));
+                    }
+                    continue;
+                }
             }
             let mut authz_type = check.authz_type.clone();
             if !check.authz_service_name.is_empty() {
@@ -336,25 +347,37 @@ fn disable_authz_guard() -> Result<crate::context::AuthzGuard, Error> {
         .ok_or_else(|| Error::new("User is not authorized (no execution context)"))
 }
 
-fn pattern_matches(pattern: &str, name: &str) -> bool {
-    moqui_lib::object::compare(&Value::string(name), "matches", &Value::string(pattern), "String").unwrap_or(false)
+/// Whether the record's name pattern and `filterMap` match. An error means the record could not
+/// be evaluated: an invalid pattern, or a `filterMap` that does not evaluate.
+fn record_applies(
+    check: &AuthzCheck,
+    name: &str,
+    parameters: Option<&BTreeMap<String, Value>>,
+) -> Result<bool, String> {
+    if check.name_is_pattern && !pattern_matches(&check.artifact_name, name)? {
+        return Ok(false);
+    }
+    if !check.filter_map.is_empty() && !filter_map_matches(&check.filter_map, parameters)? {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+fn pattern_matches(pattern: &str, name: &str) -> Result<bool, String> {
+    moqui_lib::object::compare(&Value::string(name), "matches", &Value::string(pattern), "String")
+        .map_err(|err| format!("name pattern [{pattern}]: {err}"))
 }
 
 /// Every entry of the check's `filterMap` must equal the same parameter. Without parameters the
 /// filter does not apply, as in Java.
-fn filter_map_matches(expression: &str, parameters: Option<&BTreeMap<String, Value>>) -> bool {
+fn filter_map_matches(expression: &str, parameters: Option<&BTreeMap<String, Value>>) -> Result<bool, String> {
     let Some(parameters) = parameters else {
-        return true;
+        return Ok(true);
     };
-    match crate::script::eval_map(expression) {
-        Ok(wanted) => wanted
-            .iter()
-            .all(|(key, value)| parameters.get(key).is_some_and(|actual| actual == value)),
-        Err(err) => {
-            tracing::warn!(error = %err, "authz filterMap did not evaluate; the record is skipped");
-            false
-        }
-    }
+    let wanted = crate::script::eval_map(expression).map_err(|err| format!("filterMap [{expression}]: {err}"))?;
+    Ok(wanted
+        .iter()
+        .all(|(key, value)| parameters.get(key).is_some_and(|actual| actual == value)))
 }
 
 /// The service named on an authz record may change the record's type.
@@ -420,7 +443,10 @@ fn check_tarpit(artifact_type: &str, name: &str) -> Result<(), Error> {
     let mut longest = 0_i64;
     for check in checks.iter() {
         let matched = if check.name_is_pattern {
-            pattern_matches(&check.artifact_name, name)
+            pattern_matches(&check.artifact_name, name).unwrap_or_else(|err| {
+                tracing::error!(error = %err, "tarpit record did not evaluate; it does not apply");
+                false
+            })
         } else {
             check.artifact_name == name
         };
@@ -775,18 +801,33 @@ mod tests {
 
     /// An authz record for `artifact_name`: the group member, the authz row, and the type and action.
     fn grant(world: &World, id: &str, artifact_type: &str, artifact_name: &str, authz_type: &str, inherit: &str) {
-        let _guard = world.context.disable_authz();
-        create(
-            &world.facade,
-            "moqui.security.ArtifactGroupMember",
-            &[
-                ("artifactGroupId", id),
-                ("artifactName", artifact_name),
-                ("artifactTypeEnumId", artifact_type),
-                ("nameIsPattern", "N"),
-                ("inheritAuthz", inherit),
-            ],
+        grant_member(
+            world,
+            id,
+            artifact_type,
+            artifact_name,
+            authz_type,
+            &[("nameIsPattern", "N"), ("inheritAuthz", inherit)],
         );
+    }
+
+    /// [`grant`] with the group member's other fields, such as `filterMap` or `nameIsPattern`.
+    fn grant_member(
+        world: &World,
+        id: &str,
+        artifact_type: &str,
+        artifact_name: &str,
+        authz_type: &str,
+        member: &[(&str, &str)],
+    ) {
+        let _guard = world.context.disable_authz();
+        let mut fields = vec![
+            ("artifactGroupId", id),
+            ("artifactName", artifact_name),
+            ("artifactTypeEnumId", artifact_type),
+        ];
+        fields.extend_from_slice(member);
+        create(&world.facade, "moqui.security.ArtifactGroupMember", &fields);
         create(
             &world.facade,
             "moqui.security.ArtifactAuthz",
@@ -903,6 +944,67 @@ mod tests {
     }
 
     #[test]
+    fn an_iterator_is_authorized_as_a_list_is() {
+        let world = world();
+        let _entered = world.context.enter();
+        session::set_user("nobody", "nobody");
+        let err = world
+            .facade
+            .find(ENTITY)
+            .unwrap()
+            .iterator()
+            .err()
+            .expect("iterate without an allow");
+        assert!(err.to_string().contains("not authorized"), "{err}");
+        world
+            .facade
+            .find(ENTITY)
+            .unwrap()
+            .disable_authz()
+            .iterator()
+            .expect("a find that disables authorization")
+            .close()
+            .unwrap();
+    }
+
+    #[test]
+    fn a_dynamic_view_needs_view_authorization_on_each_member() {
+        let world = world();
+        let _entered = world.context.enter();
+        session::set_user("nobody", "nobody");
+        let text = |text: &str| Value::string(text);
+        let map = |pairs: Vec<(&str, Value)>| {
+            Value::Map(pairs.into_iter().map(|(key, value)| (key.to_string(), value)).collect())
+        };
+        let members = Value::List(vec![
+            map(vec![
+                ("entity-alias", text("FOO")),
+                ("entity-name", text("moqui.test.Foo")),
+            ]),
+            map(vec![
+                ("entity-alias", text("BAR")),
+                ("entity-name", text("moqui.test.Bar")),
+                ("join-from-alias", text("FOO")),
+                ("key-map", map(vec![("fooId", text("fooId"))])),
+            ]),
+        ]);
+        let parameters: std::collections::BTreeMap<String, Value> = [
+            ("member-entity".to_string(), members),
+            ("alias-all".to_string(), map(vec![("entity-alias", text("FOO"))])),
+        ]
+        .into_iter()
+        .collect();
+        let view = || world.facade.dynamic_view("dynamic.FooBarAuthz", &parameters);
+        let err = view().expect_err("no member is allowed");
+        assert!(err.to_string().contains("not authorized"), "{err}");
+        grant(&world, "DV_FOO", "AT_ENTITY", "moqui.test.Foo", "AUTHZT_ALLOW", "N");
+        let err = view().expect_err("the joined member is not allowed");
+        assert!(err.to_string().contains("moqui.test.Bar"), "{err}");
+        grant(&world, "DV_BAR", "AT_ENTITY", "moqui.test.Bar", "AUTHZT_ALLOW", "N");
+        assert!(view().expect("both members are allowed").is_empty());
+    }
+
+    #[test]
     fn deny_beats_allow_and_always_beats_deny() {
         let world = world();
         let _entered = world.context.enter();
@@ -913,6 +1015,98 @@ mod tests {
         assert!(err.to_string().contains("deny record"), "{err}");
         grant(&world, "ALWAYS_TEST", "AT_ENTITY", ENTITY, "AUTHZT_ALWAYS", "N");
         world.facade.find(ENTITY).unwrap().list().expect("always wins");
+    }
+
+    /// A filterMap that is not a valid expression, so it cannot be evaluated.
+    const BAD_FILTER: &str = "[ this is not an expression";
+
+    fn filter_parameters() -> std::collections::BTreeMap<String, Value> {
+        [("orderId".to_string(), Value::string("O1"))].into_iter().collect()
+    }
+
+    #[test]
+    fn a_deny_whose_filter_map_fails_denies_despite_an_allow() {
+        let world = world();
+        let _entered = world.context.enter();
+        session::set_user("nobody", "nobody");
+        let service = "test.Filtered#Row";
+        grant(&world, "FILTER_ALLOW", "AT_SERVICE", service, "AUTHZT_ALLOW", "N");
+        let parameters = filter_parameters();
+        world
+            .context
+            .push_checked("AT_SERVICE", service, "all", true, false, Some(&parameters))
+            .expect("allowed before the deny");
+        world.context.pop().unwrap();
+        grant_member(
+            &world,
+            "FILTER_DENY",
+            "AT_SERVICE",
+            service,
+            "AUTHZT_DENY",
+            &[("filterMap", BAD_FILTER)],
+        );
+        let err = world
+            .context
+            .push_checked("AT_SERVICE", service, "all", true, false, Some(&parameters))
+            .expect_err("the unevaluable deny applies");
+        assert!(err.to_string().contains("deny record"), "{err}");
+    }
+
+    #[test]
+    fn a_deny_whose_name_pattern_is_invalid_denies() {
+        let world = world();
+        let _entered = world.context.enter();
+        session::set_user("nobody", "nobody");
+        let service = "test.Pattern#Row";
+        grant(&world, "PATTERN_ALLOW", "AT_SERVICE", service, "AUTHZT_ALLOW", "N");
+        grant_member(
+            &world,
+            "PATTERN_DENY",
+            "AT_SERVICE",
+            "test.(",
+            "AUTHZT_DENY",
+            &[("nameIsPattern", "Y")],
+        );
+        let err = world
+            .context
+            .push_checked("AT_SERVICE", service, "all", true, false, None)
+            .expect_err("the invalid deny pattern applies");
+        assert!(err.to_string().contains("deny record"), "{err}");
+    }
+
+    #[test]
+    fn an_allow_whose_filter_map_fails_does_not_allow() {
+        let world = world();
+        let _entered = world.context.enter();
+        session::set_user("nobody", "nobody");
+        let service = "test.FilteredAllow#Row";
+        grant_member(
+            &world,
+            "FILTER_BAD_ALLOW",
+            "AT_SERVICE",
+            service,
+            "AUTHZT_ALLOW",
+            &[("filterMap", BAD_FILTER)],
+        );
+        let parameters = filter_parameters();
+        let err = world
+            .context
+            .push_checked("AT_SERVICE", service, "all", true, false, Some(&parameters))
+            .expect_err("the unevaluable allow does not apply");
+        assert!(err.to_string().contains("not authorized"), "{err}");
+        grant_member(
+            &world,
+            "FILTER_GOOD_ALLOW",
+            "AT_SERVICE",
+            service,
+            "AUTHZT_ALLOW",
+            &[("filterMap", "{orderId: 'O1'}")],
+        );
+        world
+            .context
+            .push_checked("AT_SERVICE", service, "all", true, false, Some(&parameters))
+            .expect("a matching filterMap allows");
+        world.context.pop().unwrap();
     }
 
     #[test]

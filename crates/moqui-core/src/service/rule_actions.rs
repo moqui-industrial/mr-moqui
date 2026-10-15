@@ -17,7 +17,6 @@
 
 use std::collections::BTreeMap;
 
-use moqui_lib::node::MNode;
 use moqui_lib::object::Value;
 
 /// Push a script frame holding `values`. The frame pops when the guard drops.
@@ -31,47 +30,19 @@ pub(crate) fn publish_names(
     Ok(frame)
 }
 
-/// An empty condition passes. XML is parsed so only the expression text is evaluated.
+/// An empty condition passes. A `<condition>` element is the xml-actions condition group
+/// (`expression`, `compare`, `and`, `or`, `not`), evaluated as `<if>` evaluates it; any other
+/// child is an error, so a rule never runs because its condition was not understood. Plain text
+/// is an expression.
 pub(crate) fn condition_allows(condition: &str) -> Result<bool, crate::context::Error> {
     let trimmed = condition.trim();
     if trimmed.is_empty() {
         return Ok(true);
     }
-    let expression = if trimmed.starts_with('<') {
-        expression_text(trimmed)?
-    } else {
-        trimmed.to_string()
-    };
-    let expression = expression.trim();
-    if expression.is_empty() {
-        return Ok(true);
+    if trimmed.starts_with('<') {
+        return crate::script::eval_condition_element(trimmed);
     }
-    crate::script::eval_condition(expression)
-}
-
-fn expression_text(xml: &str) -> Result<String, crate::context::Error> {
-    let root = MNode::parse_text("condition", xml)?;
-    let mut parts = Vec::new();
-    for child in root.children() {
-        if child.name() != "expression" && child.name() != "script" {
-            continue;
-        }
-        let Some(text) = child.text() else {
-            continue;
-        };
-        let text = text.trim();
-        if !text.is_empty() {
-            parts.push(text.to_string());
-        }
-    }
-    if parts.len() <= 1 {
-        return Ok(parts.pop().unwrap_or_default());
-    }
-    Ok(parts
-        .into_iter()
-        .map(|part| format!("({part})"))
-        .collect::<Vec<_>>()
-        .join(" && "))
+    crate::script::eval_condition(trimmed)
 }
 
 /// Run action XML on the shared action runner. A bare element is wrapped in `<actions>`.

@@ -349,6 +349,14 @@ impl EntityFind {
     /// not asked to mix in rows that are not in the database yet. The cursor path needs an active
     /// transaction: the open stream is that transaction's enlisted connection. Drop closes it.
     pub fn iterator(self) -> Result<EntityListIterator, Error> {
+        if self.require_search_parameters && !self.has_search_parameters {
+            return Ok(EntityListIterator::memory(
+                self.facade,
+                self.entity_name,
+                EntityList::new(Vec::new()),
+            ));
+        }
+        let _authz = self.authz_guard();
         let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view", "iterator")?;
         let condition = self.combined();
         let lookup = self.lookup(&condition);
@@ -687,6 +695,20 @@ mod tests {
             .list()
             .unwrap_err();
         assert!(err.to_string().contains("no field nope"), "{err}");
+    }
+
+    #[test]
+    fn an_iterator_that_requires_search_parameters_finds_nothing_without_them() {
+        let (facade, tape) = seeded();
+        let before = tape.lock().unwrap().len();
+        let mut found = facade
+            .find("moqui.test.TestEntity")
+            .unwrap()
+            .require_search_form_parameters(true)
+            .iterator()
+            .unwrap();
+        assert!(found.next_value().unwrap().is_none());
+        assert_eq!(tape.lock().unwrap().len(), before, "no statement runs");
     }
 
     #[test]

@@ -230,7 +230,10 @@ fn receive_checked(
             }
         }
         "SmatHmacSha256" => {
-            let header_name = field(&remote, "authHeaderName");
+            let Some((header_name, secret)) = hmac_settings(&remote, remote_id) else {
+                web::send_json_error(403, &format!("Remote system {remote_id} auth configuration not valid"));
+                return Ok(());
+            };
             let Some(header) = request.header(&header_name).filter(|value| !value.is_empty()) else {
                 tracing::warn!(
                     "System message receive HMAC verify no header {header_name} value found, for remote {remote_id}"
@@ -241,7 +244,7 @@ fn receive_checked(
                 );
                 return Ok(());
             };
-            let signature = hmac_base64(&field(&remote, "sharedSecret"), text);
+            let signature = hmac_base64(&secret, text);
             if !same_text(header, &signature) {
                 tracing::warn!("System message receive HMAC verify did not match for remote {remote_id}");
                 web::send_json_error(403, &format!("HMAC verify failed for remote system {remote_id}"));
@@ -250,7 +253,10 @@ fn receive_checked(
             crate::user::login_anonymous()?;
         }
         "SmatHmacSha256Timestamp" => {
-            let header_name = field(&remote, "authHeaderName");
+            let Some((header_name, secret)) = hmac_settings(&remote, remote_id) else {
+                web::send_json_error(403, &format!("Remote system {remote_id} auth configuration not valid"));
+                return Ok(());
+            };
             let Some(header) = request.header(&header_name).filter(|value| !value.is_empty()) else {
                 tracing::warn!(
                     "System message receive HMAC verify no header {header_name} value found, for remote {remote_id}"
@@ -263,10 +269,7 @@ fn receive_checked(
             };
             // A header like `t=1492774577,v1=5257a869...`, signed over the timestamp, a period, and the body.
             let (timestamp, incoming) = timestamp_parts(header);
-            let signature = hmac_hex(
-                &field(&remote, "sharedSecret"),
-                &format!("{}.{text}", timestamp.as_deref().unwrap_or("null")),
-            );
+            let signature = hmac_hex(&secret, &format!("{}.{text}", timestamp.as_deref().unwrap_or("null")));
             if !same_text(incoming.as_deref().unwrap_or(""), &signature) {
                 tracing::warn!("System message receive HMAC verify did not match for remote {remote_id}");
                 web::send_json_error(403, &format!("HMAC verify failed for remote system {remote_id}"));
@@ -352,6 +355,17 @@ fn field(row: &EntityValue, name: &str) -> String {
     text_of(row.get(name))
 }
 
+/// The remote's HMAC header name and shared secret. Both are required: anyone can sign with an empty secret.
+fn hmac_settings(remote: &EntityValue, remote_id: &str) -> Option<(String, String)> {
+    let header_name = field(remote, "authHeaderName");
+    let secret = field(remote, "sharedSecret");
+    if header_name.is_empty() || secret.is_empty() {
+        tracing::error!("System message receive HMAC for remote {remote_id} needs authHeaderName and sharedSecret");
+        return None;
+    }
+    Some((header_name, secret))
+}
+
 fn hmac_bytes(secret: &str, message: &str) -> Vec<u8> {
     match HmacSha256::new_from_slice(secret.as_bytes()) {
         Ok(mut mac) => {
@@ -409,10 +423,21 @@ fn same_text(left: &str, right: &str) -> bool {
 }
 
 /// True the first time `key` is seen in the replay cache, which then holds it for the cache's live time.
+///
+/// A key must outlive the timestamp window, so a cache that expires entries sooner than [`MAX_AGE_MILLIS`] is an
+/// error. Its `max-elements` can still evict a key early, but only after that many validly signed messages.
 fn first_use(key: &str) -> Result<bool, Error> {
     let cache = ExecutionContext::with_current(|ctx| ctx.factory().cache().get(REPLAY_CACHE))
         .ok_or_else(|| Error::new("no execution context is entered"))??
         .ok_or_else(|| Error::new(format!("cache {REPLAY_CACHE} is not configured")))?;
+    let info = cache.info();
+    let short = |millis: i64| millis > 0 && millis < MAX_AGE_MILLIS;
+    if short(info.expire_live_ms) || short(info.expire_idle_ms) {
+        return Err(Error::new(format!(
+            "cache {REPLAY_CACHE} expires entries before the {} second HMAC timestamp window",
+            MAX_AGE_MILLIS / 1000
+        )));
+    }
     // One atomic check and store: two requests with the same signature cannot both see it unused.
     Ok(cache.put_if_absent(key.to_string(), Value::Bool(true))?)
 }

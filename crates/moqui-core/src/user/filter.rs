@@ -30,7 +30,45 @@ use crate::entity::{EntityFacade, EntityValue};
 /// `moqui.*` finds are unchanged. No matching filter returns `condition` as given.
 /// A missing view alias with `allowMissingAlias` not `Y` fails closed (`1 = 0`).
 pub fn apply_entity_filters(entity_name: &str, condition: Option<Condition>) -> Option<Condition> {
-    if !context_entered() || entity_name.starts_with("moqui.") {
+    apply_filters(&Target::Named(entity_name), condition)
+}
+
+/// [`apply_entity_filters`] for a view that is not in the entity model, such as a dynamic view. The view must be
+/// complete, with its aliases, so a filter on a member entity finds the alias of its field.
+pub(crate) fn apply_view_filters(view: &EntityDefinition, condition: Option<Condition>) -> Option<Condition> {
+    apply_filters(&Target::Defined(view), condition)
+}
+
+/// The entity a find reads: one in the model by name, or a definition the caller holds.
+enum Target<'a> {
+    Named(&'a str),
+    Defined(&'a EntityDefinition),
+}
+
+impl Target<'_> {
+    fn name(&self) -> &str {
+        match self {
+            Self::Named(name) => name,
+            Self::Defined(entity) => &entity.full_name,
+        }
+    }
+
+    fn with<T>(
+        &self,
+        facade: &EntityFacade,
+        body: impl FnOnce(&EntityDefinition) -> Result<T, moqui_lib::error::Error>,
+    ) -> Result<T, Error> {
+        match self {
+            Self::Named(name) => facade
+                .with_entity(name, |entity, _, _| body(entity))
+                .map_err(Error::from),
+            Self::Defined(entity) => body(entity).map_err(Error::from),
+        }
+    }
+}
+
+fn apply_filters(target: &Target<'_>, condition: Option<Condition>) -> Option<Condition> {
+    if !context_entered() || target.name().starts_with("moqui.") {
         return condition;
     }
     if ExecutionContext::with_current(|ctx| ctx.authz_disabled()).unwrap_or(true) {
@@ -39,7 +77,7 @@ pub fn apply_entity_filters(entity_name: &str, condition: Option<Condition>) -> 
     if !authz_enabled_for("AT_ENTITY") {
         return condition;
     }
-    match with_user_context(|| extra_conditions(entity_name)) {
+    match with_user_context(|| extra_conditions(target)) {
         Ok(extra) => combine(condition, extra),
         Err(err) => {
             tracing::error!(error = %err, "entity filter failed closed");
@@ -61,11 +99,11 @@ fn with_user_context<T>(body: impl FnOnce() -> T) -> T {
     body()
 }
 
-fn extra_conditions(entity_name: &str) -> Result<Vec<Condition>, Error> {
+fn extra_conditions(target: &Target<'_>) -> Result<Vec<Condition>, Error> {
     let facade = entity_facade()?;
     let mut extra = Vec::new();
     for (allow_missing, filter) in applicable_filters()? {
-        if let Some(condition) = one_filter(&facade, entity_name, &filter, allow_missing)? {
+        if let Some(condition) = one_filter(&facade, target, &filter, allow_missing)? {
             extra.push(condition);
         }
     }
@@ -146,7 +184,7 @@ fn condition_passes(expression: &str) -> Result<bool, Error> {
 
 fn one_filter(
     facade: &EntityFacade,
-    entity_name: &str,
+    target: &Target<'_>,
     filter: &EntityValue,
     allow_missing: bool,
 ) -> Result<Option<Condition>, Error> {
@@ -157,9 +195,7 @@ fn one_filter(
     }
     // Only a filter on this entity, or on a member of this view, is evaluated, as in Java: the map of a filter on
     // another entity does not run, and an error in it does not close this find.
-    let applies = facade
-        .with_entity(entity_name, |entity, _, _| Ok(applies_to(entity, &filter_entity)))
-        .map_err(Error::from)?;
+    let applies = target.with(facade, |entity| Ok(applies_to(entity, &filter_entity)))?;
     if !applies {
         return Ok(None);
     }
@@ -173,11 +209,9 @@ fn one_filter(
     };
     let join_or = text(filter, "joinOr") == "Y";
     let comparison = text(filter, "comparisonEnumId");
-    facade
-        .with_entity(entity_name, |entity, _, _| {
-            conditions_for(entity, &filter_entity, &map, (join_or, &comparison), allow_missing)
-        })
-        .map_err(Error::from)
+    target.with(facade, |entity| {
+        conditions_for(entity, &filter_entity, &map, (join_or, &comparison), allow_missing)
+    })
 }
 
 /// A filter on `filter_entity` applies to a find on `entity`: the same entity, or a member of the view.
@@ -545,6 +579,13 @@ mod tests {
         let both = super::apply_entity_filters(VIEW, None).expect("both filters");
         assert!(has_in(&both, "ownerPartyId", &["ORG1", "ORG2"]), "{both:?}");
         assert!(has_equals(&both, "ownerPartyId", "ORG9"), "{both:?}");
+
+        // A view not in the model, as a dynamic view is, gets the same filters on its members.
+        let mut dynamic = facade.with_entity(VIEW, |entity, _, _| Ok(entity.clone())).unwrap();
+        dynamic.full_name = "dynamic.ProductFilterView".to_string();
+        let on_dynamic = super::apply_view_filters(&dynamic, None).expect("filters on the dynamic view");
+        assert!(has_in(&on_dynamic, "ownerPartyId", &["ORG1", "ORG2"]), "{on_dynamic:?}");
+        assert!(has_equals(&on_dynamic, "ownerPartyId", "ORG9"), "{on_dynamic:?}");
 
         // `getFindFiltersForUser` lists the filters behind those terms, by set
         let sets: Vec<String> = super::find_filters_for_user(VIEW)

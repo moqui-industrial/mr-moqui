@@ -428,7 +428,7 @@ fn parameter_string(parameters: &BTreeMap<String, Value>) -> Option<String> {
 /// session tokens, SQL text, a shared secret, and any name with `password`, `secret`, or `token` in it or ending in
 /// `_key`, `apikey`, or `loginkey`. Ids such as `primaryKeyId` or `monkeyId` are kept.
 /// Java left out only names with `password`.
-fn secret_parameter(key: &str) -> bool {
+pub(crate) fn secret_parameter(key: &str) -> bool {
     let lower = key.to_ascii_lowercase();
     crate::web::CREDENTIAL_PARAMETER_NAMES.contains(&lower.as_str())
         || SECRET_PARAMETER_NAMES.contains(&lower.as_str())

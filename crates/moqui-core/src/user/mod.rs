@@ -32,6 +32,7 @@ pub(crate) use authz::{denied, is_permitted, note_entity_write, AuthInfo, Permit
 pub use factor::{
     random_code, random_string, second_factor_required, single_use_hash, totp_code_valid, totp_secret, totp_uri,
 };
+pub(crate) use filter::apply_view_filters;
 pub use filter::{apply_entity_filters, find_filters_for_user};
 pub(crate) use login::login_user_local;
 pub(crate) use login::stamp_value;

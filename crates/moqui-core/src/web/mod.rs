@@ -305,12 +305,16 @@ pub(crate) fn secure_parameters() -> BTreeMap<String, Value> {
     })
 }
 
-/// The text [`set_request_info`] kept, with the parameters. Empty with no request.
+/// The text [`set_request_info`] kept, with the parameters. Empty with no request. A credential or other secret
+/// parameter (the names a hit row leaves out) is not listed.
 pub(crate) fn request_details() -> String {
     WEB.with(|slot| {
         slot.borrow().as_ref().map_or_else(String::new, |web| {
             let mut text = web.request_details.clone();
             for (name, value) in &web.parameters {
+                if crate::context::secret_parameter(name) {
+                    continue;
+                }
                 text.push_str(&format!(
                     "Parameter: {name} = {}\n",
                     moqui_lib::object::to_plain_string(value)
@@ -1291,6 +1295,18 @@ pub(crate) fn record_login_error(message: &str) {
 mod tests {
     use super::{cookie_value, form_pairs, origin_allowed_for, pairs_to_parameters, percent_decode};
     use moqui_lib::object::Value;
+
+    #[test]
+    fn request_details_leave_out_credential_parameters() {
+        let parameters = [("orderId", "O1"), ("password", "hunter2"), ("api_key", "k-1")]
+            .into_iter()
+            .map(|(name, value)| (name.to_string(), Value::string(value)))
+            .collect();
+        let _web = super::install(parameters);
+        let details = super::request_details();
+        assert!(details.contains("Parameter: orderId = O1"), "{details}");
+        assert!(!details.contains("hunter2") && !details.contains("k-1"), "{details}");
+    }
 
     #[test]
     fn a_json_body_is_its_fields_a_list_or_a_parse_error_and_always_the_body_text() {

@@ -37,7 +37,7 @@ use super::facade::EntityFacade;
 use super::field_rw;
 use super::find::FindValues;
 use super::params::{self, map_row, view_columns};
-use super::value::EntityValue;
+use super::value::{EntityArtifact, EntityValue};
 
 const MAX_DEPTH: u32 = 32;
 /// The largest `pageSize` a REST find reads, unless the `entity_rest_max_page_size` property sets another.
@@ -53,7 +53,7 @@ pub fn dynamic_view(
         return named_view(facade, entity_name, parameters);
     }
     let built = build_view(facade, entity_name, parameters)?;
-    run_view(facade, &built)
+    run_view(facade, &built, true)
 }
 
 /// Write records for one entity. `directory` or `file`/`filename` on a record is the destination.
@@ -1572,7 +1572,9 @@ fn blank_view(entity_name: &str) -> EntityDefinition {
     }
 }
 
-fn run_view(facade: &EntityFacade, built: &BuiltView) -> Result<Vec<BTreeMap<String, Value>>, Error> {
+/// Run a built view. With `authorize`, reading it needs `view` authorization on each member entity, and the entity
+/// filters of each authorizing record apply, as a find of each member would.
+fn run_view(facade: &EntityFacade, built: &BuiltView, authorize: bool) -> Result<Vec<BTreeMap<String, Value>>, Error> {
     let anchor = built
         .view
         .member_entities
@@ -1580,19 +1582,30 @@ fn run_view(facade: &EntityFacade, built: &BuiltView) -> Result<Vec<BTreeMap<Str
         .map(|member| member.entity_name.clone())
         .ok_or_else(|| Error::new("dynamic view needs a member-entity"))?;
     let page = built.page;
-    let (view, statement, tx) = facade.with_group(&anchor, |_, dialect, model, tx| {
+    let (view, tx) = facade.with_group(&anchor, |_, _, model, tx| {
         let mut view = built.view.clone();
         model.complete_view(&mut view)?;
-        let statement = select_view(
+        Ok((view, tx.clone()))
+    })?;
+    let mut condition = built.condition.clone();
+    let mut artifacts = Vec::new();
+    if authorize {
+        for member in &view.member_entities {
+            artifacts.push(EntityArtifact::push(facade, &member.entity_name, "view", "list")?);
+            // The filters come from the record that authorized the frame on top, so each member adds its own.
+            condition = crate::user::apply_view_filters(&view, condition);
+        }
+    }
+    let statement = facade.with_group(&anchor, |_, dialect, model, _| {
+        select_view(
             &view,
             model,
             dialect,
             &FindValues,
-            built.condition.as_ref(),
+            condition.as_ref(),
             &built.order,
             page,
-        )?;
-        Ok((view, statement, tx.clone()))
+        )
     })?;
     let columns = view_columns(&view);
     let rows = query_tx(&tx, &statement.sql, &statement.params)?;
@@ -1650,6 +1663,7 @@ pub(crate) fn run_code_view(
             order,
             page,
         },
+        false,
     )
 }
 

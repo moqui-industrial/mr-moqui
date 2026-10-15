@@ -47,6 +47,30 @@ pub fn run_actions(actions: &str) -> Result<(), Error> {
     super::runtime::eval_script(&source).map_err(|err| with_source_line(err, &source))
 }
 
+/// Evaluate a `<condition>` element as `<if>` does. Its children are xml-actions conditions
+/// (`expression`, `compare`, `and`, `or`, `not`), and all of them must hold. An element with no
+/// condition macro is an error, never a pass.
+pub fn eval_condition_element(xml: &str) -> Result<bool, Error> {
+    if xml.as_bytes().contains(&0) {
+        return Err(Error::new("script source contains a null byte"));
+    }
+    let root = MNode::parse_text("condition", xml)?;
+    if root.name() != "condition" {
+        return Err(Error::new(format!(
+            "expected a condition element, found {}",
+            root.name()
+        )));
+    }
+    // The children of an `and` render joined by `&&`, or `true` when there are none.
+    let mut combined = String::from("<and>");
+    for child in root.children() {
+        combined.push_str(&child.write_string());
+    }
+    combined.push_str("</and>");
+    let source = generated(&combined)?;
+    super::runtime::eval_condition(&source)
+}
+
 /// An error at `eval_script:LINE:COL` with that line of the generated script after it, so a failure in actions points at
 /// the statement. With `MOQUI_ACTIONS_DEBUG` set, the element comment above it is shown too.
 fn with_source_line(err: Error, source: &str) -> Error {

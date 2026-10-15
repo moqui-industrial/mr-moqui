@@ -186,4 +186,69 @@ mod tests {
         run_seca_rules("test.example#Run", "post-service", &parameters, None).unwrap();
         assert_eq!(context.message().messages(), ["early", "late"]);
     }
+
+    #[test]
+    fn compare_and_combined_conditions_decide_whether_a_rule_runs() {
+        let context = crate::context::ExecutionContextFactory::test_context();
+        eca_rules::install(
+            context.factory(),
+            eca_rules::from_xml(
+                r#"<secas>
+                <seca service="test.example#Cond" when="pre-service" priority="1">
+                    <condition><compare field="note" operator="equals" value="go"/></condition>
+                    <actions><script>ec.message.addMessage("compare");</script></actions>
+                </seca>
+                <seca service="test.example#Cond" when="pre-service" priority="2">
+                    <condition><and>
+                        <compare field="note" operator="equals" value="go"/>
+                        <expression>count &gt; 2</expression>
+                    </and></condition>
+                    <actions><script>ec.message.addMessage("and");</script></actions>
+                </seca>
+                <seca service="test.example#Cond" when="pre-service" priority="3">
+                    <condition><or>
+                        <compare field="note" operator="equals" value="stop"/>
+                        <not><expression>count &gt; 2</expression></not>
+                    </or></condition>
+                    <actions><script>ec.message.addMessage("or");</script></actions>
+                </seca>
+            </secas>"#,
+                "",
+            ),
+        );
+        let _entered = context.enter();
+        let run = |note: &str, count: i64| {
+            context.message().clear();
+            let mut parameters = BTreeMap::new();
+            parameters.insert("note".to_string(), Value::string(note));
+            parameters.insert("count".to_string(), Value::I64(count));
+            run_seca_rules("test.example#Cond", "pre-service", &parameters, None).unwrap();
+            context.message().messages().to_vec()
+        };
+        assert_eq!(run("go", 5), ["compare", "and"]);
+        assert_eq!(run("go", 1), ["compare", "or"]);
+        assert_eq!(run("stop", 5), ["or"]);
+        assert!(run("other", 5).is_empty());
+    }
+
+    #[test]
+    fn a_condition_element_that_is_not_a_condition_fails_the_rule() {
+        let context = crate::context::ExecutionContextFactory::test_context();
+        eca_rules::install(
+            context.factory(),
+            eca_rules::from_xml(
+                r#"<secas>
+                <seca service="test.example#Odd" when="pre-service">
+                    <condition><unknown-check field="note"/></condition>
+                    <actions><script>ec.message.addMessage("ran");</script></actions>
+                </seca>
+            </secas>"#,
+                "",
+            ),
+        );
+        let _entered = context.enter();
+        let parameters = BTreeMap::new();
+        assert!(run_seca_rules("test.example#Odd", "pre-service", &parameters, None).is_err());
+        assert!(context.message().messages().is_empty(), "the rule did not run");
+    }
 }

@@ -35,7 +35,7 @@ pub use error::{Error, ErrorKind};
 #[cfg(feature = "cluster-tls")]
 pub(crate) use factory::standard_base64;
 pub use factory::{BootOptions, ContextGuard, ExecutionContext, ExecutionContextFactory, Executor};
-pub(crate) use hits::Hit;
+pub(crate) use hits::{secret_parameter, Hit};
 pub use locate::{framework_dir, locate};
 pub use message::{ErrorMark, MessageFacade, ValidationError};
 pub use resource::{ResourceEntry, ResourceFacade, ResourceRef, ResourceStat};

@@ -423,6 +423,46 @@ fn the_rest_sender_posts_the_text_with_an_hmac_header_and_reads_the_remote_id() 
 }
 
 #[test]
+fn an_hmac_receive_is_refused_when_the_remote_has_no_shared_secret() {
+    let setup = setup("hmac-empty");
+    let _entered = setup.context.enter();
+    install(&setup);
+    let facade = &setup.facade;
+    {
+        let _authz = setup.context.disable_authz();
+        seed(
+            facade,
+            "moqui.service.message.SystemMessageType",
+            &[("systemMessageTypeId", "SmsgTestIn")],
+        );
+        for (remote, secret) in [("SmsgNoSecret", ""), ("SmsgSecret", "s3cret")] {
+            seed(
+                facade,
+                "moqui.service.message.SystemMessageRemote",
+                &[
+                    ("systemMessageRemoteId", remote),
+                    ("messageAuthEnumId", "SmatHmacSha256"),
+                    ("authHeaderName", "X-Test-Signature"),
+                    ("sharedSecret", secret),
+                ],
+            );
+        }
+    }
+    let body = r#"{"note":"from the peer"}"#;
+    let receive = |remote: &str, secret: &str| {
+        let mut request = crate::web::WebRequest::new("POST", format!("/rest/sm/SmsgTestIn/{remote}"));
+        request.set_header("X-Test-Signature", super::message::hmac_base64_for_test(secret, body));
+        request.body = body.as_bytes().to_vec();
+        let _web = crate::web::install(BTreeMap::new());
+        super::message::receive_rest_message(&request, &["SmsgTestIn".to_string(), remote.to_string()]).unwrap();
+        crate::web::output_status()
+    };
+    // Anyone can sign with an empty secret, so the remote is not usable.
+    assert_eq!(receive("SmsgNoSecret", ""), 403);
+    assert_eq!(receive("SmsgSecret", "s3cret"), 200, "{}", errors(&setup.context));
+}
+
+#[test]
 fn hmac_values_match_the_java_web_utilities() {
     // HMAC-SHA256 of the usual test vector, base64 as hmacSha256Base64 gives it.
     assert_eq!(
