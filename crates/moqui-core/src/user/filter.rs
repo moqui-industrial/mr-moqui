@@ -14,13 +14,14 @@
 
 //! Entity find filters from `ArtifactAuthzFilter` and `EntityFilter`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use moqui_db::model::EntityDefinition;
 use moqui_db::sql::Condition;
 use moqui_lib::object::{to_plain_string, Value};
 
-use super::authz::{authz_enabled_for, context_entered};
+use super::authz::{authz_enabled_for, context_entered, generation};
 use super::login::entity_facade;
 use crate::context::{Error, ExecutionContext};
 use crate::entity::{EntityFacade, EntityValue};
@@ -143,36 +144,99 @@ fn applicable_filters() -> Result<Vec<(bool, EntityValue)>, Error> {
     else {
         return Ok(Vec::new());
     };
-    let facade = entity_facade()?;
-    let _guard =
-        ExecutionContext::with_current(|ctx| ctx.disable_authz()).ok_or_else(|| Error::new("no execution context"))?;
-    let authz_filters = facade.find("moqui.security.ArtifactAuthzFilter")?.list()?;
-    let sets = facade.find("moqui.security.EntityFilterSet")?.list()?;
-    let filters = facade.find("moqui.security.EntityFilter")?.list()?;
     let mut applicable = Vec::new();
-    for authz_filter in authz_filters.values() {
-        if text(authz_filter, "artifactAuthzId") != authz_id {
+    for set in filter_sets(&authz_id)?.iter() {
+        if !condition_passes(&set.authz_apply_cond)? || !condition_passes(&set.set_apply_cond)? {
             continue;
         }
-        let set_id = text(authz_filter, "entityFilterSetId");
-        let Some(set) = sets
-            .values()
-            .iter()
-            .find(|row| text(row, "entityFilterSetId") == set_id)
-        else {
-            continue;
-        };
-        if !condition_passes(&text(authz_filter, "applyCond"))? || !condition_passes(&text(set, "applyCond"))? {
-            continue;
-        }
-        let allow_missing = text(set, "allowMissingAlias") == "Y";
-        for filter in filters.values() {
-            if text(filter, "entityFilterSetId") == set_id {
-                applicable.push((allow_missing, filter.clone()));
-            }
+        for filter in &set.filters {
+            applicable.push((set.allow_missing, filter.clone()));
         }
     }
     Ok(applicable)
+}
+
+/// A filter set an `ArtifactAuthzFilter` names: the apply conditions, which are evaluated for each find, and the set's
+/// `EntityFilter` records.
+struct FilterSet {
+    authz_apply_cond: String,
+    set_apply_cond: String,
+    allow_missing: bool,
+    filters: Vec<EntityValue>,
+}
+
+/// The filter sets of each `artifactAuthzId`, read once for an authorization generation. A write to a filter table
+/// moves the generation, as a write to the other authorization tables does.
+#[derive(Default)]
+struct FilterSetCache {
+    by_authz: Mutex<GenerationSets>,
+}
+
+#[derive(Default)]
+struct GenerationSets {
+    generation: u64,
+    sets: HashMap<String, Arc<Vec<FilterSet>>>,
+}
+
+/// The filter sets of `authz_id`, from the cache of this factory. Sets read while the generation moved are returned
+/// but not kept.
+fn filter_sets(authz_id: &str) -> Result<Arc<Vec<FilterSet>>, Error> {
+    let factory = ExecutionContext::with_current(|ec| Arc::clone(ec.factory()))
+        .ok_or_else(|| Error::new("no execution context"))?;
+    let cache = factory.extension(|_| FilterSetCache::default());
+    let loaded_at = generation();
+    {
+        let guard = cache.by_authz.lock().unwrap_or_else(PoisonError::into_inner);
+        if guard.generation == loaded_at {
+            if let Some(found) = guard.sets.get(authz_id) {
+                return Ok(Arc::clone(found));
+            }
+        }
+    }
+    let sets = Arc::new(read_filter_sets(authz_id)?);
+    let mut guard = cache.by_authz.lock().unwrap_or_else(PoisonError::into_inner);
+    if generation() == loaded_at {
+        if guard.generation != loaded_at {
+            *guard = GenerationSets {
+                generation: loaded_at,
+                sets: HashMap::new(),
+            };
+        }
+        guard.sets.insert(authz_id.to_string(), Arc::clone(&sets));
+    }
+    Ok(sets)
+}
+
+fn read_filter_sets(authz_id: &str) -> Result<Vec<FilterSet>, Error> {
+    let facade = entity_facade()?;
+    let _guard =
+        ExecutionContext::with_current(|ctx| ctx.disable_authz()).ok_or_else(|| Error::new("no execution context"))?;
+    let authz_filters = facade
+        .find("moqui.security.ArtifactAuthzFilter")?
+        .eq("artifactAuthzId", Value::string(authz_id))
+        .list()?;
+    let mut out = Vec::new();
+    for authz_filter in authz_filters.values() {
+        let set_id = text(authz_filter, "entityFilterSetId");
+        let Some(set) = facade
+            .find("moqui.security.EntityFilterSet")?
+            .eq("entityFilterSetId", Value::string(&set_id))
+            .one()?
+        else {
+            continue;
+        };
+        let filters = facade
+            .find("moqui.security.EntityFilter")?
+            .eq("entityFilterSetId", Value::string(&set_id))
+            .list()?;
+        out.push(FilterSet {
+            authz_apply_cond: text(authz_filter, "applyCond"),
+            set_apply_cond: text(&set, "applyCond"),
+            allow_missing: text(&set, "allowMissingAlias") == "Y",
+            filters: filters.into_values(),
+        });
+    }
+    Ok(out)
 }
 
 fn condition_passes(expression: &str) -> Result<bool, Error> {
@@ -646,6 +710,22 @@ mod tests {
         assert_eq!(ids(&facade), ["P1", "P3"]);
         set_context_name("activeOrgId", Value::string("ORG1")).unwrap();
         assert_eq!(ids(&facade), ["P1"]);
+
+        // The filter sets are kept for an authorization generation, and a write to a filter table moves it.
+        {
+            let _guard = context.disable_authz();
+            facade
+                .find("moqui.security.ArtifactAuthzFilter")
+                .unwrap()
+                .eq("artifactAuthzId", Value::string("MANTLE_ORG_AUTHZ"))
+                .eq("entityFilterSetId", Value::string("MANTLE_ACTIVE_ORG"))
+                .one()
+                .unwrap()
+                .expect("the active org link")
+                .delete(&facade)
+                .unwrap();
+        }
+        assert_eq!(ids(&facade), ["P1", "P3"]);
 
         clear_context_stack();
         session::reset_session();

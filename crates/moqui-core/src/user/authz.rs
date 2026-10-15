@@ -39,7 +39,7 @@ const AT_ENTITY: &str = "AT_ENTITY";
 /// Bumped when a table the cached checks come from changes, so sessions reload them.
 static AUTHZ_GENERATION: AtomicU64 = AtomicU64::new(0);
 
-/// Entity writes call this. Only the authorization tables change the generation.
+/// Entity writes call this. Only the authorization tables, the entity filter tables among them, change the generation.
 ///
 /// The generation moves at once, and again when the write's transaction commits: a session that
 /// reloaded in between read the rows from before the commit, and must not keep them.
@@ -50,6 +50,9 @@ pub(crate) fn note_entity_write(entity_name: &str) {
             | "moqui.security.ArtifactGroupMember"
             | "moqui.security.UserGroupMember"
             | "moqui.security.ArtifactTarpit"
+            | "moqui.security.ArtifactAuthzFilter"
+            | "moqui.security.EntityFilterSet"
+            | "moqui.security.EntityFilter"
     ) {
         return;
     }
@@ -532,7 +535,7 @@ pub(crate) fn authz_enabled_for(artifact_type: &str) -> bool {
     artifact_flag(artifact_type, "authz-enabled")
 }
 
-fn generation() -> u64 {
+pub(super) fn generation() -> u64 {
     AUTHZ_GENERATION.load(Ordering::Relaxed)
 }
 
