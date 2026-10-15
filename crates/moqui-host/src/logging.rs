@@ -15,12 +15,15 @@
 //! Server log output, log files, and shipping logs to the search backend's log indexes.
 //!
 //! [`install`] sets the process's `tracing` subscriber: one line per event on stderr, at
-//! `moqui_log_level` (default `info`) and above. Spans are not tracked; artifact hits are counted
-//! when a frame pops, not here.
+//! `moqui_log_level` (default `info`) and above. The stderr line has a structured header and, when
+//! color is on, a dim stamp, a colored level, a dim thread, and a blue target. Color follows
+//! `moqui_log_color` (default `auto`: a terminal, and `NO_COLOR` unset). Spans are not tracked;
+//! artifact hits are counted when a frame pops, not here.
 //!
 //! [`attach_files`] opens `moqui.log` and `moqui-error.log` once the runtime directory and the
 //! default properties are known, writes the lines logged before that, and rolls the files over by
-//! size and by day. Without it lines go to stderr only.
+//! size and by day. Those files stay the plain line, with no color and no console header. Without
+//! it lines go to stderr only.
 //!
 //! When the search backend keeps log indexes (OpenSearch or Postgres), [`ship_to_search`] starts a
 //! thread that bulk-indexes queued events to `moqui_logs` and HTTP requests to `moqui_http_log`
@@ -32,6 +35,7 @@
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::fmt::Write as _;
+use std::io::IsTerminal;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -84,9 +88,15 @@ pub fn install() {
             "error" => Level::ERROR,
             _ => Level::INFO,
         };
+        let color = color_enabled(
+            &moqui_lib::env::get_prop_or_env("moqui_log_color"),
+            std::env::var_os("NO_COLOR").is_some(),
+            std::io::stderr().is_terminal(),
+        );
         let _ = tracing::subscriber::set_global_default(LineSubscriber {
             level,
             next_span: AtomicU64::new(1),
+            color,
         });
     });
 }
@@ -423,6 +433,8 @@ pub fn host_name() -> &'static str {
 struct LineSubscriber {
     level: Level,
     next_span: AtomicU64,
+    /// Stderr uses the colored console header. Decided once in [`install`].
+    color: bool,
 }
 
 impl Subscriber for LineSubscriber {
@@ -445,23 +457,20 @@ impl Subscriber for LineSubscriber {
         let thread = std::thread::current();
         let thread_name = thread.name().unwrap_or("unnamed").to_string();
         let millis = now_millis();
-        let mut line = String::with_capacity(96 + fields.message.len());
         let stamp = jiff::Timestamp::from_millisecond(millis)
             .map(|at| at.strftime("%Y-%m-%d %H:%M:%S%.3f").to_string())
             .unwrap_or_default();
-        let _ = write!(
-            line,
-            "{stamp} {:<5} [{thread_name}] {} - {}",
-            metadata.level(),
-            metadata.target(),
-            fields.message
-        );
-        for (name, value) in &fields.extra {
-            let _ = write!(line, " {name}={value}");
-        }
-        let _ = writeln!(std::io::stderr(), "{line}");
         let level = *metadata.level();
-        write_file_line(level, &line);
+        let text = LogText {
+            stamp: &stamp,
+            level,
+            thread: &thread_name,
+            target: metadata.target(),
+            message: &fields.message,
+            extra: &fields.extra,
+        };
+        let _ = writeln!(std::io::stderr(), "{}", console_line(&text, self.color));
+        write_file_line(level, &plain_line(&text));
 
         // Queued from the start, so the boot lines ship once search attaches.
         if level == Level::DEBUG || level == Level::TRACE || IN_SHIPPER.with(Cell::get) {
@@ -521,6 +530,137 @@ impl Visit for Fields {
         } else {
             self.extra.push((field.name().to_string(), format!("{value:?}")));
         }
+    }
+}
+
+/// One log event, before it is rendered for stderr or for a file.
+struct LogText<'a> {
+    stamp: &'a str,
+    level: Level,
+    thread: &'a str,
+    target: &'a str,
+    message: &'a str,
+    extra: &'a [(String, String)],
+}
+
+/// The file line. Same text the files have always stored: no color, full target.
+fn plain_line(text: &LogText<'_>) -> String {
+    let mut line = String::with_capacity(96 + text.message.len());
+    let _ = write!(
+        line,
+        "{} {:<5} [{}] {} - {}",
+        text.stamp, text.level, text.thread, text.target, text.message
+    );
+    append_extra(&mut line, text.extra, false);
+    line
+}
+
+/// The stderr line. The level sits in a fixed column. Color is SGR around the header pieces.
+fn console_line(text: &LogText<'_>, color: bool) -> String {
+    let mut line = String::with_capacity(96 + text.message.len());
+    paint(&mut line, "2", text.stamp, color);
+    // The stamp is 23 columns, then two spaces, then a 5-column level.
+    let mut col = text.stamp.len() + 2;
+    push_spaces(&mut line, 2);
+    let word = text.level.as_str();
+    paint(&mut line, level_sgr(text.level), word, color);
+    let pad = 5usize.saturating_sub(word.len());
+    push_spaces(&mut line, pad + 2);
+    col += 5 + 2;
+    let thread = format!("[{}]", text.thread);
+    paint(&mut line, "2", &thread, color);
+    col += thread.len() + 1;
+    push_spaces(&mut line, 1);
+    let target = short_target(text.target);
+    paint(&mut line, "34", &target, color);
+    col += target.len() + 2;
+    push_spaces(&mut line, 2);
+    write_console_message(&mut line, text.message, col, color);
+    append_extra(&mut line, text.extra, color);
+    line
+}
+
+/// `auto` (and anything else, including empty) is a terminal with `NO_COLOR` unset.
+/// `always` wins over a pipe and over `NO_COLOR`. `never` wins over a terminal.
+fn color_enabled(mode: &str, no_color: bool, is_tty: bool) -> bool {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "never" => false,
+        "always" => true,
+        _ => is_tty && !no_color,
+    }
+}
+
+/// Console only. `moqui_core::context::factory` becomes `core::context::factory`.
+/// `moqui` itself and any other target stay as they are.
+fn short_target(target: &str) -> String {
+    let (first, rest) = match target.split_once("::") {
+        Some((first, rest)) => (first, Some(rest)),
+        None => (target, None),
+    };
+    let short = match first {
+        "moqui_core" => "core",
+        "moqui_host" => "host",
+        "moqui_lib" => "lib",
+        "moqui_db" => "db",
+        _ => return target.to_string(),
+    };
+    match rest {
+        Some(rest) => format!("{short}::{rest}"),
+        None => short.to_string(),
+    }
+}
+
+fn level_sgr(level: Level) -> &'static str {
+    match level {
+        Level::TRACE => "35",
+        Level::DEBUG => "1;35",
+        Level::INFO => "1;32",
+        Level::WARN => "1;33",
+        Level::ERROR => "1;31",
+    }
+}
+
+fn paint(out: &mut String, sgr: &str, text: &str, color: bool) {
+    if color {
+        out.push_str("\u{1b}[");
+        out.push_str(sgr);
+        out.push('m');
+        out.push_str(text);
+        out.push_str("\u{1b}[0m");
+    } else {
+        out.push_str(text);
+    }
+}
+
+fn push_spaces(out: &mut String, count: usize) {
+    for _ in 0..count {
+        out.push(' ');
+    }
+}
+
+/// The first line stays on the header. Later lines indent to the message column, with a bar so a
+/// stack trace stays attached to its header.
+fn write_console_message(out: &mut String, message: &str, message_col: usize, color: bool) {
+    let mut lines = message.split('\n');
+    if let Some(first) = lines.next() {
+        out.push_str(first);
+    }
+    let bar_at = message_col.saturating_sub(2);
+    for line in lines {
+        out.push('\n');
+        push_spaces(out, bar_at);
+        paint(out, "2", "|", color);
+        out.push(' ');
+        out.push_str(line);
+    }
+}
+
+fn append_extra(out: &mut String, extra: &[(String, String)], color: bool) {
+    for (name, value) in extra {
+        out.push(' ');
+        paint(out, "2", name, color);
+        out.push('=');
+        out.push_str(value);
     }
 }
 
@@ -621,5 +761,144 @@ mod tests {
             Some(PathBuf::from("/srv/moqui/runtime/logs"))
         );
         assert_eq!(file_dir(runtime, "  "), None);
+    }
+
+    const STAMP: &str = "2026-10-15 01:48:49.933";
+
+    fn text<'a>(level: Level, target: &'a str, message: &'a str, extra: &'a [(String, String)]) -> LogText<'a> {
+        LogText {
+            stamp: STAMP,
+            level,
+            thread: "moqui-http",
+            target,
+            message,
+            extra,
+        }
+    }
+
+    #[test]
+    fn the_file_line_stays_plain() {
+        let message = "Setting property instance_purpose from default with value [dev]";
+        let line = plain_line(&text(Level::INFO, "moqui_core::context::factory", message, &[]));
+        assert_eq!(
+            line,
+            "2026-10-15 01:48:49.933 INFO  [moqui-http] moqui_core::context::factory - Setting property instance_purpose from default with value [dev]"
+        );
+        assert!(!line.contains('\u{1b}'));
+        let extra = [("name".to_string(), "value".to_string())];
+        let with_extra = plain_line(&text(Level::WARN, "moqui_host::db::postgres", "hello", &extra));
+        assert_eq!(
+            with_extra,
+            "2026-10-15 01:48:49.933 WARN  [moqui-http] moqui_host::db::postgres - hello name=value"
+        );
+        assert!(!with_extra.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn the_console_line_is_structured_and_the_level_is_colored() {
+        let message = "Setting property instance_purpose from default with value [dev]";
+        let plain = console_line(&text(Level::INFO, "moqui_core::context::factory", message, &[]), false);
+        assert_eq!(
+            plain,
+            "2026-10-15 01:48:49.933  INFO   [moqui-http] core::context::factory  Setting property instance_purpose from default with value [dev]"
+        );
+        assert!(!plain.contains('\u{1b}'));
+
+        let cases = [
+            (Level::TRACE, "35", "TRACE"),
+            (Level::DEBUG, "1;35", "DEBUG"),
+            (Level::INFO, "1;32", "INFO"),
+            (Level::WARN, "1;33", "WARN"),
+            (Level::ERROR, "1;31", "ERROR"),
+        ];
+        for (level, sgr, word) in cases {
+            let line = console_line(&text(level, "moqui_core::context::factory", "hello", &[]), true);
+            assert!(
+                line.contains(&format!("\u{1b}[{sgr}m{word}\u{1b}[0m")),
+                "{word} in {line:?}"
+            );
+            let at = line.find("hello").unwrap();
+            let last = line[..at].rfind('\u{1b}').unwrap();
+            assert!(
+                line[last..at].starts_with("\u{1b}[0m"),
+                "{word} message span in {line:?}"
+            );
+        }
+        let extra = [("name".to_string(), "value".to_string())];
+        let named = console_line(
+            &text(Level::INFO, "moqui_core::context::factory", "hello", &extra),
+            true,
+        );
+        assert!(named.contains(" \u{1b}[2mname\u{1b}[0m=value"), "{named:?}");
+    }
+
+    #[test]
+    fn the_console_shortens_only_the_moqui_crate_prefix() {
+        let message = "hello";
+        for (full, short) in [
+            ("moqui_core::context::factory", "core::context::factory"),
+            ("moqui_host::db::postgres", "host::db::postgres"),
+            ("moqui_lib::env", "lib::env"),
+            ("moqui_db::sql", "db::sql"),
+            ("moqui_core", "core"),
+        ] {
+            let shown = console_line(&text(Level::INFO, full, message, &[]), false);
+            assert!(shown.contains(short), "{full} -> {shown}");
+            assert!(!shown.contains(full), "{full} stayed in {shown}");
+            let stored = plain_line(&text(Level::INFO, full, message, &[]));
+            assert!(stored.contains(full), "{stored}");
+        }
+        for keep in ["moqui::main", "other::target"] {
+            let shown = console_line(&text(Level::INFO, keep, message, &[]), false);
+            assert!(shown.contains(keep), "{shown}");
+        }
+    }
+
+    #[test]
+    fn a_second_line_indents_on_the_console_and_stays_flush_in_the_file() {
+        let message = "first\nsecond";
+        let stored = plain_line(&text(Level::ERROR, "moqui_core::context::factory", message, &[]));
+        assert!(stored.contains("first\nsecond"), "{stored:?}");
+        assert!(!stored.contains('|'));
+
+        let shown = console_line(&text(Level::ERROR, "moqui_core::context::factory", message, &[]), false);
+        let (first, second) = shown.split_once('\n').unwrap();
+        let col = first.find("first").unwrap();
+        assert_eq!(&second[col..], "second");
+        assert_eq!(&second[col - 2..col], "| ");
+        assert!(second[..col - 2].chars().all(|ch| ch == ' '));
+        assert!(!shown.contains('\u{1b}'));
+
+        let colored = console_line(&text(Level::ERROR, "moqui_core::context::factory", message, &[]), true);
+        assert!(colored.contains("\u{1b}[2m|\u{1b}[0m second"), "{colored:?}");
+        let stripped = strip_ansi(&colored);
+        let (first, second) = stripped.split_once('\n').unwrap();
+        let col = first.find("first").unwrap();
+        assert_eq!(&second[col..], "second");
+    }
+
+    #[test]
+    fn color_follows_the_mode_the_terminal_and_no_color() {
+        assert!(color_enabled("auto", false, true));
+        assert!(!color_enabled("auto", false, false));
+        assert!(!color_enabled("auto", true, true));
+        assert!(color_enabled("", false, true));
+        assert!(color_enabled("always", false, false));
+        assert!(!color_enabled("never", false, true));
+        assert!(color_enabled("always", true, false));
+        assert!(!color_enabled(" NEVER ", false, true));
+    }
+
+    fn strip_ansi(text: &str) -> String {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(start) = rest.find('\u{1b}') {
+            out.push_str(&rest[..start]);
+            let after = &rest[start..];
+            let end = after.find('m').map_or(after.len(), |at| at + 1);
+            rest = &after[end..];
+        }
+        out.push_str(rest);
+        out
     }
 }

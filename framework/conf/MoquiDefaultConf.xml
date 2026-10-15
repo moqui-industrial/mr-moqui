@@ -146,6 +146,8 @@
     <default-property name="opensearch_start_wait" value="120"/>
     <!-- Server log output on stderr: trace, debug, info, warn, or error -->
     <default-property name="moqui_log_level" value="info"/>
+    <!-- stderr header color: auto (a terminal, and not NO_COLOR), always, or never. Files stay plain. -->
+    <default-property name="moqui_log_color" value="auto"/>
     <!-- Log files: moqui.log (all events) and moqui-error.log (warn and error) in moqui_log_dir, a path or runtime:// location;
         empty writes no files. A file rolls over to moqui.yyyy-MM-dd.N.log (UTC) at moqui_log_max_size_mb or when the day changes,
         and only the newest moqui_log_max_files rolled files of each kind are kept. -->
