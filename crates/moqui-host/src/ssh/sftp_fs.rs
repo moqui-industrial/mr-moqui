@@ -17,7 +17,8 @@
 //! normalized against `/`; a `..` that would leave the root is refused. Each call runs on a request worker.
 //!
 //! A file opened for reading is read whole; one opened for writing is kept in memory and written on close, because a
-//! `dbresource` file is a row. `ssh_sftp_max_file` bytes (default 256 MiB) bound either.
+//! `dbresource` file is a row. `ssh_sftp_max_file` bytes (default 256 MiB) bound either, and also the bytes all the
+//! open files of one channel hold together. A channel has at most [`MAX_HANDLES`] handles open.
 
 use std::collections::HashMap;
 use std::sync::Weak;
@@ -27,6 +28,9 @@ use russh_sftp::protocol::{Attrs, Data, File, FileAttributes, Handle, Name, Open
 use russh_sftp::server::StatusReply;
 
 use super::on_pool_without_authz;
+
+/// Open file and directory handles on one channel.
+const MAX_HANDLES: usize = 64;
 
 /// One open handle.
 enum Open {
@@ -41,6 +45,8 @@ pub(super) struct SftpFs {
     root: String,
     max_file: usize,
     handles: HashMap<String, Open>,
+    /// The file bytes the open handles hold, at most `max_file`.
+    held: usize,
     next: u64,
 }
 
@@ -51,8 +57,28 @@ impl SftpFs {
             root: root.trim_end_matches('/').to_string(),
             max_file,
             handles: HashMap::new(),
+            held: 0,
             next: 0,
         }
+    }
+
+    /// Refuse one more handle past [`MAX_HANDLES`].
+    fn handle_room(&self) -> Result<(), StatusReply> {
+        if self.handles.len() >= MAX_HANDLES {
+            return Err(StatusCode::Failure.with_message(format!(
+                "{MAX_HANDLES} handles are open on this channel; close one first"
+            )));
+        }
+        Ok(())
+    }
+
+    /// The bytes open files may still take before this channel holds `ssh_sftp_max_file`.
+    fn room(&self) -> usize {
+        self.max_file.saturating_sub(self.held)
+    }
+
+    fn too_much_held() -> StatusReply {
+        StatusCode::Failure.with_message("the open files on this channel would hold more than ssh_sftp_max_file bytes")
     }
 
     /// The location for a client path, or `PermissionDenied` when it climbs above the root.
@@ -187,6 +213,7 @@ impl russh_sftp::server::Handler for SftpFs {
     }
 
     async fn opendir(&mut self, id: u32, path: String) -> Result<Handle, Self::Error> {
+        self.handle_room()?;
         let (location, _) = self.location(&path)?;
         let listed = on_pool_without_authz(&self.factory, move |factory| {
             let resources = factory.resource();
@@ -230,10 +257,13 @@ impl russh_sftp::server::Handler for SftpFs {
         pflags: OpenFlags,
         _attrs: FileAttributes,
     ) -> Result<Handle, Self::Error> {
+        self.handle_room()?;
         let (location, _) = self.location(&filename)?;
         let writing = pflags.intersects(OpenFlags::WRITE | OpenFlags::APPEND | OpenFlags::CREATE);
         let truncate = pflags.contains(OpenFlags::TRUNCATE);
         let max = self.max_file;
+        // A truncated file is not read, so it takes no room.
+        let room = if writing && truncate { usize::MAX } else { self.room() };
         let read_location = location.clone();
         let existing = on_pool_without_authz(&self.factory, move |factory| {
             let resources = factory.resource();
@@ -244,12 +274,20 @@ impl russh_sftp::server::Handler for SftpFs {
                 Some(stat) if usize::try_from(stat.size).unwrap_or(usize::MAX) > max => Err(
                     moqui_core::context::Error::new(format!("{read_location} is larger than ssh_sftp_max_file")),
                 ),
-                Some(_) => resources.get(&read_location)?.read_bytes().map(Some),
-                None => Ok(None),
+                Some(stat) if usize::try_from(stat.size).unwrap_or(usize::MAX) > room => Ok(Err(())),
+                Some(_) if writing && truncate => Ok(Ok(Some(Vec::new()))),
+                Some(_) => resources.get(&read_location)?.read_bytes().map(|bytes| Ok(Some(bytes))),
+                None => Ok(Ok(None)),
             }
         })
         .await
-        .map_err(failure)?;
+        .map_err(failure)?
+        .map_err(|()| Self::too_much_held())?;
+        // The file may have grown between the stat and the read.
+        let size = existing.as_ref().map_or(0, Vec::len);
+        if size > self.room() {
+            return Err(Self::too_much_held());
+        }
         let open = match (writing, existing) {
             (false, Some(bytes)) => Open::Read { bytes },
             (false, None) => return Err(StatusCode::NoSuchFile.into()),
@@ -268,6 +306,9 @@ impl russh_sftp::server::Handler for SftpFs {
                 Open::Write { location, bytes }
             }
         };
+        if let Open::Read { bytes } | Open::Write { bytes, .. } = &open {
+            self.held += bytes.len();
+        }
         let handle = self.handle_id();
         self.handles.insert(handle.clone(), open);
         Ok(Handle { id, handle })
@@ -291,6 +332,7 @@ impl russh_sftp::server::Handler for SftpFs {
 
     async fn write(&mut self, id: u32, handle: String, offset: u64, data: Vec<u8>) -> Result<Status, Self::Error> {
         let max = self.max_file;
+        let room = self.room();
         let Some(Open::Write { bytes, .. }) = self.handles.get_mut(&handle) else {
             return Err(StatusCode::PermissionDenied.with_message("not opened for writing"));
         };
@@ -299,15 +341,24 @@ impl russh_sftp::server::Handler for SftpFs {
         if end > max {
             return Err(StatusCode::Failure.with_message("the file is larger than ssh_sftp_max_file"));
         }
-        if bytes.len() < end {
+        let grown = end.saturating_sub(bytes.len());
+        if grown > room {
+            return Err(Self::too_much_held());
+        }
+        if grown > 0 {
             bytes.resize(end, 0);
+            self.held += grown;
         }
         bytes[start..end].copy_from_slice(&data);
         Ok(ok(id))
     }
 
     async fn close(&mut self, id: u32, handle: String) -> Result<Status, Self::Error> {
-        match self.handles.remove(&handle) {
+        let open = self.handles.remove(&handle);
+        if let Some(Open::Read { bytes } | Open::Write { bytes, .. }) = &open {
+            self.held = self.held.saturating_sub(bytes.len());
+        }
+        match open {
             Some(Open::Write { location, bytes }) => {
                 on_pool_without_authz(&self.factory, move |factory| {
                     factory.resource().write_bytes(&location, &bytes)
@@ -397,7 +448,45 @@ impl russh_sftp::server::Handler for SftpFs {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize;
+    use std::sync::Weak;
+
+    use russh_sftp::protocol::{FileAttributes, OpenFlags};
+    use russh_sftp::server::Handler as _;
+
+    use super::{normalize, Open, SftpFs, MAX_HANDLES};
+
+    fn message(reply: &russh_sftp::server::StatusReply) -> &str {
+        reply.error_message.as_deref().unwrap_or("")
+    }
+
+    #[tokio::test]
+    async fn open_files_and_handles_are_capped_per_channel() {
+        let mut fs = SftpFs::new(Weak::new(), "runtime://sftp".to_string(), 100);
+        let (location, bytes) = ("runtime://sftp/a".to_string(), vec![0; 60]);
+        fs.handles.insert("h1".to_string(), Open::Write { location, bytes });
+        let (location, bytes) = ("runtime://sftp/b".to_string(), Vec::new());
+        fs.handles.insert("h2".to_string(), Open::Write { location, bytes });
+        fs.held = 60;
+        fs.write(1, "h2".to_string(), 0, vec![1; 40]).await.unwrap();
+        assert_eq!(fs.held, 100);
+        let refused = fs.write(2, "h2".to_string(), 40, vec![1]).await.unwrap_err();
+        assert!(message(&refused).contains("would hold more than"), "{refused:?}");
+        // Writing over bytes already held needs no room.
+        fs.write(3, "h1".to_string(), 0, vec![2; 60]).await.unwrap();
+        fs.close(4, "h1".to_string()).await.unwrap_err();
+        assert_eq!(fs.held, 40);
+
+        for index in fs.handles.len()..MAX_HANDLES {
+            fs.handles.insert(format!("d{index}"), Open::Dir { entries: None });
+        }
+        let refused = fs
+            .open(5, "/c".to_string(), OpenFlags::READ, FileAttributes::empty())
+            .await
+            .unwrap_err();
+        assert!(message(&refused).contains("handles are open"), "{refused:?}");
+        let refused = fs.opendir(6, "/".to_string()).await.unwrap_err();
+        assert!(message(&refused).contains("handles are open"), "{refused:?}");
+    }
 
     #[test]
     fn paths_stay_under_the_root() {

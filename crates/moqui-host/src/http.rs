@@ -12,29 +12,77 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Plain HTTP listener. Axum accepts the socket. Screen and entity work runs on the request pool.
+//! Plain HTTP listener. Each connection is served by hyper with axum's router, inside the `webapp_*` limits of
+//! [`ListenLimits`]. Screen and entity work runs on the request pool.
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::{ConnectInfo, Request, State};
 use axum::response::Response;
 use axum::routing::{any, get};
 use axum::Router;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use moqui_core::context::ErrorKind;
 use moqui_core::context::ExecutionContextFactory;
 use moqui_core::transaction::PoolStats;
 use moqui_core::web::{WebRequest, WebResponse};
 use moqui_lib::error::Error;
 use tokio::net::TcpListener;
+use tower::ServiceExt as _;
 
 use crate::{notws, search_proxy};
 
 pub(crate) struct HttpState {
     pub factory: Arc<ExecutionContextFactory>,
     pub shutdown: tokio::sync::watch::Receiver<bool>,
+    pub limits: ListenLimits,
+}
+
+/// Bounds on the plain listener. Timeouts are whole seconds in their property, and `0` turns one off.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ListenLimits {
+    /// `webapp_header_timeout`, default 30: a client sends its whole request head in this time. A kept-alive
+    /// connection that sends nothing for as long is closed too.
+    pub header: Option<Duration>,
+    /// `webapp_body_timeout`, default 60: the whole request body arrives in this time, or the answer is 408.
+    pub body: Option<Duration>,
+    /// `webapp_request_timeout`, default 300: from the request head to the response head, or the answer is 504.
+    /// `/notws` is exempt, and a response body, such as a long download, is sent after it.
+    pub request: Option<Duration>,
+    /// `webapp_max_connections`, default 1024: connections served at once. Past it the listener stops accepting
+    /// until one closes.
+    pub connections: usize,
+}
+
+impl ListenLimits {
+    pub(crate) fn from_properties() -> Self {
+        Self {
+            header: seconds_property("webapp_header_timeout", 30),
+            body: seconds_property("webapp_body_timeout", 60),
+            request: seconds_property("webapp_request_timeout", 300),
+            connections: moqui_lib::env::get_prop_or_env("webapp_max_connections")
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|count| *count > 0)
+                .unwrap_or(1024),
+        }
+    }
+}
+
+/// Seconds from `name`, `default` when it is empty or not a number, `None` when it is `0`.
+fn seconds_property(name: &str, default: u64) -> Option<Duration> {
+    let seconds = moqui_lib::env::get_prop_or_env(name)
+        .trim()
+        .parse::<u64>()
+        .unwrap_or(default);
+    (seconds > 0).then(|| Duration::from_secs(seconds))
 }
 
 /// Addresses and handles the test uses after the plain HTTP listener binds.
@@ -82,6 +130,7 @@ pub(crate) async fn listen(
         "Listening for HTTP on {address} and cluster on {cluster}; routes /health, /metrics, /notws, /elastic, /kibana and the screen dispatcher"
     );
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let limits = ListenLimits::from_properties();
     let app = Router::new()
         .route("/health", get(health))
         .route("/metrics", get(metrics))
@@ -97,11 +146,86 @@ pub(crate) async fn listen(
         .with_state(Arc::new(HttpState {
             factory,
             shutdown: shutdown_rx,
+            limits,
         }));
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .with_graceful_shutdown(shutdown(stop, shutdown_tx))
-        .await
-        .map_err(|err| Error::new(format!("http listener stopped: {err}")))
+    serve(listener, app, limits, shutdown(stop, shutdown_tx)).await;
+    Ok(())
+}
+
+/// Serve `app` until `stop` resolves, then let every open connection finish, as `axum::serve` does. Each
+/// connection is served here rather than by `axum::serve`, which gives hyper no timer, so that
+/// `header_read_timeout` takes effect.
+async fn serve(listener: TcpListener, app: Router, limits: ListenLimits, stop: impl Future<Output = ()>) {
+    let permits = Arc::new(tokio::sync::Semaphore::new(limits.connections));
+    let (closing, closing_rx) = tokio::sync::watch::channel(false);
+    let mut builder = hyper::server::conn::http1::Builder::new();
+    builder.timer(TokioTimer::new()).header_read_timeout(limits.header);
+    let mut stop = std::pin::pin!(stop);
+    loop {
+        let permit = tokio::select! {
+            () = &mut stop => break,
+            permit = Arc::clone(&permits).acquire_owned() => permit,
+        };
+        let Ok(permit) = permit else {
+            break;
+        };
+        let accepted = tokio::select! {
+            () = &mut stop => break,
+            accepted = listener.accept() => accepted,
+        };
+        let (stream, remote) = match accepted {
+            Ok(pair) => pair,
+            Err(err) => {
+                if !matches!(
+                    err.kind(),
+                    std::io::ErrorKind::ConnectionRefused
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::ConnectionReset
+                ) {
+                    // Out of file descriptors, most likely: wait rather than spin.
+                    tracing::warn!("http accept failed: {err}");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+                continue;
+            }
+        };
+        let _ = stream.set_nodelay(true);
+        let router = app.clone();
+        let service = hyper::service::service_fn(move |mut request: hyper::Request<hyper::body::Incoming>| {
+            request.extensions_mut().insert(ConnectInfo(remote));
+            let deadline = limits.request.filter(|_| request.uri().path() != "/notws");
+            let call = router.clone().oneshot(request);
+            async move {
+                match deadline {
+                    Some(deadline) => match tokio::time::timeout(deadline, call).await {
+                        Ok(response) => response,
+                        Err(_) => Ok(plain(504, "the request took too long")),
+                    },
+                    None => call.await,
+                }
+            }
+        });
+        let connection = builder.serve_connection(TokioIo::new(stream), service).with_upgrades();
+        let mut closing = closing_rx.clone();
+        tokio::spawn(async move {
+            let mut connection = std::pin::pin!(connection);
+            tokio::select! {
+                result = connection.as_mut() => {
+                    if let Err(err) = result {
+                        tracing::trace!("http connection from {remote} ended: {err}");
+                    }
+                }
+                _ = closing.changed() => {
+                    connection.as_mut().graceful_shutdown();
+                    let _ = connection.await;
+                }
+            }
+            drop(permit);
+        });
+    }
+    drop(closing_rx);
+    let _ = closing.send(true);
+    closing.closed().await;
 }
 
 /// Ctrl-c ends the binary. A failed handler waits on `stop`, which is how tests shut the listener down.
@@ -194,9 +318,9 @@ async fn dispatch_screen(
     if declared.is_some_and(|length| length > limit) {
         return plain(413, &format!("request body is larger than {limit} bytes"));
     }
-    let bytes = match axum::body::to_bytes(body, limit.saturating_add(1)).await {
-        Ok(bytes) if bytes.len() <= limit => bytes,
-        _ => return plain(413, &format!("request body is larger than {limit} bytes")),
+    let bytes = match read_body(&state, body, limit).await {
+        Ok(bytes) => bytes,
+        Err(refused) => return refused.response(),
     };
     web.body = bytes.to_vec();
     let log = RequestLog {
@@ -224,7 +348,7 @@ async fn dispatch_screen(
         if err.kind() == ErrorKind::Unavailable {
             return plain(503, "service unavailable");
         }
-        return plain(500, err.message());
+        return internal_error(err.message());
     }
     match result.await {
         Ok(response) => {
@@ -233,6 +357,54 @@ async fn dispatch_screen(
         }
         Err(_) => plain(500, "request worker stopped"),
     }
+}
+
+/// Why [`read_body`] stopped.
+pub(crate) enum BodyRefused {
+    /// More than this many bytes.
+    TooLarge(usize),
+    TimedOut,
+}
+
+impl BodyRefused {
+    pub(crate) fn response(&self) -> Response {
+        match self {
+            Self::TooLarge(limit) => plain(413, &format!("request body is larger than {limit} bytes")),
+            Self::TimedOut => plain(408, "the request body did not arrive in time"),
+        }
+    }
+}
+
+/// The request body, up to `limit` bytes and within `webapp_body_timeout`.
+pub(crate) async fn read_body(
+    state: &HttpState,
+    body: axum::body::Body,
+    limit: usize,
+) -> Result<bytes::Bytes, BodyRefused> {
+    let read = axum::body::to_bytes(body, limit.saturating_add(1));
+    let read = match state.limits.body {
+        Some(timeout) => tokio::time::timeout(timeout, read)
+            .await
+            .map_err(|_| BodyRefused::TimedOut)?,
+        None => read.await,
+    };
+    match read {
+        Ok(bytes) if bytes.len() <= limit => Ok(bytes),
+        _ => Err(BodyRefused::TooLarge(limit)),
+    }
+}
+
+/// A 500 that names an error id instead of `detail`, which may hold SQL, paths or entity names. The detail goes
+/// to the error log under the same id.
+pub(crate) fn internal_error(detail: &str) -> Response {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let id = format!(
+        "{:x}-{:x}",
+        crate::logging::now_millis(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    );
+    tracing::error!("request failed, error id {id}: {detail}");
+    plain(500, &format!("internal error, id {id}"))
 }
 
 /// One `moqui_http_log` entry, the fields of Java's `ElasticRequestLogFilter`. Queued only while
@@ -392,7 +564,67 @@ pub(crate) fn plain(status: u16, body: &str) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{http_port, status_allowed};
+    use std::time::{Duration, Instant};
+
+    use axum::routing::get;
+    use axum::Router;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    use super::{http_port, serve, status_allowed, ListenLimits};
+
+    async fn read_all(stream: &mut TcpStream) -> String {
+        let mut buf = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut buf))
+            .await
+            .expect("the listener did not close the connection")
+            .unwrap();
+        String::from_utf8_lossy(&buf).into_owned()
+    }
+
+    #[tokio::test]
+    async fn a_slow_request_head_is_closed_and_holds_no_connection_slot() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().route("/", get(|| async { "ok" }));
+        let limits = ListenLimits {
+            header: Some(Duration::from_millis(300)),
+            body: None,
+            request: None,
+            connections: 1,
+        };
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(serve(listener, app, limits, async move {
+            let _ = stopped.await;
+        }));
+
+        // The one slot is taken by a client that never finishes its request head.
+        let started = Instant::now();
+        let mut slow = TcpStream::connect(address).await.unwrap();
+        slow.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n").await.unwrap();
+        // A full request waits for that slot, which the header timeout frees.
+        let mut fast = TcpStream::connect(address).await.unwrap();
+        fast.write_all(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let answered = read_all(&mut fast).await;
+        assert!(answered.starts_with("HTTP/1.1 200"), "{answered}");
+        assert!(
+            started.elapsed() >= Duration::from_millis(250),
+            "{:?}",
+            started.elapsed()
+        );
+
+        let closed = read_all(&mut slow).await;
+        assert!(!closed.contains(" 200 "), "{closed}");
+        assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
+
+        drop(stop);
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("the listener did not stop")
+            .unwrap();
+    }
 
     #[test]
     fn empty_webapp_http_port_is_8080() {

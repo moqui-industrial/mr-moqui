@@ -60,7 +60,6 @@ fn the_search_store_starts_and_stops_a_local_opensearch() {
     ] {
         moqui_lib::env::set_property(name, value.to_string());
     }
-    moqui_host::xmlshim::provide_libxml2_soname(&cluster_dir).unwrap();
     let (cluster, driver) = EmbeddedCluster::start(&cluster_dir, 20).unwrap();
     let driver: Arc<dyn DbDriver> = Arc::new(driver);
     let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");

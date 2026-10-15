@@ -214,7 +214,15 @@ struct Rolling {
     day: String,
     max_bytes: u64,
     max_files: usize,
+    /// After a failed roll or open, neither is tried again before this.
+    retry_at: Option<std::time::Instant>,
+    retry_every: Duration,
+    /// The current failure was said on stderr. Cleared once the file opens or rolls again.
+    reported: bool,
 }
+
+/// How long a log file that could not be rolled or opened waits before the next try.
+const FILE_RETRY: Duration = Duration::from_secs(10);
 
 impl Rolling {
     fn open(dir: &Path, base: &'static str, max_bytes: u64, max_files: usize) -> std::io::Result<Self> {
@@ -226,6 +234,9 @@ impl Rolling {
             day: String::new(),
             max_bytes,
             max_files,
+            retry_at: None,
+            retry_every: FILE_RETRY,
+            reported: false,
         };
         let path = rolling.path();
         let modified = std::fs::metadata(&path).ok().and_then(|meta| meta.modified().ok());
@@ -246,7 +257,23 @@ impl Rolling {
     fn write(&mut self, line: &str) {
         let day = today();
         let incoming = line.len() as u64 + 1;
-        if self.size > 0 && (day != self.day || self.size + incoming > self.max_bytes) {
+        if self.file.is_none() {
+            if self.retry_due() {
+                match self.open_current() {
+                    Ok(()) => {
+                        self.retry_at = None;
+                        self.reported = false;
+                    }
+                    Err(err) => {
+                        let path = self.path();
+                        self.failed(&format!(
+                            "could not open {}: {err}; its lines are dropped until it opens",
+                            path.display()
+                        ));
+                    }
+                }
+            }
+        } else if self.size > 0 && (day != self.day || self.size + incoming > self.max_bytes) && self.retry_due() {
             self.roll();
         }
         if self.size == 0 {
@@ -259,8 +286,10 @@ impl Rolling {
         }
     }
 
-    /// Move the current file to `base.yyyy-MM-dd.N.log`, start a new one, and drop the oldest rolled files.
+    /// Move the current file to `base.yyyy-MM-dd.N.log`, start a new one, and drop the oldest rolled files. When
+    /// the move fails the current file is kept and written on, and the roll is tried again later.
     fn roll(&mut self) {
+        // Closed first: an open file cannot be renamed on Windows.
         self.file = None;
         let mut index = 1;
         let rolled = loop {
@@ -270,16 +299,52 @@ impl Rolling {
             }
             index += 1;
         };
-        if std::fs::rename(self.path(), &rolled).is_err() {
-            let _ = std::fs::remove_file(self.path());
+        let path = self.path();
+        if let Err(err) = std::fs::rename(&path, &rolled) {
+            self.failed(&format!(
+                "could not roll {} to {}: {err}; still writing to it",
+                path.display(),
+                rolled.display()
+            ));
+            let _ = self.open_current();
+            return;
         }
-        self.file = std::fs::OpenOptions::new()
+        match self.open_current() {
+            Ok(()) => {
+                self.retry_at = None;
+                self.reported = false;
+            }
+            Err(err) => self.failed(&format!(
+                "could not open {}: {err}; its lines are dropped until it opens",
+                path.display()
+            )),
+        }
+        self.prune();
+    }
+
+    /// Open the current file for appending; the size is what it already holds.
+    fn open_current(&mut self) -> std::io::Result<()> {
+        let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(self.path())
-            .ok();
-        self.size = 0;
-        self.prune();
+            .open(self.path())?;
+        self.size = file.metadata().map_or(0, |meta| meta.len());
+        self.file = Some(file);
+        Ok(())
+    }
+
+    fn retry_due(&self) -> bool {
+        self.retry_at.is_none_or(|at| std::time::Instant::now() >= at)
+    }
+
+    /// Wait `retry_every` before the next roll or open. The first failure in a row goes to stderr, not to tracing,
+    /// which would write to this file.
+    fn failed(&mut self, message: &str) {
+        self.retry_at = Some(std::time::Instant::now() + self.retry_every);
+        if !self.reported {
+            self.reported = true;
+            let _ = writeln!(std::io::stderr(), "{message}");
+        }
     }
 
     fn prune(&self) {
@@ -581,6 +646,61 @@ mod tests {
         let names = rolled(&dir, "moqui");
         assert_eq!(names, vec!["moqui.2000-01-01.1.log".to_string()]);
         assert_eq!(std::fs::read_to_string(dir.join("moqui.log")).unwrap(), "second\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_reopened_is_tried_again() {
+        let dir = scratch("reopen");
+        let mut log = Rolling::open(&dir, "moqui", 1_000_000, 5).unwrap();
+        log.retry_every = Duration::from_millis(50);
+        log.write("first");
+        // The roll's move and reopen both fail while the directory is gone.
+        std::fs::remove_dir_all(&dir).unwrap();
+        log.day = "2000-01-01".to_string();
+        log.write("lost");
+        assert!(log.file.is_none());
+        std::fs::create_dir_all(&dir).unwrap();
+        log.write("too soon");
+        assert!(log.file.is_none());
+        std::thread::sleep(Duration::from_millis(60));
+        log.write("back");
+        assert_eq!(std::fs::read_to_string(dir.join("moqui.log")).unwrap(), "back\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_roll_keeps_writing_the_current_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch("keep");
+        let mut log = Rolling::open(&dir, "moqui", 1_000_000, 5).unwrap();
+        log.retry_every = Duration::from_millis(50);
+        log.write("first");
+        // A directory that takes no new names: the move to the rolled name fails.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let locked = std::fs::write(dir.join("probe"), "").is_err();
+        if locked {
+            log.day = "2000-01-01".to_string();
+            log.write("second");
+            assert!(rolled(&dir, "moqui").is_empty());
+            assert_eq!(
+                std::fs::read_to_string(dir.join("moqui.log")).unwrap(),
+                "first\nsecond\n"
+            );
+        }
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if locked {
+            std::thread::sleep(Duration::from_millis(60));
+            log.write("third");
+            assert_eq!(rolled(&dir, "moqui"), vec!["moqui.2000-01-01.1.log".to_string()]);
+            assert_eq!(
+                std::fs::read_to_string(dir.join("moqui.2000-01-01.1.log")).unwrap(),
+                "first\nsecond\n"
+            );
+            assert_eq!(std::fs::read_to_string(dir.join("moqui.log")).unwrap(), "third\n");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

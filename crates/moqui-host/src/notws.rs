@@ -102,7 +102,7 @@ pub(crate) async fn upgrade(ws: WebSocketUpgrade, headers: HeaderMap, State(stat
         Ok(Ok(Some(user_id))) => user_id,
         Ok(Ok(None)) => return plain(401, "unauthorized"),
         Ok(Err(err)) if err.kind() == ErrorKind::Unavailable => return plain(503, "service unavailable"),
-        Ok(Err(err)) => return plain(500, err.message()),
+        Ok(Err(err)) => return crate::http::internal_error(err.message()),
         Err(_) => return plain(500, "request worker stopped"),
     };
     let shutdown = state.shutdown.clone();

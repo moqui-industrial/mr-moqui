@@ -195,7 +195,6 @@ mod tests {
     fn jdbc_extract_loads_entities_and_find_extracts() {
         let dir = temp_cluster_dir();
         let _guard = DirGuard(dir.clone());
-        crate::xmlshim::provide_libxml2_soname(&dir).unwrap();
         let (cluster, driver) = EmbeddedCluster::start(&dir, 20).unwrap();
         let driver: Arc<dyn DbDriver> = Arc::new(driver);
         let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");

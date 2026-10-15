@@ -193,6 +193,14 @@ fn sftp_and_the_admin_shell_run_on_the_built_in_server() {
     client.mkdirs("/outbox/SshOut").unwrap();
     client.close();
 
+    // Connections that never log in do not take the ssh_max_sessions (8) slots from one that does.
+    let idle: Vec<std::net::TcpStream> = (0..8).map(|_| std::net::TcpStream::connect(address).unwrap()).collect();
+    let mut past_idle = SftpClient::new(&host, "john.doe", None).unwrap();
+    past_idle.password("moqui").connect().unwrap();
+    assert_eq!(past_idle.ls_files("/drop").unwrap(), ["s.txt"]);
+    past_idle.close();
+    drop(idle);
+
     // Key login with the user's UserSshKey, and a key that is not one is refused.
     let pem = user_key.to_openssh(LineEnding::LF).unwrap().to_string();
     let mut keyed = SftpClient::new(&host, "john.doe", None).unwrap();

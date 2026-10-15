@@ -64,7 +64,7 @@ pub fn write_types(runtime: &Path, framework: &Path, out: &Path) -> Result<Strin
     let files = generate_types(runtime, framework)?;
     files.write(out).map_err(|err| Error::new(err.to_string()))?;
     for note in &files.notes {
-        eprintln!("types: {}", note.lines().next().unwrap_or_default());
+        tracing::info!("types: {}", note.lines().next().unwrap_or_default());
     }
     Ok(format!(
         "wrote {} files to {} ({} notes)",

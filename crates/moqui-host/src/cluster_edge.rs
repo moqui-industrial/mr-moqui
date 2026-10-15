@@ -239,29 +239,75 @@ fn serve_conn(
     let _ = stream.set_write_timeout(Some(CLIENT_IO));
     let _ = stream.set_nodelay(true);
     let conn = rustls::ServerConnection::new(config).map_err(|err| err.to_string())?;
-    let mut tls = rustls::StreamOwned::new(conn, stream);
+    let tls = rustls::StreamOwned::new(conn, stream);
+    serve_exchanges(tls, ConnLimits::DEFAULT, &stop, |exchange| {
+        handle_exchange(&factory, &posts, exchange)
+    })
+}
+
+/// How long a cluster connection may wait on its peer.
+#[derive(Clone, Copy)]
+struct ConnLimits {
+    /// From accept to the end of the first request, the TLS handshake included. A peer that never presents its
+    /// certificate gives its slot back after this.
+    first: Duration,
+    /// From the end of one exchange to the start of the next. The sender reconnects to a peer that closed it.
+    idle: Duration,
+    /// From the first byte of a request to its last.
+    partial: Duration,
+}
+
+impl ConnLimits {
+    const DEFAULT: Self = Self {
+        first: CLIENT_IO,
+        idle: Duration::from_secs(60),
+        partial: CLIENT_IO,
+    };
+}
+
+/// Answer the requests on one connection until it closes, a limit passes, or the listener stops. The stream's read
+/// timeout sets how often the limits and `stop` are checked.
+fn serve_exchanges<S: Read + Write>(
+    mut stream: S,
+    limits: ConnLimits,
+    stop: &AtomicBool,
+    mut handle: impl FnMut(&Exchange) -> u16,
+) -> Result<(), String> {
     let mut buf = Vec::new();
-    // When a request began arriving: a pause inside one is waited out up to the client timeout, not refused.
+    let accepted = std::time::Instant::now();
+    // When the last exchange ended; none yet means the first request is still due.
+    let mut last_exchange: Option<std::time::Instant> = None;
+    // When a request began arriving: a pause inside one is waited out up to `partial`, not refused.
     let mut partial_since: Option<std::time::Instant> = None;
     while !stop.load(Ordering::SeqCst) {
-        match read_exchange(&mut tls, &mut buf) {
+        match read_exchange(&mut stream, &mut buf) {
             Ok(Some(exchange)) => {
                 partial_since = None;
-                let status = handle_exchange(&factory, &posts, &exchange);
-                write_status(&mut tls, status).map_err(|err| err.to_string())?;
+                let status = handle(&exchange);
+                write_status(&mut stream, status).map_err(|err| err.to_string())?;
+                last_exchange = Some(std::time::Instant::now());
             }
             Ok(None) => return Ok(()),
-            Err(IoFail::Timeout) if buf.is_empty() => partial_since = None,
+            Err(IoFail::Timeout) if buf.is_empty() => {
+                partial_since = None;
+                match last_exchange {
+                    None if accepted.elapsed() > limits.first => {
+                        return Err("cluster connection sent no request".to_string());
+                    }
+                    Some(at) if at.elapsed() > limits.idle => return Ok(()),
+                    _ => {}
+                }
+            }
             Err(IoFail::Timeout) => {
                 let since = *partial_since.get_or_insert_with(std::time::Instant::now);
-                if since.elapsed() > CLIENT_IO {
-                    let _ = write_status(&mut tls, 400);
+                if since.elapsed() > limits.partial || (last_exchange.is_none() && accepted.elapsed() > limits.first) {
+                    let _ = write_status(&mut stream, 400);
                     return Err("cluster request was incomplete".to_string());
                 }
             }
             Err(IoFail::Closed) => return Ok(()),
             Err(IoFail::Bad(message)) => {
-                let _ = write_status(&mut tls, 400);
+                let _ = write_status(&mut stream, 400);
                 return Err(message);
             }
         }
@@ -372,10 +418,15 @@ impl Sender for PeerSender {
         if !topic_segment(topic) {
             return Err(CoreError::new("cluster topic is not a path segment"));
         }
-        let mut stream = match lock(&self.live).remove(base_url) {
-            Some(stream) => stream,
-            None => connect_peer(&self.config, base_url)?,
-        };
+        let kept = lock(&self.live).remove(base_url);
+        if let Some(mut stream) = kept {
+            if write_post(&mut stream, base_url, topic, payload).is_ok() {
+                lock(&self.live).insert(base_url.to_string(), stream);
+                return Ok(());
+            }
+            // The peer closes a connection left idle; a fresh one is tried once before the post fails.
+        }
+        let mut stream = connect_peer(&self.config, base_url)?;
         let sent = write_post(&mut stream, base_url, topic, payload);
         if sent.is_ok() {
             lock(&self.live).insert(base_url.to_string(), stream);
@@ -777,7 +828,7 @@ fn join_handle(name: &str, handle: JoinHandle<()>) {
         return;
     }
     if handle.join().is_err() {
-        eprintln!("{name} thread panicked");
+        tracing::error!("{name} thread panicked");
     }
 }
 
@@ -787,7 +838,61 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
-    use super::listen_port;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::AtomicBool;
+    use std::time::{Duration, Instant};
+
+    use super::{listen_port, serve_exchanges, ConnLimits, READ_IDLE};
+
+    const SHORT: ConnLimits = ConnLimits {
+        first: Duration::from_millis(300),
+        idle: Duration::from_millis(600),
+        partial: Duration::from_millis(300),
+    };
+
+    /// The server end of a fresh connection, with the listener's read timeout, and the client end.
+    fn pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        server
+            .set_read_timeout(Some(READ_IDLE.min(Duration::from_millis(50))))
+            .unwrap();
+        (server, client)
+    }
+
+    #[test]
+    fn a_connection_that_sends_nothing_gives_its_slot_back() {
+        let (server, _client) = pair();
+        let started = Instant::now();
+        let ended = serve_exchanges(server, SHORT, &AtomicBool::new(false), |_| 204);
+        assert!(ended.is_err());
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= SHORT.first && elapsed < Duration::from_secs(3),
+            "{elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn a_kept_alive_connection_closes_once_idle() {
+        let (server, mut client) = pair();
+        let serving = std::thread::spawn(move || serve_exchanges(server, SHORT, &AtomicBool::new(false), |_| 204));
+        client
+            .write_all(b"POST /cluster/x HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}")
+            .unwrap();
+        let mut answer = [0_u8; 12];
+        client.read_exact(&mut answer).unwrap();
+        assert_eq!(&answer, b"HTTP/1.1 204");
+        let answered = Instant::now();
+        assert!(serving.join().unwrap().is_ok());
+        let elapsed = answered.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(500) && elapsed < Duration::from_secs(3),
+            "{elapsed:?}"
+        );
+    }
 
     #[test]
     fn empty_cluster_https_port_listens_on_8443_and_zero_is_ephemeral() {

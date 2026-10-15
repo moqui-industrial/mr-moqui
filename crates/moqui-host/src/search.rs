@@ -174,7 +174,6 @@ fn embedded_tx(runtime_dir: &Path, store: &mut SearchStore) -> Result<Transactio
 
     let db_dir = runtime_dir.join("db");
     let dir = db_dir.join("search");
-    crate::xmlshim::provide_libxml2_soname(&dir)?;
     let options = StartOptions {
         max_connections: search_pool().max + crate::db::entity_db::SUPERUSER_SLOTS,
         role: ClusterRole::Entity,
@@ -242,7 +241,7 @@ impl OpenSearchProcess {
         let child = command
             .spawn()
             .map_err(|err| Error::new(format!("could not start OpenSearch in {}", dir.display())).with_source(err))?;
-        eprintln!(
+        tracing::info!(
             "Started OpenSearch from {} (pid {}), output in {}",
             dir.display(),
             child.id(),

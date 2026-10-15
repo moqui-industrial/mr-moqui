@@ -43,7 +43,6 @@ fn reads_go_to_the_replica_and_fresh_reads_wait_or_use_the_primary() {
     let _guards = (DirGuard(primary_dir.clone()), DirGuard(standby_dir.clone()));
     std::fs::create_dir_all(&primary_dir).unwrap();
     std::fs::create_dir_all(&standby_dir).unwrap();
-    moqui_host::xmlshim::provide_libxml2_soname(&primary_dir).unwrap();
     let (cluster, driver) = EmbeddedCluster::start(&primary_dir, 20).unwrap();
     let password = std::fs::read_to_string(primary_dir.join("pgpass"))
         .unwrap()

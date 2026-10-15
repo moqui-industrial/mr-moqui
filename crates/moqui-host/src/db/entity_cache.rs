@@ -16,8 +16,6 @@
 
 #[cfg(all(test, unix, feature = "embedded-postgres", feature = "postgres"))]
 mod tests {
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    use std::fmt::Write as _;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::time::Duration;
@@ -46,7 +44,6 @@ mod tests {
         let overlay_dir = temp_cluster_dir("overlay");
         let _main_guard = DirGuard(main_dir.clone());
         let _overlay_guard = DirGuard(overlay_dir.clone());
-        provide_libxml2_soname(&main_dir);
         let (main_cluster, main_driver) = EmbeddedCluster::start(&main_dir, 20).unwrap();
         let (overlay_cluster, overlay_driver) = EmbeddedCluster::start(&overlay_dir, 20).unwrap();
         let main_driver: Arc<dyn DbDriver> = Arc::new(main_driver);
@@ -76,7 +73,6 @@ mod tests {
     fn first_enter_sim_starts_the_overlay_and_stop_removes_it() {
         let main_dir = temp_cluster_dir("lazy");
         let _main_guard = DirGuard(main_dir.clone());
-        provide_libxml2_soname(&main_dir);
         let (main_cluster, main_driver) = EmbeddedCluster::start(&main_dir, 20).unwrap();
         let main_driver: Arc<dyn DbDriver> = Arc::new(main_driver);
         let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
@@ -300,193 +296,4 @@ mod tests {
             std::env::temp_dir().join(name)
         }
     }
-
-    fn provide_libxml2_soname(dir: &Path) {
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        {
-            let cache = ldconfig_cache();
-            if cache.lines().any(|line| ldconfig_soname(line) == "libxml2.so.2") {
-                return;
-            }
-            let Some(host) = libxml2_16_path(&cache) else {
-                return;
-            };
-            compile_libxml2_shim(dir, &host);
-        }
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        let _ = dir;
-    }
-
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    fn ldconfig_cache() -> String {
-        std::process::Command::new("ldconfig")
-            .arg("-p")
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
-            .unwrap_or_default()
-    }
-
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    fn ldconfig_soname(line: &str) -> &str {
-        line.split_whitespace().next().unwrap_or("")
-    }
-
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    fn libxml2_16_path(cache: &str) -> Option<PathBuf> {
-        for line in cache.lines() {
-            if ldconfig_soname(line) == "libxml2.so.16" && line.contains("x86-64") {
-                let path = PathBuf::from(line.split("=>").nth(1)?.trim());
-                if path.is_file() {
-                    return Some(path);
-                }
-            }
-        }
-        None
-    }
-
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    fn compile_libxml2_shim(dir: &Path, host: &Path) {
-        let shim_dir = dir.join("xmlshim");
-        std::fs::create_dir_all(&shim_dir).unwrap();
-        let assembly = shim_dir.join("shim.s");
-        let map = shim_dir.join("ver.map");
-        let shared = shim_dir.join("libxml2.so.2");
-        std::fs::write(&assembly, shim_assembly()).unwrap();
-        std::fs::write(&map, version_script()).unwrap();
-        let output = std::process::Command::new("gcc")
-            .args(["-shared", "-fPIC", "-o"])
-            .arg(&shared)
-            .arg(&assembly)
-            .arg("-Wl,-soname,libxml2.so.2")
-            .arg(format!("-Wl,--version-script={}", map.display()))
-            .arg(host)
-            .output()
-            .expect("gcc");
-        assert!(
-            output.status.success(),
-            "libxml2 shim: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let shim = shim_dir.display().to_string();
-        let existing = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
-        let library_path = if existing.split(':').any(|part| part == shim) {
-            existing
-        } else if existing.is_empty() {
-            shim
-        } else {
-            format!("{shim}:{existing}")
-        };
-        // SAFETY: initdb and the postmaster inherit this. The test writes it before those spawn.
-        unsafe { std::env::set_var("LD_LIBRARY_PATH", library_path) };
-    }
-
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    fn shim_assembly() -> String {
-        let mut out = String::new();
-        out.push_str(".text\n");
-        for (index, (name, version)) in XML_SYMBOLS.iter().enumerate() {
-            writeln!(
-                out,
-                ".globl shim_{index}\n.type shim_{index}, @function\nshim_{index}:\n    jmp {name}@PLT\n.size shim_{index}, .-shim_{index}\n.symver shim_{index}, {name}@{version}"
-            )
-            .unwrap();
-        }
-        out
-    }
-
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    fn version_script() -> String {
-        let mut out = String::new();
-        for (index, version) in XML_VERSIONS.iter().enumerate() {
-            out.push_str(version);
-            out.push_str(" {\n  global:\n");
-            for (name, symbol_version) in XML_SYMBOLS {
-                if symbol_version == version {
-                    writeln!(out, "    {name};").unwrap();
-                }
-            }
-            out.push_str("  local: *;\n}");
-            if index == 0 {
-                out.push_str(";\n");
-            } else {
-                writeln!(out, " {};", XML_VERSIONS[index - 1]).unwrap();
-            }
-        }
-        out
-    }
-
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    const XML_VERSIONS: &[&str] = &[
-        "LIBXML2_2.4.30",
-        "LIBXML2_2.6.0",
-        "LIBXML2_2.6.5",
-        "LIBXML2_2.6.8",
-        "LIBXML2_2.6.23",
-    ];
-
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    const XML_SYMBOLS: &[(&str, &str)] = &[
-        ("xmlAddChildList", "LIBXML2_2.4.30"),
-        ("xmlBufferContent", "LIBXML2_2.4.30"),
-        ("xmlBufferCreate", "LIBXML2_2.4.30"),
-        ("xmlBufferFree", "LIBXML2_2.4.30"),
-        ("xmlBufferLength", "LIBXML2_2.4.30"),
-        ("xmlCharInRange", "LIBXML2_2.6.0"),
-        ("xmlCheckVersion", "LIBXML2_2.4.30"),
-        ("xmlCopyNode", "LIBXML2_2.4.30"),
-        ("xmlCtxtReadDoc", "LIBXML2_2.6.0"),
-        ("xmlCtxtReadMemory", "LIBXML2_2.6.0"),
-        ("xmlDocSetRootElement", "LIBXML2_2.4.30"),
-        ("xmlEncodeSpecialChars", "LIBXML2_2.4.30"),
-        ("xmlFreeDoc", "LIBXML2_2.4.30"),
-        ("xmlFreeNode", "LIBXML2_2.4.30"),
-        ("xmlFreeParserCtxt", "LIBXML2_2.4.30"),
-        ("xmlFreeTextWriter", "LIBXML2_2.6.0"),
-        ("xmlGetExternalEntityLoader", "LIBXML2_2.4.30"),
-        ("xmlGetUTF8Char", "LIBXML2_2.4.30"),
-        ("xmlInitParser", "LIBXML2_2.4.30"),
-        ("xmlKeepBlanksDefault", "LIBXML2_2.4.30"),
-        ("xmlNewDoc", "LIBXML2_2.4.30"),
-        ("xmlNewDocText", "LIBXML2_2.4.30"),
-        ("xmlNewNode", "LIBXML2_2.4.30"),
-        ("xmlNewParserCtxt", "LIBXML2_2.4.30"),
-        ("xmlNewStringInputStream", "LIBXML2_2.4.30"),
-        ("xmlNewTextWriterMemory", "LIBXML2_2.6.0"),
-        ("xmlNodeDump", "LIBXML2_2.4.30"),
-        ("xmlParseBalancedChunkMemory", "LIBXML2_2.4.30"),
-        ("xmlParserPrintFileContext", "LIBXML2_2.4.30"),
-        ("xmlSaveClose", "LIBXML2_2.6.8"),
-        ("xmlSaveDoc", "LIBXML2_2.6.8"),
-        ("xmlSaveToBuffer", "LIBXML2_2.6.23"),
-        ("xmlSaveTree", "LIBXML2_2.6.8"),
-        ("xmlSetExternalEntityLoader", "LIBXML2_2.4.30"),
-        ("xmlSetGenericErrorFunc", "LIBXML2_2.4.30"),
-        ("xmlSetStructuredErrorFunc", "LIBXML2_2.6.0"),
-        ("xmlStrchr", "LIBXML2_2.4.30"),
-        ("xmlStrcmp", "LIBXML2_2.4.30"),
-        ("xmlStrdup", "LIBXML2_2.4.30"),
-        ("xmlStrlen", "LIBXML2_2.4.30"),
-        ("xmlStrncmp", "LIBXML2_2.4.30"),
-        ("xmlStrstr", "LIBXML2_2.4.30"),
-        ("xmlTextWriterEndElement", "LIBXML2_2.6.0"),
-        ("xmlTextWriterStartElement", "LIBXML2_2.6.0"),
-        ("xmlTextWriterWriteAttribute", "LIBXML2_2.6.0"),
-        ("xmlTextWriterWriteBase64", "LIBXML2_2.6.0"),
-        ("xmlTextWriterWriteBinHex", "LIBXML2_2.6.0"),
-        ("xmlTextWriterWriteRaw", "LIBXML2_2.6.0"),
-        ("xmlXPathCastBooleanToNumber", "LIBXML2_2.4.30"),
-        ("xmlXPathCastBooleanToString", "LIBXML2_2.4.30"),
-        ("xmlXPathCastNodeSetToString", "LIBXML2_2.4.30"),
-        ("xmlXPathCastNodeToString", "LIBXML2_2.4.30"),
-        ("xmlXPathCastNumberToString", "LIBXML2_2.4.30"),
-        ("xmlXPathCompiledEval", "LIBXML2_2.4.30"),
-        ("xmlXPathCtxtCompile", "LIBXML2_2.6.5"),
-        ("xmlXPathFreeCompExpr", "LIBXML2_2.4.30"),
-        ("xmlXPathFreeContext", "LIBXML2_2.4.30"),
-        ("xmlXPathFreeObject", "LIBXML2_2.4.30"),
-        ("xmlXPathNewContext", "LIBXML2_2.4.30"),
-        ("xmlXPathRegisterNs", "LIBXML2_2.4.30"),
-    ];
 }

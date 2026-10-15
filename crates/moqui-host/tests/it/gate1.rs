@@ -214,7 +214,6 @@ fn sql_features_run_on_postgres() {
 
     let (_runtime, cluster_dir, _guards) = fresh_dirs("sql-features");
     let framework = framework_dir();
-    moqui_host::xmlshim::provide_libxml2_soname(&cluster_dir).unwrap();
     let (cluster, driver) = EmbeddedCluster::start(&cluster_dir, 20).unwrap();
     let driver: Arc<dyn DbDriver> = Arc::new(driver);
     let facade = open_entity_facade(&framework, driver, pool()).unwrap();

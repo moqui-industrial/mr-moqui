@@ -48,7 +48,6 @@ fn an_external_postgres_from_the_conf_is_loaded_and_no_postmaster_starts() {
     );
     std::fs::create_dir_all(&runtime).unwrap();
     std::fs::create_dir_all(&server_dir).unwrap();
-    moqui_host::xmlshim::provide_libxml2_soname(&server_dir).unwrap();
     let (server, driver) = EmbeddedCluster::start(&server_dir, 20).unwrap();
     let password = std::fs::read_to_string(server_dir.join("pgpass")).unwrap();
 

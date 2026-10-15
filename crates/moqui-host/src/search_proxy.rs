@@ -28,10 +28,11 @@ use std::time::Duration;
 
 use axum::extract::{ConnectInfo, Request, State};
 use axum::response::Response;
+use moqui_core::outbound::redacted;
 use moqui_core::screen::PermissionCheck;
 use moqui_core::web::WebRequest;
 
-use crate::http::{plain, HttpState};
+use crate::http::{internal_error, plain, read_body, HttpState};
 
 /// Request and response bodies through the proxy are capped at this size.
 const MAX_BODY: usize = 100 * 1024 * 1024;
@@ -130,7 +131,7 @@ async fn proxy(
                 .unwrap_or_else(|_| plain(401, "login required"));
         }
         Ok(Ok(PermissionCheck::Forbidden)) => return plain(403, &format!("the {permission} permission is required")),
-        Ok(Err(err)) => return plain(500, err.message()),
+        Ok(Err(err)) => return internal_error(err.message()),
         Err(_) => return plain(500, "request worker stopped"),
     }
 
@@ -145,9 +146,9 @@ async fn proxy(
         url.push('?');
         url.push_str(query);
     }
-    let bytes = match axum::body::to_bytes(body, MAX_BODY).await {
+    let bytes = match read_body(&state, body, MAX_BODY).await {
         Ok(bytes) => bytes,
-        Err(_) => return plain(413, &format!("request body is larger than {MAX_BODY} bytes")),
+        Err(refused) => return refused.response(),
     };
     match forward(&parts.method, &parts.headers, &url, bytes.to_vec(), target).await {
         Ok(response) => response,
@@ -196,7 +197,7 @@ async fn forward(
         .body(body)
         .send()
         .await
-        .map_err(|err| format!("could not reach {url}: {err}"))?;
+        .map_err(|err| format!("could not reach {}: {}", redacted(url), err.without_url()))?;
     let mut out = Response::builder().status(response.status().as_u16());
     for (name, value) in response.headers() {
         let name = name.as_str();
@@ -206,9 +207,12 @@ async fn forward(
         out = out.header(name, value.as_bytes());
     }
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|err| err.to_string())? {
+    while let Some(chunk) = response.chunk().await.map_err(|err| err.without_url().to_string())? {
         if bytes.len() + chunk.len() > MAX_BODY {
-            return Err(format!("the response from {url} is larger than {MAX_BODY} bytes"));
+            return Err(format!(
+                "the response from {} is larger than {MAX_BODY} bytes",
+                redacted(url)
+            ));
         }
         bytes.extend_from_slice(&chunk);
     }

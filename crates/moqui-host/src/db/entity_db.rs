@@ -121,7 +121,6 @@ fn open_embedded(
 ) -> Result<EntityDb, Error> {
     use super::embedded::{ClusterRole, EmbeddedCluster, StartOptions};
 
-    crate::xmlshim::provide_libxml2_soname(cluster_dir)?;
     let options = StartOptions {
         max_connections: pool_max + LISTEN_SLOTS + SUPERUSER_SLOTS,
         role: ClusterRole::Entity,

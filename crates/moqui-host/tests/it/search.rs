@@ -44,7 +44,6 @@ fn postgres_backend_sales_and_party_parity() {
     let cluster_dir = temp_dir("moqui-pg-search");
     let _guard = DirGuard(cluster_dir.clone());
     std::fs::create_dir_all(&cluster_dir).unwrap();
-    moqui_host::xmlshim::provide_libxml2_soname(&cluster_dir).unwrap();
     let (cluster, driver) = EmbeddedCluster::start(&cluster_dir, 20).unwrap();
     let driver: Arc<dyn DbDriver> = Arc::new(driver);
     let tx = TransactionManager::new(Arc::clone(&driver), pool()).unwrap();
@@ -1154,7 +1153,6 @@ fn a_non_postgres_entity_database_gets_a_dedicated_search_cluster() {
     let cluster_dir = temp_dir("moqui-pg-search-own");
     let _guards = (DirGuard(runtime.clone()), DirGuard(cluster_dir.clone()));
     std::fs::create_dir_all(&runtime).unwrap();
-    moqui_host::xmlshim::provide_libxml2_soname(&cluster_dir).unwrap();
     let (cluster, driver) = EmbeddedCluster::start(&cluster_dir, 30).unwrap();
     let driver: Arc<dyn DbDriver> = Arc::new(driver);
     let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");

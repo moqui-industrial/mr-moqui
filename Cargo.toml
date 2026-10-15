@@ -186,6 +186,10 @@ tower-http = { version = "0.6", default-features = false, features = [
     "fs",
     "set-header",
 ] }
+# The plain listener serves each connection itself so hyper has a timer for its header read timeout (axum::serve sets
+# none). Both are already in the graph under axum with these features.
+hyper = { version = "1", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio", "server", "http1"] }
 # The PDF browser's DevTools socket (crates/moqui-host/src/pdf). Already in the graph under axum's ws feature.
 # chromiumoxide was the plan; its untagged-enum message parsing fails under serde_json arbitrary_precision.
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect"] }

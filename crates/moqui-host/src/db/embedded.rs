@@ -299,6 +299,7 @@ mod cluster {
     ) -> Result<(EmbeddedCluster, PostgresDriver), Error> {
         let settings = settings(dir, data_dir, options, adopt_port);
         let mut server = PostgreSQL::new(settings);
+        provide_libxml2(dir, server.settings())?;
         server
             .setup()
             .map_err(|err| embedded("setup embedded postgres", data_dir, err))?;
@@ -327,6 +328,27 @@ mod cluster {
             },
             driver,
         ))
+    }
+
+    /// `postgres` needs `libxml2.so.2`. When the host lacks it, [`crate::xmlshim`] puts a shim in the install's
+    /// `lib`. `setup` runs initdb, which runs `postgres`, right after it unpacks, so a missing install is unpacked
+    /// first on its own: `setup` skips initdb for a data directory that already holds a `postgresql.conf`.
+    fn provide_libxml2(dir: &Path, settings: &Settings) -> Result<(), Error> {
+        let Some(host) = crate::xmlshim::needed() else {
+            return Ok(());
+        };
+        if !settings.installation_dir.exists() {
+            let probe = dir.join("unpack");
+            std::fs::create_dir_all(&probe)
+                .and_then(|()| std::fs::write(probe.join("postgresql.conf"), ""))
+                .map_err(|err| Error::new("prepare the theseus unpack").with_source(err))?;
+            let mut unpack = settings.clone();
+            unpack.data_dir.clone_from(&probe);
+            let unpacked = PostgreSQL::new(unpack).setup();
+            let _ = std::fs::remove_dir_all(&probe);
+            unpacked.map_err(|err| embedded("unpack embedded postgres", &probe, err))?;
+        }
+        crate::xmlshim::provide(&settings.installation_dir.join("lib"), &host)
     }
 
     fn driver_for(server: &PostgreSQL, password: &str) -> PostgresDriver {
@@ -615,8 +637,6 @@ mod cluster {
 
     #[cfg(all(test, unix))]
     mod tests {
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        use std::fmt::Write as _;
         use std::path::{Path, PathBuf};
 
         use moqui_core::driver::{DbConnection, DbDriver};
@@ -637,9 +657,16 @@ mod cluster {
         fn embedded_cluster_queries_stream_cache_and_drops() {
             let dir = temp_cluster_dir();
             let _guard = DirGuard(dir.clone());
-            // theseus 18.6.0 NEEDED libxml2.so.2. A host that only ships .so.16 cannot run initdb.
-            provide_libxml2_soname(&dir);
+            // theseus 18.6.0 NEEDED libxml2.so.2. A host that only ships .so.16 runs initdb through the shim in the
+            // install's lib, and this process's environment is left alone.
+            let library_path = std::env::var_os("LD_LIBRARY_PATH");
             let (cluster, driver) = EmbeddedCluster::start(&dir, 20).unwrap();
+            assert_eq!(std::env::var_os("LD_LIBRARY_PATH"), library_path);
+            if crate::xmlshim::needed().is_some() {
+                let shim = dir.join("install").join(SHIPPED_VERSION).join("lib/libxml2.so.2");
+                assert!(shim.is_file(), "{} missing", shim.display());
+                assert!(!dir.join("unpack").exists());
+            }
             let data_dir = cluster.data_dir().to_path_buf();
             assert!(
                 data_dir.join(".s.PGSQL.5432").exists(),
@@ -729,7 +756,7 @@ mod cluster {
         #[test]
         fn postmaster_memory_stays_small_for_both_roles() {
             for role in [ClusterRole::Entity, ClusterRole::Sim] {
-                let dir = prepared_dir();
+                let dir = temp_cluster_dir();
                 let _guard = DirGuard(dir.clone());
                 let options = StartOptions {
                     role,
@@ -797,7 +824,7 @@ mod cluster {
 
         #[test]
         fn same_version_restart_keeps_the_row() {
-            let dir = prepared_dir();
+            let dir = temp_cluster_dir();
             let _guard = DirGuard(dir.clone());
             {
                 let (cluster, driver) = EmbeddedCluster::start(&dir, 20).unwrap();
@@ -841,7 +868,6 @@ mod cluster {
                 );
                 return;
             }
-            provide_libxml2_soname(&abs);
             let (cluster, driver) = EmbeddedCluster::start(&rel, 20).unwrap();
             let data_dir = cluster.data_dir().to_path_buf();
             assert!(
@@ -862,7 +888,7 @@ mod cluster {
 
         #[test]
         fn adopt_live_postmaster_keeps_the_same_pid() {
-            let dir = prepared_dir();
+            let dir = temp_cluster_dir();
             let _guard = DirGuard(dir.clone());
             let (cluster, driver) = EmbeddedCluster::start(&dir, 20).unwrap();
             let data_dir = cluster.data_dir().to_path_buf();
@@ -886,7 +912,7 @@ mod cluster {
 
         #[test]
         fn live_major_mismatch_refuses_with_the_pid() {
-            let dir = prepared_dir();
+            let dir = temp_cluster_dir();
             let _guard = DirGuard(dir.clone());
             let (cluster, driver) = EmbeddedCluster::start(&dir, 20).unwrap();
             let data_dir = cluster.data_dir().to_path_buf();
@@ -907,8 +933,8 @@ mod cluster {
 
         #[test]
         fn a_lock_copied_from_another_live_cluster_is_not_adopted() {
-            let live = prepared_dir();
-            let copy = prepared_dir();
+            let live = temp_cluster_dir();
+            let copy = temp_cluster_dir();
             let _guards = (DirGuard(live.clone()), DirGuard(copy.clone()));
             let (cluster, driver) = EmbeddedCluster::start(&live, 20).unwrap();
             drop(driver);
@@ -934,7 +960,7 @@ mod cluster {
 
         #[test]
         fn clusters_share_one_install_and_an_old_one_moves_there() {
-            let root = prepared_dir();
+            let root = temp_cluster_dir();
             let _guard = DirGuard(root.clone());
             let first = root.join("first");
             // An install from an earlier build, inside the first cluster directory.
@@ -967,7 +993,7 @@ mod cluster {
 
         #[test]
         fn dead_pid_starts_a_new_postmaster() {
-            let dir = prepared_dir();
+            let dir = temp_cluster_dir();
             let _guard = DirGuard(dir.clone());
             let (cluster, driver) = EmbeddedCluster::start(&dir, 20).unwrap();
             let data_dir = cluster.data_dir().to_path_buf();
@@ -986,7 +1012,7 @@ mod cluster {
 
         #[test]
         fn stopped_major_mismatch_names_the_missing_binaries() {
-            let dir = prepared_dir();
+            let dir = temp_cluster_dir();
             let _guard = DirGuard(dir.clone());
             let (cluster, _driver) = EmbeddedCluster::start(&dir, 20).unwrap();
             let data_dir = cluster.data_dir().to_path_buf();
@@ -1000,7 +1026,7 @@ mod cluster {
 
         #[test]
         fn stopped_major_mismatch_with_a_sibling_install_does_not_upgrade() {
-            let dir = prepared_dir();
+            let dir = temp_cluster_dir();
             let _guard = DirGuard(dir.clone());
             let (cluster, _driver) = EmbeddedCluster::start(&dir, 20).unwrap();
             let data_dir = cluster.data_dir().to_path_buf();
@@ -1018,7 +1044,7 @@ mod cluster {
 
         #[test]
         fn save_db_round_trips_the_search_schema() {
-            let dir = prepared_dir();
+            let dir = temp_cluster_dir();
             let _guard = DirGuard(dir.clone());
             let (cluster, driver) = EmbeddedCluster::start(&dir, 20).unwrap();
             let mut conn = driver.connect_postgres().unwrap();
@@ -1054,12 +1080,6 @@ mod cluster {
                     panic!("start succeeded for {}", cluster.data_dir().display());
                 }
             }
-        }
-
-        fn prepared_dir() -> PathBuf {
-            let dir = temp_cluster_dir();
-            provide_libxml2_soname(&dir);
-            dir
         }
 
         fn conn_drop_schema(driver: &PostgresDriver) {
@@ -1218,195 +1238,6 @@ mod cluster {
             );
             converted.value
         }
-
-        fn provide_libxml2_soname(dir: &Path) {
-            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-            {
-                let cache = ldconfig_cache();
-                if cache.lines().any(|line| ldconfig_soname(line) == "libxml2.so.2") {
-                    return;
-                }
-                let Some(host) = libxml2_16_path(&cache) else {
-                    return;
-                };
-                compile_libxml2_shim(dir, &host);
-            }
-            #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-            let _ = dir;
-        }
-
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        fn ldconfig_cache() -> String {
-            std::process::Command::new("ldconfig")
-                .arg("-p")
-                .output()
-                .ok()
-                .filter(|output| output.status.success())
-                .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
-                .unwrap_or_default()
-        }
-
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        fn ldconfig_soname(line: &str) -> &str {
-            line.split_whitespace().next().unwrap_or("")
-        }
-
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        fn libxml2_16_path(cache: &str) -> Option<PathBuf> {
-            for line in cache.lines() {
-                if ldconfig_soname(line) == "libxml2.so.16" && line.contains("x86-64") {
-                    let path = PathBuf::from(line.split("=>").nth(1)?.trim());
-                    if path.is_file() {
-                        return Some(path);
-                    }
-                }
-            }
-            None
-        }
-
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        fn compile_libxml2_shim(dir: &Path, host: &Path) {
-            let shim_dir = dir.join("xmlshim");
-            std::fs::create_dir_all(&shim_dir).unwrap();
-            let assembly = shim_dir.join("shim.s");
-            let map = shim_dir.join("ver.map");
-            let shared = shim_dir.join("libxml2.so.2");
-            std::fs::write(&assembly, shim_assembly()).unwrap();
-            std::fs::write(&map, version_script()).unwrap();
-            let output = std::process::Command::new("gcc")
-                .args(["-shared", "-fPIC", "-o"])
-                .arg(&shared)
-                .arg(&assembly)
-                .arg("-Wl,-soname,libxml2.so.2")
-                .arg(format!("-Wl,--version-script={}", map.display()))
-                .arg(host)
-                .output()
-                .expect("gcc");
-            assert!(
-                output.status.success(),
-                "libxml2 shim: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            let shim = shim_dir.display().to_string();
-            let existing = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
-            let library_path = if existing.split(':').any(|part| part == shim) {
-                existing
-            } else if existing.is_empty() {
-                shim
-            } else {
-                format!("{shim}:{existing}")
-            };
-            // SAFETY: initdb and the postmaster inherit this. The test writes it before those spawn.
-            unsafe { std::env::set_var("LD_LIBRARY_PATH", library_path) };
-        }
-
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        fn shim_assembly() -> String {
-            let mut out = String::new();
-            out.push_str(".text\n");
-            for (index, (name, version)) in XML_SYMBOLS.iter().enumerate() {
-                writeln!(
-                    out,
-                    ".globl shim_{index}\n.type shim_{index}, @function\nshim_{index}:\n    jmp {name}@PLT\n.size shim_{index}, .-shim_{index}\n.symver shim_{index}, {name}@{version}"
-                )
-                .unwrap();
-            }
-            out
-        }
-
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        fn version_script() -> String {
-            let mut out = String::new();
-            for (index, version) in XML_VERSIONS.iter().enumerate() {
-                out.push_str(version);
-                out.push_str(" {\n  global:\n");
-                for (name, symbol_version) in XML_SYMBOLS {
-                    if symbol_version == version {
-                        writeln!(out, "    {name};").unwrap();
-                    }
-                }
-                out.push_str("  local: *;\n}");
-                if index == 0 {
-                    out.push_str(";\n");
-                } else {
-                    writeln!(out, " {};", XML_VERSIONS[index - 1]).unwrap();
-                }
-            }
-            out
-        }
-
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        const XML_VERSIONS: &[&str] = &[
-            "LIBXML2_2.4.30",
-            "LIBXML2_2.6.0",
-            "LIBXML2_2.6.5",
-            "LIBXML2_2.6.8",
-            "LIBXML2_2.6.23",
-        ];
-
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        const XML_SYMBOLS: &[(&str, &str)] = &[
-            ("xmlAddChildList", "LIBXML2_2.4.30"),
-            ("xmlBufferContent", "LIBXML2_2.4.30"),
-            ("xmlBufferCreate", "LIBXML2_2.4.30"),
-            ("xmlBufferFree", "LIBXML2_2.4.30"),
-            ("xmlBufferLength", "LIBXML2_2.4.30"),
-            ("xmlCharInRange", "LIBXML2_2.6.0"),
-            ("xmlCheckVersion", "LIBXML2_2.4.30"),
-            ("xmlCopyNode", "LIBXML2_2.4.30"),
-            ("xmlCtxtReadDoc", "LIBXML2_2.6.0"),
-            ("xmlCtxtReadMemory", "LIBXML2_2.6.0"),
-            ("xmlDocSetRootElement", "LIBXML2_2.4.30"),
-            ("xmlEncodeSpecialChars", "LIBXML2_2.4.30"),
-            ("xmlFreeDoc", "LIBXML2_2.4.30"),
-            ("xmlFreeNode", "LIBXML2_2.4.30"),
-            ("xmlFreeParserCtxt", "LIBXML2_2.4.30"),
-            ("xmlFreeTextWriter", "LIBXML2_2.6.0"),
-            ("xmlGetExternalEntityLoader", "LIBXML2_2.4.30"),
-            ("xmlGetUTF8Char", "LIBXML2_2.4.30"),
-            ("xmlInitParser", "LIBXML2_2.4.30"),
-            ("xmlKeepBlanksDefault", "LIBXML2_2.4.30"),
-            ("xmlNewDoc", "LIBXML2_2.4.30"),
-            ("xmlNewDocText", "LIBXML2_2.4.30"),
-            ("xmlNewNode", "LIBXML2_2.4.30"),
-            ("xmlNewParserCtxt", "LIBXML2_2.4.30"),
-            ("xmlNewStringInputStream", "LIBXML2_2.4.30"),
-            ("xmlNewTextWriterMemory", "LIBXML2_2.6.0"),
-            ("xmlNodeDump", "LIBXML2_2.4.30"),
-            ("xmlParseBalancedChunkMemory", "LIBXML2_2.4.30"),
-            ("xmlParserPrintFileContext", "LIBXML2_2.4.30"),
-            ("xmlSaveClose", "LIBXML2_2.6.8"),
-            ("xmlSaveDoc", "LIBXML2_2.6.8"),
-            ("xmlSaveToBuffer", "LIBXML2_2.6.23"),
-            ("xmlSaveTree", "LIBXML2_2.6.8"),
-            ("xmlSetExternalEntityLoader", "LIBXML2_2.4.30"),
-            ("xmlSetGenericErrorFunc", "LIBXML2_2.4.30"),
-            ("xmlSetStructuredErrorFunc", "LIBXML2_2.6.0"),
-            ("xmlStrchr", "LIBXML2_2.4.30"),
-            ("xmlStrcmp", "LIBXML2_2.4.30"),
-            ("xmlStrdup", "LIBXML2_2.4.30"),
-            ("xmlStrlen", "LIBXML2_2.4.30"),
-            ("xmlStrncmp", "LIBXML2_2.4.30"),
-            ("xmlStrstr", "LIBXML2_2.4.30"),
-            ("xmlTextWriterEndElement", "LIBXML2_2.6.0"),
-            ("xmlTextWriterStartElement", "LIBXML2_2.6.0"),
-            ("xmlTextWriterWriteAttribute", "LIBXML2_2.6.0"),
-            ("xmlTextWriterWriteBase64", "LIBXML2_2.6.0"),
-            ("xmlTextWriterWriteBinHex", "LIBXML2_2.6.0"),
-            ("xmlTextWriterWriteRaw", "LIBXML2_2.6.0"),
-            ("xmlXPathCastBooleanToNumber", "LIBXML2_2.4.30"),
-            ("xmlXPathCastBooleanToString", "LIBXML2_2.4.30"),
-            ("xmlXPathCastNodeSetToString", "LIBXML2_2.4.30"),
-            ("xmlXPathCastNodeToString", "LIBXML2_2.4.30"),
-            ("xmlXPathCastNumberToString", "LIBXML2_2.4.30"),
-            ("xmlXPathCompiledEval", "LIBXML2_2.4.30"),
-            ("xmlXPathCtxtCompile", "LIBXML2_2.6.5"),
-            ("xmlXPathFreeCompExpr", "LIBXML2_2.4.30"),
-            ("xmlXPathFreeContext", "LIBXML2_2.4.30"),
-            ("xmlXPathFreeObject", "LIBXML2_2.4.30"),
-            ("xmlXPathNewContext", "LIBXML2_2.4.30"),
-            ("xmlXPathRegisterNs", "LIBXML2_2.4.30"),
-        ];
 
         fn temp_cluster_dir() -> PathBuf {
             let nanos = std::time::SystemTime::now()

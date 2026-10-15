@@ -19,11 +19,12 @@
 //! Login is the user facade: a password through `loginUser` (failures count toward the lockout, and an account that
 //! needs a second factor cannot log in here), or a public key whose fingerprint is an active `UserSshKey` of that
 //! user. The `sftp` subsystem needs the `SSH_SFTP` permission and serves `ssh_sftp_root`; `exec` and `shell` need
-//! `SSH_SHELL` and run [`super::shell`]. At most `ssh_max_sessions` connections are open at once.
+//! `SSH_SHELL` and run [`super::shell`]. At most `ssh_max_sessions` logged-in sessions are open at once. A connection
+//! that has not logged in has [`PREAUTH_TIMEOUT`] to do so, and at most [`MAX_PREAUTH`] such connections wait at once.
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -41,6 +42,12 @@ use super::{on_pool, sftp_fs::SftpFs, shell};
 const DEFAULT_MAX_SESSIONS: usize = 8;
 const DEFAULT_MAX_FILE: usize = 256 * 1024 * 1024;
 const IDLE: Duration = Duration::from_secs(600);
+/// How long a connection has from accept to a successful login.
+const PREAUTH_TIMEOUT: Duration = Duration::from_secs(30);
+/// Connections that have not logged in yet, at once; one more is closed. They do not count toward `ssh_max_sessions`.
+const MAX_PREAUTH: usize = 16;
+/// The longest admin shell line, and the longest `js` block.
+const MAX_LINE: usize = 1024 * 1024;
 const PROMPT: &str = "moqui> ";
 
 /// The address the server listens on, kept on the factory for `Server::ssh_address`.
@@ -179,6 +186,75 @@ fn number_property(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+/// The connections counted against the two limits.
+struct Counts {
+    preauth: AtomicUsize,
+    sessions: AtomicUsize,
+    max_sessions: usize,
+}
+
+/// One connection's place in [`Counts`]: a pre-auth slot from accept, traded for a session at login. Drop gives back
+/// whichever it holds.
+struct Slot {
+    counts: Arc<Counts>,
+    preauth: AtomicBool,
+    session: AtomicBool,
+}
+
+impl Slot {
+    /// A pre-auth slot, or `None` when [`MAX_PREAUTH`] connections are already waiting to log in.
+    fn preauth(counts: &Arc<Counts>) -> Option<Self> {
+        if counts.preauth.fetch_add(1, Ordering::AcqRel) >= MAX_PREAUTH {
+            counts.preauth.fetch_sub(1, Ordering::AcqRel);
+            return None;
+        }
+        Some(Self {
+            counts: Arc::clone(counts),
+            preauth: AtomicBool::new(true),
+            session: AtomicBool::new(false),
+        })
+    }
+
+    /// Trade the pre-auth slot for a session. False when `ssh_max_sessions` are open.
+    fn log_in(&self) -> bool {
+        if self.session.load(Ordering::Acquire) {
+            return true;
+        }
+        if self.counts.sessions.fetch_add(1, Ordering::AcqRel) >= self.counts.max_sessions {
+            self.counts.sessions.fetch_sub(1, Ordering::AcqRel);
+            return false;
+        }
+        self.session.store(true, Ordering::Release);
+        if self.preauth.swap(false, Ordering::AcqRel) {
+            self.counts.preauth.fetch_sub(1, Ordering::AcqRel);
+        }
+        true
+    }
+
+    fn logged_in(&self) -> bool {
+        self.session.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        if self.preauth.swap(false, Ordering::AcqRel) {
+            self.counts.preauth.fetch_sub(1, Ordering::AcqRel);
+        }
+        if self.session.swap(false, Ordering::AcqRel) {
+            self.counts.sessions.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+}
+
+/// Resolves [`PREAUTH_TIMEOUT`] after `since` when the connection has not logged in by then, and never otherwise.
+async fn preauth_expired(slot: &Slot, since: tokio::time::Instant) {
+    tokio::time::sleep_until(since + PREAUTH_TIMEOUT).await;
+    if slot.logged_in() {
+        std::future::pending::<()>().await;
+    }
+}
+
 async fn accept_loop(
     listener: TcpListener,
     config: Arc<russh::server::Config>,
@@ -186,7 +262,11 @@ async fn accept_loop(
     mut shutdown: tokio::sync::watch::Receiver<bool>,
     max_sessions: usize,
 ) {
-    let open = Arc::new(AtomicUsize::new(0));
+    let counts = Arc::new(Counts {
+        preauth: AtomicUsize::new(0),
+        sessions: AtomicUsize::new(0),
+        max_sessions,
+    });
     loop {
         let accepted = tokio::select! {
             _ = shutdown.changed() => return,
@@ -195,14 +275,16 @@ async fn accept_loop(
         let Ok((stream, peer)) = accepted else {
             continue;
         };
-        if open.fetch_add(1, Ordering::AcqRel) >= max_sessions {
-            open.fetch_sub(1, Ordering::AcqRel);
-            tracing::warn!("SSH connection from {peer} refused: ssh_max_sessions {max_sessions} are open");
+        let Some(slot) = Slot::preauth(&counts) else {
+            tracing::warn!("SSH connection from {peer} refused: {MAX_PREAUTH} connections are waiting to log in");
             drop(stream);
             continue;
-        }
+        };
+        let slot = Arc::new(slot);
+        let since = tokio::time::Instant::now();
         let handler = Connection {
             shared: Arc::clone(&shared),
+            slot: Arc::clone(&slot),
             peer,
             username: None,
             cluster: false,
@@ -212,16 +294,21 @@ async fn accept_loop(
             ptys: HashSet::new(),
         };
         let config = Arc::clone(&config);
-        let open = Arc::clone(&open);
         let mut stop = shutdown.clone();
         tokio::spawn(async move {
             let _ = stream.set_nodelay(true);
-            match russh::server::run_stream(config, stream, handler).await {
-                Ok(session) => {
+            // The version exchange waits on the client too, so the login deadline covers it.
+            let deadline = since + PREAUTH_TIMEOUT;
+            match tokio::time::timeout_at(deadline, russh::server::run_stream(config, stream, handler)).await {
+                Ok(Ok(session)) => {
                     let handle = session.handle();
                     tokio::select! {
                         _ = stop.changed() => {
                             let _ = handle.disconnect(russh::Disconnect::ByApplication, "server stopping".into(), String::new()).await;
+                        }
+                        () = preauth_expired(&slot, since) => {
+                            tracing::debug!("SSH connection from {peer} did not log in within {PREAUTH_TIMEOUT:?}");
+                            let _ = handle.disconnect(russh::Disconnect::ByApplication, "login timed out".into(), String::new()).await;
                         }
                         result = session => {
                             if let Err(err) = result {
@@ -230,9 +317,10 @@ async fn accept_loop(
                         }
                     }
                 }
-                Err(err) => tracing::debug!("SSH connection from {peer} failed: {err:?}"),
+                Ok(Err(err)) => tracing::debug!("SSH connection from {peer} failed: {err:?}"),
+                Err(_) => tracing::debug!("SSH connection from {peer} sent no version within {PREAUTH_TIMEOUT:?}"),
             }
-            open.fetch_sub(1, Ordering::AcqRel);
+            drop(slot);
         });
     }
 }
@@ -240,6 +328,8 @@ async fn accept_loop(
 /// One client connection.
 struct Connection {
     shared: Arc<Shared>,
+    /// This connection's place in the pre-auth and session counts.
+    slot: Arc<Slot>,
     peer: SocketAddr,
     username: Option<String>,
     /// A cluster peer logged in with the cluster key: it may open `cluster <topic>` channels and nothing else.
@@ -265,6 +355,14 @@ impl Connection {
             tracing::warn!(
                 "SSH login of {username} from {}: no SSH_SFTP or SSH_SHELL permission",
                 self.peer
+            );
+            return Auth::reject();
+        }
+        if !self.slot.log_in() {
+            tracing::warn!(
+                "SSH login of {username} from {} refused: ssh_max_sessions {} are open",
+                self.peer,
+                self.slot.counts.max_sessions
             );
             return Auth::reject();
         }
@@ -305,6 +403,14 @@ impl russh::server::Handler for Connection {
     async fn auth_publickey(&mut self, user: &str, public_key: &PublicKey) -> Result<Auth, Self::Error> {
         if user == super::cluster::CLUSTER_USER {
             if super::cluster::is_cluster_key(public_key) {
+                if !self.slot.log_in() {
+                    tracing::warn!(
+                        "cluster peer from {} refused: ssh_max_sessions {} are open",
+                        self.peer,
+                        self.slot.counts.max_sessions
+                    );
+                    return Ok(Auth::reject());
+                }
                 tracing::info!("cluster peer connected from {}", self.peer);
                 self.cluster = true;
                 self.username = Some(user.to_string());
@@ -451,7 +557,7 @@ impl russh::server::Handler for Connection {
         let handle = session.handle();
         let pty = self.ptys.contains(&channel);
         tokio::spawn(async move {
-            let status = interactive(open, &factory, &username, pty).await;
+            let status = interactive(open.into_stream(), &factory, &username, pty).await;
             let _ = handle.exit_status_request(channel, status).await;
             let _ = handle.eof(channel).await;
             let _ = handle.close(channel).await;
@@ -517,20 +623,22 @@ fn with_newlines(text: &str, newline: &str) -> String {
 
 /// The interactive loop: a prompt, a line, its output. With a PTY the client does not echo, so this echoes and
 /// handles backspace, ctrl-C (drop the line) and ctrl-D (end on an empty line). Returns the exit status.
-async fn interactive(
-    channel: Channel<Msg>,
+async fn interactive<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    mut stream: S,
     factory: &std::sync::Weak<ExecutionContextFactory>,
     username: &str,
     pty: bool,
 ) -> u32 {
     let newline = if pty { "\r\n" } else { "\n" };
-    let mut stream = channel.into_stream();
     let greeting = format!("MR-Moqui admin shell for {username}; type help{newline}{PROMPT}");
     if stream.write_all(greeting.as_bytes()).await.is_err() {
         return 1;
     }
     let mut line: Vec<u8> = Vec::new();
     let mut block: Option<Vec<String>> = None;
+    // Bytes past MAX_LINE are not kept; the line is refused when it ends.
+    let mut overflow = false;
+    let mut block_len = 0_usize;
     let mut buffer = [0u8; 1024];
     loop {
         let read = match stream.read(&mut buffer).await {
@@ -558,6 +666,7 @@ async fn interactive(
                 }
                 0x03 => {
                     line.clear();
+                    overflow = false;
                     block = None;
                     if pty {
                         echo.extend_from_slice(format!("^C{newline}{PROMPT}").as_bytes());
@@ -565,9 +674,13 @@ async fn interactive(
                 }
                 0x04 if line.is_empty() => return 0,
                 byte if byte >= 0x20 || byte == b'\t' => {
-                    line.push(byte);
-                    if pty {
-                        echo.push(byte);
+                    if line.len() < MAX_LINE {
+                        line.push(byte);
+                        if pty {
+                            echo.push(byte);
+                        }
+                    } else {
+                        overflow = true;
                     }
                 }
                 _ => {}
@@ -578,8 +691,25 @@ async fn interactive(
             let Some(text) = finished else {
                 continue;
             };
+            if std::mem::take(&mut overflow) {
+                block = None;
+                let message = format!("the line is longer than {MAX_LINE} bytes and was dropped");
+                if refuse(&mut stream, &message, newline).await.is_err() {
+                    return 1;
+                }
+                continue;
+            }
             // A `js` block gathers lines until a line with only `.`.
             if let Some(lines) = block.as_mut() {
+                block_len = block_len.saturating_add(text.len() + 1);
+                if block_len > MAX_LINE {
+                    block = None;
+                    let message = format!("the js block is longer than {MAX_LINE} bytes and was dropped");
+                    if refuse(&mut stream, &message, newline).await.is_err() {
+                        return 1;
+                    }
+                    continue;
+                }
                 if text.trim() == "." {
                     let code = lines.join("\n");
                     block = None;
@@ -596,6 +726,7 @@ async fn interactive(
                 }
             } else if shell::starts_block(&text) {
                 block = Some(Vec::new());
+                block_len = 0;
                 if stream
                     .write_all(format!("end with a line of .{newline}... ").as_bytes())
                     .await
@@ -621,10 +752,73 @@ async fn interactive(
     }
 }
 
+/// An input the shell refuses: the message, then a fresh prompt.
+async fn refuse<W: AsyncWriteExt + Unpin>(stream: &mut W, message: &str, newline: &str) -> std::io::Result<()> {
+    stream
+        .write_all(format!("error: {message}{newline}{PROMPT}").as_bytes())
+        .await
+}
+
 async fn write_outcome<W: AsyncWriteExt + Unpin>(stream: &mut W, text: &str, newline: &str) -> std::io::Result<()> {
     if text.is_empty() {
         return Ok(());
     }
     stream.write_all(with_newlines(text, newline).as_bytes()).await?;
     stream.write_all(newline.as_bytes()).await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::{interactive, Counts, Slot, MAX_LINE, MAX_PREAUTH};
+
+    #[tokio::test]
+    async fn an_overlong_shell_line_or_js_block_is_refused() {
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let shell = tokio::spawn(async move { interactive(server, &std::sync::Weak::new(), "tester", false).await });
+        let (mut reader, mut writer) = tokio::io::split(client);
+        let send = tokio::spawn(async move {
+            writer.write_all(&vec![b'a'; MAX_LINE + 10]).await.unwrap();
+            writer.write_all(b"\njs\n").await.unwrap();
+            let chunk = vec![b'b'; MAX_LINE / 2];
+            for _ in 0..3 {
+                writer.write_all(&chunk).await.unwrap();
+                writer.write_all(b"\n").await.unwrap();
+            }
+            writer.write_all(b"exit\n").await.unwrap();
+            writer
+        });
+        let mut seen = Vec::new();
+        reader.read_to_end(&mut seen).await.unwrap();
+        let seen = String::from_utf8_lossy(&seen);
+        assert!(seen.contains("error: the line is longer than"), "{seen}");
+        assert!(seen.contains("error: the js block is longer than"), "{seen}");
+        assert!(seen.ends_with("bye\n"), "{seen}");
+        drop(send.await.unwrap());
+        assert_eq!(shell.await.unwrap(), 0);
+    }
+
+    #[test]
+    fn a_login_trades_the_preauth_slot_for_a_session() {
+        let counts = Arc::new(Counts {
+            preauth: AtomicUsize::new(0),
+            sessions: AtomicUsize::new(0),
+            max_sessions: 1,
+        });
+        let waiting: Vec<Slot> = (0..MAX_PREAUTH).map(|_| Slot::preauth(&counts).unwrap()).collect();
+        assert!(Slot::preauth(&counts).is_none(), "past MAX_PREAUTH");
+        assert!(waiting[0].log_in());
+        // The login gave its pre-auth slot back, and took the one session.
+        let next = Slot::preauth(&counts).unwrap();
+        assert!(!next.log_in(), "past ssh_max_sessions");
+        drop(waiting);
+        assert!(next.log_in());
+        drop(next);
+        assert_eq!(counts.preauth.load(Ordering::Acquire), 0);
+        assert_eq!(counts.sessions.load(Ordering::Acquire), 0);
+    }
 }

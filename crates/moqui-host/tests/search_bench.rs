@@ -54,7 +54,6 @@ fn search_benchmarks() {
     let cluster_dir = temp_dir("msb");
     let _guard = DirGuard(cluster_dir.clone());
     std::fs::create_dir_all(&cluster_dir).unwrap();
-    moqui_host::xmlshim::provide_libxml2_soname(&cluster_dir).unwrap();
     let (cluster, driver) = EmbeddedCluster::start(&cluster_dir, 20).unwrap();
     let driver: Arc<dyn DbDriver> = Arc::new(driver);
     let tx = TransactionManager::new(Arc::clone(&driver), pool()).unwrap();

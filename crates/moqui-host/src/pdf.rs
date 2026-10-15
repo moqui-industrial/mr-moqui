@@ -93,13 +93,13 @@ pub fn install(runtime_dir: &Path) -> PdfGuard {
             PdfGuard { engine: Some(engine) }
         }
         Ok(None) => {
-            eprintln!("{}", moqui_core::screen::PDF_UNAVAILABLE);
+            tracing::warn!("{}", moqui_core::screen::PDF_UNAVAILABLE);
             moqui_core::screen::install_pdf_unavailable(moqui_core::screen::PDF_UNAVAILABLE);
             PdfGuard { engine: None }
         }
         Err(err) => {
             let reason = format!("PDF is not available: {err}");
-            eprintln!("{reason}");
+            tracing::warn!("{reason}");
             moqui_core::screen::install_pdf_unavailable(reason);
             PdfGuard { engine: None }
         }

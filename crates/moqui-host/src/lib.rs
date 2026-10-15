@@ -169,8 +169,8 @@ pub fn start_server(
 fn join_server(thread: std::thread::JoinHandle<Result<(), moqui_lib::error::Error>>) {
     match thread.join() {
         Ok(Ok(())) => {}
-        Ok(Err(err)) => eprintln!("http server: {err}"),
-        Err(_) => eprintln!("http server thread panicked"),
+        Ok(Err(err)) => tracing::error!("http server: {err}"),
+        Err(_) => tracing::error!("http server thread panicked"),
     }
 }
 
@@ -184,7 +184,6 @@ pub fn save_db(
     dir: impl AsRef<std::path::Path>,
     dump: impl AsRef<std::path::Path>,
 ) -> Result<(), moqui_lib::error::Error> {
-    xmlshim::provide_libxml2_soname(dir.as_ref())?;
     db::embedded::save_db(dir.as_ref(), dump.as_ref())
 }
 
@@ -198,7 +197,6 @@ pub fn load_save(
     dir: impl AsRef<std::path::Path>,
     dump: impl AsRef<std::path::Path>,
 ) -> Result<(), moqui_lib::error::Error> {
-    xmlshim::provide_libxml2_soname(dir.as_ref())?;
     db::embedded::load_save(dir.as_ref(), dump.as_ref())
 }
 
@@ -1258,7 +1256,7 @@ fn register_services(
     // Framework services that still hold Groovy are left out and named by `moqui lint`.
     let skipped = moqui_core::service::lint(&paths).map_err(lint_error)?;
     if !skipped.is_empty() {
-        eprintln!(
+        tracing::warn!(
             "{} service expression(s) are not JavaScript yet; run `moqui lint`",
             skipped.len()
         );
@@ -1435,40 +1433,63 @@ fn resolve_framework_location(
     Ok(std::path::PathBuf::from(location))
 }
 
-/// theseus 18.6.0 needs `libxml2.so.2`. This host may only ship `libxml2.so.16`. A caller that starts
-/// an embedded cluster itself calls [`xmlshim::provide_libxml2_soname`] first, as `load_data` does.
-pub mod xmlshim {
+/// theseus 18.6.0 links `postgres` against `libxml2.so.2`. This host may only ship `libxml2.so.16`.
+/// [`db::embedded`] builds a forwarding `libxml2.so.2` into the install's `lib` before any server binary runs.
+/// Every theseus binary searches that directory through its `$ORIGIN/../lib` runpath, so the process
+/// environment is never changed: `set_var` with other threads running is undefined behaviour.
+pub(crate) mod xmlshim {
     use std::path::{Path, PathBuf};
 
     use moqui_lib::error::Error;
 
-    /// Make `libxml2.so.2` loadable for a cluster started under `dir`, when the host needs it.
+    /// The host's `libxml2.so.16` when theseus needs the shim: the host has no `libxml2.so.2`.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub fn needed() -> Option<PathBuf> {
+        let cache = ldconfig_cache();
+        if cache.lines().any(|line| ldconfig_soname(line) == "libxml2.so.2") {
+            return None;
+        }
+        libxml2_16_path(&cache)
+    }
+
+    /// The shim is only built on x86-64 Linux.
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    pub fn needed() -> Option<PathBuf> {
+        None
+    }
+
+    /// Build `libxml2.so.2` into `lib_dir`, forwarding to `host`, unless an earlier start already did.
     ///
     /// # Errors
     ///
     /// Returns an error when the shim cannot be built.
-    pub fn provide_libxml2_soname(dir: &Path) -> Result<(), Error> {
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        {
-            provide_linux(dir)?;
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub fn provide(lib_dir: &Path, host: &Path) -> Result<(), Error> {
+        // Two clusters sharing one install may start at once. The library is built aside and renamed into
+        // place, so a postmaster never maps a half-written file.
+        static BUILD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _lock = BUILD_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let shared = lib_dir.join("libxml2.so.2");
+        if shared.is_file() {
+            return Ok(());
         }
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        {
-            let _ = dir;
-        }
-        Ok(())
+        let build_dir = lib_dir.join(format!(".xmlshim-{}", std::process::id()));
+        let built = compile_libxml2_shim(&build_dir, host).and_then(|built| {
+            std::fs::rename(&built, &shared)
+                .map_err(|err| Error::new("could not install the libxml2 shim").with_source(err))
+        });
+        let _ = std::fs::remove_dir_all(&build_dir);
+        built
     }
 
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    fn provide_linux(dir: &Path) -> Result<(), Error> {
-        let cache = ldconfig_cache();
-        if cache.lines().any(|line| ldconfig_soname(line) == "libxml2.so.2") {
-            return Ok(());
-        }
-        let Some(host) = libxml2_16_path(&cache) else {
-            return Ok(());
-        };
-        compile_libxml2_shim(dir, &host)
+    /// The shim is only built on x86-64 Linux.
+    ///
+    /// # Errors
+    ///
+    /// Never.
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    pub fn provide(_lib_dir: &Path, _host: &Path) -> Result<(), Error> {
+        Ok(())
     }
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -1500,52 +1521,34 @@ pub mod xmlshim {
         None
     }
 
+    /// Assemble and link the shim in `shim_dir`. Returns the built library.
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    fn compile_libxml2_shim(dir: &Path, host: &Path) -> Result<(), Error> {
-        let shim_dir = dir.join("xmlshim");
-        std::fs::create_dir_all(&shim_dir)
+    fn compile_libxml2_shim(shim_dir: &Path, host: &Path) -> Result<PathBuf, Error> {
+        std::fs::create_dir_all(shim_dir)
             .map_err(|err| Error::new("could not create libxml2 shim dir").with_source(err))?;
-        // A directory copied from an earlier load already holds the built library.
-        if !shim_dir.join("libxml2.so.2").is_file() {
-            let assembly = shim_dir.join("shim.s");
-            let map = shim_dir.join("ver.map");
-            let shared = shim_dir.join("libxml2.so.2");
-            std::fs::write(&assembly, shim_assembly())
-                .map_err(|err| Error::new("could not write libxml2 shim").with_source(err))?;
-            std::fs::write(&map, version_script())
-                .map_err(|err| Error::new("could not write libxml2 shim").with_source(err))?;
-            let output = std::process::Command::new("gcc")
-                .args(["-shared", "-fPIC", "-o"])
-                .arg(&shared)
-                .arg(&assembly)
-                .arg("-Wl,-soname,libxml2.so.2")
-                .arg(format!("-Wl,--version-script={}", map.display()))
-                .arg(host)
-                .output()
-                .map_err(|err| Error::new("gcc could not build the libxml2 shim").with_source(err))?;
-            if !output.status.success() {
-                return Err(Error::new(format!(
-                    "libxml2 shim: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                )));
-            }
+        let assembly = shim_dir.join("shim.s");
+        let map = shim_dir.join("ver.map");
+        let shared = shim_dir.join("libxml2.so.2");
+        std::fs::write(&assembly, shim_assembly())
+            .map_err(|err| Error::new("could not write libxml2 shim").with_source(err))?;
+        std::fs::write(&map, version_script())
+            .map_err(|err| Error::new("could not write libxml2 shim").with_source(err))?;
+        let output = std::process::Command::new("gcc")
+            .args(["-shared", "-fPIC", "-o"])
+            .arg(&shared)
+            .arg(&assembly)
+            .arg("-Wl,-soname,libxml2.so.2")
+            .arg(format!("-Wl,--version-script={}", map.display()))
+            .arg(host)
+            .output()
+            .map_err(|err| Error::new("gcc could not build the libxml2 shim").with_source(err))?;
+        if !output.status.success() {
+            return Err(Error::new(format!(
+                "libxml2 shim: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
         }
-        let shim = shim_dir.display().to_string();
-        // Two loads in one process each add their directory. Read and write under one lock, or the
-        // second write drops the first one's directory and its postmaster cannot find the library.
-        static LIBRARY_PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _lock = LIBRARY_PATH_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        let existing = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
-        let library_path = if existing.split(':').any(|part| part == shim) {
-            existing
-        } else if existing.is_empty() {
-            shim
-        } else {
-            format!("{shim}:{existing}")
-        };
-        // SAFETY: initdb and the postmaster inherit this. It is set before those processes spawn.
-        unsafe { std::env::set_var("LD_LIBRARY_PATH", library_path) };
-        Ok(())
+        Ok(shared)
     }
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

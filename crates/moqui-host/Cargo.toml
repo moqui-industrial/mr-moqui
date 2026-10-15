@@ -14,7 +14,7 @@ default = ["embedded-postgres", "postgres", "mysql", "axum", "pdf"]
 embedded-postgres = ["dep:postgresql_embedded"]
 postgres = ["dep:postgres", "dep:tokio-postgres-rustls"]
 mysql = ["dep:mysql"]
-axum = ["dep:axum", "dep:tower", "dep:tower-http"]
+axum = ["dep:axum", "dep:tower", "dep:tower-http", "dep:hyper", "dep:hyper-util"]
 pdf = ["dep:tokio-tungstenite", "dep:futures-util"]
 # MPL-2.0. Not in the default binary. `cargo tree -p moqui-host -F pdf-servo`.
 pdf-servo = ["dep:servo"]
@@ -42,6 +42,8 @@ mysql = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 tower = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }
+hyper = { workspace = true, optional = true }
+hyper-util = { workspace = true, optional = true }
 tokio-tungstenite = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 servo = { workspace = true, optional = true }
