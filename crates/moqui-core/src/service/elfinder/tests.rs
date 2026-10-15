@@ -33,7 +33,10 @@ struct Setup {
     context: ExecutionContext,
 }
 
+/// The connector on this test's thread is not production, whatever another test's boot left in
+/// the process's `instance_purpose`.
 fn setup() -> Setup {
+    crate::web::TEST_PRODUCTION.with(|flag| flag.set(Some(false)));
     let facade = crate::testing::open();
     facade.assume_db_tables();
     let context = ExecutionContextFactory::test_context_in("", ServicePools::idle(), crate::context::framework_dir());
@@ -416,13 +419,70 @@ fn a_target_outside_the_volume_is_an_error_and_a_name_stays_inside_it() {
     assert_eq!(std::fs::read_to_string(dir.0.join("secret.txt")).unwrap(), "outside");
 }
 
+#[cfg(unix)]
+#[test]
+fn removing_a_directory_removes_a_link_in_it_not_what_the_link_points_to() {
+    let setup = setup();
+    let _entered = setup.context.enter();
+    let _authz = setup.context.disable_authz();
+    install();
+    let dir = temp_dir("symlink");
+    let volume = dir.0.join("volume");
+    let outside = dir.0.join("outside");
+    std::fs::create_dir_all(volume.join("sub")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("keep.txt"), "keep").unwrap();
+    std::os::unix::fs::symlink(&outside, volume.join("sub/link")).unwrap();
+    std::os::unix::fs::symlink(&outside, volume.join("top")).unwrap();
+    let root = format!("file:{}", volume.display());
+
+    for target in ["sub", "top"] {
+        let removed = response(&command(
+            &root,
+            "rm",
+            "",
+            vec![("targets[]", Value::List(vec![Value::string(hash(target))]))],
+        ));
+        assert!(removed.get("error").is_none(), "{removed}");
+    }
+    assert!(!volume.join("sub").exists());
+    assert!(std::fs::symlink_metadata(volume.join("top")).is_err());
+    assert_eq!(std::fs::read_to_string(outside.join("keep.txt")).unwrap(), "keep");
+}
+
 #[test]
 fn writes_are_refused_in_production_except_for_a_dbresource_root() {
-    // The property is process-wide, so the check is tested on its inputs rather than set for one test.
-    assert!(writes_restricted("production", "file:runtime"));
-    assert!(writes_restricted("production", "component://webroot"));
-    assert!(!writes_restricted("production", "dbresource://mantle/content"));
-    assert!(!writes_restricted("production", "content://main"));
-    assert!(!writes_restricted("dev", "file:runtime"));
-    assert!(!writes_restricted("", "component://webroot"));
+    assert!(writes_restricted(true, "file:runtime"));
+    assert!(writes_restricted(true, "component://webroot"));
+    assert!(!writes_restricted(true, "dbresource://mantle/content"));
+    assert!(!writes_restricted(true, "content://main"));
+    assert!(!writes_restricted(false, "file:runtime"));
+
+    // A boot of the default conf leaves instance_purpose production for the process; the connector
+    // reads it through the thread's override, so the other tests here are not production.
+    let setup = setup();
+    let _entered = setup.context.enter();
+    let _authz = setup.context.disable_authz();
+    install();
+    let dir = temp_dir("production");
+    std::fs::create_dir_all(dir.0.join("sub")).unwrap();
+    let root = format!("file:{}", dir.0.display());
+    let mkdir = || {
+        response(&command(
+            &root,
+            "mkdir",
+            &hash("sub"),
+            vec![("name", Value::string("made"))],
+        ))
+    };
+    crate::web::TEST_PRODUCTION.with(|flag| flag.set(Some(true)));
+    let refused = mkdir();
+    crate::web::TEST_PRODUCTION.with(|flag| flag.set(Some(false)));
+    assert_eq!(
+        refused["error"], "Write not allowed for this resource root",
+        "{refused}"
+    );
+    let made = mkdir();
+    assert!(made.get("error").is_none(), "{made}");
+    assert!(dir.0.join("sub/made").is_dir());
 }

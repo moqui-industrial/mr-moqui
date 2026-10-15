@@ -115,10 +115,7 @@ impl Connector<'_> {
     /// In production, only `dbresource://` (and `content://`) roots accept write commands. Component and file roots
     /// stay browsable.
     fn writes_restricted(&self) -> bool {
-        writes_restricted(
-            &moqui_lib::env::get_prop_or_env("instance_purpose"),
-            &self.resource_root,
-        )
+        writes_restricted(crate::web::is_production(), &self.resource_root)
     }
 
     fn hash(&self, path: &str) -> String {
@@ -416,7 +413,7 @@ impl Connector<'_> {
 
     fn delete(&self, location: &str) -> Result<Vec<Value>, LibError> {
         let entry = self.entry(location)?;
-        if self.is_directory(&entry)? {
+        if self.is_own_directory(&entry)? {
             return self.delete_dir(&entry);
         }
         let mut deleted = Vec::new();
@@ -426,10 +423,19 @@ impl Connector<'_> {
         Ok(deleted)
     }
 
+    /// A directory to delete the contents of. A symbolic link to a directory is not one: the link is
+    /// removed, and what it points to, which may be outside the volume, is left alone.
+    fn is_own_directory(&self, entry: &Entry) -> Result<bool, LibError> {
+        match &entry.store {
+            Store::Db => self.is_directory(entry),
+            Store::File(path) => Ok(std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir())),
+        }
+    }
+
     fn delete_dir(&self, dir: &Entry) -> Result<Vec<Value>, LibError> {
         let mut deleted = Vec::new();
         for child in self.children(dir)? {
-            if self.is_directory(&child)? {
+            if self.is_own_directory(&child)? {
                 deleted.extend(self.delete_dir(&child)?);
             } else if self.delete_entry(&child)? {
                 deleted.push(Value::string(self.hash(&self.relative_to_root(&child.location))));
@@ -450,7 +456,7 @@ impl Connector<'_> {
                 }
                 self.facade.delete_db_resource(&entry.location)
             }
-            Store::File(path) => Ok(if path.is_dir() {
+            Store::File(path) => Ok(if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir()) {
                 std::fs::remove_dir(path).is_ok()
             } else {
                 std::fs::remove_file(path).is_ok()
@@ -740,9 +746,8 @@ impl Connector<'_> {
     }
 }
 
-fn writes_restricted(instance_purpose: &str, resource_root: &str) -> bool {
-    instance_purpose == "production"
-        && !(resource_root.starts_with("dbresource://") || resource_root.starts_with("content://"))
+fn writes_restricted(production: bool, resource_root: &str) -> bool {
+    production && !(resource_root.starts_with("dbresource://") || resource_root.starts_with("content://"))
 }
 
 /// The path a hash names, or `None` for anything that is not a hash of a UTF-8 path.

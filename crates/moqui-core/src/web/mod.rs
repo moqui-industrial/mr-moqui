@@ -1434,10 +1434,13 @@ mod tests {
         super::TEST_PRODUCTION.with(|production| production.set(Some(true)));
         let hidden = super::error_text(500, &err);
         let shown = super::error_text(400, &Error::of_kind(ErrorKind::BadRequest, "bad name"));
+        // Not the process property: a test that boots the default conf leaves it production.
+        super::TEST_PRODUCTION.with(|production| production.set(Some(false)));
+        let not_production = super::error_text(500, &err);
         super::TEST_PRODUCTION.with(|production| production.set(None));
         assert!(hidden.starts_with("internal error, id "), "{hidden}");
         assert!(!hidden.contains("SECRET_TABLE"), "{hidden}");
         assert_eq!(shown, "bad name");
-        assert_eq!(super::error_text(500, &err), "SELECT * FROM SECRET_TABLE failed");
+        assert_eq!(not_production, "SELECT * FROM SECRET_TABLE failed");
     }
 }

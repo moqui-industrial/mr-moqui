@@ -1441,6 +1441,8 @@ mod tests {
                         <parameter name="careful" allow-html="safe"/>
                         <parameter name="calc" type="Integer" default="2 + 3"/>
                         <parameter name="tpl" default-value="${label}-suffix"/>
+                        <parameter name="later" type="Integer"/>
+                        <parameter name="sum" type="Integer" default="calc + later"/>
                     </in-parameters>
                 </service>
             </services>"#,
@@ -1462,6 +1464,9 @@ mod tests {
             Some("hi-suffix"),
             "default-value expands"
         );
+        // A default sees the parameters before it as cleaned: a default, and a number converted after the first default.
+        let summed = call(&[("label", text("hi")), ("later", text("4"))]).unwrap();
+        assert_eq!(summed.get("sum"), Some(&Value::I32(9)), "{summed:?}");
 
         let bad = call(&[("count", text("abc"))]).unwrap_err();
         assert!(bad.to_string().contains("not a valid Integer"), "{bad}");

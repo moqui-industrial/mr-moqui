@@ -44,13 +44,15 @@ pub(crate) fn clean(
     // As Java, every parameter is checked and each that fails is a validation error for its field, so a form shows
     // them all beside their fields; the service does not run when there is one.
     let mut failed: Vec<(String, String)> = Vec::new();
+    let mut scope = DefaultScope::default();
     for param in declared.iter() {
         if param.name.is_empty() || param.required == Required::Disabled {
             continue;
         }
         known.insert(param.name.clone());
-        match clean_param(param, &params) {
+        match clean_param(param, &params, &mut scope) {
             Ok(Some(value)) => {
+                scope.set(&param.name, &value)?;
                 params.insert(param.name.clone(), value);
             }
             Ok(None) => {}
@@ -80,10 +82,14 @@ pub(crate) fn clean(
 
 /// One parameter: its default when blank, the required check, conversion to its type, HTML cleaning, and the
 /// declared checks. The value to store, if any.
-fn clean_param(param: &ParamDef, params: &BTreeMap<String, Value>) -> Result<Option<Value>, Error> {
+fn clean_param(
+    param: &ParamDef,
+    params: &BTreeMap<String, Value>,
+    scope: &mut DefaultScope,
+) -> Result<Option<Value>, Error> {
     let mut defaulted = None;
     if is_blank(params.get(&param.name)) {
-        if let Some(value) = default_for(param, params)? {
+        if let Some(value) = default_for(param, params, scope)? {
             defaulted = Some(value);
         }
     }
@@ -294,16 +300,42 @@ fn short_type(java_type: &str) -> &str {
     java_type.rsplit('.').next().unwrap_or(java_type)
 }
 
+/// The script frame parameter defaults are evaluated in. It is pushed for the first default with the parameters so
+/// far, and each parameter cleaned after that is set in it, so the parameters are copied once, not once per default.
+#[derive(Default)]
+struct DefaultScope(Option<crate::script::ContextFrame>);
+
+impl DefaultScope {
+    fn enter(&mut self, params: &BTreeMap<String, Value>) -> Result<(), Error> {
+        if self.0.is_none() {
+            let frame = crate::script::ContextFrame::push();
+            for (name, value) in params {
+                crate::script::set_context_name(name, value.clone())?;
+            }
+            self.0 = Some(frame);
+        }
+        Ok(())
+    }
+
+    fn set(&self, name: &str, value: &Value) -> Result<(), Error> {
+        if self.0.is_some() {
+            crate::script::set_context_name(name, value.clone())?;
+        }
+        Ok(())
+    }
+}
+
 /// The default of a parameter nobody supplied: the `default` expression, or the `default-value`
 /// text expanded against the parameters so far.
-fn default_for(param: &ParamDef, params: &BTreeMap<String, Value>) -> Result<Option<Value>, Error> {
+fn default_for(
+    param: &ParamDef,
+    params: &BTreeMap<String, Value>,
+    scope: &mut DefaultScope,
+) -> Result<Option<Value>, Error> {
     if param.default_expr.is_none() && param.default_value.is_none() {
         return Ok(None);
     }
-    let _frame = crate::script::ContextFrame::push();
-    for (name, value) in params {
-        crate::script::set_context_name(name, value.clone())?;
-    }
+    scope.enter(params)?;
     if let Some(expression) = &param.default_expr {
         let value = crate::script::eval_value(expression)?;
         return Ok((!value.is_null()).then_some(value));
