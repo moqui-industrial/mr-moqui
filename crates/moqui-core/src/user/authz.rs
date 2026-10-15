@@ -152,7 +152,7 @@ pub(crate) fn action_enum(action: &str) -> String {
 
 /// True while an [`crate::context::ExecutionContext::enter`] guard is live on this thread.
 pub fn context_entered() -> bool {
-    ExecutionContext::current().is_some()
+    ExecutionContext::is_entered()
 }
 
 /// Check one artifact without pushing it, against the top of the entered context's stack.
@@ -734,17 +734,17 @@ mod tests {
     fn enter_marks_the_thread_until_the_guard_drops() {
         let context = ExecutionContextFactory::test_context();
         assert!(!super::context_entered());
-        assert!(ExecutionContext::current().is_none());
+        assert!(!ExecutionContext::is_entered());
         let outer = context.enter();
         assert!(super::context_entered());
-        assert!(ExecutionContext::current().is_some());
+        assert!(ExecutionContext::is_entered());
         let inner = context.enter();
         assert!(super::context_entered());
         drop(inner);
         assert!(super::context_entered());
         drop(outer);
         assert!(!super::context_entered());
-        assert!(ExecutionContext::current().is_none());
+        assert!(!ExecutionContext::is_entered());
     }
 
     /// A booted factory with the real conf, so artifact authorization is on, over an in-memory database.

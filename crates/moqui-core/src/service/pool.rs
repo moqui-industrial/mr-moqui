@@ -882,7 +882,7 @@ fn run_inline(work: Work) {
         _ => None,
     };
     let mut cleanup = WorkCleanup::new(factory);
-    cleanup.outermost = ExecutionContext::current().is_none();
+    cleanup.outermost = !ExecutionContext::is_entered();
     match work {
         Work::Job(run) => {
             if let Err(payload) = catch_unwind(AssertUnwindSafe(|| super::jobs::run_job(*run))) {

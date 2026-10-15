@@ -14,12 +14,12 @@
 
 //! Execution context factory. One factory is shared. One context is thread-local.
 
-use std::cell::{Cell, RefCell, RefMut};
+use std::cell::{RefCell, RefMut};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use std::ptr::NonNull;
+use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 
@@ -29,8 +29,9 @@ use moqui_lib::node::MNode;
 use super::artifact::{ArtifactStack, AuthzGuard};
 
 thread_local! {
-    /// Depth and the context the outermost guard borrowed. This does not own the context.
-    static ENTERED: Cell<(*const ExecutionContext, u32)> = const { Cell::new((std::ptr::null(), 0)) };
+    /// The entered contexts, innermost last, one entry per live guard. Each entry is a handle that
+    /// shares the context's state, so a leaked guard keeps that state alive and never dangles.
+    static ENTERED: RefCell<Vec<ExecutionContext>> = const { RefCell::new(Vec::new()) };
 }
 use super::cache::CacheFacade;
 use super::component::{self, ComponentInfo};
@@ -292,11 +293,13 @@ impl ExecutionContextFactory {
 
     pub fn new_context(self: &Arc<Self>) -> ExecutionContext {
         ExecutionContext {
-            factory: Arc::clone(self),
-            messages: RefCell::new(MessageFacade::new()),
-            artifacts: RefCell::new(ArtifactStack::new()),
-            session: RefCell::new(crate::user::Memory::default()),
-            user_context: RefCell::new(std::collections::BTreeMap::new()),
+            state: Rc::new(ContextState {
+                factory: Arc::clone(self),
+                messages: RefCell::new(MessageFacade::new()),
+                artifacts: RefCell::new(ArtifactStack::new()),
+                session: RefCell::new(crate::user::Memory::default()),
+                user_context: RefCell::new(std::collections::BTreeMap::new()),
+            }),
         }
     }
 
@@ -470,7 +473,13 @@ impl ExecutionContextFactory {
     }
 }
 
+/// One thread's execution context. It is not `Send`: it stays on the thread that made it.
 pub struct ExecutionContext {
+    /// Shared with the thread-local slot while entered, see [`ExecutionContext::enter`].
+    state: Rc<ContextState>,
+}
+
+struct ContextState {
     factory: Arc<ExecutionContextFactory>,
     messages: RefCell<MessageFacade>,
     artifacts: RefCell<ArtifactStack>,
@@ -482,25 +491,26 @@ pub struct ExecutionContext {
 
 impl ExecutionContext {
     pub fn factory(&self) -> &Arc<ExecutionContextFactory> {
-        &self.factory
+        &self.state.factory
     }
 
     pub(crate) fn session(&self) -> RefMut<'_, crate::user::Memory> {
-        self.session.borrow_mut()
+        self.state.session.borrow_mut()
     }
 
     /// The `ec.user.context` map.
     pub fn user_context(&self) -> RefMut<'_, std::collections::BTreeMap<String, moqui_lib::object::Value>> {
-        self.user_context.borrow_mut()
+        self.state.user_context.borrow_mut()
     }
 
     pub fn message(&self) -> RefMut<'_, MessageFacade> {
-        self.messages.borrow_mut()
+        self.state.messages.borrow_mut()
     }
 
     /// Push an artifact frame without any check, for a frame that is already authorized.
     pub fn push(&self, artifact_type: &str, name: &str, action: &str) {
-        self.artifacts
+        self.state
+            .artifacts
             .borrow_mut()
             .push_with(artifact_type, name, action, AuthInfo::default());
     }
@@ -538,28 +548,31 @@ impl ExecutionContext {
             ancestor_deny,
         )?;
         if !permitted {
-            tracing::warn!(stack = %self.artifacts.borrow().names(), "artifact authorization failed");
+            tracing::warn!(stack = %self.state.artifacts.borrow().names(), "artifact authorization failed");
             return Err(crate::user::denied(artifact_type, name, action, &info));
         }
-        self.artifacts.borrow_mut().push_with(artifact_type, name, action, info);
+        self.state
+            .artifacts
+            .borrow_mut()
+            .push_with(artifact_type, name, action, info);
         Ok(())
     }
 
     /// The frame below, any deny on the stack, and whether authorization is disabled.
     pub(crate) fn stack_authz_state(&self) -> (Option<AuthInfo>, bool, bool) {
-        let artifacts = self.artifacts.borrow();
+        let artifacts = self.state.artifacts.borrow();
         let (last, deny) = artifacts.authz_state();
         (last, deny, artifacts.authz_disabled())
     }
 
     /// Auth info of the top frame.
     pub(crate) fn top_authz_info(&self) -> Option<AuthInfo> {
-        self.artifacts.borrow().authz_state().0
+        self.state.artifacts.borrow().authz_state().0
     }
 
     /// Mark the top frame inheritable for an anonymous user: all actions, or view only.
     pub fn set_anonymous_authorized(&self, all_actions: bool, user_id: &str) {
-        if let Some(info) = self.artifacts.borrow_mut().top_info_mut() {
+        if let Some(info) = self.state.artifacts.borrow_mut().top_info_mut() {
             if all_actions {
                 info.anonymous_all(user_id);
             } else {
@@ -570,7 +583,7 @@ impl ExecutionContext {
 
     /// Pop the top frame. A tracked frame is counted as an artifact hit, in memory.
     pub fn pop(&self) -> Result<(), Error> {
-        let popped = self.artifacts.borrow_mut().pop()?;
+        let popped = self.state.artifacts.borrow_mut().pop()?;
         if popped.hit.track {
             self.count_artifact_hit(&super::hits::Hit {
                 artifact_type: &popped.artifact_type,
@@ -592,9 +605,9 @@ impl ExecutionContext {
         sub_type: Option<&str>,
         parameters: Option<&std::collections::BTreeMap<String, moqui_lib::object::Value>>,
     ) {
-        let artifact_type = self.artifacts.borrow().top_type();
-        let keep = artifact_type.is_some_and(|name| self.factory.hits.counts(&name));
-        if let Some(hit) = self.artifacts.borrow_mut().top_hit_mut() {
+        let artifact_type = self.state.artifacts.borrow().top_type();
+        let keep = artifact_type.is_some_and(|name| self.state.factory.hits.counts(&name));
+        if let Some(hit) = self.state.artifacts.borrow_mut().top_hit_mut() {
             hit.sub_type = sub_type.map(str::to_string);
             hit.parameters = parameters.filter(|_| keep).cloned();
         }
@@ -602,87 +615,108 @@ impl ExecutionContext {
 
     /// Do not count the top frame as a hit, Java's `setTrackArtifactHit(false)`.
     pub(crate) fn untrack_hit(&self) {
-        if let Some(hit) = self.artifacts.borrow_mut().top_hit_mut() {
+        if let Some(hit) = self.state.artifacts.borrow_mut().top_hit_mut() {
             hit.track = false;
         }
     }
 
     /// Java's `countArtifactHit`, for a hit that is not a frame of the stack, such as a transition.
     pub(crate) fn count_artifact_hit(&self, hit: &super::hits::Hit<'_>) {
-        self.factory.hits.count(hit, || super::hits::HitContext {
+        self.state.factory.hits.count(hit, || super::hits::HitContext {
             visit_id: crate::user::visit_id().ok().flatten(),
             user_id: crate::user::current_user_id().ok().flatten(),
-            errors: self.messages.borrow().errors().to_vec(),
+            errors: self.state.messages.borrow().errors().to_vec(),
             request_url: crate::web::request_url(),
             referrer_url: crate::web::referrer_url(),
         });
     }
 
     pub fn disable_authz(&self) -> AuthzGuard {
-        self.artifacts.borrow().disable_authz()
+        self.state.artifacts.borrow().disable_authz()
     }
 
     pub fn authz_disabled(&self) -> bool {
-        self.artifacts.borrow().authz_disabled()
+        self.state.artifacts.borrow().authz_disabled()
     }
 
     /// Make this context current on this thread until the guard drops.
     ///
     /// Entering while another context is current makes this one current, and dropping its guard
-    /// brings the other back. `current` is `Some` while any guard is alive. The thread-local does
-    /// not keep the context alive.
+    /// brings the other back. [`Self::is_entered`] is true while any guard is alive. The slot holds
+    /// a handle to this context's state, so a leaked guard keeps the state alive instead of
+    /// leaving the slot dangling, and a guard dropped out of order removes only its own entry.
     pub fn enter(&self) -> ContextGuard<'_> {
-        let previous = ENTERED.with(|slot| {
-            let previous = slot.get();
-            slot.set((std::ptr::from_ref(self), previous.1.saturating_add(1)));
-            previous
+        let handle = self.handle();
+        let outermost = ENTERED.with(|slot| {
+            let mut stack = slot.borrow_mut();
+            stack.push(handle);
+            stack.len() == 1
         });
         // Leaving the outermost context is an inline drain point.
-        let drain =
-            (previous.1 == 0 && self.factory().executor() == Executor::Inline).then(|| Arc::clone(self.factory()));
+        let drain = (outermost && self.factory().executor() == Executor::Inline).then(|| Arc::clone(self.factory()));
         ContextGuard {
-            previous,
+            entered: Rc::clone(&self.state),
             drain,
             _scope: PhantomData,
         }
     }
 
-    /// The context entered on this thread, if a guard is still alive.
-    pub fn current() -> Option<NonNull<ExecutionContext>> {
-        ENTERED.with(|slot| {
-            let (ptr, depth) = slot.get();
-            if depth == 0 {
-                None
-            } else {
-                NonNull::new(ptr.cast_mut())
-            }
-        })
+    /// True while a context is entered on this thread.
+    pub fn is_entered() -> bool {
+        ENTERED.try_with(|slot| !slot.borrow().is_empty()).unwrap_or(false)
     }
 
     /// Run `body` with the entered context. The reference cannot outlive the callback.
+    ///
+    /// The body gets its own handle, so the context stays alive for the call even if the body
+    /// enters or leaves other contexts.
     pub fn with_current<R>(body: impl FnOnce(&ExecutionContext) -> R) -> Option<R> {
-        let ptr = Self::current()?;
-        // SAFETY: `enter` stored this pointer, and a live `ContextGuard` borrows that context. A
-        // guard restores the previous pointer when it drops, so the pointer here is always the
-        // innermost guard's, whose context is borrowed until that guard drops.
-        Some(body(unsafe { ptr.as_ref() }))
+        let current = ENTERED
+            .try_with(|slot| slot.borrow().last().map(ExecutionContext::handle))
+            .ok()
+            .flatten()?;
+        Some(body(&current))
+    }
+
+    /// Another handle to this context's state, for the thread-local slot.
+    fn handle(&self) -> ExecutionContext {
+        ExecutionContext {
+            state: Rc::clone(&self.state),
+        }
     }
 }
 
-/// Restores the previously entered context, or none, when dropped.
+/// Removes its context's entry from this thread's entered stack when dropped, bringing back the
+/// context entered before it, or none.
+///
+/// A guard is not `Send`: it belongs to the thread whose stack it pushed.
 #[must_use = "dropping the guard clears the thread-local execution context"]
 pub struct ContextGuard<'a> {
-    /// What was current before this guard, put back on drop.
-    previous: (*const ExecutionContext, u32),
+    /// The state this guard entered: its entry is the topmost one sharing this state.
+    entered: Rc<ContextState>,
     /// Set on an outermost guard of an inline factory: queued async work runs when it drops.
     drain: Option<Arc<ExecutionContextFactory>>,
-    // A guard belongs to the thread it was made on: the raw pointer above already makes it !Send.
     _scope: PhantomData<&'a ExecutionContext>,
 }
 
 impl Drop for ContextGuard<'_> {
     fn drop(&mut self) {
-        ENTERED.with(|slot| slot.set(self.previous));
+        // The removed handle drops after the slot borrow ends: dropping the last handle runs the
+        // state's own drops, which may read the slot.
+        let removed = ENTERED
+            .try_with(|slot| {
+                let mut stack = slot.borrow_mut();
+                let index = stack
+                    .iter()
+                    .rposition(|context| Rc::ptr_eq(&context.state, &self.entered))?;
+                if index + 1 != stack.len() {
+                    tracing::warn!("execution context guard dropped out of order: a later guard is still alive");
+                }
+                Some(stack.remove(index))
+            })
+            .ok()
+            .flatten();
+        drop(removed);
         if let Some(factory) = self.drain.take() {
             if !std::thread::panicking() {
                 factory.run_pending();
@@ -1108,7 +1142,77 @@ impl ExecutionContextFactory {
 
 #[cfg(test)]
 mod tests {
-    use super::standard_base64;
+    use std::rc::Rc;
+    use std::sync::Arc;
+
+    use super::{standard_base64, ExecutionContext, ExecutionContextFactory, ENTERED};
+
+    /// The entered context's factory is `factory`, read through the context's own state.
+    fn current_is(factory: &Arc<ExecutionContextFactory>) -> Option<bool> {
+        ExecutionContext::with_current(|ec| {
+            ec.message().add_error("still alive");
+            Arc::ptr_eq(ec.factory(), factory)
+        })
+    }
+
+    #[test]
+    fn forgotten_guard_keeps_the_context_alive() {
+        let ctx = ExecutionContextFactory::test_context();
+        let factory = Arc::clone(ctx.factory());
+        let state = Rc::downgrade(&ctx.state);
+        std::mem::forget(ctx.enter());
+        drop(ctx);
+        // The slot and the leaked guard own handles, so the state was not freed with `ctx`.
+        assert!(state.upgrade().is_some());
+        assert_eq!(current_is(&factory), Some(true));
+        assert!(ExecutionContext::is_entered());
+        // Clear this thread's slot. The forgotten guard's own handle stays leaked.
+        drop(ENTERED.with(|slot| std::mem::take(&mut *slot.borrow_mut())));
+        assert!(!ExecutionContext::is_entered());
+        assert_eq!(current_is(&factory), None);
+    }
+
+    #[test]
+    fn out_of_order_guards_remove_their_own_entries() {
+        let a = ExecutionContextFactory::test_context();
+        let b = ExecutionContextFactory::test_context();
+        let (factory_a, factory_b) = (Arc::clone(a.factory()), Arc::clone(b.factory()));
+        let state_a = Rc::downgrade(&a.state);
+        let ga = a.enter();
+        let gb = b.enter();
+        drop(ga);
+        drop(a);
+        // `a` left the stack with its guard, so its state is gone and `b` is still current.
+        assert!(state_a.upgrade().is_none());
+        assert_eq!(current_is(&factory_b), Some(true));
+        assert_eq!(current_is(&factory_a), Some(false));
+        drop(gb);
+        assert!(!ExecutionContext::is_entered());
+        assert_eq!(current_is(&factory_b), None);
+    }
+
+    #[test]
+    fn nested_guards_restore_the_outer_context() {
+        let a = ExecutionContextFactory::test_context();
+        let b = ExecutionContextFactory::test_context();
+        let (factory_a, factory_b) = (Arc::clone(a.factory()), Arc::clone(b.factory()));
+        {
+            let _outer = a.enter();
+            {
+                let _same = a.enter();
+                let _inner = b.enter();
+                assert_eq!(current_is(&factory_b), Some(true));
+            }
+            assert_eq!(current_is(&factory_a), Some(true));
+            // A body that enters and leaves another context keeps its own handle.
+            let kept = ExecutionContext::with_current(|ec| {
+                let _inner = b.enter();
+                Arc::ptr_eq(ec.factory(), &factory_a)
+            });
+            assert_eq!(kept, Some(true));
+        }
+        assert!(!ExecutionContext::is_entered());
+    }
 
     #[test]
     fn standard_base64_matches_padded_vectors() {

@@ -104,9 +104,7 @@ pub fn serve_at(factory: &Arc<ExecutionContextFactory>, request: WebRequest, roo
         }
     };
     // A request-pool worker already entered a fresh context for this job. Direct callers get one here.
-    let context = crate::context::ExecutionContext::current()
-        .is_none()
-        .then(|| factory.new_context());
+    let context = (!crate::context::ExecutionContext::is_entered()).then(|| factory.new_context());
     let _entered = context.as_ref().map(|context| context.enter());
     let mut parameters = parsed.parameters;
     parameters.extend(parsed.multipart.clone());
@@ -406,9 +404,7 @@ pub fn check_permission(
     request: &WebRequest,
     permission: &str,
 ) -> Result<PermissionCheck, Error> {
-    let context = crate::context::ExecutionContext::current()
-        .is_none()
-        .then(|| factory.new_context());
+    let context = (!crate::context::ExecutionContext::is_entered()).then(|| factory.new_context());
     let _entered = context.as_ref().map(|context| context.enter());
     let session_cookie = web::session_cookie_of(request);
     let visitor_cookie = web::visitor_cookie_of(request);

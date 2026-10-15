@@ -302,7 +302,7 @@ pub fn bind(
     visitor_cookie: Option<&str>,
     https: bool,
 ) -> Result<SessionGuard, Error> {
-    if ExecutionContext::current().is_none() {
+    if !ExecutionContext::is_entered() {
         return Err(Error::new("no execution context"));
     }
     if with_session(|session| session.bound_id.is_some()) {

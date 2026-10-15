@@ -155,9 +155,7 @@ impl ScreenRender {
     ///
     /// Returns the error the render raised. Its kind says 401, 403, or 404 for the web layer.
     pub fn render(self) -> Result<RenderOutput, Error> {
-        let owned = ExecutionContext::current()
-            .is_none()
-            .then(|| self.factory.new_context());
+        let owned = (!ExecutionContext::is_entered()).then(|| self.factory.new_context());
         let _entered = owned.as_ref().map(ExecutionContext::enter);
         let _web = web::install_with(self.parameters.clone(), self.base_url.clone());
         for (name, value) in &self.session {
