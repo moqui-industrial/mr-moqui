@@ -18,7 +18,7 @@
 
 #[cfg(feature = "postgres")]
 mod driver {
-    use std::collections::{HashMap, VecDeque};
+    use std::collections::VecDeque;
     use std::path::PathBuf;
 
     use moqui_core::driver::{DbCancel, DbConnection, DbDriver, DbRow};
@@ -29,6 +29,8 @@ mod driver {
     use postgres::types::{Format, FromSql, IsNull, ToSql, Type};
     use postgres::{Client, Config, NoTls, Statement};
     use tokio_postgres_rustls::MakeRustlsConnect;
+
+    use crate::db::statement_lru::StatementLru;
 
     const CACHE_CAP: usize = 100;
     const FETCH_BATCH: usize = 50;
@@ -72,17 +74,12 @@ mod driver {
     /// One `postgres::Client`. Statement LRU is keyed by the original SQL text.
     pub struct PostgresConn {
         client: Client,
-        cache: StatementCache,
+        cache: StatementLru<Statement>,
         in_transaction: bool,
         streaming: bool,
         stream_exhausted: bool,
         stream_buf: VecDeque<DbRow>,
         tls: TlsMode,
-    }
-
-    struct StatementCache {
-        statements: HashMap<String, Statement>,
-        order: VecDeque<String>,
     }
 
     struct PgCancel {
@@ -230,7 +227,7 @@ mod driver {
                 .map_err(|err| pg("set time zone", err))?;
             Ok(PostgresConn {
                 client,
-                cache: StatementCache::new(),
+                cache: StatementLru::new(CACHE_CAP),
                 in_transaction: false,
                 streaming: false,
                 stream_exhausted: false,
@@ -300,18 +297,21 @@ mod driver {
 
         fn prepared(&mut self, sql: &str) -> Result<Statement, Error> {
             if let Some(statement) = self.cache.get(sql) {
-                return Ok(statement);
+                return Ok(statement.clone());
             }
             let rewritten = rewrite_placeholders(sql);
             let statement = self.client.prepare(&rewritten).map_err(|err| pg("prepare", err))?;
-            self.cache.insert(sql.to_string(), statement.clone());
+            self.cache.insert(sql, statement.clone());
             Ok(statement)
         }
 
+        /// `COMMIT` closes an open stream's cursor first. `ROLLBACK` does not, since it closes the cursor itself and a
+        /// `CLOSE` in an aborted transaction would fail before the rollback is sent. Either way the stream is gone.
         fn finish_transaction(&mut self, sql: &str) -> Result<(), Error> {
-            if self.streaming {
-                self.close_stream()?;
-            }
+            let close = self.streaming && sql == "COMMIT";
+            let closed = if close { self.close_stream() } else { Ok(()) };
+            self.clear_stream();
+            closed?;
             self.client.batch_execute(sql).map_err(|err| pg(sql, err))?;
             self.in_transaction = false;
             Ok(())
@@ -446,7 +446,7 @@ mod driver {
             let Some(remaining) = remaining else {
                 return Ok(());
             };
-            let ms = u64::try_from(remaining.as_millis()).unwrap_or(u64::MAX);
+            let ms = crate::db::timeout_millis(remaining)?;
             self.client
                 .batch_execute(&format!("SET LOCAL statement_timeout = {ms}"))
                 .map_err(|err| pg("statement_timeout", err))?;
@@ -468,48 +468,6 @@ mod driver {
                 TlsMode::Rustls(tls) => self.token.cancel_query(tls.clone()),
             };
             result.map_err(|err| pg("cancel", err))
-        }
-    }
-
-    impl StatementCache {
-        fn new() -> Self {
-            Self {
-                statements: HashMap::new(),
-                order: VecDeque::new(),
-            }
-        }
-
-        fn len(&self) -> usize {
-            self.statements.len()
-        }
-
-        fn get(&mut self, sql: &str) -> Option<Statement> {
-            let statement = self.statements.get(sql)?.clone();
-            self.touch(sql);
-            Some(statement)
-        }
-
-        fn insert(&mut self, sql: String, statement: Statement) {
-            if self.statements.contains_key(&sql) {
-                self.touch(&sql);
-                self.statements.insert(sql, statement);
-                return;
-            }
-            if self.order.len() >= CACHE_CAP {
-                if let Some(old) = self.order.pop_front() {
-                    self.statements.remove(&old);
-                }
-            }
-            self.order.push_back(sql.clone());
-            self.statements.insert(sql, statement);
-        }
-
-        fn touch(&mut self, sql: &str) {
-            if let Some(index) = self.order.iter().position(|key| key == sql) {
-                if let Some(key) = self.order.remove(index) {
-                    self.order.push_back(key);
-                }
-            }
         }
     }
 
@@ -574,33 +532,120 @@ mod driver {
         params.iter().map(|param| param as &(dyn ToSql + Sync)).collect()
     }
 
+    /// JDBC `?` placeholders as `$1`, `$2`, ... A `?` inside a string (`'..'`, `E'..'`, `$tag$..$tag$`), a quoted
+    /// identifier or a comment is left as it is.
     fn rewrite_placeholders(sql: &str) -> String {
+        let bytes = sql.as_bytes();
         let mut out = String::with_capacity(sql.len() + 8);
-        let mut chars = sql.chars().peekable();
-        let mut in_quote = false;
         let mut index = 0u32;
-        while let Some(ch) = chars.next() {
-            if in_quote {
-                out.push(ch);
-                if ch == '\'' {
-                    if chars.peek() == Some(&'\'') {
-                        out.push(chars.next().unwrap_or('\''));
-                    } else {
-                        in_quote = false;
-                    }
+        let mut copied = 0;
+        let mut at = 0;
+        while let Some(&byte) = bytes.get(at) {
+            let next = bytes.get(at + 1).copied();
+            at = match byte {
+                b'\'' => quoted_end(bytes, at + 1, b'\'', escape_string(bytes, at)),
+                b'"' => quoted_end(bytes, at + 1, b'"', false),
+                b'-' if next == Some(b'-') => bytes[at..]
+                    .iter()
+                    .position(|&byte| byte == b'\n')
+                    .map_or(bytes.len(), |offset| at + offset + 1),
+                b'/' if next == Some(b'*') => block_comment_end(bytes, at + 2),
+                b'$' => dollar_quote_end(sql, at).unwrap_or(at + 1),
+                b'?' => {
+                    index += 1;
+                    out.push_str(&sql[copied..at]);
+                    out.push('$');
+                    out.push_str(&index.to_string());
+                    copied = at + 1;
+                    at + 1
                 }
-            } else if ch == '\'' {
-                in_quote = true;
-                out.push(ch);
-            } else if ch == '?' {
-                index += 1;
-                out.push('$');
-                out.push_str(&index.to_string());
+                _ => at + 1,
+            };
+        }
+        out.push_str(&sql[copied..]);
+        out
+    }
+
+    /// True when the quote at `at` opens an `E'..'` string, in which a backslash escapes the next character.
+    fn escape_string(bytes: &[u8], at: usize) -> bool {
+        let Some(prefix) = at.checked_sub(1).and_then(|before| bytes.get(before)) else {
+            return false;
+        };
+        let word_before = at
+            .checked_sub(2)
+            .and_then(|before| bytes.get(before))
+            .is_some_and(|&byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$');
+        matches!(prefix, b'E' | b'e') && !word_before
+    }
+
+    /// The index past the `quote` that closes a string or identifier whose body starts at `from`. A doubled quote, or
+    /// with `backslash` a backslash, escapes.
+    fn quoted_end(bytes: &[u8], from: usize, quote: u8, backslash: bool) -> usize {
+        let mut at = from;
+        while let Some(&byte) = bytes.get(at) {
+            if backslash && byte == b'\\' {
+                at += 2;
+            } else if byte == quote {
+                if bytes.get(at + 1) != Some(&quote) {
+                    return at + 1;
+                }
+                at += 2;
             } else {
-                out.push(ch);
+                at += 1;
             }
         }
-        out
+        bytes.len()
+    }
+
+    /// The index past the `*/` that closes a block comment whose body starts at `from`. Postgres comments nest.
+    fn block_comment_end(bytes: &[u8], from: usize) -> usize {
+        let mut depth = 1usize;
+        let mut at = from;
+        while let Some(&byte) = bytes.get(at) {
+            let next = bytes.get(at + 1).copied();
+            if byte == b'/' && next == Some(b'*') {
+                depth += 1;
+                at += 2;
+            } else if byte == b'*' && next == Some(b'/') {
+                depth -= 1;
+                at += 2;
+                if depth == 0 {
+                    return at;
+                }
+            } else {
+                at += 1;
+            }
+        }
+        bytes.len()
+    }
+
+    /// For a `$tag$` (or `$$`) at `at` that opens a dollar-quoted string, the index past its closing tag. `None` when
+    /// the `$` opens no tag, as in a `$1` parameter, or follows an identifier character.
+    fn dollar_quote_end(sql: &str, at: usize) -> Option<usize> {
+        let bytes = sql.as_bytes();
+        let after_word = at
+            .checked_sub(1)
+            .and_then(|before| bytes.get(before))
+            .is_some_and(|&byte| byte.is_ascii_alphanumeric() || byte == b'_');
+        if after_word {
+            return None;
+        }
+        let rest = sql.get(at + 1..)?;
+        let tag_len = rest.find('$')?;
+        let tag = &rest[..tag_len];
+        let valid = tag.bytes().enumerate().all(|(position, byte)| {
+            byte == b'_' || byte.is_ascii_alphabetic() || (position > 0 && byte.is_ascii_digit())
+        });
+        if !valid {
+            return None;
+        }
+        let delimiter = &sql[at..at + tag_len + 2];
+        let body = at + tag_len + 2;
+        Some(
+            sql[body..]
+                .find(delimiter)
+                .map_or(sql.len(), |offset| body + offset + delimiter.len()),
+        )
     }
 
     fn quote_ident(name: &str) -> String {
@@ -947,6 +992,31 @@ mod driver {
             assert_eq!(rewrite_placeholders("SELECT '?'"), "SELECT '?'");
             assert_eq!(rewrite_placeholders("SELECT 'it''s ?', ?"), "SELECT 'it''s ?', $1");
             assert_eq!(rewrite_placeholders("SELECT 'a''?''b' || ?"), "SELECT 'a''?''b' || $1");
+        }
+
+        #[test]
+        fn placeholders_skip_identifiers_comments_and_other_strings() {
+            assert_eq!(rewrite_placeholders(r#"SELECT "a?b", ?"#), r#"SELECT "a?b", $1"#);
+            assert_eq!(rewrite_placeholders(r#"SELECT "a""?", ?"#), r#"SELECT "a""?", $1"#);
+            assert_eq!(rewrite_placeholders("SELECT ? -- why?\n, ?"), "SELECT $1 -- why?\n, $2");
+            assert_eq!(rewrite_placeholders("SELECT ? -- why?"), "SELECT $1 -- why?");
+            assert_eq!(
+                rewrite_placeholders("SELECT /* a? /* b? */ c? */ ?"),
+                "SELECT /* a? /* b? */ c? */ $1"
+            );
+            assert_eq!(rewrite_placeholders("SELECT $$a?b$$, ?"), "SELECT $$a?b$$, $1");
+            assert_eq!(
+                rewrite_placeholders("SELECT $fn$ ? $x$ ? $fn$, ?"),
+                "SELECT $fn$ ? $x$ ? $fn$, $1"
+            );
+            assert_eq!(rewrite_placeholders(r"SELECT E'a\'?', ?"), r"SELECT E'a\'?', $1");
+            assert_eq!(rewrite_placeholders(r"SELECT e'\\', ?"), r"SELECT e'\\', $1");
+            // A backslash in a standard string is a plain character, and `name'..'` is no E-string.
+            assert_eq!(rewrite_placeholders(r"SELECT '\', ?"), r"SELECT '\', $1");
+            assert_eq!(rewrite_placeholders(r"SELECT some'\', ?"), r"SELECT some'\', $1");
+            // `$1` and `a$b` open no dollar quote.
+            assert_eq!(rewrite_placeholders("SELECT $1, a$b, ?"), "SELECT $1, a$b, $1");
+            assert_eq!(rewrite_placeholders("SELECT 'é?', ?"), "SELECT 'é?', $1");
         }
 
         #[test]

@@ -709,6 +709,8 @@ mod cluster {
             savepoint_keeps_the_first_row(&mut conn);
             stream_requires_a_transaction(&mut conn);
             stream_reads_every_inserted_row(&mut conn);
+            rollback_ends_an_aborted_transaction_with_an_open_stream(&mut conn);
+            statement_timeout_is_never_lifted_by_rounding(&mut conn);
 
             let mut other = driver.connect_postgres().unwrap();
             conn.begin().unwrap();
@@ -1219,6 +1221,29 @@ mod cluster {
             conn.close_stream().unwrap();
             assert!(!conn.stream_open());
             conn.commit().unwrap();
+        }
+
+        /// ROLLBACK closes the cursor itself, so a stream left open in an aborted transaction does not stop it.
+        fn rollback_ends_an_aborted_transaction_with_an_open_stream(conn: &mut PostgresConn) {
+            conn.begin().unwrap();
+            conn.open_stream("SELECT n FROM streamed ORDER BY n", &[]).unwrap();
+            assert!(conn.next_row().unwrap().is_some());
+            assert!(conn.query_once("SELECT 1 / 0", &[]).is_err());
+            conn.rollback().unwrap();
+            assert!(!conn.stream_open());
+            assert_eq!(conn.query_once("SELECT 1", &[]).unwrap().len(), 1);
+        }
+
+        /// A deadline that has passed is an error, and a sub-millisecond remainder still sets a limit.
+        fn statement_timeout_is_never_lifted_by_rounding(conn: &mut PostgresConn) {
+            conn.begin().unwrap();
+            assert!(conn.set_statement_timeout(Some(std::time::Duration::ZERO)).is_err());
+            conn.rollback().unwrap();
+            conn.begin().unwrap();
+            conn.set_statement_timeout(Some(std::time::Duration::from_micros(300)))
+                .unwrap();
+            assert_eq!(show(conn, "statement_timeout"), "1ms");
+            conn.rollback().unwrap();
         }
 
         fn show(conn: &mut PostgresConn, name: &str) -> String {

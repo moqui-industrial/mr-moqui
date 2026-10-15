@@ -16,7 +16,7 @@
 
 #[cfg(feature = "mysql")]
 mod driver {
-    use std::collections::{HashMap, VecDeque};
+    use std::ptr::NonNull;
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::Arc;
 
@@ -26,6 +26,8 @@ mod driver {
     use mysql::consts::{ColumnFlags, ColumnType};
     use mysql::prelude::Queryable;
     use mysql::Value as MysqlValue;
+
+    use crate::db::statement_lru::StatementLru;
 
     const STATEMENT_CACHE_CAP: usize = 100;
     /// MySQL `character_set` 63 is `binary`.
@@ -93,47 +95,18 @@ mod driver {
         }
     }
 
-    #[derive(Default)]
-    struct StatementCache {
-        map: HashMap<String, mysql::Statement>,
-        order: VecDeque<String>,
-    }
-
-    impl StatementCache {
-        fn len(&self) -> usize {
-            self.map.len()
-        }
-
-        fn contains(&self, sql: &str) -> bool {
-            self.map.contains_key(sql)
-        }
-
-        fn touch(&mut self, sql: &str) -> Option<&mysql::Statement> {
-            let index = self.order.iter().position(|item| item == sql)?;
-            let key = self.order.remove(index)?;
-            self.order.push_back(key);
-            self.map.get(sql)
-        }
-
-        fn insert(&mut self, sql: String, statement: mysql::Statement) -> Option<mysql::Statement> {
-            if self.map.contains_key(&sql) {
-                self.order.retain(|item| item != &sql);
-                self.order.push_back(sql.clone());
-                return self.map.insert(sql, statement);
-            }
-            let evicted = if self.map.len() >= STATEMENT_CACHE_CAP {
-                self.order.pop_front().and_then(|old| self.map.remove(&old))
-            } else {
-                None
-            };
-            self.order.push_back(sql.clone());
-            self.map.insert(sql, statement);
-            evicted
-        }
-
-        fn into_statements(self) -> impl Iterator<Item = mysql::Statement> {
-            self.map.into_values()
-        }
+    /// The statement that bounds each later statement of the session to `remaining`; `None` lifts the bound. MariaDB
+    /// has `max_statement_time` in seconds; MySQL has `max_execution_time` in milliseconds, which bounds only SELECT.
+    fn timeout_sql(mariadb: bool, remaining: Option<std::time::Duration>) -> Result<String, Error> {
+        let ms = match remaining {
+            Some(remaining) => crate::db::timeout_millis(remaining)?,
+            None => 0,
+        };
+        Ok(if mariadb {
+            format!("SET SESSION max_statement_time = {}.{:03}", ms / 1000, ms % 1000)
+        } else {
+            format!("SET SESSION max_execution_time = {ms}")
+        })
     }
 
     /// One MySQL or MariaDB server. Each [`DbDriver::connect`] opens one connection.
@@ -164,7 +137,8 @@ mod driver {
 
         /// Opens one [`mysql::Conn`]. The crate pool is not used.
         pub fn connect_mysql(&self) -> Result<MysqlConn, Error> {
-            let conn = mysql::Conn::new(self.endpoint.opts()).map_err(mysql_err)?;
+            let mut conn = mysql::Conn::new(self.endpoint.opts()).map_err(mysql_err)?;
+            let version: Option<String> = conn.query_first("SELECT VERSION()").map_err(mysql_err)?;
             let kill = Arc::new(KillState {
                 endpoint: self.endpoint.clone(),
                 connection_id: AtomicU32::new(conn.connection_id()),
@@ -172,11 +146,17 @@ mod driver {
             });
             Ok(MysqlConn {
                 stream: None,
-                statements: StatementCache::default(),
+                statements: StatementLru::new(STATEMENT_CACHE_CAP),
                 kill,
-                conn: Box::new(conn),
+                mariadb: version.as_deref().is_some_and(is_mariadb),
+                conn: NonNull::from(Box::leak(Box::new(conn))),
             })
         }
+    }
+
+    /// True for a MariaDB server's `VERSION()`, such as `10.11.6-MariaDB-0+deb12u1`.
+    fn is_mariadb(version: &str) -> bool {
+        version.contains("MariaDB")
     }
 
     impl DbDriver for MysqlDriver {
@@ -185,17 +165,40 @@ mod driver {
         }
     }
 
-    /// One MySQL connection. `stream` is dropped before `conn`.
+    /// One MySQL connection. `stream` is dropped before `conn` is freed.
+    ///
+    /// `conn` is a leaked `Box`, owned by this value and freed in `Drop`. It is a raw pointer rather than a `Box`, so
+    /// the `'static` borrow an open `stream` holds is never invalidated by a move or retag of the owner.
     pub struct MysqlConn {
         stream: Option<mysql::QueryResult<'static, 'static, 'static, mysql::Binary>>,
-        statements: StatementCache,
+        statements: StatementLru<mysql::Statement>,
         kill: Arc<KillState>,
-        conn: Box<mysql::Conn>,
+        /// The server is MariaDB, which bounds statements with `max_statement_time`.
+        mariadb: bool,
+        conn: NonNull<mysql::Conn>,
     }
+
+    // SAFETY: `conn` is uniquely owned, as a `Box<mysql::Conn>` would be, and `mysql::Conn` is `Send`. Nothing else
+    // holds the pointer except the `stream` borrow, which moves with this value.
+    unsafe impl Send for MysqlConn {}
 
     impl MysqlConn {
         pub fn statement_cache_len(&self) -> usize {
             self.statements.len()
+        }
+
+        /// The connection, for a call made while no stream is open.
+        fn conn(&mut self) -> &mut mysql::Conn {
+            self.parts().0
+        }
+
+        /// The connection and the statement cache, borrowed together.
+        fn parts(&mut self) -> (&mut mysql::Conn, &mut StatementLru<mysql::Statement>) {
+            // SAFETY: `conn` came from a leaked `Box` and is freed only in `Drop`, so it is valid and aligned. Every
+            // caller is reached after `ensure_idle` (or is `Drop`, after `stream` is gone), so no stream borrow of the
+            // connection is live, and the returned borrow is tied to `&mut self`, so it is the only one.
+            let conn = unsafe { self.conn.as_mut() };
+            (conn, &mut self.statements)
         }
 
         fn ensure_idle(&self) -> Result<(), Error> {
@@ -210,16 +213,16 @@ mod driver {
             if self.statements.contains(sql) {
                 return Ok(());
             }
-            let statement = self.conn.prep(sql)?;
-            if let Some(old) = self.statements.insert(sql.to_owned(), statement) {
-                self.conn.close(old)?;
+            let statement = self.conn().prep(sql)?;
+            if let Some(old) = self.statements.insert(sql, statement) {
+                self.conn().close(old)?;
             }
             Ok(())
         }
 
         fn cached_rows(&mut self, sql: &str, params: mysql::Params) -> Result<Vec<DbRow>, Error> {
-            let MysqlConn { conn, statements, .. } = self;
-            let Some(statement) = statements.touch(sql) else {
+            let (conn, statements) = self.parts();
+            let Some(statement) = statements.get(sql) else {
                 return Err(Error::new("mysql statement cache missed"));
             };
             let result = conn.exec_iter(statement, params).map_err(mysql_err)?;
@@ -227,8 +230,8 @@ mod driver {
         }
 
         fn cached_drain(&mut self, sql: &str, params: mysql::Params) -> Result<(), Error> {
-            let MysqlConn { conn, statements, .. } = self;
-            let Some(statement) = statements.touch(sql) else {
+            let (conn, statements) = self.parts();
+            let Some(statement) = statements.get(sql) else {
                 return Err(Error::new("mysql statement cache missed"));
             };
             let result = conn.exec_iter(statement, params).map_err(mysql_err)?;
@@ -236,19 +239,19 @@ mod driver {
         }
 
         fn once_rows(&mut self, sql: &str, params_empty: bool, params: mysql::Params) -> Result<Vec<DbRow>, Error> {
-            let statement = match self.conn.prep(sql) {
+            let statement = match self.conn().prep(sql) {
                 Ok(statement) => statement,
                 Err(err) if params_empty && unsupported_prepared(&err) => {
-                    let result = self.conn.query_iter(sql).map_err(mysql_err)?;
+                    let result = self.conn().query_iter(sql).map_err(mysql_err)?;
                     return collect_rows(result);
                 }
                 Err(err) => return Err(mysql_err(err)),
             };
-            let rows = match self.conn.exec_iter(&statement, params) {
+            let rows = match self.conn().exec_iter(&statement, params) {
                 Ok(result) => collect_rows(result),
                 Err(err) => Err(mysql_err(err)),
             };
-            let closed = self.conn.close(statement);
+            let closed = self.conn().close(statement);
             match (rows, closed) {
                 (Ok(rows), Ok(())) => Ok(rows),
                 (Err(err), _) => Err(err),
@@ -267,7 +270,7 @@ mod driver {
             match self.prep_cached(sql) {
                 Ok(()) => self.cached_rows(sql, mysql_params),
                 Err(err) if params.is_empty() && unsupported_prepared(&err) => {
-                    let result = self.conn.query_iter(sql).map_err(mysql_err)?;
+                    let result = self.conn().query_iter(sql).map_err(mysql_err)?;
                     collect_rows(result)
                 }
                 Err(err) => Err(mysql_err(err)),
@@ -279,15 +282,16 @@ mod driver {
             sql: &str,
             params: mysql::Params,
         ) -> Result<mysql::QueryResult<'static, 'static, 'static, mysql::Binary>, Error> {
-            let MysqlConn { conn, statements, .. } = self;
-            let Some(statement) = statements.touch(sql) else {
+            let (conn, statements) = self.parts();
+            let Some(statement) = statements.get(sql) else {
                 return Err(Error::new("mysql statement cache missed"));
             };
             let result = conn.exec_iter(statement, params).map_err(mysql_err)?;
-            // SAFETY: `result` borrows the `Conn` in `self.conn`'s heap box. The
-            // caller stores it in `self.stream` and does not use `conn` again until
-            // that field is dropped. `Drop` drops `stream` before `conn`. Moving
-            // `MysqlConn` does not move the boxed `Conn`.
+            // SAFETY: `result` borrows the `Conn` behind `self.conn`, a leaked heap allocation that moving `MysqlConn`
+            // does not move and that only `Drop` frees, after it drops `stream`. The caller stores `result` in
+            // `self.stream`, and every path that would use the connection again (`execute`, `rows`, `command`,
+            // `open_stream` and the transaction verbs) calls `ensure_idle` first, so none does while the stream is
+            // open. The result does not borrow the `Statement`, and statements are evicted only before a stream opens.
             let result = unsafe {
                 std::mem::transmute::<
                     mysql::QueryResult<'_, '_, '_, mysql::Binary>,
@@ -301,7 +305,7 @@ mod driver {
             self.ensure_idle()?;
             let kill = Arc::clone(&self.kill);
             let _busy = BusyFlag::arm(&kill.busy);
-            self.conn.query_drop(sql).map_err(mysql_err)
+            self.conn().query_drop(sql).map_err(mysql_err)
         }
     }
 
@@ -309,10 +313,13 @@ mod driver {
         fn drop(&mut self) {
             self.kill.busy.store(false, Ordering::Release);
             drop(self.stream.take());
-            let statements = std::mem::take(&mut self.statements);
-            for statement in statements.into_statements() {
-                let _ = self.conn.close(statement);
+            let statements = std::mem::replace(&mut self.statements, StatementLru::new(1));
+            for statement in statements.into_values() {
+                let _ = self.conn().close(statement);
             }
+            // SAFETY: `conn` came from `Box::leak` in `connect_mysql` and is freed only here, once, after the stream
+            // that borrowed it is dropped.
+            drop(unsafe { Box::from_raw(self.conn.as_ptr()) });
         }
     }
 
@@ -325,11 +332,11 @@ mod driver {
             match self.prep_cached(sql) {
                 Ok(()) => {
                     self.cached_drain(sql, mysql_params)?;
-                    Ok(self.conn.affected_rows())
+                    Ok(self.conn().affected_rows())
                 }
                 Err(err) if params.is_empty() && unsupported_prepared(&err) => {
-                    self.conn.query_drop(sql).map_err(mysql_err)?;
-                    Ok(self.conn.affected_rows())
+                    self.conn().query_drop(sql).map_err(mysql_err)?;
+                    Ok(self.conn().affected_rows())
                 }
                 Err(err) => Err(mysql_err(err)),
             }
@@ -401,10 +408,8 @@ mod driver {
         }
 
         fn set_statement_timeout(&mut self, remaining: Option<std::time::Duration>) -> Result<(), Error> {
-            let ms = remaining
-                .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-                .unwrap_or(0);
-            self.command(format!("SET SESSION max_execution_time = {ms}"))
+            let sql = timeout_sql(self.mariadb, remaining)?;
+            self.command(sql)
         }
 
         fn canceller(&self) -> Box<dyn DbCancel> {
@@ -568,17 +573,22 @@ mod driver {
         convert_text(text, "BigDecimal")
     }
 
+    /// A zero date such as `0000-00-00`, which MySQL allows, is null, as Connector/J's
+    /// `zeroDateTimeBehavior=convertToNull` reads it.
     fn map_date(value: MysqlValue) -> Result<Value, Error> {
         let text = match value {
             MysqlValue::Date(year, month, day, _, _, _, _) => {
                 if year == 0 || month == 0 || day == 0 {
-                    return Err(Error::new("mysql date was zero"));
+                    return Ok(Value::Null);
                 }
                 format!("{year:04}-{month:02}-{day:02}")
             }
             MysqlValue::Bytes(bytes) => utf8(&bytes)?,
             other => return Err(Error::new(format!("mysql date value was {other:?}"))),
         };
+        if zero_date_text(&text) {
+            return Ok(Value::Null);
+        }
         convert_text(text, "Date")
     }
 
@@ -600,11 +610,12 @@ mod driver {
         convert_text(text, "Time")
     }
 
+    /// A zero date, as in [`map_date`], is null.
     fn map_datetime(value: MysqlValue) -> Result<Value, Error> {
         let text = match value {
             MysqlValue::Date(year, month, day, hour, minute, second, micros) => {
                 if year == 0 || month == 0 || day == 0 {
-                    return Err(Error::new("mysql datetime was zero"));
+                    return Ok(Value::Null);
                 }
                 if micros == 0 {
                     format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
@@ -615,7 +626,22 @@ mod driver {
             MysqlValue::Bytes(bytes) => utf8(&bytes)?,
             other => return Err(Error::new(format!("mysql datetime value was {other:?}"))),
         };
+        if zero_date_text(&text) {
+            return Ok(Value::Null);
+        }
         convert_text(text, "Timestamp")
+    }
+
+    /// True for text-protocol date text whose year, month or day is zero, such as `0000-00-00 00:00:00`.
+    fn zero_date_text(text: &str) -> bool {
+        let Some(date) = text.get(..10) else {
+            return false;
+        };
+        let parts: Vec<&str> = date.split('-').collect();
+        parts.len() == 3
+            && parts
+                .iter()
+                .any(|part| !part.is_empty() && part.bytes().all(|byte| byte == b'0'))
     }
 
     fn map_text(value: MysqlValue) -> Result<Value, Error> {
@@ -814,14 +840,67 @@ mod driver {
                 )),
                 Value::I64(1)
             );
-            assert!(map_cell(
-                &column(ColumnType::MYSQL_TYPE_DATE),
-                MysqlValue::Date(0, 0, 0, 0, 0, 0, 0)
-            )
-            .is_err());
             assert!(to_mysql_value(&Value::List(vec![])).is_err());
             assert_eq!(must(quote_ident("a`b")), "`a``b`");
             assert!(quote_ident("").is_err());
+        }
+
+        #[test]
+        fn zero_dates_are_null() {
+            let date = column(ColumnType::MYSQL_TYPE_DATE);
+            let stamp = column(ColumnType::MYSQL_TYPE_DATETIME);
+            assert_eq!(
+                must(map_cell(&date, MysqlValue::Date(0, 0, 0, 0, 0, 0, 0))),
+                Value::Null
+            );
+            assert_eq!(
+                must(map_cell(&date, MysqlValue::Date(2020, 0, 0, 0, 0, 0, 0))),
+                Value::Null
+            );
+            assert_eq!(
+                must(map_cell(&stamp, MysqlValue::Date(0, 0, 0, 0, 0, 0, 0))),
+                Value::Null
+            );
+            assert_eq!(
+                must(map_cell(&date, MysqlValue::Bytes(b"0000-00-00".to_vec()))),
+                Value::Null
+            );
+            assert_eq!(
+                must(map_cell(&stamp, MysqlValue::Bytes(b"0000-00-00 00:00:00".to_vec()))),
+                Value::Null
+            );
+            assert_eq!(
+                must(map_cell(&stamp, MysqlValue::Bytes(b"2020-01-02 03:04:05".to_vec()))),
+                basic_convert(&Value::String("2020-01-02 03:04:05".into()), "Timestamp").value
+            );
+        }
+
+        #[test]
+        fn the_statement_timeout_suits_the_server_and_never_lifts_by_rounding() {
+            use std::time::Duration;
+
+            assert_eq!(
+                must(timeout_sql(false, Some(Duration::from_millis(2500)))),
+                "SET SESSION max_execution_time = 2500"
+            );
+            assert_eq!(
+                must(timeout_sql(true, Some(Duration::from_millis(2500)))),
+                "SET SESSION max_statement_time = 2.500"
+            );
+            assert_eq!(
+                must(timeout_sql(false, Some(Duration::from_micros(300)))),
+                "SET SESSION max_execution_time = 1"
+            );
+            assert_eq!(
+                must(timeout_sql(true, Some(Duration::from_micros(300)))),
+                "SET SESSION max_statement_time = 0.001"
+            );
+            assert!(timeout_sql(false, Some(Duration::ZERO)).is_err());
+            assert!(timeout_sql(true, Some(Duration::ZERO)).is_err());
+            assert_eq!(must(timeout_sql(false, None)), "SET SESSION max_execution_time = 0");
+            assert_eq!(must(timeout_sql(true, None)), "SET SESSION max_statement_time = 0.000");
+            assert!(is_mariadb("10.11.6-MariaDB-0+deb12u1"));
+            assert!(!is_mariadb("8.0.36"));
         }
 
         fn parse_test_spec(spec: &str) -> Option<(&str, &str, &str, u16, &str)> {

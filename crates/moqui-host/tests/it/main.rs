@@ -26,12 +26,16 @@ mod common;
 
 mod cluster_notify;
 mod elfinder;
+mod entity_cache;
 mod entity_db;
+mod field_rw;
 mod gate1;
 mod gate2;
+mod load_feed;
 mod notws;
 mod opensearch_start;
 mod pdf;
+mod query_rest;
 mod qvt_report;
 mod search;
 mod search_opensearch;
