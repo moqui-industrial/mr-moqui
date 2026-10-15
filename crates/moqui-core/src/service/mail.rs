@@ -24,10 +24,12 @@
 //! when PDF is not available it is skipped with a logged warning, as Java does when the PDF transform fails. A render
 //! that fails stops the send with the message `Error sending email: ...`, as the Groovy outer catch did.
 
+#[cfg(test)]
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
+#[cfg(test)]
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -923,6 +925,7 @@ struct Letter {
 }
 
 fn deliver(letter: &Letter, server: &EntityValue) -> Result<(), String> {
+    #[cfg(test)]
     if push_sink(letter) {
         return Ok(());
     }
@@ -1098,17 +1101,16 @@ fn new_message_id(from: &str) -> Result<String, String> {
     Ok(format!("<{}@{host}>", hex_encode(&bytes)))
 }
 
+#[cfg(test)]
 thread_local! {
     static SINK: RefCell<Option<Rc<RefCell<Vec<Letter>>>>> = const { RefCell::new(None) };
     static FAKE: RefCell<Option<Vec<Inbound>>> = const { RefCell::new(None) };
-}
-
-#[cfg(test)]
-thread_local! {
     /// The ids the fake store was asked to delete.
     static FAKE_DELETED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
+/// Keep `letter` in the installed test sink, if any: this thread's, else the shared one.
+#[cfg(test)]
 fn push_sink(letter: &Letter) -> bool {
     let kept = SINK.with(|slot| {
         let Some(sink) = slot.borrow().clone() else {
@@ -1117,11 +1119,7 @@ fn push_sink(letter: &Letter) -> bool {
         sink.borrow_mut().push(letter.clone());
         true
     });
-    #[cfg(test)]
-    if !kept {
-        return push_shared_sink(letter);
-    }
-    kept
+    kept || push_shared_sink(letter)
 }
 
 /// The sink of [`SharedSinkGuard`], for a send on a service worker thread.
@@ -1499,10 +1497,12 @@ trait Mailbox {
     fn close(&mut self) -> Result<(), String>;
 }
 
+#[cfg(test)]
 struct FakeBox {
     messages: Vec<Inbound>,
 }
 
+#[cfg(test)]
 impl Mailbox for FakeBox {
     fn list_ids(&mut self) -> Result<Vec<String>, String> {
         Ok(self.messages.iter().map(|message| message.id.clone()).collect())
@@ -1525,7 +1525,6 @@ impl Mailbox for FakeBox {
 
     fn delete(&mut self, id: &str) -> Result<(), String> {
         self.messages.retain(|message| message.id != id);
-        #[cfg(test)]
         FAKE_DELETED.with(|deleted| deleted.borrow_mut().push(id.to_string()));
         Ok(())
     }
@@ -1555,9 +1554,17 @@ impl Drop for FakeGuard {
     }
 }
 
+/// The fake store a test installed on this thread, if any.
+#[cfg(test)]
+fn fake_store() -> Option<Box<dyn Mailbox>> {
+    let messages = FAKE.with(|slot| slot.borrow().clone())?;
+    Some(Box::new(FakeBox { messages }))
+}
+
 fn open_store(settings: &StoreSettings) -> Result<Box<dyn Mailbox>, String> {
-    if let Some(messages) = FAKE.with(|slot| slot.borrow().clone()) {
-        return Ok(Box::new(FakeBox { messages }));
+    #[cfg(test)]
+    if let Some(fake) = fake_store() {
+        return Ok(fake);
     }
     match settings.protocol.as_str() {
         "pop3" | "pop3s" => Ok(Box::new(Pop3::open(settings)?)),

@@ -38,7 +38,17 @@ pub fn security_checks_run() -> u64 {
 
 thread_local! {
     static SECURITY_CHECKS: Cell<u64> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Whether [`assert_sealed_permission_grant`] ran on this thread, for the tests that check the SECA fires.
     static SEALED_ENTERED: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+fn note_sealed_grant() {
+    SEALED_ENTERED.with(|entered| entered.set(true));
 }
 
 #[cfg(test)]
@@ -74,7 +84,8 @@ pub(super) fn assert_privileged_group_membership(facade: &EntityFacade, user_gro
 
 pub(super) fn assert_sealed_permission_grant(facade: &EntityFacade, user_permission_id: &str) -> Result<(), Error> {
     SECURITY_CHECKS.with(|count| count.set(count.get() + 1));
-    SEALED_ENTERED.with(|entered| entered.set(true));
+    #[cfg(test)]
+    note_sealed_grant();
     if user_permission_id.is_empty() {
         return Ok(());
     }

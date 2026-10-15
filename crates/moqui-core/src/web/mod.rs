@@ -795,7 +795,8 @@ pub(crate) enum BodyError {
     Executable(String),
 }
 
-/// The largest request body: 1 MiB, and for a `multipart/form-data` body `webapp_max_upload`.
+/// The largest request body: `webapp_max_body`, 10 MiB by default, and for a `multipart/form-data` body
+/// `webapp_max_upload`.
 pub fn body_limit(request: &WebRequest) -> usize {
     if is_multipart(request) {
         max_upload()
