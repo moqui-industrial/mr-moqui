@@ -261,9 +261,12 @@ impl EntityFind {
 
     pub fn one(mut self) -> Result<Option<EntityValue>, Error> {
         self.narrow_to_full_pk();
+        let entity_name = self.entity_name.clone();
         let list = self.list()?;
+        // As Java `oneExtended`: the first row, more than one only traced. A find one with a partial key, such as
+        // Mantle's `entity-find-one` of an OrderPart with only the customer in the context, takes the first match.
         if list.len() > 1 {
-            return Err(Error::new(format!("find one found {} rows", list.len())));
+            tracing::trace!(entity = %entity_name, rows = list.len(), "found more than one result for find one");
         }
         Ok(list.values().first().cloned())
     }

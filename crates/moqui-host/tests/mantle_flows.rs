@@ -1009,6 +1009,11 @@ fn o2c_core(f: &Flow, st: &mut O2c) {
 }
 
 fn flow_order_to_cash_basic(f: &Flow) {
+    // The suite runs AssetReservationMultipleThreads and OrderProcureToPayBasicFlow first. OrderToCashBasicFlow
+    // depends on them: CustJqp must already have placed orders (otherwise the 20% new customer promotion adds a
+    // discount item to the first order), the purchase order puts the DEMO_1_1 stock in asset 55400, and the last
+    // feature displaces one of the reservations the threads made.
+    ensure_procure_to_pay_flow(f);
     let mut st = O2c::default();
     o2c_core(f, &mut st);
     o2c_validate_asset_issuance(f, &mut st);
@@ -1327,7 +1332,18 @@ fn make_threaded_order(f: &Flow, thread: usize) -> String {
     order_id
 }
 
+static ASSET_RESERVATION_DONE: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
+
+/// Run AssetReservationMultipleThreads once per process, as the suite does before the flows that need its orders.
+fn ensure_asset_reservation_flow(f: &Flow) {
+    let done = *ASSET_RESERVATION_DONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !done {
+        flow_asset_reservation_multiple_threads(f);
+    }
+}
+
 fn flow_asset_reservation_multiple_threads(f: &Flow) {
+    *ASSET_RESERVATION_DONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
     login("john.doe");
     let atp = |f: &Flow| -> f64 {
         list(f, "mantle.product.asset.Asset", &[("productId", "DEMO_1_1")])
@@ -1660,7 +1676,20 @@ fn flow_return_to_response(f: &Flow) {
 // OrderProcureToPayBasicFlow
 // ---------------------------------------------------------------------------------------------------------------
 
+static PROCURE_TO_PAY_DONE: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
+
+/// Run OrderProcureToPayBasicFlow (after AssetReservationMultipleThreads) once per process.
+fn ensure_procure_to_pay_flow(f: &Flow) {
+    ensure_asset_reservation_flow(f);
+    let done = *PROCURE_TO_PAY_DONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !done {
+        flow_order_procure_to_pay(f);
+    }
+}
+
 fn flow_order_procure_to_pay(f: &Flow) {
+    ensure_asset_reservation_flow(f);
+    *PROCURE_TO_PAY_DONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
     const VENDOR: &str = "ZiddlemanInc";
     const CUSTOMER: &str = "ORG_ZIZI_RETAIL";
     const FACILITY: &str = "ZIRET_WH";
