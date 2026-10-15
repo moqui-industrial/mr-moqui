@@ -14,7 +14,9 @@
 
 //! The admin command shell of the built-in SSH server, for `ssh host command` and an interactive session. It replaces
 //! the Groovy shell; it is not a web endpoint. Every command runs on a request worker in a context logged in as the
-//! SSH user, so artifact authorization applies to each service and entity call the command makes.
+//! SSH user, so artifact authorization applies to each service and entity call the command makes. `service`, `entity`
+//! and `js` run inside the Tools app root screen, as the Groovy shell did, so they need the user's authorization for
+//! that app.
 //!
 //! Commands: `help`, `status`, `service <name> [json]`, `entity <name> [json conditions]`, `cache clear [name]`,
 //! `js <code>` (a JavaScript expression or statements, with `ec`; `js` alone reads lines until a line with `.`), and
@@ -30,6 +32,10 @@ use super::on_pool;
 
 /// Up to this many rows from `entity`.
 const ENTITY_LIMIT: i64 = 100;
+
+/// The screen whose authorization `service`, `entity` and `js` run under: the root of the Tools app, which held Java's
+/// Groovy shell.
+const TOOLS_SCREEN: &str = "component://tools/screen/Tools.xml";
 
 const HELP: &str = "Commands:
   help                          this list
@@ -88,7 +94,11 @@ pub(super) async fn run(factory: &Weak<ExecutionContextFactory>, username: &str,
             let username = username.to_string();
             let ran = on_pool(factory, move |factory| {
                 moqui_core::user::internal_login_user(&username)?;
-                execute(factory, &username, &command, &rest)
+                if matches!(command.as_str(), "service" | "entity" | "js") {
+                    in_tools_app(|| execute(factory, &username, &command, &rest))
+                } else {
+                    execute(factory, &username, &command, &rest)
+                }
             })
             .await;
             match ran {
@@ -98,6 +108,19 @@ pub(super) async fn run(factory: &Weak<ExecutionContextFactory>, username: &str,
         }
         other => Outcome::failed(format!("unknown command {other}; try help")),
     }
+}
+
+/// Run `body` inside the Tools app root screen, as Java's Groovy shell ran within the Tools app: the services and
+/// entities a command calls inherit the user's authorization for that screen (`TOOLS_APP`, granted to ADMIN in the seed
+/// data), and a user without it is refused.
+fn in_tools_app<T>(body: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
+    ExecutionContext::with_current(|ec| ec.push_checked("AT_XML_SCREEN", TOOLS_SCREEN, "view", true, false, None))
+        .ok_or_else(|| Error::new("no execution context is entered"))??;
+    let result = body();
+    let popped = ExecutionContext::with_current(ExecutionContext::pop).transpose();
+    let value = result?;
+    popped?;
+    Ok(value)
 }
 
 fn execute(factory: &ExecutionContextFactory, username: &str, command: &str, rest: &str) -> Result<Outcome, Error> {

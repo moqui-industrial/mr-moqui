@@ -26,7 +26,7 @@ use moqui_core::context::{ExecutionContextFactory, ResourceStat};
 use russh_sftp::protocol::{Attrs, Data, File, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version};
 use russh_sftp::server::StatusReply;
 
-use super::on_pool;
+use super::on_pool_without_authz;
 
 /// One open handle.
 enum Open {
@@ -73,7 +73,7 @@ impl SftpFs {
     }
 
     async fn stat_of(&self, location: String) -> Result<Option<ResourceStat>, StatusReply> {
-        on_pool(&self.factory, move |factory| factory.resource().stat(&location))
+        on_pool_without_authz(&self.factory, move |factory| factory.resource().stat(&location))
             .await
             .map_err(failure)
     }
@@ -188,7 +188,7 @@ impl russh_sftp::server::Handler for SftpFs {
 
     async fn opendir(&mut self, id: u32, path: String) -> Result<Handle, Self::Error> {
         let (location, _) = self.location(&path)?;
-        let listed = on_pool(&self.factory, move |factory| {
+        let listed = on_pool_without_authz(&self.factory, move |factory| {
             let resources = factory.resource();
             let mut files = Vec::new();
             for entry in resources.list(&location)? {
@@ -235,7 +235,7 @@ impl russh_sftp::server::Handler for SftpFs {
         let truncate = pflags.contains(OpenFlags::TRUNCATE);
         let max = self.max_file;
         let read_location = location.clone();
-        let existing = on_pool(&self.factory, move |factory| {
+        let existing = on_pool_without_authz(&self.factory, move |factory| {
             let resources = factory.resource();
             match resources.stat(&read_location)? {
                 Some(stat) if !stat.is_file => {
@@ -309,7 +309,7 @@ impl russh_sftp::server::Handler for SftpFs {
     async fn close(&mut self, id: u32, handle: String) -> Result<Status, Self::Error> {
         match self.handles.remove(&handle) {
             Some(Open::Write { location, bytes }) => {
-                on_pool(&self.factory, move |factory| {
+                on_pool_without_authz(&self.factory, move |factory| {
                     factory.resource().write_bytes(&location, &bytes)
                 })
                 .await
@@ -323,7 +323,7 @@ impl russh_sftp::server::Handler for SftpFs {
 
     async fn remove(&mut self, id: u32, filename: String) -> Result<Status, Self::Error> {
         let (location, _) = self.location(&filename)?;
-        let removed = on_pool(&self.factory, move |factory| {
+        let removed = on_pool_without_authz(&self.factory, move |factory| {
             let resources = factory.resource();
             match resources.stat(&location)? {
                 Some(stat) if stat.is_file => resources.delete(&location),
@@ -342,7 +342,7 @@ impl russh_sftp::server::Handler for SftpFs {
 
     async fn mkdir(&mut self, id: u32, path: String, _attrs: FileAttributes) -> Result<Status, Self::Error> {
         let (location, _) = self.location(&path)?;
-        on_pool(&self.factory, move |factory| {
+        on_pool_without_authz(&self.factory, move |factory| {
             let resources = factory.resource();
             if resources.stat(&location)?.is_some() {
                 return Err(moqui_core::context::Error::new(format!("exists: {location}")));
@@ -359,7 +359,7 @@ impl russh_sftp::server::Handler for SftpFs {
         if shown == "/" {
             return Err(StatusCode::PermissionDenied.with_message("the SFTP root stays"));
         }
-        let removed = on_pool(&self.factory, move |factory| {
+        let removed = on_pool_without_authz(&self.factory, move |factory| {
             let resources = factory.resource();
             match resources.stat(&location)? {
                 Some(stat) if !stat.is_file => resources.delete(&location),
@@ -382,7 +382,7 @@ impl russh_sftp::server::Handler for SftpFs {
         if shown == "/" {
             return Err(StatusCode::PermissionDenied.with_message("the SFTP root stays"));
         }
-        on_pool(&self.factory, move |factory| {
+        on_pool_without_authz(&self.factory, move |factory| {
             let resources = factory.resource();
             if resources.stat(&to)?.is_some() {
                 return Err(moqui_core::context::Error::new(format!("exists: {to}")));

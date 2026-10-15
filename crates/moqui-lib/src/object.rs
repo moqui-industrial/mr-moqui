@@ -928,10 +928,11 @@ fn parse_offset(input: &str) -> Option<i32> {
 }
 
 fn take_n_digits(input: &str, n: usize) -> Option<(u32, &str)> {
-    if input.len() < n || !input[..n].chars().all(|ch| ch.is_ascii_digit()) {
+    let head = input.get(..n)?;
+    if !head.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
-    Some((input[..n].parse().ok()?, &input[n..]))
+    Some((head.parse().ok()?, &input[n..]))
 }
 
 fn frac_to_nano(digits: &str) -> Option<i32> {
@@ -1109,5 +1110,33 @@ mod tests {
         let start = parse_timestamp("2020-01-31T00:00:00Z", &TimeZone::UTC).unwrap();
         let next = add_period(start, 1, period_unit("TF_mon").unwrap()).unwrap();
         assert_eq!(next.to_zoned(TimeZone::UTC).date(), Date::new(2020, 2, 29).unwrap());
+    }
+
+    #[test]
+    fn non_ascii_date_time_text_is_rejected() {
+        for text in [
+            "1é",
+            "é",
+            "1é:00",
+            "12:é0",
+            "12:0é",
+            "12:00:0é",
+            "１２:００",
+            "10:30 ｐｍ",
+        ] {
+            assert_eq!(parse_time(text), None, "{text}");
+        }
+        for text in ["2024-01-0é", "é/01/2024", "2024-01-01 1é", "２０２４-01-01"] {
+            assert_eq!(parse_date(text), None, "{text}");
+        }
+        for text in [
+            "2024-01-01 1é",
+            "2024-01-01 12:é0",
+            "2024-01-01 12:00:0é",
+            "2024-01-01T12:00:00+é:00",
+            "2024-01-01 12:00:00.1é",
+        ] {
+            assert_eq!(parse_timestamp(text, &TimeZone::UTC), None, "{text}");
+        }
     }
 }

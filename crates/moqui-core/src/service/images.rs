@@ -26,14 +26,16 @@
 //! retry did, and `contentLocation` names that file.
 //!
 //! Differences from Java: each width is resampled from the original, where Java resampled each from the one before;
-//! the writes run in the call, where Java started a service for each; and `write#Image` takes the image as encoded bytes
-//! in `image`, where Java took an `IIOImage`.
+//! an image narrower than a width keeps its size, where Java scaled it up; the input and output sizes are limited
+//! (see [`MAX_INPUT_SIDE`], [`MAX_OUTPUT_SIDE`] and [`MAX_OUTPUT_PIXELS`]), where Java had none; the writes run in the
+//! call, where Java started a service for each; and `write#Image` takes the image as encoded bytes in `image`, where
+//! Java took an `IIOImage`.
 
 use std::collections::BTreeMap;
 use std::io::Cursor;
 
 use ::image::imageops::FilterType;
-use ::image::{DynamicImage, ImageFormat, ImageReader};
+use ::image::{DynamicImage, ImageFormat, ImageReader, Limits};
 use moqui_lib::error::Error as LibError;
 use moqui_lib::object::{is_empty, to_plain_string, Value};
 
@@ -57,6 +59,13 @@ const MIME_TYPES: [&str; 6] = [
     "image/webp",
     "image/bmp",
 ];
+
+/// The widest or tallest image the decoder takes. The decoder's default allocation limit (512 MiB) holds as well.
+const MAX_INPUT_SIDE: u32 = 30_000;
+/// The widest or tallest resized image: WebP's limit, so every listed writer takes it.
+const MAX_OUTPUT_SIDE: u32 = 16_383;
+/// The most pixels in a resized image, 200 MB as RGBA.
+const MAX_OUTPUT_PIXELS: u64 = 50_000_000;
 
 /// The outputs of `convert#Image`: the parameter suffix and the width parameter (none for the original).
 const OUTPUTS: [(&str, Option<(&str, u32)>); 5] = [
@@ -147,9 +156,13 @@ fn input_bytes(parameters: &BTreeMap<String, Value>, name: &str, location_name: 
 
 /// Decode an image, and the name of its format as a file suffix.
 fn decode(bytes: &[u8]) -> Result<(DynamicImage, String), LibError> {
-    let reader = ImageReader::new(Cursor::new(bytes))
+    let mut reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|err| LibError::new(format!("Could not read image: {err}")))?;
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_INPUT_SIDE);
+    limits.max_image_height = Some(MAX_INPUT_SIDE);
+    reader.limits(limits);
     let format = reader.format().ok_or_else(|| {
         LibError::new("No reader for the image: its format is not one of jpg, png, gif, tiff, webp, bmp")
     })?;
@@ -213,11 +226,22 @@ fn on_white(image: &DynamicImage) -> DynamicImage {
     DynamicImage::ImageRgb8(rgb)
 }
 
-/// `width` wide, with the height that keeps the aspect ratio (the integer division Java did).
-fn resized(image: &DynamicImage, width: u32) -> DynamicImage {
-    let height = u64::from(width) * u64::from(image.height()) / u64::from(image.width().max(1));
-    let height = u32::try_from(height).unwrap_or(u32::MAX).max(1);
-    image.resize_exact(width, height, FilterType::Triangle)
+/// `width` wide, with the height that keeps the aspect ratio (the integer division Java did). An image no wider than
+/// `width` keeps its size. A size past [`MAX_OUTPUT_SIDE`] a side or [`MAX_OUTPUT_PIXELS`] in all is an error.
+fn resized(image: &DynamicImage, width: u32) -> Result<DynamicImage, LibError> {
+    let (from_width, from_height) = (image.width(), image.height());
+    let width = width.min(from_width).max(1);
+    let height = (u64::from(width) * u64::from(from_height) / u64::from(from_width.max(1))).max(1);
+    if width > MAX_OUTPUT_SIDE || height > u64::from(MAX_OUTPUT_SIDE) || u64::from(width) * height > MAX_OUTPUT_PIXELS {
+        return Err(LibError::new(format!(
+            "Image of {from_width}x{from_height} would resize to {width}x{height}, past the limit of {MAX_OUTPUT_SIDE} pixels a side and {MAX_OUTPUT_PIXELS} in all"
+        )));
+    }
+    let height = height as u32;
+    if (width, height) == (from_width, from_height) {
+        return Ok(image.clone());
+    }
+    Ok(image.resize_exact(width, height, FilterType::Triangle))
 }
 
 fn put_bytes(location: &str, bytes: &[u8]) -> Result<(), LibError> {
@@ -291,7 +315,7 @@ fn convert_image(parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String
                 };
                 write_image(&image, &location, format, &input_format, true)?
             }
-            Some(width) => write_image(&resized(&image, width), &location, &output_format, &input_format, true)?,
+            Some(width) => write_image(&resized(&image, width)?, &location, &output_format, &input_format, true)?,
         };
         out.insert(format!("contentLocation{suffix}"), Value::String(written));
     }
@@ -344,8 +368,26 @@ mod tests {
     fn decode_finds_the_format_and_resize_keeps_the_aspect_ratio() {
         let (image, format) = decode(&png_with_alpha()).unwrap();
         assert_eq!(format, "png");
-        let small = resized(&image, 10);
+        let small = resized(&image, 10).unwrap();
         assert_eq!((small.width(), small.height()), (10, 5));
+        // never wider than the original
+        let same = resized(&image, 2160).unwrap();
+        assert_eq!((same.width(), same.height()), (40, 20));
+    }
+
+    #[test]
+    fn a_tall_thin_image_is_refused_not_allocated() {
+        // the review's case: 1x60000 at the default large width asked for 2160x129600000
+        let tall = DynamicImage::ImageLuma8(::image::GrayImage::new(1, 60_000));
+        let err = resized(&tall, 2160).unwrap_err();
+        assert!(err.message().contains("past the limit"), "{}", err.message());
+        let wide = DynamicImage::ImageLuma8(::image::GrayImage::new(20_000, 1));
+        assert!(resized(&wide, 20_000).is_err());
+        // the decoder refuses a side past its limit before allocating
+        let mut out = Cursor::new(Vec::new());
+        tall.write_to(&mut out, ImageFormat::Png).unwrap();
+        let err = decode(&out.into_inner()).unwrap_err();
+        assert!(err.message().contains("Could not read image"), "{}", err.message());
     }
 
     #[test]

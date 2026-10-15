@@ -75,6 +75,9 @@ fn search_benchmarks() {
     }
 }
 
+/// A named search, and the request for each round.
+type Case<'a> = (&'a str, Box<dyn Fn(usize) -> SearchRequest + 'a>);
+
 fn run(backend: &dyn SearchBackend, corpus: &Corpus, driver: Option<&dyn DbDriver>) {
     let mapping = mapping();
     let _ = backend.drop_index(&mapping);
@@ -141,7 +144,7 @@ fn run(backend: &dyn SearchBackend, corpus: &Corpus, driver: Option<&dyn DbDrive
     let rounds = 50;
     let pick = |words: &[String], round: usize| words[round % words.len()].clone();
     let lexical = |text: String| query(&format!(r#"{{"text": {{"terms": "{text}"}}}}"#));
-    let cases: Vec<(&str, Box<dyn Fn(usize) -> SearchRequest + '_>)> = vec![
+    let cases: Vec<Case<'_>> = vec![
         (
             "broad lexical (a common word)",
             Box::new(|round| SearchRequest::new(lexical(pick(common, round)))),
@@ -257,7 +260,7 @@ impl Corpus {
             sum += 1.0 / rank as f64;
             cumulative.push(sum);
         }
-        let mut draw = |random: &mut Random| {
+        let draw = |random: &mut Random| {
             let target = random.unit() * sum;
             let index = cumulative
                 .partition_point(|weight| *weight < target)

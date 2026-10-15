@@ -420,7 +420,7 @@ impl MNode {
             out.push('>');
             if let Some(text) = text {
                 out.push_str("<![CDATA[");
-                out.push_str(&text);
+                out.push_str(&text.replace("]]>", "]]]]><![CDATA[>"));
                 out.push_str("]]>");
             }
             if !children.is_empty() {
@@ -493,6 +493,16 @@ mod tests {
         assert!(root.same_structure(&again));
         assert_eq!(again.text().as_deref(), Some("a < b & c"));
         assert_eq!(again.attributes()[0].0, "b");
+    }
+
+    #[test]
+    fn writer_splits_cdata_end_in_text() {
+        let root = MNode::parse_text("t.xml", "<root>a ]]&gt; b]]&gt;<child/></root>").unwrap();
+        assert_eq!(root.text().as_deref(), Some("a ]]> b]]>"));
+        let written = root.write_string();
+        let again = MNode::parse_text("t.xml", &written).unwrap();
+        assert_eq!(again.text().as_deref(), Some("a ]]> b]]>"), "{written}");
+        assert_eq!(again.children().len(), 1);
     }
 
     #[test]

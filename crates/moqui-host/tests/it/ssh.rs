@@ -15,7 +15,7 @@
 //! SSH and SFTP on the seeded embedded Postgres, with the server as its own SFTP peer: the built-in sshd serves a
 //! `dbresource://` root, the SFTP client logs in with a password and with a `UserSshKey`, the `moqui-sftp` services send
 //! a SystemMessage and poll it back, the host key is trusted on first use and a changed key is refused, and the admin
-//! shell runs for a user with `SSH_SHELL` and refuses one without.
+//! shell runs for a user with `SSH_SHELL`, refuses one without, and checks artifact authorization for the user.
 
 #![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
 
@@ -49,6 +49,11 @@ fn data(user_key: &PrivateKey) -> String {
     <moqui.security.UserGroup userGroupId="SFTP_ONLY" description="SFTP only"/>
     <moqui.security.UserGroupMember userGroupId="SFTP_ONLY" userId="SFTP_ONLY" fromDate="1265184000000"/>
     <moqui.security.UserGroupPermission userGroupId="SFTP_ONLY" userPermissionId="SSH_SFTP" fromDate="1265184000000"/>
+    <moqui.security.UserAccount userId="SHELL_ONLY" username="shell.only" userFullName="Shell Only"
+        currentPassword="16ac58bbfa332c1c55bd98b53e60720bfa90d394" passwordHashType="SHA"/>
+    <moqui.security.UserGroup userGroupId="SHELL_ONLY" description="SSH shell, no artifact authorization"/>
+    <moqui.security.UserGroupMember userGroupId="SHELL_ONLY" userId="SHELL_ONLY" fromDate="1265184000000"/>
+    <moqui.security.UserGroupPermission userGroupId="SHELL_ONLY" userPermissionId="SSH_SHELL" fromDate="1265184000000"/>
     <moqui.security.UserAccount userId="NO_SSH" username="no.ssh" userFullName="No SSH"
         currentPassword="16ac58bbfa332c1c55bd98b53e60720bfa90d394" passwordHashType="SHA"/>
 
@@ -349,6 +354,38 @@ fn sftp_and_the_admin_shell_run_on_the_built_in_server() {
     let mut sftp_only = SftpClient::new(&host, "sftp.only", None).unwrap();
     sftp_only.password("moqui").connect().unwrap();
     sftp_only.close();
+    // A shell user's commands run as that user: with no artifact authorization, entity and service calls are refused.
+    let (out, status) = exec(address, "shell.only", "moqui", "status").unwrap();
+    assert_eq!(status, 0, "{out}");
+    let (out, status) = exec(
+        address,
+        "shell.only",
+        "moqui",
+        "entity moqui.security.UserAccount {\"username\": \"john.doe\"}",
+    )
+    .unwrap();
+    assert_eq!(status, 1, "{out}");
+    assert!(out.contains("not authorized"), "{out}");
+    let (out, status) = exec(
+        address,
+        "shell.only",
+        "moqui",
+        "service update#moqui.security.UserAccount {\"userId\": \"SHELL_ONLY\", \"userFullName\": \"Changed\"}",
+    )
+    .unwrap();
+    assert_eq!(status, 1, "{out}");
+    assert!(out.contains("not authorized"), "{out}");
+    let name = factory
+        .entity()
+        .unwrap()
+        .find("moqui.security.UserAccount")
+        .unwrap()
+        .disable_authz()
+        .eq("userId", Value::string("SHELL_ONLY"))
+        .one()
+        .unwrap()
+        .and_then(|row| row.get("userFullName").map(to_plain_string));
+    assert_eq!(name.as_deref(), Some("Shell Only"));
 
     // A server whose key changed is refused: the known_hosts line now names another key.
     let text = std::fs::read_to_string(&known_hosts).unwrap();
