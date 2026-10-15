@@ -32,7 +32,6 @@ pub use cache::CacheFacade;
 pub use component::ComponentInfo;
 pub use conf::{load_merged_conf, merge_component_confs, merge_conf};
 pub use error::{DeniedArtifact, Error, ErrorKind};
-#[cfg(feature = "cluster-tls")]
 pub use factory::{BootOptions, ContextGuard, ExecutionContext, ExecutionContextFactory, Executor};
 pub(crate) use hits::{secret_parameter, Hit};
 pub use locate::{framework_dir, locate};

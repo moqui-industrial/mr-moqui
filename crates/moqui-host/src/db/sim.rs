@@ -180,4 +180,5 @@ mod overlay {
     }
 }
 
+#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
 pub use overlay::SimOverlay;
