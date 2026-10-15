@@ -16,6 +16,8 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::marker::PhantomData;
+use std::panic::{AssertUnwindSafe, Location};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -45,6 +47,8 @@ struct Frame {
     deadline: Instant,
     conn: Rc<RefCell<Option<PooledConn>>>,
     suspended: bool,
+    /// Set by a `force_new` that suspended the frame below, which this frame's end resumes.
+    resumes_parent: bool,
     rollback_only: Option<RollbackInfo>,
     cache_hold: bool,
     fired: Arc<AtomicBool>,
@@ -55,13 +59,20 @@ struct Frame {
     on_rollback: Vec<AfterHook>,
 }
 
+impl Drop for Frame {
+    fn drop(&mut self) {
+        unregister_deadline(self.deadline_token);
+    }
+}
+
 struct RollbackInfo {
     message: String,
     error: Option<Error>,
-    callsite: &'static std::panic::Location<'static>,
+    callsite: &'static Location<'static>,
 }
 
 struct Phase {
+    token: u64,
     conn: Rc<RefCell<Option<PooledConn>>>,
     cache_flush: Vec<ConnHook>,
     feed_insert: Vec<ConnHook>,
@@ -177,16 +188,29 @@ impl TransactionManager {
         self.inner.pool.check_caps(request_cap, service_cap)
     }
 
-    /// Records the deadline and pushes a frame. Does not check out a connection.
+    /// Records the deadline and pushes a frame, or joins the active one. Does not check out a connection.
     ///
-    /// Returns `true` when this call began the transaction. Returns `false` when this thread
-    /// already has an active frame. Commit and rollback run only for the call that returned `true`.
-    /// `timeout` defaults to 60 seconds and is not changed when this call joins.
+    /// Returns `true` when this call began the transaction, and `false` when it joined the frame
+    /// already active on this thread. Each `begin`, joined or not, is ended by exactly one
+    /// [`Self::commit`] or [`Self::rollback`]: for a joined call these give the join back, and a joined
+    /// rollback also marks the frame rollback-only, as Java's `rollback(beganTransaction = false)`.
+    /// [`Self::scope`] and [`Self::run`] pair the calls. `timeout` defaults to 60 seconds and is not
+    /// changed when this call joins.
     pub fn begin(&self, timeout: Option<Duration>) -> Result<bool, Error> {
+        self.begin_frame(timeout, false)
+    }
+
+    /// [`Self::begin`] in a guard: dropping the scope without [`TxScope::commit`] rolls back a frame it
+    /// began, or marks a joined frame rollback-only, and gives the join back.
+    pub fn scope(&self, timeout: Option<Duration>) -> Result<TxScope, Error> {
+        let began = self.begin(timeout)?;
+        self.scope_after(began)
+    }
+
+    fn begin_frame(&self, timeout: Option<Duration>, resumes_parent: bool) -> Result<bool, Error> {
         let timeout = timeout.unwrap_or(DEFAULT_TIMEOUT);
         self.with_frames(|frames| {
-            if active_mut(frames).is_some() {
-                let frame = active_mut(frames).expect("active frame");
+            if let Some(frame) = active_mut(frames) {
                 frame.join_depth += 1;
                 return Ok(false);
             }
@@ -199,6 +223,7 @@ impl TransactionManager {
                 deadline,
                 conn: Rc::new(RefCell::new(None)),
                 suspended: false,
+                resumes_parent,
                 rollback_only: None,
                 cache_hold: false,
                 fired,
@@ -213,7 +238,8 @@ impl TransactionManager {
     }
 
     /// Runs `body` under `attr`. A begun frame commits on success and rolls back on error.
-    /// A joined frame pops its join and, on error, marks the outer frame rollback-only.
+    /// A joined frame pops its join and, on error, marks the outer frame rollback-only. The frame
+    /// ended is checked to be the one begun or joined, as for [`TxScope`].
     pub fn run<T, F>(&self, attr: TransactionAttribute, timeout: Option<Duration>, body: F) -> Result<T, Error>
     where
         F: FnOnce() -> Result<T, Error>,
@@ -228,8 +254,13 @@ impl TransactionManager {
         }
     }
 
+    /// Ends the innermost `begin` on this thread. A joined call gives its join back and does nothing else.
+    ///
+    /// For the call that began the frame: runs the cache-flush and feed-insert hooks, commits, returns the
+    /// connection, then runs the on-commit hooks. A frame marked rollback-only rolls back instead, runs the
+    /// on-rollback hooks, and returns an error.
     pub fn commit(&self) -> Result<(), Error> {
-        match self.prepare()? {
+        match self.prepare(None)? {
             Prepared::Joined => Ok(()),
             Prepared::Ready {
                 rollback_only: Some(info),
@@ -256,8 +287,12 @@ impl TransactionManager {
         }
     }
 
+    /// Ends the innermost `begin` on this thread. For the call that began the frame, rolls back, returns the
+    /// connection, and runs the on-rollback hooks. A joined call marks the frame rollback-only and gives its
+    /// join back, so the owner's commit rolls back.
+    #[track_caller]
     pub fn rollback(&self) -> Result<(), Error> {
-        match self.prepare()? {
+        match self.prepare(Some(Location::caller()))? {
             Prepared::Joined => Ok(()),
             Prepared::Ready { phase, .. } => self.complete(*phase, false),
         }
@@ -317,7 +352,7 @@ impl TransactionManager {
             let info = RollbackInfo {
                 message: message.clone(),
                 error: Some(Error::new(message)),
-                callsite: std::panic::Location::caller(),
+                callsite: Location::caller(),
             };
             drop(borrow);
             let _ = self.mark_rollback_only(info);
@@ -379,7 +414,8 @@ impl TransactionManager {
         })
     }
 
-    /// Suspends the current frame when it has a client, then begins a frame.
+    /// Suspends the active frame, if any, then begins a frame. Ending the new frame resumes the one this
+    /// call suspended, and only that one.
     ///
     /// The park budget counts this thread's parked clients on this pool, not other threads'.
     /// See [`Self::park_budget`].
@@ -391,10 +427,8 @@ impl TransactionManager {
         if self.stream_open() {
             return Err(Error::new("an open stream is the enlisted connection"));
         }
-        if self.has_active() {
-            self.suspend()?;
-        }
-        self.begin(timeout)
+        let suspended = self.has_active() && self.suspend()?;
+        self.begin_frame(timeout, suspended)
     }
 
     /// Parked clients one thread may hold on this pool: every ordinary connection but the one the
@@ -506,7 +540,7 @@ impl TransactionManager {
                     frame.rollback_only = Some(RollbackInfo {
                         message: "transaction deadline exceeded".to_string(),
                         error: None,
-                        callsite: std::panic::Location::caller(),
+                        callsite: Location::caller(),
                     });
                     tracing::warn!("transaction deadline exceeded");
                 }
@@ -544,34 +578,49 @@ impl TransactionManager {
         } else {
             rollback_enlisted(&phase.conn)
         };
+        // The deadline slot holds this connection's canceller: clear it before the connection goes back.
+        unregister_deadline(phase.token);
         return_conn(&phase.conn);
-        self.pop_active()?;
-        let hook_result = {
-            let _resume = ResumeOnDrop { mgr: self };
-            if result.is_ok() && commit {
-                for hook in phase.on_commit.drain(..) {
-                    hook();
-                }
-            } else {
-                for hook in phase.on_rollback.drain(..) {
-                    hook();
-                }
-            }
-            result
+        let resumes_parent = self.pop_active()?;
+        let _resume = ResumeOnDrop {
+            mgr: self,
+            armed: resumes_parent,
         };
-        hook_result
+        if result.is_ok() && commit {
+            for hook in phase.on_commit.drain(..) {
+                hook();
+            }
+        } else {
+            for hook in phase.on_rollback.drain(..) {
+                hook();
+            }
+        }
+        result
     }
 
-    fn prepare(&self) -> Result<Prepared, Error> {
+    /// Takes the active frame's end apart. A joined frame only gives its join back; `rollback_at`, the
+    /// callsite of a rollback, also marks it rollback-only.
+    fn prepare(&self, rollback_at: Option<&'static Location<'static>>) -> Result<Prepared, Error> {
         self.absorb_deadline();
         self.with_frames(|frames| {
             let frame = active_mut(frames).ok_or_else(|| Error::new("no transaction in place"))?;
             if frame.join_depth > 0 {
                 frame.join_depth -= 1;
+                if let Some(callsite) = rollback_at {
+                    if frame.rollback_only.is_none() {
+                        frame.rollback_only = Some(RollbackInfo {
+                            message: "rollback in a joined transaction".to_string(),
+                            error: None,
+                            callsite,
+                        });
+                        tracing::warn!("transaction set rollback-only");
+                    }
+                }
                 return Ok(Prepared::Joined);
             }
             let rollback_only = frame.rollback_only.take();
             let phase = Phase {
+                token: frame.deadline_token,
                 conn: Rc::clone(&frame.conn),
                 cache_flush: std::mem::take(&mut frame.cache_flush),
                 feed_insert: std::mem::take(&mut frame.feed_insert),
@@ -585,18 +634,18 @@ impl TransactionManager {
         })
     }
 
-    fn pop_active(&self) -> Result<(), Error> {
-        let token = self.with_frames(|frames| match frames.last() {
+    /// Pops the active frame, which unregisters its deadline. Returns whether ending it resumes the frame below.
+    fn pop_active(&self) -> Result<bool, Error> {
+        let (token, resumes_parent) = self.with_frames(|frames| match frames.last() {
             Some(frame) if !frame.suspended => {
-                let token = frame.deadline_token;
+                let ended = (frame.deadline_token, frame.resumes_parent);
                 frames.pop();
-                Ok(token)
+                Ok(ended)
             }
             _ => Err(Error::new("no transaction in place")),
         })?;
-        unregister_deadline(token);
         self.clear_frame_locks(token);
-        Ok(())
+        Ok(resumes_parent)
     }
 
     fn push_conn_hook(&self, kind: HookKind, hook: ConnHook) -> Result<(), Error> {
@@ -707,7 +756,7 @@ impl TransactionManager {
         let info = RollbackInfo {
             message,
             error,
-            callsite: std::panic::Location::caller(),
+            callsite: Location::caller(),
         };
         let stored = self.mark_rollback_only(info)?;
         if stored {
@@ -755,34 +804,112 @@ impl TransactionManager {
         } else {
             self.begin(timeout)?
         };
+        // The scope rolls back, or poisons a joined frame, when the body unwinds.
+        let scope = self.scope_after(began)?;
         // As Java `initTransactionCache`: the frame keeps the cache once this call returns, even when
         // this call joined. Held rows would otherwise flush after later direct writes to the same rows.
         if cache && self.inner.use_transaction_cache.load(Ordering::Relaxed) {
             self.set_cache_hold(true)?;
         }
-        let mut guard = UnwindGuard {
-            mgr: self,
-            began,
-            armed: true,
-        };
-        let result = body();
-        guard.armed = false;
-        match result {
+        match body() {
             Ok(value) => {
-                self.commit()?;
+                scope.commit()?;
                 Ok(value)
             }
             Err(err) => {
-                if began {
-                    let _ = self.rollback();
-                } else {
-                    let message = err.to_string();
-                    let _ = self.store_rollback(message, None);
-                    let _ = self.commit();
+                if let Err(ended) = scope.end(Some(err.to_string())) {
+                    tracing::warn!(error = %ended, cause = %err, "rollback after an error failed");
                 }
                 Err(err)
             }
         }
+    }
+
+    fn scope_after(&self, began: bool) -> Result<TxScope, Error> {
+        let mark = self.with_frames(|frames| {
+            active(frames).map(|frame| FrameMark {
+                token: frame.deadline_token,
+                join_depth: frame.join_depth,
+                began,
+            })
+        });
+        let mark = mark.ok_or_else(|| Error::new("no transaction in place"))?;
+        Ok(TxScope {
+            mgr: self.clone(),
+            mark,
+            ended: false,
+            _thread: PhantomData,
+        })
+    }
+
+    /// Ends the `begin` that `mark` records: commits when `rollback` is `None`, and otherwise rolls back a
+    /// begun frame, or marks a joined one rollback-only with that message and gives the join back.
+    fn end_frame(&self, mark: FrameMark, rollback: Option<String>) -> Result<(), Error> {
+        self.restore_frame(mark)?;
+        match rollback {
+            None => self.commit(),
+            Some(_) if mark.began => self.rollback(),
+            Some(message) => {
+                self.store_rollback(message, None)?;
+                self.rollback()
+            }
+        }
+    }
+
+    /// Puts the frame `mark` records back on top, as it was, when the body left the stack otherwise: rolls
+    /// back frames begun above it and not ended, resumes frames left suspended, and resets its join depth.
+    /// Anything out of place is logged as an error and marks the frame rollback-only. Errors, and changes
+    /// nothing, when the frame itself was ended.
+    fn restore_frame(&self, mark: FrameMark) -> Result<(), Error> {
+        let mut misplaced = false;
+        loop {
+            // Whether the frame is on top, and whether the top frame is suspended.
+            let place = self.with_frames(|frames| {
+                let at = frames.iter().rposition(|frame| frame.deadline_token == mark.token)?;
+                Some((at + 1 == frames.len(), frames.last().is_some_and(|frame| frame.suspended)))
+            });
+            match place {
+                None => {
+                    tracing::error!("transaction frame was ended by code inside its scope");
+                    return Err(Error::new("transaction frame was ended by code inside its scope"));
+                }
+                Some((true, false)) => break,
+                Some((_, true)) => {
+                    misplaced = true;
+                    self.resume()?;
+                }
+                Some((false, false)) => {
+                    misplaced = true;
+                    let before = self.depth();
+                    self.with_frames(|frames| {
+                        if let Some(frame) = active_mut(frames) {
+                            frame.join_depth = 0;
+                        }
+                    });
+                    self.store_rollback("transaction begun and not ended inside a scope".to_string(), None)?;
+                    if let Err(err) = self.rollback() {
+                        tracing::warn!(error = %err, "rollback of a transaction left open failed");
+                    }
+                    if self.depth() >= before {
+                        return Err(Error::new("could not end a transaction left open inside a scope"));
+                    }
+                }
+            }
+        }
+        let joins_moved = self.with_frames(|frames| {
+            let frame = active_mut(frames)?;
+            let moved = frame.join_depth != mark.join_depth;
+            frame.join_depth = mark.join_depth;
+            Some(moved)
+        });
+        if misplaced || joins_moved == Some(true) {
+            tracing::error!(
+                began = mark.began,
+                "transaction stack left out of order inside a scope; marking it rollback-only"
+            );
+            self.store_rollback("transaction stack left out of order inside a scope".to_string(), None)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn set_cache_hold(&self, hold: bool) -> Result<(), Error> {
@@ -853,7 +980,7 @@ impl TransactionManager {
 
     #[track_caller]
     fn absorb_deadline(&self) {
-        let callsite = std::panic::Location::caller();
+        let callsite = Location::caller();
         self.with_frames(|frames| {
             for frame in frames.iter_mut() {
                 if !frame.fired.load(Ordering::SeqCst) || frame.rollback_only.is_some() {
@@ -917,25 +1044,63 @@ enum HookKind {
     Rollback,
 }
 
-/// Rolls back a frame that `run` began, or poisons the joined one, when the body unwinds.
-struct UnwindGuard<'a> {
-    mgr: &'a TransactionManager,
+/// The frame a scope began or joined, and its join depth just after.
+#[derive(Clone, Copy)]
+struct FrameMark {
+    token: u64,
+    join_depth: u32,
     began: bool,
-    armed: bool,
 }
 
-impl Drop for UnwindGuard<'_> {
+/// One [`TransactionManager::begin`], ended by [`Self::commit`] or [`Self::rollback`]. Dropped without
+/// either, it rolls back a frame it began, or marks a joined frame rollback-only, and gives the join back.
+///
+/// Ending checks that the frame is the one the scope began or joined, on top and at its join depth. When
+/// code inside left frames or joins open, they are rolled back, the frame is marked rollback-only, and an
+/// error is logged. Not `Send`: the frame is on this thread's stack.
+#[must_use = "dropping the scope rolls it back"]
+pub struct TxScope {
+    mgr: TransactionManager,
+    mark: FrameMark,
+    ended: bool,
+    _thread: PhantomData<*const ()>,
+}
+
+impl TxScope {
+    /// True when this scope began the transaction, false when it joined the one in place.
+    pub fn began(&self) -> bool {
+        self.mark.began
+    }
+
+    /// Commits the frame this scope began. A joined scope gives its join back.
+    pub fn commit(self) -> Result<(), Error> {
+        self.end(None)
+    }
+
+    /// Rolls back the frame this scope began. A joined scope marks the frame rollback-only and gives its
+    /// join back.
+    pub fn rollback(self) -> Result<(), Error> {
+        self.end(Some("rollback in a joined transaction".to_string()))
+    }
+
+    fn end(mut self, rollback: Option<String>) -> Result<(), Error> {
+        self.ended = true;
+        self.mgr.end_frame(self.mark, rollback)
+    }
+}
+
+impl Drop for TxScope {
     fn drop(&mut self) {
-        if !self.armed {
+        if self.ended {
             return;
         }
-        if self.began {
-            if let Err(err) = self.mgr.rollback() {
-                tracing::warn!(error = %err, "rollback after a panic failed");
-            }
+        let message = if std::thread::panicking() {
+            "body panicked"
         } else {
-            let _ = self.mgr.store_rollback("body panicked".to_string(), None);
-            let _ = self.mgr.commit();
+            "transaction scope dropped without commit"
+        };
+        if let Err(err) = self.mgr.end_frame(self.mark, Some(message.to_string())) {
+            tracing::warn!(error = %err, "rollback of a dropped transaction scope failed");
         }
     }
 }
@@ -955,13 +1120,17 @@ impl Drop for ResumeGuard<'_> {
     }
 }
 
+/// Resumes the frame a `force_new` frame suspended, after that frame's hooks, even when one panics.
 struct ResumeOnDrop<'a> {
     mgr: &'a TransactionManager,
+    armed: bool,
 }
 
 impl Drop for ResumeOnDrop<'_> {
     fn drop(&mut self) {
-        self.mgr.resume_parked_parent();
+        if self.armed {
+            self.mgr.resume_parked_parent();
+        }
     }
 }
 
@@ -988,11 +1157,11 @@ fn try_commit(phase: &mut Phase) -> Result<(), Error> {
         return Err(Error::new("no connection enlisted"));
     }
     if let Err(err) = run_conn_hooks(&phase.conn, std::mem::take(&mut phase.cache_flush)) {
-        let _ = rollback_enlisted(&phase.conn);
+        rollback_after_failure(&phase.conn);
         return Err(err);
     }
     if let Err(err) = run_conn_hooks(&phase.conn, std::mem::take(&mut phase.feed_insert)) {
-        let _ = rollback_enlisted(&phase.conn);
+        rollback_after_failure(&phase.conn);
         return Err(err);
     }
     let committed = {
@@ -1001,19 +1170,36 @@ fn try_commit(phase: &mut Phase) -> Result<(), Error> {
         pooled.conn().commit()
     };
     if let Err(err) = committed {
-        let _ = rollback_enlisted(&phase.conn);
+        rollback_after_failure(&phase.conn);
         return Err(Error::new("commit failed").with_source(err));
     }
     Ok(())
 }
 
+/// Runs the hooks in order on the enlisted connection. A panicking hook is an error, so the frame still ends.
 fn run_conn_hooks(conn: &Rc<RefCell<Option<PooledConn>>>, hooks: Vec<ConnHook>) -> Result<(), Error> {
     for hook in hooks {
         let mut slot = conn.borrow_mut();
         let pooled = slot.as_mut().ok_or_else(|| Error::new("no connection enlisted"))?;
-        hook(pooled.conn())?;
+        match std::panic::catch_unwind(AssertUnwindSafe(|| hook(pooled.conn()))) {
+            Ok(result) => result?,
+            Err(payload) => {
+                let text = payload
+                    .downcast_ref::<&str>()
+                    .map(|text| (*text).to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                return Err(Error::new(format!("commit hook panicked: {text}")));
+            }
+        }
     }
     Ok(())
+}
+
+fn rollback_after_failure(conn: &Rc<RefCell<Option<PooledConn>>>) {
+    if let Err(err) = rollback_enlisted(conn) {
+        tracing::warn!(error = %err, "rollback after a failed commit failed");
+    }
 }
 
 fn rollback_enlisted(conn: &Rc<RefCell<Option<PooledConn>>>) -> Result<(), Error> {
@@ -1099,6 +1285,13 @@ fn register_deadline(token: u64, when: Instant, fired: Arc<AtomicBool>) {
         fired,
         cancel: Mutex::new(None),
     });
+}
+
+/// True while the deadline timer has a slot for the frame `token` names.
+#[cfg(test)]
+pub(super) fn deadline_registered(token: u64) -> bool {
+    let slots = deadlines().lock().unwrap_or_else(|err| err.into_inner());
+    slots.iter().any(|slot| slot.token == token)
 }
 
 fn unregister_deadline(token: u64) {

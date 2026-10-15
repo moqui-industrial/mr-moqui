@@ -552,6 +552,7 @@ mod tests {
         Arc::clone(ExecutionContextFactory::test_context().factory())
     }
 
+    /// Leaves a frame open on purpose, with no scope, for the pool's end-of-job cleanup to end.
     fn enlist(manager: &TransactionManager) -> Result<(), Error> {
         manager.begin(None)?;
         manager.with_connection(|_| Ok(()))?;

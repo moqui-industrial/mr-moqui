@@ -894,3 +894,154 @@ impl tracing::field::Visit for FieldVisit {
         let _ = write!(self.0, "{}={:?} ", field.name(), value);
     }
 }
+
+#[test]
+fn joined_rollback_marks_the_frame_rollback_only_and_gives_the_join_back() {
+    let (mgr, driver) = harness(small());
+    let _clean = Clean(&mgr);
+    assert!(mgr.begin(None).expect("outer"));
+    mgr.with_connection(|_| Ok(())).expect("enlist");
+    assert!(!mgr.begin(None).expect("join"));
+    mgr.rollback().expect("joined rollback");
+    assert!(mgr.in_transaction(), "the owner's frame is still in place");
+    assert_eq!(driver.event_count("rollback:"), 0);
+    let err = mgr.commit().expect_err("owner commit");
+    assert!(err.to_string().contains("rollback-only"), "{err}");
+    assert!(!mgr.in_transaction());
+    assert_eq!(driver.event_count("rollback:"), 1);
+    assert_eq!(driver.event_count("commit:"), 0);
+}
+
+#[test]
+fn a_dropped_scope_rolls_back_or_poisons_and_a_committed_one_ends_its_frame() {
+    let (mgr, driver) = harness(small());
+    let _clean = Clean(&mgr);
+    {
+        let scope = mgr.scope(None).expect("scope");
+        assert!(scope.began());
+        mgr.with_connection(|_| Ok(())).expect("enlist");
+    }
+    assert!(!mgr.in_transaction());
+    assert_eq!(driver.event_count("rollback:"), 1);
+
+    let outer = mgr.scope(None).expect("outer");
+    mgr.with_connection(|_| Ok(())).expect("enlist");
+    let joined = mgr.scope(None).expect("joined");
+    assert!(!joined.began());
+    joined.commit().expect("joined commit");
+    assert!(mgr.in_transaction());
+    {
+        let _dropped = mgr.scope(None).expect("joined again");
+    }
+    assert!(mgr.in_transaction(), "a dropped joined scope only gives its join back");
+    let err = outer.commit().expect_err("poisoned");
+    assert!(err.to_string().contains("rollback-only"), "{err}");
+    assert!(!mgr.in_transaction());
+    assert_eq!(driver.event_count("commit:"), 0);
+
+    let scope = mgr.scope(None).expect("again");
+    mgr.with_connection(|_| Ok(())).expect("enlist");
+    scope.commit().expect("commit");
+    assert!(!mgr.in_transaction());
+    assert_eq!(driver.event_count("commit:"), 1);
+}
+
+#[test]
+fn run_rolls_back_when_the_body_leaves_a_join_open() {
+    let (mgr, driver) = harness(small());
+    let _clean = Clean(&mgr);
+    let result = mgr.run(TransactionAttribute::UseOrBegin, None, || {
+        mgr.with_connection(|_| Ok(()))?;
+        // A joined begin the body never ends.
+        assert!(!mgr.begin(None)?);
+        Ok(())
+    });
+    let err = result.expect_err("out of order");
+    assert!(err.to_string().contains("rollback-only"), "{err}");
+    assert!(!mgr.in_transaction(), "no frame is left behind");
+    assert_eq!(driver.event_count("commit:"), 0);
+    assert_eq!(driver.event_count("rollback:"), 1);
+}
+
+#[test]
+fn run_rolls_back_a_frame_the_body_began_and_left_open() {
+    let (mgr, driver) = harness(small());
+    let _clean = Clean(&mgr);
+    let result = mgr.run(TransactionAttribute::UseOrBegin, None, || {
+        mgr.with_connection(|_| Ok(()))?;
+        assert!(mgr.force_new(None)?);
+        mgr.with_connection(|_| Ok(()))?;
+        Ok(())
+    });
+    assert!(result.is_err());
+    assert!(!mgr.in_transaction());
+    assert_eq!(driver.event_count("commit:"), 0);
+    assert_eq!(driver.event_count("rollback:"), 2);
+    assert_eq!(mgr.stats().parked, 0);
+    assert_eq!(mgr.stats().checked_out, 0);
+}
+
+#[test]
+fn ignore_suspend_stays_suspended_after_a_nested_transaction() {
+    let (mgr, driver) = harness(small());
+    let _clean = Clean(&mgr);
+    assert!(mgr.begin(None).expect("outer"));
+    let outer = mgr.with_connection(conn_id).expect("outer conn");
+    mgr.run(TransactionAttribute::IgnoreSuspend, None, || {
+        mgr.run(TransactionAttribute::UseOrBegin, None, || mgr.with_connection(|_| Ok(())))?;
+        assert!(!mgr.in_transaction(), "the outer transaction stays suspended");
+        assert_eq!(mgr.stats().parked, 1);
+        let direct = mgr.with_connection(|conn| {
+            conn.execute("direct", &[])?;
+            conn_id(conn)
+        })?;
+        assert_ne!(direct, outer, "the direct write does not join the outer transaction");
+        mgr.run(TransactionAttribute::ForceNew, None, || mgr.with_connection(|_| Ok(())))?;
+        assert!(!mgr.in_transaction());
+        Ok(())
+    })
+    .expect("ignore suspend");
+    assert!(mgr.in_transaction(), "resumed at the end");
+    assert_eq!(mgr.stats().parked, 0);
+    assert_eq!(mgr.with_connection(conn_id).expect("resumed"), outer);
+    mgr.commit().expect("outer commit");
+    assert_eq!(driver.event_count("commit:"), 3);
+}
+
+#[test]
+fn a_panicking_commit_hook_rolls_back_and_ends_the_frame() {
+    let (mgr, driver) = harness(small());
+    let _clean = Clean(&mgr);
+    assert!(mgr.begin(None).expect("begin"));
+    mgr.with_connection(|_| Ok(())).expect("enlist");
+    let token = mgr.frame_token().expect("token");
+    mgr.on_cache_flush(|_| panic!("flush hook failed")).expect("hook");
+    let err = mgr.commit().expect_err("hook panic");
+    assert!(err.to_string().contains("flush hook failed"), "{err}");
+    assert!(!mgr.in_transaction());
+    assert_eq!(driver.event_count("rollback:"), 1);
+    assert_eq!(driver.event_count("commit:"), 0);
+    assert_eq!(mgr.stats().checked_out, 0);
+    assert!(!super::manager::deadline_registered(token));
+}
+
+#[test]
+fn deadline_slots_leave_with_their_frames() {
+    let (mgr, _) = harness(small());
+    let _clean = Clean(&mgr);
+    assert!(mgr.begin(None).expect("begin"));
+    let token = mgr.frame_token().expect("token");
+    assert!(super::manager::deadline_registered(token));
+    mgr.commit().expect("commit");
+    assert!(!super::manager::deadline_registered(token));
+
+    // A thread that ends with its frame still on the stack.
+    let other = mgr.clone();
+    let token = std::thread::spawn(move || {
+        assert!(other.begin(None).expect("begin"));
+        other.frame_token().expect("token")
+    })
+    .join()
+    .expect("join");
+    assert!(!super::manager::deadline_registered(token));
+}

@@ -40,16 +40,33 @@ const AT_ENTITY: &str = "AT_ENTITY";
 static AUTHZ_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Entity writes call this. Only the authorization tables change the generation.
+///
+/// The generation moves at once, and again when the write's transaction commits: a session that
+/// reloaded in between read the rows from before the commit, and must not keep them.
 pub(crate) fn note_entity_write(entity_name: &str) {
-    if matches!(
+    if !matches!(
         entity_name,
         "moqui.security.ArtifactAuthz"
             | "moqui.security.ArtifactGroupMember"
             | "moqui.security.UserGroupMember"
             | "moqui.security.ArtifactTarpit"
     ) {
-        AUTHZ_GENERATION.fetch_add(1, Ordering::Relaxed);
+        return;
     }
+    bump_generation();
+    let tx = ExecutionContext::with_current(|ec| ec.factory().entity())
+        .flatten()
+        .and_then(|facade| facade.transactions_for(entity_name).ok())
+        .filter(crate::transaction::TransactionManager::in_transaction);
+    if let Some(tx) = tx {
+        if let Err(err) = tx.on_commit(bump_generation) {
+            tracing::warn!(error = %err, "could not move the authorization generation on commit");
+        }
+    }
+}
+
+fn bump_generation() {
+    AUTHZ_GENERATION.fetch_add(1, Ordering::Relaxed);
 }
 
 /// One row of `ArtifactAuthz` joined to a member of its artifact group.
@@ -502,6 +519,27 @@ fn with_cache<T>(body: impl FnOnce(&mut AuthzCache) -> T) -> T {
     })
 }
 
+/// What `read` finds in the session's cache, or else what `load` returns, kept by `store` only when the
+/// generation is still the one the load began under. A load that overlapped an authorization write is
+/// returned but not kept.
+fn cached<T: Clone>(
+    read: impl FnOnce(&AuthzCache) -> Option<T>,
+    load: impl FnOnce() -> Result<T, Error>,
+    store: impl FnOnce(&mut AuthzCache, T),
+) -> Result<T, Error> {
+    let (loaded_at, found) = with_cache(|cache| (cache.generation, read(cache)));
+    if let Some(found) = found {
+        return Ok(found);
+    }
+    let value = load()?;
+    with_cache(|cache| {
+        if cache.generation == loaded_at {
+            store(cache, value.clone());
+        }
+    });
+    Ok(value)
+}
+
 /// The current user's groups, `ALL_USERS` included, as `ec.user.userGroupIdSet`.
 ///
 /// # Errors
@@ -517,9 +555,14 @@ pub(crate) fn current_user_groups() -> Result<Arc<HashSet<String>>, Error> {
 
 /// The user's groups: `ALL_USERS` and each group with an open membership.
 fn user_groups(facade: &EntityFacade) -> Result<Arc<HashSet<String>>, Error> {
-    if let Some(groups) = with_cache(|cache| cache.groups.clone()) {
-        return Ok(groups);
-    }
+    cached(
+        |cache| cache.groups.clone(),
+        || load_user_groups(facade),
+        |cache, groups| cache.groups = Some(groups),
+    )
+}
+
+fn load_user_groups(facade: &EntityFacade) -> Result<Arc<HashSet<String>>, Error> {
     let mut groups = HashSet::new();
     groups.insert("ALL_USERS".to_string());
     if let Some(user_id) = current_user_id()?.filter(|id| !id.is_empty()) {
@@ -538,15 +581,18 @@ fn user_groups(facade: &EntityFacade) -> Result<Arc<HashSet<String>>, Error> {
             }
         }
     }
-    let groups = Arc::new(groups);
-    with_cache(|cache| cache.groups = Some(Arc::clone(&groups)));
-    Ok(groups)
+    Ok(Arc::new(groups))
 }
 
 fn user_checks(facade: &EntityFacade) -> Result<Arc<Vec<Arc<AuthzCheck>>>, Error> {
-    if let Some(checks) = with_cache(|cache| cache.checks.clone()) {
-        return Ok(checks);
-    }
+    cached(
+        |cache| cache.checks.clone(),
+        || load_user_checks(facade),
+        |cache, checks| cache.checks = Some(checks),
+    )
+}
+
+fn load_user_checks(facade: &EntityFacade) -> Result<Arc<Vec<Arc<AuthzCheck>>>, Error> {
     let groups = user_groups(facade)?;
     let mut ordered: Vec<&String> = groups.iter().collect();
     ordered.sort();
@@ -590,15 +636,20 @@ fn user_checks(facade: &EntityFacade) -> Result<Arc<Vec<Arc<AuthzCheck>>>, Error
             }
         }
     }
-    let checks = Arc::new(checks);
-    with_cache(|cache| cache.checks = Some(Arc::clone(&checks)));
-    Ok(checks)
+    Ok(Arc::new(checks))
 }
 
 fn tarpit_checks(facade: &EntityFacade, artifact_type: &str) -> Result<Arc<Vec<TarpitCheck>>, Error> {
-    if let Some(found) = with_cache(|cache| cache.tarpit.get(artifact_type).cloned()) {
-        return Ok(found);
-    }
+    cached(
+        |cache| cache.tarpit.get(artifact_type).cloned(),
+        || load_tarpit_checks(facade, artifact_type),
+        |cache, checks| {
+            cache.tarpit.insert(artifact_type.to_string(), checks);
+        },
+    )
+}
+
+fn load_tarpit_checks(facade: &EntityFacade, artifact_type: &str) -> Result<Arc<Vec<TarpitCheck>>, Error> {
     let groups = user_groups(facade)?;
     let mut checks = Vec::new();
     for group in groups.iter() {
@@ -624,11 +675,7 @@ fn tarpit_checks(facade: &EntityFacade, artifact_type: &str) -> Result<Arc<Vec<T
             }
         }
     }
-    let checks = Arc::new(checks);
-    with_cache(|cache| {
-        cache.tarpit.insert(artifact_type.to_string(), Arc::clone(&checks));
-    });
-    Ok(checks)
+    Ok(Arc::new(checks))
 }
 
 fn membership_open(row: &EntityValue, now: &Value) -> bool {
@@ -777,6 +824,42 @@ mod tests {
         }
         let seen = ExecutionContext::with_current(|ec| ec.message().messages().to_vec()).unwrap();
         assert_eq!(seen, ["outer"], "the outer context is back");
+    }
+
+    #[test]
+    fn checks_loaded_while_the_generation_moves_are_not_kept() {
+        let context = ExecutionContextFactory::test_context();
+        let _entered = context.enter();
+        let loaded = super::cached(
+            |cache| cache.checks.clone(),
+            || {
+                // An authorization write lands while the checks are read.
+                super::note_entity_write("moqui.security.ArtifactAuthz");
+                Ok(std::sync::Arc::new(Vec::new()))
+            },
+            |cache, checks| cache.checks = Some(checks),
+        )
+        .unwrap();
+        assert!(loaded.is_empty());
+        assert!(
+            super::with_cache(|cache| cache.checks.is_none()),
+            "checks read under the old generation are not stored as current"
+        );
+    }
+
+    #[test]
+    fn an_authorization_write_moves_the_generation_again_when_it_commits() {
+        let world = world();
+        let _entered = world.context.enter();
+        let tx = world.facade.transactions_for("moqui.security.ArtifactAuthz").unwrap();
+        assert!(tx.begin(None).unwrap());
+        grant(&world, "GEN_COMMIT", "AT_ENTITY", ENTITY, "AUTHZT_ALLOW", "N");
+        // A session that reloads before the commit reads the old rows under the moved generation.
+        super::with_cache(|cache| cache.checks = Some(std::sync::Arc::new(Vec::new())));
+        let written = super::generation();
+        tx.commit().unwrap();
+        assert!(super::generation() > written);
+        assert!(super::with_cache(|cache| cache.checks.is_none()), "the commit drops what was read before it");
     }
 
     #[test]
