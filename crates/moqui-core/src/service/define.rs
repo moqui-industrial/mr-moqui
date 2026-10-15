@@ -455,7 +455,10 @@ pub(crate) fn registration_failures(name: &str) -> Vec<String> {
     };
     let mut names = vec![name.to_string()];
     if let Some((path, verb_noun)) = name.rsplit_once('.').filter(|_| !name.contains('#')) {
-        if let Some(split) = verb_noun.find(|ch: char| ch.is_ascii_uppercase()).filter(|split| *split > 0) {
+        if let Some(split) = verb_noun
+            .find(|ch: char| ch.is_ascii_uppercase())
+            .filter(|split| *split > 0)
+        {
             names.push(format!("{path}.{}#{}", &verb_noun[..split], &verb_noun[split..]));
         }
     }

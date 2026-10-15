@@ -670,10 +670,7 @@ fn wait_for_workers(factory: &moqui_core::context::ExecutionContextFactory, limi
 /// at startup (`check_serve_caps`); a small fixed pool ran out on Mantle's demo data.
 #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
 fn load_pool(conf: &moqui_core::transaction::PoolConfig) -> moqui_core::transaction::PoolConfig {
-    moqui_core::transaction::PoolConfig {
-        min: 0,
-        ..conf.clone()
-    }
+    moqui_core::transaction::PoolConfig { min: 0, ..conf.clone() }
 }
 
 #[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
@@ -1140,7 +1137,10 @@ fn report_message_errors(location: &str) {
     moqui_core::context::ExecutionContext::with_current(|ctx| {
         let mut message = ctx.message();
         if !message.errors().is_empty() {
-            tracing::error!("Error messages loading entity data from {location}: {}", message.errors().join("; "));
+            tracing::error!(
+                "Error messages loading entity data from {location}: {}",
+                message.errors().join("; ")
+            );
             message.clear_errors();
         }
     });
@@ -1330,8 +1330,9 @@ fn entity_names(
     let mut seen = std::collections::BTreeSet::new();
     let mut paths = framework_xml_paths(framework_dir)?;
     for dir in entity_dirs.iter().skip(1) {
-        let read = std::fs::read_dir(dir)
-            .map_err(|err| moqui_lib::error::Error::new(format!("could not read {}", dir.display())).with_source(err))?;
+        let read = std::fs::read_dir(dir).map_err(|err| {
+            moqui_lib::error::Error::new(format!("could not read {}", dir.display())).with_source(err)
+        })?;
         let mut found: Vec<std::path::PathBuf> = read
             .filter_map(Result::ok)
             .map(|entry| entry.path())
