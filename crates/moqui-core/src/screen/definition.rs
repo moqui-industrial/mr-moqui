@@ -276,7 +276,8 @@ pub enum Implicit {
 
 impl TransitionDef {
     /// The automatic transitions: `ActionsTransitionItem` runs the screen's data preparation on demand, and the
-    /// saved find, column and screen document ones are `ScreenDefinition`'s other items.
+    /// saved find, column and screen document ones are `ScreenDefinition`'s other items. The saved find and column
+    /// ones write rows, so they take only a POST with the session token (Java takes any method and no token).
     fn implicit(screen_location: &str, implicit: Implicit) -> Self {
         let (name, read_only, begin_transaction) = match implicit {
             Implicit::FormSelectColumns => ("formSelectColumns", false, true),
@@ -286,11 +287,11 @@ impl TransitionDef {
         };
         Self {
             name: name.to_string(),
-            method: "any".to_string(),
+            method: if read_only { "any" } else { "post" }.to_string(),
             screen_location: screen_location.to_string(),
             begin_transaction,
             read_only,
-            require_session_token: Some(false),
+            require_session_token: Some(!read_only),
             authz_action: "view".to_string(),
             authz_explicit: true,
             parameters: Vec::new(),

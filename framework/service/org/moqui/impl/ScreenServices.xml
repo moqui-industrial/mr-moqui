@@ -91,14 +91,14 @@ along with this software (see the LICENSE.md file). If not, see
                 bodyParameters = {pageNoLimit: 'true', emailSubject: emailSubject, title: emailSubject, screenPath: screenPath, webHostName: webHostName}
                 for (const [key, value] of Object.entries(bodyParameters)) context[key] = value
 
-                // Java adds the parameters of a saved form-list find; saved finds are not part of this port
-                if (formListFindId) ec.logger.warn(`ScreenScheduled ${screenScheduledId} has formListFindId ${formListFindId}, saved form-list finds are not available`)
-
                 // login user before rendering screen, render as user
                 if (userAccount != null) ec.user.internalLoginUser(userAccount.username)
 
+                // A saved form-list find goes to the render as formListFindId, which applies its parameters, order and
+                // columns as for a request that names it; Java also adds those parameters to the email bodyParameters
                 const screenRender = ec.screen.makeRender().webappName(webappName).rootScreenFromHost(webHostName || 'localhost')
                         .screenPath(screenPath).renderMode(renderMode)
+                if (formListFindId) screenRender.parameters({formListFindId: formListFindId})
                 // TODO: consider config or something for protocol and port
                 if (webHostName) screenRender.baseLinkUrl(`https://${webHostName}`)
                 if (renderMode == "xsl-fo") {

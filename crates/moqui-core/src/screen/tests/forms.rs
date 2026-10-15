@@ -84,7 +84,7 @@ impl Drop for Site {
 }
 
 /// The cookies a response sets, as a `Cookie` header value.
-fn cookies(response: &WebResponse, jar: &mut Vec<(String, String)>) {
+pub(super) fn cookies(response: &WebResponse, jar: &mut Vec<(String, String)>) {
     for (name, value) in &response.headers {
         if name.eq_ignore_ascii_case("set-cookie") {
             let pair = value.split(';').next().unwrap_or("");
@@ -96,7 +96,7 @@ fn cookies(response: &WebResponse, jar: &mut Vec<(String, String)>) {
     }
 }
 
-fn with_cookies(mut request: WebRequest, jar: &[(String, String)]) -> WebRequest {
+pub(super) fn with_cookies(mut request: WebRequest, jar: &[(String, String)]) -> WebRequest {
     if !jar.is_empty() {
         let header: Vec<String> = jar.iter().map(|(key, val)| format!("{key}={val}")).collect();
         request.set_header("cookie", header.join("; "));
@@ -104,13 +104,13 @@ fn with_cookies(mut request: WebRequest, jar: &[(String, String)]) -> WebRequest
     request
 }
 
-fn token_of(html: &str) -> String {
+pub(super) fn token_of(html: &str) -> String {
     let marker = "name=\"moquiSessionToken\" value=\"";
     let start = html.find(marker).unwrap_or_else(|| panic!("no token in {html}")) + marker.len();
     html[start..start + html[start..].find('"').unwrap()].to_string()
 }
 
-fn form_post(path: &str, body: &str) -> WebRequest {
+pub(super) fn form_post(path: &str, body: &str) -> WebRequest {
     let mut post = request("POST", path);
     post.set_header("content-type", "application/x-www-form-urlencoded");
     post.body = body.as_bytes().to_vec();

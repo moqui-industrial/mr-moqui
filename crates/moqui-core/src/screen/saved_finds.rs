@@ -68,6 +68,13 @@ fn user_id() -> Option<String> {
         .filter(|id| !id.is_empty())
 }
 
+/// Template source that expands to `text` itself: `script::expand` keeps `\${` as the literal `${`, and a `\` before
+/// anything else is already literal. User text that goes into a template, such as a saved find's description in a
+/// scheduled email subject, goes through this so it is never run.
+pub(crate) fn template_literal(text: &str) -> String {
+    text.replace("${", "\\${")
+}
+
 /// The rows of `entity` with these field values.
 fn rows(facade: &EntityFacade, entity: &str, fields: &[(&str, &str)]) -> Result<Vec<EntityValue>, Error> {
     let mut find = facade.find(entity)?;
@@ -417,11 +424,37 @@ fn assembled_form(screen_location: &str, form_name: &str) -> Result<moqui_lib::n
     form.node()
 }
 
-/// The `formSaveFind` transition, as `processFormSavedFind`: returns the saved find to show next, if any.
+/// Whether the user saved the find (`FormListFindUser`).
+fn find_by_user(facade: &EntityFacade, find_id: &str, user: &str) -> Result<bool, Error> {
+    Ok(!rows(
+        facade,
+        "moqui.screen.form.FormListFindUser",
+        &[("userId", user), ("formListFindId", find_id)],
+    )?
+    .is_empty())
+}
+
+/// Whether the find is shared with a group the user is in (`FormListFindUserGroup`).
+fn find_by_group(facade: &EntityFacade, find_id: &str) -> Result<bool, Error> {
+    let groups = crate::user::current_user_groups()?;
+    Ok(rows(
+        facade,
+        "moqui.screen.form.FormListFindUserGroup",
+        &[("formListFindId", find_id)],
+    )?
+    .iter()
+    .any(|row| groups.contains(&text(row, "userGroupId"))))
+}
+
+/// The `formSaveFind` transition, as `processFormSavedFind`: returns the saved find to show next, if any. It needs a
+/// user, and a find is scheduled or made a default only by a user it belongs to, directly or through a group.
 pub(crate) fn process_saved_find(transition_screen: &str) -> Result<Option<String>, Error> {
     let facade = facade()?;
     let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
-    let user = user_id().unwrap_or_default();
+    let Some(user) = user_id() else {
+        add_error("No user logged in, cannot process saved find");
+        return Ok(None);
+    };
     let mut find_id = context_text("formListFindId");
     let mut existing = if find_id.is_empty() {
         None
@@ -484,11 +517,11 @@ pub(crate) fn process_saved_find(transition_screen: &str) -> Result<Option<Strin
             add_error(&format!("Saved find with ID {find_id} not found, not scheduling"));
             return Ok(None);
         };
-        if user.is_empty() {
+        if !find_by_user(&facade, &find_id, &user)? && !find_by_group(&facade, &find_id)? {
             add_error(&format!(
-                "No user logged in, not scheduling saved find with ID {find_id}"
+                "You are not associated with Saved Find {find_id}, not scheduling"
             ));
-            return Ok(Some(find_id));
+            return Ok(None);
         }
         let render_mode = Some(context_text("renderMode"))
             .filter(|mode| !mode.is_empty())
@@ -520,7 +553,7 @@ pub(crate) fn process_saved_find(transition_screen: &str) -> Result<Option<Strin
                 "emailSubject",
                 format!(
                     "{} ${{ec.l10n.format(ec.user.nowTimestamp, null)}}",
-                    text(find, "description")
+                    template_literal(&text(find, "description"))
                 ),
             ),
             ("userId", user.clone()),
@@ -558,6 +591,12 @@ pub(crate) fn process_saved_find(transition_screen: &str) -> Result<Option<Strin
     if context_has("MakeDefault") {
         if existing.is_none() {
             add_error(&format!("Saved find with ID {find_id} not found, not making default"));
+            return Ok(None);
+        }
+        if !find_by_user(&facade, &find_id, &user)? && !find_by_group(&facade, &find_id)? {
+            add_error(&format!(
+                "You are not associated with Saved Find {find_id}, not making default"
+            ));
             return Ok(None);
         }
         let current = rows(
@@ -606,21 +645,8 @@ pub(crate) fn process_saved_find(transition_screen: &str) -> Result<Option<Strin
             ));
             return Ok(None);
         }
-        let mine = rows(
-            &facade,
-            "moqui.screen.form.FormListFindUser",
-            &[("userId", &user), ("formListFindId", &find_id)],
-        )?;
-        if mine.is_empty() {
-            let groups = crate::user::current_user_groups()?;
-            let shared = rows(
-                &facade,
-                "moqui.screen.form.FormListFindUserGroup",
-                &[("formListFindId", &find_id)],
-            )?
-            .iter()
-            .any(|row| groups.contains(&text(row, "userGroupId")));
-            if !shared {
+        if !find_by_user(&facade, &find_id, &user)? {
+            if !find_by_group(&facade, &find_id)? {
                 add_error(&format!(
                     "You are not associated with Saved Find {find_id}, cannot update"
                 ));
@@ -857,7 +883,10 @@ pub(crate) fn user_columns(location: &str, saved_location: &str) -> Result<Optio
 /// of the user's own (a shared one is not changed), or removed with `ResetColumns`.
 pub(crate) fn save_form_config(transition_screen: &str) -> Result<(), Error> {
     let facade = facade()?;
-    let user = user_id().unwrap_or_default();
+    let Some(user) = user_id() else {
+        add_error("No user logged in, cannot save form configuration");
+        return Ok(());
+    };
     let posted = context_text("formLocation");
     if posted.is_empty() {
         add_error("No form location specified, cannot save form configuration");
@@ -905,7 +934,10 @@ pub(crate) fn save_form_config(transition_screen: &str) -> Result<(), Error> {
             "moqui.screen.form.FormConfigUserGroup",
             &[("formConfigId", id)],
         )?;
-        if users.len() > 1 || !groups.is_empty() {
+        // A configuration that is shared, or is not the user's (a posted formConfigId), is not changed: the user
+        // gets one of their own.
+        let mine = users.iter().any(|row| text(row, "userId") == user);
+        if users.len() > 1 || !groups.is_empty() || !mine {
             config_id = None;
         }
     }

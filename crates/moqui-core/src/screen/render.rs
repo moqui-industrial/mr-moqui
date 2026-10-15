@@ -1034,7 +1034,7 @@ fn run_transition_steps(
                     name: "formListFindId".to_string(),
                     required: false,
                     from: None,
-                    value: Some(id),
+                    value: Some(super::saved_finds::template_literal(&id)),
                 });
             }
             return Ok(Step::Respond(response));
@@ -1098,6 +1098,17 @@ pub(super) fn transition_authz_action(transition: &TransitionDef) -> String {
     transition.authz_action.clone()
 }
 
+/// Whether a transition runs something that can change data, as Java's `hasActionsOrSingleService`: its actions (or
+/// actions that did not compile), or the implicit saved find and column transitions, which write rows.
+fn runs_actions(transition: &TransitionDef) -> bool {
+    transition.actions.is_some()
+        || transition.actions_error.is_some()
+        || matches!(
+            transition.implicit,
+            super::Implicit::FormSaveFind | super::Implicit::FormSelectColumns
+        )
+}
+
 /// A transition that writes is refused from a request that is not encrypted when https is on, or that carries its
 /// parameters in the URL, where they are not protected (Java's ScreenRenderImpl). A read-only one is not.
 fn insecure_transition(
@@ -1105,7 +1116,7 @@ fn insecure_transition(
     job: &Job<'_>,
     transition: &TransitionDef,
 ) -> Option<&'static str> {
-    if transition.read_only || (transition.actions.is_none() && transition.actions_error.is_none()) {
+    if transition.read_only || !runs_actions(transition) {
         return None;
     }
     if !job.request.https && factory.webapp_https(WEBAPP).is_some() {
@@ -1702,8 +1713,8 @@ fn csrf_rejected(job: &Job<'_>, transition: &TransitionDef) -> Result<bool, Erro
     ) {
         return Ok(false);
     }
-    // Only a transition that runs something can change data, as Java's `hasActionsOrSingleService`.
-    if transition.actions.is_none() && transition.actions_error.is_none() {
+    // Only a transition that runs something can change data.
+    if !runs_actions(transition) {
         return Ok(false);
     }
     let required = match transition.require_session_token {
