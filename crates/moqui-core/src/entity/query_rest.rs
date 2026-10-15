@@ -1826,7 +1826,8 @@ fn write_xml_node(out: &mut String, node: &RecordNode, element: &str, level: usi
         out.push_str("        <");
         out.push_str(field);
         out.push_str("><![CDATA[");
-        out.push_str(&text);
+        // A `]]>` in the text would close the section early; split it across two sections.
+        out.push_str(&text.replace("]]>", "]]]]><![CDATA[>"));
         out.push_str("]]></");
         out.push_str(field);
         out.push_str(">\n");

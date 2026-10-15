@@ -36,7 +36,7 @@ use moqui_lib::object::{basic_convert, Value};
 use super::facade::EntityFacade;
 use super::value::EntityValue;
 use crate::driver::{DbConnection, DbRow};
-use crate::transaction::TransactionManager;
+use crate::transaction::{TransactionAttribute, TransactionManager};
 
 const SKIP_FEED_ENTITY: &str = "moqui.entity.SequenceValueItem";
 const PENDING_ENTITY: &str = "moqui.entity.feed.DataFeedPending";
@@ -146,7 +146,6 @@ struct Touch {
 struct LoadSlot {
     eca_loaded: bool,
     eca_rules: Vec<EcaRule>,
-    last_matched: Vec<String>,
     touches: Vec<Touch>,
     services: Vec<DataFileService>,
     feed_services: Vec<FeedServiceNames>,
@@ -224,21 +223,25 @@ fn with_load_slot<R>(facade: &EntityFacade, body: impl FnOnce(&mut LoadSlot) -> 
     facade.with_slot(LoadSlot::default, body)
 }
 
-/// Match ECA rules for a write.
+/// Match ECA rules for a write, and note the write for the data feed. Returns the ids of the matched rules.
 ///
-/// Callers discard the returned ids. Matched ids are also stored on the facade.
 /// `operation` is `create`, `update`, or `delete`. Do not call this from inside `with_slot`.
 pub fn match_rules(facade: &EntityFacade, entity_name: &str, operation: &str) -> Vec<String> {
     match_rules_with(facade, entity_name, operation, None)
+        .into_iter()
+        .map(|rule| rule.id)
+        .collect()
 }
 
-/// [`match_rules`] with the written values, which the data feed uses to find documents.
+/// [`match_rules`] with the written values, which the data feed uses to find documents. Returns the matched
+/// rules themselves, which the write hands to `service::run_matched_eca`: nothing is kept on the facade, so a
+/// nested or concurrent write cannot change the rules of this one.
 pub(crate) fn match_rules_with(
     facade: &EntityFacade,
     entity_name: &str,
     operation: &str,
     fields: Option<&BTreeMap<String, Value>>,
-) -> Vec<String> {
+) -> Vec<EcaRule> {
     let tx = facade.transactions_for(entity_name).ok();
     let in_tx = tx.as_ref().is_some_and(TransactionManager::in_transaction);
     let frame = tx.as_ref().and_then(TransactionManager::frame_token);
@@ -257,17 +260,13 @@ pub(crate) fn match_rules_with(
             });
         }
         if facade.flags().disable_entity_eca {
-            slot.last_matched.clear();
             return Vec::new();
         }
-        let ids: Vec<String> = slot
-            .eca_rules
+        slot.eca_rules
             .iter()
             .filter(|rule| rule_matches(rule, entity_name, operation))
-            .map(|rule| rule.id.clone())
-            .collect();
-        slot.last_matched.clone_from(&ids);
-        ids
+            .cloned()
+            .collect()
     })
 }
 
@@ -293,9 +292,16 @@ pub fn eca_rule_count(facade: &EntityFacade) -> usize {
     })
 }
 
-/// Ids from the most recent [`match_rules`] call on this facade.
-pub fn matched_eca_ids(facade: &EntityFacade) -> Vec<String> {
-    with_load_slot(facade, |slot| slot.last_matched.clone())
+/// Add the `<eeca>` rules of an `<eecas>` document after the stored ones, for a test that needs its own rules.
+#[cfg(test)]
+pub(crate) fn add_eca_rules(facade: &EntityFacade, eecas: &str) -> Result<(), Error> {
+    let root = MNode::parse_text("eecas", eecas)?;
+    let dirs = facade.entity_dirs();
+    with_load_slot(facade, |slot| {
+        ensure_rules(slot, &dirs);
+        ingest_eecas(&root, slot);
+    });
+    Ok(())
 }
 
 /// Service elements the loader has read, in order. They were called as they were read.
@@ -1903,20 +1909,11 @@ fn store_record(facade: &EntityFacade, options: &LoadOptions, record: &Record) -
     if options.restrict_sensitive_entities {
         refuse_restricted(facade, record)?;
     }
-    let began = facade.begin(&record.entity, options.timeout)?;
-    let result = write_tree(facade, options, record, &BTreeMap::new());
-    match result {
-        Ok(total) => {
-            facade.commit(&record.entity)?;
-            Ok(total)
-        }
-        Err(err) => {
-            if began {
-                let _ = facade.rollback(&record.entity);
-            }
-            Err(err)
-        }
-    }
+    // Inside an outer transaction a failed record marks it rollback-only and gives back its join, so the
+    // owner's rollback still ends the frame.
+    facade.transactions_for(&record.entity)?.run(TransactionAttribute::UseOrBegin, options.timeout, || {
+        write_tree(facade, options, record, &BTreeMap::new())
+    })
 }
 
 /// Refuses the record when it or any nested record, by relationship name, short alias, or entity name, resolves to
@@ -4036,7 +4033,7 @@ mod tests {
 
     use super::{
         conf_data_locations, data_file_services, eca_rules, feed_service_names, load_entity_data, match_rules,
-        matched_eca_ids, register_feed_insert, LoadOptions,
+        register_feed_insert, LoadOptions,
     };
     use crate::driver::{DbCancel, DbConnection, DbDriver, DbRow};
     use crate::entity::{EntityFacade, EntityGroup};
@@ -4347,10 +4344,8 @@ mod tests {
         facade.begin("moqui.screen.form.DbForm", None).unwrap();
         let ids = match_rules(&facade, "moqui.screen.form.DbForm", "create");
         assert!(ids.iter().any(|id| id == "DbFormCache"));
-        assert!(matched_eca_ids(&facade).iter().any(|id| id == "DbFormCache"));
         facade.set_disable_entity_eca(true);
         assert!(match_rules(&facade, "moqui.screen.form.DbForm", "update").is_empty());
-        assert!(matched_eca_ids(&facade).is_empty());
         facade.rollback("moqui.screen.form.DbForm").unwrap();
     }
 

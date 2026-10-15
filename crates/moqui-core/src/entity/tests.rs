@@ -1072,3 +1072,65 @@ fn the_sql_runner_reads_a_query_through_a_cursor_to_one_row_past_the_limit() {
     assert!(result.records.is_empty());
     assert!(tape.lock().unwrap_or_else(|err| err.into_inner()).read_whole);
 }
+
+fn test_entity_row(facade: &EntityFacade, test_id: &str) -> Option<super::EntityValue> {
+    facade
+        .find("moqui.test.TestEntity")
+        .unwrap()
+        .eq("testId", Value::string(test_id))
+        .one()
+        .unwrap()
+}
+
+#[test]
+fn xml_cdata_text_with_a_section_end_loads_back_unchanged() {
+    let facade = crate::testing::open();
+    let text = "first line\n]]></testLong></moqui.test.TestEntity><moqui.test.TestEntity testId=\"INJECTED\"/>\
+                <moqui.test.TestEntity testId=\"X\"><testLong><![CDATA[tail ]]>";
+    let mut fields = BTreeMap::new();
+    fields.insert("testId".to_string(), Value::string("CD1"));
+    fields.insert("testLong".to_string(), Value::string(text));
+    let element = super::query_rest::xml_element(&facade, "moqui.test.TestEntity", &fields, 0).unwrap();
+    assert!(element.contains("]]]]><![CDATA[>"), "{element}");
+    let document = format!("<entity-facade-xml>\n{element}</entity-facade-xml>\n");
+    let loaded = super::load_feed::load_entity_xml_text(
+        &facade,
+        "cdata",
+        &document,
+        &super::load_feed::LoadOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(loaded.records, 1, "{document}");
+    let row = test_entity_row(&facade, "CD1").expect("CD1 loaded");
+    assert_eq!(row.get("testLong"), Some(&Value::string(text)));
+    assert!(test_entity_row(&facade, "INJECTED").is_none());
+    assert!(test_entity_row(&facade, "X").is_none());
+}
+
+#[test]
+fn a_failed_record_load_inside_an_outer_transaction_leaves_it_to_the_owner() {
+    let facade = crate::testing::open();
+    let tx = facade.transactions_for("moqui.test.TestEntity").unwrap();
+    assert!(tx.begin(None).unwrap());
+    let mut outer = facade.make_value("moqui.test.TestEntity").unwrap();
+    outer.set("testId", Value::string("OUTER"));
+    outer.create(&facade).unwrap();
+    // The first record stores; the second has no full primary key, an error before any statement for it runs.
+    let document = r#"<entity-facade-xml>
+        <moqui.test.TestEntity testId="GOOD"/>
+        <moqui.basic.LocalizedEntityField entityName="moqui.test.TestEntity" localized="no key"/>
+    </entity-facade-xml>"#;
+    let err = super::load_feed::load_entity_xml_text(
+        &facade,
+        "missing-pk",
+        document,
+        &super::load_feed::LoadOptions::default(),
+    )
+    .unwrap_err();
+    assert!(tx.in_transaction(), "the owner's frame is still in place: {err}");
+    let commit = tx.commit().expect_err("the failed load marks the frame rollback-only");
+    assert!(commit.to_string().contains("rollback-only"), "{commit}");
+    assert!(!tx.in_transaction(), "no frame is left after the owner ends it");
+    assert!(test_entity_row(&facade, "OUTER").is_none());
+    assert!(test_entity_row(&facade, "GOOD").is_none());
+}

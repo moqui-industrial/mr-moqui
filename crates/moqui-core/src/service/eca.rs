@@ -18,7 +18,7 @@
 //! bodies run through `script::run_actions`. Feed receive submits the pending rows a commit
 //! inserted to a service worker (`crate::search::feed`).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use moqui_lib::error::Error;
 use moqui_lib::node::MNode;
@@ -27,7 +27,7 @@ use moqui_lib::object::{HostObject, Value};
 use super::rule_actions::{condition_allows, publish_names, run_stored_actions};
 use super::security_checks::{assert_privileged_group_membership, assert_sealed_permission_grant, map_text};
 use crate::context::ExecutionContext;
-use crate::entity::load_feed::{self, DataFileService};
+use crate::entity::load_feed::{self, DataFileService, EcaRule};
 use crate::entity::EntityFacade;
 
 /// Whether feed receive found search down. Kept with the facade, so it is the same on every thread
@@ -44,7 +44,7 @@ pub fn search_not_up(facade: &EntityFacade) -> bool {
     })
 }
 
-/// Run matched ECA rules. `before` selects run-before rules. Ids come from the last match.
+/// Run the ECA rules `load_feed::match_rules_with` matched for this write. `before` selects run-before rules.
 ///
 /// As Java's `EntityEcaRule.runIfMatches`: the rule's context has the field values, `entityValue` (a value
 /// scripts and called services share, so a field they set on it is set on the write for a run-before rule),
@@ -57,16 +57,16 @@ pub fn run_matched_eca(
     entity_name: &str,
     operation: &str,
     before: bool,
+    rules: &[EcaRule],
     values: &mut BTreeMap<String, Value>,
 ) -> Result<(), Error> {
-    tracing::debug!(entity = entity_name, operation, before, "running matched entity eca");
-    let matched: BTreeSet<String> = load_feed::matched_eca_ids(facade).into_iter().collect();
-    if matched.is_empty() {
+    if !rules.iter().any(|rule| rule.run_before == before) {
         return Ok(());
     }
+    tracing::debug!(entity = entity_name, operation, before, "running matched entity eca");
     let update_or_delete = operation == "update" || operation == "delete";
-    for rule in load_feed::eca_rules(facade, entity_name) {
-        if !matched.contains(&rule.id) || rule.run_before != before {
+    for rule in rules {
+        if rule.run_before != before {
             continue;
         }
         if !rule.run_on_error && has_message_error() {
@@ -467,6 +467,54 @@ mod tests {
             "{pending:?}"
         );
         assert!(search_not_up(&facade));
+    }
+
+    #[test]
+    fn a_write_in_a_run_before_rule_keeps_the_outer_after_rule() {
+        let facade = crate::testing::open_with(
+            &crate::testing::framework_dir(),
+            crate::testing::Options {
+                entity_eca: true,
+                data_feed: false,
+                tape: None,
+            },
+        );
+        // The before rule's write of another entity matches no rules of its own.
+        crate::entity::load_feed::add_eca_rules(
+            &facade,
+            r#"<eecas>
+                <eeca id="TestNestedBefore" entity="moqui.test.TestEntity" on-create="true" run-before="true">
+                    <actions>
+                        <entity-make-value entity-name="moqui.test.Foo" value-field="foo"/>
+                        <script>foo.set("fooId", "BEFORE")</script>
+                        <entity-create value-field="foo"/>
+                    </actions>
+                </eeca>
+                <eeca id="TestOuterAfter" entity="moqui.test.TestEntity" on-create="true">
+                    <actions>
+                        <entity-make-value entity-name="moqui.test.Foo" value-field="foo"/>
+                        <script>foo.set("fooId", "AFTER")</script>
+                        <entity-create value-field="foo"/>
+                    </actions>
+                </eeca>
+            </eecas>"#,
+        )
+        .unwrap();
+        let context = ExecutionContextFactory::test_context();
+        context.factory().set_entity(facade.clone());
+        let _entered = context.enter();
+        create_row(&facade, "moqui.test.TestEntity", &[("testId", "T1")]);
+        let foo_ids: Vec<String> = facade
+            .find("moqui.test.Foo")
+            .unwrap()
+            .list()
+            .unwrap()
+            .values()
+            .iter()
+            .map(|row| text(row, "fooId"))
+            .collect();
+        assert!(foo_ids.iter().any(|id| id == "BEFORE"), "{foo_ids:?}");
+        assert!(foo_ids.iter().any(|id| id == "AFTER"), "{foo_ids:?}");
     }
 
     fn boot_security() -> (EntityFacade, crate::context::ExecutionContext, TempDir) {

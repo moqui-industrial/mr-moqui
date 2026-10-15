@@ -26,6 +26,7 @@ use super::cache::WriteGate;
 use super::exec::{after_statement, execute_tx};
 use super::facade::EntityFacade;
 use super::field_rw;
+use super::load_feed::EcaRule;
 use super::params::java_of;
 use super::{cache, fk, load_feed, sequence};
 
@@ -174,13 +175,13 @@ impl EntityFacade {
         self.require_pk(&value.entity_name, &plain)?;
         fk::enforce(self, &value.entity_name, &plain, stack)?;
         self.reject_view(&value.entity_name, "create")?;
-        self.finish_write(&value.entity_name, "create", plain, false, false)?;
+        self.finish_write(&value.entity_name, "create", plain, None, false, false)?;
         Ok(())
     }
 
     fn write_update(&self, entity_name: &str, values: &BTreeMap<String, Value>) -> Result<(), Error> {
         let plain = self.normalize_values(entity_name, values, true)?;
-        let _rules = load_feed::match_rules_with(self, entity_name, "update", Some(&plain));
+        let rules = load_feed::match_rules_with(self, entity_name, "update", Some(&plain));
         self.reject_view(entity_name, "update")?;
         let has_columns = self.with_entity(entity_name, |entity, _, _| {
             Ok(!present_columns(entity, &plain, true, true).is_empty())
@@ -188,13 +189,13 @@ impl EntityFacade {
         if !has_columns {
             return Ok(());
         }
-        self.finish_write(entity_name, "update", plain, true, true)
+        self.finish_write(entity_name, "update", plain, Some(rules), true, true)
     }
 
     fn write_delete(&self, entity_name: &str, values: &BTreeMap<String, Value>) -> Result<(), Error> {
         let plain = self.normalize_values(entity_name, values, false)?;
         self.reject_view(entity_name, "delete")?;
-        self.finish_write(entity_name, "delete", plain, false, false)
+        self.finish_write(entity_name, "delete", plain, None, false, false)
     }
 
     /// Insert, or update on a primary-key conflict. Values are sealed the same way as a create.
@@ -204,15 +205,17 @@ impl EntityFacade {
         let mut stack = HashSet::new();
         fk::enforce(self, entity_name, &plain, &mut stack)?;
         self.reject_view(entity_name, "create")?;
-        self.finish_write(entity_name, "upsert", plain, false, false)
+        self.finish_write(entity_name, "upsert", plain, None, false, false)
     }
 
-    /// Run the write, or leave it with the cache when the gate handles it. Values are plaintext.
+    /// Run the write, or leave it with the cache when the gate handles it. Values are plaintext. `rules` are the
+    /// ECA rules a caller already matched for this write; `None` matches them here.
     fn finish_write(
         &self,
         entity_name: &str,
         operation: &str,
         plain: BTreeMap<String, Value>,
+        rules: Option<Vec<EcaRule>>,
         include_null: bool,
         skip_pk: bool,
     ) -> Result<(), Error> {
@@ -235,14 +238,15 @@ impl EntityFacade {
         // needs a read first to pick create or update.
         let seal_operation = if operation == "upsert" { "create" } else { operation };
         // Update already matched in `write_update`, including the no-column return.
-        if operation != "update" {
-            let _rules = load_feed::match_rules_with(self, entity_name, seal_operation, Some(&plain));
-        }
+        let rules = match rules {
+            Some(rules) => rules,
+            None => load_feed::match_rules_with(self, entity_name, seal_operation, Some(&plain)),
+        };
         let eca = crate::user::context_entered();
         let mut plain = plain;
         if eca {
             let before = plain.clone();
-            crate::service::run_matched_eca(self, entity_name, seal_operation, true, &mut plain)?;
+            crate::service::run_matched_eca(self, entity_name, seal_operation, true, &rules, &mut plain)?;
             // A run-before rule may have set fields (`entityValue` or `set-results`): convert them as a write would.
             if plain != before {
                 plain = self.normalize_values(entity_name, &plain, operation == "update")?;
@@ -275,7 +279,7 @@ impl EntityFacade {
             })?;
             execute_tx(&tx, &sql, &params)?;
             if let Some(mut values) = after_values {
-                crate::service::run_matched_eca(self, entity_name, seal_operation, false, &mut values)?;
+                crate::service::run_matched_eca(self, entity_name, seal_operation, false, &rules, &mut values)?;
             }
         }
         cache::on_write(self, entity_name, operation, &cache_values)?;

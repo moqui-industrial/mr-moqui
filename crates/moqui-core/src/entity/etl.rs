@@ -22,7 +22,7 @@ use moqui_lib::etl::{Extractor, Loader, SimpleEntry, SimpleEtl};
 
 use super::facade::EntityFacade;
 use super::find::EntityFind;
-use crate::transaction::TransactionManager;
+use crate::transaction::{TransactionAttribute, TransactionManager};
 
 /// Loads each entry into the entity named by its type. One transaction for the run, begun in
 /// `init` when none is in place, committed in `complete`, or rolled back when the run had an error.
@@ -174,13 +174,10 @@ impl EntityFind {
     /// The cursor needs a transaction. One is begun around the extract when none is in place.
     pub fn extract(self, etl: &mut SimpleEtl) -> Result<(), Error> {
         let tx = self.facade.transactions_for(self.entity_name())?;
-        let began = !tx.in_transaction() && tx.begin(None)?;
-        let result = extract_values(self, etl);
-        if began {
-            let ended = if result.is_ok() { tx.commit() } else { tx.rollback() };
-            ended?;
+        if tx.in_transaction() {
+            return extract_values(self, etl);
         }
-        result
+        tx.run(TransactionAttribute::UseOrBegin, None, || extract_values(self, etl))
     }
 }
 
