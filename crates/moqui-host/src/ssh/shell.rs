@@ -152,7 +152,7 @@ fn execute(factory: &ExecutionContextFactory, username: &str, command: &str, res
         "status" => Ok(Outcome::ok(format!(
             "MR-Moqui {}\ninstance {}\nuser {username}",
             env!("CARGO_PKG_VERSION"),
-            moqui_lib::env::get_prop_or_env("instance_id"),
+            moqui_core::cluster::instance_id(factory).unwrap_or_default(),
         ))),
         "service" => {
             let (name, json) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));

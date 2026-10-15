@@ -68,7 +68,7 @@ pub fn is_cluster_key(key: &PublicKey) -> bool {
 ///
 /// Returns an error when the cluster material is missing.
 pub fn install_sender(factory: &Arc<ExecutionContextFactory>) -> Result<(), Error> {
-    moqui_core::cluster::install_sender(sender(factory)?);
+    moqui_core::cluster::install_sender(factory, sender(factory)?);
     Ok(())
 }
 

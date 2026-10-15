@@ -491,11 +491,14 @@ fn url_safe_chars(name: &str) -> bool {
         && !name.chars().any(|ch| (ch as u32) < 32 || ch as u32 == 127)
 }
 
-/// `WebUtilities.encodeHtmlJsSafe`: HTML escapes plus the escapes a single-quoted JavaScript string needs.
+/// `WebUtilities.encodeHtmlJsSafe`: HTML escapes plus the escapes a single-quoted JavaScript string needs. Unlike
+/// Java it also escapes `\`, which would otherwise undo the quote escape, and U+2028 and U+2029, which end a
+/// JavaScript string literal in older engines.
 pub(crate) fn encode_html_js_safe(original: &str) -> String {
     let mut out = String::with_capacity(original.len());
     for ch in original.chars() {
         match ch {
+            '\\' => out.push_str("\\\\"),
             '\'' => out.push_str("\\'"),
             '"' => out.push_str("&quot;"),
             '&' => out.push_str("&amp;"),
@@ -503,6 +506,8 @@ pub(crate) fn encode_html_js_safe(original: &str) -> String {
             '>' => out.push_str("&gt;"),
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
             '\u{5}' => out.push_str("..."),
             '\u{12}' => out.push_str("&apos;"),
             '\u{13}' | '\u{14}' => out.push_str("&quot;"),
@@ -752,6 +757,17 @@ mod tests {
 
     fn holds(expression: &str) {
         assert!(eval_condition(expression).unwrap(), "{expression}");
+    }
+
+    #[test]
+    fn js_safe_escapes_backslash_first_and_the_line_separators() {
+        assert_eq!(super::encode_html_js_safe(r"a\'b"), r"a\\\'b");
+        assert_eq!(super::encode_html_js_safe("\\"), "\\\\");
+        assert_eq!(super::encode_html_js_safe("x\u{2028}y\u{2029}z"), r"x\u2028y\u2029z");
+        // The escaped text, put in a single-quoted literal, reads back as the original.
+        clear_context_stack();
+        holds(r#"eval("'" + WebUtilities.encodeHtmlJsSafe("a\\'b\u2028c\\") + "'") === "a\\'b\u2028c\\""#);
+        holds(r#"WebUtilities.fieldValuesEncodeHtmlJsSafe({"k\\": "v\\'\u2029"}) === "{'k\\\\':'v\\\\\\'\\u2029'}""#);
     }
 
     #[test]

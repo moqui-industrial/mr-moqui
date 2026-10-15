@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! In-process notifications. The host WebSocket and cluster fan-out subscribe later.
+//! In-process notifications. The host WebSocket subscribes; cluster fan-out is [`crate::cluster::publish`].
 
 mod message;
 mod topic;

@@ -1302,6 +1302,42 @@ mod tests {
         );
     }
 
+    /// The allocations the outermost script runtime holds now, after a collection. Not while a script runs: that
+    /// holds the runtime's lock.
+    fn live_allocations() -> i64 {
+        let engine = super::super::ENGINES
+            .with(|engines| engines.borrow().first().cloned())
+            .expect("a started engine");
+        engine.runtime.run_gc();
+        engine.runtime.memory_usage().malloc_count
+    }
+
+    /// `keep_assigned` matches what rquickjs does with an assigned value: an extra reference each time would keep
+    /// every assigned string alive.
+    #[test]
+    fn a_field_assigned_many_times_does_not_grow_the_runtime() {
+        let context = enumerations();
+        let _entered = context.enter();
+        let assign = |count: u32| {
+            run_script(&format!(
+                r#"(function () {{
+                    const value = ec.entity.makeValue("moqui.basic.Enumeration");
+                    for (let i = 0; i < {count}; i++) {{ value.description = "text " + i; }}
+                }})()"#
+            ))
+            .unwrap();
+        };
+        assign(1_000);
+        let before = live_allocations();
+        assign(100_000);
+        let after = live_allocations();
+        assert!(
+            after - before < 1_000,
+            "{} allocations kept after 100k assignments",
+            after - before
+        );
+    }
+
     #[test]
     fn an_eeca_action_reads_the_value_being_written() {
         let (done_tx, done_rx) = std::sync::mpsc::channel();

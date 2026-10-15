@@ -59,7 +59,7 @@ pub(crate) fn install_sender(factory: &Arc<ExecutionContextFactory>, entity_is_p
         ssh: crate::ssh::cluster::sender(factory)?,
         https: crate::cluster_edge::https_sender()?,
     };
-    moqui_core::cluster::install_sender(Arc::new(sender));
+    moqui_core::cluster::install_sender(factory, Arc::new(sender));
     Ok(())
 }
 

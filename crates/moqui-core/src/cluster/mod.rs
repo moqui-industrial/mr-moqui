@@ -18,14 +18,17 @@
 //! Fan-out is not done on the thread that published: the message goes on a queue, and one sender thread posts it to
 //! the live peers, as `plans/archive/Cluster.md` says. Invalidations waiting together are sent once per entity, since a peer
 //! clears the entity's whole cache for one. The peer list is kept and read again on the heartbeat tick.
+//!
+//! Each factory keeps its own state (sender, member id, queue, peers): a write or notification fans out only to the
+//! peers of the factory whose entity facade made it, so two factories in one process do not post for each other.
 
 #[cfg(all(test, feature = "cluster-tls"))]
 mod tests;
 
-use std::cell::Cell;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
-use std::time::Duration;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
+use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -41,7 +44,7 @@ use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
 use crate::driver::DbRow;
 use crate::entity::exec::with_reserve_tx;
 use crate::entity::EntityFacade;
-use crate::notify::{self, Listener, TopicMessage, ENTITY_CACHE_INVALIDATE, NOTIFICATION_MESSAGE};
+use crate::notify::{self, TopicMessage, ENTITY_CACHE_INVALIDATE, NOTIFICATION_MESSAGE};
 use crate::user::{now_millis, now_value, value_millis};
 
 const MEMBER: &str = "moqui.server.ClusterMember";
@@ -68,24 +71,31 @@ const PEER_BACKOFF: Duration = Duration::from_secs(5);
 /// A member row with no heartbeat in this many liveness windows is deleted.
 const DEAD_WINDOWS: i64 = 10;
 
-thread_local! {
-    static APPLYING: Cell<bool> = const { Cell::new(false) };
+/// How long the sender thread waits for more before it ends. The next message starts another.
+const SENDER_IDLE: Duration = Duration::from_secs(30);
+
+/// One factory's cluster: its sender, its member id, and the queue its sender thread posts from. Kept with
+/// [`ExecutionContextFactory::extension`], so two factories in one process fan out each to its own peers.
+pub(crate) struct ClusterState {
+    factory: Mutex<Weak<ExecutionContextFactory>>,
+    /// This member's id, set by [`start`]. Empty before.
+    instance_id: Mutex<String>,
+    sender: Mutex<Option<Arc<dyn Sender>>>,
+    no_sender_logged: AtomicBool,
+    queue: Mutex<Queue>,
+    ready: Condvar,
+    peers: Mutex<PeerCache>,
+    dropped: AtomicU64,
+    /// Batches the sender thread has taken and not finished, so a test can wait for the posts.
+    in_flight: AtomicUsize,
+    loopback_warned: AtomicBool,
 }
 
-static SENDER: Mutex<Option<Arc<dyn Sender>>> = Mutex::new(None);
-static NO_SENDER_LOGGED: AtomicBool = AtomicBool::new(false);
-static FACTORY: Mutex<Weak<ExecutionContextFactory>> = Mutex::new(Weak::new());
-static LISTENERS: OnceLock<Listeners> = OnceLock::new();
-static OUTBOX: OnceLock<Outbox> = OnceLock::new();
-static DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// Batches the sender thread has taken and not finished, so a test can wait for the posts.
-static IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-/// The messages waiting for the sender thread, and the peers it posts to.
-struct Outbox {
-    queue: Mutex<std::collections::VecDeque<(&'static str, TopicMessage)>>,
-    ready: std::sync::Condvar,
-    peers: Mutex<PeerCache>,
+/// The messages waiting for the sender thread, and whether that thread is running.
+#[derive(Default)]
+struct Queue {
+    messages: VecDeque<(&'static str, TopicMessage)>,
+    sending: bool,
 }
 
 #[derive(Default)]
@@ -94,31 +104,40 @@ struct PeerCache {
     /// When the list was read, by the clock of `now_millis`; zero is never.
     read_at: i64,
     /// Peers to skip until the time given, after every try of a post failed.
-    down_until: std::collections::HashMap<String, std::time::Instant>,
+    down_until: HashMap<String, Instant>,
 }
 
-struct Listeners {
-    _cache: notify::Subscription,
-    _notice: notify::Subscription,
-}
+/// The entity facade's link to the cluster state of the factory that started it, for [`note_write`].
+#[derive(Default)]
+struct ClusterLink(Weak<ClusterState>);
 
-struct Applying;
-
-impl Applying {
-    fn enter() -> Self {
-        APPLYING.with(|flag| flag.set(true));
-        Self
+impl ClusterState {
+    fn new() -> Self {
+        Self {
+            factory: Mutex::new(Weak::new()),
+            instance_id: Mutex::new(String::new()),
+            sender: Mutex::new(None),
+            no_sender_logged: AtomicBool::new(false),
+            queue: Mutex::new(Queue::default()),
+            ready: Condvar::new(),
+            peers: Mutex::new(PeerCache::default()),
+            dropped: AtomicU64::new(0),
+            in_flight: AtomicUsize::new(0),
+            loopback_warned: AtomicBool::new(false),
+        }
     }
-}
 
-impl Drop for Applying {
-    fn drop(&mut self) {
-        APPLYING.with(|flag| flag.set(false));
+    fn of(factory: &ExecutionContextFactory) -> Arc<Self> {
+        factory.extension(|_| Self::new())
     }
-}
 
-fn applying() -> bool {
-    APPLYING.with(Cell::get)
+    fn instance_id(&self) -> String {
+        lock(&self.instance_id).clone()
+    }
+
+    fn sender(&self) -> Option<Arc<dyn Sender>> {
+        lock(&self.sender).clone()
+    }
 }
 
 /// Posts one topic message to a peer. The host installs the HTTPS client. Tests install a recorder.
@@ -127,16 +146,22 @@ pub trait Sender: Send + Sync {
     fn post(&self, base_url: &str, topic: &str, payload: &[u8]) -> Result<(), Error>;
 }
 
-/// Replace the process sender. A later call replaces the previous one.
-pub fn install_sender(sender: Arc<dyn Sender>) {
-    *sender_slot() = Some(sender);
-    NO_SENDER_LOGGED.store(false, Ordering::Relaxed);
+/// Replace `factory`'s sender. A later call replaces the previous one.
+pub fn install_sender(factory: &ExecutionContextFactory, sender: Arc<dyn Sender>) {
+    let state = ClusterState::of(factory);
+    *lock(&state.sender) = Some(sender);
+    state.no_sender_logged.store(false, Ordering::Relaxed);
 }
 
-/// Register this instance, check live peers, and subscribe once to both topics.
+/// This member's id once [`start`] has run for `factory`.
+pub fn instance_id(factory: &ExecutionContextFactory) -> Option<String> {
+    Some(ClusterState::of(factory).instance_id()).filter(|id| !id.is_empty())
+}
+
+/// Register this instance, check live peers, and link the entity facade to `factory`'s fan-out.
 ///
 /// The host calls this after [`ExecutionContextFactory::set_entity`]. A second call refreshes the
-/// member row and does not add another listener or heartbeat hook.
+/// member row and does not add another heartbeat hook.
 ///
 /// # Errors
 ///
@@ -161,20 +186,24 @@ pub fn start(factory: &Arc<ExecutionContextFactory>) -> Result<(), Error> {
             ssh_fp: env::get_prop_or_env(SSH_FINGERPRINT_PROPERTY),
         },
     )?;
-    remember_factory(factory);
+    let state = ClusterState::of(factory);
+    *lock(&state.factory) = Arc::downgrade(factory);
+    lock(&state.instance_id).clone_from(&instance_id);
     // The member list is read again on the next send: this start may have joined a cluster or left one.
-    *outbox().peers.lock().unwrap_or_else(|err| err.into_inner()) = PeerCache::default();
+    *lock(&state.peers) = PeerCache::default();
+    facade.with_slot(ClusterLink::default, |link| link.0 = Arc::downgrade(&state));
     install_heartbeat(factory, instance_id);
-    install_listeners()
+    Ok(())
 }
 
-/// Wait until the sender thread has posted everything queued, for tests.
+/// Wait until `factory`'s sender thread has posted everything queued, for tests.
 #[cfg(all(test, feature = "cluster-tls"))]
-pub(crate) fn wait_for_sends(timeout: Duration) -> bool {
-    let until = std::time::Instant::now() + timeout;
-    while std::time::Instant::now() < until {
-        let empty = outbox().queue.lock().unwrap_or_else(|err| err.into_inner()).is_empty();
-        if empty && IN_FLIGHT.load(Ordering::SeqCst) == 0 {
+pub(crate) fn wait_for_sends(factory: &ExecutionContextFactory, timeout: Duration) -> bool {
+    let state = ClusterState::of(factory);
+    let until = Instant::now() + timeout;
+    while Instant::now() < until {
+        let empty = lock(&state.queue).messages.is_empty();
+        if empty && state.in_flight.load(Ordering::SeqCst) == 0 {
             return true;
         }
         std::thread::sleep(Duration::from_millis(5));
@@ -182,8 +211,8 @@ pub(crate) fn wait_for_sends(timeout: Duration) -> bool {
     false
 }
 
-/// Clear the named entity's one-cache for `entity-cache-invalidate`, then publish `message`.
-/// The fan-out listener does not post this publish onward.
+/// Clear the named entity's one-cache for `entity-cache-invalidate`, then publish `message` on this process's bus.
+/// It is not posted onward: only [`publish`] fans out.
 ///
 /// # Errors
 ///
@@ -200,8 +229,24 @@ pub fn apply_remote(facade: &EntityFacade, topic: &str, message: &TopicMessage) 
     } else if topic != NOTIFICATION_MESSAGE {
         return Err(Error::new(format!("unknown topic {topic}")));
     }
-    let _applying = Applying::enter();
     notify::publish(topic, message)
+}
+
+/// Publish `message` on this process's bus, then queue it for the peers of the factory that started `facade`.
+///
+/// # Errors
+///
+/// Returns an error when `topic` is not a known topic.
+pub fn publish(facade: &EntityFacade, topic: &'static str, message: &TopicMessage) -> Result<(), Error> {
+    notify::publish(topic, message)?;
+    if let Some(state) = linked_state(facade) {
+        fan_out(&state, topic, message);
+    }
+    Ok(())
+}
+
+fn linked_state(facade: &EntityFacade) -> Option<Arc<ClusterState>> {
+    facade.with_slot(ClusterLink::default, |link| link.0.upgrade())
 }
 
 /// Publish a cache invalidation after the local clear. An open transaction waits for commit.
@@ -218,15 +263,16 @@ pub(crate) fn note_write(
     };
     let tx = facade.transactions_for(entity_name).map_err(Error::from)?;
     if tx.in_transaction() {
+        let facade = facade.clone();
         tx.on_commit(move || {
-            if let Err(err) = notify::publish(ENTITY_CACHE_INVALIDATE, &message) {
+            if let Err(err) = publish(&facade, ENTITY_CACHE_INVALIDATE, &message) {
                 tracing::warn!("cluster cache publish failed: {err}");
             }
         })
         .map_err(Error::from)?;
         return Ok(());
     }
-    notify::publish(ENTITY_CACHE_INVALIDATE, &message)
+    publish(facade, ENTITY_CACHE_INVALIDATE, &message)
 }
 
 /// One self-signed pair. Both values are standard base64 of DER, one line each.
@@ -287,6 +333,7 @@ struct Member {
 /// `instance_id` when it is set, else the id in `runtime/db/instance_id`, else a new one written there. It is not
 /// written to `runtime/.env`, which `plans/archive/Cluster.md` says to copy between members: two members with one id would
 /// each take the other's member row for its own.
+/// Nor is it set as a property, which another factory in this process would then take for its own.
 fn ensure_instance_id(factory: &ExecutionContextFactory) -> Result<String, Error> {
     let current = env::get_prop_or_env("instance_id");
     if !current.is_empty() {
@@ -296,7 +343,6 @@ fn ensure_instance_id(factory: &ExecutionContextFactory) -> Result<String, Error
     if let Ok(text) = std::fs::read_to_string(&file) {
         let kept = text.trim().to_string();
         if !kept.is_empty() {
-            env::set_property("instance_id", kept.clone());
             return Ok(kept);
         }
     }
@@ -307,7 +353,6 @@ fn ensure_instance_id(factory: &ExecutionContextFactory) -> Result<String, Error
     }
     std::fs::write(&file, format!("{id}\n"))
         .map_err(|err| Error::new(format!("could not write {}: {err}", file.display())))?;
-    env::set_property("instance_id", id.clone());
     Ok(id)
 }
 
@@ -418,10 +463,6 @@ fn reject_peer_mismatch(
     Ok(())
 }
 
-fn remember_factory(factory: &Arc<ExecutionContextFactory>) {
-    *factory_slot() = Arc::downgrade(factory);
-}
-
 fn install_heartbeat(factory: &Arc<ExecutionContextFactory>, instance_id: String) {
     if factory.cluster_heartbeat.swap(true, Ordering::AcqRel) {
         return;
@@ -443,99 +484,83 @@ fn install_heartbeat(factory: &Arc<ExecutionContextFactory>, instance_id: String
         if let Err(err) = delete_dead_members(&facade, now.saturating_sub(window_millis(&factory) * DEAD_WINDOWS)) {
             tracing::warn!("cluster member cleanup failed: {err}");
         }
-        refresh_peers(&factory);
-        warn_loopback_peers(&factory);
+        let state = ClusterState::of(&factory);
+        refresh_peers(&state, &factory);
+        warn_loopback_peers(&state);
     });
 }
 
-fn install_listeners() -> Result<(), Error> {
-    if LISTENERS.get().is_some() {
-        return Ok(());
-    }
-    let installed = Listeners {
-        _cache: notify::subscribe(ENTITY_CACHE_INVALIDATE, listen(ENTITY_CACHE_INVALIDATE))?,
-        _notice: notify::subscribe(NOTIFICATION_MESSAGE, listen(NOTIFICATION_MESSAGE))?,
-    };
-    let _ = LISTENERS.set(installed);
-    Ok(())
-}
-
-fn listen(topic: &'static str) -> Listener {
-    Arc::new(move |message| fan_out(topic, message))
-}
-
-fn fan_out(topic: &'static str, message: &TopicMessage) {
-    // Remote messages carry the sender's origin and are not posted again. apply_remote republishes
-    // on this process, so the applying flag stops that same-process re-post.
-    if applying() || message.origin_id != notify::origin_id() {
-        return;
-    }
-    let outbox = outbox();
+fn fan_out(state: &Arc<ClusterState>, topic: &'static str, message: &TopicMessage) {
     {
         // A single member has no one to tell: with no peers at the last read, nothing is queued.
-        let peers = outbox.peers.lock().unwrap_or_else(|err| err.into_inner());
+        let peers = lock(&state.peers);
         if peers.read_at != 0 && peers.urls.is_empty() {
             return;
         }
     }
-    let mut queue = outbox.queue.lock().unwrap_or_else(|err| err.into_inner());
-    if queue.len() >= OUTBOX_LIMIT {
-        let dropped = DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
+    let mut queue = lock(&state.queue);
+    if queue.messages.len() >= OUTBOX_LIMIT {
+        let dropped = state.dropped.fetch_add(1, Ordering::Relaxed) + 1;
         if dropped.is_power_of_two() {
             tracing::warn!("cluster fan-out queue is full; {dropped} messages dropped");
         }
         return;
     }
-    queue.push_back((topic, message.clone()));
-    outbox.ready.notify_one();
-}
-
-fn outbox() -> &'static Outbox {
-    OUTBOX.get_or_init(|| {
-        let spawned = std::thread::Builder::new()
-            .name("moqui-cluster-send".to_string())
-            .spawn(send_loop);
-        if let Err(err) = spawned {
-            tracing::error!("cluster sender thread did not start: {err}");
-        }
-        Outbox {
-            queue: Mutex::new(std::collections::VecDeque::new()),
-            ready: std::sync::Condvar::new(),
-            peers: Mutex::new(PeerCache::default()),
-        }
-    })
-}
-
-/// The sender thread: take what is waiting, collapse the invalidations, and post each to every live peer.
-fn send_loop() {
-    loop {
-        let batch: Vec<(&'static str, TopicMessage)> = {
-            let outbox = outbox();
-            let mut queue = outbox.queue.lock().unwrap_or_else(|err| err.into_inner());
-            while queue.is_empty() {
-                queue = outbox.ready.wait(queue).unwrap_or_else(|err| err.into_inner());
-            }
-            IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
-            queue.drain(..).collect()
-        };
-        // A panic in one batch must not end the thread that every later message waits on.
-        if std::panic::catch_unwind(|| send_batch(coalesce(batch))).is_err() {
-            tracing::error!("cluster fan-out batch panicked");
-        }
-        IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+    queue.messages.push_back((topic, message.clone()));
+    if queue.sending {
+        state.ready.notify_one();
+        return;
+    }
+    let running = Arc::clone(state);
+    let spawned = std::thread::Builder::new()
+        .name("moqui-cluster-send".to_string())
+        .spawn(move || send_loop(&running));
+    match spawned {
+        Ok(_) => queue.sending = true,
+        // The message stays queued for the next try to start the thread.
+        Err(err) => tracing::error!("cluster sender thread did not start: {err}"),
     }
 }
 
-fn send_batch(batch: Vec<(&'static str, TopicMessage)>) {
-    let Some(factory) = factory_slot().upgrade() else {
+/// The sender thread: take what is waiting, collapse the invalidations, and post each to every live peer. It ends
+/// after [`SENDER_IDLE`] with nothing to send.
+fn send_loop(state: &ClusterState) {
+    loop {
+        let batch: Vec<(&'static str, TopicMessage)> = {
+            let mut queue = lock(&state.queue);
+            while queue.messages.is_empty() {
+                let (next, waited) = state
+                    .ready
+                    .wait_timeout(queue, SENDER_IDLE)
+                    .unwrap_or_else(|err| err.into_inner());
+                queue = next;
+                if waited.timed_out() && queue.messages.is_empty() {
+                    queue.sending = false;
+                    return;
+                }
+            }
+            state.in_flight.fetch_add(1, Ordering::SeqCst);
+            queue.messages.drain(..).collect()
+        };
+        // A panic in one batch must not end the thread that every later message waits on.
+        let sent = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| send_batch(state, coalesce(batch))));
+        if sent.is_err() {
+            tracing::error!("cluster fan-out batch panicked");
+        }
+        state.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn send_batch(state: &ClusterState, batch: Vec<(&'static str, TopicMessage)>) {
+    let Some(factory) = lock(&state.factory).upgrade() else {
         return;
     };
-    let peers = current_peers(&factory);
+    let peers = current_peers(state, &factory);
     if peers.is_empty() {
         return;
     }
-    let Some(sender) = sender_slot().clone() else {
-        if !NO_SENDER_LOGGED.swap(true, Ordering::Relaxed) {
+    let Some(sender) = state.sender() else {
+        if !state.no_sender_logged.swap(true, Ordering::Relaxed) {
             tracing::warn!("cluster fan-out has no sender");
         }
         return;
@@ -549,11 +574,11 @@ fn send_batch(batch: Vec<(&'static str, TopicMessage)>) {
             }
         };
         for base_url in &peers {
-            if peer_down(base_url) {
+            if peer_down(state, base_url) {
                 continue;
             }
             if !post_with_retry(&sender, base_url, topic, &payload) {
-                mark_peer_down(base_url);
+                mark_peer_down(state, base_url);
             }
         }
     }
@@ -580,30 +605,25 @@ fn coalesce(batch: Vec<(&'static str, TopicMessage)>) -> Vec<(&'static str, Topi
 }
 
 /// The live peers, read again when the heartbeat tick has not refreshed them within a liveness window.
-fn current_peers(factory: &ExecutionContextFactory) -> Vec<String> {
+fn current_peers(state: &ClusterState, factory: &ExecutionContextFactory) -> Vec<String> {
     let window = window_millis(factory);
     {
-        let peers = outbox().peers.lock().unwrap_or_else(|err| err.into_inner());
+        let peers = lock(&state.peers);
         if peers.read_at != 0 && now_millis().saturating_sub(peers.read_at) < window {
             return peers.urls.clone();
         }
     }
-    refresh_peers(factory);
-    outbox()
-        .peers
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
-        .urls
-        .clone()
+    refresh_peers(state, factory);
+    lock(&state.peers).urls.clone()
 }
 
-fn refresh_peers(factory: &ExecutionContextFactory) {
+fn refresh_peers(state: &ClusterState, factory: &ExecutionContextFactory) {
     let Some(facade) = factory.entity() else {
         return;
     };
-    match live_peer_urls(factory, &facade) {
+    match live_peer_urls(state, factory, &facade) {
         Ok(urls) => {
-            let mut peers = outbox().peers.lock().unwrap_or_else(|err| err.into_inner());
+            let mut peers = lock(&state.peers);
             peers.urls = urls;
             peers.read_at = now_millis();
         }
@@ -611,10 +631,10 @@ fn refresh_peers(factory: &ExecutionContextFactory) {
     }
 }
 
-fn peer_down(base_url: &str) -> bool {
-    let mut peers = outbox().peers.lock().unwrap_or_else(|err| err.into_inner());
+fn peer_down(state: &ClusterState, base_url: &str) -> bool {
+    let mut peers = lock(&state.peers);
     match peers.down_until.get(base_url) {
-        Some(until) if std::time::Instant::now() < *until => true,
+        Some(until) if Instant::now() < *until => true,
         Some(_) => {
             peers.down_until.remove(base_url);
             false
@@ -623,17 +643,18 @@ fn peer_down(base_url: &str) -> bool {
     }
 }
 
-fn mark_peer_down(base_url: &str) {
-    outbox()
-        .peers
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
+fn mark_peer_down(state: &ClusterState, base_url: &str) {
+    lock(&state.peers)
         .down_until
-        .insert(base_url.to_string(), std::time::Instant::now() + PEER_BACKOFF);
+        .insert(base_url.to_string(), Instant::now() + PEER_BACKOFF);
 }
 
-fn live_peer_urls(factory: &ExecutionContextFactory, facade: &EntityFacade) -> Result<Vec<String>, Error> {
-    let instance_id = env::get_prop_or_env("instance_id");
+fn live_peer_urls(
+    state: &ClusterState,
+    factory: &ExecutionContextFactory,
+    facade: &EntityFacade,
+) -> Result<Vec<String>, Error> {
+    let instance_id = state.instance_id();
     let now = db_now(facade);
     let window = window_millis(factory);
     let mut bases = Vec::new();
@@ -841,22 +862,15 @@ fn delete_dead_members(facade: &EntityFacade, before: i64) -> Result<(), Error> 
 
 /// A live member whose base URL is a loopback address cannot be reached from another host: say so once, since the
 /// fan-out to it fails without a sign otherwise.
-fn warn_loopback_peers(factory: &ExecutionContextFactory) {
-    static WARNED: AtomicBool = AtomicBool::new(false);
-    let peers = outbox()
-        .peers
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
-        .urls
-        .clone();
-    if peers.is_empty() || WARNED.load(Ordering::Relaxed) {
+fn warn_loopback_peers(state: &ClusterState) {
+    let peers = lock(&state.peers).urls.clone();
+    if peers.is_empty() || state.loopback_warned.load(Ordering::Relaxed) {
         return;
     }
     let own = cluster_base_url().unwrap_or_default();
     let loopback = |url: &str| url.contains("://127.") || url.contains("://localhost") || url.contains("://[::1]");
     if loopback(&own) || peers.iter().any(|url| loopback(url)) {
-        WARNED.store(true, Ordering::Relaxed);
-        let _ = factory;
+        state.loopback_warned.store(true, Ordering::Relaxed);
         tracing::error!(
             "a cluster member has a loopback cluster_base_url ({own}, peers {peers:?}); set cluster_base_url on each \
              member to an address the others can reach"
@@ -956,10 +970,6 @@ fn entered_authz() -> Option<crate::context::AuthzGuard> {
     ExecutionContext::with_current(ExecutionContext::disable_authz)
 }
 
-fn sender_slot() -> std::sync::MutexGuard<'static, Option<Arc<dyn Sender>>> {
-    SENDER.lock().unwrap_or_else(|err| err.into_inner())
-}
-
-fn factory_slot() -> std::sync::MutexGuard<'static, Weak<ExecutionContextFactory>> {
-    FACTORY.lock().unwrap_or_else(|err| err.into_inner())
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|err| err.into_inner())
 }

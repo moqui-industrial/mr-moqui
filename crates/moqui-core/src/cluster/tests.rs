@@ -46,8 +46,6 @@ impl Drop for Clean {
             env::clear_property(name);
         }
         env::clear_dotenv();
-        *super::sender_slot() = None;
-        super::NO_SENDER_LOGGED.store(false, Ordering::Relaxed);
     }
 }
 
@@ -76,16 +74,15 @@ impl Sender for Recording {
     }
 }
 
-fn install_recording() -> Arc<Recording> {
+fn install_recording(factory: &ExecutionContextFactory) -> Arc<Recording> {
     let recording = Arc::new(Recording {
         calls: Mutex::new(Vec::new()),
     });
-    super::install_sender(Arc::clone(&recording) as Arc<dyn Sender>);
+    super::install_sender(factory, Arc::clone(&recording) as Arc<dyn Sender>);
     recording
 }
 
-/// Counts and fails only posts whose payload names `only`. Started cluster state is process-wide,
-/// so commits from tests running alongside also reach the installed sender.
+/// Counts and fails only posts whose payload names `only`.
 struct Scripted {
     only: &'static str,
     fails_left: AtomicUsize,
@@ -163,8 +160,8 @@ fn first_start_upserts_one_member_and_does_not_post() {
     let _lock = lock();
     let _clean = Clean;
     preset("inst-first");
-    let recording = install_recording();
     let (ctx, facade) = open_facade();
+    let recording = install_recording(ctx.factory());
     let _entered = ctx.enter();
     super::start(ctx.factory()).unwrap();
     super::start(ctx.factory()).unwrap();
@@ -181,8 +178,8 @@ fn commit_posts_once_and_remote_apply_does_not_repost() {
     let _clean = Clean;
     preset("inst-local");
     let fingerprints = super::configured_fingerprints().unwrap();
-    let recording = install_recording();
     let (ctx, facade) = open_facade();
+    let recording = install_recording(ctx.factory());
     let _entered = ctx.enter();
     let _authz = ctx.disable_authz();
     put_member(
@@ -197,10 +194,10 @@ fn commit_posts_once_and_remote_apply_does_not_repost() {
     super::start(ctx.factory()).unwrap();
     assert_eq!(super::load_members(&facade).unwrap().len(), 2);
     write_visitor(&facade, "V1", false);
-    assert!(super::wait_for_sends(Duration::from_secs(5)));
+    assert!(super::wait_for_sends(ctx.factory(), Duration::from_secs(5)));
     assert!(recording.calls.lock().unwrap_or_else(|err| err.into_inner()).is_empty());
     write_visitor(&facade, "V2", true);
-    assert!(super::wait_for_sends(Duration::from_secs(5)));
+    assert!(super::wait_for_sends(ctx.factory(), Duration::from_secs(5)));
     let calls = recording.calls.lock().unwrap_or_else(|err| err.into_inner());
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].base, "https://peer.example:8443");
@@ -222,10 +219,53 @@ fn commit_posts_once_and_remote_apply_does_not_repost() {
     drop(calls);
     super::apply_remote(&facade, "entity-cache-invalidate", &message).unwrap();
     super::apply_remote(&facade, "entity-cache-invalidate", &message).unwrap();
-    assert!(super::wait_for_sends(Duration::from_secs(5)));
+    assert!(super::wait_for_sends(ctx.factory(), Duration::from_secs(5)));
     assert_eq!(recording.calls.lock().unwrap_or_else(|err| err.into_inner()).len(), 1);
     let err = super::apply_remote(&facade, "not-a-topic", &message).unwrap_err();
     assert!(err.to_string().contains("unknown topic"));
+}
+
+#[test]
+fn a_second_factory_does_not_post_through_the_first_ones_sender() {
+    let _lock = lock();
+    let _clean = Clean;
+    preset("inst-two");
+    let fingerprints = super::configured_fingerprints().unwrap();
+    let (first, first_facade) = open_facade();
+    let first_recording = install_recording(first.factory());
+    let (second, second_facade) = open_facade();
+    let second_recording = install_recording(second.factory());
+    for (ctx, facade, peer) in [
+        (&first, &first_facade, "https://first-peer.example:8443"),
+        (&second, &second_facade, "https://second-peer.example:8443"),
+    ] {
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        put_member(
+            facade,
+            "inst-two-peer",
+            peer,
+            now_value(),
+            &fingerprints.session,
+            &fingerprints.cert,
+        );
+        super::start(ctx.factory()).unwrap();
+    }
+    {
+        let _entered = second.enter();
+        let _authz = second.disable_authz();
+        write_visitor(&second_facade, "TWO-V1", true);
+    }
+    assert!(super::wait_for_sends(first.factory(), Duration::from_secs(5)));
+    assert!(super::wait_for_sends(second.factory(), Duration::from_secs(5)));
+    assert!(first_recording
+        .calls
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .is_empty());
+    let calls = second_recording.calls.lock().unwrap_or_else(|err| err.into_inner());
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].base, "https://second-peer.example:8443");
 }
 
 #[test]
@@ -274,8 +314,8 @@ fn a_stale_peer_is_not_posted() {
     let _clean = Clean;
     preset("inst-stale");
     let fingerprints = super::configured_fingerprints().unwrap();
-    let recording = install_recording();
     let (ctx, facade) = open_facade();
+    let recording = install_recording(ctx.factory());
     let _entered = ctx.enter();
     let _authz = ctx.disable_authz();
     super::start(ctx.factory()).unwrap();
@@ -297,7 +337,7 @@ fn a_stale_peer_is_not_posted() {
         &fingerprints.cert,
     );
     write_visitor(&facade, "V3", true);
-    assert!(super::wait_for_sends(Duration::from_secs(5)));
+    assert!(super::wait_for_sends(ctx.factory(), Duration::from_secs(5)));
     assert!(recording.calls.lock().unwrap_or_else(|err| err.into_inner()).is_empty());
 }
 
@@ -346,8 +386,8 @@ fn a_sender_retries_three_times_and_an_always_failing_sender_does_not_panic() {
         fails_left: AtomicUsize::new(2),
         calls: AtomicUsize::new(0),
     });
-    super::install_sender(Arc::clone(&scripted) as Arc<dyn Sender>);
     let (ctx, facade) = open_facade();
+    super::install_sender(ctx.factory(), Arc::clone(&scripted) as Arc<dyn Sender>);
     let _entered = ctx.enter();
     let _authz = ctx.disable_authz();
     super::start(ctx.factory()).unwrap();
@@ -360,7 +400,7 @@ fn a_sender_retries_three_times_and_an_always_failing_sender_does_not_panic() {
         &fingerprints.cert,
     );
     write_visitor(&facade, "RETRY-V4", true);
-    assert!(super::wait_for_sends(Duration::from_secs(5)));
+    assert!(super::wait_for_sends(ctx.factory(), Duration::from_secs(5)));
     assert_eq!(scripted.calls.load(Ordering::SeqCst), 3);
 
     let always = Arc::new(Scripted {
@@ -368,14 +408,14 @@ fn a_sender_retries_three_times_and_an_always_failing_sender_does_not_panic() {
         fails_left: AtomicUsize::new(9),
         calls: AtomicUsize::new(0),
     });
-    super::install_sender(Arc::clone(&always) as Arc<dyn Sender>);
+    super::install_sender(ctx.factory(), Arc::clone(&always) as Arc<dyn Sender>);
     write_visitor(&facade, "RETRY-V5", true);
-    assert!(super::wait_for_sends(Duration::from_secs(5)));
+    assert!(super::wait_for_sends(ctx.factory(), Duration::from_secs(5)));
     assert_eq!(always.calls.load(Ordering::SeqCst), 3);
 
-    *super::sender_slot() = None;
+    *super::lock(&super::ClusterState::of(ctx.factory()).sender) = None;
     write_visitor(&facade, "RETRY-V6", true);
-    assert!(super::wait_for_sends(Duration::from_secs(5)));
+    assert!(super::wait_for_sends(ctx.factory(), Duration::from_secs(5)));
 }
 
 #[test]
@@ -397,8 +437,8 @@ fn many_writes_in_one_wait_reach_a_peer_as_one_invalidation_and_the_commit_does_
         }
     }
     let slow = Arc::new(Slow(Mutex::new(Vec::new())));
-    super::install_sender(Arc::clone(&slow) as Arc<dyn Sender>);
     let (ctx, facade) = open_facade();
+    super::install_sender(ctx.factory(), Arc::clone(&slow) as Arc<dyn Sender>);
     let _entered = ctx.enter();
     let _authz = ctx.disable_authz();
     super::start(ctx.factory()).unwrap();
@@ -423,7 +463,7 @@ fn many_writes_in_one_wait_reach_a_peer_as_one_invalidation_and_the_commit_does_
         "the commit waited on the peer: {:?}",
         started.elapsed()
     );
-    assert!(super::wait_for_sends(Duration::from_secs(10)));
+    assert!(super::wait_for_sends(ctx.factory(), Duration::from_secs(10)));
     let posted = slow.0.lock().unwrap_or_else(|err| err.into_inner());
     let visitor_posts = posted
         .iter()
@@ -453,7 +493,8 @@ fn cluster_tls_pair_is_stable_and_a_cert_without_a_key_fails() {
     assert_consecutive_pair(&env_text);
     factory.set_entity(crate::testing::open());
     super::start(&factory).unwrap();
-    let instance = env::get_prop_or_env("instance_id");
+    let instance = super::instance_id(&factory).unwrap();
+    assert!(env::get_prop_or_env("instance_id").is_empty());
     assert_eq!(instance.len(), 36);
     assert!(instance.contains('-'));
     let names = factory.property_names().to_vec();
@@ -477,7 +518,7 @@ fn cluster_tls_pair_is_stable_and_a_cert_without_a_key_fails() {
     );
     again.set_entity(crate::testing::open());
     super::start(&again).unwrap();
-    assert_eq!(env::get_prop_or_env("instance_id"), instance);
+    assert_eq!(super::instance_id(&again).unwrap(), instance);
     let env_again = std::fs::read_to_string(temp.path().join(".env")).unwrap();
     assert_eq!(
         env_again

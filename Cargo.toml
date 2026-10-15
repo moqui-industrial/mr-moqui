@@ -133,7 +133,9 @@ totp-rs = { version = "6", default-features = false, features = [
 tracing = "0.1"
 # CSPRNG for CHANGEME secrets written to runtime/.env. No /dev/urandom.
 getrandom = { version = "0.3", features = ["std"] }
-rquickjs = "0.14"
+# Exact: `keep_assigned` in moqui-core script/runtime/entities.rs depends on how this version owns the value an
+# exotic set is given. Re-check it, and its test, before moving this.
+rquickjs = "=0.14.0"
 # Phase 6 is the first user. Not linked until then, so this line does not
 # raise the MSRV of lib or core. 0.139.0 declares rust-version 1.94.0.
 # 0.140 and later declare 1.95 or higher.

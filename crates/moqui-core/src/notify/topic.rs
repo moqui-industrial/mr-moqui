@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::context::Error;
 
-/// Cache invalidation topic. Cluster fan-out is a later subscriber, not this bus.
+/// Cache invalidation topic. Cluster fan-out is [`crate::cluster::publish`], not a subscriber of this bus.
 pub const ENTITY_CACHE_INVALIDATE: &str = "entity-cache-invalidate";
 
 /// Notification topic. A repeated `message_id` is delivered once until it ages out of the recent set.

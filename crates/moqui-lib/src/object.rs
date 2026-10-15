@@ -337,11 +337,17 @@ pub fn add_numbers(left: &Value, right: &Value) -> Result<Value, Error> {
     }
     if let (Some(a), Some(b)) = (as_i64(left), as_i64(right)) {
         if matches!(left, Value::I64(_)) || matches!(right, Value::I64(_)) {
-            return Ok(Value::I64(a.wrapping_add(b)));
+            return a
+                .checked_add(b)
+                .map(Value::I64)
+                .ok_or_else(|| Error::new("long add overflowed"));
         }
     }
     if let (Some(a), Some(b)) = (as_i32(left), as_i32(right)) {
-        return Ok(Value::I32(a.wrapping_add(b)));
+        return a
+            .checked_add(b)
+            .map(Value::I32)
+            .ok_or_else(|| Error::new("integer add overflowed"));
     }
     Err(Error::new("add_numbers needs numeric values"))
 }
@@ -975,26 +981,31 @@ fn time_epoch_millis(time: Time) -> i64 {
 fn like_match(text: &str, pattern: &str) -> bool {
     let text: Vec<char> = text.chars().flat_map(|ch| ch.to_lowercase()).collect();
     let pattern: Vec<char> = pattern.chars().flat_map(|ch| ch.to_lowercase()).collect();
-    like_at(&text, &pattern, 0, 0)
-}
-
-fn like_at(text: &[char], pattern: &[char], ti: usize, pi: usize) -> bool {
-    if pi == pattern.len() {
-        return ti == text.len();
-    }
-    if pattern[pi] == '%' {
-        if like_at(text, pattern, ti, pi + 1) {
-            return true;
+    // Two pointers: on a mismatch go back to the last `%` and let it take one more char. Only the last `%` needs
+    // retrying, so this is linear in the text for each pattern char, with no recursion.
+    let (mut ti, mut pi) = (0, 0);
+    let mut last_wildcard: Option<(usize, usize)> = None;
+    while ti < text.len() {
+        match pattern.get(pi) {
+            Some('%') => {
+                pi += 1;
+                last_wildcard = Some((pi, ti));
+            }
+            Some(&ch) if ch == '_' || ch == text[ti] => {
+                ti += 1;
+                pi += 1;
+            }
+            _ => match last_wildcard {
+                Some((after, taken)) => {
+                    pi = after;
+                    ti = taken + 1;
+                    last_wildcard = Some((after, ti));
+                }
+                None => return false,
+            },
         }
-        if ti < text.len() && like_at(text, pattern, ti + 1, pi) {
-            return true;
-        }
-        return false;
     }
-    if ti < text.len() && (pattern[pi] == '_' || pattern[pi] == text[ti]) {
-        return like_at(text, pattern, ti + 1, pi + 1);
-    }
-    false
+    pattern[pi..].iter().all(|ch| *ch == '%')
 }
 
 /// Whether all of `text` matches the Java regular expression `pattern`, as `String.matches`.
@@ -1092,6 +1103,32 @@ mod tests {
         assert!(compare_like(&Value::string("a.b"), &Value::string("a.b")));
         assert!(compare_like(&Value::Null, &Value::Null) || compare_like(&Value::string("a"), &Value::Null));
         assert!(compare(&Value::string("10"), "greater", &Value::string("2"), "Integer").unwrap());
+    }
+
+    #[test]
+    fn like_wildcards_match_without_backtracking_or_recursion() {
+        let like = |text: &str, pattern: &str| compare_like(&Value::string(text), &Value::string(pattern));
+        assert!(like("", "") && like("", "%") && like("", "%%") && !like("", "_"));
+        assert!(like("abc", "%") && like("abc", "a%c") && like("abc", "%b%") && like("abc", "___"));
+        assert!(!like("abc", "__") && !like("abc", "____") && !like("abc", "a%b") && !like("ab", "a_%b"));
+        assert!(like("abcbc", "a%bc") && like("aXbYc", "a%b%c") && like("ABC", "a_c") && like("mississippi", "%sip%"));
+        assert!(!like("mississippi", "%sipx%") && like("xaab", "%a_b") && !like("ab", "%a_b"));
+        // A pattern that backtracks exponentially, and a text long enough to overflow the stack by recursion.
+        let text = "a".repeat(5_000);
+        let pattern = format!("{}b", "%a".repeat(40));
+        assert!(!like(&text, &pattern));
+        assert!(like(&"x".repeat(1_000_000), "%x"));
+    }
+
+    #[test]
+    fn add_numbers_errors_on_integer_overflow() {
+        assert_eq!(add_numbers(&Value::I64(1), &Value::I64(2)).unwrap(), Value::I64(3));
+        assert_eq!(add_numbers(&Value::I32(1), &Value::I32(2)).unwrap(), Value::I32(3));
+        let long = add_numbers(&Value::I64(i64::MAX), &Value::I64(1)).unwrap_err();
+        assert!(long.to_string().contains("overflowed"), "{long}");
+        let int = add_numbers(&Value::I32(i32::MAX), &Value::I32(1)).unwrap_err();
+        assert!(int.to_string().contains("overflowed"), "{int}");
+        assert!(add_numbers(&Value::I64(i64::MIN), &Value::I32(-1)).is_err());
         assert!(compare(&Value::string(""), "empty", &Value::Null, "String").unwrap());
         assert!(compare(&Value::string("abc"), "matches", &Value::string("a.*"), "").unwrap());
         assert!(compare(&Value::string("abc"), "matches", &Value::string("a.*c"), "").unwrap());

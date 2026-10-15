@@ -16,7 +16,9 @@
 //!
 //! As Java `FieldValueCondition` does, a null value turns equals, like, in, and between into
 //! `IS NULL`, and their negations into `IS NOT NULL`. An empty `In` list is false: `1 = 0`. An
-//! empty `NotIn` list is true: `1 = 1`. `And` and `Or` with nothing to render are omitted.
+//! empty `NotIn` list is true: `1 = 1`. A condition that renders as nothing is true: an `And` of
+//! nothing is omitted, an `Or` with such a part is omitted, an `Or` of no parts is false (`1 = 0`), and
+//! `Not` of nothing is false.
 
 use moqui_lib::error::Error;
 use moqui_lib::object::Value;
@@ -600,10 +602,15 @@ impl<'a> Writer<'a> {
             Condition::Or(list) => self.join(list, "OR", columns),
             Condition::Not(inner) => {
                 let rendered = self.sub(inner, columns)?;
-                if !rendered.sql.is_empty() {
-                    self.push("NOT (");
-                    self.append(rendered);
-                    self.push(")");
+                match rendered.sql.as_str() {
+                    // Nothing rendered is true, so its negation is false.
+                    "" | "1 = 1" => self.push("1 = 0"),
+                    "1 = 0" => self.push("1 = 1"),
+                    _ => {
+                        self.push("NOT (");
+                        self.append(rendered);
+                        self.push(")");
+                    }
                 }
                 Ok(())
             }
@@ -742,12 +749,21 @@ impl<'a> Writer<'a> {
         Ok(())
     }
 
+    /// A part that renders as nothing is true: an `And` leaves it out, and it makes an `Or` true, so the `Or`
+    /// renders as nothing too. An `Or` of no parts is false.
     fn join(&mut self, conditions: &[Condition], operator: &str, columns: &Columns<'_>) -> Result<(), Error> {
+        let is_or = operator == "OR";
+        if is_or && conditions.is_empty() {
+            self.push("1 = 0");
+            return Ok(());
+        }
         let mut parts = Vec::new();
         for condition in conditions {
             let rendered = self.sub(condition, columns)?;
             if !rendered.sql.is_empty() {
                 parts.push(rendered);
+            } else if is_or {
+                return Ok(());
             }
         }
         if parts.is_empty() {

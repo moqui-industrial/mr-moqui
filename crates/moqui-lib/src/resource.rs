@@ -347,10 +347,19 @@ impl Resource for FileResource {
                 )));
             }
         }
-        let mut file = fs::File::create(&self.path)
-            .map_err(|err| Error::new(format!("could not write {}", self.location)).with_source(err))?;
-        file.write_all(bytes)
-            .map_err(|err| Error::new(format!("could not write {}", self.location)).with_source(err))
+        // A temp file beside the target, then a rename: a reader sees the old file or the new one, never a part, and
+        // a failed write leaves the old one. A symlink is followed, so the link stays a link.
+        let target = match fs::symlink_metadata(&self.path) {
+            Ok(meta) if meta.file_type().is_symlink() => fs::canonicalize(&self.path)
+                .map_err(|err| Error::new(format!("could not write {}", self.location)).with_source(err))?,
+            _ => self.path.clone(),
+        };
+        let temp = temp_beside(&target);
+        let written = write_then_rename(&temp, &target, bytes);
+        if written.is_err() {
+            let _ = fs::remove_file(&temp);
+        }
+        written.map_err(|err| Error::new(format!("could not write {}", self.location)).with_source(err))
     }
 
     fn last_modified(&self) -> Result<i64, Error> {
@@ -421,12 +430,40 @@ impl Resource for FileResource {
         } else {
             fs::remove_file(&self.path)
         };
-        Ok(result.is_ok())
+        match result {
+            Ok(()) => Ok(true),
+            // Gone between the check and the remove: nothing was deleted here.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(Error::new(format!("could not delete {}", self.location)).with_source(err)),
+        }
     }
 
     fn with_location(&self, location: &str) -> Self {
         Self::new(location)
     }
+}
+
+/// A hidden name in `target`'s directory that no other write in this process uses.
+fn temp_beside(target: &std::path::Path) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = target
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
+    target.with_file_name(format!(".{name}.{}.{serial}.tmp", std::process::id()))
+}
+
+/// Write `bytes` to `temp` with the permissions `target` has, flush them to disk, and rename over `target`.
+fn write_then_rename(temp: &std::path::Path, target: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(temp)?;
+    if let Ok(meta) = fs::metadata(target) {
+        file.set_permissions(meta.permissions())?;
+    }
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(temp, target)
 }
 
 struct MemFile {
@@ -705,6 +742,43 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert!(file.delete().unwrap());
         assert!(!file.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_write_replaces_whole_and_delete_reports_failures() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("moqui-lib-replace-{}-{}", std::process::id(), now_millis()));
+        fs::create_dir_all(&dir).unwrap();
+        let root = FileResource::new(dir.to_string_lossy());
+        let file = root.make_file("data.txt").unwrap();
+        file.write_text("the first and longer text").unwrap();
+        fs::set_permissions(dir.join("data.txt"), fs::Permissions::from_mode(0o640)).unwrap();
+        file.write_text("short").unwrap();
+        assert_eq!(file.read_text().unwrap(), "short");
+        let mode = fs::metadata(dir.join("data.txt")).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o640);
+        // No temp file is left beside it.
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+
+        // Through a symlink the target is written and the link stays.
+        std::os::unix::fs::symlink(dir.join("data.txt"), dir.join("link.txt")).unwrap();
+        FileResource::new(dir.join("link.txt").to_string_lossy())
+            .write_text("by link")
+            .unwrap();
+        assert!(fs::symlink_metadata(dir.join("link.txt"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(file.read_text().unwrap(), "by link");
+
+        // A directory that is not empty is an error, not a quiet false; a missing file is false.
+        let sub = root.make_directory("sub").unwrap();
+        sub.make_file("inner.txt").unwrap();
+        assert!(sub.delete().is_err());
+        assert!(!FileResource::new(dir.join("missing.txt").to_string_lossy())
+            .delete()
+            .unwrap());
         let _ = fs::remove_dir_all(&dir);
     }
 }

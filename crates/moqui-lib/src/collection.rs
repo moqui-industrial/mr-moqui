@@ -18,6 +18,8 @@
 //! in this pass. Decimal division uses the dividend's scale and half-up, which
 //! is `BigDecimal.divide(divisor, HALF_UP)`. A zero divisor leaves the map as it is.
 
+use std::cmp::Ordering;
+
 use indexmap::IndexMap;
 use jiff::Timestamp;
 use rust_decimal::Decimal;
@@ -111,23 +113,149 @@ pub fn order_map_list(
     if fields.is_empty() {
         return Ok(());
     }
-    let error = std::cell::RefCell::new(None);
-    maps.sort_by(|left, right| {
-        if error.borrow().is_some() {
-            return std::cmp::Ordering::Equal;
-        }
-        match compare_rows(left, right, &fields, nulls_last) {
-            Ok(ordering) => ordering,
-            Err(err) => {
-                *error.borrow_mut() = Some(err);
-                std::cmp::Ordering::Equal
-            }
-        }
-    });
-    if let Some(err) = error.into_inner() {
-        return Err(err);
+    // The keys are made and checked first, so the sort's comparator cannot fail: one that stops partway gives an
+    // order that is not total, which the standard sort may panic on.
+    let mut keyed: Vec<(Vec<SortKey>, usize)> = maps
+        .iter()
+        .enumerate()
+        .map(|(index, map)| {
+            let keys = fields
+                .iter()
+                .map(|field| SortKey::of(map.get(&field.name), field.ignore_case))
+                .collect();
+            (keys, index)
+        })
+        .collect();
+    for column in 0..fields.len() {
+        check_comparable(keyed.iter().map(|(keys, _)| &keys[column]))?;
+    }
+    keyed.sort_by(|(left, _), (right, _)| compare_keys(left, right, &fields, nulls_last));
+    let mut taken: Vec<IndexMap<String, Value>> = maps.iter_mut().map(std::mem::take).collect();
+    for (slot, (_, index)) in maps.iter_mut().zip(keyed) {
+        *slot = std::mem::take(&mut taken[index]);
     }
     Ok(())
+}
+
+/// One field of one row, as the sort compares it.
+enum SortKey {
+    Null,
+    Number(Decimal),
+    /// A double with no decimal form, such as infinity. It orders with the numbers.
+    Float(f64),
+    Text(String),
+    Bool(bool),
+    Timestamp(Timestamp),
+    Date(jiff::civil::Date),
+    Time(jiff::civil::Time),
+    Bytes(Vec<u8>),
+    /// A value with no order, such as a map. Two of them in one field are an error.
+    Unordered,
+    /// NaN, which orders with nothing.
+    NotANumber,
+}
+
+impl SortKey {
+    fn of(value: Option<&Value>, ignore_case: bool) -> Self {
+        let Some(value) = value.filter(|value| !value.is_null()) else {
+            return Self::Null;
+        };
+        if let Some(number) = as_number(value) {
+            return Self::Number(number);
+        }
+        match value {
+            Value::F64(number) if number.is_nan() => Self::NotANumber,
+            Value::F64(number) => Self::Float(*number),
+            Value::String(text) if ignore_case => Self::Text(text.to_lowercase()),
+            Value::String(text) => Self::Text(text.clone()),
+            Value::Bool(flag) => Self::Bool(*flag),
+            Value::Timestamp(stamp) => Self::Timestamp(*stamp),
+            Value::Date(date) => Self::Date(*date),
+            Value::Time(time) => Self::Time(*time),
+            Value::Bytes(bytes) => Self::Bytes(bytes.clone()),
+            _ => Self::Unordered,
+        }
+    }
+
+    /// Keys of one group order against each other. None for a null.
+    fn group(&self) -> Option<u8> {
+        match self {
+            Self::Null => None,
+            Self::Number(_) | Self::Float(_) => Some(0),
+            Self::Text(_) => Some(1),
+            Self::Bool(_) => Some(2),
+            Self::Timestamp(_) => Some(3),
+            Self::Date(_) => Some(4),
+            Self::Time(_) => Some(5),
+            Self::Bytes(_) => Some(6),
+            Self::Unordered => Some(7),
+            Self::NotANumber => Some(8),
+        }
+    }
+}
+
+/// An error when two present keys of one field cannot be ordered against each other.
+fn check_comparable<'a>(keys: impl Iterator<Item = &'a SortKey>) -> Result<(), Error> {
+    let mut first: Option<&SortKey> = None;
+    for key in keys {
+        let Some(group) = key.group() else {
+            continue;
+        };
+        let Some(seen) = first else {
+            first = Some(key);
+            continue;
+        };
+        if matches!(key, SortKey::NotANumber) || matches!(seen, SortKey::NotANumber) {
+            return Err(Error::new("cannot compare NaN"));
+        }
+        if seen.group() != Some(group) || group == 7 {
+            return Err(Error::new("values are not the same comparable type"));
+        }
+    }
+    Ok(())
+}
+
+fn compare_keys(left: &[SortKey], right: &[SortKey], fields: &[OrderField], nulls_last: Option<bool>) -> Ordering {
+    for ((left, right), field) in left.iter().zip(right).zip(fields) {
+        let nulls_first = match nulls_last {
+            Some(last) => !last,
+            None => field.ascending,
+        };
+        let ordering = match (left, right) {
+            (SortKey::Null, SortKey::Null) => Ordering::Equal,
+            (SortKey::Null, _) if nulls_first => Ordering::Less,
+            (SortKey::Null, _) => Ordering::Greater,
+            (_, SortKey::Null) if nulls_first => Ordering::Greater,
+            (_, SortKey::Null) => Ordering::Less,
+            (left, right) if field.ascending => compare_present_keys(left, right),
+            (left, right) => compare_present_keys(left, right).reverse(),
+        };
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+    Ordering::Equal
+}
+
+/// Two present keys that [`check_comparable`] passed.
+fn compare_present_keys(left: &SortKey, right: &SortKey) -> Ordering {
+    match (left, right) {
+        (SortKey::Number(a), SortKey::Number(b)) => a.cmp(b),
+        (SortKey::Float(a), SortKey::Float(b)) => a.total_cmp(b),
+        (SortKey::Number(a), SortKey::Float(b)) => decimal_f64(*a).total_cmp(b),
+        (SortKey::Float(a), SortKey::Number(b)) => a.total_cmp(&decimal_f64(*b)),
+        (SortKey::Text(a), SortKey::Text(b)) => a.cmp(b),
+        (SortKey::Bool(a), SortKey::Bool(b)) => a.cmp(b),
+        (SortKey::Timestamp(a), SortKey::Timestamp(b)) => a.cmp(b),
+        (SortKey::Date(a), SortKey::Date(b)) => a.cmp(b),
+        (SortKey::Time(a), SortKey::Time(b)) => a.cmp(b),
+        (SortKey::Bytes(a), SortKey::Bytes(b)) => a.cmp(b),
+        _ => Ordering::Equal,
+    }
+}
+
+fn decimal_f64(number: Decimal) -> f64 {
+    number.to_string().parse().unwrap_or(0.0)
 }
 
 struct OrderField {
@@ -172,64 +300,6 @@ fn parse_order_field(field: &str) -> Result<OrderField, Error> {
         ascending,
         ignore_case,
     })
-}
-
-fn compare_rows(
-    left: &IndexMap<String, Value>,
-    right: &IndexMap<String, Value>,
-    fields: &[OrderField],
-    nulls_last: Option<bool>,
-) -> Result<std::cmp::Ordering, Error> {
-    for field in fields {
-        let nulls_first = match nulls_last {
-            Some(last) => !last,
-            None => field.ascending,
-        };
-        let ordering = compare_field(left.get(&field.name), right.get(&field.name), field, nulls_first)?;
-        if ordering != std::cmp::Ordering::Equal {
-            return Ok(ordering);
-        }
-    }
-    Ok(std::cmp::Ordering::Equal)
-}
-
-fn compare_field(
-    left: Option<&Value>,
-    right: Option<&Value>,
-    field: &OrderField,
-    nulls_first: bool,
-) -> Result<std::cmp::Ordering, Error> {
-    let left = left.filter(|value| !value.is_null());
-    let right = right.filter(|value| !value.is_null());
-    match (left, right) {
-        (None, None) => Ok(std::cmp::Ordering::Equal),
-        (None, Some(_)) => Ok(if nulls_first {
-            std::cmp::Ordering::Less
-        } else {
-            std::cmp::Ordering::Greater
-        }),
-        (Some(_), None) => Ok(if nulls_first {
-            std::cmp::Ordering::Greater
-        } else {
-            std::cmp::Ordering::Less
-        }),
-        (Some(left), Some(right)) => {
-            let ordering = compare_present(left, right, field.ignore_case)?;
-            Ok(if field.ascending { ordering } else { ordering.reverse() })
-        }
-    }
-}
-
-fn compare_present(left: &Value, right: &Value, ignore_case: bool) -> Result<std::cmp::Ordering, Error> {
-    if let (Some(left), Some(right)) = (as_number(left), as_number(right)) {
-        return Ok(left.cmp(&right));
-    }
-    match (left, right) {
-        (Value::String(left), Value::String(right)) if ignore_case => {
-            Ok(left.to_lowercase().cmp(&right.to_lowercase()))
-        }
-        _ => crate::object::compare_obj(left, right),
-    }
 }
 
 fn as_number(value: &Value) -> Option<Decimal> {
@@ -728,6 +798,66 @@ mod tests {
         priority.insert("status".to_string(), Value::string("open"));
         let best = find_maximal_match(&maps, &priority).unwrap();
         assert_eq!(best.get("name"), Some(&Value::string("B")));
+    }
+
+    #[test]
+    fn order_sorts_by_fields_and_nulls_and_refuses_mixed_types_before_sorting() {
+        let names = |maps: &[IndexMap<String, Value>]| -> Vec<String> {
+            maps.iter()
+                .map(|map| map.get("id").map(to_plain_string).unwrap_or_default())
+                .collect()
+        };
+        let mut maps = vec![
+            row(&[
+                ("id", Value::string("r1")),
+                ("n", Value::I64(3)),
+                ("s", Value::string("b")),
+            ]),
+            row(&[
+                ("id", Value::string("r2")),
+                ("n", Value::Null),
+                ("s", Value::string("a")),
+            ]),
+            row(&[
+                ("id", Value::string("r3")),
+                ("n", Value::F64(1.5)),
+                ("s", Value::string("a")),
+            ]),
+            row(&[
+                ("id", Value::string("r4")),
+                ("n", Value::Decimal(Decimal::from(3))),
+                ("s", Value::string("a")),
+            ]),
+            row(&[("id", Value::string("r5")), ("n", Value::F64(f64::INFINITY))]),
+        ];
+        order_map_list(&mut maps, &["n", "s"], None).unwrap();
+        assert_eq!(names(&maps), ["r2", "r3", "r4", "r1", "r5"]);
+        order_map_list(&mut maps, &["-n"], None).unwrap();
+        // Stable: r4 and r1 tie on n and keep their order.
+        assert_eq!(names(&maps), ["r5", "r4", "r1", "r3", "r2"]);
+        order_map_list(&mut maps, &["n"], Some(true)).unwrap();
+        assert_eq!(names(&maps)[4], "r2");
+
+        // Mixed types fail before any reordering, however many rows there are, and never panic the sort.
+        let mut mixed: Vec<IndexMap<String, Value>> = (0..200)
+            .map(|index| {
+                let value = if index % 7 == 0 {
+                    Value::string(format!("{index}"))
+                } else {
+                    Value::I32(200 - index)
+                };
+                row(&[("id", Value::I32(index)), ("n", value)])
+            })
+            .collect();
+        let before = names(&mixed);
+        let err = order_map_list(&mut mixed, &["n"], None).unwrap_err();
+        assert!(err.to_string().contains("not the same comparable type"), "{err}");
+        assert_eq!(names(&mixed), before);
+        let mut nan = vec![row(&[("n", Value::F64(f64::NAN))]), row(&[("n", Value::F64(1.0))])];
+        assert!(order_map_list(&mut nan, &["n"], None).is_err());
+        let mut one_map = vec![row(&[("n", Value::Map(IndexMap::new()))]), row(&[("n", Value::Null)])];
+        order_map_list(&mut one_map, &["n"], None).unwrap();
+        assert!(one_map[0].get("n").is_some_and(Value::is_null));
     }
 
     #[test]

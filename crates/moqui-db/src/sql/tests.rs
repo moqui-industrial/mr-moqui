@@ -374,8 +374,9 @@ fn empty_conditions_are_omitted_and_empty_in_is_false() {
 
     let omitted = select(enumeration, postgres, &[], Some(&Condition::and(vec![])), &[], page).unwrap();
     assert!(!omitted.sql.contains("WHERE"), "{}", omitted.sql);
-    let or_omitted = select(enumeration, postgres, &[], Some(&Condition::or(vec![])), &[], page).unwrap();
-    assert!(!or_omitted.sql.contains("WHERE"), "{}", or_omitted.sql);
+    // An `or` of nothing is false, as `any` of nothing is.
+    let or_none = checked(select(enumeration, postgres, &[], Some(&Condition::or(vec![])), &[], page).unwrap());
+    assert!(or_none.sql.contains("WHERE 1 = 0"), "{}", or_none.sql);
 
     let empty_in = checked(
         select(
@@ -393,9 +394,21 @@ fn empty_conditions_are_omitted_and_empty_in_is_false() {
     let empty_not_in = render_condition(&Condition::not_in("enumId", vec![]), postgres).unwrap();
     assert_eq!(empty_not_in.sql, "1 = 1");
 
+    // An empty `and` is true, so an `or` holding one is true and renders as nothing.
+    let or_true = render_condition(
+        &Condition::or(vec![
+            Condition::and(vec![]),
+            Condition::negate(Condition::equals("enumId", Value::string("A"))),
+        ]),
+        postgres,
+    )
+    .unwrap();
+    assert_eq!(or_true.sql, "");
+    assert!(or_true.params.is_empty());
+
     let nested = checked(
         render_condition(
-            &Condition::or(vec![
+            &Condition::and(vec![
                 Condition::and(vec![]),
                 Condition::negate(Condition::equals("enumId", Value::string("A"))),
             ]),
@@ -405,6 +418,37 @@ fn empty_conditions_are_omitted_and_empty_in_is_false() {
     );
     assert_eq!(nested.sql, "NOT (\"enumId\" = ?)");
     assert_eq!(nested.params, vec![Value::string("A")]);
+
+    // Negating nothing does not leave nothing: not true is false, and not false is true.
+    let not_and = render_condition(&Condition::negate(Condition::and(vec![])), postgres).unwrap();
+    assert_eq!(not_and.sql, "1 = 0");
+    let not_or = render_condition(&Condition::negate(Condition::or(vec![])), postgres).unwrap();
+    assert_eq!(not_or.sql, "1 = 1");
+    let not_in_none = render_condition(&Condition::negate(Condition::is_in("enumId", vec![])), postgres).unwrap();
+    assert_eq!(not_in_none.sql, "1 = 1");
+    let or_kept = checked(
+        render_condition(
+            &Condition::or(vec![
+                Condition::or(vec![]),
+                Condition::equals("enumId", Value::string("B")),
+            ]),
+            postgres,
+        )
+        .unwrap(),
+    );
+    assert_eq!(or_kept.sql, "(1 = 0 OR \"enumId\" = ?)");
+    let select_none = checked(
+        select(
+            enumeration,
+            postgres,
+            &[],
+            Some(&Condition::negate(Condition::and(vec![]))),
+            &[],
+            page,
+        )
+        .unwrap(),
+    );
+    assert!(select_none.sql.contains("WHERE 1 = 0"), "{}", select_none.sql);
 }
 
 #[test]

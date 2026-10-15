@@ -256,7 +256,8 @@ impl NotificationMessage {
             ROUTE_USER_IDS.to_string(),
             Value::List(self.notify_user_ids.iter().map(Value::string).collect()),
         );
-        topic::publish(
+        crate::cluster::publish(
+            &facade,
             NOTIFICATION_MESSAGE,
             &TopicMessage {
                 origin_id: topic::origin_id().to_string(),

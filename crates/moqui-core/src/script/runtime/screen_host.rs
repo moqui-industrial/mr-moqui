@@ -25,11 +25,17 @@ use crate::screen::generate::{self, Unit, UnitRequest};
 use crate::screen::sri::{self as logic, NodeLit, Runner};
 use crate::screen::{with_current_render, RenderState};
 
-thread_local! {
-    /// The kind of the last error a host call threw, so a security error is still one after it
-    /// has crossed the script and come back as text.
-    static LAST_KIND: Cell<ErrorKind> = const { Cell::new(ErrorKind::General) };
-}
+/// The property of a thrown error that names its security kind, so a security error is still one after it has
+/// crossed the script and come back. It goes with that one error: one a script catches and goes on from does not
+/// mark a later failure, and a nested unit does not change the outer one's.
+const KIND_PROPERTY: &str = "moquiErrorKind";
+
+/// The kinds [`throw`] carries on the error, by name.
+const CARRIED_KINDS: [(ErrorKind, &str); 3] = [
+    (ErrorKind::AuthenticationRequired, "AuthenticationRequired"),
+    (ErrorKind::Unauthorized, "Unauthorized"),
+    (ErrorKind::Tarpit, "Tarpit"),
+];
 
 /// Run `body` on the script runtime with a [`Runner`] for the render in progress.
 pub(crate) fn with_screen_runner<R>(body: impl FnOnce(&dyn Runner) -> Result<R, Error>) -> Result<R, Error> {
@@ -76,13 +82,12 @@ fn run_unit(ctx: &Ctx<'_>, unit: &Unit) -> Result<(), Error> {
             function
         }
     };
-    LAST_KIND.with(|kind| kind.set(ErrorKind::General));
     let mark = StackMark::new();
     let result = in_unit_scope(ctx, || {
-        function.call::<_, ()>(()).catch(ctx).map_err(|caught| {
-            let kind = LAST_KIND.with(Cell::take);
-            Error::of_kind(kind, caught.to_string())
-        })
+        function
+            .call::<_, ()>(())
+            .catch(ctx)
+            .map_err(|caught| Error::of_kind(caught_kind(&caught), caught.to_string()))
     });
     if result.is_ok() {
         mark.keep();
@@ -90,15 +95,32 @@ fn run_unit(ctx: &Ctx<'_>, unit: &Unit) -> Result<(), Error> {
     result
 }
 
-/// Throw an error to the script, remembering a security kind.
+/// Throw an error to the script, carrying a security kind on the error object.
 fn throw(ctx: &Ctx<'_>, err: &Error) -> JsError {
-    if matches!(
-        err.kind(),
-        ErrorKind::AuthenticationRequired | ErrorKind::Unauthorized | ErrorKind::Tarpit
-    ) {
-        LAST_KIND.with(|kind| kind.set(err.kind()));
+    let Some((_, name)) = CARRIED_KINDS.iter().find(|(kind, _)| *kind == err.kind()) else {
+        return Exception::throw_message(ctx, err.message());
+    };
+    let exception = match Exception::from_message(ctx.clone(), err.message()) {
+        Ok(exception) => exception,
+        Err(thrown) => return thrown,
+    };
+    match exception.as_object().set(KIND_PROPERTY, *name) {
+        Ok(()) => exception.throw(),
+        Err(thrown) => thrown,
     }
-    Exception::throw_message(ctx, err.message())
+}
+
+/// The security kind [`throw`] put on the error the script ended with, else general.
+fn caught_kind(caught: &rquickjs::CaughtError<'_>) -> ErrorKind {
+    let object = match caught {
+        rquickjs::CaughtError::Exception(exception) => Some(exception.as_object()),
+        rquickjs::CaughtError::Value(value) => value.as_object(),
+        rquickjs::CaughtError::Error(_) => None,
+    };
+    object
+        .and_then(|object| object.get::<_, Option<String>>(KIND_PROPERTY).ok().flatten())
+        .and_then(|name| CARRIED_KINDS.iter().find(|(_, known)| *known == name))
+        .map_or(ErrorKind::General, |(kind, _)| *kind)
 }
 
 /// Run `body` with the render in progress, flushing script-held lists first so the stack is current.
@@ -951,4 +973,51 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("xlsxEndRow", sri_xlsx_end_row);
     super::urls::install(ctx, &sri)?;
     Ok(sri)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The kind `source` ends with, after `deny()` throws an unauthorized error and `fail()` a general one.
+    fn kind_after(source: &str) -> ErrorKind {
+        with_context(|ctx| {
+            let deny = Function::new(ctx.clone(), |ctx: Ctx<'_>| -> rquickjs::Result<()> {
+                Err(throw(&ctx, &Error::of_kind(ErrorKind::Unauthorized, "denied")))
+            })
+            .map_err(js_error)?;
+            let fail = Function::new(ctx.clone(), |ctx: Ctx<'_>| -> rquickjs::Result<()> {
+                Err(throw(&ctx, &Error::new("failed")))
+            })
+            .map_err(js_error)?;
+            let function = eval_js::<Function>(ctx, &format!("(function (deny, fail) {{ {source} }})"))?;
+            let caught = function
+                .call::<_, ()>((deny, fail))
+                .catch(ctx)
+                .expect_err("the script did not throw");
+            Ok(caught_kind(&caught))
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_security_kind_goes_with_its_error_only() {
+        assert_eq!(kind_after("deny();"), ErrorKind::Unauthorized);
+        assert_eq!(
+            kind_after("try { deny(); } catch (e) { throw e; }"),
+            ErrorKind::Unauthorized
+        );
+        // Caught and gone on from: the later, unrelated failure is general.
+        assert_eq!(kind_after("try { deny(); } catch (e) {} fail();"), ErrorKind::General);
+        assert_eq!(
+            kind_after("try { deny(); } catch (e) {} throw new Error('x');"),
+            ErrorKind::General
+        );
+        // A general failure caught first does not hide the security error after it.
+        assert_eq!(
+            kind_after("try { fail(); } catch (e) {} deny();"),
+            ErrorKind::Unauthorized
+        );
+        assert_eq!(kind_after("throw 'text';"), ErrorKind::General);
+    }
 }

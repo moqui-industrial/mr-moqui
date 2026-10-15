@@ -175,12 +175,18 @@ impl RestClient {
         }
     }
 
-    /// Refuse a host that resolves to a loopback, private, link-local, or unspecified address,
-    /// including the cloud metadata address. Use it for URLs a user or a remote system supplied.
-    /// The framework's own calls to a local server leave it off.
+    /// Refuse a host that resolves to a loopback, private, link-local, shared (CGNAT), or unspecified address,
+    /// including the cloud metadata address and those addresses inside IPv6. Use it for URLs a user or a remote
+    /// system supplied. The framework's own calls to a local server leave it off.
+    ///
+    /// The check is in the client's resolver, so the addresses checked are the ones connected to: a name that
+    /// resolves to a public address for the check and an internal one for the connect cannot get past it. A
+    /// redirect is resolved the same way.
     #[must_use]
     pub fn deny_internal_addresses(mut self, deny: bool) -> Self {
         self.deny_internal = deny;
+        // The resolver is part of the transport, so one built before this is not kept.
+        self.transport = OnceLock::new();
         self
     }
 
@@ -223,7 +229,8 @@ impl RestClient {
         let url = request.url;
         let shown = redacted(&url);
         if self.deny_internal {
-            deny_internal(&url)?;
+            // An address in the URL is not resolved, so the resolver does not see it.
+            deny_internal_literal(&url)?;
         }
         let mut builder = client.request(method.as_reqwest(), &url);
         for (name, value) in &request.headers {
@@ -273,10 +280,14 @@ impl RestClient {
         if let Some(client) = self.transport.get() {
             return Ok(client);
         }
-        let built = reqwest::blocking::Client::builder()
+        let mut builder = reqwest::blocking::Client::builder()
             .timeout(self.timeout)
             .connect_timeout(CONNECT_TIMEOUT)
-            .redirect(redirect_policy())
+            .redirect(redirect_policy());
+        if self.deny_internal {
+            builder = builder.dns_resolver(std::sync::Arc::new(PublicOnly));
+        }
+        let built = builder
             .build()
             .map_err(|err| Error::new("could not build the HTTP client").with_source(err))?;
         Ok(self.transport.get_or_init(|| built))
@@ -428,42 +439,132 @@ pub fn redacted(url: &str) -> String {
     }
 }
 
-fn deny_internal(url: &str) -> Result<(), Error> {
-    use std::net::ToSocketAddrs;
-
+/// Refuse a URL whose host is an internal IP address written out. A name is left to [`PublicOnly`].
+fn deny_internal_literal(url: &str) -> Result<(), Error> {
     let parsed = reqwest::Url::parse(url)
         .map_err(|err| Error::new(format!("invalid URL {}", redacted(url))).with_source(err))?;
     let host = parsed
         .host_str()
         .ok_or_else(|| Error::new(format!("URL {} has no host", redacted(url))))?;
-    let port = parsed.port_or_known_default().unwrap_or(80);
-    let addresses = (host, port)
-        .to_socket_addrs()
-        .map_err(|err| Error::new(format!("could not resolve {host}")).with_source(err))?;
-    for address in addresses {
-        if internal_address(address.ip()) {
-            return Err(Error::new(format!(
-                "{} is an internal address and is not allowed here",
-                redacted(url)
-            )));
-        }
+    // The URL parser has already put an IPv4 host in dotted form, however it was written.
+    let Ok(address) = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse::<std::net::IpAddr>()
+    else {
+        return Ok(());
+    };
+    if internal_address(address) {
+        return Err(Error::new(format!(
+            "{} is an internal address and is not allowed here",
+            redacted(url)
+        )));
     }
     Ok(())
+}
+
+/// The resolver of a client that denies internal addresses: the system lookup, failing when any address is
+/// internal. The lookup runs on its own thread, as reqwest's own resolver does, so it does not hold up the client's
+/// runtime.
+struct PublicOnly;
+
+impl reqwest::dns::Resolve for PublicOnly {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(Lookup::start(host))
+    }
+}
+
+type LookupResult = Result<reqwest::dns::Addrs, Box<dyn std::error::Error + Send + Sync>>;
+
+/// One lookup on a thread of its own, woken when the thread is done.
+struct Lookup {
+    shared: std::sync::Arc<std::sync::Mutex<LookupState>>,
+}
+
+#[derive(Default)]
+struct LookupState {
+    result: Option<LookupResult>,
+    waker: Option<std::task::Waker>,
+}
+
+impl Lookup {
+    fn start(host: String) -> Self {
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(LookupState::default()));
+        let filled = std::sync::Arc::clone(&shared);
+        let finish = move |result: LookupResult| {
+            let mut state = filled.lock().unwrap_or_else(|err| err.into_inner());
+            state.result = Some(result);
+            if let Some(waker) = state.waker.take() {
+                waker.wake();
+            }
+        };
+        let spawned = std::thread::Builder::new().name("moqui-http-dns".to_string()).spawn({
+            let finish = finish.clone();
+            move || finish(resolve_public(&host))
+        });
+        if let Err(err) = spawned {
+            finish(Err(Box::new(err)));
+        }
+        Self { shared }
+    }
+}
+
+impl std::future::Future for Lookup {
+    type Output = LookupResult;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        let mut state = self.shared.lock().unwrap_or_else(|err| err.into_inner());
+        match state.result.take() {
+            Some(result) => std::task::Poll::Ready(result),
+            None => {
+                state.waker = Some(cx.waker().clone());
+                std::task::Poll::Pending
+            }
+        }
+    }
+}
+
+/// The addresses of `host`, or an error when any is internal: one internal address among public ones could still be
+/// the one connected to.
+fn resolve_public(host: &str) -> LookupResult {
+    use std::net::ToSocketAddrs;
+
+    let addresses: Vec<std::net::SocketAddr> = (host, 0).to_socket_addrs()?.collect();
+    if addresses.iter().any(|address| internal_address(address.ip())) {
+        return Err(format!("{host} is an internal address and is not allowed here").into());
+    }
+    Ok(Box::new(addresses.into_iter()))
 }
 
 fn internal_address(address: std::net::IpAddr) -> bool {
     match address {
         std::net::IpAddr::V4(v4) => {
-            v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified() || v4.is_broadcast()
+            let octets = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                // "this network" 0.0.0.0/8, and shared address space (CGNAT) 100.64.0.0/10
+                || octets[0] == 0
+                || (octets[0] == 100 && (octets[1] & 0xc0) == 64)
         }
         std::net::IpAddr::V6(v6) => {
             let segments = v6.segments();
+            let embedded = || {
+                let [.., a, b, c, d] = v6.octets();
+                internal_address(std::net::IpAddr::V4(std::net::Ipv4Addr::new(a, b, c, d)))
+            };
             v6.is_loopback()
                 || v6.is_unspecified()
                 // unique local fc00::/7 and link local fe80::/10
                 || (segments[0] & 0xfe00) == 0xfc00
                 || (segments[0] & 0xffc0) == 0xfe80
-                || v6.to_ipv4_mapped().is_some_and(|v4| internal_address(std::net::IpAddr::V4(v4)))
+                // IPv4-mapped ::ffff:0:0/96 and IPv4-compatible ::/96
+                || (segments[..5] == [0; 5] && matches!(segments[5], 0 | 0xffff) && embedded())
+                // NAT64: the well-known 64:ff9b::/96 by the address inside, the local-use 64:ff9b:1::/48 whole
+                || (segments[..6] == [0x64, 0xff9b, 0, 0, 0, 0] && embedded())
+                || segments[..3] == [0x64, 0xff9b, 1]
         }
     }
 }
@@ -531,14 +632,72 @@ mod tests {
             "::1",
             "fd00::1",
             "fe80::1",
+            "0.1.2.3",
+            "100.64.0.1",
+            "100.127.255.254",
+            "::ffff:127.0.0.1",
+            "::ffff:169.254.169.254",
+            "::10.0.0.1",
+            "64:ff9b::7f00:1",
+            "64:ff9b::a9fe:a9fe",
+            "64:ff9b:1::808:808",
         ] {
             assert!(internal_address(text.parse().unwrap()), "{text}");
         }
-        assert!(!internal_address("93.184.216.34".parse().unwrap()));
+        for text in [
+            "93.184.216.34",
+            "100.128.0.1",
+            "100.63.255.255",
+            "::ffff:93.184.216.34",
+            "64:ff9b::808:808",
+            "2606:4700::1111",
+        ] {
+            assert!(!internal_address(text.parse().unwrap()), "{text}");
+        }
         let client = RestClient::new().deny_internal_addresses(true);
-        let request = client.get("http://127.0.0.1:9/x").prepare(false).unwrap();
-        let err = client.execute(request).expect_err("loopback is denied before a socket");
-        assert!(err.message().contains("internal address"), "{err}");
+        for url in [
+            "http://127.0.0.1:9/x",
+            "http://0x7f.1:9/x",
+            "http://[::ffff:7f00:1]:9/x",
+            "http://[64:ff9b::a9fe:a9fe]/latest",
+        ] {
+            let request = client.get(url).prepare(false).unwrap();
+            let err = client
+                .execute(request)
+                .expect_err("an internal literal is denied before a socket");
+            assert!(err.message().contains("internal address"), "{url}: {err}");
+        }
+    }
+
+    /// The whole chain of `err`, for an error that comes from inside reqwest.
+    fn chain(err: &Error) -> String {
+        let mut text = err.to_string();
+        let mut source = std::error::Error::source(err);
+        while let Some(next) = source {
+            text.push_str(": ");
+            text.push_str(&next.to_string());
+            source = next.source();
+        }
+        text
+    }
+
+    #[test]
+    fn a_name_that_resolves_internal_is_refused_by_the_resolver() {
+        // `localhost` is a name, so only the resolver sees that it is loopback; nothing listens on port 9.
+        let client = RestClient::new().deny_internal_addresses(true);
+        let err = client.get("http://localhost:9/x").send(false).expect_err("denied");
+        assert!(
+            chain(&err).contains("localhost is an internal address"),
+            "{}",
+            chain(&err)
+        );
+        assert!(resolve_public("localhost").is_err());
+        // Off, the same name is resolved and connected to, and only the connect fails.
+        let open = RestClient::new()
+            .get("http://localhost:9/x")
+            .send(false)
+            .expect_err("nothing listens");
+        assert!(!chain(&open).contains("internal address"), "{}", chain(&open));
     }
 
     #[test]
