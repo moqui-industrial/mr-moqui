@@ -36,7 +36,7 @@ Summary derived from the archived plans on 2026-10-14. Phases 0–12 and gates 1
 
 ## Mantle conversion follow-up
 
-mantle-usl services are hand ported to JavaScript and lint clean (see the fifth iteration in [ConvertProcess](archive/ConvertProcess.md)); eight of the Spock flows pass as Rust tests ([MantleFlowTests](MantleFlowTests.md)). Open: run the services the flows do not reach (payroll, EFW2, Nacha, PositivePay, BAI, OFX, budget and ratio reports, `work/`); a ScreenTest harness for `RestApiTests`; the deadlock flake in `asset_reservation_multiple_threads`; the 18 `moqui lint --screens` failures in ironstone-boss; Drools is removed rather than ported. Application migration of other components' scripts is outside this repository's gates.
+mantle-usl services are hand ported to JavaScript and lint clean (see the fifth iteration in [ConvertProcess](archive/ConvertProcess.md)); all eight Spock specs are ported to JavaScript and pass under `moqui test mantle-usl` ([MantleFlowTests](MantleFlowTests.md)). Open: run the services the flows do not reach (payroll, EFW2, Nacha, PositivePay, BAI, OFX, budget and ratio reports, `work/`); the 18 `moqui lint --screens` failures in ironstone-boss; Drools is removed rather than ported. Application migration of other components' scripts is outside this repository's gates.
 
 ## Related active plans
 [Future-Plans](Future-Plans.md) (unbuilt proposals) and [Performance-Summary](Performance-Summary.md).

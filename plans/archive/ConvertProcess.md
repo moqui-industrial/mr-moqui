@@ -1,5 +1,7 @@
 # Converting a Groovy component: the Mantle trial
 
+> Historical: this work later moved to the forks `moqui/mr-mantle-udm` and `moqui/mr-mantle-usl` (branch `master`), and the Spock flows are now JavaScript specs run by `moqui test` (see [MantleFlowTests](../MantleFlowTests.md)). Branch names and the Rust flow tests below are as they were then.
+
 This is how `mantle-udm` and `mantle-usl` were converted until all their data loads into MR-Moqui. The goal was every data type with entity ECA rules on. Services and screens that the load never reaches were not ported. The work happened on 2026-10-14, on the `mr-moqui-temp` branch of each repository in `runtime/component`. Each repository has two commits: the converter's output, then the hand ports on top, so the two can be reviewed separately.
 
 ## Result

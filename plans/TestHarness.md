@@ -1,6 +1,6 @@
 # Test harness: `moqui test`, a Spock replacement for JavaScript
 
-Status 2026-10-15: steps 1–4 built (framework pieces, rewrite and runner, the harness's own tests); paused for review before the mantle-usl port (step 5). First user: mantle-usl (replaces [MantleFlowTests](MantleFlowTests.md) when the port passes). Porting guide: `runtime/component/mantle-usl/test/README.md`.
+Status 2026-10-15: all steps built. The eight mantle-usl specs are ported and pass (84 features) and the Rust flow tests are deleted; see [MantleFlowTests](MantleFlowTests.md). First user: mantle-usl (replaces [MantleFlowTests](MantleFlowTests.md) when the port passes). Porting guide: `runtime/component/mr-mantle-usl/test/README.md`.
 
 ## Built (steps 1–4)
 
@@ -32,7 +32,7 @@ Changes from the design below:
 
 ## Context
 
-mantle-usl's services are hand-ported to JavaScript on the `mr-moqui` branch. The Spock specs that check them (`runtime/component/mantle-usl/src/test/groovy`, 10 files, ~4,600 lines) were ported to Rust as `crates/moqui-host/tests/mantle_flows.rs` (2,785 lines) plus `mantle_support/mod.rs`. That put the component's tests in the framework repo, required a Rust toolchain, and needed a conversion layer for every result. It also dropped strictness, because mr-moqui has no `tempSetSequencedIdPrimary` or `setEffectiveTime`: ids are looked up, dates are skipped, and nested `<items>` elements are skipped in checks.
+mantle-usl's services are hand-ported to JavaScript in the fork `moqui/mr-mantle-usl`. The Spock specs that check them (`runtime/component/mantle-usl/src/test/groovy`, 10 files, ~4,600 lines) were ported to Rust as `crates/moqui-host/tests/mantle_flows.rs` (2,785 lines) plus `mantle_support/mod.rs`. That put the component's tests in the framework repo, required a Rust toolchain, and needed a conversion layer for every result. It also dropped strictness, because mr-moqui has no `tempSetSequencedIdPrimary` or `setEffectiveTime`: ids are looked up, dates are skipped, and nested `<items>` elements are skipped in checks.
 
 The goal is to build a `moqui test` command in the binary that runs JavaScript spec files from a component's `test/` directory, in the same QuickJS engine as the services, with Spock's conveniences:
 - `setupSpec`/`setup`/`cleanup`/`cleanupSpec`;

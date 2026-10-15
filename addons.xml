@@ -39,7 +39,7 @@
     <!-- Template for ./moq component-create; still the Java Moqui start component -->
     <component name="start" group="moqui" version="" branch="master"/>
 
-    <!-- Mantle Business Artifact Components, on their mr-moqui branches (no MR Moqui releases yet) -->
+    <!-- Mantle Business Artifact Components, as the mr- forks (moqui/mr-mantle-udm, moqui/mr-mantle-usl; no MR Moqui releases yet) -->
     <component name="mr-mantle-udm" group="moqui" version="" branch="master"/>
     <component name="mr-mantle-usl" group="moqui" version="" branch="master"/>
     <!-- Applications -->

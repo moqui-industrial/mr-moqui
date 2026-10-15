@@ -171,12 +171,48 @@ impl EntityFacade {
     }
 
     fn insert_prepared(&self, value: &EntityValue, stack: &mut HashSet<String>) -> Result<(), Error> {
-        let plain = self.normalize_values(&value.entity_name, &value.fields, false)?;
+        let with_defaults = self.apply_field_defaults(&value.entity_name, &value.fields)?;
+        let plain = self.normalize_values(&value.entity_name, &with_defaults, false)?;
         self.require_pk(&value.entity_name, &plain)?;
         fk::enforce(self, &value.entity_name, &plain, stack)?;
         self.reject_view(&value.entity_name, "create")?;
         self.finish_write(&value.entity_name, "create", plain, None, false, false)?;
         Ok(())
+    }
+
+    /// Fill the fields an entity definition gives a `default` (a quoted literal, a number, or the name of another
+    /// field of the same value) when a create leaves them out or null, as Moqui does on create.
+    fn apply_field_defaults(
+        &self,
+        entity_name: &str,
+        values: &BTreeMap<String, Value>,
+    ) -> Result<BTreeMap<String, Value>, Error> {
+        self.with_entity(entity_name, |entity, _, _| {
+            let mut out = values.clone();
+            for field in &entity.fields {
+                let Some(default) = field.default_value.as_deref().map(str::trim).filter(|d| !d.is_empty()) else {
+                    continue;
+                };
+                if out.get(&field.name).is_some_and(|v| !v.is_null()) {
+                    continue;
+                }
+                let bytes = default.as_bytes();
+                let quoted = bytes.len() >= 2
+                    && (bytes[0] == b'\'' || bytes[0] == b'"')
+                    && bytes[bytes.len() - 1] == bytes[0];
+                let value = if quoted {
+                    Some(Value::String(default[1..default.len() - 1].to_string()))
+                } else if default.parse::<f64>().is_ok() {
+                    Some(Value::String(default.to_string()))
+                } else {
+                    out.get(default).filter(|v| !v.is_null()).cloned()
+                };
+                if let Some(value) = value {
+                    out.insert(field.name.clone(), value);
+                }
+            }
+            Ok(out)
+        })
     }
 
     fn write_update(&self, entity_name: &str, values: &BTreeMap<String, Value>) -> Result<(), Error> {

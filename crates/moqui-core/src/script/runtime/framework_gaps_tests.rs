@@ -590,3 +590,19 @@ fn data_loader_check_compares_records_and_nested_records() {
         })()"#,
     );
 }
+
+#[test]
+fn order_map_list_action_sorts_an_entity_list() {
+    let context = database();
+    let _entered = context.enter();
+    seed();
+    crate::script::run_actions(
+        r#"<actions>
+            <entity-find entity-name="moqui.basic.Enumeration" list="enumList"/>
+            <order-map-list list="enumList"><order-by field-name="enumTypeId"/><order-by field-name="-sequenceNum"/></order-map-list>
+            <set field="orderedIds" from="Array.from(enumList).map(function (e) { return e.enumId; }).join(',')"/>
+        </actions>"#,
+    )
+    .unwrap();
+    holds("context.orderedIds === 'E3,E2,E1'");
+}

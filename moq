@@ -60,6 +60,7 @@ TASKS='run|Run|[opts] [moqui-args...]|Run the debug binary with the dev conf
 run-production|Run|[opts] [moqui-args...]|Run the release binary with the production conf
 load|Run|[types] [name=value] [opts]|Load data, all types by default, with the dev conf
 load-production|Run|[types] [name=value] [opts]|Load data with the release binary and production conf
+test|Run|[component...] [test opts]|Run component tests (moqui test) with the debug binary and the dev conf
 load-save|Run|[-n name] [load args...]|clean-all, load, then save-db
 save-db|Database|[name]|Save the embedded database and OpenSearch data to runtime/save/<name>
 reload-save|Database|[name]|clean-db, then restore a save-db copy
@@ -431,6 +432,21 @@ disableAuditLog=true, disableFkCreate=true, disableDataFeed=true.
 Options (as for run): -r, --release, --debug, -c FILE, -D name=value, --build, and
   -l, --location FILE  Load only this data file (location=<absolute path>)'
 
+help_test() {
+    cat <<EOF
+Runs moqui test, the JavaScript specs in each component's test/ directory, with the debug
+binary and the dev conf. Arguments go to moqui test; the moq options below are read first and
+any other option is passed on, so moqui's own options work as they are:
+  ./moq test mantle-usl
+  ./moq test mantle-usl --db snapshot
+  ./moq test mantle-usl --spec OrderToCashBasicFlow --feature "ship Sales Order"
+  ./moq test mantle-usl --junit build/test-results
+
+Options (as for run): -r, --release, --debug, -c FILE, -p, -D name=value, --build, and
+  --  End of moq options; everything after it goes to moqui test
+EOF
+}
+
 help_load() {
     cat <<EOF
 Loads data into the configured database with the debug binary and the dev conf. With no data
@@ -683,7 +699,8 @@ add_property() {
     OPT_PROPS+=("$1")
 }
 
-# $1 is "run" (the first word that is not an option starts the binary's arguments) or "load" (options anywhere).
+# $1 is "run" (the first word that is not an option starts the binary's arguments), "load" (options anywhere), or
+# "test" (like load, but options moq does not know go to the binary, as moqui test's own --spec, --db, ...).
 # Everything else lands in OPT_REST.
 parse_run_opts() {
     local mode=$1 arg
@@ -740,6 +757,11 @@ parse_run_opts() {
                 return 0
                 ;;
             -*)
+                if [ "$mode" = test ]; then
+                    OPT_REST+=("$arg")
+                    shift
+                    continue
+                fi
                 if [ "$mode" = run ]; then
                     die "unknown option $arg (moqui's own arguments go after its command, or after --)"
                 fi
@@ -844,6 +866,14 @@ task_run_production() {
     bin=$(moqui_binary "${OPT_PROFILE:-release}") || exit 1
     apply_run_env "$PRODUCTION_CONF"
     exec_cmd "$bin" "${OPT_REST[@]}"
+}
+
+task_test() {
+    parse_run_opts test "$@"
+    local bin
+    bin=$(moqui_binary "${OPT_PROFILE:-debug}") || exit 1
+    apply_run_env ""
+    exec_cmd "$bin" test "${OPT_REST[@]}"
 }
 
 # $1 profile, $2 conf, $3 default types ("" for moqui's default), then the load arguments.
@@ -1936,6 +1966,15 @@ save_names() {
     done
 }
 
+# Names (from component.xml) of the components that have test/*.spec.js files.
+test_components() {
+    local d
+    for d in "$RUNTIME_DIR"/component/*/; do
+        compgen -G "${d}test/*.spec.js" >/dev/null || continue
+        sed -n 's/.*<component [^>]*name="\([^"]*\)".*/\1/p' "${d}component.xml" 2>/dev/null | head -1
+    done
+}
+
 component_names_local() {
     local d
     while IFS= read -r d; do
@@ -1977,6 +2016,15 @@ complete_task() {
             out=$(complete_run_like "$cur" "$prev" @binary)
             if [ "$out" = @binary ]; then
                 filter_prefix "$cur" lint types convert load save-db load-save
+            else
+                printf '%s\n' "$out"
+            fi
+            ;;
+        test)
+            local out
+            out=$(complete_run_like "$cur" "$prev" @binary)
+            if [ "$out" = @binary ]; then
+                filter_prefix "$cur" $(test_components) --spec --feature --db --junit --keep --log-level
             else
                 printf '%s\n' "$out"
             fi

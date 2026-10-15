@@ -340,7 +340,16 @@
         }),
         "order-map-list": stmt((node) => {
             const fields = childrenNamed(node, "order-by").map((ob) => literalOrExpand(attr(ob, "field-name")));
-            return `orderMapList(${attr(node, "list")}, [${fields.join(", ")}]);`;
+            const list = attr(node, "list");
+            // an entity list sorts only as a copy (see its prototype), so sort an array copy and set the name to it;
+            // a plain array is sorted in place as Groovy does
+            return js`
+                if (${list} != null && !Array.isArray(${list})) {
+                    var _listToOrder = Array.from(${list});
+                    orderMapList(_listToOrder, [${fields.join(", ")}]);
+                    ${list} = _listToOrder;
+                } else orderMapList(${list}, [${fields.join(", ")}]);
+            `;
         }),
         "filter-map-list": stmt((node) => {
             const list = attr(node, "list");

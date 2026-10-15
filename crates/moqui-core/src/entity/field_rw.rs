@@ -279,7 +279,8 @@ fn audit_text(facade: &EntityFacade, encrypt_field: bool, value: Option<&Value>)
     let Some(value) = present(value) else {
         return Ok(None);
     };
-    let plain = to_plain_string(value);
+    // A decimal read back from the database carries the column scale (10.000000); the audit text is the plain value (10).
+    let plain = audit_plain(value);
     let text = if encrypt_field {
         if let Some((primary, _)) = facade.crypt() {
             encrypt(&plain, &primary)?
@@ -290,6 +291,13 @@ fn audit_text(facade: &EntityFacade, encrypt_field: bool, value: Option<&Value>)
         plain
     };
     Ok(Some(clip_text(&text)))
+}
+
+fn audit_plain(value: &Value) -> String {
+    match value {
+        Value::Decimal(number) => number.normalize().to_string(),
+        other => to_plain_string(other),
+    }
 }
 
 fn clip_text(text: &str) -> String {
@@ -312,6 +320,13 @@ fn insert_audit(
     row.set("changedEntityName", Value::string(entity.full_name.as_str()));
     row.set("changedFieldName", Value::string(field_name));
     row.set("changedDate", changed_now());
+    // Java stamps the acting user and visit on each audit row.
+    if let Some(user_id) = crate::user::current_user_id().ok().flatten().filter(|id| !id.is_empty()) {
+        row.set("changedByUserId", Value::string(user_id));
+    }
+    if let Some(visit_id) = crate::user::visit_id().ok().flatten().filter(|id| !id.is_empty()) {
+        row.set("changedInVisitId", Value::string(visit_id));
+    }
     if let Some(text) = new_text {
         row.set("newValueText", Value::string(text));
     }
@@ -545,7 +560,16 @@ fn find_localized(
 
 #[cfg(test)]
 mod tests {
-    use super::{raw_read, RawReadGuard};
+    use super::{audit_plain, raw_read, RawReadGuard};
+    use moqui_lib::object::Value;
+
+    #[test]
+    fn audit_text_drops_the_column_scale_of_a_decimal() {
+        let value = Value::Decimal("10.000000".parse().unwrap());
+        assert_eq!(audit_plain(&value), "10");
+        assert_eq!(audit_plain(&Value::Decimal("1.50".parse().unwrap())), "1.5");
+        assert_eq!(audit_plain(&Value::string("x")), "x");
+    }
 
     #[test]
     fn a_nested_raw_read_restores_the_outer_flag() {
