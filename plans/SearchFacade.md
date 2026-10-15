@@ -343,6 +343,12 @@ Expose a dedicated authenticated application service, for example `POST /api/sea
 
 The response includes the query, exact total (`totalRelation: "eq"`), results, and authorized facet counts. Each result includes entity type/key, title/subtitle, optional snippet, score, authorized URL, category, and attributes. It uses the facade's offset/limit paging and cap; cursor pagination stays deferred. Do not report page-only facets or approximate candidate counts as full result-set counts.
 
+In the code, this is `mantle.search.UniversalSearchServices.search#Universal`, served at `POST` (or `GET`) `/rest/s1/mantle/search`.
+
+- **Types and filter.** The document types are those of the index whose primary entity the user may view. Under a `MANTLE_USER_ORG` or `MANTLE_ACTIVE_ORG` find filter, each type is limited by its organization fields, and a type with none is left out, except wiki pages. That limit is the trusted `filter`.
+- **Response.** The facet counts come back as `facetCounts`, since `facets` is the request's list of names. Each result's record is read from the entity database, with the user's filters, before it is returned.
+- **Not yet.** Links go to the generic entity screens until IronStone has the record screens. The per-document hook predicate is not implemented.
+
 Call this endpoint on submission and on debounced autocomplete requests. Render each result with its entity type's display template and navigate to its authorized business URL. All types and enabled modes share one input.
 
 ## Postgres

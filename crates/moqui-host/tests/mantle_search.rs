@@ -14,8 +14,8 @@
 
 //! Mantle's search callers on SearchFacade, over Mantle's data and a small sales fixture: the feed indexes every
 //! Mantle document type, including the wiki pages; the sales report services and projected inventory aggregate
-//! the fixture's orders and invoices; party search and the general search run; and a user limited to their
-//! organizations sees nothing owned by another.
+//! the fixture's orders and invoices; party search, the general search, and the universal search run; and a user
+//! limited to their organizations sees nothing owned by another, in results, totals, or facets.
 //!
 //! The test needs `runtime/component/mantle-udm` and `mantle-usl`, which are not part of this repository, and it
 //! skips without them. The load takes about half a minute.
@@ -89,6 +89,7 @@ fn fixture(day: &dyn Fn(i64) -> String) -> String {
     <moqui.security.ArtifactGroup artifactGroupId="SF_SEARCH" description="General search, limited to the user's organizations">
         <artifacts artifactName="mantle.GeneralServices.search#MantleFiltered" artifactTypeEnumId="AT_SERVICE" inheritAuthz="Y"/>
         <artifacts artifactName="mantle.party.PartyServices.setup#UserOrganizationInfo" artifactTypeEnumId="AT_SERVICE" inheritAuthz="Y"/>
+        <artifacts artifactName="mantle.search.UniversalSearchServices.search#Universal" artifactTypeEnumId="AT_SERVICE" inheritAuthz="Y"/>
         <authz artifactAuthzId="SF_SEARCH_ORG" userGroupId="SF_ORG_GROUP" authzTypeEnumId="AUTHZT_ALWAYS" authzActionEnumId="AUTHZA_ALL">
             <filters entityFilterSetId="MANTLE_USER_ORG"/></authz>
         <authz artifactAuthzId="SF_SEARCH_ADMIN" userGroupId="ADMIN" authzTypeEnumId="AUTHZT_ALWAYS" authzActionEnumId="AUTHZA_ALL"/>
@@ -163,6 +164,7 @@ fn mantle_search_callers_on_the_search_facade() {
             projected_inventory();
             party_search();
         }
+        universal_search_results();
         organization_limit();
     }
     drop(store);
@@ -322,6 +324,62 @@ fn party_search() {
     );
 }
 
+/// The universal search as an administrator: typed results with titles, links, and the facility found by its
+/// title prefix; a mode the backend lacks is a message, not a silent fallback.
+fn universal_search_results() {
+    moqui_core::user::internal_login_user("john.doe").unwrap();
+    let out = call(
+        "mantle.search.UniversalSearchServices.search#Universal",
+        &[
+            ("q", Value::string("fixture")),
+            ("entityType", Value::string("MantleOrder,MantleInvoice")),
+        ],
+    );
+    let titles: Vec<String> = list(out.get("results"))
+        .iter()
+        .map(|result| text(result.get("title")))
+        .collect();
+    assert_eq!(
+        number(out.get("total")),
+        5.0,
+        "three orders and two invoices for the fixture customers: {titles:?}"
+    );
+    for result in list(out.get("results")) {
+        assert!(text(result.get("url")).contains("AutoEditMaster"), "{result:?}");
+    }
+    let suggest = call(
+        "mantle.search.UniversalSearchServices.search#Universal",
+        &[
+            ("q", Value::string("ziziwork ret")),
+            ("mode", Value::string("autocomplete")),
+        ],
+    );
+    let suggested: Vec<String> = list(suggest.get("results"))
+        .iter()
+        .map(|result| text(result.get("title")))
+        .collect();
+    assert!(
+        suggested.contains(&"Ziziwork Retail Warehouse".to_string()),
+        "{suggested:?}"
+    );
+    let parameters: BTreeMap<String, Value> = [("q", Value::string("pump")), ("mode", Value::string("semantic"))]
+        .iter()
+        .map(|(key, value)| (key.to_string(), value.clone()))
+        .collect();
+    let _ = moqui_core::service::sync("mantle.search.UniversalSearchServices.search#Universal", &parameters);
+    let errors = moqui_core::context::ExecutionContext::with_current(|ec| {
+        let errors = ec.message().errors().to_vec();
+        ec.message().clear_errors();
+        errors
+    })
+    .unwrap_or_default();
+    assert!(
+        errors.iter().any(|error| error.contains("semantic capability")),
+        "{errors:?}"
+    );
+    moqui_core::user::logout().unwrap();
+}
+
 /// The general search as a user of the retail org: everything found is owned by one of the user's organizations,
 /// and less is found than without the limit.
 fn organization_limit() {
@@ -338,6 +396,7 @@ fn organization_limit() {
     // an administrator with no active organization has no limit
     moqui_core::user::internal_login_user("john.doe").unwrap();
     let everything = number(search().get("documentListCount"));
+    let universal_all = universal_search();
     moqui_core::user::logout().unwrap();
 
     moqui_core::user::internal_login_user("sf.org.user").unwrap();
@@ -361,7 +420,54 @@ fn organization_limit() {
         number(limited.get("documentListCount")) < everything,
         "the limit removes other organizations' records"
     );
+
+    // the universal search under the same limit: only the user's organizations, and no type without an organization
+    let universal = universal_search();
+    let all_total = number(universal_all.get("total"));
+    let total = number(universal.get("total"));
+    assert!(total > 0.0 && total < all_total, "{total} of {all_total}");
+    let type_counts: f64 = list(map(universal.get("facetCounts")).get("entityType"))
+        .iter()
+        .map(|facet| number(facet.get("count")))
+        .sum();
+    assert_eq!(
+        type_counts, total,
+        "the type facet counts the same authorized matches as the total"
+    );
+    for result in list(universal.get("results")) {
+        let entity_type = text(result.get("entityType"));
+        assert_ne!(entity_type, "MantleCommunicationEvent");
+        let attributes = map(result.get("attributes"));
+        let key = map(result.get("key"));
+        let owners: Vec<String> = ["ownerPartyId", "fromPartyId", "toPartyId"]
+            .iter()
+            .filter_map(|name| {
+                attributes
+                    .get(*name)
+                    .or_else(|| key.get(*name))
+                    .map(|value| text(Some(value)))
+            })
+            .collect();
+        if entity_type == "MantleParty" || entity_type == "MantleFacility" || entity_type == "MantleAsset" {
+            assert!(
+                owners.iter().any(|owner| allowed.contains(owner) || owner == "_NA_"),
+                "{entity_type} {owners:?} {result:?}"
+            );
+        }
+    }
     moqui_core::user::logout().unwrap();
+}
+
+/// The universal search for a name every organization in the demo data has, with the type facet.
+fn universal_search() -> BTreeMap<String, Value> {
+    call(
+        "mantle.search.UniversalSearchServices.search#Universal",
+        &[
+            ("q", Value::string("ziziwork")),
+            ("limit", Value::I32(100)),
+            ("facets", Value::List(vec![Value::string("entityType")])),
+        ],
+    )
 }
 
 fn call(name: &str, parameters: &[(&str, Value)]) -> BTreeMap<String, Value> {
