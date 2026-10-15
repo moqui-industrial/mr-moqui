@@ -94,23 +94,33 @@ pub fn vector_literal(vector: &[f32]) -> String {
     format!("[{}]", parts.join(","))
 }
 
+/// A nearest-neighbor request: the query vector, the model its embeddings come from, a filter, and how many hits.
+pub struct SemanticQuery<'a> {
+    pub vector: &'a [f32],
+    pub model: &'a str,
+    pub filter: Option<&'a Query>,
+    pub k: usize,
+}
+
 /// The nearest-neighbor statement: per document type, the closest `k` embedded with `model` that
 /// match `filter`, cosine distance on the HNSW index, then the closest `k` of those.
 ///
 /// # Errors
 ///
 /// Returns an error when the filter does not compile against a document.
-#[allow(clippy::too_many_arguments)]
 pub fn semantic_sql(
     schema: &str,
     text: &TextSetup,
     store: &VectorStore,
     mappings: &[Arc<DocumentMapping>],
-    vector: &[f32],
-    model: &str,
-    filter: Option<&Query>,
-    k: usize,
+    query: &SemanticQuery<'_>,
 ) -> Result<Sql, Error> {
+    let &SemanticQuery {
+        vector,
+        model,
+        filter,
+        k,
+    } = query;
     let cast = store.column_type();
     let literal_vector = vector_literal(vector);
     let mut parts = Vec::new();
@@ -711,7 +721,13 @@ impl SearchBackend for PostgresBackend {
             .vectors
             .as_ref()
             .ok_or_else(|| super::capability_error(Capability::Semantic, "postgres"))?;
-        let sql = semantic_sql(&self.schema, &self.text, store, mappings, vector, model, filter, k)?;
+        let query = SemanticQuery {
+            vector,
+            model,
+            filter,
+            k,
+        };
+        let sql = semantic_sql(&self.schema, &self.text, store, mappings, &query)?;
         let rows = self.query_on(self.read_route(None), &sql)?;
         rows.iter()
             .map(|row| {
@@ -1441,10 +1457,12 @@ mod tests {
             &TextSetup::default(),
             &store,
             &[Arc::new(mapping)],
-            &[0.5, 0.25, 0.0],
-            "moqui-hash",
-            Some(&filter),
-            10,
+            &SemanticQuery {
+                vector: &[0.5, 0.25, 0.0],
+                model: "moqui-hash",
+                filter: Some(&filter),
+                k: 10,
+            },
         )
         .unwrap();
         assert_eq!(

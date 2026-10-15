@@ -89,9 +89,15 @@ pub fn aggregate(
     aggs: &IndexMap<String, Agg>,
     run: &mut Runner<'_>,
 ) -> Result<IndexMap<String, Value>, Error> {
-    let compiler = Compiler::with_text(mapping, text);
-    let base = compiler.where_sql(filter)?;
-    let rows = run_level(table, mapping, text, &base, &[], &[], aggs, run)?;
+    let base = Compiler::with_text(mapping, text).where_sql(filter)?;
+    let mut ctx = LevelCtx {
+        table,
+        mapping,
+        text,
+        base,
+        run,
+    };
+    let rows = run_level(&mut ctx, &[], &[], aggs)?;
     let mut root = rows
         .into_iter()
         .next()
@@ -101,22 +107,48 @@ pub fn aggregate(
     Ok(root)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// What every level of one aggregation shares: the table and mapping, the documents' filter, and the statement runner.
+struct LevelCtx<'a, 'r> {
+    table: &'a str,
+    mapping: &'a DocumentMapping,
+    text: &'a TextSetup,
+    base: Sql,
+    run: &'a mut Runner<'r>,
+}
+
+/// One bucket level: grouped by `keys` under `conds`, with the levels of the bucket aggregations in it below.
 fn run_level(
-    table: &str,
-    mapping: &DocumentMapping,
-    text: &TextSetup,
-    base: &Sql,
+    ctx: &mut LevelCtx<'_, '_>,
     keys: &[KeyDef],
     conds: &[Sql],
     aggs: &IndexMap<String, Agg>,
-    run: &mut Runner<'_>,
 ) -> Result<Vec<Row>, Error> {
-    let compiler = Compiler::with_text(mapping, text);
+    let compiler = Compiler::with_text(ctx.mapping, ctx.text);
     let mut items = Vec::new();
     let mut children = Vec::new();
     collect(&compiler, aggs, &[], &[], &mut items, &mut children)?;
+    let sql = level_sql(ctx, &compiler, keys, conds, &items)?;
+    let rows = (ctx.run)(&sql)?;
+    if rows.len() > MAX_GROUPS {
+        return Err(Error::new(format!(
+            "an aggregation level returned more than {MAX_GROUPS} groups"
+        )));
+    }
+    let mut out = read_rows(&rows, keys.len(), &items, aggs);
+    for child in &children {
+        attach_children(ctx, &compiler, keys, conds, child, &mut out)?;
+    }
+    Ok(out)
+}
 
+/// The statement of a level: its keys, `count(*)`, and a column for each metric and filter count in it.
+fn level_sql(
+    ctx: &LevelCtx<'_, '_>,
+    compiler: &Compiler<'_>,
+    keys: &[KeyDef],
+    conds: &[Sql],
+    items: &[Item],
+) -> Result<Sql, Error> {
     let mut sql = Sql::new("SELECT ");
     for (index, key) in keys.iter().enumerate() {
         sql.push(&format!("{} AS k{index}, ", key.select));
@@ -175,7 +207,7 @@ fn run_level(
         }
         sql.push(&format!(" AS c{index}"));
     }
-    sql.push(&format!(" FROM {table}"));
+    sql.push(&format!(" FROM {}", ctx.table));
     for key in keys {
         if let Some(lateral) = &key.lateral {
             sql.push(" ");
@@ -187,7 +219,7 @@ fn run_level(
         sql.push(lateral);
     }
     sql.push(" WHERE ");
-    sql.append(base.clone());
+    sql.append(ctx.base.clone());
     for cond in conds {
         sql.push(" AND ");
         sql.append(cond.clone());
@@ -201,16 +233,15 @@ fn run_level(
         // One more than the cap is enough to tell it was exceeded, without reading every group.
         sql.push(&format!(" LIMIT {}", MAX_GROUPS + 1));
     }
-    let rows = run(&sql)?;
-    if rows.len() > MAX_GROUPS {
-        return Err(Error::new(format!(
-            "an aggregation level returned more than {MAX_GROUPS} groups"
-        )));
-    }
+    Ok(sql)
+}
 
+/// Each row of a level as its key tuple and its content: `doc_count`, the empty results of its aggregations, and the
+/// metric and filter count columns at their paths.
+fn read_rows(rows: &[DbRow], key_count: usize, items: &[Item], aggs: &IndexMap<String, Agg>) -> Vec<Row> {
     let mut out: Vec<Row> = Vec::with_capacity(rows.len());
-    for row in &rows {
-        let tuple: Vec<Value> = (0..keys.len())
+    for row in rows {
+        let tuple: Vec<Value> = (0..key_count)
             .map(|index| row.get(&format!("k{index}")).cloned().unwrap_or(Value::Null))
             .collect();
         let mut content = IndexMap::new();
@@ -232,39 +263,48 @@ fn run_level(
         }
         out.push((tuple, content));
     }
+    out
+}
 
-    for child in children {
-        let (key, sub_aggs) = match child.agg {
-            Agg::DateHistogram(histogram) => (histogram_key(&compiler, histogram, keys.len())?, &histogram.aggs),
-            Agg::Terms(terms) => (terms_key(&compiler, terms, keys.len())?, &terms.aggs),
-            _ => continue,
-        };
-        let mut child_keys: Vec<KeyDef> = keys.to_vec();
-        child_keys.push(key);
-        let mut child_conds: Vec<Sql> = conds.to_vec();
-        child_conds.extend(child.conds.iter().cloned());
-        let child_rows = run_level(table, mapping, text, base, &child_keys, &child_conds, sub_aggs, run)?;
-        let mut grouped: Grouped = HashMap::new();
-        for (tuple, content) in child_rows {
-            let (own, parent) = tuple
-                .split_last()
-                .map(|(own, parent)| (own.clone(), parent.to_vec()))
-                .unwrap_or((Value::Null, Vec::new()));
-            grouped.entry(tuple_key(&parent)).or_default().push((own, content));
-        }
-        for (parent_tuple, parent_content) in &mut out {
-            let rows = grouped.remove(&tuple_key(parent_tuple)).unwrap_or_default();
-            let buckets = match child.agg {
-                Agg::DateHistogram(histogram) => histogram_buckets(histogram, rows)?,
-                Agg::Terms(terms) => terms_buckets(terms, rows),
-                _ => Vec::new(),
-            };
-            let mut holder = IndexMap::new();
-            holder.insert("buckets".to_string(), Value::List(buckets));
-            set_path(parent_content, &child.path, Value::Map(holder));
-        }
+/// Run a bucket aggregation's own level, grouped by the parent keys and its key, and put its buckets in each parent row.
+fn attach_children(
+    ctx: &mut LevelCtx<'_, '_>,
+    compiler: &Compiler<'_>,
+    keys: &[KeyDef],
+    conds: &[Sql],
+    child: &ChildLevel<'_>,
+    out: &mut [Row],
+) -> Result<(), Error> {
+    let (key, sub_aggs) = match child.agg {
+        Agg::DateHistogram(histogram) => (histogram_key(compiler, histogram, keys.len())?, &histogram.aggs),
+        Agg::Terms(terms) => (terms_key(compiler, terms, keys.len())?, &terms.aggs),
+        _ => return Ok(()),
+    };
+    let mut child_keys: Vec<KeyDef> = keys.to_vec();
+    child_keys.push(key);
+    let mut child_conds: Vec<Sql> = conds.to_vec();
+    child_conds.extend(child.conds.iter().cloned());
+    let child_rows = run_level(ctx, &child_keys, &child_conds, sub_aggs)?;
+    let mut grouped: Grouped = HashMap::new();
+    for (tuple, content) in child_rows {
+        let (own, parent) = tuple
+            .split_last()
+            .map(|(own, parent)| (own.clone(), parent.to_vec()))
+            .unwrap_or((Value::Null, Vec::new()));
+        grouped.entry(tuple_key(&parent)).or_default().push((own, content));
     }
-    Ok(out)
+    for (parent_tuple, parent_content) in out.iter_mut() {
+        let rows = grouped.remove(&tuple_key(parent_tuple)).unwrap_or_default();
+        let buckets = match child.agg {
+            Agg::DateHistogram(histogram) => histogram_buckets(histogram, rows)?,
+            Agg::Terms(terms) => terms_buckets(terms, rows),
+            _ => Vec::new(),
+        };
+        let mut holder = IndexMap::new();
+        holder.insert("buckets".to_string(), Value::List(buckets));
+        set_path(parent_content, &child.path, Value::Map(holder));
+    }
+    Ok(())
 }
 
 fn collect<'t>(
