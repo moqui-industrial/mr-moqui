@@ -67,7 +67,7 @@ save-db|Database|[name]|Save the embedded database and OpenSearch data to runtim
 reload-save|Database|[name]|clean-db, then restore a save-db copy
 clean-db|Database||Delete the embedded database, txlog, and OpenSearch data
 clean-log|Database||Delete the files in runtime/log
-clean-all|Database||clean-db, clean-log, and runtime/tmp
+clean-all|Database||clean-db, clean-log, runtime/tmp, and cargo clean (the built binaries)
 opensearch-download|OpenSearch|[version] [-f]|Download OpenSearch into runtime/opensearch
 opensearch-start|OpenSearch||Start runtime/opensearch as a daemon with a pid file
 opensearch-stop|OpenSearch||Stop the runtime/opensearch daemon
@@ -546,7 +546,9 @@ help_clean_log() {
 
 help_clean_all() {
     cat <<'EOF'
-clean-db, clean-log, and runtime/tmp. Saves in runtime/save are kept; delete those by hand.
+clean-db, clean-log, runtime/tmp, and cargo clean, which removes target/ with the release and debug
+binaries (the next task that runs moqui builds it again). Saves in runtime/save are kept; delete those
+by hand. load-save cleans the runtime data only, not the binaries.
 EOF
 }
 
@@ -1170,9 +1172,14 @@ clean_log() {
 
 task_clean_all() {
     [ $# -eq 0 ] || die "clean-all takes no arguments"
+    need_tool cargo
     clean_all
+    # load-save uses clean_all alone: it must not throw away the binary it is about to run
+    info "Running cargo clean (removes target/)"
+    run_cmd cargo clean >&2 || die "cargo clean failed"
 }
 
+# The runtime data: database, logs, and runtime/tmp.
 clean_all() {
     clean_db
     clean_log

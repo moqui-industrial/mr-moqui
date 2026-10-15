@@ -79,6 +79,7 @@ cat >"$R/bin/cargo" <<'EOF'
 # cargo stub: records its arguments, builds the stub moqui for the profile, and fails when CARGO_STUB_FAIL is set.
 echo "cargo: $*" >>"$(dirname "$0")/../cargo.log"
 [ -z "${CARGO_STUB_FAIL:-}" ] || exit 1
+[ "$1" != clean ] || exit 0
 case " $* " in *" --release "*) p=release ;; *) p=debug ;; esac
 mkdir -p "$(dirname "$0")/../target/$p"
 cp "$(dirname "$0")/../target/release/moqui.keep" "$(dirname "$0")/../target/$p/moqui"
@@ -233,8 +234,10 @@ check "reload-save" 0 'Restored t1' -- "$M" reload-save t1
 check "reload-save restored db" 0 'dump of' -- cat "$R/runtime/db/embedded/data/restored"
 check "reload-save restored opensearch" 0 'index' -- cat "$R/runtime/opensearch/data/nodes/x"
 check "reload-save missing" 1 'no save named nope' -- "$M" reload-save nope
+rm -f "$R/cargo.log"
 check "clean-all" 0 'Deleting runtime/tmp' -- "$M" clean-all
 check "clean-all removed log" 1 '' -- test -e "$R/runtime/log/moqui.log"
+check "clean-all ran cargo clean" 0 'cargo: clean$' -- cat "$R/cargo.log"
 check "clean-all kept saves" 0 '' -- test -f "$R/runtime/save/t1/moqui.dump"
 check "load-save dry run" 0 'save-db .*runtime/save/demo/moqui.dump.part' -- dry "$M" load-save -n demo seed
 check "opensearch-start without install" 1 'no OpenSearch' -- "$M" opensearch-start
