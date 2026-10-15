@@ -290,8 +290,7 @@ mod tests {
             </actions>"#,
         )
         .unwrap();
-        let text =
-            crate::script::context_value("seenText").map(|value| moqui_lib::object::to_plain_string(&value));
+        let text = crate::script::context_value("seenText").map(|value| moqui_lib::object::to_plain_string(&value));
         assert_eq!(text.as_deref(), Some("1,3"));
     }
 
@@ -506,10 +505,9 @@ mod tests {
         clear_context_stack();
         // Java sends a distributed call to another server of a cluster. A call here always runs on this server's workers,
         // so `distribute(true)` returns the builder unchanged and the call is the same as without it.
-        let present = eval_condition(
-            "(function () { const b = ec.service.async(); return b.distribute(true) === b; })()",
-        )
-        .unwrap();
+        let present =
+            eval_condition("(function () { const b = ec.service.async(); return b.distribute(true) === b; })()")
+                .unwrap();
         assert!(present);
     }
 

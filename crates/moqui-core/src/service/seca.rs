@@ -63,7 +63,13 @@ pub fn run_seca_rules(
             }
             crate::script::set_context_name("results", Value::Map(to_index_map(results)))?;
         }
-        let in_rule = |err: Error| Error::new(format!("service ECA {} on {when} of {service}: {}", rule.id, err.message()));
+        let in_rule = |err: Error| {
+            Error::new(format!(
+                "service ECA {} on {when} of {service}: {}",
+                rule.id,
+                err.message()
+            ))
+        };
         if !super::rule_actions::condition_allows(&rule.condition).map_err(in_rule)? {
             continue;
         }

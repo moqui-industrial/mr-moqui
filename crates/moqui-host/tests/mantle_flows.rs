@@ -597,8 +597,14 @@ fn o2c_validate_issuance_accounting(f: &Flow, st: &mut O2c) {
         );
         // An auto-created asset (DEMO_2_1, DEMO_PA) has no acquireCost, so its issuance posts nothing
         if text(issuance, "acctgTransResultEnumId") == "AtrNoAcquireCost" {
-            assert!(trans.is_empty(), "no AcctgTrans for an asset without acquire cost: {trans:?}");
-            assert!(["DEMO_2_1", "DEMO_PA"].contains(&text(issuance, "productId").as_str()), "{issuance:?}");
+            assert!(
+                trans.is_empty(),
+                "no AcctgTrans for an asset without acquire cost: {trans:?}"
+            );
+            assert!(
+                ["DEMO_2_1", "DEMO_PA"].contains(&text(issuance, "productId").as_str()),
+                "{issuance:?}"
+            );
             continue;
         }
         assert_eq!(trans.len(), 1, "one AttInventoryIssuance per issuance: {issuance:?}");
@@ -1004,7 +1010,11 @@ fn o2c_ship_inventory_and_cancel(f: &Flow, st: &mut O2c, partial: bool) {
 fn o2c_reserve_with_displace(f: &Flow) {
     // The orders come from AssetReservationMultipleThreads (base id 53000); without that flow's data the step has
     // nothing to displace, so it ports as written and fails at the missing reservation.
-    let before = list(f, "mantle.product.issuance.AssetReservation", &[("assetId", &asset_55400(f))]);
+    let before = list(
+        f,
+        "mantle.product.issuance.AssetReservation",
+        &[("assetId", &asset_55400(f))],
+    );
     let sixty = before
         .iter()
         .find(|r| number(r.get("quantity")) == 60.0)
@@ -1380,14 +1390,18 @@ static ASSET_RESERVATION_DONE: std::sync::Mutex<bool> = std::sync::Mutex::new(fa
 
 /// Run AssetReservationMultipleThreads once per process, as the suite does before the flows that need its orders.
 fn ensure_asset_reservation_flow(f: &Flow) {
-    let done = *ASSET_RESERVATION_DONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let done = *ASSET_RESERVATION_DONE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if !done {
         flow_asset_reservation_multiple_threads(f);
     }
 }
 
 fn flow_asset_reservation_multiple_threads(f: &Flow) {
-    *ASSET_RESERVATION_DONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+    *ASSET_RESERVATION_DONE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
     login("john.doe");
     let atp = |f: &Flow| -> f64 {
         list(f, "mantle.product.asset.Asset", &[("productId", "DEMO_1_1")])
@@ -1725,7 +1739,9 @@ static PROCURE_TO_PAY_DONE: std::sync::Mutex<bool> = std::sync::Mutex::new(false
 /// Run OrderProcureToPayBasicFlow (after AssetReservationMultipleThreads) once per process.
 fn ensure_procure_to_pay_flow(f: &Flow) {
     ensure_asset_reservation_flow(f);
-    let done = *PROCURE_TO_PAY_DONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let done = *PROCURE_TO_PAY_DONE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if !done {
         flow_order_procure_to_pay(f);
     }
@@ -1733,7 +1749,9 @@ fn ensure_procure_to_pay_flow(f: &Flow) {
 
 fn flow_order_procure_to_pay(f: &Flow) {
     ensure_asset_reservation_flow(f);
-    *PROCURE_TO_PAY_DONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+    *PROCURE_TO_PAY_DONE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
     const VENDOR: &str = "ZiddlemanInc";
     const CUSTOMER: &str = "ORG_ZIZI_RETAIL";
     const FACILITY: &str = "ZIRET_WH";
@@ -1874,7 +1892,10 @@ fn flow_order_procure_to_pay(f: &Flow) {
         _ => String::new(),
     };
     let (equip1_asset, equip2_asset) = (first_asset(&equip1), first_asset(&equip2));
-    assert!(!equip1_asset.is_empty() && !equip2_asset.is_empty(), "receive results: {equip1:?} {equip2:?}");
+    assert!(
+        !equip1_asset.is_empty() && !equip2_asset.is_empty(),
+        "receive results: {equip1:?} {equip2:?}"
+    );
     call(
         "mantle.shipment.ShipmentServices.deliver#Shipment",
         &[("shipmentId", s(&shipment_id))],
@@ -2568,11 +2589,17 @@ fn flow_work_plan_to_cash(f: &Flow) {
         <mantle.account.payment.PaymentApplication invoiceId="{expense_id}" amountApplied="1009.12"/>
         </entity-facade-xml>"#
     );
-    assert_clean(check(f, &xml), "create Worker Time and Expense Invoice and record Payment");
+    assert_clean(
+        check(f, &xml),
+        "create Worker Time and Expense Invoice and record Payment",
+    );
     let trans = list(
         f,
         "mantle.ledger.transaction.AcctgTrans",
-        &[("invoiceId", &expense_id), ("acctgTransTypeEnumId", "AttPurchaseInvoice")],
+        &[
+            ("invoiceId", &expense_id),
+            ("acctgTransTypeEnumId", "AttPurchaseInvoice"),
+        ],
     );
     assert_eq!(trans.len(), 1, "{trans:?}");
     let entries = list(
@@ -2588,7 +2615,10 @@ fn flow_work_plan_to_cash(f: &Flow) {
             .sum()
     };
     assert_eq!(entries.len(), 7, "{entries:?}");
-    assert!((sum("D") - 1009.12).abs() < 0.001 && (sum("C") - 1009.12).abs() < 0.001, "{entries:?}");
+    assert!(
+        (sum("D") - 1009.12).abs() < 0.001 && (sum("C") - 1009.12).abs() < 0.001,
+        "{entries:?}"
+    );
 
     // create Client Time and Expense Invoice and Finalize; record Payment
     let client_invoice = call(
@@ -2647,7 +2677,10 @@ fn flow_work_plan_to_cash(f: &Flow) {
     let trans = list(
         f,
         "mantle.ledger.transaction.AcctgTrans",
-        &[("invoiceId", &client_invoice_id), ("acctgTransTypeEnumId", "AttSalesInvoice")],
+        &[
+            ("invoiceId", &client_invoice_id),
+            ("acctgTransTypeEnumId", "AttSalesInvoice"),
+        ],
     );
     assert_eq!(trans.len(), 1, "{trans:?}");
     let entries = list(
@@ -2693,9 +2726,21 @@ macro_rules! flow_test {
     };
 }
 
-flow_test!(order_to_cash_basic_flow, "OrderToCashBasicFlow", flow_order_to_cash_basic);
-flow_test!(order_procure_to_pay_basic_flow, "OrderProcureToPayBasicFlow", flow_order_procure_to_pay);
-flow_test!(return_to_response_basic_flow, "ReturnToResponseBasicFlow", flow_return_to_response);
+flow_test!(
+    order_to_cash_basic_flow,
+    "OrderToCashBasicFlow",
+    flow_order_to_cash_basic
+);
+flow_test!(
+    order_procure_to_pay_basic_flow,
+    "OrderProcureToPayBasicFlow",
+    flow_order_procure_to_pay
+);
+flow_test!(
+    return_to_response_basic_flow,
+    "ReturnToResponseBasicFlow",
+    flow_return_to_response
+);
 #[test]
 fn work_plan_to_cash_basic_flow() {
     with_flow("WorkPlanToCashBasicFlow", flow_work_plan_to_cash);
@@ -2705,7 +2750,11 @@ fn accounting_activities() {
     with_flow("AccountingActivities", flow_accounting_activities);
 }
 flow_test!(order_to_cash_time, "OrderToCashTime", flow_order_to_cash_time);
-flow_test!(asset_reservation_multiple_threads, "AssetReservationMultipleThreads", flow_asset_reservation_multiple_threads);
+flow_test!(
+    asset_reservation_multiple_threads,
+    "AssetReservationMultipleThreads",
+    flow_asset_reservation_multiple_threads
+);
 flow_test!(
     order_tenant_access,
     "OrderTenantAccess",

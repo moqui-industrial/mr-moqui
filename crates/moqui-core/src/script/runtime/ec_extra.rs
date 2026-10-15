@@ -261,7 +261,11 @@ fn epoch_millis_timestamp(value: &Value) -> Option<Value> {
             // A script holds a date as text such as `2026-10-16` or `2026-10-16 08:30:00`, which the date pattern formats.
             Err(_) if is_date_text(text) => {
                 // Date only text is a Date, which has no time zone to shift it.
-                let java_type = if text.trim().len() == 10 { "java.sql.Date" } else { "java.sql.Timestamp" };
+                let java_type = if text.trim().len() == 10 {
+                    "java.sql.Date"
+                } else {
+                    "java.sql.Timestamp"
+                };
                 let converted = moqui_lib::object::basic_convert(value, java_type);
                 return (!matches!(converted.value, Value::Null | Value::String(_))).then_some(converted.value);
             }

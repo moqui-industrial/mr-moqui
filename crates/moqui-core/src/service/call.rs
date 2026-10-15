@@ -837,14 +837,20 @@ fn check_status(
         .list()?;
     let mut valid = 0;
     for transition in transitions.values() {
-        let permission = transition.get("userPermissionId").map(moqui_lib::object::to_plain_string).unwrap_or_default();
+        let permission = transition
+            .get("userPermissionId")
+            .map(moqui_lib::object::to_plain_string)
+            .unwrap_or_default();
         if permission.is_empty() || crate::user::has_permission(&permission)? {
             valid += 1;
         }
     }
     if valid == 0 {
         let name_of = |id: &str| -> Result<String, LibError> {
-            let item = facade.find("moqui.basic.StatusItem")?.eq("statusId", Value::string(id.to_string())).one()?;
+            let item = facade
+                .find("moqui.basic.StatusItem")?
+                .eq("statusId", Value::string(id.to_string()))
+                .one()?;
             Ok(item
                 .and_then(|item| item.get("description").map(moqui_lib::object::to_plain_string))
                 .filter(|text| !text.is_empty())
@@ -1736,7 +1742,11 @@ mod tests {
         let _authz = ctx.disable_authz();
         crate::service::lint(std::slice::from_ref(&path)).unwrap();
         let out = sync("give#AutoOut", &BTreeMap::new()).unwrap();
-        assert_eq!(out.get("testMedium").map(moqui_lib::object::to_plain_string).as_deref(), Some("kept"), "{out:?}");
+        assert_eq!(
+            out.get("testMedium").map(moqui_lib::object::to_plain_string).as_deref(),
+            Some("kept"),
+            "{out:?}"
+        );
         assert!(!out.contains_key("notDeclared"), "{out:?}");
     }
 

@@ -260,7 +260,11 @@ impl EntityFacade {
             // A run-after rule on a delete sees the row as it was: read it now, before the row is gone.
             if let Some(values) = after_values.as_mut().filter(|_| operation == "delete") {
                 if rules.iter().any(|rule| !rule.run_before && rule.get_entire_entity) {
-                    if let Some(row) = self.refresh_fields(entity_name, values).ok().filter(|row| !row.is_empty()) {
+                    if let Some(row) = self
+                        .refresh_fields(entity_name, values)
+                        .ok()
+                        .filter(|row| !row.is_empty())
+                    {
                         for (name, value) in row {
                             values.entry(name).or_insert(value);
                         }

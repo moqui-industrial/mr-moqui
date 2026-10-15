@@ -64,6 +64,7 @@ fn setup(label: &str) -> Setup {
     let context =
         ExecutionContextFactory::test_context_in("", ServicePools::bounded(2, 16), crate::context::framework_dir());
     context.factory().set_entity(facade.clone());
+    crate::testing::seed_status_flows(&facade);
     let fixture = std::env::temp_dir().join(format!("moqui-smsg-{label}-{}.xml", std::process::id()));
     std::fs::write(&fixture, FIXTURE).unwrap();
     Setup {

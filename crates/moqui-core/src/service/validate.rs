@@ -208,7 +208,10 @@ pub(crate) fn declared_in(def: &ServiceDef, facade: Option<&EntityFacade>) -> Re
 
 /// The out-parameters with `auto-parameters` expanded to the entity's fields; the declared list when it has none.
 pub(crate) fn expanded_out(def: &ServiceDef) -> std::borrow::Cow<'_, [ParamDef]> {
-    let has_auto = def.out_params.iter().any(|param| param.name.is_empty() && param.auto.is_some());
+    let has_auto = def
+        .out_params
+        .iter()
+        .any(|param| param.name.is_empty() && param.auto.is_some());
     if has_auto {
         if let Ok(params) = expand_params(def, &def.out_params, current_facade().as_ref()) {
             return std::borrow::Cow::Owned(params);

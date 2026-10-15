@@ -31,6 +31,7 @@ fn setup() -> (EntityFacade, ExecutionContext) {
     let context =
         ExecutionContextFactory::test_context_in("", ServicePools::bounded(1, 4), crate::context::framework_dir());
     context.factory().set_entity(facade.clone());
+    crate::testing::seed_status_flows(&facade);
     (facade, context)
 }
 
@@ -210,7 +211,17 @@ fn a_print_job_is_sent_through_the_print_client_and_its_status_follows_the_serve
     assert_eq!(details.get("pagesPrinted"), Some(&Value::I32(1)));
     assert_eq!(job_field(&facade, &id, "statusId"), "PtjCompleted");
 
-    // Hold sets the held status; a release the server does not do is a message and no change.
+    // Hold sets the held status, which the status flow allows only from pending: put the job back first.
+    let mut job = facade
+        .find(PRINT_JOB)
+        .unwrap()
+        .eq("printJobId", Value::string(id.clone()))
+        .one()
+        .unwrap()
+        .unwrap();
+    job.set("statusId", Value::string("PtjPending"));
+    job.update(&facade).unwrap();
+    // A release the server does not do is a message and no change.
     crate::service::sync(
         "org.moqui.impl.PrintServices.hold#PrintJob",
         &params(&[("printJobId", &id)]),

@@ -47,6 +47,29 @@ pub(crate) fn open() -> EntityFacade {
     open_at(&framework_dir())
 }
 
+/// Seeds the framework's `StatusFlowTransition` rows, which the status check of an entity-auto update reads.
+pub(crate) fn seed_status_flows(facade: &EntityFacade) {
+    let entities = framework_dir().join("entity");
+    for file in ["BasicEntities.xml", "ServiceEntities.xml"] {
+        let text = std::fs::read_to_string(entities.join(file)).expect("read framework entities");
+        for line in text
+            .lines()
+            .filter(|line| line.contains("<moqui.basic.StatusFlowTransition "))
+        {
+            let attribute = |name: &str| {
+                let start = line.find(&format!(" {name}=\"")).expect("attribute") + name.len() + 3;
+                line[start..].split('"').next().unwrap().to_string()
+            };
+            let mut row = facade.make_value("moqui.basic.StatusFlowTransition").expect("make");
+            for name in ["statusFlowId", "statusId", "toStatusId"] {
+                row.set(name, Value::string(attribute(name)));
+            }
+            // A transition can be listed twice across files; the first one wins.
+            let _ = row.create(facade);
+        }
+    }
+}
+
 /// A facade whose statements are recorded on `tape`.
 pub(crate) fn open_with_tape(tape: Arc<Mutex<Vec<String>>>) -> EntityFacade {
     open_with(
