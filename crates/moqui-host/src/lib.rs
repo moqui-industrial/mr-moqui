@@ -28,6 +28,7 @@ pub mod search;
 pub mod ssh;
 pub mod sso;
 pub mod types;
+pub mod usage;
 
 mod cluster_edge;
 mod cluster_notify;
@@ -197,9 +198,9 @@ pub fn load_save(
     db::embedded::load_save(dir.as_ref(), dump.as_ref())
 }
 
-const USAGE: &str = "usage: moqui [save-db <cluster-dir> <dump-file> | load-save <cluster-dir> <dump-file> | load [name=value ...] | lint [file] | lint --screens [report-file] | lint --screens --qvt-static [report-file] | lint --groovy <dir> ... | convert --groovy [--write] <dir> ... | types [--out dir]]";
-
-/// No arguments start the HTTP server. `save-db` and `load-save` take a cluster directory and a dump file.
+/// No arguments start the HTTP server. With no command, `--port`, `--conf`, `--no-run-es`, and `-D name=value`
+/// set the listen port, the runtime conf, and other properties for that run. `help`, `--help`, `-h`, and `-?`
+/// print the command list ([`usage::overview`]). `save-db` and `load-save` take a cluster directory and a dump file.
 /// `load` takes `name=value` pairs. `lint` takes an optional service file. `lint --screens` checks the screen and form XML and may write a report file.
 /// `lint --groovy` reports the Groovy idioms left in a component tree such as mantle, and `convert --groovy` makes the
 /// mechanical rewrites (map literals, `context + [...]`, Elvis, EDI grammar files), printing them, and writes them with `--write`.
@@ -207,18 +208,24 @@ const USAGE: &str = "usage: moqui [save-db <cluster-dir> <dump-file> | load-save
 ///
 /// # Errors
 ///
-/// Returns an error for any other argument list, an unknown load flag, or when a command fails.
+/// Returns an error for an unknown command, a command with the wrong arguments, an unknown help topic, an unknown
+/// load flag, or when a command fails.
 pub fn dispatch<I, S>(args: I) -> Result<Option<&'static str>, moqui_lib::error::Error>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
     let args: Vec<String> = args.into_iter().map(|arg| arg.as_ref().to_string()).collect();
+    if let Some(help) = usage::help_request(&args) {
+        return help.map(Some);
+    }
+    if usage::is_server_invocation(&args) {
+        let opts = usage::parse_server_args(&args)?;
+        opts.apply();
+        serve()?;
+        return Ok(None);
+    }
     match args.as_slice() {
-        [] => {
-            serve()?;
-            Ok(None)
-        }
         [command, dir, file] if command == "save-db" => {
             save_db(dir, file)?;
             Ok(None)
@@ -247,7 +254,7 @@ where
             let write = rest.first().is_some_and(|arg| arg == "--write");
             let dirs = if write { &rest[1..] } else { rest };
             if dirs.is_empty() {
-                return Err(moqui_lib::error::Error::new(USAGE));
+                return Err(usage::command_usage("convert"));
             }
             let roots: Vec<std::path::PathBuf> = dirs.iter().map(Into::into).collect();
             let report = moqui_core::script::groovy_convert::convert_tree(&roots, write)
@@ -265,6 +272,7 @@ where
             dispatch_lint_screens(rest.first().map(String::as_str))?;
             Ok(None)
         }
+        [command, flag] if command == "lint" && flag == "--groovy" => Err(usage::command_usage("lint")),
         [command] if command == "lint" => {
             dispatch_lint(None)?;
             Ok(None)
@@ -273,7 +281,16 @@ where
             dispatch_lint(Some(path))?;
             Ok(None)
         }
-        _ => Err(moqui_lib::error::Error::new(USAGE)),
+        _ => Err(usage_error(&args)),
+    }
+}
+
+/// A known command with the wrong arguments names that command. Anything else is an unknown command.
+fn usage_error(args: &[String]) -> moqui_lib::error::Error {
+    match args.first().map(String::as_str) {
+        Some(name @ ("save-db" | "load-save" | "lint" | "convert" | "types" | "load")) => usage::command_usage(name),
+        Some(name) => usage::unknown_command(name),
+        None => usage::unknown_command(""),
     }
 }
 
@@ -1704,12 +1721,114 @@ mod tests {
 
     #[test]
     fn unknown_command_names_the_dump_commands() {
+        let text = dispatch(["help"]).unwrap().expect("help prints the command list");
+        assert!(text.contains("save-db"), "{text}");
+        assert!(text.contains("load-save"), "{text}");
+        assert!(text.contains("load"), "{text}");
+        assert!(text.contains("lint"), "{text}");
         let err = dispatch(["nope"]).unwrap_err();
         let message = err.message();
-        assert!(message.contains("save-db"), "{err}");
-        assert!(message.contains("load-save"), "{err}");
-        assert!(message.contains("load [name=value"), "{err}");
-        assert!(message.contains("lint"), "{err}");
+        assert!(message.contains("usage: moqui"), "{err}");
+        assert!(message.contains("moqui help"), "{err}");
+        assert!(!message.contains("disableEntityEca"), "{err}");
+    }
+
+    #[test]
+    fn usage_overview_lists_commands_and_environment() {
+        let text = dispatch(["help"]).unwrap().unwrap();
+        assert_eq!(dispatch(["--help"]).unwrap().unwrap(), text);
+        assert_eq!(dispatch(["-h"]).unwrap().unwrap(), text);
+        assert_eq!(dispatch(["-?"]).unwrap().unwrap(), text);
+        for needle in [
+            "Usage: moqui",
+            "save-db",
+            "load-save",
+            "load",
+            "lint",
+            "convert",
+            "types",
+            "MOQUI_CONF",
+            "webapp_http_port",
+            "--port",
+            "--conf",
+            "--no-run-es",
+            "-D",
+        ] {
+            assert!(text.contains(needle), "{needle} missing from {text}");
+        }
+    }
+
+    #[test]
+    fn usage_load_page_names_the_flags() {
+        let text = dispatch(["help", "load"]).unwrap().unwrap();
+        assert_eq!(dispatch(["load", "--help"]).unwrap().unwrap(), text);
+        assert_eq!(dispatch(["load", "-h"]).unwrap().unwrap(), text);
+        assert_eq!(dispatch(["--help", "load"]).unwrap().unwrap(), text);
+        for needle in [
+            "types",
+            "components",
+            "location",
+            "timeout",
+            "raw",
+            "disableEntityEca",
+            "disableAuditLog",
+            "disableFkCreate",
+            "disableDataFeed",
+        ] {
+            assert!(text.contains(needle), "{needle} missing from {text}");
+        }
+    }
+
+    #[test]
+    fn usage_lint_and_types_pages_name_their_modes() {
+        let lint = dispatch(["help", "lint"]).unwrap().unwrap();
+        assert!(lint.contains("--screens"), "{lint}");
+        assert!(lint.contains("--qvt-static"), "{lint}");
+        assert!(lint.contains("--groovy"), "{lint}");
+        let types = dispatch(["help", "types"]).unwrap().unwrap();
+        assert!(types.contains("--out"), "{types}");
+        assert_eq!(dispatch(["types", "--help"]).unwrap().unwrap(), types);
+    }
+
+    #[test]
+    fn usage_server_options_do_not_start_the_listener() {
+        let missing = dispatch(["--port"]).unwrap_err();
+        assert!(missing.message().contains("port"), "{missing}");
+        let bogus = dispatch(["--bogus"]).unwrap_err();
+        assert!(bogus.message().contains("unknown option '--bogus'"), "{bogus}");
+        assert!(bogus.message().contains("moqui help"), "{bogus}");
+        let threads = dispatch(["threads=4"]).unwrap_err();
+        assert!(threads.message().contains("unknown option 'threads=4'"), "{threads}");
+        let dashed = dispatch(["--threads", "4"]).unwrap_err();
+        assert!(dashed.message().contains("unknown option '--threads'"), "{dashed}");
+        let on_load = dispatch(["load", "--conf", "conf/MoquiProductionConf.xml"]).unwrap_err();
+        assert!(on_load.message().contains("load flag"), "{on_load}");
+        let before_command = dispatch(["--port", "8081", "save-db"]).unwrap_err();
+        assert!(
+            before_command.message().contains("unknown option 'save-db'"),
+            "{before_command}"
+        );
+        let help = dispatch(["--port", "8081", "--help"]).unwrap().unwrap();
+        assert_eq!(help, dispatch(["help"]).unwrap().unwrap());
+        assert_eq!(dispatch(["--port", "8081", "-h"]).unwrap().unwrap(), help);
+    }
+
+    #[test]
+    fn usage_unknown_topic_points_at_help() {
+        let err = dispatch(["help", "nope"]).unwrap_err();
+        assert!(err.message().contains("nope"), "{err}");
+        assert!(err.message().contains("moqui help"), "{err}");
+    }
+
+    #[test]
+    fn usage_wrong_arity_names_the_command() {
+        let err = dispatch(["save-db"]).unwrap_err();
+        assert!(err.message().contains("<cluster-dir>"), "{err}");
+        assert!(err.message().contains("moqui help save-db"), "{err}");
+        let convert = dispatch(["convert", "--groovy"]).unwrap_err();
+        assert!(convert.message().contains("moqui help convert"), "{convert}");
+        let lint = dispatch(["lint", "--groovy"]).unwrap_err();
+        assert!(lint.message().contains("moqui help lint"), "{lint}");
     }
 
     #[test]

@@ -50,6 +50,15 @@ pub fn clear_property(name: &str) {
     });
 }
 
+/// The process property table only. An empty value is missing.
+///
+/// This does not read the environment or dotenv. [`get_prop_or_env`] does, and that is why the runtime
+/// conf uses this for `MOQUI_CONF`: `runtime/.env` is loaded later and must not select the conf file.
+#[must_use]
+pub fn get_property(name: &str) -> Option<String> {
+    with_properties(|map| map.get(name).cloned()).filter(|value| !value.is_empty())
+}
+
 fn lookup_one(name: &str) -> Option<String> {
     let property = with_properties(|map| map.get(name).cloned());
     if let Some(value) = property {

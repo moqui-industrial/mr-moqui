@@ -184,6 +184,24 @@ mod tests {
     }
 
     #[test]
+    fn runtime_conf_property_wins_over_the_environment() {
+        let _lock = crate::user::session::cookie_property_lock();
+        let temp = TempRuntime::new("conf-property");
+        let runtime = temp.path();
+        std::fs::write(runtime.join("conf/MoquiProductionConf.xml"), "<moqui-conf/>").unwrap();
+        moqui_lib::env::set_property("MOQUI_CONF", "conf/MoquiProductionConf.xml");
+        struct Clear;
+        impl Drop for Clear {
+            fn drop(&mut self) {
+                moqui_lib::env::clear_property("MOQUI_CONF");
+            }
+        }
+        let _clear = Clear;
+        let selected = super::conf::runtime_conf(runtime).unwrap();
+        assert_eq!(selected, Some(runtime.join("conf/MoquiProductionConf.xml")));
+    }
+
+    #[test]
     fn dev_conf_merge_sets_purpose_and_entity_definition_idle() {
         let root = workspace_root();
         let base = MNode::parse_file(root.join("runtime/base-component/framework/conf/MoquiDefaultConf.xml")).unwrap();

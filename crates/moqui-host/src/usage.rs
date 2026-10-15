@@ -1,0 +1,590 @@
+/*
+ * This software is in the public domain under CC0 1.0 Universal plus a
+ * Grant of Patent License.
+ *
+ * To the extent possible under law, the author(s) have dedicated all
+ * copyright and related and neighboring rights to this software to the
+ * public domain worldwide. This software is distributed without any
+ * warranty.
+ *
+ * You should have received a copy of the CC0 Public Domain Dedication
+ * along with this software (see the LICENSE.md file). If not, see
+ * <http://creativecommons.org/publicdomain/zero/1.0/>.
+ */
+
+//! Command list and per-command help for the `moqui` binary. Plain text, no color.
+
+use moqui_lib::error::Error;
+
+const OVERVIEW: &str = "\
+moqui: the Moqui server
+
+Usage: moqui [command] [args...]      moqui help [command]      moqui <command> --help
+
+With no command, start the HTTP server.
+
+Server
+  (no command)     [options]                                Start the HTTP server (port webapp_http_port, default 8080)
+
+Data
+  load             [name=value ...]                         Load data files into the configured database
+  save-db          <cluster-dir> <dump-file>                pg_dump --format=custom of an embedded cluster
+  load-save        <cluster-dir> <dump-file>                pg_restore --format=custom into an embedded cluster
+
+Check
+  lint             [file | --screens | --groovy <dir> ...]  Lint services, screens, or leftover Groovy
+  convert          --groovy [--write] <dir> ...             Mechanical Groovy rewrites
+  types            [--out dir]                              TypeScript declarations from the loaded definitions
+
+Help
+  help             [command]                                This list, or the detail for one command
+
+Server options
+  -p, --port N       HTTP port (webapp_http_port, default 8080). Also: port=N, -port=N, --port=N.
+  -c, --conf FILE    Runtime conf, relative to the runtime directory or absolute.
+                     Also: conf=FILE, -conf=FILE, --conf=FILE. Same as MOQUI_CONF for this run.
+  --no-run-es        Do not start OpenSearch (opensearch_run=false). Also: no-run-es, -no-run-es.
+  -D name=value      Set a conf property for this run. Repeatable. Use underscore names
+                     (entity_ds_db_conf), not dotted ones.
+
+  moqui --port 8081 --conf conf/MoquiProductionConf.xml
+  moqui -p 8081 -D entity_ds_db_conf=postgres
+
+Environment
+  MOQUI_RUNTIME      Runtime directory (default: runtime)
+  MOQUI_FRAMEWORK    Framework component (default: <runtime>/base-component/framework)
+  MOQUI_CONF         Runtime conf merged over MoquiDefaultConf.xml, relative to the runtime
+                     directory or absolute. Unset uses conf/MoquiDevConf.xml when that file
+                     exists. runtime/.env is read after the conf merge and does not select it.
+  webapp_http_port   HTTP port (default 8080). cluster_https_port defaults to 8443.
+  entity_ds_db_conf  postgres, mysql, or mysql8 for an external server; otherwise embedded
+
+Other conf properties are environment variables with underscore names.
+";
+
+const LOAD: &str = "\
+moqui load [name=value ...]
+    Load data files into the configured database.
+
+Each argument is name=value, and each name is given once. With no types and no location, this loads
+seed, seed-initial, and install. types= with an empty value, or types=all, loads every data type.
+
+  moqui load
+  moqui load types=seed,seed-initial
+  moqui load types=all components=mantle-udm
+  moqui load location=runtime/component/mantle-udm/data/SomeData.xml
+  moqui load raw=true timeout=600
+
+Flags:
+  types=a,b                       Data types. Omitted: seed, seed-initial, install.
+                                  Empty or all: every data type.
+  components=a,b                  Component names. Empty means all.
+  location=FILE                   Load only this data file.
+  timeout=SECONDS                 Transaction timeout for each record. Omitted uses the
+                                  transaction default, 60 seconds.
+  raw=true|false                  Empty-database load: try-insert, and turn off entity ECA,
+                                  audit log, foreign-key create, and the data feed.
+  disableEntityEca=true|false     Turn off entity ECA rules.
+  disableAuditLog=true|false      Turn off the entity audit log.
+  disableFkCreate=true|false      Do not create foreign keys.
+  disableDataFeed=true|false      Turn off the entity data feed.
+
+Booleans accept true/false, yes/no, y/n, and 1/0.
+";
+
+const SAVE_DB: &str = "\
+moqui save-db <cluster-dir> <dump-file>
+    pg_dump --format=custom of an embedded cluster.
+
+Writes a custom-format dump of the embedded moqui database in that cluster directory. Starts the
+postmaster when it is not running, and stops a postmaster this command started. A postmaster that
+was already running keeps running. This is the embedded cluster only, not an external database
+selected by entity_ds_db_conf. The usual directory is runtime/db/embedded.
+./moq save-db also copies OpenSearch data. This command does not.
+
+  moqui save-db runtime/db/embedded runtime/save/before-upgrade/moqui.dump
+";
+
+const LOAD_SAVE: &str = "\
+moqui load-save <cluster-dir> <dump-file>
+    pg_restore --format=custom into an embedded cluster.
+
+Restores a custom-format dump with pg_restore --clean --if-exists into the embedded moqui database
+in that cluster directory. Starts the postmaster when it is not running, and stops a postmaster this
+command started. A postmaster that was already running keeps running. This is the embedded cluster
+only. The usual directory is runtime/db/embedded.
+
+  moqui load-save runtime/db/embedded runtime/save/before-upgrade/moqui.dump
+";
+
+const LINT: &str = "\
+moqui lint [file | --screens [report-file] | --groovy <dir> ...]
+    Lint services, screens, or leftover Groovy.
+
+  moqui lint
+  moqui lint service/org/moqui/impl/BasicServices.xml
+  moqui lint --screens
+  moqui lint --screens /tmp/screen-lint.txt
+  moqui lint --screens --qvt-static
+  moqui lint --groovy runtime/component/mantle-udm
+
+Forms:
+  moqui lint [file]
+      Lint service expressions. With no file, uses the service files named in MoquiDefaultConf.xml.
+      Prints each failure and exits 1 when any fail.
+
+  moqui lint --screens [report-file]
+      Lint screen and form XML under the runtime components. The report goes to the file, or to
+      stdout when the file is omitted. Expression failures exit 1.
+
+  moqui lint --screens --qvt-static [report-file]
+      Compatibility report for server-static qvt. Writes the report to the file or to stdout.
+      Does not fail the process.
+
+  moqui lint --groovy <dir> ...
+      Report Groovy idioms left under those directories. At least one directory.
+";
+
+const CONVERT: &str = "\
+moqui convert --groovy [--write] <dir> ...
+    Mechanical Groovy rewrites.
+
+Rewrites map literals, context + [...], Elvis, and EDI grammar files under the given directories.
+Prints the changes. --write writes them to the files. At least one directory is required.
+
+  moqui convert --groovy runtime/component/mantle-udm
+  moqui convert --groovy --write runtime/component/mantle-udm
+";
+
+const TYPES: &str = "\
+moqui types [--out dir]
+    TypeScript declarations from the loaded definitions.
+
+Writes declarations for the loaded entity, service, and screen definitions. --out dir and --out=dir
+set the directory. The default is types/ inside the runtime directory. This does not open a database.
+
+  moqui types
+  moqui types --out /tmp/types
+  moqui types --out=runtime/types
+";
+
+const HELP: &str = "\
+moqui help [command]
+    This list, or the detail for one command.
+
+  moqui help
+  moqui help load
+  moqui load --help
+
+moqui help, moqui --help, moqui -h, and moqui -? print the command list.
+moqui help <command> and moqui <command> --help (or -h) print that command.
+";
+
+/// The command list: groups, one line per command, and the environment variables that select the runtime.
+#[must_use]
+pub fn overview() -> &'static str {
+    OVERVIEW
+}
+
+/// The page for one command, or `None` when `name` is not a command.
+#[must_use]
+pub fn command_help(name: &str) -> Option<&'static str> {
+    match name {
+        "load" => Some(LOAD),
+        "save-db" => Some(SAVE_DB),
+        "load-save" => Some(LOAD_SAVE),
+        "lint" => Some(LINT),
+        "convert" => Some(CONVERT),
+        "types" => Some(TYPES),
+        "help" => Some(HELP),
+        _ => None,
+    }
+}
+
+/// Help requested by this argument list.
+///
+/// `help`, `--help`, `-h`, and `-?` are the command list, or one command when the next argument names it.
+/// `<command> --help` and `<command> -h` are that command's page. Server options plus `--help` or `-h` are
+/// the command list. Anything else is `None`, so the caller runs the command.
+///
+/// # Errors
+///
+/// Returns an error when the topic is not a command, or when `help` is given more than one argument.
+pub fn help_request(args: &[String]) -> Option<Result<&'static str, Error>> {
+    let first = args.first()?.as_str();
+    if matches!(first, "help" | "--help" | "-h" | "-?") {
+        return Some(topic(args));
+    }
+    if args.iter().skip(1).any(|arg| arg == "--help" || arg == "-h") {
+        if let Some(text) = command_help(first) {
+            return Some(Ok(text));
+        }
+        if is_server_invocation(args) {
+            return Some(Ok(OVERVIEW));
+        }
+        return Some(Err(unknown_command(first)));
+    }
+    None
+}
+
+/// Arguments for a server run: no subcommand, or no arguments at all.
+#[must_use]
+pub fn is_server_invocation(args: &[String]) -> bool {
+    match args.first().map(String::as_str) {
+        None => true,
+        Some(first) if is_known_command(first) => false,
+        Some(first) => looks_like_server_option(first),
+    }
+}
+
+fn is_known_command(name: &str) -> bool {
+    matches!(
+        name,
+        "help" | "--help" | "-h" | "-?" | "load" | "save-db" | "load-save" | "lint" | "convert" | "types"
+    )
+}
+
+fn looks_like_server_option(arg: &str) -> bool {
+    arg.starts_with('-') || arg == "no-run-es" || arg.contains('=')
+}
+
+/// Property assignments from a server argument list, in order. A later name replaces an earlier one.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ServerOptions {
+    properties: Vec<(String, String)>,
+}
+
+impl ServerOptions {
+    fn push(&mut self, name: impl Into<String>, value: impl Into<String>) {
+        self.properties.push((name.into(), value.into()));
+    }
+
+    /// The last assignment of `name`, if there was one.
+    #[must_use]
+    pub fn value(&self, name: &str) -> Option<&str> {
+        self.properties
+            .iter()
+            .rev()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// Assign every property. Later names replace earlier ones.
+    pub fn apply(&self) {
+        for (name, value) in &self.properties {
+            moqui_lib::env::set_property(name, value);
+        }
+    }
+}
+
+/// Parse server options. This does not start the server or set properties.
+///
+/// # Errors
+///
+/// Returns an error for an unknown option, a missing value, a port that does not parse, or a `-D` name
+/// that is not an underscore property name.
+pub fn parse_server_args(args: &[impl AsRef<str>]) -> Result<ServerOptions, Error> {
+    let args: Vec<&str> = args.iter().map(AsRef::as_ref).collect();
+    let mut opts = ServerOptions::default();
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index];
+        if let Some(value) = equals_value(arg, "port") {
+            opts.push("webapp_http_port", parse_port(value)?.to_string());
+        } else if arg == "-p" || arg == "--port" {
+            let value = next_value(&args, index, arg, "a port number")?;
+            opts.push("webapp_http_port", parse_port(value)?.to_string());
+            index += 1;
+        } else if let Some(value) = equals_value(arg, "conf") {
+            require_conf(value)?;
+            opts.push("MOQUI_CONF", value);
+        } else if arg == "-c" || arg == "--conf" {
+            let value = next_value(&args, index, arg, "a file")?;
+            require_conf(value)?;
+            opts.push("MOQUI_CONF", value);
+            index += 1;
+        } else if matches!(arg, "no-run-es" | "-no-run-es" | "--no-run-es") {
+            opts.push("opensearch_run", "false");
+        } else if arg == "-D" {
+            let token = next_value(&args, index, arg, "name=value")?;
+            let (name, value) = split_property(token)?;
+            opts.push(name, value);
+            index += 1;
+        } else if let Some(token) = arg.strip_prefix("-D") {
+            let (name, value) = split_property(token)?;
+            opts.push(name, value);
+        } else {
+            return Err(Error::new(format!(
+                "moqui: unknown option '{arg}'\nRun 'moqui help' for the command list."
+            )));
+        }
+        index += 1;
+    }
+    Ok(opts)
+}
+
+/// `port=N`, `-port=N`, or `--port=N` (and the same for another name). A flag with no `=` is `None`.
+fn equals_value<'a>(arg: &'a str, name: &str) -> Option<&'a str> {
+    let rest = if let Some(rest) = arg.strip_prefix("--") {
+        rest
+    } else if let Some(rest) = arg.strip_prefix('-') {
+        rest
+    } else {
+        arg
+    };
+    rest.strip_prefix(name)?.strip_prefix('=')
+}
+
+fn next_value<'a>(args: &'a [&str], index: usize, flag: &str, what: &str) -> Result<&'a str, Error> {
+    args.get(index + 1)
+        .copied()
+        .ok_or_else(|| Error::new(format!("{flag} needs {what}\nRun 'moqui help' for the command list.")))
+}
+
+fn require_conf(value: &str) -> Result<(), Error> {
+    if value.is_empty() {
+        Err(Error::new("conf file is empty"))
+    } else {
+        Ok(())
+    }
+}
+
+/// An explicit empty or non-numeric port is an error. An unset `webapp_http_port` still means 8080.
+fn parse_port(raw: &str) -> Result<u16, Error> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err(Error::new("webapp_http_port is not a port"));
+    }
+    raw.parse::<u16>()
+        .map_err(|_| Error::new(format!("webapp_http_port {raw} is not a port")))
+}
+
+fn split_property(token: &str) -> Result<(&str, &str), Error> {
+    let Some((name, value)) = token.split_once('=') else {
+        return Err(Error::new(format!("-D needs name=value, not '{token}'")));
+    };
+    if valid_property(name) {
+        return Ok((name, value));
+    }
+    if name.contains('.') {
+        return Err(Error::new(format!(
+            "-D {name}: use the underscore form of the property name ({})",
+            name.replace('.', "_")
+        )));
+    }
+    Err(Error::new(format!("-D {name}: not a valid property name")))
+}
+
+fn valid_property(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
+        _ => return false,
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+/// An argument list that names no command.
+pub fn unknown_command(name: &str) -> Error {
+    Error::new(format!(
+        "usage: moqui [command] [args...]\nmoqui: unknown command '{name}'\nRun 'moqui help' for the command list."
+    ))
+}
+
+/// A known command with the wrong arguments. The message is that command's usage line.
+pub fn command_usage(command: &str) -> Error {
+    let synopsis = match command {
+        "load" => "moqui load [name=value ...]",
+        "save-db" => "moqui save-db <cluster-dir> <dump-file>",
+        "load-save" => "moqui load-save <cluster-dir> <dump-file>",
+        "lint" => "moqui lint [file | --screens | --groovy <dir> ...]",
+        "convert" => "moqui convert --groovy [--write] <dir> ...",
+        "types" => "moqui types [--out dir]",
+        "help" => "moqui help [command]",
+        _ => "moqui [command] [args...]",
+    };
+    let help = if command_help(command).is_some() {
+        format!("moqui help {command}")
+    } else {
+        "moqui help".to_string()
+    };
+    Error::new(format!("usage: {synopsis}\nRun '{help}' for details."))
+}
+
+fn topic(args: &[String]) -> Result<&'static str, Error> {
+    if args.len() > 2 {
+        return Err(command_usage("help"));
+    }
+    match args.get(1).map(String::as_str) {
+        None => Ok(OVERVIEW),
+        Some(name) => command_help(name).ok_or_else(|| {
+            Error::new(format!(
+                "moqui: unknown command '{name}'\nRun 'moqui help' for the command list."
+            ))
+        }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_server_invocation, parse_server_args};
+
+    fn parse(args: &[&str]) -> super::ServerOptions {
+        parse_server_args(args).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn message(args: &[&str]) -> String {
+        parse_server_args(args)
+            .expect_err("expected an error")
+            .message()
+            .to_string()
+    }
+
+    fn owned(args: &[&str]) -> Vec<String> {
+        args.iter().copied().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn usage_port_forms_set_webapp_http_port() {
+        assert_eq!(parse(&["--port", "8081"]).value("webapp_http_port"), Some("8081"));
+        assert_eq!(parse(&["--port=8081"]).value("webapp_http_port"), Some("8081"));
+        assert_eq!(parse(&["-port=8081"]).value("webapp_http_port"), Some("8081"));
+        assert_eq!(parse(&["port=8081"]).value("webapp_http_port"), Some("8081"));
+        assert_eq!(parse(&["-p", "9"]).value("webapp_http_port"), Some("9"));
+        assert_eq!(parse(&["--port", "0"]).value("webapp_http_port"), Some("0"));
+        assert_eq!(parse(&["port=08"]).value("webapp_http_port"), Some("8"));
+        assert_eq!(parse(&["--port", " 8081 "]).value("webapp_http_port"), Some("8081"));
+    }
+
+    #[test]
+    fn usage_port_errors_name_the_problem() {
+        let missing = message(&["--port"]);
+        assert!(missing.contains("--port needs a port number"), "{missing}");
+        assert!(missing.contains("moqui help"), "{missing}");
+        let nope = message(&["--port", "nope"]);
+        assert!(nope.contains("webapp_http_port nope is not a port"), "{nope}");
+        let empty = message(&["port="]);
+        assert!(empty.contains("webapp_http_port is not a port"), "{empty}");
+        let too_big = message(&["port=65536"]);
+        assert!(too_big.contains("webapp_http_port 65536 is not a port"), "{too_big}");
+        let dashed = message(&["-p=8081"]);
+        assert!(dashed.contains("unknown option '-p=8081'"), "{dashed}");
+        let spaced = message(&["-port", "8081"]);
+        assert!(spaced.contains("unknown option '-port'"), "{spaced}");
+    }
+
+    #[test]
+    fn usage_conf_forms_set_moqui_conf() {
+        let file = "conf/MoquiProductionConf.xml";
+        assert_eq!(parse(&["--conf", file]).value("MOQUI_CONF"), Some(file));
+        assert_eq!(
+            parse(&["--conf=conf/MoquiProductionConf.xml"]).value("MOQUI_CONF"),
+            Some(file)
+        );
+        assert_eq!(
+            parse(&["-conf=conf/MoquiProductionConf.xml"]).value("MOQUI_CONF"),
+            Some(file)
+        );
+        assert_eq!(
+            parse(&["conf=conf/MoquiProductionConf.xml"]).value("MOQUI_CONF"),
+            Some(file)
+        );
+        assert_eq!(parse(&["-c", file]).value("MOQUI_CONF"), Some(file));
+        let missing = message(&["--conf"]);
+        assert!(missing.contains("--conf needs a file"), "{missing}");
+        let empty = message(&["conf="]);
+        assert!(empty.contains("conf file is empty"), "{empty}");
+        let dashed = message(&["-c=conf/MoquiProductionConf.xml"]);
+        assert!(dashed.contains("unknown option"), "{dashed}");
+        let other = message(&["confidential=x"]);
+        assert!(other.contains("unknown option 'confidential=x'"), "{other}");
+    }
+
+    #[test]
+    fn usage_no_run_es_sets_opensearch_run_false() {
+        assert_eq!(parse(&["no-run-es"]).value("opensearch_run"), Some("false"));
+        assert_eq!(parse(&["-no-run-es"]).value("opensearch_run"), Some("false"));
+        assert_eq!(parse(&["--no-run-es"]).value("opensearch_run"), Some("false"));
+    }
+
+    #[test]
+    fn usage_dash_d_records_underscore_properties() {
+        assert_eq!(
+            parse(&["-D", "entity_ds_db_conf=postgres"]).value("entity_ds_db_conf"),
+            Some("postgres")
+        );
+        assert_eq!(
+            parse(&["-Dentity_ds_db_conf=postgres"]).value("entity_ds_db_conf"),
+            Some("postgres")
+        );
+        let dotted = message(&["-D", "entity.ds.db_conf=x"]);
+        assert!(dotted.contains("entity_ds_db_conf"), "{dotted}");
+        assert!(dotted.contains("underscore"), "{dotted}");
+        let attached = message(&["-Dentity.ds.db_conf=x"]);
+        assert!(attached.contains("entity_ds_db_conf"), "{attached}");
+        let alone = message(&["-D"]);
+        assert!(alone.contains("-D needs name=value"), "{alone}");
+        let bare = message(&["-D", "entity_ds_db_conf"]);
+        assert!(bare.contains("name=value"), "{bare}");
+        let digit = message(&["-D", "1bad=x"]);
+        assert!(digit.contains("not a valid property name"), "{digit}");
+        let empty_name = message(&["-D", "=x"]);
+        assert!(empty_name.contains("not a valid property name"), "{empty_name}");
+        let opts = parse(&["-D", "entity_ds_db_conf=postgres", "-Dentity_ds_db_conf=mysql"]);
+        assert_eq!(opts.value("entity_ds_db_conf"), Some("mysql"));
+        assert_eq!(
+            parse(&["-D", "entity_ds_db_conf="]).value("entity_ds_db_conf"),
+            Some("")
+        );
+    }
+
+    #[test]
+    fn usage_threads_is_an_unknown_option() {
+        let dashed = message(&["--threads", "4"]);
+        assert!(dashed.contains("unknown option '--threads'"), "{dashed}");
+        let equals = message(&["threads=4"]);
+        assert!(equals.contains("unknown option 'threads=4'"), "{equals}");
+    }
+
+    #[test]
+    fn usage_later_assignment_replaces_an_earlier_one() {
+        let opts = parse(&["--port", "8081", "-p", "9", "port=8443"]);
+        assert_eq!(opts.value("webapp_http_port"), Some("8443"));
+        let cleared = parse(&["--port", "8081", "-D", "webapp_http_port="]);
+        assert_eq!(cleared.value("webapp_http_port"), Some(""));
+        let restored = parse(&["-D", "webapp_http_port=1", "--port", "8081"]);
+        assert_eq!(restored.value("webapp_http_port"), Some("8081"));
+        let search = parse(&["--no-run-es", "-D", "opensearch_run=true"]);
+        assert_eq!(search.value("opensearch_run"), Some("true"));
+    }
+
+    #[test]
+    fn usage_combined_server_options() {
+        let opts = parse(&[
+            "--port",
+            "8081",
+            "--conf",
+            "conf/MoquiProductionConf.xml",
+            "--no-run-es",
+            "-D",
+            "entity_ds_db_conf=postgres",
+        ]);
+        assert_eq!(opts.value("webapp_http_port"), Some("8081"));
+        assert_eq!(opts.value("MOQUI_CONF"), Some("conf/MoquiProductionConf.xml"));
+        assert_eq!(opts.value("opensearch_run"), Some("false"));
+        assert_eq!(opts.value("entity_ds_db_conf"), Some("postgres"));
+        assert!(parse(&[]).value("webapp_http_port").is_none());
+    }
+
+    #[test]
+    fn usage_server_invocation_is_options_not_commands() {
+        assert!(is_server_invocation(&[]));
+        assert!(is_server_invocation(&owned(&["--port", "8081"])));
+        assert!(is_server_invocation(&owned(&["threads=4"])));
+        assert!(is_server_invocation(&owned(&["no-run-es"])));
+        assert!(is_server_invocation(&owned(&["foo=bar"])));
+        assert!(!is_server_invocation(&owned(&["nope"])));
+        assert!(!is_server_invocation(&owned(&["load", "types=seed"])));
+        assert!(!is_server_invocation(&owned(&["load", "--conf", "x"])));
+    }
+}

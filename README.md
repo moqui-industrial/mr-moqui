@@ -74,11 +74,13 @@ With no arguments the binary starts the HTTP server (port `8080` by default, clu
 HTTPS on `8443`) using `runtime/base-component/framework/conf/MoquiDefaultConf.xml` merged with the runtime conf:
 `runtime/conf/MoquiDevConf.xml` when present, or the file `MOQUI_CONF` names, relative to
 the runtime directory or absolute (`./moq run -c FILE` sets it). `MOQUI_CONF` comes from the
-environment, not `runtime/.env`, which is read after the conf merge. Without the script:
+environment, not `runtime/.env`, which is read after the conf merge. Without the script,
+`moqui help` lists the commands and `moqui help load` describes one:
 
 ```sh
 cargo run -p moqui
 # or: ./target/debug/moqui, and ./target/debug/moqui load for the default seed, seed-initial, install data
+# ./target/debug/moqui --port 8081 --conf conf/MoquiProductionConf.xml
 ```
 
 For production packaging, deploy the release binary together with the `runtime/`

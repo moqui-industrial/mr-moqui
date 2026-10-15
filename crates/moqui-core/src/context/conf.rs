@@ -21,11 +21,14 @@ use moqui_lib::node::MNode;
 
 use super::error::Error;
 
-/// The runtime conf merged over the default, like Java's `moqui.conf`. `MOQUI_CONF` names it, relative to the runtime directory
-/// or absolute, and a named file that is missing is an error. Unset or empty means `conf/MoquiDevConf.xml` when it exists. This is
-/// read from the process environment only: `runtime/.env` is applied after the conf merge, so it cannot select the conf.
-fn runtime_conf(runtime_dir: &Path) -> Result<Option<PathBuf>, Error> {
-    runtime_conf_from(runtime_dir, std::env::var_os("MOQUI_CONF").as_deref())
+/// The runtime conf merged over the default, like Java's `moqui.conf`. A process property `MOQUI_CONF` names it,
+/// then the environment variable of the same name. Relative to the runtime directory or absolute, and a named file
+/// that is missing is an error. Unset or empty means `conf/MoquiDevConf.xml` when it exists. `runtime/.env` is applied
+/// after the conf merge, so it cannot select the conf.
+pub(super) fn runtime_conf(runtime_dir: &Path) -> Result<Option<PathBuf>, Error> {
+    let from_property = moqui_lib::env::get_property("MOQUI_CONF").map(std::ffi::OsString::from);
+    let selected = from_property.or_else(|| std::env::var_os("MOQUI_CONF"));
+    runtime_conf_from(runtime_dir, selected.as_deref())
 }
 
 pub(super) fn runtime_conf_from(runtime_dir: &Path, selected: Option<&OsStr>) -> Result<Option<PathBuf>, Error> {
