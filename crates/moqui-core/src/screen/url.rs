@@ -74,18 +74,23 @@ impl ScreenUrlInfo {
         root_location: &str,
         path: &str,
         last_standalone: i32,
-    ) -> Result<Self, Error> {
+    ) -> Result<Arc<Self>, Error> {
         let (path, query) = path.split_once('?').unwrap_or((path, ""));
         let path = path.split('#').next().unwrap_or(path);
         let segments = split_path(path);
         let mut info = Self::resolve(factory, root_location, &segments, last_standalone)?;
-        for (name, value) in crate::web::form_pairs(&query.replace("&amp;", "&")) {
-            info.inline_parameters.insert(name, value);
+        let pairs = crate::web::form_pairs(&query.replace("&amp;", "&"));
+        if !pairs.is_empty() {
+            // Inline parameters belong to this path only, so the shared cached walk is copied first.
+            let own = Arc::make_mut(&mut info);
+            for (name, value) in pairs {
+                own.inline_parameters.insert(name, value);
+            }
         }
         Ok(info)
     }
 
-    /// Resolve already-split path names.
+    /// Resolve already-split path names. A reusable walk is shared from the cache, not copied.
     ///
     /// # Errors
     ///
@@ -95,12 +100,12 @@ impl ScreenUrlInfo {
         root_location: &str,
         segments: &[String],
         last_standalone: i32,
-    ) -> Result<Self, Error> {
+    ) -> Result<Arc<Self>, Error> {
         let facade = ScreenFacade::of(factory);
         // A path that took no conditional default resolves the same way every time, as Java's `screen.url` cache.
         let key = format!("{root_location}\u{1}{}\u{1}{last_standalone}", segments.join("/"));
         if let Some(cached) = facade.cached_url(factory, &key) {
-            return Ok((*cached).clone());
+            return Ok(cached);
         }
         let root = facade.screen_def(factory, root_location)?;
         let mut walk = Walk {
@@ -131,10 +136,11 @@ impl ScreenUrlInfo {
             },
         };
         walk.run(root)?;
-        if walk.info.reusable {
-            facade.put_url(key, Arc::new(walk.info.clone()));
+        let info = Arc::new(walk.info);
+        if info.reusable {
+            facade.put_url(key, Arc::clone(&info));
         }
-        Ok(walk.info)
+        Ok(info)
     }
 
     /// The transition the path ends on, from the target screen.

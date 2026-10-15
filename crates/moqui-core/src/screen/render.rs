@@ -412,14 +412,7 @@ pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> 
         ));
     }
     let (content_type, encoding) = output_type(&facade, &info, &mode);
-    let state = Rc::new(RenderState::new(
-        factory,
-        &facade,
-        Arc::new(info),
-        mode,
-        content_type,
-        encoding,
-    ));
+    let state = Rc::new(RenderState::new(factory, &facade, info, mode, content_type, encoding));
     let _active = ActiveGuard::install(Rc::clone(&state));
     // A screen marked server-static for qvt is sent as a template that holds no request data, from the cache.
     if state.render_mode == "qvt" && super::statics::serve_template(&state, job.request, job.path)? {
@@ -898,7 +891,11 @@ enum Step {
     Respond(ResponseDef),
 }
 
-fn run_transition(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>, info: ScreenUrlInfo) -> Result<(), Error> {
+fn run_transition(
+    factory: &Arc<ExecutionContextFactory>,
+    job: &Job<'_>,
+    info: Arc<ScreenUrlInfo>,
+) -> Result<(), Error> {
     let Some(transition) = info.transition(Some(job.method)).cloned() else {
         let name = info.target_transition_name.clone().unwrap_or_default();
         let allow: Vec<String> = info
@@ -923,7 +920,6 @@ fn run_transition(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>, info: S
         }
     }
 
-    let info = Arc::new(info);
     let mode = DEFAULT_MODE.to_string();
     let facade = ScreenFacade::of(factory);
     let (content_type, encoding) = output_type(&facade, &info, &mode);

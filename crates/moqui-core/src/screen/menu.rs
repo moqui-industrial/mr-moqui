@@ -155,17 +155,16 @@ pub fn menu_data(state: &RenderState, path_names: &[String]) -> Result<Option<Va
             let screen_path = format!("{current_path}/{}", moqui_lib::string::url_encode_if_needed(&item.name));
             let mut names = full_path[..=index].to_vec();
             names.push(item.name.clone());
-            let url = urls::build_url_names(state, names.clone())?;
-            if !url.exists {
+            let url = urls::resolve_names_at(state, names, 0)?;
+            let Some(sui) = url.info.as_ref() else {
                 continue;
-            }
+            };
             let Ok(target) = state.facade.screen_def(&state.factory, &item.location) else {
                 continue;
             };
             if !permitted_under(&info.path_defs[..(index + 2).min(info.path_defs.len())], &target) {
                 continue;
             }
-            let sui = ScreenUrlInfo::resolve(&state.factory, &root, &names, 0)?;
             let missing = sui.parameter_items.values().any(|parameter| {
                 parameter.required && url.parameters.get(&parameter.name).is_none_or(String::is_empty)
             });
@@ -196,8 +195,11 @@ pub fn menu_data(state: &RenderState, path_names: &[String]) -> Result<Option<Va
             subscreens.push(Value::Map(entry));
         }
 
-        let cur_url = urls::build_url_names(state, full_path[..=index].to_vec())?;
-        let sui = ScreenUrlInfo::resolve(&state.factory, &root, &full_path[..=index], 0)?;
+        let cur_url = urls::resolve_names_at(state, full_path[..=index].to_vec(), 0)?;
+        let sui = match &cur_url.info {
+            Some(sui) => std::sync::Arc::clone(sui),
+            None => ScreenUrlInfo::resolve(&state.factory, &root, &full_path[..=index], 0)?,
+        };
         let (image, image_type) = menu_image(state, sui.menu_image.as_ref());
         let localized = l10n::localize(&ssi.menu_title)?;
         let title = if localized.is_empty() {

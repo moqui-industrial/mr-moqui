@@ -1949,7 +1949,7 @@ pub fn menu_items(state: &RenderState, screen_path: Option<&str>) -> Result<Vec<
         };
         let image = ScreenUrlInfo::resolve(&state.factory, &root, &url.names, 0)
             .ok()
-            .and_then(|info| info.menu_image)
+            .and_then(|info| info.menu_image.clone())
             .unwrap_or_default();
         out.push(MenuEntry {
             name: item.name.clone(),

@@ -21,8 +21,10 @@
 //! user group modifies (`DbFormLookup`), is assembled for each render, with the user's `DbForm` fields merged in.
 //! `extends="DbForm#formId"` extends a form made of `DbForm` records.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, PoisonError, RwLock};
 
+use moqui_db::model::EntityModel;
 use moqui_lib::node::MNode;
 use moqui_lib::object::Value;
 
@@ -790,7 +792,7 @@ fn expand_field_sub_node(
                         ))
                     })?;
                 let noun = entity_shape(&service.noun).ok();
-                add_auto_service_field(noun.as_ref(), parameter, &field_type, field, sub, form);
+                add_auto_service_field(noun.as_deref(), parameter, &field_type, field, sub, form);
             } else if let Some(entity_name) = crate::service::call::entity_auto_noun(&service_name) {
                 let shape = entity_shape(&entity_name)?;
                 add_auto_entity_field(&shape, &parameter_name, &field_type, field, Some(sub), form);
@@ -817,52 +819,87 @@ pub(super) struct EntityShape {
     pub description_field: String,
 }
 
-pub(super) fn entity_shape(entity_name: &str) -> Result<EntityShape, Error> {
-    let facade = ExecutionContext::with_current(|ec| ec.factory().entity())
-        .flatten()
-        .ok_or_else(|| Error::new("no entity facade is installed"))?;
-    facade
-        .with_model(|model| -> Result<EntityShape, moqui_lib::error::Error> {
-            let entity = model.entity(entity_name)?;
-            let fields: Vec<(String, String, bool)> = entity
-                .fields
-                .iter()
-                .map(|field| (field.name.clone(), field.field_type.clone(), field.is_pk))
-                .collect();
-            let mut one_relations = Vec::new();
-            for relationship in &entity.relationships {
-                // The expanded keys, so a relationship with no key-map (the related entity's primary key of the
-                // same name) counts, as in Java.
-                if relationship.relationship_type != "one"
-                    || relationship.is_auto_reverse
-                    || relationship.key_pairs.len() != 1
-                {
-                    continue;
+/// The shapes made so far, by entity name, for the model they were read from. A form-list row and an option item ask
+/// for the same entity over and over, and the model does not change for the life of an entity facade.
+#[derive(Default)]
+struct EntityShapes {
+    by_name: RwLock<(usize, HashMap<String, Arc<EntityShape>>)>,
+}
+
+impl EntityShapes {
+    fn get(&self, model: &EntityModel, entity_name: &str) -> Result<Arc<EntityShape>, moqui_lib::error::Error> {
+        // The model's address tells a replaced entity facade apart, so its shapes are not reused.
+        let model_key = std::ptr::from_ref(model) as usize;
+        {
+            let guard = self.by_name.read().unwrap_or_else(PoisonError::into_inner);
+            if guard.0 == model_key {
+                if let Some(shape) = guard.1.get(entity_name) {
+                    return Ok(Arc::clone(shape));
                 }
-                let (field, related_key) = relationship.key_pairs[0].clone();
-                one_relations.push((field, relationship.related.clone(), related_key));
             }
-            let description_field = entity
-                .fields
-                .iter()
-                .filter(|field| !field.is_pk)
-                .find(|field| field.name.ends_with("Name"))
-                .map(|field| field.name.clone())
-                .or_else(|| entity.field("description").map(|field| field.name.clone()))
-                .unwrap_or_default();
-            Ok(EntityShape {
-                full_name: entity.full_name.clone(),
-                pk_fields: fields
-                    .iter()
-                    .filter(|(_, _, is_pk)| *is_pk)
-                    .map(|(name, _, _)| name.clone())
-                    .collect(),
-                fields,
-                one_relations,
-                description_field,
-            })
-        })
+        }
+        let shape = Arc::new(read_entity_shape(model, entity_name)?);
+        let mut guard = self.by_name.write().unwrap_or_else(PoisonError::into_inner);
+        if guard.0 != model_key {
+            *guard = (model_key, HashMap::new());
+        }
+        guard.1.insert(entity_name.to_string(), Arc::clone(&shape));
+        Ok(shape)
+    }
+}
+
+/// The shape of `entity_name` in the current factory's entity model, shared from a cache.
+pub(super) fn entity_shape(entity_name: &str) -> Result<Arc<EntityShape>, Error> {
+    let (shapes, facade) = ExecutionContext::with_current(|ec| {
+        let factory = ec.factory();
+        factory
+            .entity()
+            .map(|facade| (factory.extension(|_| EntityShapes::default()), facade))
+    })
+    .flatten()
+    .ok_or_else(|| Error::new("no entity facade is installed"))?;
+    facade
+        .with_model(|model| shapes.get(model, entity_name))
         .map_err(Error::from)
+}
+
+fn read_entity_shape(model: &EntityModel, entity_name: &str) -> Result<EntityShape, moqui_lib::error::Error> {
+    let entity = model.entity(entity_name)?;
+    let fields: Vec<(String, String, bool)> = entity
+        .fields
+        .iter()
+        .map(|field| (field.name.clone(), field.field_type.clone(), field.is_pk))
+        .collect();
+    let mut one_relations = Vec::new();
+    for relationship in &entity.relationships {
+        // The expanded keys, so a relationship with no key-map (the related entity's primary key of the
+        // same name) counts, as in Java.
+        if relationship.relationship_type != "one" || relationship.is_auto_reverse || relationship.key_pairs.len() != 1
+        {
+            continue;
+        }
+        let (field, related_key) = relationship.key_pairs[0].clone();
+        one_relations.push((field, relationship.related.clone(), related_key));
+    }
+    let description_field = entity
+        .fields
+        .iter()
+        .filter(|field| !field.is_pk)
+        .find(|field| field.name.ends_with("Name"))
+        .map(|field| field.name.clone())
+        .or_else(|| entity.field("description").map(|field| field.name.clone()))
+        .unwrap_or_default();
+    Ok(EntityShape {
+        full_name: entity.full_name.clone(),
+        pk_fields: fields
+            .iter()
+            .filter(|(_, _, is_pk)| *is_pk)
+            .map(|(name, _, _)| name.clone())
+            .collect(),
+        fields,
+        one_relations,
+        description_field,
+    })
 }
 
 fn add_entity_fields(
@@ -934,7 +971,7 @@ fn add_auto_entity_field(
         // The text is over the related entity's value, so it is that entity's description field (Java's
         // `getDefaultDescriptionField` of the related definition), not the form entity's.
         let description = entity_shape(&relation.1)
-            .map(|related| related.description_field)
+            .map(|related| related.description_field.clone())
             .unwrap_or_default();
         let text = if description.is_empty() {
             format!("[${{{}}}]", relation.2)
@@ -1048,7 +1085,7 @@ fn set_sub_field_validate_attrs(def: &ScreenDef, form: &MNode, attribute: &str, 
         let Ok(shape) = entity_shape(&entity_name) else {
             return;
         };
-        let names = shape.fields.into_iter().map(|(name, _, _)| name).collect();
+        let names = shape.fields.iter().map(|(name, _, _)| name.clone()).collect();
         (names, "validate-entity", entity_name)
     } else {
         return;
@@ -1090,7 +1127,7 @@ fn add_service_fields(
         let sub = field.append("default-field");
         sub.set_attribute("validate-service", service.name.clone());
         sub.set_attribute("validate-parameter", parameter.name.clone());
-        add_auto_service_field(noun.as_ref(), parameter, field_type, &field, &sub, form);
+        add_auto_service_field(noun.as_deref(), parameter, field_type, &field, &sub, form);
         merge_field_node(form, &field, false);
     }
 }
@@ -1108,7 +1145,7 @@ fn add_auto_service_field(
         .entity_name
         .as_deref()
         .and_then(|name| entity_shape(name).ok());
-    let shape = own.as_ref().or(noun);
+    let shape = own.as_deref().or(noun);
     let field_name = parameter.field_name.clone().unwrap_or_else(|| parameter.name.clone());
     if let Some(shape) = shape {
         if shape.fields.iter().any(|(name, _, _)| *name == field_name) {

@@ -17,9 +17,12 @@
 //!
 //! Not ported: the transition-as-alias expansion, `ScreenPathAlias`, and `content` URLs.
 
+use std::sync::Arc;
+
 use indexmap::IndexMap;
 use moqui_lib::object::{is_empty, to_plain_string, Value};
 
+use super::definition::{ScreenDef, TransitionDef};
 use super::render::parameter_value;
 use super::sri::{self, active_screen_path, NodeLit};
 use super::url::{encode_path, resolve_screen_path, ScreenUrlInfo};
@@ -44,12 +47,21 @@ pub struct UrlInstance {
     pub is_transition: bool,
     /// The HTTP method of the transition, lower case, empty for a screen.
     pub transition_method: String,
-    /// The screens of the resolved path and the transition it ends on, for `getDisableLink`.
-    pub path_defs: Vec<std::sync::Arc<super::definition::ScreenDef>>,
-    pub transition: Option<super::definition::TransitionDef>,
+    /// The resolved path, shared with the URL cache: its screens and the transition it ends on, for `getDisableLink`.
+    pub info: Option<Arc<ScreenUrlInfo>>,
 }
 
 impl UrlInstance {
+    /// The screens of the resolved path, empty when the path did not resolve.
+    pub fn path_defs(&self) -> &[Arc<ScreenDef>] {
+        self.info.as_ref().map_or(&[], |info| info.path_defs.as_slice())
+    }
+
+    /// The transition the resolved path ends on.
+    pub fn transition(&self) -> Option<&TransitionDef> {
+        self.info.as_ref()?.transition(None)
+    }
+
     /// The path with no host.
     pub fn path(&self) -> String {
         match &self.plain {
@@ -120,11 +132,7 @@ impl UrlInstance {
         if !self.exists {
             return Ok(true);
         }
-        if let Some(condition) = self
-            .transition
-            .as_ref()
-            .and_then(|transition| transition.condition.as_ref())
-        {
+        if let Some(condition) = self.transition().and_then(|transition| transition.condition.as_ref()) {
             if !super::render::check_condition(condition)? {
                 return Ok(true);
             }
@@ -134,23 +142,24 @@ impl UrlInstance {
 
     /// `isPermitted`: each screen of the path with its parents on the artifact stack, and the transition with its action.
     fn permitted(&self) -> bool {
-        if self.path_defs.is_empty() {
+        let path_defs = self.path_defs();
+        let Some(last) = path_defs.len().checked_sub(1) else {
             return true;
-        }
-        let last = self.path_defs.len() - 1;
+        };
+        let transition = self.transition();
         let mut frames = super::render::Frames::default();
-        for (index, def) in self.path_defs.iter().enumerate() {
-            if index == last && self.transition.is_none() {
+        for (index, def) in path_defs.iter().enumerate() {
+            if index == last && transition.is_none() {
                 return sri::screen_permitted(def);
             }
             if frames.push_screen(def, false).is_err() {
                 return false;
             }
         }
-        let Some(transition) = &self.transition else {
+        let Some(transition) = transition else {
             return true;
         };
-        let target = &self.path_defs[last];
+        let target = &path_defs[last];
         let required = target.authentication == super::definition::Authentication::Required;
         if required && crate::user::current_username().ok().flatten().is_none() {
             return false;
@@ -246,21 +255,32 @@ pub fn current_url(state: &RenderState) -> Result<UrlInstance, Error> {
 }
 
 fn resolve_names(state: &RenderState, names: Vec<String>) -> Result<UrlInstance, Error> {
+    resolve_names_at(state, names, state.url_info.last_standalone)
+}
+
+/// A URL for path names from the root, resolved with `last_standalone`. That only changes which screens render, so
+/// the URL is the same for any value, and the menu reads its `menu_image` from the shared walk.
+pub(super) fn resolve_names_at(
+    state: &RenderState,
+    names: Vec<String>,
+    last_standalone: i32,
+) -> Result<UrlInstance, Error> {
     let root = state
         .url_info
         .path_defs
         .first()
-        .map(|def| def.location.clone())
+        .map(|def| def.location.as_str())
         .ok_or_else(|| Error::new("no root screen"))?;
+    let resolved = ScreenUrlInfo::resolve(&state.factory, root, &names, last_standalone);
     let mut url = UrlInstance {
-        names: names.clone(),
         minimal_names: names.clone(),
+        names,
         base: web::base_url(),
         exists: true,
         read_only: true,
         ..UrlInstance::default()
     };
-    match ScreenUrlInfo::resolve(&state.factory, &root, &names, state.url_info.last_standalone) {
+    match resolved {
         Ok(info) => {
             url.names = info.full_path.clone();
             url.minimal_names = if info.always_use_full_path {
@@ -276,7 +296,6 @@ fn resolve_names(state: &RenderState, names: Vec<String>) -> Result<UrlInstance,
                     }
                 }
             }
-            url.path_defs.clone_from(&info.path_defs);
             if let Some(transition) = info.transition(None) {
                 url.is_transition = true;
                 url.transition_method = transition.method.to_ascii_lowercase();
@@ -304,11 +323,11 @@ fn resolve_names(state: &RenderState, names: Vec<String>) -> Result<UrlInstance,
                         }
                     }
                 }
-                url.transition = Some(transition.clone());
             } else if info.target_transition_name.is_some() {
                 url.is_transition = true;
                 url.read_only = false;
             }
+            url.info = Some(info);
         }
         Err(err) if err.kind() == ErrorKind::NotFound => url.exists = false,
         Err(err) => return Err(err),
@@ -323,7 +342,7 @@ fn service_parameter_names(service: &str) -> Vec<String> {
     }
     crate::service::call::entity_auto_noun(service)
         .and_then(|entity| super::form::entity_shape(&entity).ok())
-        .map(|shape| shape.pk_fields)
+        .map(|shape| shape.pk_fields.clone())
         .unwrap_or_default()
 }
 

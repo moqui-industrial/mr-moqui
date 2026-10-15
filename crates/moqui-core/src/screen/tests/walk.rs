@@ -21,7 +21,7 @@ use super::{fixture_root, webroot};
 use crate::context::{Error, ErrorKind, ExecutionContextFactory};
 use crate::screen::{ScreenFacade, ScreenUrlInfo};
 
-fn walk(factory: &ExecutionContextFactory, path: &str) -> Result<ScreenUrlInfo, Error> {
+fn walk(factory: &ExecutionContextFactory, path: &str) -> Result<std::sync::Arc<ScreenUrlInfo>, Error> {
     ScreenUrlInfo::parse(factory, &fixture_root(), path, 0)
 }
 
@@ -115,6 +115,11 @@ fn a_query_tail_becomes_inline_parameters() {
     assert_eq!(info.inline_parameters.get("a").map(String::as_str), Some("1"));
     assert_eq!(info.inline_parameters.get("b").map(String::as_str), Some("x y"));
     assert_eq!(info.target_screen.screen_name, "Sub");
+    // The parameters are on this result only: the cached walk of the same path is shared and stays without them.
+    let plain = walk(context.factory(), "/Sub").unwrap();
+    assert!(plain.inline_parameters.is_empty());
+    let again = walk(context.factory(), "/Sub").unwrap();
+    assert!(std::sync::Arc::ptr_eq(&plain, &again));
 }
 
 #[test]
