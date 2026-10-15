@@ -352,7 +352,8 @@ mod tests {
 
     #[test]
     fn refill_sql_is_insert_on_conflict_or_for_update() {
-        let framework = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
+        let framework =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
         let conf = moqui_lib::node::MNode::parse_file(framework.join("conf/MoquiDefaultConf.xml")).unwrap();
         let model = moqui_db::model::EntityModel::load_directory(&conf, &framework.join("entity")).unwrap();
         let dialects = moqui_db::dialect::Dialects::load(&conf).unwrap();

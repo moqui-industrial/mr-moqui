@@ -43,15 +43,9 @@ pub fn generate_types(runtime: &Path, framework: &Path) -> Result<TypeFiles, Err
     };
     let facade = open_entity_facade(framework, Arc::new(ModelOnly), pool)?;
     attach(&factory, facade);
-    // `screen_files` takes the files below a directory named `screen`, so the framework's own screens are found from its root.
-    let roots: Vec<PathBuf> = [
-        framework.to_path_buf(),
-        runtime.join("base-component"),
-        runtime.join("component"),
-    ]
-    .into_iter()
-    .filter(|path| path.exists())
-    .collect();
+    // `screen_files` takes the files below a directory named `screen`. `component_roots` includes the framework
+    // directory only when it is not already inside the runtime component directories.
+    let roots = crate::qvt_report::component_roots(runtime, framework);
     moqui_core::typegen::generate(&factory, &screen_files(&roots)).map_err(|err| Error::new(err.to_string()))
 }
 

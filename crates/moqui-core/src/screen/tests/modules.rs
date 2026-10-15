@@ -378,10 +378,6 @@ fn every_base_component_screen_generates_in_all_three_modes() {
         &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component"),
         &mut files,
     );
-    collect(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../framework/screen"),
-        &mut files,
-    );
     assert!(files.len() > 100, "{}", files.len());
     let mut failures = Vec::new();
     let mut units = 0;

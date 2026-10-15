@@ -106,7 +106,7 @@ fn mantle_search_callers_on_the_search_facade() {
         eprintln!("skipping: runtime/component/mantle-udm and mantle-usl are not present");
         return;
     }
-    let framework = repo.join("framework");
+    let framework = repo.join("runtime/base-component/framework");
     // Short paths: the Postgres socket path must stay under 108 bytes.
     let runtime = temp_dir("msr");
     let cluster_dir = runtime.join("db");

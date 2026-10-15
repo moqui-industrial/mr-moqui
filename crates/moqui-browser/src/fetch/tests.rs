@@ -72,7 +72,12 @@ fn remote_rest_runs_on_the_installed_sender_and_a_failure_rolls_back_the_write()
         urls: Mutex::new(Vec::new()),
     });
     outbound::install_http_sender(fake.clone());
-    let browser = Browser::open(&runtime, &crate_dir.join("../../framework"), ":memory:").unwrap();
+    let browser = Browser::open(
+        &runtime,
+        &crate_dir.join("../../runtime/base-component/framework"),
+        ":memory:",
+    )
+    .unwrap();
     browser.check_tables(&[]).unwrap();
 
     let echoed = browser

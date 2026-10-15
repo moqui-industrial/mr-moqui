@@ -41,7 +41,7 @@ mod tests {
         provide_libxml2_soname(&dir);
         let (cluster, driver) = EmbeddedCluster::start(&dir, 20).unwrap();
         let driver: Arc<dyn DbDriver> = Arc::new(driver);
-        let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
+        let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
         let facade = open_entity_facade(
             &framework,
             driver,

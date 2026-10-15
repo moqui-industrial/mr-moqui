@@ -51,7 +51,7 @@ mod tests {
         let (overlay_cluster, overlay_driver) = EmbeddedCluster::start(&overlay_dir, 20).unwrap();
         let main_driver: Arc<dyn DbDriver> = Arc::new(main_driver);
         let overlay_driver: Arc<dyn DbDriver> = Arc::new(overlay_driver);
-        let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
+        let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
         let facade = open_entity_facade(&framework, Arc::clone(&main_driver), test_pool()).unwrap();
 
         let err = enter_sim(&facade).unwrap_err();
@@ -79,7 +79,7 @@ mod tests {
         provide_libxml2_soname(&main_dir);
         let (main_cluster, main_driver) = EmbeddedCluster::start(&main_dir, 20).unwrap();
         let main_driver: Arc<dyn DbDriver> = Arc::new(main_driver);
-        let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
+        let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
         let facade = open_entity_facade(&framework, Arc::clone(&main_driver), test_pool()).unwrap();
         facade.check_tables(&["moqui.test.TestEntity"]).unwrap();
 

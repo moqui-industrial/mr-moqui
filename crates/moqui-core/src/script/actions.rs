@@ -24,8 +24,8 @@ use rquickjs::{Ctx, Object};
 use super::walker::{self, Walk};
 use crate::context::Error;
 
-const TEMPLATE_SUPPORT: &str = include_str!("../../../../framework/template/TemplateSupport.js");
-const XML_ACTIONS: &str = include_str!("../../../../framework/template/XmlActions.js");
+const TEMPLATE_SUPPORT: &str = include_str!("../../../../runtime/base-component/framework/template/TemplateSupport.js");
+const XML_ACTIONS: &str = include_str!("../../../../runtime/base-component/framework/template/XmlActions.js");
 
 /// Set this to add a comment naming the XML element before each generated statement.
 const DEBUG_ENV: &str = "MOQUI_ACTIONS_DEBUG";

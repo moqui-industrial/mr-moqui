@@ -37,7 +37,7 @@ pub(super) fn discover(runtime_dir: &Path, framework_dir: &Path, conf: &MNode) -
         for child in list.children() {
             match child.name().as_str() {
                 "component" => found.insert(component_from_element(runtime_dir, &child)?)?,
-                "component-dir" => add_component_dir(&mut found, runtime_dir, &child)?,
+                "component-dir" => add_component_dir(&mut found, runtime_dir, &child, framework_dir)?,
                 _ => {}
             }
         }
@@ -45,7 +45,7 @@ pub(super) fn discover(runtime_dir: &Path, framework_dir: &Path, conf: &MNode) -
     sort_components(found.items)
 }
 
-fn add_component_dir(found: &mut ComponentSet, base: &Path, node: &MNode) -> Result<(), Error> {
+fn add_component_dir(found: &mut ComponentSet, base: &Path, node: &MNode, framework_dir: &Path) -> Result<(), Error> {
     let location = node
         .attribute("location")
         .filter(|value| !value.is_empty())
@@ -67,7 +67,7 @@ fn add_component_dir(found: &mut ComponentSet, base: &Path, node: &MNode) -> Res
         for child in list.children() {
             match child.name().as_str() {
                 "component" => found.insert(component_from_element(&dir, &child)?)?,
-                "component-dir" => add_component_dir(found, &dir, &child)?,
+                "component-dir" => add_component_dir(found, &dir, &child, framework_dir)?,
                 _ => {}
             }
         }
@@ -90,9 +90,36 @@ fn add_component_dir(found: &mut ComponentSet, base: &Path, node: &MNode) -> Res
     }
     entries.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
     for path in entries {
-        found.insert(component_from_dir(&path, None)?)?;
+        let info = component_from_dir(&path, None)?;
+        // The framework component is registered from the boot directory before this scan. base-component
+        // contains that directory, and a symlink in a test runtime is the same place with another path.
+        // Keep the boot directory so MOQUI_FRAMEWORK is not replaced by the copy inside the runtime.
+        if found
+            .get(&info.name)
+            .is_some_and(|existing| same_directory(&existing.location, framework_dir))
+        {
+            if !same_directory(&info.location, framework_dir) {
+                tracing::info!(
+                    component = %info.name,
+                    location = %info.location.display(),
+                    "Keeping the framework directory; the component directory has another copy"
+                );
+            }
+            continue;
+        }
+        found.insert(info)?;
     }
     Ok(())
+}
+
+fn same_directory(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
 
 fn component_from_element(base: &Path, node: &MNode) -> Result<ComponentInfo, Error> {
@@ -173,6 +200,10 @@ struct ComponentSet {
 }
 
 impl ComponentSet {
+    fn get(&self, name: &str) -> Option<&ComponentInfo> {
+        self.index.get(name).map(|&slot| &self.items[slot])
+    }
+
     fn insert(&mut self, info: ComponentInfo) -> Result<(), Error> {
         if let Some(&slot) = self.index.get(&info.name) {
             tracing::warn!(

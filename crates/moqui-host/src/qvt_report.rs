@@ -39,6 +39,16 @@ impl DbDriver for ModelOnly {
     }
 }
 
+/// Component directories whose screens are scanned. The framework directory is included when it sits outside
+/// `base-component` and `component`, so an external `MOQUI_FRAMEWORK` is scanned once along with the runtime components.
+pub(crate) fn component_roots(runtime: &Path, framework: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![runtime.join("base-component"), runtime.join("component")];
+    if !roots.iter().any(|root| framework.starts_with(root)) {
+        roots.insert(0, framework.to_path_buf());
+    }
+    roots.into_iter().filter(|path| path.exists()).collect()
+}
+
 /// Screen files below `roots`: `*.xml` in a `screen` directory whose root element is `screen`.
 pub(crate) fn screen_files(roots: &[PathBuf]) -> Vec<PathBuf> {
     let mut found = Vec::new();
@@ -66,6 +76,7 @@ pub(crate) fn screen_files(roots: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
     found.sort();
+    found.dedup();
     found
 }
 
@@ -86,19 +97,14 @@ pub fn qvt_static_reports(runtime: &Path, framework: &Path) -> Result<Vec<FileRe
     };
     let facade = open_entity_facade(framework, Arc::new(ModelOnly), pool)?;
     attach(&factory, facade);
-    let roots: Vec<PathBuf> = [
-        framework.join("screen"),
-        runtime.join("base-component"),
-        runtime.join("component"),
-    ]
-    .into_iter()
-    .filter(|path| path.exists())
-    .collect();
-    let files: Vec<String> = screen_files(&roots)
+    let roots = component_roots(runtime, framework);
+    let mut files: Vec<String> = screen_files(&roots)
         .into_iter()
         .filter_map(|path| std::fs::canonicalize(path).ok())
         .map(|path| path.to_string_lossy().into_owned())
         .collect();
+    files.sort();
+    files.dedup();
     static_reports_for_files(&factory, &files).map_err(|err| Error::new(err.to_string()))
 }
 

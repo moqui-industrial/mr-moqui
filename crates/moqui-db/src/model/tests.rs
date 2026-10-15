@@ -6,8 +6,8 @@ fn workspace_root() -> std::path::PathBuf {
 
 fn framework_model() -> EntityModel {
     let root = workspace_root();
-    let conf = MNode::parse_file(root.join("framework/conf/MoquiDefaultConf.xml")).unwrap();
-    EntityModel::load_directory(&conf, &root.join("framework/entity")).unwrap()
+    let conf = MNode::parse_file(root.join("runtime/base-component/framework/conf/MoquiDefaultConf.xml")).unwrap();
+    EntityModel::load_directory(&conf, &root.join("runtime/base-component/framework/entity")).unwrap()
 }
 
 #[test]
@@ -111,8 +111,8 @@ fn artifact_authz_check_view_keeps_members() {
 #[test]
 fn extend_entity_adds_a_field() {
     let root = workspace_root();
-    let conf = MNode::parse_file(root.join("framework/conf/MoquiDefaultConf.xml")).unwrap();
-    let mut documents = entity_documents(&root.join("framework/entity")).unwrap();
+    let conf = MNode::parse_file(root.join("runtime/base-component/framework/conf/MoquiDefaultConf.xml")).unwrap();
+    let mut documents = entity_documents(&root.join("runtime/base-component/framework/entity")).unwrap();
     documents.push(
         MNode::parse_text(
             "inline-extend.xml",

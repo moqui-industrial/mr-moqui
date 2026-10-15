@@ -62,7 +62,7 @@ fn an_external_postgres_from_the_conf_is_loaded_and_no_postmaster_starts() {
     ] {
         moqui_lib::env::set_property(name, value.to_string());
     }
-    let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
+    let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
     let report = load_data(&runtime, &framework, &cluster_dir, &LoadFlags::default()).unwrap();
     assert!(report.enumeration > 0, "enumeration {}", report.enumeration);
     assert!(

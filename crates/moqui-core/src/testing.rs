@@ -128,7 +128,7 @@ pub(crate) fn open_two_groups() -> EntityFacade {
 }
 
 pub(crate) fn framework_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework")
 }
 
 struct MemDriver {

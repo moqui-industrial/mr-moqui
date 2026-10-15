@@ -442,7 +442,7 @@ fn cluster_tls_pair_is_stable_and_a_cert_without_a_key_fails() {
     let before = repo_env_stamp(&root);
     let temp = TempRuntime::new("cluster-cert");
     std::os::unix::fs::symlink(root.join("runtime/base-component"), temp.path().join("base-component")).unwrap();
-    let framework = root.join("framework");
+    let framework = root.join("runtime/base-component/framework");
     let factory = ExecutionContextFactory::boot_with_framework(temp.path(), &framework).unwrap();
     let cert = env::get_prop_or_env("cluster_tls_cert");
     let key = env::get_prop_or_env("cluster_tls_key");
@@ -557,7 +557,10 @@ impl ConfGuard {
 
 impl Drop for ConfGuard {
     fn drop(&mut self) {
-        for relative in ["framework/conf/MoquiDefaultConf.xml", "runtime/conf/MoquiDevConf.xml"] {
+        for relative in [
+            "runtime/base-component/framework/conf/MoquiDefaultConf.xml",
+            "runtime/conf/MoquiDevConf.xml",
+        ] {
             let Ok(node) = MNode::parse_file(self.root.join(relative)) else {
                 continue;
             };

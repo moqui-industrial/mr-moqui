@@ -2543,7 +2543,10 @@ mod tests {
                 ("emailTemplateId", "SCREEN_RENDER"),
                 ("emailServerId", "SYSTEM"),
                 ("emailTypeEnumId", "EMT_SCREEN_RENDER"),
-                ("bodyScreenLocation", "classpath://screen/ScreenRenderEmail.xml"),
+                (
+                    "bodyScreenLocation",
+                    "component://framework/screen/ScreenRenderEmail.xml",
+                ),
                 ("webappName", "webroot"),
                 ("fromAddress", "reports@example.com"),
                 ("subject", "${title}"),
@@ -2594,7 +2597,10 @@ mod tests {
             &[
                 ("emailTemplateId", "SCREEN_RENDER"),
                 ("emailServerId", "SYSTEM"),
-                ("bodyScreenLocation", "classpath://screen/ScreenRenderEmail.xml"),
+                (
+                    "bodyScreenLocation",
+                    "component://framework/screen/ScreenRenderEmail.xml",
+                ),
                 ("fromAddress", "reports@example.com"),
                 ("subject", "${title}"),
             ],
@@ -2640,7 +2646,10 @@ mod tests {
             &[
                 ("emailTemplateId", "SCREEN_RENDER"),
                 ("emailServerId", "SYSTEM"),
-                ("bodyScreenLocation", "classpath://screen/ScreenRenderEmail.xml"),
+                (
+                    "bodyScreenLocation",
+                    "component://framework/screen/ScreenRenderEmail.xml",
+                ),
                 ("fromAddress", "reports@example.com"),
                 ("subject", "${title}"),
             ],

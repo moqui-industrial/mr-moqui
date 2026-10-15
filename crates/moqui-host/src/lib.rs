@@ -48,7 +48,7 @@ pub fn serve() -> Result<(), moqui_lib::error::Error> {
     #[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
     {
         let runtime = std::env::var_os("MOQUI_RUNTIME").map_or_else(|| std::path::PathBuf::from("runtime"), Into::into);
-        let framework = std::env::var_os("MOQUI_FRAMEWORK").map_or_else(|| runtime.join("../framework"), Into::into);
+        let framework = framework_from_env(&runtime);
         let cluster = runtime.join("db/embedded");
         logging::install();
         let server = start_server_in(runtime, framework, cluster, ListenBind::Property)?;
@@ -286,7 +286,7 @@ fn dispatch_load(flags: &LoadFlags) -> Result<LoadReport, moqui_lib::error::Erro
     logging::install();
     // Like Moqui's `moqui.runtime`: an install runs from its own directory unless told otherwise.
     let runtime = std::env::var_os("MOQUI_RUNTIME").map_or_else(|| std::path::PathBuf::from("runtime"), Into::into);
-    let framework = std::env::var_os("MOQUI_FRAMEWORK").map_or_else(|| runtime.join("../framework"), Into::into);
+    let framework = framework_from_env(&runtime);
     let cluster = runtime.join("db/embedded");
     load_data(&runtime, &framework, &cluster, flags)
 }
@@ -302,7 +302,7 @@ fn log_files_attached(runtime_dir: &std::path::Path) {
 fn dispatch_types(args: &[String]) -> Result<(), moqui_lib::error::Error> {
     logging::install();
     let runtime = std::env::var_os("MOQUI_RUNTIME").map_or_else(|| std::path::PathBuf::from("runtime"), Into::into);
-    let framework = std::env::var_os("MOQUI_FRAMEWORK").map_or_else(|| runtime.join("../framework"), Into::into);
+    let framework = framework_from_env(&runtime);
     let out = types::parse_types_args(args, &runtime)?;
     println!("{}", types::write_types(&runtime, &framework, &out)?);
     Ok(())
@@ -328,7 +328,7 @@ fn dispatch_lint(path: Option<&str>) -> Result<(), moqui_lib::error::Error> {
 /// report is information and no screen is marked yet.
 fn dispatch_lint_qvt_static(report: Option<&str>) -> Result<(), moqui_lib::error::Error> {
     let runtime = std::env::var_os("MOQUI_RUNTIME").map_or_else(|| std::path::PathBuf::from("runtime"), Into::into);
-    let framework = std::env::var_os("MOQUI_FRAMEWORK").map_or_else(|| runtime.join("../framework"), Into::into);
+    let framework = framework_from_env(&runtime);
     let reports = qvt_report::qvt_static_reports(&runtime, &framework)?;
     let text = qvt_report::render_reports(&reports);
     match report {
@@ -342,15 +342,8 @@ fn dispatch_lint_qvt_static(report: Option<&str>) -> Result<(), moqui_lib::error
 
 fn dispatch_lint_screens(report: Option<&str>) -> Result<(), moqui_lib::error::Error> {
     let runtime = std::env::var_os("MOQUI_RUNTIME").map_or_else(|| std::path::PathBuf::from("runtime"), Into::into);
-    let framework = std::env::var_os("MOQUI_FRAMEWORK").map_or_else(|| runtime.join("../framework"), Into::into);
-    let roots: Vec<std::path::PathBuf> = [
-        framework.join("screen"),
-        runtime.join("base-component"),
-        runtime.join("component"),
-    ]
-    .into_iter()
-    .filter(|path| path.exists())
-    .collect();
+    let framework = framework_from_env(&runtime);
+    let roots = qvt_report::component_roots(&runtime, &framework);
     let screens = moqui_core::script::screen_lint::lint_screens(&roots)
         .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
     let text = screens.render();
@@ -1413,6 +1406,11 @@ fn configured_service_paths(
     Ok(paths)
 }
 
+/// The framework component beside `tools` and `webroot`, unless `MOQUI_FRAMEWORK` names another directory.
+fn framework_from_env(runtime: &std::path::Path) -> std::path::PathBuf {
+    std::env::var_os("MOQUI_FRAMEWORK").map_or_else(|| moqui_core::context::default_framework_dir(runtime), Into::into)
+}
+
 fn resolve_framework_location(
     framework_dir: &std::path::Path,
     location: &str,
@@ -1422,6 +1420,9 @@ fn resolve_framework_location(
         .or_else(|| location.strip_prefix("classpath:"))
     {
         return Ok(framework_dir.join(rest.trim_start_matches('/')));
+    }
+    if let Some(rest) = framework_component_path(location) {
+        return Ok(framework_dir.join(rest));
     }
     if let Some(rest) = location.strip_prefix("file:") {
         let rest = rest.strip_prefix("//").unwrap_or(rest);
@@ -1433,6 +1434,25 @@ fn resolve_framework_location(
         )));
     }
     Ok(std::path::PathBuf::from(location))
+}
+
+/// `component://framework/service|entity|data|screen|template/...`, the paths that used to be `classpath://`.
+fn framework_component_path(location: &str) -> Option<&str> {
+    let rest = location
+        .strip_prefix("component://")
+        .or_else(|| location.strip_prefix("component:"))?
+        .trim_start_matches('/');
+    let (name, path) = rest.split_once('/')?;
+    if name != "framework" {
+        return None;
+    }
+    let path = path.trim_start_matches('/');
+    let directory = path.split('/').next().unwrap_or("");
+    if matches!(directory, "service" | "entity" | "data" | "screen" | "template") {
+        Some(path)
+    } else {
+        None
+    }
 }
 
 /// theseus 18.6.0 needs `libxml2.so.2`. This host may only ship `libxml2.so.16`. A caller that starts

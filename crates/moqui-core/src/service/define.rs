@@ -1239,7 +1239,8 @@ mod tests {
 
     #[test]
     fn email_services_are_mail_by_name_with_no_script_location() {
-        let service_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework/service/org/moqui");
+        let service_dir =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework/service/org/moqui");
         let paths = [
             service_dir.join("EmailServices.xml"),
             service_dir.join("impl/EmailServices.xml"),

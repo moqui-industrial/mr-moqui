@@ -434,7 +434,7 @@
             JBoss (separate objects): "java:comp/UserTransaction" and "java:comp/TransactionManager" -->
     </transaction-facade>
 
-    <resource-facade xml-actions-template-location="classpath://template/XmlActions.groovy.ftl">
+    <resource-facade xml-actions-template-location="component://framework/template/XmlActions.groovy.ftl">
         <!-- resource reference class needs to implement the org.moqui.resource.ResourceReference interface -->
         <resource-reference scheme="http" class="org.moqui.resource.UrlResourceReference"/>
         <resource-reference scheme="https" class="org.moqui.resource.UrlResourceReference"/>
@@ -523,29 +523,29 @@
         <service-type name="remote-rest" runner-class="org.moqui.impl.service.runner.RemoteRestServiceRunner"/>
 
         <!-- These are not needed for running classpath services, are for service reference (known services) -->
-        <service-file location="classpath://service/org/moqui/EmailServices.xml"/>
-        <service-file location="classpath://service/org/moqui/EntityServices.xml"/>
-        <service-file location="classpath://service/org/moqui/ImageServices.xml"/>
-        <service-file location="classpath://service/org/moqui/SmsServices.xml"/>
-        <service-file location="classpath://service/org/moqui/impl/BasicServices.xml"/>
-        <service-file location="classpath://service/org/moqui/impl/ElFinderServices.xml"/>
-        <service-file location="classpath://service/org/moqui/impl/EmailServices.xml"/>
-        <service-file location="classpath://service/org/moqui/impl/EntityServices.xml"/>
-        <service-file location="classpath://service/org/moqui/impl/EntitySyncServices.xml"/>
-        <service-file location="classpath://service/org/moqui/impl/GoogleServices.xml"/>
-        <service-file location="classpath://service/org/moqui/impl/ImageServices.xml"/>
-        <service-file location="classpath://service/org/moqui/impl/InstanceServices.xml"/>
-        <service-file location="classpath://service/org/moqui/impl/PrintServices.xml"/>
-        <service-file location="classpath://service/org/moqui/impl/ScreenServices.xml"/>
-        <service-file location="classpath://service/org/moqui/impl/ServerServices.xml"/>
-        <service-file location="classpath://service/org/moqui/impl/ServiceServices.xml"/>
-        <service-file location="classpath://service/org/moqui/impl/SpreadsheetServices.xml"/>
-        <service-file location="classpath://service/org/moqui/impl/SystemMessageServices.xml"/>
-        <service-file location="classpath://service/org/moqui/impl/UserServices.xml"/>
-        <service-file location="classpath://service/org/moqui/impl/WikiServices.xml"/>
-        <service-file location="classpath://service/org/moqui/search/SearchServices.xml"/>
-        <service-file location="classpath://service/org/moqui/sftp/SftpMessageServices.xml"/>
-        <service-file location="classpath://service/org/moqui/sso/AuthServices.xml"/>
+        <service-file location="component://framework/service/org/moqui/EmailServices.xml"/>
+        <service-file location="component://framework/service/org/moqui/EntityServices.xml"/>
+        <service-file location="component://framework/service/org/moqui/ImageServices.xml"/>
+        <service-file location="component://framework/service/org/moqui/SmsServices.xml"/>
+        <service-file location="component://framework/service/org/moqui/impl/BasicServices.xml"/>
+        <service-file location="component://framework/service/org/moqui/impl/ElFinderServices.xml"/>
+        <service-file location="component://framework/service/org/moqui/impl/EmailServices.xml"/>
+        <service-file location="component://framework/service/org/moqui/impl/EntityServices.xml"/>
+        <service-file location="component://framework/service/org/moqui/impl/EntitySyncServices.xml"/>
+        <service-file location="component://framework/service/org/moqui/impl/GoogleServices.xml"/>
+        <service-file location="component://framework/service/org/moqui/impl/ImageServices.xml"/>
+        <service-file location="component://framework/service/org/moqui/impl/InstanceServices.xml"/>
+        <service-file location="component://framework/service/org/moqui/impl/PrintServices.xml"/>
+        <service-file location="component://framework/service/org/moqui/impl/ScreenServices.xml"/>
+        <service-file location="component://framework/service/org/moqui/impl/ServerServices.xml"/>
+        <service-file location="component://framework/service/org/moqui/impl/ServiceServices.xml"/>
+        <service-file location="component://framework/service/org/moqui/impl/SpreadsheetServices.xml"/>
+        <service-file location="component://framework/service/org/moqui/impl/SystemMessageServices.xml"/>
+        <service-file location="component://framework/service/org/moqui/impl/UserServices.xml"/>
+        <service-file location="component://framework/service/org/moqui/impl/WikiServices.xml"/>
+        <service-file location="component://framework/service/org/moqui/search/SearchServices.xml"/>
+        <service-file location="component://framework/service/org/moqui/sftp/SftpMessageServices.xml"/>
+        <service-file location="component://framework/service/org/moqui/sso/AuthServices.xml"/>
     </service-facade>
 
     <!-- One search backend. With no postgres element the postgres backend uses the search schema of the entity Postgres;
@@ -741,29 +741,29 @@
              There is no reliable way to search within directories on the classpath (if in a file or jar is fine, but
              not in a war/ear file or from special ClassLoaders) -->
         <!-- in framework/entity -->
-        <load-entity location="classpath://entity/BasicEntities.xml"/>
-        <load-entity location="classpath://entity/EntityEntities.xml"/>
-        <load-entity location="classpath://entity/OlapEntities.xml"/>
-        <load-entity location="classpath://entity/ResourceEntities.xml"/>
-        <load-entity location="classpath://entity/ScreenEntities.xml"/>
-        <load-entity location="classpath://entity/Screen.eecas.xml"/>
-        <load-entity location="classpath://entity/SecurityEntities.xml"/>
-        <load-entity location="classpath://entity/Security.eecas.xml"/>
-        <load-entity location="classpath://entity/ServerEntities.xml"/>
-        <load-entity location="classpath://entity/ServiceEntities.xml"/>
-        <load-entity location="classpath://entity/TestEntities.xml"/>
-        <load-entity location="classpath://entity/LlmEntities.xml"/>
-        <load-entity location="classpath://entity/A2AEntities.xml"/>
+        <load-entity location="component://framework/entity/BasicEntities.xml"/>
+        <load-entity location="component://framework/entity/EntityEntities.xml"/>
+        <load-entity location="component://framework/entity/OlapEntities.xml"/>
+        <load-entity location="component://framework/entity/ResourceEntities.xml"/>
+        <load-entity location="component://framework/entity/ScreenEntities.xml"/>
+        <load-entity location="component://framework/entity/Screen.eecas.xml"/>
+        <load-entity location="component://framework/entity/SecurityEntities.xml"/>
+        <load-entity location="component://framework/entity/Security.eecas.xml"/>
+        <load-entity location="component://framework/entity/ServerEntities.xml"/>
+        <load-entity location="component://framework/entity/ServiceEntities.xml"/>
+        <load-entity location="component://framework/entity/TestEntities.xml"/>
+        <load-entity location="component://framework/entity/LlmEntities.xml"/>
+        <load-entity location="component://framework/entity/A2AEntities.xml"/>
         <!-- in framework/data -->
-        <load-data location="classpath://data/CommonL10nData.xml"/>
-        <load-data location="classpath://data/CurrencyData.xml"/>
-        <load-data location="classpath://data/EntityTypeData.xml"/>
-        <load-data location="classpath://data/GeoCountryData.xml"/>
-        <load-data location="classpath://data/SecurityTypeData.xml"/>
-        <load-data location="classpath://data/LlmTypeData.xml"/>
-        <load-data location="classpath://data/UnitData.xml"/>
-        <load-data location="classpath://data/MoquiSetupData.xml"/>
-        <load-data location="classpath://data/SftpDemoData.xml"/>
+        <load-data location="component://framework/data/CommonL10nData.xml"/>
+        <load-data location="component://framework/data/CurrencyData.xml"/>
+        <load-data location="component://framework/data/EntityTypeData.xml"/>
+        <load-data location="component://framework/data/GeoCountryData.xml"/>
+        <load-data location="component://framework/data/SecurityTypeData.xml"/>
+        <load-data location="component://framework/data/LlmTypeData.xml"/>
+        <load-data location="component://framework/data/UnitData.xml"/>
+        <load-data location="component://framework/data/MoquiSetupData.xml"/>
+        <load-data location="component://framework/data/SftpDemoData.xml"/>
     </entity-facade>
     <database-list>
         <dictionary-type type="id" java-type="java.lang.String" default-sql-type="VARCHAR(40)"/>

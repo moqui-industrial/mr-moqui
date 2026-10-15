@@ -101,10 +101,16 @@ pub struct BootOptions {
     pub executor: Executor,
 }
 
+/// The framework component beside `tools` and `webroot`, when `MOQUI_FRAMEWORK` is not set.
+#[must_use]
+pub fn default_framework_dir(runtime_dir: &Path) -> PathBuf {
+    runtime_dir.join("base-component/framework")
+}
+
 impl ExecutionContextFactory {
     pub fn boot(runtime_dir: impl AsRef<Path>) -> Result<Arc<Self>, Error> {
         let runtime_dir = canonicalize_dir(runtime_dir.as_ref())?;
-        let framework_dir = canonicalize_dir(&runtime_dir.join("../framework"))?;
+        let framework_dir = canonicalize_dir(&default_framework_dir(&runtime_dir))?;
         if !framework_dir.join("component.xml").is_file() {
             return Err(Error::new(format!(
                 "framework directory {} has no component.xml",

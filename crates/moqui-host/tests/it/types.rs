@@ -63,7 +63,11 @@ fn assert_tsc(dir: &Path, what: &str) {
 
 #[test]
 fn declarations_for_framework_and_tools_pass_tsc() {
-    let files = generate_types(&repo().join("runtime"), &repo().join("framework")).unwrap();
+    let files = generate_types(
+        &repo().join("runtime"),
+        &repo().join("runtime/base-component/framework"),
+    )
+    .unwrap();
     let get = |name: &str| files.get(name).unwrap_or_else(|| panic!("no {name}"));
 
     // Framework entities, with the dictionary types.
@@ -107,9 +111,9 @@ fn declarations_for_framework_and_tools_pass_tsc() {
             .contains("\"component://tools/screen/System.xml\": MoquiScreenPackage<MoquiScreen.tools_screen_System,"),
         "{screens}"
     );
-    // Framework screens load from the classpath.
+    // Framework screens load from the framework component.
     assert!(
-        screens.contains("\"classpath://screen/NotificationEmail.xml\":"),
+        screens.contains("\"component://framework/screen/NotificationEmail.xml\":"),
         "{screens}"
     );
 

@@ -34,7 +34,9 @@ pub use conf::{load_merged_conf, merge_component_confs, merge_conf};
 pub use error::{Error, ErrorKind};
 #[cfg(feature = "cluster-tls")]
 pub(crate) use factory::standard_base64;
-pub use factory::{BootOptions, ContextGuard, ExecutionContext, ExecutionContextFactory, Executor};
+pub use factory::{
+    default_framework_dir, BootOptions, ContextGuard, ExecutionContext, ExecutionContextFactory, Executor,
+};
 pub(crate) use hits::Hit;
 pub use locate::{framework_dir, locate};
 pub use message::{ErrorMark, MessageFacade, ValidationError};
@@ -66,7 +68,10 @@ mod tests {
 
     impl Drop for EnvGuard {
         fn drop(&mut self) {
-            for relative in ["framework/conf/MoquiDefaultConf.xml", "runtime/conf/MoquiDevConf.xml"] {
+            for relative in [
+                "runtime/base-component/framework/conf/MoquiDefaultConf.xml",
+                "runtime/conf/MoquiDevConf.xml",
+            ] {
                 let Ok(node) = MNode::parse_file(self.root.join(relative)) else {
                     continue;
                 };
@@ -130,11 +135,19 @@ mod tests {
             r#"<moqui-conf><default-property name="instance_purpose" value="dev"/></moqui-conf>"#,
         )
         .unwrap();
-        let none = super::merge_component_confs(&root.join("framework"), runtime.path(), &[root.join("framework")]);
+        let none = super::merge_component_confs(
+            &root.join("runtime/base-component/framework"),
+            runtime.path(),
+            &[root.join("runtime/base-component/framework")],
+        );
         assert!(none.unwrap().is_none());
-        let conf = super::merge_component_confs(&root.join("framework"), runtime.path(), &[component])
-            .unwrap()
-            .expect("a component conf");
+        let conf = super::merge_component_confs(
+            &root.join("runtime/base-component/framework"),
+            runtime.path(),
+            &[component],
+        )
+        .unwrap()
+        .expect("a component conf");
         let item = conf
             .first_named("screen-facade")
             .unwrap()
@@ -175,7 +188,7 @@ mod tests {
     #[test]
     fn dev_conf_merge_sets_purpose_and_entity_definition_idle() {
         let root = workspace_root();
-        let base = MNode::parse_file(root.join("framework/conf/MoquiDefaultConf.xml")).unwrap();
+        let base = MNode::parse_file(root.join("runtime/base-component/framework/conf/MoquiDefaultConf.xml")).unwrap();
         let over = MNode::parse_file(root.join("runtime/conf/MoquiDevConf.xml")).unwrap();
         super::merge_conf(&base, &over);
         let purpose = base
@@ -209,7 +222,7 @@ mod tests {
         .unwrap();
         std::os::unix::fs::symlink(root.join("runtime/base-component"), temp.path().join("base-component")).unwrap();
         env::set_property("moqui_version", "phase2-test");
-        let framework = root.join("framework");
+        let framework = root.join("runtime/base-component/framework");
         let factory = ExecutionContextFactory::boot_with_framework(temp.path(), &framework).unwrap();
         let names: Vec<&str> = factory.components().iter().map(|info| info.name.as_str()).collect();
         assert_eq!(names, vec!["framework", "tools", "webroot"]);
@@ -248,7 +261,7 @@ mod tests {
         let before = repo_env_stamp(&root);
         let temp = TempRuntime::new("secret");
         write_probe_conf(temp.path(), "phase2_probe_secret", "probe-secret-CHANGEME");
-        let framework = root.join("framework");
+        let framework = root.join("runtime/base-component/framework");
         let factory = ExecutionContextFactory::boot_with_framework(temp.path(), &framework).unwrap();
         let first = env::get_prop_or_env("phase2_probe_secret");
         assert_eq!(first.len(), 44);
@@ -317,7 +330,9 @@ mod tests {
         )
         .unwrap();
         std::os::unix::fs::symlink(root.join("runtime/base-component"), temp.path().join("base-component")).unwrap();
-        let factory = ExecutionContextFactory::boot_with_framework(temp.path(), root.join("framework")).unwrap();
+        let factory =
+            ExecutionContextFactory::boot_with_framework(temp.path(), root.join("runtime/base-component/framework"))
+                .unwrap();
         let context = factory.new_context();
         assert!(!context.authz_disabled());
         context

@@ -181,7 +181,7 @@ fn assemble_files(
     TypeFiles { files, notes }
 }
 
-/// The location a screen file is known by: `classpath://` below the framework, `component://` below a component.
+/// The location a screen file is known by: `component://` below the component that holds it.
 fn location_of(factory: &ExecutionContextFactory, path: &Path) -> String {
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let relative = |root: &Path| {
@@ -191,10 +191,6 @@ fn location_of(factory: &ExecutionContextFactory, path: &Path) -> String {
             .ok()
             .map(|rest| rest.to_string_lossy().replace('\\', "/"))
     };
-    // The framework is also a component; its files are named from the classpath, as the conf and the services name them.
-    if let Some(rest) = relative(factory.framework_dir()) {
-        return format!("classpath://{rest}");
-    }
     for component in factory.components() {
         if let Some(rest) = relative(&component.location) {
             return format!("component://{}/{rest}", component.name);

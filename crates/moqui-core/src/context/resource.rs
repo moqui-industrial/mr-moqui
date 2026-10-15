@@ -323,8 +323,9 @@ impl ResourceFacade {
             "file" => Ok(self.file_ref(location)),
             "runtime" => Ok(self.runtime_ref(location)),
             "component" => self.component_ref(location),
-            // The framework directory stands in for the Java classpath, as `locate` has it: the seed
-            // email templates name `classpath://screen/...`.
+            // Compatibility alias for a path in the framework component (`service/`, `entity/`,
+            // `data/`, `screen/`, `template/`). Seed email templates now use
+            // `component://framework/screen/...`. Rows already loaded still say `classpath://screen/...`.
             "classpath" => Ok(ResourceRef {
                 location: location.to_string(),
                 stored: Stored::File(FileResource::new(
@@ -729,7 +730,7 @@ mod tests {
         )
         .unwrap();
         let entity = EntityFacade::open(
-            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework"),
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework"),
             "transactional",
             vec![EntityGroup::new("transactional", "postgres", transactions)],
         )

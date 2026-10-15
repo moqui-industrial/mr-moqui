@@ -15,28 +15,28 @@ along with this software (see the LICENSE.md file). If not, see
 <entity-facade-xml type="seed-initial">
     <!-- EmailTemplate for password reset email -->
     <moqui.basic.email.EmailTemplate emailTemplateId="PASSWORD_RESET" description="Default Password Reset" emailServerId="SYSTEM"
-            emailTypeEnumId="EMT_PWD_RESET" bodyScreenLocation="classpath://screen/PasswordReset.xml" webappName="webroot"
+            emailTypeEnumId="EMT_PWD_RESET" bodyScreenLocation="component://framework/screen/PasswordReset.xml" webappName="webroot"
             fromAddress="" ccAddresses="" bccAddresses="" subject="Password Reset" sendPartial="Y"/>
     <!-- EmailTemplate for single use codes -->
     <moqui.basic.email.EmailTemplate emailTemplateId="SINGLE_USE_CODE" description="Send single use code" emailServerId="SYSTEM"
-            emailTypeEnumId="EMT_SINGLE_USE_CODE" bodyScreenLocation="classpath://screen/SingleUseCode.xml" webappName="webroot"
+            emailTypeEnumId="EMT_SINGLE_USE_CODE" bodyScreenLocation="component://framework/screen/SingleUseCode.xml" webappName="webroot"
             fromAddress="" ccAddresses="" bccAddresses="" subject="Single Use Code" sendPartial="Y"/>
     <!-- EmailTemplate for Added Email Authentication Type -->
     <moqui.basic.email.EmailTemplate emailTemplateId="ADDED_EMAIL_AUTHC_FACTOR" description="Added Email Authentication Type" emailServerId="SYSTEM"
-            emailTypeEnumId="EMT_ADDED_EMAIL_AUTHC_FACTOR" bodyScreenLocation="classpath://screen/AddedEmailAuthcFactor.xml" webappName="webroot"
+            emailTypeEnumId="EMT_ADDED_EMAIL_AUTHC_FACTOR" bodyScreenLocation="component://framework/screen/AddedEmailAuthcFactor.xml" webappName="webroot"
             fromAddress="" ccAddresses="" bccAddresses="" subject="Added Email Authentication Type" sendPartial="Y"/>
     <!-- EmailTemplate for Email Authentication Code Sent -->
     <moqui.basic.email.EmailTemplate emailTemplateId="EMAIL_AUTHC_FACTOR_SENT" description="Email Authentication Code Sent" emailServerId="SYSTEM"
-            emailTypeEnumId="EMT_EMAIL_AUTHC_FACTOR_SENT" bodyScreenLocation="classpath://screen/EmailAuthcFActorSent.xml" webappName="webroot"
+            emailTypeEnumId="EMT_EMAIL_AUTHC_FACTOR_SENT" bodyScreenLocation="component://framework/screen/EmailAuthcFActorSent.xml" webappName="webroot"
             fromAddress="" ccAddresses="" bccAddresses="" subject="Email Authentication Code Sent" sendPartial="Y"/>
 
     <!-- EmailTemplate for general notifications -->
     <moqui.basic.email.EmailTemplate emailTemplateId="NOTIFICATION" description="Default Notification" emailServerId="SYSTEM"
-            emailTypeEnumId="EMT_NOTIFICATION" bodyScreenLocation="classpath://screen/NotificationEmail.xml" webappName="webroot"
+            emailTypeEnumId="EMT_NOTIFICATION" bodyScreenLocation="component://framework/screen/NotificationEmail.xml" webappName="webroot"
             fromAddress="" fromName="" ccAddresses="" bccAddresses="" subject="${title}" sendPartial="Y"/>
     <!-- EmailTemplate for rendered screens (reports, etc) -->
     <moqui.basic.email.EmailTemplate emailTemplateId="SCREEN_RENDER" description="Default Screen Render" emailServerId="SYSTEM"
-            emailTypeEnumId="EMT_SCREEN_RENDER" bodyScreenLocation="classpath://screen/ScreenRenderEmail.xml" webappName="webroot"
+            emailTypeEnumId="EMT_SCREEN_RENDER" bodyScreenLocation="component://framework/screen/ScreenRenderEmail.xml" webappName="webroot"
             fromAddress="" fromName="" ccAddresses="" bccAddresses="" subject="${title}" sendPartial="Y"/>
 
     <!-- Web Servlet Errors NotificationTopic -->
