@@ -256,7 +256,17 @@ impl EntityFacade {
         if cache::gate_write(self, entity_name, operation, &plain)? == WriteGate::Handled {
             load_feed::note_touch(self, entity_name, seal_operation, Some(&cache_values));
         } else {
-            let after_values = eca.then(|| plain.clone());
+            let mut after_values = eca.then(|| plain.clone());
+            // A run-after rule on a delete sees the row as it was: read it now, before the row is gone.
+            if let Some(values) = after_values.as_mut().filter(|_| operation == "delete") {
+                if rules.iter().any(|rule| !rule.run_before && rule.get_entire_entity) {
+                    if let Some(row) = self.refresh_fields(entity_name, values).ok().filter(|row| !row.is_empty()) {
+                        for (name, value) in row {
+                            values.entry(name).or_insert(value);
+                        }
+                    }
+                }
+            }
             let prepared = self.seal_values(entity_name, seal_operation, plain)?;
             let (sql, params) = self.with_group(entity_name, |entity, dialect, _, _| {
                 let columns = present_columns(entity, &prepared, include_null, skip_pk);

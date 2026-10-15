@@ -69,7 +69,7 @@ pub(crate) fn clean(
             let mut messages = ec.message();
             for (field, message) in &failed {
                 let text = message.strip_prefix("parameter ").unwrap_or(message);
-                messages.add_validation_error("", field, &def.name, text);
+                messages.add_validation_error("", field, &def.name, &format!("{text} (in service {})", def.name));
             }
         });
         return Err(Error::of_kind(crate::context::ErrorKind::Validation, joined));

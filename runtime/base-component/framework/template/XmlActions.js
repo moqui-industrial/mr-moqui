@@ -129,10 +129,10 @@
             findHead(node, true),
             has(node, "offset") && `.offset(${attr(node, "offset")})`,
             has(node, "limit") && `.limit(${attr(node, "limit")})`,
-            childrenNamed(node, "select-field").map((kid) => `.selectField(${jsString(attr(kid, "field-name"))})`).join(""),
+            childrenNamed(node, "select-field").map((kid) => `.selectField(${literalOrExpand(attr(kid, "field-name"))})`).join(""),
             // The fields a form-list shows, set by the screen on the copy of its entity-find (not a schema attribute).
             has(node, "form-select-fields") && `.selectFormFields(${jsString(attr(node, "form-select-fields"))})`,
-            childrenNamed(node, "order-by").map((kid) => `.orderBy(${jsString(attr(kid, "field-name"))})`).join(""),
+            childrenNamed(node, "order-by").map((kid) => `.orderBy(${literalOrExpand(attr(kid, "field-name"))})`).join(""),
             node.children.map((kid) => findCondition(kid, cached)).join("")
         ]);
     };
@@ -339,7 +339,7 @@
             return `${field} = ${value};`;
         }),
         "order-map-list": stmt((node) => {
-            const fields = childrenNamed(node, "order-by").map((ob) => jsString(attr(ob, "field-name")));
+            const fields = childrenNamed(node, "order-by").map((ob) => literalOrExpand(attr(ob, "field-name")));
             return `orderMapList(${attr(node, "list")}, [${fields.join(", ")}]);`;
         }),
         "filter-map-list": stmt((node) => {
@@ -377,7 +377,7 @@
                 findHead(node, false),
                 autoCondition && `.condition(${autoCondition})`,
                 maps.map((kid) => `.condition(${jsString(attr(kid, "field-name"))}, ${fieldExpr(kid)})`).join(""),
-                childrenNamed(node, "select-field").map((kid) => `.selectField(${jsString(attr(kid, "field-name"))})`).join("")
+                childrenNamed(node, "select-field").map((kid) => `.selectField(${literalOrExpand(attr(kid, "field-name"))})`).join("")
             ]);
             return `${attr(node, "value-field")} = ${find}.one();`;
         }),
