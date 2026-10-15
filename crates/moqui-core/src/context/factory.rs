@@ -1076,11 +1076,16 @@ impl ExecutionContextFactory {
         } else {
             Executor::Threads
         };
+        // `component://framework/...` names the framework directory, as boot registers it before the component scan.
+        let mut component_dirs = std::collections::HashMap::new();
+        if framework_dir != Path::new(".") {
+            component_dirs.insert("framework".to_string(), framework_dir.clone());
+        }
         let factory = Arc::new(Self {
             runtime_dir: runtime_dir.clone(),
             framework_dir,
             components: Vec::new(),
-            resource: ResourceFacade::new(runtime_dir, std::collections::HashMap::new(), entity.clone()),
+            resource: ResourceFacade::new(runtime_dir, component_dirs, entity.clone()),
             cache: CacheFacade::from_conf(&conf).expect("cache"),
             conf_text: conf_text.to_string(),
             conf_cache: std::sync::OnceLock::new(),
