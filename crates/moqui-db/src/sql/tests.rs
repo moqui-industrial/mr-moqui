@@ -22,9 +22,9 @@ use crate::model::EntityModel;
 
 use super::{
     add_column, count, count_view, count_with, create_fk_index, create_foreign_key, create_index, create_table, delete,
-    foreign_key_index_name, foreign_key_name, insert, insert_or_update, render_condition, select, select_view,
-    select_view_with, select_with, update, CompareOp, Condition, FieldRef, LimitOffset, Nulls, OrderBy, PlainValues,
-    SelectOptions, Statement,
+    foreign_key_index_name, foreign_key_name, fts_index_sql, insert, insert_or_update, render_condition, select,
+    select_view, select_view_with, select_with, update, CompareOp, Condition, FieldRef, LimitOffset, Nulls, OrderBy,
+    PlainValues, SelectOptions, Statement,
 };
 
 fn workspace_root() -> std::path::PathBuf {
@@ -490,6 +490,29 @@ fn column_name_is_written_and_read_back_under_the_field_name() {
     assert!(inserted.contains("(\"BAR_SCORE\")"), "{inserted}");
     let table = create_table(entity, &model, postgres).unwrap();
     assert!(table.contains("\"BAR_SCORE\" NUMERIC"), "{table}");
+}
+
+#[test]
+fn fts_index_names_the_column_not_the_field() {
+    let (model, dialects) = framework();
+    let mut fts = model.entity("moqui.test.TestFts").unwrap().clone();
+    let body = fts.fields.iter_mut().find(|field| field.name == "body").unwrap();
+    body.column_name = "BODY_TEXT".to_string();
+    let body = fts.fields.iter().find(|field| field.name == "body").unwrap();
+
+    let pg = fts_index_sql(&fts, body, dialects.get("postgres").unwrap())
+        .unwrap()
+        .unwrap();
+    assert!(pg.contains("to_tsvector('english', \"BODY_TEXT\")"), "{pg}");
+    let my = fts_index_sql(&fts, body, dialects.get("mysql").unwrap())
+        .unwrap()
+        .unwrap();
+    assert!(my.ends_with("(`BODY_TEXT`)"), "{my}");
+    let table = create_table(&fts, &model, dialects.get("postgres").unwrap()).unwrap();
+    assert!(table.ends_with(&pg), "{table}");
+    assert!(fts_index_sql(&fts, body, dialects.get("h2").unwrap())
+        .unwrap()
+        .is_none());
 }
 
 #[test]

@@ -27,7 +27,7 @@ use moqui_lib::object::Value;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
-use super::feed::TOUCHES;
+use super::feed::{probe_query, TOUCHES};
 use super::{
     conf_data_locations, data_file_services, eca_rules, feed_service_names, load_entity_data, match_rules,
     register_feed_insert, LoadOptions,
@@ -108,6 +108,8 @@ struct Script {
     definition_reads: AtomicUsize,
     /// Savepoints set, one for each feed probe.
     savepoints: AtomicUsize,
+    /// Rolling back to a savepoint fails while set.
+    broken_rollback: AtomicBool,
 }
 
 fn new_script(missing_feed: bool, fail_inserts: bool) -> Arc<Script> {
@@ -117,6 +119,7 @@ fn new_script(missing_feed: bool, fail_inserts: bool) -> Arc<Script> {
         fail_inserts: AtomicBool::new(fail_inserts),
         definition_reads: AtomicUsize::new(0),
         savepoints: AtomicUsize::new(0),
+        broken_rollback: AtomicBool::new(false),
     })
 }
 
@@ -195,6 +198,9 @@ impl DbConnection for ScriptConn {
         Ok(())
     }
     fn rollback_to_savepoint(&mut self, _name: &str) -> Result<(), Error> {
+        if self.script.broken_rollback.load(Ordering::SeqCst) {
+            return Err(Error::new("current transaction is aborted"));
+        }
         Ok(())
     }
     fn release_savepoint(&mut self, _name: &str) -> Result<(), Error> {
@@ -747,6 +753,20 @@ fn feed_insert_uses_the_enlisted_connection_and_skips_a_missing_catalog() {
     enlist(&tx);
     facade.commit("moqui.test.Foo").unwrap();
     assert!(missing.inserts.lock().expect("inserts").is_empty());
+}
+
+#[test]
+fn a_missing_table_probe_fails_when_the_savepoint_rollback_fails() {
+    let script = new_script(true, false);
+    let mut conn = ScriptConn {
+        script: Arc::clone(&script),
+    };
+    let rows = probe_query(&mut conn, "SELECT * FROM DataFeed", &[]).unwrap();
+    assert!(rows.is_empty());
+
+    script.broken_rollback.store(true, Ordering::SeqCst);
+    let err = probe_query(&mut conn, "SELECT * FROM DataFeed", &[]).unwrap_err();
+    assert!(err.to_string().contains("aborted"), "{err}");
 }
 
 fn enlist(tx: &TransactionManager) {

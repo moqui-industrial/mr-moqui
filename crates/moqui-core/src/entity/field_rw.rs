@@ -34,18 +34,19 @@ thread_local! {
     static RAW_READ: Cell<bool> = const { Cell::new(false) };
 }
 
-struct RawReadGuard;
+/// Sets the raw-read flag and restores the value it replaced on drop, so a nested raw read leaves
+/// the outer one in place.
+struct RawReadGuard(bool);
 
 impl RawReadGuard {
     fn enter() -> Self {
-        RAW_READ.with(|flag| flag.set(true));
-        Self
+        Self(RAW_READ.with(|flag| flag.replace(true)))
     }
 }
 
 impl Drop for RawReadGuard {
     fn drop(&mut self) {
-        RAW_READ.with(|flag| flag.set(false));
+        RAW_READ.with(|flag| flag.set(self.0));
     }
 }
 
@@ -103,6 +104,9 @@ fn encrypt_fields(
     entity: &EntityDefinition,
     mut values: BTreeMap<String, Value>,
 ) -> Result<BTreeMap<String, Value>, Error> {
+    if !has_encrypted(entity) {
+        return Ok(values);
+    }
     let Some((primary, _)) = facade.crypt() else {
         return Ok(values);
     };
@@ -124,6 +128,9 @@ fn decrypt_fields(
     entity: &EntityDefinition,
     mut values: BTreeMap<String, Value>,
 ) -> Result<BTreeMap<String, Value>, Error> {
+    if !has_encrypted(entity) {
+        return Ok(values);
+    }
     let Some((primary, alts)) = facade.crypt() else {
         return Ok(values);
     };
@@ -144,6 +151,10 @@ fn decrypt_fields(
         }
     }
     Ok(values)
+}
+
+fn has_encrypted(entity: &EntityDefinition) -> bool {
+    entity.fields.iter().any(|field| field.encrypt)
 }
 
 fn take_string(
@@ -535,4 +546,23 @@ fn find_localized(
         }
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{raw_read, RawReadGuard};
+
+    #[test]
+    fn a_nested_raw_read_restores_the_outer_flag() {
+        assert!(!raw_read());
+        {
+            let _outer = RawReadGuard::enter();
+            {
+                let _inner = RawReadGuard::enter();
+                assert!(raw_read());
+            }
+            assert!(raw_read());
+        }
+        assert!(!raw_read());
+    }
 }

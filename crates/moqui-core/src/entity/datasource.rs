@@ -37,7 +37,7 @@ pub enum DatasourceKind {
 }
 
 /// One datasource, with `${}` expanded.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct DatasourceConf {
     pub group: String,
     pub kind: DatasourceKind,
@@ -53,6 +53,25 @@ pub struct DatasourceConf {
     /// False only when the conf says `sslmode`/`sslMode` disable(d). Embedded never uses TLS.
     pub tls: bool,
     pub pool: PoolConfig,
+}
+
+/// Leaves out the password.
+impl std::fmt::Debug for DatasourceConf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DatasourceConf")
+            .field("group", &self.group)
+            .field("kind", &self.kind)
+            .field("dialect", &self.dialect)
+            .field("schema", &self.schema)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("database", &self.database)
+            .field("user", &self.user)
+            .field("password", &"<redacted>")
+            .field("tls", &self.tls)
+            .field("pool", &self.pool)
+            .finish()
+    }
 }
 
 /// The datasource for `group` in the merged conf `conf` (the `moqui-conf` root).
@@ -308,6 +327,8 @@ mod tests {
             ("127.0.0.1", Some(5433), "other")
         );
         assert_eq!((ds.user.as_str(), ds.password.as_str()), ("a", "b"));
+        let shown = format!("{ds:?}");
+        assert!(shown.contains("<redacted>") && !shown.contains("\"b\""), "{shown}");
         assert!(!ds.tls);
         assert_eq!((ds.pool.min, ds.pool.max, ds.pool.reserve), (2, 12, 3));
         assert_eq!(ds.pool.acquire_timeout, Duration::ZERO);

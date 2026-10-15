@@ -33,7 +33,8 @@ pub use condition::{comparison, render_condition, CompareOp, Condition, FieldRef
 pub use ident::{is_mysql, is_sqlite, quote_ident};
 pub use statement::{
     add_column, count, count_with, create_fk_index, create_foreign_key, create_index, create_table, delete,
-    foreign_key_index_name, foreign_key_name, insert, insert_or_update, select, select_with, update, SelectOptions,
+    foreign_key_index_name, foreign_key_name, fts_index_sql, insert, insert_or_update, select, select_with, update,
+    SelectOptions,
 };
 pub use view::{count_view, select_view, select_view_with};
 

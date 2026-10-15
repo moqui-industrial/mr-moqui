@@ -720,42 +720,39 @@ fn select_sql(
     })
 }
 
-fn probe_query(conn: &mut dyn DbConnection, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
-    conn.savepoint(SAVEPOINT)?;
-    match conn.query(sql, params) {
-        Ok(rows) => {
-            conn.release_savepoint(SAVEPOINT)?;
-            Ok(rows)
-        }
-        Err(err) if relation_missing(&err) => {
-            let _ = conn.rollback_to_savepoint(SAVEPOINT);
-            let _ = conn.release_savepoint(SAVEPOINT);
-            Ok(Vec::new())
-        }
-        Err(err) => {
-            let _ = conn.rollback_to_savepoint(SAVEPOINT);
-            let _ = conn.release_savepoint(SAVEPOINT);
-            Err(err)
-        }
-    }
+pub(super) fn probe_query(conn: &mut dyn DbConnection, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
+    probe(conn, Vec::new(), |conn| conn.query(sql, params))
 }
 
 fn probe_execute(conn: &mut dyn DbConnection, sql: &str, params: &[Value]) -> Result<(), Error> {
+    probe(conn, (), |conn| conn.execute(sql, params).map(|_| ()))
+}
+
+/// Runs `run` inside a savepoint. A missing table gives `missing`, once the savepoint is rolled
+/// back; if that rollback fails the transaction is unusable, so the rollback error is returned.
+fn probe<T>(
+    conn: &mut dyn DbConnection,
+    missing: T,
+    run: impl FnOnce(&mut dyn DbConnection) -> Result<T, Error>,
+) -> Result<T, Error> {
     conn.savepoint(SAVEPOINT)?;
-    match conn.execute(sql, params) {
-        Ok(_) => {
+    match run(conn) {
+        Ok(value) => {
             conn.release_savepoint(SAVEPOINT)?;
-            Ok(())
-        }
-        Err(err) if relation_missing(&err) => {
-            let _ = conn.rollback_to_savepoint(SAVEPOINT);
-            let _ = conn.release_savepoint(SAVEPOINT);
-            Ok(())
+            Ok(value)
         }
         Err(err) => {
-            let _ = conn.rollback_to_savepoint(SAVEPOINT);
-            let _ = conn.release_savepoint(SAVEPOINT);
-            Err(err)
+            let undone = conn
+                .rollback_to_savepoint(SAVEPOINT)
+                .and_then(|()| conn.release_savepoint(SAVEPOINT));
+            if relation_missing(&err) {
+                undone.map(|()| missing)
+            } else {
+                if let Err(undo) = undone {
+                    tracing::warn!("Could not roll back savepoint {SAVEPOINT} after a failed probe: {undo}");
+                }
+                Err(err)
+            }
         }
     }
 }

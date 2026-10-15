@@ -390,20 +390,38 @@ pub fn create_table(entity: &EntityDefinition, model: &EntityModel, dialect: &Di
         sql.push_str(collate);
     }
     if dialect.fts_style.as_deref() == Some("postgres-tsvector") {
-        let config = fts_config(dialect)?;
         for field in entity.fields.iter().filter(|field| field.field_type == "text-fts") {
-            sql.push_str(";\nCREATE INDEX ");
-            sql.push_str(&quote_ident(dialect, &fts_index_name(entity, &field.name, dialect)));
-            sql.push_str(" ON ");
-            sql.push_str(&quote_ident(dialect, &entity.table_name));
-            sql.push_str(" USING gin (to_tsvector('");
-            sql.push_str(&config);
-            sql.push_str("', ");
-            sql.push_str(&quote_ident(dialect, &field.column_name));
-            sql.push_str("))");
+            if let Some(index) = fts_index_sql(entity, field, dialect)? {
+                sql.push_str(";\n");
+                sql.push_str(&index);
+            }
         }
     }
     Ok(sql)
+}
+
+/// The statement that adds the full-text index on a `text-fts` field to an existing table, or
+/// `None` when the profile's `fts-style` has no index of its own.
+pub fn fts_index_sql(
+    entity: &EntityDefinition,
+    field: &FieldDefinition,
+    dialect: &Dialect,
+) -> Result<Option<String>, Error> {
+    let index_name = quote_ident(dialect, &fts_index_name(entity, &field.name, dialect));
+    let table = quote_ident(dialect, &entity.table_name);
+    let column = quote_ident(dialect, &field.column_name);
+    match dialect.fts_style.as_deref() {
+        Some("postgres-tsvector") => {
+            let config = fts_config(dialect)?;
+            Ok(Some(format!(
+                "CREATE INDEX {index_name} ON {table} USING gin (to_tsvector('{config}', {column}))"
+            )))
+        }
+        Some("mysql-fulltext") => Ok(Some(format!(
+            "ALTER TABLE {table} ADD FULLTEXT INDEX {index_name} ({column})"
+        ))),
+        _ => Ok(None),
+    }
 }
 
 /// `CREATE [UNIQUE] INDEX name ON table (fields)`. The name is written as defined, as Java does.

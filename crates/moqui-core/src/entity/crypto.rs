@@ -38,12 +38,24 @@ const AES_BLOCK: usize = 16;
 const DES_BLOCK: usize = 8;
 const MISSING_PASS: &str = "No entity-facade.@crypt-pass setting found, NOT doing encryption";
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct CryptConfig {
     pub pass: String,
     pub salt: String,
     pub iterations: u32,
     pub algorithm: String,
+}
+
+/// Leaves out the pass phrase.
+impl std::fmt::Debug for CryptConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CryptConfig")
+            .field("pass", &"<redacted>")
+            .field("salt", &self.salt)
+            .field("iterations", &self.iterations)
+            .field("algorithm", &self.algorithm)
+            .finish()
+    }
 }
 
 pub fn encrypt(plain: &str, config: &CryptConfig) -> Result<String, Error> {
@@ -287,6 +299,12 @@ mod tests {
             iterations: 10,
             algorithm: "PBEWithMD5AndDES".to_string(),
         }
+    }
+
+    #[test]
+    fn debug_leaves_out_the_pass() {
+        let shown = format!("{:?}", aes_config());
+        assert!(!shown.contains(PASS) && shown.contains("20201202"), "{shown}");
     }
 
     #[test]

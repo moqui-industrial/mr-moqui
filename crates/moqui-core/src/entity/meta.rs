@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 
 use moqui_db::dialect::Dialect;
 use moqui_db::sql::{
-    add_column, create_fk_index, create_foreign_key, create_index, create_table, is_sqlite, quote_ident,
+    add_column, create_fk_index, create_foreign_key, create_index, create_table, fts_index_sql, is_mysql, is_sqlite,
 };
 use moqui_lib::error::Error;
 use moqui_lib::object::Value;
@@ -308,7 +308,7 @@ fn ensure_fts(facade: &EntityFacade, conn: &mut dyn DbConnection, name: &str) ->
     let statements = facade.with_entity(name, |entity, dialect, _| {
         let mut statements = Vec::new();
         for field in entity.fields.iter().filter(|field| field.field_type == "text-fts") {
-            if let Some(sql) = fts_sql(entity, &field.name, dialect)? {
+            if let Some(sql) = fts_index_sql(entity, field, dialect)? {
                 statements.push((sql, field.name.clone()));
             }
         }
@@ -423,7 +423,7 @@ fn column_probe(dialect: &Dialect, table: &str) -> Probe {
 }
 
 fn schema_expr(dialect: &Dialect) -> &'static str {
-    if dialect.name.len() >= 5 && dialect.name[..5].eq_ignore_ascii_case("mysql") {
+    if is_mysql(dialect) {
         "database()"
     } else {
         "current_schema()"
@@ -439,51 +439,4 @@ fn row_matches(columns: &[(String, Value)], table: &str) -> bool {
 
 fn has_name(names: &[String], want: &str) -> bool {
     names.iter().any(|name| name == want) || names.iter().any(|name| name.eq_ignore_ascii_case(want))
-}
-
-fn fts_sql(
-    entity: &moqui_db::model::EntityDefinition,
-    field: &str,
-    dialect: &Dialect,
-) -> Result<Option<String>, Error> {
-    let index_name = clip(
-        &format!("{}_{}_FTS", entity.table_name, field),
-        dialect.constraint_name_clip_length,
-    );
-    match dialect.fts_style.as_deref() {
-        Some("postgres-tsvector") => {
-            let config = dialect.fts_config.as_deref().unwrap_or("english");
-            if config.contains('\'') {
-                return Err(Error::new("fts-config contains a quote"));
-            }
-            Ok(Some(format!(
-                "CREATE INDEX {} ON {} USING gin (to_tsvector('{config}', {}))",
-                quote_ident(dialect, &index_name),
-                quote_ident(dialect, &entity.table_name),
-                quote_ident(dialect, field),
-            )))
-        }
-        Some("mysql-fulltext") => Ok(Some(format!(
-            "ALTER TABLE {} ADD FULLTEXT INDEX {} ({})",
-            quote_ident(dialect, &entity.table_name),
-            quote_ident(dialect, &index_name),
-            quote_ident(dialect, field),
-        ))),
-        _ => Ok(None),
-    }
-}
-
-fn clip(name: &str, limit: Option<u32>) -> String {
-    let Some(limit) = limit else {
-        return name.to_string();
-    };
-    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
-    if name.len() <= limit {
-        return name.to_string();
-    }
-    let mut end = limit;
-    while end > 0 && !name.is_char_boundary(end) {
-        end -= 1;
-    }
-    name[..end].to_string()
 }
