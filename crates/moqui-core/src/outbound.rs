@@ -71,6 +71,8 @@ pub struct Request {
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
+    /// The whole call's limit; `None` is the client's default.
+    pub timeout: Option<std::time::Duration>,
 }
 
 /// Status and body text.
@@ -148,6 +150,9 @@ fn send_default(request: Request) -> Result<Response, Error> {
     }
     if let Some(body) = request.body {
         call = call.text(content_type.as_deref().unwrap_or("text/plain"), body);
+    }
+    if let Some(timeout) = request.timeout {
+        call = call.timeout(timeout);
     }
     // The caller already applied the sim predicate.
     let response = call.send(false)?;

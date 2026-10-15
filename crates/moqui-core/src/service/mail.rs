@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Outbound SMTP and inbound IMAP/POP3 for the email services whose locations stay Groovy.
+//! Outbound SMTP and inbound IMAP/POP3 for the email services, selected by name in `define.rs`.
 //!
 //! `send#EmailTemplate` follows `sendEmailTemplate.groovy`. A template with `bodyScreenLocation` renders
 //! that screen with `makeRender()` (no socket, its own web slot, so a request in progress is not touched)

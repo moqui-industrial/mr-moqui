@@ -39,15 +39,18 @@ pub(super) const HELPERS_JS: &str = r#"
             return 0;
         });
     };
-    globalThis.filterMapList = function (list, values) {
-        if (list == null) return;
+    // keep the maps that match every value, or with `exclude` remove them
+    globalThis.filterMapList = function (list, values, exclude) {
+        if (list == null || values == null || Object.keys(values).length === 0) return;
         for (var i = list.length - 1; i >= 0; i--) {
+            var matches = true;
             for (var key in values) {
                 if (!compare(field(list[i], key), "equals", null, values[key], null, "Object")) {
-                    list.splice(i, 1);
+                    matches = false;
                     break;
                 }
             }
+            if (matches === !!exclude) list.splice(i, 1);
         }
     };
     globalThis.filterMapListByDate = function (list, fromName, thruName, valid, ignoreIfEmpty) {

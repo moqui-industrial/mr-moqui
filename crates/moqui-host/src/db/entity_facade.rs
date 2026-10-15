@@ -85,8 +85,10 @@ pub fn component_entity_dirs(factory: &ExecutionContextFactory) -> Vec<std::path
         .collect()
 }
 
-/// Install the facade so `dbresource://` reads and writes through it.
+/// Install the facade so `dbresource://` reads and writes through it, with the conf connection drivers scripts use for
+/// another database.
 pub fn attach(factory: &ExecutionContextFactory, facade: EntityFacade) {
+    super::install_conf_drivers();
     factory.set_entity(facade);
 }
 

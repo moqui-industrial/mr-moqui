@@ -37,7 +37,7 @@ Mantle and the other application components stay outside this repository. They a
 - Search is implemented under gate 4. The design is `plans/archive/SearchFacade.md`.
 - The SSO relying party is framework code. The crate is chosen in `plans/archive/Sso.md`. The redirect is not part of gate 2 and does not sit in the tool-component tail. PDF and the tool components (`moqui-poi`, `moqui-image`, `moqui-cups`, in `plans/archive/Office-Image-Print.md`) are the tail of gate 4. Gate 3 `html-print` is the print document, and the name `xsl-fo` selects that mode. Email attachments, scheduled screen PDFs, and print rendering report that PDF is not available until phase 12. The engine is the long-lived Chromium in Tool components and print of `plans/archive/Architecture-Proposal.md`. `moqui-fop` is not ported.
 - The Groovy shell endpoint is dropped. There is no Java service runner and no Groovy runner. Framework script services become JavaScript or Rust. The replacement crates are chosen in `plans/archive/Ssh.md`. The sshd is still not part of the port.
-- `InstanceServices` Docker provisioning (init, start, stop, remove, logs, and create database) is not ported. `callFuture()` still reserves a worker when the caller is already a pool thread. The Java joined sites stay named in `plans/archive/Architecture-Proposal.md`. They are not a body of work in this repository.
+- `InstanceServices` Docker provisioning (init, start, stop, remove, logs, and create database) is JavaScript since 2026-10-14. `callFuture()` still reserves a worker when the caller is already a pool thread. The Java joined sites stay named in `plans/archive/Architecture-Proposal.md`. They are not a body of work in this repository.
 
 ## Phase order
 
@@ -843,7 +843,7 @@ Depends on the HTTP client, the user facade, the screen facade for screen-search
 - LLM client, conversation, protocols, and the tool loop. Host routes for the LLM endpoints. A stream stays in the host.
 - A2A routes in the host, following `../moqui/framework/plans/A2A-Server.md`. This document does not restate that plan. Streams do not hold an `ExecutionContext`.
 
-Until this phase, the copied XML (`LlmServices.xml`, `A2AServices.xml`, and the LLM and A2A parts of the tools component) stays in the tree and is not wired, as was done for JSON-RPC. A call to one of those services fails with an error that names the service. It does not quietly run nothing.
+Until this phase, `LlmServices.xml`, `A2AServices.xml`, and the tools component's `llm` REST resource are not in the tree (removed 2026-10-14). The port takes fresh copies from moqui-framework.
 
 Check: LLM and A2A cover the same cases as the Java tests for those facades at the time of the port.
 

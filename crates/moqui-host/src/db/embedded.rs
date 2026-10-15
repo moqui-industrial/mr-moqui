@@ -170,6 +170,18 @@ mod cluster {
         pub fn data_dir(&self) -> &Path {
             &self.data_dir
         }
+
+        /// The port the postmaster listens on; on Unix it names the socket file.
+        #[must_use]
+        pub fn port(&self) -> u16 {
+            self.server.settings().port
+        }
+
+        /// The superuser's name and password, for a test that connects on its own.
+        #[must_use]
+        pub fn superuser(&self) -> (String, String) {
+            (BOOTSTRAP_SUPERUSER.to_string(), self.server.settings().password.clone())
+        }
     }
 
     impl Drop for EmbeddedCluster {

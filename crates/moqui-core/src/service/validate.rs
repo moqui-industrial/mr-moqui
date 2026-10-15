@@ -291,6 +291,12 @@ fn clean_text(param: &ParamDef, text: String) -> Result<String, Error> {
     )))
 }
 
+/// HTML cleaned as an `allow-html="safe"` parameter is, for a script that cleans text it takes with `any` (the wiki's
+/// HTML pages, where Java called Jsoup with its relaxed list).
+pub(crate) fn clean_safe_html(text: &str) -> String {
+    safe_html().clean(text).to_string()
+}
+
 /// The cleaner. ammonia's defaults are a maintained, conservative allow-list, so there is no
 /// list of our own to keep up to date.
 fn safe_html() -> &'static ammonia::Builder<'static> {

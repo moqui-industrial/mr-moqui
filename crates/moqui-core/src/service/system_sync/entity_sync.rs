@@ -485,6 +485,7 @@ fn call_remote(
         url,
         headers,
         body: Some(body.to_string()),
+        timeout: None,
     })?;
     let status = response.status;
     let reply = crate::service::parse_json(&response.body).ok();

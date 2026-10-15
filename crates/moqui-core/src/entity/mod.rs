@@ -40,7 +40,7 @@ mod value;
 
 pub(crate) use cache::screen_config_generation;
 pub use data_writer::{DataFileType, EntityDataWriter};
-pub use dbresource::{DbResourceChild, DbResourceInfo, DbResourceStat};
+pub use dbresource::{DbResourceChild, DbResourceInfo, DbResourceStat, DbResourceVersion};
 pub use etl::EtlLoader;
 pub use exec::statement_stats;
 pub use facade::{EntityFacade, EntityFlags, EntityGroup, SimStarter};

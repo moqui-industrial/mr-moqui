@@ -21,11 +21,9 @@
 use std::collections::BTreeMap;
 
 use moqui_lib::error::Error;
-use moqui_lib::node::MNode;
 use moqui_lib::object::{HostObject, Value};
 
 use super::rule_actions::{condition_allows, publish_names, run_stored_actions};
-use super::security_checks::{assert_privileged_group_membership, assert_sealed_permission_grant, map_text};
 use crate::context::ExecutionContext;
 use crate::entity::load_feed::{self, DataFileService, EcaRule};
 use crate::entity::EntityFacade;
@@ -127,7 +125,7 @@ pub fn run_matched_eca(
         if !condition_allows(&rule.condition).map_err(to_lib).map_err(in_rule)? {
             continue;
         }
-        run_rule_actions(facade, &rule.actions, values).map_err(in_rule)?;
+        run_stored_actions(&rule.actions).map_err(to_lib).map_err(in_rule)?;
         if before {
             // Fields set on `entityValue` are fields of the write, as the Java value is the one written.
             let shared = cell.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -249,49 +247,6 @@ pub fn schedule_feed_receive(facade: &EntityFacade, pending_ids: Vec<String>) ->
         Value::List(pending_ids.into_iter().map(Value::String).collect()),
     );
     super::call::async_call(PROCESS_PENDING_SERVICE, &params).map_err(to_lib)
-}
-
-/// The two `UserSecurityChecks` calls are Rust here. A rule is one of them only when its whole
-/// action is a single `<script>` that is that call, not when the text merely mentions it.
-enum SecurityCheck {
-    PrivilegedGroupMembership,
-    SealedPermissionGrant,
-}
-
-fn security_check_of(actions: &str) -> Option<SecurityCheck> {
-    let root = MNode::parse_text("actions", actions).ok()?;
-    let nodes = if root.name() == "script" {
-        vec![root]
-    } else {
-        root.children()
-    };
-    let [only] = nodes.as_slice() else {
-        return None;
-    };
-    if only.name() != "script" {
-        return None;
-    }
-    let text = only.text()?;
-    let call = text.trim();
-    if call.starts_with("org.moqui.impl.util.UserSecurityChecks.assertPrivilegedGroupMembership(") {
-        Some(SecurityCheck::PrivilegedGroupMembership)
-    } else if call.starts_with("org.moqui.impl.util.UserSecurityChecks.assertSealedPermissionGrant(") {
-        Some(SecurityCheck::SealedPermissionGrant)
-    } else {
-        None
-    }
-}
-
-fn run_rule_actions(facade: &EntityFacade, actions: &str, values: &BTreeMap<String, Value>) -> Result<(), Error> {
-    match security_check_of(actions) {
-        Some(SecurityCheck::PrivilegedGroupMembership) => {
-            assert_privileged_group_membership(facade, &map_text(values, "userGroupId"))
-        }
-        Some(SecurityCheck::SealedPermissionGrant) => {
-            assert_sealed_permission_grant(facade, &map_text(values, "userPermissionId"))
-        }
-        None => run_stored_actions(actions).map_err(to_lib),
-    }
 }
 
 pub(super) fn to_lib(err: crate::context::Error) -> Error {
@@ -515,6 +470,35 @@ mod tests {
             .collect();
         assert!(foo_ids.iter().any(|id| id == "BEFORE"), "{foo_ids:?}");
         assert!(foo_ids.iter().any(|id| id == "AFTER"), "{foo_ids:?}");
+    }
+
+    #[test]
+    fn privileged_group_membership_is_denied_to_a_non_member() {
+        let (facade, context, _runtime) = boot_security();
+        let _entered = context.enter();
+        {
+            let _authz = context.disable_authz();
+            seed_entity_allow(&facade);
+            seed_user(&facade, "plain", "Secret-12");
+        }
+        login_user("plain", "Secret-12").expect("login");
+        let mut row = facade.make_value("moqui.security.UserGroupMember").unwrap();
+        row.set("userGroupId", Value::string("ADMIN"));
+        row.set("userId", Value::string("U1"));
+        row.set("fromDate", basic_convert(&Value::I64(0), "java.sql.Timestamp").value);
+        let err = row.create(&facade).expect_err("privileged group");
+        let text = err.to_string();
+        assert!(
+            text.contains("not authorized to change membership of group ADMIN"),
+            "{text}"
+        );
+        let members = facade
+            .find("moqui.security.UserGroupMember")
+            .unwrap()
+            .eq("userGroupId", Value::string("ADMIN"))
+            .list()
+            .unwrap();
+        assert_eq!(members.len(), 0);
     }
 
     fn boot_security() -> (EntityFacade, crate::context::ExecutionContext, TempDir) {

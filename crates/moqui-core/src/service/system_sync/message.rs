@@ -136,6 +136,7 @@ pub(super) fn send_rest(
         url,
         headers,
         body: Some(body),
+        timeout: None,
     })?;
     let status = response.status;
     if !(200..300).contains(&status) {

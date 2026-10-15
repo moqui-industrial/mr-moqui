@@ -107,24 +107,24 @@ along with this software (see the LICENSE.md file). If not, see
             <iterate list="imageTypeEnvList" entry="imageTypeEnv">
                 <set field="envValue" from="ec.resource.expand(imageTypeEnv.envValue, '')"/>
                 <service-call name="create#moqui.server.instance.AppInstanceEnv"
-                        in-map="[appInstanceId:appInstanceId, envName:imageTypeEnv.envName, envValue:envValue]"/>
+                        in-map="{appInstanceId:appInstanceId, envName:imageTypeEnv.envName, envValue:envValue}"/>
             </iterate>
             <set field="imageTypeLinkList" from="imageType.links"/>
             <iterate list="imageTypeLinkList" entry="imageTypeLink">
                 <service-call name="create#moqui.server.instance.AppInstanceLink"
-                        in-map="[appInstanceId:appInstanceId, instanceName:imageTypeLink.instanceName, aliasName:imageTypeLink.aliasName]"/>
+                        in-map="{appInstanceId:appInstanceId, instanceName:imageTypeLink.instanceName, aliasName:imageTypeLink.aliasName}"/>
             </iterate>
             <set field="imageTypeVolumeList" from="imageType.vols"/>
             <iterate list="imageTypeVolumeList" entry="imageTypeVolume">
                 <set field="volumeName" from="ec.resource.expand(imageTypeVolume.volumeName, '')"/>
                 <service-call name="create#moqui.server.instance.AppInstanceVolume"
-                        in-map="[appInstanceId:appInstanceId, mountPoint:imageTypeVolume.mountPoint, volumeName:volumeName]"/>
+                        in-map="{appInstanceId:appInstanceId, mountPoint:imageTypeVolume.mountPoint, volumeName:volumeName}"/>
             </iterate>
             <set field="imageTypeHostConfigList" from="imageType.hostConfigs"/>
             <iterate list="imageTypeHostConfigList" entry="imageTypeHostConfig">
                 <set field="hostConfigValue" from="ec.resource.expand(imageTypeHostConfig.hostConfigValue, '')"/>
                 <service-call name="create#moqui.server.instance.AppInstanceHostConfig"
-                        in-map="[appInstanceId:appInstanceId, hostConfigName:imageTypeHostConfig.hostConfigName, hostConfigValue:hostConfigValue, type:imageTypeHostConfig.type]"/>
+                        in-map="{appInstanceId:appInstanceId, hostConfigName:imageTypeHostConfig.hostConfigName, hostConfigValue:hostConfigValue, type:imageTypeHostConfig.type}"/>
             </iterate>
         </actions>
     </service>
@@ -161,17 +161,13 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="instanceLog"/>
         </out-parameters>
         <actions><script><![CDATA[
-            import org.moqui.context.ExecutionContext
-            import java.util.concurrent.Future
-            ExecutionContext ec = context.ec
+            const dbFuture = ec.service.async().name("org.moqui.impl.InstanceServices.check#AppDatabase").parameter("appInstanceId", appInstanceId).callFuture()
+            const instFuture = ec.service.async().name("org.moqui.impl.InstanceServices.check#AppInstance").parameter("appInstanceId", appInstanceId).callFuture()
+            const msFuture = ec.service.async().name("org.moqui.impl.InstanceServices.check#MoquiServer").parameter("appInstanceId", appInstanceId).callFuture()
 
-            Future<Map> dbFuture = ec.service.async().name("org.moqui.impl.InstanceServices.check#AppDatabase").parameter("appInstanceId", appInstanceId).callFuture()
-            Future<Map> instFuture = ec.service.async().name("org.moqui.impl.InstanceServices.check#AppInstance").parameter("appInstanceId", appInstanceId).callFuture()
-            Future<Map> msFuture = ec.service.async().name("org.moqui.impl.InstanceServices.check#MoquiServer").parameter("appInstanceId", appInstanceId).callFuture()
-
-            context.putAll(dbFuture.get())
-            context.putAll(instFuture.get())
-            context.putAll(msFuture.get())
+            ec.context.putAll(dbFuture.get())
+            ec.context.putAll(instFuture.get())
+            ec.context.putAll(msFuture.get())
             ]]></script></actions>
     </service>
 
@@ -182,28 +178,22 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="moquiStatusMap" type="Map"/>
         </out-parameters>
         <actions><script><![CDATA[
-            import groovy.json.JsonSlurper
-            import org.moqui.context.ExecutionContext
-            import org.moqui.entity.EntityValue
-            import org.moqui.util.RestClient
-            ExecutionContext ec = context.ec
-
-            EntityValue appInstance = ec.entity.find("moqui.server.instance.AppInstance").condition("appInstanceId", appInstanceId).one()
-            RestClient restClient = ec.service.rest().method("GET").uri().host(appInstance.hostName as String).path("status").build()
+            const appInstance = ec.entity.find("moqui.server.instance.AppInstance").condition("appInstanceId", appInstanceId).one()
+            const restClient = ec.service.rest().method("GET").uri().host(String(appInstance.hostName)).path("status").build()
 
             try {
-                RestClient.RestResponse restResponse = restClient.call()
+                const restResponse = restClient.call()
                 if (restResponse.statusCode == 200) {
                     moquiConnectSuccess = true
-                    moquiStatusMap = (Map) restResponse.jsonObject()
+                    moquiStatusMap = restResponse.jsonObject()
                 } else {
                     moquiConnectSuccess = false
-                    ec.message.addMessage("Server error on Moqui server: ${restResponse.getReasonPhrase()}")
+                    ec.message.addMessage(`Server error on Moqui server: ${restResponse.getReasonPhrase()}`)
                 }
-            } catch (Exception e) {
+            } catch (e) {
                 moquiConnectSuccess = false
-                ec.logger.log(ec.logger.ERROR_INT, "Error connecting to Moqui server at ${restClient.getUri()?.toString()}", e)
-                ec.message.addMessage("Error connecting to Moqui server at ${restClient.getUri()?.toString()}: ${e.toString()}")
+                ec.logger.error(`Error connecting to Moqui server at ${restClient.getUri()}: ${e}`)
+                ec.message.addMessage(`Error connecting to Moqui server at ${restClient.getUri()}: ${e}`)
             }
         ]]></script></actions>
     </service>
@@ -214,13 +204,9 @@ along with this software (see the LICENSE.md file). If not, see
             <entity-find-one entity-name="moqui.server.instance.AppInstance" value-field="appInstance"/>
             <set field="hostType" from="appInstance?.instanceHost?.hostType"/>
             <if condition="hostType == null"><return error="true" message="No InstanceHostType found for AppInstance with ID ${appInstanceId}"/></if>
-            <!-- <service-call name="${hostType.initService}" in-map="context" out-map="context"/>-->
-            <!--For async call -->
-            <script><![CDATA[
-            import org.moqui.context.ExecutionContext
-            import java.util.concurrent.Future
-            Future<Map> instanceFuture = ec.service.async().name("${hostType.initService}").parameters([context:context,appInstanceId:appInstanceId]).callFuture()
-        ]]></script></actions>
+            <!-- runs on a worker and is not waited on: creating a container pulls its image, which can take minutes -->
+            <script>ec.service.async().name(hostType.initService).parameter("appInstanceId", appInstanceId).call()</script>
+        </actions>
     </service>
     <service verb="start" noun="AppInstance">
         <implements service="org.moqui.impl.InstanceServices.start#Instance"/>
@@ -291,123 +277,123 @@ along with this software (see the LICENSE.md file). If not, see
         <!-- https://docs.docker.com/engine/api/v1.24/#create-an-image -->
         <implements service="org.moqui.impl.InstanceServices.init#Instance"/>
         <actions><script><![CDATA[
-            import groovy.json.JsonSlurper
-            import org.moqui.BaseException
-            import org.moqui.context.ExecutionContext
-            import org.moqui.entity.EntityValue
-            import org.moqui.util.RestClient
-            import java.util.concurrent.Future
-            import java.io.BufferedReader
-            import java.io.InputStreamReader
-            import java.io.IOException
-            import groovy.json.JsonOutput
-
             connectSuccess = null
             instanceCreated = false
             instanceExists = null
             instanceUuid = null
             warnings = null
 
-            ExecutionContext ec = context.ec
-            EntityValue appInstance = ec.entity.find("moqui.server.instance.AppInstance").condition("appInstanceId", appInstanceId).one()
-            EntityValue instanceHost = appInstance.findRelatedOne("instanceHost", null, null)
+            const appInstance = ec.entity.find("moqui.server.instance.AppInstance").condition("appInstanceId", appInstanceId).one()
+            const instanceHost = appInstance.findRelatedOne("instanceHost", null, null)
             if (instanceHost == null) {
-                ec.message.addError("No InstanceHost found for AppInstance ${appInstanceId}"); return;
+                ec.message.addError(`No InstanceHost found for AppInstance ${appInstanceId}`); return;
             }
-            EntityValue instanceImage = appInstance.findRelatedOne("image", null, null)
+            const instanceImage = appInstance.findRelatedOne("image", null, null)
             if (instanceImage == null) {
-                ec.message.addError("No InstanceImage found for AppInstance ${appInstanceId}"); return;
+                ec.message.addError(`No InstanceImage found for AppInstance ${appInstanceId}`); return;
             }
-            EntityValue instanceImageType = instanceImage.findRelatedOne("imageType", null, null)
+            const instanceImageType = instanceImage.findRelatedOne("imageType", null, null)
+            const dockerUri = (restClient, ...paths) => {
+                const uri = restClient.uri().protocol(instanceHost.hostProtocol || "http").host(String(instanceHost.hostAddress))
+                        .port(instanceHost.adminPort ? parseInt(instanceHost.adminPort, 10) : 2375)
+                for (const path of paths) uri.path(path)
+                return uri
+            }
+            const containerName = String(appInstance.instanceUuid || appInstance.instanceName)
 
-            RestClient restClient = ec.service.rest().method("POST")
-            restClient.uri().protocol(instanceHost.hostProtocol ? (String) instanceHost.hostProtocol : "http")
-                    .host(instanceHost.hostAddress as String).port(instanceHost.adminPort ? (instanceHost.adminPort as int) : 2375)
-                    .path("containers").path("create").parameter("name", (String) appInstance.instanceName).build()
+            const restClient = ec.service.rest().method("POST")
+            dockerUri(restClient, "containers", "create").parameter("name", String(appInstance.instanceName)).build()
 
-            Map hostConfigMap = [RestartPolicy: [Name: "unless-stopped"]] as Map<String, Object>
-            List<String> linkList = []
-            for (Map link in appInstance.links) linkList.add("${link.instanceName}:${link.aliasName ?: link.instanceName}")
-            if (linkList) hostConfigMap.Links = linkList
-            String networkMode = appInstance.networkMode ?: instanceImageType.defaultNetworkMode
+            const hostConfigMap = {RestartPolicy: {Name: "unless-stopped"}}
+            const linkList = []
+            for (const link of appInstance.links) linkList.push(`${link.instanceName}:${link.aliasName || link.instanceName}`)
+            if (linkList.length) hostConfigMap.Links = linkList
+            const networkMode = appInstance.networkMode || instanceImageType?.defaultNetworkMode
             if (networkMode) hostConfigMap.NetworkMode = networkMode
 
-            List<String> envList = []
-            for (Map env in appInstance.envs) if (env.envValue) envList.add("${env.envName}=${env.envValue}")
+            const envList = []
+            for (const env of appInstance.envs) if (env.envValue) envList.push(`${env.envName}=${env.envValue}`)
 
-            List<String> bindList = []
-            for (Map vol in appInstance.vols) if (vol.mountPoint && vol.volumeName) bindList.add("${vol.volumeName}:${vol.mountPoint}")
-            if (bindList) hostConfigMap.Binds = bindList
+            const bindList = []
+            for (const vol of appInstance.vols) if (vol.mountPoint && vol.volumeName) bindList.push(`${vol.volumeName}:${vol.mountPoint}`)
+            if (bindList.length) hostConfigMap.Binds = bindList
 
-            for (Map hostConf in appInstance.hostConfigs) if (hostConf.hostConfigName && hostConf.hostConfigValue) {
+            for (const hostConf of appInstance.hostConfigs) if (hostConf.hostConfigName && hostConf.hostConfigValue) {
+                let hostConfigValue
                 if (hostConf.type == null || hostConf.type == 'String') hostConfigValue = hostConf.hostConfigValue
-                else if (hostConf.type == 'Number') hostConfigValue = ec.l10n.parseNumber(hostConf.hostConfigValue, null)
-                else throw new BaseException("Unknown type '${hostConf.type}' for hostConfig")
-                hostConfigMap.put(hostConf.hostConfigName, hostConfigValue)
+                else if (hostConf.type == 'Number') hostConfigValue = toNumber(ec.l10n.parseNumber(hostConf.hostConfigValue, null))
+                else throw new Error(`Unknown type '${hostConf.type}' for hostConfig`)
+                hostConfigMap[hostConf.hostConfigName] = hostConfigValue
             }
 
-            Map jsonBody = [Image: instanceImage.imageName, Env: envList, HostConfig: hostConfigMap]
-            String initCommand = appInstance.initCommand ?: instanceImageType.defaultInitCommand
+            let jsonBody = {Image: instanceImage.imageName, Env: envList, HostConfig: hostConfigMap}
+            const initCommand = appInstance.initCommand || instanceImageType?.defaultInitCommand
             if (initCommand) jsonBody.Cmd = initCommand
 
             if (appInstance.jsonConfig) {
-                Map baseConfigMap = (Map) new JsonSlurper().parseText((String) appInstance.jsonConfig)
-                org.moqui.util.CollectionUtilities.mergeNestedMap(baseConfigMap, jsonBody, false)
-                jsonBody = baseConfigMap
+                // jsonBody over the base config, as CollectionUtilities.mergeNestedMap(base, jsonBody, false)
+                const mergeNested = (base, over) => {
+                    for (const [key, value] of Object.entries(over)) {
+                        const baseValue = base[key]
+                        if (value != null && typeof value === "object" && !Array.isArray(value) &&
+                                baseValue != null && typeof baseValue === "object" && !Array.isArray(baseValue)) {
+                            mergeNested(baseValue, value)
+                        } else if (Array.isArray(value) && Array.isArray(baseValue)) {
+                            for (const item of value) if (!baseValue.includes(item)) baseValue.push(item)
+                        } else {
+                            base[key] = value
+                        }
+                    }
+                    return base
+                }
+                jsonBody = mergeNested(JSON.parse(String(appInstance.jsonConfig)), jsonBody)
             }
 
-            ec.logger.info("Initializing docker container for ${appInstance.instanceName} with:\n${jsonBody}")
+            ec.logger.info(`Initializing docker container for ${appInstance.instanceName} with:\n${JSON.stringify(jsonBody)}`)
             restClient.jsonObject(jsonBody)
 
             try {
-                authTokenPass = null
+                let authTokenPass = null
                 if (instanceImage.authTokenCmd) {
                     try {
-                        Process processCmd = Runtime.getRuntime().exec((instanceImage.authTokenCmd).split(" "), null)
-                        BufferedReader readToken = new BufferedReader(new InputStreamReader(processCmd.getInputStream()))
-                        authTokenPass = readToken.readLine()
-                    }
-                    catch (IOException io) {
+                        // the configured command, split on spaces with no shell; its first output line is the token
+                        authTokenPass = ec.resource.runTokenCommand(instanceImage.authTokenCmd)
+                    } catch (e) {
                         authTokenPass = null
-                        ec.logger.log(ec.logger.ERROR_INT, "Error connecting to Docker host in processing aws cmd", io)
-                        ec.message.addError("Error connecting to Docker host: ${io.toString()}")
+                        ec.logger.error(`Error connecting to Docker host in processing the auth token command: ${e}`)
+                        ec.message.addError(`Error connecting to Docker host: ${e}`)
                     }
-
-                }
-                else {
+                } else {
                     authTokenPass = instanceImage.password
                 }
-                Map jsonAuth = [username: instanceImage.username , password: authTokenPass , email: instanceImage.emailAddress , serveraddress: instanceImage.registryLocation ]
-                //Registry-Location now using as Server-Address
-                String json = (String) JsonOutput.toJson(jsonAuth)
-                String authEncoded = Base64.getEncoder().encodeToString(json.getBytes())
-                Map param = [fromImage:(String) instanceImage.imageName ,repo : (String)instanceImage.imageName]
-                RestClient restClientImageCreate = ec.service.rest().method("POST").addHeader((String)("X-Registry-Auth"),(String) authEncoded)
-                restClientImageCreate.uri().protocol(instanceHost.hostProtocol ? (String) instanceHost.hostProtocol : "http")
-                .host(instanceHost.hostAddress as String).port(instanceHost.adminPort ? (instanceHost.adminPort as int) : 2375)
-                .path("images").path("create")
-                .parameters(param).build()
+                // registryLocation is the registry's server address
+                const jsonAuth = {username: instanceImage.username, password: authTokenPass, email: instanceImage.emailAddress,
+                        serveraddress: instanceImage.registryLocation}
+                const authEncoded = StringUtilities.base64Encode(JSON.stringify(jsonAuth))
+                const restClientImageCreate = ec.service.rest().method("POST").addHeader("X-Registry-Auth", authEncoded)
+                dockerUri(restClientImageCreate, "images", "create")
+                        .parameters({fromImage: String(instanceImage.imageName), repo: String(instanceImage.imageName)}).build()
                 restClientImageCreate.timeout(1000)
 
-                RestClient.RestResponse restResponseImageCreate = restClientImageCreate.call()
+                const restResponseImageCreate = restClientImageCreate.call()
                 if (restResponseImageCreate.statusCode != 200) {
-                     ec.message.addMessage("Error Image-pull-fail problem image not-exists either or credential is wrong (${restResponseImageCreate.statusCode}): ${restResponseImageCreate.getReasonPhrase()}")
+                    ec.message.addMessage(`Error Image-pull-fail problem image not-exists either or credential is wrong (${restResponseImageCreate.statusCode}): ${restResponseImageCreate.getReasonPhrase()}`)
                 }
-            } catch (Exception e) {
+            } catch (e) {
                 connectSuccess = false
-                ec.logger.log(ec.logger.ERROR_INT, "Error connecting to Docker host", e)
-                ec.message.addError("Error connecting to Docker host: ${e.toString()}")
+                ec.logger.error(`Error connecting to Docker host: ${e}`)
+                ec.message.addError(`Error connecting to Docker host: ${e}`)
             }
 
             try {
-                RestClient.RestResponse restResponse = restClient.call()
+                const restResponse = restClient.call()
                 connectSuccess = true
 
                 if (restResponse.statusCode == 201) {
                     instanceCreated = true
                     instanceExists = true
 
-                    Map jsonObj = (Map) restResponse.jsonObject()
+                    const jsonObj = restResponse.jsonObject()
                     instanceUuid = jsonObj.Id
                     warnings = jsonObj.Warnings
 
@@ -416,22 +402,22 @@ along with this software (see the LICENSE.md file). If not, see
                         appInstance.update()
                     }
 
-                    ec.message.addMessage("Created Docker container ${appInstance.instanceName} (${appInstance.instanceUuid})${warnings ? ' warnings: ' + (warnings as String) : ''}")
+                    ec.message.addMessage(`Created Docker container ${appInstance.instanceName} (${appInstance.instanceUuid})${warnings && warnings.length ? ' warnings: ' + JSON.stringify(warnings) : ''}`)
                 } else if (restResponse.statusCode == 409) {
                     instanceExists = true
-                    ec.logger.warn("Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) conflict [${restResponse.getReasonPhrase()}]:\n${restResponse.text()}")
-                    ec.message.addMessage("Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) got a conflict on create [${restResponse.getReasonPhrase()}]")
+                    ec.logger.warn(`Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) conflict [${restResponse.getReasonPhrase()}]:\n${restResponse.text()}`)
+                    ec.message.addMessage(`Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) got a conflict on create [${restResponse.getReasonPhrase()}]`)
                 } else if (restResponse.statusCode == 404) {
                     // POST /v1.24/images/create?fromImage=busybox&tag=latest HTTP/1.1
                     ec.message.addMessage("Image not Found ,or may be Docker login fail")
                 } else {
-                    ec.logger.error("Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) ERROR [${restResponse.getReasonPhrase()}]:\n${restResponse.text()}")
-                    ec.message.addMessage("Error on create container for ${appInstance.instanceName} (${restResponse.statusCode}): ${restResponse.getReasonPhrase()}")
+                    ec.logger.error(`Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) ERROR [${restResponse.getReasonPhrase()}]:\n${restResponse.text()}`)
+                    ec.message.addMessage(`Error on create container for ${appInstance.instanceName} (${restResponse.statusCode}): ${restResponse.getReasonPhrase()}`)
                 }
-            } catch (Exception e) {
+            } catch (e) {
                 connectSuccess = false
-                ec.logger.log(ec.logger.ERROR_INT, "Error connecting to Docker host", e)
-                ec.message.addError("Error connecting to Docker host: ${e.toString()}")
+                ec.logger.error(`Error connecting to Docker host: ${e}`)
+                ec.message.addError(`Error connecting to Docker host: ${e}`)
             }
             ]]></script></actions>
     </service>
@@ -439,44 +425,42 @@ along with this software (see the LICENSE.md file). If not, see
         <!-- see https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#/start-a-container -->
         <implements service="org.moqui.impl.InstanceServices.start#Instance"/>
         <actions><script><![CDATA[
-            import org.moqui.context.ExecutionContext
-            import org.moqui.entity.EntityValue
-            import org.moqui.util.RestClient
-
             instanceStarted = false
             instanceRunning = null
+            const appInstance = ec.entity.find("moqui.server.instance.AppInstance").condition("appInstanceId", appInstanceId).one()
+            const instanceHost = appInstance.findRelatedOne("instanceHost", null, null)
+            const dockerUri = (restClient, ...paths) => {
+                const uri = restClient.uri().protocol(instanceHost.hostProtocol || "http").host(String(instanceHost.hostAddress))
+                        .port(instanceHost.adminPort ? parseInt(instanceHost.adminPort, 10) : 2375)
+                for (const path of paths) uri.path(path)
+                return uri
+            }
+            const containerName = String(appInstance.instanceUuid || appInstance.instanceName)
 
-            ExecutionContext ec = context.ec
-            EntityValue appInstance = ec.entity.find("moqui.server.instance.AppInstance").condition("appInstanceId", appInstanceId).one()
-            EntityValue instanceHost = appInstance.findRelatedOne("instanceHost", null, null)
-
-            RestClient restClient = ec.service.rest().method("POST")
-            restClient.uri().protocol(instanceHost.hostProtocol ? (String) instanceHost.hostProtocol : "http")
-                    .host(instanceHost.hostAddress as String).port(instanceHost.adminPort ? (instanceHost.adminPort as int) : 2375)
-                    .path("containers").path(appInstance.instanceUuid ? (String) appInstance.instanceUuid : (String) appInstance.instanceName)
-                    .path("start").build()
+            const restClient = ec.service.rest().method("POST")
+            dockerUri(restClient, "containers", containerName, "start").build()
 
             try {
-                RestClient.RestResponse restResponse = restClient.call()
+                const restResponse = restClient.call()
                 if (restResponse.statusCode == 204) {
                     instanceStarted = true
                     instanceRunning = true
-                    ec.message.addMessage("Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) started")
+                    ec.message.addMessage(`Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) started`)
                 } else if (restResponse.statusCode == 304) {
                     instanceStarted = false
                     instanceRunning = true
-                    ec.message.addMessage("Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) already started")
+                    ec.message.addMessage(`Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) already started`)
                 } else if (restResponse.statusCode == 404) {
                     instanceStarted = false
                     instanceRunning = false
-                    ec.message.addMessage("Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) does not exist, init first")
+                    ec.message.addMessage(`Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) does not exist, init first`)
                 } else {
                     errorString = restResponse.getReasonPhrase()
-                    ec.message.addMessage("Server error on Docker host: ${errorString}")
+                    ec.message.addMessage(`Server error on Docker host: ${errorString}`)
                 }
-            } catch (Exception e) {
-                ec.logger.log(ec.logger.ERROR_INT, "Error connecting to Docker host", e)
-                ec.message.addError("Error connecting to Docker host: ${e.toString()}")
+            } catch (e) {
+                ec.logger.error(`Error connecting to Docker host: ${e}`)
+                ec.message.addError(`Error connecting to Docker host: ${e}`)
             }
         ]]></script></actions>
     </service>
@@ -484,89 +468,83 @@ along with this software (see the LICENSE.md file). If not, see
         <!-- see https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#/stop-a-container -->
         <implements service="org.moqui.impl.InstanceServices.stop#Instance"/>
         <actions><script><![CDATA[
-            import org.moqui.context.ExecutionContext
-            import org.moqui.entity.EntityValue
-            import org.moqui.util.RestClient
-
             instanceStopped = false
             instanceRunning = null
+            const appInstance = ec.entity.find("moqui.server.instance.AppInstance").condition("appInstanceId", appInstanceId).one()
+            const instanceHost = appInstance.findRelatedOne("instanceHost", null, null)
+            const dockerUri = (restClient, ...paths) => {
+                const uri = restClient.uri().protocol(instanceHost.hostProtocol || "http").host(String(instanceHost.hostAddress))
+                        .port(instanceHost.adminPort ? parseInt(instanceHost.adminPort, 10) : 2375)
+                for (const path of paths) uri.path(path)
+                return uri
+            }
+            const containerName = String(appInstance.instanceUuid || appInstance.instanceName)
 
-            ExecutionContext ec = context.ec
-            EntityValue appInstance = ec.entity.find("moqui.server.instance.AppInstance").condition("appInstanceId", appInstanceId).one()
-            EntityValue instanceHost = appInstance.findRelatedOne("instanceHost", null, null)
-
-            RestClient restClient = ec.service.rest().method("POST")
-            restClient.uri().protocol(instanceHost.hostProtocol ? (String) instanceHost.hostProtocol : "http")
-                    .host(instanceHost.hostAddress as String).port(instanceHost.adminPort ? (instanceHost.adminPort as int) : 2375)
-                    .path("containers").path(appInstance.instanceUuid ? (String) appInstance.instanceUuid : (String) appInstance.instanceName)
-                    .path("stop").build()
+            const restClient = ec.service.rest().method("POST")
+            dockerUri(restClient, "containers", containerName, "stop").build()
 
             try {
-                RestClient.RestResponse restResponse = restClient.call()
+                const restResponse = restClient.call()
                 if (restResponse.statusCode == 204) {
                     instanceStopped = true
                     instanceRunning = false
-                    ec.message.addMessage("Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) stopped")
+                    ec.message.addMessage(`Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) stopped`)
                 } else if (restResponse.statusCode == 304) {
                     instanceStopped = false
                     instanceRunning = false
-                    ec.message.addMessage("Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) was not running")
+                    ec.message.addMessage(`Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) was not running`)
                 } else if (restResponse.statusCode == 404) {
                     instanceStopped = false
                     instanceRunning = false
-                    ec.message.addMessage("Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) does not exist, init first")
+                    ec.message.addMessage(`Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) does not exist, init first`)
                 } else {
                     errorString = restResponse.getReasonPhrase()
-                    ec.message.addMessage("Server error on Docker host: ${errorString}")
+                    ec.message.addMessage(`Server error on Docker host: ${errorString}`)
                 }
-            } catch (Exception e) {
-                ec.logger.log(ec.logger.ERROR_INT, "Error connecting to Docker host", e)
-                ec.message.addError("Error connecting to Docker host: ${e.toString()}")
+            } catch (e) {
+                ec.logger.error(`Error connecting to Docker host: ${e}`)
+                ec.message.addError(`Error connecting to Docker host: ${e}`)
             }
         ]]></script></actions>
     </service>
     <service verb="remove" noun="InstanceDocker">
         <!-- see https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#/remove-a-container -->
         <implements service="org.moqui.impl.InstanceServices.remove#Instance"/>
-        <actions>
-            <actions><script><![CDATA[
-            import org.moqui.context.ExecutionContext
-            import org.moqui.entity.EntityValue
-            import org.moqui.util.RestClient
-
+        <actions><script><![CDATA[
             instanceRemoved = false
             instanceExists = null
+            const appInstance = ec.entity.find("moqui.server.instance.AppInstance").condition("appInstanceId", appInstanceId).one()
+            const instanceHost = appInstance.findRelatedOne("instanceHost", null, null)
+            const dockerUri = (restClient, ...paths) => {
+                const uri = restClient.uri().protocol(instanceHost.hostProtocol || "http").host(String(instanceHost.hostAddress))
+                        .port(instanceHost.adminPort ? parseInt(instanceHost.adminPort, 10) : 2375)
+                for (const path of paths) uri.path(path)
+                return uri
+            }
+            const containerName = String(appInstance.instanceUuid || appInstance.instanceName)
 
-            ExecutionContext ec = context.ec
-            EntityValue appInstance = ec.entity.find("moqui.server.instance.AppInstance").condition("appInstanceId", appInstanceId).one()
-            EntityValue instanceHost = appInstance.findRelatedOne("instanceHost", null, null)
-
-            RestClient restClient = ec.service.rest().method("DELETE")
-            restClient.uri().protocol(instanceHost.hostProtocol ? (String) instanceHost.hostProtocol : "http")
-                    .host(instanceHost.hostAddress as String).port(instanceHost.adminPort ? (instanceHost.adminPort as int) : 2375)
-                    .path("containers").path(appInstance.instanceUuid ? (String) appInstance.instanceUuid : (String) appInstance.instanceName)
-                    .build()
+            const restClient = ec.service.rest().method("DELETE")
+            dockerUri(restClient, "containers", containerName).build()
 
             try {
-                RestClient.RestResponse restResponse = restClient.call()
+                const restResponse = restClient.call()
                 if (restResponse.statusCode == 204) {
                     instanceRemoved = true
                     instanceExists = false
-                    ec.message.addMessage("Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) removed")
+                    ec.message.addMessage(`Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) removed`)
                 } else if (restResponse.statusCode == 404) {
                     instanceRemoved = false
                     instanceExists = false
-                    ec.message.addMessage("Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) does not exist, init first")
+                    ec.message.addMessage(`Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) does not exist, init first`)
                 } else {
                     errorString = restResponse.getReasonPhrase()
-                    ec.message.addMessage("Server error on Docker host: ${errorString}")
+                    ec.message.addMessage(`Server error on Docker host: ${errorString}`)
                 }
-            } catch (Exception e) {
-                ec.logger.log(ec.logger.ERROR_INT, "Error connecting to Docker host", e)
-                ec.message.addError("Error connecting to Docker host: ${e.toString()}")
+            } catch (e) {
+                ec.logger.error(`Error connecting to Docker host: ${e}`)
+                ec.message.addError(`Error connecting to Docker host: ${e}`)
             }
         ]]></script></actions>
-        </actions>
     </service>
     <service verb="check" noun="InstanceDocker">
         <implements service="org.moqui.impl.InstanceServices.check#Instance"/>
@@ -579,10 +557,6 @@ along with this software (see the LICENSE.md file). If not, see
         <!-- see https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#/inspect-a-container -->
         <implements service="org.moqui.impl.InstanceServices.check#Instance"/>
         <actions><script><![CDATA[
-            import org.moqui.context.ExecutionContext
-            import org.moqui.entity.EntityValue
-            import org.moqui.util.RestClient
-
             connectSuccess = null
             instanceExists = null
             instanceRunning = null
@@ -590,50 +564,52 @@ along with this software (see the LICENSE.md file). If not, see
             errorString = ""
             startedAt = null
             finishedAt = null
+            const appInstance = ec.entity.find("moqui.server.instance.AppInstance").condition("appInstanceId", appInstanceId).one()
+            const instanceHost = appInstance.findRelatedOne("instanceHost", null, null)
+            if (instanceHost == null) { ec.message.addMessage(`No InstanceHost found for AppInstance ${appInstanceId}`); return; }
+            const dockerUri = (restClient, ...paths) => {
+                const uri = restClient.uri().protocol(instanceHost.hostProtocol || "http").host(String(instanceHost.hostAddress))
+                        .port(instanceHost.adminPort ? parseInt(instanceHost.adminPort, 10) : 2375)
+                for (const path of paths) uri.path(path)
+                return uri
+            }
+            const containerName = String(appInstance.instanceUuid || appInstance.instanceName)
 
-            ExecutionContext ec = context.ec
-            EntityValue appInstance = ec.entity.find("moqui.server.instance.AppInstance").condition("appInstanceId", appInstanceId).one()
-            EntityValue instanceHost = appInstance.findRelatedOne("instanceHost", null, null)
-            if (instanceHost == null) { ec.message.addMessage("No InstanceHost found for AppInstance ${appInstanceId}"); return; }
-
-            RestClient restClient = ec.service.rest().method("GET")
-            restClient.uri().protocol(instanceHost.hostProtocol ? (String) instanceHost.hostProtocol : "http")
-                    .host(instanceHost.hostAddress as String).port(instanceHost.adminPort ? (instanceHost.adminPort as int) : 2375)
-                    .path("containers").path(appInstance.instanceUuid ? (String) appInstance.instanceUuid : (String) appInstance.instanceName)
-                    .path("json").build()
+            const restClient = ec.service.rest().method("GET")
+            dockerUri(restClient, "containers", containerName, "json").build()
 
             try {
-                RestClient.RestResponse restResponse = restClient.call()
+                const restResponse = restClient.call()
                 connectSuccess = true
 
                 if (restResponse.statusCode == 200) {
                     instanceExists = true
 
-                    inspectMap = (Map) restResponse.jsonObject()
-                    Map stateMap = inspectMap.State
-                    instanceRunning = stateMap.Running as Boolean
-                    statusString = stateMap.Status as String
-                    errorString = stateMap.Error as String
-                    startedAt = ec.l10n.parseTimestamp(stateMap.StartedAt as String, "")
-                    if (stateMap.FinishedAt) finishedAt = ec.l10n.parseTimestamp(stateMap.FinishedAt as String, "")
+                    inspectMap = restResponse.jsonObject()
+                    const stateMap = inspectMap.State || {}
+                    instanceRunning = !!stateMap.Running
+                    statusString = stateMap.Status == null ? null : String(stateMap.Status)
+                    errorString = stateMap.Error == null ? null : String(stateMap.Error)
+                    startedAt = stateMap.StartedAt ? ec.l10n.parseTimestamp(String(stateMap.StartedAt), "") : null
+                    if (stateMap.FinishedAt) finishedAt = ec.l10n.parseTimestamp(String(stateMap.FinishedAt), "")
 
                     if (!appInstance.instanceUuid) {
                         appInstance.instanceUuid = inspectMap.Id
                         appInstance.update()
                     }
 
-                    ec.message.addMessage("Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) ${instanceRunning ? 'running' : 'NOT running'}, status ${statusString}, ${errorString ? 'error: ' + errorString + ', ' : ''}started at ${ec.l10n.format(startedAt, '')}${finishedAt ? ', finished at ' + ec.l10n.format(finishedAt, '') : ''}")
+                    ec.message.addMessage(`Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) ${instanceRunning ? 'running' : 'NOT running'}, status ${statusString}, ${errorString ? 'error: ' + errorString + ', ' : ''}started at ${ec.l10n.format(startedAt, '')}${finishedAt ? ', finished at ' + ec.l10n.format(finishedAt, '') : ''}`)
                 } else if (restResponse.statusCode == 404) {
                     instanceExists = false
-                    ec.message.addMessage("Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) does not exist")
+                    ec.message.addMessage(`Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) does not exist`)
                 } else {
                     errorString = restResponse.getReasonPhrase()
-                    ec.message.addMessage("Server error on Docker host: ${errorString}")
+                    ec.message.addMessage(`Server error on Docker host: ${errorString}`)
                 }
-            } catch (Exception e) {
+            } catch (e) {
                 connectSuccess = false
-                ec.logger.log(ec.logger.ERROR_INT, "Error connecting to Docker host", e)
-                ec.message.addError("Error connecting to Docker host: ${e.toString()}")
+                ec.logger.error(`Error connecting to Docker host: ${e}`)
+                ec.message.addError(`Error connecting to Docker host: ${e}`)
             }
         ]]></script></actions>
     </service>
@@ -641,45 +617,41 @@ along with this software (see the LICENSE.md file). If not, see
         <!-- see https://docs.docker.com/engine/reference/api/docker_remote_api_v1.24/#/inspect-a-container -->
         <in-parameters><parameter name="appInstanceId"/></in-parameters>
         <out-parameters><parameter name="instanceLog"/></out-parameters>
-        <actions>
-            <script><![CDATA[
-            import org.moqui.context.ExecutionContext
-            import org.moqui.entity.EntityValue
-            import org.moqui.util.RestClient
-
+        <actions><script><![CDATA[
             instanceLog = null
+            const appInstance = ec.entity.find("moqui.server.instance.AppInstance").condition("appInstanceId", appInstanceId).one()
+            const instanceHost = appInstance.findRelatedOne("instanceHost", null, null)
+            if (instanceHost == null) { ec.message.addMessage(`No InstanceHost found for AppInstance ${appInstanceId}`); return; }
+            const dockerUri = (restClient, ...paths) => {
+                const uri = restClient.uri().protocol(instanceHost.hostProtocol || "http").host(String(instanceHost.hostAddress))
+                        .port(instanceHost.adminPort ? parseInt(instanceHost.adminPort, 10) : 2375)
+                for (const path of paths) uri.path(path)
+                return uri
+            }
+            const containerName = String(appInstance.instanceUuid || appInstance.instanceName)
 
-            ExecutionContext ec = context.ec
-            EntityValue appInstance = ec.entity.find("moqui.server.instance.AppInstance").condition("appInstanceId", appInstanceId).one()
-            EntityValue instanceHost = appInstance.findRelatedOne("instanceHost", null, null)
-            if (instanceHost == null) { ec.message.addMessage("No InstanceHost found for AppInstance ${appInstanceId}"); return; }
-
-            RestClient restClient = ec.service.rest().method("GET")
-            restClient.uri().protocol(instanceHost.hostProtocol ? (String) instanceHost.hostProtocol : "http")
-                    .host(instanceHost.hostAddress as String).port(instanceHost.adminPort ? (instanceHost.adminPort as int) : 2375)
-                    .path("containers").path(appInstance.instanceUuid ? (String) appInstance.instanceUuid : (String) appInstance.instanceName)
-                    .path("logs").parameter("stdout", "true").parameter("tail", "50").build()
+            const restClient = ec.service.rest().method("GET")
+            dockerUri(restClient, "containers", containerName, "logs").parameter("stdout", "true").parameter("tail", "50").build()
 
             try {
-                RestClient.RestResponse restResponse = restClient.call()
+                const restResponse = restClient.call()
                 connectSuccess = true
 
                 if (restResponse.statusCode == 200) {
                     instanceExists = true
-
-                    instanceLog = restResponse.text().replaceAll("\u0001\u0000{5}[\u0000\u0001][\u003c\ufffd]", "").replaceAll("\u001b\\[[0-9]{0,2}m", "")
-
+                    // drop the stream frame headers and the terminal color codes
+                    instanceLog = restResponse.text().replace(/\u0001\u0000{5}[\u0000\u0001][\u003c\ufffd]/g, "").replace(/\u001b\[[0-9]{0,2}m/g, "")
                 } else if (restResponse.statusCode == 404) {
                     instanceExists = false
-                    ec.message.addMessage("Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) does not exist")
+                    ec.message.addMessage(`Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) does not exist`)
                 } else {
                     errorString = restResponse.getReasonPhrase()
-                    ec.message.addMessage("Server error on Docker host: ${errorString}")
+                    ec.message.addMessage(`Server error on Docker host: ${errorString}`)
                 }
-            } catch (Exception e) {
+            } catch (e) {
                 connectSuccess = false
-                ec.logger.log(ec.logger.ERROR_INT, "Error connecting to Docker host", e)
-                ec.message.addError("Error connecting to Docker host: ${e.toString()}")
+                ec.logger.error(`Error connecting to Docker host: ${e}`)
+                ec.message.addError(`Error connecting to Docker host: ${e}`)
             }
         ]]></script></actions>
     </service>
@@ -697,12 +669,12 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="databaseHost" from="appInstance.database"/>
             <if condition="databaseHost == null"><return message="No DatabaseHost found for AppInstance ${appInstanceId}"/></if>
             <set field="envList" from="appInstance.envs"/>
-            <set field="envMap" from="[:]"/>
-            <iterate list="envList" entry="envItem"><script>envMap.put(envItem.envName, envItem.envValue)</script></iterate>
+            <set field="envMap" from="{}"/>
+            <iterate list="envList" entry="envItem"><script>envMap[envItem.envName] = envItem.envValue</script></iterate>
 
             <!-- setup adminMap directly from databaseHost settings, may differ from how instance accesses the database -->
-            <set field="adminMap" from="[entity_ds_db_conf:databaseHost.type.confName, entity_ds_host:databaseHost.hostAddress,
-                    entity_ds_port:databaseHost.hostPort, entity_ds_user:databaseHost.adminUser, entity_ds_password:databaseHost.adminPassword]"/>
+            <set field="adminMap" from="{entity_ds_db_conf:databaseHost.type.confName, entity_ds_host:databaseHost.hostAddress,
+                    entity_ds_port:databaseHost.hostPort, entity_ds_user:databaseHost.adminUser, entity_ds_password:databaseHost.adminPassword}"/>
         </actions>
     </service>
 
@@ -711,36 +683,30 @@ along with this software (see the LICENSE.md file). If not, see
         <implements service="org.moqui.impl.InstanceServices.check#Database"/>
         <actions>
             <service-call name="org.moqui.impl.InstanceServices.get#AppInstanceEnv" in-map="context" out-map="context"/>
-            <if condition="!envMap"><return/></if>
+            <if condition="!envMap || !Object.keys(envMap).length"><return/></if>
             <!-- connect with the mysql database which is always there in MySQL -->
             <set field="adminMap.entity_ds_database" value="mysql"/>
 
             <script><![CDATA[
-                org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger("checkDatabaseMySQL")
+                const identifier = (name, what) => {
+                    if (!/^[A-Za-z0-9_]+$/.test(String(name ?? ""))) throw new Error(`The ${what} name [${name}] is not a plain identifier`)
+                    return String(name)
+                }
+                const quoted = (text) => String(text ?? "").replace(/'/g, "''")
+                const databaseName = identifier(envMap.entity_ds_database, "database")
+                const userName = identifier(envMap.entity_ds_user, "user")
 
-                dbConnectSuccess = false
+                dbConnectSuccess = ec.entity.testConfConnection(adminMap)
                 databaseExists = false
                 dbUserExists = false
-
-                javax.sql.XAConnection testXaCon = null
-                java.sql.Connection testCon = null
-                try {
-                    testXaCon = ec.entity.getConfConnection(adminMap)
-                    testCon = testXaCon.getConnection()
-                    dbConnectSuccess = true
-                } catch (Exception e) {
-                    logger.warn("Test connection failed", e)
-                } finally {
-                    if (testCon != null) testCon.close()
-                    if (testXaCon != null) testXaCon.close()
-                }
+                if (!dbConnectSuccess) ec.logger.warn("Test connection to MySQL failed")
 
                 if (dbConnectSuccess) {
-                    long dbCount = ec.entity.runSqlCountConf("information_schema.schemata", "schema_name='${envMap.entity_ds_database}'", adminMap)
-                    if (dbCount > 0L) databaseExists = true
+                    const dbCount = ec.entity.runSqlCountConf("information_schema.schemata", `schema_name='${databaseName}'`, adminMap)
+                    if (dbCount > 0) databaseExists = true
 
-                    long userCount = ec.entity.runSqlCountConf("mysql.user", "user='${envMap.entity_ds_user}'", adminMap)
-                    if (userCount > 0L) dbUserExists = true
+                    const userCount = ec.entity.runSqlCountConf("mysql.user", `user='${userName}'`, adminMap)
+                    if (userCount > 0) dbUserExists = true
                 }
             ]]></script>
 
@@ -751,39 +717,47 @@ along with this software (see the LICENSE.md file). If not, see
         <implements service="org.moqui.impl.InstanceServices.create#Database"/>
         <actions>
             <service-call name="org.moqui.impl.InstanceServices.get#AppInstanceEnv" in-map="context" out-map="context"/>
-            <if condition="!envMap"><return/></if>
+            <if condition="!envMap || !Object.keys(envMap).length"><return/></if>
             <!-- connect with the mysql database which is always there in MySQL -->
             <set field="adminMap.entity_ds_database" value="mysql"/>
 
             <script><![CDATA[
+                const identifier = (name, what) => {
+                    if (!/^[A-Za-z0-9_]+$/.test(String(name ?? ""))) throw new Error(`The ${what} name [${name}] is not a plain identifier`)
+                    return String(name)
+                }
+                const quoted = (text) => String(text ?? "").replace(/'/g, "''")
+                const databaseName = identifier(envMap.entity_ds_database, "database")
+                const userName = identifier(envMap.entity_ds_user, "user")
+
                 databaseCreated = false
                 userCreated = false
 
                 // see if database exists (SELECT * FROM information_schema.schemata WHERE schema_name='moqui')
-                long dbCount = ec.entity.runSqlCountConf("information_schema.schemata", "schema_name='${envMap.entity_ds_database}'", adminMap)
-                if (dbCount > 0L) {
-                    ec.message.addMessage("Database ${envMap.entity_ds_database} already exists on host ${adminMap.entity_ds_host}")
+                const dbCount = ec.entity.runSqlCountConf("information_schema.schemata", `schema_name='${databaseName}'`, adminMap)
+                if (dbCount > 0) {
+                    ec.message.addMessage(`Database ${databaseName} already exists on host ${adminMap.entity_ds_host}`)
                 } else {
-                    int dbRows = ec.entity.runSqlUpdateConf("CREATE DATABASE `${envMap.entity_ds_database}` DEFAULT CHARACTER SET utf8", adminMap)
+                    const dbRows = ec.entity.runSqlUpdateConf(`CREATE DATABASE \`${databaseName}\` DEFAULT CHARACTER SET utf8`, adminMap)
                     if (dbRows > 0) {
                         databaseCreated = true
-                        ec.message.addMessage("Created database ${envMap.entity_ds_database} on host ${adminMap.entity_ds_host}")
+                        ec.message.addMessage(`Created database ${databaseName} on host ${adminMap.entity_ds_host}`)
                     }
                 }
 
                 // see if user exists (SELECT * FROM mysql.user WHERE user='root')
-                long userCount = ec.entity.runSqlCountConf("mysql.user", "user='${envMap.entity_ds_user}'", adminMap)
-                if (userCount > 0L) {
-                    ec.message.addMessage("User ${envMap.entity_ds_user} already exists on host ${envMap.entity_ds_host}")
+                const userCount = ec.entity.runSqlCountConf("mysql.user", `user='${userName}'`, adminMap)
+                if (userCount > 0) {
+                    ec.message.addMessage(`User ${userName} already exists on host ${envMap.entity_ds_host}`)
                 } else {
                     // NOTE: calling CREATE USER with IF NOT EXISTS returns an error instead of warning in MySQL 5.7.* (at least 5.7.10)
                     // NOTE: always seems to return 0 rows updated so ignore
-                    ec.entity.runSqlUpdateConf("CREATE USER '${envMap.entity_ds_user}' IDENTIFIED BY '${envMap.entity_ds_password}'", adminMap)
+                    ec.entity.runSqlUpdateConf(`CREATE USER '${userName}' IDENTIFIED BY '${quoted(envMap.entity_ds_password)}'`, adminMap)
                     userCreated = true
-                    ec.message.addMessage("Created user ${envMap.entity_ds_user} on host ${adminMap.entity_ds_host}")
+                    ec.message.addMessage(`Created user ${userName} on host ${adminMap.entity_ds_host}`)
                 }
                 // NOTE: because of issue above user must already exist, often the case (using same user to access all tenant DBs; may create separate users to access only a single tenant DB)
-                ec.entity.runSqlUpdateConf("GRANT ALL ON ${envMap.entity_ds_database}.* TO '${envMap.entity_ds_user}'", adminMap)
+                ec.entity.runSqlUpdateConf(`GRANT ALL ON ${databaseName}.* TO '${userName}'`, adminMap)
             ]]></script>
         </actions>
     </service>
@@ -792,36 +766,30 @@ along with this software (see the LICENSE.md file). If not, see
         <implements service="org.moqui.impl.InstanceServices.check#Database"/>
         <actions>
             <service-call name="org.moqui.impl.InstanceServices.get#AppInstanceEnv" in-map="context" out-map="context"/>
-            <if condition="!envMap"><return/></if>
+            <if condition="!envMap || !Object.keys(envMap).length"><return/></if>
 
             <set field="adminMap.entity_ds_database" from="envMap.entity_ds_database"/>
 
             <script><![CDATA[
-                org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger("checkDatabasePostgres")
+                const identifier = (name, what) => {
+                    if (!/^[A-Za-z0-9_]+$/.test(String(name ?? ""))) throw new Error(`The ${what} name [${name}] is not a plain identifier`)
+                    return String(name)
+                }
+                const quoted = (text) => String(text ?? "").replace(/'/g, "''")
+                const databaseName = identifier(envMap.entity_ds_database, "database")
+                const userName = identifier(envMap.entity_ds_user, "user")
 
-                dbConnectSuccess = false
+                dbConnectSuccess = ec.entity.testConfConnection(adminMap)
                 databaseExists = false
                 dbUserExists = false
-
-                javax.sql.XAConnection testXaCon = null
-                java.sql.Connection testCon = null
-                try {
-                    testXaCon = ec.entity.getConfConnection(adminMap)
-                    testCon = testXaCon.getConnection()
-                    dbConnectSuccess = true
-                } catch (Exception e) {
-                    logger.warn("Test connection to Postgres failed", e)
-                } finally {
-                    if (testCon != null) testCon.close()
-                    if (testXaCon != null) testXaCon.close()
-                }
+                if (!dbConnectSuccess) ec.logger.warn("Test connection to Postgres failed")
 
                 if (dbConnectSuccess) {
-                    long dbCount = ec.entity.runSqlCountConf("pg_database", "pg_database.datname='${envMap.entity_ds_database}'", adminMap)
-                    if (dbCount > 0L) databaseExists = true
+                    const dbCount = ec.entity.runSqlCountConf("pg_database", `pg_database.datname='${databaseName}'`, adminMap)
+                    if (dbCount > 0) databaseExists = true
 
-                    long userCount = ec.entity.runSqlCountConf("pg_catalog.pg_user", "usename='${envMap.entity_ds_user}'", adminMap)
-                    if (userCount > 0L) dbUserExists = true
+                    const userCount = ec.entity.runSqlCountConf("pg_catalog.pg_user", `usename='${userName}'`, adminMap)
+                    if (userCount > 0) dbUserExists = true
                 }
             ]]></script>
         </actions>
@@ -832,36 +800,40 @@ along with this software (see the LICENSE.md file). If not, see
         <actions>
             <log message="Creating database in Postgres!"/>
             <service-call name="org.moqui.impl.InstanceServices.get#AppInstanceEnv" in-map="context" out-map="context"/>
-            <if condition="!envMap"><return/></if>
+            <if condition="!envMap || !Object.keys(envMap).length"><return/></if>
 
             <set field="adminMap.entity_ds_database" from="adminMap.entity_ds_db_conf"/>
             <script><![CDATA[
+                const identifier = (name, what) => {
+                    if (!/^[A-Za-z0-9_]+$/.test(String(name ?? ""))) throw new Error(`The ${what} name [${name}] is not a plain identifier`)
+                    return String(name)
+                }
+                const quoted = (text) => String(text ?? "").replace(/'/g, "''")
+                const databaseName = identifier(envMap.entity_ds_database, "database")
+                const userName = identifier(envMap.entity_ds_user, "user")
+
                 databaseCreated = false
                 userCreated = false
 
-                long dbCount = ec.entity.runSqlCountConf("pg_database", "pg_database.datname='${envMap.entity_ds_database}'", adminMap)
-                if (dbCount > 0L) {
-                    ec.message.addMessage("Database ${envMap.entity_ds_database} already exists on host ${adminMap.entity_ds_host}")
+                const dbCount = ec.entity.runSqlCountConf("pg_database", `pg_database.datname='${databaseName}'`, adminMap)
+                if (dbCount > 0) {
+                    ec.message.addMessage(`Database ${databaseName} already exists on host ${adminMap.entity_ds_host}`)
                 } else {
-                    int dbRows = ec.entity.runSqlUpdateConf("CREATE DATABASE ${envMap.entity_ds_database}", adminMap)
-                    if (dbRows > 0) {
-                        databaseCreated = true
-                        ec.message.addMessage("Created database ${envMap.entity_ds_database} on host ${adminMap.entity_ds_host}")
-                    }
+                    // Postgres reports no rows for CREATE DATABASE, so a statement that did not fail created it
+                    ec.entity.runSqlUpdateConf(`CREATE DATABASE ${databaseName}`, adminMap)
+                    databaseCreated = true
+                    ec.message.addMessage(`Created database ${databaseName} on host ${adminMap.entity_ds_host}`)
                 }
 
-                long userCount = ec.entity.runSqlCountConf("pg_catalog.pg_user", "usename='${envMap.entity_ds_user}'", adminMap)
-                if (userCount > 0L) {
-                    ec.message.addMessage("User ${envMap.entity_ds_user} already exists on host ${envMap.entity_ds_host}")
+                const userCount = ec.entity.runSqlCountConf("pg_catalog.pg_user", `usename='${userName}'`, adminMap)
+                if (userCount > 0) {
+                    ec.message.addMessage(`User ${userName} already exists on host ${envMap.entity_ds_host}`)
                 } else {
-                    // NOTE: calling CREATE USER with IF NOT EXISTS returns an error instead of warning in MySQL 5.7.* (at least 5.7.10)
-                    // NOTE: always seems to return 0 rows updated so ignore
-                    ec.entity.runSqlUpdateConf("CREATE USER ${envMap.entity_ds_user} WITH PASSWORD '${envMap.entity_ds_password}'", adminMap)
+                    ec.entity.runSqlUpdateConf(`CREATE USER ${userName} WITH PASSWORD '${quoted(envMap.entity_ds_password)}'`, adminMap)
                     userCreated = true
-                    ec.message.addMessage("Created user ${envMap.entity_ds_user} on host ${adminMap.entity_ds_host}")
+                    ec.message.addMessage(`Created user ${userName} on host ${adminMap.entity_ds_host}`)
                 }
-                // NOTE: because of issue above user must already exist, often the case (using same user to access all tenant DBs; may create separate users to access only a single tenant DB)
-                ec.entity.runSqlUpdateConf("GRANT ALL PRIVILEGES ON DATABASE ${envMap.entity_ds_database} TO ${envMap.entity_ds_user}", adminMap)
+                ec.entity.runSqlUpdateConf(`GRANT ALL PRIVILEGES ON DATABASE ${databaseName} TO ${userName}`, adminMap)
             ]]></script>
         </actions>
     </service>

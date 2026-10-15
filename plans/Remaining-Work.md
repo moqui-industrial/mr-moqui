@@ -4,10 +4,10 @@ Summary derived from the archived plans on 2026-10-14. Phases 0–12 and gates 1
 
 ## Deferred on purpose
 
-- **Phase 13: LLM and A2A.** Ported as the Java framework stands when the phase begins, because the Java side is not yet stable and community feedback iterations are still running. Scope: LLM client, conversation, protocols, tool loop, host routes for LLM endpoints, A2A routes (design in `../moqui/framework/plans/A2A-Server.md`). Until then `LlmServices.xml`, `A2AServices.xml` and the LLM/A2A parts of the tools component stay in the tree, unwired; a call fails with an error naming the service. The LLM client sets the sim-allow exception on `RestClient`. Check: same cases as the Java tests at the time of the port. See [Implementation-Phases, Phase 13](archive/Implementation-Phases.md).
+- **Phase 13: LLM and A2A.** Ported as the Java framework stands when the phase begins, because the Java side is not yet stable and community feedback iterations are still running. Scope: LLM client, conversation, protocols, tool loop, host routes for LLM endpoints, A2A routes (design in `../moqui/framework/plans/A2A-Server.md`). `LlmServices.xml`, `A2AServices.xml` and the tools component's `llm` REST resource were removed on 2026-10-14; take fresh copies from moqui-framework when the phase begins and wire them then. The LLM and A2A entities and `LlmTypeData.xml` stay. The LLM client sets the sim-allow exception on `RestClient`. Check: same cases as the Java tests at the time of the port. See [Implementation-Phases, Phase 13](archive/Implementation-Phases.md).
 - **Further database drivers** (SQL Server, Oracle, DB2, DB2 for i, Derby, HSQLDB). Build stays on Postgres, MySQL, and SQLite (browser). A missing driver is a configuration error naming the database. Phase 12 in the same file.
 - **Assist panel** and the other agent/assist parts: part of this phase.
-- **Deliberately not ported:** JSON-RPC, Groovy shell and web eval, Java/Groovy service runners, `vuet`/`/vapps`, `service-group`, `InstanceServices` Docker provisioning, Swagger 2.0/RAML output, `ElasticDatasourceFactory`, Hazelcast/session-byte replication.
+- **Deliberately not ported:** JSON-RPC, Groovy shell and web eval, Java/Groovy service runners, `vuet`/`/vapps`, `service-group`, Swagger 2.0/RAML output, `ElasticDatasourceFactory`, Hazelcast/session-byte replication.
 
 ## Known open items
 
@@ -28,6 +28,7 @@ Summary derived from the archived plans on 2026-10-14. Phases 0–12 and gates 1
 - Postgres `NOTIFY` cluster channel: `cluster_transport=notify`, `moqui-host/src/cluster_notify.rs`, with an integration test.
 - The russh SSH cluster sender: `moqui-host/src/ssh/cluster.rs`.
 - `ScreenServices.xml` bodies: JavaScript or Rust under `ServiceKind::Tools` (Phase 11).
+- The last framework Groovy (2026-10-14): `WikiServices`, `InstanceServices` (Docker provisioning and the database create and check services) and `verify#ReCaptcha` are JavaScript, on `ec.service.rest()`, the wiki's ResourceReference methods, dbresource version history, `ec.entity` SQL on a conf connection and `ec.resource.runTokenCommand`. The email services run in Rust (`service/mail.rs`) selected by name, and the `Security.eecas.xml` checks call the `UserSecurityChecks` script helper. `moqui lint --groovy framework runtime/base-component` reports no parse failures. Checked by `crates/moqui-core/src/service/script_ports_tests.rs`.
 - Static `qvt` template double download: the handler loads the script with the response's ETag/Cache-Control serving the second request, so it is a cache hit, not a second download. Not verified in a browser.
 - `lookup` widget as a text line: matches Java, where the macro was commented out. Not a gap.
 - `WASM_BIGINT` link flag: no longer present in the repo.

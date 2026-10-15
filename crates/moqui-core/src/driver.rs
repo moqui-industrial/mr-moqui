@@ -19,6 +19,7 @@
 //! keyed by SQL text. [`DbConnection::query_once`] must not take a cache slot.
 //! An open stream pins the connection until [`DbConnection::close_stream`].
 
+use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
 use moqui_lib::error::Error;
@@ -87,6 +88,47 @@ pub trait DbConnection: Send {
         let _ = remaining;
         Ok(())
     }
+}
+
+/// A database named by its `database-list` conf name and its address, as Java's `getConfConnection` takes from the
+/// `entity_ds_*` entries of a map. The connection is its own, not one from the entity pool.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConfDb {
+    /// The `database-list` name, such as `postgres` or `mysql8`.
+    pub db_type: String,
+    pub host: String,
+    /// Empty is the database's default port.
+    pub port: String,
+    pub database: String,
+    pub user: String,
+    pub password: String,
+}
+
+/// Makes a driver for a [`ConfDb`]. The host installs one; it knows the database clients.
+pub type ConfDriverFactory = dyn Fn(&ConfDb) -> Result<Arc<dyn DbDriver>, Error> + Send + Sync;
+
+fn conf_driver_slot() -> &'static RwLock<Option<Arc<ConfDriverFactory>>> {
+    static SLOT: RwLock<Option<Arc<ConfDriverFactory>>> = RwLock::new(None);
+    &SLOT
+}
+
+/// Use `factory` for every [`conf_driver`] in this process.
+pub fn install_conf_driver_factory(factory: Arc<ConfDriverFactory>) {
+    *conf_driver_slot().write().unwrap_or_else(PoisonError::into_inner) = Some(factory);
+}
+
+/// A driver for the database `conf` names.
+///
+/// # Errors
+///
+/// When the host installed no factory, or the factory cannot make a driver for the conf name.
+pub fn conf_driver(conf: &ConfDb) -> Result<Arc<dyn DbDriver>, Error> {
+    let factory = conf_driver_slot()
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+        .ok_or_else(|| Error::new("no database client for conf connections is installed in this host"))?;
+    factory(conf)
 }
 
 /// Cancels the statement running on another thread. A connection with no

@@ -207,6 +207,7 @@ struct Engine {
     collection_utilities: Persistent<Object<'static>>,
     string_utilities: Persistent<Object<'static>>,
     web_utilities: Persistent<Object<'static>>,
+    user_security_checks: Persistent<Object<'static>>,
     context: Context,
     // The context and its persistents borrow this runtime. Drop order frees them first.
     #[allow(dead_code)]
@@ -236,6 +237,7 @@ enum HelperKind {
     Collection,
     String,
     Web,
+    Security,
 }
 
 /// Push an empty frame on the thread-local context stack.
@@ -556,6 +558,7 @@ impl Engine {
             collection_utilities: helpers.collection_utilities,
             string_utilities: helpers.string_utilities,
             web_utilities: helpers.web_utilities,
+            user_security_checks: helpers.user_security_checks,
             context,
             runtime,
         })
@@ -567,6 +570,7 @@ struct Helpers {
     collection_utilities: Persistent<Object<'static>>,
     string_utilities: Persistent<Object<'static>>,
     web_utilities: Persistent<Object<'static>>,
+    user_security_checks: Persistent<Object<'static>>,
 }
 
 fn install_context(ctx: &Ctx<'_>) -> Result<Helpers, Error> {
@@ -574,7 +578,9 @@ fn install_context(ctx: &Ctx<'_>) -> Result<Helpers, Error> {
     let collection_utilities = Object::new(ctx.clone()).map_err(js_error)?;
     let string_utilities = Object::new(ctx.clone()).map_err(js_error)?;
     let web_utilities = Object::new(ctx.clone()).map_err(js_error)?;
+    let user_security_checks = Object::new(ctx.clone()).map_err(js_error)?;
     ec_extra::fill_helpers(ctx, &string_utilities, &collection_utilities, &web_utilities)?;
+    ec_extra::fill_security_checks(ctx, &user_security_checks)?;
     install_ec(ctx)?;
     install_helpers(ctx)?;
     tools_host::install(ctx, &string_utilities, &collection_utilities, &web_utilities)?;
@@ -585,6 +591,7 @@ fn install_context(ctx: &Ctx<'_>) -> Result<Helpers, Error> {
         collection_utilities: Persistent::save(ctx, collection_utilities),
         string_utilities: Persistent::save(ctx, string_utilities),
         web_utilities: Persistent::save(ctx, web_utilities),
+        user_security_checks: Persistent::save(ctx, user_security_checks),
     })
 }
 
@@ -734,6 +741,7 @@ fn helper_kind(name: &str) -> Option<HelperKind> {
         "CollectionUtilities" => Some(HelperKind::Collection),
         "StringUtilities" => Some(HelperKind::String),
         "WebUtilities" => Some(HelperKind::Web),
+        "UserSecurityChecks" => Some(HelperKind::Security),
         _ => None,
     }
 }
@@ -747,6 +755,7 @@ fn helper_object<'js>(ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<Option<Obj
         HelperKind::Collection => engine.collection_utilities.clone(),
         HelperKind::String => engine.string_utilities.clone(),
         HelperKind::Web => engine.web_utilities.clone(),
+        HelperKind::Security => engine.user_security_checks.clone(),
     });
     let Some(persistent) = persistent else {
         return Ok(None);

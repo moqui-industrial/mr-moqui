@@ -605,9 +605,6 @@ fn execute(
         ServiceKind::Tools => super::tools::run(&def.name, parameters, facade),
         ServiceKind::Spreadsheet => super::spreadsheet::run(&def.name, parameters, facade),
         ServiceKind::Image => super::images::run(&def.name, parameters, facade),
-        ServiceKind::NotPorted => Err(LibError::new(
-            super::not_ported::reason(&def.name).unwrap_or_else(|| format!("service {} is not available", def.name)),
-        )),
         ServiceKind::Interface => Err(LibError::new(format!("interface {} has no runner", def.name))),
         ServiceKind::Unsupported => Err(LibError::new(format!(
             "service {} runs {}, a script language this port does not run",

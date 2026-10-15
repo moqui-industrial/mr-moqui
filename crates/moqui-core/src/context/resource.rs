@@ -68,6 +68,7 @@ fn http_get(url: &str, sim: bool) -> Result<String, String> {
         url: url.to_string(),
         headers: Vec::new(),
         body: None,
+        timeout: None,
     };
     match crate::outbound::send(request) {
         Ok(response) if (200..300).contains(&response.status) => Ok(response.body),

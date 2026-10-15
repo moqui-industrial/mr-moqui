@@ -89,6 +89,8 @@
             if (kid.name === "econdition") return econditionFactory(kid);
             if (kid.name === "date-filter") return dateFilterExpr(kid);
             if (kid.name === "econdition-object") return attr(kid, "field") || "null";
+            // a nested econditions is a condition here, not the `.condition(...)` it is directly under a find
+            if (kid.name === "econditions") return conditionObjectExpr(kid);
             return kid.source || "null";
         });
         return `ec.entity.conditionFactory.makeCondition([${parts.join(", ")}], ${jsString(attr(node, "combine") || "and")})`;

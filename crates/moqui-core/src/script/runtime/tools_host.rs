@@ -90,6 +90,11 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     ec.entity.getQueryStatsList = () => [];
     ec.entity.clearQueryStats = () => {};
     ec.entity.runSqlStatement = host.runSqlStatement;
+    // another database, named by a map of `entity_ds_db_conf`, `entity_ds_host`, `entity_ds_port`, `entity_ds_database`,
+    // `entity_ds_user` and `entity_ds_password`, as Java's `getConfConnection`
+    ec.entity.testConfConnection = host.testConfConnection;
+    ec.entity.runSqlCountConf = host.runSqlCountConf;
+    ec.entity.runSqlUpdateConf = host.runSqlUpdateConf;
     ec.entity.eecaRulesByEntityName = {
         get: (entityName) => host.eecaRuleTexts(entityName).map((text) => ({ eecaNode: makeText(text) }))
     };
@@ -267,20 +272,172 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     };
 
     // ---- resources: the parts of ResourceReference the tools screens and services call ----
-    wrappers.Resource = (ref) => Object.assign(ref, {
-        getLocation: () => ref.location, getFileName: () => ref.fileName, getExists: () => ref.exists,
-        isDirectory: () => ref.directory, isFile: () => ref.file, getSize: () => ref.size,
-        isText: () => ref.text, isBinary: () => ref.binary, getContentType: () => ref.contentType,
-        getLastModified: () => ref.lastModified, length: () => ref.size || 0, getName: () => ref.fileName,
-        getDirectoryEntries: () => (ref.children || []).map((child) => wrap("Resource", child)),
-        getText: () => host.resourceText(ref.location),
-        putText: (text) => host.resourcePutText(ref.location, String(text)),
-        putBytes: (bytes) => host.resourcePutBytes(ref.location, bytes),
-        delete: () => host.resourceDelete(ref.location)
+    // A version of a `dbresource://` file: `{versionName, previousVersionName, versionDate, userId}`.
+    wrappers.ResourceVersion = (version) => Object.assign(version, {
+        getVersionName: () => version.versionName, getPreviousVersionName: () => version.previousVersionName,
+        getVersionDate: () => version.versionDate, getUserId: () => version.userId
     });
+    const makeVersion = (version) => wrap("ResourceVersion", version);
+    // `childOfLocation` is the directory `findChildFile` found the file under, kept as data for `getActualChildPath`.
+    const childOf = (childRef, directoryRef) => { if (childRef != null) childRef.childOfLocation = directoryRef.location; return childRef; };
+    const joinPath = (location, path) => location.replace(/\/$/, "") + (path.charAt(0) === "/" ? "" : "/") + path;
+    wrappers.Resource = function (ref) {
+        Object.assign(ref, {
+            getLocation: () => ref.location, getFileName: () => ref.fileName, getExists: () => ref.exists,
+            isDirectory: () => ref.directory, isFile: () => ref.file, getSize: () => ref.size,
+            isText: () => ref.text, isBinary: () => ref.binary, getContentType: () => ref.contentType,
+            getLastModified: () => ref.lastModified, length: () => ref.size || 0, getName: () => ref.fileName,
+            getDirectoryEntries: () => host.resourceEntries(ref.location).map((child) => wrap("Resource", child)),
+            // null for a file that is not there, as Java's (the stream is null)
+            getText: function (versionName) {
+                if (versionName) return host.resourceVersionText(ref.location, String(versionName));
+                const info = host.resourceInfo(ref.location);
+                return info != null && info.exists && info.file ? host.resourceText(ref.location) : null;
+            },
+            putText: (text) => host.resourcePutText(ref.location, String(text)),
+            putBytes: (bytes) => host.resourcePutBytes(ref.location, bytes),
+            // Java's `putStream(fileItem.getInputStream())` and `putStream(other.openStream())`
+            putUpload: (fileItem) => fileItem.write(ref.location),
+            copyFrom: (source) => host.resourceCopy(typeof source === "string" ? source : source.location, ref.location),
+            delete: () => host.resourceDelete(ref.location),
+            // nothing to move is not an error, as in Java (a page often has no matching directory)
+            move: function (newLocation) {
+                const info = host.resourceInfo(ref.location);
+                if (info != null && info.exists) host.resourceMove(ref.location, String(newLocation));
+            },
+            supportsVersion: () => host.resourceSupportsVersion(ref.location),
+            getVersion: (versionName) => makeVersion(host.resourceVersion(ref.location, "named", String(versionName))),
+            getCurrentVersion: () => makeVersion(host.resourceVersion(ref.location, "current")),
+            getRootVersion: () => makeVersion(host.resourceVersion(ref.location, "root")),
+            getVersionHistory: () => host.resourceVersionHistory(ref.location).map(makeVersion),
+            // the directory named as this file without its extensions, or this directory
+            findMatchingDirectory: function () {
+                if (ref.directory) return ref;
+                let dirLoc = ref.location, directoryRef = ref;
+                while (!(directoryRef.exists && directoryRef.directory) && dirLoc.lastIndexOf(".") > 0) {
+                    dirLoc = dirLoc.substring(0, dirLoc.lastIndexOf("."));
+                    directoryRef = makeRef(dirLoc);
+                }
+                return directoryRef;
+            },
+            getChild: (childName) => childName ? makeRef(joinPath(ref.findMatchingDirectory().location, String(childName))) : null,
+            getChildren: function () {
+                const directoryRef = ref.findMatchingDirectory();
+                if (directoryRef == null || !directoryRef.exists) return null;
+                return directoryRef.getDirectoryEntries().filter((child) => child.file);
+            },
+            findChildFile: function (relativePath) {
+                if (!relativePath) return ref;
+                relativePath = String(relativePath);
+                const directoryRef = ref.findMatchingDirectory();
+                let childRef = null;
+                if (directoryRef.exists) {
+                    const theFile = makeRef(joinPath(directoryRef.location, relativePath));
+                    if (theFile.exists && theFile.file) childRef = theFile;
+                    if (childRef == null) {
+                        // not at the literal path: search the directory tree for the file name
+                        const lastSlash = relativePath.lastIndexOf("/");
+                        const directoryPath = lastSlash > 0 ? relativePath.substring(0, lastSlash) : "";
+                        const childFilename = lastSlash >= 0 ? relativePath.substring(lastSlash + 1) : relativePath;
+                        childRef = findFileUnder(directoryRef.findChildDirectory(directoryPath), childFilename, new Set());
+                    }
+                    if (childRef != null) return childOf(childRef, directoryRef);
+                    // still nothing: the literal path, which does not exist
+                    return childOf(makeRef(directoryRef.location + "/" + relativePath), directoryRef);
+                }
+                let newDirectoryLoc = ref.location;
+                const lastSlash = newDirectoryLoc.lastIndexOf("/");
+                const dot = newDirectoryLoc.indexOf(".", lastSlash);
+                if (dot >= 0) newDirectoryLoc = newDirectoryLoc.substring(0, dot);
+                return makeRef(newDirectoryLoc + "/" + relativePath);
+            },
+            findChildDirectory: function (relativePath) {
+                if (!relativePath) return ref;
+                relativePath = String(relativePath);
+                let childDirectoryRef = ref.file ? ref.findMatchingDirectory() : ref;
+                for (const name of relativePath.split("/")) {
+                    childDirectoryRef = findDirectoryUnder(childDirectoryRef, name, new Set());
+                    if (childDirectoryRef == null) break;
+                }
+                if (childDirectoryRef != null) return childDirectoryRef;
+                let newDirectoryLoc = ref.location;
+                if (ref.file) {
+                    const lastSlash = newDirectoryLoc.lastIndexOf("/");
+                    const dot = newDirectoryLoc.indexOf(".", lastSlash);
+                    if (dot >= 0) newDirectoryLoc = newDirectoryLoc.substring(0, dot);
+                }
+                return makeRef(newDirectoryLoc + "/" + relativePath);
+            },
+            getActualChildPath: function () {
+                const parentLocation = ref.childOfLocation;
+                if (parentLocation == null || !ref.location.startsWith(parentLocation)) return null;
+                const childPath = ref.location.substring(parentLocation.length);
+                return childPath.startsWith("/") ? childPath.substring(1) : childPath;
+            },
+            // `{path, name, location}` of every file under this one (through matching directories) into the flat list,
+            // and as a tree with `childResourceList` into the other; either may be null
+            walkChildTree: function (allChildFileFlatList, childResourceList) {
+                if (ref.file) walkFileTree(ref, "", allChildFileFlatList, childResourceList);
+                if (ref.directory) for (const childRef of ref.getDirectoryEntries())
+                    walkFileTree(childRef, "", allChildFileFlatList, childResourceList);
+            }
+        });
+        Object.defineProperty(ref, "currentVersion", { get: ref.getCurrentVersion, configurable: true });
+        Object.defineProperty(ref, "directoryEntries", { get: ref.getDirectoryEntries, configurable: true });
+        return ref;
+    };
+    // a directory with this name under `directoryRef`, directly or anywhere below it
+    const findDirectoryUnder = function (directoryRef, childDirName, visited) {
+        if (directoryRef == null || !directoryRef.exists) return null;
+        if (!childDirName) return directoryRef;
+        const directRef = makeRef(joinPath(directoryRef.location, childDirName));
+        if (directRef != null && directRef.exists) return directRef;
+        visited.add(directoryRef.location);
+        for (const childRef of directoryRef.getDirectoryEntries()) {
+            if (!childRef.directory || visited.has(childRef.location)) continue;
+            if (childRef.fileName === childDirName || childRef.fileName.includes(childDirName + ".")) return childRef;
+            const subRef = findDirectoryUnder(childRef, childDirName, visited);
+            if (subRef != null) return subRef;
+        }
+        return null;
+    };
+    // a file with this name, or this name and an extension, under `directoryRef`, files before subdirectories
+    const findFileUnder = function (directoryRef, childFilename, visited) {
+        if (directoryRef == null || !directoryRef.exists) return null;
+        const exactRef = directoryRef.getChild(childFilename);
+        if (exactRef != null && exactRef.file && exactRef.exists) return exactRef;
+        visited.add(directoryRef.location);
+        const entries = directoryRef.getDirectoryEntries();
+        for (const childRef of entries)
+            if (childRef.file && (childRef.fileName === childFilename || childRef.fileName.startsWith(childFilename + "."))) return childRef;
+        for (const childRef of entries) {
+            if (!childRef.directory || visited.has(childRef.location)) continue;
+            const subRef = findFileUnder(childRef, childFilename, visited);
+            if (subRef != null) return subRef;
+        }
+        return null;
+    };
+    const walkFileTree = function (fileRef, pathFromRoot, allChildFileFlatList, childResourceList) {
+        if (!fileRef.file) return;
+        const childPathBase = pathFromRoot ? pathFromRoot + "/" : "";
+        let curFileName = fileRef.fileName;
+        if (curFileName.includes(".")) curFileName = curFileName.substring(0, curFileName.lastIndexOf("."));
+        const curPath = childPathBase + curFileName;
+        const curChildResourceList = [];
+        if (allChildFileFlatList != null) allChildFileFlatList.push({ path: curPath, name: curFileName, location: fileRef.location });
+        if (childResourceList != null) childResourceList.push({ path: curPath, name: curFileName, location: fileRef.location,
+            childResourceList: curChildResourceList });
+        const matchingDirRef = fileRef.findMatchingDirectory();
+        if (!matchingDirRef.exists || !matchingDirRef.directory) return;
+        const childPath = childPathBase + matchingDirRef.fileName;
+        for (const childRef of matchingDirRef.getDirectoryEntries())
+            walkFileTree(childRef, childPath, allChildFileFlatList, curChildResourceList);
+    };
     const makeRef = (location) => wrap("Resource", host.resourceInfo(location));
     ec.resource.getLocationReference = (location) => makeRef(String(location));
     ec.resource.getLocationText = (location) => host.resourceText(String(location));
+    // the registry token of a Docker image (InstanceImage.authTokenCmd): the command's first output line, no shell
+    ec.resource.runTokenCommand = (command) => host.runTokenCommand(String(command));
 
     // ---- forms: the field names a form has, for the DB form response services ----
     ec.screen.getFormNode = function (location) {
@@ -293,6 +450,100 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
         }
         return makeNode(host.parseNode(host.formXml(location)));
     };
+    // ---- REST client: `ec.service.rest()`, the parts of Java's RestClient scripts call ----
+    const restQuery = (parameters) => parameters.filter(([, value]) => value != null)
+        .map(([name, value]) => encodeURIComponent(name) + "=" + encodeURIComponent(String(value))).join("&");
+    function RestResponse(client, sent) {
+        this.statusCode = sent.statusCode;
+        this.reasonPhrase = sent.reasonPhrase;
+        this.client = client;
+        this.body = sent.text;
+    }
+    RestResponse.prototype.getStatusCode = function () { return this.statusCode; };
+    RestResponse.prototype.getReasonPhrase = function () { return this.reasonPhrase; };
+    RestResponse.prototype.text = function () { return this.body; };
+    RestResponse.prototype.jsonObject = function () {
+        try { return JSON.parse(this.body); }
+        catch (e) { throw new Error("Error parsing JSON response from request to " + this.client.uriString + ": " + e.message); }
+    };
+    function RestUriBuilder(client) {
+        this.client = client; this.protocolText = "http"; this.hostText = null; this.portNumber = 80; this.pathText = "";
+        this.parameterList = [];
+    }
+    RestUriBuilder.prototype.protocol = function (protocol) {
+        if (!protocol) throw new Error("Empty protocol not allowed");
+        this.protocolText = String(protocol); return this;
+    };
+    RestUriBuilder.prototype.host = function (host) {
+        if (!host) throw new Error("Empty host not allowed");
+        this.hostText = String(host); return this;
+    };
+    RestUriBuilder.prototype.port = function (port) {
+        port = Number(port);
+        if (!(port > 0)) throw new Error("Invalid port " + port);
+        this.portNumber = port; return this;
+    };
+    RestUriBuilder.prototype.path = function (pathEl) {
+        if (pathEl == null || pathEl === "") return this;
+        pathEl = String(pathEl);
+        this.pathText += (pathEl.startsWith("/") ? "" : "/") + pathEl;
+        if (this.pathText.endsWith("/")) this.pathText = this.pathText.substring(0, this.pathText.length - 1);
+        return this;
+    };
+    RestUriBuilder.prototype.parameter = function (name, value) { this.parameterList.push([String(name), value]); return this; };
+    RestUriBuilder.prototype.parameters = function (map) {
+        for (const [name, value] of Object.entries(map || {})) this.parameterList.push([name, value]);
+        return this;
+    };
+    RestUriBuilder.prototype.build = function () {
+        if (!this.hostText) throw new Error("No host specified, call the host() method before build()");
+        const query = restQuery(this.parameterList);
+        return this.client.uri(this.protocolText + "://" + this.hostText + ":" + this.portNumber + (this.pathText || "/") +
+            (query ? "?" + query : ""));
+    };
+    function RestClient() {
+        this.methodName = "GET"; this.uriString = null; this.headerList = []; this.bodyText = null;
+        this.bodyParameterList = []; this.contentTypeText = "application/json"; this.timeoutSeconds = 30;
+    }
+    RestClient.prototype.method = function (method) { this.methodName = String(method).toUpperCase(); return this; };
+    RestClient.prototype.uri = function (uri) {
+        if (arguments.length === 0) return new RestUriBuilder(this);
+        this.uriString = String(uri); return this;
+    };
+    RestClient.prototype.getUri = function () { return this.uriString; };
+    RestClient.prototype.getUriString = function () { return this.uriString; };
+    RestClient.prototype.addHeader = function (name, value) { this.headerList.push([String(name), String(value)]); return this; };
+    RestClient.prototype.addHeaders = function (map) {
+        for (const [name, value] of Object.entries(map || {})) this.addHeader(name, value);
+        return this;
+    };
+    RestClient.prototype.contentType = function (contentType) { this.contentTypeText = String(contentType); return this; };
+    RestClient.prototype.text = function (bodyText) { this.bodyText = bodyText == null ? null : String(bodyText); return this; };
+    RestClient.prototype.jsonObject = function (body) {
+        if (body == null) { this.bodyText = null; return this; }
+        return this.text(typeof body === "string" ? body : JSON.stringify(body));
+    };
+    // As Java's (Jetty `request.param`), body parameters go in the query string.
+    RestClient.prototype.addBodyParameter = function (name, value) { this.bodyParameterList.push([String(name), value]); return this; };
+    RestClient.prototype.addBodyParameters = function (map) {
+        for (const [name, value] of Object.entries(map || {})) this.bodyParameterList.push([name, value]);
+        return this;
+    };
+    RestClient.prototype.timeout = function (seconds) { this.timeoutSeconds = Number(seconds); return this; };
+    RestClient.prototype.call = function () {
+        let uri = this.uriString;
+        if (!uri) throw new Error("No URI set in RestClient");
+        const query = restQuery(this.bodyParameterList);
+        if (query) uri += (uri.includes("?") ? "&" : "?") + query;
+        const headers = this.headerList.slice();
+        const hasHeader = (name) => headers.some(([key]) => key.toLowerCase() === name);
+        if (this.bodyText && !hasHeader("content-type")) headers.push(["Content-Type", this.contentTypeText]);
+        if (!hasHeader("accept")) headers.push(["Accept", this.contentTypeText]);
+        const sent = host.restSend({ method: this.methodName, uri: uri, headers: headers, body: this.bodyText,
+            timeoutSeconds: this.timeoutSeconds });
+        return new RestResponse(this, sent);
+    };
+    ec.service.rest = () => new RestClient();
     ec.service.isLastRunBeforeLastSchedule = host.isLastRunBeforeLastSchedule;
     ec.service.restApi = { getFreshRootResources: host.restRootResources, getRootResources: host.restRootResources };
     ec.entity.getAllEntityNamesWithMaster = host.getAllEntityNamesWithMaster;
@@ -1119,14 +1370,33 @@ fn resource_info_value(resource: &crate::context::ResourceRef, children: bool) -
 }
 
 /// `{location, fileName, exists, directory, file, size, lastModified, children}`, or null for a location no scheme
-/// resolves.
+/// resolves. A `dbresource://` location with no row is a reference that does not exist, as Java's.
 fn resource_info<'js>(ctx: Ctx<'js>, location: String) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         match with_ec(&ctx, |ec| ec.factory().resource().get(&location))? {
             Ok(resource) => host_to_js(&ctx, resource_info_value(&resource, true)),
+            Err(_) if location.starts_with("dbresource:") => host_to_js(&ctx, missing_info_value(&location)),
             Err(_) => Null.into_js(&ctx),
         }
     })
+}
+
+fn missing_info_value(location: &str) -> Value {
+    let file_name = location.rsplit('/').next().unwrap_or_default().to_string();
+    let content_type = moqui_lib::resource::content_type_for_name(&file_name);
+    let mut map = indexmap::IndexMap::new();
+    map.insert("location".to_string(), Value::string(location));
+    map.insert("fileName".to_string(), Value::string(&file_name));
+    map.insert("exists".to_string(), Value::Bool(false));
+    map.insert("directory".to_string(), Value::Bool(false));
+    map.insert("file".to_string(), Value::Bool(false));
+    map.insert(
+        "contentType".to_string(),
+        content_type.map_or(Value::Null, Value::string),
+    );
+    map.insert("size".to_string(), Value::Null);
+    map.insert("lastModified".to_string(), Value::Null);
+    Value::Map(map)
 }
 
 fn resource_text(ctx: Ctx<'_>, location: String) -> rquickjs::Result<String> {
@@ -1160,17 +1430,390 @@ fn put_resource_bytes(ctx: &Ctx<'_>, location: &str, bytes: &[u8]) -> rquickjs::
     })
 }
 
-/// `delete` of a file-backed resource. `false` when there is no file there.
+/// `delete` of a file, or an empty directory, of a `dbresource://` or file-backed location. `false` when nothing is
+/// there.
 fn resource_delete(ctx: Ctx<'_>, location: String) -> rquickjs::Result<bool> {
     host_guard(&ctx, || {
-        let resource = resource_ref(&ctx, &location)?;
-        match resource.file_path() {
-            Some(path) if path.is_file() => std::fs::remove_file(path)
-                .map(|()| true)
-                .map_err(|err| Exception::throw_message(&ctx, &format!("{location}: {err}"))),
-            _ => Ok(false),
+        let deleted = with_ec(&ctx, |ec| ec.factory().resource().delete(&location))?;
+        deleted.map_err(|err| Exception::throw_message(&ctx, err.message()))
+    })
+}
+
+/// `getDirectoryEntries`: the files and directories directly under a directory, each as [`resource_info`] without
+/// its children. A location the facade cannot list (such as `classpath`) has its child files only.
+fn resource_entries<'js>(ctx: Ctx<'js>, location: String) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let factory = factory_of(&ctx)?;
+        let resources = factory.resource();
+        let entries = match resources.list(&location) {
+            Ok(entries) => entries
+                .iter()
+                .filter_map(|entry| resources.get(&entry.location).ok())
+                .map(|entry| resource_info_value(&entry, false))
+                .collect(),
+            Err(_) => match resources.get(&location) {
+                Ok(resource) if resource.is_directory() => resource
+                    .children()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|child| resource_info_value(child, false))
+                    .collect(),
+                _ => Vec::new(),
+            },
+        };
+        host_to_js(&ctx, Value::List(entries))
+    })
+}
+
+/// `move`: a file or directory to a new location of the same kind of storage.
+fn resource_move(ctx: Ctx<'_>, location: String, new_location: String) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        let moved = with_ec(&ctx, |ec| ec.factory().resource().rename(&location, &new_location))?;
+        moved.map_err(|err| Exception::throw_message(&ctx, err.message()))
+    })
+}
+
+/// Copy the bytes of one file to another location, for what a Groovy script did with `openStream` and `putStream`.
+fn resource_copy(ctx: Ctx<'_>, from: String, to: String) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        let bytes = resource_ref(&ctx, &from)?
+            .read_bytes()
+            .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
+        let written = with_ec(&ctx, |ec| ec.factory().resource().write_bytes(&to, &bytes))?;
+        written.map_err(|err| Exception::throw_message(&ctx, err.message()))
+    })
+}
+
+/// `supportsVersion`: only `dbresource://` files keep versions, as in Java.
+fn resource_supports_version(location: String) -> bool {
+    location.starts_with("dbresource:")
+}
+
+fn version_value(version: crate::entity::DbResourceVersion) -> Value {
+    let mut map = indexmap::IndexMap::new();
+    map.insert("versionName".to_string(), Value::string(version.version_name));
+    map.insert(
+        "previousVersionName".to_string(),
+        version.previous_version_name.map_or(Value::Null, Value::string),
+    );
+    map.insert("versionDate".to_string(), version.version_date);
+    map.insert("userId".to_string(), version.user_id.map_or(Value::Null, Value::string));
+    Value::Map(map)
+}
+
+/// `getCurrentVersion`, `getRootVersion` and `getVersion(name)`: `{versionName, previousVersionName, versionDate,
+/// userId}`, or null.
+fn resource_version<'js>(
+    ctx: Ctx<'js>,
+    location: String,
+    which: String,
+    name: Opt<String>,
+) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        if !resource_supports_version(location.clone()) {
+            return Null.into_js(&ctx);
+        }
+        let facade = facade_of(&ctx)?;
+        let found = match which.as_str() {
+            "current" => facade.db_resource_current_version(&location),
+            "root" => facade.db_resource_root_version(&location),
+            _ => facade.db_resource_version(&location, name.0.as_deref().unwrap_or_default()),
+        }
+        .map_err(|err| throw_lib(&ctx, &err))?;
+        host_to_js(&ctx, found.map_or(Value::Null, version_value))
+    })
+}
+
+/// `getVersionHistory`: newest first.
+fn resource_version_history<'js>(ctx: Ctx<'js>, location: String) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        if !resource_supports_version(location.clone()) {
+            return host_to_js(&ctx, Value::List(Vec::new()));
+        }
+        let versions = facade_of(&ctx)?
+            .db_resource_version_history(&location)
+            .map_err(|err| throw_lib(&ctx, &err))?;
+        host_to_js(&ctx, Value::List(versions.into_iter().map(version_value).collect()))
+    })
+}
+
+/// `getText(versionName)`: the text of one version, or null when there is no such version.
+fn resource_version_text<'js>(ctx: Ctx<'js>, location: String, version_name: String) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        if !resource_supports_version(location.clone()) {
+            return Null.into_js(&ctx);
+        }
+        let bytes = facade_of(&ctx)?
+            .read_db_resource_version(&location, &version_name)
+            .map_err(|err| throw_lib(&ctx, &err))?;
+        match bytes {
+            Some(bytes) => host_to_js(&ctx, Value::string(String::from_utf8_lossy(&bytes).into_owned())),
+            None => Null.into_js(&ctx),
         }
     })
+}
+
+// ---- SQL on a database named by a conf map (InstanceServices) ----
+
+/// The `entity_ds_*` entries of a conf map, as Java's `getConfConnection` reads them.
+fn conf_db_of<'js>(ctx: &Ctx<'js>, conf: &JsValue<'js>) -> rquickjs::Result<crate::driver::ConfDb> {
+    let Value::Map(map) = js_to_host(ctx, conf)? else {
+        return Err(Exception::throw_message(ctx, "the database conf is not a map"));
+    };
+    let text = |name: &str| match map.get(name) {
+        Some(Value::Null) | None => String::new(),
+        Some(value) => moqui_lib::object::to_plain_string(value),
+    };
+    Ok(crate::driver::ConfDb {
+        db_type: text("entity_ds_db_conf"),
+        host: text("entity_ds_host"),
+        port: text("entity_ds_port"),
+        database: text("entity_ds_database"),
+        user: text("entity_ds_user"),
+        password: text("entity_ds_password"),
+    })
+}
+
+fn conf_connection<'js>(ctx: &Ctx<'js>, conf: &JsValue<'js>) -> rquickjs::Result<Box<dyn crate::driver::DbConnection>> {
+    let conf = conf_db_of(ctx, conf)?;
+    crate::driver::conf_driver(&conf)
+        .and_then(|driver| driver.connect())
+        .map_err(|err| throw_lib(ctx, &err))
+}
+
+/// `testConfConnection(conf)`: whether a connection opens. A failure is logged, as the Java scripts did.
+fn test_conf_connection<'js>(ctx: Ctx<'js>, conf: JsValue<'js>) -> rquickjs::Result<bool> {
+    host_guard(&ctx, || {
+        let conf = conf_db_of(&ctx, &conf)?;
+        match crate::driver::conf_driver(&conf).and_then(|driver| driver.connect()) {
+            Ok(_) => Ok(true),
+            Err(err) => {
+                tracing::warn!(host = %conf.host, database = %conf.database, "Test connection failed: {}", err.message());
+                Ok(false)
+            }
+        }
+    })
+}
+
+/// `runSqlCountConf(table, where, conf)`: `SELECT COUNT(*) FROM table WHERE where` on that database.
+fn run_sql_count_conf<'js>(
+    ctx: Ctx<'js>,
+    table: String,
+    where_text: String,
+    conf: JsValue<'js>,
+) -> rquickjs::Result<f64> {
+    host_guard(&ctx, || {
+        let mut conn = conf_connection(&ctx, &conf)?;
+        let sql = if where_text.trim().is_empty() {
+            format!("SELECT COUNT(*) AS row_count FROM {table}")
+        } else {
+            format!("SELECT COUNT(*) AS row_count FROM {table} WHERE {where_text}")
+        };
+        let rows = conn.query_once(&sql, &[]).map_err(|err| throw_lib(&ctx, &err))?;
+        let count = rows
+            .first()
+            .and_then(|row| row.columns.first())
+            .map(|(_, value)| moqui_lib::object::to_plain_string(value))
+            .and_then(|text| text.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        Ok(count)
+    })
+}
+
+/// `runSqlUpdateConf(sql, conf)`: run one statement outside a transaction (`CREATE DATABASE` cannot run inside one)
+/// and return the rows it changed.
+fn run_sql_update_conf<'js>(ctx: Ctx<'js>, sql: String, conf: JsValue<'js>) -> rquickjs::Result<f64> {
+    host_guard(&ctx, || {
+        let mut conn = conf_connection(&ctx, &conf)?;
+        let rows = conn.execute(&sql, &[]).map_err(|err| throw_lib(&ctx, &err))?;
+        #[allow(clippy::cast_precision_loss)]
+        Ok(rows as f64)
+    })
+}
+
+// ---- registry token command (init#InstanceDocker) ----
+
+/// How long a token command may run.
+const TOKEN_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// `runTokenCommand(cmd)`: run a configured command, split on whitespace with no shell, and return the first line of
+/// its output, trimmed. A command that fails, or runs past the timeout, throws with its error output.
+fn run_token_command(ctx: Ctx<'_>, command: String) -> rquickjs::Result<String> {
+    host_guard(&ctx, || {
+        run_command_first_line(&command).map_err(|err| throw_lib(&ctx, &err))
+    })
+}
+
+fn run_command_first_line(command: &str) -> Result<String, moqui_lib::error::Error> {
+    use std::io::Read as _;
+    use std::process::{Command, Stdio};
+    let mut words = command.split_whitespace();
+    let Some(program) = words.next() else {
+        return Err(moqui_lib::error::Error::new("the token command is empty"));
+    };
+    let mut child = Command::new(program)
+        .args(words)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| moqui_lib::error::Error::new(format!("could not run token command {program}: {err}")))?;
+    // Read both pipes on their own threads, so a child that writes much is not blocked on a full pipe.
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
+    let out = std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(pipe) = stdout.as_mut() {
+            let _ = pipe.read_to_string(&mut text);
+        }
+        text
+    });
+    let err = std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(pipe) = stderr.as_mut() {
+            let _ = pipe.read_to_string(&mut text);
+        }
+        text
+    });
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() >= TOKEN_COMMAND_TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(moqui_lib::error::Error::new(format!(
+                    "token command {program} did not finish in {} seconds",
+                    TOKEN_COMMAND_TIMEOUT.as_secs()
+                )));
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Err(wait_err) => {
+                return Err(moqui_lib::error::Error::new(format!(
+                    "token command {program}: {wait_err}"
+                )))
+            }
+        }
+    };
+    let output = out.join().unwrap_or_default();
+    let errors = err.join().unwrap_or_default();
+    if !status.success() {
+        return Err(moqui_lib::error::Error::new(format!(
+            "token command {program} failed ({status}): {}",
+            errors.trim()
+        )));
+    }
+    Ok(output.lines().next().unwrap_or_default().trim().to_string())
+}
+
+// ---- REST client ----
+
+/// Send one request of `ec.service.rest()`: `{method, uri, headers: [[name, value]], body, timeoutSeconds}`. Returns
+/// `{statusCode, reasonPhrase, text}`. Denied in sim mode, as a `remote-rest` call is.
+fn rest_send<'js>(ctx: Ctx<'js>, request: JsValue<'js>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let Value::Map(request) = js_to_host(&ctx, &request)? else {
+            return Err(Exception::throw_message(&ctx, "rest request is not an object"));
+        };
+        let text = |name: &str| match request.get(name) {
+            Some(Value::Null) | None => None,
+            Some(value) => Some(moqui_lib::object::to_plain_string(value)),
+        };
+        let method_name = text("method").unwrap_or_else(|| "GET".to_string()).to_ascii_uppercase();
+        let method = crate::outbound::Method::parse(&method_name)
+            .ok_or_else(|| Exception::throw_message(&ctx, &format!("HTTP method {method_name} is not supported")))?;
+        let url = text("uri")
+            .filter(|url| !url.is_empty())
+            .ok_or_else(|| Exception::throw_message(&ctx, "no URI specified for REST call"))?;
+        let mut headers = Vec::new();
+        if let Some(Value::List(pairs)) = request.get("headers") {
+            for pair in pairs {
+                if let Value::List(pair) = pair {
+                    if let [name, value] = pair.as_slice() {
+                        headers.push((
+                            moqui_lib::object::to_plain_string(name),
+                            moqui_lib::object::to_plain_string(value),
+                        ));
+                    }
+                }
+            }
+        }
+        let timeout = request
+            .get("timeoutSeconds")
+            .and_then(|value| moqui_lib::object::to_plain_string(value).parse::<f64>().ok())
+            .filter(|seconds| *seconds > 0.0)
+            .map(std::time::Duration::from_secs_f64);
+        let sim = with_ec(&ctx, |ec| ec.factory().entity())?.is_some_and(|facade| facade.sim_active());
+        if sim {
+            return Err(Exception::throw_message(
+                &ctx,
+                &format!(
+                    "HTTP {method} {} denied because sim mode is active",
+                    crate::outbound::redacted(&url)
+                ),
+            ));
+        }
+        let response = crate::outbound::send(crate::outbound::Request {
+            method,
+            url: url.clone(),
+            headers,
+            body: text("body").filter(|body| !body.is_empty()),
+            timeout,
+        })
+        .map_err(|err| {
+            Exception::throw_message(
+                &ctx,
+                &format!(
+                    "Error calling HTTP request to {}: {}",
+                    crate::outbound::redacted(&url),
+                    err.message()
+                ),
+            )
+        })?;
+        let mut map = indexmap::IndexMap::new();
+        map.insert("statusCode".to_string(), Value::I64(i64::from(response.status)));
+        map.insert(
+            "reasonPhrase".to_string(),
+            Value::string(reason_phrase(response.status)),
+        );
+        map.insert("text".to_string(), Value::string(response.body));
+        host_to_js(&ctx, Value::Map(map))
+    })
+}
+
+/// The standard reason phrase of an HTTP status; the transport does not pass the server's own.
+fn reason_phrase(status: u16) -> &'static str {
+    match status {
+        100 => "Continue",
+        200 => "OK",
+        201 => "Created",
+        202 => "Accepted",
+        204 => "No Content",
+        301 => "Moved Permanently",
+        302 => "Found",
+        304 => "Not Modified",
+        307 => "Temporary Redirect",
+        308 => "Permanent Redirect",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        406 => "Not Acceptable",
+        408 => "Request Timeout",
+        409 => "Conflict",
+        410 => "Gone",
+        413 => "Payload Too Large",
+        415 => "Unsupported Media Type",
+        422 => "Unprocessable Entity",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        501 => "Not Implemented",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        _ => "",
+    }
 }
 
 /// The XML of the form named after `#` in a screen location: `component://.../Screen.xml#FormName`.
@@ -1367,6 +2010,18 @@ pub(super) fn install<'js>(
     method!("resourcePutText", resource_put_text);
     method!("resourcePutBytes", resource_put_bytes);
     method!("resourceDelete", resource_delete);
+    method!("resourceEntries", resource_entries);
+    method!("resourceMove", resource_move);
+    method!("resourceCopy", resource_copy);
+    method!("resourceSupportsVersion", resource_supports_version);
+    method!("resourceVersion", resource_version);
+    method!("resourceVersionHistory", resource_version_history);
+    method!("resourceVersionText", resource_version_text);
+    method!("restSend", rest_send);
+    method!("runTokenCommand", run_token_command);
+    method!("testConfConnection", test_conf_connection);
+    method!("runSqlCountConf", run_sql_count_conf);
+    method!("runSqlUpdateConf", run_sql_update_conf);
     method!("formXml", form_xml);
     method!("isLastRunBeforeLastSchedule", is_last_run_before_last_schedule);
     method!("prettyToCamelCase", pretty_to_camel_case);

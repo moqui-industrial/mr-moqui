@@ -53,8 +53,7 @@ impl JdbcExtractor {
         self
     }
 
-    /// Connect to the database by its `database-list` conf name: `postgres` (TLS, as an external
-    /// Postgres is reached elsewhere), or `mysql` and `mysql8`. An empty port is the default.
+    /// Connect to the database by its `database-list` conf name, through [`super::conf_driver`].
     ///
     /// # Errors
     ///
@@ -68,34 +67,14 @@ impl JdbcExtractor {
         user: &str,
         password: &str,
     ) -> Result<Self, Error> {
-        let port_of = |default: u16| -> Result<u16, Error> {
-            if port.trim().is_empty() {
-                return Ok(default);
-            }
-            port.trim()
-                .parse()
-                .map_err(|err| Error::new(format!("database port {port} is not a number")).with_source(err))
-        };
-        let driver: Arc<dyn DbDriver> = match db_type {
-            #[cfg(feature = "postgres")]
-            "postgres" => Arc::new(
-                super::postgres::PostgresDriver::external(user, database, host, port_of(5432)?)?.password(password),
-            ),
-            #[cfg(feature = "mysql")]
-            "mysql" | "mysql8" => Arc::new(super::mysql::MysqlDriver::new(
-                host,
-                port_of(3306)?,
-                user,
-                password,
-                database,
-                false,
-            )),
-            other => {
-                let _ = (host, database, user, password, port_of(0));
-                return Err(Error::new(format!("no database driver for database conf {other}")));
-            }
-        };
-        self.driver = Some(driver);
+        self.driver = Some(super::conf_driver(&moqui_core::driver::ConfDb {
+            db_type: db_type.to_string(),
+            host: host.to_string(),
+            port: port.to_string(),
+            database: database.to_string(),
+            user: user.to_string(),
+            password: password.to_string(),
+        })?);
         Ok(self)
     }
 

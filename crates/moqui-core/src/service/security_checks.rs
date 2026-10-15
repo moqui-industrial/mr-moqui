@@ -17,7 +17,7 @@
 //! may grant it. Both allow the write when authorization is disabled, as a data load runs.
 
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use moqui_lib::error::Error;
@@ -51,7 +51,7 @@ pub(super) fn reset_sealed_grant() {
     SEALED_ENTERED.with(|cell| cell.set(false));
 }
 
-pub(super) fn assert_privileged_group_membership(facade: &EntityFacade, user_group_id: &str) -> Result<(), Error> {
+pub(crate) fn assert_privileged_group_membership(facade: &EntityFacade, user_group_id: &str) -> Result<(), Error> {
     SECURITY_CHECKS.with(|count| count.set(count.get() + 1));
     if user_group_id.is_empty() {
         return Ok(());
@@ -70,7 +70,7 @@ pub(super) fn assert_privileged_group_membership(facade: &EntityFacade, user_gro
     )))
 }
 
-pub(super) fn assert_sealed_permission_grant(facade: &EntityFacade, user_permission_id: &str) -> Result<(), Error> {
+pub(crate) fn assert_sealed_permission_grant(facade: &EntityFacade, user_permission_id: &str) -> Result<(), Error> {
     SECURITY_CHECKS.with(|count| count.set(count.get() + 1));
     SEALED_ENTERED.with(|entered| entered.set(true));
     if user_permission_id.is_empty() {
@@ -221,13 +221,6 @@ fn now_stamp() -> Value {
         .and_then(|duration| i64::try_from(duration.as_millis()).ok())
         .unwrap_or(0);
     basic_convert(&Value::I64(millis), "java.sql.Timestamp").value
-}
-
-pub(super) fn map_text(values: &BTreeMap<String, Value>, field: &str) -> String {
-    match values.get(field) {
-        Some(value) if !value.is_null() => moqui_lib::object::to_plain_string(value),
-        _ => String::new(),
-    }
 }
 
 fn row_text(row: &EntityValue, field: &str) -> String {

@@ -593,6 +593,22 @@ fn string_base64_url_encode(text: Opt<String>) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(text.0.unwrap_or_default().as_bytes())
 }
 
+/// Standard base64 with padding of the text's UTF-8 bytes, as `Base64.getEncoder().encodeToString(text.getBytes())`.
+fn string_base64_encode(text: Opt<String>) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(text.0.unwrap_or_default().as_bytes())
+}
+
+/// The text as it is when it is safe in a URL path, else URL encoded.
+fn string_url_encode_if_needed(text: Opt<String>) -> String {
+    moqui_lib::string::url_encode_if_needed(&text.0.unwrap_or_default())
+}
+
+/// HTML cleaned to the safe allow-list of `allow-html="safe"`.
+fn string_clean_html(text: Opt<String>) -> String {
+    crate::service::clean_safe_html(&text.0.unwrap_or_default())
+}
+
 fn string_base64_url_decode(ctx: Ctx<'_>, text: Opt<String>) -> rquickjs::Result<String> {
     use base64::Engine;
     let text = text.0.unwrap_or_default();
@@ -656,6 +672,63 @@ fn collection_get_map_array_list_values<'js>(
     })
 }
 
+/// Fill `UserSecurityChecks`, the checks `Security.eecas.xml` runs before a write of a group membership or a
+/// permission grant. A denied check throws, so the write fails.
+pub(super) fn fill_security_checks<'js>(ctx: &Ctx<'js>, checks: &Object<'js>) -> Result<(), Error> {
+    let function = caught(
+        ctx,
+        "assertPrivilegedGroupMembership",
+        Function::new(ctx.clone(), security_assert_privileged_group_membership),
+    )?;
+    caught(
+        ctx,
+        "assertPrivilegedGroupMembership",
+        checks.set("assertPrivilegedGroupMembership", function),
+    )?;
+    let function = caught(
+        ctx,
+        "assertSealedPermissionGrant",
+        Function::new(ctx.clone(), security_assert_sealed_permission_grant),
+    )?;
+    caught(
+        ctx,
+        "assertSealedPermissionGrant",
+        checks.set("assertSealedPermissionGrant", function),
+    )?;
+    Ok(())
+}
+
+fn security_assert_privileged_group_membership<'js>(
+    ctx: Ctx<'js>,
+    user_group_id: Opt<JsValue<'js>>,
+) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        let facade = facade_of(&ctx)?;
+        crate::service::assert_privileged_group_membership(&facade, &opt_id_text(&ctx, &user_group_id)?)
+            .map_err(|err| throw_lib(&ctx, &err))
+    })
+}
+
+fn security_assert_sealed_permission_grant<'js>(
+    ctx: Ctx<'js>,
+    user_permission_id: Opt<JsValue<'js>>,
+) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        let facade = facade_of(&ctx)?;
+        crate::service::assert_sealed_permission_grant(&facade, &opt_id_text(&ctx, &user_permission_id)?)
+            .map_err(|err| throw_lib(&ctx, &err))
+    })
+}
+
+/// An id argument as text: null, undefined or missing is empty.
+fn opt_id_text<'js>(ctx: &Ctx<'js>, value: &Opt<JsValue<'js>>) -> rquickjs::Result<String> {
+    match &value.0 {
+        None => Ok(String::new()),
+        Some(value) if value.is_null() || value.is_undefined() => Ok(String::new()),
+        Some(value) => Ok(moqui_lib::object::to_plain_string(&js_to_host(ctx, value)?)),
+    }
+}
+
 /// Fill the helper objects the bare names `WebUtilities`, `StringUtilities` and `CollectionUtilities` resolve to.
 pub(super) fn fill_helpers<'js>(
     ctx: &Ctx<'js>,
@@ -676,6 +749,9 @@ pub(super) fn fill_helpers<'js>(
     );
     method!(string_utilities, "base64UrlEncode", string_base64_url_encode);
     method!(string_utilities, "base64UrlDecode", string_base64_url_decode);
+    method!(string_utilities, "base64Encode", string_base64_encode);
+    method!(string_utilities, "cleanHtml", string_clean_html);
+    method!(string_utilities, "urlEncodeIfNeeded", string_url_encode_if_needed);
     method!(
         collection_utilities,
         "paginateParameters",

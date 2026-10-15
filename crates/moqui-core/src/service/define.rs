@@ -33,6 +33,7 @@ pub(crate) enum ServiceKind {
     Script,
     Interface,
     RemoteRest,
+    /// An email service (`EmailServices` send and poll) whose body is Rust, in `mail`.
     Mail,
     /// A system message or entity sync service whose body is Rust, in `system_sync`.
     SystemSync,
@@ -46,8 +47,6 @@ pub(crate) enum ServiceKind {
     Spreadsheet,
     /// An image service of `moqui-image` whose body is Rust, in `images`.
     Image,
-    /// A service defined but not available in this port, in `not_ported`: LLM, A2A, Docker instances.
-    NotPorted,
     /// A script service whose language this port does not run, such as Groovy.
     Unsupported,
 }
@@ -675,25 +674,21 @@ fn load_service(prefix: &str, node: &MNode, services: &mut BTreeMap<String, Serv
         failures.push(format!("service {name} has unknown type {type_name}"));
         return;
     }
-    // A service that is not available keeps its definition, so a call names why; its body is not compiled.
-    let not_ported = type_name != "interface" && super::not_ported::runs(&name);
     let mut expression_errors = Vec::new();
-    if !not_ported && !expressions_ok(&name, node, &mut expression_errors) {
+    if !expressions_ok(&name, node, &mut expression_errors) {
         failures.extend(expression_errors);
         return;
     }
     // The generated script is what runs, so it is what must parse. This reaches every attribute
     // that becomes JavaScript, not only the ones named in `is_expression_attr`.
-    if let Some(actions) = node.first_named("actions").filter(|_| !not_ported) {
+    if let Some(actions) = node.first_named("actions") {
         if let Err(err) = crate::script::check_actions(&actions.write_string()) {
             failures.push(format!("service {name} {err}"));
             return;
         }
     }
     let location = node.attribute("location").unwrap_or_default();
-    let kind = if not_ported {
-        ServiceKind::NotPorted
-    } else if super::tools::runs(&name) {
+    let kind = if super::tools::runs(&name) {
         ServiceKind::Tools
     } else if super::system_sync::runs(&name) {
         ServiceKind::SystemSync
@@ -705,6 +700,8 @@ fn load_service(prefix: &str, node: &MNode, services: &mut BTreeMap<String, Serv
         ServiceKind::Spreadsheet
     } else if super::images::runs(&name) {
         ServiceKind::Image
+    } else if is_mail_service(&name) {
+        ServiceKind::Mail
     } else {
         kind_of(&type_name, &location)
     };
@@ -760,7 +757,6 @@ fn load_service(prefix: &str, node: &MNode, services: &mut BTreeMap<String, Serv
 fn kind_of(type_name: &str, location: &str) -> ServiceKind {
     match type_name {
         "entity-auto" => ServiceKind::EntityAuto,
-        "script" if is_groovy_location(location) && is_mail_location(location) => ServiceKind::Mail,
         "script" if is_groovy_location(location) => ServiceKind::Unsupported,
         "script" => ServiceKind::Script,
         "interface" => ServiceKind::Interface,
@@ -769,12 +765,19 @@ fn kind_of(type_name: &str, location: &str) -> ServiceKind {
     }
 }
 
-/// The framework's email scripts are Groovy until the mail transport lands; they report that mail
-/// is not configured. Any other Groovy script is simply not runnable.
-fn is_mail_location(location: &str) -> bool {
-    location.to_ascii_lowercase().contains("email")
+/// The email services `mail::run` implements. Named here, outside the `mail` feature, so a host built without it
+/// still selects them and reports that mail is not built in.
+fn is_mail_service(name: &str) -> bool {
+    matches!(
+        name,
+        "org.moqui.impl.EmailServices.send#Email"
+            | "org.moqui.impl.EmailServices.send#EmailTemplate"
+            | "org.moqui.impl.EmailServices.send#EmailMessage"
+            | "org.moqui.impl.EmailServices.poll#EmailServer"
+    )
 }
 
+/// A Groovy script, as a component written for Java Moqui names it, is not runnable here.
 fn is_groovy_location(location: &str) -> bool {
     let path = location.split(['?', '#']).next().unwrap_or(location);
     path.to_ascii_lowercase().ends_with(".groovy")
@@ -1233,6 +1236,33 @@ fn framework_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+
+    #[test]
+    fn email_services_are_mail_by_name_with_no_script_location() {
+        let service_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework/service/org/moqui");
+        let paths = [
+            service_dir.join("EmailServices.xml"),
+            service_dir.join("impl/EmailServices.xml"),
+        ];
+        let (defs, failures) = super::definitions_in(&paths).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+        for name in [
+            "send#Email",
+            "send#EmailTemplate",
+            "send#EmailMessage",
+            "poll#EmailServer",
+        ] {
+            let full = format!("org.moqui.impl.EmailServices.{name}");
+            let def = defs.iter().find(|def| def.name == full).expect(name);
+            assert_eq!(def.kind, super::ServiceKind::Mail, "{full}");
+            assert!(def.location.is_empty(), "{full} location {}", def.location);
+        }
+        // A Groovy script location from a component written for Java Moqui is still not runnable.
+        assert_eq!(
+            super::kind_of("script", "component://x/Send.groovy"),
+            super::ServiceKind::Unsupported
+        );
+    }
 
     #[test]
     fn groovy_leftover_fails_that_service_and_keeps_the_neighbor() {

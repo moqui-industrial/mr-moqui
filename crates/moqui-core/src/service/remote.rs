@@ -65,6 +65,7 @@ pub fn run_remote_rest(
         url,
         headers: Vec::new(),
         body: None,
+        timeout: None,
     };
     if http_method != Method::Get && !parameters.is_empty() {
         let body = to_json(&Value::Map(
