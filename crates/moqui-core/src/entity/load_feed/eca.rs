@@ -23,6 +23,7 @@ use moqui_lib::node::MNode;
 use moqui_lib::sync::{read, write};
 
 use super::feed::note_touch;
+use crate::context::ExecutionContext;
 use crate::entity::facade::EntityFacade;
 
 /// One ECA rule. `actions` is the stored action body. It is not executed.
@@ -61,7 +62,8 @@ pub fn match_rules(facade: &EntityFacade, entity_name: &str, operation: &str) ->
 /// The ECA rules for a write, which the write hands to `service::run_matched_eca`: nothing is kept on the
 /// facade, so a nested or concurrent write cannot change the rules of this one.
 pub(crate) fn match_rules_with(facade: &EntityFacade, entity_name: &str, operation: &str) -> Vec<EcaRule> {
-    if facade.flags().disable_entity_eca {
+    if facade.flags().disable_entity_eca || ExecutionContext::with_current(|ec| ec.entity_eca_disabled()) == Some(true)
+    {
         return Vec::new();
     }
     eca_index(facade)

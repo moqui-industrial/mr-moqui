@@ -226,6 +226,9 @@ pub enum Condition {
     /// A comparison made on `UPPER(field)` and `UPPER(value)` when the field is text. The inner
     /// condition is one comparison, against a value or another field.
     IgnoreCase(Box<Condition>),
+    /// A SQL fragment used as written, Java's `WhereCondition` (`makeConditionWhere`). It names tables and columns as
+    /// the database does, binds no values, and cannot be checked against a row held in memory.
+    Where(String),
     /// `field op ?` for a statement prepared once and bound by the caller on each run. Its slot
     /// in [`Statement::params`] is `Null`; such a caller uses the SQL text only.
     Bound(FieldRef, CompareOp),
@@ -398,6 +401,11 @@ impl Condition {
         Self::IgnoreCase(Box::new(condition))
     }
 
+    /// A SQL fragment used as written.
+    pub fn where_sql(sql: impl Into<String>) -> Self {
+        Self::Where(sql.into())
+    }
+
     /// `field op ?`, bound by the caller.
     pub fn bound(field: impl Into<FieldRef>, op: CompareOp) -> Self {
         Self::Bound(field.into(), op)
@@ -423,6 +431,7 @@ impl Condition {
             Self::IsNotNull(field) => Self::IsNotNull(change(field)),
             Self::Matches(field, value) => Self::Matches(change(field), value),
             Self::Bound(field, op) => Self::Bound(change(field), op),
+            Self::Where(sql) => Self::Where(sql),
             Self::CompareFields(left, op, right) => {
                 let left = change(left);
                 Self::CompareFields(left, op, change(right))
@@ -474,6 +483,7 @@ impl Condition {
                 }
             }
             Self::Not(inner) | Self::IgnoreCase(inner) => inner.visit_fields(visit),
+            Self::Where(_) => {}
         }
     }
 
@@ -625,9 +635,11 @@ impl<'a> Writer<'a> {
                     self.upper_if(&right, right.upper_applies());
                     Ok(())
                 }
-                Condition::And(_) | Condition::Or(_) | Condition::Not(_) | Condition::IgnoreCase(_) => {
-                    Err(Error::new("ignore-case applies to one comparison"))
-                }
+                Condition::And(_)
+                | Condition::Or(_)
+                | Condition::Not(_)
+                | Condition::IgnoreCase(_)
+                | Condition::Where(_) => Err(Error::new("ignore-case applies to one comparison")),
                 other => self.compare(other, columns, true),
             },
             Condition::CompareFields(left, op, right) => {
@@ -638,6 +650,12 @@ impl<'a> Writer<'a> {
                 self.push(op.sql());
                 self.push(" ");
                 self.push(&right.sql);
+                Ok(())
+            }
+            Condition::Where(sql) => {
+                self.push("(");
+                self.push(sql);
+                self.push(")");
                 Ok(())
             }
             Condition::Matches(field, value) => {

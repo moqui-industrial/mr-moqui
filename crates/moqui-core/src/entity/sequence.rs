@@ -35,6 +35,8 @@ use super::facade::EntityFacade;
 use crate::driver::DbConnection;
 
 const SEQUENCE_START: i64 = 100_000;
+/// The bank size when a call names none, Java's `defaultBankSize`.
+const DEFAULT_BANK_SIZE: u64 = 50;
 const SEQUENCE_ENTITY: &str = "moqui.entity.SequenceValueItem";
 /// Bounds the refill statements, so a refill that waits on a row lock (such as the caller's own
 /// uncommitted write of the `SequenceValueItem` row) fails instead of hanging.
@@ -167,6 +169,31 @@ pub(crate) fn assign_primary(facade: &EntityFacade, entity_name: &str) -> Result
         refill(&tx, &prepared, &spec.seq_name, spec.bank_size, hint)
     })?;
     Ok((spec.pk_field, apply_prefix(spec.prefix.as_deref(), &id.to_string())))
+}
+
+/// `EntityFacade.sequencedIdPrimary(seqName, staggerMax, bankSize)`: the next id of any sequence name, as text. A
+/// name that is an entity with a UUID primary sequence gets a UUID. No stagger is 0 and no bank size is the default of
+/// 50 (also for zero or less), as Java.
+pub(crate) fn sequenced_id_primary(
+    facade: &EntityFacade,
+    seq_name: &str,
+    stagger: Option<u64>,
+    bank_size: Option<u64>,
+) -> Result<String, Error> {
+    let uuid = facade
+        .with_entity(seq_name, |entity, _, _| Ok(entity.sequence_primary_use_uuid))
+        .unwrap_or(false);
+    if uuid {
+        return uuid_v4();
+    }
+    let stagger = stagger.unwrap_or(0);
+    let bank_size = bank_size.filter(|size| *size > 0).unwrap_or(DEFAULT_BANK_SIZE);
+    let prepared = facade.with_entity(SEQUENCE_ENTITY, |entity, dialect, _| seq_sql(entity, dialect))?;
+    let tx = facade.transactions_for(SEQUENCE_ENTITY)?;
+    let id = facade.inner.banks.next_id(seq_name, stagger, |hint| {
+        refill(&tx, &prepared, seq_name, bank_size, hint)
+    })?;
+    Ok(id.to_string())
 }
 
 fn seq_sql(entity: &moqui_db::model::EntityDefinition, dialect: &moqui_db::dialect::Dialect) -> Result<SeqSql, Error> {

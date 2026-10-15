@@ -17,6 +17,116 @@
 //! Groovy class-name cleanup, DOM element text, Elastic query helpers, and
 //! `numberToWords` are not ported.
 
+const SCALES: [&str; 8] = [
+    "",
+    "thousand",
+    "million",
+    "billion",
+    "trillion",
+    "quadrillion",
+    "quintillion",
+    "sextillion",
+];
+const SUBTWENTY: [&str; 20] = [
+    "",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+];
+const DECADES: [&str; 10] = [
+    "", "ten", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+];
+
+/// A value from 0 to 999 in words, as Java's `tripleAsWords` writes it, down to its extra space after "hundred".
+fn triple_as_words(value: usize, use_and: bool) -> String {
+    if value < SUBTWENTY.len() {
+        return SUBTWENTY[value].to_string();
+    }
+    let subhun = value % 100;
+    let hun = value / 100;
+    let mut out = String::new();
+    if hun > 0 {
+        out.push_str(SUBTWENTY[hun]);
+        out.push_str(" hundred");
+    }
+    if subhun > 0 {
+        if hun > 0 {
+            out.push_str(if use_and { " and " } else { " " });
+        }
+        if subhun < SUBTWENTY.len() {
+            out.push(' ');
+            out.push_str(SUBTWENTY[subhun]);
+        } else {
+            let tens = subhun / 10;
+            let units = subhun % 10;
+            if tens > 0 {
+                out.push_str(DECADES[tens]);
+            }
+            if units > 0 {
+                out.push(' ');
+                out.push_str(SUBTWENTY[units]);
+            }
+        }
+    }
+    out
+}
+
+/// `StringUtilities.numberToWords(value, useAnd)`: 0 is the empty text, as Java's (its first word is empty), and the
+/// first letter is capital.
+pub fn number_to_words(value: i64, use_and: bool) -> String {
+    if value == 0 {
+        return String::new();
+    }
+    let negative = value < 0;
+    let mut remaining = i128::from(value);
+    let mut thousands: Vec<usize> = Vec::new();
+    while remaining != 0 {
+        thousands.push(usize::try_from((remaining % 1000).abs()).unwrap_or(0));
+        remaining /= 1000;
+    }
+    let mut out = String::new();
+    if negative {
+        out.push_str("negative ");
+    }
+    let mut first = true;
+    for scale in (1..thousands.len()).rev() {
+        if !first {
+            out.push_str(", ");
+        }
+        first = false;
+        if thousands[scale] > 0 {
+            out.push_str(&triple_as_words(thousands[scale], use_and));
+            out.push(' ');
+            out.push_str(SCALES[scale]);
+        }
+    }
+    if !first && thousands[0] != 0 {
+        out.push_str(if use_and { " and " } else { " " });
+    }
+    out.push_str(&triple_as_words(thousands[0], use_and));
+    let mut chars = out.chars();
+    match chars.next() {
+        Some(head) => head.to_uppercase().chain(chars).collect(),
+        None => out,
+    }
+}
+
 /// Encode text for an XML attribute. Characters above ASCII become decimal
 /// character references. The control-character substitutions match
 /// `StringUtilities.encodeForXmlAttribute`.

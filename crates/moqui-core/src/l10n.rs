@@ -367,6 +367,20 @@ pub fn parse_number(input: &str) -> Option<Value> {
 ///
 /// Returns an error for an amount that is not a number.
 pub fn round_currency(amount: &Value, uom_id: &str, precise: bool) -> Result<Value, Error> {
+    round_currency_with(amount, uom_id, precise, format::RoundingStrategy::MidpointAwayFromZero)
+}
+
+/// [`round_currency`] with the rounding mode of Java's four-argument form.
+///
+/// # Errors
+///
+/// Returns an error for an amount that is not a number.
+pub fn round_currency_with(
+    amount: &Value,
+    uom_id: &str,
+    precise: bool,
+    strategy: format::RoundingStrategy,
+) -> Result<Value, Error> {
     if amount.is_null() {
         return Ok(Value::Null);
     }
@@ -374,10 +388,7 @@ pub fn round_currency(amount: &Value, uom_id: &str, precise: bool) -> Result<Val
         .ok_or_else(|| Error::new(format!("cannot round {} as currency", to_plain_string(amount))))?;
     let digits = currency_info(Some(uom_id)).fraction_digits.unwrap_or(2) + usize::from(precise);
     let digits = u32::try_from(digits).unwrap_or(2);
-    Ok(Value::Decimal(number.round_dp_with_strategy(
-        digits,
-        format::RoundingStrategy::MidpointAwayFromZero,
-    )))
+    Ok(Value::Decimal(number.round_dp_with_strategy(digits, strategy)))
 }
 
 #[cfg(test)]

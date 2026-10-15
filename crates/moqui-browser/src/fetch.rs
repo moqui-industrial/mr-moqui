@@ -79,7 +79,11 @@ impl HttpSender for FetchSender {
         let status = transport::send(wire.as_bytes());
         let text = String::from_utf8_lossy(&transport::take()).into_owned();
         match u16::try_from(status) {
-            Ok(status) => Ok(Response { status, body: text }),
+            Ok(status) => Ok(Response {
+                status,
+                body: text,
+                ..Default::default()
+            }),
             Err(_) => Err(Error::new(format!("HTTP {} {shown} failed: {text}", request.method))),
         }
     }

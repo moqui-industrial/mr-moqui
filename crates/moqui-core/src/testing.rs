@@ -529,7 +529,26 @@ fn compare(left: &Value, op: Op, right: &Value) -> bool {
         Op::Gt => ordering == std::cmp::Ordering::Greater,
         Op::Le => ordering != std::cmp::Ordering::Greater,
         Op::Ge => ordering != std::cmp::Ordering::Less,
+        Op::Like => like_matches(left, right),
+        Op::NotLike => !left.is_null() && !like_matches(left, right),
     }
+}
+
+/// SQL `LIKE` with `%` and `_`, on text.
+fn like_matches(left: &Value, pattern: &Value) -> bool {
+    let (Some(text), Some(pattern)) = (left.as_str(), pattern.as_str()) else {
+        return false;
+    };
+    fn walk(text: &[char], pattern: &[char]) -> bool {
+        match pattern.split_first() {
+            None => text.is_empty(),
+            Some(('%', rest)) => (0..=text.len()).any(|skip| walk(&text[skip..], rest)),
+            Some((symbol, rest)) => text
+                .split_first()
+                .is_some_and(|(first, tail)| (*symbol == '_' || symbol == first) && walk(tail, rest)),
+        }
+    }
+    walk(&text.chars().collect::<Vec<_>>(), &pattern.chars().collect::<Vec<_>>())
 }
 
 fn cmp_values(left: &Value, right: &Value) -> std::cmp::Ordering {
@@ -650,6 +669,8 @@ enum Op {
     Gt,
     Le,
     Ge,
+    Like,
+    NotLike,
 }
 
 struct OrderKey {
@@ -902,6 +923,13 @@ fn parse_primary(cur: &mut Cur) -> Result<Pred, Error> {
         return Ok(Pred::IsNull { field, negated });
     }
     let negated = cur.eat_keyword("NOT");
+    if cur.eat_keyword("LIKE") {
+        cur.expect_symbol(b'?')?;
+        return Ok(Pred::Cmp {
+            field,
+            op: if negated { Op::NotLike } else { Op::Like },
+        });
+    }
     if cur.eat_keyword("IN") {
         cur.expect_symbol(b'(')?;
         let mut slots = 0;

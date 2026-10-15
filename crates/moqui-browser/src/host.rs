@@ -160,6 +160,7 @@ impl Browser {
             disable_fk_create: true,
             timeout: None,
             restrict_sensitive_entities: false,
+            ..Default::default()
         };
         self.request(true, || Ok(load_entity_data(&self.facade, location, &options)?.records))
     }

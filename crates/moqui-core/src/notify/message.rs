@@ -154,6 +154,24 @@ impl NotificationMessage {
         self
     }
 
+    pub fn topic_name(&self) -> &str {
+        &self.topic
+    }
+
+    /// Java's `getNotificationTopic`: the `NotificationTopic` row of the topic, `None` when the topic has none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the entity facade is not installed or the find fails.
+    pub fn notification_topic(&self) -> Result<Option<EntityValue>, Error> {
+        if self.topic.is_empty() {
+            return Ok(None);
+        }
+        let facade = current_facade()?;
+        let _authz = ExecutionContext::with_current(|ctx| ctx.disable_authz());
+        Ok(facade.find(TOPIC)?.eq("topic", Value::string(&self.topic)).one()?)
+    }
+
     /// Expanded title from the last [`Self::send`]. Not expanded again.
     pub fn title_text(&self) -> Option<&str> {
         self.title_text.as_deref()

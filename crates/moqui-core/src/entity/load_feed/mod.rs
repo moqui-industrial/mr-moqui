@@ -78,6 +78,12 @@ pub struct LoadOptions {
     /// [`RESTRICTED_ENTITIES`] entity. Here service elements are refused too, a hardening beyond the Java, which ran
     /// them and checked only root and CSV entity names.
     pub restrict_sensitive_entities: bool,
+    /// Java `csvEntityName`: the entity or service of a CSV text with no entity line.
+    pub csv_entity_name: Option<String>,
+    /// Java `csvFieldNames`: the fields of a CSV text with no header line.
+    pub csv_field_names: Vec<String>,
+    /// Java `defaultValues`: fields set on each CSV record before its own values, as text.
+    pub default_values: Vec<(String, String)>,
 }
 
 /// The identity-admin and secret-config entities (`WebUtilities.isRestrictedGenericEntity`), by simple name in lower

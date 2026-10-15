@@ -141,6 +141,8 @@ impl PreparedRequest {
 pub struct RestResponse {
     status: u16,
     body: String,
+    bytes: Vec<u8>,
+    headers: Vec<(String, String)>,
 }
 
 impl RestResponse {
@@ -150,6 +152,16 @@ impl RestResponse {
 
     pub fn body(&self) -> &str {
         &self.body
+    }
+
+    /// The body as received, for a body that is not text.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// The response headers, names as the server sent them.
+    pub fn response_headers(&self) -> &[(String, String)] {
+        &self.headers
     }
 }
 
@@ -245,6 +257,11 @@ impl RestClient {
             .send()
             .map_err(|err| Error::new(format!("HTTP {method} {shown} failed")).with_source(err.without_url()))?;
         let status = response.status().as_u16();
+        let headers: Vec<(String, String)> = response
+            .headers()
+            .iter()
+            .filter_map(|(name, value)| Some((name.as_str().to_string(), value.to_str().ok()?.to_string())))
+            .collect();
         if response
             .content_length()
             .is_some_and(|length| length > MAX_RESPONSE_BYTES)
@@ -262,7 +279,12 @@ impl RestClient {
             )));
         }
         let body = String::from_utf8_lossy(&bytes).into_owned();
-        Ok(RestResponse { status, body })
+        Ok(RestResponse {
+            status,
+            body,
+            bytes,
+            headers,
+        })
     }
 
     fn call(&self, method: Method, url: impl Into<String>) -> Call<'_> {

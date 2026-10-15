@@ -76,11 +76,16 @@ pub struct Request {
     pub timeout: Option<std::time::Duration>,
 }
 
-/// Status and body text.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Status, body text, and what a binary body and the headers need. A sender that has no bytes or headers leaves them
+/// empty, and the body text stands for the bytes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Response {
     pub status: u16,
     pub body: String,
+    /// The body as received. Empty when the sender did not keep it.
+    pub bytes: Vec<u8>,
+    /// The response headers, names as sent.
+    pub headers: Vec<(String, String)>,
 }
 
 /// Sends a request on the host's transport. A transport failure is an error; an HTTP error status is
@@ -153,6 +158,8 @@ fn send_default(request: Request) -> Result<Response, Error> {
     Ok(Response {
         status: response.status(),
         body: response.body().to_string(),
+        bytes: response.bytes().to_vec(),
+        headers: response.response_headers().to_vec(),
     })
 }
 

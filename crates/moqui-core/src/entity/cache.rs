@@ -1324,6 +1324,8 @@ fn eval_condition(condition: &Condition, fields: &BTreeMap<String, Value>) -> bo
         Condition::Or(list) => list.iter().any(|child| eval_condition(child, fields)),
         Condition::Not(inner) => !eval_condition(inner, fields),
         Condition::Matches(_, _) => false,
+        // As Java's `WhereCondition.mapMatches`: raw SQL cannot be checked here, so the row stays.
+        Condition::Where(_) => true,
         Condition::CompareFields(left, op, right) => {
             let ordering = cmp_present(&field_value(fields, &left.name), &field_value(fields, &right.name));
             match (op, ordering) {

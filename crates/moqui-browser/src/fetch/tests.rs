@@ -38,6 +38,7 @@ impl HttpSender for Fake {
             Ok(Response {
                 status: 200,
                 body: format!(r#"{{"echo":"ok","method":"{}","note":"n"}}"#, request.method),
+                ..Default::default()
             })
         } else {
             Err(Error::new("connection refused"))

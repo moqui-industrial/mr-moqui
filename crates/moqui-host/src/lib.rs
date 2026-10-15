@@ -496,6 +496,7 @@ fn load_options(flags: &LoadFlags) -> moqui_core::entity::load_feed::LoadOptions
         disable_fk_create: flags.raw || flags.disable_fk_create,
         timeout: flags.timeout_seconds.map(std::time::Duration::from_secs),
         restrict_sensitive_entities: false,
+        ..Default::default()
     }
 }
 

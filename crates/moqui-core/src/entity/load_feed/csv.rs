@@ -38,36 +38,54 @@ pub(super) fn load_csv_reader(
         .trim(csv::Trim::All)
         .from_reader(reader);
     let mut records = reader.records();
-    let first = loop {
-        match records.next() {
-            Some(Ok(record)) if !record_blank(&record) => break record,
-            Some(Ok(_)) => {}
-            Some(Err(err)) => return Err(Error::new(format!("could not read csv {location}")).with_source(err)),
-            None => return Err(Error::new(format!("csv {location} has no data"))),
-        }
+    // A given entity name or field names stand for the entity line and the header line, which the text then lacks.
+    let mut file_type = None;
+    let entity_name = if let Some(name) = options.csv_entity_name.as_deref().filter(|name| !name.is_empty()) {
+        name.to_string()
+    } else {
+        let first = loop {
+            match records.next() {
+                Some(Ok(record)) if !record_blank(&record) => break record,
+                Some(Ok(_)) => {}
+                Some(Err(err)) => return Err(Error::new(format!("could not read csv {location}")).with_source(err)),
+                None => return Err(Error::new(format!("csv {location} has no data"))),
+            }
+        };
+        file_type = first
+            .get(1)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        first.get(0).unwrap_or("").trim().to_string()
     };
-    let entity_name = first.get(0).unwrap_or("").trim().to_string();
     if entity_name.is_empty() {
         return Err(Error::new(format!("csv {location} has no entity name")));
     }
-    let file_type = first.get(1).map(str::trim).filter(|value| !value.is_empty());
-    if skip_type(file_type, &options.data_types) {
+    if skip_type(file_type.as_deref(), &options.data_types) {
         return Ok(0);
     }
-    let header = loop {
-        match records.next() {
-            Some(Ok(record)) if !record_blank(&record) => break record,
-            Some(Ok(_)) => {}
-            Some(Err(err)) => return Err(Error::new(format!("could not read csv {location}")).with_source(err)),
-            None => return Err(Error::new(format!("csv {location} has no header"))),
+    let mut headers: Vec<(String, usize)> = Vec::new();
+    if options.csv_field_names.is_empty() {
+        let header = loop {
+            match records.next() {
+                Some(Ok(record)) if !record_blank(&record) => break record,
+                Some(Ok(_)) => {}
+                Some(Err(err)) => return Err(Error::new(format!("could not read csv {location}")).with_source(err)),
+                None => return Err(Error::new(format!("csv {location} has no header"))),
+            }
+        };
+        for (index, field) in header.iter().enumerate() {
+            if field.is_empty() || headers.iter().any(|(name, _)| name == field) {
+                continue;
+            }
+            headers.push((field.to_string(), index));
         }
-    };
-    let mut headers = Vec::new();
-    for (index, field) in header.iter().enumerate() {
-        if field.is_empty() || headers.iter().any(|(name, _)| name == field) {
-            continue;
+    } else {
+        for (index, field) in options.csv_field_names.iter().enumerate() {
+            if !field.is_empty() && !headers.iter().any(|(name, _)| name == field) {
+                headers.push((field.clone(), index));
+            }
         }
-        headers.push((field.to_string(), index));
     }
     let is_entity = entity_defined(facade, &entity_name);
     if !is_entity && !entity_name.contains('#') {
@@ -83,6 +101,9 @@ pub(super) fn load_csv_reader(
         }
         if is_entity {
             let mut fields = BTreeMap::new();
+            for (name, text) in &options.default_values {
+                fields.insert(name.clone(), Value::string(text));
+            }
             for (name, index) in &headers {
                 let Some(text) = record.get(*index) else {
                     continue;
@@ -104,6 +125,9 @@ pub(super) fn load_csv_reader(
             total = total.saturating_add(stored);
         } else {
             let mut parameters = BTreeMap::new();
+            for (name, text) in &options.default_values {
+                parameters.insert(name.clone(), text.clone());
+            }
             for (name, index) in &headers {
                 if let Some(text) = record.get(*index).filter(|text| !text.is_empty()) {
                     parameters.insert(name.clone(), text.to_string());

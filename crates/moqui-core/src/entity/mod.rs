@@ -50,8 +50,8 @@ pub use meta::EntityDbMeta;
 pub use moqui_db::sql::{CompareOp, Condition};
 pub(crate) use schema::document as schema_document;
 pub use search_form::SearchFormResult;
-pub(crate) use sequence::uuid_v4;
 pub use sequence::{fill_bank, stagger_step, take_id, SequenceBank};
+pub(crate) use sequence::{sequenced_id_primary, uuid_v4};
 pub use value::{EntityList, EntityValue};
 
 /// Forget what the entity layer keeps on this thread once a unit of work is over. With `sim`, ends every sim
