@@ -44,7 +44,7 @@ This is how `mantle-udm` and `mantle-usl` were converted until all their data lo
    - An action error names the service (`in service ...`). It also names the generated statement (`at generated line N: ...`), and with `MOQUI_ACTIONS_DEBUG`, the XML element before it (`after // <set field=...>`).
    - Errors left in the message facade by a data file are logged after that file (`Error messages loading entity data from ...`).
    - `ERROR [main]` lines are the load. `[moqui-worker-N]` lines are the search feed running after each commit.
-   - To read the database after a load, `psql` is not bundled. Run `postgres --single` from `db/install/<version>/bin` with `LD_LIBRARY_PATH` set to `db/embedded/xmlshim`.
+   - To read the database after a load, `psql` is not bundled. Run `postgres --single` from `db/install/<version>/bin`; the libxml2 shim is in that install's `lib/`, which the binaries find through their RUNPATH, so no `LD_LIBRARY_PATH` is needed.
 
 4. **Split the commits.** Back up the final files, reset the repository, run the converter, and commit that. Then restore the backup and commit the hand ports.
 

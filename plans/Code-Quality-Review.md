@@ -526,3 +526,97 @@ These are noted so they don't get re-reviewed:
    - Remove the libxml2 shim copies and move `src/db` tests to `tests/`.
    - Clean up dead code and stale allows.
    - Gate test hooks with `cfg(test)`.
+
+---
+
+## Resolution (2026-10-15)
+
+All six fix phases are done on `initial`: 58 commits after the review commit (9f34eda), with about 170 new tests (854 → 1024 `#[test]`).
+
+The final gate passes:
+- `cargo fmt --check` and `cargo lint` are clean.
+- `cargo test --workspace` passes, and moqui-core passes 5 runs in a row (752 tests).
+- `cargo test-slow` passes, 5 of 5.
+
+The stale golden file and the two flaky tests seen during the work were fixed at their causes:
+- the cluster state was made per factory
+- the `instance_purpose` override was scoped to the test thread
+- the in-memory database lost-update in the SFTP test was fixed
+
+Every finding was re-checked against the code before it was fixed. Each fix was made in an isolated worktree, reviewed, and then merged.
+
+| Phase | What landed |
+|---|---|
+| 1. Abort, data-loss and security Highs | H1, H3, H4, H6, H9, H13, H14, H15, the node CDATA writer, the `search_bench` lint |
+| 2. Transaction and commit semantics | H5, H7, H8, H10; `TxScope` and frame checks; `IgnoreSuspend`; commit-hook panics; authz generation on commit; SSO sync made atomic and linked by `externalUserId` |
+| 3. RAII sweep | H2; `ContextFrame` everywhere; unwind-safe engine state; parked rquickjs panics; pool cleanup and job-lock guards; local `authUsername` login; `ExecutionContext::enter` made sound with owned handles (no `unsafe`) |
+| 4. Lock scope and bounds | H11, H12; per-name sequence locks; ECA index; deadline canceller per frame; shared cache evictor; session cap; `set_var` removed; HTTP, cluster and SSH limits; SFTP and shell caps |
+| 5. Fail-open sweep | Unevaluable DENY now denies; full ECA conditions; typed `ErrorKind` and statuses; production 500s show only an error id; subscreens errors no longer cached; search status and shard handling; cluster state per factory |
+| 6. Structure, dedup, remaining Meds | `load_feed` and `sri` split into modules; serde_json and zip replace hand-written codecs; lazy service-file load; script deadlines, stack and size-capped caches; batched Postgres indexing; render hot path; NOTIFY, MariaDB and WASM panic fixes; shared `sync`/`codec`/`InstallSlot` helpers; dead code and test hooks removed; remaining Lows |
+
+### Behaviour changes
+- **SSH shell:** `service`, `entity` and `js` now run under the Tools app's authorization, as Java's Groovy shell did. Before, they ran with authorization off.
+- **Saved finds:** `formSaveFind` and `formSelectColumns` take only a POST with the session token. A saved find can be scheduled or made the default only by its owner or one of its groups. A description is never template source.
+- **Transactions:**
+  - Request and service workers roll back a frame left open by a unit of work, with an error log. Before, a request worker committed it.
+  - A joined `rollback()` marks the frame rollback-only.
+- **Scripts:**
+  - A script file runs as a function body. If its last statement is not an expression, `ec.resource.script` returns undefined.
+  - Assigning to a host global (`compare`, `toNumber`, `System` and others) throws.
+  - A script outside a transaction on a request thread is stopped at `webapp_request_timeout`.
+- **Sessions:** a client that sends no cookie gets no Visitor or Visit row until the cookie comes back or it logs in. Live sessions are capped.
+- **Authorization:**
+  - A DENY whose `filterMap` or pattern cannot be evaluated now denies.
+  - Non-expression ECA conditions are evaluated, and an unknown condition child is an error.
+  - Any `ArtifactAuthz` data with a Groovy-form `filterMap` (`[a: b]`), for example in Mantle, should be checked.
+- **Errors:**
+  - HTTP status comes only from `ErrorKind`, so some general errors that used to give 404, 405 or 403 now give 500.
+  - In production, 500 bodies and failed sections show an error id instead of the detail.
+- **SSO:**
+  - The local account is linked by `externalUserId`, and a mismatched account is refused.
+  - Email is used as the username only when it is verified, or is the provider's own username field.
+- **Search:** OpenSearch partial shard failures are errors. Highlight fragments are HTML-escaped.
+- **Other:**
+  - Entity REST `pageSize` is capped; `pageNoLimit` still lifts the cap, as in Java.
+  - The SFTP default port is 22.
+  - Data-writer zip entries are deflated.
+  - A panicking browser export resets its state.
+
+### New properties
+All are optional, with these defaults:
+
+| Property | Default | Meaning |
+|---|---|---|
+| `webapp_header_timeout` | 30 s | |
+| `webapp_body_timeout` | 60 s | |
+| `webapp_request_timeout` | 300 s | Also the script limit on request threads |
+| `webapp_max_connections` | 1024 | |
+| `webapp_shutdown_timeout` | 30 s | |
+| `webapp_session_max` | 10000 | |
+| `entity_rest_max_page_size` | 1000 | |
+| `script_timeout` | unset | An explicit script limit for all threads; 0 means none |
+
+### Not done, or left as noted
+- **Java-parity design points:**
+  - REST `pageNoLimit` bypasses the page cap.
+  - JSON-list REST calls commit item by item.
+  - The implicit `actions` transition returns the whole context.
+  - Mail attachments can name any locatable file.
+- **Lows:**
+  - `service/mail.rs` still uses `Result<_, String>` (49 sites).
+  - `moqui-lib` `regex_match` is still polynomial on nested quantifiers.
+  - Static files are read whole, with no Range support.
+  - Search mapping caches can go stale across cluster nodes.
+  - The login lockout gate is checked before the failure increment.
+  - `remember_client_ip` updates the Visit on every request.
+  - HttpSession rows are never purged when `webapp_session_timeout` ≤ 0.
+- **Global state that stays process-wide:** the notify bus and its origin id, the transaction deadline slots and lock tracking, the QZ signer, and `LAST_BOOTED`.
+- **Not verified live:**
+  - `catch_unwind` in the wasm32-emscripten build
+  - the pgvector embedding SQL, whose test needs `PGVECTOR_URL`
+  - MySQL and MariaDB integration, which needs a server
+- **Known limits:**
+  - On MySQL (not MariaDB), the statement timeout bounds only SELECT.
+  - The entity JSON loader relies on serde_json's `arbitrary_precision` number key, which a test covers.
+  - `cargo clippy -p moqui-host --no-default-features` already failed at baseline, and that configuration is not linted.
+- **Test isolation:** `screen/cache.rs` and `script/runtime/facades.rs` still read `instance_purpose` directly.
