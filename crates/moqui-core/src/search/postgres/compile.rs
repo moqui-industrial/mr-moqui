@@ -498,6 +498,17 @@ impl<'a> Compiler<'a> {
             out.push(")");
             return out;
         }
+        if list.len() == 2 && distance < NEAR_PHRASE_LIMIT {
+            // Two words: "within distance" is the second word 1 to distance + 1 positions after the first, which
+            // the phrase operators check in the GIN-indexed match itself, without reading positions row by row.
+            let (first, second) = (&list[0], &list[1]);
+            let alternatives: Vec<String> = (1..=distance + 1)
+                .map(|gap| format!("{first} <{gap}> {second}"))
+                .collect();
+            let mut out = Sql::new(format!("({vector} @@ to_tsquery({config}, "));
+            out.param(Value::String(alternatives.join(" | "))).push("))");
+            return out;
+        }
         let names: Vec<(String, String)> = list.iter().map(|_| (self.var(), self.var())).collect();
         out.push(" AND EXISTS (SELECT 1 FROM ");
         for (index, (lexeme, position)) in names.iter().enumerate() {
@@ -950,6 +961,10 @@ pub fn typed_param(kind: FieldKind, value: &Value) -> Option<(Value, &'static st
     }
 }
 
+/// Above this many positions between two words, `Near` checks positions row by row instead of an OR of phrase
+/// operators.
+const NEAR_PHRASE_LIMIT: u32 = 64;
+
 /// A date bound: a timestamp, a date (midnight UTC), epoch millis, ISO-8601, `now`, or the
 /// Moqui `yyyy-MM-dd HH:mm:ss.SSS` form read as UTC.
 pub fn parse_date_bound(value: &Value) -> Option<Timestamp> {
@@ -1017,6 +1032,27 @@ mod tests {
         assert!(Compiler::new(&mapping)
             .where_sql(&Query::Lucene("slow~".into()))
             .is_err());
+    }
+
+    #[test]
+    fn two_near_words_are_phrase_operators_and_more_read_positions() {
+        let mapping = party();
+        let near = |terms: &str| {
+            Query::from_value(&moqui_lib::json::from_json(
+                &serde_json::json!({"near": {"terms": terms, "fields": ["combinedName"], "distance": 2}}),
+            ))
+            .unwrap()
+        };
+        let sql = Compiler::new(&mapping).where_sql(&near("water pump")).unwrap();
+        assert!(!sql.text.contains("unnest"), "{}", sql.text);
+        assert!(
+            sql.params
+                .contains(&Value::string("water <1> pump | water <2> pump | water <3> pump")),
+            "{:?}",
+            sql.params
+        );
+        let sql = Compiler::new(&mapping).where_sql(&near("big water pump")).unwrap();
+        assert!(sql.text.contains("unnest"), "{}", sql.text);
     }
 
     #[test]

@@ -173,3 +173,29 @@ Batch independent socket/WAL operations and let group commit share flushes. A sy
 With a ring-aware host, socket operations can be submitted as `IORING_OP_RECV` and `IORING_OP_SEND` via `io_uring_enter`, potentially in batches. This does not put PostgreSQL WAL writes on the application's ring. Keep the planned Axum/Tokio baseline unless an equivalent measured ring implementation reduces actual CPU or physical work.
 
 To establish the achievable maximum, measure the XML stages and run the write target with syscall counts across application/proxy/database, total CPU/write, WAL bytes/write, flush latency/group size, completed transactions/s, errors, and tail latency. Use syscall tracing for diagnostic runs rather than treating instrumented throughput as the production ceiling. Keep durability and entity semantics unchanged.
+
+## Search
+
+Measured 2026-10-15 with `tests/search_bench.rs`, a generated catalog of 50,000 documents in release mode, on one development machine. Each document has a title of 2 to 4 words and a description of 20 to 40 words, drawn from a 4,000-word vocabulary with Zipf frequencies. Each query ran 50 times. Postgres is the embedded cluster with default settings. OpenSearch is the local 3.4.0 node, one shard, default JVM. Rerun with `SEARCH_BENCH_DOCS=50000 OPENSEARCH_URL=http://127.0.0.1:9200 cargo test --release -p moqui-host --test search_bench -- --ignored --nocapture`.
+
+| | Postgres p50 / p95 | OpenSearch p50 / p95 |
+|---|---|---|
+| Index, batches of 500 | 3,190 docs/s; 183 MB, 3.75 KB per document | 490 docs/s (`refresh=wait_for` on every bulk) |
+| Write one document, then find it | 56 / 65 ms | 1,005 / 1,015 ms (the refresh interval) |
+| Broad lexical, one common word (27,791 hits) | 89 / 121 ms | 3.0 / 4.2 ms |
+| Selective lexical, one rare word (49 hits) | 0.7 / 0.8 ms | 2.0 / 2.4 ms |
+| Two common words, cover-density rank | 80 / 173 ms | 4.2 / 18 ms |
+| Phrase, two title words | 1.0 / 40 ms | 1.5 / 4.8 ms |
+| Near, two common words within 3 (5,283 hits) | 579 / 599 ms | 3.7 / 10.5 ms |
+| Fuzzy, a typo in a title word | 8.7 / 149 ms | 2.9 / 4.2 ms |
+| Autocomplete, three letters | 18 / 111 ms | 2.2 / 5.4 ms |
+| Hybrid, a common and a rare word | 16 / 25 ms | 4.6 / 5.6 ms |
+| Category facet over a broad query | 82 / 103 ms | 1.1 / 6.1 ms |
+
+What the numbers say:
+
+- **Selective queries are fast on Postgres.** Rare words, phrases, and hybrid with a rare word are fast. The GIN index narrows the rows, and few rows are ranked.
+- **Broad queries are where Postgres pays.** Ranking, facets, and proximity cost tens to hundreds of milliseconds at 50,000 documents. GIN cannot return the top ranks, so every match is ranked or counted. Proximity and phrase rechecks recompute `to_tsvector` for each candidate row, because the index keeps no positions. Two-word `near` now compiles to phrase operators instead of a row-by-row position scan; on 2,000 documents in a debug build the old form took 96 ms. On common words it is still the slowest query.
+- **Candidate next steps on Postgres:** a stored per-field `tsvector` column (positions without recomputing), a cap on ranked rows for broad queries (`totalRelation: gte`), and measuring `ts_rank_cd` against plain rank on a real corpus.
+- **Freshness.** Postgres documents are visible on commit. The feed adds its after-commit delivery on the service pool, which this benchmark does not include. OpenSearch adds its refresh interval to each write.
+- **Hybrid defaults.** `k` 50 and the branch weights stay as they are. Setting them needs a relevance set from a real corpus, which a generated vocabulary cannot give.
