@@ -17,14 +17,11 @@
 //! `moqui_core::typegen::generate` writes the files. The default output is `types/` in the runtime directory.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use moqui_core::transaction::PoolConfig;
 use moqui_core::typegen::TypeFiles;
 use moqui_lib::error::Error;
 
-use crate::db::entity_facade::{attach, open_entity_facade};
-use crate::qvt_report::{screen_files, ModelOnly};
+use crate::qvt_report::{model_only_factory, screen_files};
 
 /// Generate the declarations for the framework, its components, and their screens.
 ///
@@ -32,17 +29,7 @@ use crate::qvt_report::{screen_files, ModelOnly};
 ///
 /// Returns an error when the factory, the entity model, or the service files do not load.
 pub fn generate_types(runtime: &Path, framework: &Path) -> Result<TypeFiles, Error> {
-    let factory = moqui_core::context::ExecutionContextFactory::boot_with_framework(runtime, framework)
-        .map_err(|err| Error::new(err.to_string()))?;
-    let pool = PoolConfig {
-        min: 0,
-        max: 1,
-        reserve: 0,
-        acquire_timeout: std::time::Duration::from_millis(10),
-        ..Default::default()
-    };
-    let facade = open_entity_facade(framework, Arc::new(ModelOnly), pool)?;
-    attach(&factory, facade);
+    let factory = model_only_factory(runtime, framework)?;
     // `screen_files` takes the files below a directory named `screen`, so the framework's own screens are found from its root.
     let roots: Vec<PathBuf> = [
         framework.to_path_buf(),

@@ -15,7 +15,7 @@
 //! The DevTools Protocol over one browser WebSocket: commands with an id and a reply, and events routed by the flat
 //! session they belong to. Messages stay `serde_json::Value`, so the workspace's `arbitrary_precision` numbers parse.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -32,11 +32,46 @@ const MAX_MESSAGE: usize = 512 * 1024 * 1024;
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, Error>>>>>;
 
+/// Events kept for one session before it listens.
+const EARLY_EVENTS: usize = 256;
+/// Sessions that may have events waiting for a listener at once; a page listens as soon as it is created.
+const EARLY_SESSIONS: usize = 64;
+/// Forgotten sessions remembered, so their late events (such as `Inspector.detached` after `closeTarget`) are dropped.
+const FORGOTTEN: usize = 256;
+
 /// Events of one session, and the events that arrived before anyone listened.
 #[derive(Default)]
 struct Routes {
     listeners: HashMap<String, mpsc::UnboundedSender<Value>>,
     early: HashMap<String, Vec<Value>>,
+    /// The newest last.
+    forgotten: VecDeque<String>,
+}
+
+impl Routes {
+    /// Keep `event` of `session` for its listener, unless the session was forgotten or too many sessions wait.
+    fn keep_early(&mut self, session: &str, event: Value) {
+        if self.forgotten.iter().any(|gone| gone == session) {
+            return;
+        }
+        if !self.early.contains_key(session) && self.early.len() >= EARLY_SESSIONS {
+            tracing::debug!(session, "DevTools event dropped: too many sessions without a listener");
+            return;
+        }
+        let early = self.early.entry(session.to_string()).or_default();
+        if early.len() < EARLY_EVENTS {
+            early.push(event);
+        }
+    }
+
+    fn forget(&mut self, session: &str) {
+        self.listeners.remove(session);
+        self.early.remove(session);
+        if self.forgotten.len() >= FORGOTTEN {
+            self.forgotten.pop_front();
+        }
+        self.forgotten.push_back(session.to_string());
+    }
 }
 
 /// A connected browser. Cloning shares the socket.
@@ -149,9 +184,10 @@ impl Connection {
 
     /// Stop routing the events of `session`.
     pub(super) fn forget(&self, session: &str) {
-        let mut routes = self.routes.lock().unwrap_or_else(PoisonError::into_inner);
-        routes.listeners.remove(session);
-        routes.early.remove(session);
+        self.routes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .forget(session);
     }
 
     fn dispatch(&self, message: Value) {
@@ -169,21 +205,17 @@ impl Connection {
             }
             return;
         }
-        let Some(session) = message.get("sessionId").and_then(Value::as_str) else {
+        let Some(session) = message.get("sessionId").and_then(Value::as_str).map(str::to_string) else {
             return;
         };
+        let session = session.as_str();
         let mut routes = self.routes.lock().unwrap_or_else(PoisonError::into_inner);
         match routes.listeners.get(session) {
             Some(listener) => {
                 let _ = listener.send(message);
             }
-            None => {
-                // Events before the page's listener exists; a session that never listens keeps only a few.
-                let early = routes.early.entry(session.to_string()).or_default();
-                if early.len() < 256 {
-                    early.push(message);
-                }
-            }
+            // Events before the page's listener exists, or after it was forgotten.
+            None => routes.keep_early(session, message),
         }
     }
 
@@ -204,5 +236,29 @@ impl Connection {
             .unwrap_or_else(PoisonError::into_inner)
             .listeners
             .clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{Routes, EARLY_SESSIONS};
+
+    #[test]
+    fn events_of_a_forgotten_session_are_dropped_and_waiting_sessions_are_capped() {
+        let mut routes = Routes::default();
+        routes.keep_early("page-1", json!({ "method": "Page.loadEventFired" }));
+        assert_eq!(routes.early.get("page-1").map(Vec::len), Some(1));
+        routes.forget("page-1");
+        routes.keep_early("page-1", json!({ "method": "Inspector.detached" }));
+        assert!(routes.early.is_empty());
+
+        for index in 0..EARLY_SESSIONS + 10 {
+            routes.keep_early(&format!("never-{index}"), json!({}));
+        }
+        assert_eq!(routes.early.len(), EARLY_SESSIONS);
+        routes.keep_early("never-0", json!({}));
+        assert_eq!(routes.early.get("never-0").map(Vec::len), Some(2));
     }
 }

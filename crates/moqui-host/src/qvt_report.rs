@@ -22,6 +22,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use moqui_core::context::ExecutionContextFactory;
 use moqui_core::driver::{DbConnection, DbDriver};
 use moqui_core::screen::statics::{static_reports_for_files, FileReport};
 use moqui_core::transaction::PoolConfig;
@@ -37,6 +38,26 @@ impl DbDriver for ModelOnly {
     fn connect(&self) -> Result<Box<dyn DbConnection>, Error> {
         Err(Error::new("this run reads the entity model only and has no database"))
     }
+}
+
+/// A factory booted as for a server, with an entity facade over [`ModelOnly`]: the model loads and no data is read.
+///
+/// # Errors
+///
+/// Returns an error when the factory or the entity model does not load.
+pub(crate) fn model_only_factory(runtime: &Path, framework: &Path) -> Result<Arc<ExecutionContextFactory>, Error> {
+    let factory =
+        ExecutionContextFactory::boot_with_framework(runtime, framework).map_err(|err| Error::new(err.to_string()))?;
+    let pool = PoolConfig {
+        min: 0,
+        max: 1,
+        reserve: 0,
+        acquire_timeout: std::time::Duration::from_millis(10),
+        ..Default::default()
+    };
+    let facade = open_entity_facade(framework, Arc::new(ModelOnly), pool)?;
+    attach(&factory, facade);
+    Ok(factory)
 }
 
 /// Screen files below `roots`: `*.xml` in a `screen` directory whose root element is `screen`.
@@ -75,17 +96,7 @@ pub(crate) fn screen_files(roots: &[PathBuf]) -> Vec<PathBuf> {
 ///
 /// Returns an error when the factory or the entity model does not load.
 pub fn qvt_static_reports(runtime: &Path, framework: &Path) -> Result<Vec<FileReport>, Error> {
-    let factory = moqui_core::context::ExecutionContextFactory::boot_with_framework(runtime, framework)
-        .map_err(|err| Error::new(err.to_string()))?;
-    let pool = PoolConfig {
-        min: 0,
-        max: 1,
-        reserve: 0,
-        acquire_timeout: std::time::Duration::from_millis(10),
-        ..Default::default()
-    };
-    let facade = open_entity_facade(framework, Arc::new(ModelOnly), pool)?;
-    attach(&factory, facade);
+    let factory = model_only_factory(runtime, framework)?;
     let roots: Vec<PathBuf> = [
         framework.join("screen"),
         runtime.join("base-component"),

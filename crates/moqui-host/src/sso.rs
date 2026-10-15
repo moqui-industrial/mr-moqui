@@ -25,7 +25,7 @@
 //! `secret`.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
@@ -60,13 +60,20 @@ struct ReqwestTransport {
 }
 
 impl ReqwestTransport {
+    /// A transport over the one SSO client, so connections and the TLS setup are reused across logins.
     fn new() -> Result<Self, Error> {
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(TIMEOUT)
-            .build()
+        static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+        let client = CLIENT
+            .get_or_init(|| {
+                reqwest::Client::builder()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .timeout(TIMEOUT)
+                    .build()
+                    .map_err(|err| err.to_string())
+            })
+            .as_ref()
             .map_err(|err| Error::new(format!("could not build the SSO HTTP client: {err}")))?;
-        Ok(Self { client })
+        Ok(Self { client: client.clone() })
     }
 
     async fn send(&self, request: http::Request<Bytes>) -> Result<HttpResponse, String> {

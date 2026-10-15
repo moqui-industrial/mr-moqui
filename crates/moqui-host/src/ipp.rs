@@ -21,7 +21,7 @@
 //! requesting user is the job's username, else the process user, as CUPS4J used `user.name`.
 
 use std::io::{Cursor, Read};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use ipp::attribute::{IppAttribute, IppAttributeGroup};
@@ -44,31 +44,54 @@ pub fn install() {
 #[derive(Default)]
 pub struct IppPrintClient;
 
+/// The HTTP scheme and the `host:port` authority of a server. A host that names its scheme or its port keeps them;
+/// otherwise the scheme is `https` on port 443 and `http` on any other, and the port is the server's.
+fn endpoint(server: &PrintServer) -> (&'static str, String) {
+    let host = server.host.trim_end_matches('/');
+    let (named, rest) = if let Some(rest) = host.strip_prefix("https://") {
+        (Some("https"), rest)
+    } else if let Some(rest) = host.strip_prefix("http://") {
+        (Some("http"), rest)
+    } else {
+        (None, host)
+    };
+    let has_port = rest
+        .rsplit_once(':')
+        .is_some_and(|(_, tail)| !tail.is_empty() && tail.bytes().all(|byte| byte.is_ascii_digit()));
+    let authority = if has_port {
+        rest.to_string()
+    } else {
+        format!("{rest}:{}", server.port)
+    };
+    let scheme = named.unwrap_or(if server.port == 443 { "https" } else { "http" });
+    (scheme, authority)
+}
+
 /// The HTTP base of a server: `http://host:port`, or `https://` on 443 or when the host names it.
 fn base_url(server: &PrintServer) -> String {
-    let host = server.host.trim_end_matches('/');
-    if host.starts_with("http://") || host.starts_with("https://") {
-        let has_port = host
-            .rsplit_once(':')
-            .is_some_and(|(_, tail)| tail.chars().all(|ch| ch.is_ascii_digit()));
-        return if has_port {
-            host.to_string()
-        } else {
-            format!("{host}:{}", server.port)
-        };
-    }
-    let scheme = if server.port == 443 { "https" } else { "http" };
-    format!("{scheme}://{host}:{}", server.port)
+    let (scheme, authority) = endpoint(server);
+    format!("{scheme}://{authority}")
 }
 
 /// The `ipp://` URI of a path on the server, as the attribute value CUPS expects.
 fn ipp_uri(server: &PrintServer, path: &str) -> String {
-    let host = server
-        .host
-        .trim_start_matches("http://")
-        .trim_start_matches("https://")
-        .trim_end_matches('/');
-    format!("ipp://{host}:{}{path}", server.port)
+    let (_, authority) = endpoint(server);
+    format!("ipp://{authority}{path}")
+}
+
+/// The one HTTP client for every print server, so connections and the TLS setup are reused.
+fn client() -> Result<&'static reqwest::Client, String> {
+    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(TIMEOUT)
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map_err(|err| err.to_string())
+        })
+        .as_ref()
+        .map_err(Clone::clone)
 }
 
 /// The path of a printer URI (`ipp://host:631/printers/name` is `/printers/name`), where its requests are posted.
@@ -133,12 +156,7 @@ fn send(server: &PrintServer, path: &str, request: IppRequestResponse) -> Result
     let url = format!("{}{path}", base_url(server));
     let shown = url.clone();
     let response = crate::edge::block_on(async move {
-        let client = reqwest::Client::builder()
-            .timeout(TIMEOUT)
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|err| err.to_string())?;
-        let response = client
+        let response = client()?
             .post(&url)
             .header("Content-Type", "application/ipp")
             .body(body)
@@ -400,6 +418,31 @@ mod tests {
             port: 443,
         };
         assert_eq!(base_url(&tls), "https://cups.example:443");
+    }
+
+    #[test]
+    fn a_host_that_names_its_port_keeps_it_once() {
+        let named = |host: &str| PrintServer {
+            host: host.to_string(),
+            port: 631,
+        };
+        let server = named("http://cups:632/");
+        assert_eq!(base_url(&server), "http://cups:632");
+        assert_eq!(ipp_uri(&server, "/printers/x"), "ipp://cups:632/printers/x");
+        let server = named("https://cups.example");
+        assert_eq!(base_url(&server), "https://cups.example:631");
+        assert_eq!(ipp_uri(&server, "/printers/x"), "ipp://cups.example:631/printers/x");
+        let server = named("cups:632");
+        assert_eq!(base_url(&server), "http://cups:632");
+        assert_eq!(ipp_uri(&server, "/jobs/1"), "ipp://cups:632/jobs/1");
+        let server = named("http://[::1]");
+        assert_eq!(base_url(&server), "http://[::1]:631");
+        assert_eq!(ipp_uri(&server, "/"), "ipp://[::1]:631/");
+        assert!(request(
+            Operation::PrintJob,
+            Some(&ipp_uri(&named("http://cups:632"), "/printers/x"))
+        )
+        .is_ok());
     }
 
     #[test]

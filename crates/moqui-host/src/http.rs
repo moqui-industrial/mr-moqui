@@ -58,6 +58,9 @@ pub(crate) struct ListenLimits {
     /// `webapp_max_connections`, default 1024: connections served at once. Past it the listener stops accepting
     /// until one closes.
     pub connections: usize,
+    /// `webapp_shutdown_timeout`, default 30: after a stop, how long open connections may take to finish before the
+    /// listener stops without them.
+    pub shutdown: Option<Duration>,
 }
 
 impl ListenLimits {
@@ -72,6 +75,7 @@ impl ListenLimits {
                 .ok()
                 .filter(|count| *count > 0)
                 .unwrap_or(1024),
+            shutdown: seconds_property("webapp_shutdown_timeout", 30),
         }
     }
 }
@@ -152,7 +156,8 @@ pub(crate) async fn listen(
     Ok(())
 }
 
-/// Serve `app` until `stop` resolves, then let every open connection finish, as `axum::serve` does. Each
+/// Serve `app` until `stop` resolves, then let every open connection finish, as `axum::serve` does, for up to
+/// `limits.shutdown`; the connections still open then are dropped with the runtime. Each
 /// connection is served here rather than by `axum::serve`, which gives hyper no timer, so that
 /// `header_read_timeout` takes effect.
 async fn serve(listener: TcpListener, app: Router, limits: ListenLimits, stop: impl Future<Output = ()>) {
@@ -225,7 +230,18 @@ async fn serve(listener: TcpListener, app: Router, limits: ListenLimits, stop: i
     }
     drop(closing_rx);
     let _ = closing.send(true);
-    closing.closed().await;
+    match limits.shutdown {
+        Some(deadline) => {
+            if tokio::time::timeout(deadline, closing.closed()).await.is_err() {
+                tracing::warn!(
+                    "{} HTTP connections were still open {} seconds after the stop; the listener stops without them",
+                    closing.receiver_count(),
+                    deadline.as_secs()
+                );
+            }
+        }
+        None => closing.closed().await,
+    }
 }
 
 /// Ctrl-c ends the binary. A failed handler waits on `stop`, which is how tests shut the listener down.
@@ -592,6 +608,7 @@ mod tests {
             body: None,
             request: None,
             connections: 1,
+            shutdown: None,
         };
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let server = tokio::spawn(serve(listener, app, limits, async move {
@@ -624,6 +641,39 @@ mod tests {
             .await
             .expect("the listener did not stop")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stop_waits_for_open_requests_only_until_the_shutdown_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().route("/", get(std::future::pending::<&'static str>));
+        let limits = ListenLimits {
+            header: None,
+            body: None,
+            request: None,
+            connections: 4,
+            shutdown: Some(Duration::from_millis(300)),
+        };
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(serve(listener, app, limits, async move {
+            let _ = stopped.await;
+        }));
+        let mut stuck = TcpStream::connect(address).await.unwrap();
+        stuck.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let started = Instant::now();
+        drop(stop);
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("the listener waited past its shutdown deadline")
+            .unwrap();
+        assert!(
+            started.elapsed() >= Duration::from_millis(250),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

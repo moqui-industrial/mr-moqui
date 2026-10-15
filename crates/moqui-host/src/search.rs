@@ -238,6 +238,9 @@ impl OpenSearchProcess {
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(err_log));
+        // Its own process group, so a stop reaches the JVM and its helpers and not only `su` or the script.
+        #[cfg(unix)]
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
         let child = command
             .spawn()
             .map_err(|err| Error::new(format!("could not start OpenSearch in {}", dir.display())).with_source(err))?;
@@ -257,12 +260,15 @@ impl Drop for OpenSearchProcess {
     }
 }
 
-/// Ask the process to stop (SIGTERM on unix, so OpenSearch closes its shards), wait a little, then kill it.
+/// Ask the process group to stop (SIGTERM on unix, so OpenSearch closes its shards), wait a little, then kill it.
+///
+/// `su -c` runs the command in a session of its own, outside the group. `su` passes SIGTERM on to it; the kill reaches
+/// it as a child of `su`.
 fn stop_child(child: &mut Child) {
     #[cfg(unix)]
     {
         if let Ok(pid) = i32::try_from(child.id()) {
-            let _ = Command::new("kill").arg("-TERM").arg(pid.to_string()).status();
+            let _ = signal(&["-TERM", "--", &format!("-{pid}")]);
             let deadline = Instant::now() + Duration::from_secs(30);
             while Instant::now() < deadline {
                 if matches!(child.try_wait(), Ok(Some(_))) {
@@ -270,10 +276,20 @@ fn stop_child(child: &mut Child) {
                 }
                 std::thread::sleep(Duration::from_millis(200));
             }
+            let _ = Command::new("pkill")
+                .args(["-KILL", "-P", &pid.to_string()])
+                .stderr(Stdio::null())
+                .status();
+            let _ = signal(&["-KILL", "--", &format!("-{pid}")]);
         }
     }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[cfg(unix)]
+fn signal(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
+    Command::new("kill").args(args).stderr(Stdio::null()).status()
 }
 
 /// Start the install in `dir` when: `opensearch_run` is not false, `dir/bin` exists, there is no
@@ -287,13 +303,17 @@ fn run_local_opensearch(dir: &Path, url: &str) -> bool {
     if !dir.join("bin").is_dir() || dir.join("pid").exists() {
         return false;
     }
-    let host = url
-        .split_once("://")
-        .map_or(url, |(_, rest)| rest)
-        .split(['/', ':'])
-        .next()
-        .unwrap_or("");
-    matches!(host, "127.0.0.1" | "localhost" | "[::1]")
+    local_host(url)
+}
+
+/// True when the host of `url` is this machine's loopback: `127.0.0.1`, `localhost` or `[::1]`.
+fn local_host(url: &str) -> bool {
+    let authority = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let host = match authority.strip_prefix('[') {
+        Some(bracketed) => bracketed.split(']').next().unwrap_or(""),
+        None => authority.split(['/', ':']).next().unwrap_or(""),
+    };
+    matches!(host, "127.0.0.1" | "localhost" | "::1")
 }
 
 fn opensearch_command(dir: &Path) -> Command {
@@ -358,4 +378,55 @@ fn wait_for(backend: &moqui_core::search::opensearch::OpenSearchBackend, dir: &P
         dir.display(),
         log.display()
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loopback_hosts_are_local() {
+        assert!(local_host("http://127.0.0.1:9200"));
+        assert!(local_host("http://localhost:9200/"));
+        assert!(local_host("http://[::1]:9200"));
+        assert!(local_host("https://[::1]"));
+        assert!(!local_host("http://search.example:9200"));
+        assert!(!local_host("http://[2001:db8::1]:9200"));
+    }
+
+    #[cfg(all(target_os = "linux", feature = "embedded-postgres", feature = "postgres"))]
+    #[test]
+    fn a_stop_reaches_the_whole_process_group() {
+        let dir = std::env::temp_dir().join(format!("moqui-stop-group-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid_file = dir.join("grandchild");
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(format!("sleep 300 & echo $! > {}; wait", pid_file.display()))
+            .stdin(Stdio::null());
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
+        let mut child = command.spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let grandchild = loop {
+            if let Some(pid) = std::fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|text| text.trim().parse::<u32>().ok())
+            {
+                break pid;
+            }
+            assert!(Instant::now() < deadline, "the shell did not start its child");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        stop_child(&mut child);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while crate::db::embedded::process_live(grandchild) {
+            assert!(
+                Instant::now() < deadline,
+                "the child of the stopped process was left running"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -47,8 +47,7 @@ mod search_proxy;
 pub fn serve() -> Result<(), moqui_lib::error::Error> {
     #[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
     {
-        let runtime = std::env::var_os("MOQUI_RUNTIME").map_or_else(|| std::path::PathBuf::from("runtime"), Into::into);
-        let framework = std::env::var_os("MOQUI_FRAMEWORK").map_or_else(|| runtime.join("../framework"), Into::into);
+        let (runtime, framework) = runtime_framework_dirs();
         let cluster = runtime.join("db/embedded");
         logging::install();
         let server = start_server_in(runtime, framework, cluster, ListenBind::Property)?;
@@ -280,11 +279,31 @@ where
     }
 }
 
-fn dispatch_load(flags: &LoadFlags) -> Result<LoadReport, moqui_lib::error::Error> {
-    logging::install();
-    // Like Moqui's `moqui.runtime`: an install runs from its own directory unless told otherwise.
+/// `MOQUI_RUNTIME`, default `runtime`, and `MOQUI_FRAMEWORK`, default `framework` beside the runtime. Like Moqui's
+/// `moqui.runtime`: an install runs from its own directory unless told otherwise.
+fn runtime_framework_dirs() -> (std::path::PathBuf, std::path::PathBuf) {
     let runtime = std::env::var_os("MOQUI_RUNTIME").map_or_else(|| std::path::PathBuf::from("runtime"), Into::into);
     let framework = std::env::var_os("MOQUI_FRAMEWORK").map_or_else(|| runtime.join("../framework"), Into::into);
+    (runtime, framework)
+}
+
+/// Create `dir` and its parents when missing.
+#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+fn create_dir(dir: &std::path::Path) -> Result<(), moqui_lib::error::Error> {
+    std::fs::create_dir_all(dir)
+        .map_err(|err| moqui_lib::error::Error::new(format!("could not create {}", dir.display())).with_source(err))
+}
+
+/// `dir` as an absolute path with no links.
+#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+fn canonical_dir(dir: &std::path::Path) -> Result<std::path::PathBuf, moqui_lib::error::Error> {
+    std::fs::canonicalize(dir)
+        .map_err(|err| moqui_lib::error::Error::new(format!("could not resolve {}", dir.display())).with_source(err))
+}
+
+fn dispatch_load(flags: &LoadFlags) -> Result<LoadReport, moqui_lib::error::Error> {
+    logging::install();
+    let (runtime, framework) = runtime_framework_dirs();
     let cluster = runtime.join("db/embedded");
     load_data(&runtime, &framework, &cluster, flags)
 }
@@ -299,8 +318,7 @@ fn log_files_attached(runtime_dir: &std::path::Path) {
 
 fn dispatch_types(args: &[String]) -> Result<(), moqui_lib::error::Error> {
     logging::install();
-    let runtime = std::env::var_os("MOQUI_RUNTIME").map_or_else(|| std::path::PathBuf::from("runtime"), Into::into);
-    let framework = std::env::var_os("MOQUI_FRAMEWORK").map_or_else(|| runtime.join("../framework"), Into::into);
+    let (runtime, framework) = runtime_framework_dirs();
     let out = types::parse_types_args(args, &runtime)?;
     println!("{}", types::write_types(&runtime, &framework, &out)?);
     Ok(())
@@ -325,8 +343,7 @@ fn dispatch_lint(path: Option<&str>) -> Result<(), moqui_lib::error::Error> {
 /// `lint --screens --qvt-static`: the compatibility report of every screen for server-static qvt. It does not fail the process, since a
 /// report is information and no screen is marked yet.
 fn dispatch_lint_qvt_static(report: Option<&str>) -> Result<(), moqui_lib::error::Error> {
-    let runtime = std::env::var_os("MOQUI_RUNTIME").map_or_else(|| std::path::PathBuf::from("runtime"), Into::into);
-    let framework = std::env::var_os("MOQUI_FRAMEWORK").map_or_else(|| runtime.join("../framework"), Into::into);
+    let (runtime, framework) = runtime_framework_dirs();
     let reports = qvt_report::qvt_static_reports(&runtime, &framework)?;
     let text = qvt_report::render_reports(&reports);
     match report {
@@ -339,8 +356,7 @@ fn dispatch_lint_qvt_static(report: Option<&str>) -> Result<(), moqui_lib::error
 }
 
 fn dispatch_lint_screens(report: Option<&str>) -> Result<(), moqui_lib::error::Error> {
-    let runtime = std::env::var_os("MOQUI_RUNTIME").map_or_else(|| std::path::PathBuf::from("runtime"), Into::into);
-    let framework = std::env::var_os("MOQUI_FRAMEWORK").map_or_else(|| runtime.join("../framework"), Into::into);
+    let (runtime, framework) = runtime_framework_dirs();
     let roots: Vec<std::path::PathBuf> = [
         framework.join("screen"),
         runtime.join("base-component"),
@@ -532,18 +548,10 @@ fn load_embedded(
     cluster_dir: &std::path::Path,
     flags: &LoadFlags,
 ) -> Result<LoadReport, moqui_lib::error::Error> {
-    std::fs::create_dir_all(runtime_dir).map_err(|err| {
-        moqui_lib::error::Error::new(format!("could not create {}", runtime_dir.display())).with_source(err)
-    })?;
-    std::fs::create_dir_all(cluster_dir).map_err(|err| {
-        moqui_lib::error::Error::new(format!("could not create {}", cluster_dir.display())).with_source(err)
-    })?;
-    let runtime_dir = std::fs::canonicalize(runtime_dir).map_err(|err| {
-        moqui_lib::error::Error::new(format!("could not resolve {}", runtime_dir.display())).with_source(err)
-    })?;
-    let framework_dir = std::fs::canonicalize(framework_dir).map_err(|err| {
-        moqui_lib::error::Error::new(format!("could not resolve {}", framework_dir.display())).with_source(err)
-    })?;
+    create_dir(runtime_dir)?;
+    create_dir(cluster_dir)?;
+    let runtime_dir = canonical_dir(runtime_dir)?;
+    let framework_dir = canonical_dir(framework_dir)?;
     // The factory boots first: its default properties name the datasource. It is dropped, and its
     // worker pool joined, before the database closes.
     let started = std::time::Instant::now();
@@ -800,21 +808,11 @@ fn boot_server(
     use std::sync::Arc;
 
     let boot_started = std::time::Instant::now();
-    std::fs::create_dir_all(runtime_dir).map_err(|err| {
-        moqui_lib::error::Error::new(format!("could not create {}", runtime_dir.display())).with_source(err)
-    })?;
-    std::fs::create_dir_all(cluster_dir).map_err(|err| {
-        moqui_lib::error::Error::new(format!("could not create {}", cluster_dir.display())).with_source(err)
-    })?;
-    let runtime_dir = std::fs::canonicalize(runtime_dir).map_err(|err| {
-        moqui_lib::error::Error::new(format!("could not resolve {}", runtime_dir.display())).with_source(err)
-    })?;
-    let framework_dir = std::fs::canonicalize(framework_dir).map_err(|err| {
-        moqui_lib::error::Error::new(format!("could not resolve {}", framework_dir.display())).with_source(err)
-    })?;
-    let cluster_dir = std::fs::canonicalize(cluster_dir).map_err(|err| {
-        moqui_lib::error::Error::new(format!("could not resolve {}", cluster_dir.display())).with_source(err)
-    })?;
+    create_dir(runtime_dir)?;
+    create_dir(cluster_dir)?;
+    let runtime_dir = canonical_dir(runtime_dir)?;
+    let framework_dir = canonical_dir(framework_dir)?;
+    let cluster_dir = canonical_dir(cluster_dir)?;
     // The factory boots first: its default properties name the datasource. The database stays on
     // this thread, and its clients are dropped here, after the axum runtime.
     tracing::info!(
@@ -947,12 +945,17 @@ fn boot_server(
     })
 }
 
+/// How long the axum runtime waits for its blocking tasks when it stops.
+#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+const RUNTIME_SHUTDOWN: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Drop order is the axum runtime, the PDF browser, the SSH server, the cluster listeners (while the request pool is still up),
 /// the factory, the search store, the facade, the sim overlay, then the entity database (its driver, then its cluster). The search store
 /// outlives the factory so a dedicated postmaster stops after the facade's clients, and the overlay outlives the facade
 /// for its sim pool.
 #[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
 struct ServeProcess {
+    /// Stopped with [`RUNTIME_SHUTDOWN`] as its limit.
     runtime: Option<tokio::runtime::Runtime>,
     pdf: Option<PdfSlot>,
     sshd: Option<ssh::server::SshServer>,
@@ -969,7 +972,10 @@ struct ServeProcess {
 impl Drop for ServeProcess {
     fn drop(&mut self) {
         logging::stop_shipping();
-        self.runtime.take();
+        if let Some(runtime) = self.runtime.take() {
+            // The listener has already waited out its shutdown deadline; a blocking task still running is left.
+            runtime.shutdown_timeout(RUNTIME_SHUTDOWN);
+        }
         self.pdf.take();
         self.sshd.take();
         self.cluster_edge.take();

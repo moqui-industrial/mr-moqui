@@ -88,7 +88,9 @@ pub fn find_chromium() -> Result<Option<PathBuf>, Error> {
 pub fn install(runtime_dir: &Path) -> PdfGuard {
     match find_chromium() {
         Ok(Some(binary)) => {
-            let engine = Arc::new(ChromiumPdf::new(binary, runtime_dir.join("tmp")));
+            let temp_dir = runtime_dir.join("tmp");
+            remove_orphan_profiles(&temp_dir);
+            let engine = Arc::new(ChromiumPdf::new(binary, temp_dir));
             moqui_core::screen::install_pdf_engine(engine.clone());
             PdfGuard { engine: Some(engine) }
         }
@@ -104,6 +106,45 @@ pub fn install(runtime_dir: &Path) -> PdfGuard {
             PdfGuard { engine: None }
         }
     }
+}
+
+/// Remove the `chromium-<pid>-<n>` profiles under `temp_dir` whose process is gone, such as those a server that
+/// crashed left behind. A profile is removed when its browser stops, so one of a live process is in use.
+fn remove_orphan_profiles(temp_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(temp_dir) else {
+        return;
+    };
+    let own = std::process::id();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("chromium-"))
+            .and_then(|rest| rest.split_once('-'))
+            .and_then(|(pid, _)| pid.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid == own || process_live(pid) {
+            continue;
+        }
+        let dir = entry.path();
+        if let Err(err) = std::fs::remove_dir_all(&dir) {
+            tracing::warn!("could not remove the old PDF browser profile {}: {err}", dir.display());
+        }
+    }
+}
+
+/// True while process `pid` exists.
+fn process_live(pid: u32) -> bool {
+    if cfg!(target_os = "linux") {
+        return Path::new("/proc").join(pid.to_string()).exists();
+    }
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// Removes the engine from core and stops its browser.
@@ -403,9 +444,15 @@ impl Drop for ChromiumProcess {
 
 /// The browser's arguments, apart from the profile: headless, DevTools on an ephemeral loopback port, and nothing
 /// that phones home. The sandbox stays on.
+///
+/// `Fetch` interception fails every HTTP request a page makes, but not a WebSocket or WebRTC connection. Those go to a
+/// proxy that is not there, loopback included, and WebRTC may not use UDP outside the proxy, so they fail too.
 #[must_use]
-pub fn launch_args() -> [&'static str; 13] {
+pub fn launch_args() -> [&'static str; 16] {
     [
+        "--proxy-server=127.0.0.1:9",
+        "--proxy-bypass-list=<-loopback>",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
         "--headless=new",
         "--remote-debugging-address=127.0.0.1",
         "--remote-debugging-port=0",
@@ -454,4 +501,26 @@ fn positive_property(name: &str, default: u64) -> u64 {
         .ok()
         .filter(|value| *value > 0)
         .unwrap_or(default)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remove_orphan_profiles;
+
+    #[test]
+    fn profiles_of_gone_processes_are_removed_at_install() {
+        let temp = std::env::temp_dir().join(format!("moqui-pdf-sweep-{}", std::process::id()));
+        let own = temp.join(format!("chromium-{}-0", std::process::id()));
+        // Above the Linux pid limit, so no process has it.
+        let gone = temp.join("chromium-99999999-3");
+        let other = temp.join("chromium-cache");
+        for dir in [&own, &gone, &other] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        remove_orphan_profiles(&temp);
+        assert!(own.is_dir());
+        assert!(!gone.exists());
+        assert!(other.is_dir());
+        let _ = std::fs::remove_dir_all(&temp);
+    }
 }

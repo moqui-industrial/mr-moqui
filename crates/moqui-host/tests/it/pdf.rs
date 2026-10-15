@@ -66,6 +66,8 @@ fn an_html_print_document_becomes_pdf_and_reaches_no_network() {
          <link rel=\"stylesheet\" href=\"http://127.0.0.1:{port}/style.css\"></head>\
          <body><h1>Invoice 100</h1><img src=\"http://127.0.0.1:{port}/logo.png\">\
          <script>fetch('http://127.0.0.1:{port}/fetch').catch(() => {{}})</script>\
+         <script>try {{ new WebSocket('ws://127.0.0.1:{port}/socket') }} catch (err) {{}}</script>\
+         <script>try {{ new WebSocket('ws://localhost:{port}/socket') }} catch (err) {{}}</script>\
          <table><thead><tr><th>Item</th></tr></thead><tbody><tr><td>Widget</td></tr></tbody></table></body></html>"
     );
     let first = engine.render(&html).expect("PDF bytes");
