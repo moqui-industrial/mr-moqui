@@ -34,6 +34,17 @@ use super::{
 use crate::entity::load_feed::{load_entity_xml_text, LoadOptions};
 use crate::entity::{Condition, EntityFacade};
 
+pub(super) fn register(
+    map: &mut BTreeMap<&'static str, crate::service::rust_services::RustServiceFn>,
+) -> Result<(), String> {
+    rust_service!(map, run_sync)?;
+    rust_service!(map, internal_run)?;
+    rust_service!(map, put_data)?;
+    rust_service!(map, get_data)?;
+    rust_service!(map, include_list)?;
+    Ok(())
+}
+
 const ENTITY_SYNC: &str = "moqui.entity.sync.EntitySync";
 const ARTIFACT_DETAIL: &str = "moqui.entity.sync.EntitySyncArtifactDetail";
 const DAY_MILLIS: i64 = 24 * 60 * 60 * 1000;
@@ -485,6 +496,7 @@ fn call_remote(
         url,
         headers,
         body: Some(body.to_string()),
+        timeout: None,
     })?;
     let status = response.status;
     let reply = crate::service::parse_json(&response.body).ok();

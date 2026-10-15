@@ -112,7 +112,11 @@ fn the_server_merged_modes_render_in_chromium_with_a_clean_console() {
 fn server_static_qvt_renders_in_chromium_with_its_actions_data() {
     // the same run executes the compatibility report, and the fixture is clean in it
     let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let reports = moqui_host::qvt_report::qvt_static_reports(&repo.join("runtime"), &repo.join("framework")).unwrap();
+    let reports = moqui_host::qvt_report::qvt_static_reports(
+        &repo.join("runtime"),
+        &repo.join("runtime/base-component/framework"),
+    )
+    .unwrap();
     let fixture = reports
         .iter()
         .find(|(location, _)| location.ends_with("ArtifactGroup/ArtifactGroupDetail.xml"))

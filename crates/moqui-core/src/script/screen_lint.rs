@@ -1125,7 +1125,7 @@ mod tests {
 
     #[test]
     fn screen_trees_have_no_parse_failures() {
-        let roots = [workspace("framework/screen"), workspace("runtime/base-component")];
+        let roots = [workspace("runtime/base-component")];
         let report = lint_screens(&roots).unwrap();
         assert!(report.files.len() > 100, "{} files", report.files.len());
         assert!(report.site_count() > 1000, "{} sites", report.site_count());
@@ -1163,7 +1163,6 @@ mod tests {
         }
         let mut files = Vec::new();
         collect(&workspace("runtime"), &mut files);
-        collect(&workspace("framework"), &mut files);
         assert!(files.len() >= 7, "{files:?}");
         for file in files {
             let source = std::fs::read_to_string(&file).unwrap();

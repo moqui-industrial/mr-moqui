@@ -49,7 +49,7 @@ cargo test -p moqui-host --test gate3 --test gate3_browser
 ```
 
 Run from the repo root (paths default to `MOQUI_RUNTIME=runtime`,
-`MOQUI_FRAMEWORK=<runtime>/../framework`, embedded cluster in `runtime/db/embedded`).
+`MOQUI_FRAMEWORK=<runtime>/base-component/framework`, embedded cluster in `runtime/db/embedded`).
 Setting `entity_ds_db_conf` to `postgres`, `mysql` or `mysql8`, with the other `entity_ds_*`
 properties, uses that server instead. The examples are in `runtime/conf/MoquiDevConf.xml`.
 
@@ -71,7 +71,7 @@ checkout on Linux or macOS. `./moq` with no arguments lists the tasks, and
 ```
 
 With no arguments the binary starts the HTTP server (port `8080` by default, cluster
-HTTPS on `8443`) using `framework/conf/MoquiDefaultConf.xml` merged with the runtime conf:
+HTTPS on `8443`) using `runtime/base-component/framework/conf/MoquiDefaultConf.xml` merged with the runtime conf:
 `runtime/conf/MoquiDevConf.xml` when present, or the file `MOQUI_CONF` names, relative to
 the runtime directory or absolute (`./moq run -c FILE` sets it). `MOQUI_CONF` comes from the
 environment, not `runtime/.env`, which is read after the conf merge. Without the script:
@@ -81,8 +81,8 @@ cargo run -p moqui
 # or: ./target/debug/moqui, and ./target/debug/moqui load for the default seed, seed-initial, install data
 ```
 
-For production packaging, deploy the release binary together with the `framework/`
-and `runtime/` directories and run `./target/release/moqui` from the directory that
+For production packaging, deploy the release binary together with the `runtime/`
+directory (the framework component is inside it) and run `./target/release/moqui` from the directory that
 holds them (or point `MOQUI_RUNTIME` / `MOQUI_FRAMEWORK` at them), with
 `MOQUI_CONF=conf/MoquiProductionConf.xml`. From a checkout, `./moq run-production` does that
 with the release binary.

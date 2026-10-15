@@ -25,27 +25,27 @@ along with this software (see the LICENSE.md file). If not, see
 
             <set field="language" from="locale.getLanguage()"/>
             <!-- no localization for en (default) so return now -->
-            <if condition="'en'.equals(language)"><return/></if>
+            <if condition="language === 'en'"><return/></if>
             <set field="country" from="locale.getCountry()"/>
 
             <set field="baseUrl" value="https://cdnjs.cloudflare.com/ajax/libs/jquery-validate/1.17.0/localization/"/>
-            <set field="messagesLocales" from="new HashSet(['ar','az','bg','bn_BD','ca','cs','da','de','el','es_AR','es','es_PE',
+            <set field="messagesLocales" from="['ar','az','bg','bn_BD','ca','cs','da','de','el','es_AR','es','es_PE',
                     'et','eu','fa','fi','fr','ge','gl','he','hr','hu','hy_AM','id','is','it','ja','ka','kk','ko','lt','lv','mk',
-                    'my','nl','no','pl','pt_BR','pt_PT','ro','ru','sd','si','sk','sl','sr_lat','sr','sv','th','tj','tr','uk','ur','vi','zh','zh_TW'])"/>
-            <set field="methodsLocales" from="new HashSet(['de','es_CL','fi','nl','pt'])"/>
+                    'my','nl','no','pl','pt_BR','pt_PT','ro','ru','sd','si','sk','sl','sr_lat','sr','sv','th','tj','tr','uk','ur','vi','zh','zh_TW']"/>
+            <set field="methodsLocales" from="['de','es_CL','fi','nl','pt']"/>
 
             <set field="messagesLocation" from="null"/>
             <set field="methodsLocation" from="null"/>
             <if condition="country">
                 <set field="localeStr" from="language + '_' + country"/>
-                <if condition="messagesLocales.contains(localeStr)">
+                <if condition="messagesLocales.includes(localeStr)">
                     <set field="messagesLocation" from="baseUrl + 'messages_' + localeStr + '.min.js'"/></if>
-                <if condition="methodsLocales.contains(localeStr)">
+                <if condition="methodsLocales.includes(localeStr)">
                     <set field="methodsLocation" from="baseUrl + 'methods_' + localeStr + '.min.js'"/></if>
             </if>
-            <if condition="!messagesLocation &amp;&amp; messagesLocales.contains(language)">
+            <if condition="!messagesLocation &amp;&amp; messagesLocales.includes(language)">
                 <set field="messagesLocation" from="baseUrl + 'messages_' + language + '.min.js'"/></if>
-            <if condition="!methodsLocation &amp;&amp; methodsLocales.contains(language)">
+            <if condition="!methodsLocation &amp;&amp; methodsLocales.includes(language)">
                 <set field="methodsLocation" from="baseUrl + 'methods_' + language + '.min.js'"/></if>
 
             <!-- special case for 'pt' and 'bn' that have no language only files so do explicit fallbacks -->

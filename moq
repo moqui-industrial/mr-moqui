@@ -1914,16 +1914,18 @@ conf_names() {
 }
 
 data_types() {
+    local framework=${MOQUI_FRAMEWORK:-$RUNTIME_DIR/base-component/framework}
     {
         echo all
-        find "$ROOT/framework/data" "$RUNTIME_DIR"/base-component/*/data "$RUNTIME_DIR"/component/*/data \
+        find "$framework/data" "$RUNTIME_DIR"/base-component/*/data "$RUNTIME_DIR"/component/*/data \
             -name '*.xml' -type f -exec grep -hoE '<entity-facade-xml[^>]*type="[^"]*"' {} + 2>/dev/null |
             sed -E 's/.*type="([^"]*)".*/\1/' | tr ',' '\n' | sed 's/^ *//;s/ *$//'
     } | grep -v '^$' | sort -u
 }
 
 property_names() {
-    grep -ho '<default-property name="[^"]*"' "$ROOT/framework/conf/MoquiDefaultConf.xml" 2>/dev/null |
+    local framework=${MOQUI_FRAMEWORK:-$RUNTIME_DIR/base-component/framework}
+    grep -ho '<default-property name="[^"]*"' "$framework/conf/MoquiDefaultConf.xml" 2>/dev/null |
         sed 's/.*name="\([^"]*\)"/\1=/' | sort -u
 }
 

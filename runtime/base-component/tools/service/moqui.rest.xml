@@ -263,26 +263,5 @@ along with this software (see the LICENSE.md file). If not, see
         </resource>
     </resource>
 
-    <!-- LLM sync wrappers. Streaming SSE is LlmServlet at /llm/v1, not Service REST. -->
-    <resource name="llm" description="LLM gateway (sync JSON; use POST /llm/v1/chat for SSE)">
-        <resource name="chat">
-            <method type="post"><service name="org.moqui.impl.LlmServices.chat#Conversation"/></method>
-            <id name="conversationId">
-                <resource name="resume"><method type="post">
-                    <service name="org.moqui.impl.LlmServices.resume#Conversation"/></method></resource>
-                <resource name="cancel"><method type="post">
-                    <service name="org.moqui.impl.LlmServices.cancel#Conversation"/></method></resource>
-            </id>
-        </resource>
-        <resource name="conversations">
-            <id name="conversationId">
-                <method type="get"><service name="org.moqui.impl.LlmServices.get#Conversation"/></method>
-            </id>
-        </resource>
-        <resource name="profiles">
-            <method type="get"><service name="org.moqui.impl.LlmServices.get#LlmProfiles"/></method>
-        </resource>
-    </resource>
-
     <!-- TODO: caches, TODO will need services implemented as uses API directly for most ops -->
 </resource>

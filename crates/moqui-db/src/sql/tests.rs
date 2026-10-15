@@ -33,8 +33,10 @@ fn workspace_root() -> std::path::PathBuf {
 
 fn framework() -> (EntityModel, Dialects) {
     let root = workspace_root();
-    let conf = MNode::parse_file(root.join("framework/conf/MoquiDefaultConf.xml")).expect("conf");
-    let model = EntityModel::load_directory(&conf, &root.join("framework/entity")).expect("model");
+    let conf =
+        MNode::parse_file(root.join("runtime/base-component/framework/conf/MoquiDefaultConf.xml")).expect("conf");
+    let model =
+        EntityModel::load_directory(&conf, &root.join("runtime/base-component/framework/entity")).expect("model");
     let dialects = Dialects::load(&conf).expect("dialects");
     (model, dialects)
 }
@@ -662,7 +664,8 @@ fn sample_postgres() -> Dialect {
 
 fn sample_model(entities: &str) -> EntityModel {
     let root = workspace_root();
-    let conf = MNode::parse_file(root.join("framework/conf/MoquiDefaultConf.xml")).expect("conf");
+    let conf =
+        MNode::parse_file(root.join("runtime/base-component/framework/conf/MoquiDefaultConf.xml")).expect("conf");
     let doc = MNode::parse_text("entities", &format!("<entities>{entities}</entities>")).unwrap();
     EntityModel::load(&conf, &[doc]).unwrap()
 }
@@ -1319,7 +1322,8 @@ fn a_sub_select_member_aggregates_inside_and_takes_its_conditions() {
 #[test]
 fn bad_views_fail_to_load() {
     let root = workspace_root();
-    let conf = MNode::parse_file(root.join("framework/conf/MoquiDefaultConf.xml")).expect("conf");
+    let conf =
+        MNode::parse_file(root.join("runtime/base-component/framework/conf/MoquiDefaultConf.xml")).expect("conf");
     let load = |entities: &str| {
         let doc = MNode::parse_text("entities", &format!("<entities>{ORDERS}{entities}</entities>")).unwrap();
         EntityModel::load(&conf, &[doc]).map(|_| ()).unwrap_err().to_string()
@@ -1355,9 +1359,10 @@ fn component_views_render_when_the_java_tree_is_present() {
     if !components.is_dir() {
         return;
     }
-    let conf = MNode::parse_file(root.join("framework/conf/MoquiDefaultConf.xml")).expect("conf");
+    let conf =
+        MNode::parse_file(root.join("runtime/base-component/framework/conf/MoquiDefaultConf.xml")).expect("conf");
     let mut documents = Vec::new();
-    let mut directories = vec![root.join("framework/entity")];
+    let mut directories = vec![root.join("runtime/base-component/framework/entity")];
     // The tool components whose entities are in the framework now would be loaded twice.
     let in_framework = ["moqui-sso", "moqui-sftp", "moqui-poi", "moqui-image", "moqui-cups"];
     let mut entries: Vec<_> = std::fs::read_dir(&components)

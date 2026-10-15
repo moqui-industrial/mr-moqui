@@ -39,31 +39,44 @@ use crate::user::session::{session_attribute, set_session_attribute};
 
 const ACCOUNT: &str = "moqui.security.UserAccount";
 
-const LOGIN: &str = "org.moqui.sso.AuthServices.login#User";
-const CALLBACK: &str = "org.moqui.sso.AuthServices.handle#Callback";
-const LOGOUT: &str = "org.moqui.sso.AuthServices.logout#User";
-
 const PENDING: &str = "moquiAuthFlowPending";
 const RETURN_TO: &str = "moquiAuthFlowReturnTo";
 const EXTERNAL_LOGOUT: &str = "moquiAuthFlowExternalLogout";
 const FLOW_ID: &str = "moquiAuthFlowId";
 const ID_TOKEN: &str = "moquiAuthFlowIdToken";
 
-pub(super) fn runs(name: &str) -> bool {
-    matches!(name, LOGIN | CALLBACK | LOGOUT)
+pub(in crate::service) fn register(
+    map: &mut BTreeMap<&'static str, crate::service::rust_services::RustServiceFn>,
+) -> Result<(), String> {
+    rust_service!(map, login_user)?;
+    rust_service!(map, handle_callback)?;
+    rust_service!(map, logout_user)?;
+    Ok(())
 }
 
-pub(super) fn run(
-    name: &str,
+fn login_user(
     parameters: &BTreeMap<String, Value>,
     facade: &EntityFacade,
 ) -> Result<BTreeMap<String, Value>, LibError> {
-    let outcome = match name {
-        LOGIN => login(parameters, facade),
-        CALLBACK => callback(facade),
-        LOGOUT => logout(parameters, facade),
-        other => return Err(LibError::new(format!("SSO service {other} is not implemented"))),
-    };
+    finish("org.moqui.sso.AuthServices.login#User", login(parameters, facade))
+}
+
+fn handle_callback(
+    _parameters: &BTreeMap<String, Value>,
+    facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
+    finish("org.moqui.sso.AuthServices.handle#Callback", callback(facade))
+}
+
+fn logout_user(
+    parameters: &BTreeMap<String, Value>,
+    facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
+    finish("org.moqui.sso.AuthServices.logout#User", logout(parameters, facade))
+}
+
+/// A failed login, callback, or logout is logged and the browser goes back to `/Login`. The call still returns.
+fn finish(name: &str, outcome: Result<(), LibError>) -> Result<BTreeMap<String, Value>, LibError> {
     if let Err(err) = outcome {
         tracing::error!("SSO {name} failed: {}", err.message());
         crate::web::send_redirect(&format!("{}/Login", base()));

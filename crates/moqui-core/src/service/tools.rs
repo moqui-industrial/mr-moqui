@@ -34,59 +34,28 @@ use crate::print::{JobAction, PrintDocument, PrintServer, PrinterInfo};
 use crate::service::call::{sync_with, CallOptions};
 
 const PRINT_DOCUMENT: &str = "org.moqui.impl.PrintServices.print#Document";
-const PRINT_RESOURCE: &str = "org.moqui.impl.PrintServices.print#ResourceDocument";
-const PRINT_SCREEN: &str = "org.moqui.impl.PrintServices.print#ScreenDocument";
 const SEND_INTERNAL: &str = "org.moqui.impl.PrintServices.send#PrintJobInternal";
-const SERVER_PRINTERS: &str = "org.moqui.impl.PrintServices.get#ServerPrinters";
-const JOB_DETAILS: &str = "org.moqui.impl.PrintServices.get#PrintJobDetailsFromServer";
-const HOLD_JOB: &str = "org.moqui.impl.PrintServices.hold#PrintJob";
-const RELEASE_JOB: &str = "org.moqui.impl.PrintServices.release#PrintJob";
-const CANCEL_JOB: &str = "org.moqui.impl.PrintServices.cancel#PrintJob";
-const DOCUMENT_NOTIFICATIONS: &str = "org.moqui.impl.EntityServices.send#DataDocumentNotifications";
-const REWRITE_ENCRYPTED: &str = "org.moqui.impl.EntityServices.rewrite#EntityEncryptedFields";
 
 const PRINT_JOB: &str = "moqui.basic.print.PrintJob";
 const NETWORK_PRINTER: &str = "moqui.basic.print.NetworkPrinter";
 /// CUPS4J's default port.
 const IPP_PORT: u16 = 631;
 
-/// True for a service this module runs. The definition keeps its parameters and has no actions.
-pub(super) fn runs(name: &str) -> bool {
-    matches!(
-        name,
-        PRINT_DOCUMENT
-            | PRINT_RESOURCE
-            | PRINT_SCREEN
-            | SEND_INTERNAL
-            | SERVER_PRINTERS
-            | JOB_DETAILS
-            | HOLD_JOB
-            | RELEASE_JOB
-            | CANCEL_JOB
-            | DOCUMENT_NOTIFICATIONS
-            | REWRITE_ENCRYPTED
-    )
-}
-
-pub(super) fn run(
-    name: &str,
-    parameters: &BTreeMap<String, Value>,
-    facade: &EntityFacade,
-) -> Result<BTreeMap<String, Value>, LibError> {
-    match name {
-        PRINT_DOCUMENT => print_document(parameters),
-        PRINT_RESOURCE => print_resource_document(parameters),
-        PRINT_SCREEN => print_screen_document(parameters),
-        SEND_INTERNAL => send_print_job_internal(parameters, facade),
-        SERVER_PRINTERS => get_server_printers(parameters, facade),
-        JOB_DETAILS => get_print_job_details(parameters, facade),
-        HOLD_JOB => job_action(parameters, facade, JobAction::Hold),
-        RELEASE_JOB => job_action(parameters, facade, JobAction::Release),
-        CANCEL_JOB => job_action(parameters, facade, JobAction::Cancel),
-        DOCUMENT_NOTIFICATIONS => send_document_notifications(parameters, facade),
-        REWRITE_ENCRYPTED => rewrite_encrypted_fields(parameters, facade),
-        other => Err(LibError::new(format!("tools service {other} is not implemented"))),
-    }
+pub(in crate::service) fn register(
+    map: &mut BTreeMap<&'static str, crate::service::rust_services::RustServiceFn>,
+) -> Result<(), String> {
+    rust_service!(map, print_document)?;
+    rust_service!(map, print_resource_document)?;
+    rust_service!(map, print_screen_document)?;
+    rust_service!(map, send_print_job_internal)?;
+    rust_service!(map, get_server_printers)?;
+    rust_service!(map, get_print_job_details)?;
+    rust_service!(map, hold_print_job)?;
+    rust_service!(map, release_print_job)?;
+    rust_service!(map, cancel_print_job)?;
+    rust_service!(map, send_document_notifications)?;
+    rust_service!(map, rewrite_encrypted_fields)?;
+    Ok(())
 }
 
 fn add_error(text: impl Into<String>) {
@@ -144,7 +113,10 @@ fn job_fields(parameters: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
 }
 
 /// `print#Document`: create the `PrintJob` (not sent) in its own transaction, then send it.
-fn print_document(parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, LibError> {
+fn print_document(
+    parameters: &BTreeMap<String, Value>,
+    _facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
     let Some(bytes) = document_bytes(parameters) else {
         add_error("Both inputStream and serialBlob are null, must specify one or the other");
         return Ok(BTreeMap::new());
@@ -178,7 +150,10 @@ fn print_document(parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<Strin
 }
 
 /// `print#ResourceDocument`: the bytes at a resource location, printed and not stored.
-fn print_resource_document(parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, LibError> {
+fn print_resource_document(
+    parameters: &BTreeMap<String, Value>,
+    _facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
     let location = param_text(parameters, "resourceLocation");
     let found = ExecutionContext::with_current(|ctx| ctx.factory().resource().get(&location))
         .ok_or_else(|| LibError::new("no execution context is entered"))?;
@@ -202,7 +177,10 @@ fn print_resource_document(parameters: &BTreeMap<String, Value>) -> Result<BTree
 /// `print#ScreenDocument`: render the screen as `html-print` (the `xsl-fo` mode), turn it into PDF, and pass the bytes
 /// to `print#Document`, which stores the `PrintJob` and sends it. The screen parameters are `screenParameters` plus the
 /// map `screenParametersStr` evaluates to; the job name defaults to the screen name and those parameter values.
-fn print_screen_document(parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, LibError> {
+fn print_screen_document(
+    parameters: &BTreeMap<String, Value>,
+    _facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
     let location = param_text(parameters, "screenLocation");
     let Some(factory) = ExecutionContext::with_current(|ctx| ctx.factory().clone()) else {
         return Err(LibError::new("no execution context is entered"));
@@ -563,6 +541,27 @@ fn get_print_job_details(
         }
     }
     Ok(out)
+}
+
+fn hold_print_job(
+    parameters: &BTreeMap<String, Value>,
+    facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
+    job_action(parameters, facade, JobAction::Hold)
+}
+
+fn release_print_job(
+    parameters: &BTreeMap<String, Value>,
+    facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
+    job_action(parameters, facade, JobAction::Release)
+}
+
+fn cancel_print_job(
+    parameters: &BTreeMap<String, Value>,
+    facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
+    job_action(parameters, facade, JobAction::Cancel)
 }
 
 /// `hold#`, `release#` and `cancel#PrintJob`: the action on the server, and the job's new status when it was done.

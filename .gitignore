@@ -14,7 +14,7 @@
 /runtime/ecomponent/
 
 # Python HTTP security tests
-/framework/test/.venv/
+/runtime/base-component/framework/test/.venv/
 **/__pycache__/
 .pytest_cache/
 

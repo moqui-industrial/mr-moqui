@@ -33,9 +33,6 @@ use crate::context::ExecutionContext;
 use crate::entity::EntityFacade;
 use crate::service::call::{sync_with, CallOptions};
 
-const READ: &str = "org.moqui.impl.SpreadsheetServices.read#Spreadsheet";
-const LOAD: &str = "org.moqui.impl.SpreadsheetServices.load#SpreadsheetEntity";
-
 /// Whole numbers up to this size read as a `Long`; Excel keeps every number as a double.
 const WHOLE_LIMIT: f64 = 9_007_199_254_740_992.0;
 
@@ -43,20 +40,12 @@ const WHOLE_LIMIT: f64 = 9_007_199_254_740_992.0;
 /// from the first used cell to the last, so two cells far apart would ask for billions.
 const MAX_SHEET_CELLS: u64 = 10_000_000;
 
-pub(super) fn runs(name: &str) -> bool {
-    matches!(name, READ | LOAD)
-}
-
-pub(super) fn run(
-    name: &str,
-    parameters: &BTreeMap<String, Value>,
-    _facade: &EntityFacade,
-) -> Result<BTreeMap<String, Value>, LibError> {
-    match name {
-        READ => read_spreadsheet(parameters),
-        LOAD => load_spreadsheet_entity(parameters),
-        other => Err(LibError::new(format!("spreadsheet service {other} is not implemented"))),
-    }
+pub(in crate::service) fn register(
+    map: &mut BTreeMap<&'static str, crate::service::rust_services::RustServiceFn>,
+) -> Result<(), String> {
+    rust_service!(map, read_spreadsheet)?;
+    rust_service!(map, load_spreadsheet_entity)?;
+    Ok(())
 }
 
 fn flag(parameters: &BTreeMap<String, Value>, name: &str, default: bool) -> bool {
@@ -246,7 +235,10 @@ fn excel_timestamp(serial: f64, zone: &jiff::tz::TimeZone) -> Option<Value> {
 
 /// `read#Spreadsheet`: the sheet names and the rows of one sheet, each a map by header or, without a header row, a
 /// list of the cells.
-fn read_spreadsheet(parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, LibError> {
+fn read_spreadsheet(
+    parameters: &BTreeMap<String, Value>,
+    _facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
     let sheet = read_sheet(parameters)?;
     let header_row = flag(parameters, "headerRow", true);
     let row_list = if header_row {
@@ -285,7 +277,10 @@ fn row_map(headers: &[String], row: &[Value]) -> IndexMap<String, Value> {
 /// `load#SpreadsheetEntity`: each row of the sheet stored (or created) as a record of `entityName`, through the entity
 /// auto service, so authorization, ECAs, and the caller's transaction apply. A column's field is its header unless
 /// `fieldMap` names another; a column that is not a field of the entity is not set.
-fn load_spreadsheet_entity(parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, LibError> {
+fn load_spreadsheet_entity(
+    parameters: &BTreeMap<String, Value>,
+    _facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
     let entity_name = param_text(parameters, "entityName");
     if entity_name.is_empty() {
         return Err(LibError::new("load#SpreadsheetEntity needs an entityName"));

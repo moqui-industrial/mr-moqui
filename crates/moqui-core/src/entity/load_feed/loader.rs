@@ -668,8 +668,8 @@ fn component_name(location: &str) -> Option<&str> {
     rest.split('/').next()
 }
 
-/// `classpath://` is under the framework directory this facade was opened from. Other schemes
-/// use the entered factory's components.
+/// `classpath://` is a compatibility alias for a path under the framework directory (`service/`,
+/// `entity/`, `data/`, `screen/`, `template/`). Other schemes use the entered factory's components.
 fn resolve_location(facade: &EntityFacade, location: &str) -> Result<PathBuf, Error> {
     for prefix in ["classpath://", "classpath:"] {
         if let Some(rest) = location.strip_prefix(prefix) {

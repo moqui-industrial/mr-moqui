@@ -105,7 +105,7 @@ fn a_component_loads_its_entities_rules_services_and_data() {
         std::fs::write(file, text).unwrap();
     }
     std::fs::create_dir_all(&cluster_dir).unwrap();
-    let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
+    let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
     load_data(&runtime, &framework, &cluster_dir, &LoadFlags::default()).unwrap();
 
     let (cluster, driver) = EmbeddedCluster::start(&cluster_dir, 10).unwrap();

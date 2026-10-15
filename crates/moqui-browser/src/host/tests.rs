@@ -24,7 +24,7 @@ fn crate_dir() -> PathBuf {
 }
 
 fn framework() -> PathBuf {
-    crate_dir().join("../../framework")
+    crate_dir().join("../../runtime/base-component/framework")
 }
 
 /// A copy of `crates/moqui-browser/runtime` in a temp dir. The factory writes `.env` there.

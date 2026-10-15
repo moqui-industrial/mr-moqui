@@ -32,6 +32,13 @@ use crate::entity::{EntityFacade, EntityValue};
 use crate::service::call::{sync_with, CallOptions};
 use crate::web::{self, WebRequest};
 
+pub(super) fn register(
+    map: &mut BTreeMap<&'static str, crate::service::rust_services::RustServiceFn>,
+) -> Result<(), String> {
+    rust_service!(map, send_rest)?;
+    Ok(())
+}
+
 const MESSAGE: &str = "moqui.service.message.SystemMessage";
 const MESSAGE_TYPE: &str = "moqui.service.message.SystemMessageType";
 const REMOTE: &str = "moqui.service.message.SystemMessageRemote";
@@ -137,6 +144,7 @@ pub(super) fn send_rest(
         url,
         headers,
         body: Some(body),
+        timeout: None,
     })?;
     let status = response.status;
     if !(200..300).contains(&status) {

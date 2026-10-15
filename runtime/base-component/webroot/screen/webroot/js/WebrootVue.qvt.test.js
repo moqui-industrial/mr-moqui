@@ -33,7 +33,7 @@ test("every component has a template that compiles", () => {
 test("the components the macros write are all defined", () => {
     const used = new Set();
     for (const file of ["ScreenQvt.js", "ScreenQvtStatic.js"]) {
-        const macros = fs.readFileSync(path.join(__dirname, "../../../../../../framework/template/screen/" + file), "utf8");
+        const macros = fs.readFileSync(path.join(__dirname, "../../../../framework/template/screen/" + file), "utf8");
         for (const match of macros.matchAll(/<(m-[a-z-]+)/g)) used.add(match[1]);
     }
     // m-box-body and the like are written through a string that holds the whole tag

@@ -43,13 +43,6 @@ use moqui_lib::object::{is_empty, to_plain_string, Value};
 use crate::context::ExecutionContext;
 use crate::entity::EntityFacade;
 
-const CONVERT: &str = "org.moqui.impl.ImageServices.convert#Image";
-const WRITE: &str = "org.moqui.impl.ImageServices.write#Image";
-const READER_SUFFIXES: &str = "org.moqui.impl.ImageServices.get#ImageReaderFileSuffixes";
-const WRITER_SUFFIXES: &str = "org.moqui.impl.ImageServices.get#ImageWriterFileSuffixes";
-const READER_TYPES: &str = "org.moqui.impl.ImageServices.get#ImageReaderMIMETypes";
-const WRITER_TYPES: &str = "org.moqui.impl.ImageServices.get#ImageWriterMIMETypes";
-
 /// The file suffixes of the enabled formats, read and written alike.
 const SUFFIXES: [&str; 8] = ["jpg", "jpeg", "png", "gif", "tif", "tiff", "webp", "bmp"];
 const MIME_TYPES: [&str; 6] = [
@@ -77,35 +70,53 @@ const OUTPUTS: [(&str, Option<(&str, u32)>); 5] = [
     ("Thumbnail", Some(("pixelWidthThumbnail", 165))),
 ];
 
-pub(super) fn runs(name: &str) -> bool {
-    matches!(
-        name,
-        CONVERT | WRITE | READER_SUFFIXES | WRITER_SUFFIXES | READER_TYPES | WRITER_TYPES
-    )
+pub(in crate::service) fn register(
+    map: &mut BTreeMap<&'static str, crate::service::rust_services::RustServiceFn>,
+) -> Result<(), String> {
+    rust_service!(map, convert_image)?;
+    rust_service!(map, write_image_service)?;
+    rust_service!(map, image_reader_file_suffixes)?;
+    rust_service!(map, image_writer_file_suffixes)?;
+    rust_service!(map, image_reader_mime_types)?;
+    rust_service!(map, image_writer_mime_types)?;
+    Ok(())
 }
 
-pub(super) fn run(
-    name: &str,
-    parameters: &BTreeMap<String, Value>,
+fn listed(key: &str, items: &[&str]) -> Result<BTreeMap<String, Value>, LibError> {
+    let mut out = BTreeMap::new();
+    out.insert(
+        key.to_string(),
+        Value::List(items.iter().map(|item| Value::string(*item)).collect()),
+    );
+    Ok(out)
+}
+
+fn image_reader_file_suffixes(
+    _parameters: &BTreeMap<String, Value>,
     _facade: &EntityFacade,
 ) -> Result<BTreeMap<String, Value>, LibError> {
-    let list = |key: &str, items: &[&str]| {
-        let mut out = BTreeMap::new();
-        out.insert(
-            key.to_string(),
-            Value::List(items.iter().map(|item| Value::string(*item)).collect()),
-        );
-        Ok(out)
-    };
-    match name {
-        CONVERT => convert_image(parameters),
-        WRITE => write_image_service(parameters),
-        READER_SUFFIXES => list("imageReaderFileSuffixes", &SUFFIXES),
-        WRITER_SUFFIXES => list("imageWriterFileSuffixes", &SUFFIXES),
-        READER_TYPES => list("imageReaderMIMETypes", &MIME_TYPES),
-        WRITER_TYPES => list("imageWriterMIMETypes", &MIME_TYPES),
-        other => Err(LibError::new(format!("image service {other} is not implemented"))),
-    }
+    listed("imageReaderFileSuffixes", &SUFFIXES)
+}
+
+fn image_writer_file_suffixes(
+    _parameters: &BTreeMap<String, Value>,
+    _facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
+    listed("imageWriterFileSuffixes", &SUFFIXES)
+}
+
+fn image_reader_mime_types(
+    _parameters: &BTreeMap<String, Value>,
+    _facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
+    listed("imageReaderMIMETypes", &MIME_TYPES)
+}
+
+fn image_writer_mime_types(
+    _parameters: &BTreeMap<String, Value>,
+    _facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
+    listed("imageWriterMIMETypes", &MIME_TYPES)
 }
 
 /// A resource location given as text, or as a resource reference (a map with its `location`).
@@ -275,7 +286,10 @@ fn write_image(
     }
 }
 
-fn convert_image(parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, LibError> {
+fn convert_image(
+    parameters: &BTreeMap<String, Value>,
+    _facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
     let output_format = param_text(parameters, "outputImageFormat");
     if output_format.is_empty() {
         return Err(LibError::new("outputImageFormat is required"));
@@ -321,7 +335,10 @@ fn convert_image(parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String
 }
 
 /// `write#Image`: the image bytes in `image` written as `outputImageFormat` to `outputResourceReference`.
-fn write_image_service(parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, LibError> {
+fn write_image_service(
+    parameters: &BTreeMap<String, Value>,
+    _facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
     let location = location_of(parameters.get("outputResourceReference"))
         .ok_or_else(|| LibError::new("outputResourceReference is required"))?;
     let output_format = param_text(parameters, "outputImageFormat");

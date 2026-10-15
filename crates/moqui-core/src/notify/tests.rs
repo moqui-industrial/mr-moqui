@@ -480,7 +480,10 @@ fn email_notification_sends_the_screen_body_and_stores_the_email_message_id() {
     for (field, value) in [
         ("emailTemplateId", "NOTE_MAIL"),
         ("emailServerId", "NOTE_SMTP"),
-        ("bodyScreenLocation", "classpath://screen/NotificationEmail.xml"),
+        (
+            "bodyScreenLocation",
+            "component://framework/screen/NotificationEmail.xml",
+        ),
         ("webappName", "webroot"),
         ("fromAddress", "notify@example.com"),
         ("subject", "${title}"),

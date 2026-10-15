@@ -567,7 +567,7 @@ mod tests {
 
     #[test]
     fn component_version_attribute_is_not_expanded() {
-        let path = workspace_root().join("framework/component.xml");
+        let path = workspace_root().join("runtime/base-component/framework/component.xml");
         let root = MNode::parse_file(&path).unwrap();
         assert_eq!(root.attribute("name").as_deref(), Some("framework"));
         assert_eq!(root.attribute("version").as_deref(), Some("${moqui_version}"));
@@ -577,7 +577,6 @@ mod tests {
     fn corpus_parses_and_catalog_doctype_is_rejected() {
         let root = workspace_root();
         let mut files = Vec::new();
-        collect_xml(&root.join("framework"), &mut files);
         collect_xml(&root.join("runtime"), &mut files);
         assert!(files.len() > 100, "copied {} files", files.len());
         let mut parsed = 0;
@@ -598,7 +597,7 @@ mod tests {
     #[test]
     fn dev_conf_overlay_changes_the_sections_it_names() {
         let root = workspace_root();
-        let base = MNode::parse_file(root.join("framework/conf/MoquiDefaultConf.xml")).unwrap();
+        let base = MNode::parse_file(root.join("runtime/base-component/framework/conf/MoquiDefaultConf.xml")).unwrap();
         let over = MNode::parse_file(root.join("runtime/conf/MoquiDevConf.xml")).unwrap();
         merge_dev_conf(&base, &over);
 

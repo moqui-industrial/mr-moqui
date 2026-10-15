@@ -17,6 +17,9 @@
 //! The roots come from the entered factory, or from the last factory that booted when no context
 //! is entered, as `moqui lint` runs. With neither, the process working directory is the root, the
 //! way a Moqui install runs from its own directory.
+//!
+//! `classpath://` is a compatibility alias for `service/`, `entity/`, `data/`, `screen/`, and
+//! `template/` under the framework component. New locations use `component://framework/`.
 
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
@@ -61,7 +64,7 @@ fn roots() -> Roots {
         return roots;
     }
     Roots {
-        framework: fallback_root().join("framework"),
+        framework: fallback_root().join("runtime/base-component/framework"),
         components: Vec::new(),
     }
 }
@@ -82,6 +85,8 @@ pub fn framework_dir() -> PathBuf {
 }
 
 /// A local path for a `classpath://`, `component://`, `file:`, or plain location.
+///
+/// `classpath://` is the compatibility alias described on this module.
 ///
 /// # Errors
 ///
@@ -118,11 +123,15 @@ fn component_root(roots: &Roots, name: &str) -> Option<PathBuf> {
     if let Some((_, location)) = roots.components.iter().find(|(known, _)| known == name) {
         return Some(location.clone());
     }
-    // Not discovered: look beside the framework, the way an install lays components out.
-    let repo = roots.framework.parent()?;
-    [repo.join("runtime/component").join(name), repo.join(name)]
-        .into_iter()
-        .find(|path| path.is_dir())
+    // Not discovered. The framework component lives in runtime/base-component, beside tools and
+    // webroot, and app components live in runtime/component. An external framework directory whose
+    // parent is still the install root keeps the older runtime/component lookup.
+    let parent = roots.framework.parent()?;
+    let mut candidates = vec![parent.join(name), parent.join("runtime/component").join(name)];
+    if let Some(runtime) = parent.parent() {
+        candidates.insert(1, runtime.join("component").join(name));
+    }
+    candidates.into_iter().find(|path| path.is_dir())
 }
 
 fn strip_prefix<'a>(location: &'a str, prefixes: &[&str]) -> Option<&'a str> {
@@ -138,6 +147,6 @@ mod tests {
             err.message(),
             "content resource is not available: content://main/WikiSpace/Page.md"
         );
-        assert!(super::locate("classpath://screen/ScreenRenderEmail.xml").is_ok());
+        assert!(super::locate("component://framework/screen/ScreenRenderEmail.xml").is_ok());
     }
 }

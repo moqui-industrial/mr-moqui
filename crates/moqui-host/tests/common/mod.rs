@@ -261,7 +261,7 @@ fn template_key() -> String {
     let root = repo_root();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     (COMPANION, WIDGETS, STATIC_LIST).hash(&mut hasher);
-    for part in ["framework", "runtime/base-component", "Cargo.lock"] {
+    for part in ["runtime/base-component", "Cargo.lock"] {
         stamp_tree(&root.join(part), &mut hasher);
     }
     let mut crates: Vec<PathBuf> = std::fs::read_dir(root.join("crates"))
@@ -366,7 +366,7 @@ fn prepare_runtime(runtime: &Path, fixtures: &Template, link_install: bool, extr
 /// Load the seed (the framework files and each component's `data` directory), the demo users, and the grants of the fixture.
 fn seed(runtime: &Path, cluster_dir: &Path, fixtures: &Template, extra_conf: &str) {
     prepare_runtime(runtime, fixtures, false, extra_conf);
-    let framework = repo_root().join("framework");
+    let framework = repo_root().join("runtime/base-component/framework");
     let base = std::fs::canonicalize(repo_root().join("runtime/base-component")).unwrap();
     // The seed load reads the data directory of each component too: the default themes, the pagination text, the access to the
     // applications list (webroot) and the System and Tools app groups (tools).
@@ -445,7 +445,7 @@ fn start_seeded(
         std::fs::write(component.join("component.xml"), r#"<component name="gate-static"/>"#).unwrap();
         std::fs::write(extend.join("ArtifactGroupDetail.xml"), STATIC_EXTEND).unwrap();
     }
-    let framework = repo_root().join("framework");
+    let framework = repo_root().join("runtime/base-component/framework");
     if let Some(data) = data {
         let extra = runtime.join("test-data.xml");
         std::fs::write(&extra, data).unwrap();

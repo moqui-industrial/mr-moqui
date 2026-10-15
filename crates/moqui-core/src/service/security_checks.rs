@@ -17,7 +17,7 @@
 //! may grant it. Both allow the write when authorization is disabled, as a data load runs.
 
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use moqui_lib::error::Error;
 use moqui_lib::object::Value;
@@ -61,7 +61,7 @@ pub(super) fn reset_sealed_grant() {
     SEALED_ENTERED.with(|cell| cell.set(false));
 }
 
-pub(super) fn assert_privileged_group_membership(facade: &EntityFacade, user_group_id: &str) -> Result<(), Error> {
+pub(crate) fn assert_privileged_group_membership(facade: &EntityFacade, user_group_id: &str) -> Result<(), Error> {
     SECURITY_CHECKS.with(|count| count.set(count.get() + 1));
     if user_group_id.is_empty() {
         return Ok(());
@@ -82,7 +82,7 @@ pub(super) fn assert_privileged_group_membership(facade: &EntityFacade, user_gro
     .into())
 }
 
-pub(super) fn assert_sealed_permission_grant(facade: &EntityFacade, user_permission_id: &str) -> Result<(), Error> {
+pub(crate) fn assert_sealed_permission_grant(facade: &EntityFacade, user_permission_id: &str) -> Result<(), Error> {
     SECURITY_CHECKS.with(|count| count.set(count.get() + 1));
     #[cfg(test)]
     note_sealed_grant();
@@ -226,13 +226,6 @@ fn membership_open(from: Option<&Value>, thru: Option<&Value>, now: &Value) -> b
     match thru {
         None | Some(Value::Null) => true,
         Some(thru) => moqui_lib::object::compare_obj(thru, now).ok() == Some(std::cmp::Ordering::Greater),
-    }
-}
-
-pub(super) fn map_text(values: &BTreeMap<String, Value>, field: &str) -> String {
-    match values.get(field) {
-        Some(value) if !value.is_null() => moqui_lib::object::to_plain_string(value),
-        _ => String::new(),
     }
 }
 

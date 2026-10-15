@@ -44,7 +44,8 @@ pub(crate) const MERGED_MODULE: &str = "framework/template/screen/ScreenQvt.js";
 /// `response-header` `screen-server-static` in `MoquiDefaultConf.xml`.
 pub const SERVER_STATIC_CACHE_CONTROL: &str = "max-age=86400, must-revalidate, public";
 const COMPILER_LOCATION: &str = "component://webroot/screen/webroot/libs/vue/compiler-dom.cjs.js";
-const STATIC_MODULE_SOURCE: &str = include_str!("../../../../framework/template/screen/ScreenQvtStatic.js");
+const STATIC_MODULE_SOURCE: &str =
+    include_str!("../../../../runtime/base-component/framework/template/screen/ScreenQvtStatic.js");
 /// The keys the renderer sets for a paginated list, after the list name.
 pub(crate) const PAGE_SUFFIXES: [&str; 6] = [
     "Count",

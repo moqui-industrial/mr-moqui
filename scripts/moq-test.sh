@@ -58,7 +58,8 @@ have() {
 # ========== fixture ==========
 
 R=$FIX/root
-mkdir -p "$R/target/debug" "$R/framework/data" "$R/framework/conf" "$R/runtime/conf" "$R/runtime/component" \
+mkdir -p "$R/target/debug" "$R/runtime/base-component/framework/data" "$R/runtime/base-component/framework/conf" \
+    "$R/runtime/conf" "$R/runtime/component" \
     "$R/runtime/db/install/18.6.0" "$R/runtime/log" "$R/runtime/tmp" "$R/runtime/opensearch/data/nodes" "$R/runtime/opensearch/logs"
 cp "$SRC/moq" "$R/moq"
 chmod +x "$R/moq"
@@ -75,9 +76,9 @@ chmod +x "$R/target/debug/moqui"
 echo '<moqui-conf/>' >"$R/runtime/conf/MoquiDevConf.xml"
 echo '<moqui-conf/>' >"$R/runtime/conf/MoquiProductionConf.xml"
 echo '<moqui-conf><default-property name="webapp_http_port" value=""/><default-property name="entity_ds_db_conf" value=""/></moqui-conf>' \
-    >"$R/framework/conf/MoquiDefaultConf.xml"
-echo '<entity-facade-xml type="seed">' >"$R/framework/data/A.xml"
-echo '<entity-facade-xml type="seed-initial,demo">' >"$R/framework/data/B.xml"
+    >"$R/runtime/base-component/framework/conf/MoquiDefaultConf.xml"
+echo '<entity-facade-xml type="seed">' >"$R/runtime/base-component/framework/data/A.xml"
+echo '<entity-facade-xml type="seed-initial,demo">' >"$R/runtime/base-component/framework/data/B.xml"
 echo 'log' >"$R/runtime/log/moqui.log"
 echo 'index' >"$R/runtime/opensearch/data/nodes/x"
 echo 'gc' >"$R/runtime/opensearch/logs/gc.log"

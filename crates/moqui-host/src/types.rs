@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use moqui_core::typegen::TypeFiles;
 use moqui_lib::error::Error;
 
-use crate::qvt_report::{model_only_factory, screen_files};
+use crate::qvt_report::{component_roots, model_only_factory, screen_files};
 
 /// Generate the declarations for the framework, its components, and their screens.
 ///
@@ -30,15 +30,9 @@ use crate::qvt_report::{model_only_factory, screen_files};
 /// Returns an error when the factory, the entity model, or the service files do not load.
 pub fn generate_types(runtime: &Path, framework: &Path) -> Result<TypeFiles, Error> {
     let factory = model_only_factory(runtime, framework)?;
-    // `screen_files` takes the files below a directory named `screen`, so the framework's own screens are found from its root.
-    let roots: Vec<PathBuf> = [
-        framework.to_path_buf(),
-        runtime.join("base-component"),
-        runtime.join("component"),
-    ]
-    .into_iter()
-    .filter(|path| path.exists())
-    .collect();
+    // `screen_files` takes the files below a directory named `screen`. `component_roots` includes the framework
+    // directory only when it is not already inside the runtime component directories.
+    let roots = component_roots(runtime, framework);
     moqui_core::typegen::generate(&factory, &screen_files(&roots)).map_err(|err| Error::new(err.to_string()))
 }
 

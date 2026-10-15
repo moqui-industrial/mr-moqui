@@ -69,7 +69,7 @@ impl Flow {
             ("PASSWORD_RESET", "PasswordReset.xml", "Password Reset"),
             ("SINGLE_USE_CODE", "SingleUseCode.xml", "Single Use Code"),
         ] {
-            let location = format!("classpath://screen/{screen}");
+            let location = format!("component://framework/screen/{screen}");
             flow.row(
                 "moqui.basic.email.EmailTemplate",
                 &[

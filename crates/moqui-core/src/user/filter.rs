@@ -609,7 +609,7 @@ mod tests {
         session::reset_session();
         clear_context_stack();
         let runtime = temp_dir("filter-runtime");
-        let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
+        let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
         let factory = {
             let _lock = crate::user::session::cookie_property_lock();
             ExecutionContextFactory::boot_with_framework(runtime.path(), &framework).expect("boot")
@@ -859,7 +859,7 @@ mod tests {
         let conf_dir = root.path().join("conf");
         std::fs::create_dir_all(&entity_dir).unwrap();
         std::fs::create_dir_all(&conf_dir).unwrap();
-        let real = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
+        let real = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
         std::os::unix::fs::symlink(
             real.join("conf/MoquiDefaultConf.xml"),
             conf_dir.join("MoquiDefaultConf.xml"),

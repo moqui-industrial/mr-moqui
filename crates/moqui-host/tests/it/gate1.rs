@@ -34,7 +34,7 @@ fn framework_seed_and_fixture_load() {
     let _cluster_guard = DirGuard(cluster_dir.clone());
     std::fs::create_dir_all(&runtime).unwrap();
     std::fs::create_dir_all(&cluster_dir).unwrap();
-    let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
+    let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
 
     let report = load_data(&runtime, &framework, &cluster_dir, &LoadFlags::default()).unwrap();
     assert!(
@@ -350,7 +350,7 @@ fn fresh_dirs(prefix: &str) -> (PathBuf, PathBuf, (DirGuard, DirGuard)) {
 }
 
 fn framework_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework")
 }
 
 #[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
@@ -397,7 +397,7 @@ fn mysql_metadata_insert_and_select() {
     let driver = moqui_host::db::mysql::MysqlDriver::new(host, port, user, password, database, false);
     driver.connect_mysql().expect("MySQL rejected the connection");
     let driver: Arc<dyn DbDriver> = Arc::new(driver);
-    let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
+    let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
     let facade =
         moqui_host::db::entity_facade::open_entity_facade_dialect(&framework, Arc::clone(&driver), pool(), "mysql")
             .unwrap();

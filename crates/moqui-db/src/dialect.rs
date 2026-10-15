@@ -228,7 +228,7 @@ mod tests {
     }
 
     fn load_default_conf() -> Dialects {
-        let path = workspace_root().join("framework/conf/MoquiDefaultConf.xml");
+        let path = workspace_root().join("runtime/base-component/framework/conf/MoquiDefaultConf.xml");
         let root = MNode::parse_file(&path).expect("parse MoquiDefaultConf.xml");
         let from_root = Dialects::load(&root).expect("load conf root");
         let list = root.first_named("database-list").expect("database-list");

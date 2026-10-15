@@ -83,8 +83,10 @@ pub fn component_entity_dirs(factory: &ExecutionContextFactory) -> Vec<std::path
         .collect()
 }
 
-/// Install the facade so `dbresource://` reads and writes through it.
+/// Install the facade so `dbresource://` reads and writes through it, with the conf connection drivers scripts use for
+/// another database.
 pub fn attach(factory: &ExecutionContextFactory, facade: EntityFacade) {
+    super::install_conf_drivers();
     factory.set_entity(facade);
 }
 
@@ -115,7 +117,7 @@ mod tests {
         let _guard = DirGuard(dir.clone());
         let (cluster, driver) = EmbeddedCluster::start(&dir, 20).unwrap();
         let driver: Arc<dyn DbDriver> = Arc::new(driver);
-        let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
+        let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
         let facade = open_entity_facade(
             &framework,
             driver,
@@ -258,7 +260,7 @@ mod tests {
         let _guard = DirGuard(dir.clone());
         let (cluster, driver) = EmbeddedCluster::start(&dir, 20).unwrap();
         let driver: Arc<dyn DbDriver> = Arc::new(driver);
-        let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
+        let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
         let transactions = moqui_core::transaction::TransactionManager::new(
             driver,
             PoolConfig {
@@ -325,7 +327,7 @@ mod tests {
         let _guard = DirGuard(dir.clone());
         let (cluster, driver) = EmbeddedCluster::start(&dir, 20).unwrap();
         let driver: Arc<dyn DbDriver> = Arc::new(driver);
-        let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../framework");
+        let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
         let facade = open_entity_facade(
             &framework,
             driver,

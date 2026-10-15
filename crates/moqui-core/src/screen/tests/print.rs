@@ -28,7 +28,10 @@ fn render_root() -> String {
 }
 
 fn framework_screen(name: &str) -> String {
-    format!("{}/../../framework/screen/{name}.xml", env!("CARGO_MANIFEST_DIR"))
+    format!(
+        "{}/../../runtime/base-component/framework/screen/{name}.xml",
+        env!("CARGO_MANIFEST_DIR")
+    )
 }
 
 fn strings(pairs: &[(&str, &str)]) -> BTreeMap<String, Value> {

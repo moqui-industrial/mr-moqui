@@ -52,6 +52,15 @@ pub struct DbResourceStat {
     pub size: u64,
 }
 
+/// One `DbResourceFileHistory` row, as Java's `ResourceReference.Version`. `version_date` is a Timestamp value.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DbResourceVersion {
+    pub version_name: String,
+    pub previous_version_name: Option<String>,
+    pub version_date: Value,
+    pub user_id: Option<String>,
+}
+
 struct Node {
     id: String,
     is_file: bool,
@@ -332,17 +341,7 @@ impl EntityFacade {
         let Some(row) = row else {
             return Ok(Vec::new());
         };
-        let raw = row.get("fileData").cloned().unwrap_or(Value::Null);
-        Ok(match basic_convert(&raw, "java.sql.Blob").value {
-            Value::Bytes(bytes) => bytes,
-            Value::String(text) => text.into_bytes(),
-            Value::Null => Vec::new(),
-            other => {
-                return Err(Error::new(format!(
-                    "DbResourceFile.fileData for {resource_id} is {other:?}"
-                )))
-            }
-        })
+        Ok(blob_bytes(row.get("fileData"), resource_id)?.unwrap_or_default())
     }
 
     fn ensure_node(&self, parent: Option<&str>, filename: &str, is_file: bool) -> Result<String, Error> {
@@ -375,18 +374,181 @@ impl EntityFacade {
         Ok(id)
     }
 
+    /// Write a file's bytes as `DbResourceReference.putObject`: the first write is version "01" with its history row;
+    /// a later write keeps the replaced bytes in the current version's history row and adds the next version.
     fn write_bytes(&self, resource_id: &str, bytes: &[u8]) -> Result<(), Error> {
         let existing = self.find(DB_FILE)?.eq("resourceId", Value::string(resource_id)).one()?;
+        let Some(existing) = existing else {
+            let mut value = EntityValue::make(self, DB_FILE)?;
+            value.set("resourceId", Value::string(resource_id));
+            value.set("fileData", Value::Bytes(bytes.to_vec()));
+            value.set("versionName", Value::string(FIRST_VERSION));
+            value.set("rootVersionName", Value::string(FIRST_VERSION));
+            value.create(self)?;
+            // no fileData: a history row holds the bytes only once it is a past version
+            let mut history = self.new_history(resource_id, None)?;
+            history.set("versionName", Value::string(FIRST_VERSION));
+            history.create(self)?;
+            return Ok(());
+        };
+        let current = text_of(existing.get("versionName"));
+        if let Some(current) = &current {
+            let past = self
+                .find(DB_HISTORY)?
+                .eq("resourceId", Value::string(resource_id))
+                .eq("versionName", Value::string(current))
+                .one()?;
+            if past.is_some() {
+                let mut past = EntityValue::make(self, DB_HISTORY)?;
+                past.set("resourceId", Value::string(resource_id));
+                past.set("versionName", Value::string(current));
+                past.set("fileData", existing.get("fileData").cloned().unwrap_or(Value::Null));
+                past.update(self)?;
+            }
+        }
+        let mut history = self.new_history(resource_id, current.as_deref())?;
+        history.set_sequenced_id_secondary(self)?;
+        let next = text_of(history.get("versionName"))
+            .ok_or_else(|| Error::new(format!("no next version name for DbResource {resource_id}")))?;
+        history.create(self)?;
         let mut value = EntityValue::make(self, DB_FILE)?;
         value.set("resourceId", Value::string(resource_id));
         value.set("fileData", Value::Bytes(bytes.to_vec()));
-        if existing.is_some() {
-            value.update(self)?;
-        } else {
-            value.set("versionName", Value::string("01"));
-            value.create(self)?;
+        value.set("versionName", Value::string(&next));
+        if text_of(existing.get("rootVersionName")).is_none() {
+            value.set("rootVersionName", Value::string(current.unwrap_or(next)));
         }
+        value.update(self)?;
         Ok(())
+    }
+
+    fn new_history(&self, resource_id: &str, previous: Option<&str>) -> Result<EntityValue, Error> {
+        let mut history = EntityValue::make(self, DB_HISTORY)?;
+        history.set("resourceId", Value::string(resource_id));
+        history.set("previousVersionName", previous.map_or(Value::Null, Value::string));
+        history.set("versionDate", crate::user::now_value());
+        let user_id = crate::user::current_user_id().ok().flatten();
+        history.set("userId", user_id.map_or(Value::Null, Value::string));
+        history.set("isDiff", Value::string("N"));
+        Ok(history)
+    }
+
+    /// The `DbResourceFile` row of the file at `location`, or `None` when there is no file there.
+    fn file_row(&self, location: &str) -> Result<Option<(String, EntityValue)>, Error> {
+        self.ensure_db_tables()?;
+        let parts = db_parts(location)?;
+        let node = if parts.is_empty() { None } else { self.node_at(&parts)? };
+        let Some(node) = node.filter(|node| node.is_file) else {
+            return Ok(None);
+        };
+        let row = self.find(DB_FILE)?.eq("resourceId", Value::string(&node.id)).one()?;
+        Ok(row.map(|row| (node.id, row)))
+    }
+
+    /// A version of the file at `location`, as `DbResourceReference.getVersion`.
+    pub fn db_resource_version(&self, location: &str, version_name: &str) -> Result<Option<DbResourceVersion>, Error> {
+        let Some((resource_id, _)) = self.file_row(location)? else {
+            return Ok(None);
+        };
+        let row = self
+            .find(DB_HISTORY)?
+            .eq("resourceId", Value::string(&resource_id))
+            .eq("versionName", Value::string(version_name))
+            .one()?;
+        Ok(row.as_ref().map(version_of))
+    }
+
+    /// The current version of the file at `location`, `getCurrentVersion`.
+    pub fn db_resource_current_version(&self, location: &str) -> Result<Option<DbResourceVersion>, Error> {
+        self.named_version(location, "versionName")
+    }
+
+    /// The first version of the file at `location`, `getRootVersion`.
+    pub fn db_resource_root_version(&self, location: &str) -> Result<Option<DbResourceVersion>, Error> {
+        self.named_version(location, "rootVersionName")
+    }
+
+    fn named_version(&self, location: &str, field: &str) -> Result<Option<DbResourceVersion>, Error> {
+        let Some((_, row)) = self.file_row(location)? else {
+            return Ok(None);
+        };
+        match text_of(row.get(field)) {
+            Some(name) => self.db_resource_version(location, &name),
+            None => Ok(None),
+        }
+    }
+
+    /// Every version of the file at `location`, newest first, `getVersionHistory`.
+    pub fn db_resource_version_history(&self, location: &str) -> Result<Vec<DbResourceVersion>, Error> {
+        let Some((resource_id, _)) = self.file_row(location)? else {
+            return Ok(Vec::new());
+        };
+        let rows = self
+            .find(DB_HISTORY)?
+            .eq("resourceId", Value::string(&resource_id))
+            .order_by("versionDate", true)
+            .order_by("versionName", true)
+            .list()?;
+        Ok(rows.iter().map(version_of).collect())
+    }
+
+    /// The bytes of one version of the file at `location`, as `openStream(versionName)`: the history row's data, or
+    /// the file's data when it is the current version. `None` when there is no such version.
+    pub fn read_db_resource_version(&self, location: &str, version_name: &str) -> Result<Option<Vec<u8>>, Error> {
+        let Some((resource_id, file)) = self.file_row(location)? else {
+            return Ok(None);
+        };
+        let Some(history) = self
+            .find(DB_HISTORY)?
+            .eq("resourceId", Value::string(&resource_id))
+            .eq("versionName", Value::string(version_name))
+            .one()?
+        else {
+            return Ok(None);
+        };
+        if text_of(history.get("isDiff")).as_deref() == Some("Y") {
+            return Ok(None);
+        }
+        if let Some(bytes) = blob_bytes(history.get("fileData"), &resource_id)? {
+            return Ok(Some(bytes));
+        }
+        if text_of(file.get("versionName")).as_deref() != Some(version_name) {
+            return Ok(None);
+        }
+        Ok(Some(
+            blob_bytes(file.get("fileData"), &resource_id)?.unwrap_or_default(),
+        ))
+    }
+}
+
+const FIRST_VERSION: &str = "01";
+
+fn text_of(value: Option<&Value>) -> Option<String> {
+    match value? {
+        Value::Null => None,
+        value => Some(moqui_lib::object::to_plain_string(value)).filter(|text| !text.is_empty()),
+    }
+}
+
+fn version_of(row: &EntityValue) -> DbResourceVersion {
+    DbResourceVersion {
+        version_name: text_of(row.get("versionName")).unwrap_or_default(),
+        previous_version_name: text_of(row.get("previousVersionName")),
+        version_date: row.get("versionDate").cloned().unwrap_or(Value::Null),
+        user_id: text_of(row.get("userId")),
+    }
+}
+
+/// A `fileData` value as bytes; `None` when it is null.
+fn blob_bytes(value: Option<&Value>, resource_id: &str) -> Result<Option<Vec<u8>>, Error> {
+    let raw = value.cloned().unwrap_or(Value::Null);
+    match basic_convert(&raw, "java.sql.Blob").value {
+        Value::Bytes(bytes) => Ok(Some(bytes)),
+        Value::String(text) => Ok(Some(text.into_bytes())),
+        Value::Null => Ok(None),
+        other => Err(Error::new(format!(
+            "DbResource fileData for {resource_id} is {other:?}"
+        ))),
     }
 }
 
@@ -411,4 +573,109 @@ fn db_parts(location: &str) -> Result<Vec<String>, Error> {
         .filter(|segment| !segment.is_empty())
         .map(str::to_string)
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::entity::EntityFacade;
+
+    fn facade() -> (EntityFacade, crate::context::ExecutionContext) {
+        let facade = crate::testing::open();
+        facade.assume_db_tables();
+        let context = crate::context::ExecutionContextFactory::test_context();
+        context.factory().set_entity(facade.clone());
+        (facade, context)
+    }
+
+    #[test]
+    fn first_write_is_version_01_with_its_history_row() {
+        let (facade, context) = facade();
+        let _entered = context.enter();
+        facade.write_db_resource("dbresource://wiki/a.md", b"one").unwrap();
+        let current = facade
+            .db_resource_current_version("dbresource://wiki/a.md")
+            .unwrap()
+            .expect("current");
+        assert_eq!(current.version_name, "01");
+        assert_eq!(current.previous_version_name, None);
+        assert!(!current.version_date.is_null());
+        let root = facade
+            .db_resource_root_version("dbresource://wiki/a.md")
+            .unwrap()
+            .expect("root");
+        assert_eq!(root.version_name, "01");
+        assert_eq!(
+            facade.read_db_resource_version("dbresource://wiki/a.md", "01").unwrap(),
+            Some(b"one".to_vec())
+        );
+    }
+
+    #[test]
+    fn a_later_write_keeps_the_past_version_and_adds_the_next() {
+        let (facade, context) = facade();
+        let _entered = context.enter();
+        let location = "dbresource://wiki/b.md";
+        facade.write_db_resource(location, b"one").unwrap();
+        facade.write_db_resource(location, b"two").unwrap();
+        facade.write_db_resource(location, b"three").unwrap();
+        let current = facade.db_resource_current_version(location).unwrap().expect("current");
+        assert_eq!(current.version_name, "03");
+        assert_eq!(current.previous_version_name.as_deref(), Some("02"));
+        assert_eq!(
+            facade
+                .db_resource_root_version(location)
+                .unwrap()
+                .expect("root")
+                .version_name,
+            "01"
+        );
+        assert_eq!(
+            facade.read_db_resource_version(location, "01").unwrap(),
+            Some(b"one".to_vec())
+        );
+        assert_eq!(
+            facade.read_db_resource_version(location, "02").unwrap(),
+            Some(b"two".to_vec())
+        );
+        assert_eq!(
+            facade.read_db_resource_version(location, "03").unwrap(),
+            Some(b"three".to_vec())
+        );
+        assert_eq!(facade.read_db_resource_version(location, "09").unwrap(), None);
+        assert_eq!(facade.read_db_resource(location).unwrap().bytes, b"three".to_vec());
+        let names: Vec<String> = facade
+            .db_resource_version_history(location)
+            .unwrap()
+            .into_iter()
+            .map(|version| version.version_name)
+            .collect();
+        assert_eq!(names, ["03", "02", "01"]);
+        assert_eq!(
+            facade
+                .db_resource_version(location, "02")
+                .unwrap()
+                .expect("02")
+                .previous_version_name
+                .as_deref(),
+            Some("01")
+        );
+    }
+
+    #[test]
+    fn delete_removes_the_history_and_a_missing_file_has_no_versions() {
+        let (facade, context) = facade();
+        let _entered = context.enter();
+        let location = "dbresource://wiki/c.md";
+        facade.write_db_resource(location, b"one").unwrap();
+        facade.write_db_resource(location, b"two").unwrap();
+        assert!(facade.delete_db_resource(location).unwrap());
+        assert!(facade.db_resource_version_history(location).unwrap().is_empty());
+        assert_eq!(facade.db_resource_current_version(location).unwrap(), None);
+        let rows = facade
+            .find("moqui.resource.DbResourceFileHistory")
+            .unwrap()
+            .list()
+            .unwrap();
+        assert!(rows.is_empty(), "{} history rows left", rows.len());
+    }
 }

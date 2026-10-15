@@ -37,6 +37,7 @@ use crate::context::ExecutionContext;
 use crate::entity::EntityFacade;
 use crate::web::multipart::UploadedFile;
 
+#[cfg(test)]
 const RUN_COMMAND: &str = "org.moqui.impl.ElFinderServices.run#Command";
 /// The error for a target that does not decode or that leaves the volume.
 const INVALID_TARGET: &str = "errFileNotFound";
@@ -49,19 +50,17 @@ const HASH_DECODE: GeneralPurpose = GeneralPurpose::new(
     GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
 );
 
-/// True for a service this module runs. The definition keeps its parameters and has no actions.
-pub(super) fn runs(name: &str) -> bool {
-    name == RUN_COMMAND
+pub(in crate::service) fn register(
+    map: &mut BTreeMap<&'static str, crate::service::rust_services::RustServiceFn>,
+) -> Result<(), String> {
+    rust_service!(map, run_command)?;
+    Ok(())
 }
 
-pub(super) fn run(
-    name: &str,
+fn run_command(
     parameters: &BTreeMap<String, Value>,
     facade: &EntityFacade,
 ) -> Result<BTreeMap<String, Value>, LibError> {
-    if name != RUN_COMMAND {
-        return Err(LibError::new(format!("elFinder service {name} is not implemented")));
-    }
     let text = |key: &str| match parameters.get(key) {
         Some(value) if !is_empty(value) => to_plain_string(value),
         _ => String::new(),
