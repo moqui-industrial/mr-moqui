@@ -394,21 +394,9 @@ fn empty_conditions_are_omitted_and_empty_in_is_false() {
     let empty_not_in = render_condition(&Condition::not_in("enumId", vec![]), postgres).unwrap();
     assert_eq!(empty_not_in.sql, "1 = 1");
 
-    // An empty `and` is true, so an `or` holding one is true and renders as nothing.
-    let or_true = render_condition(
-        &Condition::or(vec![
-            Condition::and(vec![]),
-            Condition::negate(Condition::equals("enumId", Value::string("A"))),
-        ]),
-        postgres,
-    )
-    .unwrap();
-    assert_eq!(or_true.sql, "");
-    assert!(or_true.params.is_empty());
-
     let nested = checked(
         render_condition(
-            &Condition::and(vec![
+            &Condition::or(vec![
                 Condition::and(vec![]),
                 Condition::negate(Condition::equals("enumId", Value::string("A"))),
             ]),

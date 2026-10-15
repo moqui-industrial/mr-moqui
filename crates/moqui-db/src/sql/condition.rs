@@ -16,9 +16,9 @@
 //!
 //! As Java `FieldValueCondition` does, a null value turns equals, like, in, and between into
 //! `IS NULL`, and their negations into `IS NOT NULL`. An empty `In` list is false: `1 = 0`. An
-//! empty `NotIn` list is true: `1 = 1`. A condition that renders as nothing is true: an `And` of
-//! nothing is omitted, an `Or` with such a part is omitted, an `Or` of no parts is false (`1 = 0`), and
-//! `Not` of nothing is false.
+//! empty `NotIn` list is true: `1 = 1`. A part of an `And` or `Or` with nothing to render is
+//! dropped, and an `And` or `Or` left with nothing is omitted. An `Or` of no parts is false
+//! (`1 = 0`), and `Not` of nothing is false.
 
 use moqui_lib::error::Error;
 use moqui_lib::object::Value;
@@ -749,21 +749,19 @@ impl<'a> Writer<'a> {
         Ok(())
     }
 
-    /// A part that renders as nothing is true: an `And` leaves it out, and it makes an `Or` true, so the `Or`
-    /// renders as nothing too. An `Or` of no parts is false.
+    /// An `Or` of no parts is false.
     fn join(&mut self, conditions: &[Condition], operator: &str, columns: &Columns<'_>) -> Result<(), Error> {
-        let is_or = operator == "OR";
-        if is_or && conditions.is_empty() {
+        if operator == "OR" && conditions.is_empty() {
             self.push("1 = 0");
             return Ok(());
         }
         let mut parts = Vec::new();
         for condition in conditions {
             let rendered = self.sub(condition, columns)?;
+            // A part that renders as nothing is dropped, from an `Or` too, as Java `ListCondition` skips an
+            // empty child: it does not make the `Or` true.
             if !rendered.sql.is_empty() {
                 parts.push(rendered);
-            } else if is_or {
-                return Ok(());
             }
         }
         if parts.is_empty() {
