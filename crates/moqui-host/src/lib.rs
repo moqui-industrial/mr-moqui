@@ -184,6 +184,7 @@ pub fn save_db(
     dir: impl AsRef<std::path::Path>,
     dump: impl AsRef<std::path::Path>,
 ) -> Result<(), moqui_lib::error::Error> {
+    xmlshim::provide_libxml2_soname(dir.as_ref())?;
     db::embedded::save_db(dir.as_ref(), dump.as_ref())
 }
 
@@ -197,6 +198,7 @@ pub fn load_save(
     dir: impl AsRef<std::path::Path>,
     dump: impl AsRef<std::path::Path>,
 ) -> Result<(), moqui_lib::error::Error> {
+    xmlshim::provide_libxml2_soname(dir.as_ref())?;
     db::embedded::load_save(dir.as_ref(), dump.as_ref())
 }
 

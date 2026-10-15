@@ -188,7 +188,7 @@ mod cluster {
     ///
     /// Returns an error when the cluster or `pg_dump` fails.
     pub fn save_db(dir: &Path, dump: &Path) -> Result<(), Error> {
-        let (cluster, _driver) = EmbeddedCluster::start(dir, CLI_MAX_CONNECTIONS)?;
+        let (cluster, _driver) = EmbeddedCluster::start_with(dir, &cli_options(dir)?)?;
         cluster.save_db(dump)
     }
 
@@ -199,8 +199,20 @@ mod cluster {
     ///
     /// Returns an error when the cluster or `pg_restore` fails.
     pub fn load_save(dir: &Path, dump: &Path) -> Result<(), Error> {
-        let (cluster, _driver) = EmbeddedCluster::start(dir, CLI_MAX_CONNECTIONS)?;
+        let (cluster, _driver) = EmbeddedCluster::start_with(dir, &cli_options(dir)?)?;
         cluster.load_save(dump)
+    }
+
+    /// `save-db` and `load-save` use the install the server shares, `install` beside the cluster directory, rather
+    /// than unpacking another one inside it. The path is absolute, since the install path is handed on verbatim.
+    fn cli_options(dir: &Path) -> Result<StartOptions, Error> {
+        std::fs::create_dir_all(dir).map_err(|err| Error::new("create embedded dir").with_source(err))?;
+        let dir = std::fs::canonicalize(dir).map_err(|err| Error::new("resolve embedded dir").with_source(err))?;
+        let mut options = StartOptions::new(CLI_MAX_CONNECTIONS);
+        if let Some(db_dir) = dir.parent() {
+            options.install_dir = Some(shared_install_dir(db_dir, &dir));
+        }
+        Ok(options)
     }
 
     /// The one theseus install under `db_dir`, shared by the entity, search and sim clusters. An

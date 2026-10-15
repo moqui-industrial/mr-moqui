@@ -1,0 +1,2151 @@
+#!/usr/bin/env bash
+# moq: MR Moqui tasks, the replacement for the Java Moqui Gradle tasks. moq-completion-protocol-1
+#
+# Run ./moq with no arguments for the task list, and ./moq help <task> for one task. Written for bash 3.2 (macOS /bin/bash)
+# and the BSD and GNU userlands: no associative arrays, ${x,,}, mapfile, sed -i, readlink -f, or tail --pid.
+# MOQ_DRY_RUN=1 prints each command that changes something, instead of running it.
+
+set -o pipefail
+
+# ========== globals ==========
+
+MOQ_CWD=$(pwd)
+
+moq_script=$0
+while [ -h "$moq_script" ]; do
+    moq_link_dir=$(cd -P "$(dirname "$moq_script")" && pwd)
+    moq_script=$(readlink "$moq_script")
+    case $moq_script in /*) ;; *) moq_script=$moq_link_dir/$moq_script ;; esac
+done
+ROOT=$(cd -P "$(dirname "$moq_script")" && pwd)
+MOQ="$ROOT/$(basename "$moq_script")"
+
+abs_path() {
+    case $1 in
+        /*) printf '%s\n' "$1" ;;
+        *) printf '%s\n' "$MOQ_CWD/$1" ;;
+    esac
+}
+
+# The binary reads MOQUI_RUNTIME and MOQUI_FRAMEWORK relative to its working directory, which is ROOT here.
+if [ -n "${MOQUI_RUNTIME:-}" ]; then
+    MOQUI_RUNTIME=$(abs_path "$MOQUI_RUNTIME")
+    export MOQUI_RUNTIME
+    RUNTIME_DIR=$MOQUI_RUNTIME
+else
+    RUNTIME_DIR=$ROOT/runtime
+fi
+if [ -n "${MOQUI_FRAMEWORK:-}" ]; then
+    MOQUI_FRAMEWORK=$(abs_path "$MOQUI_FRAMEWORK")
+    export MOQUI_FRAMEWORK
+fi
+CLUSTER_DIR=$RUNTIME_DIR/db/embedded
+SAVE_DIR=$RUNTIME_DIR/save
+OS_DIR=$RUNTIME_DIR/opensearch
+ADDONS=$ROOT/addons.xml
+MYADDONS=$ROOT/myaddons.xml
+OPENSEARCH_VERSION=3.4.0
+PRODUCTION_CONF=conf/MoquiProductionConf.xml
+
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != dumb ]; then
+    BOLD=$'\033[1m'
+    PLAIN=$'\033[0m'
+else
+    BOLD=
+    PLAIN=
+fi
+
+# name|group|arguments|description. Drives the task list, matching, and completion.
+TASKS='run|Run|[opts] [moqui-args...]|Run the debug binary with the dev conf
+run-production|Run|[opts] [moqui-args...]|Run the release binary with the production conf
+load|Run|[types] [name=value] [opts]|Load data, all types by default, with the dev conf
+load-production|Run|[types] [name=value] [opts]|Load data with the release binary and production conf
+load-save|Run|[-n name] [load args...]|clean-all, load, then save-db
+save-db|Database|[name]|Save the embedded database and OpenSearch data to runtime/save/<name>
+reload-save|Database|[name]|clean-db, then restore a save-db copy
+clean-db|Database||Delete the embedded database, txlog, and OpenSearch data
+clean-log|Database||Delete the files in runtime/log
+clean-all|Database||clean-db, clean-log, and runtime/tmp
+opensearch-download|OpenSearch|[version] [-f]|Download OpenSearch into runtime/opensearch
+opensearch-start|OpenSearch||Start runtime/opensearch as a daemon with a pid file
+opensearch-stop|OpenSearch||Stop the runtime/opensearch daemon
+git|Git|<git args...>|Run a git command in the root repo and each component repo
+git-status|Git|[-s]|Branch, tracking, ahead/behind, and changes in each repo
+git-pull|Git|[git pull args...]|Pull each repo and list the new commits
+component-get|Components|[name...] [-t type]|Get components and the components they depend on
+component-set|Components|<set...> [-t type]|Get the components in a component-set
+component-depends|Components|[-t type]|Get missing depends-on components for runtime/component
+component-create|Components|<name> [opts]|Create a component from the start component
+component-zip|Components|[name...]|Zip components in runtime/component
+completion|Setup|[bash or zsh] [--install]|Print or install shell completion
+help|Setup|[task]|Show the task list or help for one task'
+
+# Gradle task names (normalized) and other old names: alias|task [args]. These resolve only on an exact match.
+ALIASES='moqui|run
+moqui-production|run-production
+load-seed|load-production seed
+load-seed-initial|load-production seed seed-initial
+start-elastic-search|opensearch-start
+stop-elastic-search|opensearch-stop
+start-open-search|opensearch-start
+stop-open-search|opensearch-stop
+start-opensearch|opensearch-start
+stop-opensearch|opensearch-stop
+download-open-search|opensearch-download
+download-opensearch|opensearch-download
+git-pull-all|git-pull
+git-status-all|git-status
+git-checkout-all|git checkout
+git-upstream-all|git pull upstream master
+git-tag-all|git tag
+git-merge-all|git merge
+git-diff-tags-all|git log --oneline
+get-component|component-get
+get-defaults|component-get
+get-git|component-get -t git
+get-current|component-get -t current
+get-release|component-get -t release
+get-binary|component-get -t binary
+get-depends|component-depends
+get-component-set|component-set
+create-component|component-create
+zip-component|component-zip
+zip-components|component-zip'
+
+# ========== utilities ==========
+
+die() {
+    printf 'moq: %s\n' "$*" >&2
+    exit 1
+}
+
+warn() {
+    printf 'moq: %s\n' "$*" >&2
+}
+
+info() {
+    printf '%s\n' "$*"
+}
+
+heading() {
+    printf '%s%s%s\n' "$BOLD" "$*" "$PLAIN"
+}
+
+dry_run() {
+    [ "${MOQ_DRY_RUN:-}" = 1 ]
+}
+
+# The command as a shell would read it, on stderr.
+show_cmd() {
+    local out='+' arg
+    for arg in "$@"; do
+        out="$out $(printf '%q' "$arg")"
+    done
+    printf '%s\n' "$out" >&2
+}
+
+run_cmd() {
+    if dry_run; then
+        show_cmd "$@"
+        return 0
+    fi
+    "$@"
+}
+
+exec_cmd() {
+    if dry_run; then
+        show_cmd exec "$@"
+        exit 0
+    fi
+    exec "$@"
+}
+
+export_var() {
+    if dry_run; then
+        show_cmd export "$1=$2"
+    fi
+    export "$1=$2"
+}
+
+# Paths as the user sees them: relative to the repo root when inside it.
+rel() {
+    case $1 in
+        "$ROOT") printf '.\n' ;;
+        "$ROOT"/*) printf '%s\n' "${1#"$ROOT"/}" ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
+# Delete a path under the runtime directory or the component directory, and refuse anything else.
+rm_path() {
+    case $1 in
+        "$RUNTIME_DIR"/?*) ;;
+        *) die "refusing to delete $1, which is not under $(rel "$RUNTIME_DIR")" ;;
+    esac
+    [ -e "$1" ] || [ -h "$1" ] || return 0
+    info "Deleting $(rel "$1")"
+    run_cmd rm -rf -- "$1"
+}
+
+need_tool() {
+    local tool
+    for tool in "$@"; do
+        command -v "$tool" >/dev/null 2>&1 || die "this task needs '$tool', which is not on the PATH"
+    done
+}
+
+# kill -0 fails for another user's live process, which ps -p sees (busybox ps has no -p, but kill -0 covers our own).
+pid_alive() {
+    kill -0 "$1" 2>/dev/null || ps -p "$1" >/dev/null 2>&1
+}
+
+# A pid from a pid file when that process is alive.
+live_pid() {
+    local pid
+    [ -f "$1" ] || return 1
+    pid=$(head -n 1 "$1" 2>/dev/null | tr -cd '0-9')
+    [ -n "$pid" ] || return 1
+    pid_alive "$pid" || return 1
+    printf '%s\n' "$pid"
+}
+
+server_pid() {
+    live_pid "$CLUSTER_DIR/data/postmaster.pid"
+}
+
+require_server_stopped() {
+    local pid
+    if pid=$(server_pid); then
+        die "$1: the embedded Postgres in $(rel "$CLUSTER_DIR") is running (pid $pid); stop the server first"
+    fi
+}
+
+valid_name() {
+    case $1 in
+        '' | .* | *[!A-Za-z0-9._-]*) return 1 ;;
+    esac
+    return 0
+}
+
+# Lines of $1 that start with $2, for completion.
+filter_prefix() {
+    local cur=$1 line
+    shift
+    for line in "$@"; do
+        case $line in "$cur"*) printf '%s\n' "$line" ;; esac
+    done
+}
+
+# ========== task names and matching ==========
+
+task_names() {
+    printf '%s\n' "$TASKS" | cut -d'|' -f1
+}
+
+task_field() {
+    printf '%s\n' "$TASKS" | awk -F'|' -v name="$1" -v field="$2" '$1 == name { print $field }'
+}
+
+# runProduction -> run-production, gPA -> g-p-a, RUN -> run, clean_db -> clean-db.
+normalize_name() {
+    case $1 in
+        *[[:lower:]]*)
+            printf '%s\n' "$1" | sed -e 's/\([^-]\)\([[:upper:]]\)/\1-\2/g' -e 's/\([^-]\)\([[:upper:]]\)/\1-\2/g' |
+                tr '[:upper:]_' '[:lower:]-'
+            ;;
+        *) printf '%s\n' "$1" | tr '[:upper:]_' '[:lower:]-' ;;
+    esac
+}
+
+# Each dash-separated part of $1 is a prefix of the same part of $2, and $1 may have fewer parts.
+segment_match() {
+    local i
+    local -a want have
+    IFS=- read -r -a want <<<"$1"
+    IFS=- read -r -a have <<<"$2"
+    [ "${#want[@]}" -le "${#have[@]}" ] || return 1
+    for ((i = 0; i < ${#want[@]}; i++)); do
+        case ${have[i]} in "${want[i]}"*) ;; *) return 1 ;; esac
+    done
+    return 0
+}
+
+# Sets RESOLVED_TASK and RESOLVED_ARGS (an alias's arguments). Returns 1 for no match and 2 for several, with the
+# candidates in RESOLVED_CANDIDATES.
+resolve_task() {
+    local want name line
+    RESOLVED_TASK=
+    RESOLVED_ARGS=
+    RESOLVED_CANDIDATES=
+    want=$(normalize_name "$1")
+    [ -n "$want" ] || return 1
+    for name in $(task_names); do
+        if [ "$name" = "$want" ]; then
+            RESOLVED_TASK=$name
+            return 0
+        fi
+    done
+    while IFS= read -r line; do
+        if [ "${line%%|*}" = "$want" ]; then
+            line=${line#*|}
+            RESOLVED_TASK=${line%% *}
+            case $line in *' '*) RESOLVED_ARGS=${line#* } ;; esac
+            return 0
+        fi
+    done <<<"$ALIASES"
+    for name in $(task_names); do
+        if segment_match "$want" "$name"; then
+            RESOLVED_CANDIDATES="$RESOLVED_CANDIDATES $name"
+        fi
+    done
+    RESOLVED_CANDIDATES=${RESOLVED_CANDIDATES# }
+    case $RESOLVED_CANDIDATES in
+        '') ;;
+        *' '*) return 2 ;;
+        *)
+            RESOLVED_TASK=$RESOLVED_CANDIDATES
+            return 0
+            ;;
+    esac
+    # Then old names abbreviated the Gradle way (gPA is gitPullAll), when every match leads to the same task.
+    local target='' targets='' same=1
+    while IFS= read -r line; do
+        if segment_match "$want" "${line%%|*}"; then
+            RESOLVED_CANDIDATES="$RESOLVED_CANDIDATES ${line%%|*}"
+            [ -z "$targets" ] || [ "$targets" = "${line#*|}" ] || same=
+            targets=${line#*|}
+        fi
+    done <<<"$ALIASES"
+    RESOLVED_CANDIDATES=${RESOLVED_CANDIDATES# }
+    [ -n "$targets" ] || return 1
+    [ -n "$same" ] || return 2
+    target=$targets
+    RESOLVED_TASK=${target%% *}
+    case $target in *' '*) RESOLVED_ARGS=${target#* } ;; esac
+    return 0
+}
+
+# Task names for an unknown input: those containing it, else those containing a part of it (two letters or more).
+suggest_tasks() {
+    local want name part found=''
+    local -a parts
+    want=$(normalize_name "$1")
+    for name in $(task_names); do
+        case $name in *"$want"*) found="$found $name" ;; esac
+    done
+    if [ -z "$found" ]; then
+        IFS=- read -r -a parts <<<"$want"
+        for name in $(task_names); do
+            for part in "${parts[@]}"; do
+                [ ${#part} -ge 2 ] || continue
+                case $name in
+                    *"$part"*)
+                        found="$found $name"
+                        break
+                        ;;
+                esac
+            done
+        done
+    fi
+    printf '%s\n' "${found# }"
+}
+
+# ========== help ==========
+
+usage() {
+    local group last='' name args desc
+    cat <<EOF
+${BOLD}moq${PLAIN}: MR Moqui tasks (the Java Moqui Gradle tasks, with real arguments)
+
+Usage: ./moq <task> [args...]      ./moq help <task>      ./moq <task> --help
+
+A task name matches by a prefix of each dash-separated part, ignoring case,
+so r-p and runProduction both mean run-production, and c-g is component-get.
+EOF
+    while IFS='|' read -r name group args desc; do
+        if [ "$group" != "$last" ]; then
+            printf '\n%s%s%s\n' "$BOLD" "$group" "$PLAIN"
+            last=$group
+        fi
+        printf '  %-20s %-30s %s\n' "$name" "$args" "$desc"
+    done <<<"$TASKS"
+    cat <<EOF
+
+Tab completion: ./moq completion --install, or add this to ~/.bashrc or ~/.zshrc:
+  eval "\$($(printf '%q' "$MOQ") completion bash)"     (zsh: completion zsh)
+EOF
+}
+
+help_task() {
+    local name=$1 fn
+    fn="help_${name//-/_}"
+    printf '%s./moq %s %s%s\n    %s\n\n' "$BOLD" "$name" "$(task_field "$name" 3)" "$PLAIN" "$(task_field "$name" 4)"
+    if declare -f "$fn" >/dev/null; then
+        "$fn"
+    fi
+}
+
+RUN_OPTIONS_HELP='  -r, --release        Use target/release/moqui
+      --debug          Use target/debug/moqui
+  -c, --conf FILE      Runtime conf merged over MoquiDefaultConf.xml (sets MOQUI_CONF); relative to
+                       the runtime directory, like conf/MoquiProductionConf.xml, or a path
+  -p, --port N         HTTP port (webapp_http_port)
+  -D name=value        Set any conf property, as an environment variable; repeatable. Use the
+                       underscore name (entity_ds_db_conf), not a dotted one
+      --build          cargo build -p moqui first (with --release for the release binary)
+      --               End of moq options'
+
+help_run() {
+    cat <<EOF
+Runs the binary in place with the runtime and framework directories in this repo. With no
+moqui arguments it starts the HTTP server. The first argument that is not a moq option, and
+everything after it, goes to the binary, so moqui's own commands run with the same conf:
+  ./moq run                         serve with runtime/conf/MoquiDevConf.xml
+  ./moq run -p 8081 -D entity_ds_db_conf=postgres
+  ./moq run -r                      the release binary, still the dev conf
+  ./moq run lint --screens          moqui lint --screens
+  ./moq run types --out /tmp/types
+
+Options:
+$RUN_OPTIONS_HELP
+EOF
+}
+
+help_run_production() {
+    cat <<EOF
+Like run, but with target/release/moqui and conf/MoquiProductionConf.xml unless --debug or
+--conf says otherwise. Build the release binary as README.md describes (scripts/pg-payload.sh
+strip, then cargo build --release -p moqui).
+  ./moq run-production
+  ./moq run-production --debug -c conf/MoquiDevConf.xml
+
+Options:
+$RUN_OPTIONS_HELP
+EOF
+}
+
+LOAD_HELP='Words without "=" are data types, joined into types=a,b. name=value words go to moqui load as
+they are: components=a,b, timeout=<seconds>, raw=true, disableEntityEca=true,
+disableAuditLog=true, disableFkCreate=true, disableDataFeed=true.
+
+Options (as for run): -r, --release, --debug, -c FILE, -D name=value, --build, and
+  -l, --location FILE  Load only this data file (location=<absolute path>)'
+
+help_load() {
+    cat <<EOF
+Loads data into the configured database with the debug binary and the dev conf. With no data
+types it loads all of them, like gradle load.
+  ./moq load
+  ./moq load seed seed-initial install
+  ./moq load -l runtime/component/mantle-udm/data/SomeData.xml
+  ./moq load seed components=mantle-udm
+
+$LOAD_HELP
+EOF
+}
+
+help_load_production() {
+    cat <<EOF
+Loads data with the release binary and conf/MoquiProductionConf.xml. With no data types it
+loads moqui's default set: seed, seed-initial, install.
+  ./moq load-production
+  ./moq load-production seed
+
+$LOAD_HELP
+EOF
+}
+
+help_load_save() {
+    cat <<'EOF'
+gradle loadSave: clean-all, then load with the given arguments, then save-db.
+  ./moq load-save
+  ./moq load-save -n demo seed seed-initial install demo
+
+Options:
+  -n, --name NAME      The save name (default "default")
+Any other argument goes to load.
+EOF
+}
+
+help_save_db() {
+    cat <<'EOF'
+Saves the embedded database (pg_dump through moqui save-db) to runtime/save/<name>/moqui.dump,
+and runtime/opensearch/data to runtime/save/<name>/opensearch-data.tar.gz. An OpenSearch daemon
+with a pid file is stopped for the copy and started again. The name defaults to "default".
+This saves only the embedded database, not an external one set by entity_ds_db_conf.
+  ./moq save-db
+  ./moq save-db before-upgrade
+
+Options:
+  -r, --release        Use the release binary (default: debug if built, else release)
+      --skip-opensearch  Leave out the OpenSearch data
+EOF
+}
+
+help_reload_save() {
+    cat <<'EOF'
+Restores a save-db copy: clean-db, then pg_restore of runtime/save/<name>/moqui.dump into a new
+embedded database (moqui load-save), then the OpenSearch data when the save has it. The server
+must be stopped. The name defaults to "default".
+  ./moq reload-save
+  ./moq reload-save before-upgrade
+
+Options:
+  -r, --release        Use the release binary (default: debug if built, else release)
+      --skip-opensearch  Leave runtime/opensearch/data alone
+EOF
+}
+
+help_clean_db() {
+    cat <<'EOF'
+Deletes runtime/db/embedded (the embedded Postgres cluster), runtime/txlog, and the OpenSearch
+data and logs in runtime/opensearch. An OpenSearch daemon with a pid file is stopped first and
+started again after. It keeps runtime/db/install (the unpacked Postgres) and
+runtime/db/instance_id, and refuses while the embedded Postgres is running.
+EOF
+}
+
+help_clean_log() {
+    echo 'Deletes everything in runtime/log.'
+}
+
+help_clean_all() {
+    cat <<'EOF'
+clean-db, clean-log, and runtime/tmp. Saves in runtime/save are kept; delete those by hand.
+EOF
+}
+
+help_opensearch_download() {
+    cat <<EOF
+Downloads opensearch-min for Linux (x64 or arm64) into runtime/opensearch. The version
+defaults to $OPENSEARCH_VERSION. An archive already in runtime/ is used instead of downloading.
+OpenSearch publishes no macOS tarball; on macOS run it another way and set elasticsearch_url.
+
+Options:
+  -f, --force          Replace an existing runtime/opensearch, deleting its data
+EOF
+}
+
+help_opensearch_start() {
+    cat <<'EOF'
+Starts runtime/opensearch as a daemon (bin/opensearch -d -p pid). The server uses a node that
+answers and only starts its own when nothing does and there is no pid file, so a daemon started
+here outlives server restarts.
+EOF
+}
+
+help_opensearch_stop() {
+    echo 'Stops the runtime/opensearch daemon named by its pid file and waits for it to exit.'
+}
+
+help_git() {
+    cat <<'EOF'
+Runs git with these arguments in the root repo, runtime/ when it is its own repo, and each
+repo in runtime/base-component and runtime/component, under a header for each. It keeps going
+when one fails, and exits non-zero if any failed. The Gradle git tasks become:
+  ./moq git checkout mr-moqui             gitCheckoutAll -Pbranch=mr-moqui
+  ./moq git checkout -b new-branch        gitCheckoutAll -Pbranch=new-branch -Pcreate=true
+  ./moq git pull upstream master          gitUpstreamAll
+  ./moq git tag v4.1.0 && ./moq git push --tags     gitTagAll -Ptag=v4.1.0 -Ppush=true
+  ./moq git tag -d v4.1.0                 gitTagAll -Ptag=v4.1.0 -Premove=true
+  ./moq git log --oneline v4.0.0..HEAD    gitDiffTagsAll -Ptaga=v4.0.0
+  ./moq git merge feature-x               gitMergeAll -Pbranch=feature-x
+git runs without a pager. For git's own help use git help <command>.
+EOF
+}
+
+help_git_status() {
+    cat <<'EOF'
+For each repo: the branch and its tracking branch, commits ahead and behind, how far it is
+from upstream/<branch> when there is an upstream remote, the unpushed commits, and the
+short status. It does not fetch; run ./moq git fetch first for current counts.
+
+Options:
+  -s, --short          Only show repos with changes or commits to push or pull
+EOF
+}
+
+help_git_pull() {
+    cat <<'EOF'
+Runs git pull (with any arguments given, like --rebase) in each repo, then lists the commits
+the pull brought in.
+EOF
+}
+
+COMPONENT_TYPE_HELP='  -t, --type TYPE      git, current (branch archive), release, or binary. Default: git when the
+                       root has .git, else current. release and binary fall back to current when
+                       the component has no version'
+
+help_component_get() {
+    cat <<EOF
+Gets each named component into runtime/component from the location in myaddons.xml or
+addons.xml, then gets any component it depends on (component.xml depends-on) that is not
+there yet. A component already present is not changed, but its dependencies are checked.
+With no names it gets the default="a,b" list on the myaddons.xml root element.
+  ./moq component-get mantle-udm mantle-usl
+  ./moq component-get -t current ironstone-boss
+
+Options:
+$COMPONENT_TYPE_HELP
+EOF
+}
+
+help_component_set() {
+    cat <<EOF
+Gets the components of each component-set in myaddons.xml or addons.xml, including nested sets,
+and their dependencies.
+  ./moq component-set mantle
+
+Options:
+$COMPONENT_TYPE_HELP
+EOF
+}
+
+help_component_depends() {
+    cat <<EOF
+Checks every component in runtime/component and gets the depends-on components that are missing.
+
+Options:
+$COMPONENT_TYPE_HELP
+EOF
+}
+
+help_component_create() {
+    cat <<EOF
+Creates runtime/component/<name> from a template component (start by default): renames files
+whose names begin with the template name, replaces the template name in file contents, and drops
+src/ and build.gradle (the Groovy and Java side). The template's git history is not kept.
+  ./moq component-create my-app
+  ./moq component-create my-api --rest --git-remote git@github.com:me/my-api.git --myaddons me
+
+Options:
+      --from NAME      Template component from addons.xml (default start)
+      --rest           REST API only: drop screen/, template/, data/AppSeedData.xml, and empty MoquiConf.xml
+      --screens        Screens only: drop services/<name>.rest.xml and data/ApiSeedData.xml
+      --git-remote URL git init, git add ., and add this remote as origin
+      --no-git         Do not git init
+      --myaddons GROUP Add the component to myaddons.xml with this git group (creating the file if needed)
+$COMPONENT_TYPE_HELP
+EOF
+}
+
+help_component_zip() {
+    cat <<'EOF'
+Writes runtime/component/<name>-<version>.zip for each named component, or for every directory
+in runtime/component with a component.xml. It leaves out .git, build/, src/, librepo/, and
+build.gradle. Needs zip.
+EOF
+}
+
+help_completion() {
+    cat <<EOF
+Prints the completion script for bash or zsh (default: from \$SHELL). It completes task names
+(also partial ones like r-p), options, conf files, data types, save names, component names, git
+refs, and file arguments. Load it from your shell's startup file:
+  eval "\$($(printf '%q' "$MOQ") completion bash)"
+  eval "\$($(printf '%q' "$MOQ") completion zsh)"
+
+Options:
+      --install        Add that line to ~/.bashrc or ~/.zshrc if it is not there yet
+EOF
+}
+
+help_help() {
+    echo 'With a task name (partial names work), shows that task'"'"'s help. Otherwise the task list.'
+}
+
+# ========== binary, conf, and properties ==========
+
+# Set by parse_run_opts.
+OPT_PROFILE=
+OPT_CONF=
+OPT_BUILD=
+OPT_LOCATION=
+OPT_PROPS=()
+OPT_REST=()
+
+valid_property() {
+    case $1 in
+        '' | [0-9]* | *[!A-Za-z0-9_]*) return 1 ;;
+    esac
+    return 0
+}
+
+add_property() {
+    local name=${1%%=*}
+    case $1 in *=*) ;; *) die "-D needs name=value, not '$1'" ;; esac
+    if ! valid_property "$name"; then
+        case $name in
+            *.*) die "-D $name: use the underscore form of the property name ($(printf '%s' "$name" | tr . _))" ;;
+            *) die "-D $name: not a valid property name" ;;
+        esac
+    fi
+    OPT_PROPS+=("$1")
+}
+
+# $1 is "run" (the first word that is not an option starts the binary's arguments) or "load" (options anywhere).
+# Everything else lands in OPT_REST.
+parse_run_opts() {
+    local mode=$1 arg
+    shift
+    OPT_PROFILE=
+    OPT_CONF=
+    OPT_BUILD=
+    OPT_LOCATION=
+    OPT_PROPS=()
+    OPT_REST=()
+    while [ $# -gt 0 ]; do
+        arg=$1
+        case $arg in
+            -r | --release) OPT_PROFILE=release ;;
+            --debug) OPT_PROFILE=debug ;;
+            -c | --conf)
+                [ $# -ge 2 ] || die "$arg needs a file"
+                OPT_CONF=$2
+                shift
+                ;;
+            --conf=*) OPT_CONF=${arg#--conf=} ;;
+            -p | --port | --port=*)
+                local port
+                if [ "$arg" = "${arg#--port=}" ]; then
+                    [ $# -ge 2 ] || die "$arg needs a port number"
+                    port=$2
+                    shift
+                else
+                    port=${arg#--port=}
+                fi
+                case $port in '' | *[!0-9]*) die "port '$port' is not a number" ;; esac
+                OPT_PROPS+=("webapp_http_port=$port")
+                ;;
+            -D)
+                [ $# -ge 2 ] || die "-D needs name=value"
+                add_property "$2"
+                shift
+                ;;
+            -D?*) add_property "${arg#-D}" ;;
+            --build) OPT_BUILD=1 ;;
+            -l | --location)
+                [ "$mode" = load ] || die "unknown option $arg"
+                [ $# -ge 2 ] || die "$arg needs a file"
+                OPT_LOCATION=$2
+                shift
+                ;;
+            --location=*)
+                [ "$mode" = load ] || die "unknown option $arg"
+                OPT_LOCATION=${arg#--location=}
+                ;;
+            --)
+                shift
+                OPT_REST+=("$@")
+                return 0
+                ;;
+            -*)
+                if [ "$mode" = run ]; then
+                    die "unknown option $arg (moqui's own arguments go after its command, or after --)"
+                fi
+                die "unknown option $arg"
+                ;;
+            *)
+                if [ "$mode" = run ]; then
+                    OPT_REST+=("$@")
+                    return 0
+                fi
+                OPT_REST+=("$arg")
+                ;;
+        esac
+        shift
+    done
+}
+
+binary_path() {
+    printf '%s\n' "$ROOT/target/$1/moqui"
+}
+
+# The binary for a profile, building it first when asked. Dies with the build command when it is missing.
+moqui_binary() {
+    local profile=$1 bin
+    bin=$(binary_path "$profile")
+    if [ -n "$OPT_BUILD" ]; then
+        need_tool cargo
+        if [ "$profile" = release ]; then
+            run_cmd cargo build --release -p moqui >&2 || die "cargo build failed"
+        else
+            run_cmd cargo build -p moqui >&2 || die "cargo build failed"
+        fi
+    fi
+    if [ ! -x "$bin" ]; then
+        local build='cargo build -p moqui'
+        [ "$profile" = release ] && build='cargo build --release -p moqui (see README.md for the production build)'
+        if dry_run; then
+            warn "$(rel "$bin") is not built"
+        else
+            die "$(rel "$bin") is not built; build it with: $build, or add --build"
+        fi
+    fi
+    printf '%s\n' "$bin"
+}
+
+# Debug if built, else release, unless one was asked for.
+any_binary() {
+    if [ -n "$OPT_PROFILE" ]; then
+        moqui_binary "$OPT_PROFILE"
+    elif [ -x "$(binary_path debug)" ]; then
+        binary_path debug
+    elif [ -x "$(binary_path release)" ]; then
+        binary_path release
+    else
+        moqui_binary debug
+    fi
+}
+
+# MOQUI_CONF as an absolute path. A relative name is tried in the runtime directory, then from the caller's directory.
+resolve_conf() {
+    local conf=$1
+    case $conf in
+        /*) [ -f "$conf" ] || die "conf file $conf not found" ;;
+        *)
+            if [ -f "$RUNTIME_DIR/$conf" ]; then
+                conf=$RUNTIME_DIR/$conf
+            elif [ -f "$MOQ_CWD/$conf" ]; then
+                conf=$MOQ_CWD/$conf
+            else
+                die "conf file $conf not found in $(rel "$RUNTIME_DIR") or $(rel "$MOQ_CWD")"
+            fi
+            ;;
+    esac
+    printf '%s\n' "$conf"
+}
+
+# Exports the conf and properties from parse_run_opts. $1 is the default conf, or empty for the binary's default.
+apply_run_env() {
+    local conf=${OPT_CONF:-$1} prop
+    if [ -n "$conf" ]; then
+        conf=$(resolve_conf "$conf") || exit 1
+        export_var MOQUI_CONF "$conf"
+    fi
+    for prop in "${OPT_PROPS[@]}"; do
+        export_var "${prop%%=*}" "${prop#*=}"
+    done
+}
+
+# ========== run tasks ==========
+
+task_run() {
+    parse_run_opts run "$@"
+    local bin
+    bin=$(moqui_binary "${OPT_PROFILE:-debug}") || exit 1
+    apply_run_env ""
+    exec_cmd "$bin" "${OPT_REST[@]}"
+}
+
+task_run_production() {
+    parse_run_opts run "$@"
+    local bin
+    bin=$(moqui_binary "${OPT_PROFILE:-release}") || exit 1
+    apply_run_env "$PRODUCTION_CONF"
+    exec_cmd "$bin" "${OPT_REST[@]}"
+}
+
+# $1 profile, $2 conf, $3 default types ("" for moqui's default), then the load arguments.
+run_load() {
+    local profile=$1 conf=$2 default_types=$3 bin word types='' has_types=''
+    local -a flags
+    shift 3
+    parse_run_opts load "$@"
+    flags=()
+    for word in "${OPT_REST[@]}"; do
+        case $word in
+            types=*)
+                has_types=1
+                flags+=("$word")
+                ;;
+            location=*) flags+=("location=$(abs_path "${word#location=}")") ;;
+            *=*) flags+=("$word") ;;
+            *) types="${types:+$types,}$word" ;;
+        esac
+    done
+    if [ -n "$types" ]; then
+        [ -z "$has_types" ] || die "give data types as words or as types=, not both"
+        flags=("types=$types" "${flags[@]}")
+    elif [ -z "$has_types" ] && [ -n "$default_types" ]; then
+        flags=("types=$default_types" "${flags[@]}")
+    fi
+    if [ -n "$OPT_LOCATION" ]; then
+        local location
+        location=$(abs_path "$OPT_LOCATION")
+        [ -f "$location" ] || die "data file $OPT_LOCATION not found"
+        flags+=("location=$location")
+    fi
+    bin=$(moqui_binary "${OPT_PROFILE:-$profile}") || exit 1
+    apply_run_env "$conf"
+    exec_cmd "$bin" load "${flags[@]}"
+}
+
+task_load() {
+    run_load debug "" all "$@"
+}
+
+task_load_production() {
+    run_load release "$PRODUCTION_CONF" "" "$@"
+}
+
+task_load_save() {
+    local name=default
+    local -a load_args
+    load_args=()
+    while [ $# -gt 0 ]; do
+        case $1 in
+            -n | --name)
+                [ $# -ge 2 ] || die "$1 needs a name"
+                name=$2
+                shift
+                ;;
+            --name=*) name=${1#--name=} ;;
+            *) load_args+=("$1") ;;
+        esac
+        shift
+    done
+    valid_name "$name" || die "save name '$name' may use only letters, digits, '.', '_' and '-'"
+    clean_all
+    (task_load "${load_args[@]}") || die "load failed; nothing was saved"
+    task_save_db "$name"
+}
+
+# ========== OpenSearch ==========
+
+opensearch_pid() {
+    live_pid "$OS_DIR/pid"
+}
+
+opensearch_start() {
+    local pid
+    [ -x "$OS_DIR/bin/opensearch" ] || die "no OpenSearch in $(rel "$OS_DIR"); get one with ./moq opensearch-download"
+    if pid=$(opensearch_pid); then
+        info "OpenSearch is already running in $(rel "$OS_DIR") (pid $pid)"
+        return 0
+    fi
+    if [ -f "$OS_DIR/pid" ]; then
+        info "Removing the stale pid file $(rel "$OS_DIR/pid")"
+        run_cmd rm -f "$OS_DIR/pid"
+    fi
+    run_cmd mkdir -p "$OS_DIR/logs"
+    info "Starting OpenSearch in $(rel "$OS_DIR")"
+    if dry_run; then
+        show_cmd cd "$OS_DIR"
+        show_cmd ./bin/opensearch -d -p pid
+        return 0
+    fi
+    (cd "$OS_DIR" && ./bin/opensearch -d -p pid) || die "OpenSearch did not start; see $(rel "$OS_DIR/logs")"
+    if pid=$(opensearch_pid); then
+        info "OpenSearch started (pid $pid)"
+    fi
+}
+
+opensearch_stop() {
+    local pid waited=0
+    if ! pid=$(opensearch_pid); then
+        if [ -f "$OS_DIR/pid" ]; then
+            info "Removing the stale pid file $(rel "$OS_DIR/pid")"
+            run_cmd rm -f "$OS_DIR/pid"
+        else
+            info "OpenSearch in $(rel "$OS_DIR") is not running (no pid file)"
+        fi
+        return 0
+    fi
+    info "Stopping OpenSearch (pid $pid)"
+    run_cmd kill "$pid" || die "could not signal pid $pid"
+    dry_run && return 0
+    while pid_alive "$pid"; do
+        if [ "$waited" -ge 120 ]; then
+            die "OpenSearch (pid $pid) did not exit within 120 seconds"
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    rm -f "$OS_DIR/pid"
+    info "OpenSearch stopped"
+}
+
+# Stop a pid-file daemon around changes to its data. OS_PAUSED says whether to start it again.
+OS_PAUSED=
+opensearch_pause() {
+    OS_PAUSED=
+    if opensearch_pid >/dev/null; then
+        opensearch_stop
+        OS_PAUSED=1
+    elif server_pid >/dev/null && [ -x "$OS_DIR/bin/opensearch" ] && [ -d "$OS_DIR/data" ]; then
+        warn "the server is running and may have started OpenSearch itself; its data may change while this runs"
+    fi
+}
+
+opensearch_resume() {
+    if [ -n "$OS_PAUSED" ]; then
+        opensearch_start
+    fi
+    OS_PAUSED=
+}
+
+# Delete OpenSearch data and logs, keeping the install.
+clean_opensearch_data() {
+    [ -d "$OS_DIR/data" ] || [ -d "$OS_DIR/logs" ] || return 0
+    local f
+    rm_path "$OS_DIR/data"
+    if [ -d "$OS_DIR/logs" ]; then
+        for f in "$OS_DIR"/logs/* "$OS_DIR"/logs/.[!.]*; do
+            if [ -e "$f" ]; then
+                rm_path "$f"
+            fi
+        done
+    fi
+}
+
+task_opensearch_start() {
+    [ $# -eq 0 ] || die "opensearch-start takes no arguments"
+    opensearch_start
+}
+
+task_opensearch_stop() {
+    [ $# -eq 0 ] || die "opensearch-stop takes no arguments"
+    opensearch_stop
+}
+
+task_opensearch_download() {
+    local version=$OPENSEARCH_VERSION force='' arch name url archive work top pid
+    while [ $# -gt 0 ]; do
+        case $1 in
+            -f | --force) force=1 ;;
+            -*) die "unknown option $1" ;;
+            *) version=$1 ;;
+        esac
+        shift
+    done
+    case $(uname -s) in
+        Linux) ;;
+        Darwin) die "OpenSearch publishes no macOS tarball; run it another way (Docker, Homebrew) and set elasticsearch_url" ;;
+        *) die "opensearch-download supports Linux only" ;;
+    esac
+    case $(uname -m) in
+        x86_64 | amd64) arch=x64 ;;
+        aarch64 | arm64) arch=arm64 ;;
+        *) die "no OpenSearch tarball for $(uname -m)" ;;
+    esac
+    if [ -e "$OS_DIR" ]; then
+        if pid=$(opensearch_pid); then
+            die "OpenSearch is running in $(rel "$OS_DIR") (pid $pid); ./moq opensearch-stop first"
+        fi
+        [ -n "$force" ] || die "$(rel "$OS_DIR") exists; add --force to replace it, which deletes its data"
+    fi
+    need_tool curl tar
+    name=opensearch-min-$version-linux-$arch.tar.gz
+    url=https://artifacts.opensearch.org/releases/core/opensearch/$version/$name
+    archive=$RUNTIME_DIR/$name
+    if [ -f "$archive" ]; then
+        info "Using $(rel "$archive")"
+    else
+        info "Downloading $url"
+        run_cmd curl -fL --progress-bar -o "$archive.part" "$url" || die "download failed"
+        run_cmd mv "$archive.part" "$archive"
+    fi
+    rm_path "$OS_DIR"
+    if dry_run; then
+        show_cmd tar -xzf "$archive" -C "<temp>"
+        show_cmd mv "<temp>/opensearch-$version" "$OS_DIR"
+    else
+        work=$(mktemp -d "$RUNTIME_DIR/.moq-opensearch.XXXXXX") || die "could not make a temp directory"
+        if ! tar -xzf "$archive" -C "$work"; then
+            rm -rf "$work"
+            die "could not unpack $(rel "$archive")"
+        fi
+        top=$(ls "$work")
+        case $top in
+            '' | *[[:space:]]*)
+                rm -rf "$work"
+                die "unexpected layout in $(rel "$archive")"
+                ;;
+        esac
+        if ! mv "$work/$top" "$OS_DIR"; then
+            die "could not move OpenSearch into $(rel "$OS_DIR")"
+        fi
+        rmdir "$work"
+        mkdir -p "$OS_DIR/logs"
+    fi
+    rm_path "$archive"
+    info "OpenSearch $version is in $(rel "$OS_DIR")"
+}
+
+# ========== database and files ==========
+
+task_clean_db() {
+    [ $# -eq 0 ] || die "clean-db takes no arguments"
+    clean_db
+}
+
+clean_db() {
+    require_server_stopped clean-db
+    rm_path "$CLUSTER_DIR"
+    rm_path "$RUNTIME_DIR/txlog"
+    if [ -d "$OS_DIR/data" ] || [ -d "$OS_DIR/logs" ]; then
+        opensearch_pause
+        clean_opensearch_data
+        opensearch_resume
+    fi
+}
+
+task_clean_log() {
+    [ $# -eq 0 ] || die "clean-log takes no arguments"
+    clean_log
+}
+
+clean_log() {
+    local f
+    for f in "$RUNTIME_DIR"/log/* "$RUNTIME_DIR"/log/.[!.]*; do
+        if [ -e "$f" ]; then
+            rm_path "$f"
+        fi
+    done
+}
+
+task_clean_all() {
+    [ $# -eq 0 ] || die "clean-all takes no arguments"
+    clean_all
+}
+
+clean_all() {
+    clean_db
+    clean_log
+    rm_path "$RUNTIME_DIR/tmp"
+}
+
+# Sets SAVE_NAME and SKIP_OPENSEARCH, and OPT_PROFILE for any_binary.
+parse_save_args() {
+    local task=$1
+    shift
+    SAVE_NAME=default
+    SKIP_OPENSEARCH=
+    OPT_PROFILE=
+    OPT_BUILD=
+    local named=''
+    while [ $# -gt 0 ]; do
+        case $1 in
+            -r | --release) OPT_PROFILE=release ;;
+            --debug) OPT_PROFILE=debug ;;
+            --skip-opensearch) SKIP_OPENSEARCH=1 ;;
+            -*) die "unknown option $1" ;;
+            *)
+                [ -z "$named" ] || die "$task takes one save name"
+                SAVE_NAME=$1
+                named=1
+                ;;
+        esac
+        shift
+    done
+    valid_name "$SAVE_NAME" || die "save name '$SAVE_NAME' may use only letters, digits, '.', '_' and '-'"
+}
+
+task_save_db() {
+    local bin dir
+    parse_save_args save-db "$@"
+    if [ ! -d "$CLUSTER_DIR/data" ]; then
+        dry_run || die "no embedded database in $(rel "$CLUSTER_DIR"); load data first"
+        warn "no embedded database in $(rel "$CLUSTER_DIR") yet"
+    fi
+    bin=$(any_binary) || exit 1
+    dir=$SAVE_DIR/$SAVE_NAME
+    run_cmd mkdir -p "$dir" || die "could not make $(rel "$dir")"
+    info "Saving the embedded database to $(rel "$dir/moqui.dump")"
+    run_cmd "$bin" save-db "$CLUSTER_DIR" "$dir/moqui.dump.part" || die "save-db failed"
+    run_cmd mv "$dir/moqui.dump.part" "$dir/moqui.dump"
+    if [ -z "$SKIP_OPENSEARCH" ] && [ -d "$OS_DIR/data" ]; then
+        info "Saving OpenSearch data to $(rel "$dir/opensearch-data.tar.gz")"
+        opensearch_pause
+        if run_cmd tar -czf "$dir/opensearch-data.tar.gz.part" -C "$OS_DIR" data; then
+            run_cmd mv "$dir/opensearch-data.tar.gz.part" "$dir/opensearch-data.tar.gz"
+        else
+            run_cmd rm -f "$dir/opensearch-data.tar.gz.part"
+            warn "the OpenSearch data was not saved"
+        fi
+        opensearch_resume
+    elif [ -f "$dir/opensearch-data.tar.gz" ]; then
+        # An older copy would not match this database.
+        run_cmd rm -f "$dir/opensearch-data.tar.gz"
+    fi
+    info "Saved $(rel "$dir")"
+}
+
+task_reload_save() {
+    local bin dir
+    parse_save_args reload-save "$@"
+    dir=$SAVE_DIR/$SAVE_NAME
+    [ -f "$dir/moqui.dump" ] || die "no save named $SAVE_NAME (no $(rel "$dir/moqui.dump"))"
+    require_server_stopped reload-save
+    bin=$(any_binary) || exit 1
+    rm_path "$CLUSTER_DIR"
+    rm_path "$RUNTIME_DIR/txlog"
+    info "Restoring the embedded database from $(rel "$dir/moqui.dump")"
+    run_cmd "$bin" load-save "$CLUSTER_DIR" "$dir/moqui.dump" || die "load-save failed"
+    if [ -z "$SKIP_OPENSEARCH" ] && { [ -d "$OS_DIR/data" ] || [ -f "$dir/opensearch-data.tar.gz" ]; }; then
+        opensearch_pause
+        clean_opensearch_data
+        if [ -f "$dir/opensearch-data.tar.gz" ] && [ -d "$OS_DIR" ]; then
+            info "Restoring OpenSearch data from $(rel "$dir/opensearch-data.tar.gz")"
+            run_cmd tar -xzf "$dir/opensearch-data.tar.gz" -C "$OS_DIR" || warn "the OpenSearch data was not restored"
+        fi
+        opensearch_resume
+    fi
+    info "Restored $SAVE_NAME"
+}
+
+# ========== git ==========
+
+# The root repo, runtime/ when it is its own repo, then component repos, one per line.
+git_repos() {
+    local dir
+    [ -e "$ROOT/.git" ] && printf '%s\n' "$ROOT"
+    if [ -e "$RUNTIME_DIR/.git" ] && [ "$RUNTIME_DIR" != "$ROOT" ]; then
+        printf '%s\n' "$RUNTIME_DIR"
+    fi
+    for dir in "$RUNTIME_DIR"/base-component/* "$RUNTIME_DIR"/component/*; do
+        if [ -d "$dir" ] && [ -e "$dir/.git" ]; then
+            printf '%s\n' "$dir"
+        fi
+    done
+}
+
+# git_repos into the REPOS array.
+load_repos() {
+    local repo
+    REPOS=()
+    while IFS= read -r repo; do
+        REPOS+=("$repo")
+    done < <(git_repos)
+    [ ${#REPOS[@]} -gt 0 ] || die "no git repos found"
+}
+
+git_branch_label() {
+    git -C "$1" symbolic-ref --short -q HEAD 2>/dev/null ||
+        printf 'detached at %s\n' "$(git -C "$1" rev-parse --short HEAD 2>/dev/null)"
+}
+
+task_git() {
+    [ $# -gt 0 ] || die "git needs arguments, like: ./moq git status"
+    need_tool git
+    local repo failed='' first=1
+    load_repos
+    for repo in "${REPOS[@]}"; do
+        [ -n "$first" ] || echo
+        first=
+        heading "== $(rel "$repo") ($(git_branch_label "$repo"))"
+        if ! run_cmd git --no-pager -C "$repo" "$@"; then
+            failed="$failed $(rel "$repo")"
+        fi
+    done
+    if [ -n "$failed" ]; then
+        echo
+        die "git failed in:$failed"
+    fi
+}
+
+task_git_status() {
+    local short='' repo branch upstream counts behind ahead changes unpushed remote_ref base lines
+    while [ $# -gt 0 ]; do
+        case $1 in
+            -s | --short) short=1 ;;
+            *) die "unknown argument $1" ;;
+        esac
+        shift
+    done
+    need_tool git
+    load_repos
+    for repo in "${REPOS[@]}"; do
+        branch=$(git_branch_label "$repo")
+        upstream=$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)
+        behind=0
+        ahead=0
+        unpushed=
+        if [ -n "$upstream" ]; then
+            counts=$(git -C "$repo" rev-list --left-right --count '@{u}...HEAD' 2>/dev/null)
+            behind=${counts%%[[:space:]]*}
+            ahead=${counts##*[[:space:]]}
+            if [ "${ahead:-0}" -gt 0 ]; then
+                unpushed=$(git -C "$repo" log --oneline --no-decorate -n 20 '@{u}..HEAD')
+            fi
+        fi
+        changes=$(git -C "$repo" status --short 2>/dev/null)
+        if [ -n "$short" ] && [ -z "$changes" ] && [ "${ahead:-0}" -eq 0 ] && [ "${behind:-0}" -eq 0 ]; then
+            continue
+        fi
+        lines="$branch"
+        if [ -n "$upstream" ]; then
+            lines="$lines -> $upstream"
+            if [ "${ahead:-0}" -gt 0 ] || [ "${behind:-0}" -gt 0 ]; then
+                lines="$lines [ahead $ahead, behind $behind]"
+            fi
+        else
+            lines="$lines (no tracking branch)"
+        fi
+        heading "== $(rel "$repo")  $lines"
+        if git -C "$repo" remote 2>/dev/null | grep -qx upstream; then
+            base=${upstream#*/}
+            for remote_ref in "$base" master main; do
+                [ -n "$remote_ref" ] || continue
+                if git -C "$repo" rev-parse -q --verify "refs/remotes/upstream/$remote_ref" >/dev/null; then
+                    counts=$(git -C "$repo" rev-list --left-right --count "upstream/$remote_ref...HEAD")
+                    info "   upstream/$remote_ref: ahead ${counts##*[[:space:]]}, behind ${counts%%[[:space:]]*}"
+                    break
+                fi
+            done
+        fi
+        if [ -n "$unpushed" ]; then
+            info "   unpushed:"
+            printf '%s\n' "$unpushed" | sed 's/^/     /'
+            [ "$ahead" -le 20 ] || info "     ... and $((ahead - 20)) more"
+        fi
+        if [ -n "$changes" ]; then
+            printf '%s\n' "$changes" | sed 's/^/   /'
+        else
+            info "   clean"
+        fi
+    done
+}
+
+task_git_pull() {
+    need_tool git
+    local repo before after failed='' first=1
+    load_repos
+    for repo in "${REPOS[@]}"; do
+        [ -n "$first" ] || echo
+        first=
+        heading "== $(rel "$repo") ($(git_branch_label "$repo"))"
+        before=$(git -C "$repo" rev-parse -q HEAD 2>/dev/null)
+        if ! run_cmd git --no-pager -C "$repo" pull "$@"; then
+            failed="$failed $(rel "$repo")"
+            continue
+        fi
+        dry_run && continue
+        after=$(git -C "$repo" rev-parse -q HEAD 2>/dev/null)
+        if [ -n "$before" ] && [ "$before" != "$after" ]; then
+            info "New commits:"
+            git -C "$repo" log --no-decorate --format='  %h %<(16,trunc)%an %s' "$before..$after"
+        fi
+    done
+    if [ -n "$failed" ]; then
+        echo
+        die "git pull failed in:$failed"
+    fi
+}
+
+# ========== components (addons.xml, myaddons.xml, component.xml) ==========
+
+# The file without <!-- --> comments (including ones spanning lines), and with a tag that spans lines joined onto one.
+xml_strip_comments() {
+    [ -f "$1" ] || return 0
+    awk '
+        function last(s, c,    i, n) { n = 0; for (i = 1; i <= length(s); i++) if (substr(s, i, 1) == c) n = i; return n }
+        {
+            line = $0; out = ""
+            while (1) {
+                if (incomment) {
+                    i = index(line, "-->")
+                    if (i == 0) { line = ""; break }
+                    line = substr(line, i + 3); incomment = 0
+                }
+                i = index(line, "<!--")
+                if (i == 0) { out = out line; break }
+                out = out substr(line, 1, i - 1); line = substr(line, i + 4); incomment = 1
+            }
+            buf = (pending ? buf " " out : out)
+            pending = (last(buf, "<") > last(buf, ">"))
+            if (!pending) print buf
+        }
+        END { if (pending) print buf }' "$1"
+}
+
+# Lines of file $1 holding element $2. These files keep one element per line, once tags are joined.
+xml_elements() {
+    xml_strip_comments "$1" | grep "<$2[[:space:]/>]"
+}
+
+xml_attr() {
+    printf '%s\n' "$1" | sed -n "s/.*[[:space:]]$2=\"\\([^\"]*\\)\".*/\\1/p" | head -n 1
+}
+
+# The element of type $1 with name $2, from myaddons.xml first, then addons.xml.
+addons_find() {
+    local file line
+    for file in "$MYADDONS" "$ADDONS"; do
+        while IFS= read -r line; do
+            if [ "$(xml_attr "$line" name)" = "$2" ]; then
+                printf '%s\n' "$line"
+                return 0
+            fi
+        done < <(xml_elements "$file" "$1")
+    done
+    return 1
+}
+
+addons_names() {
+    local file line
+    for file in "$MYADDONS" "$ADDONS"; do
+        while IFS= read -r line; do
+            xml_attr "$line" name
+        done < <(xml_elements "$file" "$1")
+    done | sort -u
+}
+
+addons_root_attr() {
+    local line
+    line=$(xml_elements "$1" addons | head -n 1)
+    [ -n "$line" ] && xml_attr "$line" "$2"
+}
+
+# The url template of location type $2 in repository $1, from myaddons.xml first, then addons.xml.
+addons_location() {
+    local file url
+    for file in "$MYADDONS" "$ADDONS"; do
+        url=$(xml_strip_comments "$file" | awk -v repo="$1" -v type="$2" '
+            /<repository[[:space:]]/ {
+                inrepo = (match($0, "[[:space:]]name=\"" repo "\"") > 0)
+            }
+            /<\/repository>/ { inrepo = 0 }
+            inrepo && /<location[[:space:]]/ && match($0, "[[:space:]]type=\"" type "\"") {
+                if (match($0, /url="[^"]*"/)) { print substr($0, RSTART + 5, RLENGTH - 6); exit }
+            }')
+        if [ -n "$url" ]; then
+            printf '%s\n' "$url"
+            return 0
+        fi
+        # A repository found in myaddons.xml without this type does not fall through to addons.xml.
+        if xml_elements "$file" repository | grep -q "[[:space:]]name=\"$1\""; then
+            return 1
+        fi
+    done
+    return 1
+}
+
+# Fill ${group} style placeholders, and the Groovy ${component.'@group'} ones a Java myaddons.xml uses, from element $2.
+expand_url() {
+    local url=$1 element=$2 attr value
+    for attr in group name branch version token; do
+        value=$(xml_attr "$element" "$attr")
+        url=${url//"\${$attr}"/"$value"}
+        url=${url//"\${component.'@$attr'}"/"$value"}
+    done
+    printf '%s\n' "$url"
+}
+
+default_location_type() {
+    if [ -e "$ROOT/.git" ]; then echo git; else echo current; fi
+}
+
+check_location_type() {
+    case $1 in
+        git | current | release | binary) ;;
+        *) die "location type '$1' is not git, current, release, or binary" ;;
+    esac
+}
+
+# Download component $1 (addons element $3) by type $2 into $4.
+download_component() {
+    local name=$1 type=$2 element=$3 target=$4 version branch repository url work top
+    version=$(xml_attr "$element" version)
+    branch=$(xml_attr "$element" branch)
+    case $type in release | binary) [ -n "$version" ] || type=current ;; esac
+    repository=$(xml_attr "$element" repository)
+    [ -n "$repository" ] || repository=$(addons_root_attr "$MYADDONS" default-repository)
+    [ -n "$repository" ] || repository=$(addons_root_attr "$ADDONS" default-repository)
+    [ -n "$repository" ] || repository=github
+    url=$(addons_location "$repository" "$type") || die "repository $repository has no $type location in myaddons.xml or addons.xml"
+    url=$(expand_url "$url" "$element")
+    info "Getting $name ($type) from $url${branch:+ at $branch} to $(rel "$target")"
+    if [ "$type" = git ]; then
+        need_tool git
+        if [ -n "$branch" ]; then
+            run_cmd git clone -b "$branch" "$url" "$target" || die "git clone of $name failed"
+        else
+            run_cmd git clone "$url" "$target" || die "git clone of $name failed"
+        fi
+        return 0
+    fi
+    need_tool curl unzip
+    if dry_run; then
+        show_cmd curl -fL -o "$target.zip" "$url"
+        show_cmd unzip -q "$target.zip" -d "<temp>"
+        show_cmd mv "<temp>/<top>" "$target"
+        return 0
+    fi
+    curl -fL --progress-bar -o "$target.zip" "$url" || {
+        rm -f "$target.zip"
+        die "download of $name failed"
+    }
+    work=$(mktemp -d "$(dirname "$target")/.moq-get.XXXXXX") || die "could not make a temp directory"
+    if ! unzip -q "$target.zip" -d "$work"; then
+        rm -rf "$work" "$target.zip"
+        die "could not unpack the $name archive"
+    fi
+    rm -f "$target.zip"
+    # Archives hold one top directory (name-branch or name-version); move its contents up a level as Gradle did.
+    top=$(ls -A "$work")
+    if [ -n "$top" ] && [ "$(printf '%s\n' "$top" | wc -l)" -eq 1 ] && [ -d "$work/$top" ]; then
+        mv "$work/$top" "$target" && rmdir "$work"
+    else
+        mv "$work" "$target"
+    fi || die "could not move $name into $(rel "$target")"
+    info "Downloaded $name to $(rel "$target")"
+}
+
+# Component names already checked in this run, space separated.
+COMPONENTS_CHECKED=' '
+
+component_get_one() {
+    local name=$1 type=$2 element target
+    case $COMPONENTS_CHECKED in *" $name "*) return 0 ;; esac
+    element=$(addons_find component "$name") || die "component $name is not in myaddons.xml or addons.xml"
+    if [ "$(xml_attr "$element" skip-get)" = true ]; then
+        info "Skipping $name (skip-get=true)"
+        COMPONENTS_CHECKED="$COMPONENTS_CHECKED$name "
+        return 0
+    fi
+    target=$RUNTIME_DIR/component/$name
+    if [ -e "$target" ]; then
+        info "$name is already in $(rel "$target")"
+    else
+        download_component "$name" "$type" "$element" "$target"
+    fi
+    component_check_depends "$name" "$type"
+}
+
+component_check_depends() {
+    local name=$1 type=$2 dir dep line
+    case $COMPONENTS_CHECKED in *" $name "*) return 0 ;; esac
+    COMPONENTS_CHECKED="$COMPONENTS_CHECKED$name "
+    dir=$RUNTIME_DIR/component/$name
+    [ -f "$dir/component.xml" ] || return 0
+    local -a deps
+    deps=()
+    while IFS= read -r line; do
+        dep=$(xml_attr "$line" name)
+        [ -z "$dep" ] || deps+=("$dep")
+    done < <(xml_elements "$dir/component.xml" depends-on)
+    for dep in "${deps[@]}"; do
+        if [ -e "$RUNTIME_DIR/component/$dep" ]; then
+            component_check_depends "$dep" "$type"
+        else
+            info "$name depends on $dep"
+            component_get_one "$dep" "$type"
+        fi
+    done
+}
+
+components_checked_summary() {
+    local list
+    list=$(printf '%s' "$COMPONENTS_CHECKED" | tr -s ' ' | sed 's/^ //;s/ $//;s/ /, /g')
+    [ -z "$list" ] || info "Checked: $list"
+}
+
+# Sets LOCATION_TYPE and COMPONENT_ARGS from -t and the other words.
+parse_component_args() {
+    LOCATION_TYPE=$(default_location_type)
+    COMPONENT_ARGS=()
+    while [ $# -gt 0 ]; do
+        case $1 in
+            -t | --type)
+                [ $# -ge 2 ] || die "$1 needs a type"
+                LOCATION_TYPE=$2
+                shift
+                ;;
+            --type=*) LOCATION_TYPE=${1#--type=} ;;
+            -*) die "unknown option $1" ;;
+            *) COMPONENT_ARGS+=("$1") ;;
+        esac
+        shift
+    done
+    check_location_type "$LOCATION_TYPE"
+}
+
+require_addons() {
+    [ -f "$ADDONS" ] || [ -f "$MYADDONS" ] || die "no addons.xml or myaddons.xml in $(rel "$ROOT")"
+}
+
+task_component_get() {
+    local name defaults
+    parse_component_args "$@"
+    require_addons
+    if [ ${#COMPONENT_ARGS[@]} -eq 0 ]; then
+        defaults=$(addons_root_attr "$MYADDONS" default)
+        [ -n "$defaults" ] || die "give component names, or set default=\"a,b\" on the myaddons.xml root element"
+        COMPONENT_ARGS=()
+        for name in $(printf '%s\n' "$defaults" | tr ',' ' '); do
+            COMPONENT_ARGS+=("$name")
+        done
+    fi
+    run_cmd mkdir -p "$RUNTIME_DIR/component"
+    for name in "${COMPONENT_ARGS[@]}"; do
+        component_get_one "$name" "$LOCATION_TYPE"
+    done
+    components_checked_summary
+}
+
+component_set_get() {
+    local set=$1 type=$2 element name
+    element=$(addons_find component-set "$set") || die "component-set $set is not in myaddons.xml or addons.xml"
+    for name in $(xml_attr "$element" components | tr ',' ' '); do
+        component_get_one "$name" "$type"
+    done
+    for name in $(xml_attr "$element" sets | tr ',' ' '); do
+        component_set_get "$name" "$type"
+    done
+}
+
+task_component_set() {
+    local set
+    parse_component_args "$@"
+    require_addons
+    [ ${#COMPONENT_ARGS[@]} -gt 0 ] || die "component-set needs a set name: $(addons_names component-set | tr '\n' ' ')"
+    run_cmd mkdir -p "$RUNTIME_DIR/component"
+    for set in "${COMPONENT_ARGS[@]}"; do
+        component_set_get "$set" "$LOCATION_TYPE"
+    done
+    components_checked_summary
+}
+
+component_dirs() {
+    local dir
+    for dir in "$RUNTIME_DIR"/component/*; do
+        if [ -f "$dir/component.xml" ]; then
+            printf '%s\n' "$dir"
+        fi
+    done
+}
+
+task_component_depends() {
+    local dir
+    local -a dirs
+    parse_component_args "$@"
+    [ ${#COMPONENT_ARGS[@]} -eq 0 ] || die "component-depends takes no component names"
+    require_addons
+    dirs=()
+    while IFS= read -r dir; do
+        dirs+=("$dir")
+    done < <(component_dirs)
+    for dir in "${dirs[@]}"; do
+        component_check_depends "$(basename "$dir")" "$LOCATION_TYPE"
+    done
+    components_checked_summary
+}
+
+# A sed regex matching $1 literally, and a replacement inserting $1 literally.
+sed_regex_escape() {
+    printf '%s\n' "$1" | sed 's/[]\/$*.^[]/\\&/g'
+}
+
+sed_replacement_escape() {
+    printf '%s\n' "$1" | sed 's/[\/&]/\\&/g'
+}
+
+task_component_create() {
+    local name='' from=start part='' remote='' no_git='' group='' element target file base new from_re name_rep branch
+    LOCATION_TYPE=$(default_location_type)
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --from)
+                [ $# -ge 2 ] || die "--from needs a component name"
+                from=$2
+                shift
+                ;;
+            --rest) part=rest ;;
+            --screens) part=screens ;;
+            --git-remote)
+                [ $# -ge 2 ] || die "--git-remote needs a URL"
+                remote=$2
+                shift
+                ;;
+            --no-git) no_git=1 ;;
+            --myaddons)
+                [ $# -ge 2 ] || die "--myaddons needs a git group"
+                group=$2
+                shift
+                ;;
+            -t | --type)
+                [ $# -ge 2 ] || die "$1 needs a type"
+                LOCATION_TYPE=$2
+                shift
+                ;;
+            -*) die "unknown option $1" ;;
+            *)
+                [ -z "$name" ] || die "component-create takes one component name"
+                name=$1
+                ;;
+        esac
+        shift
+    done
+    [ -n "$name" ] || die "component-create needs a component name"
+    valid_name "$name" || die "component name '$name' may use only letters, digits, '.', '_' and '-'"
+    [ -z "$remote" ] || [ -z "$no_git" ] || die "--git-remote and --no-git do not go together"
+    check_location_type "$LOCATION_TYPE"
+    require_addons
+    target=$RUNTIME_DIR/component/$name
+    [ ! -e "$target" ] || die "$(rel "$target") already exists"
+    element=$(addons_find component "$from") || die "template component $from is not in myaddons.xml or addons.xml"
+    run_cmd mkdir -p "$RUNTIME_DIR/component"
+    download_component "$from" "$LOCATION_TYPE" "$element" "$target"
+    if dry_run; then
+        info "(dry run: renaming $from to $name in $(rel "$target") is skipped)"
+        return 0
+    fi
+    rm -rf "$target/.git" "$target/src" "$target/build.gradle"
+
+    # Files named <from>*, deepest first so a renamed directory does not move a file still to be renamed.
+    while IFS= read -r file; do
+        base=$(basename "$file")
+        new=$(dirname "$file")/$name${base#"$from"}
+        mv "$file" "$new"
+    done < <(find "$target" -depth -type f -name "$from*")
+    from_re=$(sed_regex_escape "$from")
+    name_rep=$(sed_replacement_escape "$name")
+    while IFS= read -r file; do
+        sed "s/$from_re/$name_rep/g" "$file" >"$file.moq-tmp" && cat "$file.moq-tmp" >"$file"
+        rm -f "$file.moq-tmp"
+    done < <(grep -rlIF -- "$from" "$target")
+
+    case $part in
+        rest)
+            rm -rf "$target/screen" "$target/template" "$target/data/AppSeedData.xml"
+            cat >"$target/MoquiConf.xml" <<'EOF'
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- No copyright or license for configuration file, details here are not considered a creative work. -->
+<moqui-conf xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/moqui-conf-3.xsd">
+</moqui-conf>
+EOF
+            info "REST API only: removed screen/, template/, and data/AppSeedData.xml"
+            ;;
+        screens)
+            rm -f "$target/services/$name.rest.xml" "$target/data/ApiSeedData.xml"
+            info "Screens only: removed services/$name.rest.xml and data/ApiSeedData.xml"
+            ;;
+    esac
+
+    branch=master
+    if [ -z "$no_git" ]; then
+        need_tool git
+        if ! git -C "$target" init -q || ! git -C "$target" add .; then
+            die "git init failed in $(rel "$target")"
+        fi
+        branch=$(git -C "$target" symbolic-ref --short HEAD 2>/dev/null || echo master)
+        if [ -n "$remote" ]; then
+            git -C "$target" remote add origin "$remote"
+        fi
+    fi
+    if [ -n "$group" ]; then
+        add_to_myaddons "$name" "$group" "$branch"
+    fi
+    info "Created $(rel "$target") from $from"
+    if [ -z "$no_git" ]; then
+        info "Next: cd $(rel "$target") && git commit -m 'Initial commit'${remote:+ && git push -u origin $branch}"
+    fi
+}
+
+add_to_myaddons() {
+    local name=$1 group=$2 branch=$3 line
+    line="    <component name=\"$name\" group=\"$group\" branch=\"$branch\"/>"
+    if [ ! -f "$MYADDONS" ]; then
+        printf '<addons>\n%s\n</addons>\n' "$line" >"$MYADDONS"
+        info "Created myaddons.xml with $name"
+        return 0
+    fi
+    grep -q '</addons>' "$MYADDONS" || die "myaddons.xml has no </addons> to add $name before"
+    awk -v line="$line" '
+        { lines[NR] = $0; if (index($0, "</addons>")) last = NR }
+        END { for (i = 1; i <= NR; i++) { if (i == last) print line; print lines[i] } }
+    ' "$MYADDONS" >"$MYADDONS.moq-tmp" && cat "$MYADDONS.moq-tmp" >"$MYADDONS"
+    rm -f "$MYADDONS.moq-tmp"
+    info "Added $name to myaddons.xml"
+}
+
+task_component_zip() {
+    local dir name element cname version zip
+    local -a dirs
+    dirs=()
+    need_tool zip
+    if [ $# -eq 0 ]; then
+        while IFS= read -r dir; do
+            dirs+=("$dir")
+        done < <(component_dirs)
+        [ ${#dirs[@]} -gt 0 ] || die "no components with a component.xml in $(rel "$RUNTIME_DIR/component")"
+    else
+        for name in "$@"; do
+            dir=$RUNTIME_DIR/component/$name
+            [ -f "$dir/component.xml" ] || die "no component.xml in $(rel "$dir")"
+            dirs+=("$dir")
+        done
+    fi
+    for dir in "${dirs[@]}"; do
+        name=$(basename "$dir")
+        element=$(xml_elements "$dir/component.xml" component | head -n 1)
+        cname=$(xml_attr "$element" name)
+        version=$(xml_attr "$element" version)
+        zip=$RUNTIME_DIR/component/${cname:-$name}${version:+-$version}.zip
+        if [ -e "$zip" ]; then
+            rm_path "$zip"
+        fi
+        if dry_run; then
+            show_cmd cd "$RUNTIME_DIR/component"
+        fi
+        (cd "$RUNTIME_DIR/component" && run_cmd zip -qr "$zip" "$name" \
+            -x "$name/.git" "$name/.git/*" "$name/build/*" "$name/src/*" "$name/librepo/*" "$name/build.gradle" \
+            "*/.DS_Store" "*~") || die "zip failed for $name"
+        info "Created $(rel "$zip")"
+    done
+}
+
+# ========== completion ==========
+
+completion_bash() {
+    cat <<'EOF'
+# bash completion for moq (MR Moqui). Load with: eval "$(/path/to/moq completion bash)"
+_moq_complete() {
+    local cmd=${COMP_WORDS[0]} cur=${COMP_WORDS[COMP_CWORD]} out line
+    case $cmd in
+        "~/"*) cmd=$HOME/${cmd#"~/"} ;;
+        */*) ;;
+        *) cmd=$(type -P "$cmd") || return 0 ;;
+    esac
+    [ -f "$cmd" ] && head -n 3 "$cmd" 2>/dev/null | grep -q moq-completion-protocol-1 || return 0
+    out=$("$cmd" __complete "$COMP_CWORD" "${COMP_WORDS[@]:1}" 2>/dev/null) || return 0
+    COMPREPLY=()
+    case $out in
+        @files*)
+            while IFS= read -r line; do COMPREPLY+=("$line"); done < <(compgen -f -- "$cur")
+            type compopt >/dev/null 2>&1 && compopt -o filenames
+            ;;
+        @dirs)
+            while IFS= read -r line; do COMPREPLY+=("$line"); done < <(compgen -d -- "$cur")
+            type compopt >/dev/null 2>&1 && compopt -o filenames
+            ;;
+        *)
+            while IFS= read -r line; do [ -n "$line" ] && COMPREPLY+=("$line"); done <<<"$out"
+            if [ ${#COMPREPLY[@]} -eq 1 ]; then
+                case ${COMPREPLY[0]} in *= | */) type compopt >/dev/null 2>&1 && compopt -o nospace ;; esac
+            fi
+            ;;
+    esac
+    return 0
+}
+complete -F _moq_complete moq
+EOF
+}
+
+completion_zsh() {
+    cat <<'EOF'
+# zsh completion for moq (MR Moqui). Load with: eval "$(/path/to/moq completion zsh)"
+_moq_complete() {
+    local cmd=${words[1]} out
+    local -a cands
+    cmd=${~cmd}
+    [[ $cmd == */* ]] || cmd=${commands[$cmd]}
+    [[ -f $cmd ]] && head -n 3 -- "$cmd" 2>/dev/null | grep -q moq-completion-protocol-1 || return 1
+    out=$("$cmd" __complete $((CURRENT - 1)) "${(@)words[2,-1]}" 2>/dev/null) || return 1
+    cands=("${(@f)out}")
+    case ${cands[1]} in
+        @files*) _files ;;
+        @dirs) _files -/ ;;
+        *)
+            [[ -n ${cands[1]} ]] || return 1
+            if [[ ${#cands} -eq 1 && ${cands[1]} == *= ]]; then
+                compadd -U -S '' -- "${cands[@]}"
+            else
+                compadd -U -- "${cands[@]}"
+            fi
+            ;;
+    esac
+}
+if ! (( $+functions[compdef] )); then
+    autoload -Uz compinit && compinit
+fi
+compdef _moq_complete moq
+EOF
+}
+
+task_completion() {
+    local shell='' install='' rc line
+    while [ $# -gt 0 ]; do
+        case $1 in
+            bash | zsh) shell=$1 ;;
+            --install) install=1 ;;
+            *) die "completion takes bash or zsh, and --install" ;;
+        esac
+        shift
+    done
+    if [ -z "$shell" ]; then
+        case ${SHELL:-} in
+            */zsh) shell=zsh ;;
+            *) shell=bash ;;
+        esac
+    fi
+    if [ -z "$install" ]; then
+        "completion_$shell"
+        return 0
+    fi
+    case $shell in
+        zsh) rc=$HOME/.zshrc ;;
+        bash) rc=$HOME/.bashrc ;;
+    esac
+    line="eval \"\$($(printf '%q' "$MOQ") completion $shell)\""
+    if [ -f "$rc" ] && grep -qF -- "$line" "$rc"; then
+        info "$rc already loads moq completion"
+        return 0
+    fi
+    if dry_run; then
+        show_cmd append "$rc" "$line"
+        return 0
+    fi
+    printf '\n# moq (MR Moqui) tab completion\n%s\n' "$line" >>"$rc" || die "could not write $rc"
+    info "Added to $rc: $line"
+    info "Open a new shell, or run that line, to use it."
+    if [ "$shell" = bash ] && [ "$(uname -s)" = Darwin ]; then
+        info "On macOS a login shell reads ~/.bash_profile; source ~/.bashrc from there if it does not already."
+    fi
+}
+
+conf_names() {
+    local f
+    for f in "$RUNTIME_DIR"/conf/*.xml; do
+        [ -f "$f" ] && printf 'conf/%s\n' "$(basename "$f")"
+    done
+}
+
+data_types() {
+    {
+        echo all
+        find "$ROOT/framework/data" "$RUNTIME_DIR"/base-component/*/data "$RUNTIME_DIR"/component/*/data \
+            -name '*.xml' -type f -exec grep -hoE '<entity-facade-xml[^>]*type="[^"]*"' {} + 2>/dev/null |
+            sed -E 's/.*type="([^"]*)".*/\1/' | tr ',' '\n' | sed 's/^ *//;s/ *$//'
+    } | grep -v '^$' | sort -u
+}
+
+property_names() {
+    grep -ho '<default-property name="[^"]*"' "$ROOT/framework/conf/MoquiDefaultConf.xml" 2>/dev/null |
+        sed 's/.*name="\([^"]*\)"/\1=/' | sort -u
+}
+
+save_names() {
+    local d
+    for d in "$SAVE_DIR"/*; do
+        [ -f "$d/moqui.dump" ] && basename "$d"
+    done
+}
+
+component_names_local() {
+    local d
+    while IFS= read -r d; do
+        basename "$d"
+    done < <(component_dirs)
+}
+
+git_refs() {
+    git -C "$ROOT" for-each-ref --format='%(refname:short)' refs/heads refs/tags refs/remotes 2>/dev/null
+}
+
+# Candidate lists below come from $(...) and are split on purpose: names hold no spaces or glob characters.
+# shellcheck disable=SC2046
+complete_run_like() {
+    local cur=$1 prev=$2 positional=$3
+    case $prev in
+        -c | --conf)
+            local confs
+            confs=$(filter_prefix "$cur" $(conf_names))
+            if [ -n "$confs" ]; then printf '%s\n' "$confs"; else echo @files; fi
+            return
+            ;;
+        -l | --location) echo @files; return ;;
+        -D) filter_prefix "$cur" $(property_names); return ;;
+        -p | --port | -n | --name) return ;;
+    esac
+    case $cur in
+        -*) filter_prefix "$cur" -r --release --debug -c --conf -p --port -D --build --; return ;;
+    esac
+    printf '%s\n' "$positional"
+}
+
+# shellcheck disable=SC2046
+complete_task() {
+    local task=$1 cur=$2 prev=$3 nargs=$4 first_arg=$5
+    case $task in
+        run | run-production)
+            local out
+            out=$(complete_run_like "$cur" "$prev" @binary)
+            if [ "$out" = @binary ]; then
+                filter_prefix "$cur" lint types convert load save-db load-save
+            else
+                printf '%s\n' "$out"
+            fi
+            ;;
+        load | load-production | load-save)
+            local out
+            if [ "$task" = load-save ]; then
+                case $prev in
+                    -n | --name) filter_prefix "$cur" $(save_names); return ;;
+                esac
+            fi
+            out=$(complete_run_like "$cur" "$prev" @types)
+            case $out in
+                @types)
+                    filter_prefix "$cur" $(data_types) components= timeout= raw= disableEntityEca= disableAuditLog= \
+                        disableFkCreate= disableDataFeed=
+                    ;;
+                *)
+                    case $cur in
+                        -*)
+                            filter_prefix "$cur" -l --location
+                            [ "$task" != load-save ] || filter_prefix "$cur" -n --name
+                            ;;
+                    esac
+                    printf '%s\n' "$out"
+                    ;;
+            esac
+            ;;
+        save-db | reload-save)
+            case $cur in
+                -*) filter_prefix "$cur" -r --release --debug --skip-opensearch ;;
+                *) filter_prefix "$cur" $(save_names) ;;
+            esac
+            ;;
+        opensearch-download) filter_prefix "$cur" -f --force "$OPENSEARCH_VERSION" ;;
+        git)
+            if [ "$nargs" -eq 1 ]; then
+                filter_prefix "$cur" status pull fetch checkout switch branch tag log diff merge push stash reset rebase \
+                    remote show
+            else
+                case $first_arg in
+                    checkout | switch | merge | rebase | log | diff | branch | tag | push | reset | show)
+                        filter_prefix "$cur" $(git_refs)
+                        ;;
+                    *) echo @files ;;
+                esac
+            fi
+            ;;
+        git-status) filter_prefix "$cur" -s --short ;;
+        git-pull) filter_prefix "$cur" --rebase --ff-only --no-rebase ;;
+        component-get | component-set | component-depends | component-create)
+            case $prev in
+                -t | --type) filter_prefix "$cur" git current release binary; return ;;
+                --from) filter_prefix "$cur" $(addons_names component); return ;;
+                --git-remote | --myaddons) return ;;
+            esac
+            case $cur in
+                -*)
+                    if [ "$task" = component-create ]; then
+                        filter_prefix "$cur" -t --type --from --rest --screens --git-remote --no-git --myaddons
+                    else
+                        filter_prefix "$cur" -t --type
+                    fi
+                    ;;
+                *)
+                    case $task in
+                        component-get) filter_prefix "$cur" $(addons_names component) ;;
+                        component-set) filter_prefix "$cur" $(addons_names component-set) ;;
+                    esac
+                    ;;
+            esac
+            ;;
+        component-zip) filter_prefix "$cur" $(component_names_local) ;;
+        completion) filter_prefix "$cur" bash zsh --install ;;
+        help) filter_prefix "$cur" $(task_names) ;;
+    esac
+}
+
+# __complete <cword> <words after moq...>: candidates for the word at cword (1 is the task name), one per line,
+# already filtered, or @files / @dirs for the shell's own file completion.
+complete_main() {
+    local cword=$1 cur prev name found=''
+    shift
+    local -a words
+    words=("$@")
+    cur=${words[cword - 1]}
+    if [ "$cword" -le 1 ]; then
+        for name in $(task_names); do
+            case $name in "$cur"*) found="$found $name" ;; esac
+        done
+        if [ -z "$found" ] && [ -n "$cur" ]; then
+            local want
+            want=$(normalize_name "$cur")
+            for name in $(task_names); do
+                if segment_match "$want" "$name"; then found="$found $name"; fi
+            done
+        fi
+        for name in $found; do printf '%s\n' "$name"; done
+        return 0
+    fi
+    resolve_task "${words[0]}" || return 0
+    prev=${words[cword - 2]}
+    # An alias that carries arguments (git-checkout-all -> git checkout) counts them as typed.
+    local first_arg=${words[1]} nargs=$((cword - 1))
+    if [ -n "$RESOLVED_ARGS" ]; then
+        # shellcheck disable=SC2086
+        set -- $RESOLVED_ARGS
+        nargs=$((nargs + $#))
+        first_arg=$1
+        [ "$cword" -gt 2 ] || prev=$1
+    fi
+    complete_task "$RESOLVED_TASK" "$cur" "$prev" "$nargs" "$first_arg"
+}
+
+# ========== main ==========
+
+main() {
+    if [ $# -eq 0 ]; then
+        usage
+        exit 1
+    fi
+    case $1 in
+        __complete)
+            shift
+            complete_main "$@"
+            exit 0
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+    esac
+    local input=$1 status
+    shift
+    resolve_task "$input"
+    status=$?
+    if [ $status -eq 2 ]; then
+        printf 'moq: %s is ambiguous: %s\n' "$input" "$RESOLVED_CANDIDATES" >&2
+        exit 2
+    elif [ $status -ne 0 ]; then
+        local near
+        near=$(suggest_tasks "$input")
+        if [ -n "$near" ]; then
+            printf 'moq: no task %s; did you mean: %s\n' "$input" "$near" >&2
+        else
+            printf 'moq: no task %s; tasks: %s\n' "$input" "$(task_names | tr '\n' ' ')" >&2
+        fi
+        exit 1
+    fi
+    case ${1:-} in
+        -h | --help)
+            help_task "$RESOLVED_TASK"
+            exit 0
+            ;;
+    esac
+    if [ "$RESOLVED_TASK" = help ]; then
+        if [ $# -eq 0 ]; then
+            usage
+            exit 0
+        fi
+        resolve_task "$1"
+        status=$?
+        [ $status -ne 2 ] || die "$1 is ambiguous: $RESOLVED_CANDIDATES"
+        [ $status -eq 0 ] || die "no task $1"
+        help_task "$RESOLVED_TASK"
+        exit 0
+    fi
+    cd "$ROOT" || die "could not cd to $ROOT"
+    # Alias arguments are fixed words from ALIASES, so splitting them is safe.
+    # shellcheck disable=SC2086
+    "task_${RESOLVED_TASK//-/_}" $RESOLVED_ARGS "$@"
+}
+
+main "$@"

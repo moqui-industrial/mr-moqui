@@ -53,27 +53,39 @@ Run from the repo root (paths default to `MOQUI_RUNTIME=runtime`,
 Setting `entity_ds_db_conf` to `postgres`, `mysql` or `mysql8`, with the other `entity_ds_*`
 properties, uses that server instead. The examples are in `runtime/conf/MoquiDevConf.xml`.
 
+The `./moq` script runs the built binaries in place and replaces the Java Moqui Gradle
+tasks (run, load, save and reload of the database, clean, OpenSearch, git across all repos,
+and component get/create/zip). It needs only bash (3.2 or newer), so it works on a fresh
+checkout on Linux or macOS. `./moq` with no arguments lists the tasks, and
+`./moq help <task>` describes one. Task names match by partial parts, ignoring case, so
+`./moq r-p` and `./moq runProduction` both mean `run-production`.
 
 ```sh
-cargo run -p moqui
-# or: ./target/debug/moqui
+./moq run                      # target/debug/moqui with runtime/conf/MoquiDevConf.xml
+./moq run -p 8081 -D entity_ds_db_conf=postgres
+./moq run lint --screens       # moqui's own commands, with the same conf
+./moq load                     # all data types; ./moq load seed seed-initial install
+./moq save-db before-upgrade   # and later: ./moq reload-save before-upgrade
+./moq git-status               # or any git command in every repo: ./moq git pull
+./moq completion --install     # tab completion for bash or zsh
 ```
 
 With no arguments the binary starts the HTTP server (port `8080` by default, cluster
-HTTPS on `8443`) using `framework/conf/MoquiDefaultConf.xml` merged with
-`runtime/conf/MoquiDevConf.xml` when present. Optional data load before or after
-starting (no arguments loads the default `seed`, `seed-initial`, `install` set):
+HTTPS on `8443`) using `framework/conf/MoquiDefaultConf.xml` merged with the runtime conf:
+`runtime/conf/MoquiDevConf.xml` when present, or the file `MOQUI_CONF` names, relative to
+the runtime directory or absolute (`./moq run -c FILE` sets it). `MOQUI_CONF` comes from the
+environment, not `runtime/.env`, which is read after the conf merge. Without the script:
 
 ```sh
-./target/debug/moqui load
+cargo run -p moqui
+# or: ./target/debug/moqui, and ./target/debug/moqui load for the default seed, seed-initial, install data
 ```
 
 For production packaging, deploy the release binary together with the `framework/`
 and `runtime/` directories and run `./target/release/moqui` from the directory that
-holds them (or point `MOQUI_RUNTIME` / `MOQUI_FRAMEWORK` at them). The production
-settings live in `runtime/conf/MoquiProductionConf.xml`, but right now the server
-only auto-loads `MoquiDevConf.xml`, so for a production copy put the production
-contents in place of `runtime/conf/MoquiDevConf.xml`.
+holds them (or point `MOQUI_RUNTIME` / `MOQUI_FRAMEWORK` at them), with
+`MOQUI_CONF=conf/MoquiProductionConf.xml`. From a checkout, `./moq run-production` does that
+with the release binary.
 
 ## Implementation Order
 
