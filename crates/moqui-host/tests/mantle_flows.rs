@@ -831,6 +831,7 @@ fn o2c_refund_overpayment(f: &Flow, st: &mut O2c) {
             ("statusId", s("PmntDelivered")),
             ("fromPartyId", s("ORG_ZIZI_RETAIL")),
             ("toPartyId", s("JoeDist")),
+            ("effectiveDate", s(&utc_now_text())),
             ("paymentRefNum", s("1000")),
             ("paymentInstrumentEnumId", s("PiCompanyCheck")),
             ("paymentMethodId", s("ZIRET_BA")),
@@ -1260,6 +1261,11 @@ fn flow_accounting_activities(f: &Flow) {
         .find(|e| text(e, "glAccountId") == "212000000")
         .expect("payable entry");
     assert_eq!(number(payable.get("amount")), 1824.25);
+}
+
+/// The current time in UTC as text, the form a Timestamp parameter takes (the fixture's user time zone is UTC).
+fn utc_now_text() -> String {
+    jiff::Timestamp::now().strftime("%Y-%m-%d %H:%M:%S").to_string()
 }
 
 fn now_text() -> String {
@@ -1909,7 +1915,7 @@ fn flow_order_procure_to_pay(f: &Flow) {
         &[
             ("paymentId", s(&payment_id)),
             ("statusId", s("PmntAuthorized")),
-            ("effectiveDate", s(&jiff::Timestamp::now().strftime("%Y-%m-%d %H:%M:%S").to_string())),
+            ("effectiveDate", s(&utc_now_text())),
             ("amount", n("24000.0")),
         ],
     );
@@ -1938,6 +1944,7 @@ fn flow_order_procure_to_pay(f: &Flow) {
             ("statusId", s("PmntDelivered")),
             ("fromPartyId", s(VENDOR)),
             ("toPartyId", s(CUSTOMER)),
+            ("effectiveDate", s(&utc_now_text())),
             ("paymentInstrumentEnumId", s("PiCompanyCheck")),
             ("amount", n("170.0")),
         ],

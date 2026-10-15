@@ -650,7 +650,7 @@ fn run_inline(def: &ServiceDef, parameters: &BTreeMap<String, Value>) -> Result<
 /// The declared out-parameters, read from the script frame.
 fn collect_outputs(def: &ServiceDef) -> BTreeMap<String, Value> {
     let mut out = BTreeMap::new();
-    for param in &def.out_params {
+    for param in super::validate::expanded_out(def).iter() {
         if param.name.is_empty() || param.required == super::define::Required::Disabled {
             continue;
         }
@@ -687,8 +687,8 @@ fn script_err(err: crate::context::Error) -> LibError {
 }
 
 fn project(def: &ServiceDef, values: BTreeMap<String, Value>) -> BTreeMap<String, Value> {
-    let names: Vec<&str> = def
-        .out_params
+    let out_params = super::validate::expanded_out(def);
+    let names: Vec<&str> = out_params
         .iter()
         .filter(|param| !param.name.is_empty() && param.required != super::define::Required::Disabled)
         .map(|param| param.name.as_str())
@@ -1720,6 +1720,24 @@ mod tests {
             expanded.iter().map(|param| &param.name).collect::<Vec<_>>(),
             first.iter().map(|param| &param.name).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn auto_parameters_in_out_parameters_are_returned() {
+        let path = write_fixture(
+            "auto-out",
+            r#"<services><service verb="give" noun="AutoOut">
+                <out-parameters><auto-parameters entity-name="moqui.test.TestEntity" include="nonpk"/></out-parameters>
+                <actions><set field="testMedium" value="kept"/><set field="notDeclared" value="dropped"/></actions>
+            </service></services>"#,
+        );
+        let (_facade, ctx) = seeded_context(&[]);
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        let out = sync("give#AutoOut", &BTreeMap::new()).unwrap();
+        assert_eq!(out.get("testMedium").map(moqui_lib::object::to_plain_string).as_deref(), Some("kept"), "{out:?}");
+        assert!(!out.contains_key("notDeclared"), "{out:?}");
     }
 
     fn write_fixture(name: &str, body: &str) -> PathBuf {
