@@ -688,12 +688,25 @@ fn install_context(ctx: &Ctx<'_>) -> Result<Helpers, Error> {
 }
 
 /// Make the globals the host installed (`ec`, `sri`, `compare`, `toDecimal` and the rest) read-only, so an assignment
-/// in one script does not change them for the later scripts on the thread. `ec` stays configurable for the wrapper a
-/// widget check puts in its place (see [`set_ec`]).
+/// in one script does not change them for the later scripts on the thread. An assignment throws, in sloppy code too:
+/// a script that used such a name for a context value would otherwise lose the value without an error. `ec` and `sri`,
+/// read on every statement of actions and screens, are plain read-only values instead, as a getter call costs about half
+/// again on each read; `ec` is configurable for the wrapper a widget check puts in its place (see [`set_ec`]).
 const FREEZE_HOST_GLOBALS: &str = r#"(function (builtins) {
     const known = new Set(builtins);
     for (const name of Object.getOwnPropertyNames(globalThis)) {
-        if (!known.has(name)) Object.defineProperty(globalThis, name, { writable: false, configurable: name === "ec" });
+        if (known.has(name)) continue;
+        if (name === "ec" || name === "sri") {
+            Object.defineProperty(globalThis, name, { writable: false, configurable: name === "ec" });
+            continue;
+        }
+        const value = globalThis[name];
+        Object.defineProperty(globalThis, name, {
+            get() { return value; },
+            set() { throw new TypeError(name + " is a host global and cannot be assigned"); },
+            enumerable: true,
+            configurable: false
+        });
     }
 })"#;
 
@@ -1546,9 +1559,20 @@ mod tests {
         assert!(err.message().contains("eval_script:3"), "{}", err.message());
         assert_eq!(plain("thrown"), Some("1".to_string()));
 
-        // The host's globals are read-only: an assignment does not replace them for the later scripts of the thread.
-        run_script("toNumber = null; compare = null; ec = null;")?;
+        // The host's globals are read-only: an assignment throws, in sloppy code too, and does not replace them for the
+        // later scripts of the thread.
+        let assigned = run_script("compare = 'a context value';").expect_err("compare is a host global");
+        assert!(
+            assigned
+                .message()
+                .contains("compare is a host global and cannot be assigned"),
+            "{}",
+            assigned.message()
+        );
+        assert!(run_script("toNumber = null;").is_err());
+        run_script("ec = null; sri = null;")?;
         holds("typeof toNumber === 'function' && typeof compare === 'function' && ec !== null && ec.resource != null");
+        holds("sri !== null && typeof sri.pushContext === 'function'");
         clear_context_stack();
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
