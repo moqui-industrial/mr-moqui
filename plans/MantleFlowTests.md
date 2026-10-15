@@ -39,14 +39,14 @@ No flow passes yet. Every flow stops at its first Groovy service; steps after th
 
 | Flow | Status | First failing service | Why |
 |---|---|---|---|
-| OrderToCashBasicFlow | ignored, fails | `mantle.product.PriceServices.get#ProductPrice` | `for (priceModify in ...)` block, and `get#ProductPriceByType` has `findAll({ ... })` |
-| OrderProcureToPayBasicFlow | ignored, fails | `mantle.product.PriceServices.get#ProductPrice` | same |
-| ReturnToResponseBasicFlow | ignored, fails | `mantle.product.PriceServices.get#ProductPrice` | through the sales order it returns from |
+| OrderToCashBasicFlow | passes (runs by default) | | runs after AssetReservationMultipleThreads and OrderProcureToPayBasicFlow, as the suite does (the flow depends on their orders and stock) |
+| OrderProcureToPayBasicFlow | passes (runs by default) | | runs AssetReservationMultipleThreads first |
+| ReturnToResponseBasicFlow | passes (runs by default) | | runs the first features of OrderToCashBasicFlow (after its prerequisites) for the order it returns from |
 | WorkPlanToCashBasicFlow | passes (runs by default) | | the worker and client invoices, GL transactions, payments and bill-through are asserted |
 | AccountingActivities | ignored, fails | `mantle.ledger.LedgerServices.get#OrganizationFiscalTimePeriods` | registers, but `new java.sql.Date(filterDate.time)` fails at run time (`cannot read property 'sql' of null`); `post#AcctgTrans` is Groovy |
-| OrderToCashTime | ignored, fails | `mantle.order.OrderServices.add#OrderProductQuantity` | generated script is not JavaScript (`Expected , or ] but found :`) |
-| AssetReservationMultipleThreads | ignored, fails | `mantle.order.OrderServices.add#OrderProductQuantity` | same; five threads each with their own context |
-| OrderTenantAccess | ignored, fails | `mantle.order.OrderServices.add#OrderProductQuantity` | same. The Spock suite does not run this spec either (placeholder for instance access) |
+| OrderToCashTime | passes (runs by default) | | |
+| AssetReservationMultipleThreads | passes (runs by default) | | five threads each with their own context |
+| OrderTenantAccess | ignored | `mantle.order.OrderServices.add#OrderProductQuantity` | `Product DEMO_TNT not found`: multi-tenant support is deprecated and the product is commented out in ZcaProductDemoData.xml. The Spock suite does not run this spec either |
 | RestApiTests | ignored, fails | `mantle.ledger.LedgerServices.recalculate#GlAccountOrgSummaries` | `new HashSet(timePeriodList*.partyId)` and other Groovy. The `s1/mantle/...` REST screen cases are not ported: the harness has no ScreenTest equivalent |
 | MantleUslSuite | ignored, fails | AccountingActivities, `get#OrganizationFiscalTimePeriods` | runs the flows in the suite's order (AccountingActivities, AssetReservationMultipleThreads, OrderProcureToPay, OrderToCash, OrderToCashTime, ReturnToResponse, WorkPlanToCash, RestApi) |
 

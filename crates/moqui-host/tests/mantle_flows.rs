@@ -2678,6 +2678,12 @@ fn flow_rest_api(f: &Flow) {
 // ---------------------------------------------------------------------------------------------------------------
 
 macro_rules! flow_test {
+    ($name:ident, $flow:expr, $function:ident) => {
+        #[test]
+        fn $name() {
+            with_flow($flow, $function);
+        }
+    };
     ($name:ident, $flow:expr, $function:ident, $reason:expr) => {
         #[test]
         #[ignore = $reason]
@@ -2687,24 +2693,9 @@ macro_rules! flow_test {
     };
 }
 
-flow_test!(
-    order_to_cash_basic_flow,
-    "OrderToCashBasicFlow",
-    flow_order_to_cash_basic,
-    "OrderToCashBasicFlow: first failing service mantle.product.PriceServices.get#ProductPrice (still Groovy)"
-);
-flow_test!(
-    order_procure_to_pay_basic_flow,
-    "OrderProcureToPayBasicFlow",
-    flow_order_procure_to_pay,
-    "OrderProcureToPayBasicFlow: first failing service mantle.product.PriceServices.get#ProductPrice (still Groovy)"
-);
-flow_test!(
-    return_to_response_basic_flow,
-    "ReturnToResponseBasicFlow",
-    flow_return_to_response,
-    "ReturnToResponseBasicFlow: runs OrderToCashBasicFlow's order first, so fails at the same service"
-);
+flow_test!(order_to_cash_basic_flow, "OrderToCashBasicFlow", flow_order_to_cash_basic);
+flow_test!(order_procure_to_pay_basic_flow, "OrderProcureToPayBasicFlow", flow_order_procure_to_pay);
+flow_test!(return_to_response_basic_flow, "ReturnToResponseBasicFlow", flow_return_to_response);
 #[test]
 fn work_plan_to_cash_basic_flow() {
     with_flow("WorkPlanToCashBasicFlow", flow_work_plan_to_cash);
@@ -2713,23 +2704,13 @@ fn work_plan_to_cash_basic_flow() {
 fn accounting_activities() {
     with_flow("AccountingActivities", flow_accounting_activities);
 }
-flow_test!(
-    order_to_cash_time,
-    "OrderToCashTime",
-    flow_order_to_cash_time,
-    "OrderToCashTime: first failing service mantle.order.OrderServices.add#OrderProductQuantity"
-);
-flow_test!(
-    asset_reservation_multiple_threads,
-    "AssetReservationMultipleThreads",
-    flow_asset_reservation_multiple_threads,
-    "AssetReservationMultipleThreads: first failing service mantle.order.OrderServices.add#OrderProductQuantity"
-);
+flow_test!(order_to_cash_time, "OrderToCashTime", flow_order_to_cash_time);
+flow_test!(asset_reservation_multiple_threads, "AssetReservationMultipleThreads", flow_asset_reservation_multiple_threads);
 flow_test!(
     order_tenant_access,
     "OrderTenantAccess",
     flow_order_tenant_access,
-    "OrderTenantAccess: not run by the Spock suite either (placeholder for instance access); fails at add#OrderProductQuantity"
+    "OrderTenantAccess: not run by the Spock suite; multi-tenant support is deprecated and DEMO_TNT, the subscription product it orders, is commented out in ZcaProductDemoData.xml (Product DEMO_TNT not found)"
 );
 flow_test!(
     rest_api_tests,
