@@ -6,6 +6,7 @@
 /runtime/tmp
 /runtime/txlog
 /runtime/.env
+/runtime/cert
 /runtime/types
 /runtime/opensearch*
 /runtime/component/

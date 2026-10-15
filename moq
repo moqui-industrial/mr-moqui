@@ -391,6 +391,7 @@ RUN_OPTIONS_HELP='      --debug          Use target/debug/moqui (default: target
   -c, --conf FILE      Runtime conf merged over MoquiDefaultConf.xml (sets MOQUI_CONF); relative to
                        the runtime directory, like conf/MoquiProductionConf.xml, or a path
   -p, --port N         HTTP port (webapp_http_port)
+      --https-port N   HTTPS port to listen on (webapp_https_listen_port), or off
   -D name=value        Set any conf property, as an environment variable; repeatable. Use the
                        underscore name (entity_ds_db_conf), not a dotted one
       --build          Build first (cargo build --release -p moqui, or without --release with --debug). A
@@ -753,6 +754,18 @@ parse_run_opts() {
                 fi
                 case $port in '' | *[!0-9]*) die "port '$port' is not a number" ;; esac
                 OPT_PROPS+=("webapp_http_port=$port")
+                ;;
+            --https-port | --https-port=*)
+                local https_port
+                if [ "$arg" = "${arg#--https-port=}" ]; then
+                    [ $# -ge 2 ] || die "$arg needs a port number or off"
+                    https_port=$2
+                    shift
+                else
+                    https_port=${arg#--https-port=}
+                fi
+                case $https_port in off) ;; '' | *[!0-9]*) die "https port '$https_port' is not a number or off" ;; esac
+                OPT_PROPS+=("webapp_https_listen_port=$https_port")
                 ;;
             -D)
                 [ $# -ge 2 ] || die "-D needs name=value"
@@ -2039,9 +2052,10 @@ complete_run_like() {
         -l | --location) echo @files; return ;;
         -D) filter_prefix "$cur" $(property_names); return ;;
         -p | --port | -n | --name) return ;;
+        --https-port) filter_prefix "$cur" off; return ;;
     esac
     case $cur in
-        -*) filter_prefix "$cur" --debug -c --conf -p --port -D --build --; return ;;
+        -*) filter_prefix "$cur" --debug -c --conf -p --port --https-port -D --build --; return ;;
     esac
     printf '%s\n' "$positional"
 }

@@ -1171,7 +1171,9 @@ pub fn finish_response(request: &WebRequest, mut response: WebResponse, prefligh
     );
     push_unique(&mut response.headers, "X-Frame-Options", "sameorigin");
     push_unique(&mut response.headers, "X-Content-Type-Options", "nosniff");
-    if request.https {
+    // HSTS holds for every port of a host (RFC 6797), so on localhost a trusted dev certificate would send the plain
+    // dev listener and any other local server to https for a year.
+    if request.https && !is_localhost(request.header("host").unwrap_or("")) {
         push_unique(&mut response.headers, "Strict-Transport-Security", "max-age=31536000");
     }
     if handle_cors() {
@@ -1182,6 +1184,20 @@ pub fn finish_response(request: &WebRequest, mut response: WebResponse, prefligh
         }
     }
     response
+}
+
+/// `localhost` or a name under it, with or without a port.
+fn is_localhost(host: &str) -> bool {
+    let host = host_without_port(host).to_ascii_lowercase();
+    host == "localhost" || host.ends_with(".localhost")
+}
+
+/// `example.com:8080` is `example.com`, and `[::1]:8080` is `[::1]`.
+pub(crate) fn host_without_port(host: &str) -> &str {
+    if host.starts_with('[') {
+        return host.find(']').map_or(host, |end| &host[..=end]);
+    }
+    host.split(':').next().unwrap_or(host)
 }
 
 fn apply_cors(headers: &mut Vec<(String, String)>, origin: &str, preflight: bool) {
@@ -1313,7 +1329,10 @@ pub(crate) fn record_login_error(message: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{cookie_value, form_pairs, origin_allowed_for, pairs_to_parameters, percent_decode};
+    use super::{
+        cookie_value, form_pairs, host_without_port, is_localhost, origin_allowed_for, pairs_to_parameters,
+        percent_decode,
+    };
     use moqui_lib::object::Value;
 
     #[test]
@@ -1364,6 +1383,18 @@ mod tests {
         assert!(!origin_allowed_for(Some("https://foo-moqui.org"), Some("other")));
         assert!(!origin_allowed_for(Some("https://evil.test"), Some("site.test")));
         moqui_lib::env::clear_property("webapp_allow_origins");
+    }
+
+    #[test]
+    fn localhost_hosts_get_no_hsts() {
+        assert!(is_localhost("localhost:8443"));
+        assert!(is_localhost("LocalHost"));
+        assert!(is_localhost("app.localhost:8443"));
+        assert!(!is_localhost("localhost.example.com"));
+        assert!(!is_localhost("[::1]:8443"));
+        assert!(!is_localhost(""));
+        assert_eq!(host_without_port("[::1]:8443"), "[::1]");
+        assert_eq!(host_without_port("example.com:8080"), "example.com");
     }
 
     #[test]

@@ -41,6 +41,8 @@ mod http;
 mod notws;
 #[cfg(feature = "axum")]
 mod search_proxy;
+#[cfg(feature = "axum")]
+mod tls;
 
 /// No arguments start the HTTP listener and block until it stops.
 ///
@@ -72,6 +74,7 @@ pub fn serve() -> Result<(), moqui_lib::error::Error> {
 pub struct Server {
     address: std::net::SocketAddr,
     cluster_address: std::net::SocketAddr,
+    https_address: Option<std::net::SocketAddr>,
     factory: Option<std::sync::Arc<moqui_core::context::ExecutionContextFactory>>,
     posts: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     /// Drops the listener shutdown sender. Empty after the first stop.
@@ -93,7 +96,13 @@ impl Server {
         *lock(&factory.extension(|_| ssh::server::SshAddress::default()).0)
     }
 
-    /// The cluster HTTPS listener. Empty `cluster_https_port` binds 8443. `0` is ephemeral, and this
+    /// The public HTTPS listener, when one is running (`webapp_https_listen_port`, certificates in `runtime/cert`).
+    #[must_use]
+    pub fn https_address(&self) -> Option<std::net::SocketAddr> {
+        self.https_address
+    }
+
+    /// The cluster HTTPS listener. Empty `cluster_https_port` binds 8444. `0` is ephemeral, and this
     /// is the address the kernel chose.
     #[must_use]
     pub fn cluster_address(&self) -> std::net::SocketAddr {
@@ -731,6 +740,7 @@ fn start_server_in(
     match ready_rx.recv() {
         Ok(Ok(bound)) => Ok(Server {
             address: bound.http,
+            https_address: bound.https,
             cluster_address: bound.cluster,
             factory: Some(bound.factory),
             posts: bound.posts,
@@ -793,7 +803,23 @@ fn serve_thread(
         .runtime
         .as_ref()
         .ok_or_else(|| moqui_lib::error::Error::new("http server has no runtime"))?;
-    let listened = runtime.block_on(http::listen(factory, address, cluster_address, posts, stop, sender));
+    // After the boot, as for the HTTP port: conf defaults and runtime/.env are read there.
+    let https = match tls::plan(&runtime_dir, address.ip(), matches!(bind, ListenBind::Property)) {
+        Ok(https) => https,
+        Err(err) => {
+            ready.fail(&err);
+            return Err(err);
+        }
+    };
+    let listened = runtime.block_on(http::listen(
+        factory,
+        address,
+        https,
+        cluster_address,
+        posts,
+        stop,
+        sender,
+    ));
     tracing::info!("HTTP listener stopped, shutting down");
     if let Some(factory) = process.factory.as_ref() {
         // Hits and the open bins are only in memory until written, as Java's destroy writes the bins.
@@ -920,7 +946,7 @@ fn boot_server(
         .start_request_pool()
         .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
     tracing::info!("Request pool started");
-    // Empty cluster_https_port listens on 8443. 0 is ephemeral for tests.
+    // Empty cluster_https_port listens on 8444. 0 is ephemeral for tests.
     moqui_core::notify::install();
     // The SSH server binds before the member row is written: with cluster_transport=ssh the row carries its address
     // and host key.

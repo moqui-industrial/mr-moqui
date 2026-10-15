@@ -12,8 +12,8 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Plain HTTP listener. Each connection is served by hyper with axum's router, inside the `webapp_*` limits of
-//! [`ListenLimits`]. Screen and entity work runs on the request pool.
+//! Public HTTP and HTTPS listeners. Each connection is served by hyper with axum's router, inside the `webapp_*`
+//! limits of [`ListenLimits`]. The HTTPS certificates are in [`crate::tls`]. Screen and entity work runs on the request pool.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -44,7 +44,7 @@ pub(crate) struct HttpState {
     pub limits: ListenLimits,
 }
 
-/// Bounds on the plain listener. Timeouts are whole seconds in their property, and `0` turns one off.
+/// Bounds on the public listeners. Timeouts are whole seconds in their property, and `0` turns one off.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ListenLimits {
     /// `webapp_header_timeout`, default 30: a client sends its whole request head in this time. A kept-alive
@@ -55,8 +55,8 @@ pub(crate) struct ListenLimits {
     /// `webapp_request_timeout`, default 300: from the request head to the response head, or the answer is 504.
     /// `/notws` is exempt, and a response body, such as a long download, is sent after it.
     pub request: Option<Duration>,
-    /// `webapp_max_connections`, default 1024: connections served at once. Past it the listener stops accepting
-    /// until one closes.
+    /// `webapp_max_connections`, default 1024: connections served at once, HTTP and HTTPS together. Past it the
+    /// listeners stop accepting until one closes.
     pub connections: usize,
     /// `webapp_shutdown_timeout`, default 30: after a stop, how long open connections may take to finish before the
     /// listener stops without them.
@@ -92,49 +92,67 @@ fn seconds_property(name: &str, default: u64) -> Option<Duration> {
 /// Addresses and handles the test uses after the plain HTTP listener binds.
 pub(crate) struct ListenReport {
     pub http: SocketAddr,
+    pub https: Option<SocketAddr>,
     pub cluster: SocketAddr,
     pub factory: Arc<ExecutionContextFactory>,
     pub posts: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
-/// Bind `bind`, publish the local address, and serve until `stop` is dropped or a ctrl-c arrives.
+/// Marks a request that arrived over this process's own TLS listener.
+#[derive(Clone, Copy)]
+struct TlsConnection;
+
+/// Bind `bind` (and the HTTPS address when there is one), publish the local addresses, and serve until `stop` is
+/// dropped or a ctrl-c arrives.
 pub(crate) async fn listen(
     factory: Arc<ExecutionContextFactory>,
     bind: SocketAddr,
+    https: Option<crate::tls::HttpsListen>,
     cluster: SocketAddr,
     posts: Arc<std::sync::Mutex<Vec<String>>>,
     stop: tokio::sync::oneshot::Receiver<()>,
     ready: Sender<Result<ListenReport, String>>,
 ) -> Result<(), Error> {
-    let listener = match TcpListener::bind(bind).await {
-        Ok(listener) => listener,
-        Err(err) => {
-            let message = format!("could not bind {bind}: {err}");
-            let _ = ready.send(Err(message.clone()));
-            return Err(Error::new(message));
-        }
+    let fail = |message: String| {
+        let _ = ready.send(Err(message.clone()));
+        Error::new(message)
     };
-    let address = match listener.local_addr() {
-        Ok(address) => address,
-        Err(err) => {
-            let message = format!("bound listener has no address: {err}");
-            let _ = ready.send(Err(message.clone()));
-            return Err(Error::new(message));
+    let listener = TcpListener::bind(bind)
+        .await
+        .map_err(|err| fail(format!("could not bind {bind}: {err}")))?;
+    let address = listener
+        .local_addr()
+        .map_err(|err| fail(format!("bound listener has no address: {err}")))?;
+    let secure = match https {
+        Some(https) => {
+            let listener = TcpListener::bind(https.bind)
+                .await
+                .map_err(|err| fail(format!("could not bind {}: {err}", https.bind)))?;
+            let local = listener
+                .local_addr()
+                .map_err(|err| fail(format!("bound HTTPS listener has no address: {err}")))?;
+            Some((listener, local, tokio_rustls::TlsAcceptor::from(https.config)))
         }
+        None => None,
     };
-    // Text responses are compressed when the client accepts gzip. Images and other types that are
-    // compressed already are left alone by the layer's default predicate.
+    let https_address = secure.as_ref().map(|(_, local, _)| *local);
     let _ = ready.send(Ok(ListenReport {
         http: address,
+        https: https_address,
         cluster,
         factory: Arc::clone(&factory),
         posts,
     }));
+    let https_text = https_address
+        .map(|secure| format!(", HTTPS on {secure}"))
+        .unwrap_or_default();
     tracing::info!(
-        "Listening for HTTP on {address} and cluster on {cluster}; routes /health, /metrics, /notws, /elastic, /kibana and the screen dispatcher"
+        "Listening for HTTP on {address}{https_text} and cluster on {cluster}; routes /health, /metrics, /notws, /elastic, /kibana and the screen dispatcher"
     );
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let limits = ListenLimits::from_properties();
+    // Text responses are compressed when the client accepts gzip. Images and other types that are
+    // compressed already are left alone by the layer's default predicate.
     let app = Router::new()
         .route("/health", get(health))
         .route("/metrics", get(metrics))
@@ -149,19 +167,49 @@ pub(crate) async fn listen(
         .layer(tower_http::compression::CompressionLayer::new())
         .with_state(Arc::new(HttpState {
             factory,
-            shutdown: shutdown_rx,
+            shutdown: shutdown_rx.clone(),
             limits,
         }));
-    serve(listener, app, limits, shutdown(stop, shutdown_tx)).await;
+    // Both loops end when the watch turns true, which `shutdown` sets after a stop or ctrl-c.
+    let stopped = |mut rx: tokio::sync::watch::Receiver<bool>| async move {
+        let _ = rx.wait_for(|stopped| *stopped).await;
+    };
+    let signal = tokio::spawn(shutdown(stop, shutdown_tx));
+    let permits = Arc::new(tokio::sync::Semaphore::new(limits.connections));
+    let plain = serve(
+        listener,
+        None,
+        app.clone(),
+        limits,
+        Arc::clone(&permits),
+        stopped(shutdown_rx.clone()),
+    );
+    match secure {
+        Some((listener, _, acceptor)) => {
+            tokio::join!(
+                plain,
+                serve(listener, Some(acceptor), app, limits, permits, stopped(shutdown_rx))
+            );
+        }
+        None => plain.await,
+    }
+    let _ = signal.await;
     Ok(())
 }
 
-/// Serve `app` until `stop` resolves, then let every open connection finish, as `axum::serve` does, for up to
+/// Serve `app` until `stop` resolves, taking one of `permits` for each open connection, then let every open connection finish, as `axum::serve` does, for up to
 /// `limits.shutdown`; the connections still open then are dropped with the runtime. Each
 /// connection is served here rather than by `axum::serve`, which gives hyper no timer, so that
-/// `header_read_timeout` takes effect.
-async fn serve(listener: TcpListener, app: Router, limits: ListenLimits, stop: impl Future<Output = ()>) {
-    let permits = Arc::new(tokio::sync::Semaphore::new(limits.connections));
+/// `header_read_timeout` takes effect. With `tls` the handshake runs in the connection's own task, so a slow
+/// client cannot hold up accepting.
+async fn serve(
+    listener: TcpListener,
+    tls: Option<tokio_rustls::TlsAcceptor>,
+    app: Router,
+    limits: ListenLimits,
+    permits: Arc<tokio::sync::Semaphore>,
+    stop: impl Future<Output = ()>,
+) {
     let (closing, closing_rx) = tokio::sync::watch::channel(false);
     let mut builder = hyper::server::conn::http1::Builder::new();
     builder.timer(TokioTimer::new()).header_read_timeout(limits.header);
@@ -196,33 +244,25 @@ async fn serve(listener: TcpListener, app: Router, limits: ListenLimits, stop: i
         };
         let _ = stream.set_nodelay(true);
         let router = app.clone();
-        let service = hyper::service::service_fn(move |mut request: hyper::Request<hyper::body::Incoming>| {
-            request.extensions_mut().insert(ConnectInfo(remote));
-            let deadline = limits.request.filter(|_| request.uri().path() != "/notws");
-            let call = router.clone().oneshot(request);
-            async move {
-                match deadline {
-                    Some(deadline) => match tokio::time::timeout(deadline, call).await {
-                        Ok(response) => response,
-                        Err(_) => Ok(plain(504, "the request took too long")),
-                    },
-                    None => call.await,
-                }
-            }
-        });
-        let connection = builder.serve_connection(TokioIo::new(stream), service).with_upgrades();
-        let mut closing = closing_rx.clone();
+        let builder = builder.clone();
+        let closing = closing_rx.clone();
+        let tls = tls.clone();
         tokio::spawn(async move {
-            let mut connection = std::pin::pin!(connection);
-            tokio::select! {
-                result = connection.as_mut() => {
-                    if let Err(err) = result {
-                        tracing::trace!("http connection from {remote} ended: {err}");
+            match tls {
+                None => run_connection(stream, remote, false, router, builder, limits, closing).await,
+                Some(acceptor) => {
+                    let handshake = acceptor.accept(stream);
+                    let secured = match limits.header {
+                        Some(limit) => tokio::time::timeout(limit, handshake).await.ok(),
+                        None => Some(handshake.await),
+                    };
+                    match secured {
+                        Some(Ok(stream)) => {
+                            run_connection(stream, remote, true, router, builder, limits, closing).await
+                        }
+                        Some(Err(err)) => tracing::debug!("TLS handshake with {remote} failed: {err}"),
+                        None => tracing::debug!("TLS handshake with {remote} timed out"),
                     }
-                }
-                _ = closing.changed() => {
-                    connection.as_mut().graceful_shutdown();
-                    let _ = connection.await;
                 }
             }
             drop(permit);
@@ -241,6 +281,49 @@ async fn serve(listener: TcpListener, app: Router, limits: ListenLimits, stop: i
             }
         }
         None => closing.closed().await,
+    }
+}
+
+async fn run_connection<S>(
+    stream: S,
+    remote: SocketAddr,
+    secure: bool,
+    router: Router,
+    builder: hyper::server::conn::http1::Builder,
+    limits: ListenLimits,
+    mut closing: tokio::sync::watch::Receiver<bool>,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let service = hyper::service::service_fn(move |mut request: hyper::Request<hyper::body::Incoming>| {
+        request.extensions_mut().insert(ConnectInfo(remote));
+        if secure {
+            request.extensions_mut().insert(TlsConnection);
+        }
+        let deadline = limits.request.filter(|_| request.uri().path() != "/notws");
+        let call = router.clone().oneshot(request);
+        async move {
+            match deadline {
+                Some(deadline) => match tokio::time::timeout(deadline, call).await {
+                    Ok(response) => response,
+                    Err(_) => Ok(plain(504, "the request took too long")),
+                },
+                None => call.await,
+            }
+        }
+    });
+    let connection = builder.serve_connection(TokioIo::new(stream), service).with_upgrades();
+    let mut connection = std::pin::pin!(connection);
+    tokio::select! {
+        result = connection.as_mut() => {
+            if let Err(err) = result {
+                tracing::trace!("http connection from {remote} ended: {err}");
+            }
+        }
+        _ = closing.changed() => {
+            connection.as_mut().graceful_shutdown();
+            let _ = connection.await;
+        }
     }
 }
 
@@ -318,9 +401,10 @@ async fn dispatch_screen(
 ) -> Response {
     let started = std::time::Instant::now();
     let started_millis = crate::logging::now_millis();
+    let over_tls = request.extensions().get::<TlsConnection>().is_some();
     let (parts, body) = request.into_parts();
     let mut web = WebRequest::new(parts.method.as_str(), parts.uri.path());
-    web.https = forwarded_https(&parts.headers);
+    web.https = over_tls || forwarded_https(&parts.headers);
     web.peer_ip = peer.ip().to_string();
     web.headers = header_map(&parts.headers);
     web.query = moqui_core::web::form_pairs(parts.uri.query().unwrap_or(""));
@@ -580,14 +664,18 @@ pub(crate) fn plain(status: u16, body: &str) -> Response {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
+    use axum::extract::Request;
     use axum::routing::get;
     use axum::Router;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::Semaphore;
 
-    use super::{http_port, serve, status_allowed, ListenLimits};
+    use super::{http_port, serve, status_allowed, ListenLimits, TlsConnection};
+    use crate::tls;
 
     async fn read_all(stream: &mut TcpStream) -> String {
         let mut buf = Vec::new();
@@ -611,7 +699,8 @@ mod tests {
             shutdown: None,
         };
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-        let server = tokio::spawn(serve(listener, app, limits, async move {
+        let permits = Arc::new(Semaphore::new(limits.connections));
+        let server = tokio::spawn(serve(listener, None, app, limits, permits, async move {
             let _ = stopped.await;
         }));
 
@@ -656,7 +745,8 @@ mod tests {
             shutdown: Some(Duration::from_millis(300)),
         };
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-        let server = tokio::spawn(serve(listener, app, limits, async move {
+        let permits = Arc::new(Semaphore::new(limits.connections));
+        let server = tokio::spawn(serve(listener, None, app, limits, permits, async move {
             let _ = stopped.await;
         }));
         let mut stuck = TcpStream::connect(address).await.unwrap();
@@ -674,6 +764,85 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
+    }
+
+    /// A request over the TLS listener reaches the router marked as secure, and one over plain HTTP does not.
+    #[tokio::test]
+    async fn a_request_over_tls_is_marked_secure() {
+        let dir = tls::tests::temp_dir("serve").join("cert");
+        tls::ensure_dev_cert(&dir).unwrap();
+        let config = Arc::new(tls::server_config(tls::CertStore::new(dir.clone())).unwrap());
+        let app = Router::new().route(
+            "/",
+            get(|request: Request| async move {
+                if request.extensions().get::<TlsConnection>().is_some() {
+                    "secure"
+                } else {
+                    "plain"
+                }
+            }),
+        );
+        let limits = ListenLimits {
+            header: Some(Duration::from_secs(5)),
+            body: None,
+            request: None,
+            connections: 4,
+            shutdown: None,
+        };
+        let permits = Arc::new(Semaphore::new(limits.connections));
+        let (stop_secure, secure_stopped) = tokio::sync::oneshot::channel::<()>();
+        let (stop_plain, plain_stopped) = tokio::sync::oneshot::channel::<()>();
+        let secure_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let secure_address = secure_listener.local_addr().unwrap();
+        let plain_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let plain_address = plain_listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            tokio::join!(
+                serve(
+                    secure_listener,
+                    Some(tokio_rustls::TlsAcceptor::from(config)),
+                    app.clone(),
+                    limits,
+                    Arc::clone(&permits),
+                    async move {
+                        let _ = secure_stopped.await;
+                    },
+                ),
+                serve(plain_listener, None, app, limits, permits, async move {
+                    let _ = plain_stopped.await;
+                }),
+            );
+        });
+
+        let stream = TcpStream::connect(secure_address).await.unwrap();
+        let mut secure = tls::tests::client_trusting(&dir.join("localhost.crt"))
+            .connect(rustls::pki_types::ServerName::try_from("localhost").unwrap(), stream)
+            .await
+            .expect("localhost handshake");
+        secure
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut answered = String::new();
+        let _ = secure.read_to_string(&mut answered).await;
+        assert!(answered.starts_with("HTTP/1.1 200"), "{answered}");
+        assert!(answered.ends_with("secure"), "{answered}");
+
+        let mut plain = TcpStream::connect(plain_address).await.unwrap();
+        plain
+            .write_all(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let answered = read_all(&mut plain).await;
+        assert!(answered.ends_with("plain"), "{answered}");
+
+        drop(stop_secure);
+        drop(stop_plain);
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("the listeners did not stop")
+            .unwrap();
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 
     #[test]

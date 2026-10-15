@@ -20,6 +20,9 @@
     <default-property name="webapp_http_port" value=""/>
     <default-property name="webapp_https_port" value=""/>
     <default-property name="webapp_https_enabled" value="false"/>
+    <!-- The port the built-in HTTPS listener binds, with certificates from runtime/cert: empty is 8443, "off" none.
+        webapp_https_port above is the port clients see in generated URLs, which differs behind a reverse proxy. -->
+    <default-property name="webapp_https_listen_port" value=""/>
     <default-property name="webapp_allow_origins" value=""/>
     <default-property name="webapp_handle_cors" value="true"/>
     <default-property name="webapp_status_ips" value="127.0.0.1"/>

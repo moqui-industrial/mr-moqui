@@ -56,7 +56,7 @@ fn notws_push_and_one_cluster_invalidation() {
     };
     load_data(&runtime, &framework, &cluster_dir, &demo_flags).unwrap();
 
-    // 0 binds an ephemeral cluster port. Empty would listen on 8443. This does not touch the repo .env.
+    // 0 binds an ephemeral cluster port. Empty would listen on 8444. This does not touch the repo .env.
     moqui_lib::env::set_property("cluster_https_port", "0");
     let server = start_server(
         &runtime,

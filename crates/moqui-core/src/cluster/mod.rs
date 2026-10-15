@@ -61,7 +61,7 @@ const MEMBER_COLUMNS: &[&str] = &[
     "certFingerprint",
     "sshHostKeyFingerprint",
 ];
-const DEFAULT_PORT: u16 = 8443;
+const DEFAULT_PORT: u16 = 8444;
 const RETRIES: u32 = 3;
 /// Waits between tries of one post: a busy peer answers 503 and is given a moment.
 const RETRY_WAITS: [Duration; 2] = [Duration::from_millis(100), Duration::from_millis(500)];

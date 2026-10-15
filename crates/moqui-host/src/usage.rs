@@ -24,7 +24,7 @@ Usage: moqui [command] [args...]      moqui help [command]      moqui <command> 
 With no command, start the HTTP server.
 
 Server
-  (no command)     [options]                                Start the HTTP server (port webapp_http_port, default 8080)
+  (no command)     [options]                                Start the HTTP server (HTTP webapp_http_port, default 8080; HTTPS webapp_https_listen_port, default 8443)
 
 Data
   load             [name=value ...]                         Load data files into the configured database
@@ -44,6 +44,8 @@ Help
 
 Server options
   -p, --port N       HTTP port (webapp_http_port, default 8080). Also: port=N, -port=N, --port=N.
+  --https-port N     HTTPS port to listen on (webapp_https_listen_port, default 8443), or 'off'. Certificates
+                     are looked up by domain in runtime/cert (<domain>.crt and <domain>.key). Also: https-port=N.
   -c, --conf FILE    Runtime conf, relative to the runtime directory or absolute.
                      Also: conf=FILE, -conf=FILE, --conf=FILE. Same as MOQUI_CONF for this run.
   --no-run-es        Do not start OpenSearch (opensearch_run=false). Also: no-run-es, -no-run-es.
@@ -59,7 +61,8 @@ Environment
   MOQUI_CONF         Runtime conf merged over MoquiDefaultConf.xml, relative to the runtime
                      directory or absolute. Unset uses conf/MoquiDevConf.xml when that file
                      exists. runtime/.env is read after the conf merge and does not select it.
-  webapp_http_port   HTTP port (default 8080). cluster_https_port defaults to 8443.
+  webapp_http_port   HTTP port (default 8080). webapp_https_listen_port defaults to 8443 and cluster_https_port
+                     to 8444. webapp_https_port is the HTTPS port in generated URLs (empty is 443).
   entity_ds_db_conf  postgres, mysql, or mysql8 for an external server; otherwise embedded
 
 Other conf properties are environment variables with underscore names.
@@ -329,6 +332,12 @@ pub fn parse_server_args(args: &[impl AsRef<str>]) -> Result<ServerOptions, Erro
             let value = next_value(&args, index, arg, "a port number")?;
             opts.push("webapp_http_port", parse_port(value)?.to_string());
             index += 1;
+        } else if let Some(value) = equals_value(arg, "https-port") {
+            opts.push("webapp_https_listen_port", parse_https_port(value)?);
+        } else if arg == "--https-port" {
+            let value = next_value(&args, index, arg, "a port number or off")?;
+            opts.push("webapp_https_listen_port", parse_https_port(value)?);
+            index += 1;
         } else if let Some(value) = equals_value(arg, "conf") {
             require_conf(value)?;
             opts.push("MOQUI_CONF", value);
@@ -391,6 +400,17 @@ fn parse_port(raw: &str) -> Result<u16, Error> {
     }
     raw.parse::<u16>()
         .map_err(|_| Error::new(format!("webapp_http_port {raw} is not a port")))
+}
+
+/// A port, or `off` to turn the HTTPS listener off.
+fn parse_https_port(raw: &str) -> Result<String, Error> {
+    let raw = raw.trim();
+    if raw == "off" {
+        return Ok(raw.to_string());
+    }
+    raw.parse::<u16>()
+        .map(|port| port.to_string())
+        .map_err(|_| Error::new(format!("webapp_https_listen_port {raw} is not a port or off")))
 }
 
 fn split_property(token: &str) -> Result<(&str, &str), Error> {
@@ -506,6 +526,22 @@ mod tests {
         assert!(dashed.contains("unknown option '-p=8081'"), "{dashed}");
         let spaced = message(&["-port", "8081"]);
         assert!(spaced.contains("unknown option '-port'"), "{spaced}");
+    }
+
+    #[test]
+    fn usage_https_port_forms_set_webapp_https_listen_port() {
+        let listen = "webapp_https_listen_port";
+        assert_eq!(parse(&["--https-port", "9443"]).value(listen), Some("9443"));
+        assert_eq!(parse(&["--https-port=9443"]).value(listen), Some("9443"));
+        assert_eq!(parse(&["https-port=off"]).value(listen), Some("off"));
+        assert_eq!(parse(&["--https-port", "9443"]).value("webapp_https_port"), None);
+        let nope = message(&["--https-port", "false"]);
+        assert!(
+            nope.contains("webapp_https_listen_port false is not a port or off"),
+            "{nope}"
+        );
+        let missing = message(&["--https-port"]);
+        assert!(missing.contains("--https-port needs a port number or off"), "{missing}");
     }
 
     #[test]

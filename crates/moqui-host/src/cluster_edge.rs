@@ -14,10 +14,10 @@
 
 //! Cluster HTTPS listener and the blocking peer client.
 //!
-//! Empty `cluster_https_port` is 8443 on `cluster_bind_address` (default `0.0.0.0`, so other hosts reach it; the
+//! Empty `cluster_https_port` is 8444 on `cluster_bind_address` (default `0.0.0.0`, so other hosts reach it; the
 //! listener takes only peers that present the cluster certificate). `0` is ephemeral: the listener binds port 0
-//! and [`ClusterEdge::address`] is the address the kernel chose. The public axum listener stays
-//! plain HTTP and does not ask for a client certificate.
+//! and [`ClusterEdge::address`] is the address the kernel chose. The public HTTP and HTTPS listeners do not ask
+//! for a client certificate.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -40,7 +40,7 @@ use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use rustls::DigitallySignedStruct;
 use sha2::{Digest, Sha256};
 
-const DEFAULT_PORT: u16 = 8443;
+const DEFAULT_PORT: u16 = 8444;
 const BODY_LIMIT: usize = 1024 * 1024;
 const HEADER_LIMIT: usize = 16 * 1024;
 /// How often a connection with nothing to read checks whether the listener is stopping.
@@ -77,7 +77,7 @@ fn bind_address() -> Result<IpAddr, HostError> {
         .map_err(|_| HostError::new(format!("cluster_bind_address {raw} is not an IP address")))
 }
 
-/// `cluster_https_port`. Empty is 8443. `0` is ephemeral and is passed through to `bind`.
+/// `cluster_https_port`. Empty is 8444. `0` is ephemeral and is passed through to `bind`.
 pub(crate) fn listen_port(raw: &str) -> Result<u16, HostError> {
     if raw.is_empty() {
         return Ok(DEFAULT_PORT);
@@ -946,8 +946,8 @@ mod tests {
     }
 
     #[test]
-    fn empty_cluster_https_port_listens_on_8443_and_zero_is_ephemeral() {
-        assert_eq!(listen_port("").unwrap(), 8443);
+    fn empty_cluster_https_port_listens_on_8444_and_zero_is_ephemeral() {
+        assert_eq!(listen_port("").unwrap(), 8444);
         assert_eq!(listen_port("0").unwrap(), 0);
         assert!(listen_port("nope").is_err());
     }

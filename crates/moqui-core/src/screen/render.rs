@@ -709,7 +709,7 @@ fn redirect_to_https(factory: &ExecutionContextFactory, job: &Job<'_>, info: &Sc
         return false;
     };
     let host = if host.is_empty() {
-        host_without_port(job.request.header("host").unwrap_or("localhost")).to_string()
+        web::host_without_port(job.request.header("host").unwrap_or("localhost")).to_string()
     } else {
         host
     };
@@ -727,14 +727,6 @@ fn redirect_to_https(factory: &ExecutionContextFactory, job: &Job<'_>, info: &Sc
     save_messages();
     web::send_redirect(&location);
     true
-}
-
-/// `example.com:8080` is `example.com`, and `[::1]:8080` is `[::1]`.
-fn host_without_port(host: &str) -> &str {
-    if host.starts_with('[') {
-        return host.find(']').map_or(host, |end| &host[..=end]);
-    }
-    host.split(':').next().unwrap_or(host)
 }
 
 /// A browser page that needs a user, asked for with none, saves itself as the screen to come back to and redirects

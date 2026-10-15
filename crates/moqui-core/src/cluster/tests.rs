@@ -169,7 +169,7 @@ fn first_start_upserts_one_member_and_does_not_post() {
     let members = super::load_members(&facade).unwrap();
     assert_eq!(members.len(), 1);
     assert_eq!(members[0].instance_id, "inst-first");
-    assert_eq!(members[0].base_url, "https://127.0.0.1:8443");
+    assert_eq!(members[0].base_url, "https://127.0.0.1:8444");
     assert!(sync::lock(&recording.calls).is_empty());
 }
 
@@ -186,7 +186,7 @@ fn commit_posts_once_and_remote_apply_does_not_repost() {
     put_member(
         &facade,
         "inst-peer",
-        "https://peer.example:8443/",
+        "https://peer.example:8444/",
         now_value(),
         &fingerprints.session,
         &fingerprints.cert,
@@ -201,11 +201,11 @@ fn commit_posts_once_and_remote_apply_does_not_repost() {
     assert!(super::wait_for_sends(ctx.factory(), Duration::from_secs(5)));
     let calls = sync::lock(&recording.calls);
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].base, "https://peer.example:8443");
+    assert_eq!(calls[0].base, "https://peer.example:8444");
     assert_eq!(calls[0].topic, "entity-cache-invalidate");
     assert_eq!(
         format!("{}/cluster/{}", calls[0].base, calls[0].topic),
-        "https://peer.example:8443/cluster/entity-cache-invalidate"
+        "https://peer.example:8444/cluster/entity-cache-invalidate"
     );
     let json: serde_json::Value = serde_json::from_slice(&calls[0].payload).unwrap();
     assert_eq!(json["origin_id"], notify::origin_id());
@@ -237,8 +237,8 @@ fn a_second_factory_does_not_post_through_the_first_ones_sender() {
     let (second, second_facade) = open_facade();
     let second_recording = install_recording(second.factory());
     for (ctx, facade, peer) in [
-        (&first, &first_facade, "https://first-peer.example:8443"),
-        (&second, &second_facade, "https://second-peer.example:8443"),
+        (&first, &first_facade, "https://first-peer.example:8444"),
+        (&second, &second_facade, "https://second-peer.example:8444"),
     ] {
         let _entered = ctx.enter();
         let _authz = ctx.disable_authz();
@@ -262,7 +262,7 @@ fn a_second_factory_does_not_post_through_the_first_ones_sender() {
     assert!(sync::lock(&first_recording.calls).is_empty());
     let calls = sync::lock(&second_recording.calls);
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].base, "https://second-peer.example:8443");
+    assert_eq!(calls[0].base, "https://second-peer.example:8444");
 }
 
 #[test]
@@ -277,7 +277,7 @@ fn a_live_peer_with_a_different_fingerprint_fails_start() {
     put_member(
         &facade,
         "inst-other-session",
-        "https://peer.example:8443",
+        "https://peer.example:8444",
         now_value(),
         "different-session",
         &fingerprints.cert,
@@ -293,7 +293,7 @@ fn a_live_peer_with_a_different_fingerprint_fails_start() {
     put_member(
         &facade,
         "inst-other-cert",
-        "https://peer.example:8443",
+        "https://peer.example:8444",
         now_value(),
         &fingerprints.session,
         "different-cert",
