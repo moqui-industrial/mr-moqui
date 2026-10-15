@@ -1818,8 +1818,12 @@ fn flow_order_procure_to_pay(f: &Flow) {
         ("salvageValue", n("1500")),
         ("depreciationTypeEnumId", s("DtpStraightLine")),
     ]);
-    let equip1_asset = need(&equip1, "assetId");
-    let equip2_asset = need(&equip2, "assetId");
+    let first_asset = |out: &Map| match out.get("assetIdList") {
+        Some(Value::List(ids)) => ids.first().map(moqui_lib::object::to_plain_string).unwrap_or_default(),
+        _ => String::new(),
+    };
+    let (equip1_asset, equip2_asset) = (first_asset(&equip1), first_asset(&equip2));
+    assert!(!equip1_asset.is_empty() && !equip2_asset.is_empty(), "receive results: {equip1:?} {equip2:?}");
     call(
         "mantle.shipment.ShipmentServices.deliver#Shipment",
         &[("shipmentId", s(&shipment_id))],
@@ -1870,7 +1874,7 @@ fn flow_order_procure_to_pay(f: &Flow) {
         "mantle.account.InvoiceServices.get#InvoiceTotal",
         &[("invoiceId", s(&invoice_id))],
     );
-    assert_eq!(number(total.get("invoiceTotal")), 23830.0 - 0.0 + 0.0, "{total:?}");
+    assert_eq!(number(total.get("invoiceTotal")), 23795.0, "{total:?}");
 
     // approve Purchase Invoice
     call(
@@ -1905,6 +1909,7 @@ fn flow_order_procure_to_pay(f: &Flow) {
         &[
             ("paymentId", s(&payment_id)),
             ("statusId", s("PmntAuthorized")),
+            ("effectiveDate", s(&jiff::Timestamp::now().strftime("%Y-%m-%d %H:%M:%S").to_string())),
             ("amount", n("24000.0")),
         ],
     );

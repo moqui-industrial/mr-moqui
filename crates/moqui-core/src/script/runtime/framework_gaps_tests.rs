@@ -258,6 +258,8 @@ fn verified_host_behaviors() {
     holds(
         r#"ec.l10n.format("1791979200000", "yyMMdd") === "261014" || ec.l10n.format("1791979200000", "yyMMdd") === "261015""#,
     );
+    // a date held as text, as a script keeps one from a Date parameter
+    holds(r#"ec.l10n.format("2026-10-16", "yyMMdd") === "261016" && ec.l10n.format("2026-10-16 08:30:00", "yyMMdd") === "261016""#);
     holds(
         r##"ec.l10n.format(toDecimal("2.5"), "0.00") === "2.50" && ec.l10n.format(toDecimal("1234.567"), "#,##0.00") === "1,234.57""##,
     );

@@ -256,10 +256,31 @@ fn epoch_millis_timestamp(value: &Value) -> Option<Value> {
         Value::I64(millis) => *millis,
         Value::I32(millis) => i64::from(*millis),
         Value::F64(millis) if millis.fract() == 0.0 => *millis as i64,
-        Value::String(text) => text.trim().parse::<i64>().ok()?,
+        Value::String(text) => match text.trim().parse::<i64>() {
+            Ok(millis) => millis,
+            // A script holds a date as text such as `2026-10-16` or `2026-10-16 08:30:00`, which the date pattern formats.
+            Err(_) if is_date_text(text) => {
+                // Date only text is a Date, which has no time zone to shift it.
+                let java_type = if text.trim().len() == 10 { "java.sql.Date" } else { "java.sql.Timestamp" };
+                let converted = moqui_lib::object::basic_convert(value, java_type);
+                return (!matches!(converted.value, Value::Null | Value::String(_))).then_some(converted.value);
+            }
+            Err(_) => return None,
+        },
         _ => return None,
     };
     Some(moqui_lib::object::basic_convert(&Value::I64(millis), "java.sql.Timestamp").value)
+}
+
+/// Text that begins `yyyy-MM-dd`.
+fn is_date_text(text: &str) -> bool {
+    let bytes = text.trim().as_bytes();
+    bytes.len() >= 10
+        && bytes[..4].iter().all(u8::is_ascii_digit)
+        && bytes[4] == b'-'
+        && bytes[5..7].iter().all(u8::is_ascii_digit)
+        && bytes[7] == b'-'
+        && bytes[8..10].iter().all(u8::is_ascii_digit)
 }
 
 fn currency(
