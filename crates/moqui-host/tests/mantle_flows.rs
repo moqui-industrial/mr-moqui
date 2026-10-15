@@ -1074,6 +1074,8 @@ fn original_order(f: &Flow) -> String {
     if let Some((order, _)) = known {
         return order;
     }
+    // as in the suite, after AssetReservationMultipleThreads and OrderProcureToPayBasicFlow
+    ensure_procure_to_pay_flow(f);
     let mut st = O2c::default();
     o2c_core(f, &mut st);
     st.order_id
@@ -1575,7 +1577,7 @@ fn flow_return_to_response(f: &Flow) {
         &[("returnId", s(&return_id))],
     );
     logout();
-    let ret = one(f, "mantle.order.return.Return", &[("returnId", &return_id)]).unwrap();
+    let ret = one(f, "mantle.order.return.ReturnHeader", &[("returnId", &return_id)]).unwrap();
     assert_eq!(text(&ret, "statusId"), "ReturnRequested");
 
     // approve Return
@@ -1586,7 +1588,7 @@ fn flow_return_to_response(f: &Flow) {
     );
     assert_eq!(
         text(
-            &one(f, "mantle.order.return.Return", &[("returnId", &return_id)]).unwrap(),
+            &one(f, "mantle.order.return.ReturnHeader", &[("returnId", &return_id)]).unwrap(),
             "statusId"
         ),
         "ReturnApproved"
@@ -1613,7 +1615,7 @@ fn flow_return_to_response(f: &Flow) {
     );
 
     // validate Return Completed
-    let ret = one(f, "mantle.order.return.Return", &[("returnId", &return_id)]).unwrap();
+    let ret = one(f, "mantle.order.return.ReturnHeader", &[("returnId", &return_id)]).unwrap();
     assert_eq!(text(&ret, "statusId"), "ReturnCompleted");
     let items = list(f, "mantle.order.return.ReturnItem", &[("returnId", &return_id)]);
     assert!(

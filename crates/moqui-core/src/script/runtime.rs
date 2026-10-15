@@ -629,8 +629,10 @@ fn expand_here(ctx: &Ctx<'_>, template: &str) -> Result<String, Error> {
 }
 
 /// A script that runs a service that runs a script needs its own runtime: a `Context::with`
-/// cannot be entered again while it is held. Each nesting level gets one, kept for reuse.
-const MAX_SCRIPT_DEPTH: usize = 16;
+/// cannot be entered again while it is held. Each nesting level gets one, kept for reuse. A chain of Mantle services
+/// from a shipment delivery to a ledger posting nests about 20 deep; the stack budget ([`stack_budget`]) is what stops
+/// runaway recursion, so this only bounds the number of engines.
+const MAX_SCRIPT_DEPTH: usize = 64;
 
 struct DepthGuard;
 
