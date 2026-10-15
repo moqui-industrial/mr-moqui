@@ -879,7 +879,21 @@ fn o2c_refund_overpayment(f: &Flow, st: &mut O2c) {
 
 /// QOH minus ATP of an asset equals its reservations, the invariant the inventory features check.
 fn reservation_invariant(f: &Flow, asset_id: &str) {
-    let summary = one(f, "mantle.product.asset.AssetDetailSummary", &[("assetId", asset_id)]).expect("summary");
+    // AssetDetailSummary sums, so only the two totals are selected, as the Spock file does
+    let summary = f
+        .facade
+        .find("mantle.product.asset.AssetDetailSummary")
+        .unwrap()
+        .eq("assetId", s(asset_id))
+        .select_field("availableToPromiseTotal")
+        .select_field("quantityOnHandTotal")
+        .list()
+        .unwrap()
+        .values()
+        .first()
+        .expect("summary")
+        .fields()
+        .clone();
     let reserved: f64 = list(f, "mantle.product.issuance.AssetReservation", &[("assetId", asset_id)])
         .iter()
         .map(|r| number(r.get("quantity")))
