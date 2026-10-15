@@ -276,6 +276,25 @@ mod tests {
     }
 
     #[test]
+    fn iterate_continue_advances_to_the_next_entry() {
+        clear_context_stack();
+        run_actions(
+            r#"<actions>
+                <set field="seen" from="[]"/>
+                <iterate list="[1, 2, 3, 4]" entry="n">
+                    <if condition="n % 2 == 0"><continue/></if>
+                    <script>seen.push(n)</script>
+                </iterate>
+                <set field="seenText" from="seen.join(',')"/>
+            </actions>"#,
+        )
+        .unwrap();
+        let text =
+            crate::script::context_value("seenText").map(|value| moqui_lib::object::to_plain_string(&value));
+        assert_eq!(text.as_deref(), Some("1,3"));
+    }
+
+    #[test]
     fn list_helpers_and_the_condition_factory_run() {
         clear_context_stack();
         run_actions(

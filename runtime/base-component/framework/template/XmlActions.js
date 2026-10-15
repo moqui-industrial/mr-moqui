@@ -227,11 +227,10 @@
                 var ${local} = ${list};
                 var ${entry}_index = 0;
                 ${setup}
-                while (${entry}_index < ${limit}) {
+                for (; ${entry}_index < ${limit}; ${entry}_index = ${entry}_index + 1) {
                     ${assign}
                     ${entry}_has_next = (${entry}_index + 1) < ${limit};
                     ${body}
-                    ${entry}_index = ${entry}_index + 1;
                 }
             }
         `;

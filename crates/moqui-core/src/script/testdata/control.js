@@ -11,11 +11,10 @@
         var _row_list = rows;
         var row_index = 0;
         var row_len = (typeof _row_list.length === "number") ? _row_list.length : 0;
-        while (row_index < row_len) {
+        for (; row_index < row_len; row_index = row_index + 1) {
             row = (typeof _row_list.get === "function") ? _row_list.get(row_index) : _row_list[row_index];
             row_has_next = (row_index + 1) < row_len;
             n = row;
-            row_index = row_index + 1;
         }
     }
     return;
