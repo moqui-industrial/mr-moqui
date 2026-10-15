@@ -16,7 +16,7 @@ use std::path::PathBuf;
 
 use serde_json::{json, Value as Json};
 
-use super::{handle, handle_op};
+use super::{guarded, handle, handle_op};
 
 fn call(request: &Json) -> Json {
     serde_json::from_str(&handle(&request.to_string())).unwrap()
@@ -109,5 +109,26 @@ fn json_requests_boot_load_call_render_and_find() {
             text: "subscribe:ALL".to_string(),
         }]
     );
+
+    // A panic is an error response, and the state it may have broken is gone.
+    let panicked: Json = serde_json::from_str(&guarded(|| panic!("boom"))).unwrap();
+    assert_eq!(panicked["ok"], json!(false));
+    assert!(
+        panicked["error"].as_str().unwrap().starts_with("panic: boom"),
+        "{panicked}"
+    );
+    let after = call(&json!({ "op": "find", "entity": "moqui.test.TestEntity" }));
+    assert!(after["error"].as_str().unwrap().contains("init has not run"), "{after}");
     let _ = std::fs::remove_dir_all(&runtime);
+}
+
+#[test]
+fn a_panic_is_an_error_response() {
+    let text: Json = serde_json::from_str(&guarded(|| panic!("{}", String::from("formatted")))).unwrap();
+    assert_eq!(text["ok"], json!(false));
+    assert!(
+        text["error"].as_str().unwrap().starts_with("panic: formatted"),
+        "{text}"
+    );
+    assert_eq!(guarded(|| "fine".to_string()), "fine");
 }

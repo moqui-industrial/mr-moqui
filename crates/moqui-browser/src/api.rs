@@ -33,8 +33,10 @@
 //!
 //! The state is per thread: the browser module has one.
 
+use std::any::Any;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -51,16 +53,53 @@ thread_local! {
 }
 
 /// Handle one JSON request and return the JSON response text.
+///
+/// A panic is caught here, since one that unwinds into an `extern "C"` export aborts the module. The response is
+/// `{"ok":false,"error":"panic: ..."}`, and the browser state, which the panic may have left half-updated, is dropped,
+/// so the next request must `init` again.
 pub fn handle(request: &str) -> String {
-    let response = match serde_json::from_str::<Json>(request) {
-        Ok(Json::Object(fields)) => match dispatch(&fields) {
-            Ok(result) => json!({ "ok": true, "result": result }),
-            Err(err) => json!({ "ok": false, "error": error_text(&err) }),
-        },
-        Ok(_) => json!({ "ok": false, "error": "the request is not a JSON object" }),
-        Err(err) => json!({ "ok": false, "error": format!("the request is not JSON: {err}") }),
+    guarded(|| {
+        let response = match serde_json::from_str::<Json>(request) {
+            Ok(Json::Object(fields)) => match dispatch(&fields) {
+                Ok(result) => json!({ "ok": true, "result": result }),
+                Err(err) => json!({ "ok": false, "error": error_text(&err) }),
+            },
+            Ok(_) => json!({ "ok": false, "error": "the request is not a JSON object" }),
+            Err(err) => json!({ "ok": false, "error": format!("the request is not JSON: {err}") }),
+        };
+        response.to_string()
+    })
+}
+
+/// `body`'s response, or the `panic: ...` error response when it panics, after the browser state is dropped.
+fn guarded(body: impl FnOnce() -> String) -> String {
+    let payload = match catch_unwind(AssertUnwindSafe(body)) {
+        Ok(response) => return response,
+        Err(payload) => payload,
     };
-    response.to_string()
+    let message = panic_text(payload.as_ref());
+    tracing::error!(panic = %message, "a browser request panicked; the state is reset");
+    // Dropping a half-updated host can panic in turn; it is then leaked rather than let unwind.
+    let dropped = catch_unwind(|| BROWSER.with(|slot| slot.borrow_mut().take()));
+    match dropped {
+        Ok(browser) => {
+            if catch_unwind(AssertUnwindSafe(move || drop(browser))).is_err() {
+                tracing::error!("the browser state panicked while it was dropped");
+            }
+        }
+        Err(_) => tracing::error!("the browser state could not be taken after a panic"),
+    }
+    json!({ "ok": false, "error": format!("panic: {message}; the state was reset, run init again") }).to_string()
+}
+
+fn panic_text(payload: &(dyn Any + Send)) -> String {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        (*text).to_string()
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "a non-text panic payload".to_string()
+    }
 }
 
 /// [`handle`] with `op` set, for the per-operation exports.

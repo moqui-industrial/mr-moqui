@@ -96,6 +96,12 @@ pub unsafe extern "C" fn moqui_request(ptr: *const u8, len: usize) -> u32 {
     hold(handle(&unsafe { request(ptr, len) }))
 }
 
+/// `body`'s value, or `fallback`'s when it panics. A panic must not unwind out of an `extern "C"` export, which aborts
+/// the module. The JSON exports go through `handle`, which catches its own.
+fn or_on_panic<T>(fallback: impl FnOnce() -> T, body: impl FnOnce() -> T) -> T {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).unwrap_or_else(|_| fallback())
+}
+
 /// The `{ok: false}` response for a call that arrived while another was suspended.
 fn refused(err: &moqui_lib::error::Error) -> String {
     serde_json::json!({ "ok": false, "error": err.to_string() }).to_string()
@@ -141,29 +147,39 @@ pub unsafe extern "C" fn moqui_ws_binary(conn_ptr: *const u8, conn_len: usize, p
         // SAFETY: the caller wrote `len` bytes at `ptr` from moqui_alloc.
         unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec()
     };
-    moqui_browser::ws::deliver_binary(&conn, bytes)
+    or_on_panic(|| 0, || moqui_browser::ws::deliver_binary(&conn, bytes))
 }
 
 /// Outbound WebSocket frames waiting. The worker drains when this is not 0.
 #[no_mangle]
 pub extern "C" fn moqui_ws_outbox_len() -> u32 {
-    u32::try_from(moqui_browser::ws::outbox_len()).unwrap_or(u32::MAX)
+    or_on_panic(
+        || 0,
+        || u32::try_from(moqui_browser::ws::outbox_len()).unwrap_or(u32::MAX),
+    )
 }
 
 /// Take every outbound frame. The result handle holds a JSON list of `{conn, text}` and
 /// `{conn, binary}`, where `binary` is another result handle with the frame bytes. Free them all.
 #[no_mangle]
 pub extern "C" fn moqui_ws_drain() -> u32 {
-    let frames: Vec<serde_json::Value> = moqui_browser::ws::take_outbox()
-        .into_iter()
-        .map(|frame| match frame {
-            moqui_browser::ws::Outbound::Text { conn, text } => serde_json::json!({ "conn": conn, "text": text }),
-            moqui_browser::ws::Outbound::Binary { conn, bytes } => {
-                serde_json::json!({ "conn": conn, "binary": hold_bytes(bytes) })
-            }
-        })
-        .collect();
-    hold(serde_json::Value::Array(frames).to_string())
+    or_on_panic(
+        || hold("[]".to_string()),
+        || {
+            let frames: Vec<serde_json::Value> = moqui_browser::ws::take_outbox()
+                .into_iter()
+                .map(|frame| match frame {
+                    moqui_browser::ws::Outbound::Text { conn, text } => {
+                        serde_json::json!({ "conn": conn, "text": text })
+                    }
+                    moqui_browser::ws::Outbound::Binary { conn, bytes } => {
+                        serde_json::json!({ "conn": conn, "binary": hold_bytes(bytes) })
+                    }
+                })
+                .collect();
+            hold(serde_json::Value::Array(frames).to_string())
+        },
+    )
 }
 
 /// Where the response bytes for `handle` start, or null for an unknown handle.
