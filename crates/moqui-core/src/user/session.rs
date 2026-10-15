@@ -538,13 +538,11 @@ pub fn session_attributes() -> BTreeMap<String, String> {
 }
 
 /// One session attribute as text. Maps and lists are returned as JSON.
-#[allow(dead_code)] // The library target does not compile the session test that calls this.
 pub fn session_attribute(name: &str) -> Option<String> {
     with_session(|session| attribute_text(session.attributes.get(name)))
 }
 
 /// Replace one session attribute. `None` removes it.
-#[allow(dead_code)] // The library target does not compile the session test that calls this.
 pub fn set_session_attribute(name: &str, value: Option<&str>) {
     with_session(|session| match value {
         Some(text) => put_json(session, name, Json::String(text.to_string())),
@@ -697,7 +695,7 @@ pub fn set_time_zone(time_zone: Option<&str>) {
     });
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn add_flash_message(message: &str) {
     add_flash_message_typed(message, "info");
 }
@@ -792,7 +790,6 @@ pub fn take_saved_for_page() -> SavedForPage {
     })
 }
 
-#[allow(dead_code)]
 pub fn save_parameter(name: &str, value: &str) {
     with_session(|session| {
         session.saved.insert(name.to_string(), value.to_string());
@@ -801,7 +798,6 @@ pub fn save_parameter(name: &str, value: &str) {
     });
 }
 
-#[allow(dead_code)]
 pub fn set_error_parameter(name: &str, value: &str) {
     with_session(|session| {
         session.errors.insert(name.to_string(), value.to_string());
@@ -810,7 +806,6 @@ pub fn set_error_parameter(name: &str, value: &str) {
     });
 }
 
-#[allow(dead_code)]
 pub fn push_screen_history(screen: &str) {
     with_session(|session| {
         // Newest first, without repeats, and no more than 40.
@@ -963,7 +958,7 @@ pub(crate) fn restore_identity(identity: &Identity) {
     });
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn reset_session() {
     with_session(|session| *session = Memory::default());
 }

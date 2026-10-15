@@ -28,7 +28,6 @@ use crate::entity::{EntityFacade, EntityValue};
 
 const USER_ACCOUNT: &str = "moqui.security.UserAccount";
 const USER_LOGIN_KEY: &str = "moqui.security.UserLoginKey";
-#[allow(dead_code)] // Used by change_password, which the library reaches only from tests.
 const PASSWORD_HISTORY: &str = "moqui.security.UserPasswordHistory";
 const INVALID_LOGIN: &str = "The username or password is not valid";
 const WEEK_MILLIS: i64 = 7 * 24 * 60 * 60 * 1000;
@@ -556,7 +555,6 @@ fn password_ok(account: &EntityValue, password: &str) -> Result<bool, Error> {
     )
 }
 
-#[allow(dead_code)]
 fn reject_history(
     facade: &EntityFacade,
     account: &EntityValue,
@@ -584,7 +582,6 @@ fn reject_history(
     Ok(())
 }
 
-#[allow(dead_code)]
 fn remember_history(facade: &EntityFacade, account: &EntityValue, user_id: &str) -> Result<(), Error> {
     let mut row = facade.make_value(PASSWORD_HISTORY)?;
     row.set("userId", Value::string(user_id));
@@ -599,7 +596,6 @@ fn remember_history(facade: &EntityFacade, account: &EntityValue, user_id: &str)
     Ok(())
 }
 
-#[allow(dead_code)]
 fn trim_history(facade: &EntityFacade, user_id: &str) -> Result<(), Error> {
     let rows = facade
         .find(PASSWORD_HISTORY)?
@@ -635,7 +631,6 @@ fn update_user(facade: &EntityFacade, user_id: &str, fields: &[(&str, Value)]) -
     Ok(())
 }
 
-#[allow(dead_code)]
 fn mark_logged_out(facade: &EntityFacade, user_id: &str) -> Result<(), Error> {
     update_user(facade, user_id, &[("hasLoggedOut", Value::string("Y"))])
 }

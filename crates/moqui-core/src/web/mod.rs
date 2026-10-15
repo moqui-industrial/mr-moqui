@@ -447,8 +447,6 @@ pub(crate) fn start_output(status: u16, content_type: &str) -> bool {
 }
 
 /// Append text to the open body. Nothing happens before [`start_output`].
-// The macro walker writes through this from slice 2.
-#[allow(dead_code)]
 pub(crate) fn write_output(text: &str) {
     WEB.with(|slot| {
         if let Some(web) = slot.borrow_mut().as_mut() {

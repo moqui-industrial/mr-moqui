@@ -59,7 +59,6 @@ pub(crate) fn password_hash_type() -> String {
     conf_text("password", "encrypt-hash-type", "SHA-256")
 }
 
-#[allow(dead_code)]
 pub(crate) fn login_key_hash_type() -> String {
     conf_text("login-key", "encrypt-hash-type", "SHA-256")
 }
