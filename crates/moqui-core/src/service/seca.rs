@@ -27,6 +27,7 @@ use crate::context::Error;
 
 #[derive(Clone, Debug)]
 pub(super) struct SecaRule {
+    id: String,
     service_plain: String,
     when_name: String,
     name_is_pattern: bool,
@@ -62,10 +63,11 @@ pub fn run_seca_rules(
             }
             crate::script::set_context_name("results", Value::Map(to_index_map(results)))?;
         }
-        if !super::rule_actions::condition_allows(&rule.condition)? {
+        let in_rule = |err: Error| Error::new(format!("service ECA {} on {when} of {service}: {}", rule.id, err.message()));
+        if !super::rule_actions::condition_allows(&rule.condition).map_err(in_rule)? {
             continue;
         }
-        super::rule_actions::run_stored_actions(&rule.actions)?;
+        super::rule_actions::run_stored_actions(&rule.actions).map_err(in_rule)?;
     }
     Ok(())
 }
@@ -136,6 +138,7 @@ fn to_index_map(values: &BTreeMap<String, Value>) -> indexmap::IndexMap<String, 
 pub(super) fn seca_rule_from(node: &MNode) -> SecaRule {
     let service = node.attribute("service").unwrap_or_default();
     SecaRule {
+        id: node.attribute("id").unwrap_or_default(),
         service_plain: service.replace('#', ""),
         when_name: node.attribute("when").unwrap_or_default(),
         name_is_pattern: node.attribute("name-is-pattern").as_deref() == Some("true"),

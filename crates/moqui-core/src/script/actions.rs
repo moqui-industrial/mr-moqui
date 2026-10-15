@@ -342,13 +342,15 @@ mod tests {
     }
 
     #[test]
-    fn multi_line_condition_expression() {
+    fn condition_element_expression_may_span_lines() {
         use moqui_lib::object::Value as V;
-        for (n, v) in [("a", V::Bool(true)), ("b", V::string("x")), ("c", V::string("z"))] {
-            crate::script::set_context_name(n, v).unwrap();
+        for (name, value) in [("multiA", V::Bool(true)), ("multiB", V::string("x"))] {
+            crate::script::set_context_name(name, value).unwrap();
         }
-        let xml = "<condition><expression>a &amp;&amp; (\n  (['x', 'y'].includes(b) &amp;&amp; c == 'z') ||\n  (b == 'q'))</expression></condition>";
+        let xml = "<condition><expression>multiA &amp;&amp; (\n  (['x', 'y'].includes(multiB) &amp;&amp; multiA) ||\n  (multiB == 'q'))</expression></condition>";
         assert!(super::eval_condition_element(xml).unwrap());
+        crate::script::set_context_name("multiB", V::string("n")).unwrap();
+        assert!(!super::eval_condition_element(xml).unwrap());
     }
 
     #[test]

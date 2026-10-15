@@ -2541,12 +2541,10 @@ flow_test!(
     flow_return_to_response,
     "ReturnToResponseBasicFlow: runs OrderToCashBasicFlow's order first, so fails at the same service"
 );
-flow_test!(
-    work_plan_to_cash_basic_flow,
-    "WorkPlanToCashBasicFlow",
-    flow_work_plan_to_cash,
-    "WorkPlanToCashBasicFlow: first failing service mantle.party.ContactServices.store#PartyContactInfo (calls create#TelecomNumber, not registered)"
-);
+#[test]
+fn work_plan_to_cash_basic_flow() {
+    with_flow("WorkPlanToCashBasicFlow", flow_work_plan_to_cash);
+}
 #[test]
 fn accounting_activities() {
     with_flow("AccountingActivities", flow_accounting_activities);
