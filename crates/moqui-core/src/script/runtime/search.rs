@@ -41,7 +41,7 @@
 //! ```
 //!
 //! `retrieval: "hybrid"` or `"semantic"` with `text`, `k`, `weights`, `fuzzyBelow`, and `qualityBoost`
-//! fuses branches (`search::hybrid`). `rank: "coverDensity"` ranks with the `searchWeight` field weights. `consistency: "readYourWrites"` waits up to `freshTimeout` milliseconds (default 5000) for this
+//! fuses branches (`search::hybrid`). `rank: "coverDensity"` ranks with the `searchWeight` field weights. `consistency: "readYourWrites"` waits up to `freshTimeout` milliseconds (default 5000, at most 60000) for this
 //! session's writes to be indexed and, with a read replica, replayed there; see `search::fresh`.
 
 use super::*;
@@ -257,14 +257,21 @@ fn retrieval(ctx: &Ctx<'_>, map: &indexmap::IndexMap<String, Value>) -> rquickjs
     }
 }
 
-/// The read-your-writes deadline from `consistency` and `freshTimeout`.
+/// The longest a read-your-writes search waits, in milliseconds: the wait holds a request worker.
+const MAX_FRESH_TIMEOUT: u64 = 60_000;
+
+/// The read-your-writes deadline from `consistency` and `freshTimeout`, which is at most [`MAX_FRESH_TIMEOUT`].
 fn fresh_by(map: &indexmap::IndexMap<String, Value>) -> Option<std::time::Instant> {
     let consistency = map.get("consistency").map(moqui_lib::object::to_plain_string)?;
     if !consistency.eq_ignore_ascii_case("readYourWrites") {
         return None;
     }
-    let millis = number(map.get("freshTimeout"), 5000);
-    Some(std::time::Instant::now() + std::time::Duration::from_millis(u64::try_from(millis).unwrap_or(5000)))
+    let millis = u64::try_from(number(map.get("freshTimeout"), 5000)).unwrap_or(MAX_FRESH_TIMEOUT);
+    let now = std::time::Instant::now();
+    Some(
+        now.checked_add(std::time::Duration::from_millis(millis.min(MAX_FRESH_TIMEOUT)))
+            .unwrap_or(now),
+    )
 }
 
 pub(super) fn search_embed_pending<'js>(ctx: Ctx<'js>, args: JsValue<'js>) -> rquickjs::Result<JsValue<'js>> {
@@ -530,4 +537,25 @@ pub(super) fn entity_get_data_documents<'js>(
         )?;
         host_to_js(&ctx, Value::List(documents.into_iter().map(Value::Map).collect()))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fresh_by, MAX_FRESH_TIMEOUT};
+    use moqui_lib::object::Value;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_huge_fresh_timeout_waits_at_most_the_maximum() {
+        let mut map = indexmap::IndexMap::new();
+        map.insert("consistency".to_string(), Value::string("readYourWrites"));
+        map.insert("freshTimeout".to_string(), Value::string("18446744073709551615"));
+        let before = Instant::now();
+        let deadline = fresh_by(&map).expect("a deadline");
+        assert!(deadline <= Instant::now() + Duration::from_millis(MAX_FRESH_TIMEOUT));
+        assert!(deadline >= before + Duration::from_millis(MAX_FRESH_TIMEOUT));
+        map.insert("freshTimeout".to_string(), Value::I32(250));
+        let deadline = fresh_by(&map).expect("a deadline");
+        assert!(deadline <= Instant::now() + Duration::from_millis(250));
+    }
 }

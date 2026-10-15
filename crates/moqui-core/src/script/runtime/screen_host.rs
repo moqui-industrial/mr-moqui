@@ -117,9 +117,15 @@ pub(super) fn lit_of(ctx: &Ctx<'_>, value: &JsValue<'_>) -> rquickjs::Result<Nod
 }
 
 fn lit(ctx: &Ctx<'_>, value: &JsValue<'_>) -> rquickjs::Result<NodeLit> {
+    lit_in(ctx, value, &mut Vec::new())
+}
+
+/// `path` holds the element objects above this one, through `children` and `parent`.
+fn lit_in<'js>(ctx: &Ctx<'_>, value: &JsValue<'js>, path: &mut Vec<JsValue<'js>>) -> rquickjs::Result<NodeLit> {
     let Some(object) = value.as_object() else {
         return Err(Exception::throw_message(ctx, "expected an element object"));
     };
+    enter_nested(path, value).map_err(|err| Exception::throw_message(ctx, err.message()))?;
     let mut node = NodeLit::default();
     if let Ok(name) = object.get::<_, String>("name") {
         node.name = name;
@@ -135,14 +141,15 @@ fn lit(ctx: &Ctx<'_>, value: &JsValue<'_>) -> rquickjs::Result<NodeLit> {
     }
     if let Ok(children) = object.get::<_, Array>("children") {
         for item in children.iter::<JsValue>() {
-            node.children.push(lit(ctx, &item?)?);
+            node.children.push(lit_in(ctx, &item?, path)?);
         }
     }
     if let Ok(parent) = object.get::<_, JsValue>("parent") {
         if parent.is_object() {
-            node.parent = Some(Box::new(lit(ctx, &parent)?));
+            node.parent = Some(Box::new(lit_in(ctx, &parent, path)?));
         }
     }
+    path.pop();
     Ok(node)
 }
 

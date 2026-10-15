@@ -16,7 +16,21 @@
 
 use super::*;
 
+/// How deep a script value may nest, in arrays, objects and Sets, when it becomes a host value.
+/// Context data rarely nests past a few levels and parsed JSON stops at 128; the limit keeps a
+/// deep or cyclic value from overflowing the native stack.
+pub(super) const MAX_NESTING: usize = 200;
+
+/// How deep a host value may nest when it becomes a script value. A host value cannot be cyclic;
+/// this is a little above [`MAX_NESTING`] so a value a script stored still reads back inside the
+/// maps host code wraps it in.
+const MAX_HOST_NESTING: usize = MAX_NESTING + 56;
+
 pub(super) fn host_to_js<'js>(ctx: &Ctx<'js>, value: Value) -> rquickjs::Result<JsValue<'js>> {
+    host_to_js_at(ctx, value, 0)
+}
+
+fn host_to_js_at<'js>(ctx: &Ctx<'js>, value: Value, depth: usize) -> rquickjs::Result<JsValue<'js>> {
     match value {
         Value::Null => Null.into_js(ctx),
         Value::Bool(flag) => flag.into_js(ctx),
@@ -29,7 +43,7 @@ pub(super) fn host_to_js<'js>(ctx: &Ctx<'js>, value: Value) -> rquickjs::Result<
             class.into_js(ctx)
         }
         Value::Timestamp(_) | Value::Date(_) | Value::Time(_) => temporal_text(&value).into_js(ctx),
-        Value::List(_) | Value::Map(_) => collection_to_js(ctx, value),
+        Value::List(_) | Value::Map(_) => collection_to_js_at(ctx, value, depth),
         Value::Bytes(bytes) => {
             rquickjs::TypedArray::<u8>::new(ctx.clone(), bytes).map(rquickjs::TypedArray::into_value)
         }
@@ -74,7 +88,7 @@ pub(super) fn i64_to_js<'js>(ctx: &Ctx<'js>, number: i64) -> rquickjs::Result<Js
     if let Ok(small) = i32::try_from(number) {
         return small.into_js(ctx);
     }
-    if number.abs() > SAFE_INTEGER {
+    if number.unsigned_abs() > SAFE_INTEGER.unsigned_abs() {
         return Err(Exception::throw_message(
             ctx,
             "integer is too large for a script number; it would lose precision",
@@ -126,17 +140,25 @@ pub(super) fn js_i64(ctx: &Ctx<'_>, value: &JsValue<'_>) -> rquickjs::Result<i64
 }
 
 pub(super) fn collection_to_js<'js>(ctx: &Ctx<'js>, value: Value) -> rquickjs::Result<JsValue<'js>> {
+    collection_to_js_at(ctx, value, 0)
+}
+
+fn collection_to_js_at<'js>(ctx: &Ctx<'js>, value: Value, depth: usize) -> rquickjs::Result<JsValue<'js>> {
+    if depth >= MAX_HOST_NESTING && matches!(value, Value::List(_) | Value::Map(_)) {
+        return Err(Exception::throw_message(ctx, TOO_DEEP));
+    }
+    let depth = depth + 1;
     match value {
         Value::List(items) => {
             let array = rquickjs::Array::new(ctx.clone())?;
             for (index, item) in items.into_iter().enumerate() {
-                array.set(index, host_to_js(ctx, item)?)?;
+                array.set(index, host_to_js_at(ctx, item, depth)?)?;
             }
             Ok(array.into_value())
         }
         Value::Map(mut entries) if entries.len() == 1 && entries.contains_key(SET_KEY) => {
             let items = entries.swap_remove(SET_KEY).unwrap_or(Value::Null);
-            let array = collection_to_js(ctx, items)?;
+            let array = collection_to_js_at(ctx, items, depth)?;
             let constructor: rquickjs::Constructor = ctx.globals().get("Set")?;
             constructor.construct((array,))
         }
@@ -147,7 +169,7 @@ pub(super) fn collection_to_js<'js>(ctx: &Ctx<'js>, value: Value) -> rquickjs::R
             };
             let object = Object::new(ctx.clone())?;
             for (key, item) in entries {
-                object.set(key, host_to_js(ctx, item)?)?;
+                object.set(key, host_to_js_at(ctx, item, depth)?)?;
             }
             // A tools object keeps its data on the stack and gets its methods back when it is read (`tools_host`).
             if let Some(name) = wrap {
@@ -158,7 +180,7 @@ pub(super) fn collection_to_js<'js>(ctx: &Ctx<'js>, value: Value) -> rquickjs::R
             }
             Ok(object.into_value())
         }
-        other => host_to_js(ctx, other),
+        other => host_to_js_at(ctx, other, depth),
     }
 }
 
@@ -186,7 +208,25 @@ pub(super) fn js_bytes(object: &Object<'_>) -> Option<Vec<u8>> {
     unsafe { buffer.as_bytes() }.map(<[u8]>::to_vec)
 }
 
+/// The error for a value deeper than [`MAX_NESTING`], which a cyclic value always is.
+pub(super) const TOO_DEEP: &str = "value is cyclic or nested too deeply";
+
+/// Step into `value` on the way down a walk of nested script values. `path` holds the arrays,
+/// objects and Sets above it: a value already there is a cycle. A value shared by two branches
+/// is not on the path of either, so it converts once for each.
+pub(super) fn enter_nested<'js>(path: &mut Vec<JsValue<'js>>, value: &JsValue<'js>) -> Result<(), Error> {
+    if path.len() >= MAX_NESTING || path.contains(value) {
+        return Err(Error::new(TOO_DEEP));
+    }
+    path.push(value.clone());
+    Ok(())
+}
+
 pub(super) fn js_value_to_host(ctx: &Ctx<'_>, value: &JsValue<'_>) -> Result<Value, Error> {
+    js_value_to_host_in(ctx, value, &mut Vec::new())
+}
+
+fn js_value_to_host_in<'js>(ctx: &Ctx<'_>, value: &JsValue<'js>, path: &mut Vec<JsValue<'js>>) -> Result<Value, Error> {
     if value.is_null() || value.is_undefined() {
         return Ok(Value::Null);
     }
@@ -208,11 +248,13 @@ pub(super) fn js_value_to_host(ctx: &Ctx<'_>, value: &JsValue<'_>) -> Result<Val
         return Ok(Value::String(text));
     }
     if let Some(array) = value.as_array() {
+        enter_nested(path, value)?;
         let mut items = Vec::with_capacity(array.len());
         for item in array.iter::<JsValue>() {
             let item = item.map_err(|err| js_caught(ctx, err))?;
-            items.push(js_value_to_host(ctx, &item)?);
+            items.push(js_value_to_host_in(ctx, &item, path)?);
         }
+        path.pop();
         return Ok(Value::List(items));
     }
     if value.is_function() {
@@ -243,6 +285,7 @@ pub(super) fn js_value_to_host(ctx: &Ctx<'_>, value: &JsValue<'_>) -> Result<Val
         if let Some(class) = object.as_class::<HostUpload>() {
             return Ok(Value::Object(HostObject(class.borrow().inner.clone())));
         }
+        enter_nested(path, value)?;
         if is_js_set(object) {
             // The value's own context, so the lifetimes of the call agree.
             let own = value.ctx().clone();
@@ -250,7 +293,8 @@ pub(super) fn js_value_to_host(ctx: &Ctx<'_>, value: &JsValue<'_>) -> Result<Val
             let from: rquickjs::Function = array_constructor.get("from").map_err(|err| js_caught(ctx, err))?;
             let items: JsValue = from.call((value.clone(),)).map_err(|err| js_caught(ctx, err))?;
             let mut map = indexmap::IndexMap::new();
-            map.insert(SET_KEY.to_string(), js_value_to_host(ctx, &items)?);
+            map.insert(SET_KEY.to_string(), js_value_to_host_in(ctx, &items, path)?);
+            path.pop();
             return Ok(Value::Map(map));
         }
         // A method of the object is not data, so it is left out, as the unwrapped projection leaves out a function.
@@ -260,8 +304,9 @@ pub(super) fn js_value_to_host(ctx: &Ctx<'_>, value: &JsValue<'_>) -> Result<Val
             if item.is_function() {
                 continue;
             }
-            map.insert(key, js_value_to_host(ctx, &item)?);
+            map.insert(key, js_value_to_host_in(ctx, &item, path)?);
         }
+        path.pop();
         return Ok(Value::Map(map));
     }
     Err(Error::new("cannot convert this value"))

@@ -1064,8 +1064,8 @@ pub fn eval_map(expression: &str) -> Result<std::collections::BTreeMap<String, V
 #[cfg(test)]
 mod tests {
     use super::{
-        clear_context_stack, context_value, eval_condition, eval_source, expand, flush_current, js_error,
-        push_context_frame, run_script, set_context_name, with_ctx, STACK,
+        clear_context_stack, context_value, eval_condition, eval_source, eval_value, expand, flush_current,
+        js_error, push_context_frame, run_script, set_context_name, with_ctx, MAX_NESTING, STACK, TOO_DEEP,
     };
     use crate::context::{Error, ExecutionContextFactory};
     use moqui_lib::object::{basic_convert, Value};
@@ -1310,6 +1310,54 @@ mod tests {
         assert!(failed.message().contains("expecting"), "{}", failed.message());
         let thrown = run_script("throw new Error('boom ' + n)").unwrap_err();
         assert!(thrown.message().contains("boom 2"), "{}", thrown.message());
+        Ok(())
+    }
+
+    fn too_deep(outcome: Result<impl std::fmt::Debug, Error>) {
+        let err = outcome.expect_err("cyclic or too deep");
+        assert!(err.message().contains(TOO_DEEP), "{}", err.message());
+    }
+
+    #[test]
+    fn a_cyclic_or_too_deep_value_is_an_error() -> Result<(), Error> {
+        clear_context_stack();
+        too_deep(run_script("var a = {}; a.self = a; result = a;"));
+        too_deep(eval_value("(() => { var a = []; a.push(a); return a; })()"));
+        too_deep(eval_value("(() => { var s = new Set(); s.add([s]); return s; })()"));
+        too_deep(eval_value("(() => { var a = []; for (var i = 0; i < 100000; i++) a = [a]; return a; })()"));
+        too_deep(run_script("items = []; items.push(items);"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_shared_value_converts_once_for_each_place() -> Result<(), Error> {
+        clear_context_stack();
+        let value = eval_value("(() => { var s = {x: 1}; return {a: s, b: [s, s], c: new Set([s])}; })()")?;
+        let Value::Map(map) = value else { panic!("expected a map, got {value:?}") };
+        let Some(Value::List(both)) = map.get("b") else { panic!("expected a list, got {map:?}") };
+        assert_eq!(map.get("a"), both.get(1));
+        assert!(matches!(map.get("a"), Some(Value::Map(shared)) if shared.get("x") == Some(&Value::I32(1))));
+        let deepest = format!("(() => {{ var a = []; for (var i = 1; i < {MAX_NESTING}; i++) a = [a]; return a; }})()");
+        set_context_name("deep", eval_value(&deepest)?)?;
+        assert!(eval_condition("deep.length === 1 && deep[0][0].length === 1")?);
+        too_deep(run_script("wrapped = [deep];"));
+        let mut host = Value::List(Vec::new());
+        for _ in 0..1000 {
+            host = Value::List(vec![host]);
+        }
+        set_context_name("hostDeep", host)?;
+        too_deep(eval_condition("hostDeep.length === 1"));
+        Ok(())
+    }
+
+    #[test]
+    fn an_integer_past_the_safe_range_is_an_error() -> Result<(), Error> {
+        clear_context_stack();
+        set_context_name("smallest", Value::I64(i64::MIN))?;
+        let err = eval_condition("smallest < 0").expect_err("i64::MIN is not exact");
+        assert!(err.message().contains("too large"), "{}", err.message());
+        set_context_name("safe", Value::I64(-9_007_199_254_740_991))?;
+        assert!(eval_condition("safe === -Number.MAX_SAFE_INTEGER")?);
         Ok(())
     }
 }
