@@ -32,7 +32,6 @@ pub mod markdown;
 pub mod node;
 pub mod object;
 pub mod resource;
-pub mod sgml;
 pub mod signer;
 pub mod string;
 pub mod sync;

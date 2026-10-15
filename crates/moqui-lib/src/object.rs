@@ -30,7 +30,7 @@ use std::str::FromStr;
 use indexmap::IndexMap;
 use jiff::civil::{Date, DateTime, Time};
 use jiff::tz::{Offset, TimeZone};
-use jiff::{Timestamp, ToSpan};
+use jiff::Timestamp;
 use rust_decimal::Decimal;
 use rust_decimal::RoundingStrategy;
 
@@ -85,19 +85,6 @@ impl PartialEq for Value {
     }
 }
 
-/// Period units named by the `TF_*` UOM ids.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PeriodUnit {
-    Millis,
-    Seconds,
-    Minutes,
-    Hours,
-    Days,
-    Weeks,
-    Months,
-    Years,
-}
-
 /// Result of [`basic_convert`]. A failed conversion keeps the original value.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Converted {
@@ -127,37 +114,6 @@ impl Value {
             _ => None,
         }
     }
-}
-
-pub fn period_unit(uom_id: &str) -> Result<PeriodUnit, Error> {
-    match uom_id {
-        "TF_ms" => Ok(PeriodUnit::Millis),
-        "TF_s" => Ok(PeriodUnit::Seconds),
-        "TF_min" => Ok(PeriodUnit::Minutes),
-        "TF_hr" => Ok(PeriodUnit::Hours),
-        "TF_day" => Ok(PeriodUnit::Days),
-        "TF_wk" => Ok(PeriodUnit::Weeks),
-        "TF_mon" => Ok(PeriodUnit::Months),
-        "TF_yr" => Ok(PeriodUnit::Years),
-        _ => Err(Error::new(format!("no period unit for UOM id {uom_id}"))),
-    }
-}
-
-/// Add `count` of `unit` to a timestamp. Months and years use calendar arithmetic.
-pub fn add_period(timestamp: Timestamp, count: i64, unit: PeriodUnit) -> Result<Timestamp, Error> {
-    let zoned = timestamp.to_zoned(TimeZone::UTC);
-    let shifted = match unit {
-        PeriodUnit::Millis => zoned.checked_add(count.milliseconds()),
-        PeriodUnit::Seconds => zoned.checked_add(count.seconds()),
-        PeriodUnit::Minutes => zoned.checked_add(count.minutes()),
-        PeriodUnit::Hours => zoned.checked_add(count.hours()),
-        PeriodUnit::Days => zoned.checked_add(count.days()),
-        PeriodUnit::Weeks => zoned.checked_add(count.weeks()),
-        PeriodUnit::Months => zoned.checked_add(count.months()),
-        PeriodUnit::Years => zoned.checked_add(count.years()),
-    }
-    .map_err(|err| Error::new("could not add a period").with_source(err))?;
-    Ok(shifted.timestamp())
 }
 
 pub fn decimal_add(left: Decimal, right: Decimal) -> Result<Decimal, Error> {
@@ -283,8 +239,8 @@ pub fn compare(field: &Value, operator: &str, to_field: &Value, java_type: &str)
         "not-contains" => !to_plain_string(&field).contains(&to_plain_string(&to_field)),
         "empty" => is_empty(&field),
         "not-empty" => !is_empty(&field),
-        "matches" => regex_matches(&to_plain_string(&field), &to_plain_string(&to_field))?,
-        "not-matches" => !regex_matches(&to_plain_string(&field), &to_plain_string(&to_field))?,
+        "matches" => regex_full_match(&to_plain_string(&field), &to_plain_string(&to_field))?,
+        "not-matches" => !regex_full_match(&to_plain_string(&field), &to_plain_string(&to_field))?,
         "not-equals" => !java_equals(&field, &to_field),
         _ => java_equals(&field, &to_field),
     };
@@ -1008,14 +964,9 @@ fn like_match(text: &str, pattern: &str) -> bool {
     pattern[pi..].iter().all(|ch| *ch == '%')
 }
 
-/// Whether all of `text` matches the Java regular expression `pattern`, as `String.matches`.
-pub fn regex_matches(text: &str, pattern: &str) -> Result<bool, Error> {
-    regex_match::is_full_match(text, pattern)
-}
-
 /// True when `pattern` matches the whole `text`.
 pub fn regex_full_match(text: &str, pattern: &str) -> Result<bool, Error> {
-    regex_matches(text, pattern)
+    regex_match::is_full_match(text, pattern)
 }
 
 #[cfg(test)]
@@ -1140,13 +1091,6 @@ mod tests {
         let one_two = Decimal::from_str("1.00").unwrap();
         assert!(!java_equals(&Value::Decimal(one), &Value::Decimal(one_two)));
         assert_eq!(decimal_compare(one, one_two), Ordering::Equal);
-    }
-
-    #[test]
-    fn period_units_move_a_timestamp() {
-        let start = parse_timestamp("2020-01-31T00:00:00Z", &TimeZone::UTC).unwrap();
-        let next = add_period(start, 1, period_unit("TF_mon").unwrap()).unwrap();
-        assert_eq!(next.to_zoned(TimeZone::UTC).date(), Date::new(2020, 2, 29).unwrap());
     }
 
     #[test]

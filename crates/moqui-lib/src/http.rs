@@ -50,7 +50,7 @@ const MAX_REDIRECTS: usize = 5;
 /// `sim` is supplied by the caller. This does not look up a Moqui context.
 /// The call is allowed when `sim` is false. When `sim` is true it is denied
 /// unless `allow_in_sim` is true.
-pub fn sim_allows_http(sim: bool, allow_in_sim: bool) -> bool {
+fn sim_allows_http(sim: bool, allow_in_sim: bool) -> bool {
     !sim || allow_in_sim
 }
 

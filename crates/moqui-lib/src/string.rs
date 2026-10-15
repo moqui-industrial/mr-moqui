@@ -17,13 +17,6 @@
 //! Groovy class-name cleanup, DOM element text, Elastic query helpers, and
 //! `numberToWords` are not ported.
 
-use std::io::Read;
-
-use base64::engine::general_purpose::URL_SAFE;
-use base64::Engine;
-
-use crate::error::Error;
-
 /// Encode text for an XML attribute. Characters above ASCII become decimal
 /// character references. The control-character substitutions match
 /// `StringUtilities.encodeForXmlAttribute`.
@@ -62,62 +55,9 @@ pub fn encode_for_xml_attribute(original: &str, add_zero_width_spaces: bool) -> 
     out
 }
 
-/// Expand the five predefined entities and decimal or hex character references.
-///
-/// An unknown or broken entity is left in the text. This is the
-/// `StringUtilities.decodeFromXml` pass, which is separate from the XML parser.
-pub fn decode_from_xml(original: &str) -> String {
-    if !original.contains('&') {
-        return original.to_string();
-    }
-    let chars: Vec<char> = original.chars().collect();
-    let mut out = String::with_capacity(original.len());
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] != '&' {
-            out.push(chars[i]);
-            i += 1;
-            continue;
-        }
-        let Some(end) = chars[i + 1..].iter().position(|ch| *ch == ';') else {
-            out.push('&');
-            i += 1;
-            continue;
-        };
-        let body: String = chars[i + 1..i + 1 + end].iter().collect();
-        if let Some(ch) = entity_char(&body) {
-            out.push(ch);
-            i += end + 2;
-        } else {
-            out.push('&');
-            i += 1;
-        }
-    }
-    out
-}
-
-fn entity_char(body: &str) -> Option<char> {
-    match body {
-        "apos" => Some('\''),
-        "quot" => Some('"'),
-        "amp" => Some('&'),
-        "lt" => Some('<'),
-        "gt" => Some('>'),
-        _ => {
-            let digits = body.strip_prefix('#')?;
-            let code = if let Some(hex) = digits.strip_prefix('x').or_else(|| digits.strip_prefix('X')) {
-                u32::from_str_radix(hex, 16).ok()?
-            } else {
-                digits.parse().ok()?
-            };
-            char::from_u32(code)
-        }
-    }
-}
-
 /// True when `URLDecoder` would leave the text unchanged: letters, digits,
 /// `._-*+`, and well-formed `%HH` escapes.
-pub fn is_url_decoder_safe(text: &str) -> bool {
+fn is_url_decoder_safe(text: &str) -> bool {
     let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
     while i < chars.len() {
@@ -156,67 +96,8 @@ pub fn url_encode_if_needed(text: &str) -> String {
     out
 }
 
-/// RFC 3986 path characters, the set `isUrlSafeRfc3986` allows.
-pub fn is_url_safe_rfc3986(text: &str) -> bool {
-    text.chars().all(|ch| {
-        ch.is_alphanumeric()
-            || matches!(
-                ch,
-                '.' | '_' | '-' | '+' | '~' | '!' | '$' | '&' | '\'' | '(' | ')' | '*' | ',' | ';' | '=' | ':' | '@'
-            )
-    })
-}
-
-/// Split a URL path. `+` becomes a space, the way `URLDecoder` does. A bad
-/// escape keeps that segment as it was written.
-pub fn path_string_to_list(path: &str, skip_segments: usize) -> Vec<String> {
-    let path = path.strip_prefix('/').unwrap_or(path);
-    path.split('/')
-        .filter(|segment| !segment.is_empty())
-        .skip(skip_segments)
-        .map(|segment| url_decode(segment).unwrap_or_else(|| segment.to_string()))
-        .collect()
-}
-
-fn url_decode(text: &str) -> Option<String> {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            b'%' => {
-                if i + 2 >= bytes.len() {
-                    return None;
-                }
-                let high = from_hex(bytes[i + 1])?;
-                let low = from_hex(bytes[i + 2])?;
-                out.push((high << 4) | low);
-                i += 3;
-            }
-            byte => {
-                out.push(byte);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8(out).ok()
-}
-
 fn is_hex(ch: char) -> bool {
     ch.is_ascii_hexdigit()
-}
-
-fn from_hex(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
 }
 
 /// `camelCaseToPretty`. A part equal to `id` in any case becomes `ID`.
@@ -288,197 +169,11 @@ pub fn pretty_to_camel_case(pretty: &str, first_upper: bool) -> String {
     out
 }
 
-pub fn remove_non_alphanumeric(orig: &str) -> String {
-    orig.chars().filter(|ch| ch.is_alphanumeric()).collect()
-}
-
-/// Replace runs of non-alphanumeric characters with a single `pad`.
-pub fn replace_non_alphanumeric(orig: &str, pad: char) -> String {
-    let mut out = String::new();
-    for ch in orig.chars() {
-        if ch.is_alphanumeric() {
-            out.push(ch);
-        } else if !out.ends_with(pad) {
-            out.push(pad);
-        }
-    }
-    out
-}
-
-pub fn is_alphanumeric_text(text: &str, allowed: &str) -> bool {
-    text.chars().all(|ch| ch.is_alphanumeric() || allowed.contains(ch))
-}
-
-/// The first digit run, keeping `.` and `,` once digits have started.
-/// An empty input is an empty string. No digits is `None`.
-pub fn find_first_number(orig: &str) -> Option<String> {
-    if orig.is_empty() {
-        return Some(String::new());
-    }
-    let mut num = String::new();
-    for ch in orig.chars() {
-        if ch.is_ascii_digit() || (!num.is_empty() && (ch == '.' || ch == ',')) {
-            num.push(ch);
-        } else if !num.is_empty() {
-            break;
-        }
-    }
-    if num.is_empty() {
-        None
-    } else {
-        Some(num)
-    }
-}
-
 /// Drop a leading UTF-8 BOM and decode. Invalid sequences become U+FFFD,
 /// which is what `new String(bytes, "UTF-8")` does.
 pub fn to_string_clean_bom(bytes: &[u8]) -> String {
     let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
     String::from_utf8_lossy(bytes).into_owned()
-}
-
-/// Insert `0` at index 0 until the text is long enough, including in front of a minus.
-/// `-1` padded to 4 is `00-1`, matching `StringUtilities.paddedNumber`.
-pub fn padded_number(number: i64, desired_length: Option<usize>) -> String {
-    let mut out = number.to_string();
-    if let Some(len) = desired_length {
-        while out.chars().count() < len {
-            out.insert(0, '0');
-        }
-    }
-    out
-}
-
-pub fn padded_string(input: &str, desired_length: Option<usize>, pad: char, right_pad: bool) -> String {
-    let mut out = input.to_string();
-    if let Some(len) = desired_length {
-        while out.chars().count() < len {
-            if right_pad {
-                out.push(pad);
-            } else {
-                out.insert(0, pad);
-            }
-        }
-    }
-    out
-}
-
-/// `MaskFormatter` with `valueContainsLiteralCharacters` false.
-///
-/// `#` digit, `U` upper letter, `L` lower letter, `A` letter or digit,
-/// `?` letter, `*` anything, `H` hex. `'` escapes the next character.
-/// A one-character placeholder fills every missing slot. A longer placeholder
-/// is indexed by the mask position, and positions past it use a space.
-pub fn format_mask(mask: &str, value: &str, placeholder: Option<&str>) -> Result<String, Error> {
-    let tokens = parse_mask(mask)?;
-    let value: Vec<char> = value.chars().collect();
-    let mut value_index = 0;
-    let mut out = String::new();
-    for (mask_index, token) in tokens.iter().enumerate() {
-        match token {
-            MaskToken::Literal(ch) => out.push(*ch),
-            MaskToken::Slot(slot) => {
-                if value_index < value.len() {
-                    let ch = value[value_index];
-                    let mapped = map_slot(*slot, ch)
-                        .ok_or_else(|| Error::new(format!("mask character '{ch}' does not fit slot {mask_index}")))?;
-                    out.push(mapped);
-                    value_index += 1;
-                } else {
-                    out.push(placeholder_at(placeholder, mask_index));
-                }
-            }
-        }
-    }
-    if value_index != value.len() {
-        return Err(Error::new("value is longer than the mask"));
-    }
-    Ok(out)
-}
-
-#[derive(Clone, Copy)]
-enum Slot {
-    Digit,
-    Upper,
-    Lower,
-    AlphaNum,
-    Letter,
-    Any,
-    Hex,
-}
-
-enum MaskToken {
-    Literal(char),
-    Slot(Slot),
-}
-
-fn parse_mask(mask: &str) -> Result<Vec<MaskToken>, Error> {
-    let chars: Vec<char> = mask.chars().collect();
-    let mut tokens = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        let ch = chars[i];
-        if ch == '\'' {
-            let next = chars
-                .get(i + 1)
-                .copied()
-                .ok_or_else(|| Error::new("mask ends with an escape"))?;
-            tokens.push(MaskToken::Literal(next));
-            i += 2;
-            continue;
-        }
-        let slot = match ch {
-            '#' => Some(Slot::Digit),
-            'U' => Some(Slot::Upper),
-            'L' => Some(Slot::Lower),
-            'A' => Some(Slot::AlphaNum),
-            '?' => Some(Slot::Letter),
-            '*' => Some(Slot::Any),
-            'H' => Some(Slot::Hex),
-            _ => None,
-        };
-        if let Some(slot) = slot {
-            tokens.push(MaskToken::Slot(slot));
-        } else {
-            tokens.push(MaskToken::Literal(ch));
-        }
-        i += 1;
-    }
-    Ok(tokens)
-}
-
-fn map_slot(slot: Slot, ch: char) -> Option<char> {
-    match slot {
-        Slot::Digit => ch.is_ascii_digit().then_some(ch),
-        Slot::Upper => ch.is_alphabetic().then_some(ch.to_uppercase().next().unwrap_or(ch)),
-        Slot::Lower => ch.is_alphabetic().then_some(ch.to_lowercase().next().unwrap_or(ch)),
-        Slot::AlphaNum => ch.is_alphanumeric().then_some(ch),
-        Slot::Letter => ch.is_alphabetic().then_some(ch),
-        Slot::Any => Some(ch),
-        Slot::Hex => ch.is_ascii_hexdigit().then_some(ch),
-    }
-}
-
-fn placeholder_at(placeholder: Option<&str>, mask_index: usize) -> char {
-    match placeholder {
-        Some(text) if text.chars().count() == 1 => text.chars().next().unwrap(),
-        Some(text) => text.chars().nth(mask_index).unwrap_or(' '),
-        None => ' ',
-    }
-}
-
-/// URL-safe Base64 of `length` random bytes, truncated to `length` characters.
-pub fn random_string(length: usize) -> Result<String, Error> {
-    if length == 0 {
-        return Ok(String::new());
-    }
-    let mut bytes = vec![0_u8; length];
-    let mut file = std::fs::File::open("/dev/urandom")
-        .map_err(|err| Error::new("could not open /dev/urandom").with_source(err))?;
-    file.read_exact(&mut bytes)
-        .map_err(|err| Error::new("could not read random bytes").with_source(err))?;
-    let encoded = URL_SAFE.encode(bytes);
-    Ok(encoded.chars().take(length).collect())
 }
 
 #[cfg(test)]
@@ -493,8 +188,6 @@ mod tests {
         );
         assert_eq!(encode_for_xml_attribute("\u{0005}\u{0001}A", false), "...A");
         assert_eq!(encode_for_xml_attribute("é", false), "&#233;");
-        assert_eq!(decode_from_xml("a&amp;b&lt;&gt;&apos;&quot;&#65;&#x42;"), "a&b<>'\"AB");
-        assert_eq!(decode_from_xml("keep &unknown;"), "keep &unknown;");
     }
 
     #[test]
@@ -503,11 +196,6 @@ mod tests {
         assert_eq!(url_encode_if_needed("a-b_c.d*e"), "a-b_c.d*e");
         assert_eq!(url_encode_if_needed("%20"), "%20");
         assert_eq!(url_encode_if_needed("%2"), "%252");
-        assert!(!is_url_safe_rfc3986("a b"));
-        assert_eq!(
-            path_string_to_list("/a/b%20c/d+e", 1),
-            vec!["b c".to_string(), "d e".to_string()]
-        );
         assert_eq!(camel_case_to_pretty("orderId"), "Order ID");
         assert_eq!(camel_case_to_pretty("foo.bar"), "Foo Bar");
         // The browser copy in WebrootVue.qvt.js (qvt.StringUtilities) is checked against the same vectors.
@@ -522,24 +210,8 @@ mod tests {
     }
 
     #[test]
-    fn padding_mask_bom_and_random() {
-        assert_eq!(padded_number(12, Some(5)), "00012");
-        assert_eq!(padded_number(-1, Some(4)), "00-1");
-        assert_eq!(padded_string("ab", Some(4), ' ', true), "ab  ");
-        assert_eq!(
-            format_mask("(###) ###-####", "1234567890", None).unwrap(),
-            "(123) 456-7890"
-        );
-        assert_eq!(format_mask("##", "1", Some("0")).unwrap(), "10");
-        assert!(format_mask("##", "ab", None).is_err());
+    fn clean_bom() {
         let bom = b"\xEF\xBB\xBFhi";
         assert_eq!(to_string_clean_bom(bom), "hi");
-        let random = random_string(16).unwrap();
-        assert_eq!(random.chars().count(), 16);
-        assert!(random
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '='));
-        assert_eq!(find_first_number("id 12.5x"), Some("12.5".to_string()));
-        assert_eq!(replace_non_alphanumeric("a--b", '_'), "a_b");
     }
 }

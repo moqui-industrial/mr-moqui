@@ -711,7 +711,7 @@ impl ScreenDef {
                 self.transitions.iter().find(|item| {
                     (item.method == "any" || item.method == method)
                         && item.name.contains(['[', '(', '*', '+', '?', '|', '\\', '.', '{'])
-                        && moqui_lib::object::regex_matches(name, &item.name).unwrap_or(false)
+                        && moqui_lib::object::regex_full_match(name, &item.name).unwrap_or(false)
                 })
             })
     }
