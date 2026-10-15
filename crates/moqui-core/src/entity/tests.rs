@@ -1093,13 +1093,9 @@ fn xml_cdata_text_with_a_section_end_loads_back_unchanged() {
     let element = super::query_rest::xml_element(&facade, "moqui.test.TestEntity", &fields, 0).unwrap();
     assert!(element.contains("]]]]><![CDATA[>"), "{element}");
     let document = format!("<entity-facade-xml>\n{element}</entity-facade-xml>\n");
-    let loaded = super::load_feed::load_entity_xml_text(
-        &facade,
-        "cdata",
-        &document,
-        &super::load_feed::LoadOptions::default(),
-    )
-    .unwrap();
+    let loaded =
+        super::load_feed::load_entity_xml_text(&facade, "cdata", &document, &super::load_feed::LoadOptions::default())
+            .unwrap();
     assert_eq!(loaded.records, 1, "{document}");
     let row = test_entity_row(&facade, "CD1").expect("CD1 loaded");
     assert_eq!(row.get("testLong"), Some(&Value::string(text)));

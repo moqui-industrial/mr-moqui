@@ -988,7 +988,9 @@ fn ignore_suspend_stays_suspended_after_a_nested_transaction() {
     assert!(mgr.begin(None).expect("outer"));
     let outer = mgr.with_connection(conn_id).expect("outer conn");
     mgr.run(TransactionAttribute::IgnoreSuspend, None, || {
-        mgr.run(TransactionAttribute::UseOrBegin, None, || mgr.with_connection(|_| Ok(())))?;
+        mgr.run(TransactionAttribute::UseOrBegin, None, || {
+            mgr.with_connection(|_| Ok(()))
+        })?;
         assert!(!mgr.in_transaction(), "the outer transaction stays suspended");
         assert_eq!(mgr.stats().parked, 1);
         let direct = mgr.with_connection(|conn| {

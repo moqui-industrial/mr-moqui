@@ -219,7 +219,11 @@ pub fn after_find(facade: &EntityFacade, lookup: &FindLookup, rows: &EntityList)
     let key = lookup_key(lookup);
     let name = meta.full_name;
     let cache = facade.with_slot(OneCaches::default, |caches| {
-        caches.lists.entry(name.clone()).or_insert_with(|| list_cache(&name)).clone()
+        caches
+            .lists
+            .entry(name.clone())
+            .or_insert_with(|| list_cache(&name))
+            .clone()
     });
     cache.put(key, rows.clone())
 }
@@ -230,13 +234,21 @@ fn frame_wrote(facade: &EntityFacade, entity_name: &str, meta: &ReadMeta) -> boo
     if TX_WRITTEN.with(|slot| slot.borrow().is_empty()) {
         return false;
     }
-    let Some(token) = facade.transactions_for(entity_name).ok().and_then(|tx| tx.frame_token()) else {
+    let Some(token) = facade
+        .transactions_for(entity_name)
+        .ok()
+        .and_then(|tx| tx.frame_token())
+    else {
         return false;
     };
     TX_WRITTEN.with(|slot| {
-        slot.borrow()
-            .get(&token)
-            .is_some_and(|names| if meta.is_view { !names.is_empty() } else { names.contains(&meta.full_name) })
+        slot.borrow().get(&token).is_some_and(|names| {
+            if meta.is_view {
+                !names.is_empty()
+            } else {
+                names.contains(&meta.full_name)
+            }
+        })
     })
 }
 
@@ -256,7 +268,10 @@ fn note_frame_write(facade: &EntityFacade, entity_name: &str, full_name: &str) -
     let (rollback_facade, rollback_name) = (facade.clone(), full_name.to_string());
     tx.on_rollback(move || end_frame_write(&rollback_facade, token, &rollback_name))?;
     TX_WRITTEN.with(|slot| {
-        slot.borrow_mut().entry(token).or_default().insert(full_name.to_string());
+        slot.borrow_mut()
+            .entry(token)
+            .or_default()
+            .insert(full_name.to_string());
     });
     Ok(())
 }
@@ -1582,7 +1597,10 @@ mod tests {
         let tx = facade.transactions_for(TYPE).unwrap();
         assert!(tx.begin(None).unwrap());
         put(&facade, TYPE, "enumTypeId", "PHANTOM");
-        assert!(found(&facade, TYPE, "enumTypeId", "PHANTOM"), "the frame reads its own write");
+        assert!(
+            found(&facade, TYPE, "enumTypeId", "PHANTOM"),
+            "the frame reads its own write"
+        );
         tx.rollback().unwrap();
         assert!(
             !found(&facade, TYPE, "enumTypeId", "PHANTOM"),
@@ -1602,13 +1620,19 @@ mod tests {
         let before_commit = std::thread::spawn(move || found(&reader, TYPE, "enumTypeId", "NEW"))
             .join()
             .unwrap();
-        assert!(!before_commit, "another thread reads the committed rows and caches them");
+        assert!(
+            !before_commit,
+            "another thread reads the committed rows and caches them"
+        );
         assert!(
             found(&facade, TYPE, "enumTypeId", "NEW"),
             "the writing frame does not read the other thread's cached rows"
         );
         tx.commit().unwrap();
-        assert!(found(&facade, TYPE, "enumTypeId", "NEW"), "the commit cleared the cache");
+        assert!(
+            found(&facade, TYPE, "enumTypeId", "NEW"),
+            "the commit cleared the cache"
+        );
         assert!(super::TX_WRITTEN.with(|slot| slot.borrow().is_empty()));
     }
 }

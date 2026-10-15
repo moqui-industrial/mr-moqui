@@ -859,7 +859,10 @@ mod tests {
         let written = super::generation();
         tx.commit().unwrap();
         assert!(super::generation() > written);
-        assert!(super::with_cache(|cache| cache.checks.is_none()), "the commit drops what was read before it");
+        assert!(
+            super::with_cache(|cache| cache.checks.is_none()),
+            "the commit drops what was read before it"
+        );
     }
 
     #[test]

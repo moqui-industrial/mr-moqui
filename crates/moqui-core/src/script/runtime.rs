@@ -1064,8 +1064,8 @@ pub fn eval_map(expression: &str) -> Result<std::collections::BTreeMap<String, V
 #[cfg(test)]
 mod tests {
     use super::{
-        clear_context_stack, context_value, eval_condition, eval_source, eval_value, expand, flush_current,
-        js_error, push_context_frame, run_script, set_context_name, with_ctx, MAX_NESTING, STACK, TOO_DEEP,
+        clear_context_stack, context_value, eval_condition, eval_source, eval_value, expand, flush_current, js_error,
+        push_context_frame, run_script, set_context_name, with_ctx, MAX_NESTING, STACK, TOO_DEEP,
     };
     use crate::context::{Error, ExecutionContextFactory};
     use moqui_lib::object::{basic_convert, Value};
@@ -1324,7 +1324,9 @@ mod tests {
         too_deep(run_script("var a = {}; a.self = a; result = a;"));
         too_deep(eval_value("(() => { var a = []; a.push(a); return a; })()"));
         too_deep(eval_value("(() => { var s = new Set(); s.add([s]); return s; })()"));
-        too_deep(eval_value("(() => { var a = []; for (var i = 0; i < 100000; i++) a = [a]; return a; })()"));
+        too_deep(eval_value(
+            "(() => { var a = []; for (var i = 0; i < 100000; i++) a = [a]; return a; })()",
+        ));
         too_deep(run_script("items = []; items.push(items);"));
         Ok(())
     }
@@ -1333,8 +1335,12 @@ mod tests {
     fn a_shared_value_converts_once_for_each_place() -> Result<(), Error> {
         clear_context_stack();
         let value = eval_value("(() => { var s = {x: 1}; return {a: s, b: [s, s], c: new Set([s])}; })()")?;
-        let Value::Map(map) = value else { panic!("expected a map, got {value:?}") };
-        let Some(Value::List(both)) = map.get("b") else { panic!("expected a list, got {map:?}") };
+        let Value::Map(map) = value else {
+            panic!("expected a map, got {value:?}")
+        };
+        let Some(Value::List(both)) = map.get("b") else {
+            panic!("expected a list, got {map:?}")
+        };
         assert_eq!(map.get("a"), both.get(1));
         assert!(matches!(map.get("a"), Some(Value::Map(shared)) if shared.get("x") == Some(&Value::I32(1))));
         let deepest = format!("(() => {{ var a = []; for (var i = 1; i < {MAX_NESTING}; i++) a = [a]; return a; }})()");

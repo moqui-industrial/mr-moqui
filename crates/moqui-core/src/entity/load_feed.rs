@@ -756,7 +756,9 @@ fn take_frame_touches(frame: Option<u64>) -> Vec<Touch> {
     let Some(frame) = frame else {
         return Vec::new();
     };
-    TOUCHES.with(|touches| touches.borrow_mut().remove(&frame)).unwrap_or_default()
+    TOUCHES
+        .with(|touches| touches.borrow_mut().remove(&frame))
+        .unwrap_or_default()
 }
 
 fn remember_feed_services(facade: &EntityFacade, services: Vec<FeedServiceNames>) {
@@ -1883,9 +1885,11 @@ fn store_record(facade: &EntityFacade, options: &LoadOptions, record: &Record) -
     }
     // Inside an outer transaction a failed record marks it rollback-only and gives back its join, so the
     // owner's rollback still ends the frame.
-    facade.transactions_for(&record.entity)?.run(TransactionAttribute::UseOrBegin, options.timeout, || {
-        write_tree(facade, options, record, &BTreeMap::new())
-    })
+    facade
+        .transactions_for(&record.entity)?
+        .run(TransactionAttribute::UseOrBegin, options.timeout, || {
+            write_tree(facade, options, record, &BTreeMap::new())
+        })
 }
 
 /// Refuses the record when it or any nested record, by relationship name, short alias, or entity name, resolves to
@@ -4781,7 +4785,11 @@ mod tests {
             facade.commit("moqui.test.Foo").unwrap();
         }
         assert_eq!(script.inserts.lock().expect("inserts").len(), 3);
-        assert_eq!(feed_service_names(&facade).len(), 1, "one entry per feed, whatever the commits");
+        assert_eq!(
+            feed_service_names(&facade).len(),
+            1,
+            "one entry per feed, whatever the commits"
+        );
         assert_eq!(frame_touches(), 0);
     }
 }

@@ -256,10 +256,18 @@ fn a_find_is_scheduled_or_made_a_default_only_by_a_user_it_belongs_to() {
         "/formSaveFind",
         &format!("formLocation=Rows&formListFindId={id}&MakeDefault=Y"),
     );
-    assert!(site.rows("moqui.screen.ScreenScheduled", "formListFindId", &id).is_empty());
-    assert!(site.rows("moqui.screen.form.FormListFindUserDefault", "userId", "bob").is_empty());
+    assert!(site
+        .rows("moqui.screen.ScreenScheduled", "formListFindId", &id)
+        .is_empty());
+    assert!(site
+        .rows("moqui.screen.form.FormListFindUserDefault", "userId", "bob")
+        .is_empty());
     // Shared with a group, a member may make it their default.
-    let mut shared = site.world.facade.make_value("moqui.screen.form.FormListFindUserGroup").unwrap();
+    let mut shared = site
+        .world
+        .facade
+        .make_value("moqui.screen.form.FormListFindUserGroup")
+        .unwrap();
     shared.set("formListFindId", Value::string(id.clone()));
     shared.set("userGroupId", Value::string("FIND_GROUP"));
     shared.create(&site.world.facade).unwrap();
@@ -268,10 +276,17 @@ fn a_find_is_scheduled_or_made_a_default_only_by_a_user_it_belongs_to() {
         "/formSaveFind",
         &format!("formLocation=Rows&formListFindId={id}&MakeDefault=Y"),
     );
-    assert_eq!(site.rows("moqui.screen.form.FormListFindUserDefault", "userId", "cy").len(), 1);
+    assert_eq!(
+        site.rows("moqui.screen.form.FormListFindUserDefault", "userId", "cy")
+            .len(),
+        1
+    );
     // Its owner may schedule it.
     site.post("/formSaveFind", &Site::schedule_body(&id));
-    assert_eq!(site.rows("moqui.screen.ScreenScheduled", "formListFindId", &id).len(), 1);
+    assert_eq!(
+        site.rows("moqui.screen.ScreenScheduled", "formListFindId", &id).len(),
+        1
+    );
 }
 
 #[test]
@@ -306,6 +321,12 @@ fn a_cookie_session_saves_a_find_or_columns_only_by_a_post_with_the_session_toke
         &site.root,
     );
     assert_eq!(posted.status, 302, "{}", posted.body_text());
-    let finds = site.world.facade.find("moqui.screen.form.FormListFind").unwrap().list().unwrap();
+    let finds = site
+        .world
+        .facade
+        .find("moqui.screen.form.FormListFind")
+        .unwrap()
+        .list()
+        .unwrap();
     assert!(finds.into_values().is_empty());
 }

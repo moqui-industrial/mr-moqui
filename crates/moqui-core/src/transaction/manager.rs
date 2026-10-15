@@ -866,7 +866,10 @@ impl TransactionManager {
             // Whether the frame is on top, and whether the top frame is suspended.
             let place = self.with_frames(|frames| {
                 let at = frames.iter().rposition(|frame| frame.deadline_token == mark.token)?;
-                Some((at + 1 == frames.len(), frames.last().is_some_and(|frame| frame.suspended)))
+                Some((
+                    at + 1 == frames.len(),
+                    frames.last().is_some_and(|frame| frame.suspended),
+                ))
             });
             match place {
                 None => {
