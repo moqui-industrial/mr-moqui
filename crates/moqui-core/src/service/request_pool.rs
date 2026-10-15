@@ -273,6 +273,7 @@ fn spawn_worker(shared: &Arc<Shared>, index: usize) -> Result<JoinHandle<()>, Er
 }
 
 fn worker_loop(shared: Arc<Shared>) {
+    crate::script::mark_request_thread();
     while let Some(work) = next_work(&shared) {
         run_work(work);
     }
@@ -542,6 +543,32 @@ mod tests {
             .try_submit(factory, move || Ok::<bool, Error>(facade.sim_active()))
             .unwrap();
         assert!(!next.recv_timeout(Duration::from_secs(5)).unwrap().unwrap());
+    }
+
+    #[test]
+    fn a_script_on_a_request_worker_is_limited_to_the_request_timeout() {
+        if !moqui_lib::env::get_prop_or_env("script_timeout").is_empty() {
+            return;
+        }
+        let pool = RequestPool::idle();
+        pool.start(1, 1).unwrap();
+        let left = pool
+            .try_submit(test_factory(), || {
+                crate::script::walker_context(|_| Ok(crate::script::script_time_remaining()))
+            })
+            .unwrap()
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap()
+            .unwrap();
+        let expected = moqui_lib::env::get_prop_or_env("webapp_request_timeout")
+            .parse::<u64>()
+            .unwrap_or(300);
+        if expected > 0 {
+            assert!(
+                left.is_some_and(|left| left <= Duration::from_secs(expected) && left > Duration::ZERO),
+                "{left:?}"
+            );
+        }
     }
 
     fn test_factory() -> Arc<ExecutionContextFactory> {

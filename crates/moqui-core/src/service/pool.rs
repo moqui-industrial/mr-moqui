@@ -1097,6 +1097,20 @@ mod tests {
     use super::{ServicePools, DEFAULT_CHECK_SECONDS};
 
     #[test]
+    fn a_script_on_a_service_worker_has_no_default_limit() {
+        if !moqui_lib::env::get_prop_or_env("script_timeout").is_empty() {
+            return;
+        }
+        let ctx = crate::context::ExecutionContextFactory::test_context_with("", ServicePools::bounded(1, 1));
+        let left = ctx
+            .factory()
+            .service_pools()
+            .call(|| crate::script::walker_context(|_| Ok(crate::script::script_time_remaining())))
+            .unwrap();
+        assert_eq!(left, None, "batch work outside a transaction runs as long as it takes");
+    }
+
+    #[test]
     fn a_panicking_tick_hook_does_not_skip_the_next() {
         let pools = ServicePools::bounded(1, 1);
         let hit = Arc::new(AtomicBool::new(false));

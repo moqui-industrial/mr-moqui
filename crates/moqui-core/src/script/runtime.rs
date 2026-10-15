@@ -108,8 +108,10 @@ thread_local! {
     static DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
     /// Whether `DEADLINE` is the default limit of a script that runs outside a transaction (see [`ScriptLimit`]).
     static DEADLINE_IS_DEFAULT: Cell<bool> = const { Cell::new(false) };
-    /// `script_timeout`, read at the first script on the thread.
+    /// The default limit of a script outside a transaction, read at the first script on the thread.
     static SCRIPT_LIMIT: Cell<Option<Option<Duration>>> = const { Cell::new(None) };
+    /// Whether this thread is a request worker, whose scripts outside a transaction are limited by default.
+    static REQUEST_THREAD: Cell<bool> = const { Cell::new(false) };
     /// Where the stack was when the outermost script on the thread was entered.
     static STACK_BASE: Cell<usize> = const { Cell::new(0) };
     static STACK: RefCell<ContextStack> = RefCell::new(ContextStack::new());
@@ -276,25 +278,44 @@ pub(crate) fn script_time_remaining() -> Option<Duration> {
         .map(|deadline| deadline.saturating_duration_since(Instant::now()))
 }
 
-/// `script_timeout`: the seconds a script may run when no transaction limits it, the default transaction timeout
-/// unless set. 0 is no limit. Read once per thread.
+/// The default of `webapp_request_timeout`, the host's limit on a whole request, read here by the same name.
+const DEFAULT_REQUEST_TIMEOUT: u64 = 300;
+
+/// Mark this thread a request worker: a script on it that runs outside a transaction is limited to the request
+/// timeout unless `script_timeout` says otherwise.
+pub(crate) fn mark_request_thread() {
+    REQUEST_THREAD.with(|flag| flag.set(true));
+    SCRIPT_LIMIT.with(|cell| cell.set(None));
+}
+
+/// The seconds a script may run when no transaction limits it, read once per thread. `script_timeout` when set, for
+/// every thread; else `webapp_request_timeout` on a request worker, and no limit on a service, job, or scheduler
+/// thread, which run batch work outside a transaction as Java does. 0 is no limit.
 fn default_script_limit() -> Option<Duration> {
     if let Some(limit) = SCRIPT_LIMIT.with(Cell::get) {
         return limit;
     }
-    let text = moqui_lib::env::get_prop_or_env("script_timeout");
-    let limit = match text.trim().parse::<u64>() {
-        Ok(0) => None,
-        Ok(seconds) => Some(Duration::from_secs(seconds)),
-        Err(_) => Some(crate::transaction::DEFAULT_TIMEOUT),
-    };
+    let limit = script_limit_for(
+        &moqui_lib::env::get_prop_or_env("script_timeout"),
+        REQUEST_THREAD.with(Cell::get),
+        &moqui_lib::env::get_prop_or_env("webapp_request_timeout"),
+    );
     SCRIPT_LIMIT.with(|cell| cell.set(Some(limit)));
     limit
 }
 
-/// The default deadline of the outermost script on a thread when nothing set one, so a loop in a script that runs
-/// outside a transaction (a `transaction="ignore"` service, a widget condition, an ECA condition) cannot hold the
-/// thread for good. Cleared when the script ends.
+fn script_limit_for(script_timeout: &str, request_thread: bool, request_timeout: &str) -> Option<Duration> {
+    let seconds = match script_timeout.trim().parse::<u64>() {
+        Ok(seconds) => seconds,
+        Err(_) if request_thread => request_timeout.trim().parse().unwrap_or(DEFAULT_REQUEST_TIMEOUT),
+        Err(_) => 0,
+    };
+    (seconds > 0).then(|| Duration::from_secs(seconds))
+}
+
+/// The default deadline of the outermost script on a thread when nothing set one (see [`default_script_limit`]), so a
+/// loop in a script that runs outside a transaction (a widget condition, a `transaction="ignore"` service a request
+/// calls) cannot hold a request worker for good. Cleared when the script ends.
 struct ScriptLimit {
     armed: bool,
 }
@@ -1836,6 +1857,7 @@ mod tests {
     fn a_loop_outside_a_transaction_stops_at_the_default_limit() -> Result<(), Error> {
         use std::time::{Duration, Instant};
         clear_context_stack();
+        // As a `script_timeout` of 200 ms would set it.
         super::SCRIPT_LIMIT.with(|limit| limit.set(Some(Some(Duration::from_millis(200)))));
         let started = Instant::now();
         let err = run_script("while (true) {}").expect_err("interrupted");
@@ -1861,6 +1883,20 @@ mod tests {
         assert!(eval_condition("true")?);
         assert_eq!(super::script_time_remaining(), None);
         Ok(())
+    }
+
+    #[test]
+    fn the_default_limit_is_script_timeout_else_the_request_timeout_on_a_request_worker() {
+        use std::time::Duration;
+        let limit = super::script_limit_for;
+        assert_eq!(limit("", false, ""), None, "a service or job thread");
+        assert_eq!(limit("", true, ""), Some(Duration::from_secs(300)));
+        assert_eq!(limit("", true, "90"), Some(Duration::from_secs(90)));
+        assert_eq!(limit("", true, "0"), None);
+        assert_eq!(limit("20", false, ""), Some(Duration::from_secs(20)));
+        assert_eq!(limit("20", true, "90"), Some(Duration::from_secs(20)));
+        assert_eq!(limit("0", true, "90"), None);
+        assert_eq!(limit("junk", false, ""), None);
     }
 
     #[test]
