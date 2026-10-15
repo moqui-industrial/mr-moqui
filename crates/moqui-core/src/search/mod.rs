@@ -876,6 +876,7 @@ pub fn agg_empty_results(aggs: &IndexMap<String, Agg>) -> IndexMap<String, Value
 pub fn agg_empty(agg: &Agg) -> Value {
     match agg {
         Agg::Sum { .. } => Value::Decimal(Default::default()),
+        Agg::Extreme { .. } => Value::Null,
         Agg::CountDistinct { .. } => Value::I64(0),
         Agg::Filter { aggs, .. } => {
             let mut map = agg_empty_results(aggs);

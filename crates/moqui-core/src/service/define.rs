@@ -489,16 +489,7 @@ pub(crate) fn registration_failures(name: &str) -> Vec<String> {
 /// component, the first that has the file. Only that file, and the files it includes, are read, and their services
 /// are merged into the registry.
 fn load_by_name(shared: &Shared, name: &str) -> Option<Arc<ServiceDef>> {
-    let path_name = name.split('#').next()?;
-    let (file, _) = path_name.rsplit_once('.')?;
-    let relative = format!("{}.xml", file.replace('.', "/"));
-    let factory = ExecutionContext::with_current(|ctx| Arc::clone(ctx.factory()))?;
-    let mut roots = vec![factory.framework_dir().to_path_buf()];
-    roots.extend(factory.components().iter().map(|info| info.location.clone()));
-    let path = roots
-        .iter()
-        .map(|root| root.join("service").join(&relative))
-        .find(|candidate| candidate.is_file())?;
+    let path = service_file_of(name)?;
     let _loading = lock(&shared.load);
     // Another thread may have merged the file while this one waited.
     let current = snapshot(shared);
@@ -514,9 +505,43 @@ fn load_by_name(shared: &Shared, name: &str) -> Option<Arc<ServiceDef>> {
         return None;
     }
     next.searched.insert(path);
+    // A service that implements one of a file not read yet failed to register: read that file, as Java looks
+    // the implemented service up by name, and repeat for what that file implements.
+    loop {
+        let missing: Vec<PathBuf> = next
+            .loaded
+            .defined
+            .values()
+            .flat_map(|def| def.implements.iter().map(|implement| implement.service.clone()))
+            .filter(|target| !next.services.contains_key(target))
+            .filter_map(|target| service_file_of(&target))
+            .filter(|file| !next.searched.contains(file) && !next.loaded.files.contains(&normalize(file)))
+            .collect();
+        let Some(file) = missing.into_iter().next() else {
+            break;
+        };
+        next.searched.insert(file.clone());
+        if let Err(err) = next.merge(std::slice::from_ref(&file)) {
+            tracing::warn!(error = %err, path = %file.display(), "could not read the service file for an implemented service");
+        }
+    }
     let found = next.services.get(name).cloned();
     replace(shared, next);
     found
+}
+
+/// The file that defines `name`, `service/a/b/C.xml` for `a.b.C.verb#noun`, in the framework or the first component with it.
+fn service_file_of(name: &str) -> Option<PathBuf> {
+    let path_name = name.split('#').next()?;
+    let (file, _) = path_name.rsplit_once('.')?;
+    let relative = format!("{}.xml", file.replace('.', "/"));
+    let factory = ExecutionContext::with_current(|ctx| Arc::clone(ctx.factory()))?;
+    let mut roots = vec![factory.framework_dir().to_path_buf()];
+    roots.extend(factory.components().iter().map(|info| info.location.clone()));
+    roots
+        .iter()
+        .map(|root| root.join("service").join(&relative))
+        .find(|candidate| candidate.is_file())
 }
 
 /// Every service registered with the entered context's factory, by name. Type generation reads these.
@@ -1490,9 +1515,8 @@ mod tests {
         let _entered = ctx.enter();
         super::PARSED.with(|parsed| parsed.borrow_mut().clear());
 
-        // A's run#One implements a service of a file not read yet, so it is not registered.
+        // A's run#One implements a service of a file not read yet: that file is read on demand.
         assert!(super::find("test.lazy.A.run#Base").is_some());
-        assert!(super::find("test.lazy.A.run#One").is_none());
         let two = super::find("test.lazy.B.run#Two").expect("B merged");
         assert!(
             two.in_params.iter().any(|param| param.name == "fromBase"),
@@ -1501,10 +1525,10 @@ mod tests {
         assert_eq!(parsed_count("A.xml"), 1, "A is not read again when B is merged");
         assert_eq!(parsed_count("B.xml"), 1);
 
-        // Reading C resolves A's run#One, which failed before.
         assert!(super::find("test.lazy.C.define#Shape").is_some());
         let one = super::find("test.lazy.A.run#One").expect("resolved once C is read");
         assert!(one.in_params.iter().any(|param| param.name == "fromShape"));
+        assert_eq!(parsed_count("C.xml"), 1, "C is read once, on demand");
         assert_eq!(parsed_count("A.xml"), 1);
         assert_eq!(parsed_count("B.xml"), 1);
         assert!(super::registration_failures("test.lazy.A.run#One").is_empty());

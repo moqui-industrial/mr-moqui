@@ -59,6 +59,12 @@ enum Item {
         conds: Vec<Sql>,
         field: String,
     },
+    Extreme {
+        path: Vec<String>,
+        conds: Vec<Sql>,
+        field: String,
+        max: bool,
+    },
     CountDistinct {
         path: Vec<String>,
         conds: Vec<Sql>,
@@ -163,31 +169,16 @@ fn level_sql(
                 filter_clause(&mut sql, conds);
             }
             Item::Sum { conds, field, .. } => {
-                let value = match compiler.locate_root(field) {
-                    Located::Missing => "NULL::numeric".to_string(),
-                    Located::Field {
-                        arrays,
-                        expr,
-                        field: found,
-                    } => {
-                        if !matches!(found.kind, FieldKind::Long | FieldKind::Double) {
-                            return Err(Error::new(format!("sum needs a number field, {field} is not")));
-                        }
-                        if arrays.is_empty() {
-                            expr
-                        } else {
-                            let alias = format!("s{index}");
-                            laterals.push(format!(
-                                "LEFT JOIN LATERAL (SELECT sum({expr}) AS v FROM {}) AS {alias} ON TRUE",
-                                from_list(&arrays)
-                            ));
-                            format!("{alias}.v")
-                        }
-                    }
-                };
+                let value = number_value(compiler, field, "sum", &format!("s{index}"), &mut laterals)?;
                 sql.push(&format!("COALESCE(sum({value})"));
                 filter_clause(&mut sql, conds);
                 sql.push(", 0)");
+            }
+            Item::Extreme { conds, field, max, .. } => {
+                let name = if *max { "max" } else { "min" };
+                let value = number_value(compiler, field, name, &format!("s{index}"), &mut laterals)?;
+                sql.push(&format!("{name}({value})"));
+                filter_clause(&mut sql, conds);
             }
             Item::CountDistinct { conds, field, .. } => {
                 let value = match compiler.locate_root(field) {
@@ -236,6 +227,38 @@ fn level_sql(
     Ok(sql)
 }
 
+/// The SQL of a number field for the aggregate function `func`: the column, or for a field of child objects the
+/// value of a lateral that applies `func` over the object's array, added to `laterals`.
+fn number_value(
+    compiler: &Compiler<'_>,
+    field: &str,
+    func: &str,
+    alias: &str,
+    laterals: &mut Vec<String>,
+) -> Result<String, Error> {
+    Ok(match compiler.locate_root(field) {
+        Located::Missing => "NULL::numeric".to_string(),
+        Located::Field {
+            arrays,
+            expr,
+            field: found,
+        } => {
+            if !matches!(found.kind, FieldKind::Long | FieldKind::Double) {
+                return Err(Error::new(format!("{func} needs a number field, {field} is not")));
+            }
+            if arrays.is_empty() {
+                expr
+            } else {
+                laterals.push(format!(
+                    "LEFT JOIN LATERAL (SELECT {func}({expr}) AS v FROM {}) AS {alias} ON TRUE",
+                    from_list(&arrays)
+                ));
+                format!("{alias}.v")
+            }
+        }
+    })
+}
+
 /// Each row of a level as its key tuple and its content: `doc_count`, the empty results of its aggregations, and the
 /// metric and filter count columns at their paths.
 fn read_rows(rows: &[DbRow], key_count: usize, items: &[Item], aggs: &IndexMap<String, Agg>) -> Vec<Row> {
@@ -258,6 +281,7 @@ fn read_rows(rows: &[DbRow], key_count: usize, items: &[Item], aggs: &IndexMap<S
                     set_path(&mut content, &full, count_value(Some(&cell)));
                 }
                 Item::Sum { path, .. } => set_path(&mut content, path, sum_value(cell)),
+                Item::Extreme { path, .. } => set_path(&mut content, path, extreme_value(cell)),
                 Item::CountDistinct { path, .. } => set_path(&mut content, path, count_value(Some(&cell))),
             }
         }
@@ -323,6 +347,12 @@ fn collect<'t>(
                 path: here,
                 conds: conds.to_vec(),
                 field: field.clone(),
+            }),
+            Agg::Extreme { field, max } => items.push(Item::Extreme {
+                path: here,
+                conds: conds.to_vec(),
+                field: field.clone(),
+                max: *max,
             }),
             Agg::CountDistinct { field } => items.push(Item::CountDistinct {
                 path: here,
@@ -612,6 +642,17 @@ fn sum_value(value: Value) -> Value {
     }
 }
 
+/// A minimum or maximum as a decimal, null when there was no value.
+fn extreme_value(value: Value) -> Value {
+    match value {
+        Value::Null | Value::Decimal(_) => value,
+        other => match moqui_lib::object::basic_convert(&other, "BigDecimal").value {
+            decimal @ Value::Decimal(_) => decimal,
+            _ => Value::Null,
+        },
+    }
+}
+
 fn timestamp_of(value: &Value) -> Option<Timestamp> {
     match value {
         Value::Timestamp(at) => Some(*at),
@@ -724,6 +765,35 @@ mod tests {
         assert!(level.ends_with("GROUP BY 1 LIMIT 65537"), "{level}");
         let Value::Map(outer) = &out["DateOuter"] else { panic!() };
         assert_eq!(outer["buckets"], Value::List(Vec::new()));
+    }
+
+    #[test]
+    fn min_and_max_levels_filter_and_read_null() {
+        let aggs = tree(
+            r#"{"hi":{"max":{"field":"issuances.issuedSaleTotal"}},
+                "lo":{"filter":{"term":{"itemTypeEnumId":"ItemProduct"}},"aggs":{"m":{"min":{"field":"itemSaleTotal"}}}}}"#,
+        );
+        let mut statements = Vec::new();
+        let mut run = |sql: &Sql| -> Result<Vec<DbRow>, Error> {
+            statements.push(sql.clone());
+            Ok(vec![DbRow {
+                columns: vec![("dc".into(), Value::I64(0))],
+            }])
+        };
+        let out = aggregate(
+            "\"search\".\"t\"",
+            &sales(),
+            &TextSetup::default(),
+            &Query::MatchAll,
+            &aggs,
+            &mut run,
+        )
+        .unwrap();
+        let level = &statements.last().unwrap().text;
+        assert!(level.contains("max(s0.v) AS c"), "{level}");
+        assert!(level.contains("LEFT JOIN LATERAL (SELECT max("), "{level}");
+        assert!(level.contains("min(\"f_itemSaleTotal\") FILTER (WHERE"), "{level}");
+        assert_eq!(out["hi"], Value::Null);
     }
 
     #[test]

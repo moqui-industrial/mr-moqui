@@ -462,6 +462,9 @@ fn agg_json(mapping: &DocumentMapping, agg: &Agg) -> Result<Json, Error> {
     };
     Ok(match agg {
         Agg::Sum { field } => json!({"sum": {"field": field_name(mapping, field, false)}}),
+        Agg::Extreme { field, max } => {
+            json!({(if *max { "max" } else { "min" }): {"field": field_name(mapping, field, false)}})
+        }
         Agg::CountDistinct { field } => json!({"cardinality": {"field": field_name(mapping, field, true),
             "precision_threshold": PRECISION_THRESHOLD}}),
         Agg::Filter { query, aggs } => {
@@ -544,6 +547,11 @@ fn read_agg(agg: &Agg, part: &Json) -> Value {
                 other => other,
             }
         }
+        Agg::Extreme { .. } => match moqui_lib::json::from_json(part.get("value").unwrap_or(&Json::Null)) {
+            Value::I64(whole) => Value::Decimal(whole.into()),
+            Value::F64(float) => moqui_lib::object::basic_convert(&Value::F64(float), "BigDecimal").value,
+            other => other,
+        },
         Agg::CountDistinct { .. } => Value::I64(part.get("value").and_then(Json::as_i64).unwrap_or(0)),
         Agg::Filter { aggs, .. } => {
             let mut map = IndexMap::new();
@@ -1111,6 +1119,23 @@ mod tests {
             query_json(&mapping, &range),
             json!({"range": {"placedDate": {"gte": 1_767_225_600_000_i64, "lt": 1_769_904_000_000_i64}}})
         );
+    }
+
+    #[test]
+    fn min_and_max_aggregations_round_trip() {
+        let mapping = sales();
+        let aggs = Agg::map_from_value(&moqui_lib::json::from_json(
+            &serde_json::from_str(r#"{"lo":{"min":{"field":"itemSaleTotal"}},"hi":{"max":{"field":"itemSaleTotal"}}}"#)
+                .unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(
+            aggs_json(&mapping, &aggs).unwrap(),
+            json!({"lo": {"min": {"field": "itemSaleTotal"}}, "hi": {"max": {"field": "itemSaleTotal"}}})
+        );
+        let out = read_aggs(&aggs, &json!({"lo": {"value": 2.5}, "hi": {"value": null}}));
+        assert!(matches!(out["lo"], Value::Decimal(_)));
+        assert_eq!(out["hi"], Value::Null);
     }
 
     #[test]

@@ -22,6 +22,7 @@
 //! {terms:          {field, size: 10, order: {totalSales: "desc"} | {_count: "desc"} | {_key: "asc"},
 //!                   aggs: {..}}}
 //! {sum:            {field}}
+//! {min:            {field}}        also max; null over nothing
 //! {count_distinct: {field}}        also "cardinality"
 //! ```
 //!
@@ -131,11 +132,23 @@ pub struct Terms {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Agg {
-    Filter { query: Query, aggs: IndexMap<String, Agg> },
+    Filter {
+        query: Query,
+        aggs: IndexMap<String, Agg>,
+    },
     DateHistogram(DateHistogram),
     Terms(Terms),
-    Sum { field: String },
-    CountDistinct { field: String },
+    Sum {
+        field: String,
+    },
+    /// The least (or, with `max`, the greatest) value of a number field, null over nothing.
+    Extreme {
+        field: String,
+        max: bool,
+    },
+    CountDistinct {
+        field: String,
+    },
 }
 
 impl Agg {
@@ -144,7 +157,7 @@ impl Agg {
             Self::Filter { aggs, .. } => Some(aggs),
             Self::DateHistogram(histogram) => Some(&histogram.aggs),
             Self::Terms(terms) => Some(&terms.aggs),
-            Self::Sum { .. } | Self::CountDistinct { .. } => None,
+            Self::Sum { .. } | Self::Extreme { .. } | Self::CountDistinct { .. } => None,
         }
     }
 
@@ -255,6 +268,14 @@ impl Agg {
                 aggs: nested()?,
             }),
             "sum" => Self::Sum { field: field()? },
+            "min" => Self::Extreme {
+                field: field()?,
+                max: false,
+            },
+            "max" => Self::Extreme {
+                field: field()?,
+                max: true,
+            },
             "count_distinct" | "cardinality" => Self::CountDistinct { field: field()? },
             other => return Err(Error::new(format!("aggregation type {other} is not supported"))),
         })
