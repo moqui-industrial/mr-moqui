@@ -78,7 +78,7 @@ fn run_unit(ctx: &Ctx<'_>, unit: &Unit) -> Result<(), Error> {
             engine
                 .units
                 .borrow_mut()
-                .insert(unit.id, Persistent::save(ctx, function.clone()));
+                .insert_sized(unit.id, Persistent::save(ctx, function.clone()), unit.source.len());
             function
         }
     };

@@ -15,6 +15,7 @@
 //! Synchronous service call.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use moqui_db::model::{EntityDefinition, KeyMap};
 use moqui_lib::error::Error as LibError;
@@ -499,7 +500,7 @@ fn canonical(name: &str) -> String {
     name.to_string()
 }
 
-fn resolve(name: &str, facade: Option<&EntityFacade>) -> Result<ServiceDef, Error> {
+fn resolve(name: &str, facade: Option<&EntityFacade>) -> Result<Arc<ServiceDef>, Error> {
     if let Some(def) = super::define::find(name) {
         return Ok(def);
     }
@@ -507,7 +508,7 @@ fn resolve(name: &str, facade: Option<&EntityFacade>) -> Result<ServiceDef, Erro
     if matches!(verb.as_str(), "create" | "update" | "store" | "delete") && !noun.is_empty() {
         if let Some(facade) = facade {
             if facade.with_entity(&noun, |_, _, _| Ok(())).is_ok() {
-                return Ok(ServiceDef::implicit(name, &verb, &noun));
+                return Ok(Arc::new(ServiceDef::implicit(name, &verb, &noun)));
             }
         }
     }
@@ -552,15 +553,17 @@ pub(crate) struct FormService {
 pub(crate) fn service_form_info(name: &str) -> Option<FormService> {
     let def = super::define::find(&canonical(name))?;
     let facade = crate::context::ExecutionContext::with_current(|ec| ec.factory().entity()).flatten();
-    let expand = |params: &[super::define::ParamDef]| {
-        super::validate::expand_params(&def, params, facade.as_ref()).unwrap_or_else(|err| {
-            tracing::warn!(service = %def.name, error = %err, "auto-parameters not expanded for a form");
-            params.iter().filter(|param| !param.name.is_empty()).cloned().collect()
-        })
+    let unexpanded = |err: Error, params: &[super::define::ParamDef]| {
+        tracing::warn!(service = %def.name, error = %err, "auto-parameters not expanded for a form");
+        params.iter().filter(|param| !param.name.is_empty()).cloned().collect()
     };
+    let in_params = super::validate::declared_in(&def, facade.as_ref())
+        .map_or_else(|err| unexpanded(err, &def.in_params), |params| params.to_vec());
+    let out_params = super::validate::expand_params(&def, &def.out_params, facade.as_ref())
+        .unwrap_or_else(|err| unexpanded(err, &def.out_params));
     Some(FormService {
-        in_params: expand(&def.in_params),
-        out_params: expand(&def.out_params),
+        in_params,
+        out_params,
         name: def.name.clone(),
         noun: def.noun.clone(),
     })
@@ -1161,7 +1164,8 @@ mod tests {
         let _entered = ctx.enter();
         crate::service::lint(std::slice::from_ref(&path)).unwrap();
         let _authz = ctx.disable_authz();
-        let mut quick = crate::service::define::find("guard#Row").expect("registered");
+        let mut quick =
+            crate::service::define::ServiceDef::clone(&crate::service::define::find("guard#Row").expect("registered"));
         quick.semaphore_ignore = std::time::Duration::from_millis(1);
         let mut patient = quick.clone();
         patient.semaphore_ignore = std::time::Duration::from_secs(3600);
@@ -1618,6 +1622,31 @@ mod tests {
         let err = sync("ping#Remote", &BTreeMap::new()).unwrap_err();
         let text = err.to_string();
         assert!(text.contains("sim mode is active"), "{text}");
+    }
+
+    #[test]
+    fn auto_parameters_are_expanded_once_per_entity_facade() {
+        let path = write_fixture(
+            "auto-cache",
+            r#"<services><service verb="take" noun="Auto">
+                <in-parameters><auto-parameters entity-name="moqui.test.TestEntity" include="pk"/></in-parameters>
+            </service></services>"#,
+        );
+        let (facade, ctx) = seeded_context(&[]);
+        let _entered = ctx.enter();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        let def = crate::service::define::find("take#Auto").expect("registered");
+        let first = super::validate::declared_in(&def, Some(&facade)).unwrap();
+        assert!(first.iter().any(|param| param.name == "testId"), "{first:?}");
+        let again = super::validate::declared_in(&def, Some(&facade)).unwrap();
+        assert!(Arc::ptr_eq(&first, &again), "kept on the definition");
+        let other = crate::testing::open();
+        let expanded = super::validate::declared_in(&def, Some(&other)).unwrap();
+        assert!(!Arc::ptr_eq(&first, &expanded), "another facade expands again");
+        assert_eq!(
+            expanded.iter().map(|param| &param.name).collect::<Vec<_>>(),
+            first.iter().map(|param| &param.name).collect::<Vec<_>>()
+        );
     }
 
     fn write_fixture(name: &str, body: &str) -> PathBuf {

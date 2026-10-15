@@ -14,7 +14,9 @@
 
 //! Service ECA. Rules come from the factory's `*.secas.xml` files (see `eca_rules`).
 
-use std::collections::BTreeMap;
+use std::borrow::Cow;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use moqui_lib::node::MNode;
 use moqui_lib::object::Value;
@@ -46,10 +48,8 @@ pub fn run_seca_rules(
     let Some(rules) = eca_rules::current() else {
         return Ok(());
     };
-    for rule in &rules.seca {
-        if rule.when_name != when || !service_matches(rule, service) {
-            continue;
-        }
+    for &position in rules.seca_index.matching(&rules.seca, service, when).iter() {
+        let rule = &rules.seca[position];
         if !rule.run_on_error && message_has_error() {
             continue;
         }
@@ -67,6 +67,62 @@ pub fn run_seca_rules(
         super::rule_actions::run_stored_actions(&rule.actions)?;
     }
     Ok(())
+}
+
+/// The SECA rules by `when` and service, made once when the rules load, so a call does not scan every rule at each of
+/// its phases. Each list holds positions in the priority order.
+#[derive(Default)]
+pub(super) struct SecaIndex {
+    /// By `when`, then by the service name without `#`.
+    exact: HashMap<String, HashMap<String, Vec<usize>>>,
+    /// The rules whose name is a pattern, by `when`.
+    patterns: HashMap<String, Vec<usize>>,
+}
+
+impl SecaIndex {
+    pub(super) fn new(rules: &[Arc<SecaRule>]) -> Self {
+        let mut index = Self::default();
+        for (position, rule) in rules.iter().enumerate() {
+            let when = rule.when_name.clone();
+            if rule.name_is_pattern {
+                index.patterns.entry(when).or_default().push(position);
+            } else {
+                index
+                    .exact
+                    .entry(when)
+                    .or_default()
+                    .entry(rule.service_plain.clone())
+                    .or_default()
+                    .push(position);
+            }
+        }
+        index
+    }
+
+    /// The positions of the rules of `rules`, the list this index was made from, that run for `service` at `when`,
+    /// in priority order.
+    fn matching<'a>(&'a self, rules: &[Arc<SecaRule>], service: &str, when: &str) -> Cow<'a, [usize]> {
+        let patterns = self.patterns.get(when).map_or(&[][..], Vec::as_slice);
+        let exact = self.exact.get(when);
+        if patterns.is_empty() && exact.is_none() {
+            return Cow::Borrowed(&[]);
+        }
+        let plain = service.replace('#', "");
+        let named = exact
+            .and_then(|by_service| by_service.get(&plain))
+            .map_or(&[][..], Vec::as_slice);
+        let mut positions: Vec<usize> = patterns
+            .iter()
+            .copied()
+            .filter(|position| pattern_matches(&rules[*position], &plain))
+            .collect();
+        if positions.is_empty() {
+            return Cow::Borrowed(named);
+        }
+        positions.extend_from_slice(named);
+        positions.sort_unstable();
+        Cow::Owned(positions)
+    }
 }
 
 fn to_index_map(values: &BTreeMap<String, Value>) -> indexmap::IndexMap<String, Value> {
@@ -134,8 +190,13 @@ fn service_matches(rule: &SecaRule, service: &str) -> bool {
     if !rule.name_is_pattern {
         return rule.service_plain == plain;
     }
+    pattern_matches(rule, &plain)
+}
+
+/// Whether the rule's name pattern matches `plain`, a service name without `#`.
+fn pattern_matches(rule: &SecaRule, plain: &str) -> bool {
     moqui_lib::object::compare(
-        &Value::string(&plain),
+        &Value::string(plain),
         "matches",
         &Value::string(&rule.service_plain),
         "String",
@@ -185,6 +246,52 @@ mod tests {
         assert_eq!(context.message().messages(), ["early", "late"]);
         run_seca_rules("test.example#Run", "post-service", &parameters, None).unwrap();
         assert_eq!(context.message().messages(), ["early", "late"]);
+    }
+
+    #[test]
+    fn pattern_and_named_rules_run_together_in_priority_order() {
+        let context = crate::context::ExecutionContextFactory::test_context();
+        eca_rules::install(
+            context.factory(),
+            eca_rules::from_xml(
+                r#"<secas>
+                <seca service="test.example.Thing.run#Run" when="pre-service" priority="3">
+                    <actions><script>ec.message.addMessage("named 3");</script></actions>
+                </seca>
+                <seca service="test\.example\..*" name-is-pattern="true" when="pre-service" priority="2">
+                    <actions><script>ec.message.addMessage("pattern 2");</script></actions>
+                </seca>
+                <seca service="test.example.Thing.run#Run" when="pre-service" priority="1">
+                    <actions><script>ec.message.addMessage("named 1");</script></actions>
+                </seca>
+                <seca service="test.example.Thing.run#Other" when="pre-service" priority="1">
+                    <actions><script>ec.message.addMessage("other");</script></actions>
+                </seca>
+                <seca service="test\.example\..*" name-is-pattern="true" when="post-service" priority="1">
+                    <actions><script>ec.message.addMessage("post");</script></actions>
+                </seca>
+            </secas>"#,
+                "",
+            ),
+        );
+        let _entered = context.enter();
+        let parameters = BTreeMap::new();
+        let run = |service: &str, when: &str| {
+            context.message().clear();
+            run_seca_rules(service, when, &parameters, None).unwrap();
+            context.message().messages().to_vec()
+        };
+        assert_eq!(
+            run("test.example.Thing.run#Run", "pre-service"),
+            ["named 1", "pattern 2", "named 3"]
+        );
+        assert_eq!(
+            run("test.example.Thing.run#Other", "pre-service"),
+            ["other", "pattern 2"]
+        );
+        assert_eq!(run("test.other.Thing.run#Run", "pre-service"), Vec::<String>::new());
+        assert_eq!(run("test.example.Thing.run#Run", "post-service"), ["post"]);
+        assert!(run("test.example.Thing.run#Run", "pre-validate").is_empty());
     }
 
     #[test]

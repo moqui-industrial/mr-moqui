@@ -28,17 +28,16 @@ pub(super) fn fresh_service<'js>(ctx: &Ctx<'js>, is_async: bool) -> rquickjs::Re
     Class::instance(
         ctx.clone(),
         HostService {
-            call: ServiceCall {
+            call: std::cell::RefCell::new(ServiceCall {
                 name: String::new(),
                 parameters: std::collections::BTreeMap::new(),
                 options: CallOptions::default(),
                 is_async,
-            },
+            }),
         },
     )
 }
 
-#[derive(Clone)]
 pub(super) struct ServiceCall {
     pub(super) name: String,
     pub(super) parameters: std::collections::BTreeMap<String, Value>,
@@ -46,128 +45,150 @@ pub(super) struct ServiceCall {
     pub(super) is_async: bool,
 }
 
-/// Service call builder. Each method returns a new builder. There is no `distribute` method.
+/// Service call builder. Each method changes the builder and returns it, as Java's. There is no `distribute` method.
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class]
 pub(super) struct HostService {
     #[qjs(skip_trace)]
-    pub(super) call: ServiceCall,
+    pub(super) call: std::cell::RefCell<ServiceCall>,
 }
 
-impl HostService {
-    fn changed<'js>(
-        &self,
-        ctx: &Ctx<'js>,
-        change: impl FnOnce(&mut ServiceCall) -> rquickjs::Result<()>,
-    ) -> rquickjs::Result<Class<'js, HostService>> {
-        let mut call = self.call.clone();
-        change(&mut call)?;
-        Class::instance(ctx.clone(), HostService { call })
+/// Change the builder `this` and return it.
+fn changed<'js>(
+    this: This<Class<'js, HostService>>,
+    ctx: &Ctx<'js>,
+    change: impl FnOnce(&mut ServiceCall),
+) -> rquickjs::Result<Class<'js, HostService>> {
+    {
+        let builder = this.0.borrow();
+        let mut call = builder
+            .call
+            .try_borrow_mut()
+            .map_err(|_| Exception::throw_message(ctx, "the service call is running"))?;
+        change(&mut call);
     }
+    Ok(this.0)
+}
+
+/// Whether `value` is `ec.context`, the whole context: `in-map="context"` passes it.
+fn is_ec_context<'js>(ctx: &Ctx<'js>, value: &JsValue<'js>) -> rquickjs::Result<bool> {
+    if !value.is_object() {
+        return Ok(false);
+    }
+    let ec: JsValue = ctx.globals().get("ec")?;
+    let Some(ec) = ec.as_object() else {
+        return Ok(false);
+    };
+    let context: JsValue = ec.get("context")?;
+    Ok(context == *value)
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
 impl HostService {
-    fn name<'js>(&self, ctx: Ctx<'js>, name: String) -> rquickjs::Result<Class<'js, HostService>> {
-        host_guard(&ctx, || {
-            self.changed(&ctx, |call| {
-                call.name = name;
-                Ok(())
-            })
-        })
+    fn name<'js>(
+        this: This<Class<'js, HostService>>,
+        ctx: Ctx<'js>,
+        name: String,
+    ) -> rquickjs::Result<Class<'js, HostService>> {
+        host_guard(&ctx, || changed(this, &ctx, |call| call.name = name))
     }
 
-    fn disable_authz<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<Class<'js, HostService>> {
-        host_guard(&ctx, || {
-            self.changed(&ctx, |call| {
-                call.options.disable_authz = true;
-                Ok(())
-            })
-        })
+    fn disable_authz<'js>(
+        this: This<Class<'js, HostService>>,
+        ctx: Ctx<'js>,
+    ) -> rquickjs::Result<Class<'js, HostService>> {
+        host_guard(&ctx, || changed(this, &ctx, |call| call.options.disable_authz = true))
     }
 
     /// `multi(true)`: one call for each row of `name_N` parameters, in one transaction, as Java's multi form submit.
-    fn multi<'js>(&self, ctx: Ctx<'js>, flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostService>> {
-        host_guard(&ctx, || {
-            self.changed(&ctx, |call| {
-                call.options.multi = flag.as_bool().unwrap_or(false);
-                Ok(())
-            })
-        })
-    }
-
-    fn ignore_transaction<'js>(&self, ctx: Ctx<'js>, flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostService>> {
-        host_guard(&ctx, || {
-            self.changed(&ctx, |call| {
-                call.options.ignore_transaction = flag.as_bool();
-                Ok(())
-            })
-        })
-    }
-
-    fn require_new_transaction<'js>(
-        &self,
+    fn multi<'js>(
+        this: This<Class<'js, HostService>>,
         ctx: Ctx<'js>,
         flag: JsValue<'js>,
     ) -> rquickjs::Result<Class<'js, HostService>> {
         host_guard(&ctx, || {
-            self.changed(&ctx, |call| {
-                call.options.require_new_transaction = flag.as_bool();
-                Ok(())
-            })
+            changed(this, &ctx, |call| call.options.multi = flag.as_bool().unwrap_or(false))
+        })
+    }
+
+    fn ignore_transaction<'js>(
+        this: This<Class<'js, HostService>>,
+        ctx: Ctx<'js>,
+        flag: JsValue<'js>,
+    ) -> rquickjs::Result<Class<'js, HostService>> {
+        host_guard(&ctx, || {
+            changed(this, &ctx, |call| call.options.ignore_transaction = flag.as_bool())
+        })
+    }
+
+    fn require_new_transaction<'js>(
+        this: This<Class<'js, HostService>>,
+        ctx: Ctx<'js>,
+        flag: JsValue<'js>,
+    ) -> rquickjs::Result<Class<'js, HostService>> {
+        host_guard(&ctx, || {
+            changed(this, &ctx, |call| call.options.require_new_transaction = flag.as_bool())
         })
     }
 
     fn transaction_timeout<'js>(
-        &self,
+        this: This<Class<'js, HostService>>,
         ctx: Ctx<'js>,
         seconds: JsValue<'js>,
     ) -> rquickjs::Result<Class<'js, HostService>> {
         host_guard(&ctx, || {
             let seconds = js_i64(&ctx, &seconds)?;
-            self.changed(&ctx, |call| {
+            changed(this, &ctx, |call| {
                 call.options.timeout = u64::try_from(seconds).ok().map(std::time::Duration::from_secs);
-                Ok(())
             })
         })
     }
 
     fn use_transaction_cache<'js>(
-        &self,
+        this: This<Class<'js, HostService>>,
         ctx: Ctx<'js>,
         flag: JsValue<'js>,
     ) -> rquickjs::Result<Class<'js, HostService>> {
         host_guard(&ctx, || {
-            self.changed(&ctx, |call| {
-                call.options.use_transaction_cache = flag.as_bool();
-                Ok(())
-            })
+            changed(this, &ctx, |call| call.options.use_transaction_cache = flag.as_bool())
         })
     }
 
-    fn parameters<'js>(&self, ctx: Ctx<'js>, map: JsValue<'js>) -> rquickjs::Result<Class<'js, HostService>> {
+    /// Add the entries of a map. `ec.context` is the whole context, read from the stack as `context` reads it.
+    fn parameters<'js>(
+        this: This<Class<'js, HostService>>,
+        ctx: Ctx<'js>,
+        map: JsValue<'js>,
+    ) -> rquickjs::Result<Class<'js, HostService>> {
         host_guard(&ctx, || {
-            let given = js_to_host(&ctx, &map)?;
-            self.changed(&ctx, |call| {
-                if let Value::Map(entries) = given {
-                    call.parameters.extend(entries);
+            let entries = if is_ec_context(&ctx, &map)? {
+                if let Some(engine) = current_engine() {
+                    readopt_all(&engine);
                 }
-                Ok(())
-            })
+                flush_current(&ctx, false)?;
+                let mut visible = context_combined();
+                visible.retain(|_, value| !matches!(value, Value::Bytes(_)));
+                visible
+            } else {
+                match js_to_host(&ctx, &map)? {
+                    Value::Map(entries) => entries,
+                    _ => return Ok(this.0),
+                }
+            };
+            changed(this, &ctx, |call| call.parameters.extend(entries))
         })
     }
 
     fn parameter<'js>(
-        &self,
+        this: This<Class<'js, HostService>>,
         ctx: Ctx<'js>,
         name: String,
         value: JsValue<'js>,
     ) -> rquickjs::Result<Class<'js, HostService>> {
         host_guard(&ctx, || {
             let value = js_to_host(&ctx, &value)?;
-            self.changed(&ctx, |call| {
+            changed(this, &ctx, |call| {
                 call.parameters.insert(name, value);
-                Ok(())
             })
         })
     }
@@ -176,7 +197,8 @@ impl HostService {
     fn call_future<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || {
             flush_current(&ctx, true)?;
-            match crate::service::call::start_future(&self.call.name, &self.call.parameters) {
+            let call = self.call.borrow();
+            match crate::service::call::start_future(&call.name, &call.parameters) {
                 Ok(future) => Class::instance(
                     ctx.clone(),
                     HostFuture {
@@ -199,17 +221,18 @@ impl HostService {
         host_guard(&ctx, || {
             // The callee may read or change the caller's names, so they are written back first.
             flush_current(&ctx, true)?;
-            if self.call.is_async {
-                if let Err(err) = crate::service::call::async_call(&self.call.name, &self.call.parameters) {
+            let call = self.call.borrow();
+            if call.is_async {
+                if let Err(err) = crate::service::call::async_call(&call.name, &call.parameters) {
                     let message = err.message().to_string();
                     with_ec(&ctx, |ec| ec.message().add_error(message))?;
                 }
                 return Null.into_js(&ctx);
             }
-            let called = if self.call.options.multi {
-                crate::service::call::sync_multi(&self.call.name, &self.call.parameters, &self.call.options)
+            let called = if call.options.multi {
+                crate::service::call::sync_multi(&call.name, &call.parameters, &call.options)
             } else {
-                crate::service::call::sync_with(&self.call.name, &self.call.parameters, &self.call.options)
+                crate::service::call::sync_with(&call.name, &call.parameters, &call.options)
             };
             match called {
                 Ok(results) => host_to_js(&ctx, Value::Map(results.into_iter().collect())),
@@ -243,7 +266,8 @@ impl HostFuture {
         host_guard(&ctx, || Ok(self.future.borrow_mut().is_done()))
     }
 
-    /// The out parameters. With a timeout in milliseconds, a call that is not done in time throws.
+    /// The out parameters. With a timeout in milliseconds, or with none the time the script has left, a call that is
+    /// not done in time throws.
     fn get<'js>(&self, ctx: Ctx<'js>, timeout_ms: Opt<JsValue<'js>>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || {
             let limit = match &timeout_ms.0 {
@@ -251,7 +275,8 @@ impl HostFuture {
                     let millis = js_i64(&ctx, value)?;
                     Some(std::time::Duration::from_millis(u64::try_from(millis).unwrap_or(0)))
                 }
-                _ => None,
+                // No limit given waits as long as the script may still run.
+                _ => script_time_remaining(),
             };
             let outcome = self.future.borrow_mut().get(limit);
             match outcome {

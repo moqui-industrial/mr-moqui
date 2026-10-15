@@ -26,6 +26,7 @@ mod pool;
 
 #[cfg(test)]
 pub(crate) use manager::single_threaded;
+pub(crate) use manager::DEFAULT_TIMEOUT;
 pub use manager::{thread_in_transaction, TransactionAttribute, TransactionManager, TxScope};
 pub use pool::{Pool, PoolConfig, PoolStats};
 

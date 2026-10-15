@@ -134,6 +134,10 @@
     <!-- How often (in seconds) to check for scheduled jobs to run, set to 0 to not run scheduled jobs -->
     <default-property name="scheduled_job_check_time" value="60"/>
 
+    <!-- Seconds a script may run when no transaction limits it (a transaction="ignore" service, a widget condition, an ECA
+        condition), the default transaction timeout. A transaction's own timeout replaces it. 0 is no limit. -->
+    <default-property name="script_timeout" value="60"/>
+
     <!-- SearchFacade backend: postgres (the default, tables in the search schema of the entity Postgres, or a dedicated
         embedded cluster when the entity database is not Postgres) or opensearch (the cluster settings below) -->
     <default-property name="search_backend" value="postgres"/>

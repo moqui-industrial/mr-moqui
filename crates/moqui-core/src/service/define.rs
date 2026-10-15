@@ -16,7 +16,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::Duration;
 
 use moqui_lib::node::MNode;
@@ -197,6 +197,8 @@ pub(crate) struct ServiceDef {
     pub in_params: Vec<ParamDef>,
     pub out_params: Vec<ParamDef>,
     pub implements: Vec<ImplementRef>,
+    /// The in-parameters with `auto-parameters` expanded, made at the first call (see `validate::declared_in`).
+    pub expanded_in: super::validate::ExpandedParams,
 }
 
 impl ServiceDef {
@@ -225,6 +227,7 @@ impl ServiceDef {
             in_params: Vec::new(),
             out_params: Vec::new(),
             implements: Vec::new(),
+            expanded_in: super::validate::ExpandedParams::default(),
         }
     }
 
@@ -233,15 +236,27 @@ impl ServiceDef {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Registry {
-    services: BTreeMap<String, ServiceDef>,
+    services: BTreeMap<String, Arc<ServiceDef>>,
     failures: Vec<String>,
-    /// The files the services came from, so a file found by service name can be added and the whole set
-    /// built again (`implements` and `include` resolve across files).
-    paths: Vec<PathBuf>,
+    /// What the files read so far define, so a file found by service name is read alone and merged in
+    /// (`implements` and `include` resolve across files).
+    loaded: Loaded,
     /// Files looked for by service name, found or not, so a miss is not searched again.
     searched: BTreeSet<PathBuf>,
+}
+
+/// The service files read, with their services as defined, before includes and implements resolve.
+#[derive(Clone, Default)]
+struct Loaded {
+    defined: BTreeMap<String, Arc<ServiceDef>>,
+    /// The failures found reading the files.
+    failures: Vec<String>,
+    /// Each `service-include` by its local name, with the service it names or why it names none.
+    includes: Vec<(String, Result<String, String>)>,
+    /// The files read, normalized.
+    files: BTreeSet<PathBuf>,
 }
 
 struct ServiceInclude {
@@ -251,7 +266,12 @@ struct ServiceInclude {
     location: String,
 }
 
-type Shared = RwLock<Arc<Registry>>;
+#[derive(Default)]
+struct Shared {
+    current: RwLock<Arc<Registry>>,
+    /// Held while the registry is built or a file is merged in, so two loads do not each replace the other's.
+    load: Mutex<()>,
+}
 
 /// The entered context's factory and its registry, or an error when no context is entered.
 fn entered() -> Result<Arc<Shared>, Error> {
@@ -260,11 +280,15 @@ fn entered() -> Result<Arc<Shared>, Error> {
 }
 
 fn registry_of(factory: &Arc<ExecutionContextFactory>) -> Arc<Shared> {
-    factory.extension::<Shared>(|_| RwLock::new(Arc::new(Registry::default())))
+    factory.extension::<Shared>(|_| Shared::default())
 }
 
 fn snapshot(shared: &Shared) -> Arc<Registry> {
-    Arc::clone(&shared.read().unwrap_or_else(|err| err.into_inner()))
+    Arc::clone(&shared.current.read().unwrap_or_else(PoisonError::into_inner))
+}
+
+fn replace(shared: &Shared, registry: Registry) {
+    *shared.current.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(registry);
 }
 
 #[cfg(test)]
@@ -420,10 +444,10 @@ pub(crate) fn input_hints(service: &str, parameter: &str) -> Option<ParamHints> 
 }
 
 /// A service of the entered context's factory. `None` when it is not defined or no context is entered.
-pub(crate) fn find(name: &str) -> Option<ServiceDef> {
+pub(crate) fn find(name: &str) -> Option<Arc<ServiceDef>> {
     let shared = entered().ok()?;
     if let Some(def) = snapshot(&shared).services.get(name) {
-        return Some(def.clone());
+        return Some(Arc::clone(def));
     }
     load_by_name(&shared, name)
 }
@@ -471,8 +495,9 @@ pub(crate) fn registration_failures(name: &str) -> Vec<String> {
 }
 
 /// Java's lookup by name: `a.b.C.verb#noun` is defined in `service/a/b/C.xml` of the framework or a
-/// component, the first that has the file. The file joins the registry, which is built again with it.
-fn load_by_name(shared: &Shared, name: &str) -> Option<ServiceDef> {
+/// component, the first that has the file. Only that file, and the files it includes, are read, and their services
+/// are merged into the registry.
+fn load_by_name(shared: &Shared, name: &str) -> Option<Arc<ServiceDef>> {
     let path_name = name.split('#').next()?;
     let (file, _) = path_name.rsplit_once('.')?;
     let relative = format!("{}.xml", file.replace('.', "/"));
@@ -483,23 +508,23 @@ fn load_by_name(shared: &Shared, name: &str) -> Option<ServiceDef> {
         .iter()
         .map(|root| root.join("service").join(&relative))
         .find(|candidate| candidate.is_file())?;
+    let _loading = shared.load.lock().unwrap_or_else(PoisonError::into_inner);
+    // Another thread may have merged the file while this one waited.
     let current = snapshot(shared);
-    if current.searched.contains(&path) || current.paths.contains(&path) {
+    if let Some(def) = current.services.get(name) {
+        return Some(Arc::clone(def));
+    }
+    if current.searched.contains(&path) || current.loaded.files.contains(&normalize(&path)) {
         return None;
     }
-    let mut paths = current.paths.clone();
-    paths.push(path.clone());
-    let mut next = match build(&paths) {
-        Ok(registry) => registry,
-        Err(err) => {
-            tracing::warn!(error = %err, path = %path.display(), "could not read the service file for {name}");
-            return None;
-        }
-    };
-    next.searched = current.searched.clone();
+    let mut next = Registry::clone(&current);
+    if let Err(err) = next.merge(std::slice::from_ref(&path)) {
+        tracing::warn!(error = %err, path = %path.display(), "could not read the service file for {name}");
+        return None;
+    }
     next.searched.insert(path);
     let found = next.services.get(name).cloned();
-    *shared.write().unwrap_or_else(|err| err.into_inner()) = Arc::new(next);
+    replace(shared, next);
     found
 }
 
@@ -509,7 +534,11 @@ fn load_by_name(shared: &Shared, name: &str) -> Option<ServiceDef> {
 ///
 /// Returns an error when no context is entered.
 pub(crate) fn registered() -> Result<Vec<ServiceDef>, Error> {
-    Ok(snapshot(&*entered()?).services.values().cloned().collect())
+    Ok(snapshot(&*entered()?)
+        .services
+        .values()
+        .map(|def| ServiceDef::clone(def))
+        .collect())
 }
 
 /// The services `paths` define, and the registration failures, without registering them.
@@ -520,7 +549,10 @@ pub(crate) fn registered() -> Result<Vec<ServiceDef>, Error> {
 #[cfg(test)]
 pub(crate) fn definitions_in(paths: &[PathBuf]) -> Result<(Vec<ServiceDef>, Vec<String>), Error> {
     let registry = build(paths)?;
-    Ok((registry.services.into_values().collect(), registry.failures))
+    Ok((
+        registry.services.into_values().map(Arc::unwrap_or_clone).collect(),
+        registry.failures,
+    ))
 }
 
 /// Register the configured service files with the entered context's factory.
@@ -567,52 +599,86 @@ pub fn check(paths: &[PathBuf]) -> Result<Vec<String>, Error> {
 }
 
 fn install(paths: &[PathBuf]) -> Result<(), Error> {
-    let registry = build(paths)?;
     let shared = entered()?;
-    *shared.write().unwrap_or_else(|err| err.into_inner()) = Arc::new(registry);
+    let _loading = shared.load.lock().unwrap_or_else(PoisonError::into_inner);
+    replace(&shared, build(paths)?);
     Ok(())
 }
 
 fn build(paths: &[PathBuf]) -> Result<Registry, Error> {
-    let mut services = BTreeMap::new();
-    let mut failures = Vec::new();
-    let mut includes = Vec::new();
-    let mut loaded = BTreeSet::new();
-    let mut pending: Vec<PathBuf> = paths.to_vec();
-    while let Some(path) = pending.pop() {
-        load_file(
-            &path,
-            &mut loaded,
-            &mut services,
-            &mut failures,
-            &mut includes,
-            &mut pending,
-        )?;
+    let mut registry = Registry::default();
+    registry.merge(paths)?;
+    Ok(registry)
+}
+
+impl Registry {
+    /// Read `paths` and the files they include, those not read already, and resolve the services again. A service
+    /// resolved before keeps its definition, unless a new file defines a service of the same name: then all resolve again.
+    fn merge(&mut self, paths: &[PathBuf]) -> Result<(), Error> {
+        let mut includes = Vec::new();
+        let mut added = Vec::new();
+        let mut pending: Vec<PathBuf> = paths.to_vec();
+        while let Some(path) = pending.pop() {
+            load_file(&path, &mut self.loaded, &mut includes, &mut pending, &mut added)?;
+        }
+        for include in includes {
+            let local = service_name(&include.prefix, &include.verb, &include.noun);
+            let target = follow_include(&include, &[], 0);
+            self.loaded.includes.push((local, target));
+        }
+        let previous = if added.iter().any(|name| self.services.contains_key(name)) {
+            BTreeMap::new()
+        } else {
+            std::mem::take(&mut self.services)
+        };
+        let (services, failures) = resolve(&self.loaded, previous);
+        self.services = services;
+        self.failures = failures;
+        Ok(())
+    }
+}
+
+/// The services of `loaded` with includes and implements resolved, and the failures. The services in `previous` are
+/// resolved already and stay as they are.
+fn resolve(
+    loaded: &Loaded,
+    previous: BTreeMap<String, Arc<ServiceDef>>,
+) -> (BTreeMap<String, Arc<ServiceDef>>, Vec<String>) {
+    let mut failures = loaded.failures.clone();
+    let done: BTreeSet<String> = previous.keys().cloned().collect();
+    let mut services = previous;
+    for (name, def) in &loaded.defined {
+        if !done.contains(name) {
+            services.insert(name.clone(), Arc::clone(def));
+        }
     }
     // Includes first, so a service can implement a name that is only an include alias.
-    resolve_includes(&includes, &mut services, &mut failures);
-    resolve_implements(&mut services, &mut failures);
-    Ok(Registry {
-        services,
-        failures,
-        paths: paths.to_vec(),
-        searched: BTreeSet::new(),
-    })
+    resolve_includes(loaded, &mut services, &mut failures);
+    resolve_implements(&mut services, &mut failures, done);
+    (services, failures)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The service files this thread parsed, for the tests that count them.
+    static PARSED: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 fn load_file(
     path: &Path,
-    loaded: &mut BTreeSet<PathBuf>,
-    services: &mut BTreeMap<String, ServiceDef>,
-    failures: &mut Vec<String>,
+    loaded: &mut Loaded,
     includes: &mut Vec<ServiceInclude>,
     pending: &mut Vec<PathBuf>,
+    added: &mut Vec<String>,
 ) -> Result<(), Error> {
     let path = normalize(path);
-    if !loaded.insert(path.clone()) {
+    if !loaded.files.insert(path.clone()) {
         return Ok(());
     }
+    #[cfg(test)]
+    PARSED.with(|parsed| parsed.borrow_mut().push(path.clone()));
     let root = MNode::parse_file(&path)?;
+    let failures = &mut loaded.failures;
     if root.name() != "services" {
         failures.push(format!("{} root is {} and not services", path.display(), root.name()));
         return Ok(());
@@ -620,7 +686,12 @@ fn load_file(
     let prefix = service_prefix(&path);
     for child in root.children() {
         match child.name().as_str() {
-            "service" => load_service(&prefix, &child, services, failures),
+            "service" => {
+                if let Some(def) = load_service(&prefix, &child, failures) {
+                    added.push(def.name.clone());
+                    loaded.defined.insert(def.name.clone(), Arc::new(def));
+                }
+            }
             "service-include" => {
                 let verb = child.attribute("verb").unwrap_or_default();
                 let noun = child.attribute("noun").unwrap_or_default();
@@ -648,46 +719,46 @@ fn load_file(
     Ok(())
 }
 
-fn load_service(prefix: &str, node: &MNode, services: &mut BTreeMap<String, ServiceDef>, failures: &mut Vec<String>) {
+fn load_service(prefix: &str, node: &MNode, failures: &mut Vec<String>) -> Option<ServiceDef> {
     let Some(verb) = node.attribute("verb") else {
         failures.push(format!("service in {prefix} is missing verb"));
-        return;
+        return None;
     };
     let noun = node.attribute("noun").unwrap_or_default();
     let name = service_name(prefix, &verb, &noun);
     let type_name = node.attribute("type").unwrap_or_else(|| "inline".to_string());
     if type_name == "remote-json-rpc" {
         failures.push(format!("service {name} JSON-RPC is not included"));
-        return;
+        return None;
     }
     if type_name == "java" {
         failures.push(format!("service {name} has no Java runner"));
-        return;
+        return None;
     }
     if type_name == "camel" {
         failures.push(format!("service {name} type camel is not included"));
-        return;
+        return None;
     }
     if !matches!(
         type_name.as_str(),
         "inline" | "entity-auto" | "script" | "interface" | "remote-rest"
     ) {
         failures.push(format!("service {name} has unknown type {type_name}"));
-        return;
+        return None;
     }
     // A service that is not available keeps its definition, so a call names why; its body is not compiled.
     let not_ported = type_name != "interface" && super::not_ported::runs(&name);
     let mut expression_errors = Vec::new();
     if !not_ported && !expressions_ok(&name, node, &mut expression_errors) {
         failures.extend(expression_errors);
-        return;
+        return None;
     }
     // The generated script is what runs, so it is what must parse. This reaches every attribute
     // that becomes JavaScript, not only the ones named in `is_expression_attr`.
     if let Some(actions) = node.first_named("actions").filter(|_| !not_ported) {
         if let Err(err) = crate::script::check_actions(&actions.write_string()) {
             failures.push(format!("service {name} {err}"));
-            return;
+            return None;
         }
     }
     let location = node.attribute("location").unwrap_or_default();
@@ -753,8 +824,9 @@ fn load_service(prefix: &str, node: &MNode, services: &mut BTreeMap<String, Serv
                 Some(ImplementRef { service, required })
             })
             .collect(),
+        expanded_in: super::validate::ExpandedParams::default(),
     };
-    services.insert(name, def);
+    Some(def)
 }
 
 fn kind_of(type_name: &str, location: &str) -> ServiceKind {
@@ -989,9 +1061,13 @@ fn usize_attr(node: &MNode, name: &str) -> Option<usize> {
     node.attribute(name).and_then(|text| text.parse().ok())
 }
 
-fn resolve_implements(services: &mut BTreeMap<String, ServiceDef>, failures: &mut Vec<String>) {
-    let names: Vec<String> = services.keys().cloned().collect();
-    let mut done = BTreeSet::new();
+/// Resolve the implements of each service not in `done`, the names resolved already.
+fn resolve_implements(
+    services: &mut BTreeMap<String, Arc<ServiceDef>>,
+    failures: &mut Vec<String>,
+    mut done: BTreeSet<String>,
+) {
+    let names: Vec<String> = services.keys().filter(|name| !done.contains(*name)).cloned().collect();
     for name in names {
         let mut stack = Vec::new();
         resolve_one(&name, services, failures, &mut done, &mut stack);
@@ -1000,7 +1076,7 @@ fn resolve_implements(services: &mut BTreeMap<String, ServiceDef>, failures: &mu
 
 fn resolve_one(
     name: &str,
-    services: &mut BTreeMap<String, ServiceDef>,
+    services: &mut BTreeMap<String, Arc<ServiceDef>>,
     failures: &mut Vec<String>,
     done: &mut BTreeSet<String>,
     stack: &mut Vec<String>,
@@ -1037,67 +1113,60 @@ fn resolve_one(
             stack.pop();
             return;
         }
-        let (inherited_in, inherited_out, no_remember) = {
-            let target = services.get(&implement.service).expect("implemented service");
-            (
-                target.in_params.clone(),
-                target.out_params.clone(),
-                target.no_remember_parameters,
-            )
+        let Some(target) = services.get(&implement.service).map(Arc::clone) else {
+            stack.pop();
+            return;
         };
-        let def = services.get_mut(name).expect("service being resolved");
-        def.no_remember_parameters |= no_remember;
-        merge_params(&mut def.in_params, inherited_in, implement.required);
-        merge_params(&mut def.out_params, inherited_out, implement.required);
+        let Some(def) = services.get_mut(name) else {
+            stack.pop();
+            return;
+        };
+        let def = Arc::make_mut(def);
+        def.no_remember_parameters |= target.no_remember_parameters;
+        merge_params(&mut def.in_params, &target.in_params, implement.required);
+        merge_params(&mut def.out_params, &target.out_params, implement.required);
     }
     done.insert(name.to_string());
     stack.pop();
 }
 
-fn merge_params(dest: &mut Vec<ParamDef>, extra: Vec<ParamDef>, required: Option<bool>) {
-    for mut param in extra {
+fn merge_params(dest: &mut Vec<ParamDef>, extra: &[ParamDef], required: Option<bool>) {
+    for param in extra {
         if param.required == Required::Disabled {
             continue;
         }
+        let present = !param.name.is_empty() && dest.iter().any(|have| have.name == param.name);
+        if present {
+            continue;
+        }
+        let mut param = param.clone();
         if let Some(flag) = required {
             param.required = if flag { Required::True } else { Required::False };
         }
-        let present = !param.name.is_empty() && dest.iter().any(|have| have.name == param.name);
-        if !present {
-            dest.push(param);
-        }
+        dest.push(param);
     }
 }
 
-fn resolve_includes(
-    includes: &[ServiceInclude],
-    services: &mut BTreeMap<String, ServiceDef>,
-    failures: &mut Vec<String>,
-) {
+/// Add a service under each include's local name, a copy of the service it names as that file defines it.
+fn resolve_includes(loaded: &Loaded, services: &mut BTreeMap<String, Arc<ServiceDef>>, failures: &mut Vec<String>) {
     let mut aliases = Vec::new();
-    for include in includes {
-        let local = service_name(&include.prefix, &include.verb, &include.noun);
-        match follow_include(include, &[], 0) {
-            Ok(target) => {
-                if services.contains_key(&target) {
-                    aliases.push((local, target));
-                } else {
-                    failures.push(format!("service {local} include did not resolve to {target}"));
-                }
-            }
-            Err(err) => failures.push(err),
+    for (local, target) in &loaded.includes {
+        match target {
+            Ok(target) if loaded.defined.contains_key(target) => aliases.push((local, target)),
+            Ok(target) => failures.push(format!("service {local} include did not resolve to {target}")),
+            Err(err) => failures.push(err.clone()),
         }
     }
     for (local, target) in aliases {
-        if services.contains_key(&local) {
+        if services.contains_key(local) {
             continue;
         }
-        let Some(def) = services.get(&target).cloned() else {
+        let Some(def) = loaded.defined.get(target) else {
             continue;
         };
-        let mut alias = def;
-        alias.name = local.clone();
-        services.insert(local, alias);
+        let mut alias = ServiceDef::clone(def);
+        alias.name.clone_from(local);
+        services.insert(local.clone(), Arc::new(alias));
     }
 }
 
@@ -1305,6 +1374,127 @@ mod tests {
             .cloned()
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// A framework directory whose `service/test/lazy` holds `files`, found by service name.
+    fn lazy_framework(name: &str, files: &[(&str, &str)]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("moqui-svc-lazy-{name}-{}", std::process::id()));
+        let dir = root.join("service/test/lazy");
+        std::fs::create_dir_all(&dir).unwrap();
+        for (file, body) in files {
+            std::fs::write(dir.join(file), body).unwrap();
+        }
+        root
+    }
+
+    fn lazy_context(root: PathBuf) -> crate::context::ExecutionContext {
+        crate::context::ExecutionContextFactory::test_context_in("", crate::service::ServicePools::idle(), root)
+    }
+
+    fn parsed_count(file: &str) -> usize {
+        super::PARSED.with(|parsed| parsed.borrow().iter().filter(|path| path.ends_with(file)).count())
+    }
+
+    #[test]
+    fn a_file_found_by_name_is_read_alone_and_merged_with_the_files_before() {
+        let root = lazy_framework(
+            "merge",
+            &[
+                (
+                    "A.xml",
+                    r#"<services>
+                        <service verb="run" noun="One">
+                            <implements service="test.lazy.C.define#Shape"/>
+                            <actions><set field="x" value="1"/></actions>
+                        </service>
+                        <service verb="run" noun="Base"><in-parameters><parameter name="fromBase"/></in-parameters></service>
+                    </services>"#,
+                ),
+                (
+                    "B.xml",
+                    r#"<services>
+                        <service verb="run" noun="Two">
+                            <implements service="test.lazy.A.run#Base"/>
+                            <actions><set field="y" value="2"/></actions>
+                        </service>
+                    </services>"#,
+                ),
+                (
+                    "C.xml",
+                    r#"<services>
+                        <service verb="define" noun="Shape" type="interface">
+                            <in-parameters><parameter name="fromShape"/></in-parameters>
+                        </service>
+                    </services>"#,
+                ),
+            ],
+        );
+        let ctx = lazy_context(root);
+        let _entered = ctx.enter();
+        super::PARSED.with(|parsed| parsed.borrow_mut().clear());
+
+        // A's run#One implements a service of a file not read yet, so it is not registered.
+        assert!(super::find("test.lazy.A.run#Base").is_some());
+        assert!(super::find("test.lazy.A.run#One").is_none());
+        let two = super::find("test.lazy.B.run#Two").expect("B merged");
+        assert!(
+            two.in_params.iter().any(|param| param.name == "fromBase"),
+            "implements across files"
+        );
+        assert_eq!(parsed_count("A.xml"), 1, "A is not read again when B is merged");
+        assert_eq!(parsed_count("B.xml"), 1);
+
+        // Reading C resolves A's run#One, which failed before.
+        assert!(super::find("test.lazy.C.define#Shape").is_some());
+        let one = super::find("test.lazy.A.run#One").expect("resolved once C is read");
+        assert!(one.in_params.iter().any(|param| param.name == "fromShape"));
+        assert_eq!(parsed_count("A.xml"), 1);
+        assert_eq!(parsed_count("B.xml"), 1);
+        assert!(super::registration_failures("test.lazy.A.run#One").is_empty());
+    }
+
+    #[test]
+    fn two_threads_loading_different_files_both_register() {
+        let files: Vec<(String, String)> = (0..4)
+            .map(|index| {
+                (
+                    format!("T{index}.xml"),
+                    format!(
+                        r#"<services><service verb="run" noun="Some"><actions><set field="n" value="{index}"/></actions></service></services>"#
+                    ),
+                )
+            })
+            .collect();
+        let borrowed: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(file, body)| (file.as_str(), body.as_str()))
+            .collect();
+        let ctx = lazy_context(lazy_framework("threads", &borrowed));
+        let factory = std::sync::Arc::clone(ctx.factory());
+        let start = std::sync::Arc::new(std::sync::Barrier::new(files.len()));
+        let threads: Vec<_> = (0..files.len())
+            .map(|index| {
+                let factory = std::sync::Arc::clone(&factory);
+                let start = std::sync::Arc::clone(&start);
+                std::thread::spawn(move || {
+                    let ec = factory.new_context();
+                    let _entered = ec.enter();
+                    start.wait();
+                    super::find(&format!("test.lazy.T{index}.run#Some")).is_some()
+                })
+            })
+            .collect();
+        for thread in threads {
+            assert!(thread.join().unwrap());
+        }
+        let _entered = ctx.enter();
+        let registry = super::snapshot(&super::entered().unwrap());
+        for index in 0..files.len() {
+            assert!(
+                registry.services.contains_key(&format!("test.lazy.T{index}.run#Some")),
+                "T{index} kept"
+            );
+        }
     }
 
     fn write_fixture(name: &str, body: &str) -> PathBuf {

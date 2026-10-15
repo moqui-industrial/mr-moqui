@@ -22,7 +22,7 @@
 use std::collections::BTreeMap;
 use std::io::Cursor;
 
-use calamine::{Data, Range, Reader};
+use calamine::{Cell, Data, DataRef, Range, Reader, Sheets};
 use indexmap::IndexMap;
 use moqui_lib::error::Error as LibError;
 use moqui_lib::object::{is_empty, to_plain_string, Value};
@@ -36,6 +36,10 @@ const LOAD: &str = "org.moqui.impl.SpreadsheetServices.load#SpreadsheetEntity";
 
 /// Whole numbers up to this size read as a `Long`; Excel keeps every number as a double.
 const WHOLE_LIMIT: f64 = 9_007_199_254_740_992.0;
+
+/// The most cells, empty ones included, the used area of an xlsx or xlsb sheet may span. calamine makes a dense grid
+/// from the first used cell to the last, so two cells far apart would ask for billions.
+const MAX_SHEET_CELLS: u64 = 10_000_000;
 
 pub(super) fn runs(name: &str) -> bool {
     matches!(name, READ | LOAD)
@@ -123,12 +127,62 @@ fn read_sheet(parameters: &BTreeMap<String, Value>) -> Result<Sheet, LibError> {
             names.join(", ")
         )));
     };
-    let range = book
-        .worksheet_range(&chosen)
-        .map_err(|err| LibError::new(format!("Could not read sheet {chosen}: {err}")))?;
+    let range = sheet_range(&mut book, &chosen)?;
     let max_rows = number(parameters, "maxRows");
     let (headers, rows) = sheet_rows(&range, flag(parameters, "headerRow", true), max_rows);
     Ok(Sheet { names, headers, rows })
+}
+
+/// The used area of sheet `name`. An xlsx or xlsb sheet is read cell by cell, and refused when its used area spans more
+/// than [`MAX_SHEET_CELLS`]. An xls sheet is at most 65,536 rows by 256 columns, and calamine caps the cells of an ods
+/// sheet.
+fn sheet_range(book: &mut Sheets<Cursor<Vec<u8>>>, name: &str) -> Result<Range<Data>, LibError> {
+    let failed = |err: &dyn std::fmt::Display| LibError::new(format!("Could not read sheet {name}: {err}"));
+    match book {
+        Sheets::Xlsx(xlsx) => {
+            let mut reader = match xlsx.worksheet_cells_reader(name) {
+                Ok(reader) => reader,
+                Err(calamine::XlsxError::NotAWorksheet(_)) => return Ok(Range::default()),
+                Err(err) => return Err(failed(&err)),
+            };
+            bounded_range(name, || reader.next_cell().map_err(|err| failed(&err)))
+        }
+        Sheets::Xlsb(xlsb) => {
+            let mut reader = xlsb.worksheet_cells_reader(name).map_err(|err| failed(&err))?;
+            bounded_range(name, || reader.next_cell().map_err(|err| failed(&err)))
+        }
+        _ => book.worksheet_range(name).map_err(|err| failed(&err)),
+    }
+}
+
+/// The non-empty cells `next` reads, as calamine's `worksheet_range` makes them, or an error once their area spans
+/// more than [`MAX_SHEET_CELLS`].
+fn bounded_range<'a>(
+    name: &str,
+    mut next: impl FnMut() -> Result<Option<Cell<DataRef<'a>>>, LibError>,
+) -> Result<Range<Data>, LibError> {
+    let mut cells = Vec::new();
+    let (mut first, mut last) = ((u32::MAX, u32::MAX), (0_u32, 0_u32));
+    while let Some(cell) = next()? {
+        if matches!(cell.get_value(), DataRef::Empty) {
+            continue;
+        }
+        let (row, column) = cell.get_position();
+        first = (first.0.min(row), first.1.min(column));
+        last = (last.0.max(row), last.1.max(column));
+        let span = (u64::from(last.0 - first.0) + 1) * (u64::from(last.1 - first.1) + 1);
+        if span > MAX_SHEET_CELLS {
+            return Err(LibError::new(format!(
+                "Sheet {name} spans more than {MAX_SHEET_CELLS} cells, from row {} column {} to row {} column {}",
+                first.0 + 1,
+                first.1 + 1,
+                last.0 + 1,
+                last.1 + 1
+            )));
+        }
+        cells.push(Cell::new((row, column), Data::from(cell.get_value().clone())));
+    }
+    Ok(Range::from_sparse(cells))
 }
 
 fn sheet_rows(range: &Range<Data>, header_row: bool, max_rows: Option<usize>) -> (Vec<String>, Vec<Vec<Value>>) {
@@ -291,6 +345,35 @@ mod tests {
         assert_eq!(cell_value(&Data::Empty, &zone), Value::Null);
         let stamp = excel_timestamp(45352.5, &zone).unwrap();
         assert_eq!(stamp, Value::Timestamp("2024-03-01T12:00:00Z".parse().unwrap()));
+    }
+
+    #[test]
+    fn a_sheet_whose_cells_span_too_large_an_area_is_refused() {
+        let mut book = rust_xlsxwriter::Workbook::new();
+        let sheet = book.add_worksheet();
+        sheet.write_string(0, 0, "first").unwrap();
+        sheet.write_string(1_048_575, 16_383, "last").unwrap();
+        let bytes = book.save_to_buffer().unwrap();
+        let mut parameters = BTreeMap::new();
+        parameters.insert("contentBytes".to_string(), Value::Bytes(bytes));
+        let Err(err) = read_sheet(&parameters) else {
+            panic!("a sparse sheet over the cell limit is refused");
+        };
+        assert!(err.message().contains("spans more than"), "{}", err.message());
+
+        // The same two cells close together read as before.
+        let mut book = rust_xlsxwriter::Workbook::new();
+        let sheet = book.add_worksheet();
+        sheet.write_string(0, 0, "first").unwrap();
+        sheet.write_string(2, 3, "last").unwrap();
+        let mut parameters = BTreeMap::new();
+        parameters.insert("contentBytes".to_string(), Value::Bytes(book.save_to_buffer().unwrap()));
+        let read = read_sheet(&parameters).unwrap();
+        assert_eq!(read.headers, vec!["first", "", "", ""]);
+        assert_eq!(
+            read.rows,
+            vec![vec![Value::Null, Value::Null, Value::Null, Value::string("last")]]
+        );
     }
 
     #[test]

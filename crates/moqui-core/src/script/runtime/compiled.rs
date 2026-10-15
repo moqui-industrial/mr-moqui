@@ -21,38 +21,90 @@
 //! rquickjs does not wrap these two calls for scripts, so they are made through `rquickjs::qjs`.
 
 use std::ffi::CString;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::panic::AssertUnwindSafe;
+use std::sync::Arc;
 
 use rquickjs::{qjs, CatchResultExt, Ctx, FromJs, Persistent, Value as JsValue};
 
 use super::{current_engine, panic_message, Error};
 
-/// Compiled scripts kept per engine.
+/// Compiled scripts kept per engine, and the source text they may add up to.
 pub(super) const MAX_COMPILED_SCRIPTS: usize = 4096;
+pub(super) const MAX_COMPILED_SCRIPT_BYTES: usize = 4 * 1024 * 1024;
+
+/// Compiled scripts by the hash of their text and their strictness, each with its text, which a hit compares.
+pub(super) type CompiledScripts = crate::script::BoundedMap<(u64, bool), (Arc<str>, Persistent<JsValue<'static>>)>;
+
+/// A script's text with the hash its compiled form is kept by, made once for a text that runs many times.
+#[derive(Clone)]
+pub(crate) struct ScriptText {
+    text: Arc<str>,
+    hash: u64,
+}
+
+impl ScriptText {
+    pub(crate) fn new(text: impl Into<Arc<str>>) -> Self {
+        let text = text.into();
+        Self {
+            hash: hash_of(&text),
+            text,
+        }
+    }
+
+    pub(crate) fn text(&self) -> &str {
+        &self.text
+    }
+}
+
+fn hash_of(text: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
 
 /// Run `source` as global code, compiled on first use and kept by its text and strictness.
 pub(super) fn eval_compiled<'js, T>(ctx: &Ctx<'js>, source: &str, strict: bool) -> Result<T, Error>
 where
     T: FromJs<'js>,
 {
-    let key = if strict {
-        format!("s{source}")
-    } else {
-        format!("l{source}")
-    };
+    eval_keyed(ctx, source, None, hash_of(source), strict)
+}
+
+/// [`eval_compiled`] for a text hashed already. A hit on the same shared text compares no characters.
+pub(super) fn eval_compiled_text<'js, T>(ctx: &Ctx<'js>, script: &ScriptText, strict: bool) -> Result<T, Error>
+where
+    T: FromJs<'js>,
+{
+    eval_keyed(ctx, &script.text, Some(&script.text), script.hash, strict)
+}
+
+fn eval_keyed<'js, T>(
+    ctx: &Ctx<'js>,
+    source: &str,
+    shared: Option<&Arc<str>>,
+    hash: u64,
+    strict: bool,
+) -> Result<T, Error>
+where
+    T: FromJs<'js>,
+{
     let engine = current_engine();
     let saved = engine
         .as_ref()
-        .and_then(|engine| engine.scripts.borrow_mut().get(key.as_str()));
+        .and_then(|engine| engine.scripts.borrow_mut().get(&(hash, strict)))
+        .filter(|(text, _)| shared.is_some_and(|shared| Arc::ptr_eq(shared, text)) || **text == *source);
     let compiled = match saved {
-        Some(saved) => saved.restore(ctx).map_err(|err| Error::new(err.to_string()))?,
+        Some((_, saved)) => saved.restore(ctx).map_err(|err| Error::new(err.to_string()))?,
         None => {
             let compiled = compile_global(ctx, source, strict)?;
             if let Some(engine) = &engine {
-                engine
-                    .scripts
-                    .borrow_mut()
-                    .insert(key, Persistent::save(ctx, compiled.clone()));
+                let text = shared.map_or_else(|| Arc::from(source), Arc::clone);
+                engine.scripts.borrow_mut().insert_sized(
+                    (hash, strict),
+                    (text, Persistent::save(ctx, compiled.clone())),
+                    source.len(),
+                );
             }
             compiled
         }

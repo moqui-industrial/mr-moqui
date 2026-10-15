@@ -61,7 +61,8 @@ mod urls;
 mod user_host;
 mod values;
 
-use compiled::{eval_compiled, MAX_COMPILED_SCRIPTS};
+pub(crate) use compiled::ScriptText;
+use compiled::{eval_compiled, eval_compiled_text, MAX_COMPILED_SCRIPTS, MAX_COMPILED_SCRIPT_BYTES};
 use conditions::*;
 use convert::*;
 use decimal::*;
@@ -87,7 +88,17 @@ use crate::entity::{EntityFacade, EntityFind, EntityList, EntityValue};
 use crate::service::call::CallOptions;
 
 const MAX_CACHED_TEMPLATES: usize = 4096;
+/// The source text the template and screen unit caches of an engine may hold. Their bytecode is about the size of the
+/// source and lives in the engine's [`MEMORY_LIMIT`] with everything the scripts make.
+const MAX_CACHED_TEMPLATE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_CACHED_UNIT_BYTES: usize = 8 * 1024 * 1024;
 const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
+/// The stack the outermost script on a thread may use, below the 2 MiB of a worker thread. QuickJS counts an engine's
+/// stack from where it is entered, so a nested engine gets what is left of [`SCRIPT_STACK`] and [`NESTED_STACK`] below
+/// the outermost script, at most [`NESTED_STACK`], and a nested script with less than [`MIN_NESTED_STACK`] left fails.
+const SCRIPT_STACK: usize = 1024 * 1024;
+const NESTED_STACK: usize = 256 * 1024;
+const MIN_NESTED_STACK: usize = 32 * 1024;
 const VALUE_OF_MESSAGE: &str =
     "decimal valueOf is not supported; use add, subtract, multiply, divide, eq, compare, isZero, or toNumber";
 
@@ -95,6 +106,12 @@ thread_local! {
     /// While true, an expression of a widget runs with the `ec` of the server-static browser host: the compatibility report's full check.
     static WIDGET_WRAP: Cell<bool> = const { Cell::new(false) };
     static DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+    /// Whether `DEADLINE` is the default limit of a script that runs outside a transaction (see [`ScriptLimit`]).
+    static DEADLINE_IS_DEFAULT: Cell<bool> = const { Cell::new(false) };
+    /// `script_timeout`, read at the first script on the thread.
+    static SCRIPT_LIMIT: Cell<Option<Option<Duration>>> = const { Cell::new(None) };
+    /// Where the stack was when the outermost script on the thread was entered.
+    static STACK_BASE: Cell<usize> = const { Cell::new(0) };
     static STACK: RefCell<ContextStack> = RefCell::new(ContextStack::new());
     static ENGINES: RefCell<Vec<Rc<Engine>>> = const { RefCell::new(Vec::new()) };
     static DEPTH: Cell<usize> = const { Cell::new(0) };
@@ -205,27 +222,123 @@ fn with_widget_ec<'js, R>(
 /// Bounds script time on this thread to a transaction's remaining time.
 ///
 /// The QuickJS interrupt handler reads the deadline, so a loop that never returns
-/// ends with an error instead of holding the worker. Nested guards keep the earlier deadline.
+/// ends with an error instead of holding the worker. Nested guards keep the earlier deadline. A transaction's limit
+/// replaces the default limit of a script that runs outside one, and the time inside does not count against that default.
 pub struct DeadlineGuard {
     previous: Option<Instant>,
+    previous_default: bool,
+    /// When the guard replaced a default limit, so the default is moved on by the time spent inside.
+    replaced_default: Option<Instant>,
 }
 
 impl DeadlineGuard {
     pub fn new(remaining: Option<Duration>) -> Self {
         let previous = DEADLINE.with(Cell::get);
+        let previous_default = DEADLINE_IS_DEFAULT.with(Cell::get);
+        let mut replaced_default = None;
         if let Some(remaining) = remaining {
-            let next = Instant::now() + remaining;
-            let chosen = previous.map_or(next, |existing| existing.min(next));
+            let now = Instant::now();
+            let next = now + remaining;
+            let chosen = match previous {
+                Some(existing) if !previous_default => existing.min(next),
+                Some(_) => {
+                    replaced_default = Some(now);
+                    next
+                }
+                None => next,
+            };
             DEADLINE.with(|deadline| deadline.set(Some(chosen)));
+            DEADLINE_IS_DEFAULT.with(|flag| flag.set(false));
         }
-        Self { previous }
+        Self {
+            previous,
+            previous_default,
+            replaced_default,
+        }
     }
 }
 
 impl Drop for DeadlineGuard {
     fn drop(&mut self) {
-        DEADLINE.with(|deadline| deadline.set(self.previous));
+        let previous = match (self.previous, self.replaced_default) {
+            (Some(at), Some(entered)) => Some(at + entered.elapsed()),
+            (previous, _) => previous,
+        };
+        DEADLINE.with(|deadline| deadline.set(previous));
+        DEADLINE_IS_DEFAULT.with(|flag| flag.set(self.previous_default));
     }
+}
+
+/// The time left before this thread's script deadline, when it has one.
+pub(crate) fn script_time_remaining() -> Option<Duration> {
+    DEADLINE
+        .with(Cell::get)
+        .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+}
+
+/// `script_timeout`: the seconds a script may run when no transaction limits it, the default transaction timeout
+/// unless set. 0 is no limit. Read once per thread.
+fn default_script_limit() -> Option<Duration> {
+    if let Some(limit) = SCRIPT_LIMIT.with(Cell::get) {
+        return limit;
+    }
+    let text = moqui_lib::env::get_prop_or_env("script_timeout");
+    let limit = match text.trim().parse::<u64>() {
+        Ok(0) => None,
+        Ok(seconds) => Some(Duration::from_secs(seconds)),
+        Err(_) => Some(crate::transaction::DEFAULT_TIMEOUT),
+    };
+    SCRIPT_LIMIT.with(|cell| cell.set(Some(limit)));
+    limit
+}
+
+/// The default deadline of the outermost script on a thread when nothing set one, so a loop in a script that runs
+/// outside a transaction (a `transaction="ignore"` service, a widget condition, an ECA condition) cannot hold the
+/// thread for good. Cleared when the script ends.
+struct ScriptLimit {
+    armed: bool,
+}
+
+impl ScriptLimit {
+    fn arm() -> Self {
+        let armed = DEADLINE.with(Cell::get).is_none()
+            && default_script_limit().is_some_and(|limit| {
+                DEADLINE.with(|deadline| deadline.set(Some(Instant::now() + limit)));
+                DEADLINE_IS_DEFAULT.with(|flag| flag.set(true));
+                true
+            });
+        Self { armed }
+    }
+}
+
+impl Drop for ScriptLimit {
+    fn drop(&mut self) {
+        if self.armed {
+            DEADLINE.with(|deadline| deadline.set(None));
+            DEADLINE_IS_DEFAULT.with(|flag| flag.set(false));
+        }
+    }
+}
+
+/// An address on the current stack.
+fn stack_address() -> usize {
+    let marker = 0_u8;
+    std::hint::black_box(std::ptr::from_ref(&marker)) as usize
+}
+
+/// The stack budget of the engine entered at `depth`, or an error when a nested script has too little stack left.
+fn stack_budget(depth: usize) -> Result<usize, Error> {
+    let here = stack_address();
+    if depth == 0 {
+        STACK_BASE.with(|base| base.set(here));
+        return Ok(SCRIPT_STACK);
+    }
+    let used = STACK_BASE.with(Cell::get).abs_diff(here);
+    let left = (SCRIPT_STACK + NESTED_STACK).saturating_sub(used).min(NESTED_STACK);
+    if left < MIN_NESTED_STACK {
+        return Err(Error::new("scripts are nested too deeply for the thread's stack"));
+    }
+    Ok(left)
 }
 
 /// Persistents drop before the context, and the context drops before the runtime.
@@ -237,10 +350,12 @@ struct Engine {
     /// the object, so it is tracked again while the stack holds what was written. See [`flush_tracked`].
     released: RefCell<HashMap<String, Released>>,
     templates: RefCell<super::bounded::BoundedMap<String, Persistent<Function<'static>>>>,
-    /// Action scripts, conditions, and expressions compiled to bytecode, by text.
-    scripts: RefCell<super::bounded::BoundedMap<String, Persistent<JsValue<'static>>>>,
+    /// Action scripts, conditions, and expressions compiled to bytecode, by the hash of their text.
+    scripts: RefCell<compiled::CompiledScripts>,
     /// Compiled screen units by unit id.
     units: RefCell<super::bounded::BoundedMap<u64, Persistent<Function<'static>>>>,
+    /// Objects made once per engine, such as the XML actions macros, by name. See [`engine_object`].
+    objects: RefCell<HashMap<&'static str, Persistent<Object<'static>>>>,
     /// Ids of the mode runtimes this engine has already run.
     runtimes: RefCell<std::collections::HashSet<u64>>,
     object_utilities: Persistent<Object<'static>>,
@@ -249,8 +364,45 @@ struct Engine {
     web_utilities: Persistent<Object<'static>>,
     context: Context,
     // The context and its persistents borrow this runtime. Drop order frees them first.
-    #[allow(dead_code)]
     runtime: Runtime,
+}
+
+impl Engine {
+    /// Drop the compiled code and the objects kept in this engine, to free its heap.
+    fn clear_caches(&self) {
+        self.templates.borrow_mut().clear();
+        self.scripts.borrow_mut().clear();
+        self.units.borrow_mut().clear();
+        self.objects.borrow_mut().clear();
+    }
+}
+
+/// The object kept in the innermost engine under `name`, made by `make` the first time.
+pub(crate) fn engine_object<'js>(
+    ctx: &Ctx<'js>,
+    name: &'static str,
+    make: impl FnOnce(&Ctx<'js>) -> Result<Object<'js>, Error>,
+) -> Result<Object<'js>, Error> {
+    let engine = current_engine();
+    let saved = engine
+        .as_ref()
+        .and_then(|engine| engine.objects.borrow().get(name).cloned());
+    if let Some(saved) = saved {
+        return saved.restore(ctx).map_err(js_error);
+    }
+    let made = make(ctx)?;
+    if let Some(engine) = engine {
+        engine
+            .objects
+            .borrow_mut()
+            .insert(name, Persistent::save(ctx, made.clone()));
+    }
+    Ok(made)
+}
+
+/// Whether the error is QuickJS running out of the engine's memory.
+fn is_out_of_memory(err: &Error) -> bool {
+    err.message().contains("out of memory")
 }
 
 /// A list or map written back before a host call, kept so the script's object survives the call.
@@ -437,6 +589,11 @@ pub(super) fn eval_script(source: &str) -> Result<(), Error> {
     with_context(|ctx| eval_compiled::<JsValue>(ctx, source, false).map(|_| ()))
 }
 
+/// [`eval_script`] for a script whose text and cache key were made once.
+pub(super) fn eval_script_text(script: &ScriptText) -> Result<(), Error> {
+    with_context(|ctx| eval_compiled_text::<JsValue>(ctx, script, false).map(|_| ()))
+}
+
 /// Same prefix rules as [`expand`], on the callback's context.
 ///
 /// [`expand`] enters `Context::with` again, and that lock is already held here.
@@ -467,6 +624,7 @@ fn with_context<R>(body: impl FnOnce(&Ctx) -> Result<R, Error>) -> Result<R, Err
     if depth >= MAX_SCRIPT_DEPTH {
         return Err(Error::new("scripts are nested too deeply"));
     }
+    let stack = stack_budget(depth)?;
     let existing = ENGINES.with(|engines| engines.borrow().get(depth).cloned());
     let engine = match existing {
         Some(engine) => engine,
@@ -476,6 +634,8 @@ fn with_context<R>(body: impl FnOnce(&Ctx) -> Result<R, Error>) -> Result<R, Err
             started
         }
     };
+    engine.runtime.set_max_stack_size(stack);
+    let _limit = (depth == 0).then(ScriptLimit::arm);
     DEPTH.with(|current| current.set(depth + 1));
     let _guard = DepthGuard;
     engine.context.with(|ctx| {
@@ -484,6 +644,11 @@ fn with_context<R>(body: impl FnOnce(&Ctx) -> Result<R, Error>) -> Result<R, Err
             outer: None,
         };
         let result = body(&ctx);
+        // The caches live in the engine's heap: when it is full, they go, so the next script on the thread can run.
+        if result.as_ref().is_err_and(is_out_of_memory) {
+            engine.clear_caches();
+            ctx.run_gc();
+        }
         let flushed = flush_tracked(&ctx, &engine, Flush::End);
         match (result, flushed) {
             (Ok(value), Ok(())) => Ok(value),
@@ -645,9 +810,19 @@ impl Engine {
         Ok(Self {
             tracked: RefCell::new(HashMap::new()),
             released: RefCell::new(HashMap::new()),
-            templates: RefCell::new(super::bounded::BoundedMap::new(MAX_CACHED_TEMPLATES)),
-            scripts: RefCell::new(super::bounded::BoundedMap::new(MAX_COMPILED_SCRIPTS)),
-            units: RefCell::new(super::bounded::BoundedMap::new(MAX_CACHED_TEMPLATES)),
+            templates: RefCell::new(super::bounded::BoundedMap::with_bytes(
+                MAX_CACHED_TEMPLATES,
+                MAX_CACHED_TEMPLATE_BYTES,
+            )),
+            scripts: RefCell::new(super::bounded::BoundedMap::with_bytes(
+                MAX_COMPILED_SCRIPTS,
+                MAX_COMPILED_SCRIPT_BYTES,
+            )),
+            units: RefCell::new(super::bounded::BoundedMap::with_bytes(
+                MAX_CACHED_TEMPLATES,
+                MAX_CACHED_UNIT_BYTES,
+            )),
+            objects: RefCell::new(HashMap::new()),
             runtimes: RefCell::new(std::collections::HashSet::new()),
             object_utilities: helpers.object_utilities,
             collection_utilities: helpers.collection_utilities,
@@ -934,7 +1109,10 @@ fn restore_template<'js>(ctx: &Ctx<'js>, template: &str) -> Result<Option<Functi
 fn save_template<'js>(ctx: &Ctx<'js>, template: &str, function: &Function<'js>) {
     let saved = Persistent::save(ctx, function.clone());
     if let Some(engine) = current_engine() {
-        engine.templates.borrow_mut().insert(template.to_string(), saved);
+        engine
+            .templates
+            .borrow_mut()
+            .insert_sized(template.to_string(), saved, template.len());
     }
 }
 
@@ -1651,6 +1829,86 @@ mod tests {
         assert!(err.message().contains("in the unit"), "{}", err.message());
         holds("level === 'outer'");
         clear_context_stack();
+        Ok(())
+    }
+
+    #[test]
+    fn a_loop_outside_a_transaction_stops_at_the_default_limit() -> Result<(), Error> {
+        use std::time::{Duration, Instant};
+        clear_context_stack();
+        super::SCRIPT_LIMIT.with(|limit| limit.set(Some(Some(Duration::from_millis(200)))));
+        let started = Instant::now();
+        let err = run_script("while (true) {}").expect_err("interrupted");
+        assert!(err.message().contains("interrupted"), "{}", err.message());
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(
+            super::script_time_remaining(),
+            None,
+            "the default goes when the script ends"
+        );
+        // A transaction's own limit replaces the default inside it, and the time inside does not count against it.
+        with_ctx(|_| {
+            assert!(super::script_time_remaining().is_some_and(|left| left <= Duration::from_millis(200)));
+            {
+                let _tx = super::DeadlineGuard::new(Some(Duration::from_secs(30)));
+                assert!(super::script_time_remaining().is_some_and(|left| left > Duration::from_secs(20)));
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            assert!(super::script_time_remaining().is_some_and(|left| left > Duration::ZERO));
+            Ok(())
+        })?;
+        super::SCRIPT_LIMIT.with(|limit| limit.set(Some(None)));
+        assert!(eval_condition("true")?);
+        assert_eq!(super::script_time_remaining(), None);
+        Ok(())
+    }
+
+    #[test]
+    fn deep_recursion_in_a_nested_script_is_a_script_error() {
+        // Less stack than a worker thread's 2 MiB, so a nested engine with a whole 1 MiB of its own under the outer
+        // script's 1 MiB, as before the nested engines had a budget, overflows the thread.
+        let outcome = std::thread::Builder::new()
+            .stack_size(1536 * 1024)
+            .spawn(|| {
+                with_ctx(|ctx| {
+                    let most: i64 = eval_source(
+                        ctx,
+                        "(function () { let most = 0; function down(n) { most = n; down(n + 1); } \
+                        try { down(0); } catch (e) {} return most; })()",
+                    )?;
+                    let nested = rquickjs::Function::new(ctx.clone(), || {
+                        match run_script("function down(n) { return down(n + 1) + 1; } down(0);") {
+                            Ok(()) => "ran".to_string(),
+                            Err(err) => err.message().to_string(),
+                        }
+                    })
+                    .map_err(js_error)?;
+                    let deep: rquickjs::Function = eval_source(
+                        ctx,
+                        "(function (nested, depth) { function deep(n) { return n === 0 ? nested() : deep(n - 1); } \
+                        return deep(depth); })",
+                    )?;
+                    deep.call::<_, String>((nested, most * 9 / 10)).map_err(js_error)
+                })
+            })
+            .unwrap()
+            .join()
+            .expect("the thread did not overflow");
+        let message = outcome.unwrap();
+        assert!(message.contains("stack"), "{message}");
+    }
+
+    #[test]
+    fn running_out_of_memory_frees_the_engine_caches() -> Result<(), Error> {
+        clear_context_stack();
+        assert!(eval_condition("1 + 1 === 2")?);
+        let cached = || super::ENGINES.with(|engines| engines.borrow()[0].scripts.borrow().len());
+        assert!(cached() > 0);
+        let err = run_script("(function () { const hog = []; while (true) hog.push(new Array(100000).fill(1)); })()")
+            .expect_err("out of memory");
+        assert!(err.message().contains("out of memory"), "{}", err.message());
+        assert_eq!(cached(), 0, "the caches went with the failed script");
+        assert!(eval_condition("1 + 1 === 2")?, "the engine runs again");
         Ok(())
     }
 }

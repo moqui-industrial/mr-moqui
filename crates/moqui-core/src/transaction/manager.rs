@@ -31,7 +31,8 @@ use crate::driver::{DbCancel, DbConnection, DbDriver};
 
 use super::pool::{Pool, PoolConfig, PoolStats, PooledConn};
 
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
+/// The timeout of a transaction that names none, as Java's `default-transaction-timeout`.
+pub(crate) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 

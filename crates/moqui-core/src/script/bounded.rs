@@ -14,24 +14,40 @@
 
 //! A map with a size cap for the compiled-code caches. When it is full, the quarter of the
 //! entries used longest ago go, so the code in use stays compiled instead of all of it being
-//! thrown out at once.
+//! thrown out at once. The cap is a count of entries and, for a map made [`BoundedMap::with_bytes`],
+//! also a total of the sizes given with the entries, such as the length of each compiled source.
 
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::hash::Hash;
 
 pub(crate) struct BoundedMap<K, V> {
-    entries: HashMap<K, (V, u64)>,
+    entries: HashMap<K, Entry<V>>,
     tick: u64,
     cap: usize,
+    bytes: usize,
+    max_bytes: usize,
+}
+
+struct Entry<V> {
+    value: V,
+    used: u64,
+    bytes: usize,
 }
 
 impl<K: Hash + Eq + Clone, V: Clone> BoundedMap<K, V> {
     pub(crate) fn new(cap: usize) -> Self {
+        Self::with_bytes(cap, usize::MAX)
+    }
+
+    /// A map of at most `cap` entries whose sizes, as given to [`Self::insert_sized`], total at most `max_bytes`.
+    pub(crate) fn with_bytes(cap: usize, max_bytes: usize) -> Self {
         Self {
             entries: HashMap::new(),
             tick: 0,
             cap: cap.max(4),
+            bytes: 0,
+            max_bytes,
         }
     }
 
@@ -42,18 +58,45 @@ impl<K: Hash + Eq + Clone, V: Clone> BoundedMap<K, V> {
     {
         self.tick += 1;
         let tick = self.tick;
-        self.entries.get_mut(key).map(|(value, used)| {
-            *used = tick;
-            value.clone()
+        self.entries.get_mut(key).map(|entry| {
+            entry.used = tick;
+            entry.value.clone()
         })
     }
 
     pub(crate) fn insert(&mut self, key: K, value: V) {
-        if self.entries.len() >= self.cap && !self.entries.contains_key(&key) {
+        self.insert_sized(key, value, 0);
+    }
+
+    /// Insert an entry of `bytes`, its approximate size. An entry larger than the whole budget is not kept.
+    pub(crate) fn insert_sized(&mut self, key: K, value: V, bytes: usize) {
+        if bytes > self.max_bytes {
+            return;
+        }
+        if let Some(old) = self.entries.remove(&key) {
+            self.bytes -= old.bytes;
+        }
+        while !self.entries.is_empty()
+            && (self.entries.len() >= self.cap || self.bytes.saturating_add(bytes) > self.max_bytes)
+        {
             self.evict();
         }
         self.tick += 1;
-        self.entries.insert(key, (value, self.tick));
+        self.bytes += bytes;
+        self.entries.insert(
+            key,
+            Entry {
+                value,
+                used: self.tick,
+                bytes,
+            },
+        );
+    }
+
+    /// Drop every entry.
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+        self.bytes = 0;
     }
 
     #[cfg(test)]
@@ -61,11 +104,24 @@ impl<K: Hash + Eq + Clone, V: Clone> BoundedMap<K, V> {
         self.entries.len()
     }
 
+    #[cfg(test)]
+    pub(crate) fn bytes(&self) -> usize {
+        self.bytes
+    }
+
     fn evict(&mut self) {
-        let mut ticks: Vec<u64> = self.entries.values().map(|(_, used)| *used).collect();
+        let mut ticks: Vec<u64> = self.entries.values().map(|entry| entry.used).collect();
         ticks.sort_unstable();
         let cutoff = ticks[(ticks.len() / 4).max(1) - 1];
-        self.entries.retain(|_, (_, used)| *used > cutoff);
+        let mut freed = 0;
+        self.entries.retain(|_, entry| {
+            let keep = entry.used > cutoff;
+            if !keep {
+                freed += entry.bytes;
+            }
+            keep
+        });
+        self.bytes -= freed;
     }
 }
 
@@ -89,5 +145,24 @@ mod tests {
         assert_eq!(map.get(&4), Some(4));
         assert_eq!(map.get(&0), Some(0));
         assert_eq!(map.get(&8), Some(8));
+    }
+
+    #[test]
+    fn a_map_with_a_byte_budget_drops_entries_until_the_new_one_fits() {
+        let mut map = BoundedMap::with_bytes(100, 1000);
+        for index in 0..4 {
+            map.insert_sized(index, index, 300);
+        }
+        // The fourth did not fit with the first three: the oldest quarter went until it did.
+        assert!(map.bytes() <= 1000, "{}", map.bytes());
+        assert_eq!(map.get(&0), None);
+        assert_eq!(map.get(&3), Some(3));
+        map.insert_sized(3, 3, 100);
+        assert_eq!(map.get(&3), Some(3));
+        assert!(map.bytes() <= 1000);
+        map.insert_sized(9, 9, 2000);
+        assert_eq!(map.get(&9), None, "larger than the whole budget");
+        map.clear();
+        assert_eq!((map.len(), map.bytes()), (0, 0));
     }
 }

@@ -252,8 +252,9 @@
                 has(node, "transaction-timeout") && `.transactionTimeout(${attr(node, "transaction-timeout")})`,
                 (tx === "cache" || tx === "force-cache") ? ".useTransactionCache(true)" : ".useTransactionCache(false)"
             ]),
-            inMap === "true" && ".parameters(context)",
-            has(node, "in-map") && inMap !== "true" && inMap !== "false" && inMap !== "" && `.parameters(${inMap})`,
+            // The whole context is ec.context, which the host reads from the stack instead of a copy made in script.
+            (inMap === "true" || inMap === "context") && ".parameters(ec.context)",
+            has(node, "in-map") && inMap !== "true" && inMap !== "context" && inMap !== "false" && inMap !== "" && `.parameters(${inMap})`,
             childrenNamed(node, "field-map")
                 .map((kid) => `.parameter(${jsString(attr(kid, "field-name"))}, ${fieldExpr(kid)})`).join(""),
             ".call()"

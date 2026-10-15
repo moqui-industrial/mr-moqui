@@ -235,6 +235,39 @@ fn a_no_tx_cache_service_sees_the_rows_the_caller_held() {
 }
 
 #[test]
+fn a_builder_changes_in_place_and_an_in_map_of_the_context_passes_it() {
+    let (_facade, ctx) = inline_context();
+    let _entered = ctx.enter();
+    let _authz = ctx.disable_authz();
+    crate::script::run_actions(
+        r#"<actions>
+            <set field="note" value="from context"/>
+            <service-call name="inline#Echo" in-map="context" out-map="viaContext"/>
+            <service-call name="inline#Echo" in-map="true" out-map="viaTrue">
+                <field-map field-name="note" value="from field map"/>
+            </service-call>
+            <script>(function () {
+                const builder = ec.service.sync().name("inline#Echo");
+                sameBuilder = builder.parameter("note", "chained") === builder;
+                chained = builder.call().note;
+                fromObject = ec.service.sync().name("inline#Echo").parameters({note: "from object"}).call().note;
+            })()</script>
+        </actions>"#,
+    )
+    .unwrap();
+    for check in [
+        "viaContext.note === 'from context'",
+        "viaTrue.note === 'from field map'",
+        "sameBuilder === true",
+        "chained === 'chained'",
+        "fromObject === 'from object'",
+    ] {
+        assert!(crate::script::eval_condition(check).unwrap(), "{check}");
+    }
+    crate::script::clear_context_stack();
+}
+
+#[test]
 fn a_multi_call_runs_each_row_in_one_transaction() {
     let (facade, ctx) = inline_context();
     let _entered = ctx.enter();

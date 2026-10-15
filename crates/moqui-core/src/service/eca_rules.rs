@@ -21,14 +21,26 @@ use std::sync::{Arc, RwLock};
 use moqui_lib::node::MNode;
 
 use super::email_eca::{email_rule_from, EmailRule};
-use super::seca::{seca_rule_from, SecaRule};
+use super::seca::{seca_rule_from, SecaIndex, SecaRule};
 use crate::context::{ExecutionContext, ExecutionContextFactory};
 
 #[derive(Default)]
 pub(super) struct EcaRules {
     /// Rules in priority order, a later rule with the same id having replaced an earlier one.
     pub(super) seca: Vec<Arc<SecaRule>>,
+    /// `seca` by `when` and service.
+    pub(super) seca_index: SecaIndex,
     pub(super) email: Vec<Arc<EmailRule>>,
+}
+
+impl EcaRules {
+    fn new(seca: Vec<Arc<SecaRule>>, email: Vec<Arc<EmailRule>>) -> Self {
+        Self {
+            seca_index: SecaIndex::new(&seca),
+            seca,
+            email,
+        }
+    }
 }
 
 type Shared = RwLock<Arc<EcaRules>>;
@@ -111,29 +123,30 @@ fn load(factory: &ExecutionContextFactory) -> EcaRules {
         "Loaded [{}] Email ECA rules from {email_files} .emecas.xml files",
         email.len()
     );
-    EcaRules { seca, email }
+    EcaRules::new(seca, email)
 }
 
 /// Parse rules from XML text, for tests.
 #[cfg(test)]
 pub(super) fn from_xml(seca_xml: &str, email_xml: &str) -> EcaRules {
-    let mut rules = EcaRules::default();
+    let mut seca: Vec<Arc<SecaRule>> = Vec::new();
+    let mut email = Vec::new();
     if !seca_xml.is_empty() {
         let root = MNode::parse_text("secas", seca_xml).expect("secas xml");
-        rules.seca = root
+        seca = root
             .children_named("seca")
             .iter()
             .map(|node| Arc::new(seca_rule_from(node)))
             .collect();
-        rules.seca.sort_by_key(|rule| rule.priority);
+        seca.sort_by_key(|rule| rule.priority);
     }
     if !email_xml.is_empty() {
         let root = MNode::parse_text("emecas", email_xml).expect("emecas xml");
-        rules.email = root
+        email = root
             .children_named("emeca")
             .iter()
             .map(|node| Arc::new(email_rule_from(node)))
             .collect();
     }
-    rules
+    EcaRules::new(seca, email)
 }

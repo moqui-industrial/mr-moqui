@@ -14,13 +14,13 @@
 
 //! XML actions. One cached script per action XML text. Names in that script are bare.
 
-use std::cell::RefCell;
 use std::collections::HashSet;
-use std::rc::Rc;
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use moqui_lib::node::MNode;
 use rquickjs::{Ctx, Object};
 
+use super::runtime::ScriptText;
 use super::walker::{self, Walk};
 use crate::context::Error;
 
@@ -30,21 +30,31 @@ const XML_ACTIONS: &str = include_str!("../../../../framework/template/XmlAction
 /// Set this to add a comment naming the XML element before each generated statement.
 const DEBUG_ENV: &str = "MOQUI_ACTIONS_DEBUG";
 
+/// The generated scripts kept, and the XML and script text they may add up to.
 const MAX_CACHED_SCRIPTS: usize = 4096;
+const MAX_CACHED_SCRIPT_BYTES: usize = 32 * 1024 * 1024;
 
-thread_local! {
-    static SCRIPTS: RefCell<super::bounded::BoundedMap<String, Rc<str>>> =
-        RefCell::new(super::bounded::BoundedMap::new(MAX_CACHED_SCRIPTS));
+type Generated = Mutex<super::bounded::BoundedMap<String, ScriptText>>;
+
+/// The script generated for each action XML text, for every thread: generation is a function of the text alone.
+fn generated_scripts() -> &'static Generated {
+    static SCRIPTS: OnceLock<Generated> = OnceLock::new();
+    SCRIPTS.get_or_init(|| {
+        Mutex::new(super::bounded::BoundedMap::with_bytes(
+            MAX_CACHED_SCRIPTS,
+            MAX_CACHED_SCRIPT_BYTES,
+        ))
+    })
 }
 
 pub fn run_actions(actions: &str) -> Result<(), Error> {
     if actions.as_bytes().contains(&0) {
         return Err(Error::new("script source contains a null byte"));
     }
-    let source = generated(actions)?;
+    let script = generated(actions)?;
     // Data preparation may do what a browser cannot, so a widget check in progress stands down while the actions run.
     let _unchecked = super::runtime::WidgetWrap::set(false);
-    super::runtime::eval_script(&source).map_err(|err| with_source_line(err, &source))
+    super::runtime::eval_script_text(&script).map_err(|err| with_source_line(err, script.text()))
 }
 
 /// Evaluate a `<condition>` element as `<if>` does. Its children are xml-actions conditions
@@ -67,8 +77,8 @@ pub fn eval_condition_element(xml: &str) -> Result<bool, Error> {
         combined.push_str(&child.write_string());
     }
     combined.push_str("</and>");
-    let source = generated(&combined)?;
-    super::runtime::eval_condition(&source)
+    let script = generated(&combined)?;
+    super::runtime::eval_condition(script.text())
 }
 
 /// An error at `eval_script:LINE:COL` with that line of the generated script after it, so a failure in actions points at
@@ -111,19 +121,24 @@ pub fn check_actions(xml: &str) -> Result<(), Error> {
     if xml.trim().is_empty() {
         return Ok(());
     }
-    let source = generated(xml)?;
-    super::parse::check_program(&source)
+    let script = generated(xml)?;
+    super::parse::check_program(script.text())
 }
 
-fn generated(xml: &str) -> Result<Rc<str>, Error> {
-    let cached = SCRIPTS.with(|scripts| scripts.borrow_mut().get(xml));
-    if let Some(source) = cached {
-        return Ok(source);
+fn generated(xml: &str) -> Result<ScriptText, Error> {
+    let scripts = generated_scripts();
+    let cached = scripts.lock().unwrap_or_else(PoisonError::into_inner).get(xml);
+    if let Some(script) = cached {
+        return Ok(script);
     }
-    let source: Rc<str> = generate(xml)?.into();
-    // Dynamic action text is bounded by the map's cap.
-    SCRIPTS.with(|scripts| scripts.borrow_mut().insert(xml.to_string(), Rc::clone(&source)));
-    Ok(source)
+    // Not under the lock: two threads may generate the same text, and the second insert is the same script.
+    let script = ScriptText::new(generate(xml)?);
+    let bytes = xml.len() + script.text().len();
+    scripts
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert_sized(xml.to_string(), script.clone(), bytes);
+    Ok(script)
 }
 
 fn generate(xml: &str) -> Result<String, Error> {
@@ -134,7 +149,8 @@ fn generate_with(xml: &str, debug: bool) -> Result<String, Error> {
     let root = MNode::parse_text("actions", xml)?;
     reject(&root)?;
     super::runtime::with_ctx(|ctx| {
-        let macros = load_macros(ctx, debug)?;
+        let name = if debug { "xml-actions-debug" } else { "xml-actions" };
+        let macros = super::runtime::engine_object(ctx, name, |ctx| load_macros(ctx, debug))?;
         let (source, _) = render(ctx, &macros, &root)?;
         Ok(source)
     })
@@ -282,6 +298,27 @@ mod tests {
         assert_eq!(text("made").as_deref(), Some("true"));
         assert_eq!(text("skipped").as_deref(), Some("true"));
         assert_eq!(text("dated").as_deref(), Some("true"));
+    }
+
+    #[test]
+    fn generated_scripts_are_shared_by_threads_and_the_macros_kept_per_engine() {
+        let xml = r#"<actions><set field="sharedGenerationProbe" value="1"/></actions>"#;
+        let here = super::generated(xml).unwrap();
+        let there = std::thread::spawn(move || super::generated(xml).unwrap())
+            .join()
+            .unwrap();
+        assert!(
+            std::ptr::eq(here.text(), there.text()),
+            "one generated text for every thread"
+        );
+        super::generated(r#"<actions><set field="macrosKeptProbe" value="2"/></actions>"#).unwrap();
+        crate::script::runtime::with_ctx(|ctx| {
+            crate::script::runtime::engine_object(ctx, "xml-actions", |_| {
+                Err(Error::new("the macros were loaded again"))
+            })
+            .map(|_| ())
+        })
+        .unwrap();
     }
 
     #[test]

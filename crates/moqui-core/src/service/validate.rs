@@ -14,7 +14,9 @@
 
 //! In-parameter checks: required, matches, ranges, and entity existence.
 
+use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use moqui_lib::object::{
@@ -36,13 +38,13 @@ pub(crate) fn clean(
     input: &BTreeMap<String, Value>,
     facade: Option<&EntityFacade>,
 ) -> Result<BTreeMap<String, Value>, Error> {
-    let declared = expand_params(def, &def.in_params, facade)?;
+    let declared = declared_in(def, facade)?;
     let mut params = input.clone();
     let mut known = BTreeSet::new();
     // As Java, every parameter is checked and each that fails is a validation error for its field, so a form shows
     // them all beside their fields; the service does not run when there is one.
     let mut failed: Vec<(String, String)> = Vec::new();
-    for param in &declared {
+    for param in declared.iter() {
         if param.name.is_empty() || param.required == Required::Disabled {
             continue;
         }
@@ -139,6 +141,63 @@ fn text_collection(value: &Value, java_type: &str) -> Option<Value> {
         }
     }
     Some(Value::List(items))
+}
+
+/// A service's in-parameters with `auto-parameters` expanded, kept with the entity facade they were expanded from.
+#[derive(Default)]
+pub(crate) struct ExpandedParams(Mutex<Option<Expanded>>);
+
+struct Expanded {
+    /// The facade's model the parameters were expanded from, or None when no parameter reads one.
+    facade: Option<Weak<dyn Any + Send + Sync>>,
+    params: Arc<[ParamDef]>,
+}
+
+impl Clone for ExpandedParams {
+    /// A changed copy of a service expands its own parameters.
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl std::fmt::Debug for ExpandedParams {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ExpandedParams")
+    }
+}
+
+/// The facade's identity. The weak reference keeps the address from being reused while it is held.
+fn facade_key(facade: &EntityFacade) -> Weak<dyn Any + Send + Sync> {
+    let inner: Arc<dyn Any + Send + Sync> = facade.inner.clone();
+    Arc::downgrade(&inner)
+}
+
+/// The in-parameters of `def` with `auto-parameters` expanded, made at the first call and kept on the definition.
+pub(crate) fn declared_in(def: &ServiceDef, facade: Option<&EntityFacade>) -> Result<Arc<[ParamDef]>, Error> {
+    let reads_entity = def
+        .in_params
+        .iter()
+        .any(|param| param.name.is_empty() && param.auto.is_some());
+    let key = facade.filter(|_| reads_entity).map(facade_key);
+    {
+        let cached = def.expanded_in.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(cached) = cached.as_ref() {
+            let same = match (&cached.facade, &key) {
+                (None, None) => true,
+                (Some(have), Some(want)) => Weak::ptr_eq(have, want),
+                _ => false,
+            };
+            if same {
+                return Ok(Arc::clone(&cached.params));
+            }
+        }
+    }
+    let params: Arc<[ParamDef]> = expand_params(def, &def.in_params, facade)?.into();
+    *def.expanded_in.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(Expanded {
+        facade: key,
+        params: Arc::clone(&params),
+    });
+    Ok(params)
 }
 
 pub(crate) fn expand_params(
