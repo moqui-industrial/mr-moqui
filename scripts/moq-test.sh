@@ -58,12 +58,12 @@ have() {
 # ========== fixture ==========
 
 R=$FIX/root
-mkdir -p "$R/target/debug" "$R/runtime/base-component/framework/data" "$R/runtime/base-component/framework/conf" \
+mkdir -p "$R/target/release" "$R/runtime/base-component/framework/data" "$R/runtime/base-component/framework/conf" \
     "$R/runtime/conf" "$R/runtime/component" \
     "$R/runtime/db/install/18.6.0" "$R/runtime/log" "$R/runtime/tmp" "$R/runtime/opensearch/data/nodes" "$R/runtime/opensearch/logs"
 cp "$SRC/moq" "$R/moq"
 chmod +x "$R/moq"
-cat >"$R/target/debug/moqui" <<'EOF'
+cat >"$R/target/release/moqui" <<'EOF'
 #!/bin/sh
 # moqui stub: records its arguments and env, and fakes save-db / load-save.
 echo "stub: $* conf=${MOQUI_CONF:-}" >>"$(dirname "$0")/calls.log"
@@ -72,7 +72,20 @@ case $1 in
     load-save) [ -f "$3" ] || exit 3; mkdir -p "$2/data"; cp "$3" "$2/data/restored" ;;
 esac
 EOF
-chmod +x "$R/target/debug/moqui"
+chmod +x "$R/target/release/moqui"
+mkdir -p "$R/bin"
+cat >"$R/bin/cargo" <<'EOF'
+#!/bin/sh
+# cargo stub: records its arguments, builds the stub moqui for the profile, and fails when CARGO_STUB_FAIL is set.
+echo "cargo: $*" >>"$(dirname "$0")/../cargo.log"
+[ -z "${CARGO_STUB_FAIL:-}" ] || exit 1
+case " $* " in *" --release "*) p=release ;; *) p=debug ;; esac
+mkdir -p "$(dirname "$0")/../target/$p"
+cp "$(dirname "$0")/../target/release/moqui.keep" "$(dirname "$0")/../target/$p/moqui"
+EOF
+chmod +x "$R/bin/cargo"
+cp "$R/target/release/moqui" "$R/target/release/moqui.keep"
+export PATH="$R/bin:$PATH"
 echo '<moqui-conf/>' >"$R/runtime/conf/MoquiDevConf.xml"
 echo '<moqui-conf/>' >"$R/runtime/conf/MoquiProductionConf.xml"
 echo '<moqui-conf><default-property name="webapp_http_port" value=""/><default-property name="entity_ds_db_conf" value=""/></moqui-conf>' \
@@ -88,20 +101,20 @@ M=$R/moq
 dry() {
     MOQ_DRY_RUN=1 "$@"
 }
-CALLS=$R/target/debug/calls.log
+CALLS=$R/target/release/calls.log
 
 # ========== matching and help ==========
 
 check "no args lists tasks" 1 'run-production' -- "$M"
 check "help" 0 'component-zip' -- "$M" help
-check "exact" 0 'exec .*/target/debug/moqui$' -- dry "$M" run
+check "exact" 0 'exec .*/target/release/moqui$' -- dry "$M" run
 check "segment prefix r-p" 0 'target/release/moqui' -- dry "$M" r-p
 check "camelCase runProduction" 0 'MOQUI_CONF=.*MoquiProductionConf.xml' -- dry "$M" runProduction
-check "upper case RUN" 0 'target/debug/moqui' -- dry "$M" RUN
+check "upper case RUN" 0 'target/release/moqui' -- dry "$M" RUN
 check "ambiguous l" 2 'ambiguous: load load-production load-save' -- "$M" l
 check "unknown task" 1 'no task zzz' -- "$M" zzz
 check "suggestion" 1 'did you mean: .*opensearch-start' -- "$M" open-stat
-check "alias moqui" 0 'target/debug/moqui$' -- dry "$M" moqui
+check "alias moqui" 0 'target/release/moqui$' -- dry "$M" moqui
 check "alias with args loadSeed" 0 'load types=seed' -- dry "$M" loadSeed
 check "gradle abbreviation gPA" 0 './moq git-pull' -- "$M" gPA --help
 check "gradle abbreviation zC" 0 './moq component-zip' -- "$M" zC --help
@@ -124,7 +137,28 @@ check "conf from cwd" 0 "MOQUI_CONF=$R/runtime/conf/MoquiDevConf.xml" -- \
     sh -c "cd '$R/runtime/conf' && MOQ_DRY_RUN=1 '$M' run --conf=MoquiDevConf.xml"
 check "conf missing" 1 'conf file nope.xml not found' -- dry "$M" run -c nope.xml
 check "run-production --debug" 0 'target/debug/moqui$' -- dry "$M" run-production --debug
-check "release not built" 1 'not built; build it with: cargo build --release' -- "$M" run -r
+check "build default" 0 'cargo build --release -p moqui$' -- dry "$M" build
+check "build --debug" 0 'cargo build -p moqui$' -- dry "$M" build --debug
+check "build passes cargo args" 0 'cargo build -p moqui --features x$' -- dry "$M" build --debug -- --features x
+rm -f "$R/cargo.log"
+check "run --debug builds a missing debug binary" 0 'is not built, building it' -- "$M" run --debug
+check "cargo saw the debug build" 0 'cargo: build -p moqui$' -- cat "$R/cargo.log"
+check "debug binary exists now" 0 '' -- test -x "$R/target/debug/moqui"
+rm -f "$R/cargo.log"
+check "run with the binary there does not build" 0 '' -- "$M" run
+check "no cargo call" 1 '' -- test -f "$R/cargo.log"
+check "run --build builds anyway" 0 '' -- "$M" run --build
+check "cargo saw --build" 0 'cargo: build --release -p moqui$' -- cat "$R/cargo.log"
+rm -f "$R/target/release/moqui" "$R/cargo.log"
+check "missing release binary is built" 0 'is not built, building it' -- "$M" run
+check "cargo saw the release build" 0 'cargo: build --release -p moqui$' -- cat "$R/cargo.log"
+rm -f "$R/target/release/moqui" "$R/cargo.log"
+check "dry run shows the build" 0 'cargo build --release -p moqui' -- dry "$M" load
+check "dry run does not call cargo" 1 '' -- test -f "$R/cargo.log"
+check "failed build" 1 'cargo build failed' -- env CARGO_STUB_FAIL=1 "$M" load
+"$R/bin/cargo" build --release -p moqui
+rm -f "$R/cargo.log"
+check "release flag is gone" 1 'unknown option -r' -- "$M" run -r
 check "load default all" 0 'moqui load types=all$' -- dry "$M" load
 check "load types" 0 'load types=seed\\?,demo components=x$' -- dry "$M" load seed demo components=x
 check "load types twice" 1 'not both' -- dry "$M" load seed types=demo
@@ -152,7 +186,7 @@ check "complete location" 0 '^@files' -- "$M" __complete 3 load -l ''
 check "complete load types" 0 '^seed-initial$' -- "$M" __complete 2 load se
 check "complete load demo" 0 '^demo$' -- "$M" __complete 2 load d
 check "complete run binary commands" 0 '^lint$' -- "$M" __complete 2 run ''
-check "complete run options" 0 '^--release$' -- "$M" __complete 2 run --r
+check "complete run options" 0 '^--debug$' -- "$M" __complete 2 run --d
 check "complete -D property" 0 '^entity_ds_db_conf=$' -- "$M" __complete 3 run -D ent
 check "complete alias task" 0 '^seed$' -- "$M" __complete 2 lP se
 check "complete help" 0 '^git-status$' -- "$M" __complete 2 help git-s

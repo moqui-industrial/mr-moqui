@@ -56,11 +56,12 @@ else
 fi
 
 # name|group|arguments|description. Drives the task list, matching, and completion.
-TASKS='run|Run|[opts] [moqui-args...]|Run the debug binary with the dev conf
+TASKS='build|Run|[--debug] [cargo args...]|Build the release binary (cargo build --release -p moqui), or the debug binary with --debug
+run|Run|[opts] [moqui-args...]|Run the release binary with the dev conf
 run-production|Run|[opts] [moqui-args...]|Run the release binary with the production conf
 load|Run|[types] [name=value] [opts]|Load data, all types by default, with the dev conf
 load-production|Run|[types] [name=value] [opts]|Load data with the release binary and production conf
-test|Run|[component...] [test opts]|Run component tests (moqui test) with the debug binary and the dev conf
+test|Run|[component...] [test opts]|Run component tests (moqui test) with the release binary and the dev conf
 load-save|Run|[-n name] [load args...]|clean-all, load, then save-db
 save-db|Database|[name]|Save the embedded database and OpenSearch data to runtime/save/<name>
 reload-save|Database|[name]|clean-db, then restore a save-db copy
@@ -386,15 +387,33 @@ help_task() {
     fi
 }
 
-RUN_OPTIONS_HELP='  -r, --release        Use target/release/moqui
-      --debug          Use target/debug/moqui
+RUN_OPTIONS_HELP='      --debug          Use target/debug/moqui (default: target/release/moqui)
   -c, --conf FILE      Runtime conf merged over MoquiDefaultConf.xml (sets MOQUI_CONF); relative to
                        the runtime directory, like conf/MoquiProductionConf.xml, or a path
   -p, --port N         HTTP port (webapp_http_port)
   -D name=value        Set any conf property, as an environment variable; repeatable. Use the
                        underscore name (entity_ds_db_conf), not a dotted one
-      --build          cargo build -p moqui first (with --release for the release binary)
+      --build          Build first (cargo build --release -p moqui, or without --release with --debug). A
+                       binary that is not there is always built
       --               End of moq options'
+
+help_build() {
+    cat <<'EOF'
+Builds the moqui binary with cargo in this repo: target/release/moqui (cargo build --release -p
+moqui), or target/debug/moqui with --debug. Other words go to cargo as they are. The tasks that run
+moqui (run, load, test, save-db, ...) build the binary they need when it is not there.
+  ./moq build
+  ./moq build --debug
+  ./moq build -- --features some-feature
+
+The release build for distribution also strips psql from the bundled Postgres first; see README.md
+(scripts/pg-payload.sh strip, then check).
+
+Options:
+      --debug          Build target/debug/moqui
+      --               End of moq options; the rest goes to cargo
+EOF
+}
 
 help_run() {
     cat <<EOF
@@ -403,7 +422,7 @@ moqui arguments it starts the HTTP server. The first argument that is not a moq 
 everything after it, goes to the binary, so moqui's own commands run with the same conf:
   ./moq run                         serve with runtime/conf/MoquiDevConf.xml
   ./moq run -p 8081 -D entity_ds_db_conf=postgres
-  ./moq run -r                      the release binary, still the dev conf
+  ./moq run --debug                 the debug binary, still the dev conf
   ./moq run lint --screens          moqui lint --screens
   ./moq run types --out /tmp/types
 
@@ -429,7 +448,7 @@ LOAD_HELP='Words without "=" are data types, joined into types=a,b. name=value w
 they are: components=a,b, timeout=<seconds>, raw=true, disableEntityEca=true,
 disableAuditLog=true, disableFkCreate=true, disableDataFeed=true.
 
-Options (as for run): -r, --release, --debug, -c FILE, -D name=value, --build, and
+Options (as for run): --debug, -c FILE, -D name=value, --build, and
   -l, --location FILE  Load only this data file (location=<absolute path>)'
 
 help_test() {
@@ -442,14 +461,14 @@ any other option is passed on, so moqui's own options work as they are:
   ./moq test mantle-usl --spec OrderToCashBasicFlow --feature "ship Sales Order"
   ./moq test mantle-usl --junit build/test-results
 
-Options (as for run): -r, --release, --debug, -c FILE, -p, -D name=value, --build, and
+Options (as for run): --debug, -c FILE, -p, -D name=value, --build, and
   --  End of moq options; everything after it goes to moqui test
 EOF
 }
 
 help_load() {
     cat <<EOF
-Loads data into the configured database with the debug binary and the dev conf. With no data
+Loads data into the configured database with the release binary and the dev conf. With no data
 types it loads all of them, like gradle load.
   ./moq load
   ./moq load seed seed-initial install
@@ -493,7 +512,7 @@ This saves only the embedded database, not an external one set by entity_ds_db_c
   ./moq save-db before-upgrade
 
 Options:
-  -r, --release        Use the release binary (default: debug if built, else release)
+      --debug          Use the debug binary (default: release). A binary that is not there is built
       --skip-opensearch  Leave out the OpenSearch data
 EOF
 }
@@ -507,7 +526,7 @@ must be stopped. The name defaults to "default".
   ./moq reload-save before-upgrade
 
 Options:
-  -r, --release        Use the release binary (default: debug if built, else release)
+      --debug          Use the debug binary (default: release). A binary that is not there is built
       --skip-opensearch  Leave runtime/opensearch/data alone
 EOF
 }
@@ -714,7 +733,6 @@ parse_run_opts() {
     while [ $# -gt 0 ]; do
         arg=$1
         case $arg in
-            -r | --release) OPT_PROFILE=release ;;
             --debug) OPT_PROFILE=debug ;;
             -c | --conf)
                 [ $# -ge 2 ] || die "$arg needs a file"
@@ -783,41 +801,37 @@ binary_path() {
     printf '%s\n' "$ROOT/target/$1/moqui"
 }
 
-# The binary for a profile, building it first when asked. Dies with the build command when it is missing.
+# cargo build for a profile ($1: release or debug), with any more cargo arguments after it.
+build_binary() {
+    local profile=$1
+    shift
+    need_tool cargo
+    if [ "$profile" = release ]; then
+        run_cmd cargo build --release -p moqui "$@" >&2 || die "cargo build failed"
+    else
+        run_cmd cargo build -p moqui "$@" >&2 || die "cargo build failed"
+    fi
+}
+
+# The binary for a profile. It is built first when asked (--build), and when it is not there.
 moqui_binary() {
     local profile=$1 bin
     bin=$(binary_path "$profile")
     if [ -n "$OPT_BUILD" ]; then
-        need_tool cargo
-        if [ "$profile" = release ]; then
-            run_cmd cargo build --release -p moqui >&2 || die "cargo build failed"
-        else
-            run_cmd cargo build -p moqui >&2 || die "cargo build failed"
-        fi
+        build_binary "$profile"
+    elif [ ! -x "$bin" ]; then
+        info "$(rel "$bin") is not built, building it" >&2
+        build_binary "$profile"
     fi
-    if [ ! -x "$bin" ]; then
-        local build='cargo build -p moqui'
-        [ "$profile" = release ] && build='cargo build --release -p moqui (see README.md for the production build)'
-        if dry_run; then
-            warn "$(rel "$bin") is not built"
-        else
-            die "$(rel "$bin") is not built; build it with: $build, or add --build"
-        fi
+    if [ ! -x "$bin" ] && ! dry_run; then
+        die "$(rel "$bin") is not there after the build"
     fi
     printf '%s\n' "$bin"
 }
 
-# Debug if built, else release, unless one was asked for.
+# The binary for the profile asked for (--debug), else release.
 any_binary() {
-    if [ -n "$OPT_PROFILE" ]; then
-        moqui_binary "$OPT_PROFILE"
-    elif [ -x "$(binary_path debug)" ]; then
-        binary_path debug
-    elif [ -x "$(binary_path release)" ]; then
-        binary_path release
-    else
-        moqui_binary debug
-    fi
+    moqui_binary "${OPT_PROFILE:-release}"
 }
 
 # MOQUI_CONF as an absolute path. A relative name is tried in the runtime directory, then from the caller's directory.
@@ -852,10 +866,29 @@ apply_run_env() {
 
 # ========== run tasks ==========
 
+task_build() {
+    local profile=release
+    local -a cargo_args
+    cargo_args=()
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --debug) profile=debug ;;
+            --)
+                shift
+                cargo_args+=("$@")
+                break
+                ;;
+            *) cargo_args+=("$1") ;;
+        esac
+        shift
+    done
+    build_binary "$profile" "${cargo_args[@]}"
+}
+
 task_run() {
     parse_run_opts run "$@"
     local bin
-    bin=$(moqui_binary "${OPT_PROFILE:-debug}") || exit 1
+    bin=$(moqui_binary "${OPT_PROFILE:-release}") || exit 1
     apply_run_env ""
     exec_cmd "$bin" "${OPT_REST[@]}"
 }
@@ -871,7 +904,7 @@ task_run_production() {
 task_test() {
     parse_run_opts test "$@"
     local bin
-    bin=$(moqui_binary "${OPT_PROFILE:-debug}") || exit 1
+    bin=$(moqui_binary "${OPT_PROFILE:-release}") || exit 1
     apply_run_env ""
     exec_cmd "$bin" test "${OPT_REST[@]}"
 }
@@ -912,7 +945,7 @@ run_load() {
 }
 
 task_load() {
-    run_load debug "" all "$@"
+    run_load release "" all "$@"
 }
 
 task_load_production() {
@@ -1157,7 +1190,6 @@ parse_save_args() {
     local named=''
     while [ $# -gt 0 ]; do
         case $1 in
-            -r | --release) OPT_PROFILE=release ;;
             --debug) OPT_PROFILE=debug ;;
             --skip-opensearch) SKIP_OPENSEARCH=1 ;;
             -*) die "unknown option $1" ;;
@@ -2002,7 +2034,7 @@ complete_run_like() {
         -p | --port | -n | --name) return ;;
     esac
     case $cur in
-        -*) filter_prefix "$cur" -r --release --debug -c --conf -p --port -D --build --; return ;;
+        -*) filter_prefix "$cur" --debug -c --conf -p --port -D --build --; return ;;
     esac
     printf '%s\n' "$positional"
 }
@@ -2011,6 +2043,7 @@ complete_run_like() {
 complete_task() {
     local task=$1 cur=$2 prev=$3 nargs=$4 first_arg=$5
     case $task in
+        build) filter_prefix "$cur" --debug ;;
         run | run-production)
             local out
             out=$(complete_run_like "$cur" "$prev" @binary)
@@ -2055,7 +2088,7 @@ complete_task() {
             ;;
         save-db | reload-save)
             case $cur in
-                -*) filter_prefix "$cur" -r --release --debug --skip-opensearch ;;
+                -*) filter_prefix "$cur" --debug --skip-opensearch ;;
                 *) filter_prefix "$cur" $(save_names) ;;
             esac
             ;;

@@ -660,13 +660,17 @@ impl ExecutionContext {
 
     /// Java's `countArtifactHit`, for a hit that is not a frame of the stack, such as a transition.
     pub(crate) fn count_artifact_hit(&self, hit: &super::hits::Hit<'_>) {
-        self.state.factory.hits.count(hit, || super::hits::HitContext {
+        let flush_now = self.state.factory.hits.count(hit, || super::hits::HitContext {
             visit_id: crate::user::visit_id().ok().flatten(),
             user_id: crate::user::current_user_id().ok().flatten(),
             errors: self.state.messages.borrow().errors().to_vec(),
             request_url: crate::web::request_url(),
             referrer_url: crate::web::referrer_url(),
         });
+        // The tick flush does not run during one long call, so a full queue is flushed here, on a thread.
+        if flush_now {
+            super::hits::spawn_flush(&self.state.factory);
+        }
     }
 
     pub fn disable_authz(&self) -> AuthzGuard {

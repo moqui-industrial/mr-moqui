@@ -1130,3 +1130,213 @@ fn a_failed_record_load_inside_an_outer_transaction_leaves_it_to_the_owner() {
     assert!(test_entity_row(&facade, "OUTER").is_none());
     assert!(test_entity_row(&facade, "GOOD").is_none());
 }
+
+/// A store of one row of `TestEntity`: `UPDATE` reports the row when present, `INSERT` adds it. Records the SQL.
+#[derive(Default)]
+struct StoreTape {
+    sql: Vec<String>,
+    params: Vec<Vec<Value>>,
+    exists: bool,
+}
+
+struct StoreDriver {
+    tape: Arc<Mutex<StoreTape>>,
+}
+
+struct StoreConn {
+    inner: FakeConn,
+    tape: Arc<Mutex<StoreTape>>,
+}
+
+impl DbDriver for StoreDriver {
+    fn connect(&self) -> Result<Box<dyn DbConnection>, Error> {
+        Ok(Box::new(StoreConn {
+            inner: FakeConn,
+            tape: Arc::clone(&self.tape),
+        }))
+    }
+}
+
+impl DbConnection for StoreConn {
+    fn execute(&mut self, sql: &str, params: &[Value]) -> Result<u64, Error> {
+        let mut tape = self.tape.lock().unwrap_or_else(|err| err.into_inner());
+        tape.sql.push(sql.to_string());
+        tape.params.push(params.to_vec());
+        if sql.starts_with("UPDATE") {
+            return Ok(u64::from(tape.exists));
+        }
+        if sql.starts_with("INSERT") {
+            tape.exists = true;
+        }
+        Ok(1)
+    }
+
+    fn query(&mut self, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
+        self.query_once(sql, params)
+    }
+
+    fn query_once(&mut self, sql: &str, _params: &[Value]) -> Result<Vec<DbRow>, Error> {
+        let mut tape = self.tape.lock().unwrap_or_else(|err| err.into_inner());
+        if sql == "SELECT 1" {
+            return Ok(Vec::new());
+        }
+        tape.sql.push(sql.to_string());
+        tape.params.push(Vec::new());
+        if tape.exists && sql.contains("TestEntity") && sql.contains("SELECT") {
+            return Ok(vec![test_row()]);
+        }
+        Ok(Vec::new())
+    }
+
+    fn open_stream(&mut self, sql: &str, params: &[Value]) -> Result<(), Error> {
+        self.inner.open_stream(sql, params)
+    }
+    fn next_row(&mut self) -> Result<Option<DbRow>, Error> {
+        self.inner.next_row()
+    }
+    fn close_stream(&mut self) -> Result<(), Error> {
+        self.inner.close_stream()
+    }
+    fn stream_open(&self) -> bool {
+        false
+    }
+    fn begin(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+    fn commit(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+    fn rollback(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+    fn savepoint(&mut self, _name: &str) -> Result<(), Error> {
+        Ok(())
+    }
+    fn rollback_to_savepoint(&mut self, _name: &str) -> Result<(), Error> {
+        Ok(())
+    }
+    fn release_savepoint(&mut self, _name: &str) -> Result<(), Error> {
+        Ok(())
+    }
+    fn canceller(&self) -> Box<dyn DbCancel> {
+        Box::new(NoCancel)
+    }
+}
+
+fn open_store(exists: bool, dialect: &str) -> (EntityFacade, Arc<Mutex<StoreTape>>) {
+    let tape = Arc::new(Mutex::new(StoreTape {
+        exists,
+        ..Default::default()
+    }));
+    let driver: Arc<dyn DbDriver> = Arc::new(StoreDriver {
+        tape: Arc::clone(&tape),
+    });
+    let transactions = TransactionManager::new(
+        driver,
+        PoolConfig {
+            min: 0,
+            max: 2,
+            reserve: 1,
+            acquire_timeout: Duration::from_secs(5),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let facade = EntityFacade::open(
+        &framework_dir(),
+        "transactional",
+        vec![EntityGroup::new("transactional", dialect, transactions)],
+    )
+    .unwrap();
+    facade.set_disable_fk_create(true);
+    facade.set_disable_data_feed(true);
+    (facade, tape)
+}
+
+fn writes(tape: &Arc<Mutex<StoreTape>>) -> Vec<(String, usize)> {
+    let tape = tape.lock().unwrap_or_else(|err| err.into_inner());
+    tape.sql
+        .iter()
+        .zip(&tape.params)
+        .map(|(sql, params)| (sql.split(' ').next().unwrap_or("").to_string(), params.len()))
+        .collect()
+}
+
+fn test_value(facade: &EntityFacade) -> super::EntityValue {
+    let mut value = facade.make_value("moqui.test.TestEntity").unwrap();
+    value.set("testId", Value::string("T1"));
+    value.set("testMedium", Value::string("changed"));
+    value
+}
+
+#[test]
+fn create_or_update_on_an_existing_row_is_one_update_with_the_same_sql_as_update() {
+    let (facade, tape) = open_store(true, "postgres");
+    facade.update_value(&test_value(&facade)).unwrap();
+    let direct = tape.lock().unwrap().sql.clone();
+    assert_eq!(direct.len(), 1, "{direct:?}");
+    tape.lock().unwrap().sql.clear();
+    tape.lock().unwrap().params.clear();
+
+    facade.create_or_update_value(&test_value(&facade)).unwrap();
+    // Before: SELECT then UPDATE. Now: the UPDATE alone, the same statement.
+    assert_eq!(tape.lock().unwrap().sql, direct);
+}
+
+#[test]
+fn create_or_update_on_a_new_row_updates_nothing_then_finds_and_inserts_as_before() {
+    let (facade, tape) = open_store(false, "postgres");
+    facade.create_value(&test_value(&facade)).unwrap();
+    let direct_insert = tape.lock().unwrap().sql.clone();
+    assert_eq!(direct_insert.len(), 1);
+    {
+        let mut tape = tape.lock().unwrap();
+        tape.exists = false;
+        tape.sql.clear();
+        tape.params.clear();
+    }
+    facade.create_or_update_value(&test_value(&facade)).unwrap();
+    let kinds: Vec<String> = writes(&tape).into_iter().map(|(kind, _)| kind).collect();
+    assert_eq!(kinds, ["UPDATE", "SELECT", "INSERT"], "{kinds:?}");
+    let tape = tape.lock().unwrap();
+    assert_eq!(tape.sql[2], direct_insert[0]);
+    assert!(tape.exists);
+}
+
+#[test]
+fn create_or_update_keeps_find_then_write_for_dialects_that_do_not_report_matched_rows() {
+    let (facade, tape) = open_store(true, "mysql");
+    facade.create_or_update_value(&test_value(&facade)).unwrap();
+    let kinds: Vec<String> = writes(&tape).into_iter().map(|(kind, _)| kind).collect();
+    assert_eq!(kinds, ["SELECT", "UPDATE"], "{kinds:?}");
+}
+
+#[test]
+fn an_update_eca_rule_keeps_create_or_update_on_the_find_then_write_path() {
+    let (facade, tape) = open_store(true, "postgres");
+    super::load_feed::add_eca_rules(
+        &facade,
+        r#"<eecas><eeca entity="moqui.test.TestEntity" on-update="true"><actions><log message="x"/></actions></eeca></eecas>"#,
+    )
+    .unwrap();
+    facade.create_or_update_value(&test_value(&facade)).unwrap();
+    let kinds: Vec<String> = writes(&tape).into_iter().map(|(kind, _)| kind).collect();
+    assert_eq!(kinds, ["SELECT", "UPDATE"], "{kinds:?}");
+}
+
+#[test]
+fn field_defaults_apply_on_create_only_through_create_or_update() {
+    let sets = |exists: bool| {
+        let (facade, tape) = open_store(exists, "postgres");
+        let mut value = facade.make_value("moqui.entity.document.DataDocumentLink").unwrap();
+        value.set("dataDocumentId", Value::string("D1"));
+        value.set("linkSeqId", Value::string("01"));
+        value.set("label", Value::string("l"));
+        facade.create_or_update_value(&value).unwrap();
+        let tape = tape.lock().unwrap();
+        tape.params.iter().flatten().any(|v| *v == Value::string("plain"))
+    };
+    // A new row gets the default 'plain' urlType; an existing row's columns are not reset by it.
+    assert!(sets(false));
+    assert!(!sets(true));
+}

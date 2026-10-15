@@ -17,7 +17,8 @@
 //! `moqui.server.ArtifactHitBin` on a reserve connection, so a request never writes them.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use moqui_db::sql::insert as sql_insert;
 use moqui_lib::node::MNode;
@@ -41,6 +42,11 @@ const FLUSH_RETRIES: u32 = 5;
 /// Hits held for the flush. Past this, until a tick takes them, a new hit is dropped and counted, so memory stays
 /// bounded when no tick runs.
 const MAX_QUEUED_HITS: usize = 10_000;
+/// Queued hits at which [`ArtifactHits::count`] asks for a flush now, as the scheduler tick may not run for a long
+/// time, such as during one long call. Half the limit, so the flush has room to run while hits keep coming.
+const FLUSH_QUEUED_HITS: usize = MAX_QUEUED_HITS / 2;
+/// Closed bins at which a flush is asked for, half the limit as for hits.
+const FLUSH_CLOSED_BINS: usize = MAX_CLOSED_BINS / 2;
 /// Closed bins held for the flush, dropped and counted past this as hits are.
 const MAX_CLOSED_BINS: usize = 20_000;
 /// Distinct artifacts with counts. A new artifact past this is not binned, and is counted as dropped.
@@ -93,6 +99,8 @@ pub(crate) struct ArtifactHits {
     /// `artifact-stats` per type: `(persist-hit, persist-bin)`.
     by_type: HashMap<String, (bool, bool)>,
     state: Mutex<State>,
+    /// True while a background flush started by [`spawn_flush`] runs, so only one runs at a time.
+    flushing: AtomicBool,
 }
 
 #[derive(Default)]
@@ -192,6 +200,7 @@ impl ArtifactHits {
             bin_length_ms,
             by_type,
             state: Mutex::new(State::default()),
+            flushing: AtomicBool::new(false),
         }
     }
 
@@ -205,12 +214,26 @@ impl ArtifactHits {
         hit || bin
     }
 
-    /// Java's `countArtifactHit`. `context` is read only when the hit is written.
-    pub(crate) fn count(&self, hit: &Hit<'_>, context: impl FnOnce() -> HitContext) {
+    /// Java's `countArtifactHit`. `context` is read only when the hit is written. Returns true when the queued hits
+    /// or closed bins have reached the flush threshold, so the caller should start a flush rather than wait for the
+    /// scheduler tick, see [`spawn_flush`]. The limits stay as the safety net when no flush runs.
+    pub(crate) fn count(&self, hit: &Hit<'_>, context: impl FnOnce() -> HitContext) -> bool {
         let (persist_hit, persist_bin) = self.persist(hit.artifact_type);
         if !persist_hit && !persist_bin {
-            return;
+            return false;
         }
+        self.count_counted(hit, persist_hit, persist_bin, context);
+        let state = lock(&self.state);
+        state.hits.len() >= FLUSH_QUEUED_HITS || state.closed.len() >= FLUSH_CLOSED_BINS
+    }
+
+    fn count_counted(
+        &self,
+        hit: &Hit<'_>,
+        persist_hit: bool,
+        persist_bin: bool,
+        context: impl FnOnce() -> HitContext,
+    ) {
         let is_entity =
             hit.artifact_type == "AT_ENTITY" || hit.sub_type.is_some_and(|sub_type| sub_type.starts_with("entity"));
         if is_entity && ENTITIES_TO_SKIP.contains(&hit.name) {
@@ -282,6 +305,13 @@ impl ArtifactHits {
         } else {
             state.hits.push(row);
         }
+    }
+
+    /// Claim the one background flush. False when one is already running.
+    fn begin_flush(&self) -> bool {
+        self.flushing
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
     }
 
     /// Take what the flush writes: the waiting hits, the closed bins, and each current bin whose
@@ -600,6 +630,44 @@ fn hit_fields(row: HitRow, ip: &str, host: &str) -> BTreeMap<String, Value> {
     fields
 }
 
+/// Releases the single-flight claim when the flush thread ends, also by a panic.
+struct FlushClaim(Arc<ExecutionContextFactory>);
+
+impl Drop for FlushClaim {
+    fn drop(&mut self) {
+        self.0.artifact_hits().flushing.store(false, Ordering::Release);
+    }
+}
+
+/// Start a flush on a background thread when none is running, for [`ArtifactHits::count`] reporting a full queue.
+/// It writes as the scheduler tick does, on the reserve connection. The thread holds the factory only while it
+/// flushes, and a failure or panic is logged, not raised.
+pub(crate) fn spawn_flush(factory: &Arc<ExecutionContextFactory>) {
+    if !factory.artifact_hits().begin_flush() {
+        return;
+    }
+    let weak = Arc::downgrade(factory);
+    let spawned = std::thread::Builder::new()
+        .name("artifact-hit-flush".to_string())
+        .spawn(move || {
+            let Some(factory) = weak.upgrade() else {
+                return;
+            };
+            let claim = FlushClaim(factory);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flush(&claim.0, false)));
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => tracing::warn!("artifact hit flush failed: {err}"),
+                Err(_) => tracing::warn!("artifact hit flush panicked"),
+            }
+        });
+    if let Err(err) = spawned {
+        // The closure never ran, so its claim was never made: release ours.
+        factory.artifact_hits().flushing.store(false, Ordering::Release);
+        tracing::warn!("artifact hit flush thread did not start: {err}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -665,6 +733,57 @@ mod tests {
         // Only the screen has persist-hit.
         assert_eq!(state.hits.len(), 1);
         assert_eq!(state.hits[0].name, "component://x.xml");
+    }
+
+    #[test]
+    fn count_asks_for_a_flush_at_the_threshold_and_a_flush_in_time_drops_nothing() {
+        use super::{FLUSH_QUEUED_HITS, MAX_QUEUED_HITS};
+
+        let hits = ArtifactHits::from_conf(conf());
+        let screen = |index: i64| hit("AT_XML_SCREEN", "component://x.xml", index, 1.0);
+        for index in 0..(FLUSH_QUEUED_HITS - 1) {
+            assert!(!hits.count(&screen(index as i64), HitContext::default));
+        }
+        assert!(hits.count(&screen(0), HitContext::default), "threshold reached");
+        // A type that is not counted never asks.
+        assert!(!hits.count(&hit("AT_LLM", "m", 0, 1.0), HitContext::default));
+
+        // The caller flushes when asked, as `spawn_flush` does with one flush at a time: nothing is dropped
+        // though three times the limit is counted with no scheduler tick.
+        let mut flushed = 0;
+        for index in 0..(MAX_QUEUED_HITS * 3) {
+            if hits.count(&screen(index as i64), HitContext::default) && hits.begin_flush() {
+                flushed += hits.take(false).0.len();
+                hits.flushing.store(false, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let state = hits.state.lock().unwrap();
+        assert_eq!(state.dropped, 0);
+        assert_eq!(flushed + state.hits.len(), FLUSH_QUEUED_HITS + MAX_QUEUED_HITS * 3);
+    }
+
+    #[test]
+    fn only_one_background_flush_is_claimed_at_a_time() {
+        let hits = ArtifactHits::from_conf(conf());
+        assert!(hits.begin_flush());
+        assert!(!hits.begin_flush());
+        hits.flushing.store(false, std::sync::atomic::Ordering::Release);
+        assert!(hits.begin_flush());
+    }
+
+    #[test]
+    fn without_a_flush_the_limit_still_drops_and_counts() {
+        use super::MAX_QUEUED_HITS;
+
+        let hits = ArtifactHits::from_conf(conf());
+        for index in 0..(MAX_QUEUED_HITS + 5) {
+            hits.count(
+                &hit("AT_XML_SCREEN", "component://x.xml", index as i64, 1.0),
+                HitContext::default,
+            );
+        }
+        let state = hits.state.lock().unwrap();
+        assert_eq!((state.hits.len(), state.dropped), (MAX_QUEUED_HITS, 5));
     }
 
     #[test]

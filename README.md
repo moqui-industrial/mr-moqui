@@ -31,10 +31,11 @@ embedded-Postgres 18.6.0 archive. Node.js is optional; the JS client tests run u
 `cargo test` only when `node` is on the path.
 
 ```sh
-# Development build, binary at target/debug/moqui
+# Development build, binary at target/debug/moqui (for work on the compiled framework;
+# ./moq runs it with --debug)
 cargo build -p moqui
 
-# Production build, binary at target/release/moqui. Strip psql (it links GPL readline)
+# Release build, binary at target/release/moqui, which ./moq uses by default. Strip psql (it links GPL readline)
 # from the Postgres archive the binary embeds first, and check the result.
 scripts/pg-payload.sh strip
 cargo build --release -p moqui
@@ -61,7 +62,9 @@ checkout on Linux or macOS. `./moq` with no arguments lists the tasks, and
 `./moq r-p` and `./moq runProduction` both mean `run-production`.
 
 ```sh
-./moq run                      # target/debug/moqui with runtime/conf/MoquiDevConf.xml
+./moq build                    # cargo build --release -p moqui (--debug for target/debug/moqui);
+                               # tasks that run moqui build a missing binary themselves
+./moq run                      # target/release/moqui with runtime/conf/MoquiDevConf.xml; --debug uses target/debug/moqui
 ./moq run -p 8081 -D entity_ds_db_conf=postgres
 ./moq run lint --screens       # moqui's own commands, with the same conf
 ./moq load                     # all data types; ./moq load seed seed-initial install

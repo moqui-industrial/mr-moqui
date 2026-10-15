@@ -154,6 +154,9 @@ impl EntityFacade {
 
     pub fn create_or_update_value(&self, value: &EntityValue) -> Result<(), Error> {
         let keys = self.pk_map(&value.entity_name, &value.fields)?;
+        if self.update_if_exists(&value.entity_name, &value.fields)? {
+            return Ok(());
+        }
         if self.find_by_pk(&value.entity_name, &keys)?.is_some() {
             self.update_value(value)
         } else {
@@ -176,8 +179,8 @@ impl EntityFacade {
         self.require_pk(&value.entity_name, &plain)?;
         fk::enforce(self, &value.entity_name, &plain, stack)?;
         self.reject_view(&value.entity_name, "create")?;
-        self.finish_write(&value.entity_name, "create", plain, None, false, false)?;
-        Ok(())
+        self.finish_write(&value.entity_name, "create", plain, None, false, false)
+            .map(|_| ())
     }
 
     /// Fill the fields an entity definition gives a `default` (a quoted literal, a number, or the name of another
@@ -226,12 +229,57 @@ impl EntityFacade {
             return Ok(());
         }
         self.finish_write(entity_name, "update", plain, Some(rules), true, true)
+            .map(|_| ())
+    }
+
+    /// The first step of [`Self::create_or_update_value`]: one `UPDATE` by primary key, for a row that is probably
+    /// there. Returns `true` when it updated a row. Returns `false` when nothing was written and the caller must
+    /// take the find-then-write path: the row is absent, or this write is one where an update without a prior read
+    /// could differ from the find-then-write path.
+    ///
+    /// Those are: an ECA rule matches `update` (it must not run for a row that turns out to be new), an
+    /// audit-logged field applies to `update` (the old value is read and logged), the dialect does not report
+    /// matched rows (only Postgres does; MySQL counts changed rows), a transaction cache or simulation is in use
+    /// (a write there is held, not run), authorization is on (an update checks `update`, a new row checks
+    /// `create`), or the update has no column to set. Foreign key checks and field defaults belong to create only,
+    /// and the path that follows a miss is the unchanged one, so they are not skipped. A probe that updates no row
+    /// leaves no feed touch, cache clear, or ECA run behind.
+    fn update_if_exists(&self, entity_name: &str, values: &BTreeMap<String, Value>) -> Result<bool, Error> {
+        let eligible = self.with_entity(entity_name, |entity, dialect, _| {
+            Ok(dialect.name == "postgres"
+                && !entity.is_view
+                && !entity.fields.iter().any(|field| {
+                    field
+                        .enable_audit_log
+                        .as_deref()
+                        .is_some_and(|flag| matches!(flag, "true" | "update"))
+                })
+                && (!crate::user::context_entered()
+                    || entity.authorize_skip.trim() == "true"
+                    || crate::context::ExecutionContext::with_current(|ctx| ctx.authz_disabled()).unwrap_or(false)))
+        })?;
+        if !eligible || self.sim_active() || self.transactions_for(entity_name)?.transaction_cache_active() {
+            return Ok(false);
+        }
+        let plain = self.normalize_values(entity_name, values, true)?;
+        let has_columns = self.with_entity(entity_name, |entity, _, _| {
+            Ok(!present_columns(entity, &plain, true, true).is_empty())
+        })?;
+        if !has_columns {
+            return Ok(false);
+        }
+        let rules = load_feed::match_rules_with(self, entity_name, "update");
+        if !rules.is_empty() {
+            return Ok(false);
+        }
+        Ok(self.finish_write(entity_name, "update-probe", plain, Some(rules), true, true)? > 0)
     }
 
     fn write_delete(&self, entity_name: &str, values: &BTreeMap<String, Value>) -> Result<(), Error> {
         let plain = self.normalize_values(entity_name, values, false)?;
         self.reject_view(entity_name, "delete")?;
         self.finish_write(entity_name, "delete", plain, None, false, false)
+            .map(|_| ())
     }
 
     /// Insert, or update on a primary-key conflict. Values are sealed the same way as a create.
@@ -242,6 +290,7 @@ impl EntityFacade {
         fk::enforce(self, entity_name, &plain, &mut stack)?;
         self.reject_view(entity_name, "create")?;
         self.finish_write(entity_name, "upsert", plain, None, false, false)
+            .map(|_| ())
     }
 
     /// Run the write, or leave it with the cache when the gate handles it. Values are plaintext. `rules` are the
@@ -254,7 +303,10 @@ impl EntityFacade {
         rules: Option<Vec<EcaRule>>,
         include_null: bool,
         skip_pk: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
+        // `update-probe` is an update that leaves no trace when it matches no row; see `update_if_exists`.
+        let probe = operation == "update-probe";
+        let operation = if probe { "update" } else { operation };
         // Declared first, so it drops last: the authorization cache is invalidated after the write.
         let _note = WriteNote(entity_name);
         let sub_type = if operation == "upsert" { "create" } else { operation };
@@ -289,6 +341,7 @@ impl EntityFacade {
             }
         }
         let cache_values = plain.clone();
+        let mut affected = 1;
         if cache::gate_write(self, entity_name, operation, &plain)? == WriteGate::Handled {
             load_feed::note_touch(self, entity_name, seal_operation, Some(&cache_values));
         } else {
@@ -329,7 +382,10 @@ impl EntityFacade {
                 };
                 Ok((sql, params))
             })?;
-            execute_tx(&tx, &sql, &params)?;
+            affected = execute_tx(&tx, &sql, &params)?;
+            if probe && affected == 0 {
+                return Ok(0);
+            }
             load_feed::note_touch(self, entity_name, seal_operation, Some(&cache_values));
             if let Some(mut values) = after_values {
                 crate::service::run_matched_eca(self, entity_name, seal_operation, false, &rules, &mut values)?;
@@ -337,7 +393,7 @@ impl EntityFacade {
         }
         cache::on_write(self, entity_name, operation, &cache_values)?;
         after_statement(self, &tx, true);
-        Ok(())
+        Ok(affected)
     }
 
     pub(crate) fn refresh_fields(
