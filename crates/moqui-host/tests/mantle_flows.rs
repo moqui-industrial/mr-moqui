@@ -1261,6 +1261,15 @@ fn now_text() -> String {
     jiff::Zoned::now().strftime("%Y-%m-%d %H:%M:%S").to_string()
 }
 
+/// A thruDate after rows just written: `now_text` drops the milliseconds, so it can fall before them. Spock uses
+/// `effectiveTime + 1`.
+fn after_now_text() -> String {
+    // UTC: the user's time zone in the fixture is UTC, while `Zoned::now` is local time
+    (jiff::Timestamp::now() + jiff::Span::new().seconds(2))
+        .strftime("%Y-%m-%d %H:%M:%S")
+        .to_string()
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // AssetReservationMultipleThreads
 // ---------------------------------------------------------------------------------------------------------------
@@ -2425,7 +2434,7 @@ fn flow_work_plan_to_cash(f: &Flow) {
             ("workerPartyId", s(&worker)),
             ("ratePurposeEnumId", s("RaprVendor")),
             ("workEffortId", s("TEST")),
-            ("thruDate", s(&now_text())),
+            ("thruDate", s(&after_now_text())),
         ],
     );
     call(
@@ -2453,7 +2462,7 @@ fn flow_work_plan_to_cash(f: &Flow) {
         &[
             ("ratePurposeEnumId", s("RaprClient")),
             ("workEffortId", s("TEST")),
-            ("thruDate", s(&now_text())),
+            ("thruDate", s(&after_now_text())),
             ("invoiceDate", s(&format!("{YEAR}-11-08"))),
         ],
     );
@@ -2538,12 +2547,10 @@ flow_test!(
     flow_work_plan_to_cash,
     "WorkPlanToCashBasicFlow: first failing service mantle.party.ContactServices.store#PartyContactInfo (calls create#TelecomNumber, not registered)"
 );
-flow_test!(
-    accounting_activities,
-    "AccountingActivities",
-    flow_accounting_activities,
-    "AccountingActivities: first failing service mantle.ledger.LedgerServices.get#OrganizationFiscalTimePeriods (java.sql.Date in an expression); then post#AcctgTrans is Groovy"
-);
+#[test]
+fn accounting_activities() {
+    with_flow("AccountingActivities", flow_accounting_activities);
+}
 flow_test!(
     order_to_cash_time,
     "OrderToCashTime",

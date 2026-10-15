@@ -726,9 +726,13 @@ fn run_entity(
         }
         record.set(key, value.clone());
     }
+    let mut status_out = BTreeMap::new();
     match verb {
         "delete" => record.delete(facade)?,
-        "update" => record.update(facade)?,
+        "update" => {
+            check_status(facade, noun, &record, &pk_names, parameters, &mut status_out)?;
+            record.update(facade)?
+        }
         "create" => {
             assign_sequence(facade, &mut record, &pk_names)?;
             record.create(facade)?;
@@ -738,6 +742,7 @@ fn run_entity(
                 assign_sequence(facade, &mut record, &pk_names)?;
                 record.create(facade)?;
             } else if row_found(facade, noun, &record, &pk_names)? {
+                check_status(facade, noun, &record, &pk_names, parameters, &mut status_out)?;
                 record.update(facade)?;
             } else {
                 record.create(facade)?;
@@ -750,7 +755,7 @@ fn run_entity(
     if verb != "delete" {
         nest(facade, verb, noun, parameters, &record, depth)?;
     }
-    let mut out = BTreeMap::new();
+    let mut out = status_out;
     for pk in &pk_names {
         if let Some(value) = record.get(pk) {
             out.insert(pk.clone(), value.clone());
@@ -789,6 +794,69 @@ fn pk_missing(record: &EntityValue, pk_names: &[String]) -> bool {
     pk_names
         .iter()
         .any(|name| record.get(name).is_none_or(|value| value.is_null() || is_empty(value)))
+}
+
+/// `EntityAutoServiceRunner.checkStatus`: when an update passes `statusId` for an entity with that field, the results
+/// get `oldStatusId` and `statusChanged`, and a changed status needs a `StatusFlowTransition` from the old to the new.
+fn check_status(
+    facade: &EntityFacade,
+    noun: &str,
+    record: &EntityValue,
+    pk_names: &[String],
+    parameters: &BTreeMap<String, Value>,
+    out: &mut BTreeMap<String, Value>,
+) -> Result<(), LibError> {
+    let Some(new_status) = parameters.get("statusId") else {
+        return Ok(());
+    };
+    if !facade.with_entity(noun, |entity, _, _| Ok(entity.has_field("statusId")))? {
+        return Ok(());
+    }
+    let mut find = facade.find(noun)?;
+    for name in pk_names {
+        find = find.eq(name, record.get(name).cloned().unwrap_or(Value::Null));
+    }
+    let Some(existing) = find.one()? else {
+        return Ok(());
+    };
+    let old_status = existing.get("statusId").cloned().unwrap_or(Value::Null);
+    out.insert("oldStatusId".to_string(), old_status.clone());
+    let same = moqui_lib::object::to_plain_string(&old_status) == moqui_lib::object::to_plain_string(new_status);
+    out.insert("statusChanged".to_string(), Value::Bool(!same));
+    let (old_id, new_id) = (
+        moqui_lib::object::to_plain_string(&old_status),
+        moqui_lib::object::to_plain_string(new_status),
+    );
+    if same || old_id.is_empty() || new_id.is_empty() || old_status.is_null() || new_status.is_null() {
+        return Ok(());
+    }
+    let transitions = facade
+        .find("moqui.basic.StatusFlowTransition")?
+        .eq("statusId", Value::string(old_id.clone()))
+        .eq("toStatusId", Value::string(new_id.clone()))
+        .list()?;
+    let mut valid = 0;
+    for transition in transitions.values() {
+        let permission = transition.get("userPermissionId").map(moqui_lib::object::to_plain_string).unwrap_or_default();
+        if permission.is_empty() || crate::user::has_permission(&permission)? {
+            valid += 1;
+        }
+    }
+    if valid == 0 {
+        let name_of = |id: &str| -> Result<String, LibError> {
+            let item = facade.find("moqui.basic.StatusItem")?.eq("statusId", Value::string(id.to_string())).one()?;
+            Ok(item
+                .and_then(|item| item.get("description").map(moqui_lib::object::to_plain_string))
+                .filter(|text| !text.is_empty())
+                .unwrap_or_else(|| id.to_string()))
+        };
+        return Err(LibError::new(format!(
+            "Status change not allowed from {} to {}",
+            name_of(&old_id)?,
+            name_of(&new_id)?
+        )));
+    }
+    Ok(())
 }
 
 fn row_found(facade: &EntityFacade, noun: &str, record: &EntityValue, pk_names: &[String]) -> Result<bool, LibError> {

@@ -78,7 +78,8 @@ pub fn eval_condition_element(xml: &str) -> Result<bool, Error> {
     }
     combined.push_str("</and>");
     let script = generated(&combined)?;
-    super::runtime::eval_condition(script.text())
+    // Only the root `actions` macro strips the raw-region marks of multi-line user code.
+    super::runtime::eval_condition(&script.text().replace(['\u{1}', '\u{2}'], ""))
 }
 
 /// An error at `eval_script:LINE:COL` with that line of the generated script after it, so a failure in actions points at
@@ -338,6 +339,16 @@ mod tests {
             .map(|_| ())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn multi_line_condition_expression() {
+        use moqui_lib::object::Value as V;
+        for (n, v) in [("a", V::Bool(true)), ("b", V::string("x")), ("c", V::string("z"))] {
+            crate::script::set_context_name(n, v).unwrap();
+        }
+        let xml = "<condition><expression>a &amp;&amp; (\n  (['x', 'y'].includes(b) &amp;&amp; c == 'z') ||\n  (b == 'q'))</expression></condition>";
+        assert!(super::eval_condition_element(xml).unwrap());
     }
 
     #[test]

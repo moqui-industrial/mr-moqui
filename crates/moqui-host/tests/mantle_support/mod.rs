@@ -224,7 +224,29 @@ pub fn call(name: &str, parameters: &[(&str, Value)]) -> Map {
     })
     .unwrap_or_default();
     assert!(errors.is_empty(), "SERVICE {name}: {errors:?}");
-    out
+    out.into_iter().map(|(k, v)| (k, plain(v))).collect()
+}
+
+/// Entity values a service returns are shared host objects; the flows read them as maps.
+fn plain(value: Value) -> Value {
+    match value {
+        Value::Object(object) => match object.0.downcast_ref::<Mutex<moqui_core::entity::EntityValue>>() {
+            Some(cell) => {
+                let guard = cell.lock().unwrap();
+                Value::Map(guard.fields().iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            }
+            None => match moqui_core::script::script_list_values(&Value::Object(object.clone())) {
+                Some(rows) => Value::List(
+                    rows.iter()
+                        .map(|v| Value::Map(v.fields().iter().map(|(k, v)| (k.clone(), v.clone())).collect()))
+                        .collect(),
+                ),
+                None => Value::Object(object),
+            },
+        },
+        Value::List(items) => Value::List(items.into_iter().map(plain).collect()),
+        other => other,
+    }
 }
 
 /// Whether a service registers: `Ok(())`, or why not (a Groovy expression left in it, or no such service).
