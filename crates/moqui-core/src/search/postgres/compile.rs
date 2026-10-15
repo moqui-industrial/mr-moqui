@@ -519,11 +519,17 @@ impl<'a> Compiler<'a> {
                 "unnest({vector}) AS {lexeme}, unnest({lexeme}.positions) AS {position}"
             ));
         }
+        // Each word is checked against the window as the join adds it, so a partial match that is already too
+        // wide is dropped there and the join does not grow as the product of the words' positions.
+        let first = &names[0].1;
         out.push(" WHERE ");
         for (index, ((lexeme, position), word)) in names.iter().zip(list).enumerate() {
             if index > 0 {
-                out.push(" AND ");
-                out.push(&format!("{position} > {}", names[index - 1].1));
+                out.push(&format!(
+                    " AND {position} > {} AND {position} - {first} <= {}",
+                    names[index - 1].1,
+                    u64::from(distance) + index as u64
+                ));
                 out.push(" AND ");
             }
             // The word as the configuration stores it.
@@ -532,8 +538,7 @@ impl<'a> Compiler<'a> {
             ));
             out.param(Value::string(word)).push(")) AS t LIMIT 1)");
         }
-        let (first, last) = (&names[0].1, &names[names.len() - 1].1);
-        out.push(&format!(" AND {last} - {first} - {} <= {distance}))", list.len() - 1));
+        out.push("))");
         out
     }
 
@@ -1053,6 +1058,13 @@ mod tests {
         );
         let sql = Compiler::new(&mapping).where_sql(&near("big water pump")).unwrap();
         assert!(sql.text.contains("unnest"), "{}", sql.text);
+        // The second and third words are each held to the window from the first as the join adds them.
+        let windows: Vec<&str> = sql
+            .text
+            .match_indices(" <= ")
+            .map(|(at, _)| &sql.text[at..at + 5])
+            .collect();
+        assert_eq!(windows, vec![" <= 3", " <= 4"], "{}", sql.text);
     }
 
     #[test]

@@ -44,7 +44,7 @@ use super::highlight::highlights;
 use super::mapping::{DocumentMapping, FieldKind};
 use super::query::Query;
 use super::{lock, Agg, Capability, Rank, ReplicaStatus, SearchBackend, SearchHit, SearchPage, SearchRequest};
-use crate::driver::DbRow;
+use crate::driver::{DbConnection, DbRow};
 use crate::entity::document::Document;
 use crate::transaction::{TransactionAttribute, TransactionManager};
 
@@ -849,8 +849,7 @@ impl SearchBackend for PostgresBackend {
         let advisory = format!("{}.{}", self.schema, mapping.physical_name);
         // True when this call made the table; false when another made it first.
         self.tx.with_reserve(|conn| {
-            conn.begin()?;
-            let result = (|| {
+            ddl_transaction(conn, &table, |conn| {
                 // Another process may be making it: wait for it, then look again.
                 conn.query("SELECT pg_advisory_xact_lock(hashtext(?))", &[Value::string(&advisory)])?;
                 let rows = conn.query(
@@ -886,14 +885,7 @@ impl SearchBackend for PostgresBackend {
                     ],
                 )?;
                 Ok(true)
-            })();
-            match result {
-                Ok(made) => conn.commit().map(|()| made),
-                Err(err) => {
-                    let _ = conn.rollback();
-                    Err(err)
-                }
-            }
+            })
         })?;
         lock(&self.known).insert(mapping.document_id.clone(), signature);
         Ok(())
@@ -1068,16 +1060,51 @@ impl SearchBackend for PostgresBackend {
         let table = self.table(mapping);
         let registry = format!("{}.document_index", ident(&self.schema));
         self.tx.with_reserve(|conn| {
-            conn.execute(&format!("DROP TABLE IF EXISTS {table}"), &[])?;
-            conn.execute(
-                &format!("DELETE FROM {registry} WHERE document_id = ?"),
-                &[Value::string(&mapping.document_id)],
-            )?;
-            Ok(())
+            ddl_transaction(conn, &table, |conn| {
+                conn.execute(&format!("DROP TABLE IF EXISTS {table}"), &[])?;
+                conn.execute(
+                    &format!("DELETE FROM {registry} WHERE document_id = ?"),
+                    &[Value::string(&mapping.document_id)],
+                )?;
+                Ok(())
+            })
         })?;
         lock(&self.known).remove(&mapping.document_id);
         lock(&self.absent).remove(&mapping.document_id);
         Ok(())
+    }
+}
+
+/// How long table DDL on a reserve connection waits for a lock. The reserve connection is not the
+/// caller's, so a lock the caller's own open transaction holds on the table would otherwise be
+/// waited for without end.
+const DDL_LOCK_TIMEOUT: &str = "5s";
+
+/// Run `work` in a transaction on a reserve connection, with [`DDL_LOCK_TIMEOUT`]. A lock wait that
+/// runs out is an error that names the table.
+fn ddl_transaction<T>(
+    conn: &mut dyn DbConnection,
+    table: &str,
+    work: impl FnOnce(&mut dyn DbConnection) -> Result<T, Error>,
+) -> Result<T, Error> {
+    conn.begin()?;
+    let result = conn
+        .execute(&format!("SET LOCAL lock_timeout = '{DDL_LOCK_TIMEOUT}'"), &[])
+        .and_then(|_| work(conn));
+    match result {
+        Ok(value) => conn.commit().map(|()| value),
+        Err(err) => {
+            let _ = conn.rollback();
+            if err.message().contains("lock timeout") {
+                Err(Error::new(format!(
+                    "search table {table} stayed locked for {DDL_LOCK_TIMEOUT}; a transaction that has written to it, \
+                     perhaps the caller's own, must end before the table is made or dropped"
+                ))
+                .with_source(err))
+            } else {
+                Err(err)
+            }
+        }
     }
 }
 
@@ -1536,6 +1563,19 @@ mod tests {
         fn canceller(&self) -> Box<dyn crate::driver::DbCancel> {
             Box::new(NoCancel)
         }
+    }
+
+    #[test]
+    fn a_ddl_lock_timeout_names_the_table() {
+        let mut conn = RegistryConn(Arc::new(std::sync::atomic::AtomicUsize::new(0)));
+        let err = super::ddl_transaction(&mut conn, "\"search\".\"t\"", |_| -> Result<(), Error> {
+            Err(Error::new("postgres execute: canceling statement due to lock timeout"))
+        })
+        .unwrap_err();
+        assert!(err.message().contains("\"search\".\"t\" stayed locked"), "{err}");
+        let other = super::ddl_transaction(&mut conn, "t", |_| -> Result<(), Error> { Err(Error::new("syntax")) });
+        assert_eq!(other.unwrap_err().message(), "syntax");
+        assert_eq!(super::ddl_transaction(&mut conn, "t", |_| Ok(7)).unwrap(), 7);
     }
 
     #[test]

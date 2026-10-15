@@ -47,6 +47,7 @@ fn postgres_backend_sales_and_party_parity() {
     let (cluster, driver) = EmbeddedCluster::start(&cluster_dir, 20).unwrap();
     let driver: Arc<dyn DbDriver> = Arc::new(driver);
     let tx = TransactionManager::new(Arc::clone(&driver), pool()).unwrap();
+    let tx_for_lock = tx.clone();
     let backend = PostgresBackend::open(tx, None).unwrap();
 
     sales_parity(&backend);
@@ -56,6 +57,7 @@ fn postgres_backend_sales_and_party_parity() {
     universal_parity(&backend);
     hybrid_parity(&backend);
     read_order_parity(&backend);
+    ddl_under_own_lock(&tx_for_lock, &backend);
     accent(
         PostgresBackend::open(
             TransactionManager::new(Arc::clone(&driver), pool()).unwrap(),
@@ -910,6 +912,13 @@ fn extensions_parity(backend: &dyn SearchBackend) {
         vec!["WINDOW"]
     );
     assert!(run(near("water pump", "[\"description\"]", 3), Rank::Default).is_empty());
+    // Three words: the other words between all of them count against the one distance.
+    assert_eq!(
+        run(near("water two pump", "[\"description\"]", 3), Rank::Default),
+        vec!["WINDOW"]
+    );
+    assert!(run(near("water two pump", "[\"description\"]", 2), Rank::Default).is_empty());
+    assert!(run(near("two water pump", "[\"description\"]", 9), Rank::Default).is_empty());
     assert!(
         run(near("pump water", "[\"title\"]", 5), Rank::Default).is_empty(),
         "order matters"
@@ -1091,6 +1100,23 @@ fn hybrid_parity(backend: &dyn SearchBackend) {
 
 /// Accent folding on Postgres: unaccented searches find accented text, in the text vector, the
 /// fuzzy title, and the autocomplete title.
+/// Dropping a table the caller's own open transaction has written to: the DDL runs on another
+/// connection, so it gives up after its lock timeout with an error instead of waiting forever.
+fn ddl_under_own_lock(tx: &TransactionManager, backend: &PostgresBackend) {
+    let mapping = catalog_mapping();
+    backend.ensure_index(&mapping).unwrap();
+    tx.begin(None).unwrap();
+    backend
+        .index_documents(&mapping, &[catalog_item("HELD", "Held", "held by the caller")])
+        .unwrap();
+    let started = Instant::now();
+    let err = backend.drop_index(&mapping).unwrap_err();
+    assert!(err.to_string().contains("stayed locked"), "{err}");
+    assert!(started.elapsed() < Duration::from_secs(30));
+    tx.rollback().unwrap();
+    backend.drop_index(&mapping).unwrap();
+}
+
 fn accent(backend: PostgresBackend) {
     assert!(backend.capabilities().contains(&Capability::Accent));
     let mapping = catalog_mapping();
