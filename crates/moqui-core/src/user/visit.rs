@@ -14,45 +14,17 @@
 
 //! Visit and visitor rows. Recording writes `moqui.server.Visitor` and `moqui.server.Visit`.
 
-use moqui_lib::object::Value;
-
 use super::login::entity_facade;
-use super::session::{self, current_user_id};
+use super::session;
 use crate::context::Error;
-use crate::entity::EntityValue;
-
-const VISITOR: &str = "moqui.server.Visitor";
-const VISIT: &str = "moqui.server.Visit";
 
 /// Create a visitor and a visit and remember their ids on the in-memory session.
 pub fn record_visit() -> Result<(), Error> {
     let facade = entity_facade()?;
-    let mut visitor = facade.make_value(VISITOR)?;
-    visitor.set("createdDate", super::login::now_value());
-    visitor.set_sequenced_id_primary(&facade)?;
-    let visitor_id = sequenced_id(&visitor, "visitorId")?;
-    visitor.create(&facade)?;
-
-    let mut visit = facade.make_value(VISIT)?;
-    visit.set("visitorId", Value::string(&visitor_id));
-    visit.set("fromDate", super::login::now_value());
-    if let Some(user_id) = current_user_id()? {
-        visit.set("userId", Value::string(user_id));
-    }
-    visit.set_sequenced_id_primary(&facade)?;
-    let visit_id = sequenced_id(&visit, "visitId")?;
-    visit.create(&facade)?;
+    let visitor_id = session::create_visitor(&facade)?;
+    let visit_id = session::create_visit(&facade, &visitor_id)?;
     session::set_visit(&visit_id, &visitor_id);
     Ok(())
-}
-
-fn sequenced_id(value: &EntityValue, field: &str) -> Result<String, Error> {
-    value
-        .get(field)
-        .and_then(Value::as_str)
-        .filter(|text| !text.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| Error::new(format!("{field} was not sequenced")))
 }
 
 #[cfg(test)]
@@ -63,6 +35,9 @@ mod tests {
     use super::*;
     use crate::context::ExecutionContextFactory;
     use crate::entity::{EntityFacade, EntityValue};
+
+    const VISITOR: &str = "moqui.server.Visitor";
+    const VISIT: &str = "moqui.server.Visit";
 
     #[test]
     fn record_visit_persists_a_visit_and_a_visitor() {

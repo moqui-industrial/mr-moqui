@@ -46,6 +46,9 @@
     <default-property name="webapp_session_flush" value="eventual"/>
     <!-- Minutes without a request before a web session expires. 0 never expires. -->
     <default-property name="webapp_session_timeout" value="60"/>
+    <!-- Most web sessions kept in memory. Over it, the sessions used longest ago are written and dropped, and reload
+        from HttpSession when they come back. 0 keeps every session. -->
+    <default-property name="webapp_session_max" value="10000"/>
 
     <!--
         user_privileged_groups: UserGroupMember create/update/delete for these groups is allowed only if the

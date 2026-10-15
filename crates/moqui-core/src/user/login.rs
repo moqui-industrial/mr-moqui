@@ -493,8 +493,9 @@ fn check_ip_allowed(account: &EntityValue, client_ip: &str) -> Result<(), Error>
     )))
 }
 
-/// The visit that began before login now belongs to the user.
+/// The visit that began before login, or the one a session put off and starts now, belongs to the user.
 fn link_visit(facade: &EntityFacade, user_id: &str) -> Result<(), Error> {
+    session::start_deferred_visit()?;
     let Some(visit_id) = session::visit_id()?.filter(|id| !id.is_empty()) else {
         return Ok(());
     };
