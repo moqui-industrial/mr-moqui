@@ -24,6 +24,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -147,8 +148,6 @@ struct Touch {
 
 #[derive(Default)]
 struct LoadSlot {
-    eca_loaded: bool,
-    eca_rules: Vec<EcaRule>,
     services: Vec<DataFileService>,
     /// By `data_feed_id`, so each commit replaces the names of the feeds it saw.
     feed_services: BTreeMap<String, FeedServiceNames>,
@@ -208,15 +207,11 @@ pub(crate) fn match_rules_with(facade: &EntityFacade, entity_name: &str, operati
     if facade.flags().disable_entity_eca {
         return Vec::new();
     }
-    let dirs = facade.entity_dirs();
-    with_load_slot(facade, |slot| {
-        ensure_rules(slot, &dirs);
-        slot.eca_rules
-            .iter()
-            .filter(|rule| rule_matches(rule, entity_name, operation))
-            .cloned()
-            .collect()
-    })
+    eca_index(facade)
+        .of_entity(entity_name)
+        .filter(|rule| rule_matches(rule, entity_name, operation))
+        .cloned()
+        .collect()
 }
 
 /// Note a write for the data feed when it ran inside a transaction. Call it after the statement succeeded, so a
@@ -263,35 +258,21 @@ pub(super) fn clear_frame_touches() {
 
 /// Rules stored for `entity_name`. This lookup does not run them; `service::run_matched_eca` does.
 pub fn eca_rules(facade: &EntityFacade, entity_name: &str) -> Vec<EcaRule> {
-    let dirs = facade.entity_dirs();
-    with_load_slot(facade, |slot| {
-        ensure_rules(slot, &dirs);
-        slot.eca_rules
-            .iter()
-            .filter(|rule| rule.entity_name == entity_name)
-            .cloned()
-            .collect()
-    })
+    eca_index(facade).of_entity(entity_name).cloned().collect()
 }
 
 /// How many entity ECA rules are loaded, for the tools artifact stats.
 pub fn eca_rule_count(facade: &EntityFacade) -> usize {
-    let dirs = facade.entity_dirs();
-    with_load_slot(facade, |slot| {
-        ensure_rules(slot, &dirs);
-        slot.eca_rules.len()
-    })
+    eca_index(facade).rules.len()
 }
 
 /// Add the `<eeca>` rules of an `<eecas>` document after the stored ones, for a test that needs its own rules.
 #[cfg(test)]
 pub(crate) fn add_eca_rules(facade: &EntityFacade, eecas: &str) -> Result<(), Error> {
     let root = MNode::parse_text("eecas", eecas)?;
-    let dirs = facade.entity_dirs();
-    with_load_slot(facade, |slot| {
-        ensure_rules(slot, &dirs);
-        ingest_eecas(&root, slot);
-    });
+    let mut index = (*eca_index(facade)).clone();
+    index.ingest(&root);
+    *facade.inner.eca_rules.write().unwrap_or_else(|err| err.into_inner()) = Some(Arc::new(index));
     Ok(())
 }
 
@@ -377,78 +358,112 @@ fn rule_matches(rule: &EcaRule, entity_name: &str, operation: &str) -> bool {
     }
 }
 
-fn ensure_rules(slot: &mut LoadSlot, dirs: &[PathBuf]) {
-    if slot.eca_loaded {
-        return;
-    }
-    slot.eca_loaded = true;
-    // The framework's rules, then each component's, as Java loads `*.eecas.xml` from every entity directory.
-    let mut files = 0;
-    for dir in dirs {
-        let read = match std::fs::read_dir(dir) {
-            Ok(read) => read,
-            Err(err) => {
-                tracing::warn!(error = %err, dir = %dir.display(), "could not read eeca directory");
-                continue;
-            }
-        };
-        let mut paths: Vec<PathBuf> = read
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.ends_with(".eecas.xml"))
-            })
-            .collect();
-        paths.sort();
-        files += paths.len();
-        for path in paths {
-            match MNode::parse_file(&path) {
-                Ok(root) => ingest_eecas(&root, slot),
-                Err(err) => tracing::warn!(error = %err, path = %path.display(), "could not parse eeca file"),
-            }
-        }
-    }
-    tracing::info!(
-        "Loaded {} Entity ECA rules from {files} .eecas.xml files, {} rules have no id",
-        slot.eca_rules.len(),
-        slot.eca_rules.iter().filter(|rule| rule.id.is_empty()).count()
-    );
+/// Entity ECA rules in file order, with the positions of each entity's rules, so matching a write is a map
+/// lookup. Built once per facade; a reader holds the `Arc` and takes no lock while matching.
+#[derive(Clone, Default)]
+pub(crate) struct EcaIndex {
+    rules: Vec<EcaRule>,
+    by_entity: HashMap<String, Vec<usize>>,
 }
 
-fn ingest_eecas(root: &MNode, slot: &mut LoadSlot) {
-    for node in root.children_named("eeca") {
-        let rule = EcaRule {
-            id: node.attribute("id").unwrap_or_default(),
-            entity_name: node.attribute("entity").unwrap_or_default(),
-            on_create: attr_true(&node, "on-create"),
-            on_update: attr_true(&node, "on-update"),
-            on_delete: attr_true(&node, "on-delete"),
-            run_before: attr_true(&node, "run-before"),
-            get_entire_entity: attr_true(&node, "get-entire-entity"),
-            get_original_value: attr_true(&node, "get-original-value"),
-            set_results: attr_true(&node, "set-results"),
-            run_on_error: attr_true(&node, "run-on-error"),
-            condition: node
-                .first_named("condition")
-                .map(|child| child.write_string())
-                .unwrap_or_default(),
-            actions: node
-                .first_named("actions")
-                .map(|child| child.write_string())
-                .unwrap_or_default(),
-        };
-        if let Some(pos) = slot
-            .eca_rules
+impl EcaIndex {
+    /// The rules of `entity_name`, in file order.
+    fn of_entity<'a>(&'a self, entity_name: &str) -> impl Iterator<Item = &'a EcaRule> + 'a {
+        self.by_entity
+            .get(entity_name)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
             .iter()
-            .position(|existing| existing.id == rule.id && !rule.id.is_empty())
-        {
-            slot.eca_rules[pos] = rule;
-        } else {
-            slot.eca_rules.push(rule);
+            .map(|at| &self.rules[*at])
+    }
+
+    /// Read every `*.eecas.xml` of `dirs`: the framework's rules, then each component's, as Java loads them from
+    /// every entity directory.
+    fn load(dirs: &[PathBuf]) -> Self {
+        let mut index = Self::default();
+        let mut files = 0;
+        for dir in dirs {
+            let read = match std::fs::read_dir(dir) {
+                Ok(read) => read,
+                Err(err) => {
+                    tracing::warn!(error = %err, dir = %dir.display(), "could not read eeca directory");
+                    continue;
+                }
+            };
+            let mut paths: Vec<PathBuf> = read
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.ends_with(".eecas.xml"))
+                })
+                .collect();
+            paths.sort();
+            files += paths.len();
+            for path in paths {
+                match MNode::parse_file(&path) {
+                    Ok(root) => index.ingest(&root),
+                    Err(err) => tracing::warn!(error = %err, path = %path.display(), "could not parse eeca file"),
+                }
+            }
+        }
+        tracing::info!(
+            "Loaded {} Entity ECA rules from {files} .eecas.xml files, {} rules have no id",
+            index.rules.len(),
+            index.rules.iter().filter(|rule| rule.id.is_empty()).count()
+        );
+        index
+    }
+
+    /// Add the `<eeca>` rules of `root`. A rule with the id of a stored one replaces it in place.
+    fn ingest(&mut self, root: &MNode) {
+        for node in root.children_named("eeca") {
+            let rule = EcaRule {
+                id: node.attribute("id").unwrap_or_default(),
+                entity_name: node.attribute("entity").unwrap_or_default(),
+                on_create: attr_true(&node, "on-create"),
+                on_update: attr_true(&node, "on-update"),
+                on_delete: attr_true(&node, "on-delete"),
+                run_before: attr_true(&node, "run-before"),
+                get_entire_entity: attr_true(&node, "get-entire-entity"),
+                get_original_value: attr_true(&node, "get-original-value"),
+                set_results: attr_true(&node, "set-results"),
+                run_on_error: attr_true(&node, "run-on-error"),
+                condition: node
+                    .first_named("condition")
+                    .map(|child| child.write_string())
+                    .unwrap_or_default(),
+                actions: node
+                    .first_named("actions")
+                    .map(|child| child.write_string())
+                    .unwrap_or_default(),
+            };
+            if let Some(pos) = self
+                .rules
+                .iter()
+                .position(|existing| existing.id == rule.id && !rule.id.is_empty())
+            {
+                self.rules[pos] = rule;
+            } else {
+                self.rules.push(rule);
+            }
+        }
+        self.by_entity.clear();
+        for (at, rule) in self.rules.iter().enumerate() {
+            self.by_entity.entry(rule.entity_name.clone()).or_default().push(at);
         }
     }
+}
+
+/// The facade's ECA rules, read from the entity directories on first use.
+fn eca_index(facade: &EntityFacade) -> Arc<EcaIndex> {
+    let rules = &facade.inner.eca_rules;
+    if let Some(index) = rules.read().unwrap_or_else(|err| err.into_inner()).as_ref() {
+        return Arc::clone(index);
+    }
+    let mut slot = rules.write().unwrap_or_else(|err| err.into_inner());
+    Arc::clone(slot.get_or_insert_with(|| Arc::new(EcaIndex::load(&facade.entity_dirs()))))
 }
 
 fn attr_true(node: &MNode, name: &str) -> bool {

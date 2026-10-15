@@ -17,7 +17,7 @@
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -29,8 +29,9 @@ use moqui_lib::object::Value;
 
 use super::crypto::CryptConfig;
 use super::find::EntityFind;
+use super::load_feed::EcaIndex;
 use super::query_rest;
-use super::sequence::SequenceBank;
+use super::sequence::SequenceBanks;
 use super::share::SharedModel;
 use super::value::EntityValue;
 use crate::transaction::TransactionManager;
@@ -86,7 +87,11 @@ pub(crate) struct Inner {
     pub(crate) component_entity_dirs: Vec<std::path::PathBuf>,
     pub(crate) default_group: String,
     pub(crate) groups: HashMap<String, GroupRuntime>,
-    pub(crate) banks: Mutex<HashMap<String, SequenceBank>>,
+    pub(crate) banks: SequenceBanks,
+    /// See [`super::cache::screen_config_generation`].
+    pub(crate) screen_config_generation: AtomicU64,
+    /// Entity ECA rules, read from the `*.eecas.xml` files on first use. See `load_feed::match_rules_with`.
+    pub(crate) eca_rules: RwLock<Option<Arc<EcaIndex>>>,
     pub(crate) flags: RwLock<EntityFlags>,
     pub(crate) db_ready: AtomicBool,
     locale: RwLock<String>,
@@ -225,7 +230,9 @@ impl EntityFacade {
                 component_entity_dirs: component_entity_dirs.to_vec(),
                 default_group: default_group.to_string(),
                 groups: runtimes,
-                banks: Mutex::new(HashMap::new()),
+                banks: SequenceBanks::default(),
+                screen_config_generation: AtomicU64::new(0),
+                eca_rules: RwLock::new(None),
                 flags: RwLock::new(EntityFlags::default()),
                 db_ready: AtomicBool::new(false),
                 locale: RwLock::new("en".to_string()),

@@ -333,19 +333,17 @@ pub fn gate_write(
 
 /// Counts writes to the screen configuration entities (`SubscreensItem`, `SubscreensDefault`), here or from a cluster
 /// peer, so a screen definition read before the last one is loaded again. Kept with the facade: the rows are its
-/// database's, and another facade's writes do not make these screens stale.
-#[derive(Default)]
-struct ScreenConfigGeneration(u64);
-
+/// database's, and another facade's writes do not make these screens stale. Reading it takes no lock.
 pub(crate) fn screen_config_generation(facade: &EntityFacade) -> u64 {
-    facade.with_slot(ScreenConfigGeneration::default, |generation| generation.0)
+    facade.inner.screen_config_generation.load(AtomicOrdering::Acquire)
 }
 
 fn note_screen_config(facade: &EntityFacade, full_name: &str) {
     if full_name.starts_with("moqui.screen.Subscreens") {
-        facade.with_slot(ScreenConfigGeneration::default, |generation| {
-            generation.0 = generation.0.wrapping_add(1);
-        });
+        facade
+            .inner
+            .screen_config_generation
+            .fetch_add(1, AtomicOrdering::AcqRel);
     }
 }
 

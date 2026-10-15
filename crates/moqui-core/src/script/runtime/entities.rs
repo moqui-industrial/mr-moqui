@@ -758,12 +758,18 @@ impl HostEntity {
         self.inner.lock().unwrap_or_else(|err| err.into_inner())
     }
 
+    /// A copy of the value, for a write: the write runs entity ECA rules, and a rule that reads this same value
+    /// must not find the cell locked. The writes take the value by reference and set nothing on it.
+    fn snapshot(&self) -> EntityValue {
+        self.val().clone()
+    }
+
     /// What `name` is on the entity of this value, or None when no entity definition can be reached.
     fn member(&self, name: &str) -> Option<Member> {
         let facade = ExecutionContext::with_current(|ec| ec.factory().entity()).flatten()?;
-        let value = self.val();
+        let entity_name = self.val().entity_name().to_string();
         facade
-            .with_entity(value.entity_name(), |entity, _, _| {
+            .with_entity(&entity_name, |entity, _, _| {
                 if entity.has_field(name) {
                     return Ok(Member::Field);
                 }
@@ -1015,28 +1021,28 @@ impl HostEntity {
     fn create(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
             let facade = facade_of(&ctx)?;
-            self.val().create(&facade).map_err(|err| throw_lib(&ctx, &err))
+            self.snapshot().create(&facade).map_err(|err| throw_lib(&ctx, &err))
         })
     }
 
     fn update(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
             let facade = facade_of(&ctx)?;
-            self.val().update(&facade).map_err(|err| throw_lib(&ctx, &err))
+            self.snapshot().update(&facade).map_err(|err| throw_lib(&ctx, &err))
         })
     }
 
     fn delete(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
             let facade = facade_of(&ctx)?;
-            self.val().delete(&facade).map_err(|err| throw_lib(&ctx, &err))
+            self.snapshot().delete(&facade).map_err(|err| throw_lib(&ctx, &err))
         })
     }
 
     fn create_or_update(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
             let facade = facade_of(&ctx)?;
-            self.val()
+            self.snapshot()
                 .create_or_update(&facade)
                 .map_err(|err| throw_lib(&ctx, &err))
         })
@@ -1294,6 +1300,69 @@ mod tests {
                 return value.parentEnumId === null && value.parentEnumId?.length === undefined && value.enumCode === "C";
             })()"#,
         );
+    }
+
+    #[test]
+    fn an_eeca_action_reads_the_value_being_written() {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            clear_context_stack();
+            let facade = crate::testing::open_with(
+                &crate::testing::framework_dir(),
+                crate::testing::Options {
+                    entity_eca: true,
+                    data_feed: false,
+                    tape: None,
+                },
+            );
+            crate::entity::load_feed::add_eca_rules(
+                &facade,
+                r#"<eecas>
+                    <eeca id="TestReadsShared" entity="moqui.test.TestEntity" on-create="true" on-update="true">
+                        <actions><script>
+                            var foo = ec.entity.makeValue("moqui.test.Foo");
+                            foo.fooId = "F-" + shared.testMedium;
+                            foo.fooText = shared.testId;
+                            foo.create();
+                        </script></actions>
+                    </eeca>
+                </eecas>"#,
+            )
+            .unwrap();
+            let context = ExecutionContextFactory::test_context();
+            context.factory().set_entity(facade.clone());
+            let _entered = context.enter();
+            let written = run_script(
+                r#"shared = ec.entity.makeValue("moqui.test.TestEntity");
+                shared.testId = "T1";
+                shared.testMedium = "first";
+                shared.create();
+                shared.testMedium = "second";
+                shared.update();"#,
+            )
+            .map_err(|err| err.to_string());
+            let foos = facade
+                .find("moqui.test.Foo")
+                .and_then(|find| find.list())
+                .map(|list| {
+                    list.values()
+                        .iter()
+                        .map(|row| format!("{:?}={:?}", row.get("fooId"), row.get("fooText")))
+                        .collect::<Vec<_>>()
+                })
+                .map_err(|err| err.to_string());
+            let _ = done_tx.send(written.and(foos));
+        });
+        let foos = done_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the writes finished: the rule's read of the value did not deadlock")
+            .unwrap();
+        assert_eq!(foos.len(), 2, "{foos:?}");
+        assert!(
+            foos.iter().any(|foo| foo.contains("F-first") && foo.contains("T1")),
+            "{foos:?}"
+        );
+        assert!(foos.iter().any(|foo| foo.contains("F-second")), "{foos:?}");
     }
 
     #[test]

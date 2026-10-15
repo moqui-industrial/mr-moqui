@@ -338,8 +338,9 @@ impl TransactionManager {
                 return Err(err);
             }
             *slot.borrow_mut() = Some(pooled);
+            // Once per frame: the enlisted connection stays until the frame ends.
+            self.install_canceller();
         }
-        self.install_canceller();
         let mut borrow = match slot.try_borrow_mut() {
             Ok(borrow) => borrow,
             Err(_) => return Err(Error::new("connection already in use")),
@@ -1248,15 +1249,15 @@ fn conf_flag(raw: Option<String>, default: bool) -> bool {
 static NEXT_DEADLINE: AtomicU64 = AtomicU64::new(1);
 
 struct DeadlineSlot {
-    token: u64,
     when: Instant,
     fired: Arc<AtomicBool>,
-    cancel: Mutex<Option<Box<dyn DbCancel>>>,
+    cancel: Option<Box<dyn DbCancel>>,
 }
 
-fn deadlines() -> &'static Mutex<Vec<DeadlineSlot>> {
-    static SLOTS: OnceLock<Mutex<Vec<DeadlineSlot>>> = OnceLock::new();
-    SLOTS.get_or_init(|| Mutex::new(Vec::new()))
+/// Deadline slots by frame token.
+fn deadlines() -> &'static Mutex<HashMap<u64, DeadlineSlot>> {
+    static SLOTS: OnceLock<Mutex<HashMap<u64, DeadlineSlot>>> = OnceLock::new();
+    SLOTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// True when any manager has a frame on this thread, active or suspended.
@@ -1298,40 +1299,42 @@ fn ensure_deadline_timer() {
 fn register_deadline(token: u64, when: Instant, fired: Arc<AtomicBool>) {
     ensure_deadline_timer();
     let mut slots = deadlines().lock().unwrap_or_else(|err| err.into_inner());
-    slots.push(DeadlineSlot {
+    slots.insert(
         token,
-        when,
-        fired,
-        cancel: Mutex::new(None),
-    });
+        DeadlineSlot {
+            when,
+            fired,
+            cancel: None,
+        },
+    );
 }
 
 /// True while the deadline timer has a slot for the frame `token` names.
 #[cfg(test)]
 pub(super) fn deadline_registered(token: u64) -> bool {
     let slots = deadlines().lock().unwrap_or_else(|err| err.into_inner());
-    slots.iter().any(|slot| slot.token == token)
+    slots.contains_key(&token)
 }
 
 fn unregister_deadline(token: u64) {
     let mut slots = deadlines().lock().unwrap_or_else(|err| err.into_inner());
-    slots.retain(|slot| slot.token != token);
+    slots.remove(&token);
 }
 
 fn deadline_set_cancel(token: u64, cancel: Box<dyn DbCancel>) {
-    let slots = deadlines().lock().unwrap_or_else(|err| err.into_inner());
-    if let Some(slot) = slots.iter().find(|slot| slot.token == token) {
-        *slot.cancel.lock().unwrap_or_else(|err| err.into_inner()) = Some(cancel);
+    let mut slots = deadlines().lock().unwrap_or_else(|err| err.into_inner());
+    if let Some(slot) = slots.get_mut(&token) {
+        slot.cancel = Some(cancel);
     }
 }
 
 fn fire_due_deadlines() {
     let now = Instant::now();
-    let slots = deadlines().lock().unwrap_or_else(|err| err.into_inner());
+    let mut slots = deadlines().lock().unwrap_or_else(|err| err.into_inner());
     let mut due = Vec::new();
-    for slot in slots.iter() {
+    for slot in slots.values_mut() {
         if now >= slot.when && !slot.fired.swap(true, Ordering::SeqCst) {
-            if let Some(cancel) = slot.cancel.lock().unwrap_or_else(|err| err.into_inner()).take() {
+            if let Some(cancel) = slot.cancel.take() {
                 due.push(cancel);
             }
         }

@@ -18,6 +18,13 @@
 //! MySQL runs one `INSERT ... ON DUPLICATE KEY UPDATE`, then reads the row it now holds with
 //! `SELECT ... FOR UPDATE`. A bare locking read on a missing row would take a gap lock.
 //! `seqNum` stays the last reserved id. There is no native sequence.
+//!
+//! Each sequence name has its own bank lock. A refill holds only that name's lock, so a slow or blocked
+//! refill of one name does not stop ids for the others.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use moqui_db::sql::{is_mysql, is_sqlite, quote_ident};
 use moqui_lib::error::Error;
@@ -29,6 +36,9 @@ use crate::driver::DbConnection;
 
 const SEQUENCE_START: i64 = 100_000;
 const SEQUENCE_ENTITY: &str = "moqui.entity.SequenceValueItem";
+/// Bounds the refill statements, so a refill that waits on a row lock (such as the caller's own
+/// uncommitted write of the `SequenceValueItem` row) fails instead of hanging.
+const REFILL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// One bank. `end` is the last reserved id, inclusive. The next id to issue is `current`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,6 +86,44 @@ pub fn take_id(bank: &mut SequenceBank, stagger_max: u64, roll: f64) -> Option<i
     Some(id)
 }
 
+/// The banks of one facade, by sequence name.
+#[derive(Default)]
+pub(crate) struct SequenceBanks {
+    names: Mutex<HashMap<String, Arc<Mutex<SequenceBank>>>>,
+}
+
+impl SequenceBanks {
+    /// The bank of `seq_name`. The map lock is held only for this lookup.
+    fn bank(&self, seq_name: &str) -> Arc<Mutex<SequenceBank>> {
+        let mut names = self.names.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(bank) = names.get(seq_name) {
+            return Arc::clone(bank);
+        }
+        let bank = Arc::new(Mutex::new(SequenceBank { current: 0, end: -1 }));
+        names.insert(seq_name.to_string(), Arc::clone(&bank));
+        bank
+    }
+
+    /// Issue the next id of `seq_name`. A used-up bank is replaced by `refill`, which gets the bank's
+    /// `current` as the hint, while only this name's lock is held.
+    fn next_id(
+        &self,
+        seq_name: &str,
+        stagger: u64,
+        mut refill: impl FnMut(i64) -> Result<SequenceBank, Error>,
+    ) -> Result<i64, Error> {
+        let bank = self.bank(seq_name);
+        let mut bank = bank.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            let roll = roll_for(stagger)?;
+            if let Some(id) = take_id(&mut bank, stagger, roll) {
+                return Ok(id);
+            }
+            *bank = refill(bank.current)?;
+        }
+    }
+}
+
 struct PrimarySpec {
     seq_name: String,
     bank_size: u64,
@@ -115,19 +163,10 @@ pub(crate) fn assign_primary(facade: &EntityFacade, entity_name: &str) -> Result
     }
     let prepared = facade.with_entity(SEQUENCE_ENTITY, |entity, dialect, _| seq_sql(entity, dialect))?;
     let tx = facade.transactions_for(SEQUENCE_ENTITY)?;
-    let mut banks = facade.inner.banks.lock().unwrap_or_else(|err| err.into_inner());
-    loop {
-        let bank = banks
-            .entry(spec.seq_name.clone())
-            .or_insert(SequenceBank { current: 0, end: -1 });
-        let roll = roll_for(spec.stagger)?;
-        if let Some(id) = take_id(bank, spec.stagger, roll) {
-            return Ok((spec.pk_field, apply_prefix(spec.prefix.as_deref(), &id.to_string())));
-        }
-        let hint = bank.current;
-        let filled = refill(&tx, &prepared, &spec.seq_name, spec.bank_size, hint)?;
-        banks.insert(spec.seq_name.clone(), filled);
-    }
+    let id = facade.inner.banks.next_id(&spec.seq_name, spec.stagger, |hint| {
+        refill(&tx, &prepared, &spec.seq_name, spec.bank_size, hint)
+    })?;
+    Ok((spec.pk_field, apply_prefix(spec.prefix.as_deref(), &id.to_string())))
 }
 
 fn seq_sql(entity: &moqui_db::model::EntityDefinition, dialect: &moqui_db::dialect::Dialect) -> Result<SeqSql, Error> {
@@ -160,13 +199,17 @@ fn refill(
     let seq_name = seq_name.to_string();
     let size = bank_width(bank_size);
     with_reserve_tx(tx, move |conn| {
+        conn.set_statement_timeout(Some(REFILL_TIMEOUT))?;
         let (first_end, increment, hint_end) = refill_targets(size, hint);
         let end = if prepared.mysql {
-            mysql_end(conn, &prepared, &seq_name, first_end, increment, hint_end)?
+            mysql_end(conn, &prepared, &seq_name, first_end, increment, hint_end)
         } else {
-            postgres_end(conn, &prepared, &seq_name, first_end, increment, hint_end)?
+            postgres_end(conn, &prepared, &seq_name, first_end, increment, hint_end)
         };
-        Ok(bank_from_end(end, size))
+        // Postgres ends the timeout with the transaction. A session setting (MySQL) must not stay on
+        // the reserve connection.
+        conn.set_statement_timeout(None)?;
+        Ok(bank_from_end(end?, size))
     })
 }
 
@@ -348,6 +391,72 @@ mod tests {
         let (_, increment, hint_end) = refill_targets(50, hint);
         let jumped = old.saturating_add(increment).max(hint_end);
         assert_eq!(bank_from_end(jumped, 50), fill_bank(Some(old), 50, hint));
+    }
+
+    #[test]
+    fn next_id_refills_a_used_up_bank_from_its_hint() {
+        let banks = SequenceBanks::default();
+        let mut hints = Vec::new();
+        let mut stored = None;
+        let mut ids = Vec::new();
+        for _ in 0..5 {
+            let id = banks
+                .next_id("A", 1, |hint| {
+                    hints.push(hint);
+                    let bank = fill_bank(stored, 1, hint);
+                    stored = Some(bank.end);
+                    Ok(bank)
+                })
+                .unwrap();
+            ids.push(id);
+        }
+        assert_eq!(ids, vec![100_000, 100_001, 100_002, 100_003, 100_004]);
+        assert_eq!(hints, vec![0, 100_002, 100_004]);
+    }
+
+    #[test]
+    fn a_blocked_refill_does_not_block_another_sequence() {
+        use std::sync::mpsc;
+        let banks = Arc::new(SequenceBanks::default());
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let blocked = {
+            let banks = Arc::clone(&banks);
+            std::thread::spawn(move || {
+                banks.next_id("Slow", 1, |hint| {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(fill_bank(None, 10, hint))
+                })
+            })
+        };
+        entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("slow refill started");
+        let (done_tx, done_rx) = mpsc::channel();
+        let other = {
+            let banks = Arc::clone(&banks);
+            std::thread::spawn(move || {
+                let id = banks.next_id("Fast", 1, |hint| Ok(fill_bank(None, 10, hint)));
+                done_tx.send(id.unwrap()).unwrap();
+            })
+        };
+        let id = done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("another sequence is not held up by the slow refill");
+        assert_eq!(id, 100_000);
+        release_tx.send(()).unwrap();
+        assert_eq!(blocked.join().unwrap().unwrap(), 100_000);
+        other.join().unwrap();
+    }
+
+    #[test]
+    fn a_failed_refill_leaves_the_bank_to_try_again() {
+        let banks = SequenceBanks::default();
+        let err = banks.next_id("A", 1, |_| Err(Error::new("db down"))).unwrap_err();
+        assert!(err.to_string().contains("db down"), "{err}");
+        let id = banks.next_id("A", 1, |hint| Ok(fill_bank(None, 10, hint))).unwrap();
+        assert_eq!(id, 100_000);
     }
 
     #[test]

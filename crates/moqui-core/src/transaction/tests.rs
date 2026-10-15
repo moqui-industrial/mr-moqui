@@ -31,6 +31,7 @@ struct Shared {
     log: Mutex<Vec<String>>,
     next_id: AtomicU64,
     cancels: Mutex<Vec<Arc<AtomicBool>>>,
+    cancellers: AtomicUsize,
 }
 
 struct FakeDriver {
@@ -57,6 +58,7 @@ impl FakeDriver {
                 log: Mutex::new(Vec::new()),
                 next_id: AtomicU64::new(1),
                 cancels: Mutex::new(Vec::new()),
+                cancellers: AtomicUsize::new(0),
             }),
         })
     }
@@ -178,6 +180,7 @@ impl DbConnection for FakeConn {
     }
 
     fn canceller(&self) -> Box<dyn DbCancel> {
+        self.shared.cancellers.fetch_add(1, Ordering::SeqCst);
         Box::new(FlagCancel(Arc::clone(&self.cancelled)))
     }
 
@@ -680,6 +683,23 @@ fn rollback_info_is_logged_on_commit() {
     assert!(text.contains("boom-cause"), "{text}");
     assert!(text.contains("callsite="), "{text}");
     assert!(text.contains("error="), "{text}");
+}
+
+#[test]
+fn the_deadline_canceller_is_installed_once_per_frame() {
+    let (mgr, driver) = harness(small());
+    let _clean = Clean(&mgr);
+    assert!(mgr.begin(None).expect("begin"));
+    for _ in 0..5 {
+        mgr.with_connection(|_| Ok(())).expect("statement");
+    }
+    assert_eq!(driver.shared.cancellers.load(Ordering::SeqCst), 1);
+    mgr.commit().expect("commit");
+    assert!(mgr.begin(None).expect("begin again"));
+    mgr.with_connection(|_| Ok(())).expect("enlist again");
+    mgr.with_connection(|_| Ok(())).expect("statement");
+    assert_eq!(driver.shared.cancellers.load(Ordering::SeqCst), 2);
+    mgr.commit().expect("commit again");
 }
 
 #[test]
