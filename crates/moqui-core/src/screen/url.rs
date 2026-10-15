@@ -375,7 +375,15 @@ impl Walk<'_> {
         }) {
             Ok(rows) => rows,
             // A database without the screen tables has no rows.
-            Err(_) => return Ok(None),
+            Err(_) if super::definition::screen_entity_absent(&entity, "moqui.screen.SubscreensDefault") => {
+                return Ok(None)
+            }
+            // Any other failure is not "no rows", so this path must be resolved again.
+            Err(err) => {
+                tracing::warn!("could not read SubscreensDefault rows for {}: {err}", screen.location);
+                self.info.reusable = false;
+                return Ok(None);
+            }
         };
         let mut chosen = None;
         for row in rows.values() {

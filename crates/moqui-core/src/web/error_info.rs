@@ -15,7 +15,7 @@
 //! What an html error page knows of the failure: the `errorThrowable` of `error/*.xml`. The Java page read the
 //! exception; this holds the facts that the pages used from it.
 
-use crate::context::{Error, ErrorKind};
+use crate::context::Error;
 
 /// The artifact a denied request was for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,11 +69,11 @@ impl ErrorInfo {
     #[must_use]
     pub fn new(status: u16, error: &Error, request_path: &str) -> Self {
         let message = error.message().to_string();
-        let artifact = if error.kind() == ErrorKind::Unauthorized {
-            parse_denied(&message)
-        } else {
-            None
-        };
+        let artifact = error.denied().map(|denied| ArtifactInfo {
+            name: denied.name.clone(),
+            action: denied.action.clone(),
+            artifact_type: denied.artifact_type.clone(),
+        });
         let path_from_last_screen = message
             .strip_prefix("screen path not found: ")
             .and_then(|rest| rest.split(" under ").next())
@@ -94,19 +94,6 @@ impl ErrorInfo {
     }
 }
 
-/// `User x is not authorized for AT_XML_SCREEN [location] action view`.
-fn parse_denied(message: &str) -> Option<ArtifactInfo> {
-    let rest = message.split_once(" is not authorized for ")?.1;
-    let (artifact_type, rest) = rest.split_once(" [")?;
-    let (name, rest) = rest.split_once("] action ")?;
-    let action = rest.split_whitespace().next().unwrap_or("").to_string();
-    Some(ArtifactInfo {
-        name: name.to_string(),
-        action,
-        artifact_type: artifact_type.to_string(),
-    })
-}
-
 /// The page that shows a failure with this status and the error type of its `error-screen` entry.
 #[must_use]
 pub fn error_screen(status: u16) -> (&'static str, &'static str) {
@@ -122,13 +109,18 @@ pub fn error_screen(status: u16) -> (&'static str, &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::{DeniedArtifact, ErrorKind};
 
     #[test]
-    fn a_denied_message_names_its_artifact() {
-        let error = Error::of_kind(
-            ErrorKind::Unauthorized,
-            "User admin is not authorized for AT_XML_SCREEN [component://x/screen/A.xml] action view because of a deny record",
-        );
+    fn a_denied_error_names_its_artifact() {
+        let error =
+            Error::of_kind(ErrorKind::Unauthorized, "User admin may not see this").with_denied(DeniedArtifact {
+                artifact_type: "AT_XML_SCREEN".to_string(),
+                name: "component://x/screen/A.xml".to_string(),
+                action: "view".to_string(),
+            });
+        // Carried through a lib-typed closure and back, as a transaction body does.
+        let error = Error::from(moqui_lib::error::Error::from(error));
         let info = ErrorInfo::new(403, &error, "/apps/A");
         let artifact = info.artifact.unwrap();
         assert_eq!(artifact.name, "component://x/screen/A.xml");

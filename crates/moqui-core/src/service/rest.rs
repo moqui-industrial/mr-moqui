@@ -612,14 +612,17 @@ fn unwrap_frame(frame: moqui_lib::context_stack::Frame) -> Value {
 /// Returns an error when the root name is missing or that root is not loaded.
 pub(crate) fn openapi_document(segments: &[String]) -> Result<Value, Error> {
     if segments.is_empty() {
-        return Err(Error::new("No root resource name specified in path"));
+        return Err(Error::of_kind(
+            ErrorKind::BadRequest,
+            "No root resource name specified in path",
+        ));
     }
     let roots = current_roots()?;
     let root = roots.resources.get(&segments[0]).ok_or_else(|| {
-        Error::new(format!(
-            "Service REST API root resource not found with name {}",
-            segments[0]
-        ))
+        Error::of_kind(
+            ErrorKind::NotFound,
+            format!("Service REST API root resource not found with name {}", segments[0]),
+        )
     })?;
     let mut paths = IndexMap::new();
     collect_paths(root, "", &segments[1..], &mut paths);

@@ -660,6 +660,16 @@ impl ScreenDef {
     }
 }
 
+/// The `config_generation` of a definition whose `SubscreensItem` rows could not be read. No count reaches it, so the
+/// definition is never current.
+pub(super) const STALE_GENERATION: u64 = u64::MAX;
+
+/// Whether a failed read of the screen configuration entity `name` only means this database has none: the entity is
+/// not defined, or its table is not there, as in a bare test factory. Any other failure is not "no rows".
+pub(super) fn screen_entity_absent(entity: &crate::entity::EntityFacade, name: &str) -> bool {
+    !crate::entity::info::is_entity_defined(entity, name) || matches!(entity.table_exists(name), Ok(false))
+}
+
 /// The count of screen configuration writes of the factory's database, 0 with none installed.
 pub(super) fn screen_config_generation(factory: &ExecutionContextFactory) -> u64 {
     factory
@@ -853,7 +863,9 @@ impl ScreenDef {
 
         // Read before the rows, so a write while they load makes this definition stale.
         let config_generation = screen_config_generation(factory);
-        let subscreens = load_subscreens(facade, factory, node, location, &mut sources)?;
+        let (subscreens, rows_read) = load_subscreens(facade, factory, node, location, &mut sources)?;
+        // Built without rows that could not be read, the definition is stale at once and is built again next time.
+        let config_generation = if rows_read { config_generation } else { STALE_GENERATION };
         let mut macro_templates = BTreeMap::new();
         for template in node.children_named("macro-template") {
             if let (Some(kind), Some(from)) = (template.attribute("type"), template.attribute("location")) {
@@ -1244,8 +1256,9 @@ fn load_subscreens(
     node: &MNode,
     location: &str,
     sources: &mut Vec<Source>,
-) -> Result<Subscreens, Error> {
+) -> Result<(Subscreens, bool), Error> {
     let mut subscreens = Subscreens::default();
+    let mut rows_read = true;
     let element = node.first_named("subscreens");
     // The directory named like the screen file, minus .xml, holds subscreens by convention.
     let base = location.strip_suffix(".xml").unwrap_or(location);
@@ -1366,10 +1379,18 @@ fn load_subscreens(
                 }
             }
             // A database without the screen tables (a bare test factory) has no rows to add.
-            Err(err) => tracing::debug!("no SubscreensItem rows for {location}: {err}"),
+            Err(err) if screen_entity_absent(&entity, "moqui.screen.SubscreensItem") => {
+                tracing::debug!("no SubscreensItem rows for {location}: {err}");
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "could not read SubscreensItem rows for {location}; reading them again next time: {err}"
+                );
+                rows_read = false;
+            }
         }
     }
-    Ok(subscreens)
+    Ok((subscreens, rows_read))
 }
 
 /// The `default-menu-title` of the screen at `location`, else its pretty file name.

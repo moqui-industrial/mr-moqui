@@ -30,6 +30,8 @@ pub struct Error {
     message: String,
     location: Option<SourceLocation>,
     source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    /// The source is an error of a higher layer carried as it is: Display shows it in place of the message.
+    carried: bool,
 }
 
 impl Error {
@@ -38,6 +40,7 @@ impl Error {
             message: message.into(),
             location: None,
             source: None,
+            carried: false,
         }
     }
 
@@ -46,11 +49,36 @@ impl Error {
             message: message.into(),
             location: Some(SourceLocation { file, line, column }),
             source: None,
+            carried: false,
+        }
+    }
+
+    /// An error of a higher layer carried through lib-typed code, such as a closure run by a transaction. Display is
+    /// the carried error's, `source()` is the carried error, and [`Self::into_carried`] gives it back whole.
+    pub fn carry(message: impl Into<String>, error: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self {
+            message: message.into(),
+            location: None,
+            source: Some(Box::new(error)),
+            carried: true,
+        }
+    }
+
+    /// The error made by [`Self::carry`], or this error when it carries none.
+    ///
+    /// # Errors
+    ///
+    /// Returns this error unchanged when it was not made by [`Self::carry`].
+    pub fn into_carried(self) -> Result<Box<dyn std::error::Error + Send + Sync>, Self> {
+        match self.source {
+            Some(source) if self.carried => Ok(source),
+            source => Err(Self { source, ..self }),
         }
     }
 
     pub fn with_source(mut self, source: impl std::error::Error + Send + Sync + 'static) -> Self {
         self.source = Some(Box::new(source));
+        self.carried = false;
         self
     }
 
@@ -65,6 +93,9 @@ impl Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let (true, Some(source)) = (self.carried, &self.source) {
+            return fmt::Display::fmt(source, f);
+        }
         f.write_str(&self.message)?;
         if let Some(loc) = &self.location {
             write!(f, " (")?;

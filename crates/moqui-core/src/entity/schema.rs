@@ -43,14 +43,14 @@ pub(crate) fn document(facade: &EntityFacade, names: &[String], master: bool) ->
 fn one_entity(model: &EntityModel, name: &str, master_name: Option<String>) -> Result<Value, Error> {
     let entity = match model.entity(name) {
         Ok(entity) => entity,
-        Err(err) if err.message().contains("not unique") => return Err(err),
-        Err(_) => return Err(Error::new(format!("No entity found with name or alias {name}"))),
+        Err(err) if err.message().contains("not unique") => return Err(bad_request(err.message())),
+        Err(_) => return Err(bad_request(format!("No entity found with name or alias {name}"))),
     };
     let master =
         match master_name.as_deref() {
             Some(master_name) => Some(entity.masters.iter().find(|item| item.name == master_name).ok_or_else(
                 || {
-                    Error::new(format!(
+                    bad_request(format!(
                         "Master name {master_name} not valid for entity {}",
                         entity.full_name
                     ))
@@ -59,6 +59,11 @@ fn one_entity(model: &EntityModel, name: &str, master_name: Option<String>) -> R
             None => None,
         };
     Ok(standalone(entity, master))
+}
+
+/// A name in the request that does not pick one entity or master: the client's error.
+fn bad_request(message: impl Into<String>) -> Error {
+    crate::context::Error::of_kind(crate::context::ErrorKind::BadRequest, message).into()
 }
 
 fn catalog(model: &EntityModel, master: bool) -> Value {

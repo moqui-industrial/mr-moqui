@@ -117,7 +117,7 @@ pub fn serve_at(factory: &Arc<ExecutionContextFactory>, request: WebRequest, roo
         parsed.json_list.as_deref(),
     ) {
         Ok(response) => response,
-        Err(err) => web::json_error(500, err.message()),
+        Err(err) => web::json_error(500, &web::error_text(500, &err)),
     };
     web::finish_response(&request, response, false)
 }
@@ -145,7 +145,7 @@ fn handle(
     )?;
     let token_before = peek_token();
     if let Err(err) = user::session::remember_client_ip(&web::client_ip(request)) {
-        return Ok(web::json_error(500, err.message()));
+        return Ok(web::json_error(500, &web::error_text(500, &err)));
     }
     // What the last response saved for this request sits under the request's own parameters.
     let saved = user::session::take_saved_parameters();
@@ -219,14 +219,15 @@ fn dispatch_request(
         } else {
             web::status_for(&err)
         };
-        if let Some(page) = error_page(factory, request, root, parameters, status, &err) {
+        let message = web::error_text(status, &err);
+        if let Some(page) = error_page(factory, request, root, parameters, status, &err, &message) {
             return Ok(page);
         }
-        return Ok(web::json_error(status, err.message()));
+        return Ok(web::json_error(status, &message));
     }
     if let Err(err) = user::end_request() {
         if !web::output_sent() {
-            return Ok(web::json_error(500, err.message()));
+            return Ok(web::json_error(500, &web::error_text(500, &err)));
         }
     }
     let (status, headers, body, sent) = web::take_output();
@@ -239,7 +240,8 @@ fn dispatch_request(
 
 /// The html page for a failure, when the client takes html and the path is not an API path: the `error/*`
 /// screen with `errorCode`, `errorType`, `errorMessage`, `errorThrowable` and `showErrorDetail` in its context.
-/// None when the page cannot be made, and the caller sends the JSON error.
+/// None when the page cannot be made, and the caller sends the JSON error. `message` is the client's text of the error,
+/// from [`web::error_text`].
 fn error_page(
     factory: &Arc<ExecutionContextFactory>,
     request: &WebRequest,
@@ -247,6 +249,7 @@ fn error_page(
     parameters: &BTreeMap<String, Value>,
     status: u16,
     err: &Error,
+    message: &str,
 ) -> Option<WebResponse> {
     if !request
         .header("accept")
@@ -260,13 +263,8 @@ fn error_page(
     }
     let (kind, page) = web::error_info::error_screen(status);
     let _ = web::take_output();
-    let production = moqui_lib::env::get_prop_or_env("instance_purpose") == "production";
+    let production = web::is_production();
     let signed_in = user::current_username().ok().flatten().is_some();
-    let message = if production && status == 500 {
-        "An internal error occurred".to_string()
-    } else {
-        err.message().to_string()
-    };
     let mut context = parameters.clone();
     context.insert("errorCode".to_string(), Value::I32(i32::from(status)));
     context.insert("errorType".to_string(), Value::string(kind));

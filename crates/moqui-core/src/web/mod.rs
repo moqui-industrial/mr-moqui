@@ -1256,35 +1256,56 @@ pub(crate) fn early_error(request: &WebRequest, status: u16, message: &str) -> W
     finish_response(request, json_error(status, message), false)
 }
 
-/// Map an entity or service error onto 401, 403, 404, 405, 429, or 500.
-///
-/// [`ErrorKind`] wins. A general error still matches the entity messages that have no kind.
+/// The HTTP status of an error, by its [`ErrorKind`]. A general error is a 500 whatever its message says.
 pub(crate) fn status_for(err: &Error) -> u16 {
     match err.kind() {
-        ErrorKind::AuthenticationRequired => return 401,
-        ErrorKind::Unauthorized => return 403,
-        ErrorKind::Tarpit => return 429,
-        ErrorKind::NotFound => return 404,
-        ErrorKind::MethodNotAllowed => return 405,
-        ErrorKind::Unavailable => return 503,
-        ErrorKind::Validation => return 400,
-        ErrorKind::General => {}
+        ErrorKind::Validation | ErrorKind::BadRequest => 400,
+        ErrorKind::AuthenticationRequired => 401,
+        ErrorKind::Unauthorized => 403,
+        ErrorKind::NotFound => 404,
+        ErrorKind::MethodNotAllowed => 405,
+        ErrorKind::Tarpit => 429,
+        ErrorKind::Unavailable => 503,
+        ErrorKind::General | ErrorKind::RollbackOnly => 500,
     }
-    let message = err.message();
-    let lower = message.to_ascii_lowercase();
-    if lower.contains("user must be logged in") || lower.contains("authentication required") {
-        return 401;
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's `instance_purpose` for this thread only, so it does not change other tests' instance.
+    pub(crate) static TEST_PRODUCTION: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Whether this instance runs with `instance_purpose` production.
+pub(crate) fn is_production() -> bool {
+    #[cfg(test)]
+    if let Some(production) = TEST_PRODUCTION.with(std::cell::Cell::get) {
+        return production;
     }
-    if lower.contains("not authorized") || lower.contains("is not authorized") || lower.contains("tarpit") {
-        return 403;
+    moqui_lib::env::get_prop_or_env("instance_purpose") == "production"
+}
+
+/// The text a client gets for `err` sent with `status`. In production a 500's detail, which can hold SQL, file paths,
+/// or script source, goes to the log under an error id, and the client gets only the id. Other statuses and other
+/// instances get the message.
+pub(crate) fn error_text(status: u16, err: &Error) -> String {
+    if status == 500 && is_production() {
+        format!("internal error, id {}", log_error_id(err))
+    } else {
+        err.message().to_string()
     }
-    if message.contains("No value found") || lower.contains("no entity named") || lower.contains("no entity name") {
-        return 404;
-    }
-    if lower.contains("not supported") {
-        return 405;
-    }
-    500
+}
+
+/// Log `detail` at error level under a new error id, in the form of the host's, and return the id.
+pub(crate) fn log_error_id(detail: &dyn std::fmt::Display) -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let id = format!(
+        "{:x}-{:x}",
+        jiff::Timestamp::now().as_millisecond(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    tracing::error!("request failed, error id {id}: {detail}");
+    id
 }
 
 pub(crate) fn record_login_error(message: &str) {
@@ -1375,5 +1396,49 @@ mod tests {
             Some("abc")
         );
         assert_eq!(cookie_value("a=b", "moqui.session"), None);
+    }
+
+    #[test]
+    fn a_kind_keeps_its_status_through_a_transaction_and_a_message_picks_none() {
+        use crate::context::{Error, ErrorKind};
+        use crate::transaction::TransactionAttribute;
+
+        let facade = crate::testing::open();
+        let tx = facade.transactions_for("moqui.basic.Enumeration").unwrap();
+        let err = tx
+            .run(TransactionAttribute::UseOrBegin, None, || -> Result<(), _> {
+                Err(Error::of_kind(ErrorKind::Tarpit, "User u has accessed AT_SERVICE x too many times").into())
+            })
+            .unwrap_err();
+        let err = Error::from(err);
+        assert_eq!(err.kind(), ErrorKind::Tarpit, "{err}");
+        assert_eq!(super::status_for(&err), 429);
+        // The kind is found under a lib error that names it as its source.
+        let wrapped = moqui_lib::error::Error::new("outer").with_source(Error::of_kind(ErrorKind::Unavailable, "full"));
+        assert_eq!(super::status_for(&Error::from(wrapped)), 503);
+        // A general error is a 500 whatever its words.
+        for message in [
+            "Operation x not supported",
+            "User is not authorized",
+            "No value found",
+            "tarpit",
+        ] {
+            assert_eq!(super::status_for(&Error::new(message)), 500, "{message}");
+        }
+    }
+
+    #[test]
+    fn a_production_500_names_only_an_error_id() {
+        use crate::context::{Error, ErrorKind};
+
+        let err = Error::new("SELECT * FROM SECRET_TABLE failed");
+        super::TEST_PRODUCTION.with(|production| production.set(Some(true)));
+        let hidden = super::error_text(500, &err);
+        let shown = super::error_text(400, &Error::of_kind(ErrorKind::BadRequest, "bad name"));
+        super::TEST_PRODUCTION.with(|production| production.set(None));
+        assert!(hidden.starts_with("internal error, id "), "{hidden}");
+        assert!(!hidden.contains("SECRET_TABLE"), "{hidden}");
+        assert_eq!(shown, "bad name");
+        assert_eq!(super::error_text(500, &err), "SELECT * FROM SECRET_TABLE failed");
     }
 }

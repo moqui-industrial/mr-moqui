@@ -1686,7 +1686,7 @@ fn in_transaction<T>(begin: bool, timeout: Option<i64>, body: impl FnOnce() -> R
         Ok(())
     });
     match outcome {
-        Err(err) if rolled_back && err.to_string().contains("rollback-only") => {}
+        Err(err) if rolled_back && ErrorKind::of(&err) == ErrorKind::RollbackOnly => {}
         other => other.map_err(Error::from)?,
     }
     kept.ok_or_else(|| Error::new("the transaction body did not finish"))

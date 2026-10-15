@@ -126,6 +126,11 @@ pub struct TransactionManager {
     inner: Arc<Inner>,
 }
 
+/// The error of a frame marked rollback-only, of kind `RollbackOnly` so a caller that marked it can tell it apart.
+fn rollback_only_error(message: String) -> Error {
+    crate::context::Error::of_kind(crate::context::ErrorKind::RollbackOnly, message).into()
+}
+
 impl TransactionManager {
     pub fn new(driver: Arc<dyn DbDriver>, config: PoolConfig) -> Result<Self, Error> {
         Ok(Self {
@@ -275,7 +280,7 @@ impl TransactionManager {
                     "commit marked rollback-only; rolling back"
                 );
                 self.complete(*phase, false)?;
-                Err(Error::new(format!(
+                Err(rollback_only_error(format!(
                     "transaction marked rollback-only: {}",
                     info.message
                 )))
@@ -328,7 +333,7 @@ impl TransactionManager {
             return result;
         }
         if let Some(message) = self.rollback_message() {
-            return Err(Error::new(format!("transaction is rollback-only: {message}")));
+            return Err(rollback_only_error(format!("transaction is rollback-only: {message}")));
         }
         let slot = self.active_conn()?;
         if slot.borrow().is_none() {

@@ -831,6 +831,126 @@ fn subscreens_item_rows_mount_screens_and_a_user_group_limits_them() {
 }
 
 #[test]
+fn a_failed_subscreens_read_is_not_cached_as_no_rows() {
+    let world = World::open("");
+    let dir = std::env::temp_dir().join(format!("moqui-screen-subscreens-failed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Base")).unwrap();
+    std::fs::write(
+        dir.join("Base.xml"),
+        r#"<screen require-authentication="false"><subscreens default-item="Own"/><widgets><subscreens-active/></widgets></screen>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Base/Own.xml"),
+        r#"<screen require-authentication="false"><widgets><label text="own"/></widgets></screen>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("App.xml"),
+        r#"<screen require-authentication="false"><widgets><label text="mounted app"/></widgets></screen>"#,
+    )
+    .unwrap();
+    let root = dir.join("Base.xml").to_string_lossy().into_owned();
+    let mut row = world.facade.make_value("moqui.screen.SubscreensItem").unwrap();
+    row.set("screenLocation", Value::string(&root));
+    row.set("subscreenName", Value::string("Mounted"));
+    row.set("userGroupId", Value::string("ALL_USERS"));
+    row.set(
+        "subscreenLocation",
+        Value::string(dir.join("App.xml").to_string_lossy()),
+    );
+    row.set("makeDefault", Value::string("Y"));
+    row.create(&world.facade).unwrap();
+
+    // A transaction marked rollback-only fails every read, as a database that is down would.
+    let tx = world.facade.transactions_for("moqui.screen.SubscreensItem").unwrap();
+    let mut resolved = None;
+    let ended = tx.run(crate::transaction::TransactionAttribute::ForceNew, None, || {
+        tx.set_rollback_only("the database is away")?;
+        resolved = Some(ScreenUrlInfo::resolve(&world.factory, &root, &[], 0));
+        Ok(())
+    });
+    assert_eq!(ErrorKind::of(&ended.unwrap_err()), ErrorKind::RollbackOnly);
+    let failed = resolved.unwrap().unwrap();
+    assert!(
+        !failed.reusable,
+        "a path resolved without its SubscreensDefault rows is not cached"
+    );
+    assert_eq!(
+        failed.path_defs[0].config_generation,
+        crate::screen::definition::STALE_GENERATION
+    );
+    assert_eq!(failed.full_path, vec!["Own"]);
+
+    // The next request reads the rows and mounts the app as the default.
+    let output = make_render(&world.factory)
+        .root_screen(root.clone())
+        .screen_path("/")
+        .render_mode("text")
+        .render()
+        .unwrap();
+    assert!(output.body_text().contains("mounted app"), "{}", output.body_text());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_production_500_and_a_failed_section_show_an_error_id_not_the_detail() {
+    let world = World::open("");
+    let dir = std::env::temp_dir().join(format!("moqui-screen-error-id-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Fails.xml"),
+        r#"<screen require-authentication="false"><actions><script>throw new Error('SELECT * FROM SECRET_TABLE')</script></actions>
+            <widgets/></screen>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Section.xml"),
+        r#"<screen require-authentication="false"><widgets><label text="before"/>
+            <section name="Broken"><actions><script>throw new Error('SELECT * FROM SECRET_TABLE')</script></actions>
+                <widgets><label text="never"/></widgets></section></widgets></screen>"#,
+    )
+    .unwrap();
+    let serve = |name: &str, production: bool| {
+        crate::web::TEST_PRODUCTION.with(|flag| flag.set(Some(production)));
+        let root = dir.join(name).to_string_lossy().into_owned();
+        let response = serve_at(&world.factory, request("GET", "/"), &root);
+        crate::web::TEST_PRODUCTION.with(|flag| flag.set(None));
+        response
+    };
+
+    let dev = serve("Fails.xml", false);
+    assert_eq!(dev.status, 500);
+    assert!(dev.body_text().contains("SECRET_TABLE"), "{}", dev.body_text());
+    let production = serve("Fails.xml", true);
+    assert_eq!(production.status, 500);
+    assert!(
+        !production.body_text().contains("SECRET_TABLE"),
+        "{}",
+        production.body_text()
+    );
+    assert!(
+        production.body_text().contains("internal error, id "),
+        "{}",
+        production.body_text()
+    );
+
+    let dev = serve("Section.xml", false);
+    assert!(dev.body_text().contains("SECRET_TABLE"), "{}", dev.body_text());
+    let production = serve("Section.xml", true);
+    let body = production.body_text();
+    assert!(body.contains("before"), "{body}");
+    assert!(
+        body.contains("Error rendering") && body.contains("internal error, id "),
+        "{body}"
+    );
+    assert!(!body.contains("SECRET_TABLE"), "{body}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_transition_link_carries_its_service_keys_and_a_failed_condition_disables_it() {
     let world = World::open("");
     world.enumeration_type();

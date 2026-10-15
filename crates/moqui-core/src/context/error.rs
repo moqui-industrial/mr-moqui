@@ -16,7 +16,7 @@
 
 use std::fmt;
 
-/// What a caller can act on. The web layer maps these to 401, 403, and 429.
+/// What a caller can act on. The web layer maps these to HTTP statuses; see `web::status_for`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ErrorKind {
     #[default]
@@ -36,6 +36,10 @@ pub enum ErrorKind {
     /// Input that does not pass a service's parameter checks. The checks that failed are validation errors in the
     /// message facade.
     Validation,
+    /// A request the client got wrong, such as a missing or ambiguous name in a REST path.
+    BadRequest,
+    /// The transaction was marked rollback-only, so it rolled back or takes no more statements.
+    RollbackOnly,
 }
 
 impl ErrorKind {
@@ -52,9 +56,18 @@ impl ErrorKind {
     }
 }
 
+/// The artifact an `Unauthorized` error refused: what the `error/Forbidden` page names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeniedArtifact {
+    pub artifact_type: String,
+    pub name: String,
+    pub action: String,
+}
+
 pub struct Error {
     message: String,
     kind: ErrorKind,
+    denied: Option<Box<DeniedArtifact>>,
     source: Option<Box<dyn std::error::Error + Send + Sync>>,
 }
 
@@ -63,6 +76,7 @@ impl Error {
         Self {
             message: message.into(),
             kind: ErrorKind::General,
+            denied: None,
             source: None,
         }
     }
@@ -78,6 +92,24 @@ impl Error {
         self.kind
     }
 
+    #[must_use]
+    pub fn with_denied(mut self, denied: DeniedArtifact) -> Self {
+        self.denied = Some(Box::new(denied));
+        self
+    }
+
+    /// The refused artifact of the first context error in the source chain that names one.
+    pub fn denied(&self) -> Option<&DeniedArtifact> {
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(self);
+        while let Some(found) = current {
+            if let Some(denied) = found.downcast_ref::<Error>().and_then(|err| err.denied.as_deref()) {
+                return Some(denied);
+            }
+            current = found.source();
+        }
+        None
+    }
+
     pub fn with_source(mut self, source: impl std::error::Error + Send + Sync + 'static) -> Self {
         self.source = Some(Box::new(source));
         self
@@ -88,16 +120,37 @@ impl Error {
     }
 }
 
+/// A context error that crossed a lib-typed closure comes back as it went in. Any other lib error keeps the kind of a
+/// context error in its source chain.
 impl From<moqui_lib::error::Error> for Error {
     fn from(err: moqui_lib::error::Error) -> Self {
-        let message = err.message().to_string();
-        Self::new(message).with_source(err)
+        let carried = match err.into_carried() {
+            Ok(carried) => carried,
+            Err(err) => {
+                return Self {
+                    message: err.message().to_string(),
+                    kind: ErrorKind::of(&err),
+                    denied: None,
+                    source: Some(Box::new(err)),
+                }
+            }
+        };
+        match carried.downcast::<Error>() {
+            Ok(err) => *err,
+            Err(other) => Self {
+                message: other.to_string(),
+                kind: ErrorKind::of(other.as_ref()),
+                denied: None,
+                source: Some(other),
+            },
+        }
     }
 }
 
+/// Carried whole, so its kind, source, and refused artifact come back on the way out of lib-typed code.
 impl From<Error> for moqui_lib::error::Error {
     fn from(err: Error) -> Self {
-        moqui_lib::error::Error::new(err.message)
+        moqui_lib::error::Error::carry(err.message.clone(), err)
     }
 }
 

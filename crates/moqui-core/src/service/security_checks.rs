@@ -65,9 +65,11 @@ pub(super) fn assert_privileged_group_membership(facade: &EntityFacade, user_gro
     if without_authz(|| user_in_group(facade, user_group_id))? {
         return Ok(());
     }
-    Err(Error::new(format!(
-        "User is not authorized to change membership of group {user_group_id}"
-    )))
+    Err(crate::context::Error::of_kind(
+        crate::context::ErrorKind::Unauthorized,
+        format!("User is not authorized to change membership of group {user_group_id}"),
+    )
+    .into())
 }
 
 pub(super) fn assert_sealed_permission_grant(facade: &EntityFacade, user_permission_id: &str) -> Result<(), Error> {
@@ -85,9 +87,11 @@ pub(super) fn assert_sealed_permission_grant(facade: &EntityFacade, user_permiss
     if without_authz(|| user_has_permission(facade, user_permission_id))? {
         return Ok(());
     }
-    Err(Error::new(format!(
-        "User is not authorized to grant permission {user_permission_id}"
-    )))
+    Err(crate::context::Error::of_kind(
+        crate::context::ErrorKind::Unauthorized,
+        format!("User is not authorized to grant permission {user_permission_id}"),
+    )
+    .into())
 }
 
 fn privileged_groups() -> BTreeSet<String> {

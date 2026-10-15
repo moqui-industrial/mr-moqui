@@ -208,6 +208,11 @@ pub(crate) fn denied(artifact_type: &str, name: &str, action: &str, info: &AuthI
         crate::context::ErrorKind::Unauthorized,
         format!("User {user} is not authorized for {artifact_type} [{name}] action {action}{because}"),
     )
+    .with_denied(crate::context::DeniedArtifact {
+        artifact_type: artifact_type.to_string(),
+        name: name.to_string(),
+        action: action.to_string(),
+    })
 }
 
 /// Decide a new frame, as Java `isPermitted` does. Returns the decision and the frame's auth info.

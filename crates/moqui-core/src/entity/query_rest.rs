@@ -38,6 +38,7 @@ use super::field_rw;
 use super::find::FindValues;
 use super::params::{self, map_row, view_columns};
 use super::value::{EntityArtifact, EntityValue};
+use crate::context::ErrorKind;
 
 const MAX_DEPTH: u32 = 32;
 /// The largest `pageSize` a REST find reads, unless the `entity_rest_max_page_size` property sets another.
@@ -290,7 +291,7 @@ fn normalize_operation(operation: &str) -> Result<Verb, Error> {
         "put" | "store" => Ok(Verb::Store),
         "patch" | "update" => Ok(Verb::Update),
         "delete" => Ok(Verb::Delete),
-        _ => Err(Error::new(format!(
+        _ => Err(kinded(ErrorKind::MethodNotAllowed, format!(
             "Operation [{operation}] not supported, must be one of: get, post, put, patch, or delete for HTTP request methods or find, create, store, update, or delete for direct entity operations"
         ))),
     }
@@ -303,9 +304,12 @@ fn resolve_target(
 ) -> Result<Resolved, Error> {
     let (name, mut path) = split_path(entity_name, parameters);
     if name.is_empty() {
-        return Err(Error::new("No entity name or alias specified in path"));
+        return Err(kinded(
+            ErrorKind::BadRequest,
+            "No entity name or alias specified in path",
+        ));
     }
-    let first = load_snap(facade, &name)?;
+    let first = load_snap(facade, &name).map_err(|err| kinded(ErrorKind::NotFound, err.message()))?;
     let mut master = optional_text(parameters, "master");
     if flag(parameters, "masterNameInPath") {
         if master.as_ref().is_none_or(String::is_empty) {
@@ -399,11 +403,14 @@ fn find_rest(facade: &EntityFacade, target: &Resolved, parameters: &BTreeMap<Str
             }
         }
         let found = find.one()?.ok_or_else(|| {
-            Error::new(format!(
-                "No value found for entity [{}] with key {}",
-                snap.label(),
-                key_text(&snap, parameters)
-            ))
+            kinded(
+                ErrorKind::NotFound,
+                format!(
+                    "No value found for entity [{}] with key {}",
+                    snap.label(),
+                    key_text(&snap, parameters)
+                ),
+            )
         })?;
         let node = render_record(
             facade,
@@ -2091,6 +2098,11 @@ fn json_string(text: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// A lib error with a context kind, which picks the HTTP status of a REST call.
+fn kinded(kind: ErrorKind, message: impl Into<String>) -> Error {
+    crate::context::Error::of_kind(kind, message).into()
 }
 
 fn load_snap(facade: &EntityFacade, name: &str) -> Result<EntitySnap, Error> {

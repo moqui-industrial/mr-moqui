@@ -139,7 +139,8 @@ fn finish_entity(started: Instant, result: Result<Value, Error>) {
         }
         Err(err) => {
             let _ = query_rest::take_page_info();
-            web::send_json_error(web::status_for(&err), err.message());
+            let status = web::status_for(&err);
+            web::send_json_error(status, &web::error_text(status, &err));
         }
     }
 }
@@ -173,7 +174,8 @@ fn service_rest(call: &Call<'_>) -> Result<bool, Error> {
         }
         Err(err) => {
             let _ = query_rest::take_page_info();
-            web::send_json_error(web::status_for(&err), err.message());
+            let status = web::status_for(&err);
+            web::send_json_error(status, &web::error_text(status, &err));
         }
     }
     Ok(true)

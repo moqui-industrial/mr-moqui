@@ -15,7 +15,7 @@
 //! `entity.json`, `master.json`, and `service.swagger`. YAML and Swagger 2 stay unbuilt.
 
 use super::dispatch::Call;
-use crate::context::{Error, ExecutionContext};
+use crate::context::{Error, ErrorKind, ExecutionContext};
 use crate::entity::EntityFacade;
 use crate::user;
 use crate::web;
@@ -31,10 +31,10 @@ pub(crate) fn entity_json(call: &Call<'_>, master: bool) -> Result<bool, Error> 
         return Ok(true);
     }
     let facade = facade()?;
-    match crate::entity::schema_document(&facade, &plain_names(call.extra), master) {
+    match crate::entity::schema_document(&facade, &plain_names(call.extra), master).map_err(Error::from) {
         Ok(value) => web::send_json_response(value),
-        Err(err) if client_error(err.message()) => web::send_json_error(400, err.message()),
-        Err(err) => return Err(Error::from(err)),
+        Err(err) if err.kind() == ErrorKind::BadRequest => web::send_json_error(400, err.message()),
+        Err(err) => return Err(err),
     }
     Ok(true)
 }
@@ -49,11 +49,8 @@ pub(crate) fn service_swagger(call: &Call<'_>) -> Result<bool, Error> {
     }
     match crate::service::openapi_document(&plain_names(call.extra)) {
         Ok(value) => web::send_json_response(value),
-        Err(err) if err.message() == "No root resource name specified in path" => {
-            web::send_json_error(400, err.message());
-        }
-        Err(err) if err.message().contains("root resource not found") => {
-            web::send_json_error(404, err.message());
+        Err(err) if matches!(err.kind(), ErrorKind::BadRequest | ErrorKind::NotFound) => {
+            web::send_json_error(web::status_for(&err), err.message());
         }
         Err(err) => return Err(err),
     }
@@ -86,10 +83,6 @@ fn plain_names(extra: &[String]) -> Vec<String> {
         .filter(|part| !part.is_empty())
         .map(ToString::to_string)
         .collect()
-}
-
-fn client_error(message: &str) -> bool {
-    message.starts_with("No entity found") || message.starts_with("Master name") || message.contains("not unique")
 }
 
 fn facade() -> Result<EntityFacade, Error> {

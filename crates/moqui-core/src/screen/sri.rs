@@ -197,15 +197,22 @@ fn is_security(err: &Error) -> bool {
 }
 
 /// Run a nested render. As in Java, an error other than a security one is logged and its message is
-/// written as text where the output would have been, so one section does not lose the page.
+/// written as text where the output would have been, so one section does not lose the page. In production the text
+/// names only an error id; the detail is in the log under it.
 fn guarded(state: &RenderState, label: &str, body: impl FnOnce() -> Result<(), Error>) -> Result<(), Error> {
     match body() {
         Err(err) if !is_security(&err) => {
-            tracing::error!("Error rendering {label}: {err}");
-            write(
-                state,
-                &encode_html(&format!("Error rendering {label}: {}", err.message())),
-            );
+            let detail = format!("Error rendering {label}: {err}");
+            let text = if web::is_production() {
+                format!(
+                    "Error rendering {label}: internal error, id {}",
+                    web::log_error_id(&detail)
+                )
+            } else {
+                tracing::error!("{detail}");
+                format!("Error rendering {label}: {}", err.message())
+            };
+            write(state, &encode_html(&text));
             Ok(())
         }
         other => other,
