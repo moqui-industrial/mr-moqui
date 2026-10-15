@@ -149,6 +149,30 @@ mod tests {
     }
 
     #[test]
+    fn runtime_conf_selected_by_moqui_conf() {
+        use std::ffi::OsStr;
+        let temp = TempRuntime::new("conf-select");
+        let runtime = temp.path();
+        assert_eq!(super::conf::runtime_conf_from(runtime, None).unwrap(), None);
+        std::fs::write(runtime.join("conf/MoquiDevConf.xml"), "<moqui-conf/>").unwrap();
+        std::fs::write(runtime.join("conf/MoquiProductionConf.xml"), "<moqui-conf/>").unwrap();
+        let dev = Some(runtime.join("conf/MoquiDevConf.xml"));
+        assert_eq!(super::conf::runtime_conf_from(runtime, None).unwrap(), dev);
+        assert_eq!(
+            super::conf::runtime_conf_from(runtime, Some(OsStr::new(""))).unwrap(),
+            dev
+        );
+        let production = runtime.join("conf/MoquiProductionConf.xml");
+        let selected =
+            super::conf::runtime_conf_from(runtime, Some(OsStr::new("conf/MoquiProductionConf.xml"))).unwrap();
+        assert_eq!(selected, Some(production.clone()));
+        let absolute = super::conf::runtime_conf_from(runtime, Some(production.as_os_str())).unwrap();
+        assert_eq!(absolute, Some(production));
+        let missing = super::conf::runtime_conf_from(runtime, Some(OsStr::new("conf/Nope.xml"))).unwrap_err();
+        assert!(missing.message().contains("conf/Nope.xml"), "{}", missing.message());
+    }
+
+    #[test]
     fn dev_conf_merge_sets_purpose_and_entity_definition_idle() {
         let root = workspace_root();
         let base = MNode::parse_file(root.join("framework/conf/MoquiDefaultConf.xml")).unwrap();

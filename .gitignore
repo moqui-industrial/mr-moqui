@@ -9,6 +9,8 @@
 /runtime/types
 /runtime/opensearch*
 /runtime/component/
+/runtime/save
+/myaddons.xml
 /runtime/ecomponent/
 
 # Python HTTP security tests

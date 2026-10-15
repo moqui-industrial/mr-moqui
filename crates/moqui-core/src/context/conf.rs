@@ -14,17 +14,39 @@
 
 //! Conf merge. Key rules follow `ExecutionContextFactoryImpl.mergeConfigNodes`.
 
-use std::path::Path;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 
 use moqui_lib::node::MNode;
 
 use super::error::Error;
 
+/// The runtime conf merged over the default, like Java's `moqui.conf`. `MOQUI_CONF` names it, relative to the runtime directory
+/// or absolute, and a named file that is missing is an error. Unset or empty means `conf/MoquiDevConf.xml` when it exists. This is
+/// read from the process environment only: `runtime/.env` is applied after the conf merge, so it cannot select the conf.
+fn runtime_conf(runtime_dir: &Path) -> Result<Option<PathBuf>, Error> {
+    runtime_conf_from(runtime_dir, std::env::var_os("MOQUI_CONF").as_deref())
+}
+
+pub(super) fn runtime_conf_from(runtime_dir: &Path, selected: Option<&OsStr>) -> Result<Option<PathBuf>, Error> {
+    match selected.filter(|value| !value.is_empty()) {
+        Some(value) => {
+            let path = runtime_dir.join(value);
+            if path.is_file() {
+                Ok(Some(path))
+            } else {
+                Err(Error::new(format!("MOQUI_CONF file {} not found", path.display())))
+            }
+        }
+        None => Ok(Some(runtime_dir.join("conf/MoquiDevConf.xml")).filter(|path| path.is_file())),
+    }
+}
+
 pub fn load_merged_conf(framework_dir: &Path, runtime_dir: &Path) -> Result<MNode, Error> {
     let base = MNode::parse_file(framework_dir.join("conf/MoquiDefaultConf.xml"))?;
-    let dev = runtime_dir.join("conf/MoquiDevConf.xml");
-    if dev.is_file() {
-        let over = MNode::parse_file(&dev)?;
+    if let Some(runtime_conf) = runtime_conf(runtime_dir)? {
+        tracing::info!("Merging runtime conf {}", runtime_conf.display());
+        let over = MNode::parse_file(&runtime_conf)?;
         merge_conf(&base, &over);
     }
     Ok(base)
@@ -50,9 +72,8 @@ pub fn merge_component_confs(
         tracing::info!("Merging component conf {}", file.display());
         merge_conf(&base, &MNode::parse_file(file)?);
     }
-    let dev = runtime_dir.join("conf/MoquiDevConf.xml");
-    if dev.is_file() {
-        merge_conf(&base, &MNode::parse_file(&dev)?);
+    if let Some(runtime_conf) = runtime_conf(runtime_dir)? {
+        merge_conf(&base, &MNode::parse_file(&runtime_conf)?);
     }
     Ok(Some(base))
 }
