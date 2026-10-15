@@ -44,6 +44,26 @@ use crate::user::AuthInfo;
 
 const ENV_HEADER: &str = "# This file holds secrets and must be kept with the instance backup.\n";
 
+/// Tarpit hit times and how long to keep them, by key, swept of idle keys as the map grows.
+struct TarpitHits {
+    by_key: std::collections::HashMap<String, (Vec<i64>, i64)>,
+    /// The size at which the next record sweeps, so a sweep costs O(1) per record over time.
+    sweep_at: usize,
+}
+
+impl TarpitHits {
+    const MIN_SWEEP_AT: usize = 1024;
+}
+
+impl Default for TarpitHits {
+    fn default() -> Self {
+        Self {
+            by_key: std::collections::HashMap::new(),
+            sweep_at: Self::MIN_SWEEP_AT,
+        }
+    }
+}
+
 pub struct ExecutionContextFactory {
     runtime_dir: PathBuf,
     framework_dir: PathBuf,
@@ -53,7 +73,7 @@ pub struct ExecutionContextFactory {
     conf_text: String,
     conf_cache: std::sync::OnceLock<ConfCache>,
     /// Hit times per `userId@type:name`, for tarpit counting.
-    tarpit_hits: std::sync::Mutex<std::collections::HashMap<String, Vec<i64>>>,
+    tarpit_hits: std::sync::Mutex<TarpitHits>,
     property_names: Vec<String>,
     extensions:
         std::sync::Mutex<std::collections::HashMap<std::any::TypeId, std::sync::Arc<dyn std::any::Any + Send + Sync>>>,
@@ -187,7 +207,7 @@ impl ExecutionContextFactory {
             cache,
             conf_text,
             conf_cache: std::sync::OnceLock::new(),
-            tarpit_hits: std::sync::Mutex::new(std::collections::HashMap::new()),
+            tarpit_hits: std::sync::Mutex::default(),
             property_names,
             extensions: std::sync::Mutex::new(std::collections::HashMap::new()),
             entity,
@@ -395,24 +415,44 @@ impl ExecutionContextFactory {
         self.tarpit_hits
             .lock()
             .unwrap_or_else(|err| err.into_inner())
+            .by_key
             .get(key)
-            .cloned()
+            .map(|(times, _)| times.clone())
             .unwrap_or_default()
     }
 
-    /// Record a hit. Times older than `keep_ms` are dropped so the list stays small.
+    /// Record a hit. Times older than `keep_ms` are dropped so the list stays small. Once the map has
+    /// doubled since the last sweep, keys with no hit within their own `keep_ms` are dropped too.
     pub fn record_tarpit_hit(&self, key: &str, now_ms: i64, keep_ms: i64) {
+        let keep_ms = keep_ms.max(1);
         let mut hits = self.tarpit_hits.lock().unwrap_or_else(|err| err.into_inner());
-        let list = hits.entry(key.to_string()).or_default();
-        list.retain(|time| now_ms - *time < keep_ms.max(1));
+        let (list, keep) = hits.by_key.entry(key.to_string()).or_default();
+        list.retain(|time| now_ms - *time < keep_ms);
         list.push(now_ms);
+        *keep = keep_ms;
+        if hits.by_key.len() >= hits.sweep_at {
+            hits.by_key
+                .retain(|_, (times, keep)| times.last().is_some_and(|last| now_ms - *last < *keep));
+            hits.sweep_at = hits.by_key.len().saturating_mul(2).max(TarpitHits::MIN_SWEEP_AT);
+        }
     }
 
     pub fn clear_tarpit_hits(&self, key: &str) {
         self.tarpit_hits
             .lock()
             .unwrap_or_else(|err| err.into_inner())
+            .by_key
             .remove(key);
+    }
+
+    /// The number of keys with recorded tarpit hits, for tests.
+    #[cfg(test)]
+    pub(crate) fn tarpit_key_count(&self) -> usize {
+        self.tarpit_hits
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .by_key
+            .len()
     }
 
     pub fn conf_text(&self) -> &str {
@@ -1046,7 +1086,7 @@ impl ExecutionContextFactory {
             cache: CacheFacade::from_conf(&conf).expect("cache"),
             conf_text: conf_text.to_string(),
             conf_cache: std::sync::OnceLock::new(),
-            tarpit_hits: std::sync::Mutex::new(std::collections::HashMap::new()),
+            tarpit_hits: std::sync::Mutex::default(),
             property_names: Vec::new(),
             extensions: std::sync::Mutex::new(std::collections::HashMap::new()),
             entity,
@@ -1078,5 +1118,25 @@ mod tests {
         assert_eq!(standard_base64(b"f"), "Zg==");
         assert_eq!(standard_base64(&[0_u8; 32]).len(), 44);
         assert!(standard_base64(&[0_u8; 32]).ends_with('='));
+    }
+
+    #[test]
+    fn idle_tarpit_keys_are_swept_as_the_map_grows() {
+        let context = super::ExecutionContextFactory::test_context();
+        let factory = context.factory();
+        // Many users each hit once and go away.
+        for user in 0..5_000 {
+            factory.record_tarpit_hit(&format!("user{user}@AT_SERVICE:svc"), 1_000, 60_000);
+        }
+        // All still within their window, so all kept; the next sweep comes at twice this many.
+        assert_eq!(factory.tarpit_key_count(), 5_000);
+        // An hour later every one of them is idle: the sweep at 8192 keys leaves only the new ones.
+        let later = 1_000 + 3_600_000;
+        for user in 0..3_200 {
+            factory.record_tarpit_hit(&format!("late{user}@AT_SERVICE:svc"), later, 60_000);
+        }
+        assert_eq!(factory.tarpit_key_count(), 3_200);
+        assert_eq!(factory.tarpit_times("late3199@AT_SERVICE:svc"), vec![later]);
+        assert!(factory.tarpit_times("user0@AT_SERVICE:svc").is_empty());
     }
 }

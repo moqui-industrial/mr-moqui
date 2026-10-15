@@ -82,6 +82,8 @@ const MODE_MODULES: [(&str, &str); 9] = [
 
 const BUILT_IN_DIR: &str = "framework/template/screen/";
 const MAX_STATIC_TEMPLATES: usize = 64;
+/// Units kept for dynamic and user-column forms of one definition, one for each different assembled form.
+const MAX_DYNAMIC_UNITS: usize = 128;
 const DEBUG_ENV: &str = "MOQUI_ACTIONS_DEBUG";
 
 static NEXT_UNIT: AtomicU64 = AtomicU64::new(1);
@@ -100,7 +102,10 @@ pub struct Unit {
 
 /// What a definition keeps for rendering: generated units and assembled forms.
 pub struct Generated {
+    /// By section and mode, so bounded by the definition.
     units: Mutex<HashMap<String, Option<Arc<Unit>>>>,
+    /// By the text of an assembled dynamic or user-column form, which varies with the context and user.
+    dynamic_units: Mutex<crate::script::BoundedMap<String, Arc<Unit>>>,
     forms: Mutex<HashMap<String, Arc<FormInstance>>>,
     /// The server-static templates by request path, and whether the screen can be one, by macro module.
     statics: Mutex<crate::script::BoundedMap<String, Arc<StaticTemplate>>>,
@@ -117,6 +122,7 @@ impl Default for Generated {
     fn default() -> Self {
         Self {
             units: Mutex::default(),
+            dynamic_units: Mutex::new(crate::script::BoundedMap::new(MAX_DYNAMIC_UNITS)),
             forms: Mutex::default(),
             statics: Mutex::new(crate::script::BoundedMap::new(MAX_STATIC_TEMPLATES)),
             eligibility: Mutex::default(),
@@ -224,10 +230,30 @@ impl Generated {
             .insert(key, unit);
     }
 
+    fn dynamic_unit(&self, key: &str) -> Option<Arc<Unit>> {
+        self.dynamic_units
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .get(key)
+    }
+
+    fn put_dynamic_unit(&self, key: String, unit: Arc<Unit>) {
+        self.dynamic_units
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .insert(key, unit);
+    }
+
     /// The number of units generated, for tests.
     #[cfg(test)]
     pub fn unit_count(&self) -> usize {
-        self.units.lock().unwrap_or_else(|err| err.into_inner()).len()
+        self.units.lock().unwrap_or_else(|err| err.into_inner()).len() + self.dynamic_unit_count()
+    }
+
+    /// The number of dynamic form units kept, for tests.
+    #[cfg(test)]
+    pub fn dynamic_unit_count(&self) -> usize {
+        self.dynamic_units.lock().unwrap_or_else(|err| err.into_inner()).len()
     }
 }
 
@@ -352,7 +378,7 @@ pub fn unit_for_dynamic_form(
         form.name,
         hasher.finish()
     );
-    if let Some(Some(found)) = request.def.generated.unit(&key) {
+    if let Some(found) = request.def.generated.dynamic_unit(&key) {
         return Ok(found);
     }
     let source = mode_source(request.factory, request.macro_location)?;
@@ -368,7 +394,7 @@ pub fn unit_for_dynamic_form(
         ))
     })?;
     let unit = Arc::new(make_unit(&loaded, body)?);
-    request.def.generated.put_unit(key, Some(Arc::clone(&unit)));
+    request.def.generated.put_dynamic_unit(key, Arc::clone(&unit));
     Ok(unit)
 }
 
@@ -566,4 +592,33 @@ pub fn generate_unit_source(mode: &str, xml: &str) -> Result<String, Error> {
         let body = generate_body(ctx, &module, &root, None, mode)?;
         Ok(make_unit(&module, body)?.source)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn many_distinct_dynamic_forms_keep_their_units_at_the_bound() {
+        let generated = Generated::default();
+        let unit = |id| {
+            Arc::new(Unit {
+                id,
+                source: String::new(),
+                runtime: Arc::from(""),
+                runtime_id: 0,
+            })
+        };
+        generated.put_unit("text|loc|S|widgets".to_string(), Some(unit(0)));
+        for id in 1..2_000 {
+            generated.put_dynamic_unit(format!("dynamic|text|loc|Form|{id:x}"), unit(id));
+            assert!(generated.dynamic_unit_count() <= MAX_DYNAMIC_UNITS);
+        }
+        assert_eq!(
+            generated.dynamic_unit("dynamic|text|loc|Form|7cf").map(|unit| unit.id),
+            Some(1_999)
+        );
+        // Section units are not dropped to make room.
+        assert!(generated.unit("text|loc|S|widgets").is_some());
+    }
 }

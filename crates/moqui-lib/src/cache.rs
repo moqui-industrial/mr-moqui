@@ -17,9 +17,12 @@
 //! A get treats an entry as expired when `last + duration < now`, so the exact
 //! boundary is still valid. `max_entries == 0` means unlimited. The background
 //! pass orders overflow by lowest access count, then oldest access time, then
-//! insertion sequence. The evict thread holds a weak handle and sleeps in short
-//! slices, so dropping the cache does not wait for `max_check_seconds`. Each pass
-//! also drops expired entries, so they do not count toward `max_entries`.
+//! the sequence of its last put. One process-wide evict thread serves every cache with a
+//! background pass. It holds weak handles and waits on a condvar until the soonest
+//! pass is due, so closing or dropping a cache does not wait for `max_check_seconds`,
+//! and it exits when no cache is left. Each pass also drops expired entries, so they
+//! do not count toward `max_entries`. A cache with no background pass enforces the
+//! limit in `put`, once the size passes `max_entries` by a tenth.
 //!
 //! A get takes a read lock and bumps the access count and time with atomics. Values
 //! are kept behind an `Arc` and cloned after the lock is released. The eviction and
@@ -29,8 +32,8 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
+use std::time::{Duration, Instant};
 
 use indexmap::IndexMap;
 
@@ -85,8 +88,8 @@ pub struct CacheConfig {
     pub expire_creation_ms: Option<i64>,
     pub expire_update_ms: Option<i64>,
     pub clock: Option<Arc<dyn Clock>>,
-    /// When false, call [`MCache::evict_overflow`] directly. The default starts
-    /// a thread only when `max_entries` is greater than zero.
+    /// When false, `put` enforces `max_entries` itself. The default registers the
+    /// cache with the shared evict thread only when `max_entries` is greater than zero.
     pub evict_in_background: bool,
 }
 
@@ -228,6 +231,8 @@ struct CacheInner<K, V> {
     max_check_seconds: u64,
     evict_in_background: bool,
     evictor_started: AtomicBool,
+    /// True once the shared evict thread runs passes for this cache. Until then `put` evicts.
+    evictor_active: AtomicBool,
     expire_access_ms: Option<i64>,
     expire_creation_ms: Option<i64>,
     expire_update_ms: Option<i64>,
@@ -265,6 +270,7 @@ where
             max_check_seconds: config.max_check_seconds,
             evict_in_background: config.evict_in_background,
             evictor_started: AtomicBool::new(false),
+            evictor_active: AtomicBool::new(false),
             expire_access_ms: config.expire_access_ms,
             expire_creation_ms: config.expire_creation_ms,
             expire_update_ms: config.expire_update_ms,
@@ -286,7 +292,24 @@ where
             && inner.max_entries.load(Ordering::SeqCst) > 0
             && !inner.evictor_started.swap(true, Ordering::SeqCst)
         {
-            spawn_evictor(inner, inner.max_check_seconds);
+            let target: Arc<dyn EvictTarget> = Arc::new(WeakCache(Arc::downgrade(inner)));
+            let period = Duration::from_secs(inner.max_check_seconds);
+            if register_evictor(target, period) {
+                inner.evictor_active.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// With no background pass, a put that takes the size past `max_entries` plus a tenth
+    /// drops expired entries and evicts back down to `max_entries`.
+    fn evict_inline_if_needed(&self, len: usize) {
+        if self.inner.evictor_active.load(Ordering::SeqCst) {
+            return;
+        }
+        let max = self.max_entries();
+        if max > 0 && len > max.saturating_add(max / 10) {
+            let _ = self.clear_expired();
+            self.evict_overflow();
         }
     }
 
@@ -311,27 +334,29 @@ where
         self.ensure_open()?;
         let now = self.inner.clock.now_millis();
         let mut expired = false;
-        {
+        let len = {
             let mut entries = write_map(&self.inner.entries);
             if entries.get(&key).is_some_and(|entry| self.entry_expired(entry, now)) {
                 entries.remove(&key);
                 expired = true;
             }
+            let seq = self.inner.seq.fetch_add(1, Ordering::Relaxed);
             if let Some(entry) = entries.get_mut(&key) {
-                // Same rule as `MEntry.setValue`: a clock that did not move leaves the old value.
-                if now > entry.updated {
-                    entry.value = Arc::new(value);
-                    entry.updated = now;
-                }
+                // The last put wins, even within one millisecond. `MEntry.setValue` keeps the old value
+                // unless the clock moved; here only the update time never goes back, for `get_if_fresh`.
+                entry.value = Arc::new(value);
+                entry.updated = entry.updated.max(now);
+                entry.seq = seq;
             } else {
-                let seq = self.inner.seq.fetch_add(1, Ordering::Relaxed);
                 entries.insert(key, Entry::new(value, now, seq));
             }
-        }
+            entries.len()
+        };
         if expired {
             bump(&self.inner.stats.expires, 1);
         }
         bump(&self.inner.stats.puts, 1);
+        self.evict_inline_if_needed(len);
         Ok(())
     }
 
@@ -341,7 +366,7 @@ where
         self.ensure_open()?;
         let now = self.inner.clock.now_millis();
         let mut expired = false;
-        {
+        let len = {
             let mut entries = write_map(&self.inner.entries);
             if entries.get(&key).is_some_and(|entry| self.entry_expired(entry, now)) {
                 entries.remove(&key);
@@ -352,11 +377,13 @@ where
             }
             let seq = self.inner.seq.fetch_add(1, Ordering::Relaxed);
             entries.insert(key, Entry::new(value, now, seq));
-        }
+            entries.len()
+        };
         if expired {
             bump(&self.inner.stats.expires, 1);
         }
         bump(&self.inner.stats.puts, 1);
+        self.evict_inline_if_needed(len);
         Ok(true)
     }
 
@@ -449,13 +476,14 @@ where
             .collect()
     }
 
-    /// Going from unlimited to a limit starts the background pass if the config enabled it.
+    /// Going from unlimited to a limit starts the background pass if the config enabled it,
+    /// otherwise the next put past the limit evicts.
     pub fn set_max_entries(&self, max_entries: usize) {
         self.inner.max_entries.store(max_entries as u64, Ordering::SeqCst);
         self.start_evictor_if_needed();
     }
 
-    /// Remove overflow now. Tests use this instead of waiting for the thread.
+    /// Remove overflow now, down to `max_entries`.
     pub fn evict_overflow(&self) -> usize {
         if self.is_closed() {
             return 0;
@@ -539,6 +567,9 @@ where
         }
         self.inner.stop.store(true, Ordering::SeqCst);
         write_map(&self.inner.entries).clear();
+        if self.inner.evictor_active.load(Ordering::SeqCst) {
+            EVICTOR.wake.notify_all();
+        }
         Ok(())
     }
 
@@ -641,35 +672,131 @@ fn write_map<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
     lock.write().unwrap_or_else(|err| err.into_inner())
 }
 
-fn spawn_evictor<K, V>(inner: &Arc<CacheInner<K, V>>, seconds: u64)
+impl<K, V> Drop for CacheInner<K, V> {
+    fn drop(&mut self) {
+        // Lets the shared evict thread drop this registration, and exit if it was the last.
+        if *self.evictor_active.get_mut() {
+            EVICTOR.wake.notify_all();
+        }
+    }
+}
+
+/// One cache as the shared evict thread sees it, without its key and value types.
+trait EvictTarget: Send + Sync {
+    /// False once the cache is closed or dropped.
+    fn is_live(&self) -> bool;
+    fn run_pass(&self);
+}
+
+struct WeakCache<K, V>(Weak<CacheInner<K, V>>);
+
+impl<K, V> EvictTarget for WeakCache<K, V>
 where
     K: Clone + Eq + Hash + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
 {
-    let weak: Weak<CacheInner<K, V>> = Arc::downgrade(inner);
-    let period_ms = seconds.saturating_mul(1000);
-    let _ = std::thread::Builder::new()
-        .name("moqui-mcache-evict".to_string())
-        .spawn(move || {
-            let slice = Duration::from_millis(50);
-            let mut waited = 0_u64;
-            loop {
-                std::thread::sleep(slice);
-                let Some(inner) = weak.upgrade() else {
-                    break;
-                };
-                if inner.stop.load(Ordering::SeqCst) {
-                    break;
-                }
-                waited = waited.saturating_add(50);
-                if period_ms > 0 && waited >= period_ms {
-                    waited = 0;
-                    let cache = MCache { inner };
-                    let _ = cache.clear_expired();
-                    cache.evict_overflow();
-                }
-            }
-        });
+    fn is_live(&self) -> bool {
+        self.0.upgrade().is_some_and(|inner| !inner.stop.load(Ordering::SeqCst))
+    }
+
+    fn run_pass(&self) {
+        let Some(inner) = self.0.upgrade() else {
+            return;
+        };
+        let cache = MCache { inner };
+        let _ = cache.clear_expired();
+        cache.evict_overflow();
+    }
+}
+
+struct Registration {
+    target: Arc<dyn EvictTarget>,
+    period: Duration,
+    due: Instant,
+}
+
+struct EvictorState {
+    registrations: Vec<Registration>,
+    running: bool,
+}
+
+struct Evictor {
+    state: Mutex<EvictorState>,
+    wake: Condvar,
+}
+
+const EVICTOR_THREAD_NAME: &str = "moqui-mcache-evict";
+
+static EVICTOR: Evictor = Evictor {
+    state: Mutex::new(EvictorState {
+        registrations: Vec::new(),
+        running: false,
+    }),
+    wake: Condvar::new(),
+};
+
+/// Add a cache to the shared evict thread, starting the thread when none runs. False when the
+/// thread could not start, so the cache evicts in `put` instead.
+fn register_evictor(target: Arc<dyn EvictTarget>, period: Duration) -> bool {
+    let mut state = lock_map(&EVICTOR.state);
+    state.registrations.push(Registration {
+        target,
+        period,
+        due: Instant::now() + period,
+    });
+    if state.running {
+        EVICTOR.wake.notify_all();
+        return true;
+    }
+    match std::thread::Builder::new()
+        .name(EVICTOR_THREAD_NAME.to_string())
+        .spawn(run_evictor)
+    {
+        Ok(_) => {
+            state.running = true;
+            true
+        }
+        Err(err) => {
+            state.registrations.pop();
+            tracing::warn!("could not start the cache evict thread, evicting on put instead: {err}");
+            false
+        }
+    }
+}
+
+/// Run each due pass outside the lock, then wait until the soonest next one or a wake.
+fn run_evictor() {
+    let mut state = lock_map(&EVICTOR.state);
+    loop {
+        state.registrations.retain(|registration| registration.target.is_live());
+        let Some(soonest) = state.registrations.iter().map(|registration| registration.due).min() else {
+            state.running = false;
+            return;
+        };
+        let now = Instant::now();
+        if soonest > now {
+            state = EVICTOR
+                .wake
+                .wait_timeout(state, soonest - now)
+                .unwrap_or_else(|err| err.into_inner())
+                .0;
+            continue;
+        }
+        let due: Vec<Arc<dyn EvictTarget>> = state
+            .registrations
+            .iter_mut()
+            .filter(|registration| registration.due <= now)
+            .map(|registration| {
+                registration.due = now + registration.period;
+                Arc::clone(&registration.target)
+            })
+            .collect();
+        drop(state);
+        for target in due {
+            target.run_pass();
+        }
+        state = lock_map(&EVICTOR.state);
+    }
 }
 
 struct Slot {
@@ -890,12 +1017,15 @@ mod tests {
         cache.put("new", 2).unwrap();
         assert_eq!(cache.get(&"old").unwrap(), Some(1));
         clock.advance(5);
+        // No background pass, so the put past the limit evicts.
         cache.put("third", 3).unwrap();
-        assert_eq!(cache.evict_overflow(), 1);
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.evict_overflow(), 0);
         assert_eq!(cache.get(&"new").unwrap(), None);
         assert_eq!(cache.get(&"old").unwrap(), Some(1));
         assert_eq!(cache.get(&"third").unwrap(), Some(3));
         assert_eq!(cache.stats().evictions, 1);
+        cache.remove(&"third").unwrap();
         clock.set(100);
         cache.put("aged", 7).unwrap();
         clock.set(200);
@@ -907,7 +1037,8 @@ mod tests {
 
     #[test]
     fn concurrent_gets_while_evicting() {
-        let cache = MCache::<u32, Vec<u32>>::new("lists", CacheConfig::new().max_entries(100).background(false));
+        // A background pass that is never due, so the puts do not evict and the explicit pass does.
+        let cache = MCache::<u32, Vec<u32>>::new("lists", CacheConfig::new().max_entries(100).max_check_seconds(3_600));
         for key in 0..1_000 {
             cache.put(key, vec![key; 8]).unwrap();
         }
@@ -948,11 +1079,80 @@ mod tests {
         cache.put(1, 1).unwrap();
         cache.put(2, 2).unwrap();
         clock.set(100);
+        // Past the limit with no background pass: the put drops expired first, then overflow.
         cache.put(3, 3).unwrap();
-        // What the background pass does: expired first, then overflow.
-        assert_eq!(cache.clear_expired().unwrap(), 2);
-        assert_eq!(cache.evict_overflow(), 0);
+        assert_eq!(cache.len(), 1);
+        assert_eq!((cache.stats().expires, cache.stats().evictions), (2, 0));
         assert_eq!(cache.get(&3).unwrap(), Some(3));
+    }
+
+    #[test]
+    fn put_bounds_a_cache_without_a_background_pass() {
+        let cache = MCache::<u32, u32>::new("screen.url", CacheConfig::new().max_entries(100).background(false));
+        for key in 0..10_000 {
+            cache.put(key, key).unwrap();
+            assert!(cache.len() <= 110);
+        }
+        for key in 10_000..20_000 {
+            cache.put_if_absent(key, key).unwrap();
+            assert!(cache.len() <= 110);
+        }
+        assert!(cache.len() >= 100);
+        assert_eq!(cache.get(&19_999).unwrap(), Some(19_999));
+    }
+
+    #[test]
+    fn a_second_put_in_the_same_millisecond_wins() {
+        let clock = ManualClock::new(5);
+        let cache = MCache::<&'static str, i32>::new(
+            "same",
+            CacheConfig::new()
+                .clock(Arc::clone(&clock) as Arc<dyn Clock>)
+                .background(false),
+        );
+        cache.put("key", 1).unwrap();
+        cache.put("key", 2).unwrap();
+        assert_eq!(cache.get(&"key").unwrap(), Some(2));
+        // A put never moves the update time back, so `get_if_fresh` keeps its meaning.
+        assert_eq!(cache.entry_infos()[0].updated, 5);
+    }
+
+    /// Threads whose name starts with the evict thread's (Linux truncates names to 15 bytes).
+    #[cfg(target_os = "linux")]
+    fn evict_thread_count() -> usize {
+        let prefix = &EVICTOR_THREAD_NAME[..15];
+        std::fs::read_dir("/proc/self/task")
+            .unwrap()
+            .filter_map(|task| std::fs::read_to_string(task.ok()?.path().join("comm")).ok())
+            .filter(|name| name.trim_end() == prefix)
+            .count()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bounded_caches_share_one_evict_thread() {
+        let caches: Vec<MCache<u32, u32>> = (0..20)
+            .map(|index| {
+                MCache::new(
+                    format!("shared{index}"),
+                    CacheConfig::new().max_entries(5).max_check_seconds(1),
+                )
+            })
+            .collect();
+        for cache in &caches {
+            for key in 0..20 {
+                cache.put(key, key).unwrap();
+            }
+        }
+        let started = std::time::Instant::now();
+        // Another test's thread may be exiting just as this one starts, so allow it a moment.
+        while (evict_thread_count() != 1 || caches.iter().any(|cache| cache.len() > 5))
+            && started.elapsed() < Duration::from_secs(5)
+        {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(evict_thread_count(), 1);
+        assert!(caches.iter().all(|cache| cache.len() == 5));
     }
 
     #[test]

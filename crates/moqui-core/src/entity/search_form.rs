@@ -91,8 +91,11 @@ impl EntityFind {
         }
         let given = |name: &str| input.get(name).is_some_and(|value| !is_empty(value));
         if always_paginate || given("pageIndex") || given("pageSize") {
-            let index = whole(input.get("pageIndex")).unwrap_or(0);
-            let size = whole(input.get("pageSize")).or(self.limit).unwrap_or(DEFAULT_PAGE_SIZE);
+            let index = whole(input.get("pageIndex")).unwrap_or(0).max(0);
+            let size = whole(input.get("pageSize"))
+                .or(self.limit)
+                .unwrap_or(DEFAULT_PAGE_SIZE)
+                .max(0);
             self = self.offset(index.saturating_mul(size)).limit(size);
         }
         if input.get("pageNoLimit").is_some_and(truthy) {
@@ -394,6 +397,19 @@ mod tests {
         let empty = search(&[("testMedium", ""), ("other", "x")]);
         assert!(conditions(&empty).is_empty());
         assert!(!empty.find.has_search_parameters);
+    }
+
+    #[test]
+    fn a_negative_page_gives_no_negative_offset() {
+        let page = search(&[("pageIndex", "-3"), ("pageSize", "10")]);
+        assert_eq!((page.find.offset_value(), page.find.limit_value()), (Some(0), Some(10)));
+        let page = search(&[("pageIndex", "2"), ("pageSize", "-10")]);
+        assert_eq!((page.find.offset_value(), page.find.limit_value()), (Some(0), Some(0)));
+        let page = search(&[("pageIndex", "2"), ("pageSize", "10")]);
+        assert_eq!(
+            (page.find.offset_value(), page.find.limit_value()),
+            (Some(20), Some(10))
+        );
     }
 
     #[test]

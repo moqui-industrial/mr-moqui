@@ -40,6 +40,8 @@ use super::params::{self, map_row, view_columns};
 use super::value::EntityValue;
 
 const MAX_DEPTH: u32 = 32;
+/// The largest `pageSize` a REST find reads, unless the `entity_rest_max_page_size` property sets another.
+const DEFAULT_MAX_PAGE_SIZE: i64 = 1_000;
 
 /// Build a view from `parameters` and return its rows.
 pub fn dynamic_view(
@@ -470,7 +472,7 @@ fn page_numbers(page: &Page, parameters: &BTreeMap<String, Value>, total: i64) -
     let range_low = if total <= 0 {
         0
     } else {
-        index.saturating_mul(divisor) + 1
+        index.saturating_mul(divisor).saturating_add(1)
     };
     let range_high = index.saturating_mul(divisor).saturating_add(size).min(total.max(0));
     PageInfo {
@@ -649,7 +651,7 @@ fn rest_page(parameters: &BTreeMap<String, Value>) -> Page {
     let index = parameters.get("pageIndex").and_then(value_i64);
     let size = parameters.get("pageSize").and_then(value_i64);
     if index.is_some() || size.is_some() {
-        let page_size = size.unwrap_or(20).max(0);
+        let page_size = size.unwrap_or(20).clamp(0, max_page_size());
         let page_index = index.unwrap_or(0).max(0);
         return Page {
             limit: Some(page_size),
@@ -660,6 +662,15 @@ fn rest_page(parameters: &BTreeMap<String, Value>) -> Page {
         limit: Some(100),
         offset: None,
     }
+}
+
+fn max_page_size() -> i64 {
+    moqui_lib::env::get_prop_or_env("entity_rest_max_page_size")
+        .trim()
+        .parse::<i64>()
+        .ok()
+        .filter(|size| *size > 0)
+        .unwrap_or(DEFAULT_MAX_PAGE_SIZE)
 }
 
 fn pk_complete(snap: &EntitySnap, parameters: &BTreeMap<String, Value>) -> bool {
@@ -2235,4 +2246,33 @@ fn now_stamp() -> Value {
         .and_then(|duration| i64::try_from(duration.as_millis()).ok())
         .unwrap_or(0);
     basic_convert(&Value::I64(millis), "java.sql.Timestamp").value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn page_of(pairs: &[(&str, i64)]) -> Page {
+        let parameters: BTreeMap<String, Value> = pairs
+            .iter()
+            .map(|(name, value)| (name.to_string(), Value::I64(*value)))
+            .collect();
+        rest_page(&parameters)
+    }
+
+    #[test]
+    fn a_rest_page_is_capped_and_never_negative() {
+        let page = page_of(&[("pageSize", i64::MAX), ("pageIndex", 2)]);
+        assert_eq!(page.limit, Some(max_page_size()));
+        assert_eq!(page.offset, Some(2 * max_page_size()));
+        let page = page_of(&[("pageSize", 50), ("pageIndex", -3)]);
+        assert_eq!((page.limit, page.offset), (Some(50), Some(0)));
+        let page = page_of(&[("pageSize", -5), ("pageIndex", 4)]);
+        assert_eq!((page.limit, page.offset), (Some(0), Some(0)));
+        let parameters = BTreeMap::from([("pageIndex".to_string(), Value::I64(i64::MAX))]);
+        let page = rest_page(&parameters);
+        assert_eq!(page.offset, Some(i64::MAX));
+        let info = page_numbers(&page, &parameters, 10);
+        assert_eq!((info.range_low, info.range_high), (i64::MAX, 10));
+    }
 }

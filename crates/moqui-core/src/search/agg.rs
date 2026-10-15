@@ -325,17 +325,20 @@ pub fn parse_offset(text: &str) -> Result<SignedDuration, Error> {
     let amount: i64 = rest[..split]
         .parse()
         .map_err(|_| Error::new(format!("offset {text} has no amount")))?;
-    let seconds = match &rest[split..] {
-        "d" => amount * 86_400,
-        "h" => amount * 3_600,
-        "m" => amount * 60,
-        "s" => amount,
+    let per_unit = match &rest[split..] {
+        "d" => 86_400,
+        "h" => 3_600,
+        "m" => 60,
+        "s" => 1,
         "ms" => {
             let duration = SignedDuration::from_millis(amount);
             return Ok(if negative { -duration } else { duration });
         }
         other => return Err(Error::new(format!("offset unit {other} is not d, h, m, s, or ms"))),
     };
+    let seconds = amount
+        .checked_mul(per_unit)
+        .ok_or_else(|| Error::new(format!("offset {text} is too large")))?;
     let duration = SignedDuration::from_secs(seconds);
     Ok(if negative { -duration } else { duration })
 }
@@ -463,6 +466,12 @@ mod tests {
         assert_eq!(parse_offset("-1d").unwrap(), SignedDuration::from_hours(-24));
         assert_eq!(parse_offset("+6d").unwrap(), SignedDuration::from_hours(144));
         assert!(parse_offset("6").is_err());
+        assert!(parse_offset("+9223372036854775807d").is_err());
+        assert!(parse_offset("-200000000000000000h").is_err());
+        assert_eq!(
+            parse_offset("9223372036854775807s").unwrap(),
+            SignedDuration::from_secs(i64::MAX)
+        );
     }
 
     #[test]

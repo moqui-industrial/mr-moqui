@@ -198,6 +198,8 @@ fn run_level(
     if !keys.is_empty() {
         let ordinals: Vec<String> = (1..=keys.len()).map(|index| index.to_string()).collect();
         sql.push(&format!(" GROUP BY {}", ordinals.join(", ")));
+        // One more than the cap is enough to tell it was exceeded, without reading every group.
+        sql.push(&format!(" LIMIT {}", MAX_GROUPS + 1));
     }
     let rows = run(&sql)?;
     if rows.len() > MAX_GROUPS {
@@ -672,9 +674,38 @@ mod tests {
         );
         assert!(level.contains("count(DISTINCT \"f_orderId\") AS c2"), "{level}");
         assert!(level.contains("LEFT JOIN LATERAL (SELECT sum((e"), "{level}");
-        assert!(level.ends_with("GROUP BY 1"), "{level}");
+        assert!(level.ends_with("GROUP BY 1 LIMIT 65537"), "{level}");
         let Value::Map(outer) = &out["DateOuter"] else { panic!() };
         assert_eq!(outer["buckets"], Value::List(Vec::new()));
+    }
+
+    #[test]
+    fn a_level_past_the_group_cap_is_an_error() {
+        let aggs = tree(r#"{"P":{"terms":{"field":"productId","size":10}}}"#);
+        let mut run = |sql: &Sql| -> Result<Vec<DbRow>, Error> {
+            if !sql.text.contains("GROUP BY") {
+                return Ok(vec![DbRow {
+                    columns: vec![("dc".into(), Value::I64(1))],
+                }]);
+            }
+            // What the database returns for the LIMIT when there are more groups than that.
+            let limit: usize = sql.text.rsplit(' ').next().unwrap().parse().unwrap();
+            assert_eq!(limit, MAX_GROUPS + 1);
+            let row = DbRow {
+                columns: vec![("k0".into(), Value::string("p")), ("dc".into(), Value::I64(1))],
+            };
+            Ok(vec![row; limit])
+        };
+        let err = aggregate(
+            "\"search\".\"t\"",
+            &sales(),
+            &TextSetup::default(),
+            &Query::MatchAll,
+            &aggs,
+            &mut run,
+        )
+        .unwrap_err();
+        assert!(err.message().contains("more than 65536 groups"), "{err}");
     }
 
     #[test]

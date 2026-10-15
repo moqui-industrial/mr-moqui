@@ -39,7 +39,7 @@ use super::highlight::highlights;
 use super::mapping::DocumentMapping;
 use super::query::{Query, TextFields, TextMatch};
 use super::semantic::Embedder;
-use super::{Capability, SearchBackend, SearchHit, SearchPage, SearchRequest, TotalRelation};
+use super::{Capability, SearchBackend, SearchHit, SearchPage, SearchRequest, TotalRelation, MAX_WINDOW};
 
 /// The reciprocal rank fusion constant.
 pub const RRF_K: f64 = 60.0;
@@ -90,6 +90,14 @@ impl Default for HybridOptions {
     }
 }
 
+/// Candidates each branch reads: `k`, at least the requested page, at most [`MAX_WINDOW`].
+fn branch_window(request: &SearchRequest, options: &HybridOptions) -> usize {
+    options
+        .k
+        .max(request.offset.saturating_add(request.limit))
+        .clamp(1, MAX_WINDOW)
+}
+
 fn branch_request(request: &SearchRequest, query: Query, limit: usize) -> SearchRequest {
     let mut branch = SearchRequest::new(query);
     branch.limit = limit;
@@ -126,7 +134,7 @@ pub fn search(
 ) -> Result<SearchPage, Error> {
     let have = backend.capabilities();
     let text = options.text.trim();
-    let k = options.k.max(request.offset + request.limit).max(1);
+    let k = branch_window(request, options);
     let lexical = lexical_query(request, options);
     let lexical_page = backend.search(mappings, &branch_request(request, lexical.clone(), k))?;
     let mut counted = vec![lexical.clone()];
@@ -172,7 +180,7 @@ pub fn semantic_search(
     options: &HybridOptions,
     embedder: &dyn Embedder,
 ) -> Result<SearchPage, Error> {
-    let k = options.k.max(request.offset + request.limit).max(1);
+    let k = branch_window(request, options);
     let vector = embedder
         .embed(&[options.text.trim().to_string()])?
         .pop()
@@ -302,5 +310,21 @@ mod tests {
             ]
         );
         assert!((fused[0].score - (1.0 / 62.0 + 2.0 / 61.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn branch_window_covers_the_page_within_the_search_window() {
+        let mut request = SearchRequest::new(Query::MatchAll);
+        request.offset = 40;
+        request.limit = 20;
+        let options = |k| HybridOptions {
+            k,
+            ..HybridOptions::default()
+        };
+        assert_eq!(branch_window(&request, &options(50)), 60);
+        assert_eq!(branch_window(&request, &options(100)), 100);
+        assert_eq!(branch_window(&request, &options(usize::MAX)), MAX_WINDOW);
+        request.offset = usize::MAX;
+        assert_eq!(branch_window(&request, &options(0)), MAX_WINDOW);
     }
 }
