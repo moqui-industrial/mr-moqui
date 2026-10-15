@@ -88,14 +88,30 @@ impl WorkCleanup {
 
 impl Drop for WorkCleanup {
     fn drop(&mut self) {
-        if self.outermost {
-            crate::script::clear_context_stack();
-        }
-        let Some(facade) = self.factory.as_ref().and_then(|factory| factory.entity()) else {
-            return;
-        };
-        rollback_frames(&facade);
-        crate::entity::clear_thread_state(&facade, self.outermost);
+        let outermost = self.outermost;
+        let factory = self.factory.take();
+        cleanup_step("work cleanup", || {
+            if outermost {
+                crate::script::clear_context_stack();
+            }
+            let Some(facade) = factory.as_ref().and_then(|factory| factory.entity()) else {
+                return;
+            };
+            rollback_frames(&facade);
+            crate::entity::clear_thread_state(&facade, outermost);
+        });
+    }
+}
+
+/// Run a cleanup guard's work. During an unwind a second panic would abort the process, so then a panic in `work` is
+/// caught and logged; otherwise `work` runs as it is.
+pub(crate) fn cleanup_step(what: &str, work: impl FnOnce()) {
+    if !thread::panicking() {
+        work();
+        return;
+    }
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(work)) {
+        tracing::error!(cleanup = what, panic = %panic_text(payload.as_ref()), "cleanup panicked during an unwind");
     }
 }
 

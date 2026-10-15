@@ -481,7 +481,7 @@ impl Drop for RunEnd<'_> {
             messages: String::new(),
             errors: "The service job panicked".to_string(),
         };
-        finish_run(self.facade, self.job, &outcome);
+        super::pool::cleanup_step("job run end", || finish_run(self.facade, self.job, &outcome));
     }
 }
 
