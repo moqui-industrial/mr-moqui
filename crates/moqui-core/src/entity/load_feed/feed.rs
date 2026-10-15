@@ -12,12 +12,12 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Data-feed touches of each transaction frame, and the `DataFeedPending` insert at commit.
+//! Data-feed touches of each transaction frame, and the `DataFeedPending` insert at commit. The feed and document
+//! definitions it needs are read once and kept on the facade until one of them is written.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::Read;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use moqui_db::sql::{insert, quote_ident, select, Condition, FieldRef, LimitOffset};
 use moqui_lib::error::Error;
@@ -35,8 +35,6 @@ const PENDING_ENTITY: &str = "moqui.entity.feed.DataFeedPending";
 const MAX_RELATED_DOCS: usize = 10_000;
 const REALTIME_PUSH: &str = "DTFDTP_RT_PUSH";
 const SAVEPOINT: &str = "moqui_feed";
-
-static NEXT_RANDOM: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {
     /// Data-feed touches of each open transaction frame on this thread, by frame token.
@@ -143,36 +141,16 @@ fn insert_pending(
     if aggs.is_empty() {
         return Ok(Vec::new());
     }
-    let (feed_sql, feed_params) = select_sql(
-        facade,
-        "moqui.entity.feed.DataFeed",
-        &["dataFeedId", "feedReceiveServiceName", "feedDeleteServiceName"],
-        Some(Condition::equals("dataFeedTypeEnumId", Value::string(REALTIME_PUSH))),
-    )?;
-    let feed_rows = probe_query(conn, &feed_sql, &feed_params)?;
-    if feed_rows.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut services = Vec::new();
-    let mut feed_ids = Vec::new();
-    for row in &feed_rows {
-        let data_feed_id = cell_string(row, "dataFeedId");
-        if data_feed_id.is_empty() {
-            continue;
-        }
-        services.push(FeedServiceNames {
-            data_feed_id: data_feed_id.clone(),
-            receive_service: cell_string(row, "feedReceiveServiceName"),
-            delete_service: cell_string(row, "feedDeleteServiceName"),
-        });
-        feed_ids.push(data_feed_id);
-    }
-    remember_feed_services(facade, services);
-    if feed_ids.is_empty() {
-        return Ok(Vec::new());
-    }
-    let targets = feed_targets(facade, conn, &feed_ids)?;
-    if targets.is_empty() {
+    // A frame that wrote a feed definition reads its own uncommitted rows, which no other frame may see.
+    let own_definitions = aggs.keys().any(|entity_name| {
+        canonical_name(facade, entity_name).is_ok_and(|name| crate::entity::cache::is_feed_definition(&name))
+    });
+    let config = feed_config(facade, conn, !own_definitions)?;
+    let targets = &config.targets;
+    if !aggs
+        .keys()
+        .any(|entity_name| targets.iter().any(|target| &target.entity_name == entity_name))
+    {
         return Ok(Vec::new());
     }
     let insert_sql = pending_insert_sql(facade)?;
@@ -211,7 +189,7 @@ fn insert_pending(
         }
     }
     for ((document_id, id), (entity_name, operation)) in &resolved {
-        let row_id = random_id();
+        let row_id = crate::entity::uuid_v4()?;
         let params = vec![
             Value::string(&row_id),
             Value::string(document_id),
@@ -261,7 +239,7 @@ fn insert_pending(
                 if !seen.insert(dedup) {
                     continue;
                 }
-                let row_id = random_id();
+                let row_id = crate::entity::uuid_v4()?;
                 let params = vec![
                     Value::string(&row_id),
                     Value::string(&hit.data_document_id),
@@ -440,15 +418,73 @@ fn take_frame_touches(frame: Option<u64>) -> Vec<Touch> {
         .unwrap_or_default()
 }
 
-fn remember_feed_services(facade: &EntityFacade, services: Vec<FeedServiceNames>) {
+fn remember_feed_services(facade: &EntityFacade, services: &[FeedServiceNames]) {
     if services.is_empty() {
         return;
     }
     with_load_slot(facade, |slot| {
         for service in services {
-            slot.feed_services.insert(service.data_feed_id.clone(), service);
+            slot.feed_services.insert(service.data_feed_id.clone(), service.clone());
         }
     });
+}
+
+/// The real-time feeds and the document targets they index, read once per feed definition generation (see
+/// [`crate::entity::cache::feed_definition_generation`]) and kept on the facade.
+pub(super) struct FeedConfig {
+    generation: u64,
+    targets: Vec<DocTarget>,
+}
+
+/// The feed configuration, from the facade when no definition was written since it was read. Otherwise it is read
+/// on the enlisted connection, and kept when `keep`.
+fn feed_config(facade: &EntityFacade, conn: &mut dyn DbConnection, keep: bool) -> Result<Arc<FeedConfig>, Error> {
+    let generation = crate::entity::cache::feed_definition_generation(facade);
+    if keep {
+        let cached = with_load_slot(facade, |slot| slot.feed_config.clone());
+        if let Some(config) = cached.filter(|config| config.generation == generation) {
+            return Ok(config);
+        }
+    }
+    let (feed_sql, feed_params) = select_sql(
+        facade,
+        "moqui.entity.feed.DataFeed",
+        &["dataFeedId", "feedReceiveServiceName", "feedDeleteServiceName"],
+        Some(Condition::equals("dataFeedTypeEnumId", Value::string(REALTIME_PUSH))),
+    )?;
+    let feed_rows = probe_query(conn, &feed_sql, &feed_params)?;
+    let mut services = Vec::new();
+    for row in &feed_rows {
+        let data_feed_id = cell_string(row, "dataFeedId");
+        if data_feed_id.is_empty() {
+            continue;
+        }
+        services.push(FeedServiceNames {
+            data_feed_id,
+            receive_service: cell_string(row, "feedReceiveServiceName"),
+            delete_service: cell_string(row, "feedDeleteServiceName"),
+        });
+    }
+    let targets = if services.is_empty() {
+        Vec::new()
+    } else {
+        let feed_ids: Vec<String> = services.iter().map(|service| service.data_feed_id.clone()).collect();
+        feed_targets(facade, conn, &feed_ids)?
+    };
+    remember_feed_services(facade, &services);
+    let config = Arc::new(FeedConfig { generation, targets });
+    if keep {
+        with_load_slot(facade, |slot| {
+            if slot
+                .feed_config
+                .as_ref()
+                .is_none_or(|kept| kept.generation <= generation)
+            {
+                slot.feed_config = Some(Arc::clone(&config));
+            }
+        });
+    }
+    Ok(config)
 }
 
 fn feed_targets(
@@ -783,36 +819,4 @@ fn scalar_text(value: &Value) -> Option<String> {
         Value::Time(time) => Some(time.to_string()),
         Value::Bytes(_) | Value::List(_) | Value::Map(_) | Value::Object(_) => None,
     }
-}
-
-fn random_id() -> String {
-    let mut bytes = [0_u8; 16];
-    let filled = std::fs::File::open("/dev/urandom")
-        .and_then(|mut file| file.read_exact(&mut bytes))
-        .is_ok();
-    if !filled {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0);
-        let tick = NEXT_RANDOM.fetch_add(1, Ordering::Relaxed);
-        bytes[..8].copy_from_slice(&nanos.to_le_bytes());
-        bytes[8..].copy_from_slice(&tick.to_le_bytes());
-    }
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    format_uuid(&bytes)
-}
-
-fn format_uuid(bytes: &[u8; 16]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(36);
-    for (index, byte) in bytes.iter().enumerate() {
-        if index == 4 || index == 6 || index == 8 || index == 10 {
-            out.push('-');
-        }
-        out.push(char::from(HEX[usize::from(byte >> 4)]));
-        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    out
 }

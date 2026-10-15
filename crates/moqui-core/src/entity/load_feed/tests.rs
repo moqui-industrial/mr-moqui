@@ -12,8 +12,9 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
+use std::io::{Cursor, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -23,6 +24,8 @@ use moqui_db::sql::insert_or_update;
 use moqui_lib::error::Error;
 use moqui_lib::node::MNode;
 use moqui_lib::object::Value;
+use zip::write::SimpleFileOptions;
+use zip::{CompressionMethod, ZipWriter};
 
 use super::feed::TOUCHES;
 use super::{
@@ -101,6 +104,20 @@ struct Script {
     missing_feed: bool,
     /// Entity inserts fail while set, as a duplicate key would.
     fail_inserts: AtomicBool,
+    /// Queries of the feed and document definition tables.
+    definition_reads: AtomicUsize,
+    /// Savepoints set, one for each feed probe.
+    savepoints: AtomicUsize,
+}
+
+fn new_script(missing_feed: bool, fail_inserts: bool) -> Arc<Script> {
+    Arc::new(Script {
+        inserts: Mutex::new(Vec::new()),
+        missing_feed,
+        fail_inserts: AtomicBool::new(fail_inserts),
+        definition_reads: AtomicUsize::new(0),
+        savepoints: AtomicUsize::new(0),
+    })
 }
 
 struct ScriptConn {
@@ -117,6 +134,9 @@ impl DbConnection for ScriptConn {
         Ok(1)
     }
     fn query(&mut self, sql: &str, _params: &[Value]) -> Result<Vec<DbRow>, Error> {
+        if (sql.contains("DataFeed") || sql.contains("DataDocument")) && !sql.contains("DataFeedPending") {
+            self.script.definition_reads.fetch_add(1, Ordering::SeqCst);
+        }
         if self.script.missing_feed && sql.contains("DataFeed") {
             let source = std::io::Error::other("relation \"DataFeed\" does not exist");
             return Err(Error::new("postgres query").with_source(source));
@@ -171,6 +191,7 @@ impl DbConnection for ScriptConn {
         Ok(())
     }
     fn savepoint(&mut self, _name: &str) -> Result<(), Error> {
+        self.script.savepoints.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
     fn rollback_to_savepoint(&mut self, _name: &str) -> Result<(), Error> {
@@ -252,76 +273,31 @@ fn temp_dir() -> (PathBuf, DirGuard) {
     (path, guard)
 }
 
-/// A stored entry the way Java `ZipOutputStream` writes it: flag bit 3, zero local sizes, and a
-/// data descriptor after the data. Only the central directory carries the sizes.
-fn descriptor_zip(name: &str, data: &[u8]) -> Vec<u8> {
-    let plain = stored_zip(name, data);
-    let local_len = 30 + name.len() + data.len();
-    let mut out = plain[..local_len].to_vec();
-    out[6] |= 0x08;
-    out[18..26].fill(0);
-    let shift = 16_u32;
-    out.extend_from_slice(&0x0807_4b50_u32.to_le_bytes());
-    out.extend_from_slice(&0_u32.to_le_bytes());
-    out.extend_from_slice(&(u32::try_from(data.len()).unwrap()).to_le_bytes());
-    out.extend_from_slice(&(u32::try_from(data.len()).unwrap()).to_le_bytes());
-    let mut rest = plain[local_len..].to_vec();
-    // The end record's directory offset moves past the descriptor.
-    let end_at = rest.len() - 22;
-    let offset_at = end_at + 16;
-    let moved = u32::from_le_bytes(rest[offset_at..offset_at + 4].try_into().unwrap()) + shift;
-    rest[offset_at..offset_at + 4].copy_from_slice(&moved.to_le_bytes());
-    out.extend(rest);
-    out
+/// A zip of `entries`, each written with `method`.
+fn zip_of(entries: &[(&str, &[u8])], method: CompressionMethod) -> Vec<u8> {
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    for (name, data) in entries {
+        writer
+            .start_file(*name, SimpleFileOptions::default().compression_method(method))
+            .unwrap();
+        writer.write_all(data).unwrap();
+    }
+    writer.finish().unwrap().into_inner()
 }
 
-fn stored_zip(name: &str, data: &[u8]) -> Vec<u8> {
-    let name_bytes = name.as_bytes();
-    let mut local = Vec::new();
-    local.extend_from_slice(&0x0403_4b50_u32.to_le_bytes());
-    local.extend_from_slice(&20_u16.to_le_bytes());
-    local.extend_from_slice(&0_u16.to_le_bytes());
-    local.extend_from_slice(&0_u16.to_le_bytes());
-    local.extend_from_slice(&0_u16.to_le_bytes());
-    local.extend_from_slice(&0_u16.to_le_bytes());
-    local.extend_from_slice(&0_u32.to_le_bytes());
-    local.extend_from_slice(&(u32::try_from(data.len()).unwrap()).to_le_bytes());
-    local.extend_from_slice(&(u32::try_from(data.len()).unwrap()).to_le_bytes());
-    local.extend_from_slice(&(u16::try_from(name_bytes.len()).unwrap()).to_le_bytes());
-    local.extend_from_slice(&0_u16.to_le_bytes());
-    local.extend_from_slice(name_bytes);
-    local.extend_from_slice(data);
-    let mut central = Vec::new();
-    central.extend_from_slice(&0x0201_4b50_u32.to_le_bytes());
-    central.extend_from_slice(&20_u16.to_le_bytes());
-    central.extend_from_slice(&20_u16.to_le_bytes());
-    central.extend_from_slice(&0_u16.to_le_bytes());
-    central.extend_from_slice(&0_u16.to_le_bytes());
-    central.extend_from_slice(&0_u16.to_le_bytes());
-    central.extend_from_slice(&0_u16.to_le_bytes());
-    central.extend_from_slice(&0_u32.to_le_bytes());
-    central.extend_from_slice(&(u32::try_from(data.len()).unwrap()).to_le_bytes());
-    central.extend_from_slice(&(u32::try_from(data.len()).unwrap()).to_le_bytes());
-    central.extend_from_slice(&(u16::try_from(name_bytes.len()).unwrap()).to_le_bytes());
-    central.extend_from_slice(&0_u16.to_le_bytes());
-    central.extend_from_slice(&0_u16.to_le_bytes());
-    central.extend_from_slice(&0_u16.to_le_bytes());
-    central.extend_from_slice(&0_u16.to_le_bytes());
-    central.extend_from_slice(&0_u32.to_le_bytes());
-    central.extend_from_slice(&0_u32.to_le_bytes());
-    central.extend_from_slice(name_bytes);
-    let mut end = Vec::new();
-    end.extend_from_slice(&0x0605_4b50_u32.to_le_bytes());
-    end.extend_from_slice(&0_u16.to_le_bytes());
-    end.extend_from_slice(&0_u16.to_le_bytes());
-    end.extend_from_slice(&1_u16.to_le_bytes());
-    end.extend_from_slice(&1_u16.to_le_bytes());
-    end.extend_from_slice(&(u32::try_from(central.len()).unwrap()).to_le_bytes());
-    end.extend_from_slice(&(u32::try_from(local.len()).unwrap()).to_le_bytes());
-    end.extend_from_slice(&0_u16.to_le_bytes());
-    let mut out = local;
-    out.extend(central);
-    out.extend(end);
+/// A stored entry the way Java `ZipOutputStream` writes it to a stream: flag bit 3, zero local sizes, and a data
+/// descriptor after the data. Only the central directory carries the sizes.
+fn descriptor_zip(name: &str, data: &[u8]) -> Vec<u8> {
+    let mut writer = ZipWriter::new_stream(Vec::new());
+    writer
+        .start_file(
+            name,
+            SimpleFileOptions::default().compression_method(CompressionMethod::Stored),
+        )
+        .unwrap();
+    writer.write_all(data).unwrap();
+    let out = writer.finish().unwrap().into_inner();
+    assert_eq!(out[6] & 0x08, 0x08, "the entry has a data descriptor");
     out
 }
 
@@ -417,7 +393,7 @@ fn loader_filters_types_holds_services_and_reads_zip() {
 
     let zip_path = dir.join("rows.zip");
     let csv = b"moqui.test.TestEntity,seed\ntestId,testMedium\nZ1,zip\n";
-    std::fs::write(&zip_path, stored_zip("rows.csv", csv)).unwrap();
+    std::fs::write(&zip_path, zip_of(&[("rows.csv", csv)], CompressionMethod::Stored)).unwrap();
     let zip_loaded = load_entity_data(&facade, zip_path.to_str().unwrap(), &LoadOptions::default()).unwrap();
     assert_eq!(zip_loaded.records, 1);
 
@@ -427,11 +403,7 @@ fn loader_filters_types_holds_services_and_reads_zip() {
     assert_eq!(described_loaded.records, 1);
 
     let deflated = dir.join("deflated.zip");
-    let payload: &[u8] = &[
-        203, 205, 47, 44, 205, 212, 43, 73, 45, 46, 209, 11, 1, 18, 174, 121, 37, 153, 37, 149, 58, 197, 169, 169, 41,
-        92, 32, 65, 207, 20, 29, 16, 229, 155, 154, 146, 89, 154, 203, 21, 101, 168, 83, 149, 89, 192, 5, 0,
-    ];
-    std::fs::write(&deflated, deflate_zip("rows.csv", payload, csv.len())).unwrap();
+    std::fs::write(&deflated, zip_of(&[("rows.csv", csv)], CompressionMethod::Deflated)).unwrap();
     let deflated_loaded = load_entity_data(&facade, deflated.to_str().unwrap(), &LoadOptions::default()).unwrap();
     assert_eq!(deflated_loaded.records, 1);
 
@@ -589,64 +561,117 @@ fn loader_scans_one_large_element_in_linear_time() {
     assert!(started.elapsed() < Duration::from_secs(20), "{:?}", started.elapsed());
 }
 
-fn deflate_zip(name: &str, compressed: &[u8], plain_len: usize) -> Vec<u8> {
-    let name_bytes = name.as_bytes();
-    let mut local = Vec::new();
-    local.extend_from_slice(&0x0403_4b50_u32.to_le_bytes());
-    local.extend_from_slice(&20_u16.to_le_bytes());
-    local.extend_from_slice(&0_u16.to_le_bytes());
-    local.extend_from_slice(&8_u16.to_le_bytes());
-    local.extend_from_slice(&0_u16.to_le_bytes());
-    local.extend_from_slice(&0_u16.to_le_bytes());
-    local.extend_from_slice(&0_u32.to_le_bytes());
-    local.extend_from_slice(&(u32::try_from(compressed.len()).unwrap()).to_le_bytes());
-    local.extend_from_slice(&(u32::try_from(plain_len).unwrap()).to_le_bytes());
-    local.extend_from_slice(&(u16::try_from(name_bytes.len()).unwrap()).to_le_bytes());
-    local.extend_from_slice(&0_u16.to_le_bytes());
-    local.extend_from_slice(name_bytes);
-    local.extend_from_slice(compressed);
-    let mut central = Vec::new();
-    central.extend_from_slice(&0x0201_4b50_u32.to_le_bytes());
-    central.extend_from_slice(&20_u16.to_le_bytes());
-    central.extend_from_slice(&20_u16.to_le_bytes());
-    central.extend_from_slice(&0_u16.to_le_bytes());
-    central.extend_from_slice(&8_u16.to_le_bytes());
-    central.extend_from_slice(&0_u16.to_le_bytes());
-    central.extend_from_slice(&0_u16.to_le_bytes());
-    central.extend_from_slice(&0_u32.to_le_bytes());
-    central.extend_from_slice(&(u32::try_from(compressed.len()).unwrap()).to_le_bytes());
-    central.extend_from_slice(&(u32::try_from(plain_len).unwrap()).to_le_bytes());
-    central.extend_from_slice(&(u16::try_from(name_bytes.len()).unwrap()).to_le_bytes());
-    central.extend_from_slice(&0_u16.to_le_bytes());
-    central.extend_from_slice(&0_u16.to_le_bytes());
-    central.extend_from_slice(&0_u16.to_le_bytes());
-    central.extend_from_slice(&0_u16.to_le_bytes());
-    central.extend_from_slice(&0_u32.to_le_bytes());
-    central.extend_from_slice(&0_u32.to_le_bytes());
-    central.extend_from_slice(name_bytes);
-    let mut end = Vec::new();
-    end.extend_from_slice(&0x0605_4b50_u32.to_le_bytes());
-    end.extend_from_slice(&0_u16.to_le_bytes());
-    end.extend_from_slice(&0_u16.to_le_bytes());
-    end.extend_from_slice(&1_u16.to_le_bytes());
-    end.extend_from_slice(&1_u16.to_le_bytes());
-    end.extend_from_slice(&(u32::try_from(central.len()).unwrap()).to_le_bytes());
-    end.extend_from_slice(&(u32::try_from(local.len()).unwrap()).to_le_bytes());
-    end.extend_from_slice(&0_u16.to_le_bytes());
-    let mut out = local;
-    out.extend(central);
-    out.extend(end);
-    out
+#[test]
+fn zip_entries_stream_past_the_old_inflate_limit() {
+    // One element larger than the 16 MiB the hand-written inflate held, deflated.
+    let mut medium = String::with_capacity(17 * 1024 * 1024);
+    while medium.len() < 17 * 1024 * 1024 {
+        medium.push_str("0123456789abcdef");
+    }
+    let xml = format!(
+        "<entity-facade-xml type=\"seed\"><moqui.test.TestEntity testId=\"BIG\" testMedium=\"{medium}\"/>\
+         <moqui.test.TestEntity testId=\"SMALL\" testMedium=\"small\"/></entity-facade-xml>"
+    );
+    drop(medium);
+    let csv = b"moqui.test.TestEntity,seed\ntestId,testMedium\nC1,csv\n";
+    let json = br#"[{"_entity":"moqui.test.TestEntity","testId":"J1","testMedium":"json"}]"#;
+    let inner = zip_of(&[("inner.csv", csv)], CompressionMethod::Deflated);
+    let archive = zip_of(
+        &[
+            ("data/big.xml", xml.as_bytes()),
+            ("data/rows.json", json),
+            ("data/inner.zip", &inner),
+            ("data/notes.txt", b"not data"),
+        ],
+        CompressionMethod::Deflated,
+    );
+    assert!(archive.len() < xml.len() / 100, "the entry compressed");
+    let (dir, _guard) = temp_dir();
+    let path = dir.join("big.zip");
+    std::fs::write(&path, archive).unwrap();
+    let facade = open_empty();
+    let loaded = load_entity_data(&facade, path.to_str().unwrap(), &LoadOptions::default()).unwrap();
+    assert_eq!(loaded.records, 4);
 }
 
 #[test]
-fn inflate_covers_stored_fixed_and_dynamic_blocks() {
-    let stored = [1_u8, 5, 0, 0xfa, 0xff, b'h', b'e', b'l', b'l', b'o'];
-    assert_eq!(super::zip::inflate(&stored).unwrap(), b"hello");
-    let fixed = [203_u8, 72, 205, 201, 201, 7, 0];
-    assert_eq!(super::zip::inflate(&fixed).unwrap(), b"hello");
-    let dynamic = [5_u8, 192, 129, 0, 0, 0, 0, 0, 144, 54, 255, 83, 8];
-    assert_eq!(super::zip::inflate(&dynamic).unwrap(), b"A");
+fn zip_nesting_and_entry_names_are_bounded() {
+    let csv = b"moqui.test.TestEntity,seed\ntestId,testMedium\nN1,nested\n";
+    let mut archive = zip_of(&[("rows.csv", csv)], CompressionMethod::Stored);
+    for _ in 0..6 {
+        archive = zip_of(&[("inner.zip", &archive)], CompressionMethod::Stored);
+    }
+    let (dir, _guard) = temp_dir();
+    let deep = dir.join("deep.zip");
+    std::fs::write(&deep, archive).unwrap();
+    let facade = open_empty();
+    let err = load_entity_data(&facade, deep.to_str().unwrap(), &LoadOptions::default()).unwrap_err();
+    assert!(err.to_string().contains("too deep"), "{err}");
+
+    let escape = dir.join("escape.zip");
+    std::fs::write(&escape, zip_of(&[("../rows.csv", csv)], CompressionMethod::Stored)).unwrap();
+    let err = load_entity_data(&facade, escape.to_str().unwrap(), &LoadOptions::default()).unwrap_err();
+    assert!(err.to_string().contains("not a safe path"), "{err}");
+
+    let mut corrupt = zip_of(&[("rows.csv", csv)], CompressionMethod::Stored);
+    // The stored data starts after the 30-byte local header and the name; flip a byte of it so the CRC fails.
+    corrupt[30 + "rows.csv".len() + 2] ^= 0x20;
+    let bad = dir.join("bad.zip");
+    std::fs::write(&bad, corrupt).unwrap();
+    assert!(load_entity_data(&facade, bad.to_str().unwrap(), &LoadOptions::default()).is_err());
+}
+
+#[test]
+fn json_decodes_surrogate_pairs_and_bounds_nesting() {
+    let super::json::Json::Object(pairs) = super::json::parse_json(r#"{"note":"smile \ud83d\ude00"}"#).unwrap() else {
+        panic!("json is not an object");
+    };
+    assert!(matches!(&pairs[0].1, super::json::Json::String(text) if text == "smile \u{1f600}"));
+    assert!(
+        super::json::parse_json(r#""\ud83d""#).is_err(),
+        "a lone surrogate is not a character"
+    );
+
+    // Deep nesting is an error, not a stack overflow.
+    let deep = format!("{}{}", "[".repeat(100_000), "]".repeat(100_000));
+    let err = super::json::parse_json(&deep).err().expect("deep nesting is refused");
+    assert!(err.to_string().contains("recursion limit"), "{err}");
+    let facade = open_empty();
+    let file = format!(r#"[{{"_entity":"moqui.test.TestEntity","testId":"D1","testMedium":{deep}}}]"#);
+    let reader = std::io::BufReader::new(std::io::Cursor::new(file.into_bytes()));
+    assert!(super::json::load_json_reader(&facade, "deep.json", reader, &LoadOptions::default()).is_err());
+
+    // Members keep their document order.
+    let super::json::Json::Object(pairs) = super::json::parse_json(r#"{"b":1,"a":2,"c":3}"#).unwrap() else {
+        panic!("json is not an object");
+    };
+    let keys: Vec<&str> = pairs.iter().map(|(key, _)| key.as_str()).collect();
+    assert_eq!(keys, ["b", "a", "c"]);
+}
+
+#[test]
+fn json_numbers_convert_by_field_type_without_losing_digits() {
+    let facade = crate::testing::open();
+    let json = r#"[{"_entity":"moqui.test.TestEntity","testId":"N1","testNumberDecimal":12345678901234567890.123456789,
+        "testNumberInteger":9007199254740993,"testMedium":1.50}]"#;
+    let reader = std::io::BufReader::new(std::io::Cursor::new(json.as_bytes()));
+    let loaded = super::json::load_json_reader(&facade, "numbers.json", reader, &LoadOptions::default()).unwrap();
+    assert_eq!(loaded, 1);
+    let row = facade
+        .find("moqui.test.TestEntity")
+        .unwrap()
+        .eq("testId", Value::string("N1"))
+        .one()
+        .unwrap()
+        .expect("row");
+    let decimal = row.get("testNumberDecimal").cloned().unwrap_or(Value::Null);
+    assert_eq!(
+        decimal,
+        Value::Decimal("12345678901234567890.123456789".parse().unwrap()),
+        "{decimal:?}"
+    );
+    assert_eq!(row.get("testNumberInteger"), Some(&Value::I64(9_007_199_254_740_993)));
+    assert_eq!(row.get("testMedium").and_then(Value::as_str), Some("1.50"));
 }
 
 #[test]
@@ -666,11 +691,7 @@ fn mysql_try_insert_uses_duplicate_key_update() {
 
 #[test]
 fn feed_insert_uses_the_enlisted_connection_and_skips_a_missing_catalog() {
-    let script = Arc::new(Script {
-        inserts: Mutex::new(Vec::new()),
-        missing_feed: false,
-        fail_inserts: AtomicBool::new(false),
-    });
+    let script = new_script(false, false);
     let facade = open_with(Arc::new(ScriptDriver {
         script: Arc::clone(&script),
     }));
@@ -715,11 +736,7 @@ fn feed_insert_uses_the_enlisted_connection_and_skips_a_missing_catalog() {
     assert_eq!(script.inserts.lock().expect("inserts").len(), 1);
     facade.set_sim_active(false);
 
-    let missing = Arc::new(Script {
-        inserts: Mutex::new(Vec::new()),
-        missing_feed: true,
-        fail_inserts: AtomicBool::new(false),
-    });
+    let missing = new_script(true, false);
     let facade = open_with(Arc::new(ScriptDriver {
         script: Arc::clone(&missing),
     }));
@@ -738,11 +755,7 @@ fn enlist(tx: &TransactionManager) {
 
 #[test]
 fn autocommit_match_does_not_insert_on_a_later_commit() {
-    let script = Arc::new(Script {
-        inserts: Mutex::new(Vec::new()),
-        missing_feed: false,
-        fail_inserts: AtomicBool::new(false),
-    });
+    let script = new_script(false, false);
     let facade = open_with(Arc::new(ScriptDriver {
         script: Arc::clone(&script),
     }));
@@ -767,11 +780,7 @@ fn frame_touches() -> usize {
 
 #[test]
 fn a_failed_first_write_leaves_no_touch_and_feed_names_do_not_grow() {
-    let script = Arc::new(Script {
-        inserts: Mutex::new(Vec::new()),
-        missing_feed: false,
-        fail_inserts: AtomicBool::new(true),
-    });
+    let script = new_script(false, true);
     let facade = open_with(Arc::new(ScriptDriver {
         script: Arc::clone(&script),
     }));
@@ -809,4 +818,68 @@ fn a_failed_first_write_leaves_no_touch_and_feed_names_do_not_grow() {
         "one entry per feed, whatever the commits"
     );
     assert_eq!(frame_touches(), 0);
+}
+
+#[test]
+fn feed_definitions_are_read_once_until_one_is_written() {
+    let script = new_script(false, false);
+    let facade = open_with(Arc::new(ScriptDriver {
+        script: Arc::clone(&script),
+    }));
+    let reads = || script.definition_reads.load(Ordering::SeqCst);
+    facade.begin("moqui.test.Foo", None).unwrap();
+    create_foo(&facade, "F1").unwrap();
+    facade.commit("moqui.test.Foo").unwrap();
+    let first = reads();
+    assert!(first > 0, "the first commit read the definitions");
+    assert_eq!(script.inserts.lock().expect("inserts").len(), 1);
+
+    facade.begin("moqui.test.Foo", None).unwrap();
+    create_foo(&facade, "F2").unwrap();
+    facade.commit("moqui.test.Foo").unwrap();
+    assert_eq!(reads(), first, "the second commit used the kept definitions");
+    assert_eq!(script.inserts.lock().expect("inserts").len(), 2);
+
+    // A write to an entity no document reads sets no savepoint and reads nothing.
+    let savepoints = script.savepoints.load(Ordering::SeqCst);
+    facade.begin("moqui.test.TestEntity", None).unwrap();
+    let mut row = facade.make_value("moqui.test.TestEntity").unwrap();
+    row.set("testId", Value::string("T1"));
+    row.create(&facade).unwrap();
+    facade.commit("moqui.test.TestEntity").unwrap();
+    assert_eq!(script.savepoints.load(Ordering::SeqCst), savepoints);
+    assert_eq!(reads(), first);
+    assert_eq!(script.inserts.lock().expect("inserts").len(), 2);
+
+    // A definition write, here outside a transaction, makes the next commit read them again.
+    let mut feed = facade.make_value("moqui.entity.feed.DataFeed").unwrap();
+    feed.set("dataFeedId", Value::string("FEED2"));
+    feed.create(&facade).unwrap();
+    facade.begin("moqui.test.Foo", None).unwrap();
+    create_foo(&facade, "F3").unwrap();
+    facade.commit("moqui.test.Foo").unwrap();
+    assert!(reads() > first, "the definitions were read again");
+    let again = reads();
+
+    // A definition written inside the frame is read from that frame and not kept for others.
+    facade.begin("moqui.test.Foo", None).unwrap();
+    let mut document = facade.make_value("moqui.entity.document.DataDocument").unwrap();
+    document.set("dataDocumentId", Value::string("DOC2"));
+    document.create(&facade).unwrap();
+    create_foo(&facade, "F4").unwrap();
+    facade.commit("moqui.test.Foo").unwrap();
+    assert!(reads() > again);
+    let after_frame = reads();
+    facade.begin("moqui.test.Foo", None).unwrap();
+    create_foo(&facade, "F5").unwrap();
+    facade.commit("moqui.test.Foo").unwrap();
+    assert!(
+        reads() > after_frame,
+        "the commit of the definition write counts as a write"
+    );
+    let settled = reads();
+    facade.begin("moqui.test.Foo", None).unwrap();
+    create_foo(&facade, "F6").unwrap();
+    facade.commit("moqui.test.Foo").unwrap();
+    assert_eq!(reads(), settled);
 }

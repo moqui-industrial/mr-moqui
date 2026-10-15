@@ -112,6 +112,8 @@ pub struct DocCondition {
 
 #[derive(Default)]
 struct InfoCache {
+    /// The feed definition generation the infos were read at. See [`super::cache::feed_definition_generation`].
+    generation: u64,
     infos: HashMap<String, Arc<DocumentInfo>>,
 }
 
@@ -140,19 +142,30 @@ impl DocumentInfo {
     }
 }
 
-/// Load and cache a document definition. [`clear_document_cache`] drops the cache.
+/// Load and cache a document definition. A write to a `moqui.entity.document` entity, or
+/// [`clear_document_cache`], drops the cache.
 ///
 /// # Errors
 ///
 /// Returns an error when the document, its primary entity, a relationship, or a field is not
 /// defined.
 pub fn document_info(facade: &EntityFacade, data_document_id: &str) -> Result<Arc<DocumentInfo>, Error> {
-    if let Some(found) = facade.with_slot(InfoCache::default, |cache| cache.infos.get(data_document_id).cloned()) {
+    let generation = super::cache::feed_definition_generation(facade);
+    let found = facade.with_slot(InfoCache::default, |cache| {
+        if cache.generation != generation {
+            cache.infos.clear();
+            cache.generation = generation;
+        }
+        cache.infos.get(data_document_id).cloned()
+    });
+    if let Some(found) = found {
         return Ok(found);
     }
     let info = Arc::new(load_info(facade, data_document_id)?);
     facade.with_slot(InfoCache::default, |cache| {
-        cache.infos.insert(data_document_id.to_string(), Arc::clone(&info));
+        if cache.generation == generation {
+            cache.infos.insert(data_document_id.to_string(), Arc::clone(&info));
+        }
     });
     Ok(info)
 }
@@ -232,22 +245,29 @@ pub fn feed_documents(
     let info = document_info(facade, data_document_id)?;
     let batch_size = batch_size.max(1);
     let stamp = thru.unwrap_or_else(Timestamp::now);
-    let mut offset = 0i64;
+    let mut after: Option<Vec<Value>> = None;
     let mut count = 0usize;
     loop {
-        // Page on the primary entity alone, so one document never splits across pages.
+        // Page on the primary entity alone, so one document never splits across pages. Each page starts after the
+        // last key of the one before, not at an offset, so a row written while the pages are read shifts nothing:
+        // no row is read twice or skipped.
         let mut find = facade.find(&info.primary_entity)?;
         for name in &info.primary_pk {
             find = find.select_field(name).order_by(name, false);
         }
-        let keys = find
-            .offset(offset)
-            .limit(i64::try_from(batch_size).unwrap_or(i64::MAX))
-            .list()?;
-        if keys.is_empty() {
-            break;
+        if let Some(last) = &after {
+            find = find.condition(after_key(&info.primary_pk, last));
         }
-        offset += i64::try_from(keys.len()).unwrap_or(i64::MAX);
+        let keys = find.limit(i64::try_from(batch_size).unwrap_or(i64::MAX)).list()?;
+        let Some(last) = keys.iter().last() else {
+            break;
+        };
+        after = Some(
+            info.primary_pk
+                .iter()
+                .map(|name| last.get(name).cloned().unwrap_or(Value::Null))
+                .collect(),
+        );
         let ids: Vec<String> = keys
             .iter()
             .map(|value| {
@@ -270,6 +290,23 @@ pub fn feed_documents(
         }
     }
     Ok(count)
+}
+
+/// Rows whose primary key sorts after `last` in the order the pages are read: `(a, b) > (la, lb)` written out as
+/// `a > la OR (a = la AND b > lb)`.
+fn after_key(names: &[String], last: &[Value]) -> Condition {
+    let mut ors = Vec::with_capacity(names.len());
+    for (at, (name, value)) in names.iter().zip(last).enumerate() {
+        let mut ands: Vec<Condition> = names
+            .iter()
+            .zip(last)
+            .take(at)
+            .map(|(name, value)| Condition::equals(name.as_str(), value.clone()))
+            .collect();
+        ands.push(Condition::greater(name.as_str(), value.clone()));
+        ors.push(Condition::and(ands));
+    }
+    Condition::or(ors)
 }
 
 fn ids_condition(info: &DocumentInfo, ids: &[String]) -> Result<Condition, Error> {
@@ -926,5 +963,93 @@ mod tests {
             vec!["issuances", "(acquireCost ? issuedQuantity * acquireCost : null)"]
         );
         assert_eq!(field_path_to_list("(a ?: b)"), vec!["(a ?: b)"]);
+    }
+
+    fn create_row(facade: &crate::entity::EntityFacade, entity: &str, pairs: &[(&str, &str)]) {
+        let mut row = facade.make_value(entity).unwrap();
+        for (name, value) in pairs {
+            row.set(*name, moqui_lib::object::Value::string(*value));
+        }
+        row.create(facade).unwrap();
+    }
+
+    #[test]
+    fn feed_pages_by_key_so_rows_written_meanwhile_are_not_skipped_or_repeated() {
+        let facade = crate::testing::open();
+        create_row(
+            &facade,
+            super::DOCUMENT,
+            &[
+                ("dataDocumentId", "PAGED"),
+                ("primaryEntityName", "moqui.test.TestEntity"),
+            ],
+        );
+        create_row(
+            &facade,
+            super::DOCUMENT_FIELD,
+            &[
+                ("dataDocumentId", "PAGED"),
+                ("fieldSeqId", "01"),
+                ("fieldPath", "testMedium"),
+            ],
+        );
+        for id in ["A", "C", "E", "G"] {
+            create_row(&facade, "moqui.test.TestEntity", &[("testId", id), ("testMedium", id)]);
+        }
+        let mut seen = Vec::new();
+        let mut pages = 0;
+        let count = super::feed_documents(&facade, "PAGED", None, None, 2, |docs| {
+            pages += 1;
+            seen.extend(
+                docs.iter()
+                    .map(|doc| doc.get("_id").map(super::to_plain_string).unwrap_or_default()),
+            );
+            if pages == 1 {
+                // One row before the read position, which an offset would read again, and one after it.
+                create_row(
+                    &facade,
+                    "moqui.test.TestEntity",
+                    &[("testId", "B"), ("testMedium", "B")],
+                );
+                create_row(
+                    &facade,
+                    "moqui.test.TestEntity",
+                    &[("testId", "F"), ("testMedium", "F")],
+                );
+            }
+            Ok(true)
+        })
+        .unwrap();
+        assert_eq!(seen, ["A", "C", "E", "F", "G"]);
+        assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn a_document_definition_write_drops_the_cached_info() {
+        let facade = crate::testing::open();
+        create_row(
+            &facade,
+            super::DOCUMENT,
+            &[
+                ("dataDocumentId", "CACHED"),
+                ("primaryEntityName", "moqui.test.TestEntity"),
+            ],
+        );
+        let before = super::document_info(&facade, "CACHED").unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &before,
+            &super::document_info(&facade, "CACHED").unwrap()
+        ));
+        create_row(
+            &facade,
+            super::DOCUMENT_FIELD,
+            &[
+                ("dataDocumentId", "CACHED"),
+                ("fieldSeqId", "01"),
+                ("fieldPath", "testMedium"),
+            ],
+        );
+        let after = super::document_info(&facade, "CACHED").unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&before, &after), "the field write was seen");
     }
 }

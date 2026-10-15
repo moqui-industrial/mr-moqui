@@ -16,7 +16,7 @@
 //! record in its own transaction.
 
 use std::collections::{BTreeMap, HashMap};
-use std::io::{BufReader, Read};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use base64::engine::general_purpose::STANDARD;
@@ -29,14 +29,12 @@ use moqui_lib::object::{basic_convert, Value};
 use super::csv::load_csv_reader;
 use super::json::load_json_reader;
 use super::xml::{load_xml_reader, load_xml_text};
-use super::zip::load_zip_bytes;
+use super::zip::load_zip_reader;
 use super::{with_load_slot, DataFileService, LoadOptions, LoadResult, RESTRICTED_ENTITIES};
 use crate::entity::facade::EntityFacade;
 use crate::entity::fk::FkScope;
 use crate::entity::value::EntityValue;
 use crate::transaction::TransactionAttribute;
-
-const MAX_ZIP_FILE: u64 = 256 * 1024 * 1024;
 
 pub(super) struct Record {
     pub(super) entity: String,
@@ -63,7 +61,7 @@ pub fn load_entity_data(facade: &EntityFacade, location: &str, options: &LoadOpt
     }
     let _scope = FkScope::enter(options.dummy_fks, options.disable_fk_create);
     let path = resolve_location(facade, location)?;
-    let records = load_path(facade, location, &path, options, 0)?;
+    let records = load_path(facade, location, &path, options)?;
     Ok(LoadResult { records })
 }
 
@@ -79,18 +77,9 @@ pub fn load_entity_xml_text(
     Ok(LoadResult { records })
 }
 
-fn load_path(
-    facade: &EntityFacade,
-    location: &str,
-    path: &Path,
-    options: &LoadOptions,
-    depth: u32,
-) -> Result<u64, Error> {
-    if depth > 4 {
-        return Err(Error::new(format!("zip nesting is too deep at {location}")));
-    }
+fn load_path(facade: &EntityFacade, location: &str, path: &Path, options: &LoadOptions) -> Result<u64, Error> {
     if path.is_dir() {
-        return load_directory(facade, path, options, depth);
+        return load_directory(facade, path, options);
     }
     match extension(path).as_str() {
         "xml" => {
@@ -107,25 +96,13 @@ fn load_path(
         }
         "zip" => {
             let file = open_data(path, location)?;
-            let mut bytes = Vec::new();
-            file.take(MAX_ZIP_FILE + 1)
-                .read_to_end(&mut bytes)
-                .map_err(|err| Error::new(format!("could not read {location}")).with_source(err))?;
-            if bytes.len() as u64 > MAX_ZIP_FILE {
-                return Err(Error::new(format!("{location} is too large to load")));
-            }
-            load_zip_bytes(facade, location, &bytes, options, depth)
+            load_zip_reader(facade, location, BufReader::new(file), options, 0)
         }
         _ => Err(Error::new(format!("unsupported data file {location}"))),
     }
 }
 
-pub(super) fn load_directory(
-    facade: &EntityFacade,
-    path: &Path,
-    options: &LoadOptions,
-    depth: u32,
-) -> Result<u64, Error> {
+fn load_directory(facade: &EntityFacade, path: &Path, options: &LoadOptions) -> Result<u64, Error> {
     let mut names = Vec::new();
     let read = std::fs::read_dir(path)
         .map_err(|err| Error::new(format!("could not read {}", path.display())).with_source(err))?;
@@ -140,7 +117,7 @@ pub(super) fn load_directory(
     let mut total = 0_u64;
     for child in names {
         let location = child.display().to_string();
-        total = total.saturating_add(load_path(facade, &location, &child, options, depth)?);
+        total = total.saturating_add(load_path(facade, &location, &child, options)?);
     }
     Ok(total)
 }

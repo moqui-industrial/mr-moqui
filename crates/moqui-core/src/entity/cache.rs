@@ -286,6 +286,7 @@ fn end_frame_write(facade: &EntityFacade, token: u64, full_name: &str) {
             }
         }
     });
+    note_feed_definition(facade, full_name);
     if let Err(err) = clear_named(facade, full_name) {
         tracing::warn!(error = %err, entity = %full_name, "entity cache clear at transaction end failed");
     }
@@ -347,6 +348,30 @@ fn note_screen_config(facade: &EntityFacade, full_name: &str) {
     }
 }
 
+/// Counts writes to the data feed and data document definitions, here or from a cluster peer, so the feed insert
+/// and the document definitions read them again. A write inside a transaction counts again at its commit or rollback,
+/// so a definition read from another frame while it was open is not kept. Reading it takes no lock.
+pub(crate) fn feed_definition_generation(facade: &EntityFacade) -> u64 {
+    facade.inner.feed_definition_generation.load(AtomicOrdering::Acquire)
+}
+
+/// A data feed or data document definition entity: `DataFeed`, `DataFeedDocument`, or any `moqui.entity.document`
+/// entity. `DataFeedPending` rows are work, not definitions.
+pub(crate) fn is_feed_definition(full_name: &str) -> bool {
+    full_name.starts_with("moqui.entity.document.")
+        || full_name == "moqui.entity.feed.DataFeed"
+        || full_name == "moqui.entity.feed.DataFeedDocument"
+}
+
+fn note_feed_definition(facade: &EntityFacade, full_name: &str) {
+    if is_feed_definition(full_name) {
+        facade
+            .inner
+            .feed_definition_generation
+            .fetch_add(1, AtomicOrdering::AcqRel);
+    }
+}
+
 /// Clear this entity's one-cache, then publish `entity-cache-invalidate` for the primary key.
 /// The transaction flush is separate and runs at commit. The local clear stays the whole entity. Inside a
 /// transaction the clear runs again at commit or rollback, and the publish waits for commit.
@@ -361,6 +386,7 @@ pub fn on_write(
     clear_named(facade, &meta.full_name)?;
     note_frame_write(facade, entity_name, &meta.full_name)?;
     note_screen_config(facade, &meta.full_name);
+    note_feed_definition(facade, &meta.full_name);
     crate::cluster::note_write(facade, entity_name, &meta.pk_fields, values).map_err(Error::from)
 }
 
@@ -368,6 +394,7 @@ pub fn on_write(
 pub(crate) fn clear_one_cache(facade: &EntityFacade, entity_name: &str) -> Result<(), Error> {
     let meta = read_meta(facade, entity_name)?;
     note_screen_config(facade, &meta.full_name);
+    note_feed_definition(facade, &meta.full_name);
     clear_named(facade, &meta.full_name)
 }
 

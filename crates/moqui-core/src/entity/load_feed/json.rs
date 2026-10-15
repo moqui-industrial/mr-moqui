@@ -12,13 +12,16 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Entity JSON data files, read one array element at a time.
+//! Entity JSON data files, read one array element at a time. The streaming scan finds where each element ends; serde_json
+//! parses it.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::io::BufRead;
 
 use moqui_lib::error::Error;
 use moqui_lib::object::Value;
+use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 
 use super::loader::{
     apply_key_pairs, call_data_file_service, decode_binary, entity_defined, inherit_pk_fields, shape_of, shared_pks,
@@ -27,15 +30,6 @@ use super::loader::{
 use super::pull::Pull;
 use super::{DataFileService, LoadOptions};
 use crate::entity::facade::EntityFacade;
-
-pub(super) fn load_json_text(
-    facade: &EntityFacade,
-    location: &str,
-    text: &str,
-    options: &LoadOptions,
-) -> Result<u64, Error> {
-    load_json_reader(facade, location, std::io::Cursor::new(text.as_bytes()), options)
-}
 
 pub(super) fn load_json_reader(
     facade: &EntityFacade,
@@ -296,20 +290,9 @@ fn json_field_value(field_type: &str, value: &Json) -> Result<Option<Value>, Err
         Json::String(text) if field_type == "binary-very-long" => Ok(Some(Value::Bytes(decode_binary(text)))),
         Json::String(text) => Ok(Some(Value::string(text))),
         Json::Bool(flag) => Ok(Some(Value::Bool(*flag))),
-        Json::Number(text) => Ok(Some(parse_json_number(text))),
+        // The text as written: `convert_fields` converts it by the field type, so no digits are lost to `f64`.
+        Json::Number(text) => Ok(Some(Value::string(text))),
         Json::Array(_) | Json::Object(_) => Ok(None),
-    }
-}
-
-fn parse_json_number(text: &str) -> Value {
-    if text.contains(['.', 'e', 'E']) {
-        text.parse::<f64>()
-            .map(Value::F64)
-            .unwrap_or_else(|_| Value::string(text))
-    } else {
-        text.parse::<i64>()
-            .map(Value::I64)
-            .unwrap_or_else(|_| Value::string(text))
     }
 }
 
@@ -553,6 +536,8 @@ fn is_json_ws(byte: u8) -> bool {
     matches!(byte, b' ' | b'\t' | b'\n' | b'\r')
 }
 
+/// One JSON value. A number keeps its text, so a field converts it by its type and a decimal stays exact. Object
+/// members stay in document order, so nested records are written in the order they appear.
 pub(super) enum Json {
     Null,
     Bool(bool),
@@ -562,194 +547,74 @@ pub(super) enum Json {
     Object(Vec<(String, Json)>),
 }
 
-struct JsonParser<'a> {
-    text: &'a str,
-    index: usize,
-}
+/// The key under which serde_json, built with `arbitrary_precision`, hands a number to a visitor: a one-member map of
+/// the number's text.
+const NUMBER_TOKEN: &str = "$serde_json::private::Number";
 
+/// Parse one JSON value. serde_json stops nesting past 128 levels with an error.
 pub(super) fn parse_json(text: &str) -> Result<Json, Error> {
-    let mut parser = JsonParser { text, index: 0 };
-    parser.skip();
-    let value = parser.value()?;
-    parser.skip();
-    if parser.index != parser.text.len() {
-        return Err(Error::new("json has trailing data"));
-    }
-    Ok(value)
+    serde_json::from_str(text).map_err(|err| Error::new(format!("json is not valid: {err}")).with_source(err))
 }
 
-impl JsonParser<'_> {
-    fn skip(&mut self) {
-        while let Some(ch) = self.peek() {
-            if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
-                self.bump();
-            } else {
-                break;
-            }
-        }
+impl<'de> Deserialize<'de> for Json {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(JsonVisitor)
+    }
+}
+
+struct JsonVisitor;
+
+impl<'de> Visitor<'de> for JsonVisitor {
+    type Value = Json;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON value")
     }
 
-    fn peek(&self) -> Option<char> {
-        self.text[self.index..].chars().next()
+    fn visit_unit<E: de::Error>(self) -> Result<Json, E> {
+        Ok(Json::Null)
     }
 
-    fn bump(&mut self) -> Option<char> {
-        let ch = self.peek()?;
-        self.index += ch.len_utf8();
-        Some(ch)
+    fn visit_bool<E: de::Error>(self, value: bool) -> Result<Json, E> {
+        Ok(Json::Bool(value))
     }
 
-    fn value(&mut self) -> Result<Json, Error> {
-        self.skip();
-        match self.peek() {
-            Some('n') => self.literal("null", Json::Null),
-            Some('t') => self.literal("true", Json::Bool(true)),
-            Some('f') => self.literal("false", Json::Bool(false)),
-            Some('"') => Ok(Json::String(self.string()?)),
-            Some('[') => self.array(),
-            Some('{') => self.object(),
-            Some('-') | Some('0'..='9') => Ok(Json::Number(self.number()?)),
-            Some(ch) => Err(Error::new(format!("unexpected json character {ch}"))),
-            None => Err(Error::new("json ended early")),
-        }
+    fn visit_i64<E: de::Error>(self, value: i64) -> Result<Json, E> {
+        Ok(Json::Number(value.to_string()))
     }
 
-    fn literal(&mut self, expected: &str, value: Json) -> Result<Json, Error> {
-        for ch in expected.chars() {
-            if self.bump() != Some(ch) {
-                return Err(Error::new(format!("json literal {expected} is incomplete")));
-            }
-        }
-        Ok(value)
+    fn visit_u64<E: de::Error>(self, value: u64) -> Result<Json, E> {
+        Ok(Json::Number(value.to_string()))
     }
 
-    fn string(&mut self) -> Result<String, Error> {
-        if self.bump() != Some('"') {
-            return Err(Error::new("json string does not start with a quote"));
-        }
-        let mut out = String::new();
-        loop {
-            match self.bump() {
-                Some('"') => return Ok(out),
-                Some('\\') => out.push(self.escape()?),
-                Some(ch) => out.push(ch),
-                None => return Err(Error::new("json string ended early")),
-            }
-        }
+    fn visit_f64<E: de::Error>(self, value: f64) -> Result<Json, E> {
+        Ok(Json::Number(value.to_string()))
     }
 
-    fn escape(&mut self) -> Result<char, Error> {
-        match self.bump() {
-            Some('"') => Ok('"'),
-            Some('\\') => Ok('\\'),
-            Some('/') => Ok('/'),
-            Some('b') => Ok('\u{0008}'),
-            Some('f') => Ok('\u{000c}'),
-            Some('n') => Ok('\n'),
-            Some('r') => Ok('\r'),
-            Some('t') => Ok('\t'),
-            Some('u') => self.hex_char(),
-            Some(ch) => Err(Error::new(format!("json escape {ch} is not valid"))),
-            None => Err(Error::new("json escape ended early")),
-        }
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<Json, E> {
+        Ok(Json::String(value.to_string()))
     }
 
-    fn hex_char(&mut self) -> Result<char, Error> {
-        let mut value = 0_u32;
-        for _ in 0..4 {
-            let Some(ch) = self.bump() else {
-                return Err(Error::new("json hex escape ended early"));
-            };
-            let digit = ch
-                .to_digit(16)
-                .ok_or_else(|| Error::new("json hex escape is not hex"))?;
-            value = (value << 4) | digit;
-        }
-        char::from_u32(value).ok_or_else(|| Error::new("json hex escape is not a character"))
+    fn visit_string<E: de::Error>(self, value: String) -> Result<Json, E> {
+        Ok(Json::String(value))
     }
 
-    fn number(&mut self) -> Result<String, Error> {
-        let start = self.index;
-        if self.peek() == Some('-') {
-            self.bump();
-        }
-        if self.peek() == Some('0') {
-            self.bump();
-        } else if self.peek().is_some_and(|ch| ch.is_ascii_digit()) {
-            while self.peek().is_some_and(|ch| ch.is_ascii_digit()) {
-                self.bump();
-            }
-        } else {
-            return Err(Error::new("json number is incomplete"));
-        }
-        if self.peek() == Some('.') {
-            self.bump();
-            if !self.peek().is_some_and(|ch| ch.is_ascii_digit()) {
-                return Err(Error::new("json fraction is incomplete"));
-            }
-            while self.peek().is_some_and(|ch| ch.is_ascii_digit()) {
-                self.bump();
-            }
-        }
-        if self.peek().is_some_and(|ch| ch == 'e' || ch == 'E') {
-            self.bump();
-            if self.peek().is_some_and(|ch| ch == '+' || ch == '-') {
-                self.bump();
-            }
-            if !self.peek().is_some_and(|ch| ch.is_ascii_digit()) {
-                return Err(Error::new("json exponent is incomplete"));
-            }
-            while self.peek().is_some_and(|ch| ch.is_ascii_digit()) {
-                self.bump();
-            }
-        }
-        Ok(self.text[start..self.index].to_string())
-    }
-
-    fn array(&mut self) -> Result<Json, Error> {
-        self.bump();
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Json, A::Error> {
         let mut values = Vec::new();
-        self.skip();
-        if self.peek() == Some(']') {
-            self.bump();
-            return Ok(Json::Array(values));
+        while let Some(value) = seq.next_element()? {
+            values.push(value);
         }
-        loop {
-            values.push(self.value()?);
-            self.skip();
-            match self.bump() {
-                Some(',') => self.skip(),
-                Some(']') => return Ok(Json::Array(values)),
-                _ => return Err(Error::new("json array is not closed")),
-            }
-        }
+        Ok(Json::Array(values))
     }
 
-    fn object(&mut self) -> Result<Json, Error> {
-        self.bump();
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Json, A::Error> {
         let mut pairs = Vec::new();
-        self.skip();
-        if self.peek() == Some('}') {
-            self.bump();
-            return Ok(Json::Object(pairs));
+        while let Some(key) = map.next_key::<String>()? {
+            if pairs.is_empty() && key == NUMBER_TOKEN {
+                return Ok(Json::Number(map.next_value()?));
+            }
+            pairs.push((key, map.next_value()?));
         }
-        loop {
-            self.skip();
-            if self.peek() != Some('"') {
-                return Err(Error::new("json object key is not a string"));
-            }
-            let key = self.string()?;
-            self.skip();
-            if self.bump() != Some(':') {
-                return Err(Error::new("json object is missing a colon"));
-            }
-            pairs.push((key, self.value()?));
-            self.skip();
-            match self.bump() {
-                Some(',') => {}
-                Some('}') => return Ok(Json::Object(pairs)),
-                _ => return Err(Error::new("json object is not closed")),
-            }
-        }
+        Ok(Json::Object(pairs))
     }
 }

@@ -141,6 +141,8 @@ struct MemConn {
     tape: Option<Arc<Mutex<Vec<String>>>>,
     local: Option<Tables>,
     dirty: BTreeSet<String>,
+    /// The rows of the open stream not read yet. The select runs whole when the stream opens.
+    stream: Option<std::collections::VecDeque<DbRow>>,
 }
 
 struct NoCancel;
@@ -158,6 +160,7 @@ impl DbDriver for MemDriver {
             tape: self.tape.clone(),
             local: None,
             dirty: BTreeSet::new(),
+            stream: None,
         }))
     }
 }
@@ -175,20 +178,23 @@ impl DbConnection for MemConn {
         self.query(sql, params)
     }
 
-    fn open_stream(&mut self, _sql: &str, _params: &[Value]) -> Result<(), Error> {
+    fn open_stream(&mut self, sql: &str, params: &[Value]) -> Result<(), Error> {
+        let rows = self.apply(sql, params)?.1;
+        self.stream = Some(rows.into());
         Ok(())
     }
 
     fn next_row(&mut self) -> Result<Option<DbRow>, Error> {
-        Ok(None)
+        Ok(self.stream.as_mut().and_then(std::collections::VecDeque::pop_front))
     }
 
     fn close_stream(&mut self) -> Result<(), Error> {
+        self.stream = None;
         Ok(())
     }
 
     fn stream_open(&self) -> bool {
-        false
+        self.stream.is_some()
     }
 
     fn begin(&mut self) -> Result<(), Error> {

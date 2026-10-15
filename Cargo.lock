@@ -4700,12 +4700,14 @@ dependencies = [
  "rquickjs",
  "rust_xlsxwriter",
  "rustls",
+ "serde",
  "serde_json",
  "sha1 0.10.7",
  "sha2 0.10.9",
  "totp-rs",
  "tracing",
  "webpki-roots",
+ "zip",
 ]
 
 [[package]]

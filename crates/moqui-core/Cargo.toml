@@ -36,6 +36,7 @@ ammonia = { workspace = true }
 croner = { workspace = true }
 indexmap = { workspace = true }
 jiff = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 lettre = { workspace = true, optional = true }
 imap = { workspace = true, optional = true }
@@ -46,6 +47,7 @@ rcgen = { workspace = true, optional = true }
 totp-rs = { workspace = true }
 rust_xlsxwriter = { workspace = true }
 calamine = { workspace = true }
+zip = { workspace = true }
 image = { workspace = true }
 
 # No prebuilt QuickJS bindings ship for this target. bindgen needs libclang and the emsdk sysroot;

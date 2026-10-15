@@ -109,8 +109,10 @@ pub struct LoadResult {
 #[derive(Default)]
 struct LoadSlot {
     services: Vec<DataFileService>,
-    /// By `data_feed_id`, so each commit replaces the names of the feeds it saw.
+    /// By `data_feed_id`, so each read of the feed definitions replaces the names of the feeds it saw.
     feed_services: BTreeMap<String, FeedServiceNames>,
+    /// The feed definitions as last read. See `feed::feed_config`.
+    feed_config: Option<std::sync::Arc<feed::FeedConfig>>,
 }
 
 fn with_load_slot<R>(facade: &EntityFacade, body: impl FnOnce(&mut LoadSlot) -> R) -> R {
