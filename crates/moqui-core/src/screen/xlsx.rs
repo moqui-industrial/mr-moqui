@@ -23,6 +23,8 @@
 //! negatives in red, and dates as `yyyy-MM-dd`, times as `HH:mm:ss`, time stamps as `yyyy-MM-dd HH:mm`. Columns are
 //! fitted to their text. A date is an Excel serial number with a date format, as POI wrote it.
 
+use std::borrow::Cow;
+
 use jiff::civil::{Date, DateTime, Time};
 use moqui_lib::format::ToPrimitive;
 use moqui_lib::object::Value;
@@ -35,6 +37,8 @@ use crate::l10n;
 const HEADER_FILL: u32 = 0x0096_9696;
 /// Excel's limit on a sheet name.
 const SHEET_NAME_MAX: usize = 31;
+/// Excel's limit on the characters in one cell.
+const CELL_TEXT_MAX: usize = 32_767;
 
 /// How a number cell is shown: the field's `align` and the widget's currency or `.00` format.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -157,7 +161,7 @@ impl XlsxBook {
             worksheet.set_name(name).map_err(xlsx_error)?;
             for (col, title) in sheet.headers.iter().enumerate() {
                 worksheet
-                    .write_string_with_format(0, column(col)?, title, &styles.header)
+                    .write_string_with_format(0, column(col)?, cell_text(title), &styles.header)
                     .map_err(xlsx_error)?;
             }
             worksheet.set_freeze_panes(1, 0).map_err(xlsx_error)?;
@@ -167,7 +171,9 @@ impl XlsxBook {
                     let col = column(col)?;
                     match &cell.value {
                         CellValue::Empty => continue,
-                        CellValue::Text(text) => worksheet.write_string_with_format(row_num, col, text, &styles.text),
+                        CellValue::Text(text) => {
+                            worksheet.write_string_with_format(row_num, col, cell_text(text), &styles.text)
+                        }
                         CellValue::Number(number) => {
                             let format = if cell.hints.currency {
                                 &styles.currency
@@ -273,6 +279,19 @@ fn excel_time(time: Time) -> f64 {
     seconds / 86_400.0
 }
 
+/// The text cut to Excel's cell limit, ending in an ellipsis when cut, so one long value does not
+/// fail the whole export.
+fn cell_text(text: &str) -> Cow<'_, str> {
+    if text.chars().nth(CELL_TEXT_MAX).is_none() {
+        return Cow::Borrowed(text);
+    }
+    let end = text
+        .char_indices()
+        .nth(CELL_TEXT_MAX - 1)
+        .map_or(text.len(), |(at, _)| at);
+    Cow::Owned(format!("{}\u{2026}", &text[..end]))
+}
+
 fn column(index: usize) -> Result<u16, Error> {
     u16::try_from(index).map_err(|_| Error::new("Too many columns for a sheet"))
 }
@@ -343,6 +362,24 @@ mod tests {
         // 2024-03-01 is serial 45352
         let date = range.get_value((1, 2)).unwrap();
         assert_eq!(date.get_datetime().map(|found| found.as_f64()), Some(45352.0));
+    }
+
+    #[test]
+    fn a_cell_over_the_excel_limit_is_cut_with_an_ellipsis() {
+        let mut book = XlsxBook::default();
+        book.start_sheet("Long");
+        let long = "\u{e9}".repeat(CELL_TEXT_MAX + 10);
+        book.cell(&[(Value::string(long.as_str()), String::new())], CellHints::default())
+            .unwrap();
+        book.end_row();
+        let bytes = book.to_bytes().unwrap();
+        let mut sheets = calamine::open_workbook_auto_from_rs(std::io::Cursor::new(bytes)).unwrap();
+        use calamine::Reader;
+        let range = sheets.worksheet_range("Long").unwrap();
+        let text = range.get_value((1, 0)).unwrap().to_string();
+        assert_eq!(text.chars().count(), CELL_TEXT_MAX);
+        assert!(text.ends_with('\u{2026}'));
+        assert_eq!(cell_text("short"), "short");
     }
 
     #[test]

@@ -212,6 +212,7 @@ fn dispatch_request(
         new_session,
         started: Instant::now(),
     };
+    let end = EndRequest::armed();
     if let Err(err) = render::run_job(factory, &job) {
         // Only a kind names a client error. A script or load failure is a 500 whatever it says.
         let status = if err.kind() == ErrorKind::General {
@@ -225,7 +226,7 @@ fn dispatch_request(
         }
         return Ok(web::json_error(status, &message));
     }
-    if let Err(err) = user::end_request() {
+    if let Err(err) = end.finish() {
         if !web::output_sent() {
             return Ok(web::json_error(500, &web::error_text(500, &err)));
         }
@@ -236,6 +237,31 @@ fn dispatch_request(
         headers,
         body,
     })
+}
+
+/// Ends the request's session work ([`user::end_request`]) on every path: [`EndRequest::finish`]
+/// hands the caller its error, and a drop without it (a failed request) logs the error.
+struct EndRequest(bool);
+
+impl EndRequest {
+    fn armed() -> Self {
+        Self(true)
+    }
+
+    fn finish(mut self) -> Result<(), Error> {
+        self.0 = false;
+        user::end_request()
+    }
+}
+
+impl Drop for EndRequest {
+    fn drop(&mut self) {
+        if self.0 {
+            if let Err(err) = user::end_request() {
+                tracing::error!("Error ending a failed request's session: {err}");
+            }
+        }
+    }
 }
 
 /// The html page for a failure, when the client takes html and the path is not an API path: the `error/*`
@@ -418,6 +444,7 @@ pub fn check_permission(
         .map(|(name, value)| (name.clone(), Value::string(value)))
         .collect();
     let _web = web::install(parameters.clone());
+    let end = EndRequest::armed();
     authenticate(request, &parameters)?;
     let check = if user::current_username()?.is_none() {
         PermissionCheck::Unauthenticated
@@ -426,7 +453,7 @@ pub fn check_permission(
     } else {
         PermissionCheck::Forbidden
     };
-    user::end_request()?;
+    end.finish()?;
     drop(guard);
     Ok(check)
 }

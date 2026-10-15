@@ -34,6 +34,12 @@ const STACK_LIMIT: usize = 4 * 1024 * 1024;
 ///
 /// Returns an error when the compiler bundle does not load or the compile script itself fails.
 pub fn compile_errors(compiler_source: &str, templates: &[String]) -> Result<Vec<String>, Error> {
+    let count = u32::try_from(templates.len().max(1)).unwrap_or(u32::MAX);
+    compile_errors_within(compiler_source, templates, COMPILE_TIME_LIMIT.saturating_mul(count))
+}
+
+/// [`compile_errors`], with the compile script stopped once `limit` has passed.
+fn compile_errors_within(compiler_source: &str, templates: &[String], limit: Duration) -> Result<Vec<String>, Error> {
     let runtime = Runtime::new().map_err(|err| Error::new(err.to_string()))?;
     runtime.set_memory_limit(MEMORY_LIMIT);
     runtime.set_max_stack_size(STACK_LIMIT);
@@ -53,11 +59,13 @@ pub fn compile_errors(compiler_source: &str, templates: &[String]) -> Result<Vec
                     onError: function (err) {{ errors.push(index + ': ' + err.code + ' ' + err.message + (err.loc ? ' at ' + err.loc.start.line + ':' + err.loc.start.column : '')); }} }});
             }}); return JSON.stringify(errors); }})()"
         );
-        let json: String = ctx
+        COMPILE_DEADLINE.with(|deadline| deadline.set(Some(Instant::now() + limit)));
+        let json: Result<String, Error> = ctx
             .eval(script)
             .catch(&ctx)
-            .map_err(|err| Error::new(format!("the Vue compiler failed: {err}")))?;
-        serde_json::from_str(&json).map_err(|err| Error::new(err.to_string()))
+            .map_err(|err| Error::new(format!("the Vue compiler failed: {err}")));
+        COMPILE_DEADLINE.with(|deadline| deadline.set(None));
+        serde_json::from_str(&json?).map_err(|err| Error::new(err.to_string()))
     })
 }
 
@@ -216,4 +224,20 @@ pub fn precompiled_components(compiler_source: &str, scripts: &[&str]) -> Result
     }
     out.push_str("    };\n})(globalThis.moqui);\n");
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::compile_errors_within;
+
+    #[test]
+    fn a_compile_that_loops_stops_at_the_deadline() {
+        let looping = "var VueCompilerDOM = { compile: function () { for (;;) {} } };";
+        let started = Instant::now();
+        let err = compile_errors_within(looping, &["<p/>".to_string()], Duration::from_millis(100)).unwrap_err();
+        assert!(err.to_string().contains("the Vue compiler failed"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
 }

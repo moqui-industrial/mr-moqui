@@ -219,6 +219,31 @@ fn login_method_parameter_and_csrf_misses() {
 }
 
 #[test]
+fn guarantee_mode_flushes_the_session_of_a_failed_request() {
+    let world = World::open("");
+    world
+        .factory
+        .sessions
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .mode = crate::user::session::FlushMode::Guarantee;
+    let root = webroot().to_string_lossy().into_owned();
+    let response = serve_at(&world.factory, request("GET", "/no/such/screen"), &root);
+    assert_eq!(response.status, 404, "{}", response.body_text());
+    let cookie = header_value(&response, "Set-Cookie").expect("session cookie");
+    let value = cookie.split(';').next().unwrap().split_once('=').unwrap().1;
+    let session_id = crate::user::verify_session_cookie(value).unwrap().expect("session id");
+    let row = world
+        .facade
+        .find("moqui.server.HttpSession")
+        .unwrap()
+        .eq("sessionId", Value::string(&session_id))
+        .one()
+        .unwrap();
+    assert!(row.is_some(), "the failed request's session was not written");
+}
+
+#[test]
 fn login_sets_a_cookie_and_the_next_request_is_that_user() {
     let world = World::open("");
     world.user("admin", None);

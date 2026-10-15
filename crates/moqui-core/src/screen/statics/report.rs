@@ -25,6 +25,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use moqui_lib::node::MNode;
@@ -627,8 +628,9 @@ pub fn static_reports_for_files(
         );
     }
     xml.push_str("</subscreens></screen>");
-    let root = std::env::temp_dir().join(format!("moqui-qvt-report-{}.xml", std::process::id()));
-    std::fs::write(&root, xml).map_err(|err| Error::new(format!("{}: {err}", root.display())))?;
+    let dir = TempDir::create("moqui-qvt-report")?;
+    let root = dir.0.join("root.xml");
+    write_new(&root, &xml)?;
     let root_location = root.to_string_lossy().into_owned();
     let context = factory.new_context();
     let _entered = context.enter();
@@ -638,6 +640,58 @@ pub fn static_reports_for_files(
         let report = static_report(factory, &root_location, &format!("/S{index}"), &BTreeMap::new(), false);
         out.push((location.clone(), report));
     }
-    let _ = std::fs::remove_file(&root);
     Ok(out)
+}
+
+/// A directory under the system temp dir with a random name, made by this process alone (owner-only
+/// on unix), and removed with what is in it on drop.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn create(prefix: &str) -> Result<Self, Error> {
+        let mut bytes = [0u8; 8];
+        getrandom::fill(&mut bytes).map_err(|err| Error::new(format!("could not read random bytes: {err}")))?;
+        let path = std::env::temp_dir().join(format!("{prefix}-{:016x}", u64::from_le_bytes(bytes)));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder
+            .create(&path)
+            .map_err(|err| Error::new(format!("{}: {err}", path.display())))?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn write_new(path: &Path, text: &str) -> Result<(), Error> {
+    use std::io::Write as _;
+    std::fs::File::create_new(path)
+        .and_then(|mut file| file.write_all(text.as_bytes()))
+        .map_err(|err| Error::new(format!("{}: {err}", path.display())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{write_new, TempDir};
+
+    #[test]
+    fn the_report_root_dir_is_random_and_removed() {
+        let first = TempDir::create("moqui-qvt-report").unwrap();
+        let second = TempDir::create("moqui-qvt-report").unwrap();
+        assert_ne!(first.0, second.0);
+        let file = first.0.join("root.xml");
+        write_new(&file, "<screen/>").unwrap();
+        assert!(
+            write_new(&file, "<screen/>").is_err(),
+            "an existing file is not written over"
+        );
+        let path = first.0.clone();
+        drop(first);
+        assert!(!path.exists());
+    }
 }
