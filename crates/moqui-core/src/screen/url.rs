@@ -427,6 +427,7 @@ fn not_found(name: &str, under: &ScreenDef) -> Error {
         ErrorKind::NotFound,
         format!("screen path not found: {name} under {}", under.location),
     )
+    .with_missing_path(name)
 }
 
 pub(crate) fn split_path(path: &str) -> Vec<String> {

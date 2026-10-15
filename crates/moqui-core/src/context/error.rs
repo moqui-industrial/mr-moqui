@@ -68,6 +68,7 @@ pub struct Error {
     message: String,
     kind: ErrorKind,
     denied: Option<Box<DeniedArtifact>>,
+    missing_path: Option<Box<str>>,
     source: Option<Box<dyn std::error::Error + Send + Sync>>,
 }
 
@@ -77,6 +78,7 @@ impl Error {
             message: message.into(),
             kind: ErrorKind::General,
             denied: None,
+            missing_path: None,
             source: None,
         }
     }
@@ -100,10 +102,26 @@ impl Error {
 
     /// The refused artifact of the first context error in the source chain that names one.
     pub fn denied(&self) -> Option<&DeniedArtifact> {
+        self.first_in_chain(|err| err.denied.as_deref())
+    }
+
+    /// A `NotFound` error for a screen path: `name` is the path segment no screen or transition matched.
+    #[must_use]
+    pub fn with_missing_path(mut self, name: impl Into<String>) -> Self {
+        self.missing_path = Some(name.into().into_boxed_str());
+        self
+    }
+
+    /// The screen path segment that was not found, of the first context error in the source chain that names one.
+    pub fn missing_path(&self) -> Option<&str> {
+        self.first_in_chain(|err| err.missing_path.as_deref())
+    }
+
+    fn first_in_chain<'a, T: ?Sized>(&'a self, pick: impl Fn(&'a Error) -> Option<&'a T>) -> Option<&'a T> {
         let mut current: Option<&(dyn std::error::Error + 'static)> = Some(self);
         while let Some(found) = current {
-            if let Some(denied) = found.downcast_ref::<Error>().and_then(|err| err.denied.as_deref()) {
-                return Some(denied);
+            if let Some(picked) = found.downcast_ref::<Error>().and_then(&pick) {
+                return Some(picked);
             }
             current = found.source();
         }
@@ -131,6 +149,7 @@ impl From<moqui_lib::error::Error> for Error {
                     message: err.message().to_string(),
                     kind: ErrorKind::of(&err),
                     denied: None,
+                    missing_path: None,
                     source: Some(Box::new(err)),
                 }
             }
@@ -141,6 +160,7 @@ impl From<moqui_lib::error::Error> for Error {
                 message: other.to_string(),
                 kind: ErrorKind::of(other.as_ref()),
                 denied: None,
+                missing_path: None,
                 source: Some(other),
             },
         }

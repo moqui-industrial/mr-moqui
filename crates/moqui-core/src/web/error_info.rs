@@ -74,11 +74,7 @@ impl ErrorInfo {
             action: denied.action.clone(),
             artifact_type: denied.artifact_type.clone(),
         });
-        let path_from_last_screen = message
-            .strip_prefix("screen path not found: ")
-            .and_then(|rest| rest.split(" under ").next())
-            .unwrap_or_default()
-            .to_string();
+        let path_from_last_screen = error.missing_path().unwrap_or_default().to_string();
         Self {
             status,
             trace: message.lines().map(str::to_string).collect(),
@@ -134,10 +130,16 @@ mod tests {
         let error = Error::of_kind(
             ErrorKind::NotFound,
             "screen path not found: Nope under component://x/y.xml",
-        );
+        )
+        .with_missing_path("Nope");
+        // Carried through a lib-typed closure and back, as a transaction body does.
+        let error = Error::from(moqui_lib::error::Error::from(error));
         let info = ErrorInfo::new(404, &error, "/Nope");
         assert_eq!(info.path_from_last_screen, "Nope");
         assert!(info.artifact.is_none());
+        // Message text alone is not a missing path.
+        let text_only = Error::of_kind(ErrorKind::NotFound, "screen path not found: Nope under x");
+        assert_eq!(ErrorInfo::new(404, &text_only, "/Nope").path_from_last_screen, "");
     }
 
     #[test]
