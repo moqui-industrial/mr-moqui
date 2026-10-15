@@ -96,7 +96,7 @@ impl EntityDbMeta<'_> {
                 }
             }
         }
-        let skip_fk = self.facade.flags().disable_fk_create;
+        let skip_fk = super::fk::fk_create_disabled(self.facade);
         let started = std::time::Instant::now();
         let mut totals = Counts::default();
         let mut groups: Vec<String> = batches.keys().cloned().collect();

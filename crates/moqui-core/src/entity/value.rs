@@ -181,7 +181,7 @@ impl EntityFacade {
 
     fn write_update(&self, entity_name: &str, values: &BTreeMap<String, Value>) -> Result<(), Error> {
         let plain = self.normalize_values(entity_name, values, true)?;
-        let rules = load_feed::match_rules_with(self, entity_name, "update", Some(&plain));
+        let rules = load_feed::match_rules_with(self, entity_name, "update");
         self.reject_view(entity_name, "update")?;
         let has_columns = self.with_entity(entity_name, |entity, _, _| {
             Ok(!present_columns(entity, &plain, true, true).is_empty())
@@ -240,7 +240,7 @@ impl EntityFacade {
         // Update already matched in `write_update`, including the no-column return.
         let rules = match rules {
             Some(rules) => rules,
-            None => load_feed::match_rules_with(self, entity_name, seal_operation, Some(&plain)),
+            None => load_feed::match_rules_with(self, entity_name, seal_operation),
         };
         let eca = crate::user::context_entered();
         let mut plain = plain;
@@ -253,7 +253,9 @@ impl EntityFacade {
             }
         }
         let cache_values = plain.clone();
-        if cache::gate_write(self, entity_name, operation, &plain)? == WriteGate::Proceed {
+        if cache::gate_write(self, entity_name, operation, &plain)? == WriteGate::Handled {
+            load_feed::note_touch(self, entity_name, seal_operation, Some(&cache_values));
+        } else {
             let after_values = eca.then(|| plain.clone());
             let prepared = self.seal_values(entity_name, seal_operation, plain)?;
             let (sql, params) = self.with_group(entity_name, |entity, dialect, _, _| {
@@ -278,6 +280,7 @@ impl EntityFacade {
                 Ok((sql, params))
             })?;
             execute_tx(&tx, &sql, &params)?;
+            load_feed::note_touch(self, entity_name, seal_operation, Some(&cache_values));
             if let Some(mut values) = after_values {
                 crate::service::run_matched_eca(self, entity_name, seal_operation, false, &rules, &mut values)?;
             }

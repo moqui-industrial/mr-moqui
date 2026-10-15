@@ -51,6 +51,9 @@ static SIM_SEQ: AtomicU64 = AtomicU64::new(1);
 thread_local! {
     /// Held rows by transaction frame token.
     static TX_HOLD: RefCell<HashMap<u64, Vec<Held>>> = RefCell::new(HashMap::new());
+    /// Entities written by each open transaction frame, by frame token. Their finds skip the one-cache until the
+    /// frame ends, since a find on the enlisted connection sees the frame's uncommitted rows.
+    static TX_WRITTEN: RefCell<HashMap<u64, HashSet<String>>> = RefCell::new(HashMap::new());
     static SIM: RefCell<Vec<SimSession>> = const { RefCell::new(Vec::new()) };
     /// Sim mode on this thread without a schema, which tests set through `set_sim_active`.
     static SIM_FLAG: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -174,7 +177,7 @@ pub fn before_find(facade: &EntityFacade, lookup: &FindLookup) -> Option<EntityL
             }
         }
     }
-    if meta.caches(lookup) {
+    if meta.caches(lookup) && !frame_wrote(facade, &lookup.entity_name, &meta) {
         return cache_get(facade, &meta.full_name, lookup);
     }
     None
@@ -205,18 +208,72 @@ pub fn before_count(facade: &EntityFacade, entity_name: &str, condition: Option<
 }
 
 /// Store a find result when the entity cache attribute is `true`. Rows are already plaintext.
+///
+/// Not stored while the active frame has written the entity (any entity, for a view): those rows may be
+/// uncommitted.
 pub fn after_find(facade: &EntityFacade, lookup: &FindLookup, rows: &EntityList) -> Result<(), Error> {
     let meta = read_meta(facade, &lookup.entity_name)?;
-    if !meta.caches(lookup) {
+    if !meta.caches(lookup) || frame_wrote(facade, &lookup.entity_name, &meta) {
         return Ok(());
     }
     let key = lookup_key(lookup);
-    let stored = rows.clone();
     let name = meta.full_name;
-    facade.with_slot(OneCaches::default, |caches| {
-        let cache = caches.lists.entry(name.clone()).or_insert_with(|| list_cache(&name));
-        cache.put(key, stored)
+    let cache = facade.with_slot(OneCaches::default, |caches| {
+        caches.lists.entry(name.clone()).or_insert_with(|| list_cache(&name)).clone()
+    });
+    cache.put(key, rows.clone())
+}
+
+/// True when this thread's active frame for the entity has written it. For a view, any write in the frame counts,
+/// since member writes do not name the view.
+fn frame_wrote(facade: &EntityFacade, entity_name: &str, meta: &ReadMeta) -> bool {
+    if TX_WRITTEN.with(|slot| slot.borrow().is_empty()) {
+        return false;
+    }
+    let Some(token) = facade.transactions_for(entity_name).ok().and_then(|tx| tx.frame_token()) else {
+        return false;
+    };
+    TX_WRITTEN.with(|slot| {
+        slot.borrow()
+            .get(&token)
+            .is_some_and(|names| if meta.is_view { !names.is_empty() } else { names.contains(&meta.full_name) })
     })
+}
+
+/// Inside a transaction, record the write on the frame and clear the one-cache again when the frame commits or
+/// rolls back, so rows read and cached by other threads before the commit do not stay. Hooks go on once per entity
+/// per frame.
+fn note_frame_write(facade: &EntityFacade, entity_name: &str, full_name: &str) -> Result<(), Error> {
+    let tx = facade.transactions_for(entity_name)?;
+    let Some(token) = tx.frame_token() else {
+        return Ok(());
+    };
+    if TX_WRITTEN.with(|slot| slot.borrow().get(&token).is_some_and(|names| names.contains(full_name))) {
+        return Ok(());
+    }
+    let (commit_facade, commit_name) = (facade.clone(), full_name.to_string());
+    tx.on_commit(move || end_frame_write(&commit_facade, token, &commit_name))?;
+    let (rollback_facade, rollback_name) = (facade.clone(), full_name.to_string());
+    tx.on_rollback(move || end_frame_write(&rollback_facade, token, &rollback_name))?;
+    TX_WRITTEN.with(|slot| {
+        slot.borrow_mut().entry(token).or_default().insert(full_name.to_string());
+    });
+    Ok(())
+}
+
+fn end_frame_write(facade: &EntityFacade, token: u64, full_name: &str) {
+    TX_WRITTEN.with(|slot| {
+        let mut written = slot.borrow_mut();
+        if let Some(names) = written.get_mut(&token) {
+            names.remove(full_name);
+            if names.is_empty() {
+                written.remove(&token);
+            }
+        }
+    });
+    if let Err(err) = clear_named(facade, full_name) {
+        tracing::warn!(error = %err, entity = %full_name, "entity cache clear at transaction end failed");
+    }
 }
 
 /// Hold the write, or send it to the sim overlay. `Proceed` leaves SQL to the caller.
@@ -278,7 +335,8 @@ fn note_screen_config(facade: &EntityFacade, full_name: &str) {
 }
 
 /// Clear this entity's one-cache, then publish `entity-cache-invalidate` for the primary key.
-/// The transaction flush is separate and runs at commit. The local clear stays the whole entity.
+/// The transaction flush is separate and runs at commit. The local clear stays the whole entity. Inside a
+/// transaction the clear runs again at commit or rollback, and the publish waits for commit.
 pub fn on_write(
     facade: &EntityFacade,
     entity_name: &str,
@@ -288,6 +346,7 @@ pub fn on_write(
     let _ = operation;
     let meta = read_meta(facade, entity_name)?;
     clear_named(facade, &meta.full_name)?;
+    note_frame_write(facade, entity_name, &meta.full_name)?;
     note_screen_config(facade, &meta.full_name);
     crate::cluster::note_write(facade, entity_name, &meta.pk_fields, values).map_err(Error::from)
 }
@@ -300,12 +359,10 @@ pub(crate) fn clear_one_cache(facade: &EntityFacade, entity_name: &str) -> Resul
 }
 
 fn clear_named(facade: &EntityFacade, full_name: &str) -> Result<(), Error> {
-    facade.with_slot(OneCaches::default, |caches| {
-        if let Some(cache) = caches.lists.get(full_name) {
-            cache.clear()?;
-        }
-        Ok(())
-    })
+    match facade.with_slot(OneCaches::default, |caches| caches.lists.get(full_name).cloned()) {
+        Some(cache) => cache.clear(),
+        None => Ok(()),
+    }
 }
 
 /// The list cache of each entity that has cached a find, for the cache admin screen. The names are
@@ -1066,10 +1123,8 @@ impl SimView {
 
 fn cache_get(facade: &EntityFacade, entity_name: &str, lookup: &FindLookup) -> Option<EntityList> {
     let key = lookup_key(lookup);
-    facade.with_slot(OneCaches::default, |caches| {
-        let cache = caches.lists.get(entity_name)?;
-        cache.get(&key).ok().flatten()
-    })
+    let cache = facade.with_slot(OneCaches::default, |caches| caches.lists.get(entity_name).cloned())?;
+    cache.get(&key).ok().flatten()
 }
 
 fn list_cache(name: &str) -> MCache<String, EntityList> {
@@ -1519,5 +1574,41 @@ mod tests {
         assert_eq!(statements(&tape, "INSERT"), 2, "the commit writes nothing twice");
         assert!(found(&facade, TEST, "testId", "Held"));
         assert!(found(&facade, TEST, "testId", "After"));
+    }
+
+    #[test]
+    fn a_cached_find_of_an_entity_the_frame_wrote_is_not_kept_after_rollback() {
+        let facade = testing::open();
+        let tx = facade.transactions_for(TYPE).unwrap();
+        assert!(tx.begin(None).unwrap());
+        put(&facade, TYPE, "enumTypeId", "PHANTOM");
+        assert!(found(&facade, TYPE, "enumTypeId", "PHANTOM"), "the frame reads its own write");
+        tx.rollback().unwrap();
+        assert!(
+            !found(&facade, TYPE, "enumTypeId", "PHANTOM"),
+            "the rolled-back row was not cached"
+        );
+        assert!(super::TX_WRITTEN.with(|slot| slot.borrow().is_empty()));
+    }
+
+    #[test]
+    fn a_commit_clears_rows_another_thread_cached_before_it() {
+        let facade = testing::open();
+        assert!(!found(&facade, TYPE, "enumTypeId", "NEW"), "caches the empty result");
+        let tx = facade.transactions_for(TYPE).unwrap();
+        assert!(tx.begin(None).unwrap());
+        put(&facade, TYPE, "enumTypeId", "NEW");
+        let reader = facade.clone();
+        let before_commit = std::thread::spawn(move || found(&reader, TYPE, "enumTypeId", "NEW"))
+            .join()
+            .unwrap();
+        assert!(!before_commit, "another thread reads the committed rows and caches them");
+        assert!(
+            found(&facade, TYPE, "enumTypeId", "NEW"),
+            "the writing frame does not read the other thread's cached rows"
+        );
+        tx.commit().unwrap();
+        assert!(found(&facade, TYPE, "enumTypeId", "NEW"), "the commit cleared the cache");
+        assert!(super::TX_WRITTEN.with(|slot| slot.borrow().is_empty()));
     }
 }

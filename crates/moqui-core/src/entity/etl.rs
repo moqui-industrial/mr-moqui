@@ -125,16 +125,9 @@ impl Loader for EtlLoader {
             tracing::info!(entity = %entity_name, "Tried to load ETL entry with invalid entity name");
             return Ok(());
         }
-        // The dummy-fks flag is the facade's, as for the data loader. It is set for this write only.
-        let previous = self.facade.flags().dummy_fks;
-        if self.dummy_fks {
-            self.facade.set_dummy_fks(true);
-        }
-        let result = self.write(&entity_name, entry);
-        if self.dummy_fks {
-            self.facade.set_dummy_fks(previous);
-        }
-        result
+        // Dummy foreign keys are on for this thread and this write only, as for the data loader.
+        let _scope = super::fk::FkScope::enter(self.dummy_fks, false);
+        self.write(&entity_name, entry)
     }
 
     fn complete(&mut self, etl: &SimpleEtl) {

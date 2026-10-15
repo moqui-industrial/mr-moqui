@@ -19,11 +19,11 @@
 //! Feed receive and delete service names are recorded, and `service::schedule_feed_receive` hands
 //! the pending rows to a service worker after commit. Documents are indexed only when search is attached.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread::ThreadId;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -34,6 +34,7 @@ use moqui_lib::node::MNode;
 use moqui_lib::object::{basic_convert, Value};
 
 use super::facade::EntityFacade;
+use super::fk::FkScope;
 use super::value::EntityValue;
 use crate::driver::{DbConnection, DbRow};
 use crate::transaction::{TransactionAttribute, TransactionManager};
@@ -50,6 +51,11 @@ const MAX_ZIP_FILE: u64 = 256 * 1024 * 1024;
 const SAVEPOINT: &str = "moqui_feed";
 
 static NEXT_RANDOM: AtomicU64 = AtomicU64::new(1);
+
+thread_local! {
+    /// Data-feed touches of each open transaction frame on this thread, by frame token.
+    static TOUCHES: RefCell<HashMap<u64, Vec<Touch>>> = RefCell::new(HashMap::new());
+}
 
 /// One ECA rule. `actions` is the stored action body. It is not executed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -132,9 +138,6 @@ pub struct LoadResult {
 }
 
 struct Touch {
-    thread: ThreadId,
-    /// The transaction frame the write ran in, so a `force-new` commit takes only its own.
-    frame: Option<u64>,
     entity_name: String,
     operation: String,
     /// The written values. The feed reads keys from them, and a related delete walks back to the
@@ -146,9 +149,9 @@ struct Touch {
 struct LoadSlot {
     eca_loaded: bool,
     eca_rules: Vec<EcaRule>,
-    touches: Vec<Touch>,
     services: Vec<DataFileService>,
-    feed_services: Vec<FeedServiceNames>,
+    /// By `data_feed_id`, so each commit replaces the names of the feeds it saw.
+    feed_services: BTreeMap<String, FeedServiceNames>,
 }
 
 struct Record {
@@ -183,42 +186,6 @@ struct DocTarget {
     paths: Vec<Vec<(String, String)>>,
 }
 
-struct FlagGuard<'a> {
-    facade: &'a EntityFacade,
-    dummy: Option<bool>,
-    disable_fk: Option<bool>,
-}
-
-impl<'a> FlagGuard<'a> {
-    fn engage(facade: &'a EntityFacade, options: &LoadOptions) -> Self {
-        let mut guard = Self {
-            facade,
-            dummy: None,
-            disable_fk: None,
-        };
-        if options.dummy_fks {
-            guard.dummy = Some(facade.flags().dummy_fks);
-            facade.set_dummy_fks(true);
-        }
-        if options.disable_fk_create {
-            guard.disable_fk = Some(facade.flags().disable_fk_create);
-            facade.set_disable_fk_create(true);
-        }
-        guard
-    }
-}
-
-impl Drop for FlagGuard<'_> {
-    fn drop(&mut self) {
-        if let Some(value) = self.dummy {
-            self.facade.set_dummy_fks(value);
-        }
-        if let Some(value) = self.disable_fk {
-            self.facade.set_disable_fk_create(value);
-        }
-    }
-}
-
 fn with_load_slot<R>(facade: &EntityFacade, body: impl FnOnce(&mut LoadSlot) -> R) -> R {
     facade.with_slot(LoadSlot::default, body)
 }
@@ -227,47 +194,66 @@ fn with_load_slot<R>(facade: &EntityFacade, body: impl FnOnce(&mut LoadSlot) -> 
 ///
 /// `operation` is `create`, `update`, or `delete`. Do not call this from inside `with_slot`.
 pub fn match_rules(facade: &EntityFacade, entity_name: &str, operation: &str) -> Vec<String> {
-    match_rules_with(facade, entity_name, operation, None)
+    let ids = match_rules_with(facade, entity_name, operation)
         .into_iter()
         .map(|rule| rule.id)
-        .collect()
+        .collect();
+    note_touch(facade, entity_name, operation, None);
+    ids
 }
 
-/// [`match_rules`] with the written values, which the data feed uses to find documents. Returns the matched
-/// rules themselves, which the write hands to `service::run_matched_eca`: nothing is kept on the facade, so a
-/// nested or concurrent write cannot change the rules of this one.
-pub(crate) fn match_rules_with(
-    facade: &EntityFacade,
-    entity_name: &str,
-    operation: &str,
-    fields: Option<&BTreeMap<String, Value>>,
-) -> Vec<EcaRule> {
-    let tx = facade.transactions_for(entity_name).ok();
-    let in_tx = tx.as_ref().is_some_and(TransactionManager::in_transaction);
-    let frame = tx.as_ref().and_then(TransactionManager::frame_token);
-    let keep_fields =
-        !facade.flags().disable_data_feed && entity_name != SKIP_FEED_ENTITY && entity_name != PENDING_ENTITY;
+/// The ECA rules for a write, which the write hands to `service::run_matched_eca`: nothing is kept on the
+/// facade, so a nested or concurrent write cannot change the rules of this one.
+pub(crate) fn match_rules_with(facade: &EntityFacade, entity_name: &str, operation: &str) -> Vec<EcaRule> {
+    if facade.flags().disable_entity_eca {
+        return Vec::new();
+    }
     let dirs = facade.entity_dirs();
     with_load_slot(facade, |slot| {
         ensure_rules(slot, &dirs);
-        if in_tx {
-            slot.touches.push(Touch {
-                thread: std::thread::current().id(),
-                frame,
-                entity_name: entity_name.to_string(),
-                operation: operation.to_string(),
-                fields: fields.filter(|_| keep_fields).cloned(),
-            });
-        }
-        if facade.flags().disable_entity_eca {
-            return Vec::new();
-        }
         slot.eca_rules
             .iter()
             .filter(|rule| rule_matches(rule, entity_name, operation))
             .cloned()
             .collect()
     })
+}
+
+/// Note a write for the data feed when it ran inside a transaction. Call it after the statement succeeded, so a
+/// failed write leaves nothing. The data feed uses `fields` to find documents.
+///
+/// The frame's first touch registers dropping the frame's touches when it ends. The feed insert has taken them
+/// before a commit; a rollback, or a frame with no feed insert, leaves nothing behind either.
+pub(crate) fn note_touch(
+    facade: &EntityFacade,
+    entity_name: &str,
+    operation: &str,
+    fields: Option<&BTreeMap<String, Value>>,
+) {
+    let Some(tx) = facade.transactions_for(entity_name).ok() else {
+        return;
+    };
+    let Some(frame) = tx.frame_token() else {
+        return;
+    };
+    if !TOUCHES.with(|touches| touches.borrow().contains_key(&frame))
+        && (tx.on_commit(move || drop_frame_touches(frame)).is_err()
+            || tx.on_rollback(move || drop_frame_touches(frame)).is_err())
+    {
+        return;
+    }
+    let keep_fields =
+        !facade.flags().disable_data_feed && entity_name != SKIP_FEED_ENTITY && entity_name != PENDING_ENTITY;
+    let touch = Touch {
+        entity_name: entity_name.to_string(),
+        operation: operation.to_string(),
+        fields: fields.filter(|_| keep_fields).cloned(),
+    };
+    TOUCHES.with(|touches| touches.borrow_mut().entry(frame).or_default().push(touch));
+}
+
+fn drop_frame_touches(frame: u64) {
+    TOUCHES.with(|touches| touches.borrow_mut().remove(&frame));
 }
 
 /// Rules stored for `entity_name`. This lookup does not run them; `service::run_matched_eca` does.
@@ -311,7 +297,7 @@ pub fn data_file_services(facade: &EntityFacade) -> Vec<DataFileService> {
 
 /// Receive and delete service names seen while inserting feed rows. A service worker calls them after commit, not the loader.
 pub fn feed_service_names(facade: &EntityFacade) -> Vec<FeedServiceNames> {
-    with_load_slot(facade, |slot| slot.feed_services.clone())
+    with_load_slot(facade, |slot| slot.feed_services.values().cloned().collect())
 }
 
 /// `load-data` locations from the framework conf. This does not load those files.
@@ -330,8 +316,8 @@ pub fn conf_data_locations(facade: &EntityFacade) -> Result<Vec<String>, Error> 
 }
 
 /// Register the hooks for the open frame: before commit, insert `DataFeedPending` on the
-/// enlisted connection; after commit, hand the inserted rows to the feed receive; on rollback,
-/// drop this frame's touches.
+/// enlisted connection; after commit, hand the inserted rows to the feed receive. The touches
+/// drop themselves at rollback (see [`note_touch`]).
 pub fn register_feed_insert(facade: &EntityFacade, tx: &TransactionManager) -> Result<(), Error> {
     let frame = tx.frame_token();
     let inserted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -348,10 +334,6 @@ pub fn register_feed_insert(facade: &EntityFacade, tx: &TransactionManager) -> R
         if let Err(err) = crate::service::schedule_feed_receive(&commit_facade, ids) {
             tracing::warn!(error = %err, "data feed receive was not scheduled; pending rows stay");
         }
-    })?;
-    let rollback_facade = facade.clone();
-    tx.on_rollback(move || {
-        let _ = take_frame_touches(&rollback_facade, frame);
     })
 }
 
@@ -360,7 +342,7 @@ pub fn load_entity_data(facade: &EntityFacade, location: &str, options: &LoadOpt
     if !component_allowed(location, &options.components) {
         return Ok(LoadResult { records: 0 });
     }
-    let _guard = FlagGuard::engage(facade, options);
+    let _scope = FkScope::enter(options.dummy_fks, options.disable_fk_create);
     let path = resolve_location(facade, location)?;
     let records = load_path(facade, location, &path, options, 0)?;
     Ok(LoadResult { records })
@@ -373,7 +355,7 @@ pub fn load_entity_xml_text(
     text: &str,
     options: &LoadOptions,
 ) -> Result<LoadResult, Error> {
-    let _guard = FlagGuard::engage(facade, options);
+    let _scope = FkScope::enter(options.dummy_fks, options.disable_fk_create);
     let records = load_xml_text(facade, location, text, options)?;
     Ok(LoadResult { records })
 }
@@ -474,7 +456,7 @@ fn insert_pending(
     conn: &mut dyn DbConnection,
     frame: Option<u64>,
 ) -> Result<Vec<String>, Error> {
-    let touches = take_frame_touches(facade, frame);
+    let touches = take_frame_touches(frame);
     if facade.sim_active() || facade.flags().disable_data_feed {
         return Ok(Vec::new());
     }
@@ -769,33 +751,23 @@ fn aggregate_touches(touches: &[Touch]) -> HashMap<String, Agg> {
     aggs
 }
 
-/// Take this frame's touches. Touches with no frame are taken by thread.
-fn take_frame_touches(facade: &EntityFacade, frame: Option<u64>) -> Vec<Touch> {
-    let thread = std::thread::current().id();
-    with_load_slot(facade, |slot| {
-        let mut kept = Vec::new();
-        let mut taken = Vec::new();
-        for touch in slot.touches.drain(..) {
-            let mine = match (frame, touch.frame) {
-                (Some(frame), Some(touched)) => frame == touched,
-                _ => touch.thread == thread,
-            };
-            if mine {
-                taken.push(touch);
-            } else {
-                kept.push(touch);
-            }
-        }
-        slot.touches = kept;
-        taken
-    })
+/// Take this frame's touches, so a `force-new` commit takes only its own.
+fn take_frame_touches(frame: Option<u64>) -> Vec<Touch> {
+    let Some(frame) = frame else {
+        return Vec::new();
+    };
+    TOUCHES.with(|touches| touches.borrow_mut().remove(&frame)).unwrap_or_default()
 }
 
 fn remember_feed_services(facade: &EntityFacade, services: Vec<FeedServiceNames>) {
     if services.is_empty() {
         return;
     }
-    with_load_slot(facade, |slot| slot.feed_services.extend(services));
+    with_load_slot(facade, |slot| {
+        for service in services {
+            slot.feed_services.insert(service.data_feed_id.clone(), service);
+        }
+    });
 }
 
 fn feed_targets(
@@ -4021,6 +3993,7 @@ impl JsonParser<'_> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -4033,7 +4006,7 @@ mod tests {
 
     use super::{
         conf_data_locations, data_file_services, eca_rules, feed_service_names, load_entity_data, match_rules,
-        register_feed_insert, LoadOptions,
+        register_feed_insert, LoadOptions, TOUCHES,
     };
     use crate::driver::{DbCancel, DbConnection, DbDriver, DbRow};
     use crate::entity::{EntityFacade, EntityGroup};
@@ -4105,6 +4078,8 @@ mod tests {
     struct Script {
         inserts: Mutex<Vec<Vec<Value>>>,
         missing_feed: bool,
+        /// Entity inserts fail while set, as a duplicate key would.
+        fail_inserts: AtomicBool,
     }
 
     struct ScriptConn {
@@ -4115,6 +4090,8 @@ mod tests {
         fn execute(&mut self, sql: &str, params: &[Value]) -> Result<u64, Error> {
             if sql.contains("DataFeedPending") {
                 self.script.inserts.lock().expect("inserts").push(params.to_vec());
+            } else if sql.starts_with("INSERT") && self.script.fail_inserts.load(Ordering::SeqCst) {
+                return Err(Error::new("duplicate key value violates unique constraint"));
             }
             Ok(1)
         }
@@ -4670,6 +4647,7 @@ mod tests {
         let script = Arc::new(Script {
             inserts: Mutex::new(Vec::new()),
             missing_feed: false,
+            fail_inserts: AtomicBool::new(false),
         });
         let facade = open_with(Arc::new(ScriptDriver {
             script: Arc::clone(&script),
@@ -4718,6 +4696,7 @@ mod tests {
         let missing = Arc::new(Script {
             inserts: Mutex::new(Vec::new()),
             missing_feed: true,
+            fail_inserts: AtomicBool::new(false),
         });
         let facade = open_with(Arc::new(ScriptDriver {
             script: Arc::clone(&missing),
@@ -4740,6 +4719,7 @@ mod tests {
         let script = Arc::new(Script {
             inserts: Mutex::new(Vec::new()),
             missing_feed: false,
+            fail_inserts: AtomicBool::new(false),
         });
         let facade = open_with(Arc::new(ScriptDriver {
             script: Arc::clone(&script),
@@ -4751,5 +4731,57 @@ mod tests {
         enlist(&tx);
         facade.commit("moqui.test.Foo").unwrap();
         assert!(script.inserts.lock().expect("inserts").is_empty());
+    }
+
+    fn create_foo(facade: &EntityFacade, id: &str) -> Result<(), Error> {
+        let mut value = facade.make_value("moqui.test.Foo")?;
+        value.set("fooId", Value::string(id));
+        value.create(facade)
+    }
+
+    fn frame_touches() -> usize {
+        TOUCHES.with(|touches| touches.borrow().values().map(Vec::len).sum())
+    }
+
+    #[test]
+    fn a_failed_first_write_leaves_no_touch_and_feed_names_do_not_grow() {
+        let script = Arc::new(Script {
+            inserts: Mutex::new(Vec::new()),
+            missing_feed: false,
+            fail_inserts: AtomicBool::new(true),
+        });
+        let facade = open_with(Arc::new(ScriptDriver {
+            script: Arc::clone(&script),
+        }));
+        facade.begin("moqui.test.Foo", None).unwrap();
+        assert!(create_foo(&facade, "F9").is_err());
+        assert_eq!(frame_touches(), 0, "the failed write noted nothing");
+        facade.rollback("moqui.test.Foo").unwrap();
+        assert_eq!(frame_touches(), 0);
+        assert!(script.inserts.lock().expect("inserts").is_empty());
+
+        script.fail_inserts.store(false, Ordering::SeqCst);
+        facade.begin("moqui.test.Foo", None).unwrap();
+        create_foo(&facade, "F1").unwrap();
+        assert_eq!(frame_touches(), 1);
+        facade.commit("moqui.test.Foo").unwrap();
+        assert_eq!(frame_touches(), 0, "the commit took this frame's touches");
+        let ids: Vec<Value> = script
+            .inserts
+            .lock()
+            .expect("inserts")
+            .iter()
+            .map(|params| params[3].clone())
+            .collect();
+        assert_eq!(ids, vec![Value::string("F1")], "pending rows only for the written row");
+
+        for id in ["F2", "F3"] {
+            facade.begin("moqui.test.Foo", None).unwrap();
+            create_foo(&facade, id).unwrap();
+            facade.commit("moqui.test.Foo").unwrap();
+        }
+        assert_eq!(script.inserts.lock().expect("inserts").len(), 3);
+        assert_eq!(feed_service_names(&facade).len(), 1, "one entry per feed, whatever the commits");
+        assert_eq!(frame_touches(), 0);
     }
 }
