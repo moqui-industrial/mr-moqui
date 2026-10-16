@@ -126,6 +126,8 @@ interface EntityValueMethods<N extends string = string> {
     update(): void;
     delete(): void;
     deleteRelated(relationship: keyof MoquiRel<N> & string): void;
+    /** Deletes the rows of the named `many` relationships (names or short aliases), then this value. False, with nothing deleted, when rows of another entity still reference it. */
+    deleteWithRelated(relationships?: string[] | Set<string> | null): boolean;
     findRelated<R extends keyof MoquiRel<N> & string>(
         relationship: R,
         byAndFields?: MoquiMap | null,

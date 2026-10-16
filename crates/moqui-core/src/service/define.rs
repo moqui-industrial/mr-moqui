@@ -122,6 +122,8 @@ pub(crate) enum Check {
     TimeRange {
         after: Option<String>,
         before: Option<String>,
+        /// A Java date pattern (`MM/yyyy`) the value is read by, as the `format` attribute says.
+        format: Option<String>,
     },
     CreditCard {
         types: Option<String>,
@@ -1063,6 +1065,7 @@ fn parse_check(node: &MNode) -> Option<Check> {
         "time-range" => Check::TimeRange {
             after: node.attribute("after"),
             before: node.attribute("before"),
+            format: node.attribute("format"),
         },
         "credit-card" => Check::CreditCard {
             types: node.attribute("types"),

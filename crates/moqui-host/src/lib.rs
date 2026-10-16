@@ -270,8 +270,12 @@ where
             Ok(None)
         }
         [command, flag, dirs @ ..] if command == "lint" && flag == "--groovy" && !dirs.is_empty() => {
-            let roots: Vec<std::path::PathBuf> = dirs.iter().map(Into::into).collect();
-            let report = moqui_core::script::screen_lint::lint_groovy(&roots)
+            let show_all = dirs.iter().any(|arg| arg == "--all");
+            let roots: Vec<std::path::PathBuf> = dirs.iter().filter(|arg| *arg != "--all").map(Into::into).collect();
+            if roots.is_empty() {
+                return Err(usage::command_usage("lint"));
+            }
+            let report = moqui_core::script::screen_lint::lint_groovy(&roots, show_all)
                 .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
             print!("{}", report.render());
             Ok(None)
@@ -674,7 +678,13 @@ fn load_with_factory(
     let context = factory.new_context();
     let entered = context.enter();
     let authz = context.disable_authz();
-    let outcome = load_in_context(framework_dir, &facade, flags, &component_data_locations(factory, flags));
+    let outcome = load_in_context(
+        framework_dir,
+        &facade,
+        flags,
+        &component_data_locations(factory, flags),
+        false,
+    );
     drop(authz);
     drop(entered);
     drop(context);
@@ -926,11 +936,13 @@ fn boot_server(
         let context = factory.new_context();
         let entered = context.enter();
         let authz = context.disable_authz();
+        let flags = startup_load_flags(factory.conf_text())?;
         let loaded = load_in_context(
             &framework_dir,
             &facade,
-            &LoadFlags::default(),
-            &component_data_locations(&factory, &LoadFlags::default()),
+            &flags,
+            &component_data_locations(&factory, &flags),
+            true,
         );
         drop(authz);
         drop(entered);
@@ -1089,12 +1101,37 @@ impl Drop for Ready {
     }
 }
 
+fn startup_load_flags(conf_text: &str) -> Result<LoadFlags, moqui_lib::error::Error> {
+    let conf = moqui_lib::node::MNode::parse_text("moqui-conf", conf_text)?;
+    let types = conf
+        .first_named("tools")
+        .and_then(|tools| tools.attribute("empty-db-load"))
+        .unwrap_or_default();
+    Ok(LoadFlags {
+        data_types: Some(split_csv(&moqui_lib::env::expand(&types)?)),
+        ..LoadFlags::default()
+    })
+}
+
+fn should_load_data(existing: i64, flags: &LoadFlags, startup: bool) -> bool {
+    if startup {
+        existing == 0
+            && flags
+                .data_types
+                .as_ref()
+                .is_some_and(|types| !types.is_empty() && types.as_slice() != ["none"])
+    } else {
+        existing == 0 || flags.data_types.is_some() || !flags.components.is_empty()
+    }
+}
+
 #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
 fn load_in_context(
     framework_dir: &std::path::Path,
     facade: &moqui_core::entity::EntityFacade,
     flags: &LoadFlags,
     component_data: &[String],
+    startup: bool,
 ) -> Result<LoadReport, moqui_lib::error::Error> {
     use moqui_core::entity::load_feed::conf_data_locations;
 
@@ -1140,7 +1177,7 @@ fn load_in_context(
     if let Some(location) = &flags.location {
         tracing::info!("Loading entity data from location {location}, data types: {types}");
         records = records.saturating_add(load_one(facade, location, &options)?);
-    } else if existing == 0 || flags.data_types.is_some() || !flags.components.is_empty() {
+    } else if should_load_data(existing, flags, startup) {
         if existing == 0 {
             tracing::info!("Found 0 Enumeration records, loading empty-db-load data types ({types})");
         } else {
@@ -1170,7 +1207,7 @@ fn load_in_context(
         }
     } else {
         tracing::info!(
-            "Found {existing} Enumeration records, NOT loading empty-db-load data types (all); use the load command with types or components to load more"
+            "Found {existing} Enumeration records, NOT loading empty-db-load data types ({types}); use the load command with types or components to load more"
         );
     }
     tracing::info!(
@@ -1754,7 +1791,53 @@ pub(crate) mod xmlshim {
 
 #[cfg(test)]
 mod tests {
-    use super::{dispatch, load_options, parse_load_args, LoadFlags};
+    use super::{dispatch, load_options, parse_load_args, should_load_data, startup_load_flags, LoadFlags};
+
+    #[test]
+    fn startup_load_honors_all_including_demo() {
+        let flags = startup_load_flags(r#"<moqui-conf><tools empty-db-load="all"/></moqui-conf>"#).unwrap();
+        assert!(load_options(&flags).data_types.is_empty());
+        assert!(should_load_data(0, &flags, true));
+        assert!(!should_load_data(1, &flags, true));
+    }
+
+    #[test]
+    fn startup_load_expands_configured_property() {
+        let key = "moqui_host_test_empty_db_load";
+        moqui_lib::env::set_property(key, "seed, demo");
+        let result =
+            startup_load_flags(r#"<moqui-conf><tools empty-db-load="${moqui_host_test_empty_db_load}"/></moqui-conf>"#);
+        moqui_lib::env::clear_property(key);
+        let flags = result.unwrap();
+        assert_eq!(load_options(&flags).data_types, ["seed", "demo"]);
+        assert!(should_load_data(0, &flags, true));
+        assert!(!should_load_data(1, &flags, true));
+    }
+
+    #[test]
+    fn startup_load_respects_disabled_and_absent_settings() {
+        for conf in [
+            r#"<moqui-conf><tools empty-db-load="none"/></moqui-conf>"#,
+            r#"<moqui-conf><tools empty-db-load=""/></moqui-conf>"#,
+            "<moqui-conf><tools/></moqui-conf>",
+            "<moqui-conf/>",
+        ] {
+            let flags = startup_load_flags(conf).unwrap();
+            assert!(!should_load_data(0, &flags, true));
+        }
+    }
+
+    #[test]
+    fn explicit_load_keeps_existing_database_and_default_behavior() {
+        let flags = LoadFlags::default();
+        assert_eq!(load_options(&flags).data_types, ["seed", "seed-initial", "install"]);
+        assert!(should_load_data(0, &flags, false));
+        assert!(!should_load_data(1, &flags, false));
+        let all = parse_load_args(&["types=all"]).unwrap();
+        assert!(should_load_data(1, &all, false));
+        let components = parse_load_args(&["components=webroot"]).unwrap();
+        assert!(should_load_data(1, &components, false));
+    }
 
     #[test]
     fn no_args_start_the_server_and_are_not_called_here() {

@@ -124,7 +124,7 @@ only. The usual directory is runtime/db/embedded.
 ";
 
 const LINT: &str = "\
-moqui lint [file | --screens [report-file] | --groovy <dir> ...]
+moqui lint [file | --screens [report-file] | --groovy [--all] <dir> ...]
     Lint services, screens, or leftover Groovy.
 
   moqui lint
@@ -133,6 +133,7 @@ moqui lint [file | --screens [report-file] | --groovy <dir> ...]
   moqui lint --screens /tmp/screen-lint.txt
   moqui lint --screens --qvt-static
   moqui lint --groovy runtime/component/mantle-udm
+  moqui lint --groovy --all runtime/component/mr-mantle-usl
 
 Forms:
   moqui lint [file]
@@ -148,7 +149,9 @@ Forms:
       Does not fail the process.
 
   moqui lint --groovy <dir> ...
-      Report Groovy idioms left under those directories. At least one directory.
+      Report Groovy idioms and run-time hazards left under those directories. At least one directory.
+      Idioms that are also valid JavaScript (`new Date`, `.add(` on a decimal, `catch (e)`) are counted
+      in the totals and not flagged; --all flags them too.
 ";
 
 const CONVERT: &str = "\
@@ -200,6 +203,10 @@ Options:
                                   existing uses the runtime's embedded database and changes its data.
   --junit dir                     Write TEST-<component>.<Spec>.xml into this directory.
   --keep                          Leave the scratch runtime in place.
+  --coverage                      After the run, list the services of each component's service/*.xml
+                                  files that no spec called, with the total.
+  --coverage-report file          Write that report to the file, with the call counts, and print only
+                                  the total.
   --log-level level               Console level: trace, debug, info, warn, or error.
                                   The default is warn. The run prints the moqui.log path.
 ";

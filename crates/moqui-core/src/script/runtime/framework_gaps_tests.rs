@@ -165,6 +165,35 @@ fn entity_value_refresh_entry_set_pretty_name_and_related_fk() {
 }
 
 #[test]
+fn an_entity_value_is_the_context_of_resource_expand() {
+    let context = database();
+    let _entered = context.enter();
+    seed();
+    // `ec.resource.expand(text, "", entityValue)`, as `PartyNameTemplate` is expanded with a `PartyDetail`
+    holds(
+        r#"ec.resource.expand("${enumId}: ${description}", "", ec.entity.find("moqui.basic.Enumeration").condition("enumId", "E1").one()) === "E1: first""#,
+    );
+}
+
+#[test]
+fn delete_with_related_deletes_the_named_rows_and_refuses_when_others_use_the_value() {
+    let context = database();
+    let _entered = context.enter();
+    seed();
+    // the enumerations hold a foreign key to their type: not named, so the type stays and the result is false
+    holds(
+        r#"ec.entity.find("moqui.basic.EnumerationType").condition("enumTypeId", "T1").one().deleteWithRelated([]) === false
+            && ec.entity.find("moqui.basic.EnumerationType").condition("enumTypeId", "T1").count() === 1"#,
+    );
+    // named by the relationship's entity, the enumerations go with the type
+    holds(
+        r#"ec.entity.find("moqui.basic.EnumerationType").condition("enumTypeId", "T1").one().deleteWithRelated(["moqui.basic.Enumeration"]) === true
+            && ec.entity.find("moqui.basic.EnumerationType").condition("enumTypeId", "T1").count() === 0
+            && ec.entity.find("moqui.basic.Enumeration").condition("enumTypeId", "T1").count() === 0"#,
+    );
+}
+
+#[test]
 fn entity_lists_have_the_array_methods() {
     let context = database();
     let _entered = context.enter();

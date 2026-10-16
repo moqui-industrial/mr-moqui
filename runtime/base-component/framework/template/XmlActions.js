@@ -57,6 +57,9 @@
         return attr(node, "field-name");
     };
 
+    // The `ignore` attribute is an expression: the condition is skipped when it is true (`ignore="!term"`).
+    const ignoreExpr = (node) => has(node, "ignore") ? `!!(${attr(node, "ignore")})` : "false";
+
     const econditionFactory = (node) => {
         const fromExpr = has(node, "from") ? attr(node, "from") : fieldExpr(node);
         const value = has(node, "value") ? jsString(attr(node, "value")) : "null";
@@ -64,14 +67,14 @@
         return `ec.entity.conditionFactory.makeActionConditionDirect(${jsString(attr(node, "field-name"))}, ` +
             `${jsString(attr(node, "operator") || "equals")}, ${fromExpr}, ${value}, ${toField}, ` +
             `${attr(node, "ignore-case") === "true"}, ${attr(node, "ignore-if-empty") === "true"}, ` +
-            `${attr(node, "or-null") === "true"}, ${jsString(attr(node, "ignore") || "false")})`;
+            `${attr(node, "or-null") === "true"}, ${ignoreExpr(node)})`;
     };
 
     const econditionSuffix = (node) => {
         const operator = attr(node, "operator") || "equals";
         const simple = operator === "equals" && attr(node, "ignore-case") !== "true" &&
             attr(node, "ignore-if-empty") !== "true" && attr(node, "or-null") !== "true" &&
-            !has(node, "to-field-name");
+            !has(node, "to-field-name") && !has(node, "ignore");
         if (simple) return `.condition(${jsString(attr(node, "field-name"))}, ${fieldExpr(node)})`;
         return `.condition(${econditionFactory(node)})`;
     };
@@ -82,7 +85,7 @@
         `${attrOrNull(node, "valid-date")}, ${attr(node, "ignore-if-empty") === "true"}`;
 
     const dateFilterExpr = (node) =>
-        `ec.entity.conditionFactory.makeConditionDate(${dateFilterArgs(node)}, ${jsString(attr(node, "ignore") || "false")})`;
+        `ec.entity.conditionFactory.makeConditionDate(${dateFilterArgs(node)}, ${ignoreExpr(node)})`;
 
     const conditionObjectExpr = (node) => {
         const parts = node.children.map((kid) => {

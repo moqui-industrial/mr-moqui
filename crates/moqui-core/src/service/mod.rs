@@ -17,6 +17,7 @@
 #[macro_use]
 mod rust_services;
 pub(crate) mod call;
+pub mod coverage;
 pub(crate) mod define;
 mod eca;
 mod eca_rules;

@@ -262,6 +262,7 @@ pub fn sync_with(
     let name = canonical(name);
     let facade = current_facade();
     let def = resolve(&name, facade.as_ref())?;
+    super::coverage::record(&def.name);
     super::seca::run_seca_rules(&def.name, "pre-validate", parameters, None)?;
     // Input that fails its checks is validation errors in the message facade and no run, as in Java: the caller sees
     // the errors (a screen shows them by their fields) instead of a failed call.

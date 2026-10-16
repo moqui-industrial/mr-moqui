@@ -970,6 +970,32 @@ fn an_aggregate_in_where_or_a_having_without_one_is_an_error() {
 }
 
 #[test]
+fn a_distinct_select_also_selects_its_order_by_fields() {
+    let model = totals_model();
+    let postgres = sample_postgres();
+    let order = model.entity("sample.Order").unwrap();
+    let distinct = SelectOptions {
+        distinct: true,
+        ..SelectOptions::default()
+    };
+    let sql = select_with(
+        order,
+        &postgres,
+        &[FieldRef::new("customerId")],
+        None,
+        &[OrderBy::asc("orderId"), OrderBy::asc("customerId")],
+        LimitOffset::default(),
+        &distinct,
+    )
+    .unwrap();
+    assert!(
+        sql.sql.starts_with("SELECT DISTINCT \"customerId\", \"orderId\" FROM"),
+        "{}",
+        sql.sql
+    );
+}
+
+#[test]
 fn distinct_and_for_update_are_written_and_cannot_be_combined() {
     let model = totals_model();
     let postgres = sample_postgres();

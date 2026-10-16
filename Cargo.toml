@@ -105,10 +105,10 @@ lettre = { version = "0.11", default-features = false, features = [
     "aws-lc-rs",
     "webpki-roots",
 ] }
-# Blocking IMAP. The default feature tls is native-tls and stays off.
-# 2.4.1 has no rustls feature. rustls-connector is a dev-dependency and is not linked.
-# The TCP stream is wrapped with rustls below.
-imap = { version = "2.4", default-features = false }
+# Blocking IMAP. The default feature native-tls stays off, and so does rustls-tls (rustls-connector).
+# The TCP stream is wrapped with rustls below. Pinned 3.0 alpha: 2.x uses nom 5, which pulls
+# lexical-core 0.7 (RUSTSEC-2024-0377); 3.0 uses nom 7.
+imap = { version = "=3.0.0-alpha.15", default-features = false }
 # Inbound MIME for poll#EmailServer: nested multiparts, RFC 2047 words, charsets, folded headers. Defaults are
 # empty; the single-byte charsets are built in, and `full_encoding` (encoding_rs for multi-byte CJK) stays off.
 mail-parser = { version = "0.11", default-features = false }

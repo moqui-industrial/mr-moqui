@@ -165,7 +165,20 @@ pub fn select_with(
     } else {
         "SELECT "
     });
-    out.push(&select_list(entity, dialect, fields));
+    // A distinct select can only be ordered by what it selects, so the order-by fields are selected too, as Java's
+    // EntityFindBase adds them.
+    let mut selected: Vec<FieldRef> = fields.to_vec();
+    if options.distinct && !selected.is_empty() {
+        for order in order_by {
+            if order.field.expr.is_none()
+                && order.field.entity_alias.is_none()
+                && !selected.iter().any(|field| field.name == order.field.name)
+            {
+                selected.push(FieldRef::new(&order.field.name));
+            }
+        }
+    }
+    out.push(&select_list(entity, dialect, &selected));
     out.push(" FROM ");
     out.push(&quote_ident(dialect, &entity.table_name));
     where_clause(&mut out, entity, condition)?;
