@@ -153,3 +153,21 @@ impl HostStream {
         })
     }
 }
+
+/// An uploaded file made from text, as the JavaScript object a service or spec holds. The test harness uses it to call
+/// the services that take a `FileItem` without a web request.
+pub(crate) fn text_upload_to_js<'js>(
+    ctx: &Ctx<'js>,
+    field_name: &str,
+    file_name: &str,
+    content_type: &str,
+    text: &str,
+) -> rquickjs::Result<JsValue<'js>> {
+    let inner = Arc::new(UploadedFile {
+        field_name: field_name.to_string(),
+        file_name: file_name.to_string(),
+        content_type: content_type.to_string(),
+        bytes: text.as_bytes().to_vec(),
+    });
+    Class::instance(ctx.clone(), HostUpload { inner }).and_then(|class| class.into_js(ctx))
+}

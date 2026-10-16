@@ -620,9 +620,10 @@ fn execute(
         ServiceKind::Native => {
             let run = def
                 .native_fn
+                .as_ref()
                 .ok_or_else(|| LibError::new(format!("service {} has no native implementation", def.name)))?;
             ExecutionContext::with_current(|ec| {
-                run(
+                run.call(
                     ec,
                     &crate::native::ServiceInfo {
                         name: &def.name,
@@ -754,6 +755,16 @@ fn run_entity(
             .is_none_or(|value| value.is_null() || is_empty(value))
     {
         record.set("fromDate", crate::user::now_effective_value());
+    }
+    // a primary key field with a default (a content date, say) takes it before a missing key is sequenced
+    if matches!(verb, "create" | "store") && pk_missing(&record, &pk_names) {
+        let with_defaults = facade.apply_field_defaults(noun, record.fields())?;
+        for name in &pk_names {
+            let missing = record.get(name).is_none_or(|value| value.is_null() || is_empty(value));
+            if let Some(value) = with_defaults.get(name).filter(|value| missing && !value.is_null()) {
+                record.set(name, value.clone());
+            }
+        }
     }
     let mut status_out = BTreeMap::new();
     match verb {
@@ -1774,6 +1785,31 @@ mod tests {
         assert_eq!(
             out.get("testMedium").map(moqui_lib::object::to_plain_string).as_deref(),
             Some("kept"),
+            "{out:?}"
+        );
+        assert!(!out.contains_key("notDeclared"), "{out:?}");
+    }
+
+    #[test]
+    fn auto_parameters_of_a_view_entity_use_its_aliases() {
+        let path = write_fixture(
+            "auto-view",
+            r#"<services><service verb="give" noun="AutoView">
+                <in-parameters><auto-parameters entity-name="moqui.test.TestEntityCount"/></in-parameters>
+                <out-parameters><auto-parameters entity-name="moqui.test.TestEntityCount"/></out-parameters>
+                <actions><set field="entityCount" value="7"/><set field="notDeclared" value="dropped"/></actions>
+            </service></services>"#,
+        );
+        let (_facade, ctx) = seeded_context(&[]);
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        let out = sync("give#AutoView", &BTreeMap::new()).unwrap();
+        assert_eq!(
+            out.get("entityCount")
+                .map(moqui_lib::object::to_plain_string)
+                .as_deref(),
+            Some("7"),
             "{out:?}"
         );
         assert!(!out.contains_key("notDeclared"), "{out:?}");

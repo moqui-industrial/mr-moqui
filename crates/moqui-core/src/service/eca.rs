@@ -47,7 +47,8 @@ pub fn search_not_up(facade: &EntityFacade) -> bool {
 ///
 /// As Java's `EntityEcaRule.runIfMatches`: the rule's context has the field values, `entityValue` (a value
 /// scripts and called services share, so a field they set on it is set on the write for a run-before rule),
-/// `originalValue` (the row before an update or delete, with `get-original-value`, before rules only), and
+/// `originalValue` (the row before an update or delete, with `get-original-value`: read here for a before rule, and
+/// `pre_row`, read by the write before it ran, for an after rule), and
 /// `eecaOperation`. `get-entire-entity` fills unset fields from the row for an update or delete. With
 /// `set-results`, non-primary-key fields the actions set in the rule's context are set on the values. A rule
 /// is skipped while the message facade has errors unless it has `run-on-error` or is one of the Rust security
@@ -59,6 +60,7 @@ pub fn run_matched_eca(
     before: bool,
     rules: &[EcaRule],
     values: &mut BTreeMap<String, Value>,
+    pre_row: Option<&crate::entity::EntityValue>,
 ) -> Result<(), Error> {
     if !rules.iter().any(|rule| rule.run_before == before) {
         return Ok(());
@@ -96,7 +98,11 @@ pub fn run_matched_eca(
         }
         let original = match (&db_row, before && rule.get_original_value) {
             (Some(row), true) => entity_object(row.clone()),
-            _ => Value::Null,
+            // an after rule gets the row as the write found it, which is what Java keeps of the old database values
+            _ => match pre_row {
+                Some(row) if !before && rule.get_original_value && update_or_delete => entity_object(row.clone()),
+                _ => Value::Null,
+            },
         };
         let mut current = facade.make_value(entity_name).map_err(in_rule)?;
         for (name, value) in values.iter() {

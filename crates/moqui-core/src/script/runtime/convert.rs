@@ -78,6 +78,9 @@ pub(super) fn object_to_js<'js>(ctx: &Ctx<'js>, object: &HostObject) -> rquickjs
     if let Some(inner) = object.downcast::<crate::web::multipart::UploadedFile>() {
         return Class::instance(ctx.clone(), HostUpload { inner }).and_then(|class| class.into_js(ctx));
     }
+    if let Some(inner) = object.downcast::<crate::native::ToolHandle>() {
+        return tool_to_js(ctx, inner);
+    }
     Err(Exception::throw_message(ctx, "cannot convert this object"))
 }
 
@@ -298,6 +301,10 @@ fn js_value_to_host_in<'js>(ctx: &Ctx<'_>, value: &JsValue<'js>, path: &mut Vec<
         }
         // An uploaded file passed to a service stays the file, as the Java FileItem in `ec.web.parameters` does.
         if let Some(class) = object.as_class::<HostUpload>() {
+            return Ok(Value::Object(HostObject(class.borrow().inner.clone())));
+        }
+        // A tool stays the tool, so its methods are there again when the value is read back.
+        if let Some(class) = object.as_class::<HostTool>() {
             return Ok(Value::Object(HostObject(class.borrow().inner.clone())));
         }
         // A `Date` has no own properties; it is a time stamp, as a Java `Date` passed to a service is.

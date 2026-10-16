@@ -19,6 +19,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 
 use moqui_db::model::{EntityDefinition, EntityModel};
+use moqui_db::sql::{Condition, FieldRef};
 use moqui_lib::error::Error;
 use moqui_lib::object::{decimal_compare, to_plain_string, Value};
 
@@ -150,6 +151,64 @@ fn decrypt_fields(
         }
     }
     Ok(values)
+}
+
+/// A find condition on an encrypted field compares with the stored form of the value, as Java binds it: the encryption is
+/// deterministic (a constant IV) so that a query by value finds the row. Equality and membership are the comparisons that
+/// mean anything on ciphertext; a view-entity and a condition that names another entity's field are left as they are.
+pub(super) fn encrypt_condition(
+    facade: &EntityFacade,
+    entity: &EntityDefinition,
+    condition: Option<Condition>,
+) -> Result<Option<Condition>, Error> {
+    let Some(condition) = condition else {
+        return Ok(None);
+    };
+    if entity.is_view || !has_encrypted(entity) {
+        return Ok(Some(condition));
+    }
+    let Some((primary, _)) = facade.crypt() else {
+        return Ok(Some(condition));
+    };
+    Ok(Some(encrypt_in(entity, &primary, condition)?))
+}
+
+fn encrypt_in(
+    entity: &EntityDefinition,
+    config: &super::crypto::CryptConfig,
+    condition: Condition,
+) -> Result<Condition, Error> {
+    let encrypted = |field: &FieldRef| {
+        field.entity_alias.is_none() && entity.field(&field.name).is_some_and(|definition| definition.encrypt)
+    };
+    let seal = |value: Value| -> Result<Value, Error> {
+        match value.as_str() {
+            Some(plain) => Ok(Value::string(encrypt(plain, config)?)),
+            None => Ok(value),
+        }
+    };
+    Ok(match condition {
+        Condition::Equals(field, value) if encrypted(&field) => Condition::Equals(field, seal(value)?),
+        Condition::NotEquals(field, value) if encrypted(&field) => Condition::NotEquals(field, seal(value)?),
+        Condition::In(field, values) if encrypted(&field) => {
+            Condition::In(field, values.into_iter().map(seal).collect::<Result<_, _>>()?)
+        }
+        Condition::NotIn(field, values) if encrypted(&field) => {
+            Condition::NotIn(field, values.into_iter().map(seal).collect::<Result<_, _>>()?)
+        }
+        Condition::And(list) => Condition::And(
+            list.into_iter()
+                .map(|inner| encrypt_in(entity, config, inner))
+                .collect::<Result<_, _>>()?,
+        ),
+        Condition::Or(list) => Condition::Or(
+            list.into_iter()
+                .map(|inner| encrypt_in(entity, config, inner))
+                .collect::<Result<_, _>>()?,
+        ),
+        Condition::Not(inner) => Condition::Not(Box::new(encrypt_in(entity, config, *inner)?)),
+        other => other,
+    })
 }
 
 fn has_encrypted(entity: &EntityDefinition) -> bool {
@@ -321,7 +380,11 @@ fn insert_audit(
     row.set("changedFieldName", Value::string(field_name));
     row.set("changedDate", changed_now());
     // Java stamps the acting user and visit on each audit row.
-    if let Some(user_id) = crate::user::current_user_id().ok().flatten().filter(|id| !id.is_empty()) {
+    if let Some(user_id) = crate::user::current_user_id()
+        .ok()
+        .flatten()
+        .filter(|id| !id.is_empty())
+    {
         row.set("changedByUserId", Value::string(user_id));
     }
     if let Some(visit_id) = crate::user::visit_id().ok().flatten().filter(|id| !id.is_empty()) {

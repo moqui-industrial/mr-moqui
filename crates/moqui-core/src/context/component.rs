@@ -90,6 +90,14 @@ fn add_component_dir(found: &mut ComponentSet, base: &Path, node: &MNode, framew
     }
     entries.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
     for path in entries {
+        // A component in the directory can be off unless a conf names it with a `component` element.
+        if disabled_in_manifest(&path)? {
+            tracing::info!(
+                "Skipping component {}, its component.xml has disabled=true",
+                path.display()
+            );
+            continue;
+        }
         let info = component_from_dir(&path, None)?;
         // The framework component is registered from the boot directory before this scan. base-component
         // contains that directory, and a symlink in a test runtime is the same place with another path.
@@ -110,6 +118,15 @@ fn add_component_dir(found: &mut ComponentSet, base: &Path, node: &MNode, framew
         found.insert(info)?;
     }
     Ok(())
+}
+
+/// True when `component.xml` in `path` has a `disabled` attribute that expands to `true`.
+fn disabled_in_manifest(path: &Path) -> Result<bool, Error> {
+    let manifest = MNode::parse_file(path.join("component.xml"))?;
+    match manifest.attribute("disabled") {
+        Some(raw) => Ok(env::expand(&raw)?.trim() == "true"),
+        None => Ok(false),
+    }
 }
 
 fn same_directory(left: &Path, right: &Path) -> bool {

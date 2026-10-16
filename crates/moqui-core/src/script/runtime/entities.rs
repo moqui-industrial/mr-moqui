@@ -1244,6 +1244,37 @@ impl HostEntity {
         })
     }
 
+    /// `equals(other)`: the same entity with the same field values, as Java's `EntityValueBase.equals`; a script's `==`
+    /// on two values is identity, so a service that asks whether an edit changed anything calls this.
+    fn equals<'js>(&self, ctx: Ctx<'js>, other: JsValue<'js>) -> rquickjs::Result<bool> {
+        host_guard(&ctx, || {
+            let other = js_to_host(&ctx, &other)?;
+            let (Some(name), Some(theirs)) = (
+                super::values::value_entity_name(&other),
+                super::values::value_map(&other),
+            ) else {
+                return Ok(false);
+            };
+            let mine = self.val();
+            if mine.entity_name() != name {
+                return Ok(false);
+            }
+            let fields = mine.fields();
+            let comparable = |value: &Value| -> String {
+                if value.is_null() {
+                    String::new()
+                } else {
+                    moqui_lib::object::to_plain_string(value)
+                }
+            };
+            let same = |name: &String| {
+                comparable(fields.get(name).unwrap_or(&Value::Null))
+                    == comparable(theirs.get(name).unwrap_or(&Value::Null))
+            };
+            Ok(fields.keys().all(same) && theirs.keys().all(same))
+        })
+    }
+
     /// `getMap()`: the fields as a plain map.
     fn get_map<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || {
@@ -1512,7 +1543,7 @@ impl HostEntity {
 
 /// A member of the class prototype or of `Object.prototype`. An exotic class's own get runs instead of the
 /// prototype lookup, so it looks there itself first.
-fn prototype_member<'js, C: rquickjs::class::JsClass<'js>>(
+pub(super) fn prototype_member<'js, C: rquickjs::class::JsClass<'js>>(
     ctx: &Ctx<'js>,
     atom: &Atom<'js>,
 ) -> rquickjs::Result<Option<JsValue<'js>>> {
@@ -1523,7 +1554,10 @@ fn prototype_member<'js, C: rquickjs::class::JsClass<'js>>(
     Ok((!found.is_undefined()).then_some(found))
 }
 
-fn prototype_has<'js, C: rquickjs::class::JsClass<'js>>(ctx: &Ctx<'js>, atom: &Atom<'js>) -> Result<bool, JsError> {
+pub(super) fn prototype_has<'js, C: rquickjs::class::JsClass<'js>>(
+    ctx: &Ctx<'js>,
+    atom: &Atom<'js>,
+) -> Result<bool, JsError> {
     match Class::<C>::prototype(ctx)? {
         Some(prototype) => prototype.contains_key(atom.clone()),
         None => Ok(false),
@@ -1535,7 +1569,7 @@ fn prototype_has<'js, C: rquickjs::class::JsClass<'js>>(ctx: &Ctx<'js>, atom: &A
 /// assignment would free the value twice. Re-check when rquickjs is upgraded: once the wrapper borrows the value,
 /// this would keep one reference too many (a leak, not a crash). The value is not forgotten whole: it holds a
 /// reference to the context too.
-fn keep_assigned(value: JsValue<'_>) {
+pub(super) fn keep_assigned(value: JsValue<'_>) {
     // SAFETY: the context and the value are live for this call; this adds one reference to the value, which the
     // free QuickJS does after the exotic set takes back.
     unsafe {
@@ -1544,7 +1578,7 @@ fn keep_assigned(value: JsValue<'_>) {
 }
 
 /// The text of a property name, or None for a symbol.
-fn atom_name(atom: &Atom<'_>) -> rquickjs::Result<Option<String>> {
+pub(super) fn atom_name(atom: &Atom<'_>) -> rquickjs::Result<Option<String>> {
     if atom.to_value()?.is_symbol() {
         return Ok(None);
     }
@@ -1815,6 +1849,18 @@ mod tests {
             r#"(() => { const a = ec.entity.makeValue("moqui.basic.Enumeration"); a.enumId = "X"; a.description = "one";
                 const b = a.cloneValue(); b.description = "two";
                 return a.description === "one" && b.description === "two" && b.enumId === "X"; })()"#,
+        );
+    }
+
+    #[test]
+    fn equals_compares_the_entity_and_field_values_not_identity() {
+        let ctx = enumerations();
+        let _entered = ctx.enter();
+        holds(
+            r#"(() => { const a = ec.entity.makeValue("moqui.basic.Enumeration"); a.enumId = "X"; a.description = "one";
+                const b = a.cloneValue(); const c = a.cloneValue(); c.description = "two";
+                const other = ec.entity.makeValue("moqui.basic.EnumerationType"); other.enumTypeId = "X"; other.description = "one";
+                return a !== b && a.equals(b) && !a.equals(c) && !a.equals(other) && !a.equals(null) && !a.equals({}); })()"#,
         );
     }
 

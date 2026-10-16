@@ -24,9 +24,12 @@ Most of MR-Moqui is a port of the Java framework as it exists when the port begi
 
 ## Native components
 
-Components can supply linked Rust services, tools, resource schemes, template renderers and custom service runners.
-Service XML still defines services; component configuration selects implementations. See
-[Native component usage](plans/Native-Components-Usage.md) and the [plan](plans/Native-Components.md).
+Components can supply linked Rust services, tools, resource schemes, template renderers and custom service runners,
+as a Gradle build did for a Java Moqui component: a `Cargo.toml` and `src/` beside the `component.xml`, which
+`./moq build` links into the binary. Service XML still defines services; component configuration selects
+implementations, and scripts get tools with `ec.factory.getTool("Name")`. See
+[Native component usage](plans/Native-Components-Usage.md), the [plan](plans/Native-Components.md), and
+`runtime/base-component/example`, which is off by default (`./moq run -D example_disabled=false`).
 
 ## Build, Test, and Run
 
@@ -68,8 +71,9 @@ checkout on Linux or macOS. `./moq` with no arguments lists the tasks, and
 `./moq r-p` and `./moq runProduction` both mean `run-production`.
 
 ```sh
-./moq build                    # cargo build --release -p moqui (--debug for target/debug/moqui);
-                               # tasks that run moqui build a missing binary themselves
+./moq build                    # cargo build --release -p moqui (--debug for target/debug/moqui), linking
+                               # any component crates in runtime/component; tasks that run moqui build a
+                               # missing binary themselves
 ./moq run                      # target/release/moqui with runtime/conf/MoquiDevConf.xml; --debug uses target/debug/moqui
 ./moq run -p 8081 -D entity_ds_db_conf=postgres
 ./moq run lint --screens       # moqui's own commands, with the same conf

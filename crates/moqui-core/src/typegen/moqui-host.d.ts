@@ -569,14 +569,18 @@ interface MoquiNotificationMessage {
     getNotifyUserIds(): string[];
 }
 
-/** Only the explicitly exposed native tool methods are callable from scripts. */
-interface MoquiNativeTool {
-    [method: string]: (...parameters: unknown[]) => unknown;
+/** The tools of the linked component crates that declare a type, by tool factory name. `tools.d.ts` adds to it. */
+interface MoquiToolMap {}
+
+/** A tool with no declared type: only the methods its Rust `Tool` exposes, taking and returning script values. */
+interface MoquiTool {
+    readonly [member: string]: (...args: unknown[]) => unknown;
 }
 
-interface MoquiNativeToolFactory {
+/** `ec.factory.getToolFactory(name)`: a configured tool factory. */
+interface MoquiToolFactory<T = MoquiTool> {
     readonly name: string;
-    getInstance(...parameters: unknown[]): MoquiNativeTool;
+    getInstance(...parameters: unknown[]): T;
 }
 
 /**
@@ -584,7 +588,9 @@ interface MoquiNativeToolFactory {
  * `ec.cache` and `ec.search` are outside the Server host methods list and are typed loosely.
  */
 interface MoquiServerEc {
-    getTool(name: string, ...parameters: unknown[]): MoquiNativeTool;
+    /** The same as `ec.factory.getTool`. */
+    getTool<K extends keyof MoquiToolMap>(name: K, ...parameters: unknown[]): MoquiToolMap[K];
+    getTool(name: string, ...parameters: unknown[]): MoquiTool;
     readonly entity: MoquiEntityFacade;
     readonly service: {
         sync(): ServiceCallSync;
@@ -605,10 +611,14 @@ interface MoquiServerEc {
     readonly context: MoquiEcContext;
     readonly factory: {
         readonly moquiVersion: string;
-        getTool(name: string, ...parameters: unknown[]): MoquiNativeTool;
-        getToolFactory(name: string): MoquiNativeToolFactory | null;
         /** Wait up to `retryLimit` (default 50) times 100 ms for async service work to finish; whether the pool is empty. */
         waitWorkerPoolEmpty(retryLimit?: number): boolean;
+        /** Java's `getTool(name, parameters...)`: the object of a component's Rust tool factory. A tool that declares its type is in `MoquiToolMap` (`tools.d.ts`). */
+        getTool<K extends keyof MoquiToolMap>(name: K, ...parameters: unknown[]): MoquiToolMap[K];
+        getTool(name: string, ...parameters: unknown[]): MoquiTool;
+        /** The tool factory a conf `tool-factory` element selected, or null when there is none of that name. */
+        getToolFactory<K extends keyof MoquiToolMap>(name: K): MoquiToolFactory<MoquiToolMap[K]> | null;
+        getToolFactory(name: string): MoquiToolFactory | null;
     };
     readonly cache: { getCache(name: string): { get(key: string): unknown; put(key: string, value: unknown): void; remove(key: string): boolean; containsKey(key: string): boolean; clear(): void } };
     /**

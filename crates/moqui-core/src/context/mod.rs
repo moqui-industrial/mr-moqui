@@ -240,8 +240,19 @@ mod tests {
         env::set_property("moqui_version", "phase2-test");
         let framework = root.join("runtime/base-component/framework");
         let factory = ExecutionContextFactory::boot_with_framework(temp.path(), &framework).unwrap();
+        // example is in base-component too, with disabled="${example_disabled ?: 'true'}" in its component.xml.
         let names: Vec<&str> = factory.components().iter().map(|info| info.name.as_str()).collect();
         assert_eq!(names, vec!["framework", "tools", "webroot"]);
+        // Turned on, it loads and its MoquiConf.xml selects its tool factory, which this test binary does not link.
+        env::set_property("example_disabled", "false");
+        let enabled = ExecutionContextFactory::boot_with_framework(temp.path(), &framework);
+        env::clear_property("example_disabled");
+        let err = enabled.err().expect("the example tool factory is not linked here");
+        assert!(
+            err.to_string()
+                .contains("tool-factory example::ExampleToolFactory is not linked"),
+            "{err}"
+        );
         for info in factory.components() {
             assert_eq!(info.version, "phase2-test");
         }

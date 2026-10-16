@@ -24,6 +24,8 @@ struct Facts {
     other_decimal: BTreeSet<String>,
     other_array: BTreeSet<String>,
     assigned: BTreeSet<String>,
+    /// Names set from `x.cloneValue()`: entity values, which `==` compares by identity.
+    cloned: BTreeSet<String>,
 }
 
 /// One expression or script of a scope, with where it is.
@@ -54,10 +56,14 @@ pub(crate) fn refine(root: &MNode, file: &mut FileReport) {
                 })
         });
     }
+    // `.equals(` is a Java collection method in Groovy, and the host entity value's own method in a port: on a copy made with
+    // `cloneValue()` it is the port, so those are not flagged.
+    let mut cloned_names: BTreeSet<String> = BTreeSet::new();
     for scope in root.children() {
         let mut facts = Facts::default();
         let mut texts = Vec::new();
         gather(&scope, &mut facts, &mut texts);
+        cloned_names.extend(facts.cloned.iter().cloned());
         let mut declared: BTreeSet<String> = BTreeSet::new();
         for text in &texts {
             let masked = mask_strings(&text.text);
@@ -86,6 +92,28 @@ pub(crate) fn refine(root: &MNode, file: &mut FileReport) {
                     }
                 }
             }
+        }
+    }
+    if !cloned_names.is_empty() {
+        for site in &mut file.sites {
+            site.idioms.retain(|(idiom, sample)| {
+                if *idiom != Idiom::CollectionMethod {
+                    return true;
+                }
+                // the sample starts a few characters before the call, so it may hold only the end of the receiver's name
+                let Some(call) = sample.find(".equals(") else {
+                    return true;
+                };
+                let tail: String = sample[..call]
+                    .chars()
+                    .rev()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                tail.len() < 3 || !cloned_names.iter().any(|name| name.ends_with(&tail))
+            });
         }
     }
 }
@@ -196,6 +224,9 @@ fn record_assignment(facts: &mut Facts, name: &str, rhs: &str) {
         facts.arrays.insert(name.to_string());
     } else {
         facts.other_array.insert(name.to_string());
+    }
+    if rhs.ends_with(".cloneValue()") {
+        facts.cloned.insert(name.to_string());
     }
     facts.assigned.insert(name.to_string());
 }
@@ -556,6 +587,9 @@ fn hazards(masked: &str, facts: &Facts) -> Vec<(Idiom, usize)> {
                 }
             }
         }
+        if facts.cloned.contains(name) && equality_with_a_value(before, after) {
+            out.push((Idiom::EntityValueIdentity, start));
+        }
         if before.ends_with("in")
             && before[..before.len() - 2].ends_with(|c: char| c.is_whitespace() || c == ')' || c == '\'' || c == '"')
             && !in_for_head(&masked[..start])
@@ -567,6 +601,23 @@ fn hazards(masked: &str, facts: &Facts) -> Vec<(Idiom, usize)> {
         }
     }
     out
+}
+
+/// `name == other` or `other != name` where other is not `null` or `undefined`.
+fn equality_with_a_value(before: &str, after: &str) -> bool {
+    for op in ["===", "!==", "==", "!="] {
+        if let Some(rhs) = after.strip_prefix(op) {
+            let rhs = rhs.trim_start();
+            return !(rhs.starts_with("null") || rhs.starts_with("undefined"));
+        }
+    }
+    for op in ["===", "!==", "==", "!="] {
+        if let Some(lhs) = before.strip_suffix(op) {
+            let lhs = lhs.trim_end();
+            return !(lhs.ends_with("null") || lhs.ends_with("undefined"));
+        }
+    }
+    false
 }
 
 /// A collection name tested for truthiness: `!x`, `if (x)`, `x && ..`, `x || ..`, `x ? a : b`.
@@ -670,6 +721,7 @@ mod tests {
                         | Idiom::EmptyCollectionTruthiness
                         | Idiom::DuplicateDeclaration
                         | Idiom::StringAsRegex
+                        | Idiom::EntityValueIdentity
                 )
             })
             .collect()
@@ -737,6 +789,18 @@ mod tests {
         let found = kinds(xml);
         // `push` and `first()` on fooList; copyList was copied.
         assert_eq!(found, vec![Idiom::FindListMutation; 2], "{:?}", scan(xml));
+    }
+
+    #[test]
+    fn a_cloned_entity_value_compared_with_equals_signs_is_found() {
+        let xml = r#"<services><service verb="a" noun="B"><actions>
+            <set field="copy" from="orig.cloneValue()"/>
+            <if condition="copy == orig"><return/></if>
+            <if condition="copy != orig"><return/></if>
+            <if condition="copy.equals(orig)"><return/></if>
+            <if condition="copy == null"><return/></if>
+        </actions></service></services>"#;
+        assert_eq!(kinds(xml), vec![Idiom::EntityValueIdentity; 2], "{:?}", scan(xml));
     }
 
     #[test]

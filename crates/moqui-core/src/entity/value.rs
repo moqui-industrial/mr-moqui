@@ -183,9 +183,10 @@ impl EntityFacade {
             .map(|_| ())
     }
 
-    /// Fill the fields an entity definition gives a `default` (a quoted literal, a number, or the name of another
-    /// field of the same value) when a create leaves them out or null, as Moqui does on create.
-    fn apply_field_defaults(
+    /// Fill the fields an entity definition gives a `default` (a quoted literal, a number, the name of another
+    /// field of the same value, `ec.user.nowTimestamp` or `ec.user.userId`) when a create leaves them out or null, as
+    /// Moqui does on create.
+    pub(crate) fn apply_field_defaults(
         &self,
         entity_name: &str,
         values: &BTreeMap<String, Value>,
@@ -200,13 +201,17 @@ impl EntityFacade {
                     continue;
                 }
                 let bytes = default.as_bytes();
-                let quoted = bytes.len() >= 2
-                    && (bytes[0] == b'\'' || bytes[0] == b'"')
-                    && bytes[bytes.len() - 1] == bytes[0];
+                let quoted =
+                    bytes.len() >= 2 && (bytes[0] == b'\'' || bytes[0] == b'"') && bytes[bytes.len() - 1] == bytes[0];
                 let value = if quoted {
                     Some(Value::String(default[1..default.len() - 1].to_string()))
                 } else if default.parse::<f64>().is_ok() {
                     Some(Value::String(default.to_string()))
+                } else if default == "ec.user.nowTimestamp" {
+                    // the execution context's effective time, as the Groovy default expression read it
+                    Some(crate::user::now_effective_value())
+                } else if default == "ec.user.userId" {
+                    crate::user::current_user_id().ok().flatten().map(Value::string)
                 } else {
                     out.get(default).filter(|v| !v.is_null()).cloned()
                 };
@@ -334,7 +339,7 @@ impl EntityFacade {
         let mut plain = plain;
         if eca {
             let before = plain.clone();
-            crate::service::run_matched_eca(self, entity_name, seal_operation, true, &rules, &mut plain)?;
+            crate::service::run_matched_eca(self, entity_name, seal_operation, true, &rules, &mut plain, None)?;
             // A run-before rule may have set fields (`entityValue` or `set-results`): convert them as a write would.
             if plain != before {
                 plain = self.normalize_values(entity_name, &plain, operation == "update")?;
@@ -346,6 +351,16 @@ impl EntityFacade {
             load_feed::note_touch(self, entity_name, seal_operation, Some(&cache_values));
         } else {
             let mut after_values = eca.then(|| plain.clone());
+            // An after rule with `get-original-value` on an update or delete gets the row as it was before the write.
+            let pre_row = if eca
+                && (operation == "update" || operation == "delete")
+                && rules.iter().any(|rule| !rule.run_before && rule.get_original_value)
+            {
+                let keys = self.pk_map(entity_name, &plain)?;
+                self.find_by_pk(entity_name, &keys)?
+            } else {
+                None
+            };
             // A run-after rule on a delete sees the row as it was: read it now, before the row is gone.
             if let Some(values) = after_values.as_mut().filter(|_| operation == "delete") {
                 if rules.iter().any(|rule| !rule.run_before && rule.get_entire_entity) {
@@ -388,7 +403,15 @@ impl EntityFacade {
             }
             load_feed::note_touch(self, entity_name, seal_operation, Some(&cache_values));
             if let Some(mut values) = after_values {
-                crate::service::run_matched_eca(self, entity_name, seal_operation, false, &rules, &mut values)?;
+                crate::service::run_matched_eca(
+                    self,
+                    entity_name,
+                    seal_operation,
+                    false,
+                    &rules,
+                    &mut values,
+                    pre_row.as_ref(),
+                )?;
             }
         }
         cache::on_write(self, entity_name, operation, &cache_values)?;

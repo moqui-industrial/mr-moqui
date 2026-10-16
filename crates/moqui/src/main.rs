@@ -12,13 +12,11 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
+// Component crates kept in runtime/base-component. Naming each keeps its `submit_component!` entry in the binary; it adds
+// nothing unless its component loads. `./moq build` generates a binary with these plus the add-on component crates in
+// runtime/component (target/moqui-app).
+use example as _;
+
 fn main() {
-    match moqui_host::dispatch(std::env::args().skip(1)) {
-        Ok(Some(line)) => println!("{line}"),
-        Ok(None) => {}
-        Err(err) => {
-            eprintln!("{err}");
-            std::process::exit(1);
-        }
-    }
+    moqui_host::main();
 }

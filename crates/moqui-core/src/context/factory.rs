@@ -410,6 +410,46 @@ impl ExecutionContextFactory {
             .map_err(|_| Error::new(format!("tool {name} has a different instance type")))
     }
 
+    /// The tool factory named `name` as its own type, for Rust code that wants more than its instances. None when there
+    /// is none or it is another type.
+    pub fn get_tool_factory_typed<T: crate::native::ToolFactory>(&self, name: &str) -> Option<Arc<T>> {
+        let factory: Arc<dyn std::any::Any + Send + Sync> = self.get_tool_factory(name)?;
+        factory.downcast::<T>().ok()
+    }
+
+    /// The tool factories that give a TypeScript type for their instance, as (name, type), for `moqui types`.
+    pub fn tool_type_declarations(&self) -> Vec<(String, &'static str)> {
+        self.native_tools.type_declarations()
+    }
+
+    /// Bind a `type="rust"` service location to a closure for this factory, beside the linked catalogue's functions. For
+    /// an implementation that keeps state, such as a tool factory's: call it from `ToolFactory::pre_facade_init`.
+    /// [`crate::service_location!`] names a function by its Rust path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the location is empty, already bound (a built-in or catalogue function included), or when
+    /// this factory has already read service definitions, which resolve their location as they are read.
+    pub fn register_service(
+        &self,
+        location: &str,
+        run: impl Fn(
+                &ExecutionContext,
+                &crate::native::ServiceInfo<'_>,
+                &crate::native::Parameters,
+            ) -> Result<crate::native::Parameters, moqui_lib::error::Error>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Result<(), Error> {
+        if crate::service::define::definitions_read(self) {
+            return Err(Error::new(format!(
+                "rust service {location} is registered after the service definitions were read; register it in pre_facade_init"
+            )));
+        }
+        self.native.register_service(location, Arc::new(run))
+    }
+
     pub fn resource(&self) -> &ResourceFacade {
         &self.resource
     }

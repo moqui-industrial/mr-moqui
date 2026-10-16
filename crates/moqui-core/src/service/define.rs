@@ -172,7 +172,7 @@ pub(crate) struct ServiceDef {
     pub location: String,
     /// The registered function when `kind` is [`ServiceKind::Rust`].
     pub rust_fn: Option<super::rust_services::RustServiceFn>,
-    pub native_fn: Option<crate::native::NativeService>,
+    pub native_fn: Option<crate::native::NativeServiceFn>,
     pub method: String,
     /// `<actions>` XML, or empty when the service has none.
     pub actions: String,
@@ -279,6 +279,15 @@ fn entered() -> Result<Arc<Shared>, Error> {
 
 fn registry_of(factory: &Arc<ExecutionContextFactory>) -> Arc<Shared> {
     factory.extension::<Shared>(|_| Shared::default())
+}
+
+/// True once `factory` has read a service file, after which a rust service location registered on it would not be seen
+/// by the definitions already read.
+pub(crate) fn definitions_read(factory: &ExecutionContextFactory) -> bool {
+    !snapshot(&factory.extension::<Shared>(|_| Shared::default()))
+        .loaded
+        .files
+        .is_empty()
 }
 
 fn snapshot(shared: &Shared) -> Arc<Registry> {

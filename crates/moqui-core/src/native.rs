@@ -6,18 +6,31 @@
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use moqui_lib::error::Error as LibError;
 use moqui_lib::node::MNode;
-use moqui_lib::object::Value;
-use moqui_lib::sync::lock;
+use moqui_lib::object::{HostObject, Value};
+use moqui_lib::sync::{lock, read, write};
 
 use crate::context::{ComponentInfo, Error, ExecutionContext, ExecutionContextFactory, ResourceEntry, ResourceStat};
 use crate::script::template::TemplateRenderer;
 
 /// Submit a `NativeComponent { name, register }` from a linked component crate.
 pub use inventory::submit as submit_component;
+
+/// The `type="rust"` location of a function by its Rust path, `module_path!() + "::" + name`, for
+/// [`NativeRegistry::service_function`] or [`ExecutionContextFactory::register_service`]:
+///
+/// ```ignore
+/// registry.service_function(moqui_core::service_location!(echo), echo)?;
+/// ```
+#[macro_export]
+macro_rules! service_location {
+    ($function:ident) => {
+        concat!(module_path!(), "::", stringify!($function))
+    };
+}
 
 pub struct NativeComponent {
     pub name: &'static str,
@@ -36,11 +49,39 @@ pub struct ServiceInfo<'a> {
 }
 
 pub type NativeService = fn(&ExecutionContext, &ServiceInfo<'_>, &Parameters) -> Result<Parameters, LibError>;
+pub(crate) type NativeBody =
+    dyn Fn(&ExecutionContext, &ServiceInfo<'_>, &Parameters) -> Result<Parameters, LibError> + Send + Sync;
+
+/// A service body as the definition holds it: a catalogue function, or a closure bound with
+/// [`ExecutionContextFactory::register_service`].
+#[derive(Clone)]
+pub(crate) struct NativeServiceFn(Arc<NativeBody>);
+
+impl NativeServiceFn {
+    pub(crate) fn new(body: Arc<NativeBody>) -> Self {
+        Self(body)
+    }
+
+    pub(crate) fn call(
+        &self,
+        ec: &ExecutionContext,
+        service: &ServiceInfo<'_>,
+        parameters: &Parameters,
+    ) -> Result<Parameters, LibError> {
+        (self.0)(ec, service, parameters)
+    }
+}
+
+impl std::fmt::Debug for NativeServiceFn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("NativeServiceFn")
+    }
+}
 pub type ToolConstructor = fn() -> Arc<dyn ToolFactory>;
 pub type ResourceConstructor = fn(&Arc<ExecutionContextFactory>) -> Result<Arc<dyn ResourceProvider>, Error>;
 
 /// A factory-owned tool lifecycle. Do not retain a strong reference to the execution context factory.
-pub trait ToolFactory: Send + Sync {
+pub trait ToolFactory: Any + Send + Sync {
     fn name(&self) -> &str;
     fn pre_facade_init(&self, _factory: &Arc<ExecutionContextFactory>) -> Result<(), Error> {
         Ok(())
@@ -49,6 +90,11 @@ pub trait ToolFactory: Send + Sync {
         Ok(())
     }
     fn get_instance(&self, parameters: &[Value]) -> Result<Arc<dyn Tool>, Error>;
+    /// The TypeScript type of the instance, such as `{ greet(name: string): string }`, for `moqui types`. None types it
+    /// loosely.
+    fn type_declaration(&self) -> Option<&'static str> {
+        None
+    }
     fn destroy(&self) {}
     /// Runs when the factory is dropped, after its facade fields have been released.
     fn post_facade_destroy(&self) {}
@@ -62,7 +108,19 @@ pub trait Tool: Any + Send + Sync {
     fn call(&self, _ec: &ExecutionContext, method: &str, _parameters: &[Value]) -> Result<Value, Error> {
         Err(Error::new(format!("tool method {method} is not exposed")))
     }
+    /// A property a script reads that is not a method, as a Groovy getter would be. None reads as `undefined`.
+    fn property(&self, _ec: &ExecutionContext, _name: &str) -> Result<Option<Value>, Error> {
+        Ok(None)
+    }
 }
+
+/// A tool as a [`Value`], so a tool method can return another tool and a script keeps it on the context stack.
+pub fn tool_value(tool: Arc<dyn Tool>) -> Value {
+    Value::Object(HostObject::new(ToolHandle(tool)))
+}
+
+/// What a tool [`Value`] holds.
+pub(crate) struct ToolHandle(pub(crate) Arc<dyn Tool>);
 
 /// Storage for a configured resource scheme. Mutating operations are opt-in.
 /// Providers must apply their own outbound/sim policy before external I/O.
@@ -90,6 +148,8 @@ pub trait ResourceProvider: Send + Sync + std::fmt::Debug {
 #[derive(Default)]
 pub struct NativeRegistry {
     services: BTreeMap<String, NativeService>,
+    /// Closures bound after boot with [`ExecutionContextFactory::register_service`].
+    registered: RwLock<BTreeMap<String, NativeServiceFn>>,
     runners: BTreeMap<String, NativeService>,
     tools: BTreeMap<String, ToolConstructor>,
     resources: BTreeMap<String, ResourceConstructor>,
@@ -166,11 +226,24 @@ impl NativeRegistry {
         Ok(registry)
     }
 
-    pub(crate) fn service_at(&self, location: &str) -> Option<NativeService> {
-        self.services.get(location).copied()
+    pub(crate) fn service_at(&self, location: &str) -> Option<NativeServiceFn> {
+        if let Some(function) = self.services.get(location).copied() {
+            return Some(NativeServiceFn::new(Arc::new(function)));
+        }
+        read(&self.registered).get(location).cloned()
     }
-    pub(crate) fn runner_for(&self, name: &str) -> Option<NativeService> {
-        self.service_types.get(name).copied()
+    pub(crate) fn runner_for(&self, name: &str) -> Option<NativeServiceFn> {
+        self.service_types
+            .get(name)
+            .copied()
+            .map(|runner| NativeServiceFn::new(Arc::new(runner)))
+    }
+    /// [`ExecutionContextFactory::register_service`]: a location no built-in, catalogue or earlier closure has.
+    pub(crate) fn register_service(&self, location: &str, run: Arc<NativeBody>) -> Result<(), Error> {
+        if crate::service::rust_services::get(location).is_some() || self.services.contains_key(location) {
+            return Err(Error::new(format!("duplicate native implementation {location}")));
+        }
+        insert(&mut write(&self.registered), location, NativeServiceFn::new(run))
     }
     pub(crate) fn template_for(&self, class: &str) -> Option<Arc<dyn TemplateRenderer>> {
         self.templates.get(class).cloned()
@@ -314,6 +387,13 @@ impl ToolSet {
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn type_declarations(&self) -> Vec<(String, &'static str)> {
+        lock(&self.tools)
+            .iter()
+            .filter_map(|tool| tool.type_declaration().map(|text| (tool.name().to_string(), text)))
+            .collect()
     }
 
     pub(crate) fn get(&self, name: &str) -> Option<Arc<dyn ToolFactory>> {

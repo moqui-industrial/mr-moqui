@@ -209,6 +209,20 @@ pub fn load_save(
     db::embedded::load_save(dir.as_ref(), dump.as_ref())
 }
 
+/// The process entry of a moqui binary: [`dispatch`] on the command line arguments, the line it returns printed, and
+/// exit status 1 with the error on stderr when it fails. A binary that links component crates names each one
+/// (`use my_component as _;`) so its `submit_component!` entry is kept.
+pub fn main() {
+    match dispatch(std::env::args().skip(1)) {
+        Ok(Some(line)) => println!("{line}"),
+        Ok(None) => {}
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// No arguments start the HTTP server. With no command, `--port`, `--conf`, `--no-run-es`, and `-D name=value`
 /// set the listen port, the runtime conf, and other properties for that run. `help`, `--help`, `-h`, and `-?`
 /// print the command list ([`usage::overview`]). `save-db` and `load-save` take a cluster directory and a dump file.
@@ -372,20 +386,30 @@ fn dispatch_types(args: &[String]) -> Result<(), moqui_lib::error::Error> {
 }
 
 fn dispatch_lint(path: Option<&str>) -> Result<(), moqui_lib::error::Error> {
+    let owned = path.map(std::path::PathBuf::from);
+    let paths: Vec<std::path::PathBuf> = owned.into_iter().collect();
+    // A factory with no threads and no database, entered so a `type="rust"` location a linked component binds resolves
+    // as it does in a server. With no runtime to boot (a lone file), only the built-in locations resolve.
     let (runtime, framework) = runtime_framework_dirs();
-    let factory = moqui_core::context::ExecutionContextFactory::boot_with_options(
-        runtime,
-        framework,
+    let booted = moqui_core::context::ExecutionContextFactory::boot_with_options(
+        &runtime,
+        &framework,
         moqui_core::context::BootOptions {
             executor: moqui_core::context::Executor::Inline,
         },
-    )
-    .map_err(moqui_lib::error::Error::from)?;
-    let context = factory.new_context();
-    let _entered = context.enter();
-    let owned = path.map(std::path::PathBuf::from);
-    let paths: Vec<std::path::PathBuf> = owned.into_iter().collect();
-    let failures = moqui_core::service::check(&paths).map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
+    );
+    let checked = match booted {
+        Ok(factory) => {
+            let context = factory.new_context();
+            let _entered = context.enter();
+            moqui_core::service::check(&paths)
+        }
+        Err(err) => {
+            tracing::warn!("Linting without a factory, so only built-in rust service locations resolve: {err}");
+            moqui_core::service::check(&paths)
+        }
+    };
+    let failures = checked.map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
     for failure in &failures {
         println!("{failure}");
     }

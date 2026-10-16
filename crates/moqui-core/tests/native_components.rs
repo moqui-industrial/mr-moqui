@@ -28,6 +28,7 @@ fn register(registry: &mut NativeRegistry) -> Result<(), Error> {
     registry.tool("probe::Second", || Arc::new(Factory::new("Second", false)))?;
     registry.tool("probe::Alias", || Arc::new(Factory::new("First", false)))?;
     registry.tool("probe::Fail", || Arc::new(Factory::new("Fail", true)))?;
+    registry.tool("probe::Rich", || Arc::new(RichFactory))?;
     registry.resource("probe::Memory", |factory| Ok(factory.extension(|_| Memory::default())))?;
     registry.template("probe::Upper", Arc::new(Upper))
 }
@@ -142,6 +143,65 @@ impl Tool for Counter {
         }
         assert_eq!(method, "increment");
         Ok(Value::I64(self.value.fetch_add(1, Ordering::Relaxed) as i64 + 1))
+    }
+}
+/// A tool factory that binds a closure service over its state, and gives tools with properties and nested tools.
+struct RichFactory;
+impl ToolFactory for RichFactory {
+    fn name(&self) -> &str {
+        "Rich"
+    }
+    fn pre_facade_init(&self, factory: &Arc<ExecutionContextFactory>) -> Result<(), Error> {
+        let label = String::from("from the factory");
+        factory.register_service("probe::closure", move |_ec, info, parameters| {
+            let mut out = parameters.clone();
+            out.insert("label".into(), Value::string(format!("{label} at {}", info.location)));
+            Ok(out)
+        })?;
+        let err = factory.register_service("probe::closure", echo).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("duplicate native implementation probe::closure"),
+            "{err}"
+        );
+        let err = factory.register_service("probe::echo", echo).unwrap_err();
+        assert!(err.to_string().contains("duplicate"), "a catalogue location: {err}");
+        let err = factory
+            .register_service("moqui_core::service::mail::send_template", echo)
+            .unwrap_err();
+        assert!(err.to_string().contains("duplicate"), "a built-in location: {err}");
+        Ok(())
+    }
+    fn get_instance(&self, parameters: &[Value]) -> Result<Arc<dyn Tool>, Error> {
+        let label = match parameters.first() {
+            Some(Value::String(text)) => text.clone(),
+            _ => "rich".to_string(),
+        };
+        Ok(Arc::new(RichTool { label }))
+    }
+    fn type_declaration(&self) -> Option<&'static str> {
+        Some("{ echo(...args: unknown[]): unknown[] }")
+    }
+}
+struct RichTool {
+    label: String,
+}
+impl Tool for RichTool {
+    fn methods(&self) -> &'static [&'static str] {
+        &["echo", "child", "fail"]
+    }
+    fn call(&self, _ec: &ExecutionContext, method: &str, parameters: &[Value]) -> Result<Value, Error> {
+        match method {
+            "echo" => Ok(Value::List(parameters.to_vec())),
+            "child" => Ok(tool_value(Arc::new(RichTool {
+                label: format!("{} child", self.label),
+            }))),
+            "fail" => Err(Error::new("failed on purpose")),
+            _ => unreachable!("not a method: {method}"),
+        }
+    }
+    fn property(&self, _ec: &ExecutionContext, name: &str) -> Result<Option<Value>, Error> {
+        Ok((name == "label").then(|| Value::string(self.label.clone())))
     }
 }
 #[derive(Default, Debug)]
@@ -409,6 +469,70 @@ fn tools_obey_priority_lifecycle_and_explicit_js_methods() {
     );
     assert!(factory.get_tool("First", &[]).is_err());
     assert!(factory.init_tools().is_err());
+}
+
+#[test]
+fn tool_objects_keep_their_methods_and_closures_bind_services() {
+    let runtime = Runtime::new("native-probe", r#"<tools><tool-factory class="probe::Rich"/></tools>"#);
+    runtime.services(
+        r#"<services>
+      <service verb="closure" noun="Value" type="rust" location="probe::closure" authenticate="false" transaction="ignore">
+        <in-parameters><parameter name="note"/></in-parameters>
+        <out-parameters><parameter name="note"/><parameter name="label"/></out-parameters>
+      </service>
+      <service verb="keep" noun="Tool" authenticate="false" transaction="ignore">
+        <out-parameters><parameter name="text"/></out-parameters>
+        <actions>
+          <set field="tool" from="ec.factory.getTool('Rich', 'kept')"/>
+          <set field="text" from="tool.label + ':' + tool.echo('x')[0] + ':' + tool.child().label"/>
+        </actions>
+      </service>
+    </services>"#,
+    );
+    let factory = runtime.boot().unwrap();
+    attach(&factory);
+    factory.init_tools().unwrap();
+    assert!(factory.get_tool_factory_typed::<RichFactory>("Rich").is_some());
+    assert!(factory.get_tool_factory_typed::<Factory>("Rich").is_none());
+    assert_eq!(
+        factory.tool_type_declarations(),
+        [("Rich".to_string(), "{ echo(...args: unknown[]): unknown[] }")]
+    );
+    let ec = factory.new_context();
+    let _entered = ec.enter();
+    assert!(moqui_core::service::lint(&[]).unwrap().is_empty());
+    let params = BTreeMap::from([("note".into(), Value::string("hello"))]);
+    let out = moqui_core::service::sync("Probe.closure#Value", &params).unwrap();
+    assert_eq!(out["note"], Value::string("hello"));
+    assert_eq!(out["label"], Value::string("from the factory at probe::closure"));
+    // The definitions are read now, so a later binding would not be seen by them.
+    let err = factory.register_service("probe::late", echo).unwrap_err();
+    assert!(
+        err.to_string().contains("after the service definitions were read"),
+        "{err}"
+    );
+
+    // Kept on the context stack by XML Actions and read back, it is still the tool.
+    let out = moqui_core::service::sync("Probe.keep#Tool", &BTreeMap::new()).unwrap();
+    assert_eq!(out["text"], Value::string("kept:x:kept child"));
+
+    moqui_core::script::clear_context_stack();
+    let holds = |expression: &str| assert!(moqui_core::script::eval_condition(expression).unwrap(), "{expression}");
+    holds("JSON.stringify(ec.getTool('Rich').echo(1, 'a', null)) === '[1,\"a\",null]'");
+    holds("ec.factory.getTool('Rich').missing === undefined");
+    holds("'echo' in ec.getTool('Rich') && !('nope' in ec.getTool('Rich'))");
+    holds("Object.getOwnPropertyNames(ec.getTool('Rich')).join() === 'echo,child,fail'");
+    holds("(() => { const t = ec.getTool('Rich'); try { t.label = 'x' } catch (e) {} return t.label === 'rich' })()");
+    holds("(() => { try { ec.getTool('Rich').fail(); return false } catch (e) { return String(e.message).includes('failed on purpose') } })()");
+    moqui_core::script::set_context_name(
+        "given",
+        tool_value(Arc::new(RichTool {
+            label: "from rust".into(),
+        })),
+    )
+    .unwrap();
+    holds("given.label === 'from rust' && given.child().label === 'from rust child'");
+    moqui_core::script::clear_context_stack();
 }
 
 #[test]

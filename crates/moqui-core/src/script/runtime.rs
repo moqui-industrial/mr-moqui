@@ -78,6 +78,7 @@ use error_info::*;
 pub use facades::run_script_location;
 use facades::*;
 use helpers::*;
+use native_tools::*;
 pub(crate) use screen_host::with_screen_runner;
 use search::*;
 use services::*;
@@ -593,6 +594,9 @@ pub fn expand(template: &str) -> Result<String, Error> {
     }
     with_context(|ctx| expand_in(ctx, template))
 }
+
+/// See [`upload::text_upload_to_js`].
+pub(crate) use upload::text_upload_to_js;
 
 pub(crate) fn with_ctx<R>(body: impl FnOnce(&Ctx) -> Result<R, Error>) -> Result<R, Error> {
     with_context(body)
