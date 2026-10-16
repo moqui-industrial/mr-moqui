@@ -7,7 +7,7 @@ Summary derived from the archived plans on 2026-10-14. Phases 0–12 and gates 1
 - **Phase 13: LLM and A2A.** Ported as the Java framework stands when the phase begins, because the Java side is not yet stable and community feedback iterations are still running. Scope: LLM client, conversation, protocols, tool loop, host routes for LLM endpoints, A2A routes (design in `../moqui/framework/plans/A2A-Server.md`). `LlmServices.xml`, `A2AServices.xml` and the tools component's `llm` REST resource were removed on 2026-10-14; take fresh copies from moqui-framework when the phase begins and wire them then. The LLM and A2A entities and `LlmTypeData.xml` stay. The LLM client sets the sim-allow exception on `RestClient`. Check: same cases as the Java tests at the time of the port. See [Implementation-Phases, Phase 13](archive/Implementation-Phases.md).
 - **Further database drivers** (SQL Server, Oracle, DB2, DB2 for i, Derby, HSQLDB). Build stays on Postgres, MySQL, and SQLite (browser). A missing driver is a configuration error naming the database. Phase 12 in the same file.
 - **Assist panel** and the other agent/assist parts: part of this phase.
-- **Deliberately not ported:** JSON-RPC, Groovy shell and web eval, Java/Groovy service runners, `vuet`/`/vapps`, `service-group`, Swagger 2.0/RAML output, `ElasticDatasourceFactory`, Hazelcast/session-byte replication.
+- **Deliberately not ported:** JSON-RPC, Groovy shell and web eval, Java/Groovy service runners, `vuet`/`/vapps`, `service-group`, Swagger 2.0/RAML output, Hazelcast/session-byte replication. Non-SQL entity datasources (`ElasticDatasourceFactory`, OrientDB) are a proposal in [Future-Plans](Future-Plans.md).
 
 ## Known open items
 

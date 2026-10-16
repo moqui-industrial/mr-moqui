@@ -242,7 +242,7 @@ pub fn get_field_entity_value(widget: &NodeLit) -> Result<String, Error> {
     };
     let text = widget.attr("text");
     if !text.is_empty() {
-        let fields: IndexMap<String, Value> = found.fields().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let fields: IndexMap<String, Value> = found.localized_fields(&facade).into_iter().collect();
         let _frame = ContextFrame::push();
         script::put_context_all(&fields);
         return script::expand_localized(text);
@@ -251,7 +251,8 @@ pub fn get_field_entity_value(widget: &NodeLit) -> Result<String, Error> {
         return Ok(String::new());
     }
     Ok(found
-        .get(&shape.description_field)
+        .get_localized(&facade, &shape.description_field)
+        .as_ref()
         .map(to_plain_string)
         .unwrap_or_default())
 }

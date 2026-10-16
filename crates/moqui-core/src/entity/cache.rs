@@ -145,7 +145,29 @@ struct SimSession {
     written: HashSet<String>,
     /// Java's `TransactionCacheDb.seqBanks`: the sim's own sequenced ids, so a sim uses no production ids.
     seq_banks: HashMap<String, i64>,
+    /// Rows copied unchanged from production so a view read can join them with the sim's own rows, by row key. Neither
+    /// written nor deleted in the sim. See [`super::sim_view`].
+    replicas: HashSet<String>,
+    /// Rows copied from production in this session, against [`SIM_TOTAL_COPY_CAP`].
+    copied: usize,
 }
+
+impl SimSession {
+    fn new(schema: String) -> Self {
+        Self {
+            schema,
+            tables: HashSet::new(),
+            tombstones: HashMap::new(),
+            written: HashSet::new(),
+            seq_banks: HashMap::new(),
+            replicas: HashSet::new(),
+            copied: 0,
+        }
+    }
+}
+
+/// Java's `TransactionCacheDb.TOTAL_COPY_CAP`: rows copied from production over one sim, which bounds its size.
+const SIM_TOTAL_COPY_CAP: usize = 200_000;
 
 /// Java's `TransactionCacheDb.SEQ_START`: where the ids of a sim's sequences start.
 const SIM_SEQ_START: i64 = 900_000_000;
@@ -179,6 +201,8 @@ struct SimHit {
     table: bool,
     tombstone: bool,
     written: bool,
+    /// A copy of the production row is in the sim table. See [`SimSession::replicas`].
+    replica: bool,
 }
 
 struct SimView {
@@ -875,13 +899,7 @@ pub fn enter_sim(facade: &EntityFacade) -> Result<(), Error> {
     }
     sim.with_connection(|conn| execute_conn(conn, &format!("CREATE SCHEMA {schema}"), &[]))?;
     SIM.with(|slot| {
-        slot.borrow_mut().push(SimSession {
-            schema,
-            tables: HashSet::new(),
-            tombstones: HashMap::new(),
-            written: HashSet::new(),
-            seq_banks: HashMap::new(),
-        });
+        slot.borrow_mut().push(SimSession::new(schema));
     });
     Ok(())
 }
@@ -909,6 +927,141 @@ pub fn exit_sim(facade: &EntityFacade) -> Result<(), Error> {
 #[must_use]
 pub fn sim_entered() -> bool {
     sim_session_open()
+}
+
+/// The innermost sim schema of this thread, when a sim session is open.
+pub(super) fn sim_schema() -> Option<String> {
+    SIM.with(|slot| slot.borrow().last().map(|session| session.schema.clone()))
+}
+
+/// Whether the sim wrote or deleted a row of `entity` (a full name).
+pub(super) fn sim_changed(entity: &str) -> bool {
+    let prefix = format!("{entity}{PK_SEP}");
+    SIM.with(|slot| {
+        slot.borrow().last().is_some_and(|session| {
+            session.tombstones.get(entity).is_some_and(|set| !set.is_empty())
+                || session.written.iter().any(|key| key.starts_with(&prefix))
+        })
+    })
+}
+
+/// Rows deleted in the sim, as Java's `deletedCount`: production still returns them, so they shrink a copied page.
+pub(super) fn sim_deleted_count() -> usize {
+    SIM.with(|slot| {
+        slot.borrow()
+            .last()
+            .map_or(0, |session| session.tombstones.values().map(HashSet::len).sum())
+    })
+}
+
+/// The rows the sim wrote of `entity_name`, plain, read from its table. Not its replicas.
+pub(super) fn sim_written_rows(
+    facade: &EntityFacade,
+    entity_name: &str,
+) -> Result<Vec<BTreeMap<String, Value>>, Error> {
+    let meta = read_meta(facade, entity_name)?;
+    let view = sim_view(&meta.full_name);
+    if !view.table {
+        return Ok(Vec::new());
+    }
+    let rows = load_plain(facade, &meta, None, &[], Some(&view.schema))?;
+    Ok(rows
+        .into_iter()
+        .filter(|row| pk_of(row, &meta.pk_fields).is_some_and(|pk| view.hide.contains(&row_key(&meta.full_name, &pk))))
+        .collect())
+}
+
+/// Create the table of `entity_name` in the sim schema when the sim has none yet.
+pub(super) fn ensure_sim_table(facade: &EntityFacade, entity_name: &str) -> Result<(), Error> {
+    let full_name = facade.with_entity(entity_name, |entity, _, _| Ok(entity.full_name.clone()))?;
+    let (schema, exists) = SIM.with(|slot| {
+        let guard = slot.borrow();
+        let session = guard.last().ok_or_else(|| Error::new("sim session is missing"))?;
+        Ok::<_, Error>((session.schema.clone(), session.tables.contains(&full_name)))
+    })?;
+    if exists {
+        return Ok(());
+    }
+    let ddl = create_sql(facade, entity_name)?;
+    let sim = facade
+        .sim_transactions()
+        .ok_or_else(|| Error::new("sim transactions are not configured"))?;
+    run_overlay(&sim, &schema, Some(&ddl), &[])?;
+    SIM.with(|slot| {
+        if let Some(session) = slot.borrow_mut().last_mut() {
+            session.tables.insert(full_name);
+        }
+    });
+    Ok(())
+}
+
+/// Copy a production row of `entity_name` into the sim schema as a replica, as Java's `copyFromProduction`. A row
+/// the sim wrote, deleted or already copied is left as it is. Returns whether it was copied.
+///
+/// # Errors
+///
+/// Fails when the sim has copied [`SIM_TOTAL_COPY_CAP`] rows, as Java fails the sim, or the copy cannot be written.
+pub(super) fn copy_replica(
+    facade: &EntityFacade,
+    entity_name: &str,
+    plain: BTreeMap<String, Value>,
+) -> Result<bool, Error> {
+    let owner = facade.clone();
+    let (full_name, pk, sealed) = facade.with_entity(entity_name, |entity, _, _| {
+        let pk = identity(entity, &plain)?;
+        let sealed = field_rw::seal_stored(&owner, entity, plain.clone())?;
+        Ok((entity.full_name.clone(), pk, sealed))
+    })?;
+    let key = row_key(&full_name, &pk);
+    let skip = SIM.with(|slot| {
+        let mut guard = slot.borrow_mut();
+        let session = guard.last_mut().ok_or_else(|| Error::new("sim session is missing"))?;
+        if session.written.contains(&key)
+            || session.replicas.contains(&key)
+            || session.tombstones.get(&full_name).is_some_and(|set| set.contains(&pk))
+        {
+            return Ok(true);
+        }
+        session.copied += 1;
+        if session.copied > SIM_TOTAL_COPY_CAP {
+            return Err(Error::new(format!(
+                "The sim copied more than {SIM_TOTAL_COPY_CAP} production rows. Narrow the query or end the sim."
+            )));
+        }
+        Ok::<_, Error>(false)
+    })?;
+    if skip {
+        return Ok(false);
+    }
+    ensure_sim_table(facade, entity_name)?;
+    let schema = sim_schema().ok_or_else(|| Error::new("sim session is missing"))?;
+    let mut statements = Vec::new();
+    push_statement(&mut statements, dml(facade, entity_name, Op::Create, &sealed)?);
+    let sim = facade
+        .sim_transactions()
+        .ok_or_else(|| Error::new("sim transactions are not configured"))?;
+    run_overlay(&sim, &schema, None, &statements)?;
+    SIM.with(|slot| {
+        if let Some(session) = slot.borrow_mut().last_mut() {
+            session.replicas.insert(key);
+        }
+    });
+    Ok(true)
+}
+
+/// Run a read on the sim schema `schema`.
+pub(super) fn query_sim(facade: &EntityFacade, schema: &str, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
+    let sim = facade
+        .sim_transactions()
+        .ok_or_else(|| Error::new("sim transactions are not configured"))?;
+    sim.with_connection(|conn| {
+        query_conn(
+            conn,
+            "SELECT set_config('search_path', ?, false)",
+            &[Value::string(schema)],
+        )?;
+        query_conn(conn, sql, params)
+    })
 }
 
 /// End every sim session this thread still has open, dropping its schema, and clear the sim flag. A failed drop is
@@ -1003,15 +1156,17 @@ fn write_sim(
 ) -> Result<(), Error> {
     let hit = sim_hit(&prepared.full_name, &prepared.pk)?;
     // The overlay dialect rejects insert-or-update. A new sim row is an insert; a written row is an update.
+    // A replica row is in the sim table already, as a written one is.
+    let present = hit.written || hit.replica;
     let op = match op {
-        Op::Upsert if hit.written => Op::Update,
+        Op::Upsert if present => Op::Update,
         Op::Upsert => Op::Create,
         other => other,
     };
     if op == Op::Update && hit.tombstone {
         return Ok(());
     }
-    if op == Op::Create && hit.written {
+    if op == Op::Create && present {
         return Err(Error::new(format!(
             "create of existing sim row {} {}",
             prepared.full_name, prepared.pk
@@ -1021,7 +1176,7 @@ fn write_sim(
         note_sim(&prepared.full_name, &prepared.pk, Op::Delete, false);
         return Ok(());
     }
-    let sealed_copy = if op == Op::Update && !hit.written {
+    let sealed_copy = if op == Op::Update && !present {
         match load_by_pk(facade, entity_name, plain)? {
             Some(row) => Some(seal(facade, entity_name, "create", row)?),
             None => None,
@@ -1055,7 +1210,7 @@ fn sim_statements(
     if let Some(copied) = sealed_copy {
         push_statement(&mut statements, dml(facade, entity_name, Op::Create, copied)?);
         push_statement(&mut statements, dml(facade, entity_name, Op::Update, sealed)?);
-    } else if op == Op::Update && !hit.written {
+    } else if op == Op::Update && !hit.written && !hit.replica {
         push_statement(&mut statements, dml(facade, entity_name, Op::Create, sealed)?);
     } else {
         push_statement(&mut statements, dml(facade, entity_name, op, sealed)?);
@@ -1118,6 +1273,7 @@ fn note_sim(entity: &str, pk: &str, op: Op, created_table: bool) {
         if created_table {
             session.tables.insert(entity.to_string());
         }
+        session.replicas.remove(&row_key);
         match op {
             Op::Create | Op::Update | Op::Upsert => {
                 if let Some(set) = session.tombstones.get_mut(entity) {
@@ -1304,17 +1460,7 @@ fn load_plain(
 ) -> Result<Vec<BTreeMap<String, Value>>, Error> {
     let plan = plan_select(facade, &meta.full_name, condition, order)?;
     let db_rows = if let Some(schema) = overlay_schema {
-        let sim = facade
-            .sim_transactions()
-            .ok_or_else(|| Error::new("sim transactions are not configured"))?;
-        sim.with_connection(|conn| {
-            query_conn(
-                conn,
-                "SELECT set_config('search_path', ?, false)",
-                &[Value::string(schema)],
-            )?;
-            query_conn(conn, &plan.sql, &plan.params)
-        })?
+        query_sim(facade, schema, &plan.sql, &plan.params)?
     } else {
         query_tx(&plan.tx, &plan.sql, &plan.params)?
     };
@@ -1613,6 +1759,7 @@ fn sim_hit(entity: &str, pk: &str) -> Result<SimHit, Error> {
             table: session.tables.contains(entity),
             tombstone: session.tombstones.get(entity).is_some_and(|set| set.contains(pk)),
             written: session.written.contains(&key),
+            replica: session.replicas.contains(&key),
         })
     })
 }
@@ -1630,14 +1777,17 @@ fn sim_view(entity: &str) -> SimView {
             }
         }
         let prefix = format!("{entity}{PK_SEP}");
+        let mut written = false;
         for key in &session.written {
             if key.starts_with(&prefix) {
                 hide.insert(key.clone());
+                written = true;
             }
         }
+        // A table that holds only replicas holds production's rows, so production answers alone.
         SimView {
             schema: session.schema.clone(),
-            table: session.tables.contains(entity),
+            table: written && session.tables.contains(entity),
             hide,
         }
     })
@@ -2175,13 +2325,7 @@ mod tests {
     fn a_sim_takes_its_ids_from_its_own_bank() {
         assert_eq!(super::sim_next_seq("moqui.test.TestEntity"), None);
         super::SIM.with(|slot| {
-            slot.borrow_mut().push(super::SimSession {
-                schema: "sim_test".to_string(),
-                tables: std::collections::HashSet::new(),
-                tombstones: std::collections::HashMap::new(),
-                written: std::collections::HashSet::new(),
-                seq_banks: std::collections::HashMap::new(),
-            });
+            slot.borrow_mut().push(super::SimSession::new("sim_test".to_string()));
         });
         assert_eq!(super::sim_next_seq("moqui.test.TestEntity"), Some(900_000_001));
         assert_eq!(super::sim_next_seq("moqui.test.TestEntity"), Some(900_000_002));
