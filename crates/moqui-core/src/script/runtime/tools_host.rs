@@ -246,6 +246,19 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
             if (Array.isArray(messages)) { messages.push(...result.messages); return result.fieldsChecked; }
             return result.messages;
         };
+        // Java's checkInfo(): a row for each record not found and each field that did not match. With no argument the
+        // rows come back and the messages are info messages; checkInfo(diffInfoList, messages) adds to the lists and
+        // returns the fields checked.
+        l.checkInfo = (diffInfoList, messages) => {
+            const result = host.loadData(Object.assign({}, options, { check: true, checkInfo: true }));
+            if (Array.isArray(diffInfoList)) {
+                diffInfoList.push(...result.diffInfo);
+                if (Array.isArray(messages)) messages.push(...result.messages);
+                return result.fieldsChecked;
+            }
+            for (const message of result.messages) ec.message.addMessage(message, "info");
+            return result.diffInfo;
+        };
         return l;
     };
 
@@ -1191,6 +1204,8 @@ fn load_data<'js>(ctx: Ctx<'js>, options: JsValue<'js>) -> rquickjs::Result<JsVa
             csv_delimiter: text("csvDelimiter").chars().next(),
             csv_comment_start: text("csvCommentStart").chars().next(),
             csv_quote_char: text("csvQuoteChar").chars().next(),
+            // Java's `messageNoActionFiles` is true unless the script sets it false.
+            hide_no_action_files: text("messageNoActionFiles") == "false",
             default_values: match options.get("defaultValues") {
                 Some(Value::Map(entries)) => entries
                     .iter()
@@ -1207,13 +1222,21 @@ fn load_data<'js>(ctx: Ctx<'js>, options: JsValue<'js>) -> rquickjs::Result<JsVa
         let factory = factory_of(&ctx)?;
         let check = flag("check");
         let mut fields_checked = 0_u64;
+        let mut diff_info = Vec::new();
         let loaded = if check {
-            // `check()`: the messages are what did not match, not what was loaded.
-            crate::entity::load_feed::check_with(|| load_source(&facade, &factory, &text, &locations, &load_options))
-                .map(|((records, _), result)| {
-                    fields_checked = result.fields_checked;
-                    (records, result.messages)
-                })
+            // `check()`: the messages are what did not match, not what was loaded. `checkInfo()`: what did not match
+            // is in the diff rows.
+            let source = || load_source(&facade, &factory, &text, &locations, &load_options);
+            let checked = if flag("checkInfo") {
+                crate::entity::load_feed::check_info_with(source)
+            } else {
+                crate::entity::load_feed::check_with(source)
+            };
+            checked.map(|((records, _), result)| {
+                fields_checked = result.fields_checked;
+                diff_info = result.diff_info;
+                (records, result.messages)
+            })
         } else {
             load_source(&facade, &factory, &text, &locations, &load_options)
         };
@@ -1234,6 +1257,10 @@ fn load_data<'js>(ctx: Ctx<'js>, options: JsValue<'js>) -> rquickjs::Result<JsVa
             "fieldsChecked".to_string(),
             Value::I64(i64::try_from(fields_checked).unwrap_or(i64::MAX)),
         );
+        out.insert(
+            "diffInfo".to_string(),
+            Value::List(diff_info.into_iter().map(Value::Map).collect()),
+        );
         host_to_js(&ctx, Value::Map(out))
     })
 }
@@ -1245,7 +1272,9 @@ fn load_source(
     locations: &[String],
     options: &crate::entity::load_feed::LoadOptions,
 ) -> Result<(u64, Vec<String>), moqui_lib::error::Error> {
-    use crate::entity::load_feed::{conf_data_locations, load_entity_data, load_entity_xml_text};
+    use crate::entity::load_feed::{
+        conf_data_locations, load_entity_data, load_entity_text_file, load_entity_xml_text, location_in_components,
+    };
     // As Java's `internalRun`: the XML, CSV and JSON text, each in its own transaction, then each location. With
     // none of those, the conf data of the data types or components.
     let mut records = 0;
@@ -1267,7 +1296,7 @@ fn load_source(
         std::fs::write(&path, body).map_err(|err| {
             moqui_lib::error::Error::new(format!("could not write {}", path.display())).with_source(err)
         })?;
-        let result = load_entity_data(facade, &path.display().to_string(), options);
+        let result = load_entity_text_file(facade, name, &path, options);
         let _ = std::fs::remove_file(&path);
         records += result?.records;
     }
@@ -1277,7 +1306,10 @@ fn load_source(
     } else if options.data_types.is_empty() && options.components.is_empty() {
         Vec::new()
     } else {
-        conf_data_locations(facade)?
+        // Only the locations gathered here are narrowed to the components, as Java's `componentNameList`.
+        let mut gathered = conf_data_locations(facade)?;
+        gathered.retain(|location| location_in_components(location, &options.components));
+        gathered
     };
     for location in locations {
         // As Java's `loadAllData`, a location that fails is logged and the load goes on with the next one.

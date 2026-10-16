@@ -20,14 +20,14 @@ ordering.
 
 ## Summary
 
-97 open findings and 32 accepted differences. Open by phase:
+80 open findings and 36 accepted differences. Open by phase:
 
 | Phase | Open | High |
 |---|---|---|
 | 1 Entity value / field / condition | 2 | — |
 | 2 Entity find / query | 0 | — |
 | 3 Facade / metadata / DDL / cache | 3 | — |
-| 4 Data loader / feed / ECA / writer / document / ETL | 18 | P4a-01, P4a-02 |
+| 4 Data loader / feed / ECA / writer / document / ETL | 1 | — |
 | 5 Entity query / REST | 5 | P5-01 |
 | 6 Service definition / validation / call | 20 | P6b-01 (decision) |
 | 7 ECA / SECA / pools / jobs | 19 | — |
@@ -35,8 +35,6 @@ ordering.
 
 | ID | Area | One-line |
 |---|---|---|
-| P4a-01 | data loader | CSV BLOB stored as Base64 text, not decoded bytes |
-| P4a-02 | data loader | CSV rows use entity-auto `store` (auto key/status) vs Java `createOrUpdate` |
 | P5-01 | entity REST | REST find of a **view-entity** returns only `_entity` (no alias values) |
 | P6b-01 | service call | Service-body failure returns `Err`; Java returns the result map — **open design decision** |
 | P8a-03 | service REST | `/rest/s1` service results not run through `stripUserAccountSecrets` |
@@ -46,14 +44,12 @@ ordering.
 1. **Access control** (P8a-03, P7b-07, P7b-08, P7a-05): service-REST results are not stripped of
    UserAccount secrets; async calls skip the pre-queue authz check and then run with authz enabled;
    the permission check omits ALL_USERS group permissions.
-2. **Loader contract** (P4a-01, P4a-02, P4a-05, P4a-08, P4a-09, P4a-11): CSV typing, the CSV write
-   path, empty/short cells and bad-type handling diverge from Java's accept/reject rules.
-3. **Full-text search and model sources** (P3-20, P3-14, P3-21): a `LIKE` on a `text-fts` field is not rewritten
+2. **Full-text search and model sources** (P3-20, P3-14, P3-21): a `LIKE` on a `text-fts` field is not rewritten
    to a full-text search (the DDL now follows `FtsDdl`), DB view entities are not built from their rows, and a
    foreign key is recognized only by its computed name.
-4. **Error contract** (P6b-01, P7a-10): a failing service body propagates `Err` where Java records the
+3. **Error contract** (P6b-01, P7a-10): a failing service body propagates `Err` where Java records the
    error and returns; `post-commit` SECA gets `None` instead of an empty map.
-5. **View REST output** (P5-01): view finds now filter on aliases but still render no alias values.
+4. **View REST output** (P5-01): view finds now filter on aliases but still render no alias values.
 
 ### Open decisions
 
@@ -65,8 +61,8 @@ ordering.
 
 ### Stale code comments (small to-dos)
 
-- `entity/load_feed/loader.rs:435` says the loader uses the entity-auto store path; true for XML/JSON
-  but not CSV (Java CSV uses `createOrUpdate`), which hides P4a-02.
+None open. The last one, the loader's comment that every record uses the entity-auto store path, now says that CSV
+rows do not (P4a-02, `entity/load_feed/loader.rs:466-467`).
 
 ---
 
@@ -335,94 +331,98 @@ against `EntityDataLoaderImpl`, `EntityDataFeed`, `EntityEcaRule`, `EntityDataWr
 `EntityDataDocument`, `SimpleEtl` and the relevant `EntityFacadeImpl`/`EntityValueBase` methods.
 `pull.rs` has no Java counterpart.
 
+Worked 2026-10-16: P4a-01, P4a-02, P4a-05, P4a-08, P4a-09, P4a-10, P4a-11, P4a-12, P4a-13, P4a-14, P4a-15,
+P4b-01, P4b-02, P4b-03, P4b-05 and P4b-06 fixed; P4a-04 and P4b-08 moved to
+[Accepted differences](#accepted-differences); P4a-16, P4a-17 and P4a-21 found and fixed, P4a-19 and P4a-20 found
+and accepted, and P4a-18 (the `list()` half of P4a-10) split off and left open, along the way. The shipped data
+(`moqui load types=all` in a copy of `runtime/`: the framework, tools and webroot seed, install and demo files, 1389
+records) loads with no failed file or error. Line numbers in this section are as of that change.
+
 ### Findings — 4a data loader
 
 | ID | Rust location | Java location | Divergence | Severity | Intentional? |
 |----|---|---|---|---|---|
-| P4a-01 | `entity/load_feed/csv.rs:125`; `moqui-lib/src/object.rs:577` | `EntityDataLoaderImpl.groovy:1022-1030` | CSV BLOB cells stored as raw Base64 text; Java Base64-decodes (`typeValue==12`) before `setBytes` | High | No |
-| P4a-02 | `entity/load_feed/csv.rs:127` → `entity/load_feed/loader.rs:436` | `EntityDataLoaderImpl.groovy:579,1036-1042` | CSV rows go through entity-auto `store_entity` (auto `fromDate`, secondary sequencing, status-flow check); Java CSV uses `createOrUpdate` and throws on an incomplete multi-key PK | High | No |
-| P4a-04 | `entity/load_feed/json.rs:289` | `EntityDataLoaderImpl.groovy:1130`; `FieldInfo.java:235-241` | JSON BLOB: Rust Base64-decodes; Java stores raw UTF-8 bytes | Med | Unsure |
-| P4a-05 | `entity/load_feed/loader.rs:537-548` | `EntityJavaUtil.java:522-536`; `FieldInfo.java:217-219` | Bad type text: Java records a validation error and the record fails (XML/JSON) or throws (CSV); Rust keeps the original string and stores it | Med | No |
-| P4a-08 | `entity/load_feed/csv.rs:122-124`; `entity/load_feed/loader.rs:233-235`, `:655` | `EntityDataLoaderImpl.groovy:813-817,1016-1018` | Empty CSV cell / XML attribute skips the field; Java sets null, so an update clears the column and a `defaultValues` entry does not survive | Med | No |
-| P4a-09 | `entity/load_feed/csv.rs:102`; `entity/load_feed/json.rs:120` | `EntityDataLoaderImpl.groovy:968-974,1117-1123` | CSV/JSON service name without `#` errors; Java calls any defined service (Rust XML uses `defined_name`, `entity/load_feed/loader.rs:191-192`) | Med | No |
-| P4a-10 | `entity/load_feed/check.rs:96-101` | `EntityDataLoaderImpl.groovy:69,169-217,428-430` | `list()`/`checkInfo()` unported; "-- Checked" line only when messages exist (Java `messageNoActionFiles` defaults true) | Med | No |
-| P4a-11 | `entity/load_feed/csv.rs:119-121` | `EntityDataLoaderImpl.groovy:1013-1014` | Short CSV row: Rust skips missing columns; Java throws | Med | No |
-| P4a-12 | `entity/load_feed/loader.rs:59`, `:749-757` | `EntityDataLoaderImpl.groovy:249-255,330-336` | `options.components` filters explicit `component://` locations; Java only filters auto-discovery | Low | No |
-| P4a-13 | `entity/load_feed/loader.rs:244`, `:288` | `EntityDataLoaderImpl.groovy:859,865` | Child-element and service-param text `.trim()`ed; Java keeps raw SAX data | Low | No |
-| P4a-14 | `entity/load_feed/xml.rs:102-109` | `EntityDataLoaderImpl.groovy:692-699` | Unknown root element errors; Java ignores any root other than the known types | Low | No |
-| P4a-15 | `moqui-lib/src/object.rs:484` | `FieldInfo.java:233` | `"y"/"Y"` → true (matches `ObjectUtilities.java:124`, not `FieldInfo`'s `Boolean.valueOf`) | Low | No |
+| P4a-18 | `script/runtime/tools_host.rs:220-262` (no `list`) | `EntityDataLoaderImpl.groovy:209-217,633-645` | `EntityDataLoader.list()` unported: the values a load would write, as an `EntityList`, with no service called | Low | No |
 
-### Findings — 4b feed / ECA / writer / document / ETL
+No 4b (feed / ECA / writer / document / ETL) finding is open.
 
-| ID | Rust location | Java location | Divergence | Severity | Intentional? |
-|----|---|---|---|---|---|
-| P4b-01 | `entity/load_feed/eca.rs:96-97`, `:184` | `EntityFacadeImpl.groovy:968-969,986-990` | EECA rule `entity` not canonicalized; undefined entities not skipped | Med | No |
-| P4b-02 | `entity/load_feed/eca.rs:203-212` | `EntityFacadeImpl.groovy:935-936,966-977` | Same-entity rule order: single file-order list vs no-id-first then id'd (Java's id'd order is `HashMap`-undefined) | Low | No |
-| P4b-03 | `entity/document.rs:834-857` | `EntityDataDocument.groovy:136,163-169,363-427` | Rows merged by `doc_id` even when not all PKs are aliased; Java emits one doc per row | Med | No |
-| P4b-05 | `entity/data_writer.rs:452-465` | `EntityValueBase.java:1128,1181,1187`; `EntityDataWriterImpl.groovy:391-397` | XML record count/message excludes nested dependents | Low | No |
-| P4b-06 | `entity/data_writer.rs:303-307`, `:555-557` | `EntityDataWriterImpl.groovy:91-96,152-154` | `file()`/`directory()` create parent dirs; Java errors if the parent is missing (zip path matches) | Low | No |
-| P4b-08 | `entity/etl.rs:92-97` | `EntityFacadeImpl.groovy:2151-2174` | `useTryInsert` fallback has an extra `never_try_insert` guard; Java does create then update | Low | No |
+#### P4a-18 — `EntityDataLoader.list()` not ported
 
-#### P4a-01 — CSV BLOB cells are not Base64-decoded
-
-Java's CSV handler special-cases `fi.typeValue == 12`, Base64-decodes the cell and calls `setBytes`.
-Rust inserts `Value::string(text)` for every column and `to_bytes` returns its UTF-8 bytes, so a CSV
-BLOB column stores the literal Base64 text (and Java errors on invalid Base64 where Rust stores it).
-
-#### P4a-02 — CSV entity rows use the entity-auto store path
-
-Rust CSV rows go through `prepare_fields` (auto `fromDate`, secondary sequence) and
-`service::call::store_entity`. Java's CSV reader does its own PK check and then
-`value.createOrUpdate()`: a row with an incomplete multi-key PK throws in Java, whereas Rust auto-fills
-the key and inserts, and a CSV row that changes `statusId` triggers Rust's status-flow check that the
-Java CSV path never runs. (The XML/JSON paths use entity-auto store in both.)
-
-#### P4a-04 — JSON BLOB values decoded that Java stores raw
-
-Rust `json_field_value` Base64-decodes a string for a `binary-very-long` field. Java's JSON path
-converts through `FieldInfo.convertFromString`, where typeValue 12 does
-`new SerialBlob(value.getBytes())` — raw UTF-8, no decode.
-
-#### P4a-05 — Bad type text stored verbatim
-
-Java's `EntityInfo.setFieldsEv` catches conversion failures and records a validation error, leaving the
-field unset, and the error makes the record fail; CSV conversion throws and fails the file. Rust
-`basic_convert` returns the original value on failure, so the offending string is written.
-
-#### P4a-08 / P4a-11 — Empty and short CSV rows
-
-Java's empty-cell branch sets the field to null and an empty XML attribute is put as null; Rust skips
-these values, so on an update Java clears the column and Rust leaves it, and a `defaultValues` entry
-survives where Java nulls it. Java also does `record.get(i)` unguarded so a short row throws; Rust
-loads a partial record.
-
-#### P4a-09 — CSV/JSON service name requires `#`
-
-Java calls any name `sfi.isServiceDefined` accepts. Rust's CSV and JSON readers treat a non-entity name
-as a service only when it contains `#`; the XML path uses the broader `defined_name` check, so Rust is
-internally inconsistent too.
-
-#### P4b-01 — EECA rule entity name not canonicalized
-
-Java resolves a rule's `entity` via `getEntityDefinition` and keys it by `getFullEntityName()`, warning
-and skipping an undefined entity. Rust `EcaIndex::ingest` stores the raw attribute and `rule_matches`
-compares it literally, so a rule written with a short name silently never fires.
-
-#### P4b-03 — Data documents merged even when not all PKs are aliased
-
-Java's `hasAllPrimaryPks` decides whether to merge rows by doc id; otherwise it emits one document per
-query row. Rust `merge_rows` always groups by `doc_id`, so such a DataDocument returns fewer, merged
-documents.
+Split from P4a-10 when `checkInfo` was ported. Java's `ListValueHandler` collects each record (nested records through
+`addValuesFromPlainMapRecursive`) into an `EntityList` and logs each service element instead of calling it. No screen,
+service or component in `runtime/` calls `list()`, and the DataImport screen uses `check`/`checkInfo`, so it is left
+open for want of a caller. A port would divert records the way a check does (`entity/load_feed/check.rs`), turn each
+`Record` tree into entity values in Java's order, and bind `l.list` in the script data loader.
 
 #### Phase 4 checked and found equivalent
 
-- `defaultValues` merged into XML, JSON and CSV records (`entity/load_feed/loader.rs:647-666`).
-- Per-location error isolation (log and continue) and one transaction per file (`entity/load_feed/loader.rs:94-112,
-  166-177`).
+- CSV BLOB cells (P4a-01, fixed): a `binary-very-long` cell is Base64 (the padding optional, as Java's decoder), and
+  text that is not Base64 fails the file (`entity/load_feed/csv.rs:156`; `decode_base64`,
+  `entity/load_feed/loader.rs:334`).
+- CSV write path (P4a-02, fixed): a CSV row gets Java's own primary-key check (`complete_csv_pk`,
+  `entity/load_feed/loader.rs:508`): with the fields converted, a missing one-field key is sequenced and a missing key
+  of a longer one fails the file. It is then stored as Java's `handleValue` (`store_value`, `:481`): created when
+  missing under `onlyCreate`, an upsert under `useTryInsert` (not where the database is `never-try-insert`), and
+  otherwise `createOrUpdate`; no entity-auto `fromDate` default, secondary sequence or status-flow check. XML and
+  JSON records still use the entity-auto store, as Java's plain-map handler; the comment there now says so (`:466`).
+- Bad type text (P4a-05, fixed): `convert_fields` (`entity/load_feed/loader.rs:618`) fails the record with Java's
+  "The value [..] is not valid for type .. for field .." when the text is not of the field's type, for XML, JSON and
+  CSV, and in a check. Number text is read as a BigDecimal first, as `L10nFacade.parseNumber`, so `118,500` is
+  118500 and `1800.0` is a whole 1800 for a Long.
+- Empty values (P4a-08, fixed): an empty CSV cell, an empty XML attribute, and a JSON `null` or `""` are null, so a
+  store clears the column, and a `defaultValues` entry does not fill a field the record sets empty
+  (`entity/load_feed/csv.rs:151`; `entity/load_feed/loader.rs:258`, `:770-784`; `entity/load_feed/json.rs:287`). An
+  empty field element is still not a value, as Java's `if (currentFieldValue)`.
+- Service names (P4a-09, fixed): XML, CSV and JSON all take any name `isServiceDefined` takes, or a `verb#noun`
+  entity-auto name (`data_service_name`, `entity/load_feed/loader.rs:237`; `entity/load_feed/csv.rs:106`;
+  `entity/load_feed/json.rs:120`).
+- `checkInfo` and `messageNoActionFiles` (P4a-10, fixed): `check_info_with` (`entity/load_feed/check.rs:99`) gives
+  Java's diff rows (`entity`, `pk`, `notFound`, `pkComplete`, `location`, with `createValues` or `field`, `value`,
+  `dbValue`) and no message for them; the script data loader has `checkInfo()` and `checkInfo(diffInfoList,
+  messages)`, which the DataImport screen calls. Each file a check reads is followed by `-- Checked data (N records)
+  in {location}` unless `messageNoActionFiles(false)` and the file gave no messages (`check_file`, `:146`); XML, CSV
+  and JSON text are named `xmlText`, `csvText`, `jsonText` and get no such line, as Java's.
+- Short CSV rows (P4a-11, fixed): a row with fewer columns than the header fails the file
+  (`entity/load_feed/csv.rs:143`).
+- `options.components` (P4a-12, fixed): `load_entity_data` reads any location it is given; the host's conf
+  `load-data` locations and the script loader's gathered conf locations are narrowed with `location_in_components`
+  (`entity/load_feed/loader.rs:876`; `moqui-host/src/lib.rs:1257`; `script/runtime/tools_host.rs:1311`).
+- Field element text (P4a-13, fixed): the XML reader parses each element with `MNode::parse_text_raw`
+  (`moqui-lib/src/node/mod.rs:94`), so a field element's or service parameter's text is kept as written, whitespace
+  included, as Java's SAX `characters` (`entity/load_feed/loader.rs:270`).
+- Root elements (P4a-14, fixed): a root other than `entity-facade-xml` or `seed-data` is read as an `<entities>` file
+  is: only the `<seed-data>` (type `seed`) and `<entity-facade-xml>` (its `type`) elements in it are data, and a file
+  with none loads nothing, not an error (`load_embedded_document`, `entity/load_feed/xml.rs:41`).
+- Boolean text (P4a-15, fixed): the loader's conversion takes only `true`, in any case, as true (`Boolean.valueOf`,
+  `convert_text`, `entity/load_feed/loader.rs:655`); `moqui-lib`'s `to_bool` keeps `ObjectUtilities`' `y`. No shipped
+  dictionary type is a Boolean.
+- CSV column that is not a field (P4a-16, found and fixed): fails the file, as Java's field lookup does; it was
+  dropped (`entity/load_feed/csv.rs:120`).
+- The text `null` (P4a-17, found and fixed): is null for any field type, as `FieldInfo.convertFromString`
+  (`entity/load_feed/loader.rs:655`).
+- A CSV header name given twice (P4a-21, found and fixed): reads the later column, as Java's header map; the first
+  was read (`entity/load_feed/csv.rs:94`).
+- EECA entity names (P4b-01, fixed): a rule's `entity` is resolved to its full name, and a rule for an entity that is
+  not defined is skipped with Java's warning (`EcaIndex::ingest`, `entity/load_feed/eca.rs:180`).
+- EECA order (P4b-02, fixed): an entity's rules with no id run first, then those with an id, each in file order
+  (`entity/load_feed/eca.rs:217-226`); Java's id'd rules are in `HashMap` order, which file order is one instance of.
+- Data document merging (P4b-03, fixed): rows merge by document id only when every primary key field is a field alias
+  (`has_all_primary_pks`, `entity/document.rs:60`, `:633`); otherwise each row is a document (`:863`), and its `_id`
+  is made, as `makeDocId`, of the document's fields named for the key, so a one-field key that is not a field gives
+  no `_id` (`doc_id`, `:127`). Before, the `_id` was always the full key, read from the query's own key aliases.
+- XML writer count (P4b-05, fixed): an XML record counts its nested records too, as `plainMapXmlWriter`; JSON and CSV
+  count each top record (`data_body`, `entity/query_rest.rs:1556`, `xml_record_count`, `:1584`;
+  `write_rows`, `entity/data_writer.rs:472`).
+- Writer directories (P4b-06, fixed): `file()` needs its parent directory and `directory()` creates only the last
+  one (`mkdir`), else the write is a message error; the zip writes still create the parents, as Java's
+  (`entity/data_writer.rs:254`, `:300-315`, `write_new`, `:575`).
+- `defaultValues` merged into XML, JSON and CSV records (`entity/load_feed/loader.rs:770-791`).
+- Per-location error isolation (log and continue) and one transaction per file (`entity/load_feed/loader.rs:104-134,
+  188-199`).
 - `ec.entity.getEntityDataDocument()` + `writeDocumentsTo*` bound for the shipped DataDocument screens
-  (`script/runtime/tools_host.rs:253-266`).
-- XML `binary-very-long` child-element Base64 decode with UTF-8 fallback; XML entity/field/relationship
-  parsing, nested-record key inheritance, `<seed-data>`/`entity-facade-xml` type skipping.
+  (`script/runtime/tools_host.rs:266-281`).
+- XML `binary-very-long` child-element Base64 decode with UTF-8 fallback (see P4a-19 for the trim); XML
+  entity/field/relationship parsing, nested-record key inheritance, `<seed-data>`/`entity-facade-xml` type skipping.
 - JSON array-vs-object roots, `_dataType` marker, per-element `_entity` dispatch; zip entry dispatch.
 - `data_types` skip semantics; `only_create`; restricted-entity list; `fromDate` default and PK
   sequencing for XML/JSON; `check` messages, `lastUpdatedStamp` exclusion, PK display format.
@@ -449,7 +449,7 @@ tracked once under P2-06/P2-07/P2-12.
 | ID | Rust location | Java location | Divergence | Severity | Intentional? |
 |----|---|---|---|---|---|
 | P5-01 | `entity/query_rest.rs:300`, `:739` | `EntityFacadeImpl.groovy:1730,1754-1755` | REST find of a **view-entity** filters on aliases now but renders only `_entity` (`EntitySnap` copies `entity.fields`, empty for views); PK lookup on a view never happens | High | No |
-| P5-11 | `web/mod.rs:514` → `entity/query_rest.rs:1763` | `ContextJavaUtil.java:591-597` | REST JSON serializes `Timestamp`/`Date`/`Time` as quoted strings; Java emits unquoted millis (`WRITE_DATES_AS_TIMESTAMPS`) | Med | No |
+| P5-11 | `web/mod.rs:514` → `entity/query_rest.rs:1775` | `ContextJavaUtil.java:591-597` | REST JSON serializes `Timestamp`/`Date`/`Time` as quoted strings; Java emits unquoted millis (`WRITE_DATES_AS_TIMESTAMPS`) | Med | No |
 | P5-13 | `entity/query_rest.rs:1238-1247` | `EntityDynamicViewImpl.groovy:104-110` | `default-display` alias attribute dropped (unused in `runtime/`) | Low | Unsure |
 | P5-15 | `web/mod.rs:514` | `WebFacadeImpl.groovy:721`; `ContextJavaUtil.java:595` | Entity REST JSON compact vs Java `INDENT_OUTPUT` pretty-print | Low | Unsure |
 | P5-16 | `moqui-db/src/model/view.rs:267` | `EntityDefinition.groovy:180,205-210`; `EntityValueBase.java:215-251` | `pq-expression` aliases unsupported (fail the `alias X has no entity-alias` check) and unevaluated (unused in `runtime/`) | Low | Unsure |
@@ -592,7 +592,7 @@ Reviewed `service/{eca,eca_rules,seca,rule_actions,email_eca,security_checks}.rs
 |----|---|---|---|---|---|
 | P7a-03 | `service/call.rs:293`, `:316` | `ServiceCallSyncImpl.java:173,215,239,565` | Implicit entity-auto: `pre-validate` SECA fires once in Rust, twice in Java; and Rust runs `pre-auth` SECA, which Java never reaches (it returns at `:215`) | Med | No |
 | P7a-05 | `service/security_checks.rs:142-188` | `UserFacadeImpl.groovy:852-858` | `user_in_group` omits the `userGroupId == "ALL_USERS"` short-circuit, and `user_has_permission` omits ALL_USERS group permissions that Java `hasPermission` includes | Med | No |
-| P7a-06 | `entity/load_feed/eca.rs:191-194`; `service/email_eca.rs:34-37`; `script/actions.rs:76-81` | `EmailEcaRule.groovy:44-47`; `EntityEcaRule.groovy:44-47` | EECA and EMECA AND every `<condition>` child; Java wraps only the first (SECA now matches) | Low | Unsure |
+| P7a-06 | `entity/load_feed/eca.rs:198-201`; `service/email_eca.rs:34-37`; `script/actions.rs:76-81` | `EmailEcaRule.groovy:44-47`; `EntityEcaRule.groovy:44-47` | EECA and EMECA AND every `<condition>` child; Java wraps only the first (SECA now matches) | Low | Unsure |
 | P7a-07 | `script/runtime/convert.rs:123-137` | `actions/XmlAction.java:77-81` | `eval_condition` JS truthiness (empty array/object true) vs Groovy `as Boolean` (empty collection false) | Low | Unsure |
 | P7a-08 | `service/seca.rs:132-168` | `ServiceFacadeImpl.groovy:415-508` | SECA patterns matched at runtime; Java expands patterns to defined services at load | Low | Yes |
 | P7a-10 | `service/call.rs:395` | `ServiceCallSyncImpl.java:388` | `post-commit` on a failed call passes `results = None`; Java passes an empty map | Low | No |
@@ -806,8 +806,12 @@ tolerance). Not part of the worklist; revisit only if the rationale changes.
 | P3-06 | datasource / DDL | No table, constraint or index name is schema-qualified: Postgres sets the session `search_path` to `schema-name` (`moqui-host/src/db/entity_db.rs:202-207`), `use-schema-for-all` (only the DB2 profiles) is unread, and a MySQL `schema-name` is logged and not used (`entity/datasource.rs:222-229`) | Same placement on Postgres without qualifying each statement; no DB2 driver; on MySQL Java's `schema.TABLE` is another database, which the jdbc-uri names. `use-schemas="false"` is now honored (no search path, `entity/datasource.rs:178-184`); comments at both sites |
 | P3-11 | DDL | `fk-style="name_fk"` (the MySQL profiles) is not followed: always `ADD CONSTRAINT name FOREIGN KEY` (`moqui-db/src/sql/statement.rs:562-571`) | MySQL 8.0.16 and later ignore the `name_fk` name and call the key `{table}_ibfk_N`, so the check that goes by name (P3-21) would add it again on every check; doc comment at `create_foreign_key` |
 | P3b-10 | feed cache | Feed-info cache invalidated on write vs Java 900s TTL (`entity/cache.rs:838-845`) | Rust is more current |
+| P4a-04 | data loader | A JSON `binary-very-long` string is Base64-decoded (text that is not Base64 is its UTF-8 bytes); Java's JSON reader stores the text's UTF-8 bytes (`entity/load_feed/json.rs:290-292`) | This port's data writer writes bytes in JSON as Base64, so its writer and loader round-trip; Java's JSON writer has no text form for bytes (`JsonBuilder` of a `SerialBlob`), so its pair never did. Comment at the site |
+| P4a-19 | data loader | XML and JSON `binary-very-long` text is trimmed before the Base64 decode; Java decodes it as it is, so Base64 with whitespace around it becomes the text's UTF-8 bytes (`entity/load_feed/loader.rs:327-331`) | Base64 laid out on lines of its own decodes to the bytes meant; Java's writer puts it in CDATA with no whitespace, so both read that the same. Doc comment at `decode_binary` |
+| P4a-20 | data loader | An empty CSV header cell (a trailing delimiter) is no column; Java's field lookup fails the file on it (`entity/load_feed/csv.rs:94-100`) | A trailing delimiter is no reason to fail a file; a non-empty name that is not a field still fails it (P4a-16). Comment at the site |
 | P4b-07 | data feed | `get#DataFeedDocuments` honors `thruUpdateStamp`; Java always passes null | Bug fix; comment at runtime `EntityServices.xml:35-36` |
-| P4b-09 | data writer | `isoDateTime(true)` formats dates in JSON and XML; Java ignores it (`TODO`) (`entity/query_rest.rs:1555-1578,1704-1721`) | Implements Java's TODO |
+| P4b-08 | ETL | `useTryInsert` stores with `createOrUpdate` where the database is `never-try-insert` (Postgres); Java's ETL loader tries the insert anyway (`entity/etl.rs:92-101`) | Safer: on Postgres the failed insert aborts the transaction, so Java's update after it fails; the data loader's `handleValue` has the same guard. Comment at the site |
+| P4b-09 | data writer | `isoDateTime(true)` formats dates in JSON and XML; Java ignores it (`TODO`) (`entity/query_rest.rs:1551-1583,1716-1733`) | Implements Java's TODO |
 | P5-14 | entity REST | Request `pageSize` capped at `entity_rest_max_page_size` (1000); Java caps nothing | Documented `entity/query_rest.rs:534-553` |
 | P6a-05 | service tools | Service detail view is a rebuilt node (`method` null, no `groovyString`, some attributes dropped) | Documented `service/info.rs:183-184` |
 | P6b-08 | semaphore | Row cleared only while `lockThread` equals Rust's owner label | Documented `service/semaphore.rs:72-73,204-205` |

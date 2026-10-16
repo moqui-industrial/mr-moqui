@@ -1181,7 +1181,7 @@ fn load_in_context(
     startup: bool,
     startup_add_missing: bool,
 ) -> Result<LoadReport, moqui_lib::error::Error> {
-    use moqui_core::entity::load_feed::conf_data_locations;
+    use moqui_core::entity::load_feed::{conf_data_locations, location_in_components};
 
     let checks_before = moqui_core::service::security_checks_run();
     apply_facade_flags(facade, flags);
@@ -1252,7 +1252,9 @@ fn load_in_context(
             })
             .map(|path| path.display().to_string())
             .collect();
-        let conf_files = conf_data_locations(facade)?;
+        // The conf locations are narrowed to the components; the loader does not filter a location it is given.
+        let mut conf_files = conf_data_locations(facade)?;
+        conf_files.retain(|location| location_in_components(location, &flags.components));
         let mut listing = String::from("Loading entity data from the following locations:");
         for location in framework_files.iter().chain(&conf_files).chain(component_data) {
             listing.push_str("\n - ");
