@@ -1219,6 +1219,37 @@ impl HostEntity {
         })
     }
 
+    /// `equals(other)`: the same entity with the same field values, as Java's `EntityValueBase.equals`; a script's `==`
+    /// on two values is identity, so a service that asks whether an edit changed anything calls this.
+    fn equals<'js>(&self, ctx: Ctx<'js>, other: JsValue<'js>) -> rquickjs::Result<bool> {
+        host_guard(&ctx, || {
+            let other = js_to_host(&ctx, &other)?;
+            let (Some(name), Some(theirs)) = (
+                super::values::value_entity_name(&other),
+                super::values::value_map(&other),
+            ) else {
+                return Ok(false);
+            };
+            let mine = self.val();
+            if mine.entity_name() != name {
+                return Ok(false);
+            }
+            let fields = mine.fields();
+            let comparable = |value: &Value| -> String {
+                if value.is_null() {
+                    String::new()
+                } else {
+                    moqui_lib::object::to_plain_string(value)
+                }
+            };
+            let same = |name: &String| {
+                comparable(fields.get(name).unwrap_or(&Value::Null))
+                    == comparable(theirs.get(name).unwrap_or(&Value::Null))
+            };
+            Ok(fields.keys().all(same) && theirs.keys().all(same))
+        })
+    }
+
     /// `getMap()`: the fields as a plain map.
     fn get_map<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || {
@@ -1790,6 +1821,18 @@ mod tests {
             r#"(() => { const a = ec.entity.makeValue("moqui.basic.Enumeration"); a.enumId = "X"; a.description = "one";
                 const b = a.cloneValue(); b.description = "two";
                 return a.description === "one" && b.description === "two" && b.enumId === "X"; })()"#,
+        );
+    }
+
+    #[test]
+    fn equals_compares_the_entity_and_field_values_not_identity() {
+        let ctx = enumerations();
+        let _entered = ctx.enter();
+        holds(
+            r#"(() => { const a = ec.entity.makeValue("moqui.basic.Enumeration"); a.enumId = "X"; a.description = "one";
+                const b = a.cloneValue(); const c = a.cloneValue(); c.description = "two";
+                const other = ec.entity.makeValue("moqui.basic.EnumerationType"); other.enumTypeId = "X"; other.description = "one";
+                return a !== b && a.equals(b) && !a.equals(c) && !a.equals(other) && !a.equals(null) && !a.equals({}); })()"#,
         );
     }
 

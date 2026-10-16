@@ -117,6 +117,9 @@ pub enum Idiom {
     DuplicateDeclaration,
     /// `.replaceAll('[^a-z]+', '')` and the like: Java reads the string as a regular expression, JavaScript as text.
     StringAsRegex,
+    /// `==` or `!=` between an entity value copied with `cloneValue()` and another value: Groovy compared the fields,
+    /// JavaScript compares identity, so the test is never true. `a.equals(b)` compares the fields.
+    EntityValueIdentity,
 }
 
 /// How an idiom counts in a report.
@@ -175,6 +178,7 @@ impl Idiom {
             Idiom::InOnList => "in-on-list",
             Idiom::DuplicateDeclaration => "duplicate-declaration",
             Idiom::StringAsRegex => "string-as-regex",
+            Idiom::EntityValueIdentity => "entity-value-identity",
         }
     }
 
@@ -191,7 +195,8 @@ impl Idiom {
             | Idiom::FindListMutation
             | Idiom::InOnList
             | Idiom::EmptyCollectionTruthiness
-            | Idiom::DuplicateDeclaration => Severity::Hazard,
+            | Idiom::DuplicateDeclaration
+            | Idiom::EntityValueIdentity => Severity::Hazard,
             _ => Severity::Groovy,
         }
     }
