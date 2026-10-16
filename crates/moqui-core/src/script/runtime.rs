@@ -29,12 +29,12 @@ use std::time::{Duration, Instant};
 
 use moqui_lib::context_stack::{ContextStack, Lookup};
 use moqui_lib::object::{HostObject, Value};
+use rquickjs::Error as JsError;
 use rquickjs::class::Trace;
 use rquickjs::context::EvalOptions;
 use rquickjs::function::{Opt, Rest, This};
 use rquickjs::object::Property;
 use rquickjs::proxy::{Proxy, ProxyHandler, ProxyProperty, ProxyReceiver, ProxyTarget};
-use rquickjs::Error as JsError;
 use rquickjs::{
     CatchResultExt, Class, Context, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Null, Object, Persistent,
     Runtime, Undefined, Value as JsValue,
@@ -65,7 +65,7 @@ mod user_host;
 mod values;
 
 pub(crate) use compiled::ScriptText;
-use compiled::{eval_compiled, eval_compiled_text, MAX_COMPILED_SCRIPTS, MAX_COMPILED_SCRIPT_BYTES};
+use compiled::{MAX_COMPILED_SCRIPT_BYTES, MAX_COMPILED_SCRIPTS, eval_compiled, eval_compiled_text};
 use conditions::*;
 use convert::*;
 use decimal::*;
@@ -1012,14 +1012,46 @@ fn proxy_set_inner<'js>(ctx: &Ctx<'js>, property: &ProxyProperty<'js>, value: &J
         engine.released.borrow_mut().remove(&name);
     }
     let host = js_to_host(&ctx, value)?;
+    // A list or map put under a name stays the script's object, so `entry = list[i]; entry.field = x` changes the
+    // element of the list, as it does in Java where both are the one Map. It is written to the stack at the next flush.
+    let keep = matches!(host, Value::List(_) | Value::Map(_)) && is_plain_collection(value);
     STACK.with(|stack| {
         stack
             .borrow_mut()
-            .put(name, host)
+            .put(name.clone(), host)
             .map(|_| ())
             .map_err(|err| Exception::throw_message(&ctx, err.message()))
     })?;
+    if keep {
+        if let Some(engine) = current_engine() {
+            engine
+                .tracked
+                .borrow_mut()
+                .insert(name, Persistent::save(&ctx, value.clone()));
+        }
+    }
     Ok(true)
+}
+
+/// An array or an object made by `{}` or `new Object()`, the values that convert to a host list or map and back
+/// as the same shape: not a `Set`, a `Map`, a class instance or an exotic host object.
+fn is_plain_collection(value: &JsValue<'_>) -> bool {
+    if value.is_array() {
+        return true;
+    }
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    let ctx = object.ctx();
+    let plain: Option<Object> = ctx
+        .globals()
+        .get("Object")
+        .ok()
+        .and_then(|object: Object| object.get("prototype").ok());
+    match (object.get_prototype(), plain) {
+        (Some(prototype), Some(plain)) => prototype == plain,
+        _ => false,
+    }
 }
 
 fn global_has_own(ctx: &Ctx<'_>, name: &str) -> rquickjs::Result<bool> {
@@ -1455,12 +1487,12 @@ pub fn eval_map(expression: &str) -> Result<std::collections::BTreeMap<String, V
 #[cfg(test)]
 mod tests {
     use super::{
-        clear_context_stack, context_value, eval_compiled, eval_condition, eval_source, eval_value, expand,
-        flush_current, js_error, push_context_frame, run_script, run_script_location, set_context_name, with_ctx,
-        with_screen_runner, MAX_NESTING, STACK, TOO_DEEP,
+        MAX_NESTING, STACK, TOO_DEEP, clear_context_stack, context_value, eval_compiled, eval_condition, eval_source,
+        eval_value, expand, flush_current, js_error, push_context_frame, run_script, run_script_location,
+        set_context_name, with_ctx, with_screen_runner,
     };
     use crate::context::{Error, ExecutionContextFactory};
-    use moqui_lib::object::{basic_convert, Value};
+    use moqui_lib::object::{Value, basic_convert};
     use rquickjs::Ctx;
 
     const MAX_COEFFICIENT: &str = "79228162514264337593543950335";

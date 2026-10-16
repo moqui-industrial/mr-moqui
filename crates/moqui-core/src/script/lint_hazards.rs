@@ -32,6 +32,9 @@ struct Text {
     element: String,
     attribute: String,
     text: String,
+    /// A `<script>` directly under the service's `<actions>`: its `const` and `let` are in the scope of the whole
+    /// generated function, so another one with the same name is a redeclaration. In an `if` or `iterate` they are in a block.
+    function_level: bool,
 }
 
 /// Adds the hazards to the sites of a scanned file and removes the truthiness warnings that a declared type
@@ -55,9 +58,18 @@ pub(crate) fn refine(root: &MNode, file: &mut FileReport) {
         let mut facts = Facts::default();
         let mut texts = Vec::new();
         gather(&scope, &mut facts, &mut texts);
+        let mut declared: BTreeSet<String> = BTreeSet::new();
         for text in &texts {
             let masked = mask_strings(&text.text);
-            for (idiom, at) in hazards(&masked, &facts) {
+            let mut found_hazards = hazards(&masked, &facts);
+            if text.function_level {
+                for (name, at) in top_level_declarations(&masked) {
+                    if !declared.insert(name) {
+                        found_hazards.push((Idiom::DuplicateDeclaration, at));
+                    }
+                }
+            }
+            for (idiom, at) in found_hazards {
                 let sample = snippet(&text.text, at);
                 let found = file.sites.iter_mut().find(|site| {
                     site.line == text.line
@@ -92,7 +104,16 @@ fn declared_types(node: &MNode, types: &mut BTreeMap<String, Vec<String>>) {
 
 /// Collects the facts and the expression texts under `node`.
 fn gather(node: &MNode, facts: &mut Facts, texts: &mut Vec<Text>) {
+    gather_at(node, facts, texts, None);
+}
+
+/// `actions_depth` is how many elements below an `actions` or `always-actions` element `node` is: 1 is a direct child.
+fn gather_at(node: &MNode, facts: &mut Facts, texts: &mut Vec<Text>, actions_depth: Option<usize>) {
     let element = node.name();
+    let actions_depth = match element.as_str() {
+        "actions" | "always-actions" => Some(0),
+        _ => actions_depth.map(|depth| depth + 1),
+    };
     let line = node.line();
     match element.as_str() {
         "parameter" => {
@@ -137,6 +158,7 @@ fn gather(node: &MNode, facts: &mut Facts, texts: &mut Vec<Text>) {
                 element: element.clone(),
                 attribute: attr,
                 text: value,
+                function_level: false,
             });
         }
     }
@@ -148,11 +170,12 @@ fn gather(node: &MNode, facts: &mut Facts, texts: &mut Vec<Text>) {
                 element: element.clone(),
                 attribute: "text".to_string(),
                 text: body,
+                function_level: element == "script" && actions_depth == Some(1),
             });
         }
     }
     for child in node.children() {
-        gather(&child, facts, texts);
+        gather_at(&child, facts, texts, actions_depth);
     }
 }
 
@@ -410,6 +433,47 @@ const LIST_MUTATIONS: &[&str] = &[
     "clear",
 ];
 
+/// The names a masked script declares with `const` or `let` outside any brace, bracket or parenthesis, with the offset.
+fn top_level_declarations(masked: &str) -> Vec<(String, usize)> {
+    let bytes = masked.as_bytes();
+    let mut depth = 0i32;
+    let mut out = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 && (index == 0 || !is_word(bytes[index - 1])) {
+            for keyword in ["const", "let"] {
+                let rest = &masked[index..];
+                if rest.starts_with(keyword)
+                    && rest
+                        .as_bytes()
+                        .get(keyword.len())
+                        .is_some_and(|b| b.is_ascii_whitespace())
+                {
+                    let name: String = rest[keyword.len()..]
+                        .trim_start()
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
+                        .collect();
+                    if !name.is_empty() {
+                        out.push((name, index));
+                    }
+                }
+            }
+        }
+        index += 1;
+    }
+    out
+}
+
+fn is_word(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$'
+}
+
 /// The hazards in one masked text, each with the offset.
 fn hazards(masked: &str, facts: &Facts) -> Vec<(Idiom, usize)> {
     let decimals: BTreeSet<&String> = facts.decimals.difference(&facts.other_decimal).collect();
@@ -558,6 +622,7 @@ mod tests {
                         | Idiom::FindListMutation
                         | Idiom::InOnList
                         | Idiom::EmptyCollectionTruthiness
+                        | Idiom::DuplicateDeclaration
                 )
             })
             .collect()
@@ -664,6 +729,17 @@ mod tests {
             <set field="x" from="fooList &amp;&amp; fooList[0]"/>
         </actions></service></services>"#;
         assert_eq!(kinds(xml), vec![Idiom::EmptyCollectionTruthiness; 2], "{:?}", scan(xml));
+    }
+
+    #[test]
+    fn a_const_declared_twice_at_function_level_is_a_hazard() {
+        let xml = r#"<services><service verb="a" noun="B"><actions>
+            <script>const dec = (v) => v; let total = 0</script>
+            <if condition="x"><script>const dec = (v) => v + 1</script></if>
+            <script>for (const dec of rows) {}; const other = 1</script>
+            <script>const dec = 2</script>
+        </actions></service></services>"#;
+        assert_eq!(kinds(xml), vec![Idiom::DuplicateDeclaration], "{:?}", scan(xml));
     }
 
     #[test]

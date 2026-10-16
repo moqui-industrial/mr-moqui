@@ -112,6 +112,9 @@ pub enum Idiom {
     FindListMutation,
     /// `x in list` on an array, which JavaScript reads as an index test.
     InOnList,
+    /// A `const` or `let` of a name another `<script>` of the same service already declares at the function level of
+    /// the generated script, which JavaScript refuses to run.
+    DuplicateDeclaration,
 }
 
 /// How an idiom counts in a report.
@@ -168,6 +171,7 @@ impl Idiom {
             Idiom::DecimalOperator => "decimal-operator",
             Idiom::FindListMutation => "find-list-mutation",
             Idiom::InOnList => "in-on-list",
+            Idiom::DuplicateDeclaration => "duplicate-declaration",
         }
     }
 
@@ -180,9 +184,11 @@ impl Idiom {
             | Idiom::AddCall
             | Idiom::CatchBare
             | Idiom::HostStatic => Severity::Valid,
-            Idiom::DecimalOperator | Idiom::FindListMutation | Idiom::InOnList | Idiom::EmptyCollectionTruthiness => {
-                Severity::Hazard
-            }
+            Idiom::DecimalOperator
+            | Idiom::FindListMutation
+            | Idiom::InOnList
+            | Idiom::EmptyCollectionTruthiness
+            | Idiom::DuplicateDeclaration => Severity::Hazard,
             _ => Severity::Groovy,
         }
     }

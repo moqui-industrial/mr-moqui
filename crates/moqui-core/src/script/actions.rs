@@ -331,6 +331,36 @@ mod tests {
         assert_eq!(text("ignoredDate").as_deref(), Some("true"));
     }
 
+    /// A list of maps passed in keeps what an iterate sets on an element when another iterate (after a service call)
+    /// reads the list again, as the Java maps are the same objects.
+    #[test]
+    fn an_element_changed_in_an_iterate_is_changed_in_the_next_one() {
+        clear_context_stack();
+        let ctx = ExecutionContextFactory::test_context();
+        let _guard = ctx.enter();
+        let item = |name: &str| {
+            let mut map = indexmap::IndexMap::new();
+            map.insert("name".to_string(), Value::string(name));
+            Value::Map(map)
+        };
+        set_context_name("datasets", Value::List(vec![item("a"), item("b")])).unwrap();
+        run_actions(
+            r#"<actions>
+                <iterate list="datasets" entry="dataset">
+                    <set field="dataset.classSet" from="[]"/>
+                    <!-- a call that may change the context releases the script's values, as a service call does -->
+                    <script>ec.resource.expand('x', '', {k: 1})</script>
+                    <script>dataset.classSet.push(dataset.name)</script>
+                </iterate>
+                <set field="seen" from="datasets.map(function (d) { return d.classSet == null ? 'none' : d.classSet.join(','); }).join('|')"/>
+            </actions>"#,
+        )
+        .unwrap();
+        let seen = crate::script::context_value("seen").map(|value| moqui_lib::object::to_plain_string(&value));
+        assert_eq!(seen.as_deref(), Some("a|b"));
+        clear_context_stack();
+    }
+
     /// `ignore` is an expression in the XML: the generated code passes its value, and a plain `econdition` with an
     /// `ignore` is not made the shorthand `.condition(field, value)` that has no way to skip.
     #[test]
