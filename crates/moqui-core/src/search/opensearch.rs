@@ -804,7 +804,7 @@ impl SearchBackend for OpenSearchBackend {
             return Ok(0);
         }
         let index = self.index_name(mapping);
-        let now = read_at.unwrap_or_else(Timestamp::now).as_millisecond();
+        let now = read_at.unwrap_or_else(moqui_lib::clock::now).as_millisecond();
         let mut text = String::new();
         // Log entries come without ids: OpenSearch makes them, and the write does not wait for a refresh.
         let generated_ids = documents.iter().all(|(id, _)| id.is_empty());

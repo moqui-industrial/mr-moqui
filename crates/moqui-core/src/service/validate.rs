@@ -17,7 +17,6 @@
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use moqui_lib::object::{
     basic_convert, convert_checked, decimal_compare, decimal_eq, is_empty, regex_full_match, to_plain_string, Value,
@@ -630,10 +629,7 @@ fn stamp_millis(value: &Value) -> Option<i64> {
 
 fn bound_millis(text: &str) -> Result<i64, Error> {
     if text == "now" {
-        let millis = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
-            .unwrap_or(0);
+        let millis = moqui_lib::clock::now_millis();
         return Ok(millis);
     }
     let converted = basic_convert(&Value::string(text), "Timestamp").value;

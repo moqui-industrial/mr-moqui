@@ -113,7 +113,7 @@ fn pass(shared: &Arc<Shared>, factory: &Arc<ExecutionContextFactory>) -> Result<
         return Ok(report);
     };
     let mut slots = shared.job_slots();
-    let now = jiff::Timestamp::now();
+    let now = moqui_lib::clock::now();
     let now_stamp = timestamp_value(now.as_millisecond());
     let plan = LockPlan::new(&facade)?;
 

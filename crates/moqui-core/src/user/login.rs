@@ -14,8 +14,6 @@
 
 //! Login against `moqui.security.UserAccount`. A bound web session rotates on password success.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use moqui_db::sql::{select as sql_select, update as sql_update, Condition, FieldRef, LimitOffset};
 use moqui_lib::object::{basic_convert, Value};
 
@@ -378,17 +376,16 @@ pub(crate) fn now_effective_value() -> Value {
 
 /// [`now_effective_value`] as epoch millis.
 pub(crate) fn now_effective_millis() -> i64 {
+    if crate::deterministic::enabled() {
+        return now_millis();
+    }
     ExecutionContext::with_current(ExecutionContext::effective_time)
         .flatten()
         .unwrap_or_else(now_millis)
 }
 
 pub(crate) fn now_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
-        .unwrap_or(0)
+    moqui_lib::clock::now_millis()
 }
 
 fn gate_account(facade: &EntityFacade, account: &EntityValue, now: i64) -> Result<(), Error> {
@@ -679,7 +676,11 @@ fn increment_failed(facade: &EntityFacade, user_id: &str) -> Result<(), Error> {
     })?;
     let tx = facade.transactions_for(USER_ACCOUNT)?;
     let user_id = user_id.to_string();
-    tx.with_reserve(|conn| apply_failed_increment(conn, &statements, &user_id))?;
+    if crate::deterministic::enabled() {
+        crate::entity::exec::with_reserve_tx(&tx, |conn| write_failed_increment(conn, &statements, &user_id))?;
+    } else {
+        tx.with_reserve(|conn| apply_failed_increment(conn, &statements, &user_id))?;
+    }
     Ok(())
 }
 

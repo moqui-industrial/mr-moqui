@@ -44,6 +44,8 @@ type ConnHook = Box<dyn FnOnce(&mut dyn DbConnection) -> Result<(), Error> + Sen
 type AfterHook = Box<dyn FnOnce() + Send>;
 
 struct Frame {
+    operation: Option<crate::deterministic::Operation>,
+    begin_failed: bool,
     join_depth: u32,
     deadline: Instant,
     conn: Rc<RefCell<Option<PooledConn>>>,
@@ -220,11 +222,14 @@ impl TransactionManager {
                 frame.join_depth += 1;
                 return Ok(false);
             }
+            let operation = crate::deterministic::begin()?;
             let deadline = Instant::now() + timeout;
             let fired = Arc::new(AtomicBool::new(false));
             let deadline_token = NEXT_DEADLINE.fetch_add(1, Ordering::Relaxed);
             register_deadline(deadline_token, deadline, Arc::clone(&fired));
             frames.push(Frame {
+                operation,
+                begin_failed: false,
                 join_depth: 0,
                 deadline,
                 conn: Rc::new(RefCell::new(None)),
@@ -326,8 +331,12 @@ impl TransactionManager {
     where
         F: FnOnce(&mut dyn DbConnection) -> Result<T, Error>,
     {
+        crate::deterministic::check()?;
         self.absorb_deadline();
         if !self.has_active() {
+            if crate::deterministic::enabled() {
+                return self.run(TransactionAttribute::UseOrBegin, None, || self.with_connection(body));
+            }
             let mut pooled = self.inner.pool.checkout_ordinary()?;
             let result = body(pooled.conn());
             drop(pooled);
@@ -338,8 +347,26 @@ impl TransactionManager {
         }
         let slot = self.active_conn()?;
         if slot.borrow().is_none() {
-            let mut pooled = self.inner.pool.checkout_ordinary()?;
+            let mut pooled = match self.inner.pool.checkout_ordinary() {
+                Ok(pooled) => pooled,
+                Err(err) => {
+                    self.with_frames(|frames| {
+                        if let Some(frame) = active_mut(frames) {
+                            frame.begin_failed = true;
+                        }
+                    });
+                    return Err(err);
+                }
+            };
             if let Err(err) = pooled.conn().begin() {
+                self.with_frames(|frames| {
+                    if let Some(frame) = active_mut(frames) {
+                        frame.begin_failed = true;
+                    }
+                });
+                if crate::deterministic::enabled() {
+                    self.set_rollback_only("database begin failed")?;
+                }
                 pooled.discard();
                 return Err(err);
             }
@@ -353,7 +380,11 @@ impl TransactionManager {
         };
         self.arm_statement_timeout(borrow.as_mut())?;
         let pooled = borrow.as_mut().ok_or_else(|| Error::new("no connection enlisted"))?;
-        let result = body(pooled.conn());
+        let result = if crate::deterministic::enabled() {
+            body(&mut super::checked::CheckedConnection(pooled.conn()))
+        } else {
+            body(pooled.conn())
+        };
         if let Err(err) = &result {
             let message = err.to_string();
             let info = RollbackInfo {
@@ -373,6 +404,9 @@ impl TransactionManager {
     where
         F: FnOnce(&mut dyn DbConnection) -> Result<T, Error>,
     {
+        if crate::deterministic::enabled() {
+            return self.run(TransactionAttribute::ForceNew, None, || self.with_connection(body));
+        }
         let mut pooled = self.inner.pool.checkout_reserve()?;
         let result = body(pooled.conn());
         drop(pooled);
@@ -394,6 +428,9 @@ impl TransactionManager {
         self.with_frames(|frames| {
             let frame = active_mut(frames).ok_or_else(|| Error::new("no transaction in place"))?;
             frame.suspended = true;
+            if let Some(operation) = &frame.operation {
+                operation.suspend(true);
+            }
             Ok(true)
         })
     }
@@ -416,6 +453,9 @@ impl TransactionManager {
         self.with_frames(|frames| {
             if let Some(frame) = frames.last_mut() {
                 frame.suspended = false;
+                if let Some(operation) = &frame.operation {
+                    operation.suspend(false);
+                }
             }
             Ok(())
         })
@@ -435,7 +475,15 @@ impl TransactionManager {
             return Err(Error::new("an open stream is the enlisted connection"));
         }
         let suspended = self.has_active() && self.suspend()?;
-        self.begin_frame(timeout, suspended)
+        match self.begin_frame(timeout, suspended) {
+            Ok(began) => Ok(began),
+            Err(err) => {
+                if suspended {
+                    self.resume()?;
+                }
+                Err(err)
+            }
+        }
     }
 
     /// Parked clients one thread may hold on this pool: every ordinary connection but the one the
@@ -592,6 +640,7 @@ impl TransactionManager {
     }
 
     fn complete(&self, mut phase: Phase, commit: bool) -> Result<(), Error> {
+        let commit = commit && crate::deterministic::check().is_ok();
         let result = if commit {
             try_commit(&mut phase)
         } else {
@@ -600,16 +649,35 @@ impl TransactionManager {
         // The deadline slot holds this connection's canceller: clear it before the connection goes back.
         unregister_deadline(phase.token);
         return_conn(&phase.conn);
+        let operation_result = self.with_frames(|frames| {
+            let frame = active_mut(frames).expect("completing frame");
+            let outcome = if frame.begin_failed {
+                "begin_failed"
+            } else if result.is_ok() && commit {
+                "committed"
+            } else {
+                "rolled_back"
+            };
+            frame.operation.take().map_or(Ok(()), |operation| {
+                if result.is_err() && !frame.begin_failed {
+                    Err(operation.uncertain())
+                } else {
+                    operation.finish(outcome)
+                }
+            })
+        });
         let resumes_parent = self.pop_active()?;
         let _resume = ResumeOnDrop {
             mgr: self,
             armed: resumes_parent,
         };
+        let _hook_operation = crate::deterministic::bootstrap()?;
         if result.is_ok() && commit {
             run_after_hooks("commit", phase.on_commit.drain(..));
         } else {
             run_after_hooks("rollback", phase.on_rollback.drain(..));
         }
+        operation_result?;
         result
     }
 

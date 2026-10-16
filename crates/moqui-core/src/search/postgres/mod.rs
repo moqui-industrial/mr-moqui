@@ -179,7 +179,17 @@ impl PostgresBackend {
         let quoted = ident(&schema);
         let trigram = tx.with_reserve(|conn| {
             conn.execute(&format!("CREATE SCHEMA IF NOT EXISTS {quoted}"), &[])?;
-            let trigram = match conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm", &[]) {
+            if crate::deterministic::enabled() {
+                conn.savepoint("moqui_search_extension")?;
+            }
+            let extension = conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm", &[]);
+            if crate::deterministic::enabled() {
+                if extension.is_err() {
+                    conn.rollback_to_savepoint("moqui_search_extension")?;
+                }
+                conn.release_savepoint("moqui_search_extension")?;
+            }
+            let trigram = match extension {
                 Ok(_) => true,
                 Err(err) => {
                     tracing::warn!(error = %err, "pg_trgm is not available; contains searches will scan");
@@ -190,7 +200,12 @@ impl PostgresBackend {
                 &format!(
                     "CREATE TABLE IF NOT EXISTS {quoted}.document_index (document_id text PRIMARY KEY, \
                      index_name text, physical_name text NOT NULL, signature text NOT NULL, \
-                     created_at timestamptz NOT NULL DEFAULT now())"
+                     created_at timestamptz NOT NULL{})",
+                    if crate::deterministic::enabled() {
+                        ""
+                    } else {
+                        " DEFAULT now()"
+                    }
                 ),
                 &[],
             )?;
@@ -268,7 +283,13 @@ impl PostgresBackend {
                     false,
                 ));
             }
-            if let Err(err) = conn.execute("CREATE EXTENSION IF NOT EXISTS unaccent", &[]) {
+            if crate::deterministic::enabled() { conn.savepoint("moqui_search_extension")?; }
+            let extension = conn.execute("CREATE EXTENSION IF NOT EXISTS unaccent", &[]);
+            if crate::deterministic::enabled() {
+                if extension.is_err() { conn.rollback_to_savepoint("moqui_search_extension")?; }
+                conn.release_savepoint("moqui_search_extension")?;
+            }
+            if let Err(err) = extension {
                 tracing::warn!(error = %err, "unaccent is not available; search does not fold accents");
                 return Ok((
                     TextSetup {
@@ -669,7 +690,7 @@ fn generated_doc_id() -> String {
             .try_into()
             .unwrap_or([0; 6]);
     }
-    let mut id = format!("{:013x}", Timestamp::now().as_millisecond());
+    let mut id = format!("{:013x}", moqui_lib::clock::now_millis());
     for byte in bytes {
         id.push_str(&format!("{byte:02x}"));
     }
@@ -871,18 +892,23 @@ impl SearchBackend for PostgresBackend {
                 for statement in &statements {
                     conn.execute(statement, &[])?;
                 }
+                let mut params = vec![
+                    Value::string(&mapping.document_id),
+                    mapping.index_name.clone().map_or(Value::Null, Value::String),
+                    Value::string(&mapping.physical_name),
+                    Value::string(&signature),
+                ];
+                let (column, placeholder, stamp) = if crate::deterministic::enabled() {
+                    params.push(Value::Timestamp(moqui_lib::clock::now()));
+                    (", created_at", ", ?", "EXCLUDED.created_at")
+                } else { ("", "", "now()") };
                 conn.execute(
                     &format!(
-                        "INSERT INTO {registry} (document_id, index_name, physical_name, signature) VALUES (?, ?, ?, ?) \
+                        "INSERT INTO {registry} (document_id, index_name, physical_name, signature{column}) VALUES (?, ?, ?, ?{placeholder}) \
                          ON CONFLICT (document_id) DO UPDATE SET index_name = EXCLUDED.index_name, \
-                         physical_name = EXCLUDED.physical_name, signature = EXCLUDED.signature, created_at = now()"
+                         physical_name = EXCLUDED.physical_name, signature = EXCLUDED.signature, created_at = {stamp}"
                     ),
-                    &[
-                        Value::string(&mapping.document_id),
-                        mapping.index_name.clone().map_or(Value::Null, Value::String),
-                        Value::string(&mapping.physical_name),
-                        Value::string(&signature),
-                    ],
+                    &params,
                 )?;
                 Ok(true)
             })
@@ -911,7 +937,7 @@ impl SearchBackend for PostgresBackend {
         }
         let table = self.table(mapping);
         let columns = insert_columns(mapping);
-        let now = read_at.unwrap_or_else(Timestamp::now);
+        let now = read_at.unwrap_or_else(moqui_lib::clock::now);
         // One statement holds a row once, so a document given twice is written as its last copy, as one statement per
         // document would leave it.
         let mut latest: IndexMap<&str, &Document> = IndexMap::with_capacity(documents.len());
@@ -1087,6 +1113,10 @@ fn ddl_transaction<T>(
     table: &str,
     work: impl FnOnce(&mut dyn DbConnection) -> Result<T, Error>,
 ) -> Result<T, Error> {
+    if crate::deterministic::enabled() {
+        conn.execute(&format!("SET LOCAL lock_timeout = '{DDL_LOCK_TIMEOUT}'"), &[])?;
+        return work(conn); // with_reserve already owns the independent frame.
+    }
     conn.begin()?;
     let result = conn
         .execute(&format!("SET LOCAL lock_timeout = '{DDL_LOCK_TIMEOUT}'"), &[])

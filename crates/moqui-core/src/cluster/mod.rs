@@ -285,7 +285,7 @@ pub(crate) fn generate_cert_pair() -> Result<(String, String), Error> {
     let mut name = rcgen::DistinguishedName::new();
     name.push(rcgen::DnType::CommonName, "moqui-cluster");
     params.distinguished_name = name;
-    let today = jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC).date();
+    let today = moqui_lib::clock::now().to_zoned(jiff::tz::TimeZone::UTC).date();
     let until = today
         .checked_add(jiff::Span::new().years(10))
         .map_err(|err| Error::new(format!("could not generate cluster tls material: {err}")))?;
@@ -486,6 +486,11 @@ fn install_heartbeat(factory: &Arc<ExecutionContextFactory>, instance_id: String
 }
 
 fn fan_out(state: &Arc<ClusterState>, topic: &'static str, message: &TopicMessage) {
+    if crate::deterministic::enabled() {
+        // No autonomous sender: publication stays on the application lane.
+        send_batch(state, vec![(topic, message.clone())]);
+        return;
+    }
     {
         // A single member has no one to tell: with no peers at the last read, nothing is queued.
         let peers = lock(&state.peers);
@@ -821,6 +826,9 @@ fn write_member(facade: &EntityFacade, member: &Member) -> Result<(), Error> {
 
 /// The database server's time in epoch milliseconds, else this host's.
 fn db_now(facade: &EntityFacade) -> i64 {
+    if crate::deterministic::enabled() {
+        return moqui_lib::clock::now_millis();
+    }
     let read = facade
         .transactions_for(MEMBER)
         .map_err(Error::from)

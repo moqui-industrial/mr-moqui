@@ -75,7 +75,7 @@ pub fn status_map(factory: &ExecutionContextFactory, include_sensitive: bool) ->
             .get(name)
             .map_or(Value::Null, |kib| decimal(*kib as f64 / 1024.0, 3))
     };
-    let now = jiff::Timestamp::now().as_millisecond();
+    let now = moqui_lib::clock::now_millis();
     let started = factory.started_millis();
     #[allow(clippy::cast_precision_loss)] // Milliseconds of uptime fit a double.
     let uptime_hours = (now - started) as f64 / 3_600_000.0;

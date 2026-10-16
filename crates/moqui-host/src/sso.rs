@@ -286,6 +286,9 @@ fn endpoint(url: &str, what: &str) -> Result<EndpointUrl, Error> {
 }
 
 fn now_secs() -> u64 {
+    if moqui_core::deterministic::enabled() {
+        return u64::try_from(moqui_lib::clock::now_millis() / 1000).unwrap_or(0);
+    }
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())

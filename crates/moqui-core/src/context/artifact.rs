@@ -135,6 +135,20 @@ impl ArtifactStack {
         self.frames.last_mut().map(|frame| &mut frame.info)
     }
 
+    pub(super) fn deterministic_metadata(&self) -> Vec<serde_json::Value> {
+        self.frames
+            .iter()
+            .rev()
+            .map(|frame| {
+                serde_json::json!({
+                    "type": frame.artifact_type,
+                    "sub_type": frame.hit.sub_type.as_deref().unwrap_or(""),
+                    "name": frame.name,
+                })
+            })
+            .collect()
+    }
+
     pub(super) fn top_type(&self) -> Option<String> {
         self.frames.last().map(|frame| frame.artifact_type.clone())
     }

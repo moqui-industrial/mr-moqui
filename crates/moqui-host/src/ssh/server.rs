@@ -584,11 +584,15 @@ fn key_belongs_to(factory: &ExecutionContextFactory, fingerprint: &str, username
         .get("userId")
         .map(moqui_lib::object::to_plain_string)
         .unwrap_or_default();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
-        .unwrap_or(i64::MAX);
+    let now = if moqui_core::deterministic::enabled() {
+        moqui_lib::clock::now_millis()
+    } else {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
+            .unwrap_or(i64::MAX)
+    };
     let keys = facade
         .find("moqui.security.UserSshKey")?
         .eq("userId", Value::string(&user_id))

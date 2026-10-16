@@ -770,7 +770,7 @@ fn save_find(
         find.set("formLocation", Value::string(location.clone()));
         let description = if description.is_empty() {
             let username = crate::user::current_username().ok().flatten().unwrap_or_default();
-            let now = jiff::Zoned::now().strftime("%Y-%m-%d %H:%M").to_string();
+            let now = moqui_lib::clock::zoned_now().strftime("%Y-%m-%d %H:%M").to_string();
             format!("{username} - {now}")
         } else {
             description

@@ -549,7 +549,7 @@ fn write_new<T>(path: &Path, body: impl FnOnce(&mut BufWriter<File>) -> Result<T
 
 /// Deflated, stamped now, and zip64 when an entry or the archive passes 4 GiB, as `ZipOutputStream` writes them.
 fn entry_options() -> SimpleFileOptions {
-    let now = jiff::Zoned::now().datetime();
+    let now = moqui_lib::clock::zoned_now().datetime();
     let stamp = (|| {
         DateTime::from_date_and_time(
             u16::try_from(now.year()).ok()?,

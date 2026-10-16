@@ -33,7 +33,7 @@ pub(crate) fn has_error() -> bool {
 
 /// Now, in epoch milliseconds.
 pub(crate) fn now_millis() -> i64 {
-    jiff::Timestamp::now().as_millisecond()
+    moqui_lib::clock::now_millis()
 }
 
 /// Now as a `Timestamp` value, to the millisecond.
@@ -70,6 +70,9 @@ pub(crate) fn reserve<T>(
     tx: &TransactionManager,
     body: impl FnOnce(&mut dyn DbConnection) -> Result<T, LibError>,
 ) -> Result<T, Error> {
+    if crate::deterministic::enabled() {
+        return crate::entity::exec::with_reserve_tx(tx, body).map_err(Error::from);
+    }
     tx.with_reserve(|conn| {
         conn.begin()?;
         match body(conn) {

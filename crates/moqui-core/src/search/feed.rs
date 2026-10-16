@@ -217,7 +217,7 @@ fn deliver(
         .filter_map(|doc| doc.get("_id").map(to_plain_string))
         .collect();
     let gone: Vec<&String> = record_ids.iter().filter(|id| !found.contains(*id)).collect();
-    let stamp = Value::Timestamp(Timestamp::now());
+    let stamp = Value::Timestamp(moqui_lib::clock::now());
     for feed in feeds {
         if !documents.is_empty() {
             let mut params = BTreeMap::new();
@@ -347,7 +347,7 @@ pub fn rebuild_feed(
         total += document::feed_documents(&facade, &document_id, from, thru, batch_size, |batch: Vec<Document>| {
             let mut params = BTreeMap::new();
             params.insert("dataFeedId".to_string(), Value::string(data_feed_id));
-            params.insert("feedStamp".to_string(), Value::Timestamp(Timestamp::now()));
+            params.insert("feedStamp".to_string(), Value::Timestamp(moqui_lib::clock::now()));
             params.insert(
                 "documentList".to_string(),
                 Value::List(batch.into_iter().map(Value::Map).collect()),

@@ -17,6 +17,7 @@
 //! Feature `http` links blocking `reqwest`. It is off unless a dependent enables it.
 
 pub mod cache;
+pub mod clock;
 pub mod codec;
 pub mod collection;
 pub mod context_stack;

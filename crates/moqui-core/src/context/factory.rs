@@ -165,8 +165,16 @@ impl ExecutionContextFactory {
     pub fn boot_with_options(
         runtime_dir: impl AsRef<Path>,
         framework_dir: impl AsRef<Path>,
-        options: BootOptions,
+        mut options: BootOptions,
     ) -> Result<Arc<Self>, Error> {
+        crate::deterministic::validate_startup().map_err(Error::from)?;
+        let _bootstrap = crate::deterministic::bootstrap().map_err(Error::from)?;
+        if crate::deterministic::enabled() {
+            options.executor = Executor::Inline;
+            tracing::warn!(
+                "Deterministic mode: inline executor; autonomous scheduler is unsupported (jobs must be invoked explicitly)"
+            );
+        }
         assert_shareable::<Self>();
         let boot_started = std::time::Instant::now();
         let runtime_dir = canonicalize_dir(runtime_dir.as_ref())?;
@@ -236,7 +244,7 @@ impl ExecutionContextFactory {
             sessions: std::sync::Mutex::new(crate::user::session::SessionTable::new(flush_mode)),
             cluster_heartbeat: AtomicBool::new(false),
             hits,
-            started_millis: jiff::Timestamp::now().as_millisecond(),
+            started_millis: moqui_lib::clock::now_millis(),
             native,
             native_tools: crate::native::ToolSet::default(),
         });
@@ -258,6 +266,11 @@ impl ExecutionContextFactory {
     /// With [`Executor::Inline`] this does nothing: the pool stays idle and the host runs each
     /// request on the calling thread.
     pub fn start_request_pool(&self) -> Result<(), Error> {
+        if crate::deterministic::enabled() {
+            // External cluster requests also use this pool; all entered contexts still take
+            // the process lane. Services and scheduled jobs remain inline.
+            return self.requests.start(1, 1024);
+        }
         if self.executor == Executor::Inline {
             return Ok(());
         }
@@ -302,6 +315,7 @@ impl ExecutionContextFactory {
     ///
     /// Returns an error when a session row cannot be written.
     pub fn flush_sessions(&self) -> Result<(), Error> {
+        let _operation = crate::deterministic::bootstrap().map_err(Error::from)?;
         crate::user::session::flush_dirty(self)
     }
 
@@ -312,6 +326,7 @@ impl ExecutionContextFactory {
     ///
     /// Returns an error when the rows cannot be written.
     pub fn flush_artifact_hits(&self) -> Result<(), Error> {
+        let _operation = crate::deterministic::bootstrap().map_err(Error::from)?;
         super::hits::flush(self, true)
     }
 
@@ -375,7 +390,19 @@ impl ExecutionContextFactory {
 
     /// Stop request/service workers before closing tools. The host calls this after its listeners stop.
     pub fn shutdown(&self) {
+        // Join external workers before acquiring the lane: a worker may be waiting to enter it.
         self.requests.shutdown();
+        if let Err(err) = crate::deterministic::check() {
+            tracing::error!(error = %err, "not running shutdown writes after deterministic failure");
+            return;
+        }
+        let _operation = crate::deterministic::bootstrap().expect("deterministic shutdown operation");
+        if crate::deterministic::enabled() {
+            assert!(
+                self.wait_worker_pool_empty(0),
+                "deterministic shutdown has undrained work"
+            );
+        }
         self.pools.shutdown();
         self.shutdown_tools();
     }
@@ -812,6 +839,10 @@ impl ExecutionContext {
     }
 
     /// Java's `getStackNameString`: the names on the artifact stack, top first.
+    pub(crate) fn deterministic_artifacts(&self) -> Vec<serde_json::Value> {
+        self.state.artifacts.borrow().deterministic_metadata()
+    }
+
     pub fn artifact_stack_names(&self) -> String {
         self.state.artifacts.borrow().name_string()
     }
@@ -827,6 +858,7 @@ impl ExecutionContext {
     /// a handle to this context's state, so a leaked guard keeps the state alive instead of
     /// leaving the slot dangling, and a guard dropped out of order removes only its own entry.
     pub fn enter(&self) -> ContextGuard<'_> {
+        let operation = crate::deterministic::bootstrap().expect("deterministic context operation");
         let handle = self.handle();
         let outermost = ENTERED.with(|slot| {
             let mut stack = slot.borrow_mut();
@@ -836,6 +868,7 @@ impl ExecutionContext {
         // Leaving the outermost context is an inline drain point.
         let drain = (outermost && self.factory().executor() == Executor::Inline).then(|| Arc::clone(self.factory()));
         ContextGuard {
+            _operation: operation,
             entered: Rc::clone(&self.state),
             drain,
             _scope: PhantomData,
@@ -873,6 +906,7 @@ impl ExecutionContext {
 /// A guard is not `Send`: it belongs to the thread whose stack it pushed.
 #[must_use = "dropping the guard clears the thread-local execution context"]
 pub struct ContextGuard<'a> {
+    _operation: Option<crate::deterministic::Operation>,
     /// The state this guard entered: its entry is the topmost one sharing this state.
     entered: Rc<ContextState>,
     /// Set on an outermost guard of an inline factory: queued async work runs when it drops.

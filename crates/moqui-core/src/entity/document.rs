@@ -204,7 +204,7 @@ pub fn data_documents(
     thru: Option<Timestamp>,
 ) -> Result<Vec<Document>, Error> {
     let info = document_info(facade, data_document_id)?;
-    let stamp = thru.unwrap_or_else(Timestamp::now);
+    let stamp = thru.unwrap_or_else(moqui_lib::clock::now);
     let rows = query_rows(facade, &info, condition, from, thru, LimitOffset::default())?;
     let docs = merge_rows(&info, &rows, stamp);
     post_process(facade, &info, docs)
@@ -244,7 +244,7 @@ pub fn feed_documents(
 ) -> Result<usize, Error> {
     let info = document_info(facade, data_document_id)?;
     let batch_size = batch_size.max(1);
-    let stamp = thru.unwrap_or_else(Timestamp::now);
+    let stamp = thru.unwrap_or_else(moqui_lib::clock::now);
     let mut after: Option<Vec<Value>> = None;
     let mut count = 0usize;
     loop {

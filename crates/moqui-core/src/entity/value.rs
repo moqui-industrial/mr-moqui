@@ -15,7 +15,6 @@
 //! One entity record and a list of records.
 
 use std::collections::{BTreeMap, HashSet};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use moqui_db::model::EntityDefinition;
 use moqui_db::sql::{delete, insert, insert_or_update, update, Condition};
@@ -140,19 +139,51 @@ impl EntityList {
 
 impl EntityFacade {
     pub fn create_value(&self, value: &EntityValue) -> Result<(), Error> {
+        if crate::deterministic::enabled() {
+            let tx = self.transactions_for(&value.entity_name)?;
+            if !tx.in_transaction() {
+                return tx.run(crate::transaction::TransactionAttribute::UseOrBegin, None, || {
+                    self.create_value(value)
+                });
+            }
+        }
         let mut stack = HashSet::new();
         self.insert_record(value, &mut stack)
     }
 
     pub fn update_value(&self, value: &EntityValue) -> Result<(), Error> {
+        if crate::deterministic::enabled() {
+            let tx = self.transactions_for(&value.entity_name)?;
+            if !tx.in_transaction() {
+                return tx.run(crate::transaction::TransactionAttribute::UseOrBegin, None, || {
+                    self.update_value(value)
+                });
+            }
+        }
         self.write_update(&value.entity_name, &value.fields)
     }
 
     pub fn delete_value(&self, value: &EntityValue) -> Result<(), Error> {
+        if crate::deterministic::enabled() {
+            let tx = self.transactions_for(&value.entity_name)?;
+            if !tx.in_transaction() {
+                return tx.run(crate::transaction::TransactionAttribute::UseOrBegin, None, || {
+                    self.delete_value(value)
+                });
+            }
+        }
         self.write_delete(&value.entity_name, &value.fields)
     }
 
     pub fn create_or_update_value(&self, value: &EntityValue) -> Result<(), Error> {
+        if crate::deterministic::enabled() {
+            let tx = self.transactions_for(&value.entity_name)?;
+            if !tx.in_transaction() {
+                return tx.run(crate::transaction::TransactionAttribute::UseOrBegin, None, || {
+                    self.create_or_update_value(value)
+                });
+            }
+        }
         // As Java, fill primary-key defaults first.
         let mut value = value.clone();
         let defaults = self.apply_field_defaults(&value.entity_name, &value.fields)?;
@@ -755,10 +786,6 @@ impl Drop for EntityArtifact {
 }
 
 fn now_stamp() -> Value {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
-        .unwrap_or(0);
+    let millis = moqui_lib::clock::now_millis();
     basic_convert(&Value::I64(millis), "java.sql.Timestamp").value
 }

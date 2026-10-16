@@ -21,6 +21,7 @@
 //! No JTA types, no XA, and no `PREPARE TRANSACTION`. Savepoints forward to the enlisted connection.
 //! [`TransactionManager::force_new`] is a suspend of the current frame plus a new frame, not a savepoint.
 
+mod checked;
 mod manager;
 mod pool;
 

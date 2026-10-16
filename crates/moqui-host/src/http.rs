@@ -452,6 +452,17 @@ async fn dispatch_screen(
         agent: web.header("user-agent").unwrap_or("").to_string(),
     };
     let factory = Arc::clone(&state.factory);
+    if moqui_core::deterministic::enabled() {
+        // The synchronous core enters the process-wide reentrant lane. Never block a Tokio
+        // runtime worker on the coordinator or run a blocking reqwest client inside Tokio.
+        return match tokio::task::spawn_blocking(move || moqui_core::screen::serve(&factory, web)).await {
+            Ok(response) => {
+                log.queue(&response, started.elapsed());
+                from_web(response)
+            }
+            Err(_) => plain(500, "deterministic request failed"),
+        };
+    }
     let job_factory = Arc::clone(&factory);
     let serve_factory = Arc::clone(&factory);
     let (done, result) = tokio::sync::oneshot::channel();

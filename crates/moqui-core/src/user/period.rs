@@ -40,7 +40,7 @@ pub fn period_range(period: &str, offset: &str, basis: &str) -> Result<(Value, V
     };
     let zone = zone();
     let basis = if basis.trim().is_empty() {
-        Timestamp::now().to_zoned(zone.clone()).date()
+        moqui_lib::clock::now().to_zoned(zone.clone()).date()
     } else if let Ok(millis) = basis.trim().parse::<i64>() {
         // a Date or Timestamp parameter reaches a script as epoch millis
         Timestamp::from_millisecond(millis)

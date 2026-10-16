@@ -161,6 +161,9 @@ fn try_lock(plan: &Plan, name: &str, scope: &str, ignore: Duration, owner: &Valu
             Ok(_) => Ok(true),
             Err(err) => {
                 // A concurrent insert of the same key is a held lock. Anything else is a failure.
+                if crate::deterministic::enabled() {
+                    return Err(err);
+                }
                 let _ = conn.rollback();
                 conn.begin()?;
                 if conn.query(&plan.select_sql, &[name_value, scope_value])?.is_empty() {

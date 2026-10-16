@@ -18,6 +18,7 @@
 //! The search store and backend are placed by [`search`].
 
 pub mod db;
+pub mod deterministic;
 pub mod edge;
 pub mod ipp;
 pub mod logging;
@@ -241,7 +242,12 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    let args: Vec<String> = args.into_iter().map(|arg| arg.as_ref().to_string()).collect();
+    let mut args: Vec<String> = args.into_iter().map(|arg| arg.as_ref().to_string()).collect();
+    if args.iter().any(|arg| arg == "--deterministic") {
+        moqui_core::deterministic::request();
+        args.retain(|arg| arg != "--deterministic");
+    }
+    deterministic::init()?;
     if let Some(help) = usage::help_request(&args) {
         return help.map(Some);
     }
@@ -624,6 +630,7 @@ fn load_embedded(
     cluster_dir: &std::path::Path,
     flags: &LoadFlags,
 ) -> Result<LoadReport, moqui_lib::error::Error> {
+    let _bootstrap = deterministic::bootstrap()?;
     create_dir(runtime_dir)?;
     create_dir(cluster_dir)?;
     let runtime_dir = canonical_dir(runtime_dir)?;
@@ -704,6 +711,7 @@ fn load_with_factory(
             logging::ship_to_search(factory);
             Some(store)
         }
+        Err(err) if moqui_core::deterministic::enabled() && !deterministic::offline() => return Err(err),
         Err(err) => {
             tracing::warn!("Search is not available during this load, data feeds will not index documents: {err}");
             None
@@ -837,12 +845,18 @@ fn serve_thread(
         .factory
         .clone()
         .ok_or_else(|| moqui_lib::error::Error::new("http server has no factory"))?;
-    let cluster = process
-        .cluster_edge
-        .as_ref()
-        .ok_or_else(|| moqui_lib::error::Error::new("http server has no cluster listener"))?;
-    let cluster_address = cluster.address();
-    let posts = cluster.posts();
+    let (cluster_address, posts) = if deterministic::offline() {
+        (
+            std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        )
+    } else {
+        let cluster = process
+            .cluster_edge
+            .as_ref()
+            .ok_or_else(|| moqui_lib::error::Error::new("http server has no cluster listener"))?;
+        (cluster.address(), cluster.posts())
+    };
     let sender = ready.handoff()?;
     let runtime = process
         .runtime
@@ -906,6 +920,7 @@ fn boot_server(
 ) -> Result<ServeProcess, moqui_lib::error::Error> {
     use std::sync::Arc;
 
+    let _bootstrap = deterministic::bootstrap()?;
     let boot_started = std::time::Instant::now();
     create_dir(runtime_dir)?;
     create_dir(cluster_dir)?;
@@ -959,6 +974,7 @@ fn boot_server(
             logging::ship_to_search(&factory);
             Some(store)
         }
+        Err(err) if moqui_core::deterministic::enabled() && !deterministic::offline() => return Err(err),
         Err(err) => {
             tracing::warn!("Search is not available, the server starts without indexing: {err}");
             None
@@ -1001,16 +1017,25 @@ fn boot_server(
     // The SSH server binds before the member row is written: with cluster_transport=ssh the row carries its address
     // and host key.
     let cluster_posts = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let sshd = ssh::server::start(&factory, &runtime_dir, Arc::clone(&cluster_posts))?;
+    let sshd = if deterministic::offline() {
+        None
+    } else {
+        ssh::server::start(&factory, &runtime_dir, Arc::clone(&cluster_posts))?
+    };
     if sshd.is_some() {
         tracing::info!("SSH server started");
     } else {
         tracing::info!("Not starting the SSH server, it is not configured");
     }
     // One sender for every transport: a peer's base URL picks HTTPS, SSH, or Postgres NOTIFY.
-    cluster_notify::install_sender(&factory, db.is_postgres())?;
-    let notify_listener = cluster_notify::listen_if_configured(&factory, &db, Arc::clone(&cluster_posts))?;
-    moqui_core::cluster::start(&factory).map_err(moqui_lib::error::Error::from)?;
+    let notify_listener = if deterministic::offline() {
+        None
+    } else {
+        cluster_notify::install_sender(&factory, db.is_postgres())?;
+        let listener = cluster_notify::listen_if_configured(&factory, &db, Arc::clone(&cluster_posts))?;
+        moqui_core::cluster::start(&factory).map_err(moqui_lib::error::Error::from)?;
+        listener
+    };
     tracing::info!(
         "Cluster notify {}",
         if notify_listener.is_some() {
@@ -1019,7 +1044,11 @@ fn boot_server(
             "listener not started, not configured"
         }
     );
-    let cluster_edge = cluster_edge::listen(Arc::clone(&factory), cluster_posts)?;
+    let cluster_edge = if deterministic::offline() {
+        None
+    } else {
+        Some(cluster_edge::listen(Arc::clone(&factory), cluster_posts)?)
+    };
     notws::install_push().map_err(moqui_lib::error::Error::from)?;
     tracing::info!("Cluster, cluster edge listener and notification WebSocket push initialized");
     let pdf = install_pdf(&runtime_dir);
@@ -1039,7 +1068,7 @@ fn boot_server(
         runtime: Some(runtime),
         pdf: Some(pdf),
         sshd,
-        cluster_edge: Some(cluster_edge),
+        cluster_edge,
         notify_listener,
         factory: Some(factory),
         search,

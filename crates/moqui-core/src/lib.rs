@@ -16,6 +16,7 @@
 
 pub mod cluster;
 pub mod context;
+pub mod deterministic;
 pub mod driver;
 pub mod edi;
 pub mod entity;

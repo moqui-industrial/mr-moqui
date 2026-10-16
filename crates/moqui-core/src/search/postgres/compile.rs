@@ -343,7 +343,7 @@ impl<'a> Compiler<'a> {
                                 kind: FieldKind::Keyword,
                                 sortable: true,
                             },
-                        }
+                        };
                     }
                     // A log index has its own `@timestamp`, the event time; the shipper's index time is later.
                     "@timestamp" if self.mapping.root.fields.contains_key(name) => {}
@@ -355,7 +355,7 @@ impl<'a> Compiler<'a> {
                                 kind: FieldKind::Date,
                                 sortable: true,
                             },
-                        }
+                        };
                     }
                     _ => {}
                 }
@@ -986,7 +986,7 @@ pub fn parse_date_bound(value: &Value) -> Option<Timestamp> {
                 .ok()
                 .and_then(|millis| Timestamp::from_millisecond(millis).ok())
         }
-        Value::String(text) if text.trim() == "now" => Some(Timestamp::now()),
+        Value::String(text) if text.trim() == "now" => Some(moqui_lib::clock::now()),
         Value::String(text) => parse_timestamp(text, &TimeZone::UTC),
         _ => None,
     }

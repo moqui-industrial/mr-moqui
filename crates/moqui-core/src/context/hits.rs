@@ -245,7 +245,7 @@ impl ArtifactHits {
                 Some(sub_type) if hit.artifact_type != "AT_SERVICE" => format!("{}{sub_type}", hit.name),
                 _ => hit.name.to_string(),
             };
-            if state.stats.len() >= MAX_STATS && !state.stats.contains_key(&key) {
+            if !crate::deterministic::enabled() && state.stats.len() >= MAX_STATS && !state.stats.contains_key(&key) {
                 state.drop_one("artifact");
                 return;
             }
@@ -255,7 +255,7 @@ impl ArtifactHits {
                 next_order,
                 ..
             } = &mut *state;
-            let full = closed.len() >= MAX_CLOSED_BINS;
+            let full = !crate::deterministic::enabled() && closed.len() >= MAX_CLOSED_BINS;
             let info = stats.entry(key).or_insert_with(|| {
                 *next_order += 1;
                 StatsInfo {
@@ -307,7 +307,7 @@ impl ArtifactHits {
             output_size: hit.output_size,
         };
         let mut state = lock(&self.state);
-        if state.hits.len() >= MAX_QUEUED_HITS {
+        if !crate::deterministic::enabled() && state.hits.len() >= MAX_QUEUED_HITS {
             state.drop_one("row");
         } else {
             state.hits.push(row);
@@ -694,6 +694,12 @@ impl Drop for FlushClaim {
 /// It writes as the scheduler tick does, on the reserve connection. The thread holds the factory only while it
 /// flushes, and a failure or panic is logged, not raised.
 pub(crate) fn spawn_flush(factory: &Arc<ExecutionContextFactory>) {
+    if crate::deterministic::enabled() {
+        // Keep the queue intact; the explicit host shutdown flush writes it on the lane.
+        // The inline executor has no periodic flush, just as in the browser.
+        tracing::warn!("Deterministic artifact-hit queue awaits explicit shutdown flush (no background writer)");
+        return;
+    }
     if !factory.artifact_hits().begin_flush() {
         return;
     }

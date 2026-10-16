@@ -400,7 +400,7 @@ pub fn zone_name(zone: &TimeZone) -> String {
     match zone.iana_name() {
         Some(name) => name.to_string(),
         None => {
-            let offset = zone.to_offset(Timestamp::now());
+            let offset = zone.to_offset(moqui_lib::clock::now());
             let seconds = offset.seconds();
             let sign = if seconds < 0 { '-' } else { '+' };
             let total = seconds.unsigned_abs() / 60;

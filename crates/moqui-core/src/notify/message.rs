@@ -338,7 +338,7 @@ fn resolve_users(
         .list()?
         .values()
         .to_vec();
-    let now = jiff::Timestamp::now();
+    let now = moqui_lib::clock::now();
     let mut recipients = BTreeSet::new();
     let mut checked = BTreeSet::new();
     for user_id in explicit {
@@ -793,11 +793,7 @@ fn yn(row: &EntityValue, name: &str) -> Option<bool> {
 }
 
 fn now_value() -> Value {
-    basic_convert(
-        &Value::I64(jiff::Timestamp::now().as_millisecond()),
-        "java.sql.Timestamp",
-    )
-    .value
+    basic_convert(&Value::I64(moqui_lib::clock::now_millis()), "java.sql.Timestamp").value
 }
 
 fn new_id() -> Result<String, Error> {

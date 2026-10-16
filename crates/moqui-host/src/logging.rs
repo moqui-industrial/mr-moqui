@@ -63,6 +63,7 @@ static HTTP_QUEUE: Mutex<VecDeque<Document>> = Mutex::new(VecDeque::new());
 static SHIPPING: AtomicBool = AtomicBool::new(false);
 static STOP_SHIPPING: AtomicBool = AtomicBool::new(false);
 static SHIPPER: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+static INLINE_SHIPPER: Mutex<Option<Arc<moqui_core::search::SearchFacade>>> = Mutex::new(None);
 /// Lines logged before [`attach_files`] and the sinks after it.
 static FILES: Mutex<FileState> = Mutex::new(FileState::Pending(Vec::new()));
 /// Lines held for the files before they attach. A failed boot never attaches, so this is capped.
@@ -122,6 +123,11 @@ pub fn ship_to_search(factory: &Arc<ExecutionContextFactory>) -> bool {
     if let Err(err) = facade.ensure_log_indexes() {
         tracing::warn!("Could not create the log indexes, the first flush tries again: {err}");
     }
+    if moqui_core::deterministic::enabled() {
+        *lock(&INLINE_SHIPPER) = Some(facade);
+        tracing::info!("Deterministic log shipping queued until explicit shutdown flush (no autonomous writer)");
+        return true;
+    }
     let backend_name = facade.backend().name();
     let shipper_facade = Arc::clone(&facade);
     let spawned = std::thread::Builder::new()
@@ -160,6 +166,16 @@ pub fn ship_to_search(factory: &Arc<ExecutionContextFactory>) -> bool {
 /// Send what is queued and end the shipper thread, so it no longer holds the search facade and its
 /// database connections. Does nothing when shipping never started.
 pub fn stop_shipping() {
+    if moqui_core::deterministic::enabled() {
+        if let Some(facade) = lock(&INLINE_SHIPPER).take() {
+            let _operation = moqui_core::deterministic::bootstrap().expect("deterministic log flush operation");
+            IN_SHIPPER.with(|flag| flag.set(true));
+            flush(&facade);
+            IN_SHIPPER.with(|flag| flag.set(false));
+            SHIPPING.store(false, Ordering::SeqCst);
+        }
+        return;
+    }
     let handle = lock(&SHIPPER).take();
     if let Some(handle) = handle {
         STOP_SHIPPING.store(true, Ordering::SeqCst);
@@ -175,7 +191,7 @@ pub fn flush(facade: &moqui_core::search::SearchFacade) {
         (&HTTP_QUEUE, moqui_core::search::logs::HTTP_LOG),
     ] {
         loop {
-            let batch: Vec<Document> = {
+            let mut batch: Vec<Document> = {
                 let mut queue = lock(queue);
                 let count = queue.len().min(BATCH);
                 queue.drain(..count).collect()
@@ -184,8 +200,19 @@ pub fn flush(facade: &moqui_core::search::SearchFacade) {
                 break;
             }
             let full = batch.len() == BATCH;
+            if moqui_core::deterministic::enabled() {
+                // This is explicit nontransactional log work. Assign the operation's logical
+                // stamp, never the diagnostic wall-clock reading captured on a runtime thread.
+                for entry in &mut batch {
+                    entry.insert("@timestamp".into(), Value::I64(moqui_lib::clock::now_millis()));
+                }
+            }
             if let Err(err) = facade.index_log_entries(index, batch) {
                 // stderr, not tracing: an event here would be queued for the store that just failed
+                assert!(
+                    !moqui_core::deterministic::enabled(),
+                    "deterministic log shipping failed: {err}"
+                );
                 let _ = writeln!(std::io::stderr(), "could not ship log entries to {index}: {err}");
                 break;
             }
@@ -205,7 +232,7 @@ pub fn queue_http_request(entry: Document) {
 
 fn push(queue: &Mutex<VecDeque<Document>>, entry: Document) {
     let mut queue = lock(queue);
-    if queue.len() < QUEUE_LIMIT {
+    if moqui_core::deterministic::enabled() || queue.len() < QUEUE_LIMIT {
         queue.push_back(entry);
     }
 }

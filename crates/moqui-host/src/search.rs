@@ -86,7 +86,18 @@ pub fn attach_search(
     entity: &EntityFacade,
     entity_is_postgres: bool,
 ) -> Result<SearchStore, Error> {
+    if crate::deterministic::offline() {
+        return Err(Error::new(
+            "search explicitly disabled by MOQUI_DETERMINISTIC_OFFLINE=true",
+        ));
+    }
     let conf = SearchConf::from_conf_text(factory.conf_text())?;
+    if moqui_core::deterministic::enabled() && (conf.backend == Backend::OpenSearch || conf.postgres.read_url.is_some())
+    {
+        return Err(Error::new(
+            "deterministic search requires the primary PostgreSQL backend; OpenSearch and read replicas are unsupported",
+        ));
+    }
     match conf.backend {
         Backend::OpenSearch => attach_opensearch(factory, entity, &conf),
         Backend::Postgres => {

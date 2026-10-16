@@ -677,6 +677,9 @@ fn run_overlay(
     ddl: Option<&str>,
     statements: &[(String, Vec<Value>)],
 ) -> Result<(), Error> {
+    if crate::deterministic::enabled() {
+        return Err(Error::new("simulation overlays are unsupported in deterministic mode"));
+    }
     sim.with_connection(|conn| {
         conn.begin()?;
         let result = apply_overlay(conn, schema, ddl, statements);

@@ -103,6 +103,10 @@ impl EntityDbMeta<'_> {
         let mut groups: Vec<String> = batches.keys().cloned().collect();
         groups.sort();
         tracing::info!("Checking tables for entities in groups [{}]", groups.join(", "));
+        let mut batches: Vec<_> = batches.into_iter().collect();
+        if crate::deterministic::enabled() {
+            batches.sort_by(|a, b| a.0.cmp(&b.0));
+        }
         for (group, batch) in batches {
             let facade = self.facade;
             let names = batch.names;
@@ -388,6 +392,25 @@ fn ensure_fks(facade: &EntityFacade, conn: &mut dyn DbConnection, name: &str, le
 
 /// True when the statement ran, false when the object existed or a lenient statement failed.
 fn run_statement(conn: &mut dyn DbConnection, sql: &str, lenient: bool) -> Result<bool, Error> {
+    // Normal reserve DDL is autocommit. In deterministic mode it belongs to an explicit
+    // transaction, so the existing tolerated duplicate/FK errors need a savepoint.
+    if crate::deterministic::enabled() {
+        conn.savepoint("moqui_meta_statement")?;
+        let result = execute_conn(conn, sql, &[]);
+        if result.is_err() {
+            conn.rollback_to_savepoint("moqui_meta_statement")?;
+        }
+        conn.release_savepoint("moqui_meta_statement")?;
+        return match result {
+            Ok(_) => Ok(true),
+            Err(err) if already_exists(&err) => Ok(false),
+            Err(err) if lenient => {
+                tracing::warn!(%err, sql = %sql, "foreign key was not created");
+                Ok(false)
+            }
+            Err(err) => Err(err),
+        };
+    }
     match execute_conn(conn, sql, &[]) {
         Ok(_) => Ok(true),
         Err(err) if already_exists(&err) => Ok(false),

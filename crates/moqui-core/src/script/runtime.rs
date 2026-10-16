@@ -1249,6 +1249,31 @@ fn throw_lib(ctx: &Ctx<'_>, err: &moqui_lib::error::Error) -> JsError {
 /// `ec` is an own property of `globalThis`, so the bare-name proxy does not hide it.
 fn install_ec(ctx: &Ctx<'_>) -> Result<(), Error> {
     let ec = caught(ctx, "ec", Object::new(ctx.clone()))?;
+    if moqui_lib::clock::deterministic() {
+        ctx.globals()
+            .set(
+                "__moquiLogicalNow",
+                Function::new(ctx.clone(), moqui_lib::clock::now_millis).map_err(js_error)?,
+            )
+            .map_err(js_error)?;
+        ctx.eval::<(), _>(
+            r#"
+            (() => {
+                const RealDate = Date, now = __moquiLogicalNow;
+                function LogicalDate(...args) {
+                    if (!new.target) return new RealDate(now()).toString();
+                    return args.length ? new RealDate(...args) : new RealDate(now());
+                }
+                Object.setPrototypeOf(LogicalDate, RealDate);
+                LogicalDate.prototype = RealDate.prototype;
+                LogicalDate.now = now;
+                globalThis.Date = LogicalDate;
+                delete globalThis.__moquiLogicalNow;
+            })();
+        "#,
+        )
+        .map_err(js_error)?;
+    }
     ec.set("entity", entity_object(ctx)?).map_err(js_error)?;
     ec.set("resource", resource_object(ctx)?).map_err(js_error)?;
     let message = caught(ctx, "message", Class::instance(ctx.clone(), HostMessage {}))?;

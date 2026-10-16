@@ -64,7 +64,7 @@ pub fn is_last_run_before_last_schedule(
     let cron = super::schedule::parse_cron(cron)?;
     let now = now_millis
         .and_then(|millis| jiff::Timestamp::from_millisecond(millis).ok())
-        .unwrap_or_else(jiff::Timestamp::now)
+        .unwrap_or_else(moqui_lib::clock::now)
         .to_zoned(jiff::tz::TimeZone::system());
     let Ok(last_schedule) = cron.find_previous_occurrence(&now, true) else {
         return Ok(false);

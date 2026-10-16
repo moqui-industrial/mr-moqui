@@ -690,7 +690,11 @@ fn file_tail(path: &str) -> &str {
 }
 
 fn now_millis() -> i64 {
-    system_millis(SystemTime::now())
+    if crate::clock::deterministic() {
+        crate::clock::now_millis()
+    } else {
+        system_millis(SystemTime::now())
+    }
 }
 
 fn system_millis(time: SystemTime) -> i64 {

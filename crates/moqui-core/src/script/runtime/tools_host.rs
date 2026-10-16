@@ -1819,7 +1819,7 @@ fn run_command_first_line(command: &str) -> Result<String, moqui_lib::error::Err
             Err(wait_err) => {
                 return Err(moqui_lib::error::Error::new(format!(
                     "token command {program}: {wait_err}"
-                )))
+                )));
             }
         }
     };
@@ -2033,11 +2033,11 @@ fn next_cron_execution<'js>(ctx: Ctx<'js>, cron: String, after: Opt<JsValue<'js>
                         return Err(Exception::throw_message(
                             &ctx,
                             "nextCronExecution needs a moment to start after",
-                        ))
+                        ));
                     }
                 }
             }
-            None => jiff::Timestamp::now().as_millisecond(),
+            None => moqui_lib::clock::now_millis(),
         };
         match crate::service::info::next_cron_execution(&cron, after)
             .map_err(|err| Exception::throw_message(&ctx, err.message()))?

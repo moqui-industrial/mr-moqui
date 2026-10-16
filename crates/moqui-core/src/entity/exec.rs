@@ -67,6 +67,13 @@ pub(crate) fn with_reserve_tx<T, F>(tx: &TransactionManager, body: F) -> Result<
 where
     F: FnOnce(&mut dyn DbConnection) -> Result<T, Error>,
 {
+    if crate::deterministic::enabled() {
+        // The ordinary pool's independent frame gives this reserve transaction its own
+        // coordinator assignment and restores the caller on every exit path.
+        return tx.run(crate::transaction::TransactionAttribute::ForceNew, None, || {
+            tx.with_connection(body)
+        });
+    }
     tx.with_reserve(|conn| {
         conn.begin()?;
         match body(conn) {

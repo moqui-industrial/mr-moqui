@@ -222,7 +222,7 @@ pub struct PoolStatus {
 impl Shared {
     pub(crate) fn note_pass(&self, report: &super::jobs::PassReport) {
         let mut stats = lock(&self.runner);
-        stats.last_execute_millis = jiff::Timestamp::now().as_millisecond();
+        stats.last_execute_millis = moqui_lib::clock::now_millis();
         stats.execute_count += 1;
         stats.total_jobs_run += u64::try_from(report.jobs_run).unwrap_or(0);
         stats.last_jobs_active = report.jobs_active;
@@ -405,6 +405,11 @@ impl ServicePools {
         parameters: &BTreeMap<String, Value>,
     ) -> Result<BTreeMap<String, Value>, Error> {
         if self.inline.is_some() {
+            if crate::deterministic::enabled() && crate::transaction::thread_in_transaction() {
+                return Err(Error::new(
+                    "callFuture inside a transaction is unsupported in deterministic mode; use async after commit",
+                ));
+            }
             return call_now(name, parameters);
         }
         self.running()?.call_future(name, parameters)
@@ -458,6 +463,11 @@ impl ServicePools {
         parameters: &BTreeMap<String, Value>,
     ) -> Result<CallReceiver, Error> {
         if self.inline.is_some() {
+            if crate::deterministic::enabled() && crate::transaction::thread_in_transaction() {
+                return Err(Error::new(
+                    "callFuture inside a transaction is unsupported in deterministic mode",
+                ));
+            }
             let (tx, rx) = mpsc::channel();
             let _ = tx.send(call_now(name, parameters));
             return Ok(rx);

@@ -227,9 +227,7 @@ pub(crate) fn resource_distinct_value() -> String {
     static START: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     START
         .get_or_init(|| {
-            let millis = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |elapsed| elapsed.as_millis());
+            let millis = moqui_lib::clock::now_millis();
             format!("{millis:x}")
         })
         .clone()
@@ -1316,7 +1314,7 @@ pub(crate) fn log_error_id(detail: &dyn std::fmt::Display) -> String {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let id = format!(
         "{:x}-{:x}",
-        jiff::Timestamp::now().as_millisecond(),
+        moqui_lib::clock::now_millis(),
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
     tracing::error!("request failed, error id {id}: {detail}");
