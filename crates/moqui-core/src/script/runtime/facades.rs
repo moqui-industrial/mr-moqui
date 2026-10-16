@@ -106,8 +106,9 @@ pub(super) fn sri_send_redirect_and_stop_render(ctx: Ctx<'_>, url: String) -> rq
 /// returns, or its last expression statement.
 pub(super) fn resource_script<'js>(ctx: Ctx<'js>, location: String) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
-        let source = read_script(&location).map_err(|err| Exception::throw_message(&ctx, err.message()))?;
-        eval_compiled::<JsValue>(&ctx, &source, false).map_err(|err| Exception::throw_message(&ctx, err.message()))
+        let source = read_script(&location).map_err(|err| throw_context(&ctx, &err))?;
+        let script = super::ScriptText::named(source, location.as_str());
+        eval_compiled_text::<JsValue>(&ctx, &script, false).map_err(|err| throw_context(&ctx, &err))
     })
 }
 
@@ -173,7 +174,7 @@ pub(super) fn read_script(location: &str) -> Result<Arc<str>, Error> {
 /// Returns an error when the file cannot be read or the script throws.
 pub fn run_script_location(location: &str) -> Result<(), Error> {
     let source = read_script(location)?;
-    eval_script(&source)
+    eval_script_text(&super::ScriptText::named(source, location))
 }
 
 /// `ec.logger.log(level, message, thrown)`: the level is a name or one of Java's `LoggerFacade` numbers, `ERROR_INT`

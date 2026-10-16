@@ -1478,7 +1478,7 @@ fn get_request_details(ctx: Ctx<'_>) -> rquickjs::Result<String> {
 
 fn resource_ref(ctx: &Ctx<'_>, location: &str) -> rquickjs::Result<crate::context::ResourceRef> {
     let found = with_ec(ctx, |ec| ec.factory().resource().get(location))?;
-    found.map_err(|err| Exception::throw_message(ctx, err.message()))
+    found.map_err(|err| throw_context(ctx, &err))
 }
 
 fn resource_info_value(resource: &crate::context::ResourceRef, children: bool) -> Value {
@@ -1566,7 +1566,7 @@ fn resource_text(ctx: Ctx<'_>, location: String) -> rquickjs::Result<String> {
     host_guard(&ctx, || {
         resource_ref(&ctx, &location)?
             .read_text()
-            .map_err(|err| Exception::throw_message(&ctx, err.message()))
+            .map_err(|err| throw_context(&ctx, &err))
     })
 }
 
@@ -2211,8 +2211,7 @@ fn get_find_filters_for_user<'js>(ctx: Ctx<'js>, entity_name: String) -> rquickj
 
 fn resolve_rest_service<'js>(ctx: Ctx<'js>, path: String, method: String) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
-        let value = crate::service::resolve_rest_service(&path, &method)
-            .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
+        let value = crate::service::resolve_rest_service(&path, &method).map_err(|err| throw_context(&ctx, &err))?;
         host_to_js(&ctx, value)
     })
 }
@@ -2227,7 +2226,7 @@ fn transition_info<'js>(
     host_guard(&ctx, || {
         let factory = factory_of(&ctx)?;
         let value = crate::screen::info::transition_info(&factory, &root, &location, &name, &method)
-            .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
+            .map_err(|err| throw_context(&ctx, &err))?;
         host_to_js(&ctx, value)
     })
 }
