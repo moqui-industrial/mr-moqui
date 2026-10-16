@@ -67,6 +67,10 @@ fn load_data_stores_eca_and_inserts_pending() {
             "moqui.security.UserGroupPermission",
             "moqui.security.UserGroupMember",
             "moqui.security.UserAccount",
+            // A service frame reads the tarpit and authz checks, as Java does, though authz is disabled.
+            "moqui.security.ArtifactTarpit",
+            "moqui.security.ArtifactAuthz",
+            "moqui.security.ArtifactGroupMember",
         ])
         .unwrap();
 

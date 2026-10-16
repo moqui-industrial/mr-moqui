@@ -36,10 +36,10 @@ thread_local! {
 
 /// Sets the raw-read flag and restores the value it replaced on drop, so a nested raw read leaves
 /// the outer one in place.
-struct RawReadGuard(bool);
+pub(super) struct RawReadGuard(bool);
 
 impl RawReadGuard {
-    fn enter() -> Self {
+    pub(super) fn enter() -> Self {
         Self(RAW_READ.with(|flag| flag.replace(true)))
     }
 }

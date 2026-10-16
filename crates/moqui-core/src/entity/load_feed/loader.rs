@@ -376,8 +376,11 @@ fn write_tree(
             write_upsert(facade, &record.entity, &fields)?;
         } else if options.only_create {
             value_from(facade, &record.entity, &fields)?.create(facade)?;
-        } else {
+        } else if options.dummy_fks {
             value_from(facade, &record.entity, &fields)?.create_or_update(facade)?;
+        } else {
+            // Java's plain-map loader uses the entity-auto store path, including status checks.
+            crate::service::call::store_entity(facade, &record.entity, &fields)?;
         }
         total = 1;
     }

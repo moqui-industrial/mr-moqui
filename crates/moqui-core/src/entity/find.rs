@@ -233,12 +233,16 @@ impl EntityFind {
     }
 
     pub fn list(self) -> Result<EntityList, Error> {
+        self.list_internal("list")
+    }
+
+    fn list_internal(self, operation: &str) -> Result<EntityList, Error> {
         if self.require_search_parameters && !self.has_search_parameters {
             return Ok(EntityList::new(Vec::new()));
         }
         // The view frame is what authorizes the read, and the filters come from its record.
         let _authz = self.authz_guard();
-        let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view", "list")?;
+        let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view", operation)?;
         let condition = self.combined();
         let lookup = self.lookup(&condition);
         let bypass = self.bypasses_cache();
@@ -259,10 +263,14 @@ impl EntityFind {
         self.localize_list(list)
     }
 
-    pub fn one(mut self) -> Result<Option<EntityValue>, Error> {
+    pub fn one(self) -> Result<Option<EntityValue>, Error> {
+        self.one_internal("one")
+    }
+
+    pub(crate) fn one_internal(mut self, operation: &str) -> Result<Option<EntityValue>, Error> {
         self.narrow_to_full_pk();
         let entity_name = self.entity_name.clone();
-        let list = self.list()?;
+        let list = self.list_internal(operation)?;
         // As Java `oneExtended`: the first row, more than one only traced. A find one with a partial key, such as
         // Mantle's `entity-find-one` of an OrderPart with only the customer in the context, takes the first match.
         if list.len() > 1 {

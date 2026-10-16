@@ -415,6 +415,8 @@
         <!-- The Java enabled a type with no entry here; this one is listed because a missing entry is disabled here.
             The service REST API checks the path of each request (MOQUI_API for /moqui). -->
         <artifact-execution type="AT_REST_PATH" authz-enabled="true" tarpit-enabled="true"/>
+        <!-- Enabled with no entry in Java too: the startup data load frame (loadDataEmptyDb) is one. -->
+        <artifact-execution type="AT_OTHER" authz-enabled="true" tarpit-enabled="true"/>
     </artifact-execution-facade>
     <user-facade>
         <password encrypt-hash-type="SHA-256" min-length="8" min-digits="1" min-others="1"

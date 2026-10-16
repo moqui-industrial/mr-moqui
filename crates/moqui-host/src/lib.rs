@@ -966,6 +966,9 @@ fn boot_server(
     };
     // Log events and HTTP requests go to moqui_logs and moqui_http_log through the search backend (shipped above).
     factory.init_tools().map_err(moqui_lib::error::Error::from)?;
+    if search.is_some() {
+        index_feeds_on_start_empty(&factory);
+    }
     let load_started = std::time::Instant::now();
     {
         let context = factory.new_context();
@@ -1216,6 +1219,7 @@ fn load_in_context(
         tracing::info!("Loading entity data from location {location}, data types: {types}");
         records = records.saturating_add(load_one(facade, location, &options)?);
     } else if should_load_data(existing, flags, startup) {
+        let empty_db_load = startup && existing == 0;
         if existing == 0 {
             tracing::info!("Found 0 Enumeration records, loading empty-db-load data types ({types})");
         } else {
@@ -1240,9 +1244,13 @@ fn load_in_context(
         }
         tracing::info!("{listing}");
         tracing::info!("Loading data types: {types}");
+        // Java's checkEmptyDb loads in an AT_OTHER loadDataEmptyDb frame that needs no authorization, marked
+        // authorized for all actions, with the anonymous user logged in.
+        let frame = empty_db_load.then(EmptyDbLoadFrame::push).transpose()?;
         for location in framework_files.iter().chain(&conf_files).chain(component_data) {
             records = records.saturating_add(load_one(facade, location, &options)?);
         }
+        drop(frame);
     } else {
         tracing::info!(
             "Found {existing} Enumeration records, NOT loading empty-db-load data types ({types}); use the load command with types or components to load more"
@@ -1252,8 +1260,11 @@ fn load_in_context(
         "Data load of {records} records finished in {:.3} seconds",
         load_started.elapsed().as_secs_f64()
     );
+    // Report counts Java does not make, counted in Rust-only bins.
+    let report = moqui_core::entity::RustOnlyEntityHits::enter(moqui_core::entity::RustOnlyEntityHits::LOAD_REPORT);
     let enumeration = entity_count(facade, "moqui.basic.Enumeration")?;
     let user_group_permission = entity_count(facade, "moqui.security.UserGroupPermission")?;
+    drop(report);
     tracing::info!(
         "Loaded {records} records; enumeration {enumeration}; user group permission {user_group_permission}"
     );
@@ -1264,6 +1275,45 @@ fn load_in_context(
         test_fts_before_load,
         security_checks: moqui_core::service::security_checks_run().saturating_sub(checks_before),
     })
+}
+
+/// [`moqui_core::search::index_feeds_on_start_empty`] in a context of its own.
+fn index_feeds_on_start_empty(factory: &std::sync::Arc<moqui_core::context::ExecutionContextFactory>) {
+    let context = factory.new_context();
+    let _entered = context.enter();
+    moqui_core::search::index_feeds_on_start_empty();
+}
+
+/// The `loadDataEmptyDb` frame of Java's `checkEmptyDb`, popped on drop.
+#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+struct EmptyDbLoadFrame;
+
+#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+impl EmptyDbLoadFrame {
+    fn push() -> Result<Self, moqui_lib::error::Error> {
+        let pushed = moqui_core::context::ExecutionContext::with_current(|ctx| {
+            ctx.push_checked("AT_OTHER", "loadDataEmptyDb", "all", false, true, None)?;
+            ctx.set_anonymous_authorized(true, "");
+            moqui_core::user::login_anonymous()?;
+            Ok::<(), moqui_core::context::Error>(())
+        });
+        match pushed {
+            Some(Ok(())) => Ok(Self),
+            Some(Err(err)) => Err(moqui_lib::error::Error::new(err.to_string())),
+            None => Err(moqui_lib::error::Error::new(
+                "the empty-db load has no execution context",
+            )),
+        }
+    }
+}
+
+#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+impl Drop for EmptyDbLoadFrame {
+    fn drop(&mut self) {
+        moqui_core::context::ExecutionContext::with_current(|ctx| {
+            let _ = ctx.pop();
+        });
+    }
 }
 
 /// As `EntityDataLoaderImpl` after each file: errors left in the message facade (an ECA action's failed service call,
