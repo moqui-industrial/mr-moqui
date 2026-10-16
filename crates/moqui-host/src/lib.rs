@@ -270,8 +270,12 @@ where
             Ok(None)
         }
         [command, flag, dirs @ ..] if command == "lint" && flag == "--groovy" && !dirs.is_empty() => {
-            let roots: Vec<std::path::PathBuf> = dirs.iter().map(Into::into).collect();
-            let report = moqui_core::script::screen_lint::lint_groovy(&roots)
+            let show_all = dirs.iter().any(|arg| arg == "--all");
+            let roots: Vec<std::path::PathBuf> = dirs.iter().filter(|arg| *arg != "--all").map(Into::into).collect();
+            if roots.is_empty() {
+                return Err(usage::command_usage("lint"));
+            }
+            let report = moqui_core::script::screen_lint::lint_groovy(&roots, show_all)
                 .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
             print!("{}", report.render());
             Ok(None)
