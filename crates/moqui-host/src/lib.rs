@@ -38,6 +38,8 @@ mod cluster_notify;
 #[cfg(feature = "axum")]
 mod http;
 #[cfg(feature = "axum")]
+mod streaming;
+#[cfg(feature = "axum")]
 mod notws;
 #[cfg(feature = "axum")]
 mod search_proxy;

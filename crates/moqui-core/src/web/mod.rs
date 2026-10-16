@@ -19,32 +19,8 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
-
-type ChunkSource = Box<dyn Iterator<Item = std::io::Result<Vec<u8>>> + Send>;
-
-/// A pull-based native response. Only a requested chunk is produced; dropping the
-/// HTTP body releases the source after an in-flight next() finishes.
-#[derive(Clone)]
-pub struct ResponseStream(Arc<Mutex<ChunkSource>>);
-
-impl std::fmt::Debug for ResponseStream {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("ResponseStream")
-    }
-}
-
-impl ResponseStream {
-    pub fn new(source: impl Iterator<Item = std::io::Result<Vec<u8>>> + Send + 'static) -> Self {
-        Self(Arc::new(Mutex::new(Box::new(source))))
-    }
-    pub fn next_chunk(&self) -> Option<std::io::Result<Vec<u8>>> {
-        match self.0.lock() {
-            Ok(mut source) => source.next(),
-            Err(_) => Some(Err(std::io::Error::other("response stream lock poisoned"))),
-        }
-    }
-}
+mod stream;
+pub use stream::{BlockingStreamSource, Cancelled, ResponseStream, StreamCancellation, StreamChunk, StreamLifetime, StreamSource};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -109,7 +85,7 @@ impl WebRequest {
 }
 
 /// One HTTP response. Repeated names are separate headers, so `Set-Cookie` can appear twice.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct WebResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
@@ -705,7 +681,8 @@ pub(crate) fn send_reset_content(location: &str) {
     });
 }
 
-/// Send a native HTTP stream. The source must own its resources and bound blocking work.
+/// Transfer an owned native stream to HTTP. Disconnect signals cancellation;
+/// blocking sources must bound their operations and async sources must yield.
 pub fn send_stream(content_type: &str, stream: ResponseStream) -> Result<(), Error> {
     WEB.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -1538,18 +1515,25 @@ mod response_stream_tests {
     #[test]
     fn stream_is_preserved_across_nested_output_and_cleared_explicitly() {
         let _guard = install(BTreeMap::new());
-        send_stream("application/octet-stream", ResponseStream::new(vec![Ok(vec![0, 255, 1])].into_iter())).unwrap();
+        let mut chunks = vec![Ok(vec![0, 255, 1])].into_iter();
+        let source = move |_: &StreamCancellation| chunks.next();
+        send_stream("application/octet-stream", ResponseStream::from_blocking(source, StreamCancellation::default()))
+            .unwrap();
         let stash = stash_output();
         assert!(take_stream().is_none());
         restore_output(stash);
-        let stream = take_stream().unwrap();
-        assert_eq!(stream.next_chunk().unwrap().unwrap(), vec![0, 255, 1]);
-        assert!(stream.next_chunk().is_none());
+        let (lifetime, source) = take_stream().unwrap().into_parts();
+        let StreamSource::Blocking(mut source) = source else {
+            panic!("blocking source expected")
+        };
+        assert_eq!(source.next_chunk(lifetime.cancellation()).unwrap().unwrap(), vec![0, 255, 1]);
+        assert!(source.next_chunk(lifetime.cancellation()).is_none());
         clear_output();
         assert!(take_stream().is_none());
     }
     #[test]
     fn stream_requires_active_http_request() {
-        assert!(send_stream("application/octet-stream", ResponseStream::new(std::iter::empty())).is_err());
+        let source = ResponseStream::from_blocking(|_: &StreamCancellation| None, StreamCancellation::default());
+        assert!(send_stream("application/octet-stream", source).is_err());
     }
 }

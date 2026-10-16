@@ -31,16 +31,11 @@ implementations, and scripts get tools with `ec.factory.getTool("Name")`. See
 [Native component usage](plans/Native-Components-Usage.md), the [plan](plans/Native-Components.md), and
 `runtime/base-component/example`, which is off by default (`./moq run -D example_disabled=false`).
 
-Native HTTP services can call `moqui_core::web::send_stream(content_type,
-ResponseStream::new(source))`, where `source` is a `Send + 'static` iterator of
-`std::io::Result<Vec<u8>>`. It requires an active HTTP screen transition and
-sends the response directly; use a `none` transition response. The host pulls
-chunks on demand on its blocking executor, without buffering the full body or
-holding the request's ExecutionContext. Dropping the HTTP body releases the
-source after any in-flight `next()` finishes. Iterators must bound blocking
-operations and own their resources; an ExecutionContext must not escape into
-them. The API supports finite or continuous streams of binary or text data;
-the producer selects the content type and supplies any protocol framing.
+Native HTTP services can send finite or continuous streams of binary or text data.
+The transport exclusively owns the source and signals cancellation on disconnect.
+Async sources run on the HTTP runtime; blocking sources use bounded dedicated
+workers. See [Native HTTP streaming](docs/native-http-streaming.md) for the API,
+upstream cleanup, concurrency limits and post-header error handling.
 
 ## Build, Test, and Run
 

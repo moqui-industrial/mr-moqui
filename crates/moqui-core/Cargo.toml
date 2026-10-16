@@ -14,6 +14,7 @@ publish.workspace = true
 
 [dependencies]
 inventory = { workspace = true }
+futures-core = { workspace = true }
 moqui-lib = { workspace = true }
 moqui-db = { workspace = true }
 csv = { workspace = true }
