@@ -385,7 +385,7 @@ pub fn sync_with(
             Some(produced) => Ok(produced),
             None => {
                 // A failure is also an error message, so rules that skip on error skip.
-                add_error(&err.to_string());
+                add_error(&err.diagnostic());
                 Err(err)
             }
         },
@@ -818,7 +818,7 @@ fn run_inline(def: &ServiceDef, parameters: &BTreeMap<String, Value>) -> Result<
         crate::script::set_context_name(name, value.clone()).map_err(script_err)?;
     }
     if !def.actions.trim().is_empty() {
-        crate::script::run_actions(&def.actions).map_err(|err| in_service(def, &err))?;
+        crate::script::run_actions_at(&def.actions, def.action_source.as_ref()).map_err(|err| in_service(def, err))?;
     }
     Ok(collect_outputs(def))
 }
@@ -844,22 +844,22 @@ fn run_script(def: &ServiceDef, parameters: &BTreeMap<String, Value>) -> Result<
     for (name, value) in parameters {
         crate::script::set_context_name(name, value.clone()).map_err(script_err)?;
     }
-    crate::script::run_script_location(&def.location).map_err(|err| in_service(def, &err))?;
+    crate::script::run_script_location(&def.location).map_err(|err| in_service(def, err))?;
     Ok(collect_outputs(def))
 }
 
 /// A failure in a service's body, with the service named after it (Java logs "Error running service ..."): a script
 /// error alone gives only a line in the generated code.
-fn in_service(def: &ServiceDef, err: &crate::context::Error) -> LibError {
-    let message = err.message();
-    if message.contains("\n    in service ") {
-        return LibError::new(message);
+fn in_service(def: &ServiceDef, err: crate::context::Error) -> LibError {
+    if err.message().contains("\n    in service ") {
+        return err.into();
     }
-    LibError::new(format!("{}\n    in service {}", message.trim_end(), def.name))
+    let message = format!("{}\n    in service {}", err.message().trim_end(), def.name);
+    err.with_message(message).into()
 }
 
 fn script_err(err: crate::context::Error) -> LibError {
-    LibError::new(err.message())
+    err.into()
 }
 
 fn project(def: &ServiceDef, values: BTreeMap<String, Value>) -> BTreeMap<String, Value> {
@@ -1576,6 +1576,35 @@ mod tests {
             }
         }
         (facade, ctx)
+    }
+
+    #[test]
+    fn service_failures_identify_owning_actions_and_rust_origin() {
+        let path = write_fixture(
+            "source-locations",
+            "<services>\n<service verb=\"locate\" noun=\"Failure\">\n<actions><script><![CDATA[\nconst location = 'component://MissingDiagnostics/screen/A.xml';\nec.resource.getLocationText(location);\n]]></script></actions>\n</service>\n</services>",
+        );
+        let (_facade, ctx) = seeded_context(&[]);
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        let err = sync("locate#Failure", &BTreeMap::new()).unwrap_err();
+        let diagnostic = err.diagnostic();
+        assert!(
+            diagnostic.contains(&format!("{}#actions-3-1.generated.js:", path.display())),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("Rust: crates/moqui-core/src/context/resource.rs:"),
+            "{diagnostic}"
+        );
+        assert!(diagnostic.contains("in service locate#Failure"), "{diagnostic}");
+        assert!(ctx
+            .message()
+            .errors()
+            .iter()
+            .any(|error| error.contains(".generated.js:") && error.contains("Rust:")));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

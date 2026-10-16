@@ -178,6 +178,7 @@ pub(crate) struct ServiceDef {
     pub method: String,
     /// `<actions>` XML, or empty when the service has none.
     pub actions: String,
+    pub action_source: Option<moqui_lib::error::SourceLocation>,
     pub authenticate: Authenticate,
     pub authz_action: Option<String>,
     pub validate_input: bool,
@@ -212,6 +213,7 @@ impl ServiceDef {
             native_fn: None,
             method: String::new(),
             actions: String::new(),
+            action_source: None,
             // As Java's `runImplicitEntityAuto`: no login is needed and the service itself is not authorized; each
             // entity operation it makes is.
             authenticate: Authenticate::Off,
@@ -872,6 +874,13 @@ fn load_service(prefix: &str, node: &MNode, failures: &mut Vec<String>) -> Optio
             .first_named("actions")
             .map(|node| node.write_string())
             .unwrap_or_default(),
+        action_source: node
+            .first_named("actions")
+            .map(|actions| moqui_lib::error::SourceLocation {
+                file: actions.file_location(),
+                line: actions.line(),
+                column: actions.column(),
+            }),
         authenticate: authenticate_of(node),
         authz_action: node.attribute("authz-action"),
         validate_input: bool_attr(node, "validate", true),
