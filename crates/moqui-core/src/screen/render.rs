@@ -537,7 +537,7 @@ fn render_screens(state: &RenderState, facade: &ScreenFacade) -> Result<(), Erro
             frames.enter_screen(def, index == last)?;
             state.screen_path_index.set(index);
             if let Some(actions) = &def.always_actions {
-                script::run_actions(&actions.xml)?;
+                actions.run()?;
             }
         }
     }
@@ -580,7 +580,7 @@ fn render_screens(state: &RenderState, facade: &ScreenFacade) -> Result<(), Erro
             if index >= first_pre {
                 state.screen_path_index.set(index);
                 if let Some(actions) = &def.pre_actions {
-                    script::run_actions(&actions.xml)?;
+                    actions.run()?;
                 }
             }
         }
@@ -972,7 +972,7 @@ fn run_transition_steps(
         frames.apply_anonymous(def)?;
         state.screen_path_index.set(index);
         if let Some(actions) = &def.always_actions {
-            script::run_actions(&actions.xml)?;
+            actions.run()?;
         }
     }
     let screen = Arc::clone(&info.target_screen);
@@ -1220,7 +1220,7 @@ fn wants_json(job: &Job<'_>, info: &ScreenUrlInfo) -> bool {
 }
 
 fn run_transition_actions(actions: &Actions) -> Result<(), Error> {
-    script::run_actions(&actions.xml)
+    actions.run()
 }
 
 /// The error response when there are errors, else the last conditional response that holds (Java checks them all
@@ -1658,7 +1658,7 @@ pub(crate) fn check_condition(condition: &Condition) -> Result<bool, Error> {
         Condition::Expression(expression) => script::eval_condition(expression),
         Condition::Wrapped(actions) => {
             let _frame = ContextFrame::push();
-            script::run_actions(&actions.xml)?;
+            actions.run()?;
             Ok(matches!(
                 script::context_value(CONDITION_FIELD),
                 Some(Value::Bool(true))

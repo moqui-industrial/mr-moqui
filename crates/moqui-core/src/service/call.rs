@@ -385,7 +385,7 @@ pub fn sync_with(
             Some(produced) => Ok(produced),
             None => {
                 // A failure is also an error message, so rules that skip on error skip.
-                add_error(&err.to_string());
+                add_error(&err.diagnostic());
                 Err(err)
             }
         },
@@ -818,7 +818,7 @@ fn run_inline(def: &ServiceDef, parameters: &BTreeMap<String, Value>) -> Result<
         crate::script::set_context_name(name, value.clone()).map_err(script_err)?;
     }
     if !def.actions.trim().is_empty() {
-        crate::script::run_actions(&def.actions).map_err(|err| in_service(def, &err))?;
+        crate::script::run_actions_at(&def.actions, def.action_source.as_ref()).map_err(|err| in_service(def, err))?;
     }
     Ok(collect_outputs(def))
 }
@@ -844,22 +844,19 @@ fn run_script(def: &ServiceDef, parameters: &BTreeMap<String, Value>) -> Result<
     for (name, value) in parameters {
         crate::script::set_context_name(name, value.clone()).map_err(script_err)?;
     }
-    crate::script::run_script_location(&def.location).map_err(|err| in_service(def, &err))?;
+    crate::script::run_script_location(&def.location).map_err(|err| in_service(def, err))?;
     Ok(collect_outputs(def))
 }
 
 /// A failure in a service's body, with the service named after it (Java logs "Error running service ..."): a script
 /// error alone gives only a line in the generated code.
-fn in_service(def: &ServiceDef, err: &crate::context::Error) -> LibError {
-    let message = err.message();
-    if message.contains("\n    in service ") {
-        return LibError::new(message);
-    }
-    LibError::new(format!("{}\n    in service {}", message.trim_end(), def.name))
+fn in_service(def: &ServiceDef, err: crate::context::Error) -> LibError {
+    let message = format!("{}\n    in service {}", err.message().trim_end(), def.name);
+    err.with_message(message).into()
 }
 
 fn script_err(err: crate::context::Error) -> LibError {
-    LibError::new(err.message())
+    err.into()
 }
 
 fn project(def: &ServiceDef, values: BTreeMap<String, Value>) -> BTreeMap<String, Value> {
@@ -1576,6 +1573,56 @@ mod tests {
             }
         }
         (facade, ctx)
+    }
+
+    #[test]
+    fn service_failures_keep_original_xml_and_rust_source_locations() {
+        let path = write_fixture(
+            "source-locations",
+            "<services>\n<service verb=\"locate\" noun=\"Failure\">\n<actions><script><![CDATA[\nconst location = 'component://MissingDiagnostics/screen/A.xml';\nec.resource.getLocationText(location);\n]]></script></actions>\n</service>\n</services>",
+        );
+        let (_facade, ctx) = seeded_context(&[]);
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        let err = sync("locate#Failure", &BTreeMap::new()).unwrap_err();
+        let diagnostic = err.diagnostic();
+        assert!(
+            diagnostic.contains(&format!("JavaScript: {}:5:", path.display())),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("Rust: crates/moqui-core/src/context/resource.rs:"),
+            "{diagnostic}"
+        );
+        assert!(diagnostic.contains("in service locate#Failure"), "{diagnostic}");
+        assert!(ctx
+            .message()
+            .errors()
+            .iter()
+            .any(|error| error.contains("JavaScript:") && error.contains("Rust:")));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn service_context_preserves_kind_and_all_callers() {
+        let inner = super::ServiceDef::implicit("inner#Service", "inner", "Service");
+        let mut outer = inner.clone();
+        outer.name = "outer#Service".into();
+        let line = line!() + 1;
+        let error = crate::context::Error::of_kind(crate::context::ErrorKind::NotFound, "missing");
+        let error = super::in_service(&inner, error);
+        let error = super::in_service(&outer, error.into());
+        let error = crate::context::Error::from(error);
+        assert_eq!(error.kind(), crate::context::ErrorKind::NotFound);
+        let diagnostic = error.diagnostic();
+        for expected in [
+            "in service inner#Service",
+            "in service outer#Service",
+            &format!("Rust: {}:{line}:", file!()),
+        ] {
+            assert!(diagnostic.contains(expected), "{diagnostic}");
+        }
     }
 
     #[test]

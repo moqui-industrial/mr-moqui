@@ -508,7 +508,7 @@ fn list_forms(state: &RenderState, def: &Arc<ScreenDef>) -> Vec<(String, Arc<for
 /// the sections the render reaches. A section-iterate runs its actions for each entry, and the list is kept as those actions left it.
 fn prepare_screen(state: &RenderState, def: &Arc<ScreenDef>) -> Result<(), Error> {
     if let Some(actions) = &def.root.actions {
-        script::run_actions(&actions.xml)?;
+        actions.run()?;
     }
     if let Some(widgets) = &def.root.widgets {
         walk_widgets(state, def, &widgets.node()?, 0)?;
@@ -556,7 +556,7 @@ fn walk_widgets(state: &RenderState, owner: &Arc<ScreenDef>, node: &MNode, depth
                 }
                 let other = state.facade.screen_def(&state.factory, &location)?;
                 if let Some(actions) = &other.root.actions {
-                    script::run_actions(&actions.xml)?;
+                    actions.run()?;
                 }
                 if let Some(widgets) = &other.root.widgets {
                     walk_widgets(state, &other, &widgets.node()?, depth + 1)?;
@@ -606,7 +606,7 @@ fn prepare_section(
                 script::set_context_name(&format!("{entry}_index"), index_value)?;
                 script::set_context_name(&format!("{entry}_has_next"), Value::Bool(index + 1 < count))?;
                 if let Some(actions) = &section.actions {
-                    script::run_actions(&actions.xml)?;
+                    actions.run()?;
                 }
                 if let Some(widgets) = &section.widgets {
                     walk_widgets(state, owner, &widgets.node()?, depth + 1)?;
@@ -629,7 +629,7 @@ fn prepare_section(
     };
     let fragment = if holds {
         if let Some(actions) = &section.actions {
-            script::run_actions(&actions.xml)?;
+            actions.run()?;
         }
         section.widgets.as_ref()
     } else {
@@ -1172,7 +1172,7 @@ pub(crate) fn run_actions_transition(state: &RenderState) -> Result<(), Error> {
         if index >= first_pre {
             state.screen_path_index.set(index);
             if let Some(actions) = &def.pre_actions {
-                script::run_actions(&actions.xml)?;
+                actions.run()?;
             }
         }
     }

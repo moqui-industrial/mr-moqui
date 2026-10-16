@@ -49,13 +49,36 @@ fn generated_scripts() -> &'static Generated {
 }
 
 pub fn run_actions(actions: &str) -> Result<(), Error> {
+    run_actions_at(actions, None)
+}
+
+/// Run actions with the original XML location, not the location of the generated JavaScript.
+/// Mapping is done only on failure so successful calls keep using the shared generated script.
+pub(crate) fn run_actions_at(actions: &str, source: Option<&moqui_lib::error::SourceLocation>) -> Result<(), Error> {
     if actions.as_bytes().contains(&0) {
         return Err(Error::new("script source contains a null byte"));
     }
     let script = generated(actions)?;
+    let file_name = source.and_then(|source| {
+        source
+            .file
+            .as_ref()
+            .map(|file| format!("{file}#actions-{}-{}.generated.js", source.line, source.column))
+    });
+    let script = match &file_name {
+        Some(file_name) => script.with_file_name(file_name),
+        None => script,
+    };
+    let file_name = file_name.as_deref().unwrap_or("eval_script");
     // Data preparation may do what a browser cannot, so a widget check in progress stands down while the actions run.
     let _unchecked = super::runtime::WidgetWrap::set(false);
-    super::runtime::eval_script_text(&script).map_err(|err| with_source_line(err, script.text()))
+    super::runtime::eval_script_text(&script).map_err(|err| {
+        let err = with_source_line(err, script.text(), file_name);
+        match source {
+            Some(source) => with_xml_source(err, script.text(), source, file_name),
+            None => err,
+        }
+    })
 }
 
 /// Evaluate a `<condition>` element as `<if>` does. Its children are xml-actions conditions
@@ -94,16 +117,9 @@ pub fn eval_condition_group(and_xml: &str) -> Result<bool, Error> {
 
 /// An error at `eval_script:LINE:COL` with that line of the generated script after it, so a failure in actions points at
 /// the statement. With `MOQUI_ACTIONS_DEBUG` set, the element comment above it is shown too.
-fn with_source_line(err: Error, source: &str) -> Error {
+fn with_source_line(err: Error, source: &str, file_name: &str) -> Error {
     let message = err.message();
-    let Some(at) = message.find("eval_script:") else {
-        return err;
-    };
-    let line: Option<usize> = message[at + "eval_script:".len()..]
-        .split(':')
-        .next()
-        .and_then(|number| number.parse().ok());
-    let Some(line) = line.filter(|line| *line > 0) else {
+    let Some((line, _)) = generated_position(message, file_name).filter(|(line, _)| *line > 0) else {
         return err;
     };
     let lines: Vec<&str> = source.lines().collect();
@@ -119,7 +135,89 @@ fn with_source_line(err: Error, source: &str) -> Error {
     {
         detail.push_str(&format!("\n    after {comment}"));
     }
-    Error::new(format!("{}{detail}", message.trim_end()))
+    let message = format!("{}{detail}", message.trim_end());
+    err.with_message(message)
+}
+
+/// Inline script bodies are emitted verbatim. Match the failing generated line to its original
+/// body, then locate that body in the XML file. Never label a generated position as an XML line.
+fn with_xml_source(err: Error, generated: &str, source: &moqui_lib::error::SourceLocation, file_name: &str) -> Error {
+    let Some(file) = &source.file else { return err };
+    let mut detail = format!("\n    XML actions: {file}:{}:{}", source.line, source.column);
+    if let Some((line, column)) = generated_position(err.message(), file_name) {
+        let xml = crate::context::locate(file)
+            .ok()
+            .and_then(|path| std::fs::read_to_string(path).ok());
+        if let Some(xml) = xml {
+            if let Ok(root) = MNode::parse_text(file, &xml) {
+                if let Some(actions) = node_at_position(&root, source.line, source.column) {
+                    if let Some(mapped) = script_position(&actions, &xml, generated, line, column) {
+                        detail.push_str(&format!("\n    JavaScript: {file}:{}:{}", mapped.0, mapped.1));
+                    }
+                }
+            }
+        }
+    }
+    let message = format!("{}{detail}", err.message().trim_end());
+    err.with_message(message)
+}
+
+fn generated_position(message: &str, file_name: &str) -> Option<(usize, usize)> {
+    let prefix = format!("{file_name}:");
+    let at = message.find(&prefix)? + prefix.len();
+    let mut parts = message[at..].split(':');
+    let line = parts.next()?.parse().ok()?;
+    let column = parts
+        .next()?
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .ok()?;
+    Some((line, column))
+}
+
+fn node_at_position(node: &MNode, line: u32, column: u32) -> Option<MNode> {
+    if node.line() == line && node.column() == column {
+        return Some(node.clone());
+    }
+    node.children()
+        .iter()
+        .find_map(|child| node_at_position(child, line, column))
+}
+
+fn script_position(node: &MNode, xml: &str, generated: &str, line: usize, column: usize) -> Option<(usize, usize)> {
+    if node.name() == "script" {
+        if let Some(text) = node.text() {
+            // Multiple identical bodies are ambiguous: retain the generated location instead of guessing.
+            let mut matches = generated.match_indices(&text);
+            if let Some((start, _)) = matches.next() {
+                let first_line = generated[..start].bytes().filter(|byte| *byte == b'\n').count() + 1;
+                let last_line = first_line + text.bytes().filter(|byte| *byte == b'\n').count();
+                if matches.next().is_none() && (first_line..=last_line).contains(&line) {
+                    let node_start = xml
+                        .split_inclusive('\n')
+                        .take(node.line().saturating_sub(1) as usize)
+                        .map(str::len)
+                        .sum::<usize>();
+                    let original = node_start + xml[node_start..].find(&text)?;
+                    let original_line = xml[..original].bytes().filter(|byte| *byte == b'\n').count() + 1;
+                    // First-line indentation differs in generated code. Later raw lines are verbatim.
+                    let column = if line == first_line {
+                        let generated_column = generated[..start].rsplit('\n').next()?.encode_utf16().count() + 1;
+                        let original_column = xml[..original].rsplit('\n').next()?.encode_utf16().count() + 1;
+                        original_column + column.checked_sub(generated_column)?
+                    } else {
+                        column
+                    };
+                    return Some((original_line + line - first_line, column));
+                }
+            }
+        }
+    }
+    node.children()
+        .iter()
+        .find_map(|child| script_position(child, xml, generated, line, column))
 }
 
 /// Generate the script for `xml` and parse it, without running anything. Definition load calls
@@ -738,6 +836,96 @@ mod tests {
         );
         clear_context_stack();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn script_diagnostics_name_files_and_keep_rust_origins() {
+        let ctx = ExecutionContextFactory::test_context();
+        let _entered = ctx.enter();
+        clear_context_stack();
+        let dir = std::env::temp_dir().join(format!("moqui-script-diagnostics-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Identical text at different locations must not reuse bytecode with the first file's name.
+        let text = "const x = 1;\nthrow new Error('file failed');\n";
+        for name in ["First.js", "Second.js"] {
+            let path = dir.join(name).to_string_lossy().into_owned();
+            std::fs::write(&path, text).unwrap();
+            set_context_name("where", Value::string(&path)).unwrap();
+            for _ in 0..2 {
+                let err = run_actions("<actions><script>ec.resource.script(where)</script></actions>").unwrap_err();
+                assert!(err.message().contains(&format!("{path}:2:")), "{}", err.diagnostic());
+                assert!(!err.diagnostic().contains("Rust:"), "{}", err.diagnostic());
+            }
+        }
+        let path = dir.join("Resource.js").to_string_lossy().into_owned();
+        std::fs::write(
+            &path,
+            "const x = 1;\nec.resource.getLocationText('component://MissingDiagnostics/screen/A.xml');\n",
+        )
+        .unwrap();
+        let err = crate::script::run_script_location(&path).unwrap_err();
+        let diagnostic = err.diagnostic();
+        assert!(diagnostic.contains(&format!("{path}:2:")), "{diagnostic}");
+        assert!(
+            diagnostic.contains("Rust: crates/moqui-core/src/context/resource.rs:"),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("component://MissingDiagnostics/screen/A.xml"),
+            "{diagnostic}"
+        );
+        assert!(crate::script::eval_condition("(function () { try { ec.resource.getLocationText('component://MissingDiagnostics/screen/A.xml'); } catch (e) { return e.message === 'component MissingDiagnostics is not registered for location component://MissingDiagnostics/screen/A.xml' && e.stack.includes('Rust: crates/moqui-core/src/context/resource.rs:'); } return false; })()").unwrap());
+        let syntax_path = dir.join("Syntax.js").to_string_lossy().into_owned();
+        std::fs::write(&syntax_path, "const x = 1;\nconst broken = ;\n").unwrap();
+        let err = crate::script::run_script_location(&syntax_path).unwrap_err();
+        assert!(
+            err.diagnostic().contains(&format!("{syntax_path}:2:")),
+            "{}",
+            err.diagnostic()
+        );
+        clear_context_stack();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inline_script_diagnostics_map_to_original_xml_lines() {
+        let ctx = ExecutionContextFactory::test_context();
+        let _entered = ctx.enter();
+        let path = std::env::temp_dir().join(format!("moqui-action-diagnostics-{}.xml", std::process::id()));
+        let xml = "<screen>\n    <actions>\n        <script><![CDATA[\n            const x = 1;\n            throw new Error('inline failed');\n        ]]></script>\n    </actions>\n</screen>";
+        std::fs::write(&path, xml).unwrap();
+        for location in [path.to_string_lossy().into_owned(), format!("file:{}", path.display())] {
+            let root = moqui_lib::node::MNode::parse_text(&location, xml).unwrap();
+            let actions = root.first_named("actions").unwrap();
+            let source = moqui_lib::error::SourceLocation {
+                file: actions.file_location(),
+                line: actions.line(),
+                column: actions.column(),
+            };
+            let err = super::run_actions_at(&actions.write_string(), Some(&source)).unwrap_err();
+            let diagnostic = err.diagnostic();
+            assert!(
+                diagnostic.contains(&format!("JavaScript: {location}:5:")),
+                "{diagnostic}"
+            );
+            assert!(diagnostic.contains("#actions-2-5.generated.js:"), "{diagnostic}");
+            assert!(!diagnostic.contains("Rust:"), "{diagnostic}");
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn inline_script_mapping_does_not_guess_for_ambiguous_bodies() {
+        let xml =
+            "<actions><script>throw new Error('same');</script><script>throw new Error('same');</script></actions>";
+        let root = moqui_lib::node::MNode::parse_text("ambiguous.xml", xml).unwrap();
+        let generated = generate(xml).unwrap();
+        let first_line = generated
+            .lines()
+            .position(|line| line.contains("throw new Error"))
+            .unwrap()
+            + 1;
+        assert!(super::script_position(&root, xml, &generated, first_line, 1).is_none());
     }
 
     #[test]
