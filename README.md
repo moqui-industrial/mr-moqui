@@ -1,5 +1,13 @@
 # Modern Rust Moqui Framework - MR Moqui
 
+## Quick Start
+
+```sh
+./moq build   # Do a release build; builds are from full source (including dependencies)
+./moq load    # Load all data, including demo; skip this and production data loads on first run
+./moq run     # Start moqui; logs to console, ctrl-c to stop; default ports 8080 and 8443
+```
+
 ## Goals
 
 - Keep XML as the spec language for configuration, entities, services, screens, SECAs, and data files, with only the adaptations required by a Rust runtime.
@@ -9,7 +17,7 @@
 - Make OpenSearch optional from day one by planning a search interface that can be satisfied by Postgres full-text search and JSON operators.
 - Preserve the ExecutionContext / facade shape that makes Moqui’s artifact model work.
 
-## Significant Redesigns
+## Significant Redesigns vs Moqui Java
 
 Most of MR-Moqui is a port of the Java framework as it exists when the port begins. These are the places that change on purpose.
 
