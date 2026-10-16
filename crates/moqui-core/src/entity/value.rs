@@ -153,14 +153,21 @@ impl EntityFacade {
     }
 
     pub fn create_or_update_value(&self, value: &EntityValue) -> Result<(), Error> {
-        let keys = self.pk_map(&value.entity_name, &value.fields)?;
-        if self.update_if_exists(&value.entity_name, &value.fields)? {
-            return Ok(());
-        }
-        if self.find_by_pk(&value.entity_name, &keys)?.is_some() {
-            self.update_value(value)
+        // Java fills primary-key defaults, then refreshes a clone before choosing the write.
+        // An UPDATE probe records a spurious update hit even when the row does not exist.
+        let mut value = value.clone();
+        let defaults = self.apply_field_defaults(&value.entity_name, &value.fields)?;
+        let keys = self.pk_map(&value.entity_name, &defaults)?;
+        value.fields.extend(keys.clone());
+        let exists = {
+            // Java refreshes a throwaway clone without accessing its localized fields.
+            let _raw = super::field_rw::RawReadGuard::enter();
+            self.refresh_by_pk(&value.entity_name, &keys)?.is_some()
+        };
+        if exists {
+            self.update_value(&value)
         } else {
-            self.create_value(value)
+            self.create_value(&value)
         }
     }
 
@@ -237,49 +244,6 @@ impl EntityFacade {
             .map(|_| ())
     }
 
-    /// The first step of [`Self::create_or_update_value`]: one `UPDATE` by primary key, for a row that is probably
-    /// there. Returns `true` when it updated a row. Returns `false` when nothing was written and the caller must
-    /// take the find-then-write path: the row is absent, or this write is one where an update without a prior read
-    /// could differ from the find-then-write path.
-    ///
-    /// Those are: an ECA rule matches `update` (it must not run for a row that turns out to be new), an
-    /// audit-logged field applies to `update` (the old value is read and logged), the dialect does not report
-    /// matched rows (only Postgres does; MySQL counts changed rows), a transaction cache or simulation is in use
-    /// (a write there is held, not run), authorization is on (an update checks `update`, a new row checks
-    /// `create`), or the update has no column to set. Foreign key checks and field defaults belong to create only,
-    /// and the path that follows a miss is the unchanged one, so they are not skipped. A probe that updates no row
-    /// leaves no feed touch, cache clear, or ECA run behind.
-    fn update_if_exists(&self, entity_name: &str, values: &BTreeMap<String, Value>) -> Result<bool, Error> {
-        let eligible = self.with_entity(entity_name, |entity, dialect, _| {
-            Ok(dialect.name == "postgres"
-                && !entity.is_view
-                && !entity.fields.iter().any(|field| {
-                    field
-                        .enable_audit_log
-                        .as_deref()
-                        .is_some_and(|flag| matches!(flag, "true" | "update"))
-                })
-                && (!crate::user::context_entered()
-                    || entity.authorize_skip.trim() == "true"
-                    || crate::context::ExecutionContext::with_current(|ctx| ctx.authz_disabled()).unwrap_or(false)))
-        })?;
-        if !eligible || self.sim_active() || self.transactions_for(entity_name)?.transaction_cache_active() {
-            return Ok(false);
-        }
-        let plain = self.normalize_values(entity_name, values, true)?;
-        let has_columns = self.with_entity(entity_name, |entity, _, _| {
-            Ok(!present_columns(entity, &plain, true, true).is_empty())
-        })?;
-        if !has_columns {
-            return Ok(false);
-        }
-        let rules = load_feed::match_rules_with(self, entity_name, "update");
-        if !rules.is_empty() {
-            return Ok(false);
-        }
-        Ok(self.finish_write(entity_name, "update-probe", plain, Some(rules), true, true)? > 0)
-    }
-
     fn write_delete(&self, entity_name: &str, values: &BTreeMap<String, Value>) -> Result<(), Error> {
         let plain = self.normalize_values(entity_name, values, false)?;
         self.reject_view(entity_name, "delete")?;
@@ -309,9 +273,6 @@ impl EntityFacade {
         include_null: bool,
         skip_pk: bool,
     ) -> Result<u64, Error> {
-        // `update-probe` is an update that leaves no trace when it matches no row; see `update_if_exists`.
-        let probe = operation == "update-probe";
-        let operation = if probe { "update" } else { operation };
         // Declared first, so it drops last: the authorization cache is invalidated after the write.
         let _note = WriteNote(entity_name);
         let sub_type = if operation == "upsert" { "create" } else { operation };
@@ -398,9 +359,6 @@ impl EntityFacade {
                 Ok((sql, params))
             })?;
             affected = execute_tx(&tx, &sql, &params)?;
-            if probe && affected == 0 {
-                return Ok(0);
-            }
             load_feed::note_touch(self, entity_name, seal_operation, Some(&cache_values));
             if let Some(mut values) = after_values {
                 crate::service::run_matched_eca(
@@ -425,9 +383,18 @@ impl EntityFacade {
         values: &BTreeMap<String, Value>,
     ) -> Result<BTreeMap<String, Value>, Error> {
         let keys = self.pk_map(entity_name, values)?;
-        self.find_by_pk(entity_name, &keys)?
+        self.refresh_by_pk(entity_name, &keys)?
             .map(|value| value.fields)
             .ok_or_else(|| Error::new(format!("refresh found no {entity_name}")))
+    }
+
+    fn refresh_by_pk(&self, entity_name: &str, keys: &BTreeMap<String, Value>) -> Result<Option<EntityValue>, Error> {
+        // Refresh bypasses the shared entity cache but still sees transaction-held rows.
+        let mut find = self.find(entity_name)?.use_cache(false);
+        for (field, value) in keys {
+            find = find.eq(field, value.clone());
+        }
+        find.one_internal("refresh")
     }
 
     pub(crate) fn find_by_pk(
@@ -621,6 +588,33 @@ impl Drop for WriteNote<'_> {
     }
 }
 
+thread_local! {
+    static UNTRACKED_HITS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// While held, entity operations on this thread still push their frame, and so are still authorized, but are not
+/// counted as artifact hits. For reads Java does not make: FK existence checks (Java leaves those to the database)
+/// and the load report counts. Nested guards stack.
+#[must_use = "hits are counted again when the guard drops"]
+pub struct UntrackedEntityHits(());
+
+impl UntrackedEntityHits {
+    pub fn enter() -> Self {
+        UNTRACKED_HITS.with(|depth| depth.set(depth.get() + 1));
+        Self(())
+    }
+}
+
+impl Drop for UntrackedEntityHits {
+    fn drop(&mut self) {
+        UNTRACKED_HITS.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
+fn entity_hits_untracked() -> bool {
+    UNTRACKED_HITS.with(|depth| depth.get() > 0)
+}
+
 /// An `AT_ENTITY` frame on the artifact stack for one entity operation.
 ///
 /// The frame is decided against the one below it, so a service or screen that was allowed to do
@@ -649,6 +643,9 @@ impl EntityArtifact {
         let outcome = crate::context::ExecutionContext::with_current(|ctx| {
             ctx.push_checked("AT_ENTITY", entity_name, action, requires_authz, false, None)?;
             ctx.set_hit_detail(Some(sub_type), None);
+            if entity_hits_untracked() {
+                ctx.untrack_hit();
+            }
             Ok::<(), crate::context::Error>(())
         });
         match outcome {

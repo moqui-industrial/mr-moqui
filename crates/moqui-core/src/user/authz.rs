@@ -250,12 +250,8 @@ pub(crate) fn is_permitted(
     if !context_entered() {
         return Ok((true, info));
     }
-    // While authorization is disabled nothing below can be refused, and everything under this
-    // frame runs disabled too, so there is no authorization to record for it to inherit.
-    if permit.authz_disabled {
-        inherited(&mut info);
-        return Ok((true, info));
-    }
+    // As Java, a frame that is not an entity is still counted for the tarpit and matched against the user's checks
+    // while authorization is disabled: nothing below refuses it then, but it records what was authorized.
     let action_id = action_enum(action);
     if !is_entity
         && permit.count_tarpit
@@ -630,48 +626,35 @@ fn user_checks(facade: &EntityFacade) -> Result<Arc<Vec<Arc<AuthzCheck>>>, Error
     )
 }
 
+/// One `ArtifactAuthzCheckView` read per group, as Java's `getArtifactAuthzCheckList`.
 fn load_user_checks(facade: &EntityFacade) -> Result<Arc<Vec<Arc<AuthzCheck>>>, Error> {
     let groups = user_groups(facade)?;
     let mut ordered: Vec<&String> = groups.iter().collect();
     ordered.sort();
-    let mut members: BTreeMap<String, Vec<EntityValue>> = BTreeMap::new();
     let mut checks = Vec::new();
     for group in ordered {
-        let authz_rows = facade
-            .find("moqui.security.ArtifactAuthz")?
+        let rows = facade
+            .find("moqui.security.ArtifactAuthzCheckView")?
             .eq("userGroupId", Value::string(group))
             .list()?;
-        for authz in authz_rows.values() {
-            let group_id = text(authz, "artifactGroupId");
-            let authz_id = text(authz, "artifactAuthzId");
-            if group_id.is_empty() || authz_id.is_empty() {
+        for row in rows.values() {
+            let authz_id = text(row, "artifactAuthzId");
+            let artifact_name = text(row, "artifactName");
+            let artifact_type = text(row, "artifactTypeEnumId");
+            if authz_id.is_empty() || artifact_name.is_empty() || artifact_type.is_empty() {
                 continue;
             }
-            if !members.contains_key(&group_id) {
-                let rows = facade
-                    .find("moqui.security.ArtifactGroupMember")?
-                    .eq("artifactGroupId", Value::string(&group_id))
-                    .list()?;
-                members.insert(group_id.clone(), rows.values().to_vec());
-            }
-            for member in members.get(&group_id).map(Vec::as_slice).unwrap_or_default() {
-                let artifact_name = text(member, "artifactName");
-                let artifact_type = text(member, "artifactTypeEnumId");
-                if artifact_name.is_empty() || artifact_type.is_empty() {
-                    continue;
-                }
-                checks.push(Arc::new(AuthzCheck {
-                    artifact_authz_id: authz_id.clone(),
-                    authz_type: text(authz, "authzTypeEnumId"),
-                    authz_action: text(authz, "authzActionEnumId"),
-                    authz_service_name: text(authz, "authzServiceName"),
-                    artifact_name,
-                    artifact_type,
-                    name_is_pattern: text(member, "nameIsPattern") == "Y",
-                    inherit_authz: text(member, "inheritAuthz") == "Y",
-                    filter_map: text(member, "filterMap"),
-                }));
-            }
+            checks.push(Arc::new(AuthzCheck {
+                artifact_authz_id: authz_id,
+                authz_type: text(row, "authzTypeEnumId"),
+                authz_action: text(row, "authzActionEnumId"),
+                authz_service_name: text(row, "authzServiceName"),
+                artifact_name,
+                artifact_type,
+                name_is_pattern: text(row, "nameIsPattern") == "Y",
+                inherit_authz: text(row, "inheritAuthz") == "Y",
+                filter_map: text(row, "filterMap"),
+            }));
         }
     }
     Ok(Arc::new(checks))
@@ -687,30 +670,26 @@ fn tarpit_checks(facade: &EntityFacade, artifact_type: &str) -> Result<Arc<Vec<T
     )
 }
 
+/// One `ArtifactTarpitCheckView` read per group for the type, as Java's `getArtifactTarpitCheckList`.
 fn load_tarpit_checks(facade: &EntityFacade, artifact_type: &str) -> Result<Arc<Vec<TarpitCheck>>, Error> {
     let groups = user_groups(facade)?;
+    let mut ordered: Vec<&String> = groups.iter().collect();
+    ordered.sort();
     let mut checks = Vec::new();
-    for group in groups.iter() {
-        let tarpits = facade
-            .find("moqui.security.ArtifactTarpit")?
+    for group in ordered {
+        let rows = facade
+            .find("moqui.security.ArtifactTarpitCheckView")?
             .eq("userGroupId", Value::string(group))
+            .eq("artifactTypeEnumId", Value::string(artifact_type))
             .list()?;
-        for tarpit in tarpits.values() {
-            let group_id = text(tarpit, "artifactGroupId");
-            let members = facade
-                .find("moqui.security.ArtifactGroupMember")?
-                .eq("artifactGroupId", Value::string(&group_id))
-                .eq("artifactTypeEnumId", Value::string(artifact_type))
-                .list()?;
-            for member in members.values() {
-                checks.push(TarpitCheck {
-                    artifact_name: text(member, "artifactName"),
-                    name_is_pattern: text(member, "nameIsPattern") == "Y",
-                    max_hits_count: number(tarpit, "maxHitsCount"),
-                    max_hits_duration: number(tarpit, "maxHitsDuration"),
-                    tarpit_duration: number(tarpit, "tarpitDuration"),
-                });
-            }
+        for row in rows.values() {
+            checks.push(TarpitCheck {
+                artifact_name: text(row, "artifactName"),
+                name_is_pattern: text(row, "nameIsPattern") == "Y",
+                max_hits_count: number(row, "maxHitsCount"),
+                max_hits_duration: number(row, "maxHitsDuration"),
+                tarpit_duration: number(row, "tarpitDuration"),
+            });
         }
     }
     Ok(Arc::new(checks))

@@ -106,6 +106,8 @@ pub(crate) struct ArtifactHits {
 #[derive(Default)]
 struct State {
     stats: HashMap<String, StatsInfo>,
+    /// Insertion number of the next new artifact, for [`java_hash_map_order`].
+    next_order: u64,
     /// Bins that ended, waiting for the flush.
     closed: Vec<BinRow>,
     /// Hits waiting for the flush, Java's `deferredHitInfoQueue`.
@@ -129,6 +131,8 @@ impl State {
 
 /// Java's `ArtifactStatsInfo`: counts since start for one artifact, and its current bin.
 struct StatsInfo {
+    /// When the artifact was first counted since start, see [`java_hash_map_order`].
+    order: u64,
     artifact_type: String,
     sub_type: Option<String>,
     name: String,
@@ -245,16 +249,25 @@ impl ArtifactHits {
                 state.drop_one("artifact");
                 return;
             }
-            let State { stats, closed, .. } = &mut *state;
+            let State {
+                stats,
+                closed,
+                next_order,
+                ..
+            } = &mut *state;
             let full = closed.len() >= MAX_CLOSED_BINS;
-            let info = stats.entry(key).or_insert_with(|| StatsInfo {
-                artifact_type: hit.artifact_type.to_string(),
-                sub_type: hit.sub_type.map(str::to_string),
-                name: hit.name.to_string(),
-                cur_bin: None,
-                hit_count: 0,
-                total_time: 0.0,
-                total_squared: 0.0,
+            let info = stats.entry(key).or_insert_with(|| {
+                *next_order += 1;
+                StatsInfo {
+                    order: *next_order,
+                    artifact_type: hit.artifact_type.to_string(),
+                    sub_type: hit.sub_type.map(str::to_string),
+                    name: hit.name.to_string(),
+                    cur_bin: None,
+                    hit_count: 0,
+                    total_time: 0.0,
+                    total_squared: 0.0,
+                }
             });
             // The current bin ended since the last hit: it waits for the flush, and a new one starts.
             let expired = info
@@ -310,16 +323,34 @@ impl ArtifactHits {
 
     /// Take what the flush writes: the waiting hits, the closed bins, and each current bin whose
     /// time is over. `all` also takes the current bins that are still open, as Java's `destroy`.
+    ///
+    /// Current bins are taken in the iteration order of Java's `artifactStatsInfoByType` `HashMap`, which is the
+    /// order Java's `destroy` gives them their sequenced ids.
     fn take(&self, all: bool) -> (Vec<HitRow>, Vec<BinRow>) {
+        self.take_with(all, false)
+    }
+
+    /// As [`Self::take`] with `all`, then forget every artifact's counts, as Java's factory restart after the
+    /// empty-db load: the old factory's `destroy` writes its bins and the new one starts with no stats.
+    fn take_restart(&self) -> (Vec<HitRow>, Vec<BinRow>) {
+        self.take_with(true, true)
+    }
+
+    fn take_with(&self, all: bool, restart: bool) -> (Vec<HitRow>, Vec<BinRow>) {
         let now = now_millis();
         let mut state = lock(&self.state);
         let State {
             stats,
+            next_order,
             closed,
             hits,
             dropped,
         } = &mut *state;
-        for info in stats.values_mut() {
+        let keys = java_hash_map_order(stats.iter().map(|(key, info)| (key.as_str(), info.order)));
+        for key in keys {
+            let Some(info) = stats.get_mut(&key) else {
+                continue;
+            };
             let Some(start) = info.cur_bin.as_ref().map(|bin| bin.start_ms) else {
                 continue;
             };
@@ -336,8 +367,33 @@ impl ArtifactHits {
             );
             *dropped = 0;
         }
+        if restart {
+            stats.clear();
+            *next_order = 0;
+        }
         (std::mem::take(hits), std::mem::take(closed))
     }
+}
+
+/// Keys in the iteration order of a Java `HashMap<String, _>` the keys were put into in `order`, with nothing
+/// removed: by bucket, `(h ^ (h >>> 16)) & (capacity - 1)` of the Java `String.hashCode`, and in each bucket by
+/// insertion, which a resize keeps. The capacity starts at 16 and doubles while the size is over 3/4 of it. A bucket
+/// of 8 or more keys, which Java turns into a tree once the capacity is 64, is not modelled.
+fn java_hash_map_order<'a>(keys: impl Iterator<Item = (&'a str, u64)>) -> Vec<String> {
+    let mut keyed: Vec<(u32, u64, &str)> = Vec::new();
+    for (key, order) in keys {
+        let hash = key
+            .encode_utf16()
+            .fold(0_u32, |hash, unit| hash.wrapping_mul(31).wrapping_add(u32::from(unit)));
+        keyed.push((hash ^ (hash >> 16), order, key));
+    }
+    let mut capacity = 16_usize;
+    while keyed.len() > capacity / 4 * 3 {
+        capacity *= 2;
+    }
+    let mask = u32::try_from(capacity - 1).unwrap_or(u32::MAX);
+    keyed.sort_by_key(|(spread, order, _)| (spread & mask, *order));
+    keyed.into_iter().map(|(_, _, key)| key.to_string()).collect()
 }
 
 impl StatsInfo {
@@ -477,10 +533,16 @@ fn server_address() -> &'static (String, String) {
         let Some(name) = name else {
             return ("127.0.0.1".to_string(), "localhost".to_string());
         };
-        let ip = std::net::ToSocketAddrs::to_socket_addrs(&(name.as_str(), 0))
-            .ok()
-            .and_then(|mut addresses| addresses.next())
-            .map_or_else(|| "127.0.0.1".to_string(), |address| address.ip().to_string());
+        // Java orders the resolved addresses IPv4 first (java.net.preferIPv6Addresses defaults to false), keeping
+        // the resolver's order within each family, and takes the first.
+        let addresses: Vec<std::net::IpAddr> = std::net::ToSocketAddrs::to_socket_addrs(&(name.as_str(), 0))
+            .map(|found| found.map(|address| address.ip()).collect())
+            .unwrap_or_default();
+        let ip = addresses
+            .iter()
+            .find(|address| address.is_ipv4())
+            .or_else(|| addresses.first())
+            .map_or_else(|| "127.0.0.1".to_string(), ToString::to_string);
         (ip, name)
     })
 }
@@ -492,7 +554,22 @@ fn server_address() -> &'static (String, String) {
 ///
 /// Returns an error when a chunk of rows cannot be written after the retries.
 pub(crate) fn flush(factory: &ExecutionContextFactory, all: bool) -> Result<(), Error> {
-    let (hits, bins) = factory.artifact_hits().take(all);
+    let taken = factory.artifact_hits().take(all);
+    write(factory, taken)
+}
+
+/// Java's factory restart after the empty-db load, for the counts: write every hit and bin as the old factory's
+/// `destroy` does, then start counting again with no stats, as the new factory does.
+///
+/// # Errors
+///
+/// Returns an error when a chunk of rows cannot be written after the retries.
+pub(crate) fn flush_restart(factory: &ExecutionContextFactory) -> Result<(), Error> {
+    let taken = factory.artifact_hits().take_restart();
+    write(factory, taken)
+}
+
+fn write(factory: &ExecutionContextFactory, (hits, bins): (Vec<HitRow>, Vec<BinRow>)) -> Result<(), Error> {
     if hits.is_empty() && bins.is_empty() {
         return Ok(());
     }
@@ -754,6 +831,64 @@ mod tests {
         let state = hits.state.lock().unwrap();
         assert_eq!(state.dropped, 0);
         assert_eq!(flushed + state.hits.len(), FLUSH_QUEUED_HITS + MAX_QUEUED_HITS * 3);
+    }
+
+    #[test]
+    fn current_bins_are_taken_in_java_hash_map_order() {
+        use super::java_hash_map_order;
+
+        let order =
+            |keys: &[&str]| java_hash_map_order(keys.iter().enumerate().map(|(index, key)| (*key, index as u64)));
+        // Buckets by String.hashCode: "c" 99, "a" 97, "b" 98, whatever the insertion order.
+        assert_eq!(order(&["c", "a", "b"]), ["a", "b", "c"]);
+        // "BB" and "Aa" share hash 2112: one bucket, in insertion order.
+        assert_eq!(order(&["BB", "Aa"]), ["BB", "Aa"]);
+        assert_eq!(order(&["Aa", "BB"]), ["Aa", "BB"]);
+        // 13 keys pass the 3/4 threshold of 16, so 32 buckets: "q" (113) is bucket 1 of 16 but 17 of 32.
+        let letters = ["q", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"];
+        assert_eq!(order(&letters)[0], "q");
+        let mut thirteen = letters.to_vec();
+        thirteen.push("l");
+        assert_eq!(order(&thirteen).last().map(String::as_str), Some("q"));
+        // Java wrote these first, in this order, at the end of an empty-db load of 85 bins (128 buckets). Inserted
+        // in Java's order, EnumerationType and UomConversion share bucket 4.
+        let mut keys = vec![
+            "moqui.basic.EnumerationTyperefresh".to_string(),
+            "moqui.security.ArtifactTarpitrefresh".to_string(),
+            "moqui.basic.UomConversionrefresh".to_string(),
+        ];
+        keys.extend((0..82).map(|index| format!("pad{index}")));
+        let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
+        let ordered: Vec<String> = order(&keys)
+            .into_iter()
+            .filter(|key| key.starts_with("moqui."))
+            .collect();
+        assert_eq!(
+            ordered,
+            [
+                "moqui.security.ArtifactTarpitrefresh",
+                "moqui.basic.EnumerationTyperefresh",
+                "moqui.basic.UomConversionrefresh",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_restart_takes_every_bin_and_starts_with_no_stats() {
+        let hits = ArtifactHits::from_conf(conf());
+        hits.count(&hit("AT_SERVICE", "a.b#c", 1_000, 4.0), HitContext::default);
+        hits.count(
+            &hit("AT_XML_SCREEN", "component://x.xml", 2_000, 5.0),
+            HitContext::default,
+        );
+        let (_, bins) = hits.take_restart();
+        assert_eq!(bins.len(), 2);
+        let state = hits.state.lock().unwrap();
+        assert!(state.stats.is_empty() && state.closed.is_empty() && state.next_order == 0);
+        drop(state);
+        hits.count(&hit("AT_SERVICE", "a.b#c", 3_000, 1.0), HitContext::default);
+        let state = hits.state.lock().unwrap();
+        assert_eq!(state.stats["a.b#c"].hit_count, 1);
     }
 
     #[test]
@@ -1025,6 +1160,167 @@ mod tests {
     }
 
     #[test]
+    fn create_or_update_and_refresh_count_java_operations_without_probe_or_nested_find_hits() {
+        let world = world();
+        let _entered = world.context.enter();
+        let _authz = world.context.disable_authz();
+        let entity = "moqui.basic.EnumerationType";
+        let mut value = world.facade.make_value(entity).unwrap();
+        value.set("enumTypeId", Value::string("HitType"));
+        value.set("description", Value::string("first"));
+        value.create_or_update(&world.facade).unwrap();
+        value.set("description", Value::string("second"));
+        value.create_or_update(&world.facade).unwrap();
+        value.refresh(&world.facade).unwrap();
+        world.facade.find(entity).unwrap().one().unwrap();
+        world.facade.find(entity).unwrap().list().unwrap();
+        world.context.factory().flush_artifact_hits().unwrap();
+
+        let bins = rows(&world, "moqui.server.ArtifactHitBin", "AT_ENTITY");
+        let counts: BTreeMap<_, _> = bins
+            .iter()
+            .filter(|bin| text(bin, "artifactName") == entity)
+            .map(|bin| (text(bin, "artifactSubType"), number(bin, "hitCount")))
+            .collect();
+        assert_eq!(bins.iter().filter(|bin| text(bin, "artifactName") == entity).count(), 5);
+        assert_eq!(
+            counts,
+            BTreeMap::from([
+                ("create".to_string(), 1.0),
+                ("update".to_string(), 1.0),
+                ("refresh".to_string(), 3.0),
+                ("one".to_string(), 1.0),
+                ("list".to_string(), 1.0),
+            ])
+        );
+    }
+
+    #[test]
+    fn untracked_fk_reads_still_refuse_a_missing_parent() {
+        let world = world();
+        let _entered = world.context.enter();
+        let _authz = world.context.disable_authz();
+        world.facade.set_disable_fk_create(false);
+        let mut flow = world.facade.make_value("moqui.basic.StatusFlow").unwrap();
+        flow.set("statusFlowId", Value::string("Default"));
+        flow.create(&world.facade).unwrap();
+        let mut transition = world.facade.make_value("moqui.basic.StatusFlowTransition").unwrap();
+        transition.set("statusFlowId", Value::string("Default"));
+        transition.set("statusId", Value::string("Missing"));
+        transition.set("toStatusId", Value::string("AlsoMissing"));
+        assert!(transition.create(&world.facade).is_err());
+        // A read made after the FK check is counted again.
+        world.facade.find("moqui.basic.StatusFlow").unwrap().list().unwrap();
+        world.context.factory().flush_artifact_hits().unwrap();
+        let bins = rows(&world, "moqui.server.ArtifactHitBin", "AT_ENTITY");
+        assert!(bins
+            .iter()
+            .all(|bin| text(bin, "artifactName") != "moqui.basic.StatusItem"));
+        assert!(
+            bins.iter()
+                .any(|bin| text(bin, "artifactName") == "moqui.basic.StatusFlow"
+                    && text(bin, "artifactSubType") == "list")
+        );
+    }
+
+    #[test]
+    fn existence_reads_do_not_localize_unused_fields_or_disable_later_localization() {
+        let world = world();
+        let _entered = world.context.enter();
+        let _authz = world.context.disable_authz();
+        world.facade.set_disable_fk_create(false);
+        for id in ["First", "Second"] {
+            let mut status = world.facade.make_value("moqui.basic.StatusItem").unwrap();
+            status.set("statusId", Value::string(id));
+            status.set("description", Value::string(id));
+            status.create(&world.facade).unwrap();
+            status.create_or_update(&world.facade).unwrap();
+        }
+        let mut flow = world.facade.make_value("moqui.basic.StatusFlow").unwrap();
+        flow.set("statusFlowId", Value::string("Default"));
+        flow.create(&world.facade).unwrap();
+        let mut transition = world.facade.make_value("moqui.basic.StatusFlowTransition").unwrap();
+        transition.set("statusFlowId", Value::string("Default"));
+        transition.set("statusId", Value::string("First"));
+        transition.set("toStatusId", Value::string("Second"));
+        transition.create(&world.facade).unwrap();
+        world.context.factory().flush_artifact_hits().unwrap();
+        let bins = rows(&world, "moqui.server.ArtifactHitBin", "AT_ENTITY");
+        assert!(bins
+            .iter()
+            .all(|bin| text(bin, "artifactName") != "moqui.basic.LocalizedEntityField"));
+        // The two FK existence reads of the transition ran, but Java makes no such read, so they are not hits.
+        assert!(bins.iter().all(
+            |bin| !(text(bin, "artifactName") == "moqui.basic.StatusItem" && text(bin, "artifactSubType") == "one")
+        ));
+
+        let mut translation = world.facade.make_value("moqui.basic.LocalizedEntityField").unwrap();
+        for (field, value) in [
+            ("entityName", "moqui.basic.StatusItem"),
+            ("fieldName", "description"),
+            ("pkValue", "First"),
+            ("locale", "en"),
+            ("localized", "Translated"),
+        ] {
+            translation.set(field, Value::string(value));
+        }
+        translation.create(&world.facade).unwrap();
+        let found = world
+            .facade
+            .find("moqui.basic.StatusItem")
+            .unwrap()
+            .eq("statusId", Value::string("First"))
+            .one()
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.get("description"), Some(&Value::string("Translated")));
+    }
+
+    #[test]
+    fn plain_map_loader_uses_refresh_for_regular_rows_and_one_for_new_status_rows() {
+        let world = world();
+        let _entered = world.context.enter();
+        let _authz = world.context.disable_authz();
+        world.facade.set_disable_fk_create(true);
+        crate::entity::load_feed::load_entity_xml_text(
+            &world.facade,
+            "statistics-loader",
+            r#"<entity-facade-xml>
+                <moqui.basic.EnumerationType enumTypeId="HitType" description="first"/>
+                <moqui.basic.EnumerationType enumTypeId="HitType" description="second"/>
+                <moqui.basic.StatusItem statusId="HitStatus"/>
+            </entity-facade-xml>"#,
+            &crate::entity::load_feed::LoadOptions::default(),
+        )
+        .unwrap();
+        world.context.factory().flush_artifact_hits().unwrap();
+        let bins = rows(&world, "moqui.server.ArtifactHitBin", "AT_ENTITY");
+        let counts: BTreeMap<_, _> = bins
+            .iter()
+            .filter(|bin| {
+                ["moqui.basic.EnumerationType", "moqui.basic.StatusItem"].contains(&text(bin, "artifactName").as_str())
+            })
+            .map(|bin| {
+                (
+                    (text(bin, "artifactName"), text(bin, "artifactSubType")),
+                    number(bin, "hitCount"),
+                )
+            })
+            .collect();
+        let expected = [
+            ("moqui.basic.EnumerationType", "refresh", 2.0),
+            ("moqui.basic.EnumerationType", "create", 1.0),
+            ("moqui.basic.EnumerationType", "update", 1.0),
+            ("moqui.basic.StatusItem", "one", 1.0),
+            ("moqui.basic.StatusItem", "create", 1.0),
+        ]
+        .into_iter()
+        .map(|(entity, operation, count)| ((entity.to_string(), operation.to_string()), count))
+        .collect();
+        assert_eq!(counts, expected);
+    }
+
+    #[test]
     fn screen_service_and_entity_hits_are_written_by_the_tick_and_shown_by_the_tools_screens() {
         let world = world();
         let _entered = world.context.enter();
@@ -1045,6 +1341,7 @@ mod tests {
         parameters.insert("password".to_string(), Value::string("secret"));
         crate::service::sync("find#Hits", &parameters).unwrap();
         world.facade.find("moqui.basic.Enumeration").unwrap().list().unwrap();
+        world.facade.find("moqui.basic.Enumeration").unwrap().one().unwrap();
 
         // Nothing is written on the request path.
         assert!(rows(&world, "moqui.server.ArtifactHit", "AT_XML_SCREEN").is_empty());
@@ -1082,11 +1379,20 @@ mod tests {
         let entities = rows(&world, "moqui.server.ArtifactHitBin", "AT_ENTITY");
         let lists: Vec<_> = entities
             .iter()
-            .filter(|bin| text(bin, "artifactName") == "moqui.basic.Enumeration")
+            .filter(|bin| {
+                text(bin, "artifactName") == "moqui.basic.Enumeration" && text(bin, "artifactSubType") == "list"
+            })
             .collect();
         assert_eq!(lists.len(), 1, "{entities:?}");
-        assert_eq!(text(lists[0], "artifactSubType"), "list");
         assert_eq!(number(lists[0], "hitCount"), 2.0);
+        let ones: Vec<_> = entities
+            .iter()
+            .filter(|bin| {
+                text(bin, "artifactName") == "moqui.basic.Enumeration" && text(bin, "artifactSubType") == "one"
+            })
+            .collect();
+        assert_eq!(ones.len(), 1, "{entities:?}");
+        assert_eq!(number(ones[0], "hitCount"), 1.0);
         // The hit tables themselves are not counted.
         assert!(entities
             .iter()

@@ -14,7 +14,8 @@
 
 //! An in-memory SQL database for unit tests. It understands the statements the entity layer writes
 //! for the framework entities: single-table inserts, updates, deletes, and selects with `AND`,
-//! `OR`, `IN`, `IS NULL`, ordering, and paging, and the sequence refill.
+//! `OR`, `IN`, `IS NULL`, ordering, and paging, view selects that join member tables on equal columns, and the
+//! sequence refill.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -337,8 +338,10 @@ impl MemConn {
         }
         let name = params[0].clone();
         let first_end = as_i64(&params[1])?;
-        let increment = as_i64(&params[2])?;
-        let hint_end = as_i64(&params[3])?;
+        // With a lastUpdatedStamp column the stamp is the third insert value.
+        let rest = &params[params.len() - 2..];
+        let increment = as_i64(&rest[0])?;
+        let hint_end = as_i64(&rest[1])?;
         let mut rows = self.read_table("sequence_value_item");
         let end = if let Some(row) = rows.iter_mut().find(|row| row.get("seq_name") == Some(&name)) {
             let old = row.get("seq_num").and_then(|value| as_i64(value).ok()).unwrap_or(0);
@@ -420,9 +423,53 @@ impl MemConn {
         }
     }
 
+    /// The rows of the select's table, and of each join, with every column also under `"ALIAS.column"`.
+    fn select_rows(&self, query: &SelectQuery) -> Vec<Row> {
+        let qualified = |row: &Row, alias: &str, into: &mut Row| {
+            for (column, value) in row {
+                into.insert(format!("{alias}.{column}"), value.clone());
+            }
+        };
+        let mut rows: Vec<Row> = self
+            .read_table(&query.table)
+            .into_iter()
+            .map(|row| {
+                let mut out = row.clone();
+                qualified(&row, query.alias.as_deref().unwrap_or(&query.table), &mut out);
+                out
+            })
+            .collect();
+        for join in &query.joins {
+            let right = self.read_table(&join.table);
+            let mut next = Vec::new();
+            for left in rows {
+                let mut found = false;
+                for candidate in &right {
+                    let matches = join.on.iter().all(|(one, two)| {
+                        let mut probe = Row::new();
+                        qualified(candidate, &join.alias, &mut probe);
+                        let read = |name: &str| left.get(name).or_else(|| probe.get(name)).filter(|v| !v.is_null());
+                        matches!((read(one), read(two)), (Some(a), Some(b)) if a == b)
+                    });
+                    if matches {
+                        let mut merged = left.clone();
+                        qualified(candidate, &join.alias, &mut merged);
+                        next.push(merged);
+                        found = true;
+                    }
+                }
+                if !found && join.outer {
+                    next.push(left);
+                }
+            }
+            rows = next;
+        }
+        rows
+    }
+
     fn exec_select(&mut self, query: &SelectQuery, params: &[Value]) -> Result<(u64, Vec<DbRow>), Error> {
         let mut matched = Vec::new();
-        for row in self.read_table(&query.table) {
+        for row in self.select_rows(query) {
             if keep(&query.pred, &row, params, 0)? {
                 matched.push(row);
             }
@@ -666,6 +713,9 @@ struct SelectQuery {
     /// The name each column is returned as.
     names: Vec<String>,
     table: String,
+    /// The alias of `table` in a view select.
+    alias: Option<String>,
+    joins: Vec<Join>,
     pred: Option<Pred>,
     order: Vec<OrderKey>,
     limit: bool,
@@ -702,6 +752,14 @@ enum Op {
     Ge,
     Like,
     NotLike,
+}
+
+/// A member table joined on equal columns, `ON "A"."x" = "B"."x" AND ...`.
+struct Join {
+    table: String,
+    alias: String,
+    outer: bool,
+    on: Vec<(String, String)>,
 }
 
 struct OrderKey {
@@ -800,11 +858,46 @@ fn parse_select(cur: &mut Cur) -> Result<Stmt, Error> {
         parse_columns(cur)?.into_iter().unzip()
     };
     cur.expect_keyword("FROM")?;
-    let table = cur.quoted()?;
+    // A view of several members joins them in parentheses: FROM ("A" "X" INNER JOIN "B" "Y" ON ...).
+    let joined = cur.eat_symbol(b'(');
+    let table = cur.quoted_part()?;
     // A view select aliases its member table: FROM "Product" "PROD".
     cur.skip();
-    if cur.peek_symbol(b'"') {
-        cur.quoted()?;
+    let alias = if cur.peek_symbol(b'"') {
+        Some(cur.quoted_part()?)
+    } else {
+        None
+    };
+    let mut joins = Vec::new();
+    if joined {
+        while !cur.eat_symbol(b')') {
+            let outer = if cur.eat_keyword("LEFT") {
+                cur.expect_keyword("OUTER")?;
+                true
+            } else {
+                cur.expect_keyword("INNER")?;
+                false
+            };
+            cur.expect_keyword("JOIN")?;
+            let table = cur.quoted_part()?;
+            let alias = cur.quoted_part()?;
+            cur.expect_keyword("ON")?;
+            let mut on = Vec::new();
+            loop {
+                let left = cur.quoted()?;
+                cur.expect_symbol(b'=')?;
+                on.push((left, cur.quoted()?));
+                if !cur.eat_keyword("AND") {
+                    break;
+                }
+            }
+            joins.push(Join {
+                table,
+                alias,
+                outer,
+                on,
+            });
+        }
     }
     let pred = if cur.eat_keyword("WHERE") {
         Some(parse_or(cur)?)
@@ -853,6 +946,8 @@ fn parse_select(cur: &mut Cur) -> Result<Stmt, Error> {
         columns,
         names,
         table,
+        alias,
+        joins,
         pred,
         order,
         limit,
@@ -1065,12 +1160,12 @@ impl Cur<'_> {
         self.i < self.sql.len() && self.sql.as_bytes()[self.i] == symbol
     }
 
-    /// A quoted name, or `"ALIAS"."name"` which is the name.
+    /// A quoted name, or `"ALIAS"."name"`, which a select's rows also carry under `"ALIAS.name"`.
     fn quoted(&mut self) -> Result<String, Error> {
         let first = self.quoted_part()?;
         if self.i < self.sql.len() && self.sql.as_bytes()[self.i] == b'.' {
             self.i += 1;
-            return self.quoted_part();
+            return Ok(format!("{first}.{}", self.quoted_part()?));
         }
         Ok(first)
     }

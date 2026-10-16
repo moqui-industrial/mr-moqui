@@ -142,6 +142,19 @@ impl SequenceBanks {
     }
 }
 
+impl SequenceBanks {
+    /// Drop every bank, as a new Java factory starts with an empty bank cache: the next id of each name comes
+    /// from a database refill, one past the stored `seqNum`.
+    fn reset_all(&self) {
+        self.names.lock().unwrap_or_else(PoisonError::into_inner).clear();
+    }
+}
+
+/// Drop every in-memory sequence bank of the facade. See [`SequenceBanks::reset_all`].
+pub(crate) fn reset_sequence_banks(facade: &EntityFacade) {
+    facade.inner.banks.reset_all();
+}
+
 /// `EntityFacade.tempSetSequencedIdPrimary(seqName, nextSeqNum, bankSize)`. Factory wide, as Java.
 pub(crate) fn temp_set_sequenced_id_primary(facade: &EntityFacade, seq_name: &str, next: i64, bank_size: i64) {
     facade.inner.banks.temp_set(seq_name, next, bank_size);
@@ -164,6 +177,8 @@ struct PrimarySpec {
 #[derive(Clone)]
 struct SeqSql {
     mysql: bool,
+    /// The row has `lastUpdatedStamp`, set on each refill as Java's create or update of the row does.
+    stamp: bool,
     lock_sql: String,
     mysql_upsert_sql: String,
     upsert_sql: String,
@@ -232,17 +247,28 @@ fn seq_sql(entity: &moqui_db::model::EntityDefinition, dialect: &moqui_db::diale
     };
     let name_col = column("seqName")?;
     let num_col = column("seqNum")?;
+    let stamp_col = column("lastUpdatedStamp").ok();
     let mysql = is_mysql(dialect);
     // SQLite has the same upsert and RETURNING, but its two-argument max() is GREATEST.
     let greatest = if is_sqlite(dialect) { "max" } else { "GREATEST" };
+    let (insert_cols, insert_values, mysql_stamp, stamp_set) = match &stamp_col {
+        Some(stamp) => (
+            format!("{name_col}, {num_col}, {stamp}"),
+            "?, ?, ?",
+            format!(", {stamp} = VALUES({stamp})"),
+            format!(", {stamp} = EXCLUDED.{stamp}"),
+        ),
+        None => (format!("{name_col}, {num_col}"), "?, ?", String::new(), String::new()),
+    };
     Ok(SeqSql {
         mysql,
+        stamp: stamp_col.is_some(),
         lock_sql: format!("SELECT {num_col} FROM {table} WHERE {name_col} = ? FOR UPDATE"),
         mysql_upsert_sql: format!(
-            "INSERT INTO {table} ({name_col}, {num_col}) VALUES (?, ?) ON DUPLICATE KEY UPDATE {num_col} = GREATEST({num_col} + ?, ?)"
+            "INSERT INTO {table} ({insert_cols}) VALUES ({insert_values}) ON DUPLICATE KEY UPDATE {num_col} = GREATEST({num_col} + ?, ?){mysql_stamp}"
         ),
         upsert_sql: format!(
-            "INSERT INTO {table} ({name_col}, {num_col}) VALUES (?, ?) ON CONFLICT ({name_col}) DO UPDATE SET {num_col} = {greatest}({table}.{num_col} + ?, ?) RETURNING {num_col}"
+            "INSERT INTO {table} ({insert_cols}) VALUES ({insert_values}) ON CONFLICT ({name_col}) DO UPDATE SET {num_col} = {greatest}({table}.{num_col} + ?, ?){stamp_set} RETURNING {num_col}"
         ),
     })
 }
@@ -303,12 +329,7 @@ fn postgres_end(
     let rows = query_conn(
         conn,
         &prepared.upsert_sql,
-        &[
-            string_param(seq_name),
-            long_param(first_end),
-            long_param(increment),
-            long_param(hint_end),
-        ],
+        &upsert_params(prepared, string_param(seq_name), first_end, increment, hint_end),
     )?;
     one_seq_num(&rows, seq_name)
 }
@@ -325,15 +346,21 @@ fn mysql_end(
     super::exec::execute_conn(
         conn,
         &prepared.mysql_upsert_sql,
-        &[
-            name.clone(),
-            long_param(first_end),
-            long_param(increment),
-            long_param(hint_end),
-        ],
+        &upsert_params(prepared, name.clone(), first_end, increment, hint_end),
     )?;
     let rows = query_conn(conn, &prepared.lock_sql, std::slice::from_ref(&name))?;
     one_seq_num(&rows, seq_name)
+}
+
+/// Insert values (the name, the first end, and the stamp when the row has one), then the conflict increment and hint.
+fn upsert_params(prepared: &SeqSql, name: Value, first_end: i64, increment: i64, hint_end: i64) -> Vec<Value> {
+    let mut params = vec![name, long_param(first_end)];
+    if prepared.stamp {
+        params.push(basic_convert(&Value::I64(crate::user::now_millis()), "java.sql.Timestamp").value);
+    }
+    params.push(long_param(increment));
+    params.push(long_param(hint_end));
+    params
 }
 
 fn one_seq_num(rows: &[crate::driver::DbRow], seq_name: &str) -> Result<i64, Error> {
@@ -552,7 +579,7 @@ mod tests {
         assert!(!postgres.mysql);
         assert_eq!(
             postgres.upsert_sql,
-            "INSERT INTO \"sequence_value_item\" (\"seq_name\", \"seq_num\") VALUES (?, ?) ON CONFLICT (\"seq_name\") DO UPDATE SET \"seq_num\" = GREATEST(\"sequence_value_item\".\"seq_num\" + ?, ?) RETURNING \"seq_num\""
+            "INSERT INTO \"sequence_value_item\" (\"seq_name\", \"seq_num\", \"last_updated_stamp\") VALUES (?, ?, ?) ON CONFLICT (\"seq_name\") DO UPDATE SET \"seq_num\" = GREATEST(\"sequence_value_item\".\"seq_num\" + ?, ?), \"last_updated_stamp\" = EXCLUDED.\"last_updated_stamp\" RETURNING \"seq_num\""
         );
         let mysql = seq_sql(entity, dialects.get("mysql").unwrap()).unwrap();
         assert!(mysql.mysql);
@@ -562,7 +589,7 @@ mod tests {
         );
         assert_eq!(
             mysql.mysql_upsert_sql,
-            "INSERT INTO `SEQUENCE_VALUE_ITEM` (`SEQ_NAME`, `SEQ_NUM`) VALUES (?, ?) ON DUPLICATE KEY UPDATE `SEQ_NUM` = GREATEST(`SEQ_NUM` + ?, ?)"
+            "INSERT INTO `SEQUENCE_VALUE_ITEM` (`SEQ_NAME`, `SEQ_NUM`, `LAST_UPDATED_STAMP`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `SEQ_NUM` = GREATEST(`SEQ_NUM` + ?, ?), `LAST_UPDATED_STAMP` = VALUES(`LAST_UPDATED_STAMP`)"
         );
         let mut overridden = entity.clone();
         overridden.table_name = "SEQ_STORE".to_string();
@@ -570,9 +597,9 @@ mod tests {
             field.column_name = format!("CUSTOM_{}", field.column_name);
         }
         let sql = seq_sql(&overridden, dialects.get("postgres").unwrap()).unwrap();
-        assert!(sql
-            .upsert_sql
-            .starts_with("INSERT INTO \"seq_store\" (\"custom_seq_name\", \"custom_seq_num\")"));
+        assert!(sql.upsert_sql.starts_with(
+            "INSERT INTO \"seq_store\" (\"custom_seq_name\", \"custom_seq_num\", \"custom_last_updated_stamp\")"
+        ));
         assert!(sql.upsert_sql.ends_with("RETURNING \"custom_seq_num\""));
     }
 }

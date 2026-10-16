@@ -493,6 +493,9 @@ pub struct LoadReport {
     /// How many times `UserSecurityChecks` ran during the load. The security ECAs fire on each
     /// `UserGroupMember` and `UserGroupPermission` write, so seed data makes this positive.
     pub security_checks: u64,
+    /// The startup empty-db load ran: no `moqui.basic.Enumeration` rows and `empty-db-load` types to load. Java
+    /// restarts its factory after this load.
+    pub empty_db_load: bool,
 }
 
 /// Parse `name=value` load arguments. This does not open a database.
@@ -966,8 +969,11 @@ fn boot_server(
     };
     // Log events and HTTP requests go to moqui_logs and moqui_http_log through the search backend (shipped above).
     factory.init_tools().map_err(moqui_lib::error::Error::from)?;
+    if search.is_some() {
+        index_feeds_on_start_empty(&factory);
+    }
     let load_started = std::time::Instant::now();
-    {
+    let empty_db_load = {
         let context = factory.new_context();
         let entered = context.enter();
         let authz = context.disable_authz();
@@ -982,7 +988,17 @@ fn boot_server(
         drop(authz);
         drop(entered);
         drop(context);
-        loaded?;
+        loaded?.empty_db_load
+    };
+    if empty_db_load {
+        // Java restarts its factory after the empty-db load: the old one writes its artifact hit bins on destroy,
+        // and the new one starts counting again and runs its start-time search check again.
+        factory
+            .restart_artifact_stats()
+            .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
+        if search.is_some() {
+            index_feeds_on_start_empty(&factory);
+        }
     }
     tracing::info!(
         "Table check and empty-db load finished in {:.3} seconds",
@@ -1212,10 +1228,12 @@ fn load_in_context(
         .as_ref()
         .map_or_else(|| "seed,seed-initial,install".to_string(), |types| types.join(","));
     let existing = entity_count(facade, "moqui.basic.Enumeration")?;
+    let mut empty_db_load = false;
     if let Some(location) = &flags.location {
         tracing::info!("Loading entity data from location {location}, data types: {types}");
         records = records.saturating_add(load_one(facade, location, &options)?);
     } else if should_load_data(existing, flags, startup) {
+        empty_db_load = startup && existing == 0;
         if existing == 0 {
             tracing::info!("Found 0 Enumeration records, loading empty-db-load data types ({types})");
         } else {
@@ -1240,9 +1258,13 @@ fn load_in_context(
         }
         tracing::info!("{listing}");
         tracing::info!("Loading data types: {types}");
+        // Java's checkEmptyDb loads in an AT_OTHER loadDataEmptyDb frame that needs no authorization, marked
+        // authorized for all actions, with the anonymous user logged in.
+        let frame = empty_db_load.then(EmptyDbLoadFrame::push).transpose()?;
         for location in framework_files.iter().chain(&conf_files).chain(component_data) {
             records = records.saturating_add(load_one(facade, location, &options)?);
         }
+        drop(frame);
     } else {
         tracing::info!(
             "Found {existing} Enumeration records, NOT loading empty-db-load data types ({types}); use the load command with types or components to load more"
@@ -1252,8 +1274,11 @@ fn load_in_context(
         "Data load of {records} records finished in {:.3} seconds",
         load_started.elapsed().as_secs_f64()
     );
+    // Report counts Java does not make, so they are not artifact hits.
+    let untracked = moqui_core::entity::UntrackedEntityHits::enter();
     let enumeration = entity_count(facade, "moqui.basic.Enumeration")?;
     let user_group_permission = entity_count(facade, "moqui.security.UserGroupPermission")?;
+    drop(untracked);
     tracing::info!(
         "Loaded {records} records; enumeration {enumeration}; user group permission {user_group_permission}"
     );
@@ -1263,7 +1288,47 @@ fn load_in_context(
         user_group_permission,
         test_fts_before_load,
         security_checks: moqui_core::service::security_checks_run().saturating_sub(checks_before),
+        empty_db_load,
     })
+}
+
+/// [`moqui_core::search::index_feeds_on_start_empty`] in a context of its own.
+fn index_feeds_on_start_empty(factory: &std::sync::Arc<moqui_core::context::ExecutionContextFactory>) {
+    let context = factory.new_context();
+    let _entered = context.enter();
+    moqui_core::search::index_feeds_on_start_empty();
+}
+
+/// The `loadDataEmptyDb` frame of Java's `checkEmptyDb`, popped on drop.
+#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+struct EmptyDbLoadFrame;
+
+#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+impl EmptyDbLoadFrame {
+    fn push() -> Result<Self, moqui_lib::error::Error> {
+        let pushed = moqui_core::context::ExecutionContext::with_current(|ctx| {
+            ctx.push_checked("AT_OTHER", "loadDataEmptyDb", "all", false, true, None)?;
+            ctx.set_anonymous_authorized(true, "");
+            moqui_core::user::login_anonymous()?;
+            Ok::<(), moqui_core::context::Error>(())
+        });
+        match pushed {
+            Some(Ok(())) => Ok(Self),
+            Some(Err(err)) => Err(moqui_lib::error::Error::new(err.to_string())),
+            None => Err(moqui_lib::error::Error::new(
+                "the empty-db load has no execution context",
+            )),
+        }
+    }
+}
+
+#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+impl Drop for EmptyDbLoadFrame {
+    fn drop(&mut self) {
+        moqui_core::context::ExecutionContext::with_current(|ctx| {
+            let _ = ctx.pop();
+        });
+    }
 }
 
 /// As `EntityDataLoaderImpl` after each file: errors left in the message facade (an ECA action's failed service call,

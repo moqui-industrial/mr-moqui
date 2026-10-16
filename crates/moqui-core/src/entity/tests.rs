@@ -1270,7 +1270,7 @@ fn test_value(facade: &EntityFacade) -> super::EntityValue {
 }
 
 #[test]
-fn create_or_update_on_an_existing_row_is_one_update_with_the_same_sql_as_update() {
+fn create_or_update_on_an_existing_row_refreshes_then_runs_the_same_sql_as_update() {
     let (facade, tape) = open_store(true, "postgres");
     facade.update_value(&test_value(&facade)).unwrap();
     let direct = tape.lock().unwrap().sql.clone();
@@ -1279,12 +1279,13 @@ fn create_or_update_on_an_existing_row_is_one_update_with_the_same_sql_as_update
     tape.lock().unwrap().params.clear();
 
     facade.create_or_update_value(&test_value(&facade)).unwrap();
-    // Before: SELECT then UPDATE. Now: the UPDATE alone, the same statement.
-    assert_eq!(tape.lock().unwrap().sql, direct);
+    let kinds: Vec<String> = writes(&tape).into_iter().map(|(kind, _)| kind).collect();
+    assert_eq!(kinds, ["SELECT", "UPDATE"], "{kinds:?}");
+    assert_eq!(tape.lock().unwrap().sql[1], direct[0]);
 }
 
 #[test]
-fn create_or_update_on_a_new_row_updates_nothing_then_finds_and_inserts_as_before() {
+fn create_or_update_on_a_new_row_refreshes_then_inserts_without_an_update_probe() {
     let (facade, tape) = open_store(false, "postgres");
     facade.create_value(&test_value(&facade)).unwrap();
     let direct_insert = tape.lock().unwrap().sql.clone();
@@ -1297,9 +1298,9 @@ fn create_or_update_on_a_new_row_updates_nothing_then_finds_and_inserts_as_befor
     }
     facade.create_or_update_value(&test_value(&facade)).unwrap();
     let kinds: Vec<String> = writes(&tape).into_iter().map(|(kind, _)| kind).collect();
-    assert_eq!(kinds, ["UPDATE", "SELECT", "INSERT"], "{kinds:?}");
+    assert_eq!(kinds, ["SELECT", "INSERT"], "{kinds:?}");
     let tape = tape.lock().unwrap();
-    assert_eq!(tape.sql[2], direct_insert[0]);
+    assert_eq!(tape.sql[1], direct_insert[0]);
     assert!(tape.exists);
 }
 
@@ -1325,18 +1326,81 @@ fn an_update_eca_rule_keeps_create_or_update_on_the_find_then_write_path() {
 }
 
 #[test]
+fn plain_map_loader_preserves_status_validation_on_updates() {
+    let facade = crate::testing::open();
+    facade.set_disable_fk_create(true);
+    facade.set_disable_audit_log(true);
+    let load = |status| {
+        super::load_feed::load_entity_xml_text(
+            &facade,
+            "status-loader",
+            &format!(
+                r#"<entity-facade-xml><moqui.service.message.SystemMessage
+                systemMessageId="M1" statusId="{status}"/></entity-facade-xml>"#
+            ),
+            &super::load_feed::LoadOptions::default(),
+        )
+    };
+    load("First").unwrap();
+    let error = load("Second").unwrap_err();
+    assert!(error.to_string().contains("Status change not allowed"), "{error}");
+    let mut transition = facade.make_value("moqui.basic.StatusFlowTransition").unwrap();
+    transition.set("statusFlowId", Value::string("Default"));
+    transition.set("statusId", Value::string("First"));
+    transition.set("toStatusId", Value::string("Second"));
+    transition.create(&facade).unwrap();
+    load("Second").unwrap();
+    let row = facade
+        .find("moqui.service.message.SystemMessage")
+        .unwrap()
+        .one()
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.get("statusId"), Some(&Value::string("Second")));
+}
+
+#[test]
+fn create_or_update_applies_primary_key_defaults_before_refreshing() {
+    let facade = crate::testing::open();
+    facade.set_disable_fk_create(true);
+    let entity = "moqui.screen.SubscreensItem";
+    let mut value = facade.make_value(entity).unwrap();
+    value.set("screenLocation", Value::string("test.xml"));
+    value.set("subscreenName", Value::string("test"));
+    value.set("menuTitle", Value::string("first"));
+    value.create_or_update(&facade).unwrap();
+    value.set("menuTitle", Value::string("second"));
+    value.create_or_update(&facade).unwrap();
+    let rows = facade.find(entity).unwrap().list().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows.get(0).unwrap().get("userGroupId"),
+        Some(&Value::string("ALL_USERS"))
+    );
+    assert_eq!(rows.get(0).unwrap().get("menuTitle"), Some(&Value::string("second")));
+}
+
+#[test]
 fn field_defaults_apply_on_create_only_through_create_or_update() {
-    let sets = |exists: bool| {
-        let (facade, tape) = open_store(exists, "postgres");
-        let mut value = facade.make_value("moqui.entity.document.DataDocumentLink").unwrap();
+    for exists in [false, true] {
+        let facade = crate::testing::open();
+        facade.set_disable_fk_create(true);
+        let entity = "moqui.entity.document.DataDocumentLink";
+        let mut value = facade.make_value(entity).unwrap();
         value.set("dataDocumentId", Value::string("D1"));
         value.set("linkSeqId", Value::string("01"));
         value.set("label", Value::string("l"));
-        facade.create_or_update_value(&value).unwrap();
-        let tape = tape.lock().unwrap();
-        tape.params.iter().flatten().any(|v| *v == Value::string("plain"))
-    };
-    // A new row gets the default 'plain' urlType; an existing row's columns are not reset by it.
-    assert!(sets(false));
-    assert!(!sets(true));
+        if exists {
+            let mut original = value.clone();
+            original.set("urlType", Value::string("custom"));
+            original.create(&facade).unwrap();
+        }
+        value.create_or_update(&facade).unwrap();
+        value.refresh(&facade).unwrap();
+        // A new row gets 'plain'; an update must not reset an existing column to its default.
+        assert_eq!(
+            value.get("urlType"),
+            Some(&Value::string(if exists { "custom" } else { "plain" }))
+        );
+    }
 }
