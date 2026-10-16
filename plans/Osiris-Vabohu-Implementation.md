@@ -30,6 +30,9 @@ cargo test -p moqui-core --lib --no-default-features --features http
 
 Verified result: **804 passed, 0 failed, 1 ignored**. `git diff --check` also passed.
 
+Library Clippy passed with `cargo clippy -p moqui-core --lib --no-default-features --features http -- -D warnings`.
+Including tests exposes an existing `clippy::drop_non_drop` at `crates/moqui-core/src/entity/sequence.rs:524` (`drop(next)`); that file is unchanged by this branch. The same library+tests Clippy command passed with only that lint allowed (`-- -D warnings -A clippy::drop_non_drop`). No repository lint configuration was relaxed.
+
 `http` is required for existing loopback-HTTP tests. A no-default-features run without it is not a valid full-core HTTP test gate.
 
 ## Still required before the requested runtime goal is met
