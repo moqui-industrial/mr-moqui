@@ -27,7 +27,8 @@ use crate::context::Error;
 const TEMPLATE_SUPPORT: &str = include_str!("../../../../runtime/base-component/framework/template/TemplateSupport.js");
 const XML_ACTIONS: &str = include_str!("../../../../runtime/base-component/framework/template/XmlActions.js");
 
-/// Set this to add a comment naming the XML element before each generated statement.
+/// Set this to add a comment naming the XML element before each generated statement. The value `dump` also prints
+/// each generated script to stderr, with line numbers as an error's `eval_script:LINE` has them.
 const DEBUG_ENV: &str = "MOQUI_ACTIONS_DEBUG";
 
 /// The generated scripts kept, and the XML and script text they may add up to.
@@ -143,7 +144,15 @@ fn generated(xml: &str) -> Result<ScriptText, Error> {
 }
 
 fn generate(xml: &str) -> Result<String, Error> {
-    generate_with(xml, std::env::var_os(DEBUG_ENV).is_some())
+    let debug = std::env::var_os(DEBUG_ENV);
+    let source = generate_with(xml, debug.is_some())?;
+    if debug.is_some_and(|value| value == "dump") {
+        eprintln!("---- generated action script ----");
+        for (index, line) in source.lines().enumerate() {
+            eprintln!("{:>4}: {line}", index + 1);
+        }
+    }
+    Ok(source)
 }
 
 fn generate_with(xml: &str, debug: bool) -> Result<String, Error> {
