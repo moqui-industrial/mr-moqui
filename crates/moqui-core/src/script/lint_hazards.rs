@@ -62,6 +62,9 @@ pub(crate) fn refine(root: &MNode, file: &mut FileReport) {
         for text in &texts {
             let masked = mask_strings(&text.text);
             let mut found_hazards = hazards(&masked, &facts);
+            for at in string_regex_calls(&text.text, &masked) {
+                found_hazards.push((Idiom::StringAsRegex, at));
+            }
             if text.function_level {
                 for (name, at) in top_level_declarations(&masked) {
                     if !declared.insert(name) {
@@ -470,6 +473,49 @@ fn top_level_declarations(masked: &str) -> Vec<(String, usize)> {
     out
 }
 
+/// Java's `replaceAll`, `replaceFirst`, `matches` and `split` take a regular expression. A JavaScript string method
+/// given a string takes the text as it is, so `.replaceAll('[^a-z]+', '')` replaces nothing. Returns the offsets of such
+/// calls whose string argument holds a regular expression operator. `masked` keeps comments out.
+fn string_regex_calls(text: &str, masked: &str) -> Vec<usize> {
+    const METHODS: &[&str] = &[".replaceAll(", ".replaceFirst(", ".matches(", ".replace(", ".split("];
+    const OPERATORS: &[&str] = &["[", "\\", ".*", ".+", "^", "$", "|", "+"];
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    for method in METHODS {
+        for (at, _) in text.match_indices(method) {
+            if masked.as_bytes().get(at) != Some(&b'.') {
+                continue;
+            }
+            let rest = &text[at + method.len()..];
+            let rest_trimmed = rest.trim_start();
+            let quote = match rest_trimmed.chars().next() {
+                Some(q @ ('\'' | '"')) => q,
+                _ => continue,
+            };
+            let body = &rest_trimmed[1..];
+            let mut end = None;
+            let mut escaped = false;
+            for (index, ch) in body.char_indices() {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == quote {
+                    end = Some(index);
+                    break;
+                }
+            }
+            let Some(end) = end else { continue };
+            let literal = &body[..end];
+            if OPERATORS.iter().any(|operator| literal.contains(operator)) {
+                out.push(at);
+            }
+        }
+    }
+    let _ = bytes;
+    out
+}
+
 fn is_word(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$'
 }
@@ -623,6 +669,7 @@ mod tests {
                         | Idiom::InOnList
                         | Idiom::EmptyCollectionTruthiness
                         | Idiom::DuplicateDeclaration
+                        | Idiom::StringAsRegex
                 )
             })
             .collect()
@@ -729,6 +776,18 @@ mod tests {
             <set field="x" from="fooList &amp;&amp; fooList[0]"/>
         </actions></service></services>"#;
         assert_eq!(kinds(xml), vec![Idiom::EmptyCollectionTruthiness; 2], "{:?}", scan(xml));
+    }
+
+    #[test]
+    fn a_regular_expression_given_to_a_string_method_as_text_is_a_hazard() {
+        let xml = r#"<services><service verb="a" noun="B"><actions>
+            <set field="a" from="x.replaceAll('[^a-z0-9-]+', '')"/>
+            <set field="b" from="x.replaceAll(' ', '-').replace(/[^a-z]+/g, '')"/>
+            <set field="c" from="x.split(':')[0]"/>
+            <script>const d = x.matches('\\d+') // not .replaceAll('[a]', '')
+            </script>
+        </actions></service></services>"#;
+        assert_eq!(kinds(xml), vec![Idiom::StringAsRegex; 2], "{:?}", scan(xml));
     }
 
     #[test]

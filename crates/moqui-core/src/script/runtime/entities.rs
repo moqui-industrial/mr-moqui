@@ -1404,6 +1404,57 @@ impl HostEntity {
         })
     }
 
+    /// `deleteWithRelated(relationships)`: delete the rows of the named `many` relationships (relationship names or short
+    /// aliases), then this value. When rows of any other entity still hold a foreign key to this value nothing is
+    /// deleted and the result is false, so a caller can report that the value is in use.
+    fn delete_with_related<'js>(&self, ctx: Ctx<'js>, relationships: Opt<JsValue<'js>>) -> rquickjs::Result<bool> {
+        host_guard(&ctx, || {
+            let wanted: Vec<String> = match relationships
+                .0
+                .as_ref()
+                .filter(|value| !value.is_null() && !value.is_undefined())
+            {
+                Some(value) => host_texts(js_to_host(&ctx, value)?),
+                None => Vec::new(),
+            };
+            let facade = facade_of(&ctx)?;
+            let parent = self.val().entity_name().to_string();
+            // The relationships to delete through: the named ones that lead to many rows.
+            let chosen: Vec<(String, String)> = facade
+                .with_entity(&parent, |entity, _, _| {
+                    Ok(entity
+                        .relationships
+                        .iter()
+                        .filter(|relationship| {
+                            relationship.relationship_type.starts_with("many")
+                                && wanted.iter().any(|name| relationship.matches(name))
+                        })
+                        .map(|relationship| (relationship.name.clone(), relationship.related.clone()))
+                        .collect())
+                })
+                .map_err(|err| throw_lib(&ctx, &err))?;
+            let skip = rquickjs::Array::new(ctx.clone())?;
+            for (index, (_, related)) in chosen.iter().enumerate() {
+                skip.set(index, related.clone())?;
+            }
+            let others = self.find_related_fk(ctx.clone(), Opt(Some(skip.into_value())))?;
+            if others.borrow().inner.len() > 0 {
+                return Ok(false);
+            }
+            for (name, _) in &chosen {
+                let list = self
+                    .related_find(&ctx, name)?
+                    .list()
+                    .map_err(|err| throw_lib(&ctx, &err))?;
+                for value in list.values() {
+                    value.delete(&facade).map_err(|err| throw_lib(&ctx, &err))?;
+                }
+            }
+            self.snapshot().delete(&facade).map_err(|err| throw_lib(&ctx, &err))?;
+            Ok(true)
+        })
+    }
+
     fn delete_related(&self, ctx: Ctx<'_>, name: String) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
             let facade = facade_of(&ctx)?;
