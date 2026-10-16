@@ -22,8 +22,10 @@ the original queued editor, identity restoration, or ordinary-user write policy.
 
 Validation: **72 Node tests**, **9 real XML/QuickJS/PostgreSQL features**, and
 **824 core tests passed, 1 ignored**. Library Clippy with `http` and `-D warnings`
-also passed. PostgreSQL tests include canonical reference graph round-trip,
-concurrent stale edits and rollback after parent inserts. See the component
+also passed. These gates were rerun after merging current `origin/master`
+(`d761f57`, native-component and SQL-name fixes); the native public API suite
+also passed **11 tests**. PostgreSQL tests include canonical reference graph
+round-trip, concurrent stale edits and rollback after parent inserts. See the component
 README for reproducible commands and limitations. The next sections describe
 the earlier adapter baseline; their old counts are historical.
 

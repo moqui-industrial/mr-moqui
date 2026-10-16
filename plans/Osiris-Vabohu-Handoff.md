@@ -62,7 +62,10 @@ Current gates:
   and rollback after a subtype insert fails after its parent rows were written.
 - `cargo test -p moqui-core --lib --no-default-features --features http`:
   **824 passed, 0 failed, 1 ignored**.
+- Native-component public API integration suite: **11 passed**.
 - Library Clippy with the same features and `-D warnings`: passed.
+- Merged current `origin/master` (`d761f57`, including native-component PR #13
+  and SQL-name PR #12) and reran these gates on the combined framework branch.
 
 Use isolated incremental `CARGO_TARGET_DIR=/home/user/.cache/mr-vabohu-target`,
 compiler `rustc 1.98.1`, unless intentionally selecting a new consistent toolchain.
@@ -82,12 +85,12 @@ Logs for this iteration: `/tmp/mr-vabohu-{node-tests,runtime-tests,core-tests,cl
 4. Implement authenticated completion SSE preserving original GET-only URL,
    owner checks/status codes, capacity limits, heartbeat/disconnect behavior and
    `completed`/`failed` events. Do not silently substitute polling.
-5. For native shared-state implementations, use a component-owned crate. Inspect
-   `/home/user/moqui/mr-moqui-native-components/plans/Native-Components.md` and
-   `Native-Components-Usage.md` and integrate committed API changes into this
-   framework branch. Do not edit/copy another session's unfinished core files or
-   invent a dynamic loader. Native code remains selected through authoritative
-   service XML and normal authentication/transaction/authorization processing.
+5. For native shared-state implementations, use a component-owned crate. The
+   committed native API is now merged into this branch; read local
+   `plans/Native-Components.md` and `plans/Native-Components-Usage.md` first.
+   Do not edit/copy another session's unfinished core files or invent a dynamic
+   loader. Native code remains selected through authoritative service XML and
+   normal authentication/transaction/authorization processing.
 6. Port/install actual MarbleERP/SimpleScreens/Mantle operations and original
    seed/demo processes. The small framework seed lacks full entity annotations
    and ERP functionality; it is not user-approved reduced scope.
