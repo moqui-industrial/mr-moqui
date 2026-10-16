@@ -58,6 +58,7 @@ mod screen_host;
 mod search;
 mod services;
 mod sftp;
+mod tool_object;
 mod tools_host;
 mod upload;
 mod urls;
@@ -78,6 +79,7 @@ use helpers::*;
 pub(crate) use screen_host::with_screen_runner;
 use search::*;
 use services::*;
+use tool_object::*;
 use upload::*;
 pub use values::script_list_values;
 pub(crate) use values::{

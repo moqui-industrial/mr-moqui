@@ -209,6 +209,20 @@ pub fn load_save(
     db::embedded::load_save(dir.as_ref(), dump.as_ref())
 }
 
+/// The process entry of a moqui binary: [`dispatch`] on the command line arguments, the line it returns printed, and
+/// exit status 1 with the error on stderr when it fails. A binary that links component crates registers them with
+/// `moqui_core::context::register_component_tools` first.
+pub fn main() {
+    match dispatch(std::env::args().skip(1)) {
+        Ok(Some(line)) => println!("{line}"),
+        Ok(None) => {}
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// No arguments start the HTTP server. With no command, `--port`, `--conf`, `--no-run-es`, and `-D name=value`
 /// set the listen port, the runtime conf, and other properties for that run. `help`, `--help`, `-h`, and `-?`
 /// print the command list ([`usage::overview`]). `save-db` and `load-save` take a cluster directory and a dump file.
@@ -370,7 +384,24 @@ fn dispatch_types(args: &[String]) -> Result<(), moqui_lib::error::Error> {
 fn dispatch_lint(path: Option<&str>) -> Result<(), moqui_lib::error::Error> {
     let owned = path.map(std::path::PathBuf::from);
     let paths: Vec<std::path::PathBuf> = owned.into_iter().collect();
-    let failures = moqui_core::service::check(&paths).map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
+    // A factory with no threads and no database, entered so a `type="rust"` location a component's tool factory
+    // registers resolves as it does in a server.
+    let (runtime, framework) = runtime_framework_dirs();
+    let factory = moqui_core::context::ExecutionContextFactory::boot_with_options(
+        &runtime,
+        &framework,
+        moqui_core::context::BootOptions {
+            executor: moqui_core::context::Executor::Inline,
+            ..Default::default()
+        },
+    )
+    .map_err(moqui_lib::error::Error::from)?;
+    let context = factory.new_context();
+    let entered = context.enter();
+    let checked = moqui_core::service::check(&paths);
+    drop(entered);
+    drop(context);
+    let failures = checked.map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
     for failure in &failures {
         println!("{failure}");
     }
@@ -626,6 +657,7 @@ fn load_embedded(
         }
     };
     let outcome = load_with_factory(&factory, &framework_dir, &db, pool, flags);
+    factory.destroy_tools();
     drop(factory);
     drop(db);
     if let Ok(report) = &outcome {
@@ -659,6 +691,7 @@ fn load_with_factory(
         "Entity Facade initialized in {:.3} seconds",
         entity_started.elapsed().as_secs_f64()
     );
+    factory.post_facade_init().map_err(moqui_lib::error::Error::from)?;
     // Feeds index through search when it is up; a load still runs when it is not.
     let _search = match crate::search::attach_search(factory, &facade, db.is_postgres()) {
         Ok(store) => {
@@ -912,6 +945,7 @@ fn boot_server(
         "Entity Facade initialized in {:.3} seconds",
         entity_started.elapsed().as_secs_f64()
     );
+    factory.post_facade_init().map_err(moqui_lib::error::Error::from)?;
     // The overlay starts on the first enter_sim, inside the cluster directory, on the shared install.
     let sim = crate::db::sim::SimOverlay::install(&facade, &cluster_dir, Some(install));
     // Same policy as `load`: indexing runs when search is up, and the server still starts when it is not.
@@ -1042,6 +1076,10 @@ impl Drop for ServeProcess {
         self.sshd.take();
         self.cluster_edge.take();
         self.notify_listener.take();
+        // The tool factories stop while the entity facade and the database are still up.
+        if let Some(factory) = &self.factory {
+            factory.destroy_tools();
+        }
         self.factory.take();
         self.search.take();
         self.facade.take();

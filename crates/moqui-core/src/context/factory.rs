@@ -28,6 +28,7 @@ use base64::Engine;
 
 use moqui_lib::env;
 use moqui_lib::node::MNode;
+use moqui_lib::object::Value;
 use moqui_lib::sync::{lock, read, write};
 
 use super::artifact::{ArtifactStack, AuthzGuard};
@@ -44,6 +45,7 @@ use super::confcache::ConfCache;
 use super::error::Error;
 use super::message::MessageFacade;
 use super::resource::ResourceFacade;
+use super::tool::{self, ComponentTools, Tool, ToolFactory, ToolRegistry};
 use crate::entity::EntityFacade;
 use crate::user::AuthInfo;
 
@@ -96,6 +98,8 @@ pub struct ExecutionContextFactory {
     hits: super::hits::ArtifactHits,
     /// When the factory booted, in epoch milliseconds, for the status of the tools dashboard.
     started_millis: i64,
+    /// The tool factories of the loaded components, in init order.
+    tools: ToolRegistry,
 }
 
 /// How async service calls, `callFuture()`, and scheduled jobs run.
@@ -124,6 +128,9 @@ impl Default for Executor {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BootOptions {
     pub executor: Executor,
+    /// The component crates whose tool factories this factory makes, as (component name, maker) pairs. None uses the
+    /// ones the binary registered with [`super::tool::register_component_tools`].
+    pub tool_factories: Option<&'static [(&'static str, ComponentTools)]>,
 }
 
 /// The framework component beside `tools` and `webroot`, when `MOQUI_FRAMEWORK` is not set.
@@ -190,6 +197,11 @@ impl ExecutionContextFactory {
             conf::merge_component_confs(&framework_dir, &runtime_dir, &component_dirs)?.unwrap_or(conf_node);
         let env_path = runtime_dir.join(".env");
         let (property_names, mut set_by_boot) = apply_default_properties(&conf_node, &env_path)?;
+        let tools = ToolRegistry::build(
+            options.tool_factories.unwrap_or_else(tool::component_tools),
+            &components,
+            &conf_node,
+        )?;
         let entity = Arc::new(RwLock::new(None));
         let resource = ResourceFacade::new(runtime_dir.clone(), component_roots(&components), Arc::clone(&entity));
         tracing::info!("Resource Facade initialized");
@@ -229,11 +241,13 @@ impl ExecutionContextFactory {
             cluster_heartbeat: AtomicBool::new(false),
             hits,
             started_millis: jiff::Timestamp::now().as_millisecond(),
+            tools,
         });
         factory.pools.attach(&factory);
         // The host calls cluster::start after the entity facade is installed.
         install_session_flush(&factory);
         install_hit_flush(&factory);
+        factory.tools.pre_facade_init(&factory)?;
         Ok(factory)
     }
 
@@ -484,6 +498,75 @@ impl ExecutionContextFactory {
     /// The installed entity facade, when the host has registered one.
     pub fn entity(&self) -> Option<EntityFacade> {
         read(&self.entity).clone()
+    }
+
+    /// Run [`ToolFactory::init`] of each tool factory, in init order. The host calls this once the entity facade is
+    /// attached, before it loads data or takes a request. Later calls do nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first tool factory's init error.
+    pub fn post_facade_init(self: &Arc<Self>) -> Result<(), Error> {
+        self.tools.init(self)
+    }
+
+    /// Run [`ToolFactory::destroy`] of each tool factory, in reverse init order. The host calls this at shutdown while
+    /// the entity facade is still attached; the factory's drop calls it too. Later calls do nothing.
+    pub fn destroy_tools(&self) {
+        self.tools.destroy();
+    }
+
+    /// Java's `getTool(name, parameters...)`: the instance of the tool factory named `name`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a not-found error when no loaded tool factory has that name, or the tool factory's instance error.
+    pub fn tool(&self, name: &str, parameters: &[Value]) -> Result<Arc<dyn Tool>, Error> {
+        self.tools.instance(name, parameters)
+    }
+
+    /// The tool factory named `name` as its own type. None when there is none or it is another type.
+    pub fn tool_factory<T: ToolFactory>(&self, name: &str) -> Option<Arc<T>> {
+        self.tools.factory(name).and_then(tool::downcast::<T>)
+    }
+
+    /// The names of the tool factories, in init order.
+    pub fn tool_names(&self) -> Vec<String> {
+        self.tools.names()
+    }
+
+    /// The tool factories that give a TypeScript type for their instance, as (name, type).
+    pub fn tool_type_declarations(&self) -> Vec<(String, &'static str)> {
+        self.tools.type_declarations()
+    }
+
+    /// Register the body of `type="rust"` services whose `location` is `location`, for this factory. The
+    /// [`crate::register_service!`] macro names a function by its Rust path, the convention the built-in services use.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the location is empty or already registered (a built-in service included), or when this
+    /// factory has already read service definitions, which resolve their location as they are read. Register in
+    /// [`ToolFactory::pre_facade_init`].
+    pub fn register_service(
+        &self,
+        location: &str,
+        run: impl Fn(
+                &std::collections::BTreeMap<String, Value>,
+                &EntityFacade,
+            ) -> Result<std::collections::BTreeMap<String, Value>, moqui_lib::error::Error>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Result<(), Error> {
+        crate::service::rust_services::register(self, location, crate::service::RustServiceFn::new(run))
+    }
+}
+
+impl Drop for ExecutionContextFactory {
+    /// The tool factories are destroyed here when the host did not call [`Self::destroy_tools`] first.
+    fn drop(&mut self) {
+        self.tools.destroy();
     }
 }
 
@@ -1187,6 +1270,7 @@ impl ExecutionContextFactory {
             cluster_heartbeat: AtomicBool::new(false),
             hits: super::hits::ArtifactHits::from_conf(conf_text),
             started_millis: jiff::Timestamp::now().as_millisecond(),
+            tools: ToolRegistry::default(),
         });
         factory.pools.attach(&factory);
         install_hit_flush(&factory);

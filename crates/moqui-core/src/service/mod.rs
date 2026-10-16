@@ -15,7 +15,7 @@
 //! Service facade: definitions, synchronous calls, ECAs, pools, jobs, and REST. JSON-RPC is not part of this port.
 
 #[macro_use]
-mod rust_services;
+pub(crate) mod rust_services;
 pub(crate) mod call;
 pub(crate) mod define;
 mod eca;
@@ -65,6 +65,7 @@ pub use request_pool::{caps, check_serve_caps, RequestPool};
 pub(crate) use rest::install;
 pub(crate) use rest::openapi_document;
 pub use rest::{root_resource_infos, run};
+pub use rust_services::RustServiceFn;
 pub use seca::run_seca_rules;
 pub use security_checks::security_checks_run;
 pub(crate) use security_checks::{assert_privileged_group_membership, assert_sealed_permission_grant};

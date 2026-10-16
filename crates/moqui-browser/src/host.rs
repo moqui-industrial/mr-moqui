@@ -72,6 +72,7 @@ impl Browser {
             framework_dir,
             BootOptions {
                 executor: Executor::Inline,
+                ..Default::default()
             },
         )
         .map_err(|err| Error::new(format!("boot: {err}")))?;
@@ -79,6 +80,9 @@ impl Browser {
         let driver: Arc<dyn DbDriver> = sqlite.clone();
         let facade = open_entity_facade(factory.framework_dir(), driver)?;
         factory.set_entity(facade.clone());
+        factory
+            .post_facade_init()
+            .map_err(|err| Error::new(format!("tool init: {err}")))?;
         let browser = Self {
             factory,
             facade,

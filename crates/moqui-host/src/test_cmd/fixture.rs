@@ -67,6 +67,7 @@ pub struct TestFixture {
 impl Drop for TestFixture {
     fn drop(&mut self) {
         crate::wait_for_workers(&self.factory, std::time::Duration::from_secs(30));
+        self.factory.destroy_tools();
         crate::logging::stop_shipping();
         drop(self.facade.take());
         drop(self.db.take());
@@ -276,6 +277,7 @@ fn boot(runtime: &Path, framework: &Path) -> Result<Booted, Error> {
         &db.conf.dialect,
     )?;
     crate::db::entity_facade::attach(&factory, facade.clone());
+    factory.post_facade_init().map_err(Error::from)?;
     let search = match crate::search::attach_search(&factory, &facade, db.is_postgres()) {
         Ok(store) => Some(store),
         Err(err) => {

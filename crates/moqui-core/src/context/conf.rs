@@ -103,7 +103,10 @@ fn merge_config_component_nodes(base: &MNode, over: &MNode) {
 
 fn merge_config_nodes(base: &MNode, over: &MNode) {
     base.merge_children_by_keys(over, "default-property", &["name"], None);
+    // Java tool factories by `class`, the Rust ones by `name`. An element without the key attribute is skipped by
+    // each merge, so the two do not meet.
     base.merge_child_with_child_key(over, "tools", "tool-factory", &["class"], None);
+    base.merge_child_with_child_key(over, "tools", "tool-factory", &["name"], None);
     base.merge_child_with_child_key(over, "cache-list", "cache", &["name"], None);
     merge_server_stats(base, over);
     merge_webapps(base, over);

@@ -2375,6 +2375,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "example"
+version = "0.1.0"
+dependencies = [
+ "moqui-core",
+ "moqui-lib",
+ "tracing",
+]
+
+[[package]]
 name = "exr"
 version = "1.74.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4634,6 +4643,8 @@ dependencies = [
 name = "moqui"
 version = "0.1.0"
 dependencies = [
+ "example",
+ "moqui-core",
  "moqui-host",
 ]
 

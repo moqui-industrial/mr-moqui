@@ -571,6 +571,14 @@ interface MoquiNotificationMessage {
  * The server `ec` an action, a service script, or a script outside a render sees: the facade surface.
  * `ec.cache` and `ec.search` are outside the Server host methods list and are typed loosely.
  */
+/** The tools of the linked component crates that declare a type, by tool factory name. `tools.d.ts` adds to it. */
+interface MoquiToolMap {}
+
+/** A tool with no declared type: its methods take and return script values. */
+interface MoquiTool {
+    readonly [member: string]: (...args: unknown[]) => unknown;
+}
+
 interface MoquiServerEc {
     readonly entity: MoquiEntityFacade;
     readonly service: {
@@ -594,6 +602,9 @@ interface MoquiServerEc {
         readonly moquiVersion: string;
         /** Wait up to `retryLimit` (default 50) times 100 ms for async service work to finish; whether the pool is empty. */
         waitWorkerPoolEmpty(retryLimit?: number): boolean;
+        /** Java's `getTool(name, parameters...)`: the object of a component's Rust tool factory. A tool that declares its type is in `MoquiToolMap` (`tools.d.ts`). */
+        getTool<K extends keyof MoquiToolMap>(name: K, ...parameters: unknown[]): MoquiToolMap[K];
+        getTool(name: string, ...parameters: unknown[]): MoquiTool;
     };
     readonly cache: { getCache(name: string): { get(key: string): unknown; put(key: string, value: unknown): void; remove(key: string): boolean; containsKey(key: string): boolean; clear(): void } };
     /**

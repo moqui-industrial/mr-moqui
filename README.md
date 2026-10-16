@@ -62,8 +62,9 @@ checkout on Linux or macOS. `./moq` with no arguments lists the tasks, and
 `./moq r-p` and `./moq runProduction` both mean `run-production`.
 
 ```sh
-./moq build                    # cargo build --release -p moqui (--debug for target/debug/moqui);
-                               # tasks that run moqui build a missing binary themselves
+./moq build                    # cargo build --release -p moqui (--debug for target/debug/moqui), linking
+                               # any component crates in runtime/component; tasks that run moqui build a
+                               # missing binary themselves
 ./moq run                      # target/release/moqui with runtime/conf/MoquiDevConf.xml; --debug uses target/debug/moqui
 ./moq run -p 8081 -D entity_ds_db_conf=postgres
 ./moq run lint --screens       # moqui's own commands, with the same conf
@@ -86,6 +87,12 @@ cargo run -p moqui
 # or: ./target/debug/moqui, and ./target/debug/moqui load for the default seed, seed-initial, install data
 # ./target/debug/moqui --port 8081 --conf conf/MoquiProductionConf.xml
 ```
+
+A component can have Rust in it, as a Gradle build did for a Java Moqui component: a `Cargo.toml` and `src/` beside its
+`component.xml`. `./moq build` links that crate into the binary. Its tool factories (Java's `ToolFactory`) hook into
+startup and shutdown, register `type="rust"` service implementations, and give the objects scripts get from
+`ec.factory.getTool("Name")`. See `runtime/component/README.md`, and `runtime/base-component/example`, which is off
+by default (`./moq run -D example_disabled=false`).
 
 HTTPS certificates are looked up by the requested domain in `runtime/cert` (git-ignored), in any of these layouts:
 nginx-proxy's `<domain>.crt` and `<domain>.key` (`dhparam.pem` files are ignored), certbot's or acme-companion's

@@ -45,13 +45,14 @@ fn types_writes_the_declarations_into_out() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("wrote 7 files"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("wrote 8 files"));
     for name in [
         "moqui-host.d.ts",
         "entities.d.ts",
         "services.d.ts",
         "screens.d.ts",
         "shape.ts",
+        "tools.d.ts",
         "tsconfig.json",
     ] {
         assert!(names.iter().any(|found| found == name), "{name} in {names:?}");

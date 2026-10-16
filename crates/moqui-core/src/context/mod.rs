@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Factory, conf, components, resources, cache, messages, and the artifact stack.
+//! Factory, conf, components, tool factories, resources, cache, messages, and the artifact stack.
 
 mod artifact;
 mod cache;
@@ -26,6 +26,9 @@ mod locate;
 mod message;
 mod resource;
 pub mod status;
+mod tool;
+#[cfg(test)]
+mod tool_tests;
 
 pub use artifact::AuthzGuard;
 pub use cache::CacheFacade;
@@ -39,6 +42,8 @@ pub(crate) use hits::{secret_parameter, Hit};
 pub use locate::{framework_dir, locate};
 pub use message::{ErrorMark, MessageFacade, ValidationError};
 pub use resource::{ResourceEntry, ResourceFacade, ResourceRef, ResourceStat};
+pub(crate) use tool::ToolHandle;
+pub use tool::{register_component_tools, tool_value, ComponentTools, Tool, ToolFactory};
 
 #[cfg(test)]
 mod tests {
@@ -240,8 +245,16 @@ mod tests {
         env::set_property("moqui_version", "phase2-test");
         let framework = root.join("runtime/base-component/framework");
         let factory = ExecutionContextFactory::boot_with_framework(temp.path(), &framework).unwrap();
+        // example is in base-component too, with disabled="${example_disabled ?: 'true'}" in its component.xml.
         let names: Vec<&str> = factory.components().iter().map(|info| info.name.as_str()).collect();
         assert_eq!(names, vec!["framework", "tools", "webroot"]);
+        env::set_property("example_disabled", "false");
+        let enabled = ExecutionContextFactory::boot_with_framework(temp.path(), &framework);
+        env::clear_property("example_disabled");
+        let enabled = enabled.unwrap();
+        let names: Vec<&str> = enabled.components().iter().map(|info| info.name.as_str()).collect();
+        assert_eq!(names, vec!["framework", "example", "tools", "webroot"]);
+        drop(enabled);
         for info in factory.components() {
             assert_eq!(info.version, "phase2-test");
         }

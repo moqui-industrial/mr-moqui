@@ -121,6 +121,18 @@ fn host_text() -> String {
     )
 }
 
+/// `tools.d.ts`: the type of each tool whose tool factory declares one, merged into `MoquiToolMap`.
+fn tools_text(declarations: &[(String, &str)]) -> String {
+    let mut text = format!(
+        "{HEADER}// The tools of the linked component crates, by tool factory name.\n\ninterface MoquiToolMap {{\n"
+    );
+    for (name, declaration) in declarations {
+        text.push_str(&format!("    {}: {};\n", ts::quote(name), declaration.trim()));
+    }
+    text.push_str("}\n");
+    text
+}
+
 /// `shape.ts`: the server-static qvt package keys (`plans/archive/QvtServerStatic.md`) as values.
 fn shape_text() -> String {
     format!(
@@ -270,10 +282,13 @@ pub fn generate(factory: &Arc<ExecutionContextFactory>, screen_files: &[PathBuf]
         }
     }
     let sources = screen_sources(&facade, factory, &defs);
-    let files = match factory.entity() {
+    let mut files = match factory.entity() {
         Some(entity) => entity.with_model(|model| assemble_files(Some(model), &services, &sources, &failures)),
         None => assemble_files(None, &services, &sources, &failures),
     };
+    files
+        .files
+        .push(("tools.d.ts".to_string(), tools_text(&factory.tool_type_declarations())));
     Ok(files)
 }
 

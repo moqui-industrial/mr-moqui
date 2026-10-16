@@ -17,7 +17,12 @@ members = [
     "crates/moqui-host",
     "crates/moqui-browser",
     "crates/moqui",
+    # Component crates kept with the framework. The default binary links them; see crates/moqui/src/main.rs.
+    "runtime/base-component/example",
 ]
+# Add-on component crates are linked by `./moq build` through a generated crate in target/moqui-app, not by this
+# workspace. Excluded so cargo run inside one of them treats it as its own root.
+exclude = ["runtime/component", "runtime/ecomponent"]
 
 [workspace.package]
 edition = "2021"
@@ -35,18 +40,8 @@ all = { level = "deny", priority = -1 }
 [workspace.lints.rust]
 unexpected_cfgs = { level = "deny", priority = -1 }
 
-# Phase 6 unwinds across the service boundary. This is already the compiler default.
-[profile.dev]
-panic = "unwind"
-
-# Dependencies optimized in dev and test builds; the workspace crates stay at opt-level 0. A debug
-# screen render was about 12x slower than release with unoptimized dependencies, which made the
-# screen tests take minutes. Costs one longer build of the dependencies.
-[profile.dev.package."*"]
-opt-level = 3
-
-[profile.release]
-panic = "unwind"
+# The build profiles are in .cargo/config.toml, so the generated crate `./moq build` links add-on components through
+# (target/moqui-app, its own workspace) builds the same way as this one.
 
 [workspace.dependencies]
 moqui-lib = { path = "crates/moqui-lib" }
@@ -54,6 +49,8 @@ moqui-db = { path = "crates/moqui-db" }
 # default-features off so moqui-browser can leave out mail, http, and cluster-tls; moqui-host names them.
 moqui-core = { path = "crates/moqui-core", default-features = false }
 moqui-host = { path = "crates/moqui-host" }
+# Component crates kept in runtime/base-component, linked by crates/moqui.
+example = { path = "runtime/base-component/example" }
 
 # --- moqui-lib ---
 jiff = "0.2"

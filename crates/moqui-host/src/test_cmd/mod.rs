@@ -256,6 +256,18 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
     }
     let started = Instant::now();
     let fixture = fixture::open(&runtime, &framework, args.db, args.keep)?;
+    // A component directory the factory did not load (its component.xml is disabled) has nothing to test.
+    for name in drop_unloaded(&mut components, &fixture) {
+        if args.components.contains(&name) {
+            return Err(Error::new(format!(
+                "component {name} is not loaded; its component.xml may be disabled (see its README for how to turn it on)"
+            )));
+        }
+        tracing::info!("Not running the specs of component {name}, it is not loaded");
+    }
+    if components.is_empty() {
+        return Err(Error::new("none of the components with specs is loaded"));
+    }
     order_by_load(&mut components, &fixture);
     let options = RunOptions {
         feature_filter: args.feature.clone(),
@@ -299,14 +311,33 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
     Ok(())
 }
 
-/// Components in the order the factory loads them, which follows `depends-on`.
-fn order_by_load(components: &mut [TestComponent], fixture: &TestFixture) {
-    let loaded: Vec<PathBuf> = fixture
+/// Leave out the components the factory did not load, and return their names.
+fn drop_unloaded(components: &mut Vec<TestComponent>, fixture: &TestFixture) -> Vec<String> {
+    let loaded = loaded_locations(fixture);
+    let mut dropped = Vec::new();
+    components.retain(|component| {
+        let dir = std::fs::canonicalize(&component.dir).unwrap_or_else(|_| component.dir.clone());
+        let keep = loaded.contains(&dir);
+        if !keep {
+            dropped.push(component.name.clone());
+        }
+        keep
+    });
+    dropped
+}
+
+fn loaded_locations(fixture: &TestFixture) -> Vec<PathBuf> {
+    fixture
         .factory
         .components()
         .iter()
         .map(|info| std::fs::canonicalize(&info.location).unwrap_or_else(|_| info.location.clone()))
-        .collect();
+        .collect()
+}
+
+/// Components in the order the factory loads them, which follows `depends-on`.
+fn order_by_load(components: &mut [TestComponent], fixture: &TestFixture) {
+    let loaded = loaded_locations(fixture);
     components.sort_by_key(|component| {
         let dir = std::fs::canonicalize(&component.dir).unwrap_or_else(|_| component.dir.clone());
         loaded

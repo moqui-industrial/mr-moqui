@@ -262,3 +262,14 @@ fn host_and_shape_take_the_names_from_the_rust_constants() {
         "shape.ts writes the same key"
     );
 }
+
+#[test]
+fn tools_declare_their_types_in_the_tool_map() {
+    let text = super::tools_text(&[("ExampleTool".to_string(), " { greet(name: string): string } ")]);
+    assert!(text.contains("interface MoquiToolMap {\n"), "{text}");
+    assert!(
+        text.contains("    \"ExampleTool\": { greet(name: string): string };\n"),
+        "{text}"
+    );
+    assert!(super::tools_text(&[]).ends_with("interface MoquiToolMap {\n}\n"));
+}

@@ -274,6 +274,15 @@ fn registry_of(factory: &Arc<ExecutionContextFactory>) -> Arc<Shared> {
     factory.extension::<Shared>(|_| Shared::default())
 }
 
+/// True once `factory` has read a service file, after which a rust service location registered on it would not be seen
+/// by the definitions already read.
+pub(crate) fn definitions_read(factory: &ExecutionContextFactory) -> bool {
+    !snapshot(&factory.extension::<Shared>(|_| Shared::default()))
+        .loaded
+        .files
+        .is_empty()
+}
+
 fn snapshot(shared: &Shared) -> Arc<Registry> {
     Arc::clone(&read(&shared.current))
 }

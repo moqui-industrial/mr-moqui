@@ -612,8 +612,8 @@ fn execute(
     facade: &EntityFacade,
 ) -> Result<BTreeMap<String, Value>, LibError> {
     match def.kind {
-        ServiceKind::Rust => match def.rust_fn {
-            Some(run) => run(parameters, facade),
+        ServiceKind::Rust => match &def.rust_fn {
+            Some(run) => run.run(parameters, facade),
             None => Err(LibError::new(format!("service {} has no rust function", def.name))),
         },
         ServiceKind::Interface => Err(LibError::new(format!("interface {} has no runner", def.name))),

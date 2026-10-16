@@ -84,8 +84,12 @@ along with this software (see the LICENSE.md file). If not, see
     </xs:element>
     <xs:element name="tool-factory">
         <xs:complexType>
-            <xs:attribute name="class" type="xs:string" use="required"><xs:annotation><xs:documentation>
-                Must implement the org.moqui.context.ToolFactory interface.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="class" type="xs:string" use="optional"><xs:annotation><xs:documentation>
+                A Java Moqui ToolFactory class. Ignored by MR Moqui; use name for a Rust tool factory.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="name" type="xs:string" use="optional"><xs:annotation><xs:documentation>
+                The name of a Rust tool factory from a component crate linked into the binary. The element changes
+                its init-priority or, with disabled="true", leaves it out. A linked tool factory with no element
+                is active with the priority its code gives.</xs:documentation></xs:annotation></xs:attribute>
             <xs:attribute name="init-priority" type="xs:integer" default="10"/>
             <xs:attribute name="disabled" type="boolean" default="false"/>
         </xs:complexType>
@@ -1128,6 +1132,12 @@ along with this software (see the LICENSE.md file). If not, see
                 when component element is in a component.xml file within a component.
             </xs:documentation></xs:annotation></xs:attribute>
             <xs:attribute name="version" type="xs:string" use="optional"/>
+            <xs:attribute name="disabled" type="xs:string" use="optional"><xs:annotation><xs:documentation>
+                In a component.xml file: when this expands to true the component is not loaded when a component-dir
+                is scanned. A component element under component-list that names the component still loads it. The
+                value can use a property, such as ${my_component_disabled ?: 'true'}, so a -D option or environment
+                variable can turn it on for a run.
+            </xs:documentation></xs:annotation></xs:attribute>
         </xs:complexType>
     </xs:element>
     <xs:element name="depends-on">

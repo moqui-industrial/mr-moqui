@@ -1436,7 +1436,7 @@ impl HostEntity {
 
 /// A member of the class prototype or of `Object.prototype`. An exotic class's own get runs instead of the
 /// prototype lookup, so it looks there itself first.
-fn prototype_member<'js, C: rquickjs::class::JsClass<'js>>(
+pub(super) fn prototype_member<'js, C: rquickjs::class::JsClass<'js>>(
     ctx: &Ctx<'js>,
     atom: &Atom<'js>,
 ) -> rquickjs::Result<Option<JsValue<'js>>> {
@@ -1447,7 +1447,10 @@ fn prototype_member<'js, C: rquickjs::class::JsClass<'js>>(
     Ok((!found.is_undefined()).then_some(found))
 }
 
-fn prototype_has<'js, C: rquickjs::class::JsClass<'js>>(ctx: &Ctx<'js>, atom: &Atom<'js>) -> Result<bool, JsError> {
+pub(super) fn prototype_has<'js, C: rquickjs::class::JsClass<'js>>(
+    ctx: &Ctx<'js>,
+    atom: &Atom<'js>,
+) -> Result<bool, JsError> {
     match Class::<C>::prototype(ctx)? {
         Some(prototype) => prototype.contains_key(atom.clone()),
         None => Ok(false),
@@ -1459,7 +1462,7 @@ fn prototype_has<'js, C: rquickjs::class::JsClass<'js>>(ctx: &Ctx<'js>, atom: &A
 /// assignment would free the value twice. Re-check when rquickjs is upgraded: once the wrapper borrows the value,
 /// this would keep one reference too many (a leak, not a crash). The value is not forgotten whole: it holds a
 /// reference to the context too.
-fn keep_assigned(value: JsValue<'_>) {
+pub(super) fn keep_assigned(value: JsValue<'_>) {
     // SAFETY: the context and the value are live for this call; this adds one reference to the value, which the
     // free QuickJS does after the exotic set takes back.
     unsafe {
@@ -1468,7 +1471,7 @@ fn keep_assigned(value: JsValue<'_>) {
 }
 
 /// The text of a property name, or None for a symbol.
-fn atom_name(atom: &Atom<'_>) -> rquickjs::Result<Option<String>> {
+pub(super) fn atom_name(atom: &Atom<'_>) -> rquickjs::Result<Option<String>> {
     if atom.to_value()?.is_symbol() {
         return Ok(None);
     }

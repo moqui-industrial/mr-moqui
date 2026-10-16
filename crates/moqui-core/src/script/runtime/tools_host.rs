@@ -652,6 +652,7 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     Object.defineProperty(ec.factory, "versionMap", { get: () => ({ moqui: ec.factory.moquiVersion }) });
     ec.factory.getThreadList = host.getThreadList;
     ec.factory.waitWorkerPoolEmpty = host.waitWorkerPoolEmpty;
+    ec.factory.getTool = host.getTool;
     ec.web.getRequestDetails = host.getRequestDetails;
     Object.defineProperty(ec.web, "secureRequestParameters", { get: host.secureRequestParameters });
     su.camelCaseToPretty = host.camelCaseToPretty;
@@ -2258,6 +2259,7 @@ pub(super) fn install<'js>(
     method!("getRuntimePath", get_runtime_path);
     method!("getThreadList", get_thread_list);
     method!("waitWorkerPoolEmpty", wait_worker_pool_empty);
+    method!("getTool", factory_get_tool);
     method!("getRequestDetails", get_request_details);
     method!("secureRequestParameters", secure_request_parameters);
     method!("camelCaseToPretty", camel_case_to_pretty);
