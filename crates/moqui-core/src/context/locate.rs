@@ -141,6 +141,34 @@ fn strip_prefix<'a>(location: &'a str, prefixes: &[&str]) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn email_template_seeds_keep_java_classpath_uris() {
+        let framework = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
+        let seed = moqui_lib::node::MNode::parse_file(framework.join("data/MoquiSetupData.xml")).unwrap();
+        let templates = seed.children_named("moqui.basic.email.EmailTemplate");
+        let expected = [
+            ("PASSWORD_RESET", "PasswordReset.xml"),
+            ("SINGLE_USE_CODE", "SingleUseCode.xml"),
+            ("ADDED_EMAIL_AUTHC_FACTOR", "AddedEmailAuthcFactor.xml"),
+            ("EMAIL_AUTHC_FACTOR_SENT", "EmailAuthcFActorSent.xml"),
+            ("NOTIFICATION", "NotificationEmail.xml"),
+            ("SCREEN_RENDER", "ScreenRenderEmail.xml"),
+        ];
+        assert_eq!(templates.len(), expected.len());
+        for (id, file) in expected {
+            let template = templates
+                .iter()
+                .find(|node| node.attribute("emailTemplateId").as_deref() == Some(id))
+                .unwrap();
+            let location = template.attribute("bodyScreenLocation").unwrap();
+            assert_eq!(location, format!("classpath://screen/{file}"));
+            assert_eq!(
+                super::locate(&location).unwrap(),
+                super::locate(&format!("component://framework/screen/{file}")).unwrap()
+            );
+        }
+    }
+
+    #[test]
     fn a_content_location_is_an_error_that_names_it() {
         let err = super::locate("content://main/WikiSpace/Page.md").unwrap_err();
         assert_eq!(
