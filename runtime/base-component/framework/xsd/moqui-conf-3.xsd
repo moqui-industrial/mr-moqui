@@ -806,6 +806,9 @@ along with this software (see the LICENSE.md file). If not, see
             <xs:attribute name="dci-topic-factory" type="xs:string">
                 <xs:annotation><xs:documentation>Topic factory for distributed cache invalidate</xs:documentation></xs:annotation></xs:attribute>
             <xs:attribute name="sequenced-id-prefix" type="xs:string"/>
+            <xs:attribute name="sql-name-style" type="xs:string">
+                <xs:annotation><xs:documentation>Rust only: java (default), or legacy to retain pre-compatibility quoted Rust table and column names. Supports property expansion.</xs:documentation></xs:annotation>
+            </xs:attribute>
             <xs:attribute name="default-group-name" type="name-plain"/>
             <xs:attribute name="database-time-zone" type="xs:string"/>
             <xs:attribute name="database-locale" type="xs:string"/>

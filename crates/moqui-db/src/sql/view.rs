@@ -43,7 +43,7 @@ use crate::model::{
 };
 
 use super::condition::{Column, Condition, FieldRef, LimitOffset, OrderBy, Writer};
-use super::ident::quote_ident;
+use super::ident::{quote_column, quote_ident, quote_physical_ident};
 use super::statement::{for_update, SelectOptions};
 use super::{ConditionValues, Statement};
 
@@ -315,7 +315,7 @@ impl<'a> Renderer<'a> {
                     .ok_or_else(|| Error::new(format!("invalid field name {field} for entity {}", entity.full_name)))?;
                 Ok(format!(
                     "{qualifier}.{}",
-                    quote_ident(self.dialect, &definition.column_name)
+                    quote_column(self.dialect, &definition.column_name)
                 ))
             }
             Kind::View => {
@@ -359,7 +359,7 @@ impl<'a> Renderer<'a> {
                 Ok(format!(
                     "{}.{}",
                     quote_ident(self.dialect, entity_alias),
-                    quote_ident(self.dialect, &definition.column_name)
+                    quote_column(self.dialect, &definition.column_name)
                 ))
             };
             let sql = self.alias_expression(alias, &inner_column)?;
@@ -981,7 +981,7 @@ impl<'a> Renderer<'a> {
     ) -> Result<(), Error> {
         let entity = self.member_entity(member)?;
         match self.kind(member)? {
-            Kind::Table => out.push(&quote_ident(self.dialect, &entity.table_name)),
+            Kind::Table => out.push(&quote_physical_ident(self.dialect, &entity.table_name)),
             Kind::View => {
                 let nested = Renderer::new(entity, self.model, self.dialect, self.values)?;
                 let query = nested.query(None, &SelectOptions::default(), &[])?;
@@ -1074,7 +1074,7 @@ impl<'a> Renderer<'a> {
                 .ok_or_else(|| Error::new(format!("invalid field name {field} for entity {}", entity.full_name)))?;
             Ok(format!(
                 "{qualifier}.{}",
-                quote_ident(self.dialect, &definition.column_name)
+                quote_column(self.dialect, &definition.column_name)
             ))
         };
         let mut items = Vec::new();
@@ -1100,7 +1100,7 @@ impl<'a> Renderer<'a> {
         out.push("SELECT ");
         out.push(&items.join(", "));
         out.push(" FROM ");
-        out.push(&quote_ident(self.dialect, &entity.table_name));
+        out.push(&quote_physical_ident(self.dialect, &entity.table_name));
         out.push(" ");
         out.push(&qualifier);
         let mut wrote_where = false;

@@ -662,7 +662,9 @@
         -->
     </llm-facade>
 
-    <entity-facade default-group-name="transactional" entity-eca-enabled="true" sequenced-id-prefix=""
+    <!-- Rust: java names for fresh schemas; set entity_sql_name_style=legacy before opening an old Rust database. -->
+    <entity-facade sql-name-style="${entity_sql_name_style ?: 'java'}"
+            default-group-name="transactional" entity-eca-enabled="true" sequenced-id-prefix=""
             distributed-cache-invalidate="false" dci-topic-factory="" query-stats="false"
             database-locale="${default_locale}" database-time-zone="${database_time_zone ?: default_time_zone}"
             crypt-salt="20201202" crypt-iter="10" crypt-algo="PBEWithHmacSHA256AndAES_128" crypt-pass="${entity_ds_crypt_pass}">

@@ -647,9 +647,8 @@ fn load_with_factory(
     flags: &LoadFlags,
 ) -> Result<LoadReport, moqui_lib::error::Error> {
     let entity_started = std::time::Instant::now();
-    let facade = crate::db::entity_facade::open_entity_facade_components(
-        framework_dir,
-        &crate::db::entity_facade::component_entity_dirs(factory),
+    let facade = crate::db::entity_facade::open_entity_facade_for_factory(
+        factory,
         std::sync::Arc::clone(&db.driver),
         pool,
         &db.conf.dialect,
@@ -900,9 +899,8 @@ fn boot_server(
         db_started.elapsed().as_secs_f64()
     );
     let entity_started = std::time::Instant::now();
-    let facade = crate::db::entity_facade::open_entity_facade_components(
-        &framework_dir,
-        &crate::db::entity_facade::component_entity_dirs(&factory),
+    let facade = crate::db::entity_facade::open_entity_facade_for_factory(
+        &factory,
         Arc::clone(&db.driver),
         pool,
         &db.conf.dialect,

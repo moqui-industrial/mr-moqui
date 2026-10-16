@@ -35,6 +35,10 @@ fn framework() -> (EntityModel, Dialects) {
     let root = workspace_root();
     let conf =
         MNode::parse_file(root.join("runtime/base-component/framework/conf/MoquiDefaultConf.xml")).expect("conf");
+    // Keep the pre-existing SQL snapshots as explicit legacy-mode coverage.
+    conf.first_named("entity-facade")
+        .unwrap()
+        .set_attribute("sql-name-style", "legacy");
     let model =
         EntityModel::load_directory(&conf, &root.join("runtime/base-component/framework/entity")).expect("model");
     let dialects = Dialects::load(&conf).expect("dialects");
@@ -666,6 +670,9 @@ fn sample_model(entities: &str) -> EntityModel {
     let root = workspace_root();
     let conf =
         MNode::parse_file(root.join("runtime/base-component/framework/conf/MoquiDefaultConf.xml")).expect("conf");
+    conf.first_named("entity-facade")
+        .unwrap()
+        .set_attribute("sql-name-style", "legacy");
     let doc = MNode::parse_text("entities", &format!("<entities>{entities}</entities>")).unwrap();
     EntityModel::load(&conf, &[doc]).unwrap()
 }

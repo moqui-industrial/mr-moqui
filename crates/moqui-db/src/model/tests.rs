@@ -21,7 +21,7 @@ fn framework_entities_and_dictionary_load() {
 
     let enumeration = model.entity("moqui.basic.Enumeration").unwrap();
     assert_eq!(model.entity("Enumeration").unwrap().full_name, enumeration.full_name);
-    assert_eq!(enumeration.table_name, "Enumeration");
+    assert_eq!(enumeration.table_name, "ENUMERATION");
     assert_eq!(enumeration.entity_use, "configuration");
     assert_eq!(enumeration.cache, "true");
     assert_eq!(enumeration.sequence_bank_size, 50);

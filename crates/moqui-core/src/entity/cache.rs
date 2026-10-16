@@ -1558,7 +1558,7 @@ mod tests {
                 Ok(())
             })?;
             assert_eq!(
-                statements(&tape, "UPDATE \"TestEntity\""),
+                statements(&tape, "UPDATE \"test_entity\""),
                 0,
                 "{:?}",
                 tape.lock().unwrap()
@@ -1566,7 +1566,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        assert_eq!(statements(&tape, "UPDATE \"TestEntity\""), 1);
+        assert_eq!(statements(&tape, "UPDATE \"test_entity\""), 1);
         let row = facade
             .find(TEST)
             .unwrap()

@@ -14,8 +14,9 @@
 
 //! Condition tree and SQL text. No connection and no driver.
 //!
-//! Identifiers are the model field and table names. `name-replace` runs before quoting.
-//! Postgres quotes with `"`. MySQL quotes with backticks. Placeholders stay `?`.
+//! Physical identifiers use the model's Java-style names, database folding and column
+//! `name-replace` rules. Logical aliases are quoted verbatim. Postgres quotes with `"`;
+//! MySQL quotes with backticks. Placeholders stay `?`.
 //!
 //! Every builder that writes a placeholder returns a [`Statement`] whose `params` are the values
 //! for those placeholders, in order. Insert and update `SET` columns are the exception: the caller
@@ -30,7 +31,10 @@ use moqui_lib::error::Error;
 use moqui_lib::object::{basic_convert, Value};
 
 pub use condition::{comparison, render_condition, CompareOp, Condition, FieldRef, LimitOffset, Nulls, OrderBy};
-pub use ident::{is_mysql, is_sqlite, quote_ident};
+pub use ident::{
+    is_mysql, is_sqlite, legacy_name, physical_column_name, physical_name, quote_column, quote_ident,
+    quote_physical_ident,
+};
 pub use statement::{
     add_column, count, count_with, create_fk_index, create_foreign_key, create_index, create_table, delete,
     foreign_key_index_name, foreign_key_name, fts_index_sql, insert, insert_or_update, select, select_with, update,
@@ -80,5 +84,7 @@ impl ConditionValues for PlainValues {
     }
 }
 
+#[cfg(test)]
+mod names_tests;
 #[cfg(test)]
 mod tests;

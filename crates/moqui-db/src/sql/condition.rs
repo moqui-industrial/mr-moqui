@@ -28,7 +28,8 @@ use crate::dialect::Dialect;
 use super::ident::quote_ident;
 use super::Statement;
 
-/// Entity alias (optional) plus a field name. Names are rendered as stored, after `name-replace`.
+/// Entity alias (optional) plus a logical field name. Entity/view builders resolve physical
+/// columns; standalone `render_condition` has no model and quotes names verbatim.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FieldRef {
     pub entity_alias: Option<String>,
