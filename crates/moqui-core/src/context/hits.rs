@@ -227,13 +227,7 @@ impl ArtifactHits {
         state.hits.len() >= FLUSH_QUEUED_HITS || state.closed.len() >= FLUSH_CLOSED_BINS
     }
 
-    fn count_counted(
-        &self,
-        hit: &Hit<'_>,
-        persist_hit: bool,
-        persist_bin: bool,
-        context: impl FnOnce() -> HitContext,
-    ) {
+    fn count_counted(&self, hit: &Hit<'_>, persist_hit: bool, persist_bin: bool, context: impl FnOnce() -> HitContext) {
         let is_entity =
             hit.artifact_type == "AT_ENTITY" || hit.sub_type.is_some_and(|sub_type| sub_type.starts_with("entity"));
         if is_entity && ENTITIES_TO_SKIP.contains(&hit.name) {
@@ -903,6 +897,10 @@ mod tests {
             <artifact-stats type="AT_SERVICE" persist-bin="true" persist-hit="true"/>
             <artifact-stats type="AT_ENTITY" persist-bin="true"/>
         </server-stats></moqui-conf>"#;
+        world_with_conf(conf)
+    }
+
+    fn world_with_conf(conf: &str) -> World {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -960,6 +958,70 @@ mod tests {
             .render()
             .unwrap_or_else(|err| panic!("{screen}{path}: {err}"))
             .body_text()
+    }
+
+    #[test]
+    fn shipped_settings_and_disabled_overrides_survive_merge_and_shutdown_flush() {
+        use moqui_lib::node::MNode;
+
+        let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime");
+        for mode in ["default", "dev", "disabled"] {
+            let conf = MNode::parse_file(runtime.join("base-component/framework/conf/MoquiDefaultConf.xml")).unwrap();
+            if mode != "default" {
+                super::super::conf::merge_conf(
+                    &conf,
+                    &MNode::parse_file(runtime.join("conf/MoquiDevConf.xml")).unwrap(),
+                );
+            }
+            if mode == "disabled" {
+                super::super::conf::merge_conf(
+                    &conf,
+                    &MNode::parse_text(
+                        "disabled",
+                        r#"<moqui-conf><server-stats>
+                        <artifact-stats type="AT_XML_SCREEN" persist-hit="false" persist-bin="false"/>
+                        <artifact-stats type="AT_SERVICE" persist-hit="false" persist-bin="false"/>
+                        <artifact-stats type="AT_ENTITY" persist-bin="false"/>
+                    </server-stats></moqui-conf>"#,
+                    )
+                    .unwrap(),
+                );
+            }
+            let world = world_with_conf(&conf.write_string());
+            let configured = world.context.factory().artifact_hits();
+            assert_eq!(configured.bin_length_ms, 900_000);
+            assert_eq!(configured.persist("AT_XML_SCREEN_CONTENT"), (mode != "default", true));
+            assert_eq!(configured.persist("AT_LLM"), (false, true));
+            assert_eq!(configured.persist("AT_ENTITY"), (false, mode == "dev"));
+            let _entered = world.context.enter();
+            let _authz = world.context.disable_authz();
+            assert!(render(&world, "HitScreen.xml", "").contains("tracked"));
+            render(&world, "Untracked.xml", "");
+            crate::service::sync("find#Hits", &BTreeMap::new()).unwrap();
+            // No tick and no bin expiry: shutdown must persist the still-open bins and queued hits.
+            assert!(rows(&world, super::HIT_BIN, "AT_SERVICE").is_empty());
+            world.context.factory().flush_artifact_hits().unwrap();
+            for (kind, hit_enabled, bin_enabled) in [
+                ("AT_XML_SCREEN", mode != "disabled", mode != "disabled"),
+                ("AT_SERVICE", mode == "dev", mode != "disabled"),
+                ("AT_ENTITY", false, mode == "dev"),
+            ] {
+                assert_eq!(
+                    !rows(&world, super::HIT, kind).is_empty(),
+                    hit_enabled,
+                    "{mode}: {kind} hits"
+                );
+                let bins = rows(&world, super::HIT_BIN, kind);
+                assert_eq!(!bins.is_empty(), bin_enabled, "{mode}: {kind} bins");
+                assert!(bins.iter().all(|bin| number(bin, "hitCount") > 0.0));
+                assert!(bins
+                    .iter()
+                    .all(|bin| !text(bin, "artifactName").ends_with("Untracked.xml")));
+            }
+            let before = rows(&world, super::HIT_BIN, "AT_XML_SCREEN").len();
+            world.context.factory().flush_artifact_hits().unwrap();
+            assert_eq!(rows(&world, super::HIT_BIN, "AT_XML_SCREEN").len(), before);
+        }
     }
 
     #[test]
