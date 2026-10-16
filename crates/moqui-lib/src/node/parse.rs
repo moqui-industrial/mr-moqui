@@ -29,6 +29,7 @@ pub(crate) fn parse_document(location: Option<&str>, text: &str, root_only: bool
         line: 1,
         column: 1,
         file: location.filter(|value| !value.is_empty()).map(str::to_string),
+        depth: 0,
     };
     parser.skip_bom();
     parser.skip_misc()?;
@@ -87,6 +88,7 @@ impl<'a> XmlEvents<'a> {
                 line: 1,
                 column: 1,
                 file: location.filter(|value| !value.is_empty()).map(str::to_string),
+                depth: 0,
             },
             open: Vec::new(),
             pending_end: None,
@@ -172,7 +174,13 @@ struct Parser<'a> {
     line: u32,
     column: u32,
     file: Option<String>,
+    /// Elements open in `parse_element`, bounded by [`MAX_DEPTH`]: nesting recurses.
+    depth: usize,
 }
+
+/// Deepest element nesting the tree parser accepts. A deeper document is an error, where recursing on it would
+/// overflow the stack, which aborts the process instead of failing the one parse.
+const MAX_DEPTH: usize = 256;
 
 impl<'a> Parser<'a> {
     fn error(&self, message: impl Into<String>) -> Error {
@@ -279,6 +287,20 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_element(&mut self, parent: Option<Weak<RefCell<NodeInner>>>, root_only: bool) -> Result<MNode, Error> {
+        if self.depth >= MAX_DEPTH {
+            return Err(self.error(format!("elements nested deeper than {MAX_DEPTH}")));
+        }
+        self.depth += 1;
+        let parsed = self.parse_element_inner(parent, root_only);
+        self.depth -= 1;
+        parsed
+    }
+
+    fn parse_element_inner(
+        &mut self,
+        parent: Option<Weak<RefCell<NodeInner>>>,
+        root_only: bool,
+    ) -> Result<MNode, Error> {
         let line = self.line;
         let column = self.column;
         let StartTag {

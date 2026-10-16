@@ -263,14 +263,9 @@ fn one_filter(
     if !applies {
         return Ok(None);
     }
-    let map = match crate::script::eval_map(&expression) {
-        Ok(map) => map,
-        Err(err) if allow_missing => {
-            tracing::error!(error = %err, "skipping entity filter map");
-            return Ok(None);
-        }
-        Err(err) => return Err(err),
-    };
+    // An error evaluating the map closes the find even with `allowMissingAlias`: as in Java, that setting only
+    // excuses a missing alias in the conditions, never a broken filter, which would otherwise stop filtering.
+    let map = crate::script::eval_map(&expression)?;
     let join_or = text(filter, "joinOr") == "Y";
     let comparison = text(filter, "comparisonEnumId");
     target.with(facade, |entity| {

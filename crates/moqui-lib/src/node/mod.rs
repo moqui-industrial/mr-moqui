@@ -464,6 +464,15 @@ mod tests {
     }
 
     #[test]
+    fn deeply_nested_elements_are_an_error_not_a_stack_overflow() {
+        let deep = format!("{}{}", "<a>".repeat(100_000), "</a>".repeat(100_000));
+        let err = expect_parse_err(MNode::parse_text("deep.xml", &deep));
+        assert!(err.to_string().contains("nested deeper"), "{err}");
+        let fine = format!("{}{}", "<a>".repeat(100), "</a>".repeat(100));
+        MNode::parse_text("fine.xml", &fine).unwrap();
+    }
+
+    #[test]
     fn declaration_comment_cdata_entities_and_raw_names() {
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
         <!-- comment with &not-an-entity; -->

@@ -26,7 +26,10 @@ pub fn is_sqlite(dialect: &Dialect) -> bool {
 }
 
 fn starts_with_ignore(name: &str, prefix: &str) -> bool {
-    name.len() >= prefix.len() && name[..prefix.len()].eq_ignore_ascii_case(prefix)
+    // bytes, so a multi-byte name that has a character across the prefix length is no match instead of a panic
+    name.as_bytes()
+        .get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
 }
 
 /// Column replacements are ordered, case-insensitive, and may chain, as in Java FieldInfo.
@@ -144,4 +147,18 @@ pub(crate) fn shrink_name(name: &str, limit: usize) -> String {
         chars.truncate(limit.saturating_sub(1));
     }
     chars.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::starts_with_ignore;
+
+    #[test]
+    fn a_prefix_test_does_not_split_a_multi_byte_character() {
+        assert!(starts_with_ignore("SQLite3", "sqlite"));
+        assert!(!starts_with_ignore("sql", "sqlite"));
+        // the prefix length falls inside the second character
+        assert!(!starts_with_ignore("sé", "sq"));
+        assert!(!starts_with_ignore("\u{20ac}uro", "sqlite"));
+    }
 }

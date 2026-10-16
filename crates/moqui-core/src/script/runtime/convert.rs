@@ -345,25 +345,33 @@ pub(super) const SET_KEY: &str = "__set__";
 /// The key of a map whose JavaScript form is a tools object: the name of the wrapper that adds its methods.
 pub(super) const WRAP_KEY: &str = "__wrap";
 
+/// A script `Set`, or a subclass of one: an instance of this context's own `Set`, not an object that only names
+/// itself one through `constructor.name`.
 fn is_js_set(object: &Object<'_>) -> bool {
-    object
-        .get::<_, Object>("constructor")
-        .and_then(|constructor| constructor.get::<_, String>("name"))
-        .is_ok_and(|name| name == "Set")
+    let ctx = object.ctx();
+    ctx.globals()
+        .get::<_, Object>("Set")
+        .is_ok_and(|set| object.is_instance_of(&set))
 }
 
 /// The epoch millis of a script `Date`, or `None` for any other object. An invalid date is `None` too, so it converts
-/// as the empty object it is.
+/// as the empty object it is. The intrinsic `Date.prototype.getTime` reads the time, not a `getTime` the object brings.
 fn js_date_millis(object: &Object<'_>) -> Option<i64> {
-    let is_date = object
-        .get::<_, Object>("constructor")
-        .and_then(|constructor| constructor.get::<_, String>("name"))
-        .is_ok_and(|name| name == "Date");
-    if !is_date {
+    let ctx = object.ctx();
+    let date: Object = ctx.globals().get("Date").ok()?;
+    if !object.is_instance_of(&date) {
         return None;
     }
-    let get_time: rquickjs::Function = object.get("getTime").ok()?;
-    let millis: f64 = get_time.call((rquickjs::function::This(object.clone()),)).ok()?;
+    let prototype: Object = date.get("prototype").ok()?;
+    let get_time: rquickjs::Function = prototype.get("getTime").ok()?;
+    let millis: f64 = match get_time.call((rquickjs::function::This(object.clone()),)) {
+        Ok(millis) => millis,
+        Err(_) => {
+            // an object that only inherits from `Date.prototype` has no time: the call threw, so the throw is cleared
+            let _ = ctx.catch();
+            return None;
+        }
+    };
     #[allow(clippy::cast_possible_truncation)]
     millis.is_finite().then_some(millis as i64)
 }

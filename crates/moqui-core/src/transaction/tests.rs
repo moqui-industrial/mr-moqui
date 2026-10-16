@@ -1065,6 +1065,25 @@ fn a_panicking_commit_hook_rolls_back_and_ends_the_frame() {
 }
 
 #[test]
+fn a_panicking_after_commit_hook_does_not_skip_the_rest() {
+    let (mgr, driver) = harness(small());
+    let _clean = Clean(&mgr);
+    let ran = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    assert!(mgr.begin(None).expect("begin"));
+    mgr.with_connection(|_| Ok(())).expect("enlist");
+    mgr.on_commit(|| panic!("after-commit hook failed")).expect("hook");
+    let counter = ran.clone();
+    mgr.on_commit(move || {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    })
+    .expect("hook");
+    mgr.commit().expect("the commit succeeded, whatever a hook after it does");
+    assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(!mgr.in_transaction());
+    assert_eq!(driver.event_count("commit:"), 1);
+}
+
+#[test]
 fn deadline_slots_leave_with_their_frames() {
     let (mgr, _) = harness(small());
     let _clean = Clean(&mgr);
