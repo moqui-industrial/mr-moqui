@@ -86,7 +86,6 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
 
     // ---- entity ----
     ec.entity.isEntityDefined = host.isEntityDefined;
-    ec.entity.getValueListFromPlainMap = host.valuesFromPlainMap;
     ec.entity.getAllEntityNames = host.getAllEntityNames;
     ec.entity.getAllEntitiesInfo = host.getAllEntitiesInfo;
     ec.entity.getAllEntityInfo = host.getAllEntityInfo;
@@ -251,19 +250,11 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     ec.service.secaRulesByServiceName = {
         get: (serviceName) => { const texts = host.secaRuleTexts(serviceName); return texts.length ? texts.map(makeText) : null; }
     };
-    wrappers.ServiceDefinition = (info) => Object.assign(info, {
-        getInParameter: (name) => {
-            const param = info.inParameterInfoMap[name];
-            return param ? makeNode({ name: "parameter", attributes: {
-                name: param.name, type: param.type, required: String(param.required)
-            } }) : null;
-        }
-    });
     ec.service.getServiceDefinition = function (serviceName) {
         const info = host.serviceDefinitionInfo(serviceName);
         if (info == null) return null;
         info.serviceNode = makeNode(host.parseNode(info.serviceXml));
-        return wrap("ServiceDefinition", info);
+        return info;
     };
     wrappers.JobRunner = (info) => Object.assign(info, {
         getLastExecuteTime: () => info.lastExecuteTime, getExecuteCount: () => info.executeCount,
@@ -288,7 +279,6 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
 
     // ---- screen ----
     ec.screen.getAllRootScreenLocations = host.getAllRootScreenLocations;
-    ec.screen.getTransitionInfo = host.transitionInfo;
     wrappers.ScreenInfo = (info) => Object.assign(info, { getIndentedName: () => info.indentedName });
     ec.screen.getScreenInfoList = function (rootLocation, levels) {
         return host.getScreenInfoList(rootLocation, levels).map((info) =>
@@ -597,8 +587,7 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     ec.service.nextCronExecution = host.nextCronExecution;
     // (expression, locale, shortFormat): English text only, from the cron parser
     ec.service.getCronDescription = (expression) => host.cronDescription(String(expression));
-    ec.service.restApi = { getFreshRootResources: host.restRootResources, getRootResources: host.restRootResources,
-        resolveService: host.resolveRestService };
+    ec.service.restApi = { getFreshRootResources: host.restRootResources, getRootResources: host.restRootResources };
     ec.entity.getAllEntityNamesWithMaster = host.getAllEntityNamesWithMaster;
 
     // `ScreenUrlInfo.isPermitted(ec, null, AUTHZA_ALL)` as a check of one artifact: the screen, the type, the action.
@@ -2143,44 +2132,6 @@ fn get_find_filters_for_user<'js>(ctx: Ctx<'js>, entity_name: String) -> rquickj
     })
 }
 
-fn resolve_rest_service<'js>(ctx: Ctx<'js>, path: String, method: String) -> rquickjs::Result<JsValue<'js>> {
-    host_guard(&ctx, || {
-        let value = crate::service::resolve_rest_service(&path, &method)
-            .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
-        host_to_js(&ctx, value)
-    })
-}
-
-fn transition_info<'js>(
-    ctx: Ctx<'js>,
-    root: String,
-    location: String,
-    name: String,
-    method: String,
-) -> rquickjs::Result<JsValue<'js>> {
-    host_guard(&ctx, || {
-        let factory = factory_of(&ctx)?;
-        let value = crate::screen::info::transition_info(&factory, &root, &location, &name, &method)
-            .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
-        host_to_js(&ctx, value)
-    })
-}
-
-fn values_from_plain_map<'js>(
-    ctx: Ctx<'js>,
-    map: JsValue<'js>,
-    entity: String,
-) -> rquickjs::Result<Class<'js, HostList>> {
-    host_guard(&ctx, || {
-        let Value::Map(map) = js_to_host(&ctx, &map)? else {
-            return Err(Exception::throw_message(&ctx, "Entity graph must be a map"));
-        };
-        let values = crate::entity::query_rest::values_from_plain_map(&facade_of(&ctx)?, &map, &entity)
-            .map_err(|err| throw_lib(&ctx, &err))?;
-        Class::instance(ctx.clone(), HostList::of_list(crate::entity::EntityList::new(values)))
-    })
-}
-
 fn rest_root_resources<'js>(ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let roots =
@@ -2313,9 +2264,6 @@ pub(super) fn install<'js>(
     method!("getAvailableTimeZones", get_available_time_zones);
     method!("resourceInfo", resource_info);
     method!("restRootResources", rest_root_resources);
-    method!("resolveRestService", resolve_rest_service);
-    method!("transitionInfo", transition_info);
-    method!("valuesFromPlainMap", values_from_plain_map);
     method!("isPermitted", is_permitted);
     method!("disableEntityEca", disable_entity_eca);
     method!("enableEntityEca", enable_entity_eca);

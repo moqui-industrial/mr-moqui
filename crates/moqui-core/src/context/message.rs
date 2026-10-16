@@ -109,7 +109,7 @@ impl MessageFacade {
         self.validation_errors.clear();
     }
 
-    /// Isolate tool validation errors without discarding the caller's errors or informational messages.
+    /// Isolate validation errors without discarding the caller's errors or informational messages.
     pub fn push_errors(&mut self) {
         self.error_stack.push((
             std::mem::take(&mut self.errors),
