@@ -237,6 +237,10 @@ impl DbConnection for Tracked {
         self.conn.canceller()
     }
 
+    fn returns_rows(&mut self, sql: &str) -> Result<Option<bool>, Error> {
+        self.conn.returns_rows(sql)
+    }
+
     fn set_statement_timeout(&mut self, remaining: Option<std::time::Duration>) -> Result<(), Error> {
         self.conn.set_statement_timeout(remaining)
     }

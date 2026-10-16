@@ -60,6 +60,8 @@ fn load_data_stores_eca_and_inserts_pending() {
             "moqui.basic.Enumeration",
             "moqui.basic.LocalizedEntityField",
             "moqui.entity.document.DataDocument",
+            "moqui.entity.document.DataDocumentField",
+            "moqui.entity.document.DataDocumentCondition",
             "moqui.entity.feed.DataFeed",
             "moqui.entity.feed.DataFeedDocument",
             "moqui.entity.feed.DataFeedPending",
@@ -350,6 +352,16 @@ fn load_data_stores_eca_and_inserts_pending() {
         &facade,
         "moqui.entity.document.DataDocument",
         &[("dataDocumentId", "DOC1"), ("primaryEntityName", "moqui.test.Foo")],
+    );
+    // A write is fed when it sets a document field, as Java's `dataFeedCheckAndRegister`.
+    create_row(
+        &facade,
+        "moqui.entity.document.DataDocumentField",
+        &[
+            ("dataDocumentId", "DOC1"),
+            ("fieldSeqId", "01"),
+            ("fieldPath", "fooText"),
+        ],
     );
     create_row(
         &facade,

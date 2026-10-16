@@ -41,6 +41,11 @@ pub struct CallOptions {
     /// `softValidate(true)`: input that fails validation is reported as danger messages, not errors, and the service
     /// does not run, as Java's.
     pub soft_validate: bool,
+    /// `ignorePreviousError(true)`: errors already in the message facade are set aside while the service runs, so it
+    /// runs anyway, and come back after it.
+    pub ignore_previous_error: bool,
+    /// `noRememberParameters()`: the artifact hit does not keep the parameters.
+    pub no_remember_parameters: bool,
 }
 
 impl CallOptions {
@@ -261,7 +266,29 @@ pub fn sync_with(
     };
     let name = canonical(name);
     let facade = current_facade();
+    // An unknown service is an error first, as Java's `call` looks it up before `callSingle`.
     let def = resolve(&name, facade.as_ref())?;
+    // As Java's `callSingle`: with `ignorePreviousError` the errors so far are set aside until the call returns.
+    let _set_aside = options.ignore_previous_error.then(ErrorsAside::push);
+    if has_error() {
+        tracing::warn!(service = %def.name, "Found error(s) before service {}, so not running service", def.name);
+        return Ok(BTreeMap::new());
+    }
+    // A transaction marked for rollback runs no more services, unless this one runs in a new transaction.
+    if options.require_new_transaction != Some(true) {
+        if let Some(tx) = facade.as_ref().and_then(|facade| facade.default_transactions().ok()) {
+            if tx.is_rollback_only() {
+                tracing::warn!(service = %def.name, "Transaction marked for rollback, not running service {}", def.name);
+                if !options.ignore_previous_error && !has_error() {
+                    add_error(&format!(
+                        "Transaction marked for rollback, not running service {}",
+                        def.name
+                    ));
+                }
+                return Ok(BTreeMap::new());
+            }
+        }
+    }
     super::coverage::record(&def.name);
     super::seca::run_seca_rules(&def.name, "pre-validate", parameters, None)?;
     // Input that fails its checks is validation errors in the message facade and no run, as in Java: the caller sees
@@ -313,7 +340,7 @@ pub fn sync_with(
     }
     // The service goes on the artifact stack, so the entity operations it makes inherit its
     // authorization. Only a service that requires authentication needs an allow record.
-    let _frame = ServiceFrame::push(&def, &cleaned)?;
+    let _frame = ServiceFrame::push(&def, &cleaned, options.no_remember_parameters)?;
     let facade = facade.ok_or_else(|| Error::new("no entity facade is installed"))?;
     let guard = crate::service::semaphore::take(&def, &cleaned, &facade)?;
     let entity_name = if def.kind == ServiceKind::EntityAuto && !def.noun.is_empty() {
@@ -363,12 +390,29 @@ pub fn sync_with(
             }
         },
     };
+    call_callbacks(&def.name, &cleaned, produced.as_ref());
     // post-commit rules run whether or not the service worked. Those that skip on error do.
     let post = super::seca::run_seca_rules(&def.name, "post-commit", &cleaned, produced.as_ref().ok());
     drop(guard);
     let produced = produced?;
     post?;
     Ok(project(&def, produced))
+}
+
+/// The message errors set aside by `ignorePreviousError`, put back when dropped (Java's `pushErrors`/`popErrors`).
+struct ErrorsAside;
+
+impl ErrorsAside {
+    fn push() -> Self {
+        ExecutionContext::with_current(|ctx| ctx.message().push_errors());
+        Self
+    }
+}
+
+impl Drop for ErrorsAside {
+    fn drop(&mut self) {
+        ExecutionContext::with_current(|ctx| ctx.message().pop_errors());
+    }
 }
 
 /// The artifact frame for a running service. It pops when dropped, and ends an anonymous login the
@@ -379,7 +423,7 @@ struct ServiceFrame {
 }
 
 impl ServiceFrame {
-    fn push(def: &ServiceDef, parameters: &BTreeMap<String, Value>) -> Result<Self, Error> {
+    fn push(def: &ServiceDef, parameters: &BTreeMap<String, Value>, no_remember: bool) -> Result<Self, Error> {
         if !crate::user::context_entered() {
             return Ok(Self {
                 pushed: false,
@@ -396,7 +440,7 @@ impl ServiceFrame {
                 true,
                 Some(parameters),
             )?;
-            let remembered = (!def.no_remember_parameters).then_some(parameters);
+            let remembered = (!def.no_remember_parameters && !no_remember).then_some(parameters);
             ctx.set_hit_detail(Some(&def.service_type), remembered);
             Ok(())
         });
@@ -465,16 +509,7 @@ fn register_tx_rollback(
     service: &str,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<(), LibError> {
-    if !tx.in_transaction() {
-        return Ok(());
-    }
-    let service = service.to_string();
-    let parameters = parameters.clone();
-    tx.on_rollback(move || {
-        if let Err(err) = super::seca::run_seca_rules(&service, "tx-rollback", &parameters, None) {
-            tracing::warn!(error = %err, "tx-rollback rules failed");
-        }
-    })
+    register_tx_rules(tx, service, "tx-rollback", parameters, None)
 }
 
 fn register_tx_commit(
@@ -483,17 +518,122 @@ fn register_tx_commit(
     parameters: &BTreeMap<String, Value>,
     results: &BTreeMap<String, Value>,
 ) -> Result<(), LibError> {
-    if !tx.in_transaction() {
+    register_tx_rules(tx, service, "tx-commit", parameters, Some(results))
+}
+
+/// Java's `SecaSynchronization`: when the transaction commits (or rolls back), the `tx-commit` (or `tx-rollback`)
+/// rules run on a service worker, in a context and transaction of their own. A sim session never really commits, so
+/// its rules do not run.
+fn register_tx_rules(
+    tx: &crate::transaction::TransactionManager,
+    service: &str,
+    when: &'static str,
+    parameters: &BTreeMap<String, Value>,
+    results: Option<&BTreeMap<String, Value>>,
+) -> Result<(), LibError> {
+    if !tx.in_transaction() || !super::seca::has_rules(service, when) {
         return Ok(());
     }
+    let Some(factory) = ExecutionContext::with_current(|ctx| Arc::clone(ctx.factory())) else {
+        return Ok(());
+    };
+    let sim = current_facade().is_some_and(|facade| facade.sim_active());
     let service = service.to_string();
     let parameters = parameters.clone();
-    let results = results.clone();
-    tx.on_commit(move || {
-        if let Err(err) = super::seca::run_seca_rules(&service, "tx-commit", &parameters, Some(&results)) {
-            tracing::warn!(error = %err, "tx-commit rules failed");
+    let results = results.cloned();
+    let hook = move || {
+        if sim {
+            tracing::info!("Skipping {when} rules of {service} in a sim session");
+            return;
         }
-    })
+        let pools_factory = Arc::clone(&factory);
+        pools_factory.service_pools().spawn("service tx ECA rules", move || {
+            let facade = factory
+                .entity()
+                .ok_or_else(|| Error::new("no entity facade is installed"))?;
+            let tx = facade.default_transactions()?;
+            tx.run(TransactionAttribute::UseOrBegin, None, || {
+                super::seca::run_seca_rules(&service, when, &parameters, results.as_ref()).map_err(Into::into)
+            })
+            .map_err(Into::into)
+        });
+    };
+    if when == "tx-commit" {
+        tx.on_commit(hook)
+    } else {
+        tx.on_rollback(hook)
+    }
+}
+
+/// Java's `ServiceCallSpecial.registerOnCommit` and `registerOnRollback`: run `name` asynchronously once the
+/// transaction in place commits (`on_commit`) or rolls back.
+///
+/// # Errors
+///
+/// Returns an error for an unknown service or when no transaction is in place.
+pub fn register_on_end(name: &str, parameters: &BTreeMap<String, Value>, on_commit: bool) -> Result<(), Error> {
+    let name = canonical(name);
+    let facade = current_facade().ok_or_else(|| Error::new("no entity facade is installed"))?;
+    resolve(&name, Some(&facade))?;
+    let tx = facade.default_transactions()?;
+    if !tx.in_transaction() {
+        return Err(Error::new(format!(
+            "Cannot register service {name} to run at the end of a transaction: no transaction is in place"
+        )));
+    }
+    let parameters = parameters.clone();
+    let hook = move || {
+        if let Err(err) = async_call(&name, &parameters) {
+            tracing::error!(error = %err, "Could not run service {name} registered for the end of the transaction");
+        }
+    };
+    if on_commit {
+        tx.on_commit(hook)?;
+    } else {
+        tx.on_rollback(hook)?;
+    }
+    Ok(())
+}
+
+/// Java's `ServiceCallback`: told the in-parameters and the results of each call of a service, or its error.
+pub trait ServiceCallback: Send + Sync {
+    fn is_enabled(&self) -> bool {
+        true
+    }
+    fn receive_result(&self, context: &BTreeMap<String, Value>, result: &BTreeMap<String, Value>);
+    fn receive_error(&self, context: &BTreeMap<String, Value>, error: &LibError);
+}
+
+type Callbacks = std::sync::RwLock<std::collections::HashMap<String, Vec<Arc<dyn ServiceCallback>>>>;
+
+fn callbacks() -> &'static Callbacks {
+    static CALLBACKS: std::sync::OnceLock<Callbacks> = std::sync::OnceLock::new();
+    CALLBACKS.get_or_init(Default::default)
+}
+
+/// Java's `ServiceFacade.registerCallback`: `callback` hears of every later call of `name`.
+pub fn register_callback(name: &str, callback: Arc<dyn ServiceCallback>) {
+    callbacks()
+        .write()
+        .unwrap_or_else(|err| err.into_inner())
+        .entry(canonical(name))
+        .or_default()
+        .push(callback);
+}
+
+fn call_callbacks(name: &str, context: &BTreeMap<String, Value>, outcome: Result<&BTreeMap<String, Value>, &LibError>) {
+    let list = callbacks()
+        .read()
+        .unwrap_or_else(|err| err.into_inner())
+        .get(name)
+        .cloned()
+        .unwrap_or_default();
+    for callback in list.iter().filter(|callback| callback.is_enabled()) {
+        match outcome {
+            Ok(result) => callback.receive_result(context, result),
+            Err(err) => callback.receive_error(context, err),
+        }
+    }
 }
 
 pub fn call(name: &str) -> Result<(), Error> {
@@ -584,6 +724,20 @@ pub(crate) fn service_form_info(name: &str) -> Option<FormService> {
 
 /// The entity of an implicit entity-auto service name such as `create#moqui.basic.Enumeration`, when it has no
 /// definition of its own.
+/// Java's `isServiceDefined`: a registered service, or an entity-auto name (`create`, `update`, `store`, `delete`)
+/// of a defined entity. With no entity facade an entity-auto name counts as defined.
+pub(crate) fn is_service_defined(name: &str, facade: Option<&EntityFacade>) -> bool {
+    let name = canonical(name);
+    if super::define::find(&name).is_some() {
+        return true;
+    }
+    match (entity_auto_noun(&name), facade) {
+        (Some(noun), Some(facade)) => crate::entity::info::is_entity_defined(facade, &noun),
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
+}
+
 pub(crate) fn entity_auto_noun(name: &str) -> Option<String> {
     let name = canonical(name);
     if super::define::find(&name).is_some() {
@@ -646,7 +800,8 @@ fn execute(
         ServiceKind::RemoteRest => super::remote::run_remote_rest(
             &def.name,
             &def.location,
-            None,
+            // As Java: the service's `method` attribute, else the verb when it is an HTTP method, else POST.
+            Some(def.method.as_str()),
             &def.verb,
             parameters,
             facade.sim_active(),

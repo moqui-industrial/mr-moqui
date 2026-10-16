@@ -446,8 +446,8 @@ fn sync_account_rows(
     let now = now_value();
     let current = active_members(facade, &user_id)?;
     let mut obsolete: BTreeSet<String> = current.iter().map(|member| field(member, "userGroupId")).collect();
-    let roles: BTreeSet<&str> = profile.roles.iter().map(String::as_str).collect();
-    for role in roles {
+    let roles = profile_roles(profile);
+    for role in roles.iter().map(String::as_str) {
         let mapped = facade
             .find("moqui.security.sso.AuthFlowRoleMap")?
             .disable_authz()
@@ -511,6 +511,28 @@ fn active_members(facade: &EntityFacade, user_id: &str) -> Result<Vec<EntityValu
         .collect())
 }
 
+/// The provider's roles; when it gave none apart, the `roles` claim among the attributes (a list, or text split on
+/// commas), as the Java client reads a profile's roles.
+fn profile_roles(profile: &SsoProfile) -> BTreeSet<String> {
+    if !profile.roles.is_empty() {
+        return profile.roles.iter().cloned().collect();
+    }
+    match profile.attributes.get("roles") {
+        Some(Value::List(items)) => items
+            .iter()
+            .map(to_plain_string)
+            .filter(|role| !role.is_empty())
+            .collect(),
+        Some(Value::String(text)) => text
+            .split(',')
+            .map(str::trim)
+            .filter(|role| !role.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => BTreeSet::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -541,6 +563,19 @@ mod tests {
         }
         row.create(facade).expect("create");
         row
+    }
+
+    #[test]
+    fn roles_fall_back_to_the_roles_claim() {
+        let mut given = profile("u", "u", &["a"]);
+        given.attributes.insert("roles".to_string(), Value::string("x, y"));
+        assert_eq!(super::profile_roles(&given).into_iter().collect::<Vec<_>>(), ["a"]);
+        given.roles.clear();
+        assert_eq!(super::profile_roles(&given).into_iter().collect::<Vec<_>>(), ["x", "y"]);
+        given
+            .attributes
+            .insert("roles".to_string(), Value::List(vec![Value::string("z")]));
+        assert_eq!(super::profile_roles(&given).into_iter().collect::<Vec<_>>(), ["z"]);
     }
 
     fn profile(id: &str, username: &str, roles: &[&str]) -> SsoProfile {

@@ -471,7 +471,7 @@ pub struct LoadFlags {
     pub data_types: Option<Vec<String>>,
     pub components: Vec<String>,
     pub location: Option<String>,
-    /// `timeout` seconds. Each loaded record runs under this transaction timeout.
+    /// `timeout` seconds. Each data file loads in one transaction with this timeout (600 seconds when not given).
     pub timeout_seconds: Option<u64>,
     pub raw: bool,
     pub disable_entity_eca: bool,
@@ -693,6 +693,8 @@ fn load_with_factory(
         &db.conf.dialect,
     )?;
     crate::db::entity_facade::attach(factory, facade.clone());
+    let merged = moqui_lib::node::MNode::parse_text("moqui-conf", factory.conf_text()).ok();
+    crate::db::entity_facade::apply_datasource_conf(&facade, &db.conf, merged.as_ref());
     tracing::info!(
         "Entity Facade initialized in {:.3} seconds",
         entity_started.elapsed().as_secs_f64()
@@ -719,6 +721,7 @@ fn load_with_factory(
         flags,
         &component_data_locations(factory, flags),
         false,
+        db.conf.startup_add_missing,
     );
     drop(authz);
     drop(entered);
@@ -946,6 +949,8 @@ fn boot_server(
         &db.conf.dialect,
     )?;
     crate::db::entity_facade::attach(&factory, facade.clone());
+    let merged = moqui_lib::node::MNode::parse_text("moqui-conf", factory.conf_text()).ok();
+    crate::db::entity_facade::apply_datasource_conf(&facade, &db.conf, merged.as_ref());
     tracing::info!(
         "Entity Facade initialized in {:.3} seconds",
         entity_started.elapsed().as_secs_f64()
@@ -981,6 +986,7 @@ fn boot_server(
             &flags,
             &component_data_locations(&factory, &flags),
             true,
+            db.conf.startup_add_missing,
         );
         drop(authz);
         drop(entered);
@@ -1173,6 +1179,7 @@ fn load_in_context(
     flags: &LoadFlags,
     component_data: &[String],
     startup: bool,
+    startup_add_missing: bool,
 ) -> Result<LoadReport, moqui_lib::error::Error> {
     use moqui_core::entity::load_feed::conf_data_locations;
 
@@ -1189,24 +1196,32 @@ fn load_in_context(
         "{} Service ECA rules are active",
         moqui_core::service::info::seca_rule_count()
     );
-    let entities = entity_names(framework_dir, &facade.entity_dirs())?;
-    if !entities.iter().any(|name| name == "moqui.test.TestFts") {
-        return Err(moqui_lib::error::Error::new(
-            "framework entity list has no moqui.test.TestFts",
-        ));
-    }
-    let refs: Vec<&str> = entities.iter().map(String::as_str).collect();
-    tracing::info!(
-        "Checking tables for {} framework entities in group transactional",
-        refs.len()
-    );
-    facade.check_tables(&refs)?;
-    let test_fts_before_load = facade.table_exists("moqui.test.TestFts")?;
-    if !test_fts_before_load {
-        return Err(moqui_lib::error::Error::new(
-            "moqui.test.TestFts was not created before the seed load",
-        ));
-    }
+    // As Java, `startup-add-missing` checks every table now; without it a table is made on first use when
+    // `runtime-add-missing` is on, or is left to the database.
+    let test_fts_before_load = if startup_add_missing {
+        let entities = entity_names(framework_dir, &facade.entity_dirs())?;
+        if !entities.iter().any(|name| name == "moqui.test.TestFts") {
+            return Err(moqui_lib::error::Error::new(
+                "framework entity list has no moqui.test.TestFts",
+            ));
+        }
+        let refs: Vec<&str> = entities.iter().map(String::as_str).collect();
+        tracing::info!(
+            "Checking tables for {} framework entities in group transactional",
+            refs.len()
+        );
+        facade.check_tables(&refs)?;
+        let test_fts_before_load = facade.table_exists("moqui.test.TestFts")?;
+        if !test_fts_before_load {
+            return Err(moqui_lib::error::Error::new(
+                "moqui.test.TestFts was not created before the seed load",
+            ));
+        }
+        true
+    } else {
+        tracing::info!("Not checking tables at startup, startup-add-missing is not set for group transactional");
+        false
+    };
     let options = load_options(flags);
     let mut records = 0_u64;
     let mut failed_files = 0_u64;

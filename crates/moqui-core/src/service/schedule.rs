@@ -186,17 +186,18 @@ mod tests {
     #[test]
     fn default_conf_sizes_and_drop_joins() {
         let text = std::fs::read_to_string(framework_dir().join("conf/MoquiDefaultConf.xml")).unwrap();
+        // `worker-pool-max` 32, less the 2 job workers of `job-pool-core`.
         let pools = super::super::start_pools(&text).unwrap();
-        assert_eq!(pools.sizes(), (32, 65_535));
+        assert_eq!(pools.sizes(), (30, 65_535));
         drop(pools);
         let missing = super::super::start_pools("<moqui-conf/>").unwrap();
-        assert_eq!(missing.sizes(), (32, 65_535));
+        assert_eq!(missing.sizes(), (30, 65_535));
         drop(missing);
         let junk = super::super::start_pools(
             r#"<moqui-conf><tools worker-pool-max="nope" worker-queue="nope"/></moqui-conf>"#,
         )
         .unwrap();
-        assert_eq!(junk.sizes(), (32, 65_535));
+        assert_eq!(junk.sizes(), (30, 65_535));
         drop(junk);
         let none = super::super::start_pools(r#"<moqui-conf><tools worker-pool-max="0"/></moqui-conf>"#);
         assert!(none.is_err(), "a pool with no workers can never run anything");
@@ -233,7 +234,6 @@ mod tests {
     struct Jobs {
         ctx: ExecutionContext,
         facade: EntityFacade,
-        pools_handle: Arc<super::super::pool::Shared>,
     }
 
     fn jobs_world(workers: usize, queue: usize) -> Jobs {
@@ -243,7 +243,6 @@ mod tests {
         let path = std::env::temp_dir().join(format!("moqui-jobs-{}-{seq}.xml", std::process::id()));
         std::fs::write(&path, SERVICES).unwrap();
         let pools = ServicePools::bounded(workers, queue);
-        let pools_handle = pools.shared_handle();
         let ctx = ExecutionContextFactory::test_context_with("", pools);
         let facade = crate::testing::open();
         ctx.factory().set_entity(facade.clone());
@@ -252,11 +251,7 @@ mod tests {
             let failures = crate::service::lint(std::slice::from_ref(&path)).unwrap();
             assert!(failures.is_empty(), "{failures:?}");
         }
-        Jobs {
-            ctx,
-            facade,
-            pools_handle,
-        }
+        Jobs { ctx, facade }
     }
 
     fn create(facade: &EntityFacade, name: &str, fields: &[(&str, &str)]) {
@@ -477,10 +472,8 @@ mod tests {
             .collect();
         assert_eq!(stored.len(), 1);
         assert_eq!(text(&stored[0], "serviceName"), "mark#Row");
-        // The queue is still full, so the pass leaves the stored call alone.
-        assert_eq!(pools.tick().jobs_run, 0);
-        hold.open();
-        wait_for("the queue to drain", || world.pools_handle.job_slots() > 0);
+        // Jobs run on their own workers, as Java's `jobWorkerPool`, so the stored call runs while the service queue
+        // is still full.
         let mut submitted = false;
         wait_for("the queued call to run", || {
             if !submitted {
@@ -506,6 +499,7 @@ mod tests {
                 .iter()
                 .all(|job| !text(job, "jobName").starts_with(super::super::jobs::QUEUE_PREFIX))
         });
+        hold.open();
     }
 
     #[test]

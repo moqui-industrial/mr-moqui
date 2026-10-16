@@ -245,8 +245,53 @@ impl EntityFacade {
         if !has_columns {
             return Ok(());
         }
+        self.check_create_only_fields(entity_name, &plain)?;
         self.finish_write(entity_name, "update", plain, Some(rules), true, true)
             .map(|_| ())
+    }
+
+    /// As Java's update: a create-only field (every field of a `create-only` entity) that would change is an error.
+    /// The row is read only when the entity has such a field. Fields that keep their stored value pass.
+    fn check_create_only_fields(&self, entity_name: &str, plain: &BTreeMap<String, Value>) -> Result<(), Error> {
+        let (full_name, create_only) = self.with_entity(entity_name, |entity, _, _| {
+            let names: Vec<String> = entity
+                .fields
+                .iter()
+                .filter(|field| {
+                    // The stamp is set on every write, as Java's update which skips it in this check.
+                    field.create_only
+                        && !field.is_pk
+                        && field.name != "lastUpdatedStamp"
+                        && plain.contains_key(&field.name)
+                })
+                .map(|field| field.name.clone())
+                .collect();
+            Ok((entity.full_name.clone(), names))
+        })?;
+        if create_only.is_empty() {
+            return Ok(());
+        }
+        let keys = self.pk_map(entity_name, plain)?;
+        let stored = {
+            let _raw = super::field_rw::RawReadGuard::enter();
+            self.find_by_pk(entity_name, &keys)?
+        };
+        let changed: Vec<String> = create_only
+            .into_iter()
+            .filter(|name| {
+                let new_value = plain.get(name).unwrap_or(&Value::Null);
+                let old_value = stored.as_ref().and_then(|row| row.get(name)).unwrap_or(&Value::Null);
+                old_value != new_value
+                    && moqui_lib::object::to_plain_string(old_value) != moqui_lib::object::to_plain_string(new_value)
+            })
+            .collect();
+        if changed.is_empty() {
+            return Ok(());
+        }
+        Err(Error::new(format!(
+            "Cannot update create-only (immutable) fields [{}] on entity {full_name}",
+            changed.join(", ")
+        )))
     }
 
     /// The first step of [`Self::create_or_update_value`]: one `UPDATE` by primary key, for a row that is probably
@@ -265,6 +310,7 @@ impl EntityFacade {
         let eligible = self.with_entity(entity_name, |entity, dialect, _| {
             Ok(dialect.name == "postgres"
                 && !entity.is_view
+                && !entity.fields.iter().any(|field| field.create_only && !field.is_pk)
                 && !entity.fields.iter().any(|field| {
                     field
                         .enable_audit_log
@@ -295,6 +341,15 @@ impl EntityFacade {
     fn write_delete(&self, entity_name: &str, values: &BTreeMap<String, Value>) -> Result<(), Error> {
         let plain = self.normalize_values(entity_name, values, false)?;
         self.reject_view(entity_name, "delete")?;
+        self.with_entity(entity_name, |entity, _, _| {
+            if entity.create_only {
+                return Err(Error::new(format!(
+                    "Entity {} is create-only (immutable), cannot be deleted.",
+                    entity.full_name
+                )));
+            }
+            Ok(())
+        })?;
         self.finish_write(entity_name, "delete", plain, None, false, false)
             .map(|_| ())
     }
@@ -368,7 +423,7 @@ impl EntityFacade {
         let cache_values = plain.clone();
         let mut affected = 1;
         if cache::gate_write(self, entity_name, operation, &plain)? == WriteGate::Handled {
-            load_feed::note_touch(self, entity_name, seal_operation, Some(&cache_values));
+            load_feed::note_touch(self, entity_name, seal_operation, Some(&cache_values), None);
         } else {
             let mut after_values = eca.then(|| plain.clone());
             // An after rule with `get-original-value` on an update or delete gets the row as it was before the write.
@@ -378,6 +433,19 @@ impl EntityFacade {
             {
                 let keys = self.pk_map(entity_name, &plain)?;
                 self.find_by_pk(entity_name, &keys)?
+            } else {
+                None
+            };
+            // The data feed feeds an update only when a document field changes, so it needs the row as it was.
+            let feed_old = if operation == "update" && !probe && load_feed::feed_wants_old(self, entity_name) {
+                match &pre_row {
+                    Some(row) => Some(row.fields().clone()),
+                    None => {
+                        let keys = self.pk_map(entity_name, &plain)?;
+                        let _raw = super::field_rw::RawReadGuard::enter();
+                        self.find_by_pk(entity_name, &keys)?.map(|row| row.fields().clone())
+                    }
+                }
             } else {
                 None
             };
@@ -395,6 +463,8 @@ impl EntityFacade {
                     }
                 }
             }
+            // Java's `checkTableRuntime` before each write, when the group adds missing tables at runtime.
+            self.check_table_runtime(entity_name);
             let prepared = self.seal_values(entity_name, seal_operation, plain)?;
             let (sql, params) = self.with_group(entity_name, |entity, dialect, _, _| {
                 let columns = present_columns(entity, &prepared, include_null, skip_pk);
@@ -424,7 +494,7 @@ impl EntityFacade {
                 }
                 crate::context::ExecutionContext::with_current(|ctx| ctx.set_hit_detail(Some("update"), None));
             }
-            load_feed::note_touch(self, entity_name, seal_operation, Some(&cache_values));
+            load_feed::note_touch(self, entity_name, seal_operation, Some(&cache_values), feed_old);
             if let Some(mut values) = after_values {
                 crate::service::run_matched_eca(
                     self,

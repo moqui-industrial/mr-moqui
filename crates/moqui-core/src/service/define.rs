@@ -151,6 +151,8 @@ pub(crate) struct ParamDef {
     pub field_name: Option<String>,
     /// `format`, for the date and number widgets of a form.
     pub format: Option<String>,
+    /// Nested `<parameter>` elements: the entries of a `Map` parameter, cleaned and checked the same way.
+    pub children: Vec<ParamDef>,
 }
 
 #[derive(Clone, Debug)]
@@ -1037,6 +1039,7 @@ fn parse_parameter(node: &MNode) -> ParamDef {
         entity_name: node.attribute("entity-name").filter(|text| !text.is_empty()),
         field_name: node.attribute("field-name").filter(|text| !text.is_empty()),
         format: node.attribute("format").filter(|text| !text.is_empty()),
+        children: node.children_named("parameter").iter().map(parse_parameter).collect(),
     }
 }
 
@@ -1070,6 +1073,7 @@ fn parse_auto(node: &MNode) -> ParamDef {
         entity_name: None,
         field_name: None,
         format: None,
+        children: Vec::new(),
     }
 }
 

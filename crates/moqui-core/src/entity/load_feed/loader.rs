@@ -74,7 +74,7 @@ pub fn load_entity_xml_text(
     options: &LoadOptions,
 ) -> Result<LoadResult, Error> {
     let _scope = FkScope::enter(options.dummy_fks, options.disable_fk_create);
-    let records = load_xml_text(facade, location, text, options)?;
+    let records = in_file_transaction(facade, options, || load_xml_text(facade, location, text, options))?;
     Ok(LoadResult {
         records,
         failed_files: 0,
@@ -91,6 +91,30 @@ fn load_path(
     if path.is_dir() {
         return load_directory(facade, path, options, failed_files);
     }
+    in_file_transaction(facade, options, || load_file(facade, location, path, options))
+}
+
+/// Java's `loadSingleFile`: one file (or text) in one transaction, 600 seconds unless the load names another timeout.
+/// A record that fails rolls back the whole file, and the load reports it; inside a caller's transaction the file
+/// joins it.
+pub(super) fn in_file_transaction(
+    facade: &EntityFacade,
+    options: &LoadOptions,
+    body: impl FnOnce() -> Result<u64, Error>,
+) -> Result<u64, Error> {
+    if super::check::checking() {
+        return body();
+    }
+    let timeout = options.timeout.unwrap_or(FILE_TIMEOUT);
+    facade
+        .default_transactions()?
+        .run(TransactionAttribute::UseOrBegin, Some(timeout), body)
+}
+
+/// Java's `EntityDataLoaderImpl.transactionTimeout` default.
+const FILE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+fn load_file(facade: &EntityFacade, location: &str, path: &Path, options: &LoadOptions) -> Result<u64, Error> {
     match extension(path).as_str() {
         "xml" => {
             let file = open_data(path, location)?;
@@ -606,8 +630,39 @@ pub(super) fn call_data_file_service(
             service.name
         )));
     }
+    // As Java's `handleService`: a create-only load calls no service.
+    if options.only_create {
+        tracing::info!(
+            "Not calling service {} from {}, running with only insert",
+            service.name,
+            service.location
+        );
+        return Ok(());
+    }
     with_load_slot(facade, |slot| slot.services.push(service.clone()));
     crate::service::run_data_file_service(facade, &service)
+}
+
+/// Java `defaultValues` on a top-level record: each default the record does not set, for a field of its entity.
+pub(super) fn apply_default_values(facade: &EntityFacade, options: &LoadOptions, record: &mut Record) {
+    if options.default_values.is_empty() {
+        return;
+    }
+    let Ok(shape) = shape_of(facade, &record.entity) else {
+        return;
+    };
+    for (name, text) in &options.default_values {
+        if shape.fields.contains_key(name) && record.fields.get(name).is_none_or(Value::is_null) {
+            record.fields.insert(name.clone(), Value::string(text));
+        }
+    }
+}
+
+/// Java `defaultValues` on a data-file service call: each default the element does not set.
+pub(super) fn apply_default_parameters(options: &LoadOptions, service: &mut DataFileService) {
+    for (name, text) in &options.default_values {
+        service.parameters.entry(name.clone()).or_insert_with(|| text.clone());
+    }
 }
 
 pub(super) fn shape_of(facade: &EntityFacade, entity_name: &str) -> Result<Shape, Error> {

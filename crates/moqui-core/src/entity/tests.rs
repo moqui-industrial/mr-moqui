@@ -717,7 +717,12 @@ fn entity_rest_serves_the_verbs() {
             )]),
         )
         .unwrap_err();
-    assert!(err.to_string().contains("Only one relationship step"), "{err}");
+    // As Java, each element after a relationship's keys names another relationship.
+    assert!(
+        err.to_string()
+            .contains("No relationship found with name or alias [more]"),
+        "{err}"
+    );
     let err = facade
         .rest(
             "find",
@@ -1375,9 +1380,10 @@ fn plain_map_loader_preserves_status_validation_on_updates() {
     let row = facade
         .find("moqui.service.message.SystemMessage")
         .unwrap()
-        .one()
+        .list()
         .unwrap()
-        .unwrap();
+        .values()[0]
+        .clone();
     assert_eq!(row.get("statusId"), Some(&Value::string("Second")));
 }
 
@@ -1502,4 +1508,243 @@ fn entity_rest_delete_needs_every_key_and_takes_a_wildcard() {
     let left = facade.find(entity).unwrap().list().unwrap();
     assert_eq!(left.len(), 1);
     assert_eq!(left.values()[0].get("statusFlowId").and_then(Value::as_str), Some("F2"));
+}
+
+/// As Java's `oneInternal`: a find one with no condition, or with a primary key field null or empty, is null.
+#[test]
+fn find_one_with_no_condition_or_an_empty_key_is_none() {
+    let facade = crate::testing::open();
+    let entity = "moqui.basic.Enumeration";
+    let mut row = facade.make_value(entity).unwrap();
+    row.set("enumId", Value::string("E1"));
+    row.set("description", Value::string("one"));
+    row.create(&facade).unwrap();
+    assert!(facade.find(entity).unwrap().one().unwrap().is_none());
+    assert!(facade
+        .find(entity)
+        .unwrap()
+        .eq("enumId", Value::Null)
+        .one()
+        .unwrap()
+        .is_none());
+    assert!(facade
+        .find(entity)
+        .unwrap()
+        .eq("enumId", Value::string(""))
+        .eq("description", Value::string("one"))
+        .one()
+        .unwrap()
+        .is_none());
+    assert!(facade
+        .find(entity)
+        .unwrap()
+        .eq("enumId", Value::string("E1"))
+        .one()
+        .unwrap()
+        .is_some());
+    assert!(facade
+        .find(entity)
+        .unwrap()
+        .eq("description", Value::string("one"))
+        .one()
+        .unwrap()
+        .is_some());
+}
+
+/// Java's `updateAll` and `deleteAll`: row by row through the value path, the rows that change counted, and not
+/// for a create-only entity. An update that would change a create-only field fails; one that keeps it passes.
+#[test]
+fn update_all_and_delete_all_go_row_by_row_and_create_only_is_kept() {
+    let facade = crate::testing::open();
+    let entity = "moqui.basic.StatusFlowTransition";
+    for to in ["B", "C"] {
+        let mut row = facade.make_value(entity).unwrap();
+        row.set("statusFlowId", Value::string("F1"));
+        row.set("statusId", Value::string("A"));
+        row.set("toStatusId", Value::string(to));
+        row.create(&facade).unwrap();
+    }
+    let set = || vec![("transitionName".to_string(), Value::string("Go"))];
+    let find = || facade.find(entity).unwrap().eq("statusFlowId", Value::string("F1"));
+    assert_eq!(find().update_all(set()).unwrap(), 2);
+    assert_eq!(find().update_all(set()).unwrap(), 0);
+    assert_eq!(find().eq("transitionName", Value::string("Go")).count().unwrap(), 2);
+    assert_eq!(find().delete_all().unwrap(), 2);
+    assert_eq!(find().count().unwrap(), 0);
+
+    let audit = "moqui.entity.EntityAuditLog";
+    let mut log = facade.make_value(audit).unwrap();
+    log.set("auditHistorySeqId", Value::string("A1"));
+    log.set("changedFieldName", Value::string("statusId"));
+    log.create(&facade).unwrap();
+    log.update(&facade).unwrap();
+    log.set("changedFieldName", Value::string("other"));
+    let err = log.update(&facade).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("create-only (immutable) fields [changedFieldName]"),
+        "{err}"
+    );
+    let err = log.delete(&facade).unwrap_err();
+    assert!(err.to_string().contains("create-only"), "{err}");
+    let all = || facade.find(audit).unwrap().eq("auditHistorySeqId", Value::string("A1"));
+    assert!(all()
+        .update_all(vec![("changeReason".to_string(), Value::string("x"))])
+        .is_err());
+    assert!(all().delete_all().is_err());
+}
+
+/// Java's localized field get: the user's locale, then its language, then `default`, in `LocalizedEntityField`, and
+/// then the same chain in `LocalizedMessage` for the stored text.
+#[test]
+fn localized_fields_use_the_user_locale_and_fall_back_to_localized_message() {
+    let facade = crate::testing::open();
+    let context = crate::context::ExecutionContextFactory::test_context();
+    context.factory().set_entity(facade.clone());
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    let entity = "moqui.basic.Enumeration";
+    for (id, description) in [("E1", "Hello"), ("E2", "Bye"), ("E3", "Plain")] {
+        let mut row = facade.make_value(entity).unwrap();
+        row.set("enumId", Value::string(id));
+        row.set("description", Value::string(description));
+        row.create(&facade).unwrap();
+    }
+    let mut field = facade.make_value("moqui.basic.LocalizedEntityField").unwrap();
+    for (name, value) in [
+        ("entityName", entity),
+        ("fieldName", "description"),
+        ("pkValue", "E1"),
+        ("locale", "default"),
+        ("localized", "Hello (default)"),
+    ] {
+        field.set(name, Value::string(value));
+    }
+    field.create(&facade).unwrap();
+    let mut message = facade.make_value("moqui.basic.LocalizedMessage").unwrap();
+    for (name, value) in [("original", "Bye"), ("locale", "fr"), ("localized", "Au revoir")] {
+        message.set(name, Value::string(value));
+    }
+    message.create(&facade).unwrap();
+    let description = |id: &str| {
+        facade
+            .find(entity)
+            .unwrap()
+            .eq("enumId", Value::string(id))
+            .one()
+            .unwrap()
+            .unwrap()
+            .get("description")
+            .cloned()
+    };
+    crate::user::session::set_locale(Some("fr_CA"));
+    assert_eq!(description("E1"), Some(Value::string("Hello (default)")));
+    assert_eq!(description("E2"), Some(Value::string("Au revoir")));
+    assert_eq!(description("E3"), Some(Value::string("Plain")));
+    crate::user::session::set_locale(Some("de"));
+    assert_eq!(description("E2"), Some(Value::string("Bye")));
+    crate::user::session::set_locale(None);
+}
+
+/// Java's `EntityDataDocument` writers: the documents as JSON text, into a new file (an existing one is a message
+/// error), and one file per document id in a directory.
+#[test]
+fn data_documents_are_written_as_json_to_text_a_file_and_a_directory() {
+    let facade = crate::testing::open();
+    let context = crate::context::ExecutionContextFactory::test_context();
+    context.factory().set_entity(facade.clone());
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    let make = |entity: &str, pairs: &[(&str, &str)]| {
+        let mut row = facade.make_value(entity).unwrap();
+        for (name, value) in pairs {
+            row.set(*name, Value::string(*value));
+        }
+        row.create(&facade).unwrap();
+    };
+    make(
+        "moqui.entity.document.DataDocument",
+        &[
+            ("dataDocumentId", "EnumDoc"),
+            ("primaryEntityName", "moqui.basic.Enumeration"),
+            ("documentName", "Enums"),
+        ],
+    );
+    for (seq, path) in [("1", "enumId"), ("2", "enumCode")] {
+        make(
+            "moqui.entity.document.DataDocumentField",
+            &[("dataDocumentId", "EnumDoc"), ("fieldSeqId", seq), ("fieldPath", path)],
+        );
+    }
+    for (id, code) in [("E1", "one"), ("E2", "two")] {
+        make("moqui.basic.Enumeration", &[("enumId", id), ("enumCode", code)]);
+    }
+    let ids = vec!["EnumDoc".to_string()];
+    let (text, count) = super::document::documents_json(&facade, &ids, None, None, None, false).unwrap();
+    assert_eq!(count, 2, "{text}");
+    assert!(text.contains("\"enumCode\":\"one\"") && text.contains(",\n"), "{text}");
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("moqui-doc-export-{nanos}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("all.json");
+    assert_eq!(
+        super::document::write_documents_to_file(&facade, &file, &ids, None, None, None, true).unwrap(),
+        2
+    );
+    let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(
+        written.as_array().map(Vec::len),
+        Some(3),
+        "two documents and the closing {{}}"
+    );
+    assert_eq!(
+        super::document::write_documents_to_file(&facade, &file, &ids, None, None, None, true).unwrap(),
+        0
+    );
+    assert!(context
+        .message()
+        .errors()
+        .iter()
+        .any(|error| error.contains("already exists")));
+    context.message().clear_errors();
+    let out = dir.join("each");
+    assert_eq!(
+        super::document::write_documents_to_directory(&facade, &out, &ids, None, None, None, false).unwrap(),
+        2
+    );
+    assert!(out.join("EnumDoc.json").is_file());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Java's `useClone`: a find reads from the clone datasource of the entity's group when one is open; a find for
+/// update and a write stay on the group itself.
+#[test]
+fn a_find_that_uses_the_clone_reads_the_clone_group() {
+    let facade = crate::testing::open_groups("transactional#clone1");
+    let entity = "moqui.basic.Enumeration";
+    let mut row = facade.make_value(entity).unwrap();
+    row.set("enumId", Value::string("MAIN"));
+    row.create(&facade).unwrap();
+    let main = facade
+        .find(entity)
+        .unwrap()
+        .eq("enumId", Value::string("MAIN"))
+        .one()
+        .unwrap();
+    assert!(main.is_some());
+    // The clone is its own database here, so the row is not there.
+    let cloned = facade
+        .find(entity)
+        .unwrap()
+        .eq("enumId", Value::string("MAIN"))
+        .use_clone(true)
+        .use_cache(false)
+        .one()
+        .unwrap();
+    assert!(cloned.is_none());
+    assert_eq!(facade.group_names()[0], "transactional");
 }

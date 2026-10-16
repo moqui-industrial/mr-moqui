@@ -29,6 +29,7 @@ use crate::context::ExecutionContext;
 
 const AUDIT_ENTITY: &str = "moqui.entity.EntityAuditLog";
 const LOCALIZED_ENTITY: &str = "moqui.basic.LocalizedEntityField";
+const LOCALIZED_MESSAGE: &str = "moqui.basic.LocalizedMessage";
 const TEXT_LIMIT: usize = 4000;
 
 thread_local! {
@@ -138,29 +139,27 @@ fn decrypt_fields(
     entity: &EntityDefinition,
     mut values: BTreeMap<String, Value>,
 ) -> Result<BTreeMap<String, Value>, Error> {
-    if !has_encrypted(entity) {
+    let names = encrypted_names(entity);
+    if names.is_empty() {
         return Ok(values);
     }
     let Some((primary, alts)) = facade.crypt() else {
         return Ok(values);
     };
-    for field in &entity.fields {
-        if !field.encrypt {
-            continue;
-        }
-        let Some(stored) = take_string(entity, &field.name, &values)? else {
+    for name in names {
+        let Some(stored) = take_string(entity, name, &values)? else {
             continue;
         };
         match decrypt_with_alts(&stored, &primary, &alts) {
             Ok(plain) => {
-                values.insert(field.name.clone(), Value::string(plain));
+                values.insert(name.to_string(), Value::string(plain));
             }
             // A value with no colon that is not hex was stored as plaintext.
             Err(_) if !stored.contains(':') && !is_hex_ciphertext(&stored) => {}
             // As Java's `FieldInfo`, the read goes on with a clear placeholder, which a write refuses.
             Err(err) => {
-                tracing::error!(error = %err, "Error decrypting field {} of entity {}", field.name, entity.full_name);
-                values.insert(field.name.clone(), Value::string(DECRYPT_FAILED));
+                tracing::error!(error = %err, "Error decrypting field {name} of entity {}", entity.full_name);
+                values.insert(name.to_string(), Value::string(DECRYPT_FAILED));
             }
         }
     }
@@ -168,8 +167,9 @@ fn decrypt_fields(
 }
 
 /// A find condition on an encrypted field compares with the stored form of the value, as Java binds it: the encryption is
-/// deterministic (a constant IV) so that a query by value finds the row. Equality and membership are the comparisons that
-/// mean anything on ciphertext; a view-entity and a condition that names another entity's field are left as they are.
+/// deterministic (a constant IV) so that a query by value finds the row. As Java's `FieldInfo` every bound value of the
+/// field is encrypted, whatever the operator, and a view's alias of an encrypted field is one too. A condition that names
+/// another entity's field is left as it is.
 pub(super) fn encrypt_condition(
     facade: &EntityFacade,
     entity: &EntityDefinition,
@@ -178,51 +178,70 @@ pub(super) fn encrypt_condition(
     let Some(condition) = condition else {
         return Ok(None);
     };
-    if entity.is_view || !has_encrypted(entity) {
+    let names = encrypted_names(entity);
+    if names.is_empty() {
         return Ok(Some(condition));
     }
     let Some((primary, _)) = facade.crypt() else {
         return Ok(Some(condition));
     };
-    Ok(Some(encrypt_in(entity, &primary, condition)?))
+    Ok(Some(encrypt_in(&names, &primary, condition)?))
 }
 
-fn encrypt_in(
-    entity: &EntityDefinition,
-    config: &super::crypto::CryptConfig,
-    condition: Condition,
-) -> Result<Condition, Error> {
-    let encrypted = |field: &FieldRef| {
-        field.entity_alias.is_none() && entity.field(&field.name).is_some_and(|definition| definition.encrypt)
-    };
+fn encrypt_in(names: &[&str], config: &super::crypto::CryptConfig, condition: Condition) -> Result<Condition, Error> {
+    let encrypted = |field: &FieldRef| field.entity_alias.is_none() && names.contains(&field.name.as_str());
     let seal = |value: Value| -> Result<Value, Error> {
         match value.as_str() {
             Some(plain) => Ok(Value::string(encrypt(plain, config)?)),
             None => Ok(value),
         }
     };
+    let seal_all = |values: Vec<Value>| values.into_iter().map(seal).collect::<Result<Vec<_>, _>>();
+    let recurse = |list: Vec<Condition>| {
+        list.into_iter()
+            .map(|inner| encrypt_in(names, config, inner))
+            .collect::<Result<Vec<_>, _>>()
+    };
     Ok(match condition {
         Condition::Equals(field, value) if encrypted(&field) => Condition::Equals(field, seal(value)?),
         Condition::NotEquals(field, value) if encrypted(&field) => Condition::NotEquals(field, seal(value)?),
-        Condition::In(field, values) if encrypted(&field) => {
-            Condition::In(field, values.into_iter().map(seal).collect::<Result<_, _>>()?)
+        Condition::Less(field, value) if encrypted(&field) => Condition::Less(field, seal(value)?),
+        Condition::Greater(field, value) if encrypted(&field) => Condition::Greater(field, seal(value)?),
+        Condition::LessEqual(field, value) if encrypted(&field) => Condition::LessEqual(field, seal(value)?),
+        Condition::GreaterEqual(field, value) if encrypted(&field) => Condition::GreaterEqual(field, seal(value)?),
+        Condition::Like(field, value) if encrypted(&field) => Condition::Like(field, seal(value)?),
+        Condition::NotLike(field, value) if encrypted(&field) => Condition::NotLike(field, seal(value)?),
+        Condition::Between(field, low, high) if encrypted(&field) => Condition::Between(field, seal(low)?, seal(high)?),
+        Condition::NotBetween(field, low, high) if encrypted(&field) => {
+            Condition::NotBetween(field, seal(low)?, seal(high)?)
         }
-        Condition::NotIn(field, values) if encrypted(&field) => {
-            Condition::NotIn(field, values.into_iter().map(seal).collect::<Result<_, _>>()?)
-        }
-        Condition::And(list) => Condition::And(
-            list.into_iter()
-                .map(|inner| encrypt_in(entity, config, inner))
-                .collect::<Result<_, _>>()?,
-        ),
-        Condition::Or(list) => Condition::Or(
-            list.into_iter()
-                .map(|inner| encrypt_in(entity, config, inner))
-                .collect::<Result<_, _>>()?,
-        ),
-        Condition::Not(inner) => Condition::Not(Box::new(encrypt_in(entity, config, *inner)?)),
+        Condition::In(field, values) if encrypted(&field) => Condition::In(field, seal_all(values)?),
+        Condition::NotIn(field, values) if encrypted(&field) => Condition::NotIn(field, seal_all(values)?),
+        Condition::And(list) => Condition::And(recurse(list)?),
+        Condition::Or(list) => Condition::Or(recurse(list)?),
+        Condition::Not(inner) => Condition::Not(Box::new(encrypt_in(names, config, *inner)?)),
+        Condition::IgnoreCase(inner) => Condition::IgnoreCase(Box::new(encrypt_in(names, config, *inner)?)),
         other => other,
     })
+}
+
+/// The encrypted fields: an entity's `encrypt` fields, or a view's aliases of one (Java copies `encrypt` to the alias).
+fn encrypted_names(entity: &EntityDefinition) -> Vec<&str> {
+    if entity.is_view {
+        entity
+            .aliases
+            .iter()
+            .filter(|alias| alias.encrypt && alias.function.is_none())
+            .map(|alias| alias.name.as_str())
+            .collect()
+    } else {
+        entity
+            .fields
+            .iter()
+            .filter(|field| field.encrypt)
+            .map(|field| field.name.as_str())
+            .collect()
+    }
 }
 
 fn has_encrypted(entity: &EntityDefinition) -> bool {
@@ -417,6 +436,13 @@ fn insert_audit(
     if let Some(text) = old_text {
         row.set("oldValueText", Value::string(text));
     }
+    // As Java: a `{field}_changeReason` in the context.
+    if let Some(reason) = crate::script::context_value(&format!("{field_name}_changeReason"))
+        .map(|value| moqui_lib::object::to_plain_string(&value))
+        .filter(|reason| !reason.is_empty())
+    {
+        row.set("changeReason", Value::string(reason));
+    }
     put_pk(&mut row, entity, values);
     row.create(facade)
 }
@@ -465,7 +491,8 @@ struct LocalTarget {
     entity_name: String,
     field_name: String,
     column: String,
-    pk_column: String,
+    /// The column of the record's single primary key field; `None` when it has more than one.
+    pk_column: Option<String>,
 }
 
 fn localize(
@@ -488,16 +515,25 @@ fn localize(
     if targets.is_empty() {
         return Ok(values);
     }
-    let locales = locale_chain(&facade.locale());
+    // The user's locale, as Java's `userFacade.getLocale()`; the facade's own with no execution context.
+    let locale = if crate::user::context_entered() {
+        crate::l10n::locale()
+    } else {
+        facade.locale()
+    };
+    let locales = locale_chain(&locale);
     if locales.is_empty() {
         return Ok(values);
     }
     let mut values = values;
     for target in &targets {
-        let Some(pk) = pk_text(values.get(&target.pk_column)) else {
+        let pk = target.pk_column.as_ref().and_then(|column| pk_text(values.get(column)));
+        let stored = plain_text(values.get(&target.column)).filter(|text| !text.is_empty());
+        if pk.is_none() && stored.is_none() {
             continue;
-        };
-        match find_localized(facade, target, &pk, &locales) {
+        }
+        let pk = pk.unwrap_or_default();
+        match find_localized(facade, target, &pk, stored.as_deref(), &locales) {
             Ok(Some(localized)) => {
                 values.insert(target.column.clone(), localized);
             }
@@ -517,10 +553,8 @@ fn localize(
 }
 
 fn plain_targets(entity: &EntityDefinition) -> Vec<LocalTarget> {
-    let Some(pk_column) = entity.pk_field_names().into_iter().next() else {
-        return Vec::new();
-    };
-    let pk_column = pk_column.to_string();
+    let pk_names = entity.pk_field_names();
+    let pk_column = (pk_names.len() == 1).then(|| pk_names[0].to_string());
     entity
         .fields
         .iter()
@@ -566,9 +600,7 @@ fn view_targets(view: &EntityDefinition, model: &EntityModel) -> Result<Vec<Loca
         if !member.field(&field_name).is_some_and(|field| field.enable_localization) {
             continue;
         }
-        let Some(pk_column) = member_pk_column(view, member, entity_alias) else {
-            continue;
-        };
+        let pk_column = member_pk_column(view, member, entity_alias);
         push_target(
             &mut targets,
             &mut seen,
@@ -594,7 +626,11 @@ fn member_entity_name(view: &EntityDefinition, alias: &str) -> Option<String> {
 }
 
 fn member_pk_column(view: &EntityDefinition, member: &EntityDefinition, entity_alias: &str) -> Option<String> {
-    let pk = member.pk_field_names().into_iter().next()?.to_string();
+    let pk_names = member.pk_field_names();
+    if pk_names.len() != 1 {
+        return None;
+    }
+    let pk = pk_names[0].to_string();
     for alias in &view.aliases {
         if alias.function.is_some() || alias.entity_alias.as_deref() != Some(entity_alias) {
             continue;
@@ -616,7 +652,7 @@ fn pk_text(value: Option<&Value>) -> Option<String> {
     }
 }
 
-/// Full locale, then drop the region, then the language.
+/// Full locale, then drop the region, then the language, then `default`, as Java's localized field get.
 fn locale_chain(locale: &str) -> Vec<String> {
     let mut chain = Vec::new();
     push_locale(&mut chain, locale);
@@ -630,6 +666,9 @@ fn locale_chain(locale: &str) -> Vec<String> {
         push_locale(&mut chain, head);
         current = head.to_string();
     }
+    if !chain.is_empty() {
+        push_locale(&mut chain, "default");
+    }
     chain
 }
 
@@ -640,19 +679,39 @@ fn push_locale(chain: &mut Vec<String>, locale: &str) {
     chain.push(locale.to_string());
 }
 
+/// Java's localized field get: the `LocalizedEntityField` for the record (single primary key only) in each locale of
+/// the chain, else the `LocalizedMessage` for the stored text in each locale. Both read through the entity cache.
 fn find_localized(
     facade: &EntityFacade,
     target: &LocalTarget,
     pk: &str,
+    stored: Option<&str>,
     locales: &[String],
 ) -> Result<Option<Value>, Error> {
+    if !pk.is_empty() {
+        for locale in locales {
+            let row = facade
+                .find(LOCALIZED_ENTITY)?
+                .eq("entityName", Value::string(target.entity_name.as_str()))
+                .eq("fieldName", Value::string(target.field_name.as_str()))
+                .eq("pkValue", Value::string(pk))
+                .eq("locale", Value::string(locale.as_str()))
+                .use_cache(true)
+                .one()?;
+            if let Some(row) = row {
+                return Ok(Some(row.get("localized").cloned().unwrap_or(Value::Null)));
+            }
+        }
+    }
+    let Some(original) = stored else {
+        return Ok(None);
+    };
     for locale in locales {
         let row = facade
-            .find(LOCALIZED_ENTITY)?
-            .eq("entityName", Value::string(target.entity_name.as_str()))
-            .eq("fieldName", Value::string(target.field_name.as_str()))
-            .eq("pkValue", Value::string(pk))
+            .find(LOCALIZED_MESSAGE)?
+            .eq("original", Value::string(original))
             .eq("locale", Value::string(locale.as_str()))
+            .use_cache(true)
             .one()?;
         if let Some(row) = row {
             return Ok(Some(row.get("localized").cloned().unwrap_or(Value::Null)));
@@ -663,7 +722,8 @@ fn find_localized(
 
 #[cfg(test)]
 mod tests {
-    use super::{audit_plain, audit_stack, raw_read, RawReadGuard};
+    use super::{audit_plain, audit_stack, encrypt_in, raw_read, RawReadGuard};
+    use moqui_db::sql::Condition;
     use moqui_lib::object::Value;
 
     use crate::context::ExecutionContextFactory;
@@ -793,6 +853,38 @@ mod tests {
         let stack = row.get("artifactStack").and_then(Value::as_str).unwrap();
         assert_eq!(stack, format!("{prefix}{}\u{fffd}", "a".repeat(3999 - prefix.len())));
         assert_eq!(stack.encode_utf16().count(), 4000);
+    }
+
+    /// As Java's `FieldInfo`, every bound value of an encrypted field is sealed, whatever the operator.
+    #[test]
+    fn every_bound_value_of_an_encrypted_field_is_sealed() {
+        let config = crate::entity::crypto::CryptConfig {
+            pass: "MoquiDefaultPassword:CHANGEME".to_string(),
+            salt: "20201202".to_string(),
+            iterations: 10,
+            algorithm: "PBEWithHmacSHA256AndAES_128".to_string(),
+        };
+        let sealed = Value::string(crate::entity::crypto::encrypt("v", &config).unwrap());
+        let plain = || Value::string("v");
+        let condition = Condition::and(vec![
+            Condition::Like("secret".into(), plain()),
+            Condition::Between("secret".into(), plain(), plain()),
+            Condition::IgnoreCase(Box::new(Condition::Greater("secret".into(), plain()))),
+            Condition::Equals("other".into(), plain()),
+        ]);
+        let Condition::And(list) = encrypt_in(&["secret"], &config, condition).unwrap() else {
+            panic!("an and");
+        };
+        assert_eq!(list[0], Condition::Like("secret".into(), sealed.clone()));
+        assert_eq!(
+            list[1],
+            Condition::Between("secret".into(), sealed.clone(), sealed.clone())
+        );
+        assert_eq!(
+            list[2],
+            Condition::IgnoreCase(Box::new(Condition::Greater("secret".into(), sealed)))
+        );
+        assert_eq!(list[3], Condition::Equals("other".into(), plain()));
     }
 
     #[test]

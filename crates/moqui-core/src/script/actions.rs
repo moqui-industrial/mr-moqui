@@ -83,6 +83,15 @@ pub fn eval_condition_element(xml: &str) -> Result<bool, Error> {
     super::runtime::eval_condition(&script.text().replace(['\u{1}', '\u{2}'], ""))
 }
 
+/// [`eval_condition_element`] for a condition group made once: `<and>` holding the condition macros.
+pub fn eval_condition_group(and_xml: &str) -> Result<bool, Error> {
+    if and_xml.as_bytes().contains(&0) {
+        return Err(Error::new("script source contains a null byte"));
+    }
+    let script = generated(and_xml)?;
+    super::runtime::eval_condition(&script.text().replace(['\u{1}', '\u{2}'], ""))
+}
+
 /// An error at `eval_script:LINE:COL` with that line of the generated script after it, so a failure in actions points at
 /// the statement. With `MOQUI_ACTIONS_DEBUG` set, the element comment above it is shown too.
 fn with_source_line(err: Error, source: &str) -> Error {

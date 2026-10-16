@@ -28,12 +28,19 @@ use crate::context::Error;
 #[derive(Clone, Debug)]
 pub(super) struct SecaRule {
     id: String,
+    /// The `service` attribute as written, with its `#`.
+    service_name: String,
     service_plain: String,
     when_name: String,
     name_is_pattern: bool,
+    /// The service name pattern, parsed when the rules load.
+    pattern: Option<moqui_lib::object::CompiledRegex>,
     run_on_error: bool,
     pub(super) priority: i32,
+    /// The `<condition>` element as written, for the tools screens.
     condition: String,
+    /// What the rule checks: as Java, the first child of `<condition>` only, made into the condition group once.
+    condition_check: Option<String>,
     actions: String,
 }
 
@@ -70,13 +77,23 @@ pub fn run_seca_rules(
                 err.message()
             ))
         };
-        if !super::rule_actions::condition_allows(&rule.condition).map_err(in_rule)? {
-            continue;
+        if let Some(check) = &rule.condition_check {
+            if !crate::script::eval_condition_group(check).map_err(in_rule)? {
+                continue;
+            }
         }
         super::rule_actions::run_stored_actions(&rule.actions).map_err(in_rule)?;
     }
     Ok(())
 }
+
+/// Whether any rule runs for `service` at `when`, so a transaction hook is registered only when one does.
+pub(super) fn has_rules(service: &str, when: &str) -> bool {
+    eca_rules::current().is_some_and(|rules| !rules.seca_index.matching(&rules.seca, service, when).is_empty())
+}
+
+/// The positions of the pattern rules that matched, by `when` and service name.
+type PatternHits = HashMap<(String, String), Arc<[usize]>>;
 
 /// The SECA rules by `when` and service, made once when the rules load, so a call does not scan every rule at each of
 /// its phases. Each list holds positions in the priority order.
@@ -86,6 +103,8 @@ pub(super) struct SecaIndex {
     exact: HashMap<String, HashMap<String, Vec<usize>>>,
     /// The rules whose name is a pattern, by `when`.
     patterns: HashMap<String, Vec<usize>>,
+    /// The pattern rules that matched, by `when` and service name, so each pattern runs once for a service.
+    pattern_hits: std::sync::RwLock<PatternHits>,
 }
 
 impl SecaIndex {
@@ -120,11 +139,26 @@ impl SecaIndex {
         let named = exact
             .and_then(|by_service| by_service.get(&plain))
             .map_or(&[][..], Vec::as_slice);
-        let mut positions: Vec<usize> = patterns
-            .iter()
-            .copied()
-            .filter(|position| pattern_matches(&rules[*position], &plain))
-            .collect();
+        let key = (when.to_string(), plain.clone());
+        let cached = self
+            .pattern_hits
+            .read()
+            .unwrap_or_else(|err| err.into_inner())
+            .get(&key)
+            .cloned();
+        let hits = cached.unwrap_or_else(|| {
+            let hits: Arc<[usize]> = patterns
+                .iter()
+                .copied()
+                .filter(|position| pattern_matches(&rules[*position], &plain))
+                .collect();
+            self.pattern_hits
+                .write()
+                .unwrap_or_else(|err| err.into_inner())
+                .insert(key, Arc::clone(&hits));
+            hits
+        });
+        let mut positions: Vec<usize> = hits.to_vec();
         if positions.is_empty() {
             return Cow::Borrowed(named);
         }
@@ -141,27 +175,45 @@ fn to_index_map(values: &BTreeMap<String, Value>) -> indexmap::IndexMap<String, 
         .collect()
 }
 
-pub(super) fn seca_rule_from(node: &MNode) -> SecaRule {
+/// A rule from its `<seca>` element. A name pattern that does not parse is an error, so the loader skips the rule.
+pub(super) fn seca_rule_from(node: &MNode) -> Result<SecaRule, Error> {
     let service = node.attribute("service").unwrap_or_default();
-    SecaRule {
+    let service_plain = service.replace('#', "");
+    let name_is_pattern = node.attribute("name-is-pattern").as_deref() == Some("true");
+    let pattern = if name_is_pattern {
+        Some(moqui_lib::object::CompiledRegex::new(&service_plain).map_err(|err| {
+            Error::new(format!(
+                "service name pattern {service_plain} is not valid: {}",
+                err.message()
+            ))
+        })?)
+    } else {
+        None
+    };
+    let condition_node = node.first_named("condition");
+    let condition_check = condition_node
+        .as_ref()
+        .and_then(|condition| condition.children().into_iter().next())
+        .map(|first| format!("<and>{}</and>", first.write_string()));
+    Ok(SecaRule {
         id: node.attribute("id").unwrap_or_default(),
-        service_plain: service.replace('#', ""),
+        service_name: service.clone(),
+        service_plain,
         when_name: node.attribute("when").unwrap_or_default(),
-        name_is_pattern: node.attribute("name-is-pattern").as_deref() == Some("true"),
+        name_is_pattern,
+        pattern,
         run_on_error: node.attribute("run-on-error").as_deref() == Some("true"),
         priority: node
             .attribute("priority")
             .and_then(|text| text.parse().ok())
             .unwrap_or(5),
-        condition: node
-            .first_named("condition")
-            .map(|child| child.write_string())
-            .unwrap_or_default(),
+        condition: condition_node.map(|child| child.write_string()).unwrap_or_default(),
+        condition_check,
         actions: node
             .first_named("actions")
             .map(|child| child.write_string())
             .unwrap_or_default(),
-    }
+    })
 }
 
 impl SecaRule {
@@ -205,13 +257,25 @@ fn service_matches(rule: &SecaRule, service: &str) -> bool {
 
 /// Whether the rule's name pattern matches `plain`, a service name without `#`.
 fn pattern_matches(rule: &SecaRule, plain: &str) -> bool {
-    moqui_lib::object::compare(
-        &Value::string(plain),
-        "matches",
-        &Value::string(&rule.service_plain),
-        "String",
-    )
-    .unwrap_or(false)
+    rule.pattern
+        .as_ref()
+        .is_some_and(|pattern| pattern.is_full_match(plain))
+}
+
+impl SecaRule {
+    /// Java's load check: a named service that is defined, or a pattern that matches a known service.
+    pub(super) fn service_defined(&self, facade: Option<&crate::entity::EntityFacade>) -> bool {
+        if !self.name_is_pattern {
+            return super::call::is_service_defined(&self.service_name, facade)
+                || super::define::registered()
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|def| def.name.replace('#', "") == self.service_plain);
+        }
+        super::info::known_service_names()
+            .iter()
+            .any(|name| pattern_matches(self, &name.replace('#', "")) || pattern_matches(self, name))
+    }
 }
 
 #[cfg(test)]
@@ -222,6 +286,52 @@ mod tests {
 
     use super::run_seca_rules;
     use crate::service::eca_rules;
+
+    /// As Java's `ServiceEcaRule`: only the first child of `<condition>` is checked, and a name pattern that does not
+    /// parse is an error, so the loader skips that rule.
+    #[test]
+    fn only_the_first_condition_child_counts_and_a_bad_pattern_is_an_error() {
+        let context = crate::context::ExecutionContextFactory::test_context();
+        eca_rules::install(
+            context.factory(),
+            eca_rules::from_xml(
+                r#"<secas>
+                <seca service="test.example#First" when="pre-service">
+                    <condition><expression>true</expression><expression>false</expression></condition>
+                    <actions><script>ec.message.addMessage("first");</script></actions>
+                </seca>
+            </secas>"#,
+                "",
+            ),
+        );
+        let _entered = context.enter();
+        run_seca_rules("test.example#First", "pre-service", &BTreeMap::new(), None).unwrap();
+        assert_eq!(context.message().messages(), ["first"]);
+        let node = moqui_lib::node::MNode::parse_text(
+            "seca",
+            r#"<seca service="test.(unclosed" name-is-pattern="true" when="pre-service"/>"#,
+        )
+        .unwrap();
+        assert!(super::seca_rule_from(&node).is_err());
+    }
+
+    /// Java's SECA load check: an entity-auto name of a defined entity counts as a defined service; a name that is
+    /// neither registered nor entity-auto does not.
+    #[test]
+    fn a_rule_for_an_entity_auto_service_is_kept_and_one_for_no_service_is_not() {
+        let facade = crate::testing::open();
+        let rule = |service: &str| {
+            let node = moqui_lib::node::MNode::parse_text(
+                "seca",
+                &format!(r#"<seca service="{service}" when="post-service"/>"#),
+            )
+            .unwrap();
+            super::seca_rule_from(&node).unwrap()
+        };
+        assert!(rule("update#moqui.basic.Enumeration").service_defined(Some(&facade)));
+        assert!(!rule("update#moqui.basic.NoSuchEntity").service_defined(Some(&facade)));
+        assert!(!rule("no.such.Services.do#Nothing").service_defined(Some(&facade)));
+    }
 
     #[test]
     fn seca_for_a_test_service_runs_its_action() {

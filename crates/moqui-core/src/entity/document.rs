@@ -210,6 +210,159 @@ pub fn data_documents(
     post_process(facade, &info, docs)
 }
 
+/// Java's `writeDocumentsToWriter`: the documents of each id as JSON, comma separated, with a newline after the last,
+/// pretty printed (four spaces) when asked. Returns the text and how many documents it holds.
+///
+/// # Errors
+///
+/// Returns an error when a definition is bad or a query fails.
+pub fn documents_json(
+    facade: &EntityFacade,
+    data_document_ids: &[String],
+    condition: Option<Condition>,
+    from: Option<Timestamp>,
+    thru: Option<Timestamp>,
+    pretty: bool,
+) -> Result<(String, usize), Error> {
+    let mut out = String::new();
+    let mut written = 0_usize;
+    for id in data_document_ids {
+        for document in data_documents(facade, id, condition.clone(), from, thru)? {
+            if written > 0 {
+                out.push_str(",\n");
+            }
+            let json = moqui_lib::json::to_json(&Value::Map(document));
+            if pretty {
+                let mut bytes = Vec::new();
+                let formatter = serde_json::ser::PrettyFormatter::with_indent(b"    ");
+                let mut serializer = serde_json::Serializer::with_formatter(&mut bytes, formatter);
+                serde::Serialize::serialize(&json, &mut serializer)
+                    .map_err(|err| Error::new("could not write a document as JSON").with_source(err))?;
+                out.push_str(&String::from_utf8_lossy(&bytes));
+            } else {
+                out.push_str(&json.to_string());
+            }
+            written += 1;
+        }
+    }
+    if written > 0 {
+        out.push('\n');
+    }
+    Ok((out, written))
+}
+
+/// Java's `writeDocumentsToFile`: the documents in a JSON array in a new file. A file that is already there is a
+/// message error and nothing is written. Returns how many documents were written.
+///
+/// # Errors
+///
+/// Returns an error when a query fails or the file cannot be written.
+pub fn write_documents_to_file(
+    facade: &EntityFacade,
+    path: &std::path::Path,
+    data_document_ids: &[String],
+    condition: Option<Condition>,
+    from: Option<Timestamp>,
+    thru: Option<Timestamp>,
+    pretty: bool,
+) -> Result<usize, Error> {
+    let file = match std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            message_error(format!("File {} already exists.", path.display()));
+            return Ok(0);
+        }
+        Err(err) => return Err(Error::new(format!("could not create {}", path.display())).with_source(err)),
+    };
+    let written = write_array(facade, file, path, data_document_ids, condition, from, thru, pretty)?;
+    message(format!("Wrote {written} documents to file {}", path.display()));
+    Ok(written)
+}
+
+/// Java's `writeDocumentsToDirectory`: one file per document id, `{id}.json`, in the directory (made when missing). A
+/// file already there is a message error and that document is skipped. Returns how many documents were written.
+///
+/// # Errors
+///
+/// Returns an error when a query fails or a file cannot be written.
+pub fn write_documents_to_directory(
+    facade: &EntityFacade,
+    dir: &std::path::Path,
+    data_document_ids: &[String],
+    condition: Option<Condition>,
+    from: Option<Timestamp>,
+    thru: Option<Timestamp>,
+    pretty: bool,
+) -> Result<usize, Error> {
+    if !dir.exists() {
+        std::fs::create_dir(dir)
+            .map_err(|err| Error::new(format!("could not create {}", dir.display())).with_source(err))?;
+    }
+    if !dir.is_dir() {
+        message_error(format!("Path {} is not a directory.", dir.display()));
+        return Ok(0);
+    }
+    let mut written = 0;
+    for id in data_document_ids {
+        let path = dir.join(format!("{id}.json"));
+        let file = match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                message_error(format!(
+                    "File {} already exists, skipping document {id}.",
+                    path.display()
+                ));
+                continue;
+            }
+            Err(err) => return Err(Error::new(format!("could not create {}", path.display())).with_source(err)),
+        };
+        written += write_array(
+            facade,
+            file,
+            &path,
+            std::slice::from_ref(id),
+            condition.clone(),
+            from,
+            thru,
+            pretty,
+        )?;
+        message(format!("Wrote {written} records to file {}", path.display()));
+    }
+    Ok(written)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_array(
+    facade: &EntityFacade,
+    mut file: std::fs::File,
+    path: &std::path::Path,
+    data_document_ids: &[String],
+    condition: Option<Condition>,
+    from: Option<Timestamp>,
+    thru: Option<Timestamp>,
+    pretty: bool,
+) -> Result<usize, Error> {
+    use std::io::Write;
+    let (text, written) = documents_json(facade, data_document_ids, condition, from, thru, pretty)?;
+    // As Java, an empty object closes the list; here with the comma Java leaves out, so the file is valid JSON.
+    let body = if written > 0 {
+        format!("[\n{},\n{{}}\n]\n", text.trim_end())
+    } else {
+        "[\n{}\n]\n".to_string()
+    };
+    file.write_all(body.as_bytes())
+        .map_err(|err| Error::new(format!("could not write {}", path.display())).with_source(err))?;
+    Ok(written)
+}
+
+fn message(text: String) {
+    crate::context::ExecutionContext::with_current(|ec| ec.message().add_message(text));
+}
+
+fn message_error(text: String) {
+    crate::context::ExecutionContext::with_current(|ec| ec.message().add_error(text));
+}
+
 /// Documents for the given `_id` values. An id with no matching document is left out.
 ///
 /// # Errors
@@ -881,13 +1034,34 @@ fn post_conditions_pass(info: &DocumentInfo, doc: &Document) -> bool {
                 }
             }
             Some(expected) => {
-                if !found.iter().any(|value| &to_plain_string(value) == expected) {
+                if !found.iter().any(|value| typed_equals(value, expected)) {
                     return false;
                 }
             }
         }
     }
     true
+}
+
+/// Java's `fieldValue.asType(value.class) in valueSet`: the condition text converted to the type of the document
+/// value, then compared, so `5` matches a number `5.00` and a date in any form the conversion reads.
+fn typed_equals(value: &Value, expected: &str) -> bool {
+    let java_type = match value {
+        Value::Decimal(_) => "java.math.BigDecimal",
+        Value::I32(_) => "java.lang.Integer",
+        Value::I64(_) => "java.lang.Long",
+        Value::F64(_) => "java.lang.Double",
+        Value::Bool(_) => "java.lang.Boolean",
+        Value::Timestamp(_) => "java.sql.Timestamp",
+        Value::Date(_) => "java.sql.Date",
+        Value::Time(_) => "java.sql.Time",
+        _ => return to_plain_string(value) == expected,
+    };
+    let converted = moqui_lib::object::basic_convert(&Value::string(expected), java_type).value;
+    matches!(
+        moqui_lib::object::compare_obj(value, &converted),
+        Ok(std::cmp::Ordering::Equal)
+    ) || to_plain_string(value) == expected
 }
 
 fn collect_values(name: &str, map: &Document, out: &mut Vec<Value>) {
@@ -924,6 +1098,16 @@ fn text(value: Option<&Value>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::field_path_to_list;
+
+    #[test]
+    fn a_post_query_condition_compares_by_the_document_value_type() {
+        use moqui_lib::object::Value;
+        assert!(super::typed_equals(&Value::Decimal("5.00".parse().unwrap()), "5"));
+        assert!(super::typed_equals(&Value::I64(7), "7"));
+        assert!(!super::typed_equals(&Value::I64(7), "8"));
+        assert!(super::typed_equals(&Value::Bool(true), "true"));
+        assert!(super::typed_equals(&Value::string("Y"), "Y"));
+    }
 
     #[test]
     fn a_date_expression_returning_epoch_millis_is_a_timestamp() {
