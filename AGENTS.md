@@ -1,0 +1,1 @@
+- Default building skill: read [.agents/skills/building/SKILL.md](.agents/skills/building/SKILL.md) before building or working in a worktree.
