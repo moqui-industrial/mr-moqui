@@ -74,6 +74,55 @@ pub fn root_resource_infos() -> Result<Vec<Value>, Error> {
     Ok(roots.resources.values().map(|node| resource_info(node, true)).collect())
 }
 
+/// Resolve a resource path (without `/rest/s1`) and HTTP method to its service and path parameter names.
+/// Uses dispatch's named-resource-before-id rule. This neither executes nor authorizes a call;
+/// consumers must still enforce authorization when executing the returned service.
+pub fn resolve_service(path: &str, method: &str) -> Result<Value, Error> {
+    let parts: Vec<_> = path
+        .trim_matches('/')
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    let roots = current_roots()?;
+    let mut node = parts
+        .first()
+        .and_then(|root| roots.resources.get(*root))
+        .ok_or_else(|| Error::new("REST root resource not found"))?;
+    let mut path_parameters = Vec::new();
+    for part in &parts[1..] {
+        node = node
+            .resources
+            .get(*part)
+            .or(node.id.as_deref())
+            .ok_or_else(|| Error::new("REST resource not found"))?;
+        if node.is_id {
+            path_parameters.push(Value::string(&node.name));
+        }
+        if node.is_id && node.allow_extra_path {
+            break;
+        }
+    }
+    if !node.methods.contains_key(&method.to_ascii_lowercase()) {
+        if let Some(id) = node.id.as_deref().filter(|id| id.allow_extra_path) {
+            node = id;
+            path_parameters.push(Value::string(&node.name));
+        }
+    }
+    let operation = node
+        .methods
+        .get(&method.to_ascii_lowercase())
+        .ok_or_else(|| Error::new("REST method not found"))?;
+    let Operation::Service { name, .. } = operation else {
+        return Err(Error::new("REST method is not backed by a service"));
+    };
+    Ok(Value::Map(indexmap::indexmap! {
+        "serviceName".to_string() => Value::string(name),
+        "path".to_string() => Value::string(format!("/rest/s1/{}", parts.join("/"))),
+        "pathParameters".to_string() => Value::List(path_parameters),
+        "method".to_string() => Value::string(method.to_ascii_lowercase()),
+    }))
+}
+
 fn resource_info(node: &Node, with_children: bool) -> Value {
     let text = |value: &Option<String>| value.as_deref().map_or(Value::Null, Value::string);
     let mut map = IndexMap::new();
@@ -771,6 +820,53 @@ mod tests {
             crate::context::ErrorKind::NotFound,
             "{err}"
         );
+    }
+
+    #[test]
+    fn service_metadata_resolves_named_resources_ids_and_extra_paths_without_executing() {
+        let dir = std::env::temp_dir().join(format!("moqui-rest-metadata-{}", std::process::id()));
+        let _guard = DirGuard(dir.clone());
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("api.rest.xml");
+        std::fs::write(&path, r#"<resource name="api"><resource name="items">
+            <resource name="named"><method type="get"><service name="literal#Named"/></method></resource>
+            <id name="itemId"><resource name="detail"><method type="post"><service name="literal#Detail"/></method></resource></id>
+            <method type="get"><entity name="moqui.basic.Enumeration" operation="list"/></method>
+            </resource><resource name="browse"><id name="path" allow-extra-path="true">
+            <method type="get"><service name="literal#Browse"/></method></id></resource></resource>"#).unwrap();
+        let context = ExecutionContextFactory::test_context();
+        install(context.factory(), &[path]);
+        let _entered = context.enter();
+        for (path, method, expected, parameters) in [
+            ("api/items/named", "GET", "literal#Named", vec![]),
+            (
+                "/api/items/123/detail/",
+                "post",
+                "literal#Detail",
+                vec![Value::string("itemId")],
+            ),
+            ("api/browse", "get", "literal#Browse", vec![Value::string("path")]),
+            ("api/browse/a/b", "get", "literal#Browse", vec![Value::string("path")]),
+        ] {
+            let Value::Map(result) = super::resolve_service(path, method).unwrap() else {
+                panic!("map");
+            };
+            assert_eq!(result["serviceName"].as_str(), Some(expected));
+            assert_eq!(result["pathParameters"], Value::List(parameters));
+            assert_eq!(result["method"], Value::string(method.to_ascii_lowercase()));
+            assert_eq!(
+                result["path"],
+                Value::string(format!("/rest/s1/{}", path.trim_matches('/')))
+            );
+        }
+        for path in ["", "missing", "api/items", "api/items/123", "api/items/named/missing"] {
+            assert!(super::resolve_service(path, "get").is_err(), "{path}");
+        }
+        assert!(super::resolve_service("api/items/named", "post").is_err());
+        assert!(crate::script::eval_condition(
+            r#"ec.service.restApi.resolveService("api/items/123/detail", "post").pathParameters[0] === "itemId""#,
+        )
+        .unwrap());
     }
 
     #[test]

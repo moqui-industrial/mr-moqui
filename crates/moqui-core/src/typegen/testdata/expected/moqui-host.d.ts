@@ -122,6 +122,8 @@ interface EntityValueMethods<N extends string = string> {
     /** The rows of every entity that holds a foreign key to this value, as one list. Skip by full name, short alias or entity name; an array or a Set. */
     findRelatedFk(skipEntities?: string[] | Set<string> | null): EntityList;
     getMap(): MoquiMap;
+    getEntityName(): string;
+    resolveEntityName(): string;
     create(): void;
     createOrUpdate(): void;
     update(): void;
@@ -213,6 +215,8 @@ interface EntityFind<N extends string = string> {
     orderBy(fields: string): EntityFind<N>;
     copy(): EntityFind<N>;
     one(): EntityValue<N> | null;
+    /** A plain master graph retaining nested identities; `default` when omitted. */
+    oneMaster(master?: string): MoquiMap | null;
     list(): EntityList<N>;
     iterator(): EntityList<N>;
     count(): number;
@@ -227,6 +231,12 @@ interface EntityFind<N extends string = string> {
 }
 
 // ---- services ----
+
+interface MoquiParameterInfo {
+    name: string;
+    type: string;
+    required: boolean;
+}
 
 /** Filled by the generated `services.d.ts`: input and output maps by service name. */
 interface MoquiServiceIn {}
@@ -327,6 +337,8 @@ interface MoquiEntityFacade {
     find<N extends (keyof MoquiEntityMap & string) | (string & {})>(entityName: N): EntityFind<N>;
     makeValue<N extends (keyof MoquiEntityMap & string) | (string & {})>(entityName: N): EntityValue<N>;
     getDataDocuments(...args: unknown[]): MoquiMap[];
+    /** Flatten a graph to unpersisted values, inheriting keys and skipping read-only relationships. */
+    getValueListFromPlainMap(graph: MoquiMap, entityName: string): EntityList;
     /** The next id of a sequence name, as text. No stagger is 0, no bank size 50. */
     sequencedIdPrimary(seqName: string, staggerMax?: number | null, bankSize?: number | null): string;
     /** Pin the next primary ids of an entity or sequence name to `nextSeqNum` through `nextSeqNum + bankSize`, factory wide. For tests. */
@@ -390,7 +402,11 @@ interface MoquiMessageFacade {
     addPublic(message: string, type?: string): void;
     hasError(): boolean;
     getErrorsString(): string;
+    readonly errorsString: string;
+    /** Clear active errors and validation errors, retaining informational messages. */
     clearErrors(): void;
+    pushErrors(): void;
+    popErrors(): void;
     readonly errors: string[];
 }
 
@@ -524,6 +540,11 @@ interface MoquiScreenTest {
 }
 
 interface MoquiScreenFacade {
+    /** Read metadata only; throws for missing or ambiguous mounts. */
+    getTransitionInfo(root: string, location: string, name: string, method: string): {
+        location: string; name: string; method: string; path: string; serviceName: string | null;
+        pathParameters: string[]; parameterMap: Record<string, { name: string; required: boolean }>;
+    };
     isRenderModeValid(mode: string): boolean;
     isRenderModeText(mode: string): boolean;
     /** A screen-output mode such as xlsx, whose render is bytes. */
@@ -594,6 +615,19 @@ interface MoquiServerEc {
     getTool(name: string, ...parameters: unknown[]): MoquiTool;
     readonly entity: MoquiEntityFacade;
     readonly service: {
+        /** Expanded declarations, including auto-parameters; does not execute the service. */
+        getServiceDefinition(name: string): (MoquiMap & {
+            inParameterNames: string[];
+            inParameterInfoMap: Record<string, MoquiParameterInfo>;
+            outParameterInfoMap: Record<string, MoquiParameterInfo>;
+            getInParameter(name: string): { attribute(name: string): string | null } | null;
+        }) | null;
+        readonly restApi: {
+            /** Resource path without `/rest/s1`; metadata only, not an authorization check. */
+            resolveService(path: string, method: string): {
+                serviceName: string; path: string; method: string; pathParameters: string[];
+            };
+        };
         sync(): ServiceCallSync;
         async(): ServiceCallAsync;
         /** Epoch millis of the next time a Quartz cron expression (seconds first) is due after the moment, or null when never. */
