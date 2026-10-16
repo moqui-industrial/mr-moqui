@@ -35,6 +35,10 @@ fn framework() -> (EntityModel, Dialects) {
     let root = workspace_root();
     let conf =
         MNode::parse_file(root.join("runtime/base-component/framework/conf/MoquiDefaultConf.xml")).expect("conf");
+    // Keep the pre-existing SQL snapshots as explicit legacy-mode coverage.
+    conf.first_named("entity-facade")
+        .unwrap()
+        .set_attribute("sql-name-style", "legacy");
     let model =
         EntityModel::load_directory(&conf, &root.join("runtime/base-component/framework/entity")).expect("model");
     let dialects = Dialects::load(&conf).expect("dialects");
@@ -666,6 +670,9 @@ fn sample_model(entities: &str) -> EntityModel {
     let root = workspace_root();
     let conf =
         MNode::parse_file(root.join("runtime/base-component/framework/conf/MoquiDefaultConf.xml")).expect("conf");
+    conf.first_named("entity-facade")
+        .unwrap()
+        .set_attribute("sql-name-style", "legacy");
     let doc = MNode::parse_text("entities", &format!("<entities>{entities}</entities>")).unwrap();
     EntityModel::load(&conf, &[doc]).unwrap()
 }
@@ -967,6 +974,32 @@ fn an_aggregate_in_where_or_a_having_without_one_is_an_error() {
     )
     .unwrap_err();
     assert!(err.to_string().contains("no aggregate"), "{err}");
+}
+
+#[test]
+fn a_distinct_select_also_selects_its_order_by_fields() {
+    let model = totals_model();
+    let postgres = sample_postgres();
+    let order = model.entity("sample.Order").unwrap();
+    let distinct = SelectOptions {
+        distinct: true,
+        ..SelectOptions::default()
+    };
+    let sql = select_with(
+        order,
+        &postgres,
+        &[FieldRef::new("customerId")],
+        None,
+        &[OrderBy::asc("orderId"), OrderBy::asc("customerId")],
+        LimitOffset::default(),
+        &distinct,
+    )
+    .unwrap();
+    assert!(
+        sql.sql.starts_with("SELECT DISTINCT \"customerId\", \"orderId\" FROM"),
+        "{}",
+        sql.sql
+    );
 }
 
 #[test]

@@ -20,6 +20,7 @@
 //! their `dependsOn` names, in suite order. Each spec runs in its own execution context on one database, as the Spock
 //! specs of a suite share one.
 
+mod coverage;
 mod fixture;
 mod report;
 
@@ -41,6 +42,10 @@ pub struct TestArgs {
     pub junit: Option<PathBuf>,
     pub keep: bool,
     pub log_level: Option<String>,
+    /// `--coverage`: report which services of the components the specs called.
+    pub coverage: bool,
+    /// `--coverage-report file`: write the full report here (with the called services) and print the total.
+    pub coverage_report: Option<PathBuf>,
 }
 
 pub fn parse_test_args(args: &[String]) -> Result<TestArgs, Error> {
@@ -52,6 +57,8 @@ pub fn parse_test_args(args: &[String]) -> Result<TestArgs, Error> {
         junit: None,
         keep: false,
         log_level: None,
+        coverage: false,
+        coverage_report: None,
     };
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -72,10 +79,15 @@ pub fn parse_test_args(args: &[String]) -> Result<TestArgs, Error> {
             "--junit" => parsed.junit = Some(PathBuf::from(value("--junit")?)),
             "--log-level" => parsed.log_level = Some(value("--log-level")?),
             "--keep" => parsed.keep = true,
+            "--coverage" => parsed.coverage = true,
+            "--coverage-report" => {
+                parsed.coverage = true;
+                parsed.coverage_report = Some(PathBuf::from(value("--coverage-report")?));
+            }
             other if other.starts_with("--") => {
                 return Err(Error::new(format!(
                     "unknown option {other}\nRun 'moqui help test' for details."
-                )))
+                )));
             }
             name => parsed.components.push(name.to_string()),
         }
@@ -273,6 +285,9 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
         feature_filter: args.feature.clone(),
     };
     let mut results = Vec::new();
+    if args.coverage {
+        moqui_core::service::coverage::enable();
+    }
     for component in &components {
         for spec in &component.specs {
             let context = fixture.factory.new_context();
@@ -294,6 +309,9 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
                 result,
             });
         }
+    }
+    if args.coverage {
+        print_coverage(&components, &args, &moqui_core::service::coverage::finish())?;
     }
     let log_dir = fixture.log_dir.clone();
     drop(fixture);
@@ -333,6 +351,34 @@ fn loaded_locations(fixture: &TestFixture) -> Vec<PathBuf> {
         .iter()
         .map(|info| std::fs::canonicalize(&info.location).unwrap_or_else(|_| info.location.clone()))
         .collect()
+}
+
+/// The service coverage of each component that ran, on the console, and in full in the `--coverage-report` file.
+fn print_coverage(
+    components: &[TestComponent],
+    args: &TestArgs,
+    counts: &std::collections::BTreeMap<String, u64>,
+) -> Result<(), Error> {
+    let mut full = String::new();
+    for component in components {
+        let files = coverage::coverage(&component.dir, counts);
+        if files.is_empty() {
+            continue;
+        }
+        let text = coverage::render(&component.name, &files, true);
+        full.push_str(&text);
+        if args.coverage_report.is_none() {
+            print!("{}", coverage::render(&component.name, &files, false));
+        } else if let Some(total) = text.lines().last() {
+            println!("Service coverage {}: {total}", component.name);
+        }
+    }
+    if let Some(path) = &args.coverage_report {
+        std::fs::write(path, full)
+            .map_err(|err| Error::new(format!("could not write {}", path.display())).with_source(err))?;
+        println!("Service coverage report: {}", path.display());
+    }
+    Ok(())
 }
 
 /// Components in the order the factory loads them, which follows `depends-on`.

@@ -126,6 +126,8 @@ interface EntityValueMethods<N extends string = string> {
     update(): void;
     delete(): void;
     deleteRelated(relationship: keyof MoquiRel<N> & string): void;
+    /** Deletes the rows of the named `many` relationships (names or short aliases), then this value. False, with nothing deleted, when rows of another entity still reference it. */
+    deleteWithRelated(relationships?: string[] | Set<string> | null): boolean;
     findRelated<R extends keyof MoquiRel<N> & string>(
         relationship: R,
         byAndFields?: MoquiMap | null,
@@ -567,19 +569,28 @@ interface MoquiNotificationMessage {
     getNotifyUserIds(): string[];
 }
 
-/**
- * The server `ec` an action, a service script, or a script outside a render sees: the facade surface.
- * `ec.cache` and `ec.search` are outside the Server host methods list and are typed loosely.
- */
 /** The tools of the linked component crates that declare a type, by tool factory name. `tools.d.ts` adds to it. */
 interface MoquiToolMap {}
 
-/** A tool with no declared type: its methods take and return script values. */
+/** A tool with no declared type: only the methods its Rust `Tool` exposes, taking and returning script values. */
 interface MoquiTool {
     readonly [member: string]: (...args: unknown[]) => unknown;
 }
 
+/** `ec.factory.getToolFactory(name)`: a configured tool factory. */
+interface MoquiToolFactory<T = MoquiTool> {
+    readonly name: string;
+    getInstance(...parameters: unknown[]): T;
+}
+
+/**
+ * The server `ec` an action, a service script, or a script outside a render sees: the facade surface.
+ * `ec.cache` and `ec.search` are outside the Server host methods list and are typed loosely.
+ */
 interface MoquiServerEc {
+    /** The same as `ec.factory.getTool`. */
+    getTool<K extends keyof MoquiToolMap>(name: K, ...parameters: unknown[]): MoquiToolMap[K];
+    getTool(name: string, ...parameters: unknown[]): MoquiTool;
     readonly entity: MoquiEntityFacade;
     readonly service: {
         sync(): ServiceCallSync;
@@ -605,6 +616,9 @@ interface MoquiServerEc {
         /** Java's `getTool(name, parameters...)`: the object of a component's Rust tool factory. A tool that declares its type is in `MoquiToolMap` (`tools.d.ts`). */
         getTool<K extends keyof MoquiToolMap>(name: K, ...parameters: unknown[]): MoquiToolMap[K];
         getTool(name: string, ...parameters: unknown[]): MoquiTool;
+        /** The tool factory a conf `tool-factory` element selected, or null when there is none of that name. */
+        getToolFactory<K extends keyof MoquiToolMap>(name: K): MoquiToolFactory<MoquiToolMap[K]> | null;
+        getToolFactory(name: string): MoquiToolFactory | null;
     };
     readonly cache: { getCache(name: string): { get(key: string): unknown; put(key: string, value: unknown): void; remove(key: string): boolean; containsKey(key: string): boolean; clear(): void } };
     /**

@@ -27,6 +27,28 @@ The component name is `mantle-usl` (from `component.xml`), not the directory nam
 
 `OrderTenantAccess` is not ported (not in the Spock suite; multi-tenant is deprecated).
 
+## Specs without a Spock original (2026-10-16)
+
+Written to run services that no flow reaches, and run after the flows. Each was written against the service text, not an oracle, so a failing check is as likely a wrong expectation as a bug; the notes in each file say where a service is an upstream stub. `moqui test mantle-usl --coverage` lists the services no spec called, per file; `--coverage-report file` writes the call counts.
+
+| Spec | Services |
+|---|---|
+| HumanResServices | Employment, EmploymentSalary, RateAmount, payroll time periods, positions |
+| PayrollServices | process#TimePeriodPay, employment pay, invoices, payments, reopen |
+| ContactAndFacilityServices | party and facility contact info, FacilityServices |
+| PartyServices | find, convert, roles, classifications, settings, user accounts, badge scans |
+| BankFileServices | OFX and BAI 2 import, match, reconcile, unreconcile |
+| BankOutputFiles | NACHA, Positive Pay (six formats) |
+| FinancialReports | income statement, balance sheet, cash flow, ratios, ledger info, period series |
+| ProductCatalogServices | features, variants, categories, content, clone, store slugs and options |
+| BudgetServices | budgets, sub-period items, details, expense reports |
+| TaxStatementServices | 1099-MISC statements, payer and recipient tax info |
+| InvoicePaymentMisc | invoice and payment edits, credit memo, reverse, cancel, void, refund |
+| WorkProjectServices | work efforts, projects, milestones, tasks, comments, time entries, events |
+| LedgerMaintenance | GL accounts, transactions, journals, period close and reopen, reposting |
+
+Specs that create their own organization (`init#PartyAccountingConfiguration` with `sourcePartyId: "DefaultSettings"`) get a full set of fiscal periods and accounts. A spec that freezes time with `ec.user.setEffectiveTime` cannot give one party the same role twice in the same millisecond (primary key).
+
 ## Known differences from the Groovy checks
 
 - `totalFieldsChecked` counting is dropped; `checkData` returns only errors.

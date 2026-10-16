@@ -27,7 +27,8 @@ use crate::context::Error;
 const TEMPLATE_SUPPORT: &str = include_str!("../../../../runtime/base-component/framework/template/TemplateSupport.js");
 const XML_ACTIONS: &str = include_str!("../../../../runtime/base-component/framework/template/XmlActions.js");
 
-/// Set this to add a comment naming the XML element before each generated statement.
+/// Set this to add a comment naming the XML element before each generated statement. The value `dump` also prints
+/// each generated script to stderr, with line numbers as an error's `eval_script:LINE` has them.
 const DEBUG_ENV: &str = "MOQUI_ACTIONS_DEBUG";
 
 /// The generated scripts kept, and the XML and script text they may add up to.
@@ -143,7 +144,15 @@ fn generated(xml: &str) -> Result<ScriptText, Error> {
 }
 
 fn generate(xml: &str) -> Result<String, Error> {
-    generate_with(xml, std::env::var_os(DEBUG_ENV).is_some())
+    let debug = std::env::var_os(DEBUG_ENV);
+    let source = generate_with(xml, debug.is_some())?;
+    if debug.is_some_and(|value| value == "dump") {
+        eprintln!("---- generated action script ----");
+        for (index, line) in source.lines().enumerate() {
+            eprintln!("{:>4}: {line}", index + 1);
+        }
+    }
+    Ok(source)
 }
 
 fn generate_with(xml: &str, debug: bool) -> Result<String, Error> {
@@ -307,6 +316,8 @@ mod tests {
                 <set field="made" from="ec.entity.conditionFactory.makeCondition('a', 'greater', 3) != null"/>
                 <set field="skipped" from="ec.entity.conditionFactory.makeActionConditionDirect('a', 'equals', null, null, null, false, true, false, 'false') === null"/>
                 <set field="dated" from="ec.entity.conditionFactory.makeConditionDate('fromDate', 'thruDate', null, false, 'false') != null"/>
+                <set field="ignoreFlag" from="true"/>
+                <set field="ignoredDate" from="ec.entity.conditionFactory.makeConditionDate('fromDate', 'thruDate', null, false, ignoreFlag) === null"/>
             </actions>"#,
         )
         .unwrap();
@@ -317,6 +328,55 @@ mod tests {
         assert_eq!(text("made").as_deref(), Some("true"));
         assert_eq!(text("skipped").as_deref(), Some("true"));
         assert_eq!(text("dated").as_deref(), Some("true"));
+        assert_eq!(text("ignoredDate").as_deref(), Some("true"));
+    }
+
+    /// A list of maps passed in keeps what an iterate sets on an element when another iterate (after a service call)
+    /// reads the list again, as the Java maps are the same objects.
+    #[test]
+    fn an_element_changed_in_an_iterate_is_changed_in_the_next_one() {
+        clear_context_stack();
+        let ctx = ExecutionContextFactory::test_context();
+        let _guard = ctx.enter();
+        let item = |name: &str| {
+            let mut map = indexmap::IndexMap::new();
+            map.insert("name".to_string(), Value::string(name));
+            Value::Map(map)
+        };
+        set_context_name("datasets", Value::List(vec![item("a"), item("b")])).unwrap();
+        run_actions(
+            r#"<actions>
+                <iterate list="datasets" entry="dataset">
+                    <set field="dataset.classSet" from="[]"/>
+                    <!-- a call that may change the context releases the script's values, as a service call does -->
+                    <script>ec.resource.expand('x', '', {k: 1})</script>
+                    <script>dataset.classSet.push(dataset.name)</script>
+                </iterate>
+                <set field="seen" from="datasets.map(function (d) { return d.classSet == null ? 'none' : d.classSet.join(','); }).join('|')"/>
+            </actions>"#,
+        )
+        .unwrap();
+        let seen = crate::script::context_value("seen").map(|value| moqui_lib::object::to_plain_string(&value));
+        assert_eq!(seen.as_deref(), Some("a|b"));
+        clear_context_stack();
+    }
+
+    /// `ignore` is an expression in the XML: the generated code passes its value, and a plain `econdition` with an
+    /// `ignore` is not made the shorthand `.condition(field, value)` that has no way to skip.
+    #[test]
+    fn the_ignore_attribute_is_an_expression() {
+        let script = generate_with(
+            r#"<actions><entity-find entity-name="a.B" list="rows">
+                <econdition field-name="statusId" ignore="!statusId &amp;&amp; !strictAll"/>
+                <econdition field-name="partyId"/>
+                <date-filter ignore="skipDates"/>
+            </entity-find></actions>"#,
+            false,
+        )
+        .unwrap();
+        assert!(script.contains("!!(!statusId && !strictAll)"), "{script}");
+        assert!(script.contains("!!(skipDates)"), "{script}");
+        assert!(script.contains(r#".condition("partyId", partyId)"#), "{script}");
     }
 
     #[test]

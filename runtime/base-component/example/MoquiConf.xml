@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Merged into the conf only when the component loads. It selects the tool factory this component's crate links, by
+    the class it registers in its catalogue (src/example_tool.rs). -->
+<moqui-conf xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/moqui-conf-3.xsd">
+    <tools>
+        <tool-factory class="example::ExampleToolFactory" init-priority="20"/>
+    </tools>
+</moqui-conf>

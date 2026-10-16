@@ -432,6 +432,7 @@ impl EntityFind {
             fields: self.select_fields.clone(),
         };
         self.facade.with_group(&self.entity_name, |entity, dialect, model, tx| {
+            let condition = field_rw::encrypt_condition(&self.facade, entity, condition.clone())?;
             for name in &self.select_fields {
                 if !entity.has_field(name) {
                     return Err(Error::new(format!("{} has no field {name}", entity.full_name)));
@@ -686,7 +687,7 @@ mod tests {
             "only the selected field is read"
         );
         let sql = tape.lock().unwrap().last().cloned().unwrap();
-        assert!(sql.starts_with("SELECT \"testId\" FROM"), "{sql}");
+        assert!(sql.starts_with("SELECT \"test_id\" AS \"testId\" FROM"), "{sql}");
         let err = facade
             .find("moqui.test.TestEntity")
             .unwrap()
@@ -767,12 +768,12 @@ mod tests {
         let tape = tape.lock().unwrap();
         assert!(
             tape.iter()
-                .any(|sql| sql.ends_with("WHERE UPPER(\"testMedium\") = UPPER(?)")),
+                .any(|sql| sql.ends_with("WHERE UPPER(\"test_medium\") = UPPER(?)")),
             "{tape:?}"
         );
         assert!(
             tape.iter()
-                .any(|sql| sql.ends_with("WHERE \"testId\" <= \"testMedium\"")),
+                .any(|sql| sql.ends_with("WHERE \"test_id\" <= \"test_medium\"")),
             "{tape:?}"
         );
         let dialect = moqui_db::dialect::Dialects::load(

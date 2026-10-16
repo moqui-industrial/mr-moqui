@@ -129,7 +129,7 @@ struct ScriptConn {
 
 impl DbConnection for ScriptConn {
     fn execute(&mut self, sql: &str, params: &[Value]) -> Result<u64, Error> {
-        if sql.contains("DataFeedPending") {
+        if sql.contains("data_feed_pending") {
             self.script.inserts.lock().expect("inserts").push(params.to_vec());
         } else if sql.starts_with("INSERT") && self.script.fail_inserts.load(Ordering::SeqCst) {
             return Err(Error::new("duplicate key value violates unique constraint"));
@@ -137,30 +137,30 @@ impl DbConnection for ScriptConn {
         Ok(1)
     }
     fn query(&mut self, sql: &str, _params: &[Value]) -> Result<Vec<DbRow>, Error> {
-        if (sql.contains("DataFeed") || sql.contains("DataDocument")) && !sql.contains("DataFeedPending") {
+        if (sql.contains("data_feed") || sql.contains("data_document")) && !sql.contains("data_feed_pending") {
             self.script.definition_reads.fetch_add(1, Ordering::SeqCst);
         }
-        if self.script.missing_feed && sql.contains("DataFeed") {
+        if self.script.missing_feed && sql.contains("data_feed") {
             let source = std::io::Error::other("relation \"DataFeed\" does not exist");
             return Err(Error::new("postgres query").with_source(source));
         }
         if sql.contains("xmin") {
             return Ok(vec![db_row(&[("fooId", "F1")])]);
         }
-        if sql.contains("DataDocumentField") {
+        if sql.contains("data_document_field") {
             let source = std::io::Error::other("relation \"DataDocumentField\" does not exist");
             return Err(Error::new("postgres query").with_source(source));
         }
-        if sql.contains("DataFeedDocument") {
+        if sql.contains("data_feed_document") {
             return Ok(vec![db_row(&[("dataFeedId", "FEED1"), ("dataDocumentId", "DOC1")])]);
         }
-        if sql.contains("DataDocument") {
+        if sql.contains("data_document") {
             return Ok(vec![db_row(&[
                 ("dataDocumentId", "DOC1"),
                 ("primaryEntityName", "moqui.test.Foo"),
             ])]);
         }
-        if sql.contains("DataFeed") {
+        if sql.contains("data_feed") {
             return Ok(vec![db_row(&[
                 ("dataFeedId", "FEED1"),
                 ("feedReceiveServiceName", "index#DataDocuments"),
@@ -761,11 +761,11 @@ fn a_missing_table_probe_fails_when_the_savepoint_rollback_fails() {
     let mut conn = ScriptConn {
         script: Arc::clone(&script),
     };
-    let rows = probe_query(&mut conn, "SELECT * FROM DataFeed", &[]).unwrap();
+    let rows = probe_query(&mut conn, "SELECT * FROM data_feed", &[]).unwrap();
     assert!(rows.is_empty());
 
     script.broken_rollback.store(true, Ordering::SeqCst);
-    let err = probe_query(&mut conn, "SELECT * FROM DataFeed", &[]).unwrap_err();
+    let err = probe_query(&mut conn, "SELECT * FROM data_feed", &[]).unwrap_err();
     assert!(err.to_string().contains("aborted"), "{err}");
 }
 

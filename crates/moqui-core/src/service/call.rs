@@ -24,7 +24,7 @@ use moqui_lib::object::{is_empty, Value};
 use super::define::{Authenticate, ServiceDef, ServiceKind};
 use super::util::has_error;
 use super::validate;
-use crate::context::Error;
+use crate::context::{Error, ExecutionContext};
 use crate::entity::{EntityFacade, EntityValue};
 use crate::transaction::TransactionAttribute;
 
@@ -262,6 +262,7 @@ pub fn sync_with(
     let name = canonical(name);
     let facade = current_facade();
     let def = resolve(&name, facade.as_ref())?;
+    super::coverage::record(&def.name);
     super::seca::run_seca_rules(&def.name, "pre-validate", parameters, None)?;
     // Input that fails its checks is validation errors in the message facade and no run, as in Java: the caller sees
     // the errors (a screen shows them by their fields) instead of a failed call.
@@ -612,10 +613,29 @@ fn execute(
     facade: &EntityFacade,
 ) -> Result<BTreeMap<String, Value>, LibError> {
     match def.kind {
-        ServiceKind::Rust => match &def.rust_fn {
-            Some(run) => run.run(parameters, facade),
+        ServiceKind::Rust => match def.rust_fn {
+            Some(run) => run(parameters, facade),
             None => Err(LibError::new(format!("service {} has no rust function", def.name))),
         },
+        ServiceKind::Native => {
+            let run = def
+                .native_fn
+                .as_ref()
+                .ok_or_else(|| LibError::new(format!("service {} has no native implementation", def.name)))?;
+            ExecutionContext::with_current(|ec| {
+                run.call(
+                    ec,
+                    &crate::native::ServiceInfo {
+                        name: &def.name,
+                        service_type: &def.service_type,
+                        location: &def.location,
+                        method: &def.method,
+                    },
+                    parameters,
+                )
+            })
+            .ok_or_else(|| LibError::new("no execution context is entered"))?
+        }
         ServiceKind::Interface => Err(LibError::new(format!("interface {} has no runner", def.name))),
         ServiceKind::Unsupported => Err(LibError::new(format!(
             "service {} runs {}, a script language this port does not run",
@@ -1163,8 +1183,8 @@ mod tests {
             .expect("stored row");
         assert_eq!(row.get("testMedium").and_then(Value::as_str), Some("second"));
         let sql = tape.lock().unwrap_or_else(|err| err.into_inner()).join("\n");
-        assert!(sql.contains("INSERT") && sql.contains("TestEntity"), "{sql}");
-        assert!(sql.contains("UPDATE") && sql.contains("TestEntity"), "{sql}");
+        assert!(sql.contains("INSERT") && sql.contains("test_entity"), "{sql}");
+        assert!(sql.contains("UPDATE") && sql.contains("test_entity"), "{sql}");
         assert!(!sql.contains("ON CONFLICT"), "{sql}");
     }
 
@@ -1755,6 +1775,31 @@ mod tests {
         assert_eq!(
             out.get("testMedium").map(moqui_lib::object::to_plain_string).as_deref(),
             Some("kept"),
+            "{out:?}"
+        );
+        assert!(!out.contains_key("notDeclared"), "{out:?}");
+    }
+
+    #[test]
+    fn auto_parameters_of_a_view_entity_use_its_aliases() {
+        let path = write_fixture(
+            "auto-view",
+            r#"<services><service verb="give" noun="AutoView">
+                <in-parameters><auto-parameters entity-name="moqui.test.TestEntityCount"/></in-parameters>
+                <out-parameters><auto-parameters entity-name="moqui.test.TestEntityCount"/></out-parameters>
+                <actions><set field="entityCount" value="7"/><set field="notDeclared" value="dropped"/></actions>
+            </service></services>"#,
+        );
+        let (_facade, ctx) = seeded_context(&[]);
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        let out = sync("give#AutoView", &BTreeMap::new()).unwrap();
+        assert_eq!(
+            out.get("entityCount")
+                .map(moqui_lib::object::to_plain_string)
+                .as_deref(),
+            Some("7"),
             "{out:?}"
         );
         assert!(!out.contains_key("notDeclared"), "{out:?}");

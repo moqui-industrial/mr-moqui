@@ -12,16 +12,11 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-use moqui_core::context::ComponentTools;
-
-/// The component crates linked into this binary, by component name. `./moq build` generates a binary with the same
-/// list plus the add-on component crates in runtime/component (target/moqui-app).
-static COMPONENT_TOOLS: [(&str, ComponentTools); 1] = [("example", example::tool_factories)];
+// Component crates kept in runtime/base-component. Naming each keeps its `submit_component!` entry in the binary; it adds
+// nothing unless its component loads. `./moq build` generates a binary with these plus the add-on component crates in
+// runtime/component (target/moqui-app).
+use example as _;
 
 fn main() {
-    if let Err(err) = moqui_core::context::register_component_tools(&COMPONENT_TOOLS) {
-        eprintln!("{err}");
-        std::process::exit(1);
-    }
     moqui_host::main();
 }

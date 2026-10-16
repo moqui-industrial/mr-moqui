@@ -78,7 +78,7 @@ pub(super) fn object_to_js<'js>(ctx: &Ctx<'js>, object: &HostObject) -> rquickjs
     if let Some(inner) = object.downcast::<crate::web::multipart::UploadedFile>() {
         return Class::instance(ctx.clone(), HostUpload { inner }).and_then(|class| class.into_js(ctx));
     }
-    if let Some(inner) = object.downcast::<crate::context::ToolHandle>() {
+    if let Some(inner) = object.downcast::<crate::native::ToolHandle>() {
         return tool_to_js(ctx, inner);
     }
     Err(Exception::throw_message(ctx, "cannot convert this object"))

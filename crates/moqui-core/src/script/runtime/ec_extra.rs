@@ -28,11 +28,9 @@ fn with_additional<'js, T>(
     map: &Opt<JsValue<'js>>,
     body: impl FnOnce() -> rquickjs::Result<T>,
 ) -> rquickjs::Result<T> {
+    // A map, or an entity value as the additional context, gives its fields, as Java's `EntityValueBase` Map does.
     let entries = match map.0.as_ref().filter(|value| value.is_object()) {
-        Some(value) => match js_to_host(ctx, value)? {
-            Value::Map(entries) => Some(entries),
-            _ => None,
-        },
+        Some(value) => value_map(&js_to_host(ctx, value)?),
         None => None,
     };
     let Some(entries) = entries else {
@@ -95,19 +93,23 @@ fn throw_error(ctx: &Ctx<'_>, err: &Error) -> JsError {
 
 fn resource_expand_l10n<'js>(
     ctx: Ctx<'js>,
-    template: String,
+    template: Option<String>,
     _location: Opt<JsValue<'js>>,
     map: Opt<JsValue<'js>>,
 ) -> rquickjs::Result<String> {
+    // a null template expands to nothing, as in Java
+    let template = template.unwrap_or_default();
     host_guard(&ctx, || expand_with(&ctx, &template, &map, true))
 }
 
 fn resource_expand_no_l10n<'js>(
     ctx: Ctx<'js>,
-    template: String,
+    template: Option<String>,
     _location: Opt<JsValue<'js>>,
     map: Opt<JsValue<'js>>,
 ) -> rquickjs::Result<String> {
+    // a null template expands to nothing, as in Java
+    let template = template.unwrap_or_default();
     host_guard(&ctx, || expand_with(&ctx, &template, &map, false))
 }
 
@@ -843,6 +845,7 @@ pub(super) fn install_ec_extras<'js>(ctx: &Ctx<'js>, ec: &Object<'js>) -> Result
         "ec.factory.moquiVersion",
         factory.set("moquiVersion", env!("CARGO_PKG_VERSION")),
     )?;
+    super::native_tools::install(ctx, ec, &factory)?;
     caught(ctx, "ec.factory", ec.set("factory", factory))?;
     caught(ctx, "ec.screen", ec.set("screen", screen_object(ctx)?))
 }

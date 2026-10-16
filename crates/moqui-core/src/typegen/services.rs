@@ -102,6 +102,7 @@ fn kind_name(kind: ServiceKind) -> &'static str {
         ServiceKind::Interface => "interface",
         ServiceKind::RemoteRest => "remote-rest",
         ServiceKind::Rust => "rust",
+        ServiceKind::Native => "native",
         ServiceKind::Unsupported => "script (not run by this port)",
     }
 }

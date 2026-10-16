@@ -49,6 +49,29 @@ feature("XML Actions keep the tool in a field and call it", {
     },
 })
 
+feature("a closure service reads the tool factory's state", {
+    when() {
+        const counter = ec.getTool("ExampleTool").counter()
+        const value = counter.increment(3)
+        return { value, out: call("example.ExampleServices.get#CounterValue", {}) }
+    },
+    then({ value, out }) {
+        out.count == value
+    },
+})
+
+feature("the tool factory by name, and null for none", {
+    when() {
+        const factory = ec.factory.getToolFactory("ExampleTool")
+        return { name: factory.name, text: factory.getInstance("Hey").greet("Lin"), none: ec.factory.getToolFactory("NoSuchTool") }
+    },
+    then({ name, text, none }) {
+        name == "ExampleTool"
+        text == "Hey, Lin!"
+        none == null
+    },
+})
+
 feature("an unknown tool is an error", {
     when() {
         try {
@@ -59,6 +82,6 @@ feature("an unknown tool is an error", {
         }
     },
     then({ message }) {
-        message.includes("no tool factory named NoSuchTool")
+        message.includes("no tool factory NoSuchTool")
     },
 })

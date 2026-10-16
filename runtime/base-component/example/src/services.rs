@@ -12,34 +12,33 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! `type="rust"` services. `register_service!` names each function by its Rust path, which is the `location` in
-//! `service/example/ExampleServices.xml`: `example::services::echo`.
+//! `type="rust"` services bound in the catalogue. `service_location!` names each function by its Rust path, which is
+//! the `location` in `service/example/ExampleServices.xml`: `example::services::echo`.
 
-use std::collections::BTreeMap;
-
-use moqui_core::context::{Error, ExecutionContextFactory};
-use moqui_core::entity::EntityFacade;
+use moqui_core::context::{Error, ExecutionContext};
+use moqui_core::native::{NativeRegistry, Parameters, ServiceInfo};
 use moqui_lib::error::Error as LibError;
 use moqui_lib::object::Value;
 
-/// Register this module's services. Called from the tool factory's `pre_facade_init`, before any service definition is
-/// read.
-pub(crate) fn register(ecf: &ExecutionContextFactory) -> Result<(), Error> {
-    moqui_core::register_service!(ecf, echo)?;
-    Ok(())
+pub(crate) fn register(registry: &mut NativeRegistry) -> Result<(), Error> {
+    registry.service_function(moqui_core::service_location!(echo), echo)
 }
 
-/// `example.ExampleServices.echo#Message`: the message back, with the user the call runs as. The parameters are
-/// already validated against the definition, and the call's execution context is the entered one, so the user and the
-/// transaction are the caller's.
+/// `example.ExampleServices.echo#Message`: the message back, with the user the call runs as. The service XML defines the
+/// parameters, authentication and transaction; the parameters are already validated, and `ec` is the caller's, so the
+/// user and the transaction are the caller's.
 ///
 /// # Errors
 ///
 /// Returns an error when the session cannot be read.
-pub fn echo(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) -> Result<BTreeMap<String, Value>, LibError> {
+pub fn echo(
+    _ec: &ExecutionContext,
+    _service: &ServiceInfo<'_>,
+    parameters: &Parameters,
+) -> Result<Parameters, LibError> {
     let message = parameters.get("message").cloned().unwrap_or(Value::Null);
     let username = moqui_core::user::current_username()?.map_or(Value::Null, Value::String);
-    let mut out = BTreeMap::new();
+    let mut out = Parameters::new();
     out.insert("message".to_string(), message);
     out.insert("username".to_string(), username);
     Ok(out)

@@ -84,6 +84,8 @@ reqwest = { version = "0.13", default-features = false, features = [
 encoding_rs = "0.8"
 
 # --- moqui-core (no direct tokio, axum, postgres, mysql, or postgresql_embedded) ---
+# Linked component crates submit their implementation catalogue (moqui_core::native::submit_component!).
+inventory = "0.3.25"
 # Field encryption. pbkdf2 0.12 stays on hmac 0.12 and sha2 0.10.
 # aes, cbc, and des share cipher 0.5. cbc alloc is the Vec padding API.
 aes = "0.9"

@@ -67,7 +67,8 @@ pub struct TestFixture {
 impl Drop for TestFixture {
     fn drop(&mut self) {
         crate::wait_for_workers(&self.factory, std::time::Duration::from_secs(30));
-        self.factory.destroy_tools();
+        // The tools close while the database is still up.
+        self.factory.shutdown_tools();
         crate::logging::stop_shipping();
         drop(self.facade.take());
         drop(self.db.take());
@@ -269,15 +270,13 @@ fn boot(runtime: &Path, framework: &Path) -> Result<Booted, Error> {
     std::fs::create_dir_all(&cluster).map_err(io("could not create the cluster directory"))?;
     let install = crate::db::embedded::shared_install_dir(&runtime.join("db"), &cluster);
     let db = crate::db::entity_db::open(conf, &cluster, &install, pool.max)?;
-    let facade = crate::db::entity_facade::open_entity_facade_components(
-        framework,
-        &crate::db::entity_facade::component_entity_dirs(&factory),
+    let facade = crate::db::entity_facade::open_entity_facade_for_factory(
+        &factory,
         Arc::clone(&db.driver),
         pool,
         &db.conf.dialect,
     )?;
     crate::db::entity_facade::attach(&factory, facade.clone());
-    factory.post_facade_init().map_err(Error::from)?;
     let search = match crate::search::attach_search(&factory, &facade, db.is_postgres()) {
         Ok(store) => Some(store),
         Err(err) => {
@@ -285,5 +284,6 @@ fn boot(runtime: &Path, framework: &Path) -> Result<Booted, Error> {
             None
         }
     };
+    factory.init_tools().map_err(Error::from)?;
     Ok((factory, facade, search, db))
 }

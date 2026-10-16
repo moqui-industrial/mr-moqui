@@ -28,7 +28,6 @@ use base64::Engine;
 
 use moqui_lib::env;
 use moqui_lib::node::MNode;
-use moqui_lib::object::Value;
 use moqui_lib::sync::{lock, read, write};
 
 use super::artifact::{ArtifactStack, AuthzGuard};
@@ -45,7 +44,6 @@ use super::confcache::ConfCache;
 use super::error::Error;
 use super::message::MessageFacade;
 use super::resource::ResourceFacade;
-use super::tool::{self, ComponentTools, Tool, ToolFactory, ToolRegistry};
 use crate::entity::EntityFacade;
 use crate::user::AuthInfo;
 
@@ -98,8 +96,14 @@ pub struct ExecutionContextFactory {
     hits: super::hits::ArtifactHits,
     /// When the factory booted, in epoch milliseconds, for the status of the tools dashboard.
     started_millis: i64,
-    /// The tool factories of the loaded components, in init order.
-    tools: ToolRegistry,
+    native: crate::native::NativeRegistry,
+    pub(crate) native_tools: crate::native::ToolSet,
+}
+
+impl Drop for ExecutionContextFactory {
+    fn drop(&mut self) {
+        self.native_tools.shutdown();
+    }
 }
 
 /// How async service calls, `callFuture()`, and scheduled jobs run.
@@ -128,9 +132,6 @@ impl Default for Executor {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BootOptions {
     pub executor: Executor,
-    /// The component crates whose tool factories this factory makes, as (component name, maker) pairs. None uses the
-    /// ones the binary registered with [`super::tool::register_component_tools`].
-    pub tool_factories: Option<&'static [(&'static str, ComponentTools)]>,
 }
 
 /// The framework component beside `tools` and `webroot`, when `MOQUI_FRAMEWORK` is not set.
@@ -195,19 +196,14 @@ impl ExecutionContextFactory {
         let component_dirs: Vec<_> = components.iter().map(|info| info.location.clone()).collect();
         let conf_node =
             conf::merge_component_confs(&framework_dir, &runtime_dir, &component_dirs)?.unwrap_or(conf_node);
+        let native = crate::native::NativeRegistry::discover(&components, &conf_node)?;
         let env_path = runtime_dir.join(".env");
         let (property_names, mut set_by_boot) = apply_default_properties(&conf_node, &env_path)?;
-        let tools = ToolRegistry::build(
-            options.tool_factories.unwrap_or_else(tool::component_tools),
-            &components,
-            &conf_node,
-        )?;
         let entity = Arc::new(RwLock::new(None));
         let resource = ResourceFacade::new(runtime_dir.clone(), component_roots(&components), Arc::clone(&entity));
         tracing::info!("Resource Facade initialized");
         let cache = CacheFacade::from_conf(&conf_node)?;
         tracing::info!("Cache Facade initialized");
-        set_by_boot.keep();
         let conf_text = conf_node.write_string();
         let hits = super::hits::ArtifactHits::from_conf(&conf_text);
         let flush_mode = crate::user::session::flush_mode_from_property()?;
@@ -241,13 +237,15 @@ impl ExecutionContextFactory {
             cluster_heartbeat: AtomicBool::new(false),
             hits,
             started_millis: jiff::Timestamp::now().as_millisecond(),
-            tools,
+            native,
+            native_tools: crate::native::ToolSet::default(),
         });
+        factory.native.configure(&factory, &conf_node)?;
+        set_by_boot.keep();
         factory.pools.attach(&factory);
         // The host calls cluster::start after the entity facade is installed.
         install_session_flush(&factory);
         install_hit_flush(&factory);
-        factory.tools.pre_facade_init(&factory)?;
         Ok(factory)
     }
 
@@ -361,6 +359,95 @@ impl ExecutionContextFactory {
 
     pub fn components(&self) -> &[ComponentInfo] {
         &self.components
+    }
+
+    /// Linked implementations; XML still defines services and bindings.
+    pub(crate) fn native(&self) -> &crate::native::NativeRegistry {
+        &self.native
+    }
+
+    /// Initialize configured tools once, after installing the required facades.
+    pub fn init_tools(self: &Arc<Self>) -> Result<(), Error> {
+        let context = self.new_context();
+        let _entered = context.enter();
+        self.native_tools.init(self)
+    }
+
+    /// Stop request/service workers before closing tools. The host calls this after its listeners stop.
+    pub fn shutdown(&self) {
+        self.requests.shutdown();
+        self.pools.shutdown();
+        self.shutdown_tools();
+    }
+
+    /// Stop tools in reverse order. Call only after their callers have stopped.
+    pub fn shutdown_tools(&self) {
+        self.native_tools.shutdown();
+    }
+
+    pub fn get_tool_factory(&self, name: &str) -> Option<Arc<dyn crate::native::ToolFactory>> {
+        self.native_tools.get(name)
+    }
+
+    pub fn get_tool(
+        &self,
+        name: &str,
+        parameters: &[moqui_lib::object::Value],
+    ) -> Result<Arc<dyn crate::native::Tool>, Error> {
+        self.get_tool_factory(name)
+            .ok_or_else(|| Error::new(format!("no tool factory {name}")))?
+            .get_instance(parameters)
+    }
+
+    pub fn get_tool_typed<T: crate::native::Tool>(
+        &self,
+        name: &str,
+        parameters: &[moqui_lib::object::Value],
+    ) -> Result<Arc<T>, Error> {
+        let instance: Arc<dyn std::any::Any + Send + Sync> = self.get_tool(name, parameters)?;
+        instance
+            .downcast::<T>()
+            .map_err(|_| Error::new(format!("tool {name} has a different instance type")))
+    }
+
+    /// The tool factory named `name` as its own type, for Rust code that wants more than its instances. None when there
+    /// is none or it is another type.
+    pub fn get_tool_factory_typed<T: crate::native::ToolFactory>(&self, name: &str) -> Option<Arc<T>> {
+        let factory: Arc<dyn std::any::Any + Send + Sync> = self.get_tool_factory(name)?;
+        factory.downcast::<T>().ok()
+    }
+
+    /// The tool factories that give a TypeScript type for their instance, as (name, type), for `moqui types`.
+    pub fn tool_type_declarations(&self) -> Vec<(String, &'static str)> {
+        self.native_tools.type_declarations()
+    }
+
+    /// Bind a `type="rust"` service location to a closure for this factory, beside the linked catalogue's functions. For
+    /// an implementation that keeps state, such as a tool factory's: call it from `ToolFactory::pre_facade_init`.
+    /// [`crate::service_location!`] names a function by its Rust path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the location is empty, already bound (a built-in or catalogue function included), or when
+    /// this factory has already read service definitions, which resolve their location as they are read.
+    pub fn register_service(
+        &self,
+        location: &str,
+        run: impl Fn(
+                &ExecutionContext,
+                &crate::native::ServiceInfo<'_>,
+                &crate::native::Parameters,
+            ) -> Result<crate::native::Parameters, moqui_lib::error::Error>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Result<(), Error> {
+        if crate::service::define::definitions_read(self) {
+            return Err(Error::new(format!(
+                "rust service {location} is registered after the service definitions were read; register it in pre_facade_init"
+            )));
+        }
+        self.native.register_service(location, Arc::new(run))
     }
 
     pub fn resource(&self) -> &ResourceFacade {
@@ -498,75 +585,6 @@ impl ExecutionContextFactory {
     /// The installed entity facade, when the host has registered one.
     pub fn entity(&self) -> Option<EntityFacade> {
         read(&self.entity).clone()
-    }
-
-    /// Run [`ToolFactory::init`] of each tool factory, in init order. The host calls this once the entity facade is
-    /// attached, before it loads data or takes a request. Later calls do nothing.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first tool factory's init error.
-    pub fn post_facade_init(self: &Arc<Self>) -> Result<(), Error> {
-        self.tools.init(self)
-    }
-
-    /// Run [`ToolFactory::destroy`] of each tool factory, in reverse init order. The host calls this at shutdown while
-    /// the entity facade is still attached; the factory's drop calls it too. Later calls do nothing.
-    pub fn destroy_tools(&self) {
-        self.tools.destroy();
-    }
-
-    /// Java's `getTool(name, parameters...)`: the instance of the tool factory named `name`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a not-found error when no loaded tool factory has that name, or the tool factory's instance error.
-    pub fn tool(&self, name: &str, parameters: &[Value]) -> Result<Arc<dyn Tool>, Error> {
-        self.tools.instance(name, parameters)
-    }
-
-    /// The tool factory named `name` as its own type. None when there is none or it is another type.
-    pub fn tool_factory<T: ToolFactory>(&self, name: &str) -> Option<Arc<T>> {
-        self.tools.factory(name).and_then(tool::downcast::<T>)
-    }
-
-    /// The names of the tool factories, in init order.
-    pub fn tool_names(&self) -> Vec<String> {
-        self.tools.names()
-    }
-
-    /// The tool factories that give a TypeScript type for their instance, as (name, type).
-    pub fn tool_type_declarations(&self) -> Vec<(String, &'static str)> {
-        self.tools.type_declarations()
-    }
-
-    /// Register the body of `type="rust"` services whose `location` is `location`, for this factory. The
-    /// [`crate::register_service!`] macro names a function by its Rust path, the convention the built-in services use.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the location is empty or already registered (a built-in service included), or when this
-    /// factory has already read service definitions, which resolve their location as they are read. Register in
-    /// [`ToolFactory::pre_facade_init`].
-    pub fn register_service(
-        &self,
-        location: &str,
-        run: impl Fn(
-                &std::collections::BTreeMap<String, Value>,
-                &EntityFacade,
-            ) -> Result<std::collections::BTreeMap<String, Value>, moqui_lib::error::Error>
-            + Send
-            + Sync
-            + 'static,
-    ) -> Result<(), Error> {
-        crate::service::rust_services::register(self, location, crate::service::RustServiceFn::new(run))
-    }
-}
-
-impl Drop for ExecutionContextFactory {
-    /// The tool factories are destroyed here when the host did not call [`Self::destroy_tools`] first.
-    fn drop(&mut self) {
-        self.tools.destroy();
     }
 }
 
@@ -1270,7 +1288,8 @@ impl ExecutionContextFactory {
             cluster_heartbeat: AtomicBool::new(false),
             hits: super::hits::ArtifactHits::from_conf(conf_text),
             started_millis: jiff::Timestamp::now().as_millisecond(),
-            tools: ToolRegistry::default(),
+            native: crate::native::NativeRegistry::default(),
+            native_tools: crate::native::ToolSet::default(),
         });
         factory.pools.attach(&factory);
         install_hit_flush(&factory);

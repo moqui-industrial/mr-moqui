@@ -53,12 +53,12 @@ mod facades;
 #[cfg(test)]
 mod framework_gaps_tests;
 mod helpers;
+mod native_tools;
 mod notification;
 mod screen_host;
 mod search;
 mod services;
 mod sftp;
-mod tool_object;
 mod tools_host;
 mod upload;
 mod urls;
@@ -76,10 +76,10 @@ use error_info::*;
 pub use facades::run_script_location;
 use facades::*;
 use helpers::*;
+use native_tools::*;
 pub(crate) use screen_host::with_screen_runner;
 use search::*;
 use services::*;
-use tool_object::*;
 use upload::*;
 pub use values::script_list_values;
 pub(crate) use values::{
@@ -1014,14 +1014,46 @@ fn proxy_set_inner<'js>(ctx: &Ctx<'js>, property: &ProxyProperty<'js>, value: &J
         engine.released.borrow_mut().remove(&name);
     }
     let host = js_to_host(&ctx, value)?;
+    // A list or map put under a name stays the script's object, so `entry = list[i]; entry.field = x` changes the
+    // element of the list, as it does in Java where both are the one Map. It is written to the stack at the next flush.
+    let keep = matches!(host, Value::List(_) | Value::Map(_)) && is_plain_collection(value);
     STACK.with(|stack| {
         stack
             .borrow_mut()
-            .put(name, host)
+            .put(name.clone(), host)
             .map(|_| ())
             .map_err(|err| Exception::throw_message(&ctx, err.message()))
     })?;
+    if keep {
+        if let Some(engine) = current_engine() {
+            engine
+                .tracked
+                .borrow_mut()
+                .insert(name, Persistent::save(&ctx, value.clone()));
+        }
+    }
     Ok(true)
+}
+
+/// An array or an object made by `{}` or `new Object()`, the values that convert to a host list or map and back
+/// as the same shape: not a `Set`, a `Map`, a class instance or an exotic host object.
+fn is_plain_collection(value: &JsValue<'_>) -> bool {
+    if value.is_array() {
+        return true;
+    }
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    let ctx = object.ctx();
+    let plain: Option<Object> = ctx
+        .globals()
+        .get("Object")
+        .ok()
+        .and_then(|object: Object| object.get("prototype").ok());
+    match (object.get_prototype(), plain) {
+        (Some(prototype), Some(plain)) => prototype == plain,
+        _ => false,
+    }
 }
 
 fn global_has_own(ctx: &Ctx<'_>, name: &str) -> rquickjs::Result<bool> {

@@ -12,16 +12,23 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Examples of Rust in a component. The binary registers [`tool_factories`] under the component name `example`
-//! (`moqui_core::context::register_component_tools`), and each factory boot that loads the component makes them.
+//! Examples of Rust in a component. `submit_component!` puts this crate's implementations in the linked catalogue under
+//! the component name `example`. A binary that links the crate (`use example as _;`) has them, and a factory boot uses
+//! them only when it loads the component. The component's XML picks them: `MoquiConf.xml` selects the tool factory by
+//! class, and the service definitions name the service locations.
 
 mod example_tool;
 pub mod services;
 
-use moqui_core::context::ToolFactory;
+use moqui_core::context::Error;
+use moqui_core::native::{submit_component, NativeComponent, NativeRegistry};
 
-/// The tool factories of this component, made again for each execution context factory.
-#[must_use]
-pub fn tool_factories() -> Vec<Box<dyn ToolFactory>> {
-    vec![Box::new(example_tool::ExampleToolFactory::default())]
+submit_component! {
+    NativeComponent { name: "example", register }
+}
+
+/// This component's implementations, in a factory's catalogue.
+fn register(registry: &mut NativeRegistry) -> Result<(), Error> {
+    services::register(registry)?;
+    example_tool::register(registry)
 }

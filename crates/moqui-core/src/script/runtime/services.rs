@@ -193,9 +193,10 @@ impl HostService {
                 visible.retain(|_, value| !matches!(value, Value::Bytes(_)));
                 visible
             } else {
-                match js_to_host(&ctx, &map)? {
-                    Value::Map(entries) => entries,
-                    _ => return Ok(this.0),
+                // a plain object, or an entity value whose fields are the parameters
+                match super::values::value_map(&js_to_host(&ctx, &map)?) {
+                    Some(entries) => entries,
+                    None => return Ok(this.0),
                 }
             };
             changed(this, &ctx, |call| call.parameters.extend(entries))

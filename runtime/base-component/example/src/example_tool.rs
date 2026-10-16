@@ -12,25 +12,33 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! `ExampleTool`: a tool factory with each part of the lifecycle, and the tool `ec.factory.getTool("ExampleTool")`
-//! gives a script.
+//! `ExampleTool`: a tool factory with each part of the lifecycle, and the tool scripts get from
+//! `ec.factory.getTool("ExampleTool")`. `MoquiConf.xml` selects it by its class, [`CLASS`].
 //!
 //! ```js
 //! const tool = ec.factory.getTool("ExampleTool")
 //! tool.greet("Ada")             // "Hello, Ada!"
 //! tool.greeting                 // "Hello", a property
 //! tool.counter().increment(2)   // a second tool, shared by every instance of this factory
-//! ec.factory.getTool("ExampleTool", "Hi").greet("Ada")   // "Hi, Ada!": getTool parameters reach instance()
+//! ec.factory.getTool("ExampleTool", "Hi").greet("Ada")   // "Hi, Ada!": getTool parameters reach get_instance()
 //! ```
 
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use moqui_core::context::{tool_value, Error, ExecutionContextFactory, Tool, ToolFactory};
+use moqui_core::context::{Error, ExecutionContext, ExecutionContextFactory};
+use moqui_core::native::{tool_value, NativeRegistry, Parameters, Tool, ToolFactory};
 use moqui_lib::object::Value;
 
+/// The identifier `<tool-factory class="..."/>` selects.
+const CLASS: &str = "example::ExampleToolFactory";
+
+pub(crate) fn register(registry: &mut NativeRegistry) -> Result<(), Error> {
+    registry.tool(CLASS, || Arc::new(ExampleToolFactory::default()))
+}
+
 #[derive(Default)]
-pub(crate) struct ExampleToolFactory {
+struct ExampleToolFactory {
     /// From `example_greeting`, read in `init`.
     greeting: OnceLock<String>,
     /// State the factory keeps for every instance it gives.
@@ -42,13 +50,19 @@ impl ToolFactory for ExampleToolFactory {
         "ExampleTool"
     }
 
-    /// Services are registered before the entity facade is there, so lint and the first call see them.
-    fn pre_facade_init(&self, ecf: &Arc<ExecutionContextFactory>) -> Result<(), Error> {
-        crate::services::register(ecf)
+    /// Before the entity facade is there. A service whose body needs this factory's state is bound here, as a closure,
+    /// before any service definition is read: `example.ExampleServices.get#CounterValue`.
+    fn pre_facade_init(&self, factory: &Arc<ExecutionContextFactory>) -> Result<(), Error> {
+        let counter = Arc::clone(&self.counter);
+        factory.register_service("example::counter_value", move |_ec, _service, _parameters| {
+            let mut out = Parameters::new();
+            out.insert("count".to_string(), Value::I64(counter.value.load(Ordering::Relaxed)));
+            Ok(out)
+        })
     }
 
     /// The entity facade is attached here, before the data load and the first request.
-    fn init(&self, _ecf: &Arc<ExecutionContextFactory>) -> Result<(), Error> {
+    fn init(&self, _factory: &Arc<ExecutionContextFactory>) -> Result<(), Error> {
         let configured = moqui_lib::env::get_prop_or_env("example_greeting");
         let greeting = if configured.is_empty() {
             "Hello".to_string()
@@ -61,7 +75,7 @@ impl ToolFactory for ExampleToolFactory {
     }
 
     /// A first `getTool` parameter replaces the greeting for that instance.
-    fn instance(&self, parameters: &[Value]) -> Result<Arc<dyn Tool>, Error> {
+    fn get_instance(&self, parameters: &[Value]) -> Result<Arc<dyn Tool>, Error> {
         let greeting = match parameters.first() {
             Some(Value::String(text)) if !text.is_empty() => text.clone(),
             Some(Value::Null) | None => self.greeting.get().cloned().unwrap_or_else(|| "Hello".to_string()),
@@ -98,11 +112,11 @@ struct ExampleTool {
 }
 
 impl Tool for ExampleTool {
-    fn methods(&self) -> &[&str] {
+    fn methods(&self) -> &'static [&'static str] {
         &["greet", "counter"]
     }
 
-    fn call(&self, method: &str, args: Vec<Value>) -> Result<Value, Error> {
+    fn call(&self, _ec: &ExecutionContext, method: &str, args: &[Value]) -> Result<Value, Error> {
         match method {
             "greet" => {
                 let name = match args.first() {
@@ -117,7 +131,7 @@ impl Tool for ExampleTool {
         }
     }
 
-    fn property(&self, name: &str) -> Result<Option<Value>, Error> {
+    fn property(&self, _ec: &ExecutionContext, name: &str) -> Result<Option<Value>, Error> {
         Ok((name == "greeting").then(|| Value::String(self.greeting.clone())))
     }
 }
@@ -128,11 +142,11 @@ struct Counter {
 }
 
 impl Tool for Counter {
-    fn methods(&self) -> &[&str] {
+    fn methods(&self) -> &'static [&'static str] {
         &["increment", "value"]
     }
 
-    fn call(&self, method: &str, args: Vec<Value>) -> Result<Value, Error> {
+    fn call(&self, _ec: &ExecutionContext, method: &str, args: &[Value]) -> Result<Value, Error> {
         match method {
             "increment" => {
                 let by = match args.first() {

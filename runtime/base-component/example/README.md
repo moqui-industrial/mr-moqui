@@ -14,17 +14,18 @@ default.
   <component-list><component name="example" location="base-component/example"/></component-list>
   ```
 
-The binary always links this crate. Its tool factory and services are only made when the component is loaded.
+The binary always links this crate. Its implementations are only used when the component loads.
 
 ## What is here
 
 | File | Shows |
 | --- | --- |
 | `Cargo.toml` | A component crate on `moqui-core` and `moqui-lib`; here from the workspace, by path in `runtime/component`. |
-| `src/lib.rs` | `pub fn tool_factories()`, which the binary registers under the component name. |
-| `src/example_tool.rs` | A `ToolFactory` with `pre_facade_init`, `init`, `instance`, `type_declaration` and `destroy`. Two `Tool`s show methods, a property, `getTool` parameters, and a method that returns another tool. |
-| `src/services.rs` | A `type="rust"` service and `register_service!`, which names it `example::services::echo`. |
-| `service/example/ExampleServices.xml` | The rust service definition, and XML Actions that keep the tool in a field and call it. |
+| `src/lib.rs` | `submit_component!`, which puts the crate's implementations in the linked catalogue under the component name. |
+| `src/services.rs` | A `type="rust"` service function bound in the catalogue at `service_location!(echo)`, `example::services::echo`. |
+| `src/example_tool.rs` | A `ToolFactory` with `pre_facade_init` (binding a closure service over its state), `init`, `get_instance`, `type_declaration` and `destroy`. Two `Tool`s show methods, a property, `getTool` parameters, and a method that returns another tool. |
+| `MoquiConf.xml` | Selects the tool factory by the class the crate registers, `example::ExampleToolFactory`. |
+| `service/example/ExampleServices.xml` | The two rust service definitions, and XML Actions that keep the tool in a field and call it. |
 | `test/Example.spec.js` | Specs for each of these. |
 
 ## Rust in your own component
@@ -39,18 +40,21 @@ moqui-core = { path = "../../../crates/moqui-core", default-features = false }
 moqui-lib = { path = "../../../crates/moqui-lib" }
 tracing = "0.1"
 ```
- `./moq build` finds the crate (a `Cargo.toml` beside a `component.xml`) and links it into
+
+`./moq build` finds the crate (a `Cargo.toml` beside a `component.xml`) and links it into
 `target/{release,debug}/moqui` with the framework, through a generated crate in `target/moqui-app`.
 
+- **Selection.** `submit_component!` names the component; the crate's code is used only when that component loads. The
+  component's XML picks what runs: service definitions name the locations, and `MoquiConf.xml` selects tool factories
+  by class, with `init-priority` and `disabled`.
 - **Lifecycle.**
-  - `pre_facade_init` runs at the end of the factory boot, with no entity facade yet. Register services there.
+  - `pre_facade_init` runs at the end of the factory boot, with no entity facade yet. Bind closure services there.
   - `init` runs once the entity facade is attached, before data loads and the first request.
-  - `destroy` runs at shutdown, in reverse order, while the database is still up.
-- **Priority and conf.** `init_priority` orders the tool factories. A conf element
-  `<tools><tool-factory name="ExampleTool" init-priority="20" disabled="true"/></tools>` changes the priority or leaves
-  the tool factory out.
+  - `destroy` runs at shutdown, in reverse order, after the worker pools stop, and also when an init fails.
 - **Tools in scripts.** A script calls a name in `Tool::methods` as a method. It reads any other name through
   `Tool::property`. Arguments and results convert as service parameters do. The object stays the tool when the
   context stack keeps it, so `<set field="tool" from="ec.factory.getTool('X')"/>` followed by `tool.method()` works.
-- **Rust services.** They take `(&parameters, &EntityFacade)` and run in the caller's execution context and
-  transaction. `moqui_core::user` and the other facades work as they do in the framework's own services.
+- **Rust services.** They take `(&ExecutionContext, &ServiceInfo, &Parameters)` and run in the caller's execution
+  context and transaction. `moqui_core::user` and the other facades work as they do in the framework's own services.
+
+The full guide is `plans/Native-Components-Usage.md`.

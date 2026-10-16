@@ -48,6 +48,10 @@ const JS_GLOBALS: &[&str] = &[
     "Reflect", "Promise", "BigInt", "RegExp", "Error",
 ];
 
+/// Statics the script runtime defines as globals besides the JavaScript ones, so a call on them is not Java.
+const HOST_STATICS: &[&str] = &["ResourceReference"];
+
+/// Java collection methods that have no JavaScript meaning.
 const COLLECTION_METHODS: &[&str] = &[
     ".size()",
     ".isEmpty()",
@@ -55,14 +59,15 @@ const COLLECTION_METHODS: &[&str] = &[
     ".containsKey(",
     ".keySet()",
     ".entrySet()",
-    ".add(",
-    ".addAll(",
     ".put(",
-    ".putAll(",
     ".toList()",
     ".getAt(",
     ".equals(",
 ];
+
+/// Methods that are Java collection calls in Groovy and also the host decimal, `Set`, or `ec.context` API in a port.
+/// They cannot be told apart without types, so they are counted and not flagged.
+const ADD_METHODS: &[&str] = &[".add(", ".addAll(", ".putAll("];
 
 /// A Groovy idiom and whether the text still runs as JavaScript when it is present.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -75,8 +80,14 @@ pub enum Idiom {
     GStringDollarName,
     RegexOperator,
     DecimalLiteral,
+    /// `1.5`: a `BigDecimal` in Groovy and a number in JavaScript, so it is valid and may differ in arithmetic.
+    DecimalPointLiteral,
     BigDecimal,
+    /// `.setScale(n, 'MODE')` is the host decimal API.
+    SetScale,
     NewType,
+    /// `new Date`, `new Set` and the other JavaScript classes.
+    NewJsType,
     MapLiteral,
     ListStar,
     AsCast,
@@ -85,9 +96,48 @@ pub enum Idiom {
     StaticClass,
     QuotedProperty,
     CollectionMethod,
+    /// `.add(`, `.addAll(` and `.putAll(`.
+    AddCall,
     Catch,
+    /// `catch (e)`, which is JavaScript. `catch (Exception e)` is [`Idiom::Catch`].
+    CatchBare,
     SafeNavigation,
     ContextPlus,
+    /// A call on a global the host defines, such as `ResourceReference.isTextFilename(..)`.
+    HostStatic,
+    /// A host decimal under `<`, `>`, `==`, `!=`, `!x`, `x ||`, `x ? :` or an arithmetic operator. The value is always
+    /// truthy and its `valueOf` throws, so the test or the arithmetic does not do what Groovy did.
+    DecimalOperator,
+    /// `push`, `add`, `first()`, `each(` and the like on an `entity-find` result, which is a read-only host list.
+    FindListMutation,
+    /// `x in list` on an array, which JavaScript reads as an index test.
+    InOnList,
+    /// A `const` or `let` of a name another `<script>` of the same service already declares at the function level of
+    /// the generated script, which JavaScript refuses to run.
+    DuplicateDeclaration,
+    /// `.replaceAll('[^a-z]+', '')` and the like: Java reads the string as a regular expression, JavaScript as text.
+    StringAsRegex,
+}
+
+/// How an idiom counts in a report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Severity {
+    /// Runs as JavaScript and means the same. Counted in the totals and not flagged.
+    Valid,
+    /// Looks like JavaScript and probably misbehaves at run time.
+    Hazard,
+    /// Groovy or Java that has to be rewritten.
+    Groovy,
+}
+
+impl Severity {
+    pub fn name(self) -> &'static str {
+        match self {
+            Severity::Valid => "valid JavaScript",
+            Severity::Hazard => "hazard",
+            Severity::Groovy => "groovy",
+        }
+    }
 }
 
 impl Idiom {
@@ -101,8 +151,11 @@ impl Idiom {
             Idiom::GStringDollarName => "gstring-dollar-name",
             Idiom::RegexOperator => "regex-operator",
             Idiom::DecimalLiteral => "decimal-literal",
+            Idiom::DecimalPointLiteral => "decimal-point-literal",
             Idiom::BigDecimal => "bigdecimal",
+            Idiom::SetScale => "set-scale",
             Idiom::NewType => "new-type",
+            Idiom::NewJsType => "new-js-type",
             Idiom::MapLiteral => "map-literal",
             Idiom::ListStar => "list-star",
             Idiom::AsCast => "as-cast",
@@ -111,15 +164,41 @@ impl Idiom {
             Idiom::StaticClass => "static-class",
             Idiom::QuotedProperty => "quoted-property",
             Idiom::CollectionMethod => "collection-method",
+            Idiom::AddCall => "add-call",
             Idiom::Catch => "catch",
+            Idiom::CatchBare => "catch-bare",
             Idiom::SafeNavigation => "safe-navigation",
             Idiom::ContextPlus => "context-plus",
+            Idiom::HostStatic => "host-static",
+            Idiom::DecimalOperator => "decimal-operator",
+            Idiom::FindListMutation => "find-list-mutation",
+            Idiom::InOnList => "in-on-list",
+            Idiom::DuplicateDeclaration => "duplicate-declaration",
+            Idiom::StringAsRegex => "string-as-regex",
         }
     }
 
-    /// Optional chaining is JavaScript, so it is counted and never flagged.
+    pub fn severity(self) -> Severity {
+        match self {
+            Idiom::SafeNavigation
+            | Idiom::DecimalPointLiteral
+            | Idiom::SetScale
+            | Idiom::NewJsType
+            | Idiom::AddCall
+            | Idiom::CatchBare
+            | Idiom::HostStatic => Severity::Valid,
+            Idiom::DecimalOperator
+            | Idiom::FindListMutation
+            | Idiom::InOnList
+            | Idiom::EmptyCollectionTruthiness
+            | Idiom::DuplicateDeclaration => Severity::Hazard,
+            _ => Severity::Groovy,
+        }
+    }
+
+    /// Groovy or a hazard: what a default report flags.
     pub fn is_groovy(self) -> bool {
-        self != Idiom::SafeNavigation
+        self.severity() != Severity::Valid
     }
 }
 
@@ -145,8 +224,9 @@ pub struct Site {
 }
 
 impl Site {
-    fn flagged(&self) -> bool {
-        self.error.is_some() || self.idioms.iter().any(|(idiom, _)| idiom.is_groovy())
+    /// A parse failure, a Groovy idiom or a hazard. With `all`, also an idiom that is valid JavaScript.
+    fn flagged(&self, all: bool) -> bool {
+        self.error.is_some() || self.idioms.iter().any(|(idiom, _)| all || idiom.is_groovy())
     }
 }
 
@@ -181,6 +261,8 @@ pub struct ScreenLintReport {
     pub unparsed: Vec<(PathBuf, String)>,
     /// The first line of the rendered report. Empty is the screen lint's.
     pub title: &'static str,
+    /// Flag and list the sites that hold only idioms that are valid JavaScript (`lint --groovy --all`).
+    pub show_all: bool,
 }
 
 impl ScreenLintReport {
@@ -230,11 +312,11 @@ impl ScreenLintReport {
             .collect()
     }
 
-    /// Sites that still hold a Groovy idiom or fail to parse.
+    /// Sites that still hold a Groovy idiom or a hazard, or fail to parse.
     pub fn flagged_count(&self) -> usize {
         self.files
             .iter()
-            .map(|file| file.sites.iter().filter(|site| site.flagged()).count())
+            .map(|file| file.sites.iter().filter(|site| site.flagged(self.show_all)).count())
             .sum()
     }
 
@@ -270,12 +352,37 @@ impl ScreenLintReport {
             failures.len(),
             failures.len() - site_failures
         );
-        let _ = writeln!(out, "sites with a Groovy idiom or failure: {}", self.flagged_count());
+        let _ = writeln!(
+            out,
+            "sites with a Groovy idiom, hazard or failure{}: {}",
+            if self.show_all {
+                " (or valid JavaScript idiom)"
+            } else {
+                ""
+            },
+            self.flagged_count()
+        );
         let _ = writeln!(out, "fancy template bodies compiled: {dialect}");
         let _ = writeln!(out, "FreeMarker template locations (not compiled): {ftl}");
         let _ = writeln!(out, "\nIdiom totals (sites, files)");
-        for (idiom, (sites, files)) in self.idiom_totals() {
-            let _ = writeln!(out, "  {:<30} {sites:>5} {files:>5}", idiom.name());
+        for severity in [Severity::Groovy, Severity::Hazard, Severity::Valid] {
+            let totals: Vec<_> = self
+                .idiom_totals()
+                .into_iter()
+                .filter(|(idiom, _)| idiom.severity() == severity)
+                .collect();
+            if totals.is_empty() {
+                continue;
+            }
+            let note = if severity == Severity::Valid && !self.show_all {
+                ", not flagged"
+            } else {
+                ""
+            };
+            let _ = writeln!(out, " {}{note}", severity.name());
+            for (idiom, (sites, files)) in totals {
+                let _ = writeln!(out, "  {:<30} {sites:>5} {files:>5}", idiom.name());
+            }
         }
         let _ = writeln!(out, "\nParse failures");
         for failure in &failures {
@@ -310,7 +417,7 @@ impl ScreenLintReport {
         }
         let _ = writeln!(out, "\nPer file (flagged sites only; before text)");
         for file in &self.files {
-            let flagged: Vec<&Site> = file.sites.iter().filter(|site| site.flagged()).collect();
+            let flagged: Vec<&Site> = file.sites.iter().filter(|site| site.flagged(self.show_all)).collect();
             if flagged.is_empty() {
                 continue;
             }
@@ -369,6 +476,7 @@ pub fn lint_screens(roots: &[PathBuf]) -> Result<ScreenLintReport, Error> {
             ..FileReport::default()
         };
         scan_node(&root, false, &mut file);
+        super::lint_hazards::refine(&root, &mut file);
         report.files.push(file);
     }
     Ok(report)
@@ -388,6 +496,12 @@ const GROOVY_ROOTS: &[&str] = &[
     "seed-data",
 ];
 
+/// Scans a parsed file with the same walk the lints use, for the tests of the hazard rules.
+#[cfg(test)]
+pub(crate) fn scan_for_tests(root: &MNode, file: &mut FileReport) {
+    scan_node(root, false, file);
+}
+
 /// `moqui lint --groovy`: the pre-scan of a component tree that has not been migrated, such as mantle. Every XML
 /// file under the roots whose root element is a screen, form, service, ECA or data file is scanned as the screen lint
 /// scans a screen, and the `.groovy` files are listed. Nothing fails: the report is what is left to convert.
@@ -395,7 +509,7 @@ const GROOVY_ROOTS: &[&str] = &[
 /// # Errors
 ///
 /// Returns an error when a directory cannot be read.
-pub fn lint_groovy(roots: &[PathBuf]) -> Result<ScreenLintReport, Error> {
+pub fn lint_groovy(roots: &[PathBuf], show_all: bool) -> Result<ScreenLintReport, Error> {
     let mut paths = Vec::new();
     let mut groovy = Vec::new();
     for root in roots {
@@ -406,6 +520,7 @@ pub fn lint_groovy(roots: &[PathBuf]) -> Result<ScreenLintReport, Error> {
     let mut report = ScreenLintReport {
         title: "Groovy idiom lint",
         groovy_files: groovy,
+        show_all,
         ..ScreenLintReport::default()
     };
     for path in paths {
@@ -425,6 +540,7 @@ pub fn lint_groovy(roots: &[PathBuf]) -> Result<ScreenLintReport, Error> {
             ..FileReport::default()
         };
         scan_node(&root, false, &mut file);
+        super::lint_hazards::refine(&root, &mut file);
         report.files.push(file);
     }
     Ok(report)
@@ -537,7 +653,7 @@ fn check_condition(node: &MNode, file: &mut FileReport) {
     }
 }
 
-fn is_expression_attr(element: &str, attr: &str) -> bool {
+pub(crate) fn is_expression_attr(element: &str, attr: &str) -> bool {
     match attr {
         "condition" | "from" | "in-map" | "parameter-map" | "text-map" => true,
         "list" => matches!(
@@ -736,34 +852,126 @@ fn truthiness_candidate(attr: &str, text: &str) -> Option<String> {
     None
 }
 
-/// Replace the characters inside string literals with spaces, keeping the quotes.
-fn mask_strings(text: &str) -> String {
+/// Replace the characters inside string literals, template literals and comments with spaces, keeping the quotes and
+/// newlines. The code inside a template literal's `${..}` is kept. A space stands for each byte, so offsets in the
+/// result are offsets in `text`.
+pub(crate) fn mask_strings(text: &str) -> String {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Mode {
+        Code,
+        Quote(char),
+        Template,
+        Line,
+        Block,
+    }
+    fn blank(out: &mut String, ch: char) {
+        for _ in 0..ch.len_utf8() {
+            out.push(' ');
+        }
+    }
+    let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
-    let mut quote: Option<char> = None;
+    let mut mode = Mode::Code;
     let mut escaped = false;
-    for ch in text.chars() {
-        match quote {
-            Some(open) => {
+    // Brace depth inside each open `${`; the last entry is the innermost one.
+    let mut braces: Vec<usize> = Vec::new();
+    let mut index = 0;
+    while index < chars.len() {
+        let ch = chars[index];
+        let next = chars.get(index + 1).copied();
+        match mode {
+            Mode::Quote(open) => {
                 if escaped {
                     escaped = false;
-                    out.push(' ');
+                    blank(&mut out, ch);
                 } else if ch == '\\' {
                     escaped = true;
-                    out.push(' ');
+                    blank(&mut out, ch);
                 } else if ch == open {
-                    quote = None;
+                    mode = Mode::Code;
                     out.push(ch);
                 } else {
-                    out.push(' ');
+                    blank(&mut out, ch);
                 }
             }
-            None => {
-                if ch == '\'' || ch == '"' {
-                    quote = Some(ch);
+            Mode::Template => {
+                if escaped {
+                    escaped = false;
+                    blank(&mut out, ch);
+                } else if ch == '\\' {
+                    escaped = true;
+                    blank(&mut out, ch);
+                } else if ch == '`' {
+                    mode = Mode::Code;
+                    out.push(ch);
+                } else if ch == '$' && next == Some('{') {
+                    out.push_str("${");
+                    braces.push(0);
+                    mode = Mode::Code;
+                    index += 1;
+                } else {
+                    blank(&mut out, ch);
                 }
-                out.push(ch);
             }
+            Mode::Line => {
+                if ch == '\n' {
+                    mode = Mode::Code;
+                    out.push(ch);
+                } else {
+                    blank(&mut out, ch);
+                }
+            }
+            Mode::Block => {
+                if ch == '*' && next == Some('/') {
+                    mode = Mode::Code;
+                    out.push_str("  ");
+                    index += 1;
+                } else if ch == '\n' {
+                    out.push(ch);
+                } else {
+                    blank(&mut out, ch);
+                }
+            }
+            Mode::Code => match ch {
+                '\'' | '"' => {
+                    mode = Mode::Quote(ch);
+                    out.push(ch);
+                }
+                '`' => {
+                    mode = Mode::Template;
+                    out.push(ch);
+                }
+                '/' if next == Some('/') => {
+                    mode = Mode::Line;
+                    out.push_str("  ");
+                    index += 1;
+                }
+                '/' if next == Some('*') => {
+                    mode = Mode::Block;
+                    out.push_str("  ");
+                    index += 1;
+                }
+                '{' => {
+                    if let Some(depth) = braces.last_mut() {
+                        *depth += 1;
+                    }
+                    out.push(ch);
+                }
+                '}' => {
+                    match braces.last_mut() {
+                        Some(0) => {
+                            braces.pop();
+                            mode = Mode::Template;
+                        }
+                        Some(depth) => *depth -= 1,
+                        None => {}
+                    }
+                    out.push(ch);
+                }
+                _ => out.push(ch),
+            },
         }
+        index += 1;
     }
     out
 }
@@ -814,7 +1022,7 @@ fn find_words(masked: &str, word: &str) -> Vec<usize> {
         .collect()
 }
 
-fn snippet(text: &str, at: usize) -> String {
+pub(crate) fn snippet(text: &str, at: usize) -> String {
     let start = text.floor_char_boundary(at.saturating_sub(8));
     let end = text.ceil_char_boundary((at + 24).min(text.len()));
     text[start..end].to_string()
@@ -849,14 +1057,20 @@ pub fn classify(text: &str) -> Vec<(Idiom, String)> {
     if let Some(at) = m.find("=~").or_else(|| m.find("~/")) {
         out.push(sample(text, Idiom::RegexOperator, at));
     }
-    if let Some(at) = decimal_literal(bytes) {
+    if let Some(at) = decimal_literal(bytes, true) {
         out.push(sample(text, Idiom::DecimalLiteral, at));
     }
-    for word in ["BigDecimal", "setScale", "toBigDecimal", "BigInteger"] {
+    if let Some(at) = decimal_literal(bytes, false) {
+        out.push(sample(text, Idiom::DecimalPointLiteral, at));
+    }
+    for word in ["BigDecimal", "toBigDecimal", "BigInteger"] {
         if let Some(&at) = find_words(m, word).first() {
             out.push(sample(text, Idiom::BigDecimal, at));
             break;
         }
+    }
+    if let Some(&at) = find_words(m, "setScale").first() {
+        out.push(sample(text, Idiom::SetScale, at));
     }
     for at in find_words(m, "new") {
         let rest = m[at + 3..].trim_start();
@@ -865,7 +1079,12 @@ pub fn classify(text: &str) -> Vec<(Idiom, String)> {
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
                 .collect();
-            out.push((Idiom::NewType, name));
+            let idiom = if JS_GLOBALS.contains(&name.as_str()) {
+                Idiom::NewJsType
+            } else {
+                Idiom::NewType
+            };
+            out.push((idiom, name));
         }
     }
     if let Some(at) = context_plus(m) {
@@ -893,12 +1112,23 @@ pub fn classify(text: &str) -> Vec<(Idiom, String)> {
         out.push(sample(text, Idiom::Def, at));
     }
     if let Some(&at) = find_words(m, "catch").first() {
-        out.push(sample(text, Idiom::Catch, at));
+        let idiom = if typed_catch(&m[at + "catch".len()..]) {
+            Idiom::Catch
+        } else {
+            Idiom::CatchBare
+        };
+        out.push(sample(text, idiom, at));
     }
     for (class, at) in static_calls(m) {
-        if !JS_GLOBALS.contains(&class.as_str()) {
-            out.push((Idiom::StaticClass, format!("{class} {}", snippet(text, at))));
+        if JS_GLOBALS.contains(&class.as_str()) {
+            continue;
         }
+        let idiom = if HOST_STATICS.contains(&class.as_str()) {
+            Idiom::HostStatic
+        } else {
+            Idiom::StaticClass
+        };
+        out.push((idiom, format!("{class} {}", snippet(text, at))));
     }
     if m.contains(".'") || m.contains(".\"") {
         out.push(sample(
@@ -913,7 +1143,22 @@ pub fn classify(text: &str) -> Vec<(Idiom, String)> {
             break;
         }
     }
+    for method in ADD_METHODS {
+        if let Some(at) = m.find(method) {
+            out.push(sample(text, Idiom::AddCall, at));
+            break;
+        }
+    }
     out
+}
+
+/// `catch (Exception e)` or `catch (A | B e)`: the text after `catch` opens with a typed parameter.
+fn typed_catch(rest: &str) -> bool {
+    let Some(inner) = rest.trim_start().strip_prefix('(') else {
+        return false;
+    };
+    let inner = inner.split(')').next().unwrap_or("");
+    inner.split_whitespace().count() > 1 || inner.contains('|')
 }
 
 fn sample(text: &str, idiom: Idiom, at: usize) -> (Idiom, String) {
@@ -929,7 +1174,8 @@ fn range_at(bytes: &[u8]) -> Option<usize> {
     })
 }
 
-fn decimal_literal(bytes: &[u8]) -> Option<usize> {
+/// A `1.5` (`suffix` false) or a `10g` / `10G` (`suffix` true) number.
+fn decimal_literal(bytes: &[u8], suffix: bool) -> Option<usize> {
     for index in 0..bytes.len() {
         if !bytes[index].is_ascii_digit() || (index > 0 && (is_ident(bytes[index - 1]) || bytes[index - 1] == b'.')) {
             continue;
@@ -938,10 +1184,11 @@ fn decimal_literal(bytes: &[u8]) -> Option<usize> {
         while end < bytes.len() && bytes[end].is_ascii_digit() {
             end += 1;
         }
-        if end + 1 < bytes.len() && bytes[end] == b'.' && bytes[end + 1].is_ascii_digit() {
+        if !suffix && end + 1 < bytes.len() && bytes[end] == b'.' && bytes[end + 1].is_ascii_digit() {
             return Some(index);
         }
-        if end < bytes.len()
+        if suffix
+            && end < bytes.len()
             && matches!(bytes[end], b'g' | b'G')
             && (end + 1 >= bytes.len() || !is_ident(bytes[end + 1]))
         {
@@ -1058,6 +1305,33 @@ mod tests {
     }
 
     #[test]
+    fn comments_and_template_text_do_not_trigger_idioms_but_template_code_does() {
+        assert!(names("// Java's list.size() as BigDecimal 1.5 ..\nx").is_empty());
+        assert!(names("/* x as String; a..b */ y").is_empty());
+        assert!(names("`as many as ${n}`").is_empty());
+        assert!(names("`n: ${list.size()}`").contains(&"collection-method"));
+        assert!(names("f('it\\'s') // don't\nlist.size()").contains(&"collection-method"));
+        assert_eq!(mask_strings("a /* é */ b").len(), "a /* é */ b".len());
+    }
+
+    #[test]
+    fn valid_javascript_idioms_are_not_flagged_by_default() {
+        let site = |text: &str| Site {
+            line: 1,
+            element: "script".into(),
+            attribute: "text".into(),
+            kind: SiteKind::Script,
+            text: text.into(),
+            error: None,
+            idioms: classify(text),
+        };
+        assert!(!site("const s = new Set(); s.add(1); a?.b; try { f() } catch (e) {}").flagged(false));
+        assert!(site("const s = new Set(); s.add(1)").flagged(true));
+        assert!(site("list.size()").flagged(false));
+        assert_eq!(Idiom::DecimalOperator.severity(), Severity::Hazard);
+    }
+
+    #[test]
     fn strings_do_not_trigger_idioms() {
         assert!(names("'a ?: b => [x:1] new Foo()'").is_empty());
     }
@@ -1078,11 +1352,15 @@ mod tests {
         assert!(names("\"Hi ${name}\"").contains(&"gstring"));
         assert!(names("'Hi ${name}'").is_empty());
         assert_eq!(names("a =~ /x/"), vec!["regex-operator"]);
-        assert!(names("price * 1.5").contains(&"decimal-literal"));
-        assert!(names("x.setScale(2)").contains(&"bigdecimal"));
+        assert!(names("price * 10g").contains(&"decimal-literal"));
+        assert!(names("price * 1.5").contains(&"decimal-point-literal"));
+        assert!(names("x.setScale(2)").contains(&"set-scale"));
+        assert!(names("new BigDecimal(a)").contains(&"bigdecimal"));
         let new_type = classify("new TreeSet(a)");
         assert_eq!(new_type, vec![(Idiom::NewType, "TreeSet".to_string())]);
+        assert_eq!(names("new Date(a)"), vec!["new-js-type"]);
         assert!(names("StringUtilities.camelCaseToPretty(x)").contains(&"static-class"));
+        assert_eq!(names("ResourceReference.isTextFilename(x)"), vec!["host-static"]);
         assert!(names("Math.max(1, 2)").is_empty());
     }
 
@@ -1091,6 +1369,9 @@ mod tests {
         assert!(names("x in ['A', 'B']").contains(&"in-operator"));
         assert!(names("'k' in obj").is_empty());
         assert!(names("list.size() > 0").contains(&"collection-method"));
+        assert_eq!(names("total.add(x)"), vec!["add-call"]);
+        assert_eq!(names("try { a() } catch (e) { b() }"), vec!["catch-bare"]);
+        assert_eq!(names("try { a() } catch (Exception e) { b() }"), vec!["catch"]);
         assert!(names("x as String").contains(&"as-cast"));
         assert!(names("def x = 1").contains(&"def"));
     }

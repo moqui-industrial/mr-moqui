@@ -1,9 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
-    <!-- A service implemented in Rust: the location is the path the tool factory registered (src/services.rs). -->
+    <!-- A service implemented in Rust: the location is the function the component's catalogue binds (src/services.rs).
+        The XML defines the service; the Rust function is only its body. -->
     <service verb="echo" noun="Message" type="rust" location="example::services::echo">
         <in-parameters><parameter name="message" required="true"/></in-parameters>
         <out-parameters><parameter name="message"/><parameter name="username"/></out-parameters>
+    </service>
+
+    <!-- A body the tool factory binds as a closure over its own state, in pre_facade_init (src/example_tool.rs). -->
+    <service verb="get" noun="CounterValue" type="rust" location="example::counter_value">
+        <out-parameters><parameter name="count" type="Long"/></out-parameters>
     </service>
 
     <!-- XML Actions using the tool: kept in a field, then called. -->

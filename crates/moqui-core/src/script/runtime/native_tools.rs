@@ -1,27 +1,18 @@
-/*
- * This software is in the public domain under CC0 1.0 Universal plus a
- * Grant of Patent License.
- *
- * To the extent possible under law, the author(s) have dedicated all
- * copyright and related and neighboring rights to this software to the
- * public domain worldwide. This software is distributed without any
- * warranty.
- *
- * You should have received a copy of the CC0 Public Domain Dedication
- * along with this software (see the LICENSE.md file). If not, see
- * <http://creativecommons.org/publicdomain/zero/1.0/>.
- */
-
-//! The object `ec.factory.getTool(name, ...parameters)` returns: a component's [`Tool`](crate::context::Tool) as a
-//! script sees it. A name in the tool's `methods()` reads as a function that converts its arguments and result as
-//! service parameters are; any other name reads through the tool's `property()`. The object holds the tool, not data,
-//! so it is the same tool after the context stack keeps it (`<set field="tool" from="ec.factory.getTool('X')"/>`).
+//! Component tools in scripts: `ec.getTool(name, ...parameters)`, `ec.factory.getTool` and
+//! `ec.factory.getToolFactory(name)`.
+//!
+//! A tool is an exotic object over the Rust [`Tool`](crate::native::Tool): a name in its `methods()` reads as a function
+//! that converts its arguments and result as service parameters are, and any other name reads through its
+//! `property()`. Only those cross the boundary, never arbitrary Rust objects. The object holds the tool, not data, so it
+//! is the same tool after the context stack keeps it (`<set field="tool" from="ec.factory.getTool('X')"/>`), and a
+//! method can return another tool ([`crate::native::tool_value`]).
 
 use rquickjs::class::{PropertyDescriptor, PropertyName};
+use rquickjs::function::Rest;
 use rquickjs::Atom;
 
 use super::*;
-use crate::context::ToolHandle;
+use crate::native::ToolHandle;
 
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class(exotic)]
@@ -35,24 +26,46 @@ pub(super) fn tool_to_js<'js>(ctx: &Ctx<'js>, tool: Arc<ToolHandle>) -> rquickjs
     Class::instance(ctx.clone(), HostTool { inner: tool }).and_then(|class| class.into_js(ctx))
 }
 
-/// `ec.factory.getTool(name, ...parameters)`.
-pub(super) fn factory_get_tool<'js>(
-    ctx: Ctx<'js>,
-    name: String,
-    parameters: Rest<JsValue<'js>>,
-) -> rquickjs::Result<JsValue<'js>> {
+fn get_tool<'js>(ctx: Ctx<'js>, name: String, parameters: Rest<JsValue<'js>>) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let parameters = parameters
             .0
             .iter()
             .map(|value| js_to_host(&ctx, value))
             .collect::<rquickjs::Result<Vec<_>>>()?;
-        let factory = with_ec(&ctx, |ec| Arc::clone(ec.factory()))?;
-        let tool = factory
-            .tool(&name, &parameters)
-            .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
+        let tool = with_ec(&ctx, |ec| ec.factory().get_tool(&name, &parameters))?
+            .map_err(|error| Exception::throw_message(&ctx, error.message()))?;
         tool_to_js(&ctx, Arc::new(ToolHandle(tool)))
     })
+}
+
+/// `ec.factory.getToolFactory(name)`: `{ name, getInstance(...parameters) }`, or null when no tool factory has that name.
+fn get_factory<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let tool = with_ec(&ctx, |ec| ec.factory().get_tool_factory(&name))?;
+        let Some(tool) = tool else {
+            return Ok(JsValue::new_null(ctx.clone()));
+        };
+        let object = Object::new(ctx.clone())?;
+        object.set("name", tool.name())?;
+        let get = Function::new(ctx.clone(), move |ctx: Ctx<'js>, args: Rest<JsValue<'js>>| {
+            get_tool(ctx, name.clone(), args)
+        })?;
+        object.set("getInstance", get)?;
+        Ok(object.into_value())
+    })
+}
+
+pub(super) fn install<'js>(ctx: &Ctx<'js>, ec: &Object<'js>, factory: &Object<'js>) -> Result<(), Error> {
+    let get = Function::new(ctx.clone(), get_tool).map_err(js_error)?;
+    ec.set("getTool", get.clone()).map_err(js_error)?;
+    factory.set("getTool", get).map_err(js_error)?;
+    factory
+        .set(
+            "getToolFactory",
+            Function::new(ctx.clone(), get_factory).map_err(js_error)?,
+        )
+        .map_err(js_error)
 }
 
 impl HostTool {
@@ -60,7 +73,7 @@ impl HostTool {
         self.inner.0.methods().contains(&name)
     }
 
-    /// A function that calls `method` on this tool.
+    /// A function that calls `method` on this tool, in the calling script's execution context.
     fn method<'js>(&self, ctx: &Ctx<'js>, method: String) -> rquickjs::Result<JsValue<'js>> {
         let tool = Arc::clone(&self.inner);
         let function = Function::new(
@@ -72,10 +85,9 @@ impl HostTool {
                         .iter()
                         .map(|value| js_to_host(&ctx, value))
                         .collect::<rquickjs::Result<Vec<_>>>()?;
-                    match tool.0.call(&method, args) {
-                        Ok(result) => host_to_js(&ctx, result),
-                        Err(err) => Err(Exception::throw_message(&ctx, err.message())),
-                    }
+                    let result = with_ec(&ctx, |ec| tool.0.call(ec, &method, &args))?
+                        .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
+                    host_to_js(&ctx, result)
                 })
             },
         )?;
@@ -95,7 +107,7 @@ impl HostTool {
             let Some(name) = name else {
                 return Undefined.into_js(ctx);
             };
-            match self.inner.0.property(&name) {
+            match with_ec(ctx, |ec| self.inner.0.property(ec, &name))? {
                 Ok(Some(value)) => host_to_js(ctx, value),
                 Ok(None) => Undefined.into_js(ctx),
                 Err(err) => Err(Exception::throw_message(ctx, err.message())),

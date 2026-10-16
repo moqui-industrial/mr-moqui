@@ -72,7 +72,6 @@ impl Browser {
             framework_dir,
             BootOptions {
                 executor: Executor::Inline,
-                ..Default::default()
             },
         )
         .map_err(|err| Error::new(format!("boot: {err}")))?;
@@ -81,8 +80,8 @@ impl Browser {
         let facade = open_entity_facade(factory.framework_dir(), driver)?;
         factory.set_entity(facade.clone());
         factory
-            .post_facade_init()
-            .map_err(|err| Error::new(format!("tool init: {err}")))?;
+            .init_tools()
+            .map_err(|err| Error::new(format!("tools: {err}")))?;
         let browser = Self {
             factory,
             facade,

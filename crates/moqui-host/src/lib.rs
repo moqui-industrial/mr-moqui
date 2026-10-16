@@ -210,8 +210,8 @@ pub fn load_save(
 }
 
 /// The process entry of a moqui binary: [`dispatch`] on the command line arguments, the line it returns printed, and
-/// exit status 1 with the error on stderr when it fails. A binary that links component crates registers them with
-/// `moqui_core::context::register_component_tools` first.
+/// exit status 1 with the error on stderr when it fails. A binary that links component crates names each one
+/// (`use my_component as _;`) so its `submit_component!` entry is kept.
 pub fn main() {
     match dispatch(std::env::args().skip(1)) {
         Ok(Some(line)) => println!("{line}"),
@@ -284,8 +284,12 @@ where
             Ok(None)
         }
         [command, flag, dirs @ ..] if command == "lint" && flag == "--groovy" && !dirs.is_empty() => {
-            let roots: Vec<std::path::PathBuf> = dirs.iter().map(Into::into).collect();
-            let report = moqui_core::script::screen_lint::lint_groovy(&roots)
+            let show_all = dirs.iter().any(|arg| arg == "--all");
+            let roots: Vec<std::path::PathBuf> = dirs.iter().filter(|arg| *arg != "--all").map(Into::into).collect();
+            if roots.is_empty() {
+                return Err(usage::command_usage("lint"));
+            }
+            let report = moqui_core::script::screen_lint::lint_groovy(&roots, show_all)
                 .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
             print!("{}", report.render());
             Ok(None)
@@ -384,23 +388,27 @@ fn dispatch_types(args: &[String]) -> Result<(), moqui_lib::error::Error> {
 fn dispatch_lint(path: Option<&str>) -> Result<(), moqui_lib::error::Error> {
     let owned = path.map(std::path::PathBuf::from);
     let paths: Vec<std::path::PathBuf> = owned.into_iter().collect();
-    // A factory with no threads and no database, entered so a `type="rust"` location a component's tool factory
-    // registers resolves as it does in a server.
+    // A factory with no threads and no database, entered so a `type="rust"` location a linked component binds resolves
+    // as it does in a server. With no runtime to boot (a lone file), only the built-in locations resolve.
     let (runtime, framework) = runtime_framework_dirs();
-    let factory = moqui_core::context::ExecutionContextFactory::boot_with_options(
+    let booted = moqui_core::context::ExecutionContextFactory::boot_with_options(
         &runtime,
         &framework,
         moqui_core::context::BootOptions {
             executor: moqui_core::context::Executor::Inline,
-            ..Default::default()
         },
-    )
-    .map_err(moqui_lib::error::Error::from)?;
-    let context = factory.new_context();
-    let entered = context.enter();
-    let checked = moqui_core::service::check(&paths);
-    drop(entered);
-    drop(context);
+    );
+    let checked = match booted {
+        Ok(factory) => {
+            let context = factory.new_context();
+            let _entered = context.enter();
+            moqui_core::service::check(&paths)
+        }
+        Err(err) => {
+            tracing::warn!("Linting without a factory, so only built-in rust service locations resolve: {err}");
+            moqui_core::service::check(&paths)
+        }
+    };
     let failures = checked.map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
     for failure in &failures {
         println!("{failure}");
@@ -657,7 +665,6 @@ fn load_embedded(
         }
     };
     let outcome = load_with_factory(&factory, &framework_dir, &db, pool, flags);
-    factory.destroy_tools();
     drop(factory);
     drop(db);
     if let Ok(report) = &outcome {
@@ -679,9 +686,8 @@ fn load_with_factory(
     flags: &LoadFlags,
 ) -> Result<LoadReport, moqui_lib::error::Error> {
     let entity_started = std::time::Instant::now();
-    let facade = crate::db::entity_facade::open_entity_facade_components(
-        framework_dir,
-        &crate::db::entity_facade::component_entity_dirs(factory),
+    let facade = crate::db::entity_facade::open_entity_facade_for_factory(
+        factory,
         std::sync::Arc::clone(&db.driver),
         pool,
         &db.conf.dialect,
@@ -691,7 +697,6 @@ fn load_with_factory(
         "Entity Facade initialized in {:.3} seconds",
         entity_started.elapsed().as_secs_f64()
     );
-    factory.post_facade_init().map_err(moqui_lib::error::Error::from)?;
     // Feeds index through search when it is up; a load still runs when it is not.
     let _search = match crate::search::attach_search(factory, &facade, db.is_postgres()) {
         Ok(store) => {
@@ -704,6 +709,7 @@ fn load_with_factory(
             None
         }
     };
+    factory.init_tools().map_err(moqui_lib::error::Error::from)?;
     let context = factory.new_context();
     let entered = context.enter();
     let authz = context.disable_authz();
@@ -933,9 +939,8 @@ fn boot_server(
         db_started.elapsed().as_secs_f64()
     );
     let entity_started = std::time::Instant::now();
-    let facade = crate::db::entity_facade::open_entity_facade_components(
-        &framework_dir,
-        &crate::db::entity_facade::component_entity_dirs(&factory),
+    let facade = crate::db::entity_facade::open_entity_facade_for_factory(
+        &factory,
         Arc::clone(&db.driver),
         pool,
         &db.conf.dialect,
@@ -945,7 +950,6 @@ fn boot_server(
         "Entity Facade initialized in {:.3} seconds",
         entity_started.elapsed().as_secs_f64()
     );
-    factory.post_facade_init().map_err(moqui_lib::error::Error::from)?;
     // The overlay starts on the first enter_sim, inside the cluster directory, on the shared install.
     let sim = crate::db::sim::SimOverlay::install(&facade, &cluster_dir, Some(install));
     // Same policy as `load`: indexing runs when search is up, and the server still starts when it is not.
@@ -961,6 +965,7 @@ fn boot_server(
         }
     };
     // Log events and HTTP requests go to moqui_logs and moqui_http_log through the search backend (shipped above).
+    factory.init_tools().map_err(moqui_lib::error::Error::from)?;
     let load_started = std::time::Instant::now();
     {
         let context = factory.new_context();
@@ -1072,14 +1077,13 @@ impl Drop for ServeProcess {
             // The listener has already waited out its shutdown deadline; a blocking task still running is left.
             runtime.shutdown_timeout(RUNTIME_SHUTDOWN);
         }
+        if let Some(factory) = &self.factory {
+            factory.shutdown();
+        }
         self.pdf.take();
         self.sshd.take();
         self.cluster_edge.take();
         self.notify_listener.take();
-        // The tool factories stop while the entity facade and the database are still up.
-        if let Some(factory) = &self.factory {
-            factory.destroy_tools();
-        }
         self.factory.take();
         self.search.take();
         self.facade.take();

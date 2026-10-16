@@ -36,6 +36,7 @@ pub(crate) enum ServiceKind {
     RemoteRest,
     /// A service whose body is a function in the Rust service registry. `location` is that function's path.
     Rust,
+    Native,
     /// A script service whose language this port does not run, such as Groovy.
     Unsupported,
 }
@@ -122,6 +123,8 @@ pub(crate) enum Check {
     TimeRange {
         after: Option<String>,
         before: Option<String>,
+        /// A Java date pattern (`MM/yyyy`) the value is read by, as the `format` attribute says.
+        format: Option<String>,
     },
     CreditCard {
         types: Option<String>,
@@ -169,6 +172,8 @@ pub(crate) struct ServiceDef {
     pub location: String,
     /// The registered function when `kind` is [`ServiceKind::Rust`].
     pub rust_fn: Option<super::rust_services::RustServiceFn>,
+    pub native_fn: Option<crate::native::NativeServiceFn>,
+    pub method: String,
     /// `<actions>` XML, or empty when the service has none.
     pub actions: String,
     pub authenticate: Authenticate,
@@ -202,6 +207,8 @@ impl ServiceDef {
             no_remember_parameters: false,
             location: String::new(),
             rust_fn: None,
+            native_fn: None,
+            method: String::new(),
             actions: String::new(),
             authenticate: Authenticate::Required,
             authz_action: None,
@@ -764,16 +771,28 @@ fn load_service(prefix: &str, node: &MNode, failures: &mut Vec<String>) -> Optio
         failures.push(format!("service {name} type camel is not included"));
         return None;
     }
-    if !matches!(
-        type_name.as_str(),
-        "inline" | "entity-auto" | "script" | "interface" | "remote-rest" | "rust"
-    ) {
+    let native_fn = ExecutionContext::with_current(|ec| {
+        if type_name == "rust" {
+            ec.factory()
+                .native()
+                .service_at(&node.attribute("location").unwrap_or_default())
+        } else {
+            ec.factory().native().runner_for(&type_name)
+        }
+    })
+    .flatten();
+    if native_fn.is_none()
+        && !matches!(
+            type_name.as_str(),
+            "inline" | "entity-auto" | "script" | "interface" | "remote-rest" | "rust"
+        )
+    {
         failures.push(format!("service {name} has unknown type {type_name}"));
         return None;
     }
-    if type_name == "rust" && node.first_named("actions").is_some() {
+    if (type_name == "rust" || native_fn.is_some()) && node.first_named("actions").is_some() {
         failures.push(format!(
-            "service {name} type rust has actions; the registered function is the body"
+            "service {name} type {type_name} has actions; the registered function is the body"
         ));
         return None;
     }
@@ -791,7 +810,7 @@ fn load_service(prefix: &str, node: &MNode, failures: &mut Vec<String>) -> Optio
         }
     }
     let location = node.attribute("location").unwrap_or_default();
-    let rust_fn = if type_name == "rust" {
+    let rust_fn = if type_name == "rust" && native_fn.is_none() {
         if location.is_empty() {
             failures.push(format!("service {name} type rust is missing a location"));
             return None;
@@ -806,7 +825,9 @@ fn load_service(prefix: &str, node: &MNode, failures: &mut Vec<String>) -> Optio
     } else {
         None
     };
-    let kind = if rust_fn.is_some() {
+    let kind = if native_fn.is_some() {
+        ServiceKind::Native
+    } else if rust_fn.is_some() {
         ServiceKind::Rust
     } else {
         kind_of(&type_name, &location)
@@ -820,6 +841,8 @@ fn load_service(prefix: &str, node: &MNode, failures: &mut Vec<String>) -> Optio
         no_remember_parameters: bool_attr(node, "no-remember-parameters", false),
         location,
         rust_fn,
+        native_fn,
+        method: node.attribute("method").unwrap_or_default(),
         actions: node
             .first_named("actions")
             .map(|node| node.write_string())
@@ -1072,6 +1095,7 @@ fn parse_check(node: &MNode) -> Option<Check> {
         "time-range" => Check::TimeRange {
             after: node.attribute("after"),
             before: node.attribute("before"),
+            format: node.attribute("format"),
         },
         "credit-card" => Check::CreditCard {
             types: node.attribute("types"),
@@ -1299,8 +1323,14 @@ pub fn configured_service_files() -> Result<Vec<PathBuf>, Error> {
 }
 
 fn configured_paths() -> Result<Vec<PathBuf>, Error> {
-    let conf = framework_dir().join("conf/MoquiDefaultConf.xml");
-    let root = MNode::parse_file(&conf)?;
+    let configured = ExecutionContext::with_current(|ec| ec.factory().conf_text().to_string())
+        .filter(|conf| !conf.trim().is_empty())
+        .map(|conf| MNode::parse_text("moqui-conf", &conf))
+        .transpose()?;
+    let root = match configured.filter(|root| root.first_named("service-facade").is_some()) {
+        Some(root) => root,
+        None => MNode::parse_file(framework_dir().join("conf/MoquiDefaultConf.xml"))?,
+    };
     let facade = root
         .first_named("service-facade")
         .ok_or_else(|| Error::new("service-facade is missing"))?;

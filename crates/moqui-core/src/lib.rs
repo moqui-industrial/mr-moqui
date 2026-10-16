@@ -20,6 +20,7 @@ pub mod driver;
 pub mod edi;
 pub mod entity;
 pub mod l10n;
+pub mod native;
 pub mod notify;
 pub mod outbound;
 pub mod print;

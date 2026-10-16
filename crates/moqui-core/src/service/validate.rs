@@ -270,22 +270,45 @@ pub(crate) fn auto_fields(
     entity: &moqui_db::model::EntityDefinition,
     model: &moqui_db::model::EntityModel,
 ) -> Vec<ParamDef> {
+    // a view-entity has aliases, not fields
+    let fields: Vec<(&str, bool, String)> = if entity.is_view {
+        entity
+            .aliases
+            .iter()
+            .map(|alias| {
+                let java = if alias.java_type.is_empty() {
+                    "String".to_string()
+                } else {
+                    alias.java_type.clone()
+                };
+                (alias.name.as_str(), alias.is_pk, java)
+            })
+            .collect()
+    } else {
+        entity
+            .fields
+            .iter()
+            .map(|field| {
+                let java = model
+                    .dictionary_type(&field.field_type)
+                    .map(|entry| entry.java_type.clone())
+                    .unwrap_or_else(|| "String".to_string());
+                (field.name.as_str(), field.is_pk, java)
+            })
+            .collect()
+    };
     let mut params = Vec::new();
-    for field in &entity.fields {
+    for (name, is_pk, java) in fields {
         let take = match auto.include {
-            Include::Pk => field.is_pk,
-            Include::NonPk => !field.is_pk,
+            Include::Pk => is_pk,
+            Include::NonPk => !is_pk,
             Include::All => true,
         };
-        if !take || auto.exclude.iter().any(|name| name == &field.name) {
+        if !take || auto.exclude.iter().any(|excluded| excluded == name) {
             continue;
         }
-        let java = model
-            .dictionary_type(&field.field_type)
-            .map(|entry| entry.java_type.clone())
-            .unwrap_or_else(|| "String".to_string());
         params.push(ParamDef {
-            name: field.name.clone(),
+            name: name.to_string(),
             java_type: java,
             required: auto.required,
             // Java's mergeAutoParameters takes no default: the entity field's `default` is an expression for a
@@ -468,8 +491,15 @@ fn apply_check(name: &str, check: &Check, value: &Value) -> Result<(), Error> {
         Check::TextUrl => require_match(name, value, r"^https?://\S+$", "is not a URL")?,
         Check::TextLetters => require_match(name, value, "^[A-Za-z]+$", "is not letters")?,
         Check::TextDigits => require_match(name, value, "^[0-9]+$", "is not digits")?,
-        Check::TimeRange { after, before } => {
-            let stamp = stamp_millis(value).ok_or_else(|| Error::new(format!("parameter {name} is not a date")))?;
+        Check::TimeRange { after, before, format } => {
+            let read = match format {
+                Some(pattern) if !value.is_null() => {
+                    crate::l10n::parse_timestamp_format(&to_plain_string(value), Some(pattern))
+                }
+                _ => None,
+            };
+            let stamp = stamp_millis(read.as_ref().unwrap_or(value))
+                .ok_or_else(|| Error::new(format!("parameter {name} is not a date")))?;
             if let Some(after) = after {
                 let bound = bound_millis(after)?;
                 if stamp <= bound {
@@ -649,4 +679,32 @@ fn card_type_ok(digits: &str, types: Option<&str>) -> bool {
     types
         .split(',')
         .any(|allowed| allowed.trim().eq_ignore_ascii_case(kind))
+}
+
+#[cfg(test)]
+mod time_range_tests {
+    use super::*;
+
+    #[test]
+    fn a_time_range_reads_the_value_by_its_format() {
+        let after_now = Check::TimeRange {
+            after: Some("now".to_string()),
+            before: None,
+            format: Some("MM/yyyy".to_string()),
+        };
+        // a month and year far ahead pass, one long past does not, and text that does not fit the pattern is not a date
+        assert!(apply_check("expireDate", &after_now, &Value::string("12/2099")).is_ok());
+        let past = apply_check("expireDate", &after_now, &Value::string("01/2001")).unwrap_err();
+        assert!(past.message().contains("not after now"), "{}", past.message());
+        let bad = apply_check("expireDate", &after_now, &Value::string("soon")).unwrap_err();
+        assert!(bad.message().contains("not a date"), "{}", bad.message());
+        // without a format the value is epoch milliseconds, as before
+        let plain = Check::TimeRange {
+            after: Some("now".to_string()),
+            before: None,
+            format: None,
+        };
+        assert!(apply_check("when", &plain, &Value::string("4102444800000")).is_ok());
+        assert!(apply_check("when", &plain, &Value::string("12/2099")).is_err());
+    }
 }

@@ -8,7 +8,6 @@ publish.workspace = true
 
 [dependencies]
 moqui-host = { workspace = true }
-moqui-core = { workspace = true }
 # Component crates kept in runtime/base-component; each adds nothing unless its component loads.
 example = { workspace = true }
 

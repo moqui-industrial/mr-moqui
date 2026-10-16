@@ -59,29 +59,19 @@ along with this software (see the LICENSE.md file). If not, see
             <xs:attribute name="type" default="inline">
                 <xs:annotation><xs:documentation>
                     The service type specifies how the service is implemented. Additional types can be added by
-                    implementing the org.moqui.impl.service.ServiceRunner interface and adding an
-                    service-facade.service-type element in the Moqui Conf XML file. The default value is inline
+                    linking a native runner implementation and adding a service-facade.service-type
+                    element in the Moqui Conf XML file. Service definitions remain in this XML. The default value is inline
                     meaning the service implementation is under the service.actions element.
                 </xs:documentation></xs:annotation>
                 <xs:simpleType>
-                    <xs:restriction base="xs:token">
-                        <xs:enumeration value="inline"/>
-                        <xs:enumeration value="entity-auto"/>
-                        <xs:enumeration value="script"/>
-                        <xs:enumeration value="java"/>
-                        <xs:enumeration value="rust"/>
-                        <xs:enumeration value="interface"/>
-                        <xs:enumeration value="remote-json-rpc"/>
-                        <xs:enumeration value="remote-rest"/>
-                        <xs:enumeration value="camel"/>
-                    </xs:restriction>
+                    <xs:restriction base="xs:token"><xs:minLength value="1"/></xs:restriction>
                 </xs:simpleType>
             </xs:attribute>
             <xs:attribute name="location" type="xs:string" use="optional">
                 <xs:annotation><xs:documentation>The location of the service. For scripts this is the Resource Facade
                     location of the file. For Java class methods this is the full class name. For rust services this
                     is the Rust path of the registered function, such as moqui_core::service::mail::send_template,
-                    or for a component crate a function its tool factory registers with register_service!, such as
+                    or for a linked component crate the identifier its catalogue or a tool factory binds, such as
                     example::services::echo.
                     For remote services this is the URL of the remote service. Instead of an actual location can also
                     refer to a pre-defined location from the service-facade.service-location element in the Moqui Conf

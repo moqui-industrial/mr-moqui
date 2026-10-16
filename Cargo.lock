@@ -4644,7 +4644,6 @@ name = "moqui"
 version = "0.1.0"
 dependencies = [
  "example",
- "moqui-core",
  "moqui-host",
 ]
 
@@ -4680,6 +4679,7 @@ dependencies = [
  "image",
  "imap",
  "indexmap 2.14.2",
+ "inventory",
  "jiff",
  "lettre",
  "mail-parser",

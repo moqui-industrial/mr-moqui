@@ -546,6 +546,16 @@ impl ServicePools {
         Arc::clone(self.shared.as_ref().expect("service worker pool"))
     }
 
+    /// Stop threaded workers and the scheduler before shutting down their tools.
+    pub(crate) fn shutdown(&self) {
+        let Some(shared) = &self.shared else {
+            return;
+        };
+        fail_pending(shared);
+        let handles = std::mem::take(&mut *lock(&shared.handles));
+        join_all(handles);
+    }
+
     fn running(&self) -> Result<&Arc<Shared>, Error> {
         self.shared
             .as_ref()
@@ -555,15 +565,7 @@ impl ServicePools {
 
 impl Drop for ServicePools {
     fn drop(&mut self) {
-        let Some(shared) = self.shared.take() else {
-            return;
-        };
-        fail_pending(&shared);
-        let handles = {
-            let mut guard = lock(&shared.handles);
-            std::mem::take(&mut *guard)
-        };
-        join_all(handles);
+        self.shutdown();
     }
 }
 
