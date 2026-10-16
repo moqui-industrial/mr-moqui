@@ -50,13 +50,18 @@ checkout's untracked gap-analysis plan remains untouched.
 `apply#BusinessProcessActions` is a deterministic administrative service, not the
 original queued `update#BusinessProcessDiff` or its frontend completion contract.
 Upsert does not delete omitted graph records or change conversation identity.
-Do not claim ordinary-user edit policy, identity restoration or full ERP parity.
+`apply#BusinessProcessDiff` now validates raw semantic mappings at the locked
+write boundary, revalidates advisory same-process deleted/just-replaced identity
+selections, restores phrase/reference IDs and remaps surviving inputs. Obsolete
+restored reference trees are cleaned child-first after repointing retained refs.
+No text-similarity inference or model selection is implemented. Do not claim
+ordinary-user edit policy, model orchestration or full ERP parity.
 
 Current gates:
 
-- `node --test runtime/component/mr-vabohu/test/*.test.mjs`: **72 passed**;
+- `node --test runtime/component/mr-vabohu/test/*.test.mjs`: **89 passed**;
   includes all 44 snapshot hash checks.
-- Real XML/QuickJS + disposable PostgreSQL: **9 features passed**. Tests include
+- Real XML/QuickJS + disposable PostgreSQL: **11 features passed**. Tests include
   discovery, canonical graph reload, stale updates, concurrent locked edits,
   soft deletion, foreign identities, ADMIN checks with artifact authz disabled,
   and rollback after a subtype insert fails after its parent rows were written.
@@ -76,9 +81,10 @@ Logs for this iteration: `/tmp/mr-vabohu-{node-tests,runtime-tests,core-tests,cl
 1. Port LLM profiles/conversations/tools: validated terminal acceptance, retries,
    browse policy, latest-edit injection before each request and advisory identity
    selection. Raw HTTP is not the full tool runtime; do not fabricate success.
-2. Port original identity restoration/reference remapping and normal-user edit
-   policy, enforcing ADMIN-only relationship and artifact-authorization changes
-   again at the write boundary. Keep full-source stale checks and atomic writes.
+2. Connect model-based advisory identity selection to the now-ported deterministic
+   restoration/reference-remapping write boundary; port normal-user edit policy.
+   Enforce ADMIN-only relationship and artifact-authorization changes again at
+   the write boundary. Keep full-source stale checks and atomic writes.
 3. Implement shared per-process queue/workers, supersession, owner-scoped replay
    and retention, and failure cleanup. No JS-global shared state. Keep network I/O
    outside caller transactions and isolated persistence in named services.

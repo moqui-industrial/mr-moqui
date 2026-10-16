@@ -18,9 +18,11 @@ Component graph validation, dependency inference, ADMIN-only upsert and
 transactional deterministic actions are ported. Writes sanitize allowed graph
 relationships, preserve subtype rows, enforce graph identity ownership, lock the
 process, reject stale sources, and soft-delete replaced identities. They are not
-the original queued editor, identity restoration, or ordinary-user write policy.
+the original queued editor or ordinary-user write policy. The raw semantic diff
+write boundary now supports revalidated advisory identity restoration, reference
+ID reuse and cleanup, with surviving input-parent remapping.
 
-Validation: **72 Node tests**, **9 real XML/QuickJS/PostgreSQL features**, and
+Validation: **89 Node tests**, **11 real XML/QuickJS/PostgreSQL features**, and
 **824 core tests passed, 1 ignored**. Library Clippy with `http` and `-D warnings`
 also passed. These gates were rerun after merging current `origin/master`
 (`d761f57`, native-component and SQL-name fixes); the native public API suite
@@ -66,7 +68,7 @@ Including tests exposes an existing `clippy::drop_non_drop` at `crates/moqui-cor
 
 ## Still required before the requested runtime goal is met
 
-- [ ] Finish remaining OSIRIS orchestration/identity-restoration services; deterministic helpers, discovery and graph validation/writes are ported. Preserve the frozen working-tree source, not HEAD-only source.
+- [ ] Finish remaining OSIRIS orchestration/model-based identity-selection services; deterministic helpers, discovery and graph validation/writes are ported. Preserve the frozen working-tree source, not HEAD-only source.
 - [x] Adapt recovered component metadata call sites and qualify discovery through real XML services.
 - [ ] Implement LLM profiles, clients, conversations, tool schemas/validation, retry/terminal-tool behavior, browse policy and latest-edit injection. The existing Phase 13 work remains deferred; no fake successful model results are introduced here.
 - [ ] Replace callback service parameters with serializable named service operations; use existing service futures for parallel identity resolution.
