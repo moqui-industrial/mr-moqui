@@ -21,8 +21,37 @@ use indexmap::IndexMap;
 
 use super::*;
 
-/// The fields of a map or an entity value.
+/// The fields of a map or an entity value, an entity value's localized fields in the user's locale, as Java's `getMap`.
 pub(crate) fn value_map(value: &Value) -> Option<IndexMap<String, Value>> {
+    match value {
+        Value::Map(entries) => Some(entries.clone()),
+        Value::Object(object) => {
+            let cell = object.downcast::<EntityCell>()?;
+            let guard = lock(&cell);
+            if !guard.has_l10n() {
+                return Some(
+                    guard
+                        .fields()
+                        .iter()
+                        .map(|(key, item)| (key.clone(), item.clone()))
+                        .collect(),
+                );
+            }
+            // The lookups are finds, so they run with the value unlocked.
+            let copy = guard.clone();
+            drop(guard);
+            let fields = match entity_facade() {
+                Some(facade) => copy.localized_fields(&facade),
+                None => copy.fields().clone(),
+            };
+            Some(fields.into_iter().collect())
+        }
+        _ => None,
+    }
+}
+
+/// The stored fields of a map or an entity value, not localized: what a comparison of values reads.
+pub(crate) fn value_map_stored(value: &Value) -> Option<IndexMap<String, Value>> {
     match value {
         Value::Map(entries) => Some(entries.clone()),
         Value::Object(object) => {
@@ -40,17 +69,33 @@ pub(crate) fn value_map(value: &Value) -> Option<IndexMap<String, Value>> {
     }
 }
 
-/// One field of a map or entity value. None when the field is not there.
+/// One field of a map or entity value, an entity value's localized field in the user's locale. None when the field is
+/// not there.
 pub(crate) fn value_field(value: &Value, field: &str) -> Option<Value> {
     match value {
         Value::Map(entries) => entries.get(field).cloned(),
         Value::Object(object) => {
             let cell = object.downcast::<EntityCell>()?;
             let guard = lock(&cell);
-            guard.get(field).cloned()
+            if !guard.localizes(field) {
+                return guard.get(field).cloned();
+            }
+            let Some(facade) = entity_facade() else {
+                return guard.get(field).cloned();
+            };
+            let read = guard.read_localized(&facade, field);
+            drop(guard);
+            match read {
+                Ok(found) => found,
+                Err(read) => read.run(&facade),
+            }
         }
         _ => None,
     }
+}
+
+fn entity_facade() -> Option<crate::entity::EntityFacade> {
+    ExecutionContext::with_current(|ec| ec.factory().entity()).flatten()
 }
 
 /// The entity name of an entity value.

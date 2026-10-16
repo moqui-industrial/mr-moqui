@@ -1626,7 +1626,7 @@ fn localized_fields_use_the_user_locale_and_fall_back_to_localized_message() {
         message.set(name, Value::string(value));
     }
     message.create(&facade).unwrap();
-    let description = |id: &str| {
+    let find = |id: &str| {
         facade
             .find(entity)
             .unwrap()
@@ -1634,15 +1634,102 @@ fn localized_fields_use_the_user_locale_and_fall_back_to_localized_message() {
             .one()
             .unwrap()
             .unwrap()
-            .get("description")
-            .cloned()
     };
+    let description = |id: &str| find(id).get_localized(&facade, "description");
     crate::user::session::set_locale(Some("fr_CA"));
     assert_eq!(description("E1"), Some(Value::string("Hello (default)")));
     assert_eq!(description("E2"), Some(Value::string("Au revoir")));
     assert_eq!(description("E3"), Some(Value::string("Plain")));
+    // The stored value stays on the value, and a write of it writes what was stored, as Java's `valueMapInternal`.
+    let mut read = find("E2");
+    assert_eq!(read.get("description"), Some(&Value::string("Bye")));
+    read.set("sequenceNum", Value::I64(7));
+    read.update(&facade).unwrap();
+    facade
+        .find(entity)
+        .unwrap()
+        .eq("enumId", Value::string("E1"))
+        .update_all([("sequenceNum".to_string(), Value::I64(8))])
+        .unwrap();
     crate::user::session::set_locale(Some("de"));
     assert_eq!(description("E2"), Some(Value::string("Bye")));
+    assert_eq!(
+        find("E1").get_localized(&facade, "description"),
+        Some(Value::string("Hello (default)"))
+    );
+    assert_eq!(find("E1").get("description"), Some(&Value::string("Hello")));
+    assert_eq!(
+        find("E2")
+            .get("sequenceNum")
+            .map(moqui_lib::object::to_plain_string)
+            .as_deref(),
+        Some("7")
+    );
+    // A value reads its localized fields in the locale of the time it is read.
+    crate::user::session::set_locale(Some("fr"));
+    let kept = find("E2");
+    assert_eq!(
+        kept.get_localized(&facade, "description"),
+        Some(Value::string("Au revoir"))
+    );
+    crate::user::session::set_locale(Some("de"));
+    assert_eq!(kept.get_localized(&facade, "description"), Some(Value::string("Bye")));
+    assert_eq!(
+        kept.localized_fields(&facade).get("description"),
+        Some(&Value::string("Bye"))
+    );
+    crate::user::session::set_locale(None);
+}
+
+/// Localization is applied when a field is read, not when the row is: a translation added after the read is seen,
+/// and a field read once is not looked up again in the same locale.
+#[test]
+fn a_localized_field_is_looked_up_when_read_and_then_remembered() {
+    let facade = crate::testing::open();
+    let context = crate::context::ExecutionContextFactory::test_context();
+    context.factory().set_entity(facade.clone());
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    let mut row = facade.make_value("moqui.basic.Enumeration").unwrap();
+    row.set("enumId", Value::string("L1"));
+    row.set("description", Value::string("Late"));
+    row.create(&facade).unwrap();
+    crate::user::session::set_locale(Some("fr"));
+    let read = facade
+        .find("moqui.basic.Enumeration")
+        .unwrap()
+        .eq("enumId", Value::string("L1"))
+        .one()
+        .unwrap()
+        .unwrap();
+    let mut message = facade.make_value("moqui.basic.LocalizedMessage").unwrap();
+    for (name, value) in [("original", "Late"), ("locale", "fr"), ("localized", "En retard")] {
+        message.set(name, Value::string(value));
+    }
+    message.create(&facade).unwrap();
+    assert_eq!(
+        read.get_localized(&facade, "description"),
+        Some(Value::string("En retard"))
+    );
+    message.delete(&facade).unwrap();
+    assert_eq!(
+        read.get_localized(&facade, "description"),
+        Some(Value::string("En retard"))
+    );
+    // A clone shares what was read; setting the field forgets it.
+    let mut copy = read.clone();
+    assert_eq!(
+        copy.get_localized(&facade, "description"),
+        Some(Value::string("En retard"))
+    );
+    copy.set("description", Value::string("Late"));
+    assert_eq!(copy.get_localized(&facade, "description"), Some(Value::string("Late")));
+    assert_eq!(
+        read.get_localized(&facade, "description"),
+        Some(Value::string("En retard"))
+    );
+    // A value that was made, not read, is plain.
+    assert_eq!(row.get_localized(&facade, "description"), Some(Value::string("Late")));
     crate::user::session::set_locale(None);
 }
 

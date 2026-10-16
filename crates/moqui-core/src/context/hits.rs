@@ -1264,7 +1264,11 @@ mod tests {
             .one()
             .unwrap()
             .unwrap();
-        assert_eq!(found.get("description"), Some(&Value::string("Translated")));
+        assert_eq!(
+            found.get_localized(&world.facade, "description"),
+            Some(Value::string("Translated"))
+        );
+        assert_eq!(found.get("description"), Some(&Value::string("First")));
     }
 
     #[test]

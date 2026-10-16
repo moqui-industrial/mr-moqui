@@ -381,3 +381,95 @@ fn a_screen_document_prints_its_pdf_or_reports_that_pdf_is_not_available() {
         errors(&context)
     );
 }
+
+fn crypt(pass: &str) -> crate::entity::crypto::CryptConfig {
+    crate::entity::crypto::CryptConfig {
+        pass: pass.to_string(),
+        salt: "20201202".to_string(),
+        iterations: 10,
+        algorithm: "PBEWithHmacSHA256AndAES_128".to_string(),
+    }
+}
+
+/// Pages of three over seven records with a two field key: each record is rewritten once, under the new key, and a
+/// record that does not decrypt is skipped.
+#[test]
+fn encrypted_fields_are_rewritten_in_key_pages() {
+    const ENV: &str = "moqui.server.instance.InstanceImageTypeEnv";
+    let (facade, context) = setup();
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    facade.set_disable_fk_create(true);
+    let old = crypt("OldPassword:CHANGEME");
+    let new = crypt("NewPassword:CHANGEME");
+    facade.set_crypt(old.clone(), Vec::new());
+    let mut keys = Vec::new();
+    for image in ["A", "B"] {
+        for env in ["E1", "E2", "E3", "E4"] {
+            keys.push((image, env));
+        }
+    }
+    keys.pop();
+    for (image, env) in &keys {
+        let mut value = facade.make_value(ENV).unwrap();
+        value.set("imageTypeId", Value::string(*image));
+        value.set("envName", Value::string(*env));
+        value.set("envValue", Value::string(format!("{image}-{env}")));
+        value.create(&facade).unwrap();
+    }
+    // Sealed under a key the rewrite does not have.
+    facade.set_crypt(crypt("Unknown:CHANGEME"), Vec::new());
+    let mut lost = facade.make_value(ENV).unwrap();
+    lost.set("imageTypeId", Value::string("A"));
+    lost.set("envName", Value::string("E9"));
+    lost.set("envValue", Value::string("lost"));
+    lost.create(&facade).unwrap();
+
+    facade.set_crypt(new.clone(), vec![old]);
+    let out = super::rewrite_encrypted_in_pages(ENV, &facade, 3).unwrap();
+    assert_eq!(out.get("recordsUpdated"), Some(&Value::I64(7)));
+
+    facade.set_crypt(new, Vec::new());
+    for (image, env) in &keys {
+        let row = facade
+            .find(ENV)
+            .unwrap()
+            .eq("imageTypeId", Value::string(*image))
+            .eq("envName", Value::string(*env))
+            .one()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.get("envValue").map(to_plain_string).as_deref(),
+            Some(format!("{image}-{env}").as_str())
+        );
+    }
+}
+
+#[test]
+fn key_after_orders_by_each_key_field_in_turn() {
+    use crate::entity::Condition;
+    let names: Vec<String> = ["a", "b", "c"].iter().map(|name| name.to_string()).collect();
+    let mut last = indexmap::IndexMap::new();
+    for name in &names {
+        last.insert(name.clone(), Value::string(format!("{name}1")));
+    }
+    let one = super::key_after(&names[..1], &last);
+    assert_eq!(one, Condition::greater("a", Value::string("a1")));
+    let three = super::key_after(&names, &last);
+    assert_eq!(
+        three,
+        Condition::or(vec![
+            Condition::greater("a", Value::string("a1")),
+            Condition::and(vec![
+                Condition::equals("a", Value::string("a1")),
+                Condition::greater("b", Value::string("b1")),
+            ]),
+            Condition::and(vec![
+                Condition::equals("a", Value::string("a1")),
+                Condition::equals("b", Value::string("b1")),
+                Condition::greater("c", Value::string("c1")),
+            ]),
+        ])
+    );
+}

@@ -66,21 +66,18 @@ pub fn before_write(
     encrypt_fields(facade, entity, values)
 }
 
-/// Decrypt, then localize, for a caller that will not cache the row.
-///
-/// The find list cache stores [`decrypt_stored`] and localizes with [`localize_stored`] on the way out,
-/// so a later read can use a different locale.
-pub fn after_read(
+/// Encrypt a row read from the database for a copy of it, with no audit: nothing about it changed.
+pub(crate) fn seal_stored(
     facade: &EntityFacade,
     entity: &EntityDefinition,
     values: BTreeMap<String, Value>,
 ) -> Result<BTreeMap<String, Value>, Error> {
-    let values = decrypt_stored(facade, entity, values)?;
-    localize_stored(facade, entity, values)
+    encrypt_fields(facade, entity, values)
 }
 
-/// Decrypt a row for the find cache. Localization stays out of the cached value.
-pub(crate) fn decrypt_stored(
+/// Decrypt a row as read. The stored values stay as they are: localization is applied when a field is read, through
+/// [`super::EntityValue::get_localized`], as Java's `getKnownField`, so a write of the value writes what was stored.
+pub fn after_read(
     facade: &EntityFacade,
     entity: &EntityDefinition,
     values: BTreeMap<String, Value>,
@@ -88,16 +85,13 @@ pub(crate) fn decrypt_stored(
     decrypt_fields(facade, entity, values)
 }
 
-/// Apply the facade locale to a decrypted row.
-pub(crate) fn localize_stored(
+/// Decrypt a row for the find cache.
+pub(crate) fn decrypt_stored(
     facade: &EntityFacade,
     entity: &EntityDefinition,
     values: BTreeMap<String, Value>,
 ) -> Result<BTreeMap<String, Value>, Error> {
-    if raw_read() {
-        return Ok(values);
-    }
-    localize(facade, entity, values)
+    decrypt_fields(facade, entity, values)
 }
 
 fn encrypt_fields(
@@ -485,6 +479,33 @@ fn changed_now() -> Value {
     crate::user::now_effective_value()
 }
 
+/// The localized fields of a find's entity, worked out once per find and shared by each value it returns.
+#[derive(Debug)]
+pub(crate) struct L10nTargets {
+    targets: Vec<LocalTarget>,
+}
+
+impl L10nTargets {
+    pub(crate) fn has(&self, column: &str) -> bool {
+        self.targets.iter().any(|target| target.column == column)
+    }
+
+    pub(crate) fn columns(&self) -> impl Iterator<Item = &str> {
+        self.targets.iter().map(|target| target.column.as_str())
+    }
+
+    /// The columns the lookup of `column` reads: itself and its record's primary key.
+    pub(crate) fn read_columns<'a>(&'a self, column: &'a str) -> impl Iterator<Item = &'a str> {
+        let pk = self
+            .targets
+            .iter()
+            .find(|target| target.column == column)
+            .and_then(|target| target.pk_column.as_deref());
+        std::iter::once(column).chain(pk)
+    }
+}
+
+#[derive(Debug)]
 struct LocalTarget {
     entity_name: String,
     field_name: String,
@@ -493,61 +514,67 @@ struct LocalTarget {
     pk_column: Option<String>,
 }
 
-fn localize(
-    facade: &EntityFacade,
-    entity: &EntityDefinition,
-    values: BTreeMap<String, Value>,
-) -> Result<BTreeMap<String, Value>, Error> {
-    // A lookup that fails leaves the stored value, so the read itself still succeeds.
+/// The localized fields of `entity`, or `None` when it has none or this is a raw read (an internal read that must
+/// see what is stored). A lookup that fails is logged and the values stay as stored.
+pub(crate) fn l10n_targets(facade: &EntityFacade, entity: &EntityDefinition) -> Option<std::sync::Arc<L10nTargets>> {
+    if raw_read() {
+        return None;
+    }
     let targets = if entity.is_view {
         match view_targets_for(facade, entity) {
             Ok(targets) => targets,
             Err(err) => {
                 tracing::error!(error = %err, "Could not find the localized fields of {}, not localizing", entity.full_name);
-                return Ok(values);
+                return None;
             }
         }
     } else {
         plain_targets(entity)
     };
-    if targets.is_empty() {
-        return Ok(values);
-    }
-    // The user's locale, as Java's `userFacade.getLocale()`; the facade's own with no execution context.
-    let locale = if crate::user::context_entered() {
+    (!targets.is_empty()).then(|| std::sync::Arc::new(L10nTargets { targets }))
+}
+
+/// The user's locale, as Java's `userFacade.getLocale()`; the facade's own with no execution context.
+pub(crate) fn current_locale(facade: &EntityFacade) -> String {
+    if crate::user::context_entered() {
         crate::l10n::locale()
     } else {
         facade.locale()
-    };
-    let locales = locale_chain(&locale);
+    }
+}
+
+/// The localized value of `column` in `locale`, or `None` to use the stored value: the column is not localized, there
+/// is no localization, or the lookup failed (logged; the read itself still succeeds).
+pub(crate) fn localize_field(
+    facade: &EntityFacade,
+    targets: &L10nTargets,
+    values: &BTreeMap<String, Value>,
+    column: &str,
+    locale: &str,
+) -> Option<Value> {
+    let target = targets.targets.iter().find(|target| target.column == column)?;
+    let locales = locale_chain(locale);
     if locales.is_empty() {
-        return Ok(values);
+        return None;
     }
-    let mut values = values;
-    for target in &targets {
-        let pk = target.pk_column.as_ref().and_then(|column| pk_text(values.get(column)));
-        let stored = plain_text(values.get(&target.column)).filter(|text| !text.is_empty());
-        if pk.is_none() && stored.is_none() {
-            continue;
-        }
-        let pk = pk.unwrap_or_default();
-        match find_localized(facade, target, &pk, stored.as_deref(), &locales) {
-            Ok(Some(localized)) => {
-                values.insert(target.column.clone(), localized);
-            }
-            Ok(None) => {}
-            Err(err) => {
-                tracing::error!(
-                    error = %err,
-                    "Could not localize field {} of {} {pk}, using the stored value",
-                    target.field_name,
-                    target.entity_name
-                );
-                break;
-            }
+    let pk = target.pk_column.as_ref().and_then(|column| pk_text(values.get(column)));
+    let stored = plain_text(values.get(&target.column)).filter(|text| !text.is_empty());
+    if pk.is_none() && stored.is_none() {
+        return None;
+    }
+    let pk = pk.unwrap_or_default();
+    match find_localized(facade, target, &pk, stored.as_deref(), &locales) {
+        Ok(found) => found,
+        Err(err) => {
+            tracing::error!(
+                error = %err,
+                "Could not localize field {} of {} {pk}, using the stored value",
+                target.field_name,
+                target.entity_name
+            );
+            None
         }
     }
-    Ok(values)
 }
 
 fn plain_targets(entity: &EntityDefinition) -> Vec<LocalTarget> {

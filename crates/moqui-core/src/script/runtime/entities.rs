@@ -1021,6 +1021,38 @@ impl HostEntity {
             .ok()
     }
 
+    /// A field as a script reads it, in the user's locale when it is a localized field, as Java's `get`. A lookup runs
+    /// with the value unlocked, since it is a find.
+    fn field_value(&self, name: &str) -> Option<Value> {
+        let value = self.val();
+        if !value.localizes(name) {
+            return value.get(name).cloned();
+        }
+        let Some(facade) = ExecutionContext::with_current(|ec| ec.factory().entity()).flatten() else {
+            return value.get(name).cloned();
+        };
+        let read = value.read_localized(&facade, name);
+        drop(value);
+        match read {
+            Ok(found) => found,
+            Err(read) => read.run(&facade),
+        }
+    }
+
+    /// The fields as a plain map, the localized ones in the user's locale, as Java's `getMap`.
+    fn field_map(&self) -> std::collections::BTreeMap<String, Value> {
+        let value = self.val();
+        if !value.has_l10n() {
+            return value.fields().clone();
+        }
+        let copy = value.clone();
+        drop(value);
+        match ExecutionContext::with_current(|ec| ec.factory().entity()).flatten() {
+            Some(facade) => copy.localized_fields(&facade),
+            None => copy.fields().clone(),
+        }
+    }
+
     /// Whether `name` is a field: one the value holds, or one its entity defines.
     fn is_field(&self, name: &str) -> bool {
         self.val().fields().contains_key(name) || matches!(self.member(name), Some(Member::Field))
@@ -1049,7 +1081,7 @@ impl HostEntity {
     /// A field value, null for a field the value does not hold, or the related value or list for a relationship
     /// name, as Java `EntityValueBase.get` resolves a name. Undefined for any other name.
     fn read_member<'js>(&self, ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<JsValue<'js>> {
-        let held = self.val().get(name).cloned();
+        let held = self.field_value(name);
         if let Some(value) = held {
             return host_to_js(ctx, value);
         }
@@ -1137,7 +1169,7 @@ impl HostEntity {
         if !self.is_field(&name) {
             return Ok(None);
         }
-        let held = self.val().get(&name).cloned().unwrap_or(Value::Null);
+        let held = self.field_value(&name).unwrap_or(Value::Null);
         let value = host_to_js(ctx, held)?;
         Ok(Some(PropertyDescriptor::new_value(value, true, true, true)))
     }
@@ -1163,7 +1195,7 @@ impl HostEntity {
     fn get<'js>(&self, ctx: Ctx<'js>, field: String) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || {
             // the held value is cloned so the value is not locked while a relationship find runs
-            let held = self.val().get(&field).cloned();
+            let held = self.field_value(&field);
             if let Some(value) = held {
                 return value_to_js(&ctx, &value);
             }
@@ -1229,12 +1261,7 @@ impl HostEntity {
     /// `entrySet()`: each field as an entry with `key` and `value`, and `getKey()` and `getValue()`.
     fn entry_set<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || {
-            let entries: Vec<(String, Value)> = self
-                .val()
-                .fields()
-                .iter()
-                .map(|(name, value)| (name.clone(), value.clone()))
-                .collect();
+            let entries: Vec<(String, Value)> = self.field_map().into_iter().collect();
             let list = rquickjs::Array::new(ctx.clone())?;
             for (index, (name, value)) in entries.into_iter().enumerate() {
                 let entry = Object::new(ctx.clone())?;
@@ -1318,7 +1345,7 @@ impl HostEntity {
             let other = js_to_host(&ctx, &other)?;
             let (Some(name), Some(theirs)) = (
                 super::values::value_entity_name(&other),
-                super::values::value_map(&other),
+                super::values::value_map_stored(&other),
             ) else {
                 return Ok(false);
             };
@@ -1342,15 +1369,10 @@ impl HostEntity {
         })
     }
 
-    /// `getMap()`: the fields as a plain map.
+    /// `getMap()`: the fields as a plain map, the localized ones in the user's locale.
     fn get_map<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || {
-            let map: indexmap::IndexMap<String, Value> = self
-                .val()
-                .fields()
-                .iter()
-                .map(|(name, value)| (name.clone(), value.clone()))
-                .collect();
+            let map: indexmap::IndexMap<String, Value> = self.field_map().into_iter().collect();
             host_to_js(&ctx, Value::Map(map))
         })
     }
@@ -1763,6 +1785,42 @@ mod tests {
                 return value.parentEnumId === null && value.parentEnumId?.length === undefined && value.enumCode === "C";
             })()"#,
         );
+    }
+
+    /// As Java's `get` and `getMap`: a script reads a localized field in the user's locale; the stored value is what
+    /// an update writes.
+    #[test]
+    fn a_script_reads_localized_fields_and_writes_the_stored_ones() {
+        let context = enumerations();
+        let _entered = context.enter();
+        let _authz = context.disable_authz();
+        seed();
+        run_script(
+            r#"const message = ec.entity.makeValue("moqui.basic.LocalizedMessage");
+            message.original = "first"; message.locale = "fr"; message.localized = "premier";
+            message.create();"#,
+        )
+        .unwrap();
+        crate::user::session::set_locale(Some("fr"));
+        holds(
+            r#"(function () {
+                const value = ec.entity.find("moqui.basic.Enumeration").condition("enumId", "E1").one();
+                const map = value.getMap();
+                const json = JSON.parse(JSON.stringify(value));
+                value.sequenceNum = 9;
+                value.update();
+                const stored = ec.entity.find("moqui.basic.Enumeration").condition("enumId", "E1").useCache(false).one();
+                return value.description === "premier" && value.get("description") === "premier"
+                    && map.description === "premier" && json.description === "premier"
+                    && stored.sequenceNum === 9 && stored.description === "premier";
+            })()"#,
+        );
+        crate::user::session::set_locale(Some("de"));
+        holds(
+            r#"ec.entity.find("moqui.basic.Enumeration").condition("enumId", "E1").useCache(false).one().description
+                === "first""#,
+        );
+        crate::user::session::set_locale(None);
     }
 
     /// The allocations the outermost script runtime holds now, after a collection. Not while a script runs: that

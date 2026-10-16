@@ -14,6 +14,8 @@
 
 //! Entity find. The condition tree is `moqui_db`. A view uses `select_view`.
 
+use std::sync::Arc;
+
 use moqui_db::sql::{
     count_view, count_with, select_view_with, select_with, Condition, ConditionValues, FieldRef, LimitOffset, OrderBy,
     SelectOptions,
@@ -26,6 +28,7 @@ use super::exec::{after_statement, query_tx};
 use super::facade::EntityFacade;
 use super::field_rw;
 use super::params::{entity_columns, map_row, view_columns};
+use super::sim_view;
 use super::value::{EntityArtifact, EntityList, EntityValue};
 use crate::driver::DbRow;
 use crate::transaction::TransactionManager;
@@ -267,10 +270,16 @@ impl EntityFind {
         let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view", operation)?;
         let condition = self.combined();
         let lookup = self.lookup(&condition);
+        if let Some(schema) = self.sim_view_schema(false)? {
+            let plan = self.plan(false)?;
+            let rows = cache::query_sim(&self.facade, &schema, &plan.sql, &plan.params)?;
+            let values = self.rows_to_values(&plan, &rows)?;
+            return Ok(self.attach_l10n(EntityList::new(values)));
+        }
         let bypass = self.bypasses_cache();
         if !bypass {
             if let Some(cached) = cache::before_find(&self.facade, &lookup) {
-                return self.localize_list(cached);
+                return Ok(self.attach_l10n(cached));
             }
         }
         // As Java: a find on a table that does not exist finds nothing.
@@ -289,7 +298,7 @@ impl EntityFind {
                 tracing::warn!(error = %err, "Could not cache the find of {}", self.entity_name);
             }
         }
-        self.localize_list(list)
+        Ok(self.attach_l10n(list))
     }
 
     /// Java `updateAll`: set `fields` on each row found and update the rows that change, so each update runs its
@@ -446,6 +455,11 @@ impl EntityFind {
         }
         let _authz = self.authz_guard();
         let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view", "count")?;
+        if let Some(schema) = self.sim_view_schema(true)? {
+            let plan = self.plan(true)?;
+            let rows = cache::query_sim(&self.facade, &schema, &plan.sql, &plan.params)?;
+            return count_of(&rows);
+        }
         let condition = self.combined();
         let lookup = self.lookup(&condition);
         let bypass = self.bypasses_cache();
@@ -458,21 +472,40 @@ impl EntityFind {
         let plan = self.plan(true)?;
         let rows = query_tx(&plan.tx, &plan.sql, &plan.params)?;
         after_statement(&self.facade, &plan.tx, false);
-        let value = rows
-            .first()
-            .and_then(|row| row.columns.first())
-            .map(|(_, value)| value.clone())
-            .unwrap_or(Value::Null);
-        let count = match basic_convert(&value, "Long").value {
-            Value::I64(number) => number,
-            other => return Err(Error::new(format!("count returned {other:?}"))),
-        };
+        let count = count_of(&rows)?;
         if !bypass {
             if let Err(err) = cache::after_count(&self.facade, &lookup, count) {
                 tracing::warn!(error = %err, "Could not cache the count of {}", self.entity_name);
             }
         }
         Ok(count)
+    }
+
+    /// A view the sim changed is read from the sim schema, once this copies the member rows the read needs there; see
+    /// [`super::sim_view`]. `None` when production answers. The copy starts from production's answer to this find
+    /// with every alias, its page widened to hold the rows the sim deleted, as Java's `copyWorkingSet`.
+    fn sim_view_schema(&self, for_count: bool) -> Result<Option<String>, Error> {
+        let Some(plan) = sim_view::plan_for(&self.facade, &self.entity_name)? else {
+            return Ok(None);
+        };
+        let schema = plan.prepare(&self.facade, || {
+            let mut production = self.clone();
+            production.select_fields.clear();
+            production.form_order_only = false;
+            production.use_cache = Some(false);
+            let slack = i64::try_from(cache::sim_deleted_count())
+                .unwrap_or(i64::MAX)
+                .saturating_add(1);
+            production.limit = if for_count {
+                None
+            } else {
+                self.limit
+                    .map(|limit| limit.saturating_add(self.offset.unwrap_or(0)).saturating_add(slack))
+            };
+            production.offset = None;
+            Ok(production.list()?.into_values())
+        })?;
+        Ok(Some(schema))
     }
 
     /// Open a cursor when this find has no transaction hold and no sim schema.
@@ -487,6 +520,12 @@ impl EntityFind {
                 self.entity_name,
                 EntityList::new(Vec::new()),
             ));
+        }
+        // A view the sim changed is read from the sim schema, into memory.
+        if sim_view::plan_for(&self.facade, &self.entity_name)?.is_some() {
+            let facade = self.facade.clone();
+            let entity_name = self.entity_name.clone();
+            return Ok(EntityListIterator::memory(facade, entity_name, self.list()?));
         }
         let _authz = self.authz_guard();
         let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view", "iterator")?;
@@ -656,17 +695,17 @@ impl EntityFind {
         })
     }
 
-    /// Localization uses the locale at read time. The list cache keeps the decrypted row.
-    fn localize_list(&self, list: EntityList) -> Result<EntityList, Error> {
-        let facade = self.facade.clone();
-        self.facade.with_entity(&self.entity_name, |entity, _, _| {
-            let mut values = Vec::with_capacity(list.len());
-            for row in list.values() {
-                let adjusted = field_rw::localize_stored(&facade, entity, row.fields().clone())?;
-                values.push(EntityValue::from_fields(row.entity_name().to_string(), adjusted));
-            }
-            Ok(EntityList::new(values))
-        })
+    /// Each value reads its localized fields in the locale of the time it is read. The list cache keeps the stored row.
+    fn attach_l10n(&self, list: EntityList) -> EntityList {
+        let Some(targets) = find_l10n(&self.facade, &self.entity_name) else {
+            return list;
+        };
+        EntityList::new(
+            list.into_values()
+                .into_iter()
+                .map(|value| value.with_l10n(Some(&targets)))
+                .collect(),
+        )
     }
 }
 
@@ -689,6 +728,27 @@ impl ConditionValues for FindValues {
             return Ok(Value::Null);
         }
         Ok(basic_convert(&Value::string(text), java_type).value)
+    }
+}
+
+/// The localized fields of `entity_name`, for the values a find of it returns.
+fn find_l10n(facade: &EntityFacade, entity_name: &str) -> Option<Arc<field_rw::L10nTargets>> {
+    facade
+        .with_entity(entity_name, |entity, _, _| Ok(field_rw::l10n_targets(facade, entity)))
+        .ok()
+        .flatten()
+}
+
+/// The number a count query returned.
+fn count_of(rows: &[DbRow]) -> Result<i64, Error> {
+    let value = rows
+        .first()
+        .and_then(|row| row.columns.first())
+        .map(|(_, value)| value.clone())
+        .unwrap_or(Value::Null);
+    match basic_convert(&value, "Long").value {
+        Value::I64(number) => Ok(number),
+        other => Err(Error::new(format!("count returned {other:?}"))),
     }
 }
 
@@ -716,8 +776,10 @@ pub struct EntityListIterator {
     columns: Vec<(String, String)>,
     tx: Option<TransactionManager>,
     open: bool,
-    /// In memory: every row, not yet localized.
+    /// In memory: every row.
     memory: Option<Vec<EntityValue>>,
+    /// The localized fields each row returned reads.
+    l10n: Option<Arc<field_rw::L10nTargets>>,
     scrollable: bool,
     /// A scrollable stream's rows read so far, by index.
     seen: Vec<EntityValue>,
@@ -738,6 +800,7 @@ impl EntityListIterator {
         tx: TransactionManager,
         scrollable: bool,
     ) -> Self {
+        let l10n = find_l10n(&facade, &entity_name);
         Self {
             facade,
             entity_name,
@@ -745,6 +808,7 @@ impl EntityListIterator {
             tx: Some(tx),
             open: true,
             memory: None,
+            l10n,
             scrollable,
             seen: Vec::new(),
             window: std::collections::VecDeque::new(),
@@ -755,6 +819,7 @@ impl EntityListIterator {
     }
 
     fn memory(facade: EntityFacade, entity_name: String, list: EntityList) -> Self {
+        let l10n = find_l10n(&facade, &entity_name);
         Self {
             facade,
             entity_name,
@@ -762,6 +827,7 @@ impl EntityListIterator {
             tx: None,
             open: false,
             memory: Some(list.into_values()),
+            l10n,
             scrollable: true,
             seen: Vec::new(),
             window: std::collections::VecDeque::new(),
@@ -931,7 +997,7 @@ impl EntityListIterator {
         ))
     }
 
-    /// The next database row, decrypted and localized; `None` at the end, which closes the stream.
+    /// The next database row, decrypted; `None` at the end, which closes the stream.
     fn read_raw(&mut self) -> Result<Option<EntityValue>, Error> {
         if !self.open {
             return Ok(None);
@@ -958,16 +1024,9 @@ impl EntityListIterator {
         }
     }
 
-    /// A row as the caller gets it: a row from memory is localized now; a database row already was.
+    /// A row as the caller gets it, reading its localized fields when they are read.
     fn emit(&self, row: EntityValue) -> Result<EntityValue, Error> {
-        if self.memory.is_none() {
-            return Ok(row);
-        }
-        let facade = self.facade.clone();
-        let adjusted = self.facade.with_entity(&self.entity_name, |entity, _, _| {
-            field_rw::localize_stored(&facade, entity, row.fields().clone())
-        })?;
-        Ok(EntityValue::from_fields(row.entity_name().to_string(), adjusted))
+        Ok(row.with_l10n(self.l10n.as_ref()))
     }
 
     pub fn close(&mut self) -> Result<(), Error> {
