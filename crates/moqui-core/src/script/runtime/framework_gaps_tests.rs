@@ -213,6 +213,59 @@ fn an_after_entity_eca_rule_gets_the_original_value_of_an_update() {
 }
 
 #[test]
+fn a_find_condition_on_an_encrypted_field_matches_the_stored_value() {
+    clear_context_stack();
+    let facade = crate::testing::open();
+    facade.set_crypt(
+        crate::entity::crypto::CryptConfig {
+            pass: "MoquiDefaultPassword:CHANGEME".to_string(),
+            salt: "20201202".to_string(),
+            iterations: 10,
+            algorithm: "PBEWithHmacSHA256AndAES_128".to_string(),
+        },
+        Vec::new(),
+    );
+    let context = ExecutionContextFactory::test_context();
+    context.factory().set_entity(facade.clone());
+    let _entered = context.enter();
+    // PartyIdentification-style lookups: the stored value is encrypted, the condition value is plain text
+    run_script(
+        r#"const host = ec.entity.makeValue("moqui.server.instance.InstanceHost");
+        host.instanceHostId = "H1";
+        host.password = "Secret";
+        host.create();"#,
+    )
+    .unwrap();
+    holds(
+        r#"ec.entity.find("moqui.server.instance.InstanceHost").condition("password", "Secret").list().length === 1"#,
+    );
+    holds(
+        r#"ec.entity.find("moqui.server.instance.InstanceHost").condition("password", "in", ["Secret", "Other"]).list().length === 1"#,
+    );
+    holds(r#"ec.entity.find("moqui.server.instance.InstanceHost").condition("password", "Other").list().length === 0"#);
+    holds(
+        r#"ec.entity.find("moqui.server.instance.InstanceHost").condition("instanceHostId", "H1").one().password === "Secret""#,
+    );
+}
+
+#[test]
+fn an_entity_value_is_the_parameters_of_a_service_call() {
+    let context = database();
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    seed();
+    // `<service-call name="delete#..." in-map="entityValue"/>`, as the bulk order store removes the items an update left out
+    run_script(
+        r#"const value = ec.entity.find("moqui.basic.Enumeration").condition("enumId", "E1").one();
+        value.description = "via service";
+        ec.service.sync().name("update#moqui.basic.Enumeration").parameters(value).call();
+        if (ec.message.hasError()) throw new Error(ec.message.getErrorsString());"#,
+    )
+    .unwrap();
+    holds(r#"ec.entity.find("moqui.basic.Enumeration").condition("enumId", "E1").one().description === "via service""#);
+}
+
+#[test]
 fn a_null_template_expands_to_nothing() {
     let context = database();
     let _entered = context.enter();

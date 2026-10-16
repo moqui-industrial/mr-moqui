@@ -432,6 +432,7 @@ impl EntityFind {
             fields: self.select_fields.clone(),
         };
         self.facade.with_group(&self.entity_name, |entity, dialect, model, tx| {
+            let condition = field_rw::encrypt_condition(&self.facade, entity, condition.clone())?;
             for name in &self.select_fields {
                 if !entity.has_field(name) {
                     return Err(Error::new(format!("{} has no field {name}", entity.full_name)));
