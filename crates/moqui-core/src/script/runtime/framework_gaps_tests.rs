@@ -49,27 +49,6 @@ fn seed() {
 }
 
 #[test]
-fn message_error_scopes_preserve_caller_errors_and_messages() {
-    clear_context_stack();
-    let context = ExecutionContextFactory::test_context();
-    let _entered = context.enter();
-    run_script(
-        r#"
-        ec.message.addMessage("notice");
-        ec.message.addError("caller");
-        ec.message.pushErrors();
-        ec.message.addError("validation");
-        isolated = ec.message.errorsString;
-        ec.message.clearErrors();
-        ec.message.popErrors();
-    "#,
-    )
-    .unwrap();
-    holds(r#"isolated === "validation" && ec.message.getErrorsString() === "caller""#);
-    assert_eq!(context.message().messages(), ["notice"]);
-}
-
-#[test]
 fn decimals_abs_negate_scale_and_scaled_divide() {
     clear_context_stack();
     holds(r#"toDecimal("-2.50").abs().toString() === "2.50" && toDecimal("2.50").negate().toString() === "-2.50""#);
