@@ -205,7 +205,7 @@ pub fn open_form_list(state: &RenderState, name: &str) -> Result<(usize, usize),
 fn form_rows(form: &FormInstance) -> Result<Vec<IndexMap<String, Value>>, Error> {
     let list_value = match &form.entity_find {
         Some(find) => {
-            find.run()?;
+            script::run_actions(&find.xml)?;
             script::context_value(&form.list_name).unwrap_or(Value::Null)
         }
         None => script::eval_value(&form.list_name)?,
@@ -233,7 +233,7 @@ fn form_rows(form: &FormInstance) -> Result<Vec<IndexMap<String, Value>>, Error>
         let _ = script::set_context_name(&format!("{prefix}_has_next"), has_next);
         let ran = (|| -> Result<(), Error> {
             if let Some(actions) = &form.row_actions {
-                actions.run()?;
+                script::run_actions(&actions.xml)?;
             }
             for (field, from) in &form.field_from {
                 let value = script::eval_value(from)?;

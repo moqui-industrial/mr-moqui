@@ -285,7 +285,7 @@ fn render_single(
     let fail = !holds;
     if holds {
         if let Some(actions) = &section.actions {
-            actions.run()?;
+            script::run_actions(&actions.xml)?;
         }
         if state.dont_do_render.get() {
             return Ok(());

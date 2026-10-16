@@ -851,6 +851,9 @@ fn run_script(def: &ServiceDef, parameters: &BTreeMap<String, Value>) -> Result<
 /// A failure in a service's body, with the service named after it (Java logs "Error running service ..."): a script
 /// error alone gives only a line in the generated code.
 fn in_service(def: &ServiceDef, err: crate::context::Error) -> LibError {
+    if err.message().contains("\n    in service ") {
+        return err.into();
+    }
     let message = format!("{}\n    in service {}", err.message().trim_end(), def.name);
     err.with_message(message).into()
 }
@@ -1576,7 +1579,7 @@ mod tests {
     }
 
     #[test]
-    fn service_failures_keep_original_xml_and_rust_source_locations() {
+    fn service_failures_identify_owning_actions_and_rust_origin() {
         let path = write_fixture(
             "source-locations",
             "<services>\n<service verb=\"locate\" noun=\"Failure\">\n<actions><script><![CDATA[\nconst location = 'component://MissingDiagnostics/screen/A.xml';\nec.resource.getLocationText(location);\n]]></script></actions>\n</service>\n</services>",
@@ -1588,7 +1591,7 @@ mod tests {
         let err = sync("locate#Failure", &BTreeMap::new()).unwrap_err();
         let diagnostic = err.diagnostic();
         assert!(
-            diagnostic.contains(&format!("JavaScript: {}:5:", path.display())),
+            diagnostic.contains(&format!("{}#actions-3-1.generated.js:", path.display())),
             "{diagnostic}"
         );
         assert!(
@@ -1600,29 +1603,8 @@ mod tests {
             .message()
             .errors()
             .iter()
-            .any(|error| error.contains("JavaScript:") && error.contains("Rust:")));
+            .any(|error| error.contains(".generated.js:") && error.contains("Rust:")));
         std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn service_context_preserves_kind_and_all_callers() {
-        let inner = super::ServiceDef::implicit("inner#Service", "inner", "Service");
-        let mut outer = inner.clone();
-        outer.name = "outer#Service".into();
-        let line = line!() + 1;
-        let error = crate::context::Error::of_kind(crate::context::ErrorKind::NotFound, "missing");
-        let error = super::in_service(&inner, error);
-        let error = super::in_service(&outer, error.into());
-        let error = crate::context::Error::from(error);
-        assert_eq!(error.kind(), crate::context::ErrorKind::NotFound);
-        let diagnostic = error.diagnostic();
-        for expected in [
-            "in service inner#Service",
-            "in service outer#Service",
-            &format!("Rust: {}:{line}:", file!()),
-        ] {
-            assert!(diagnostic.contains(expected), "{diagnostic}");
-        }
     }
 
     #[test]

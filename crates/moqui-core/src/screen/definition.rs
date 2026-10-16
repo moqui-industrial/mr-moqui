@@ -63,7 +63,6 @@ impl XmlFragment {
 #[derive(Clone, Debug)]
 pub struct Actions {
     pub xml: Arc<str>,
-    source: Option<moqui_lib::error::SourceLocation>,
 }
 
 impl Actions {
@@ -71,25 +70,12 @@ impl Actions {
     pub(super) fn from_node(node: &MNode, label: &str) -> Result<Self, Error> {
         let copy = node.deep_copy();
         copy.set_name("actions");
-        let mut actions = Self::from_xml(copy.write_string(), label)?;
-        actions.source = Some(moqui_lib::error::SourceLocation {
-            file: node.file_location(),
-            line: node.line(),
-            column: node.column(),
-        });
-        Ok(actions)
+        Self::from_xml(copy.write_string(), label)
     }
 
     pub(super) fn from_xml(xml: String, label: &str) -> Result<Self, Error> {
         crate::script::check_actions(&xml).map_err(|err| Error::new(format!("{label}: {}", err.message())))?;
-        Ok(Self {
-            xml: Arc::from(xml),
-            source: None,
-        })
-    }
-
-    pub(crate) fn run(&self) -> Result<(), Error> {
-        crate::script::run_actions_at(&self.xml, self.source.as_ref())
+        Ok(Self { xml: Arc::from(xml) })
     }
 }
 
