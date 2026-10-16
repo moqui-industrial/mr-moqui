@@ -34,12 +34,14 @@ pub struct NameReplace {
 ///
 /// String fields are `None` when the attribute is absent. XSD defaults are not filled in.
 /// `never_nulls`, `never_try_insert`, and `use_binary_type_for_blob` are false when absent.
-/// `use_foreign_key_indexes` is true unless the attribute is `false`.
+/// `use_foreign_key_indexes` and `use_pk_constraint_names` are true unless the attribute is `false`.
 /// `sql_types` holds only that database's `<database-type>` entries.
 /// `placeholder` is always [`PLACEHOLDER`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dialect {
     pub name: String,
+    /// Preserve the pre-compatibility Rust quoted identifiers. Never migrate automatically.
+    pub legacy_names: bool,
     pub placeholder: &'static str,
     pub fts_style: Option<String>,
     pub fts_config: Option<String>,
@@ -60,6 +62,7 @@ pub struct Dialect {
     /// Text written in place of `FOR UPDATE`. Empty writes nothing.
     pub for_update: Option<String>,
     pub use_foreign_key_indexes: bool,
+    pub use_pk_constraint_names: bool,
     /// `<database-type type>` to `sql-type`. A missing type is left for the dictionary default.
     pub sql_types: BTreeMap<String, String>,
     pub name_replaces: Vec<NameReplace>,
@@ -84,9 +87,11 @@ impl Dialects {
     /// `node` may be that element or a conf root that contains one.
     pub fn load(node: &MNode) -> Result<Self, Error> {
         let list = database_list(node)?;
+        let legacy_names = legacy_names(node)?;
         let mut by_name = BTreeMap::new();
         for child in list.children_named("database") {
-            let dialect = parse_database(&child)?;
+            let mut dialect = parse_database(&child)?;
+            dialect.legacy_names = legacy_names;
             let name = dialect.name.clone();
             if by_name.contains_key(&name) {
                 return Err(at(&child, format!("database \"{name}\" is duplicated")));
@@ -110,6 +115,21 @@ impl Dialects {
 
     pub fn is_empty(&self) -> bool {
         self.by_name.is_empty()
+    }
+}
+
+/// Rust-only compatibility switch, shared by the model and SQL dialects.
+pub(crate) fn legacy_names(conf: &MNode) -> Result<bool, Error> {
+    let raw = conf
+        .first_named("entity-facade")
+        .and_then(|node| node.attribute("sql-name-style"))
+        .unwrap_or_else(|| "java".to_string());
+    match moqui_lib::env::expand(&raw)?.as_str() {
+        "java" => Ok(false),
+        "legacy" => Ok(true),
+        other => Err(Error::new(format!(
+            "sql-name-style must be java or legacy, found {other}"
+        ))),
     }
 }
 
@@ -151,6 +171,7 @@ fn parse_database(node: &MNode) -> Result<Dialect, Error> {
     }
     Ok(Dialect {
         name,
+        legacy_names: false,
         placeholder: PLACEHOLDER,
         fts_style: optional(node, "fts-style"),
         fts_config: optional(node, "fts-config"),
@@ -171,6 +192,7 @@ fn parse_database(node: &MNode) -> Result<Dialect, Error> {
         // Present and empty means no row lock text at all (SQLite). Absent means `FOR UPDATE`.
         for_update: node.attribute("for-update").map(|value| value.trim().to_string()),
         use_foreign_key_indexes: !matches!(optional(node, "use-foreign-key-indexes").as_deref(), Some("false")),
+        use_pk_constraint_names: !matches!(optional(node, "use-pk-constraint-names").as_deref(), Some("false")),
         sql_types,
         name_replaces,
     })

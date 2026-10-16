@@ -177,11 +177,22 @@ impl EntityFacade {
         default_group: &str,
         groups: Vec<EntityGroup>,
     ) -> Result<Self, Error> {
+        let conf = MNode::parse_file(framework_dir.join("conf/MoquiDefaultConf.xml"))?;
+        Self::open_components_with_conf(framework_dir, component_entity_dirs, default_group, groups, &conf)
+    }
+
+    /// Load with the runtime's merged configuration, including database name replacements
+    /// and the Rust SQL naming compatibility switch.
+    pub fn open_components_with_conf(
+        framework_dir: &Path,
+        component_entity_dirs: &[std::path::PathBuf],
+        default_group: &str,
+        groups: Vec<EntityGroup>,
+        conf: &MNode,
+    ) -> Result<Self, Error> {
         if groups.is_empty() {
             return Err(Error::new("entity facade needs a transaction manager"));
         }
-        let conf_path = framework_dir.join("conf/MoquiDefaultConf.xml");
-        let conf = MNode::parse_file(&conf_path)?;
         let started = std::time::Instant::now();
         let framework_entities = framework_dir.join("entity");
         let mut directories: Vec<&Path> = vec![framework_entities.as_path()];
@@ -194,8 +205,8 @@ impl EntityFacade {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
-        let model = EntityModel::load_directories(&conf, &directories)?;
-        let dialects = Dialects::load(&conf)?;
+        let model = EntityModel::load_directories(conf, &directories)?;
+        let dialects = Dialects::load(conf)?;
         let all = model.entities();
         let views = all.iter().filter(|entity| entity.is_view).count();
         tracing::info!(

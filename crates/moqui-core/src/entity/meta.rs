@@ -20,6 +20,7 @@ use std::collections::{HashMap, HashSet};
 use moqui_db::dialect::Dialect;
 use moqui_db::sql::{
     add_column, create_fk_index, create_foreign_key, create_index, create_table, fts_index_sql, is_mysql, is_sqlite,
+    legacy_name, physical_column_name, physical_name,
 };
 use moqui_lib::error::Error;
 use moqui_lib::object::Value;
@@ -207,6 +208,36 @@ fn apply(
     skip_fk: bool,
     lenient_fk: bool,
 ) -> Result<Counts, Error> {
+    // Detect old quoted Rust tables/columns before doing any DDL in this batch.
+    // Never create an empty parallel table or add empty replacement columns over legacy data.
+    for name in names {
+        facade.with_entity(name, |entity, dialect, _| {
+            if dialect.legacy_names {
+                return Ok(());
+            }
+            let table = physical_name(dialect, &entity.table_name);
+            for old in [&entity.entity_name, &entity.table_name] {
+                let old = legacy_name(dialect, old);
+                if old != table && exact_table_exists(conn, dialect, &old)? {
+                    return Err(legacy_schema_error(name));
+                }
+            }
+            if table_exists_conn(conn, dialect, &entity.table_name)? {
+                let present = column_names(conn, dialect, &entity.table_name)?;
+                for field in &entity.fields {
+                    let column = physical_column_name(dialect, &field.column_name);
+                    if !has_name(dialect, &present, &column)
+                        && [&field.name, &field.column_name]
+                            .iter()
+                            .any(|old| present.contains(&legacy_name(dialect, old)))
+                    {
+                        return Err(legacy_schema_error(name));
+                    }
+                }
+            }
+            Ok(())
+        })?;
+    }
     let mut counts = Counts::default();
     for name in names {
         let sql = facade.with_entity(name, |entity, dialect, model| {
@@ -254,7 +285,7 @@ fn ensure_columns(facade: &EntityFacade, conn: &mut dyn DbConnection, name: &str
         let present = column_names(conn, dialect, &entity.table_name)?;
         let mut statements = Vec::new();
         for field in &entity.fields {
-            if has_name(&present, &field.column_name) {
+            if has_name(dialect, &present, &physical_column_name(dialect, &field.column_name)) {
                 continue;
             }
             statements.push((add_column(entity, field, model, dialect)?, field.column_name.clone()));
@@ -387,6 +418,8 @@ fn column_names(conn: &mut dyn DbConnection, dialect: &Dialect, table: &str) -> 
 }
 
 fn table_probe(dialect: &Dialect, table: &str) -> Probe {
+    let table = physical_name(dialect, table);
+    let table = table.as_str();
     if is_sqlite(dialect) {
         return Probe {
             sql: "SELECT name FROM sqlite_master WHERE type = 'table' AND lower(name) = lower(?)".to_string(),
@@ -396,8 +429,9 @@ fn table_probe(dialect: &Dialect, table: &str) -> Probe {
     }
     Probe {
         sql: format!(
-            "SELECT table_name FROM information_schema.tables WHERE table_schema = {} AND lower(table_name) = lower(?)",
-            schema_expr(dialect)
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = {} AND {}",
+            schema_expr(dialect),
+            table_predicate(dialect)
         ),
         params: vec![Value::string(table)],
         table: table.to_string(),
@@ -405,6 +439,8 @@ fn table_probe(dialect: &Dialect, table: &str) -> Probe {
 }
 
 fn column_probe(dialect: &Dialect, table: &str) -> Probe {
+    let table = physical_name(dialect, table);
+    let table = table.as_str();
     if is_sqlite(dialect) {
         return Probe {
             sql: "SELECT name FROM pragma_table_info(?)".to_string(),
@@ -414,12 +450,44 @@ fn column_probe(dialect: &Dialect, table: &str) -> Probe {
     }
     Probe {
         sql: format!(
-            "SELECT column_name FROM information_schema.columns WHERE table_schema = {} AND lower(table_name) = lower(?)",
-            schema_expr(dialect)
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = {} AND {}",
+            schema_expr(dialect),
+            table_predicate(dialect)
         ),
         params: vec![Value::string(table)],
         table: table.to_string(),
     }
+}
+
+fn table_predicate(dialect: &Dialect) -> &'static str {
+    if dialect.name.starts_with("postgres") {
+        "table_name = ?"
+    } else {
+        "lower(table_name) = lower(?)"
+    }
+}
+
+fn legacy_schema_error(name: &str) -> Error {
+    Error::new(format!(
+        "legacy Rust SQL names detected for {name}; no automatic migration is performed. \
+         Set entity_sql_name_style=legacy to keep the existing schema, or migrate it offline first"
+    ))
+}
+
+fn exact_table_exists(conn: &mut dyn DbConnection, dialect: &Dialect, table: &str) -> Result<bool, Error> {
+    let sql = if is_sqlite(dialect) {
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?".to_string()
+    } else {
+        format!(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = {} AND table_name = ?",
+            schema_expr(dialect)
+        )
+    };
+    Ok(query_conn(conn, &sql, &[Value::string(table)])?.iter().any(|row| {
+        row.columns
+            .first()
+            .is_some_and(|(_, value)| value.as_str() == Some(table))
+    }))
 }
 
 fn schema_expr(dialect: &Dialect) -> &'static str {
@@ -437,6 +505,7 @@ fn row_matches(columns: &[(String, Value)], table: &str) -> bool {
     name == table || name.eq_ignore_ascii_case(table)
 }
 
-fn has_name(names: &[String], want: &str) -> bool {
-    names.iter().any(|name| name == want) || names.iter().any(|name| name.eq_ignore_ascii_case(want))
+fn has_name(dialect: &Dialect, names: &[String], want: &str) -> bool {
+    names.iter().any(|name| name == want)
+        || (!dialect.name.starts_with("postgres") && names.iter().any(|name| name.eq_ignore_ascii_case(want)))
 }

@@ -71,6 +71,28 @@ pub fn open_entity_facade_components(
     )
 }
 
+/// Open the runtime's merged configuration, not just the framework defaults.
+/// In particular, physical naming overrides must be identical for DDL and queries.
+pub fn open_entity_facade_for_factory(
+    factory: &ExecutionContextFactory,
+    driver: Arc<dyn DbDriver>,
+    pool: PoolConfig,
+    dialect: &str,
+) -> Result<EntityFacade, Error> {
+    let conf = moqui_lib::node::MNode::parse_text("moqui-conf", factory.conf_text())?;
+    let tx = moqui_core::transaction::TransactionManager::new(driver, pool)?;
+    tx.configure_from_conf(&conf)?;
+    let facade = EntityFacade::open_components_with_conf(
+        factory.framework_dir(),
+        &component_entity_dirs(factory),
+        "transactional",
+        vec![moqui_core::entity::EntityGroup::new("transactional", dialect, tx)],
+        &conf,
+    )?;
+    facade.crypt_from_conf(&conf)?;
+    Ok(facade)
+}
+
 /// The `entity` directory of each component the factory found, in its load order, the framework
 /// left out (its directory is always read).
 pub fn component_entity_dirs(factory: &ExecutionContextFactory) -> Vec<std::path::PathBuf> {
@@ -250,6 +272,87 @@ mod tests {
 
         drop(facade);
         drop(cluster);
+    }
+
+    #[test]
+    fn java_physical_names_crud_and_legacy_schema_guard() {
+        let dir = temp_cluster_dir();
+        let _guard = DirGuard(dir.clone());
+        let (_cluster, driver) = EmbeddedCluster::start(&dir, 20).unwrap();
+        let driver: Arc<dyn DbDriver> = Arc::new(driver);
+        let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
+        let facade = open_entity_facade(
+            &framework,
+            Arc::clone(&driver),
+            PoolConfig {
+                min: 0,
+                max: 4,
+                reserve: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        facade.set_disable_audit_log(true);
+        facade.set_disable_entity_eca(true);
+        facade.set_disable_data_feed(true);
+        facade.check_tables(&["UserAccount"]).unwrap();
+        // A second check must discover the same columns, not try adding differently named ones.
+        facade.check_tables(&["UserAccount"]).unwrap();
+        let mut conn = driver.connect().unwrap();
+        let columns = conn.query("SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'user_account'", &[]).unwrap();
+        assert!(columns.iter().any(|row| row.columns[0].1.as_str() == Some("user_id")));
+        assert!(!columns.iter().any(|row| row.columns[0].1.as_str() == Some("userId")));
+        let mut user = facade.make_value("UserAccount").unwrap();
+        user.set("userId", Value::string("U1"));
+        user.set("username", Value::string("before"));
+        user.create(&facade).unwrap();
+        user.set("username", Value::string("after"));
+        user.update(&facade).unwrap();
+        let found = facade
+            .find("UserAccount")
+            .unwrap()
+            .eq("userId", Value::string("U1"))
+            .one()
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.get("username").and_then(Value::as_str), Some("after"));
+        user.delete(&facade).unwrap();
+        assert_eq!(facade.find("UserAccount").unwrap().count().unwrap(), 0);
+
+        // Construct an old Rust schema on this disposable database, never a user's database.
+        let conf = moqui_lib::node::MNode::parse_file(framework.join("conf/MoquiDefaultConf.xml")).unwrap();
+        conf.first_named("entity-facade")
+            .unwrap()
+            .set_attribute("sql-name-style", "legacy");
+        let legacy = moqui_core::entity::EntityFacade::open_components_with_conf(
+            &framework,
+            &[],
+            "transactional",
+            vec![moqui_core::entity::EntityGroup::new(
+                "transactional",
+                "postgres",
+                facade.transactions_for("UserAccount").unwrap(),
+            )],
+            &conf,
+        )
+        .unwrap();
+        legacy.check_tables(&["TestEntity"]).unwrap();
+        let mut row = legacy.make_value("TestEntity").unwrap();
+        row.set("testId", Value::string("old-data"));
+        row.create(&legacy).unwrap();
+        let error = facade.check_tables(&["TestEntity"]).unwrap_err();
+        assert!(error.to_string().contains("legacy Rust SQL names detected"), "{error}");
+        assert!(!facade.table_exists("TestEntity").unwrap());
+        conn.execute("CREATE TABLE foo (\"fooId\" VARCHAR(40))", &[]).unwrap();
+        let error = facade.check_tables(&["Foo"]).unwrap_err();
+        assert!(error.to_string().contains("legacy Rust SQL names detected"), "{error}");
+        assert!(legacy
+            .find("TestEntity")
+            .unwrap()
+            .eq("testId", Value::string("old-data"))
+            .one()
+            .unwrap()
+            .is_some());
     }
 
     /// Every framework view-entity runs a paged select and a count on Postgres, with every

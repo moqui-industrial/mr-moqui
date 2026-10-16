@@ -174,10 +174,10 @@ fn recipients_dedup_group_explicit_terminated_and_all() {
         ["alice", "bob", "carol", "eve", "ghost"].as_slice()
     );
     let sqls = lock(&tape)[before..].to_vec();
-    assert_eq!(select_count(&sqls, "NotificationTopic"), 1, "{sqls:?}");
-    assert_eq!(select_count(&sqls, "NotificationTopicUser"), 1, "{sqls:?}");
-    assert_eq!(select_count(&sqls, "UserGroupMember"), 1, "{sqls:?}");
-    assert_eq!(select_count(&sqls, "UserAccount"), 1, "{sqls:?}");
+    assert_eq!(select_count(&sqls, "notification_topic"), 1, "{sqls:?}");
+    assert_eq!(select_count(&sqls, "notification_topic_user"), 1, "{sqls:?}");
+    assert_eq!(select_count(&sqls, "user_group_member"), 1, "{sqls:?}");
+    assert_eq!(select_count(&sqls, "user_account"), 1, "{sqls:?}");
 }
 
 #[test]

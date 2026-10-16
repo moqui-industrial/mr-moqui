@@ -1182,8 +1182,8 @@ mod tests {
             .expect("stored row");
         assert_eq!(row.get("testMedium").and_then(Value::as_str), Some("second"));
         let sql = tape.lock().unwrap_or_else(|err| err.into_inner()).join("\n");
-        assert!(sql.contains("INSERT") && sql.contains("TestEntity"), "{sql}");
-        assert!(sql.contains("UPDATE") && sql.contains("TestEntity"), "{sql}");
+        assert!(sql.contains("INSERT") && sql.contains("test_entity"), "{sql}");
+        assert!(sql.contains("UPDATE") && sql.contains("test_entity"), "{sql}");
         assert!(!sql.contains("ON CONFLICT"), "{sql}");
     }
 
