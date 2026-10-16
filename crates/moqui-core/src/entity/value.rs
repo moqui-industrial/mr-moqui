@@ -51,12 +51,14 @@ impl PartialEq for EntityValue {
     }
 }
 
+type LocalizedValues = HashMap<(String, String), Option<Value>>;
+
 /// The localized fields of a value, and what each read in each locale, as Java's `localizedByLocaleByField`. A clone
 /// shares what was read until either one sets a field.
 #[derive(Clone)]
 struct Localizer {
     targets: Arc<field_rw::L10nTargets>,
-    memo: Arc<Mutex<HashMap<(String, String), Option<Value>>>>,
+    memo: Arc<Mutex<LocalizedValues>>,
 }
 
 impl std::fmt::Debug for Localizer {
