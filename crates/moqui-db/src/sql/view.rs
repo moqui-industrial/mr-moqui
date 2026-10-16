@@ -38,13 +38,13 @@ use moqui_lib::error::Error;
 
 use crate::dialect::Dialect;
 use crate::model::{
-    is_text_java_type, AliasExpr, CaseAlias, ComplexAlias, ComplexField, ComplexPart, EntityDefinition, EntityModel,
-    FieldAlias, MemberEntity, SubSelect,
+    AliasExpr, CaseAlias, ComplexAlias, ComplexField, ComplexPart, EntityDefinition, EntityModel, FieldAlias,
+    MemberEntity, SubSelect, is_text_java_type,
 };
 
 use super::condition::{Column, Condition, FieldRef, LimitOffset, OrderBy, Writer};
 use super::ident::quote_ident;
-use super::statement::{for_update, SelectOptions};
+use super::statement::{SelectOptions, for_update};
 use super::{ConditionValues, Statement};
 
 /// View-entity select. See the module notes.
@@ -187,11 +187,22 @@ impl<'a> Renderer<'a> {
         options: &SelectOptions,
         order_by: &[OrderBy],
     ) -> Result<Query<'a>, Error> {
-        let selected: Vec<&FieldAlias> = if options.fields.is_empty() {
+        let own = self.view.entity_condition.as_ref();
+        let distinct = options.distinct || own.is_some_and(|own| own.distinct);
+        let mut names: Vec<&str> = options.fields.iter().map(String::as_str).collect();
+        if distinct && !names.is_empty() {
+            // A distinct select can only be ordered by what it selects, so the order-by fields are selected too, as
+            // Java's EntityFindBase adds them.
+            for order in order_by {
+                if self.view.alias(&order.field.name).is_some() && !names.contains(&order.field.name.as_str()) {
+                    names.push(order.field.name.as_str());
+                }
+            }
+        }
+        let selected: Vec<&FieldAlias> = if names.is_empty() {
             self.view.aliases.iter().collect()
         } else {
-            options
-                .fields
+            names
                 .iter()
                 .map(|name| {
                     self.view
@@ -206,7 +217,6 @@ impl<'a> Renderer<'a> {
                 self.view.full_name
             )));
         }
-        let own = self.view.entity_condition.as_ref();
         let own_where = match own {
             Some(own) => own.conditions.build(self.view, self.model, None, self.values)?,
             None => None,
@@ -239,7 +249,7 @@ impl<'a> Renderer<'a> {
             where_condition,
             having,
             order_by: ordering,
-            distinct: options.distinct || own.is_some_and(|own| own.distinct),
+            distinct,
         })
     }
 

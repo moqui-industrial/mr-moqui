@@ -21,10 +21,10 @@ use crate::dialect::{Dialect, Dialects};
 use crate::model::EntityModel;
 
 use super::{
-    add_column, count, count_view, count_with, create_fk_index, create_foreign_key, create_index, create_table, delete,
+    CompareOp, Condition, FieldRef, LimitOffset, Nulls, OrderBy, PlainValues, SelectOptions, Statement, add_column,
+    count, count_view, count_with, create_fk_index, create_foreign_key, create_index, create_table, delete,
     foreign_key_index_name, foreign_key_name, fts_index_sql, insert, insert_or_update, render_condition, select,
-    select_view, select_view_with, select_with, update, CompareOp, Condition, FieldRef, LimitOffset, Nulls, OrderBy,
-    PlainValues, SelectOptions, Statement,
+    select_view, select_view_with, select_with, update,
 };
 
 fn workspace_root() -> std::path::PathBuf {
@@ -512,9 +512,11 @@ fn fts_index_names_the_column_not_the_field() {
     assert!(my.ends_with("(`BODY_TEXT`)"), "{my}");
     let table = create_table(&fts, &model, dialects.get("postgres").unwrap()).unwrap();
     assert!(table.ends_with(&pg), "{table}");
-    assert!(fts_index_sql(&fts, body, dialects.get("h2").unwrap())
-        .unwrap()
-        .is_none());
+    assert!(
+        fts_index_sql(&fts, body, dialects.get("h2").unwrap())
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -839,17 +841,19 @@ fn a_field_subset_groups_by_the_selected_fields_and_joins_only_used_members() {
         fields: vec!["nope".to_string()],
         ..SelectOptions::default()
     };
-    assert!(select_view_with(
-        view,
-        &model,
-        &postgres,
-        &values(),
-        None,
-        &[],
-        LimitOffset::default(),
-        &unknown
-    )
-    .is_err());
+    assert!(
+        select_view_with(
+            view,
+            &model,
+            &postgres,
+            &values(),
+            None,
+            &[],
+            LimitOffset::default(),
+            &unknown
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -970,6 +974,32 @@ fn an_aggregate_in_where_or_a_having_without_one_is_an_error() {
 }
 
 #[test]
+fn a_distinct_select_also_selects_its_order_by_fields() {
+    let model = totals_model();
+    let postgres = sample_postgres();
+    let order = model.entity("sample.Order").unwrap();
+    let distinct = SelectOptions {
+        distinct: true,
+        ..SelectOptions::default()
+    };
+    let sql = select_with(
+        order,
+        &postgres,
+        &[FieldRef::new("customerId")],
+        None,
+        &[OrderBy::asc("orderId"), OrderBy::asc("customerId")],
+        LimitOffset::default(),
+        &distinct,
+    )
+    .unwrap();
+    assert!(
+        sql.sql.starts_with("SELECT DISTINCT \"customerId\", \"orderId\" FROM"),
+        "{}",
+        sql.sql
+    );
+}
+
+#[test]
 fn distinct_and_for_update_are_written_and_cannot_be_combined() {
     let model = totals_model();
     let postgres = sample_postgres();
@@ -1052,17 +1082,19 @@ fn distinct_and_for_update_are_written_and_cannot_be_combined() {
     assert!(sql.sql.ends_with(" FOR UPDATE"), "{}", sql.sql);
     assert!(!sql.sql.contains("GROUP BY"), "{}", sql.sql);
     let totals = model.entity("sample.OrderTotal").unwrap();
-    assert!(select_view_with(
-        totals,
-        &model,
-        &postgres,
-        &values(),
-        None,
-        &[],
-        LimitOffset::default(),
-        &locking
-    )
-    .is_err());
+    assert!(
+        select_view_with(
+            totals,
+            &model,
+            &postgres,
+            &values(),
+            None,
+            &[],
+            LimitOffset::default(),
+            &locking
+        )
+        .is_err()
+    );
 }
 
 #[test]

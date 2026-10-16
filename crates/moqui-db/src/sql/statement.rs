@@ -24,9 +24,9 @@ use moqui_lib::error::Error;
 use crate::dialect::Dialect;
 use crate::model::{EntityDefinition, EntityModel, FieldDefinition, IndexDefinition, Relationship};
 
-use super::condition::{fts_config, Column, Condition, FieldRef, LimitOffset, OrderBy, Writer};
-use super::ident::{clip_length, clip_name, is_mysql, placeholders, quote_ident, shrink_name};
 use super::Statement;
+use super::condition::{Column, Condition, FieldRef, LimitOffset, OrderBy, Writer, fts_config};
+use super::ident::{clip_length, clip_name, is_mysql, placeholders, quote_ident, shrink_name};
 
 /// What a select can ask for beyond conditions, order, and paging.
 #[derive(Debug, Clone, Default)]
@@ -165,7 +165,20 @@ pub fn select_with(
     } else {
         "SELECT "
     });
-    out.push(&select_list(entity, dialect, fields));
+    // A distinct select can only be ordered by what it selects, so the order-by fields are selected too, as Java's
+    // EntityFindBase adds them.
+    let mut selected: Vec<FieldRef> = fields.to_vec();
+    if options.distinct && !selected.is_empty() {
+        for order in order_by {
+            if order.field.expr.is_none()
+                && order.field.entity_alias.is_none()
+                && !selected.iter().any(|field| field.name == order.field.name)
+            {
+                selected.push(FieldRef::new(&order.field.name));
+            }
+        }
+    }
+    out.push(&select_list(entity, dialect, &selected));
     out.push(" FROM ");
     out.push(&quote_ident(dialect, &entity.table_name));
     where_clause(&mut out, entity, condition)?;
