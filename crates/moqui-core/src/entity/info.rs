@@ -217,7 +217,7 @@ pub fn pretty_name(entity_name: &str, title: Option<&str>, base_name: Option<&st
 
 /// Java's `RelationshipInfo.dependent` (`hasReverse`): the related entity has a `one` or `one-nofk` relationship back
 /// to `entity` with the same title, whatever this relationship's type, so a one-to-one is a dependent too.
-fn is_dependent(model: &EntityModel, entity: &EntityDefinition, relationship: &Relationship) -> bool {
+pub(super) fn is_dependent(model: &EntityModel, entity: &EntityDefinition, relationship: &Relationship) -> bool {
     let Some(related) = model.entity_full(&relationship.related) else {
         return false;
     };

@@ -20,18 +20,18 @@ ordering.
 
 ## Summary
 
-120 open findings and 28 accepted differences. Open by phase:
+114 open findings and 30 accepted differences. Open by phase:
 
 | Phase | Open | High |
 |---|---|---|
 | 1 Entity value / field / condition | 2 | — |
-| 2 Entity find / query | 7 | — |
+| 2 Entity find / query | 0 | — |
 | 3 Facade / metadata / DDL / cache | 20 | — |
 | 4 Data loader / feed / ECA / writer / document / ETL | 18 | P4a-01, P4a-02 |
 | 5 Entity query / REST | 5 | P5-01 |
 | 6 Service definition / validation / call | 20 | P6b-01 (decision) |
 | 7 ECA / SECA / pools / jobs | 19 | — |
-| 8 REST / remote / tools / mail / components | 29 | P8a-03 |
+| 8 REST / remote / tools / mail / components | 30 | P8a-03 |
 
 | ID | Area | One-line |
 |---|---|---|
@@ -53,8 +53,7 @@ ordering.
    non-directory model sources (`<load-entity>`, DB view entities) are unread.
 4. **Error contract** (P6b-01, P7a-10): a failing service body propagates `Err` where Java records the
    error and returns; `post-commit` SECA gets `None` instead of an empty map.
-5. **Cache** (P3b-03, P2-02, P2-08): the sim has no rollback poison; search-form finds can be served
-   from cache; distinct/select-field finds bypass a cache Java would use.
+5. **Cache** (P3b-03): the sim has no rollback poison.
 6. **View REST output** (P5-01): view finds now filter on aliases but still render no alias values.
 
 ### Open decisions
@@ -69,8 +68,6 @@ ordering.
 
 - `entity/load_feed/loader.rs:435` says the loader uses the entity-auto store path; true for XML/JSON
   but not CSV (Java CSV uses `createOrUpdate`), which hides P4a-02.
-- `entity/find.rs:191-192`: the `select_field` doc comment says an unknown field is an error; the code
-  now skips it with a warning as Java does.
 
 ---
 
@@ -149,39 +146,37 @@ against `EntityFindBase.groovy`, `EntityFindImpl.java`, `EntityFindBuilder.java`
 `EntityQueryBuilder.java`, `AggregationUtil.java`, `FtsDdl.java`, `FtsSql.java` and
 `RestSchemaUtil.groovy`.
 
-| ID | Rust location | Java/XML location | Divergence | Severity | Intentional? |
-|---|---|---|---|---|---|
-| P2-02 | `entity/search_form.rs:58-106` | `EntityFindBase.groovy:400-401` | `search_form_map` does not force `useCache(false)`, so a non-paged search-form find on a `cache="true"` entity can be answered from cache | Low-Med | No |
-| P2-03 | `entity/find.rs:129-132`, `:583-589` | `EntityFindBase.groovy:118-135`, `163-200` | Repeated `condition(field,value)` replaces the value in Java's per-field map; Rust pushes a second condition and ANDs them | Med | No |
-| P2-04 | `entity/search_form.rs:259-280` | `EntityFindBase.groovy:470-516` | `ignore_case` (`_ic`) applied to the `in` operator; Java applies it only to `equals`/`like`/`contains`/`begins` | Med | No |
-| P2-06 | `entity/schema.rs:110-141` | `RestSchemaUtil.groovy:166-213` | Schema drops relationships: no relationship properties, details as `{"type":"array","items":{"type":"object"}}`; Java emits `$ref` (array for `many`) and full nesting | Med | Unsure |
-| P2-07 | `entity/schema.rs:143-161` | `RestSchemaUtil.groovy:91-123` | Field schemas omit the `enum` list Java derives from `Enumeration`/`StatusItem` FKs | Low | Unsure |
-| P2-08 | `entity/find.rs:236-238`; `entity/cache.rs:124-133` | `EntityFindBase.groovy:673-687`, `1087-1095` | Distinct and select-field finds bypass the cache in Rust; Java caches them (reading all fields) | Low | Unsure |
-| P2-11 | `moqui-db/src/sql/statement.rs:259-267` | `EntityFindBuilder.java:53-68` | `distinct` count with no select fields: Java wraps `SELECT DISTINCT <all fields>`; Rust emits `COUNT(*)` (same result, PK included) | Low | Unsure |
-
-#### P2-03 — Repeated same-field `condition` replace vs AND
-
-Java's `condition(String,Object)` stores one value per field (`simpleAndMap.put`, and a plain `EQUALS`
-`FieldValueCondition` is routed back to it), so a second call for the same field replaces the first.
-Rust `eq` pushes another `Condition::equals` and `unfiltered` ANDs them, so `eq("f",a).eq("f",b)`
-becomes `f = a AND f = b` and matches nothing.
-
-#### P2-04 — `_ic` applied to `in`
-
-Java attaches `.ignoreCase()` only in the `equals`/`like`/`contains`/`begins` branches; the `in` branch
-ignores `_ic`. Rust wraps the built condition in `ignore_case` for every operator, so
-`field_op=in&field_ic=true` renders `UPPER(col) IN (UPPER(?), …)`.
-
-#### P2-06 — Relationship schema lost
-
-Java's `getJsonSchema` adds relationship properties with `$ref` (array for `type="many"`, single
-otherwise) and, on the catalog path, nests all relationships. Rust `catalog`/`standalone` add fields
-only and `add_details` emits each detail as an untyped object array.
+Worked 2026-10-16: P2-02, P2-03, P2-04, P2-06, P2-07 and P2-11 fixed; P2-08 moved to
+[Accepted differences](#accepted-differences); P2-13 and P2-15 found and fixed, and P2-14 found and accepted,
+along the way. No Phase 2 finding is open. Line numbers in this section are as of that change.
 
 #### Phase 2 checked and found equivalent
 
-- `one()` with no condition or an empty PK returns `None` without querying (`entity/find.rs:361-399`).
-- `select_field` of an unknown field is skipped with a warning (`entity/find.rs:614-626`).
+- Repeated equality (P2-03, fixed): `eq` and `condition` keep one equality (or `IS NULL`) per plain field, as
+  Java's `simpleAndMap`, so a second one for the field replaces the first in place, and an `AND` is unrolled so
+  its equalities do the same (`add_condition`, `entity/find.rs:720`). A search-form condition goes the same way,
+  so a form value replaces the find's own equality on that field, as in Java.
+- Search-form cache (P2-02, fixed): `search_form_map` sets `useCache(false)` when the find did not choose, and a
+  find that asked for the cache (Java's `shouldCache`) is not paged (`entity/search_form.rs:66-69`, `:98`).
+- Search-form `_ic` (P2-04, fixed) applies to `equals`/`like`/`contains`/`begins` only, not `in`.
+- Search-form `_not` (P2-13, fixed): on `equals` and `in` it also finds the rows with no value, Java's `orNull`
+  (`or_null`, `entity/search_form.rs:314`); `like`/`contains`/`begins` stay a plain `NOT LIKE`. Before, Rust
+  left out the null rows.
+- `pageNoLimit` (P2-15, fixed) removes paging only for `true` or the text `"true"`, as Java; Rust took any
+  non-empty value but `false`, so `Y` removed paging.
+- JSON schema relationships (P2-06, fixed): an entity's dependent relationships, or a master's details (with
+  `use-master`), are properties named by short alias or relationship name with a `$ref` to the related schema,
+  an array for `many`; the related schemas go in `$defs`, nested as Java nests them, and a reference back to a
+  standalone document's own entity is `#` (`entity/schema.rs:131-245`). The catalog also holds any view entity
+  a relationship refers to, so every `$ref` resolves; Java refers to a definition it never writes.
+- JSON schema `enum` (P2-07, fixed): the first non-auto-reverse `one` relationship keyed by the field alone,
+  titled and to `Enumeration` or `StatusItem`, lists that type's ids by `sequenceNum` (`field_enums`,
+  `entity/schema.rs:250`); a read that fails is logged and the field has no `enum`.
+- Distinct count (P2-11, fixed): with no field selected it counts `SELECT DISTINCT *` in a sub-select, as Java
+  wraps all fields (`moqui-db/src/sql/statement.rs:262`).
+- `one()` with no condition or an empty PK returns `None` without querying (`entity/find.rs:367-405`).
+- `select_field` of an unknown field is skipped with a warning (`entity/find.rs:619-631`); its doc comment now
+  says so.
 - Search-form operators (`equals`/`like`/`contains`/`begins`/`empty`/`in`, `_from`/`_thru`, `_period`),
   date-range widening, `_period`/`getPeriodRange` windows, unknown op → no condition.
 - Pagination defaults (page size 20, offset `index*size`, `pageNoLimit`, negative clamp); paged and
@@ -445,7 +440,7 @@ tracked once under P2-06/P2-07/P2-12.
 #### P5-01 — REST find of a view-entity returns only `_entity`
 
 The model stores view aliases in `EntityDefinition.aliases` and leaves `fields` empty for a view.
-Conditions now go through `search_form_map`, which reads aliases (`entity/search_form.rs:118-137`), but
+Conditions now go through `search_form_map`, which reads aliases (`entity/search_form.rs:125-144`), but
 `EntitySnap::from_entity` still copies only `entity.fields` and `render` iterates `snap.fields`, so the
 response rows carry only `_entity` and `pk_complete` is always false. Java iterates
 `ed.allFieldInfoList` (aliases for a view) and returns alias values.
@@ -697,6 +692,7 @@ image/spreadsheet service XML. The `*.rest.xml` HTTP route/CORS layer lives in `
 | P8a-20 | `service/rest.rs:375`, `:224` | `RestApi.groovy:616-632` | Unsupported method child fails the whole file; Java registers no handler | Low | No |
 | P8a-21 | `service/tools.rs:618`, `:664-668` | `EntityServices.xml:176-192` | Empty-string userIds dropped; DataDocument read without `useCache(true)` | Low | Unsure |
 | P8a-22 | `service/rest.rs:132-161` | `RestApi.groovy:100-106,597,634-644` | `resource_info` omits `childPaths`/`methods` (the dashboard uses only `childMethods`, which is recursive on both sides) | Low | Unsure |
+| P8a-24 | `service/rest.rs:729` (`openapi_document`) | `RestApi.groovy:471`; `RestSchemaUtil.groovy:517` | Service-parameter schemas omit the `enum` lists Java derives from `Enumeration`/`StatusItem` (entity schemas have them since P2-07) | Low | Unsure |
 
 ### Findings — 8b mail / email services
 
@@ -786,8 +782,10 @@ tolerance). Not part of the worklist; revisit only if the rationale changes.
 |---|---|---|---|
 | P1-07 | entity condition | A raw `Where` fragment is wrapped in `(...)`; Java appends it verbatim, so boolean precedence can differ (`moqui-db/src/sql/condition.rs:656-662`) | Safer: an `OR` in the fragment cannot bind across the conditions around it; comment at the site |
 | P1-13 | entity list | Rust `EntityList` has only len/get/iter/values; Java has `filterByAnd`, `orderByFields`, `getFirst` and more (`entity/value.rs:243-277`) | Rust callers use slice/iterator methods; the script runtime's list has the helpers scripts call (`filterByDate`, `getPartialList`, `first`), and no converted component uses the others; doc comment at the type |
-| P2-10 | entity find | `iterator()` under `requireSearchFormParameters` returns an empty iterator; Java returns `null` (`entity/find.rs:517-523`) | Rust has no null iterator; empty is the safe equivalent |
-| P2-12 | entity schema | JSON schema envelope redesigned: `$defs`/draft 2020-12, PK `required`, keyed by full name vs Java `definitions`/`anyOf`/pagination, draft-04, `_entity`+`default`, short-or-full name (`entity/schema.rs:25,84-127`) | Deliberate modernization; relationship/`enum` gaps tracked as P2-06/P2-07 |
+| P2-08 | entity find | Distinct and select-field finds bypass the entity cache; Java caches them by reading every field, so a cached entity answers with whole, non-distinct rows (`entity/find.rs:238-244`) | Rust returns the rows and fields asked for; comment at `bypasses_cache` |
+| P2-10 | entity find | `iterator()` under `requireSearchFormParameters` returns an empty iterator; Java returns `null` (`entity/find.rs:522-528`) | Rust has no null iterator; empty is the safe equivalent |
+| P2-12 | entity schema | JSON schema envelope redesigned: `$defs`/draft 2020-12, PK `required`, keyed by full name vs Java `definitions`/`anyOf`/pagination, draft-04, `_entity`+`default`, short-or-full name (`entity/schema.rs:27,91-130`) | Deliberate modernization; relationships and `enum` now follow Java inside it (P2-06/P2-07 fixed) |
+| P2-14 | search form | `_not` with `_ic` on `equals` compares ignoring case; Java throws, since `ignoreCase()` on the `orNull` join condition is unsupported (`entity/search_form.rs:269-272`) | A search a user can type should not fail; comment at the site |
 | P3b-10 | feed cache | Feed-info cache invalidated on write vs Java 900s TTL (`entity/cache.rs:751-758`) | Rust is more current |
 | P4b-07 | data feed | `get#DataFeedDocuments` honors `thruUpdateStamp`; Java always passes null | Bug fix; comment at runtime `EntityServices.xml:35-36` |
 | P4b-09 | data writer | `isoDateTime(true)` formats dates in JSON and XML; Java ignores it (`TODO`) (`entity/query_rest.rs:1555-1578,1704-1721`) | Implements Java's TODO |

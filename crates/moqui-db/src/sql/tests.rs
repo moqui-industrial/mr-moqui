@@ -121,6 +121,16 @@ fn postgres_enumeration_insert_select_and_count() {
         counted.sql,
         "SELECT COUNT(*) FROM (SELECT DISTINCT \"enumTypeId\" FROM \"Enumeration\" WHERE \"enumTypeId\" = ?) TEMP_NAME"
     );
+    // With no field selected a distinct count is of whole rows, as Java's `makeCountFunction`.
+    let whole_rows = SelectOptions {
+        distinct: true,
+        ..SelectOptions::default()
+    };
+    let counted = checked(count_with(enumeration, postgres, Some(&condition), &whole_rows).unwrap());
+    assert_eq!(
+        counted.sql,
+        "SELECT COUNT(*) FROM (SELECT DISTINCT * FROM \"Enumeration\" WHERE \"enumTypeId\" = ?) TEMP_NAME"
+    );
 }
 
 #[test]

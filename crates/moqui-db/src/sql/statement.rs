@@ -242,8 +242,8 @@ pub fn count(entity: &EntityDefinition, dialect: &Dialect, condition: Option<&Co
     count_with(entity, dialect, condition, &SelectOptions::default())
 }
 
-/// [`count`] with [`SelectOptions`]. A distinct count over `options.fields` counts a
-/// `SELECT DISTINCT` sub-select, as Java does.
+/// [`count`] with [`SelectOptions`]. A distinct count counts a `SELECT DISTINCT` sub-select of
+/// `options.fields`, or of every field when none are given, as Java does.
 pub fn count_with(
     entity: &EntityDefinition,
     dialect: &Dialect,
@@ -257,7 +257,9 @@ pub fn count_with(
         )));
     }
     let mut out = Writer::new(dialect);
-    let wrapped = options.distinct && !options.fields.is_empty();
+    // As Java's `makeCountFunction`: a distinct count counts the distinct rows of the selected fields, all of them when
+    // none are selected.
+    let wrapped = options.distinct;
     if wrapped {
         let fields: Vec<FieldRef> = options.fields.iter().map(FieldRef::new).collect();
         out.push("SELECT COUNT(*) FROM (SELECT DISTINCT ");

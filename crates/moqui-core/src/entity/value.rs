@@ -56,8 +56,11 @@ impl PartialEq for EntityValue {
 #[derive(Clone)]
 struct Localizer {
     targets: Arc<field_rw::L10nTargets>,
-    memo: Arc<Mutex<HashMap<(String, String), Option<Value>>>>,
+    memo: Arc<Mutex<LocalizedReads>>,
 }
+
+/// What each localized read gave, keyed by field and locale.
+type LocalizedReads = HashMap<(String, String), Option<Value>>;
 
 impl std::fmt::Debug for Localizer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
