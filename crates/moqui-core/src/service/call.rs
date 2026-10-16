@@ -862,6 +862,9 @@ fn script_err(err: crate::context::Error) -> LibError {
     err.into()
 }
 
+/// The results a caller gets: only the declared out-parameters, or all when none are declared. Java returns the
+/// runner's map as it is; keeping to the declared ones means a body's other values do not reach a REST or remote
+/// caller (accepted, P6b-14). Inline and script bodies have no `result` map to fill, as a script here may use that name.
 fn project(def: &ServiceDef, values: BTreeMap<String, Value>) -> BTreeMap<String, Value> {
     let out_params = super::validate::expanded_out(def);
     let names: Vec<&str> = out_params
@@ -888,20 +891,28 @@ fn run_entity(
     if depth > 8 {
         return Err(LibError::new("nested entity-auto is too deep"));
     }
-    let pk_names = facade.with_entity(noun, |entity, _, _| {
-        Ok(entity
-            .pk_field_names()
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>())
+    let (pk_names, field_names) = facade.with_entity(noun, |entity, _, _| {
+        Ok((
+            entity
+                .pk_field_names()
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+            entity
+                .fields
+                .iter()
+                .map(|field| field.name.clone())
+                .collect::<std::collections::BTreeSet<_>>(),
+        ))
     })?;
     if verb == "delete" {
         delete_entity(facade, noun, parameters, &pk_names)?;
         return Ok(BTreeMap::new());
     }
     let mut record = facade.make_value(noun)?;
+    // As Java's `setFields`, only the entity's fields are set: an implicit call passes its parameters as they came.
     for (key, value) in parameters {
-        if reserved(key) || matches!(value, Value::Map(_) | Value::List(_)) {
+        if reserved(key) || !field_names.contains(key) || matches!(value, Value::Map(_) | Value::List(_)) {
             continue;
         }
         record.set(key, value.clone());
@@ -1096,23 +1107,53 @@ fn check_status(
         }
     }
     if valid == 0 {
-        let name_of = |id: &str| -> Result<String, LibError> {
+        let name_of = |id: &str| -> Result<Value, LibError> {
             let item = facade
                 .find("moqui.basic.StatusItem")?
                 .eq("statusId", Value::string(id.to_string()))
+                .use_cache(true)
                 .one()?;
             Ok(item
-                .and_then(|item| item.get("description").map(moqui_lib::object::to_plain_string))
-                .filter(|text| !text.is_empty())
-                .unwrap_or_else(|| id.to_string()))
+                .and_then(|item| item.get("description").cloned())
+                .unwrap_or(Value::Null))
         };
-        return Err(LibError::new(format!(
-            "Status change not allowed from {} to {}",
-            name_of(&old_id)?,
-            name_of(&new_id)?
-        )));
+        let values = [
+            (
+                "fullEntityName",
+                Value::string(localize_or(&format!("{noun}##EntityName"))),
+            ),
+            ("lookedUpStatusId", Value::string(old_id.clone())),
+            ("parameterStatusId", Value::string(new_id.clone())),
+            ("lookedUpStatusName", name_of(&old_id)?),
+            ("parameterStatusName", name_of(&new_id)?),
+        ];
+        return Err(LibError::new(status_transition_message(&values)));
     }
     Ok(true)
+}
+
+/// `text` in the session locale, or as it is.
+fn localize_or(text: &str) -> String {
+    crate::l10n::localize(text).unwrap_or_else(|_| text.to_string())
+}
+
+/// Java's `StatusFlowTransitionNotFoundTemplate` expanded with `values`. Without its localized message (the seed
+/// data's `CommonL10nData.xml` is not loaded) the default locale's text is used.
+fn status_transition_message(values: &[(&str, Value)]) -> String {
+    const TEMPLATE: &str = "StatusFlowTransitionNotFoundTemplate";
+    const DEFAULT: &str =
+        "Status change not allowed from ${lookedUpStatusName || lookedUpStatusId} to ${parameterStatusName || parameterStatusId}";
+    let localized = localize_or(TEMPLATE);
+    let template = if localized == TEMPLATE {
+        DEFAULT
+    } else {
+        localized.as_str()
+    };
+    let _frame = crate::script::ContextFrame::push();
+    for (name, value) in values {
+        let _ = crate::script::set_context_name(name, value.clone());
+    }
+    crate::script::expand(template).unwrap_or_else(|_| template.to_string())
 }
 
 fn nest(
@@ -1421,16 +1462,25 @@ mod tests {
             (messages.errors().to_vec(), messages.validation_errors().to_vec())
         })
         .unwrap();
-        assert!(
-            errors
-                .iter()
-                .any(|text| text.contains("amount") && text.contains("required")),
-            "{errors:?}"
+        // Java's text, which names no field: the validation error carries it, and the errors string writes it with the
+        // field and service, as Java's `toStringPretty`.
+        assert_eq!(errors, ["Field cannot be empty"]);
+        let text = ExecutionContext::with_current(|ec| ec.message().errors_string()).unwrap();
+        assert_eq!(
+            text,
+            format!(
+                "Field cannot be empty(for field Amount of service {}",
+                moqui_lib::string::camel_case_to_pretty("need#Value")
+            )
         );
         assert_eq!(validation.len(), 1);
         assert_eq!(
-            (validation[0].field.as_str(), validation[0].service.as_str()),
-            ("amount", "need#Value")
+            (
+                validation[0].field.as_str(),
+                validation[0].service.as_str(),
+                validation[0].message.as_str()
+            ),
+            ("amount", "need#Value", "Field cannot be empty")
         );
     }
 
@@ -1465,7 +1515,15 @@ mod tests {
         row.create(&facade).unwrap();
         let err = sync("lock#Row", &BTreeMap::new()).unwrap_err();
         let text = err.to_string();
-        assert!(text.contains("semaphore"), "{text}");
+        // Java's text, with the holder's thread
+        assert!(
+            text.contains("An instance of service semaphore lock#Row with parameter value [_NA_] is already running (thread [other], locked at "),
+            "{text}"
+        );
+        assert!(
+            text.contains("and it is setup to fail on semaphore conflict."),
+            "{text}"
+        );
         assert!(!text.contains("actions not run"), "{text}");
     }
 
@@ -1816,7 +1874,11 @@ mod tests {
         assert_eq!(summed.get("sum"), Some(&Value::I32(9)), "{summed:?}");
 
         let bad = call(&[("count", text("abc"))]).unwrap_err();
-        assert!(bad.to_string().contains("not a valid Integer"), "{bad}");
+        assert!(
+            bad.to_string()
+                .contains("Value entered (abc) could not be converted to a Integer"),
+            "{bad}"
+        );
         let range = call(&[("count", text("11"))]).unwrap_err();
         assert!(
             range.to_string().contains("count"),
@@ -2043,6 +2105,159 @@ mod tests {
             "{out:?}"
         );
         assert!(!out.contains_key("notDeclared"), "{out:?}");
+    }
+
+    /// Java's `ServiceDefinition` merge: the implemented service's parameters first, then the service's own merged
+    /// into them by name, and an `auto-parameters` field and a parameter of the same name are one parameter, whose
+    /// attributes the later one sets. An empty `default-value` is no default.
+    #[test]
+    fn implemented_and_auto_parameters_merge_by_name() {
+        let path = write_fixture(
+            "merge",
+            r#"<services>
+                <service verb="define" noun="Row" type="interface">
+                    <in-parameters>
+                        <parameter name="testId" required="true"/>
+                        <parameter name="note" default-value="n"/>
+                    </in-parameters>
+                </service>
+                <service verb="save" noun="Row">
+                    <implements service="define#Row"/>
+                    <in-parameters>
+                        <auto-parameters entity-name="moqui.test.TestEntity" include="nonpk"/>
+                        <parameter name="testDateTime" required="true"/>
+                        <parameter name="testId"><text-length max="5"/></parameter>
+                        <parameter name="note" default-value=""/>
+                    </in-parameters>
+                    <actions><set field="x" value="1"/></actions>
+                </service>
+            </services>"#,
+        );
+        let (facade, ctx) = seeded_context(&[]);
+        let _entered = ctx.enter();
+        let failures = crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+        let def = crate::service::define::find("save#Row").expect("registered");
+        let declared = super::validate::declared_in(&def, Some(&facade)).unwrap();
+        let names: Vec<&str> = declared.iter().map(|param| param.name.as_str()).collect();
+        assert_eq!(&names[..3], ["testId", "note", "testMedium"], "{names:?}");
+        assert_eq!(
+            names.iter().filter(|name| **name == "testDateTime").count(),
+            1,
+            "{names:?}"
+        );
+        let stamp = declared.iter().find(|param| param.name == "testDateTime").unwrap();
+        assert_eq!(stamp.java_type, "java.sql.Timestamp");
+        assert_eq!(stamp.required, super::super::define::Required::True);
+        assert_eq!(stamp.field_name.as_deref(), Some("testDateTime"));
+        let id = declared.iter().find(|param| param.name == "testId").unwrap();
+        assert_eq!(
+            (id.required, id.checks.len()),
+            (super::super::define::Required::True, 1)
+        );
+        assert_eq!(
+            declared
+                .iter()
+                .find(|param| param.name == "note")
+                .unwrap()
+                .default_value,
+            None
+        );
+
+        let params = |pairs: &[(&str, &str)]| -> BTreeMap<String, Value> {
+            pairs
+                .iter()
+                .map(|(name, value)| (name.to_string(), Value::string(*value)))
+                .collect()
+        };
+        let cleaned = crate::service::validate(
+            "save#Row",
+            &params(&[("testId", "R1"), ("testDateTime", "2024-01-02 03:04:05")]),
+        )
+        .unwrap();
+        assert!(
+            matches!(cleaned.get("testDateTime"), Some(Value::Timestamp(_))),
+            "{cleaned:?}"
+        );
+        assert!(!cleaned.contains_key("note"), "{cleaned:?}");
+        let err = crate::service::validate("save#Row", &params(&[("testId", "ABCDEFG")])).unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("Value entered (ABCDEFG), length 7, is longer than 5 characters."),
+            "{text}"
+        );
+        assert!(
+            text.contains("Field cannot be empty (for field testDateTime)"),
+            "{text}"
+        );
+    }
+
+    /// A declared entity-auto service gets only its declared parameters, as any service; an implicit one gets them
+    /// as they came, and the runner sets only the entity's fields.
+    #[test]
+    fn entity_auto_parameters_are_the_declared_ones_or_all_for_an_implicit_call() {
+        let path = write_fixture(
+            "entity-auto-declared",
+            r#"<services>
+                <service verb="create" noun="moqui.test.TestEntity" type="entity-auto">
+                    <in-parameters><auto-parameters include="nonpk"/></in-parameters>
+                    <out-parameters><parameter name="testId"/></out-parameters>
+                </service>
+            </services>"#,
+        );
+        let (facade, ctx) = seeded_context(&[]);
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("testId".to_string(), Value::string("MINE"));
+        params.insert("testMedium".to_string(), Value::string("declared"));
+        let created = sync("create#moqui.test.TestEntity", &params).unwrap();
+        let id = created
+            .get("testId")
+            .map(moqui_lib::object::to_plain_string)
+            .unwrap_or_default();
+        assert!(
+            !id.is_empty() && id != "MINE",
+            "the primary key is not a declared parameter: {created:?}"
+        );
+
+        let implicit =
+            super::super::define::ServiceDef::implicit("store#moqui.test.TestEntity", "store", "moqui.test.TestEntity");
+        params.insert("notAField".to_string(), Value::string("x"));
+        let cleaned = super::validate::clean(&implicit, &params, Some(&facade)).unwrap();
+        assert_eq!(cleaned, params);
+        sync("store#moqui.test.TestEntity", &params).unwrap();
+        let row = facade
+            .find("moqui.test.TestEntity")
+            .unwrap()
+            .eq("testId", Value::string("MINE"))
+            .one()
+            .unwrap()
+            .expect("stored");
+        assert_eq!(row.get("testMedium").and_then(Value::as_str), Some("declared"));
+    }
+
+    /// Java's `StatusFlowTransitionNotFoundTemplate`, its default text when the seed data is not loaded.
+    #[test]
+    fn a_status_change_not_allowed_names_the_statuses() {
+        let values = |old_name: Value| {
+            [
+                ("fullEntityName", Value::string("moqui.test.TestEntity")),
+                ("lookedUpStatusId", Value::string("TsOpen")),
+                ("parameterStatusId", Value::string("TsDone")),
+                ("lookedUpStatusName", old_name),
+                ("parameterStatusName", Value::string("Done")),
+            ]
+        };
+        assert_eq!(
+            super::status_transition_message(&values(Value::string("Open"))),
+            "Status change not allowed from Open to Done"
+        );
+        assert_eq!(
+            super::status_transition_message(&values(Value::Null)),
+            "Status change not allowed from TsOpen to Done"
+        );
     }
 
     fn write_fixture(name: &str, body: &str) -> PathBuf {

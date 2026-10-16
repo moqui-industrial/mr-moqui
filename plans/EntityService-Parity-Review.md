@@ -20,7 +20,7 @@ ordering.
 
 ## Summary
 
-78 open findings and 36 accepted differences. Open by phase:
+59 open findings and 40 accepted differences. Open by phase:
 
 | Phase | Open | High |
 |---|---|---|
@@ -29,7 +29,7 @@ ordering.
 | 3 Facade / metadata / DDL / cache | 3 | — |
 | 4 Data loader / feed / ECA / writer / document / ETL | 1 | — |
 | 5 Entity query / REST | 3 | — |
-| 6 Service definition / validation / call | 20 | P6b-01 (decision) |
+| 6 Service definition / validation / call | 1 | P6b-01 (decision) |
 | 7 ECA / SECA / pools / jobs | 19 | — |
 | 8 REST / remote / tools / mail / components | 30 | P8a-03 |
 
@@ -47,7 +47,8 @@ ordering.
    to a full-text search (the DDL now follows `FtsDdl`), DB view entities are not built from their rows, and a
    foreign key is recognized only by its computed name.
 3. **Error contract** (P6b-01, P7a-10): a failing service body propagates `Err` where Java records the
-   error and returns; `post-commit` SECA gets `None` instead of an empty map.
+   error and returns; `post-commit` SECA gets `None` instead of an empty map. (The errors text now follows Java's
+   `errorsString`, P6a-23 fixed.)
 4. **View fields** (P5-19, P5-16, P5-18): the entity JSON schema and the data writer's CSV of a view read no fields
    (REST finds and form auto fields now read the aliases), `pq-expression` aliases are not evaluated, and
    `DataDocument.<id>` is not an entity name.
@@ -56,7 +57,32 @@ ordering.
 
 - **P6b-01** — keep Rust's `Err` on a service-body failure (the Rust tests assert it) as a documented
   redesign, or switch to Java's record-and-return contract. Everything that calls `sync(...).call()`
-  depends on the answer.
+  depends on the answer. Notes for the decision (2026-10-16):
+  - Callers: about 25 non-test call sites of `service::sync`, `call::sync`, `sync_with` and `sync_multi` in
+    moqui-core, moqui-host and moqui-browser, and about 90 in tests. Some stop on the `Err` with `?`
+    (`entity/query_rest.rs:243`, `entity/field_rw.rs:466`, `user/authz.rs:417`, `service/rest.rs:564,608`,
+    `service/spreadsheet.rs:315`, `moqui-browser/src/host.rs:182`); some match it to record or log it
+    (`service/jobs.rs:466` records the job's error, `service/eca.rs:206`, `entity/document.rs:970`,
+    `notify/message.rs:601`, `service/tools.rs:68`, `service/system_sync/sftp.rs:242`); some read the message
+    facade as well (`screen/dispatch.rs:248,263,294`, `search/feed.rs:248`, `service/sso.rs:301`,
+    `service/system_sync/message.rs:336`, `moqui-host/src/ssh/shell.rs:163`). Under Java's contract the first two
+    groups would need a `has_error()` check, or they go on with an empty result.
+  - Tests that assert the `Err` of a body failure: in `service/call.rs`,
+    `service_failures_identify_owning_actions_and_rust_origin` (reads the diagnostic from the `Err`),
+    `post_commit_rules_run_after_a_failure_only_when_they_run_on_error`,
+    `a_runaway_script_ends_at_the_transaction_deadline` and `remote_rest_in_sim_mode_errors_before_a_socket`; and
+    `service/elfinder/tests.rs:417`. `script_ports_tests.rs:612-621` takes either. The authentication and semaphore
+    failures (`native_components.rs:395`, `held_fail_semaphore_errors`) throw in Java too, before its `try`.
+  - Scripts and XML actions: `ec.service.sync()…call()` (`script/runtime/services.rs:266-297`) already turns the
+    `Err` into a message-facade error and returns `null`; Java returns the result map, the empty one it started
+    with when the runner threw. A `<service-call>` compiles to that call, merges the result only when it is not
+    null, and returns on `ec.message.hasError()`, so actions stop as Java's do; only an `out-map` differs (left as it
+    was here, `{}` in Java).
+  - A switch: `sync_with` returns the empty (or partial) map after `add_error` and the rollback
+    (`service/call.rs:382-392`), keeping `Err` for what Java also throws: an authorization failure in the body (Java
+    rethrows `ArtifactAuthorizationException`) and the failures before the run (unknown service, authentication,
+    semaphore). The script host's `Err` arm would then be unused, the callers in the first two groups above move
+    to a `has_error()` check, and the tests above read the message facade.
 - **Spreadsheet/print references**: `org.moqui.impl.SpreadsheetServices` and some component Groovy are
   absent from these checkouts, so those comparisons rely on the XML descriptor only.
 
@@ -538,58 +564,28 @@ Reviewed `service/{define,validate,info,call,semaphore}.rs` against `ServiceDefi
 `ParameterInfo.java`, `ServiceFacadeImpl.groovy`, `ServiceCallImpl.java`, `ServiceCallSyncImpl.java`,
 `ServiceCallSpecialImpl.groovy` and the inline/entity-auto/script runners. Async is in Phase 7.
 
+Worked 2026-10-16: P6a-01, P6a-03, P6a-04, P6a-06, P6a-07, P6a-08, P6a-09, P6a-10, P6a-11, P6a-13, P6a-14, P6a-15,
+P6a-16, P6a-17, P6b-10, P6b-11 and P6b-12 fixed; P6a-12 and P6b-14 moved to [Accepted
+differences](#accepted-differences); P6b-01 left open as a decision, with notes under [Open
+decisions](#open-decisions). Found along the way: P6a-18, P6a-21 and P6a-22 (fixed), P6a-19 and P6a-20 (the parts of
+P6a-13 and P6a-08 that stay, accepted) and P6a-23 (fixed: the errors text that P6a-14's messages left without a
+field). Two changes reach shipped services: parameters of `implements` now come first (an order change only: a dump of
+the 37 `runtime/` services with `implements` gives the same name, type, `required`, checks and default for each
+parameter as before), and an `auto-parameters` field merges with a parameter of the same name, so
+`EntityServices.create#DataDocumentField` and `update#DataDocumentField`, whose `fieldPath required="true"` comes
+before `<auto-parameters include="nonpk"/>`, no longer require `fieldPath`, as in Java, where the later
+`auto-parameters` sets `required="false"`; in the other 7 such services the merged parameter keeps the type,
+`required`, default and checks of the two before. Line numbers in this section are as of that change.
+
 ### Findings — 6a definition / validation / info
 
-| ID | Rust location | Java location | Divergence | Severity | Intentional? |
-|----|---|---|---|---|---|
-| P6a-01 | `service/validate.rs:141`, `:167`, `:168` | `ServiceDefinition.java:212,492,519-545,556-558` | `validate="false"` gates only unknown-parameter retention (`:78`) and nesting (`:97`); Rust still enforces `required`, `allow-html` and declared checks (only `noop` uses `validate="false"` in `runtime/`) | Med | No |
-| P6a-03 | `service/validate.rs:393-394` | `ParameterInfo.java:154-193` | Number conversion ignores the parameter `format` (date/time/timestamp now use it) | Med | No |
-| P6a-04 | `service/info.rs:26-34`; `service/define.rs:572-578` | `ServiceFacadeImpl.groovy:336-359,380-413` | `known_service_names` returns only loaded services; Java scans every component `service/` dir | Med | Unsure |
-| P6a-06 | `service/define.rs:1211-1224`, `:1032` | `ServiceDefinition.java:106-152` | Implements parameters appended after own params (Java places them first); an own param of the same name replaces the interface one instead of merging attributes, so an untyped own param becomes `String` | Med | No |
-| P6a-07 | `service/validate.rs:586-608` | `ServiceDefinition.java:738-782` | `time-range` bounds exclusive vs Java inclusive; unparseable value errors in Rust but is skipped in Java | Med | No |
-| P6a-08 | `service/validate.rs:578-583` | `ServiceDefinition.java:41,698-715` | Email/letters/digits checks are ASCII regexes; Java uses `EmailValidator` and `Character.isLetter`/`isDigit` | Low-Med | No |
-| P6a-09 | `service/info.rs:37-39` | `ServiceFacadeImpl.groovy:492-497,530-534` | `getSecaRuleCount` counts distinct rules; Java counts per-service expansions | Low | Unsure |
-| P6a-10 | `service/validate.rs:368` | `ServiceDefinition.java:265-272,296-304` | Auto-expanded params omit the `field-name` Java sets | Low | No |
-| P6a-11 | `service/define.rs:1034` | `ParameterInfo.java:95-98` | Empty `default-value=""` counts as a default in Rust, not in Java | Low | No |
-| P6a-12 | `service/validate.rs:49` | `ParameterInfo.java:101-102`; `ServiceDefinition.java:396-553` | `required="disabled"` params skipped before `known.insert`, so `retain_known` drops them; Java still converts a passed disabled param | Low | Unsure |
-| P6a-13 | `service/validate.rs:376-381`, `:625-640` | `ServiceDefinition.java:531-543,568-579` | Stops at the first failing check per param; Java collects all failures, including failing OR branches | Low | No |
-| P6a-14 | `service/validate.rs:73`, `:142` | `ServiceDefinition.java:492-493,594,656` | Error text differs (`X is required (in service …)` vs `Field cannot be empty`) | Low | No |
-| P6a-15 | `service/define.rs:554-565` | `ServiceFacadeImpl.groovy:275-298` | File lookup takes the first existing file; Java lets later components override | Low | Unsure |
-| P6a-16 | `service/define.rs:949-957` | `ServiceDefinition.java:190-195` | Non-numeric `transaction-timeout` silently ignored vs Java `Integer.valueOf` error (`"0"` → unset is equivalent) | Low | No |
-| P6a-17 | `service/validate.rs:692-708` | `ServiceCallSyncImpl.java:558-606` | Implicit entity-auto calls filtered to fields + Map/List values; Java passes the raw map | Low | Unsure |
+None open.
 
 ### Findings — 6b call / semaphore
 
 | ID | Rust location | Java location | Divergence | Severity | Intentional? |
 |----|---|---|---|---|---|
-| P6b-01 | `service/call.rs:382-397` | `ServiceCallSyncImpl.java:320-356,391` | A service-body failure is returned as `Err` after `add_error`; Java catches it, records the message/cause chain, rolls back, and returns the result map (only `ArtifactAuthorizationException` rethrown) | High | Decision pending |
-| P6b-10 | `service/semaphore.rs:196-201` | `ServiceCallSyncImpl.java:461-466` | Empty-string `semaphore-parameter` maps to `_NULL_` in Rust but `""` in Java | Low | No |
-| P6b-11 | `service/semaphore.rs:63` | `ServiceCallSyncImpl.java:497-517` | Semaphore-conflict error text differs | Low | No |
-| P6b-12 | `service/call.rs:1109-1113` | `EntityAutoServiceRunner.groovy:487-491` | Invalid status transition error hardcoded; Java expands `StatusFlowTransitionNotFoundTemplate` | Low | No |
-| P6b-14 | `service/call.rs:827-838`, `:865-879` | `ServiceCallSyncImpl.java:322,391`; `InlineServiceRunner.java:56-66`; `ScriptServiceRunner.java:56-83` | Rust collects only declared out-parameters; Java returns the runner map, so undeclared `result` keys / a body-returned Map are dropped in Rust | Low | Unsure |
-
-#### P6a-01 — `validate="false"` still enforces required/HTML/checks
-
-Java's `nestedParameterClean` gates the required-field error (`parameterIsEmpty && validate &&
-parameterInfo.required`), the `allow-html` check and every `ParameterValidation` sub-element behind
-`validate`; type conversion is not gated. Rust always runs `required` (`service/validate.rs:141`), `clean_html`
-(`:167`) and `check_param` (`:168`); only `retain_known` and nesting look at `validate_input`. No
-shipped `runtime/` service with parameters uses `validate="false"` today, so the impact is on
-component services that do.
-
-#### P6a-06 — Implements parameter ordering and merge
-
-Java inserts deep-copied `implements` parameters first, then merges own params by name, so an own param
-that only overrides one attribute keeps the interface's `type`, `required`, etc. Rust appends
-implemented params after own params, and a same-named own param replaces the interface one entirely;
-an own param with no `type` then defaults to `String` (`service/define.rs:1032`).
-
-#### P6a-07 / P6a-08 — `time-range` and character-class validation
-
-Java `time-range` compares with `compareTo(...) < 0` / `> 0`, so equality passes and an unparseable
-value is skipped; Rust uses exclusive bounds and errors on an unparseable formatted value. Java's email
-check uses `EmailValidator` and letters/digits use `Character.isLetter`/`isDigit`; Rust uses ASCII
-regexes, so non-ASCII letters/digits and some emails validate differently.
+| P6b-01 | `service/call.rs:382-392` | `ServiceCallSyncImpl.java:320-356,391` | A service-body failure is returned as `Err` after `add_error`; Java catches it, records the message/cause chain, rolls back, and returns the result map (only `ArtifactAuthorizationException` rethrown) | High | Decision pending |
 
 #### P6b-01 — A service-body failure throws in Rust but returns a map in Java
 
@@ -601,13 +597,93 @@ Rust tests assert this `Err`; see [Open decisions](#open-decisions).
 
 #### Phase 6 checked and found equivalent
 
-- Nested `<parameter>` children parsed and validated (`service/define.rs:1042`, `service/validate.rs:84-125`).
-- Implicit entity-auto skips authentication (`Authenticate::Off`, `service/define.rs:215-217`); an `AT_SERVICE`
+- `validate="false"` (P6a-01, fixed): skips the `required` check, the `allow-html` check and the declared checks, as
+  Java's `nestedParameterClean`, and still converts (`clean_param`, `service/validate.rs:124-170`); unknown
+  parameters are kept and nested maps not trimmed, as before.
+- Number `format` (P6a-03, fixed): a number parameter with a `format` is read by that `DecimalFormat` pattern for
+  the session locale, as `BigDecimalValidator.validate(text, pattern, locale)` (`convert_text`,
+  `service/validate.rs:436`; `l10n::parse_number_format`, `l10n.rs:365`; `format::parse_decimal_pattern`,
+  `moqui-lib/src/format.rs:330`): its prefix and suffix or negative sub-pattern, grouping only when the pattern
+  groups, `%` and per-mille scaled back. Text it does not read is Java's error naming the format.
+- Known service names (P6a-04, fixed): `known_service_names` (`service/info.rs:27`) adds to the registered services
+  the services of the `service-file` locations and of every service file under each component's `service`
+  directory, read but not registered, as `getKnownServiceNames` (`service_names_in_files`,
+  `service/define.rs:639-702`); a file that does not parse is logged and skipped. Like Java, the framework's own
+  `service` directory is listed only through `service-file`.
+- `implements` merge (P6a-06, fixed): the implemented services' parameters come first, then the service's own are
+  merged in by name, as `ServiceDefinition`'s `mergeParameter`: an own parameter sets only the attributes it has (a
+  parameter that adds a check keeps the interface's `type` and `required`), its checks are added and its nested
+  parameters merged (`merge_param`, `service/define.rs:162-202`; `resolve_one`/`implemented`,
+  `service/define.rs:1363-1455`). `implements required` also sets the `required` of an `auto-parameters` it copies.
+  A `required="disabled"` implemented parameter is still left out (P6a-12), and of two implemented services with a
+  parameter of the same name the first one's is kept (Java appends both and the later wins its map).
+- `time-range` (P6a-07, fixed): text is read by the `format` and a value that does not read is not checked; the
+  bounds are inclusive, and `now` is the effective time written and read back by the format, so `after="now"` with
+  `MM/yyyy` takes this month (`time_range`, `service/validate.rs:735-775`; `bound_millis`, `:912-927`).
+- Character classes (P6a-08, fixed): `text-letters` is Unicode alphabetic in the Basic Multilingual Plane, as
+  `Character.isLetter` of a UTF-16 unit, `text-digits` the decimal digits there, as `Character.isDigit`
+  (`is_java_digit`, `service/validate.rs:779`), and `text-email` follows `EmailValidator`'s user and host rules
+  (`is_email`, `:794-875`); what stays different is P6a-20.
+- SECA rule count (P6a-09, fixed): `getSecaRuleCount` counts a pattern rule once per known service it matches
+  (`seca_rule_count`, `service/info.rs:39`; `SecaRule::service_count`, `service/seca.rs:284-296`). The startup log
+  keeps Java's "SECA rules active" count of rules (`seca_rules_active`, `service/info.rs:48`), and a SECA load reads
+  the known names at most once (`service_defined`, `service/seca.rs:266-282`).
+- `field-name` (P6a-10, fixed): an `auto-parameters` field sets `field-name` (`auto_fields`,
+  `service/validate.rs:424`).
+- Empty `default-value` (P6a-11, fixed): no default, as `ParameterInfo` (`parse_parameter`,
+  `service/define.rs:1237`); an empty `default-value` on an own parameter still clears an implemented one's.
+- Each failed check (P6a-13, fixed): every check of a parameter that fails is its own validation error, and an HTML
+  error does not stop the checks (`clean_param`, `service/validate.rs:161-170`; `apply_check`, `:576-731`); `val-and`
+  reports each child; `val-or`/`val-not` are P6a-19.
+- Message text (P6a-14, fixed): Java's localized messages: `Field cannot be empty`, `Value entered ({0}) could not be
+  converted to a {1}` (with `using format [..]`), the HTML message, and each check's `Value entered …` text or its own
+  `message` expanded with `pv`, `regexp`, `min`/`max` (`apply_check`, `service/validate.rs:576-731`). The field and
+  service are on the validation error, not in its text; the errors text adds them (P6a-23).
+- Errors text (P6a-23, found and fixed): the JSON `errors` of a REST or screen response (`web/mod.rs:778-781`,
+  `screen/dispatch.rs:370-373`) and a script's `ec.message.errorsString` (`script/runtime/facades.rs:350-352`) are
+  Java's `getErrorsString`: the errors, then each validation error as `toStringPretty` writes it, its message, `(`,
+  `for field`, ` on form` and ` of service` with the pretty names, and no closing parenthesis, as Java
+  (`MessageFacade::errors_text`, `ValidationError::to_string_pretty`, `context/message.rs:44-67`, `:132-156`); a
+  validation error's message, which the errors list also holds, is written once. The lines are joined without
+  Java's newline after the last. The browser still leaves a placed field error out of its toasts: `placeFieldErrors`
+  in `WebrootVue.qvt.js` (`moqui.validationErrorText`) and `moqui-html.js` match the line in either form. Before,
+  the line was the message alone, which since P6a-14 named no field.
+- File override (P6a-15, fixed): reading a service file under a framework or component `service` directory reads
+  the files of the same path in the others, and a service is defined by the last of them that has it, in the order
+  framework then components, as `findServiceNode`; this holds for the `service-file` files read at startup too
+  (`load_file`, `service/define.rs:844-946`; `service_roots`, `:620-634`). A file that does not parse loses only its
+  own services.
+- Numeric attributes (P6a-16, fixed; P6a-22, found and fixed): a `transaction-timeout`, `semaphore-timeout`,
+  `semaphore-sleep` or `semaphore-ignore` that is not a whole number fails that service with a registration failure,
+  where Java's `Integer.valueOf`/`Long.parseLong` fails its definition; before, the first was ignored and the others
+  took their defaults (`service/define.rs:1006-1021`; `timeout_of`, `:1142`; `seconds_attr`, `:1164`).
+- Implicit entity-auto (P6a-17, fixed): the implicit definition does not clean its parameters
+  (`validate_input: false`, `service/define.rs:263-269`), so SECA rules and the runner get the map as it came, as
+  `runImplicitEntityAuto`; the runner sets only the entity's fields, as `setFields` (`run_entity`,
+  `service/call.rs:915`).
+- Declared entity-auto (P6a-18, found and fixed): a declared `type="entity-auto"` service kept every entity field
+  and every map or list parameter beyond its declared parameters; it now keeps only those declared, as any
+  validating service, so `create#UomConversion` (`auto-parameters include="nonpk"`) no longer takes a caller's
+  `uomConversionId` (`clean`, `service/validate.rs:78-80`).
+- `auto-parameters` merge (P6a-21, found and fixed): an `auto-parameters` field and a parameter of the same name were
+  two parameters, each cleaned in turn, so an untyped parameter after a `Timestamp` field converted the value back to
+  text; they are now one, merged by name in declaration order, as `mergeAutoParameters` (`expand_params`,
+  `service/validate.rs:321-341`; the same in `typegen/services.rs:34-61`).
+- Semaphore scope (P6b-10, fixed): an empty `semaphore-parameter` is `_NA_` and an empty value is `""`; only a missing
+  or null value is `_NULL_` (`scope_value`, `service/semaphore.rs:237-245`).
+- Semaphore text (P6b-11, fixed): Java's "An instance of service semaphore … is already running (thread [..], locked
+  at ..) and it is setup to fail on semaphore conflict." and the wait form with its seconds, with the holder read
+  from the row (`take`, `service/semaphore.rs:33-77`; `try_lock`, `:151-216`).
+- Status transition text (P6b-12, fixed): `StatusFlowTransitionNotFoundTemplate` localized and expanded with the
+  status ids and names, its default text when the seed data is not loaded (`status_transition_message`,
+  `service/call.rs:1142-1157`).
+- Nested `<parameter>` children parsed and validated (`service/define.rs:1245`, `service/validate.rs:84-118`).
+- Implicit entity-auto skips authentication (`Authenticate::Off`, `service/define.rs:263-265`); an `AT_SERVICE`
   frame is still pushed but with `requires_authz=false`.
 - Early "errors already in the facade" abort with `ErrorsAside` push/pop, and the rollback-only guard
   (`service/call.rs:271-291,402-416`).
 - `verb_action` maps `get`/`search` to `view` (`service/call.rs:760`); entity-auto `delete` requires a full PK
-  or `*` wildcard (`delete_entity`, `service/call.rs:972-1015`) and returns an empty map.
+  or `*` wildcard (`delete_entity`, `service/call.rs:983-1026`) and returns an empty map.
 - Service `type` default, `authenticate` values, `transaction`/`no-tx-cache` defaults,
   `no-remember-parameters`, interface pass-through; semaphore attribute defaults and none/fail/wait.
 - `auto-parameters` include/exclude/required/allow-html; `default` precedence, requirement-after-
@@ -705,7 +781,7 @@ authz-controlled artifacts can fail where Java succeeds.
 #### Phase 7 checked and found equivalent
 
 - SECA/EMECA discovery per component, id-overwrite, priority ordering; SECA rules for undefined
-  services skipped at load (`service/eca_rules.rs:104-112`, `service/seca.rs:267-278`); SECA uses only the first
+  services skipped at load (`service/eca_rules.rs:105-113`, `service/seca.rs:266-282`); SECA uses only the first
   `<condition>` child (`service/seca.rs:193-197`).
 - Runtime name matching; `run-on-error` gating for SECA; phase set/ordering and tx hooks; tx rules run
   on a worker in a new transaction and skip sim sessions (`service/call.rs:524-559`); condition-false skip.
@@ -858,8 +934,12 @@ tolerance). Not part of the worklist; revisit only if the rationale changes.
 | P4b-08 | ETL | `useTryInsert` stores with `createOrUpdate` where the database is `never-try-insert` (Postgres); Java's ETL loader tries the insert anyway (`entity/etl.rs:92-101`) | Safer: on Postgres the failed insert aborts the transaction, so Java's update after it fails; the data loader's `handleValue` has the same guard. Comment at the site |
 | P4b-09 | data writer | `isoDateTime(true)` formats dates in JSON and XML; Java ignores it (`TODO`) (`entity/query_rest.rs:1550-1582,1715-1732`) | Implements Java's TODO |
 | P5-14 | entity REST | Request `pageSize` capped at `entity_rest_max_page_size` (1000); Java caps nothing | Documented `entity/query_rest.rs:532-551` |
-| P6a-05 | service tools | Service detail view is a rebuilt node (`method` null, no `groovyString`, some attributes dropped) | Documented `service/info.rs:183-184` |
-| P6b-08 | semaphore | Row cleared only while `lockThread` equals Rust's owner label | Documented `service/semaphore.rs:72-73,204-205` |
+| P6a-05 | service tools | Service detail view is a rebuilt node (`method` null, no `groovyString`, some attributes dropped) | Documented `service/info.rs:194-195` |
+| P6a-12 | service validation | A `required="disabled"` parameter is skipped, so validating drops a value passed for it, and an implemented one is not copied (`service/validate.rs:48-52`, `service/define.rs:1434-1441`); Java only makes it not required and still converts the value | The XSD says it behaves "as if the parameter did not exist", for overriding an earlier parameter; dropping it keeps an undeclared value from the service. Comment at the site |
+| P6a-19 | service validation | `val-or` passes when one child passes and `val-not` fails when one passes, with a message (`service/validate.rs:704-723`); Java's `validateParameterSingle` adds each failing child's error even when the `val-or` passes, and adds none for a failing `val-not` | Java's makes a `val-or` with any failing branch fail the call and a failing `val-not` pass it; unused in `runtime/`. Comment at the site |
+| P6a-20 | service validation | `text-email` checks the top-level domain's form (letters first, two or more long), not the IANA list, and a Unicode host is not valid; `text-letters` takes Unicode alphabetic characters, a little more than `Character.isLetter` (combining vowel signs, letter numbers) (`service/validate.rs:684-688`, `:789-875`) | No list of top-level domains to keep current and no IDN library in moqui-core; doc comment at `is_email` |
+| P6b-08 | semaphore | Row cleared only while `lockThread` equals Rust's owner label | Documented `service/semaphore.rs:82-83,247-248` |
+| P6b-14 | service call | A call returns only the declared out-parameters (all when none are declared), and inline/script bodies have no `result` map (`service/call.rs:865-882`); Java returns the runner's map, the `result` map's entries included | Keeps a body's other values from REST and remote callers; a ported script uses `result` as a name of its own (`SearchServices.xml`). Doc comment at `project` |
 | P7a-01 | EECA | Security-check EECAs run even when the message facade already has errors (Java skips them) | Stricter by design; `service/eca.rs:74-75`, test at `service/eca.rs:327` |
 | P7a-04 | security | `SSH_SHELL` sealed in Rust conf/constants | Rust-only artifact (`service/security_checks.rs:31-32`, `MoquiDefaultConf.xml:63-64`) |
 | P7a-09 | email ECA | A failing email rule is logged and the rest run; Java aborts | AGENTS.md failure-tolerance policy |

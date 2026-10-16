@@ -368,7 +368,8 @@ fn message_error_count() -> usize {
 }
 
 fn message_errors() -> Vec<String> {
-    ExecutionContext::with_current(|ec| ec.message().errors().to_vec()).unwrap_or_default()
+    // Java's `errorsString`: a validation error written with its field, form and service.
+    ExecutionContext::with_current(|ec| ec.message().errors_text()).unwrap_or_default()
 }
 
 /// The `X-Page-*` headers for the page info the last REST find recorded, if any.

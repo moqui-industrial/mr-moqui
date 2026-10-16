@@ -263,8 +263,13 @@ fn pattern_matches(rule: &SecaRule, plain: &str) -> bool {
 }
 
 impl SecaRule {
-    /// Java's load check: a named service that is defined, or a pattern that matches a known service.
-    pub(super) fn service_defined(&self, facade: Option<&crate::entity::EntityFacade>) -> bool {
+    /// Java's load check: a named service that is defined, or a pattern that matches a known service. `known` is
+    /// filled with the known service names when a pattern first needs them, so a load reads the service files once.
+    pub(super) fn service_defined(
+        &self,
+        facade: Option<&crate::entity::EntityFacade>,
+        known: &mut Option<Vec<String>>,
+    ) -> bool {
         if !self.name_is_pattern {
             return super::call::is_service_defined(&self.service_name, facade)
                 || super::define::registered()
@@ -272,9 +277,20 @@ impl SecaRule {
                     .iter()
                     .any(|def| def.name.replace('#', "") == self.service_plain);
         }
-        super::info::known_service_names()
+        self.service_count(known) > 0
+    }
+
+    /// How many services the rule runs for, as Java's `getSecaRuleCount` counts it: one for a named service, and for a
+    /// pattern each known service it matches. `known` is filled as for [`Self::service_defined`].
+    pub(super) fn service_count(&self, known: &mut Option<Vec<String>>) -> usize {
+        if !self.name_is_pattern {
+            return 1;
+        }
+        known
+            .get_or_insert_with(super::info::known_service_names)
             .iter()
-            .any(|name| pattern_matches(self, &name.replace('#', "")) || pattern_matches(self, name))
+            .filter(|name| pattern_matches(self, &name.replace('#', "")) || pattern_matches(self, name))
+            .count()
     }
 }
 
@@ -328,9 +344,9 @@ mod tests {
             .unwrap();
             super::seca_rule_from(&node).unwrap()
         };
-        assert!(rule("update#moqui.basic.Enumeration").service_defined(Some(&facade)));
-        assert!(!rule("update#moqui.basic.NoSuchEntity").service_defined(Some(&facade)));
-        assert!(!rule("no.such.Services.do#Nothing").service_defined(Some(&facade)));
+        assert!(rule("update#moqui.basic.Enumeration").service_defined(Some(&facade), &mut None));
+        assert!(!rule("update#moqui.basic.NoSuchEntity").service_defined(Some(&facade), &mut None));
+        assert!(!rule("no.such.Services.do#Nothing").service_defined(Some(&facade), &mut None));
     }
 
     #[test]
@@ -507,5 +523,32 @@ mod tests {
         let parameters = BTreeMap::new();
         assert!(run_seca_rules("test.example#Odd", "pre-service", &parameters, None).is_err());
         assert!(context.message().messages().is_empty(), "the rule did not run");
+    }
+
+    /// Java's `getSecaRuleCount` counts a pattern rule once for each known service it matches; the rules loaded are
+    /// counted once each.
+    #[test]
+    fn the_rule_count_counts_a_pattern_once_per_matching_service() {
+        let context = crate::context::ExecutionContextFactory::test_context();
+        eca_rules::install(
+            context.factory(),
+            eca_rules::from_xml(
+                r#"<secas>
+                <seca service="count#One" when="pre-service"/>
+                <seca service="count.*" name-is-pattern="true" when="post-service"/>
+            </secas>"#,
+                "",
+            ),
+        );
+        let _entered = context.enter();
+        let path = std::env::temp_dir().join(format!("moqui-svc-seca-count-{}.xml", std::process::id()));
+        std::fs::write(
+            &path,
+            r#"<services><service verb="count" noun="One"/><service verb="count" noun="Two"/><service verb="other" noun="Three"/></services>"#,
+        )
+        .unwrap();
+        crate::service::lint(&[path]).unwrap();
+        assert_eq!(crate::service::info::seca_rules_active(), 2);
+        assert_eq!(crate::service::info::seca_rule_count(), 3);
     }
 }

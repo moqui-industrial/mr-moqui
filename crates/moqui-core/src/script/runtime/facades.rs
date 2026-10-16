@@ -348,7 +348,7 @@ impl HostMessage {
     }
 
     fn get_errors_string(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
-        host_guard(&ctx, || with_ec(&ctx, |ec| ec.message().errors().join("\n")))
+        host_guard(&ctx, || with_ec(&ctx, |ec| ec.message().errors_string()))
     }
 
     #[qjs(get)]

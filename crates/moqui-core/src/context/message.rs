@@ -41,6 +41,32 @@ pub struct ValidationError {
     pub message: String,
 }
 
+impl ValidationError {
+    /// Java's `ValidationError.toStringPretty`: the message, then `(`, then `for field`, ` on form` and ` of service`
+    /// with the pretty names that are not empty. As in Java there is no space before the `(` and no closing `)`.
+    pub fn to_string_pretty(&self) -> String {
+        let pretty = moqui_lib::string::camel_case_to_pretty;
+        let mut text = self.message.clone();
+        text.push('(');
+        let field = pretty(&self.field);
+        if !field.is_empty() {
+            text.push_str("for field ");
+            text.push_str(&field);
+        }
+        let form = pretty(&self.form);
+        if !form.is_empty() {
+            text.push_str(" on form ");
+            text.push_str(&form);
+        }
+        let service = pretty(&self.service);
+        if !service.is_empty() {
+            text.push_str(" of service ");
+            text.push_str(&service);
+        }
+        text
+    }
+}
+
 impl MessageFacade {
     pub fn new() -> Self {
         Self::default()
@@ -101,6 +127,32 @@ impl MessageFacade {
 
     pub fn errors(&self) -> &[String] {
         &self.errors
+    }
+
+    /// The lines of Java's `getErrorsString`: the errors, then each validation error as `toStringPretty` writes it.
+    /// [`Self::errors`] holds a validation error's message too, so that one is not written twice.
+    pub fn errors_text(&self) -> Vec<String> {
+        let mut owned: Vec<&str> = self
+            .validation_errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect();
+        let mut lines = Vec::with_capacity(self.errors.len());
+        for error in &self.errors {
+            match owned.iter().position(|message| *message == error) {
+                Some(index) => {
+                    owned.swap_remove(index);
+                }
+                None => lines.push(error.clone()),
+            }
+        }
+        lines.extend(self.validation_errors.iter().map(ValidationError::to_string_pretty));
+        lines
+    }
+
+    /// [`Self::errors_text`] joined by newlines, as Java's `getErrorsString` (without its newline after the last).
+    pub fn errors_string(&self) -> String {
+        self.errors_text().join("\n")
     }
 
     /// Java `clearErrors`: the errors and validation errors, not the messages.
@@ -171,6 +223,35 @@ mod tests {
         assert_eq!(facade.messages(), ["before", "during"]);
         facade.pop_errors();
         assert_eq!(facade.errors(), ["outer", "caller"]);
+    }
+
+    /// Java's `getErrorsString`: the errors, then each validation error by `toStringPretty`, once.
+    #[test]
+    fn the_errors_string_writes_validation_errors_as_java_does() {
+        let mut facade = MessageFacade::new();
+        facade.add_error("plain");
+        facade.add_validation_error(
+            "",
+            "emailAddress",
+            "org.moqui.impl.UserServices.update#UserAccount",
+            "Bad",
+        );
+        facade.add_validation_error("EditThing", "title", "", "Needs a letter");
+        facade.add_validation_error("", "", "", "No field");
+        assert_eq!(
+            facade.errors_text(),
+            [
+                "plain",
+                &format!(
+                    "Bad(for field Email Address of service {}",
+                    moqui_lib::string::camel_case_to_pretty("org.moqui.impl.UserServices.update#UserAccount")
+                ),
+                "Needs a letter(for field Title on form Edit Thing",
+                "No field(",
+            ]
+        );
+        assert_eq!(facade.errors(), ["plain", "Bad", "Needs a letter", "No field"]);
+        assert_eq!(facade.errors_string(), facade.errors_text().join("\n"));
     }
 
     #[test]

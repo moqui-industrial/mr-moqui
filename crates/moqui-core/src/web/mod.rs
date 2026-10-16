@@ -776,7 +776,8 @@ pub(crate) fn take_output() -> (u16, Vec<(String, String)>, Vec<u8>, bool) {
 }
 
 fn message_errors() -> Vec<String> {
-    ExecutionContext::with_current(|ec| ec.message().errors().to_vec()).unwrap_or_default()
+    // Java's `errorsString`: a validation error written with its field, form and service.
+    ExecutionContext::with_current(|ec| ec.message().errors_text()).unwrap_or_default()
 }
 
 /// Parsed inputs for one request. A JSON list stays beside the parameter map.
