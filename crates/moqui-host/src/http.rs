@@ -657,8 +657,20 @@ fn from_web(response: WebResponse) -> Response {
     for (name, value) in response.headers {
         builder = builder.header(name, value);
     }
+    let body = if let Some(stream) = response.stream {
+        axum::body::Body::from_stream(futures_util::stream::unfold(stream, |stream| async move {
+            let source = stream.clone();
+            match tokio::task::spawn_blocking(move || source.next_chunk()).await {
+                Ok(Some(chunk)) => Some((chunk, stream)),
+                Ok(None) => None,
+                Err(error) => Some((Err(std::io::Error::other(error)), stream)),
+            }
+        }))
+    } else {
+        axum::body::Body::from(response.body)
+    };
     builder
-        .body(axum::body::Body::from(response.body))
+        .body(body)
         .unwrap_or_else(|_| plain(500, "could not build the response"))
 }
 
@@ -767,6 +779,39 @@ mod tests {
 
     use super::{http_port, serve, status_allowed, ListenLimits, TlsConnection};
     use crate::tls;
+
+    #[tokio::test]
+    async fn response_stream_pulls_on_demand_and_releases_on_disconnect() {
+        use futures_util::StreamExt;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        struct Source(Arc<AtomicUsize>, Arc<AtomicBool>);
+        impl Iterator for Source {
+            type Item = std::io::Result<Vec<u8>>;
+            fn next(&mut self) -> Option<Self::Item> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Some(Ok(b"frame\r\n".to_vec()))
+            }
+        }
+        impl Drop for Source {
+            fn drop(&mut self) {
+                self.1.store(true, Ordering::SeqCst);
+            }
+        }
+        let pulls = Arc::new(AtomicUsize::new(0));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let mut response = moqui_core::web::WebResponse::new(200, Vec::new());
+        response.stream = Some(moqui_core::web::ResponseStream::new(Source(
+            pulls.clone(),
+            dropped.clone(),
+        )));
+        let mut body = super::from_web(response).into_body().into_data_stream();
+        assert_eq!(pulls.load(Ordering::SeqCst), 0);
+        assert_eq!(&body.next().await.unwrap().unwrap()[..], b"frame\r\n");
+        assert_eq!(pulls.load(Ordering::SeqCst), 1);
+        drop(body);
+        assert!(dropped.load(Ordering::SeqCst));
+        assert_eq!(pulls.load(Ordering::SeqCst), 1);
+    }
 
     async fn read_all(stream: &mut TcpStream) -> String {
         let mut buf = Vec::new();

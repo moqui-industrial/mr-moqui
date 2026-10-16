@@ -31,6 +31,16 @@ implementations, and scripts get tools with `ec.factory.getTool("Name")`. See
 [Native component usage](plans/Native-Components-Usage.md), the [plan](plans/Native-Components.md), and
 `runtime/base-component/example`, which is off by default (`./moq run -D example_disabled=false`).
 
+Native HTTP services can call `moqui_core::web::send_stream(content_type,
+ResponseStream::new(source))`, where `source` is a `Send + 'static` iterator of
+`std::io::Result<Vec<u8>>`. It requires an active HTTP screen transition and
+sends the response directly; use a `none` transition response. The host pulls
+chunks on demand on its blocking executor, without buffering the full body or
+holding the request's ExecutionContext. Dropping the HTTP body releases the
+source after any in-flight `next()` finishes. Iterators must bound blocking
+operations and own their resources; an ExecutionContext must not escape into
+them. `moqui-genicam` uses this API for finite or continuous MJPEG.
+
 ## Build, Test, and Run
 
 Very basic instructions from a fresh checkout. A Run & Deploy guide will come later.

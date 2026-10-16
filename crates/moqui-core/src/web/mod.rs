@@ -19,6 +19,32 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
+type ChunkSource = Box<dyn Iterator<Item = std::io::Result<Vec<u8>>> + Send>;
+
+/// A pull-based native response. Only a requested chunk is produced; dropping the
+/// HTTP body releases the source after an in-flight next() finishes.
+#[derive(Clone)]
+pub struct ResponseStream(Arc<Mutex<ChunkSource>>);
+
+impl std::fmt::Debug for ResponseStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ResponseStream")
+    }
+}
+
+impl ResponseStream {
+    pub fn new(source: impl Iterator<Item = std::io::Result<Vec<u8>>> + Send + 'static) -> Self {
+        Self(Arc::new(Mutex::new(Box::new(source))))
+    }
+    pub fn next_chunk(&self) -> Option<std::io::Result<Vec<u8>>> {
+        match self.0.lock() {
+            Ok(mut source) => source.next(),
+            Err(_) => Some(Err(std::io::Error::other("response stream lock poisoned"))),
+        }
+    }
+}
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -88,6 +114,7 @@ pub struct WebResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    pub stream: Option<ResponseStream>,
 }
 
 impl WebResponse {
@@ -96,6 +123,7 @@ impl WebResponse {
             status,
             headers: Vec::new(),
             body: body.into(),
+            stream: None,
         }
     }
 
@@ -136,6 +164,7 @@ struct WebSlot {
     status: u16,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
+    stream: Option<ResponseStream>,
 }
 
 /// Puts back the thread-local web slot that was there before the install, or clears it when there was
@@ -178,6 +207,7 @@ pub(crate) fn install_with(parameters: BTreeMap<String, Value>, base_url: String
             status: 200,
             headers: Vec::new(),
             body: Vec::new(),
+            stream: None,
         })
     });
     WebGuard { previous }
@@ -675,6 +705,29 @@ pub(crate) fn send_reset_content(location: &str) {
     });
 }
 
+/// Send a native HTTP stream. The source must own its resources and bound blocking work.
+pub fn send_stream(content_type: &str, stream: ResponseStream) -> Result<(), Error> {
+    WEB.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let web = slot
+            .as_mut()
+            .ok_or_else(|| Error::new("streaming requires an active HTTP request"))?;
+        if web.sent {
+            return Err(Error::new("HTTP response was already sent"));
+        }
+        web.sent = true;
+        web.status = 200;
+        web.headers.push(("Content-Type".into(), content_type.into()));
+        web.headers.push(("X-Accel-Buffering".into(), "no".into()));
+        web.stream = Some(stream);
+        Ok(())
+    })
+}
+
+pub(crate) fn take_stream() -> Option<ResponseStream> {
+    WEB.with(|slot| slot.borrow_mut().as_mut().and_then(|web| web.stream.take()))
+}
+
 /// A response with its own headers and bytes, such as a static file. One already sent is left alone.
 pub(crate) fn send_bytes_with_headers(status: u16, headers: Vec<(String, String)>, body: Vec<u8>) {
     WEB.with(|slot| {
@@ -731,18 +784,20 @@ pub(crate) fn clear_output() {
             web.status = 200;
             web.headers.clear();
             web.body.clear();
+            web.stream = None;
         }
     });
 }
 
 /// What a request had written, set aside while something else uses the slot's output.
-pub(crate) struct OutputStash((u16, Vec<(String, String)>, Vec<u8>, bool));
+pub(crate) struct OutputStash((u16, Vec<(String, String)>, Vec<u8>, bool), Option<ResponseStream>);
 
 /// Take what was written so far and leave the slot empty, for output that is not the response.
 pub(crate) fn stash_output() -> OutputStash {
+    let stream = take_stream();
     let taken = take_output();
     clear_output();
-    OutputStash(taken)
+    OutputStash(taken, stream)
 }
 
 /// Put back what [`stash_output`] took, dropping anything written since.
@@ -754,6 +809,7 @@ pub(crate) fn restore_output(stash: OutputStash) {
             web.headers = headers;
             web.body = body;
             web.sent = sent;
+            web.stream = stash.1;
         }
     });
 }
@@ -1473,5 +1529,27 @@ mod tests {
         assert!(!hidden.contains("SECRET_TABLE"), "{hidden}");
         assert_eq!(shown, "bad name");
         assert_eq!(not_production, "SELECT * FROM SECRET_TABLE failed");
+    }
+}
+
+#[cfg(test)]
+mod response_stream_tests {
+    use super::*;
+    #[test]
+    fn stream_is_preserved_across_nested_output_and_cleared_explicitly() {
+        let _guard = install(BTreeMap::new());
+        send_stream("video/test", ResponseStream::new(vec![Ok(vec![1, 2])].into_iter())).unwrap();
+        let stash = stash_output();
+        assert!(take_stream().is_none());
+        restore_output(stash);
+        let stream = take_stream().unwrap();
+        assert_eq!(stream.next_chunk().unwrap().unwrap(), vec![1, 2]);
+        assert!(stream.next_chunk().is_none());
+        clear_output();
+        assert!(take_stream().is_none());
+    }
+    #[test]
+    fn headless_stream_is_rejected() {
+        assert!(send_stream("video/test", ResponseStream::new(std::iter::empty())).is_err());
     }
 }
