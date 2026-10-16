@@ -281,6 +281,7 @@ fn install_prelude() -> Result<(), Error> {
 fn install_host(ctx: &Ctx<'_>) -> rquickjs::Result<()> {
     let host = Object::new(ctx.clone())?;
     host.set("parallel", Function::new(ctx.clone(), parallel_host)?)?;
+    host.set("uploadedFile", Function::new(ctx.clone(), uploaded_file_host)?)?;
     // A plain set of a global goes through the context stack's proxy, which takes only data.
     let define: Function = ctx.eval(
         "(host) => Object.defineProperty(globalThis, '__moquiTestHost', { value: host, writable: true, configurable: true })",
@@ -365,6 +366,17 @@ fn reset_context() {
 
 /// `__moquiTestHost.parallel(n, source, argsJson, transaction, timeoutSeconds)`: run the function source on `n`
 /// threads, each with its own execution context and engine, and return `{results, errors}` as JSON.
+/// `uploadedFile(fileName, text, contentType)` of the prelude: an uploaded file holding the text.
+fn uploaded_file_host<'js>(
+    ctx: Ctx<'js>,
+    file_name: String,
+    text: String,
+    content_type: Option<String>,
+) -> rquickjs::Result<rquickjs::Value<'js>> {
+    let content_type = content_type.unwrap_or_else(|| "text/plain".to_string());
+    crate::script::text_upload_to_js(&ctx, "contentFile", &file_name, &content_type, &text)
+}
+
 fn parallel_host(
     ctx: Ctx<'_>,
     count: u32,

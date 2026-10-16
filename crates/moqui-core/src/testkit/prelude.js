@@ -399,5 +399,9 @@
         return out.results;
     });
 
+    // An uploaded file with the text as its content, for the services that take a FileItem: uploadedFile("a.txt", "text", "text/plain").
+    define("uploadedFile", (fileName, text, contentType) => __moquiTestHost.uploadedFile(String(fileName), String(text == null ? "" : text),
+        contentType == null ? "text/plain" : String(contentType)));
+
     Object.defineProperty(g, "log", { get: () => ec.logger, configurable: true });
 })(globalThis);

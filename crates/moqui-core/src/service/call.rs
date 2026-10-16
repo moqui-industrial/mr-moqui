@@ -756,6 +756,16 @@ fn run_entity(
     {
         record.set("fromDate", crate::user::now_effective_value());
     }
+    // a primary key field with a default (a content date, say) takes it before a missing key is sequenced
+    if matches!(verb, "create" | "store") && pk_missing(&record, &pk_names) {
+        let with_defaults = facade.apply_field_defaults(noun, record.fields())?;
+        for name in &pk_names {
+            let missing = record.get(name).is_none_or(|value| value.is_null() || is_empty(value));
+            if let Some(value) = with_defaults.get(name).filter(|value| missing && !value.is_null()) {
+                record.set(name, value.clone());
+            }
+        }
+    }
     let mut status_out = BTreeMap::new();
     match verb {
         "delete" => record.delete(facade)?,

@@ -139,6 +139,7 @@ feature("call REST API (#requestMethod, #screenPath)", {
 - **`login(user, password = "moqui")`**: throws if `loginUser` returns false. **`logout()`**.
 - **`parallel(n, fn, args, {transaction: true, timeout})`**: runs `fn(threadNum, args)` on n threads, each with its own context and engine. `fn` is re-evaluated from its source, so it must not close over variables; `args` are JSON-cloned. It returns the results, and a thread error fails the feature.
 - **`screenTest(baseScreenPath)`**: sugar for `ec.screen.makeTest().baseScreenPath(...)`.
+- **`uploadedFile(fileName, text, contentType = "text/plain")`**: an uploaded file holding the text, the `FileItem` that services such as `save#InvoiceContentFile` and `upload#OfxVersion1` take.
 - Helpers: `sum(list, field)` and `dec(x)` for decimal sums and conversion; `log` is `ec.logger`.
 
 ### Power asserts (source rewrite, `crates/moqui-core/src/testkit/rewrite.rs`)
