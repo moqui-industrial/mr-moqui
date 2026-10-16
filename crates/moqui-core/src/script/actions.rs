@@ -316,6 +316,8 @@ mod tests {
                 <set field="made" from="ec.entity.conditionFactory.makeCondition('a', 'greater', 3) != null"/>
                 <set field="skipped" from="ec.entity.conditionFactory.makeActionConditionDirect('a', 'equals', null, null, null, false, true, false, 'false') === null"/>
                 <set field="dated" from="ec.entity.conditionFactory.makeConditionDate('fromDate', 'thruDate', null, false, 'false') != null"/>
+                <set field="ignoreFlag" from="true"/>
+                <set field="ignoredDate" from="ec.entity.conditionFactory.makeConditionDate('fromDate', 'thruDate', null, false, ignoreFlag) === null"/>
             </actions>"#,
         )
         .unwrap();
@@ -326,6 +328,25 @@ mod tests {
         assert_eq!(text("made").as_deref(), Some("true"));
         assert_eq!(text("skipped").as_deref(), Some("true"));
         assert_eq!(text("dated").as_deref(), Some("true"));
+        assert_eq!(text("ignoredDate").as_deref(), Some("true"));
+    }
+
+    /// `ignore` is an expression in the XML: the generated code passes its value, and a plain `econdition` with an
+    /// `ignore` is not made the shorthand `.condition(field, value)` that has no way to skip.
+    #[test]
+    fn the_ignore_attribute_is_an_expression() {
+        let script = generate_with(
+            r#"<actions><entity-find entity-name="a.B" list="rows">
+                <econdition field-name="statusId" ignore="!statusId &amp;&amp; !strictAll"/>
+                <econdition field-name="partyId"/>
+                <date-filter ignore="skipDates"/>
+            </entity-find></actions>"#,
+            false,
+        )
+        .unwrap();
+        assert!(script.contains("!!(!statusId && !strictAll)"), "{script}");
+        assert!(script.contains("!!(skipDates)"), "{script}");
+        assert!(script.contains(r#".condition("partyId", partyId)"#), "{script}");
     }
 
     #[test]
@@ -423,8 +444,11 @@ mod tests {
     fn nested_blocks_indent_but_inline_script_text_is_unchanged() {
         let source =
             generate("<actions><if condition=\"a\"><script>var s = `one\ntwo`;</script></if></actions>").unwrap();
-        assert!(source
-            .contains("        // begin inline script\n        var s = `one\ntwo`;\n        // end inline script\n"));
+        assert!(
+            source.contains(
+                "        // begin inline script\n        var s = `one\ntwo`;\n        // end inline script\n"
+            )
+        );
         assert!(!source.contains('\u{1}') && !source.contains('\u{2}'));
     }
 
@@ -458,9 +482,11 @@ mod tests {
     fn each_concrete_element_has_a_macro() {
         let names = macro_names().unwrap();
         assert_eq!(names, MACROS);
-        assert!(!names
-            .iter()
-            .any(|name| *name == "service-group" || *name == "service-invoke"));
+        assert!(
+            !names
+                .iter()
+                .any(|name| *name == "service-group" || *name == "service-invoke")
+        );
     }
 
     #[test]

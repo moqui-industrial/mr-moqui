@@ -106,6 +106,8 @@ fn gather(node: &MNode, facts: &mut Facts, texts: &mut Vec<Text>) {
         }
         "entity-find" => {
             if let Some(list) = node.attribute("list") {
+                // An empty find result is an empty list: false in Groovy and true here.
+                facts.collections.insert(list.clone());
                 facts.find_lists.insert(list);
             }
         }
@@ -648,6 +650,19 @@ mod tests {
                 const n = ids ? 1 : 2
                 for (const id of ids) {}
             </script></actions></service></services>"#;
+        assert_eq!(kinds(xml), vec![Idiom::EmptyCollectionTruthiness; 2], "{:?}", scan(xml));
+    }
+
+    #[test]
+    fn an_entity_find_list_tested_for_truthiness_is_a_hazard() {
+        let xml = r#"<services><service verb="a" noun="B"><actions>
+            <entity-find entity-name="Foo" list="fooList"/>
+            <script>
+                const first = fooList ? fooList[0].id : null
+                const safe = fooList?.length ? fooList[0].id : null
+            </script>
+            <set field="x" from="fooList &amp;&amp; fooList[0]"/>
+        </actions></service></services>"#;
         assert_eq!(kinds(xml), vec![Idiom::EmptyCollectionTruthiness; 2], "{:?}", scan(xml));
     }
 

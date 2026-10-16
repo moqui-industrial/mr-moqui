@@ -115,7 +115,7 @@ pub(super) fn comparison(field: &str, operator: &str, value: Value) -> Result<Co
         other => {
             return Err(moqui_lib::error::Error::new(format!(
                 "unknown condition operator {other}"
-            )))
+            )));
         }
     };
     Ok(condition)
@@ -211,6 +211,18 @@ pub(super) fn truthy_text(value: &str) -> bool {
     value.eq_ignore_ascii_case("true")
 }
 
+/// The `ignore` argument of `makeActionConditionDirect` and `makeConditionDate`: the generated code passes the value
+/// of the element's `ignore` expression, so a flag; the text "true" is a flag too.
+fn ignore_flag(value: &JsValue<'_>) -> bool {
+    if let Some(flag) = value.as_bool() {
+        return flag;
+    }
+    if let Some(text) = value.as_string() {
+        return text.to_string().is_ok_and(|text| truthy_text(&text));
+    }
+    js_truthy(value)
+}
+
 /// From and thru date columns that cover `validDate`, or now: `(from is null or from <= d) and (thru is null or thru > d)`.
 pub(super) fn make_condition_date<'js>(
     ctx: Ctx<'js>,
@@ -218,10 +230,10 @@ pub(super) fn make_condition_date<'js>(
     thru_name: String,
     valid: JsValue<'js>,
     ignore_if_empty: Opt<bool>,
-    ignore: Opt<String>,
+    ignore: Opt<JsValue<'js>>,
 ) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
-        if ignore.0.as_deref().is_some_and(truthy_text) {
+        if ignore.0.as_ref().is_some_and(ignore_flag) {
             return Null.into_js(&ctx);
         }
         let valid = js_to_host(&ctx, &valid)?;
@@ -273,10 +285,7 @@ pub(super) fn make_action_condition<'js>(ctx: Ctx<'js>, args: Rest<JsValue<'js>>
         let flag = |index: usize| arg(index).as_bool().unwrap_or(false);
         let field = js_string(&ctx, &arg(0))?;
         let operator = js_string(&ctx, &arg(1))?;
-        if arg(8)
-            .as_string()
-            .is_some_and(|text| text.to_string().is_ok_and(|text| truthy_text(&text)))
-        {
+        if ignore_flag(&arg(8)) {
             return Null.into_js(&ctx);
         }
         let to_field = arg(4);
@@ -322,7 +331,7 @@ fn compare_op(operator: &str) -> Result<CompareOp, moqui_lib::error::Error> {
         other => {
             return Err(moqui_lib::error::Error::new(format!(
                 "operator {other} cannot compare two fields"
-            )))
+            )));
         }
     })
 }

@@ -28,11 +28,9 @@ fn with_additional<'js, T>(
     map: &Opt<JsValue<'js>>,
     body: impl FnOnce() -> rquickjs::Result<T>,
 ) -> rquickjs::Result<T> {
+    // A map, or an entity value as the additional context, gives its fields, as Java's `EntityValueBase` Map does.
     let entries = match map.0.as_ref().filter(|value| value.is_object()) {
-        Some(value) => match js_to_host(ctx, value)? {
-            Value::Map(entries) => Some(entries),
-            _ => None,
-        },
+        Some(value) => value_map(&js_to_host(ctx, value)?),
         None => None,
     };
     let Some(entries) = entries else {

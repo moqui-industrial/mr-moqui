@@ -165,6 +165,17 @@ fn entity_value_refresh_entry_set_pretty_name_and_related_fk() {
 }
 
 #[test]
+fn an_entity_value_is_the_context_of_resource_expand() {
+    let context = database();
+    let _entered = context.enter();
+    seed();
+    // `ec.resource.expand(text, "", entityValue)`, as `PartyNameTemplate` is expanded with a `PartyDetail`
+    holds(
+        r#"ec.resource.expand("${enumId}: ${description}", "", ec.entity.find("moqui.basic.Enumeration").condition("enumId", "E1").one()) === "E1: first""#,
+    );
+}
+
+#[test]
 fn entity_lists_have_the_array_methods() {
     let context = database();
     let _entered = context.enter();
