@@ -15,17 +15,18 @@
 //! URL instances for `sri.buildUrl` and `sri.makeUrlByType`: a screen path or a transition resolved
 //! against the screen being rendered, with its parameters.
 //!
-//! Not ported: the transition-as-alias expansion, `ScreenPathAlias`, and `content` URLs.
+//! A transition with no condition, actions, or conditional response and a screen-path default response is an alias
+//! for that response URL (`UrlInstance.expandTransitionAliasUrl`). Not ported: `ScreenPathAlias` and `content` URLs.
 
 use std::sync::Arc;
 
 use indexmap::IndexMap;
 use moqui_lib::object::{is_empty, to_plain_string, Value};
 
-use super::definition::{ScreenDef, TransitionDef};
+use super::definition::{ResponseKind, ScreenDef, TransitionDef};
 use super::render::parameter_value;
 use super::sri::{self, active_screen_path, NodeLit};
-use super::url::{encode_path, resolve_screen_path, ScreenUrlInfo};
+use super::url::{encode_path, parse_last_standalone, resolve_screen_path, ScreenUrlInfo};
 use super::RenderState;
 use crate::context::{Error, ErrorKind};
 use crate::{script, web};
@@ -358,6 +359,8 @@ pub struct StaticUrl {
     pub read_only: bool,
     /// The HTTP method of the transition, lower case.
     pub method: String,
+    /// Where an alias transition sends a navigation. Empty when the target is not an alias, so a form still posts `path`.
+    pub screen_path: String,
 }
 
 /// The target of a link written into a static template: the name resolved against the screen being rendered.
@@ -386,6 +389,10 @@ pub fn static_url(state: &RenderState, text: &str, url_type: &str) -> Result<Sta
         .ok_or_else(|| Error::new("no root screen"))?;
     match ScreenUrlInfo::resolve(&state.factory, &root, &names, state.url_info.last_standalone) {
         Ok(info) => {
+            let screen_path = match alias_url(state, &info)? {
+                Some(alias) => alias.path(),
+                None => String::new(),
+            };
             let transition = info.transition(None);
             let is_transition = transition.is_some() || info.target_transition_name.is_some();
             Ok(StaticUrl {
@@ -397,6 +404,7 @@ pub fn static_url(state: &RenderState, text: &str, url_type: &str) -> Result<Sta
                 method: transition
                     .map(|item| item.method.to_ascii_lowercase())
                     .unwrap_or_default(),
+                screen_path,
             })
         }
         Err(err) if err.kind() == ErrorKind::NotFound => {
@@ -412,6 +420,7 @@ pub fn static_url(state: &RenderState, text: &str, url_type: &str) -> Result<Sta
                 is_screen: false,
                 read_only: local.as_ref().is_none_or(|item| item.read_only),
                 method: local.map(|item| item.method.to_ascii_lowercase()).unwrap_or_default(),
+                screen_path: String::new(),
             })
         }
         Err(err) => Err(err),
@@ -428,6 +437,7 @@ pub fn make_url_by_type(
     orig_url: &str,
     url_type: &str,
     parameter_parent: Option<&NodeLit>,
+    expand_transition_url: bool,
 ) -> Result<UrlInstance, Error> {
     let kind = script::expand_localized(url_type)?;
     let mut url = match kind.as_str() {
@@ -444,6 +454,14 @@ pub fn make_url_by_type(
             }
         }
     };
+    // Before the link's own parameters, so those still override the alias response.
+    if expand_transition_url {
+        if let Some(info) = url.info.clone() {
+            if let Some(alias) = alias_url(state, &info)? {
+                url = alias;
+            }
+        }
+    }
     if let Some(parent) = parameter_parent {
         let map_expr = parent.attr("parameter-map");
         if !map_expr.is_empty() {
@@ -469,6 +487,67 @@ pub fn make_url_by_type(
         }
     }
     Ok(url)
+}
+
+/// A transition that only names another screen. Java's `expandTransitionAliasUrl` rewrites a link to that screen
+/// instead of leaving it on the transition, which a client router would try to open as a subscreen.
+fn is_transition_alias(transition: &TransitionDef) -> bool {
+    let response = &transition.default_response;
+    transition.condition.is_none()
+        && transition.actions.is_none()
+        && transition.actions_error.is_none()
+        && transition.single_service.is_none()
+        && transition.conditional_responses.is_empty()
+        && response.kind == ResponseKind::Url
+        && response.url_type == "screen-path"
+}
+
+/// The screen URL an alias transition stands for, or nothing when `info` does not end on one.
+fn alias_url(state: &RenderState, info: &ScreenUrlInfo) -> Result<Option<UrlInstance>, Error> {
+    let Some(transition) = info.transition(None) else {
+        return Ok(None);
+    };
+    if !is_transition_alias(transition) {
+        return Ok(None);
+    }
+    let response = &transition.default_response;
+    let mut target = script::expand(&response.url)?;
+    let mut parameters: IndexMap<String, String> = IndexMap::new();
+    for parameter in &response.parameters {
+        if let Some(value) = parameter_value(parameter)? {
+            let text = to_plain_string(&value);
+            if !text.is_empty() {
+                parameters.insert(parameter.name.clone(), text);
+            }
+        }
+    }
+    if let Some(expression) = &response.parameter_map {
+        for (name, value) in script::eval_map(expression)? {
+            let text = to_plain_string(&value);
+            if !text.is_empty() {
+                parameters.insert(name, text);
+            }
+        }
+    }
+    let standalone = parameters
+        .get("lastStandalone")
+        .map(|text| parse_last_standalone(text, info.last_standalone))
+        .unwrap_or(info.last_standalone);
+    let query = target
+        .split_once('?')
+        .map(|(path, query)| (path.to_string(), query.to_string()));
+    if let Some((path, query)) = query {
+        for (name, value) in web::form_pairs(&query) {
+            parameters.entry(name).or_insert(value);
+        }
+        target = path;
+    }
+    let names = resolve_screen_path(&info.pre_transition_path, &target);
+    let mut url = resolve_names_at(state, names, standalone)?;
+    for (name, value) in parameters {
+        url.parameters.insert(name, value);
+    }
+    Ok(Some(url))
 }
 
 /// `sri.isAnchorLink(linkNode, urlInstance)`.

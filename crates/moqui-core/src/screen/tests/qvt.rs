@@ -121,6 +121,21 @@ fn form_lists() {
     assert!(out.contains("class=\"tr\""), "{out}");
 }
 
+/// An anchor to a transition that only redirects is a link to that screen. A transition with actions, and
+/// `expand-transition-url="false"`, stay on the transition so a submit still posts it.
+#[test]
+fn an_alias_transition_link_points_at_the_screen() {
+    // `.qvt` is always-standalone, so the body is List. A plain path renders Alias and stops at its placeholder.
+    let out = render_path("Alias", "/List.qvt", &[]);
+    assert_compiles(&["alias".to_string()], std::slice::from_ref(&out));
+    assert!(out.contains("href=\"/Detail?id=I1&amp;fromResponse=yes\""), "{out}");
+    assert!(out.contains("href=\"/List/detail?id=I1\""), "{out}");
+    assert!(out.contains("href=\"/List/acted?id=I1\""), "{out}");
+    // expand defaults to true, so this submit goes to the screen. false keeps the post on the transition.
+    assert!(out.contains("action=\"/Detail\""), "{out}");
+    assert!(out.contains("action=\"/List/detail\""), "{out}");
+}
+
 #[test]
 fn subscreen_menus_tabs_and_panels() {
     check_path("Menu", "", "menu-one", &[]);

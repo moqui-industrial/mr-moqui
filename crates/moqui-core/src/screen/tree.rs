@@ -212,6 +212,7 @@ fn child_nodes(
                         &link_node.attribute("url").unwrap_or_default(),
                         &url_type,
                         Some(&lit),
+                        link_node.attribute("expand-transition-url").as_deref() != Some("false"),
                     )?;
                     let url_text = if link_node.attribute("url-noparam").as_deref() == Some("true") {
                         url.path()

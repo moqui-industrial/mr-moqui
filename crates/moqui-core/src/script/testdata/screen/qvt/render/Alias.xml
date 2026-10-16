@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<screen require-authentication="false">
+    <subscreens default-item="List"/>
+    <widgets><subscreens-active/></widgets>
+</screen>

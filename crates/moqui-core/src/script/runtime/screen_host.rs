@@ -806,6 +806,7 @@ fn sri_static_url<'js>(ctx: Ctx<'js>, text: String, url_type: Opt<String>) -> rq
         })?;
         let object = Object::new(ctx.clone())?;
         object.set("path", found.path)?;
+        object.set("screenPath", found.screen_path)?;
         object.set("exists", found.exists)?;
         object.set("isTransition", found.is_transition)?;
         object.set("isScreen", found.is_screen)?;

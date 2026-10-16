@@ -111,6 +111,24 @@ fn the_template_holds_no_request_data_and_compiles_without_with() {
     assert!(html.contains("<template v-if=\"(item != null)\">"), "{html}");
 }
 
+/// A server-static anchor uses the alias screen path. The transition path stays available for a submit.
+#[test]
+fn an_alias_transition_link_bakes_the_screen_path() {
+    let context = ExecutionContextFactory::test_context();
+    let output = render(context.factory(), "/Jump.qvt", &[]);
+    assert_eq!(output.status, 200, "{}", output.body_text());
+    assert_eq!(
+        header(&output, "X-Moqui-Qvt"),
+        "static-template",
+        "{}",
+        output.body_text()
+    );
+    let html = html_of(context.factory(), "Jump", "/Jump");
+    assert!(html.contains("$mq.url('/Land'"), "{html}");
+    assert!(html.contains("$mq.url('/Jump/open'"), "{html}");
+    assert!(html.contains("$mq.url('/Jump/save'"), "{html}");
+}
+
 #[test]
 fn every_request_gets_the_same_cached_template() {
     let context = ExecutionContextFactory::test_context();
