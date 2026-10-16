@@ -39,7 +39,8 @@ chunks on demand on its blocking executor, without buffering the full body or
 holding the request's ExecutionContext. Dropping the HTTP body releases the
 source after any in-flight `next()` finishes. Iterators must bound blocking
 operations and own their resources; an ExecutionContext must not escape into
-them. `moqui-genicam` uses this API for finite or continuous MJPEG.
+them. The API supports finite or continuous streams of binary or text data;
+the producer selects the content type and supplies any protocol framing.
 
 ## Build, Test, and Run
 

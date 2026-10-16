@@ -1538,18 +1538,18 @@ mod response_stream_tests {
     #[test]
     fn stream_is_preserved_across_nested_output_and_cleared_explicitly() {
         let _guard = install(BTreeMap::new());
-        send_stream("video/test", ResponseStream::new(vec![Ok(vec![1, 2])].into_iter())).unwrap();
+        send_stream("application/octet-stream", ResponseStream::new(vec![Ok(vec![0, 255, 1])].into_iter())).unwrap();
         let stash = stash_output();
         assert!(take_stream().is_none());
         restore_output(stash);
         let stream = take_stream().unwrap();
-        assert_eq!(stream.next_chunk().unwrap().unwrap(), vec![1, 2]);
+        assert_eq!(stream.next_chunk().unwrap().unwrap(), vec![0, 255, 1]);
         assert!(stream.next_chunk().is_none());
         clear_output();
         assert!(take_stream().is_none());
     }
     #[test]
-    fn headless_stream_is_rejected() {
-        assert!(send_stream("video/test", ResponseStream::new(std::iter::empty())).is_err());
+    fn stream_requires_active_http_request() {
+        assert!(send_stream("application/octet-stream", ResponseStream::new(std::iter::empty())).is_err());
     }
 }

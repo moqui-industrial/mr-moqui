@@ -789,7 +789,7 @@ mod tests {
             type Item = std::io::Result<Vec<u8>>;
             fn next(&mut self) -> Option<Self::Item> {
                 self.0.fetch_add(1, Ordering::SeqCst);
-                Some(Ok(b"frame\r\n".to_vec()))
+                Some(Ok(vec![0, 255, 1]))
             }
         }
         impl Drop for Source {
@@ -806,7 +806,7 @@ mod tests {
         )));
         let mut body = super::from_web(response).into_body().into_data_stream();
         assert_eq!(pulls.load(Ordering::SeqCst), 0);
-        assert_eq!(&body.next().await.unwrap().unwrap()[..], b"frame\r\n");
+        assert_eq!(&body.next().await.unwrap().unwrap()[..], &[0, 255, 1]);
         assert_eq!(pulls.load(Ordering::SeqCst), 1);
         drop(body);
         assert!(dropped.load(Ordering::SeqCst));
