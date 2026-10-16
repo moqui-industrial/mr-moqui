@@ -940,6 +940,88 @@ fn defined_name(facade: &EntityFacade, name: &str) -> Option<String> {
     load_snap(facade, name).ok().map(|snap| snap.full_name)
 }
 
+/// A master graph for a script find, using the same expansion and authorization as entity REST.
+pub(crate) fn master_value(facade: &EntityFacade, record: &EntityValue, master: &str) -> Result<Value, Error> {
+    render_record(facade, record.entity_name(), record.fields(), 0, Some(master)).map(|node| node_to_value(&node))
+}
+
+/// Flatten a plain master graph to typed values, inheriting primary keys and relationship key mappings.
+/// As in Java, read-only relationships and unrelated metadata maps are not persisted.
+pub(crate) fn values_from_plain_map(
+    facade: &EntityFacade,
+    map: &indexmap::IndexMap<String, Value>,
+    entity: &str,
+) -> Result<Vec<EntityValue>, Error> {
+    fn add(
+        facade: &EntityFacade,
+        map: &indexmap::IndexMap<String, Value>,
+        entity: &str,
+        inherited: &BTreeMap<String, Value>,
+        depth: u32,
+        out: &mut Vec<EntityValue>,
+    ) -> Result<(), Error> {
+        if depth > MAX_DEPTH {
+            return Err(Error::new("Entity graph exceeds maximum depth"));
+        }
+        let (full_name, fields, pks, relationships) = facade.with_entity(entity, |ed, _, _| {
+            Ok((
+                ed.full_name.clone(),
+                ed.field_names().into_iter().map(str::to_string).collect::<Vec<_>>(),
+                ed.pk_field_names().into_iter().map(str::to_string).collect::<Vec<_>>(),
+                ed.relationships.clone(),
+            ))
+        })?;
+        let mut row = facade.make_value(&full_name)?;
+        for field in &fields {
+            if let Some(value) = map.get(field).or_else(|| inherited.get(field)) {
+                row.set(field, value.clone());
+            }
+        }
+        let mut shared = inherited.clone();
+        for pk in &pks {
+            if let Some(value) = row.get(pk) {
+                shared.insert(pk.clone(), value.clone());
+            }
+        }
+        out.push(row);
+        for (name, value) in map {
+            if fields.contains(name) {
+                continue;
+            }
+            let Some(rel) = relationships
+                .iter()
+                .find(|rel| rel.name == *name || rel.short_alias.as_deref() == Some(name))
+            else {
+                continue;
+            };
+            if !rel.mutable {
+                continue;
+            }
+            let mut keys = shared.clone();
+            for (source, target) in &rel.key_pairs {
+                if let Some(value) = shared.get(source) {
+                    keys.insert(target.clone(), value.clone());
+                }
+            }
+            match value {
+                Value::Map(child) => add(facade, child, &rel.related, &keys, depth + 1, out)?,
+                Value::List(children) => {
+                    for child in children {
+                        if let Value::Map(child) = child {
+                            add(facade, child, &rel.related, &keys, depth + 1, out)?;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    add(facade, map, entity, &BTreeMap::new(), 0, &mut out)?;
+    Ok(out)
+}
+
 fn render_record(
     facade: &EntityFacade,
     entity_name: &str,

@@ -64,7 +64,7 @@ pub use request_pool::{caps, check_serve_caps, RequestPool};
 #[cfg(test)]
 pub(crate) use rest::install;
 pub(crate) use rest::openapi_document;
-pub use rest::{root_resource_infos, run};
+pub use rest::{resolve_service as resolve_rest_service, root_resource_infos, run};
 pub use seca::run_seca_rules;
 pub use security_checks::security_checks_run;
 pub(crate) use security_checks::{assert_privileged_group_membership, assert_sealed_permission_grant};

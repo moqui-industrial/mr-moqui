@@ -54,6 +54,8 @@ mod facades;
 mod framework_gaps_tests;
 mod helpers;
 mod notification;
+#[cfg(test)]
+mod osiris_tests;
 mod screen_host;
 mod search;
 mod services;

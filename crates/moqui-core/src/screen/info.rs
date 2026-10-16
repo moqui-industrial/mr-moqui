@@ -82,6 +82,69 @@ pub fn screen_info_list(
     Ok(out)
 }
 
+/// Resolve a transition's mounted path and backing service without exposing implementation objects.
+/// The caller chooses the root screen; this operation only reads metadata, never grants execution access.
+pub fn transition_info(
+    factory: &ExecutionContextFactory,
+    root: &str,
+    location: &str,
+    name: &str,
+    method: &str,
+) -> Result<Value, Error> {
+    let facade = ScreenFacade::of(factory);
+    let def = facade.screen_def(factory, location)?;
+    let transition = def
+        .transition(name, Some(method))
+        .ok_or_else(|| Error::new("Screen transition not found"))?;
+    fn find_path(
+        facade: &ScreenFacade,
+        factory: &ExecutionContextFactory,
+        current: &str,
+        target: &str,
+        seen: &mut Vec<String>,
+        names: &mut Vec<String>,
+    ) -> Result<bool, Error> {
+        if current == target {
+            return Ok(true);
+        }
+        if seen.len() >= MAX_DEPTH || seen.iter().any(|entry| entry == current) {
+            return Ok(false);
+        }
+        seen.push(current.to_string());
+        let def = facade.screen_def(factory, current)?;
+        for item in &def.subscreens.items {
+            names.push(item.name.clone());
+            let seen_depth = seen.len();
+            let found = find_path(facade, factory, &item.location, target, seen, names);
+            seen.truncate(seen_depth);
+            if matches!(found, Ok(true)) {
+                return Ok(true);
+            }
+            if let Err(err) = found {
+                tracing::debug!(location = %item.location, "Skipping unreadable screen in metadata lookup: {err}");
+            }
+            names.pop();
+        }
+        seen.pop();
+        Ok(false)
+    }
+    let mut names = Vec::new();
+    if !find_path(&facade, factory, root, location, &mut Vec::new(), &mut names)? {
+        return Err(Error::new("Screen is not mounted under the selected root"));
+    }
+    names.push(name.to_string());
+    Ok(Value::Map(indexmap::indexmap! {
+        "location".to_string() => Value::string(location),
+        "name".to_string() => Value::string(name),
+        "method".to_string() => Value::string(method.to_ascii_lowercase()),
+        "path".to_string() => Value::string(format!("/{}", names.join("/"))),
+        "serviceName".to_string() => transition.single_service.as_deref().map_or(Value::Null, Value::string),
+        "parameterMap".to_string() => Value::Map(transition.parameters.iter().map(|param| (param.name.clone(), Value::Map(indexmap::indexmap! {
+            "name".to_string() => Value::string(&param.name), "required".to_string() => Value::Bool(param.required),
+        }))).collect()),
+    }))
+}
+
 fn walk(
     facade: &ScreenFacade,
     factory: &ExecutionContextFactory,

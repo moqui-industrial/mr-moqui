@@ -328,9 +328,22 @@ impl HostMessage {
 
     fn clear_errors(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
-            with_ec(&ctx, |ec| ec.message().clear())?;
+            with_ec(&ctx, |ec| ec.message().clear_errors())?;
             Ok(())
         })
+    }
+
+    fn push_errors(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
+        host_guard(&ctx, || with_ec(&ctx, |ec| ec.message().push_errors()))
+    }
+
+    fn pop_errors(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
+        host_guard(&ctx, || with_ec(&ctx, |ec| ec.message().pop_errors()))
+    }
+
+    #[qjs(get, rename = "errorsString")]
+    fn errors_string_property(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        self.get_errors_string(ctx)
     }
 
     fn get_errors_string(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {

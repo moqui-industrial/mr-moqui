@@ -21,6 +21,7 @@ pub struct MessageFacade {
     message_types: Vec<String>,
     errors: Vec<String>,
     validation_errors: Vec<ValidationError>,
+    error_stack: Vec<(Vec<String>, Vec<ValidationError>)>,
 }
 
 /// How many errors a [`MessageFacade`] had, so the ones added after can be taken back out.
@@ -108,6 +109,21 @@ impl MessageFacade {
         self.validation_errors.clear();
     }
 
+    /// Isolate tool validation errors without discarding the caller's errors or informational messages.
+    pub fn push_errors(&mut self) {
+        self.error_stack.push((
+            std::mem::take(&mut self.errors),
+            std::mem::take(&mut self.validation_errors),
+        ));
+    }
+
+    pub fn pop_errors(&mut self) {
+        if let Some((errors, validation_errors)) = self.error_stack.pop() {
+            self.errors.extend(errors);
+            self.validation_errors.extend(validation_errors);
+        }
+    }
+
     /// A mark for [`Self::take_errors_since`].
     pub fn error_mark(&self) -> ErrorMark {
         ErrorMark {
@@ -133,6 +149,29 @@ impl MessageFacade {
 #[cfg(test)]
 mod tests {
     use super::MessageFacade;
+
+    #[test]
+    fn nested_error_scopes_restore_validation_errors_without_losing_messages() {
+        let mut facade = MessageFacade::new();
+        facade.add_validation_error("form", "field", "svc", "caller");
+        facade.add_message("before");
+        facade.push_errors();
+        assert!(facade.errors().is_empty());
+        facade.add_error("outer");
+        facade.push_errors();
+        facade.add_validation_error("", "tool", "", "inner");
+        facade.clear_errors();
+        facade.add_message("during");
+        facade.pop_errors();
+        assert_eq!(facade.errors(), ["outer"]);
+        assert!(facade.validation_errors().is_empty());
+        facade.pop_errors();
+        assert_eq!(facade.errors(), ["outer", "caller"]);
+        assert_eq!(facade.validation_errors()[0].field, "field");
+        assert_eq!(facade.messages(), ["before", "during"]);
+        facade.pop_errors();
+        assert_eq!(facade.errors(), ["outer", "caller"]);
+    }
 
     #[test]
     fn take_errors_since_leaves_the_earlier_errors_and_the_messages() {
