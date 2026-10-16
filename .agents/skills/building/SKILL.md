@@ -1,0 +1,2 @@
+- Building: use one consistent compiler version to preserve cached artifacts; prefer incremental development builds over optimized release builds for iteration; avoid unnecessary cache clearing.
+- Worktrees: keep build caches separate to avoid cross-worktree lock contention and artifact churn; concurrent builds still compete for CPU and memory, so measure build performance without competing builds.
