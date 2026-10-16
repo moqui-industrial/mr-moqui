@@ -30,6 +30,65 @@ use moqui_lib::object::Value;
 
 #[test]
 #[ignore = "slow: cargo test-slow"]
+fn empty_db_startup_persists_audit_artifact_stack() {
+    use moqui_core::driver::DbConnection;
+    use moqui_host::db::embedded::StartOptions;
+
+    let _serial = crate::common::serial();
+    let _properties = crate::common::PropertyReset::of(&["cluster_https_port"]);
+    let runtime = temp_dir("moqui-audit-rt");
+    let cluster_dir = temp_dir("moqui-audit-pg");
+    let _runtime_guard = DirGuard(runtime.clone());
+    let _cluster_guard = DirGuard(cluster_dir.clone());
+    std::fs::create_dir_all(runtime.join("conf")).unwrap();
+    std::fs::write(
+        runtime.join("conf/MoquiDevConf.xml"),
+        r#"<moqui-conf><tools empty-db-load="seed,seed-initial,install,demo"/></moqui-conf>"#,
+    )
+    .unwrap();
+    let base =
+        std::fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component")).unwrap();
+    std::os::unix::fs::symlink(&base, runtime.join("base-component")).unwrap();
+    let framework = base.join("framework");
+    moqui_lib::env::set_property("cluster_https_port", "0");
+
+    // No pre-seeding: startup itself must load the checked-in WebrootSecurityDemoData user.
+    let server = start_server(
+        &runtime,
+        &framework,
+        &cluster_dir,
+        SocketAddr::from(([127, 0, 0, 1], 0)),
+    )
+    .unwrap();
+    drop(server);
+
+    // Reopen the stopped database and query SQL directly: this must be persisted provenance,
+    // not a value computed by an entity read or a stack supplied by the test.
+    let mut options = StartOptions::new(20);
+    options.install_dir = Some(runtime.join("db/install"));
+    let (_cluster, driver) = EmbeddedCluster::start_with(&cluster_dir, &options).unwrap();
+    let mut conn = driver.connect_postgres().unwrap();
+    let audits = conn
+        .query_once(
+            "SELECT new_value_text, artifact_stack FROM entity_audit_log \
+             WHERE changed_entity_name = ? AND changed_field_name = ? AND pk_primary_value = ?",
+            &[
+                Value::string("moqui.security.UserAccount"),
+                Value::string("username"),
+                Value::string("EX_JOHN_DOE"),
+            ],
+        )
+        .unwrap();
+    assert_eq!(audits.len(), 1, "startup demo username audit count");
+    let row = &audits[0];
+    assert_eq!(row.get("new_value_text").and_then(Value::as_str), Some("john.doe"));
+    let stack = row.get("artifact_stack").and_then(Value::as_str);
+    println!("persisted empty-db username audit artifact_stack: {stack:?}");
+    assert_eq!(stack, Some("moqui.security.UserAccount, loadDataEmptyDb"));
+}
+
+#[test]
+#[ignore = "slow: cargo test-slow"]
 fn rest_enum_types_login_and_session_survive_restart() {
     let _serial = crate::common::serial();
     let runtime = temp_dir("moqui-gate2-rt");

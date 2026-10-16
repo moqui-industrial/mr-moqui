@@ -25,6 +25,7 @@ use moqui_lib::object::{decimal_compare, to_plain_string, Value};
 
 use super::crypto::{decrypt_with_alts, encrypt};
 use super::facade::EntityFacade;
+use crate::context::ExecutionContext;
 
 const AUDIT_ENTITY: &str = "moqui.entity.EntityAuditLog";
 const LOCALIZED_ENTITY: &str = "moqui.basic.LocalizedEntityField";
@@ -398,6 +399,12 @@ fn clip_text(text: &str) -> String {
     text.chars().take(TEXT_LIMIT).collect()
 }
 
+fn audit_stack() -> String {
+    let names = ExecutionContext::with_current(ExecutionContext::artifact_stack_names).unwrap_or_default();
+    // Java length/substring count UTF-16 units. A split surrogate is represented lossily in a Rust string.
+    String::from_utf16_lossy(&names.encode_utf16().take(TEXT_LIMIT).collect::<Vec<_>>())
+}
+
 fn insert_audit(
     facade: &EntityFacade,
     entity: &EntityDefinition,
@@ -411,6 +418,7 @@ fn insert_audit(
     row.set("changedEntityName", Value::string(entity.full_name.as_str()));
     row.set("changedFieldName", Value::string(field_name));
     row.set("changedDate", changed_now());
+    row.set("artifactStack", Value::string(audit_stack()));
     // Java stamps the acting user and visit on each audit row.
     if let Some(user_id) = crate::user::current_user_id()
         .ok()
@@ -428,18 +436,12 @@ fn insert_audit(
     if let Some(text) = old_text {
         row.set("oldValueText", Value::string(text));
     }
-    // As Java: a `{field}_changeReason` in the context, and the artifact stack up to 4000 characters.
+    // As Java: a `{field}_changeReason` in the context.
     if let Some(reason) = crate::script::context_value(&format!("{field_name}_changeReason"))
         .map(|value| moqui_lib::object::to_plain_string(&value))
         .filter(|reason| !reason.is_empty())
     {
         row.set("changeReason", Value::string(reason));
-    }
-    if let Some(stack) = crate::context::ExecutionContext::with_current(|ec| ec.artifact_stack_names()) {
-        row.set(
-            "artifactStack",
-            Value::string(stack.chars().take(TEXT_LIMIT).collect::<String>()),
-        );
     }
     put_pk(&mut row, entity, values);
     row.create(facade)
@@ -720,9 +722,138 @@ fn find_localized(
 
 #[cfg(test)]
 mod tests {
-    use super::{audit_plain, encrypt_in, raw_read, RawReadGuard};
+    use super::{audit_plain, audit_stack, encrypt_in, raw_read, RawReadGuard};
     use moqui_db::sql::Condition;
     use moqui_lib::object::Value;
+
+    use crate::context::ExecutionContextFactory;
+    use crate::entity::{EntityFacade, EntityList};
+
+    fn audit_facade() -> EntityFacade {
+        let facade = crate::testing::open();
+        facade.set_disable_audit_log(false);
+        facade
+    }
+
+    fn write_username(facade: &EntityFacade, username: &str, create: bool) {
+        let mut user = facade.make_value("moqui.security.UserAccount").unwrap();
+        user.set("userId", Value::string("AUDIT_STACK"));
+        user.set("username", Value::string(username));
+        if create {
+            user.create(facade).unwrap();
+        } else {
+            user.update(facade).unwrap();
+        }
+    }
+
+    fn username_audits(facade: &EntityFacade) -> EntityList {
+        facade
+            .find("moqui.entity.EntityAuditLog")
+            .unwrap()
+            .eq("changedEntityName", Value::string("moqui.security.UserAccount"))
+            .eq("changedFieldName", Value::string("username"))
+            .list()
+            .unwrap()
+    }
+
+    #[test]
+    fn audit_stack_follows_create_update_and_scoped_contexts() {
+        let facade = audit_facade();
+        let context = ExecutionContextFactory::test_context();
+        let _entered = context.enter();
+        let _authz = context.disable_authz();
+        assert!(facade.begin("moqui.security.UserAccount", None).unwrap());
+        context.push("AT_OTHER", "data load", "all");
+        context.push("AT_SERVICE", "create#Account", "create");
+        write_username(&facade, "alice", true);
+        context.pop().unwrap();
+        assert_eq!(context.artifact_stack_names(), "data load");
+
+        // A nested execution context must not pick up the outer context's stack.
+        let inner = ExecutionContextFactory::test_context();
+        {
+            let _entered = inner.enter();
+            let _authz = inner.disable_authz();
+            inner.push("AT_SERVICE", "update#Account", "update");
+            write_username(&facade, "alice2", false);
+            assert_eq!(inner.artifact_stack_names(), "update#Account");
+        }
+        write_username(&facade, "alice3", false);
+        assert_eq!(context.artifact_stack_names(), "data load");
+        facade.commit("moqui.security.UserAccount").unwrap();
+
+        // Stack capture must not move audit writes out of the entity's transaction.
+        assert!(facade.begin("moqui.security.UserAccount", None).unwrap());
+        write_username(&facade, "rolled-back", false);
+        facade.rollback("moqui.security.UserAccount").unwrap();
+        let audits = username_audits(&facade);
+        assert_eq!(audits.len(), 3);
+        for (username, expected) in [
+            ("alice", "moqui.security.UserAccount, create#Account, data load"),
+            ("alice2", "moqui.security.UserAccount, update#Account"),
+            ("alice3", "moqui.security.UserAccount, data load"),
+        ] {
+            let row = audits
+                .iter()
+                .find(|row| row.get("newValueText").and_then(Value::as_str) == Some(username))
+                .unwrap();
+            assert_eq!(row.get("artifactStack").and_then(Value::as_str), Some(expected));
+        }
+    }
+
+    #[test]
+    fn audit_stack_without_an_entered_context_is_empty_not_null() {
+        let facade = audit_facade();
+        write_username(&facade, "alice", true);
+        write_username(&facade, "alice2", false);
+        let audits = username_audits(&facade);
+        assert_eq!(audits.len(), 2);
+        for row in audits.iter() {
+            assert_eq!(row.get("artifactStack").and_then(Value::as_str), Some(""));
+        }
+    }
+
+    #[test]
+    fn audit_stack_of_an_entered_empty_context_is_empty() {
+        let context = ExecutionContextFactory::test_context();
+        let _entered = context.enter();
+        assert_eq!(audit_stack(), "");
+    }
+
+    #[test]
+    fn audit_stack_truncates_to_java_utf16_length() {
+        let facade = audit_facade();
+        let context = ExecutionContextFactory::test_context();
+        let _entered = context.enter();
+        let _authz = context.disable_authz();
+        let prefix = "moqui.security.UserAccount, ";
+        // Non-BMP characters count as two Java string characters, not one Rust char or four bytes.
+        let name = format!("{}😀tail", "é".repeat(3997 - prefix.len()));
+        context.push("AT_OTHER", &name, "all");
+        write_username(&facade, "alice", true);
+        let audits = username_audits(&facade);
+        let stack = audits
+            .get(0)
+            .unwrap()
+            .get("artifactStack")
+            .and_then(Value::as_str)
+            .unwrap();
+        assert_eq!(stack, format!("{prefix}{}😀t", "é".repeat(3997 - prefix.len())));
+        assert_eq!(stack.encode_utf16().count(), 4000);
+        context.pop().unwrap();
+
+        // Java substring can split a surrogate pair. Rust strings represent that orphan lossily.
+        context.push("AT_OTHER", &format!("{}😀", "a".repeat(3999 - prefix.len())), "all");
+        write_username(&facade, "alice2", false);
+        let audits = username_audits(&facade);
+        let row = audits
+            .iter()
+            .find(|row| row.get("newValueText").and_then(Value::as_str) == Some("alice2"))
+            .unwrap();
+        let stack = row.get("artifactStack").and_then(Value::as_str).unwrap();
+        assert_eq!(stack, format!("{prefix}{}\u{fffd}", "a".repeat(3999 - prefix.len())));
+        assert_eq!(stack.encode_utf16().count(), 4000);
+    }
 
     /// As Java's `FieldInfo`, every bound value of an encrypted field is sealed, whatever the operator.
     #[test]
