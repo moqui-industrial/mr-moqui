@@ -4669,6 +4669,7 @@ dependencies = [
  "image",
  "imap",
  "indexmap 2.14.2",
+ "inventory",
  "jiff",
  "lettre",
  "mail-parser",

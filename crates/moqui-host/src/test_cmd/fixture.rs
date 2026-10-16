@@ -283,5 +283,6 @@ fn boot(runtime: &Path, framework: &Path) -> Result<Booted, Error> {
             None
         }
     };
+    factory.init_tools().map_err(Error::from)?;
     Ok((factory, facade, search, db))
 }
