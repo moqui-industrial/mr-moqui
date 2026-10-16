@@ -535,6 +535,101 @@ pub(super) fn entity_get_data_documents<'js>(
     })
 }
 
+/// The host side of `ec.entity.getEntityDataDocument()`'s writers: `mode` `text` gives `{text, count}` for
+/// `writeDocumentsToWriter`, `file` and `dir` write under `path` (`writeDocumentsToFile`, `writeDocumentsToDirectory`)
+/// and give `{count}`. After the condition come `fromUpdateStamp`, `thruUpdateStamp` and `prettyPrint`.
+pub(super) fn write_data_documents<'js>(
+    ctx: Ctx<'js>,
+    mode: String,
+    path: String,
+    ids: Vec<String>,
+    condition: JsValue<'js>,
+    rest: Rest<JsValue<'js>>,
+) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let undefined = JsValue::new_undefined(ctx.clone());
+        let from = rest.0.first().cloned().unwrap_or_else(|| undefined.clone());
+        let thru = rest.0.get(1).cloned().unwrap_or_else(|| undefined.clone());
+        let pretty = rest.0.get(2).and_then(JsValue::as_bool).unwrap_or(false);
+        flush_current(&ctx, true)?;
+        let facade = facade_of(&ctx)?;
+        let condition = if condition.is_null() || condition.is_undefined() {
+            None
+        } else {
+            match condition_of(&condition) {
+                Some(condition) => Some(condition),
+                None => match js_to_host(&ctx, &condition)? {
+                    Value::Map(map) => join(
+                        map.into_iter()
+                            .map(|(field, value)| Condition::equals(field.as_str(), value))
+                            .collect(),
+                        "and",
+                    ),
+                    _ => {
+                        return Err(Exception::throw_message(
+                            &ctx,
+                            "the document writers take a condition or a map",
+                        ))
+                    }
+                },
+            }
+        };
+        let stamp = |value: &JsValue<'js>| -> rquickjs::Result<Option<jiff::Timestamp>> {
+            if value.is_null() || value.is_undefined() {
+                return Ok(None);
+            }
+            Ok(timestamp_at(Some(&js_to_host(&ctx, value)?)))
+        };
+        let (from, thru) = (stamp(&from)?, stamp(&thru)?);
+        let mut out = indexmap::IndexMap::new();
+        let count = match mode.as_str() {
+            "text" => {
+                let (text, count) = lib(
+                    &ctx,
+                    crate::entity::document::documents_json(&facade, &ids, condition, from, thru, pretty),
+                )?;
+                out.insert("text".to_string(), Value::String(text));
+                count
+            }
+            "file" => lib(
+                &ctx,
+                crate::entity::document::write_documents_to_file(
+                    &facade,
+                    std::path::Path::new(&path),
+                    &ids,
+                    condition,
+                    from,
+                    thru,
+                    pretty,
+                ),
+            )?,
+            "dir" => lib(
+                &ctx,
+                crate::entity::document::write_documents_to_directory(
+                    &facade,
+                    std::path::Path::new(&path),
+                    &ids,
+                    condition,
+                    from,
+                    thru,
+                    pretty,
+                ),
+            )?,
+            other => {
+                return Err(Exception::throw_message(
+                    &ctx,
+                    &format!("unknown document write mode {other}"),
+                ))
+            }
+        };
+        out.insert(
+            "count".to_string(),
+            Value::I64(i64::try_from(count).unwrap_or(i64::MAX)),
+        );
+        host_to_js(&ctx, Value::Map(out))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{fresh_by, MAX_FRESH_TIMEOUT};

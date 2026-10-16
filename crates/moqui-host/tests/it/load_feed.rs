@@ -60,6 +60,8 @@ fn load_data_stores_eca_and_inserts_pending() {
             "moqui.basic.Enumeration",
             "moqui.basic.LocalizedEntityField",
             "moqui.entity.document.DataDocument",
+            "moqui.entity.document.DataDocumentField",
+            "moqui.entity.document.DataDocumentCondition",
             "moqui.entity.feed.DataFeed",
             "moqui.entity.feed.DataFeedDocument",
             "moqui.entity.feed.DataFeedPending",
@@ -252,8 +254,10 @@ fn load_data_stores_eca_and_inserts_pending() {
         </entity-facade-xml>"#,
     )
     .unwrap();
+    // Without dummy foreign keys the database constraint decides, as in Java.
     let blocked = load_entity_data(&facade, missing.to_str().unwrap(), &LoadOptions::default()).unwrap_err();
-    assert!(blocked.to_string().contains("has no related"), "{blocked}");
+    let blocked_text = format!("{blocked:?}");
+    assert!(blocked_text.contains("usergroupmemberusergroup"), "{blocked_text}");
     let no_fk = LoadOptions {
         disable_fk_create: true,
         ..LoadOptions::default()
@@ -348,6 +352,16 @@ fn load_data_stores_eca_and_inserts_pending() {
         &facade,
         "moqui.entity.document.DataDocument",
         &[("dataDocumentId", "DOC1"), ("primaryEntityName", "moqui.test.Foo")],
+    );
+    // A write is fed when it sets a document field, as Java's `dataFeedCheckAndRegister`.
+    create_row(
+        &facade,
+        "moqui.entity.document.DataDocumentField",
+        &[
+            ("dataDocumentId", "DOC1"),
+            ("fieldSeqId", "01"),
+            ("fieldPath", "fooText"),
+        ],
     );
     create_row(
         &facade,

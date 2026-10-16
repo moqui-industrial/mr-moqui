@@ -42,6 +42,9 @@ use crate::transaction::TransactionManager;
 const DEFAULT_WORKERS: usize = 32;
 const DEFAULT_QUEUE: usize = 65_535;
 const DEFAULT_CHECK_SECONDS: u64 = 60;
+/// Java's `job-pool-core` and `job-pool-max` defaults.
+const DEFAULT_JOB_POOL_CORE: usize = 2;
+const DEFAULT_JOB_POOL_MAX: usize = 8;
 
 type TickHook = Arc<dyn Fn() + Send + Sync>;
 
@@ -188,6 +191,13 @@ pub(crate) struct Shared {
     pub(crate) queue_cap: usize,
     /// Jobs allowed to wait beyond the workers, from `service-facade/@job-queue-max`.
     pub(crate) job_queue_max: usize,
+    /// Threads that run scheduled jobs, apart from the service workers: `service-facade/@job-pool-core`.
+    pub(crate) job_workers: usize,
+    /// `service-facade/@job-pool-max` (at least twice the processors, as Java): with `job_queue_max`, how many jobs
+    /// may be running or waiting.
+    pub(crate) job_pool_max: usize,
+    /// Wakes the job workers.
+    pub(crate) job_wake: Condvar,
     /// How often the scheduler thread runs a pass, from `service-facade/@scheduled-job-check-time`.
     pub(crate) check_interval: Duration,
     /// The factory the pool serves, set once it is built. Weak, so the pool never keeps it alive.
@@ -236,6 +246,10 @@ pub(crate) struct State {
     pub(crate) queue: VecDeque<Work>,
     /// Workers running something now.
     pub(crate) active: usize,
+    /// Scheduled job runs waiting for a job worker, as Java's separate `jobWorkerPool`.
+    pub(crate) jobs: VecDeque<Box<super::jobs::JobRun>>,
+    /// Job workers running a job now.
+    pub(crate) jobs_active: usize,
 }
 
 pub(crate) enum Work {
@@ -451,6 +465,34 @@ impl ServicePools {
             .map_err(|_| Error::new("service worker returned the wrong type"))
     }
 
+    /// Run `job` on a service worker in an execution context of its own, without waiting for it, as Java's
+    /// `ThreadPoolRunnable`. A failure is logged with `what`. With no worker threads it runs now.
+    pub(crate) fn spawn(&self, what: &'static str, job: impl FnOnce() -> Result<(), Error> + Send + 'static) {
+        let Some(shared) = &self.shared else {
+            let result = match capture_factory() {
+                Ok(factory) => {
+                    let ctx = factory.new_context();
+                    let _entered = ctx.enter();
+                    job()
+                }
+                Err(_) => job(),
+            };
+            if let Err(err) = result {
+                tracing::error!(error = %err, "{what} failed");
+            }
+            return;
+        };
+        let run: ClosureFn = Box::new(move || {
+            if let Err(err) = job() {
+                tracing::error!(error = %err, "{what} failed");
+            }
+            Ok(Box::new(()) as Box<dyn Any + Send>)
+        });
+        if let Err(err) = queue_closure(shared, run) {
+            tracing::error!(error = %err, "{what} was not run");
+        }
+    }
+
     /// Start the call and return its pending result. See [`Shared::submit_future`].
     pub(crate) fn submit_future(
         &self,
@@ -640,6 +682,8 @@ struct Settings {
     workers: usize,
     queue: usize,
     job_queue_max: usize,
+    job_pool_core: usize,
+    job_pool_max: usize,
     check_interval: Duration,
 }
 
@@ -650,6 +694,8 @@ impl Settings {
             workers,
             queue,
             job_queue_max: 0,
+            job_pool_core: DEFAULT_JOB_POOL_CORE,
+            job_pool_max: DEFAULT_JOB_POOL_MAX,
             check_interval: Duration::from_secs(DEFAULT_CHECK_SECONDS),
         }
     }
@@ -675,6 +721,9 @@ fn settings(conf_text: &str) -> Result<Settings, Error> {
         workers: tool("worker-pool-max", DEFAULT_WORKERS),
         queue: tool("worker-queue", DEFAULT_QUEUE),
         job_queue_max: service("job-queue-max", 0),
+        job_pool_core: service("job-pool-core", DEFAULT_JOB_POOL_CORE).max(1),
+        job_pool_max: service("job-pool-max", DEFAULT_JOB_POOL_MAX)
+            .max(thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get) * 2),
         check_interval: Duration::from_secs(u64::try_from(seconds).unwrap_or(DEFAULT_CHECK_SECONDS)),
     })
 }
@@ -689,6 +738,13 @@ fn start(settings: Settings) -> Result<ServicePools, Error> {
     if settings.workers == 0 {
         return Err(Error::new("the service worker pool needs at least one worker"));
     }
+    // The job workers come out of `worker-pool-max`, so the threads that hold database connections stay within the
+    // count the transaction pool is sized for (see `check_serve_caps`). A pool too small to spare them keeps all its
+    // workers and adds the job workers.
+    let mut settings = settings;
+    if settings.workers > settings.job_pool_core {
+        settings.workers -= settings.job_pool_core;
+    }
     let shared = Arc::new(Shared {
         state: Mutex::new(State::default()),
         wake: Condvar::new(),
@@ -696,6 +752,9 @@ fn start(settings: Settings) -> Result<ServicePools, Error> {
         workers: settings.workers,
         queue_cap: settings.queue,
         job_queue_max: settings.job_queue_max,
+        job_workers: settings.job_pool_core,
+        job_pool_max: settings.job_pool_max,
+        job_wake: Condvar::new(),
         check_interval: settings.check_interval,
         factory: Mutex::new(Weak::new()),
         reserved: std::sync::atomic::AtomicUsize::new(0),
@@ -718,6 +777,12 @@ fn spawn_all(shared: &Arc<Shared>, workers: usize) -> Result<Vec<JoinHandle<()>>
             return Err(err);
         }
     }
+    for index in 0..shared.job_workers {
+        if let Err(err) = push_handle(&mut handles, spawn_job_worker(shared, index)) {
+            stop_joined(shared, handles);
+            return Err(err);
+        }
+    }
     if let Err(err) = push_handle(&mut handles, spawn_scheduler(shared)) {
         stop_joined(shared, handles);
         return Err(err);
@@ -736,6 +801,46 @@ fn spawn_worker(shared: &Arc<Shared>, index: usize) -> Result<JoinHandle<()>, Er
         .name(format!("moqui-worker-{index}"))
         .spawn(move || worker_loop(shared))
         .map_err(|err| Error::new(format!("service worker did not start: {err}")))
+}
+
+fn spawn_job_worker(shared: &Arc<Shared>, index: usize) -> Result<JoinHandle<()>, Error> {
+    let shared = Arc::clone(shared);
+    thread::Builder::new()
+        .name(format!("moqui-job-{index}"))
+        .spawn(move || job_loop(shared))
+        .map_err(|err| Error::new(format!("service job worker did not start: {err}")))
+}
+
+/// A job worker: scheduled job runs only, so a long job never holds a service worker, as Java's `jobWorkerPool`.
+fn job_loop(shared: Arc<Shared>) {
+    loop {
+        let run = {
+            let mut state = lock(&shared.state);
+            loop {
+                if state.stop {
+                    return;
+                }
+                if let Some(run) = state.jobs.pop_front() {
+                    state.jobs_active += 1;
+                    break run;
+                }
+                state = shared.job_wake.wait(state).unwrap_or_else(|err| err.into_inner());
+            }
+        };
+        run_job_work(run);
+        lock(&shared.state).jobs_active -= 1;
+    }
+}
+
+fn run_job_work(run: Box<super::jobs::JobRun>) {
+    let _cleanup = WorkCleanup::new(Some(Arc::clone(run.factory())));
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        let _flag = WorkerFlag::enter();
+        super::jobs::run_job(*run);
+    }));
+    if let Err(payload) = outcome {
+        tracing::error!(panic = %panic_text(payload.as_ref()), "service job panicked");
+    }
 }
 
 fn spawn_scheduler(shared: &Arc<Shared>) -> Result<JoinHandle<()>, Error> {
@@ -768,16 +873,7 @@ fn next_work(shared: &Shared) -> Option<Work> {
 fn run_work(shared: &Arc<Shared>, work: Work) {
     lock(&shared.state).active += 1;
     match work {
-        Work::Job(run) => {
-            let _cleanup = WorkCleanup::new(Some(Arc::clone(run.factory())));
-            let outcome = catch_unwind(AssertUnwindSafe(|| {
-                let _flag = WorkerFlag::enter();
-                super::jobs::run_job(*run);
-            }));
-            if let Err(payload) = outcome {
-                tracing::error!(panic = %panic_text(payload.as_ref()), "service job panicked");
-            }
-        }
+        Work::Job(run) => run_job_work(run),
         Work::Closure(job) => run_closure(shared, job),
         other => {
             if let Some(job) = call_job(other) {
@@ -959,14 +1055,18 @@ fn unwind_result(
 }
 
 fn fail_pending(shared: &Shared) {
-    let pending = {
+    let (pending, jobs) = {
         let mut state = lock(&shared.state);
         state.stop = true;
-        std::mem::take(&mut state.queue)
+        (std::mem::take(&mut state.queue), std::mem::take(&mut state.jobs))
     };
     shared.wake.notify_all();
+    shared.job_wake.notify_all();
     for work in pending {
         fail_one(work);
+    }
+    for run in jobs {
+        super::jobs::abandon(*run);
     }
 }
 

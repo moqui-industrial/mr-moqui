@@ -14,6 +14,8 @@
 
 //! Entity find. The condition tree is `moqui_db`. A view uses `select_view`.
 
+use std::sync::Arc;
+
 use moqui_db::sql::{
     count_view, count_with, select_view_with, select_with, Condition, ConditionValues, FieldRef, LimitOffset, OrderBy,
     SelectOptions,
@@ -26,6 +28,7 @@ use super::exec::{after_statement, query_tx};
 use super::facade::EntityFacade;
 use super::field_rw;
 use super::params::{entity_columns, map_row, view_columns};
+use super::sim_view;
 use super::value::{EntityArtifact, EntityList, EntityValue};
 use crate::driver::DbRow;
 use crate::transaction::TransactionManager;
@@ -53,6 +56,10 @@ pub struct EntityFind {
     disable_authz: bool,
     /// `useCache`: `None` follows the entity's `cache` attribute.
     use_cache: Option<bool>,
+    /// Java's scroll-insensitive result set type: the iterator can move back. See [`EntityListIterator`].
+    scrollable: bool,
+    /// Java's `useClone`: read from a clone datasource of the entity's group when one is open.
+    use_clone: bool,
 }
 
 impl EntityFind {
@@ -73,7 +80,25 @@ impl EntityFind {
             has_search_parameters: false,
             disable_authz: false,
             use_cache: None,
+            scrollable: false,
+            use_clone: false,
         }
+    }
+
+    /// Java's `useClone(true)`: read from a clone of the entity's group (`{group}#clone1` and so on) when one is open,
+    /// such as a read replica for reports. A find for update stays on the group itself.
+    #[must_use]
+    pub fn use_clone(mut self, on: bool) -> Self {
+        self.use_clone = on;
+        self
+    }
+
+    /// An iterator that can move back and jump, as Java's `resultSetType(TYPE_SCROLL_INSENSITIVE)`. It keeps the rows
+    /// it reads.
+    #[must_use]
+    pub fn scrollable(mut self, on: bool) -> Self {
+        self.scrollable = on;
+        self
     }
 
     /// `useCache(flag)`: true reads through the entity cache even for an entity whose `cache` is not `true` (but not one
@@ -245,11 +270,21 @@ impl EntityFind {
         let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view", operation)?;
         let condition = self.combined();
         let lookup = self.lookup(&condition);
+        if let Some(schema) = self.sim_view_schema(false)? {
+            let plan = self.plan(false)?;
+            let rows = cache::query_sim(&self.facade, &schema, &plan.sql, &plan.params)?;
+            let values = self.rows_to_values(&plan, &rows)?;
+            return Ok(self.attach_l10n(EntityList::new(values)));
+        }
         let bypass = self.bypasses_cache();
         if !bypass {
             if let Some(cached) = cache::before_find(&self.facade, &lookup) {
-                return self.localize_list(cached);
+                return Ok(self.attach_l10n(cached));
             }
+        }
+        // As Java: a find on a table that does not exist finds nothing.
+        if !self.facade.table_ready(&self.entity_name) {
+            return Ok(EntityList::new(Vec::new()));
         }
         self.require_transaction_for_lock()?;
         let plan = self.plan(false)?;
@@ -258,9 +293,65 @@ impl EntityFind {
         let values = self.rows_to_values(&plan, &rows)?;
         let list = EntityList::new(values);
         if !bypass {
-            cache::after_find(&self.facade, &lookup, &list)?;
+            // The rows were read; a cache that cannot hold them only costs the next read.
+            if let Err(err) = cache::after_find(&self.facade, &lookup, &list) {
+                tracing::warn!(error = %err, "Could not cache the find of {}", self.entity_name);
+            }
         }
-        self.localize_list(list)
+        Ok(self.attach_l10n(list))
+    }
+
+    /// Java `updateAll`: set `fields` on each row found and update the rows that change, so each update runs its
+    /// entity ECA rules. Returns how many rows were updated. Not for a `create-only` entity. The find skips the cache.
+    pub fn update_all(self, fields: impl IntoIterator<Item = (String, Value)>) -> Result<i64, Error> {
+        let fields: Vec<(String, Value)> = fields.into_iter().collect();
+        let _authz = self.authz_guard();
+        let facade = self.facade.clone();
+        self.refuse_create_only("updated")?;
+        let list = self.use_cache(false).list()?;
+        let mut updated = 0_i64;
+        for value in list.values() {
+            let mut changed = value.clone();
+            let mut modified = false;
+            for (name, new_value) in &fields {
+                let same = value.get(name).is_some_and(|old| {
+                    old == new_value
+                        || moqui_lib::object::to_plain_string(old) == moqui_lib::object::to_plain_string(new_value)
+                });
+                modified |= !same;
+                changed.set(name.clone(), new_value.clone());
+            }
+            if modified {
+                changed.update(&facade)?;
+                updated += 1;
+            }
+        }
+        Ok(updated)
+    }
+
+    /// Java `deleteAll`: delete each row found through the value path, so each delete runs its entity ECA rules.
+    /// Returns how many rows were deleted. Not for a `create-only` entity. The find skips the cache.
+    pub fn delete_all(self) -> Result<i64, Error> {
+        let _authz = self.authz_guard();
+        let facade = self.facade.clone();
+        self.refuse_create_only("deleted")?;
+        let list = self.use_cache(false).list()?;
+        for value in list.values() {
+            value.delete(&facade)?;
+        }
+        Ok(i64::try_from(list.len()).unwrap_or(i64::MAX))
+    }
+
+    fn refuse_create_only(&self, verb: &str) -> Result<(), Error> {
+        self.facade.with_entity(&self.entity_name, |entity, _, _| {
+            if entity.create_only {
+                return Err(Error::new(format!(
+                    "Entity {} is create-only (immutable), cannot be {verb}.",
+                    entity.full_name
+                )));
+            }
+            Ok(())
+        })
     }
 
     pub fn one(self) -> Result<Option<EntityValue>, Error> {
@@ -268,6 +359,14 @@ impl EntityFind {
     }
 
     pub(crate) fn one_internal(mut self, operation: &str) -> Result<Option<EntityValue>, Error> {
+        // Java `oneInternal`: a find one with no condition, or with a primary key field set to null or empty, is null
+        // without a query.
+        if self.conditions.is_empty() || self.has_empty_pk() {
+            // Still a `view` of the entity, authorized and counted as a hit.
+            let _authz = self.authz_guard();
+            let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view", operation)?;
+            return Ok(None);
+        }
         self.narrow_to_full_pk();
         let entity_name = self.entity_name.clone();
         let list = self.list_internal(operation)?;
@@ -277,6 +376,26 @@ impl EntityFind {
             tracing::trace!(entity = %entity_name, rows = list.len(), "found more than one result for find one");
         }
         Ok(list.values().first().cloned())
+    }
+
+    /// A primary key field compared to null or an empty value, as Java's `hasEmptyPk`.
+    fn has_empty_pk(&self) -> bool {
+        let Ok(pk_names) = self.facade.with_entity(&self.entity_name, |entity, _, _| {
+            Ok(entity
+                .pk_field_names()
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect::<Vec<_>>())
+        }) else {
+            return false;
+        };
+        self.conditions.iter().any(|condition| match condition {
+            Condition::Equals(field, value) => {
+                field.entity_alias.is_none() && pk_names.contains(&field.name) && moqui_lib::object::is_empty(value)
+            }
+            Condition::IsNull(field) => field.entity_alias.is_none() && pk_names.contains(&field.name),
+            _ => false,
+        })
     }
 
     /// Java `oneInternal`: a find one whose field equalities hold the full primary key, with more besides (a
@@ -336,22 +455,57 @@ impl EntityFind {
         }
         let _authz = self.authz_guard();
         let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view", "count")?;
+        if let Some(schema) = self.sim_view_schema(true)? {
+            let plan = self.plan(true)?;
+            let rows = cache::query_sim(&self.facade, &schema, &plan.sql, &plan.params)?;
+            return count_of(&rows);
+        }
         let condition = self.combined();
-        if let Some(count) = cache::before_count(&self.facade, &self.entity_name, condition.as_ref()) {
+        let lookup = self.lookup(&condition);
+        let bypass = self.bypasses_cache();
+        if let Some(count) = cache::before_count(&self.facade, &lookup).filter(|_| !bypass) {
             return Ok(count);
+        }
+        if !self.facade.table_ready(&self.entity_name) {
+            return Ok(0);
         }
         let plan = self.plan(true)?;
         let rows = query_tx(&plan.tx, &plan.sql, &plan.params)?;
         after_statement(&self.facade, &plan.tx, false);
-        let value = rows
-            .first()
-            .and_then(|row| row.columns.first())
-            .map(|(_, value)| value.clone())
-            .unwrap_or(Value::Null);
-        match basic_convert(&value, "Long").value {
-            Value::I64(number) => Ok(number),
-            other => Err(Error::new(format!("count returned {other:?}"))),
+        let count = count_of(&rows)?;
+        if !bypass {
+            if let Err(err) = cache::after_count(&self.facade, &lookup, count) {
+                tracing::warn!(error = %err, "Could not cache the count of {}", self.entity_name);
+            }
         }
+        Ok(count)
+    }
+
+    /// A view the sim changed is read from the sim schema, once this copies the member rows the read needs there; see
+    /// [`super::sim_view`]. `None` when production answers. The copy starts from production's answer to this find
+    /// with every alias, its page widened to hold the rows the sim deleted, as Java's `copyWorkingSet`.
+    fn sim_view_schema(&self, for_count: bool) -> Result<Option<String>, Error> {
+        let Some(plan) = sim_view::plan_for(&self.facade, &self.entity_name)? else {
+            return Ok(None);
+        };
+        let schema = plan.prepare(&self.facade, || {
+            let mut production = self.clone();
+            production.select_fields.clear();
+            production.form_order_only = false;
+            production.use_cache = Some(false);
+            let slack = i64::try_from(cache::sim_deleted_count())
+                .unwrap_or(i64::MAX)
+                .saturating_add(1);
+            production.limit = if for_count {
+                None
+            } else {
+                self.limit
+                    .map(|limit| limit.saturating_add(self.offset.unwrap_or(0)).saturating_add(slack))
+            };
+            production.offset = None;
+            Ok(production.list()?.into_values())
+        })?;
+        Ok(Some(schema))
     }
 
     /// Open a cursor when this find has no transaction hold and no sim schema.
@@ -367,6 +521,12 @@ impl EntityFind {
                 EntityList::new(Vec::new()),
             ));
         }
+        // A view the sim changed is read from the sim schema, into memory.
+        if sim_view::plan_for(&self.facade, &self.entity_name)?.is_some() {
+            let facade = self.facade.clone();
+            let entity_name = self.entity_name.clone();
+            return Ok(EntityListIterator::memory(facade, entity_name, self.list()?));
+        }
         let _authz = self.authz_guard();
         let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view", "iterator")?;
         let condition = self.combined();
@@ -375,6 +535,13 @@ impl EntityFind {
             if let Some(cached) = cache::before_find(&self.facade, &lookup) {
                 return Ok(EntityListIterator::memory(self.facade, self.entity_name, cached));
             }
+        }
+        if !self.facade.table_ready(&self.entity_name) {
+            return Ok(EntityListIterator::memory(
+                self.facade,
+                self.entity_name,
+                EntityList::new(Vec::new()),
+            ));
         }
         self.require_transaction_for_lock()?;
         let plan = self.plan(false)?;
@@ -386,6 +553,7 @@ impl EntityFind {
             self.entity_name,
             plan.columns,
             plan.tx,
+            self.scrollable,
         ))
     }
 
@@ -401,6 +569,7 @@ impl EntityFind {
 
     fn lookup(&self, condition: &Option<Condition>) -> FindLookup {
         FindLookup {
+            filtered: *condition != self.unfiltered(),
             entity_name: self.entity_name.clone(),
             use_cache: self.use_cache,
             condition: condition.clone(),
@@ -410,12 +579,17 @@ impl EntityFind {
         }
     }
 
-    fn combined(&self) -> Option<Condition> {
-        let condition = match self.conditions.len() {
+    /// The find's own conditions, before the user's authorization filters.
+    fn unfiltered(&self) -> Option<Condition> {
+        match self.conditions.len() {
             0 => None,
             1 => Some(self.conditions[0].clone()),
             _ => Some(Condition::and(self.conditions.clone())),
-        };
+        }
+    }
+
+    fn combined(&self) -> Option<Condition> {
+        let condition = self.unfiltered();
         if !authorization_filters() {
             return condition;
         }
@@ -433,70 +607,79 @@ impl EntityFind {
             1 => Some(self.having[0].clone()),
             _ => Some(Condition::and(self.having.clone())),
         };
-        let options = SelectOptions {
-            distinct: self.distinct,
-            for_update: self.for_update,
-            having,
-            fields: self.select_fields.clone(),
-        };
-        self.facade.with_group(&self.entity_name, |entity, dialect, model, tx| {
-            let condition = field_rw::encrypt_condition(&self.facade, entity, condition.clone())?;
-            for name in &self.select_fields {
-                if !entity.has_field(name) {
-                    return Err(Error::new(format!("{} has no field {name}", entity.full_name)));
-                }
-            }
-            let wanted =
-                |name: &str| self.select_fields.is_empty() || self.select_fields.iter().any(|field| field == name);
-            // Java's `orderBy` skips a name that is not a field of the entity, such as a default
-            // order a screen names for a column its entity does not have.
-            let order: Vec<OrderBy> = self
-                .order
-                .iter()
-                .filter(|entry| entry.field.entity_alias.is_some() || entity.has_field(&entry.field.name))
-                .filter(|entry| !self.form_order_only || self.select_fields.contains(&entry.field.name))
-                .cloned()
-                .collect();
-            let (statement, mut columns) = if entity.is_view {
-                let statement = if count_only {
-                    count_view(entity, model, dialect, &FindValues, condition.as_ref(), &options)?
-                } else {
-                    select_view_with(
-                        entity,
-                        model,
-                        dialect,
-                        &FindValues,
-                        condition.as_ref(),
-                        &order,
-                        page,
-                        &options,
-                    )?
-                };
-                (statement, view_columns(entity))
-            } else if count_only {
-                (count_with(entity, dialect, condition.as_ref(), &options)?, Vec::new())
-            } else {
-                let fields: Vec<FieldRef> = entity
-                    .fields
+        let use_clone = self.use_clone && !self.for_update;
+        self.facade
+            .with_read_group(&self.entity_name, use_clone, |entity, dialect, model, tx| {
+                let condition = field_rw::encrypt_condition(&self.facade, entity, condition.clone())?;
+                // Java's `selectField` skips a name that is not a field of the entity.
+                let select_fields: Vec<String> = self
+                    .select_fields
                     .iter()
-                    .filter(|field| wanted(&field.name))
-                    .map(|field| FieldRef::new(&field.name))
+                    .filter(|name| {
+                        let known = entity.has_field(name);
+                        if !known {
+                            tracing::warn!("{} has no field {name}, not selecting it", entity.full_name);
+                        }
+                        known
+                    })
+                    .cloned()
                     .collect();
-                let statement = select_with(entity, dialect, &fields, condition.as_ref(), &order, page, &options)?;
-                (statement, entity_columns(entity, model))
-            };
-            if count_only {
-                columns.clear();
-            } else {
-                columns.retain(|(name, _)| wanted(name));
-            }
-            Ok(ReadPlan {
-                sql: statement.sql,
-                params: statement.params,
-                columns,
-                tx: tx.clone(),
+                let options = SelectOptions {
+                    distinct: self.distinct,
+                    for_update: self.for_update,
+                    having: having.clone(),
+                    fields: select_fields.clone(),
+                };
+                let wanted = |name: &str| select_fields.is_empty() || select_fields.iter().any(|field| field == name);
+                // Java's `orderBy` skips a name that is not a field of the entity, such as a default
+                // order a screen names for a column its entity does not have.
+                let order: Vec<OrderBy> = self
+                    .order
+                    .iter()
+                    .filter(|entry| entry.field.entity_alias.is_some() || entity.has_field(&entry.field.name))
+                    .filter(|entry| !self.form_order_only || select_fields.contains(&entry.field.name))
+                    .cloned()
+                    .collect();
+                let (statement, mut columns) = if entity.is_view {
+                    let statement = if count_only {
+                        count_view(entity, model, dialect, &FindValues, condition.as_ref(), &options)?
+                    } else {
+                        select_view_with(
+                            entity,
+                            model,
+                            dialect,
+                            &FindValues,
+                            condition.as_ref(),
+                            &order,
+                            page,
+                            &options,
+                        )?
+                    };
+                    (statement, view_columns(entity))
+                } else if count_only {
+                    (count_with(entity, dialect, condition.as_ref(), &options)?, Vec::new())
+                } else {
+                    let fields: Vec<FieldRef> = entity
+                        .fields
+                        .iter()
+                        .filter(|field| wanted(&field.name))
+                        .map(|field| FieldRef::new(&field.name))
+                        .collect();
+                    let statement = select_with(entity, dialect, &fields, condition.as_ref(), &order, page, &options)?;
+                    (statement, entity_columns(entity, model))
+                };
+                if count_only {
+                    columns.clear();
+                } else {
+                    columns.retain(|(name, _)| wanted(name));
+                }
+                Ok(ReadPlan {
+                    sql: statement.sql,
+                    params: statement.params,
+                    columns,
+                    tx: tx.clone(),
+                })
             })
-        })
     }
 
     fn rows_to_values(&self, plan: &ReadPlan, rows: &[DbRow]) -> Result<Vec<EntityValue>, Error> {
@@ -512,17 +695,17 @@ impl EntityFind {
         })
     }
 
-    /// Localization uses the locale at read time. The list cache keeps the decrypted row.
-    fn localize_list(&self, list: EntityList) -> Result<EntityList, Error> {
-        let facade = self.facade.clone();
-        self.facade.with_entity(&self.entity_name, |entity, _, _| {
-            let mut values = Vec::with_capacity(list.len());
-            for row in list.values() {
-                let adjusted = field_rw::localize_stored(&facade, entity, row.fields().clone())?;
-                values.push(EntityValue::from_fields(row.entity_name().to_string(), adjusted));
-            }
-            Ok(EntityList::new(values))
-        })
+    /// Each value reads its localized fields in the locale of the time it is read. The list cache keeps the stored row.
+    fn attach_l10n(&self, list: EntityList) -> EntityList {
+        let Some(targets) = find_l10n(&self.facade, &self.entity_name) else {
+            return list;
+        };
+        EntityList::new(
+            list.into_values()
+                .into_iter()
+                .map(|value| value.with_l10n(Some(&targets)))
+                .collect(),
+        )
     }
 }
 
@@ -548,6 +731,27 @@ impl ConditionValues for FindValues {
     }
 }
 
+/// The localized fields of `entity_name`, for the values a find of it returns.
+fn find_l10n(facade: &EntityFacade, entity_name: &str) -> Option<Arc<field_rw::L10nTargets>> {
+    facade
+        .with_entity(entity_name, |entity, _, _| Ok(field_rw::l10n_targets(facade, entity)))
+        .ok()
+        .flatten()
+}
+
+/// The number a count query returned.
+fn count_of(rows: &[DbRow]) -> Result<i64, Error> {
+    let value = rows
+        .first()
+        .and_then(|row| row.columns.first())
+        .map(|(_, value)| value.clone())
+        .unwrap_or(Value::Null);
+    match basic_convert(&value, "Long").value {
+        Value::I64(number) => Ok(number),
+        other => Err(Error::new(format!("count returned {other:?}"))),
+    }
+}
+
 fn authorization_filters() -> bool {
     if !crate::user::context_entered() {
         return false;
@@ -562,15 +766,30 @@ struct ReadPlan {
     tx: TransactionManager,
 }
 
-/// A streaming find. Drop calls `close_stream` and releases the pinned connection.
+/// Java's `EntityListIterator`: a cursor over a find's rows, read from the database as it moves. `next_value` moves
+/// forward. With [`EntityFind::scrollable`] (Java's scroll-insensitive result set) it keeps the rows read, so
+/// `previous_value`, `absolute`, `relative` and `get_partial_list` can go anywhere; otherwise it only moves forward and
+/// holds no more than two rows, so a large export streams. Rows from the cache or the overlay are in memory and scroll.
 pub struct EntityListIterator {
     facade: EntityFacade,
     entity_name: String,
     columns: Vec<(String, String)>,
     tx: Option<TransactionManager>,
     open: bool,
-    memory: Vec<EntityValue>,
-    index: usize,
+    /// In memory: every row.
+    memory: Option<Vec<EntityValue>>,
+    /// The localized fields each row returned reads.
+    l10n: Option<Arc<field_rw::L10nTargets>>,
+    scrollable: bool,
+    /// A scrollable stream's rows read so far, by index.
+    seen: Vec<EntityValue>,
+    /// A forward-only stream's last rows read, by index.
+    window: std::collections::VecDeque<(usize, EntityValue)>,
+    /// Rows read from the stream so far.
+    consumed: usize,
+    /// The current row's index: -1 before the first; at or past the end after the last.
+    current: i64,
+    fetch_size: Option<usize>,
 }
 
 impl EntityListIterator {
@@ -579,45 +798,209 @@ impl EntityListIterator {
         entity_name: String,
         columns: Vec<(String, String)>,
         tx: TransactionManager,
+        scrollable: bool,
     ) -> Self {
+        let l10n = find_l10n(&facade, &entity_name);
         Self {
             facade,
             entity_name,
             columns,
             tx: Some(tx),
             open: true,
-            memory: Vec::new(),
-            index: 0,
+            memory: None,
+            l10n,
+            scrollable,
+            seen: Vec::new(),
+            window: std::collections::VecDeque::new(),
+            consumed: 0,
+            current: -1,
+            fetch_size: None,
         }
     }
 
     fn memory(facade: EntityFacade, entity_name: String, list: EntityList) -> Self {
+        let l10n = find_l10n(&facade, &entity_name);
         Self {
             facade,
             entity_name,
             columns: Vec::new(),
             tx: None,
             open: false,
-            memory: list.values().to_vec(),
-            index: 0,
+            memory: Some(list.into_values()),
+            l10n,
+            scrollable: true,
+            seen: Vec::new(),
+            window: std::collections::VecDeque::new(),
+            consumed: 0,
+            current: -1,
+            fetch_size: None,
         }
     }
 
+    /// Move to the next row and return it; `None` past the last.
     pub fn next_value(&mut self) -> Result<Option<EntityValue>, Error> {
-        if !self.memory.is_empty() || !self.open {
-            if self.index >= self.memory.len() {
-                return Ok(None);
+        let index = usize::try_from(self.current + 1).unwrap_or(0);
+        let row = self.row_at(index)?;
+        self.current = i64::try_from(index).unwrap_or(i64::MAX);
+        row.map(|row| self.emit(row)).transpose()
+    }
+
+    /// Java's `hasNext`: whether a row follows the current one. A forward-only stream reads it ahead.
+    pub fn has_next(&mut self) -> Result<bool, Error> {
+        let index = usize::try_from(self.current + 1).unwrap_or(0);
+        Ok(self.row_at(index)?.is_some())
+    }
+
+    /// Java's `previous`: move to the row before the current one and return it; `None` before the first.
+    ///
+    /// # Errors
+    ///
+    /// A forward-only stream cannot move back.
+    pub fn previous_value(&mut self) -> Result<Option<EntityValue>, Error> {
+        if self.current <= 0 {
+            self.current = -1;
+            return Ok(None);
+        }
+        let index = usize::try_from(self.current - 1).unwrap_or(0);
+        let row = self.row_at(index)?;
+        self.current = i64::try_from(index).unwrap_or(0);
+        row.map(|row| self.emit(row)).transpose()
+    }
+
+    /// Java's `absolute`, 1-based as JDBC: row `n` from the start, or from the end when negative; 0 is before the first.
+    /// True when the cursor is on a row.
+    pub fn absolute(&mut self, row: i64) -> Result<bool, Error> {
+        if row == 0 {
+            self.current = -1;
+            return Ok(false);
+        }
+        let index = if row > 0 {
+            row - 1
+        } else {
+            let total = i64::try_from(self.total()?).unwrap_or(i64::MAX);
+            total + row
+        };
+        if index < 0 {
+            self.current = -1;
+            return Ok(false);
+        }
+        let found = self.row_at(usize::try_from(index).unwrap_or(usize::MAX))?.is_some();
+        self.current = index;
+        Ok(found)
+    }
+
+    /// Java's `relative`: move `rows` from the current row. True when the cursor is on a row.
+    pub fn relative(&mut self, rows: i64) -> Result<bool, Error> {
+        let target = self.current.saturating_add(rows);
+        if target < 0 {
+            self.current = -1;
+            return Ok(false);
+        }
+        self.absolute(target + 1)
+    }
+
+    /// Java's `currentIndex`: the current row, 1-based; 0 before the first.
+    pub fn current_index(&self) -> i64 {
+        self.current + 1
+    }
+
+    /// Java's `setFetchSize`: a hint for how many rows a read brings. Kept; the stream reads by its own batches.
+    pub fn set_fetch_size(&mut self, rows: usize) {
+        self.fetch_size = Some(rows);
+    }
+
+    /// Java's `getPartialList`: up to `limit` rows from row `offset` (1-based; 0 is 1).
+    pub fn get_partial_list(&mut self, offset: i64, limit: usize) -> Result<EntityList, Error> {
+        let mut out = Vec::new();
+        if limit == 0 || !self.absolute(offset.max(1))? {
+            return Ok(EntityList::new(out));
+        }
+        let index = usize::try_from(self.current).unwrap_or(0);
+        if let Some(row) = self.row_at(index)? {
+            out.push(self.emit(row)?);
+        }
+        while out.len() < limit {
+            match self.next_value()? {
+                Some(row) => out.push(row),
+                None => break,
             }
-            let value = self.memory[self.index].clone();
-            self.index += 1;
-            let facade = self.facade.clone();
-            let adjusted = self.facade.with_entity(&self.entity_name, |entity, _, _| {
-                field_rw::localize_stored(&facade, entity, value.fields().clone())
-            })?;
-            return Ok(Some(EntityValue::from_fields(
-                value.entity_name().to_string(),
-                adjusted,
-            )));
+        }
+        Ok(EntityList::new(out))
+    }
+
+    /// Java's `getCompleteList`: every row, from the first when the cursor can go back, else from here on.
+    pub fn get_complete_list(&mut self) -> Result<EntityList, Error> {
+        if self.memory.is_some() || self.scrollable {
+            self.current = -1;
+        }
+        let mut out = Vec::new();
+        while let Some(row) = self.next_value()? {
+            out.push(row);
+        }
+        Ok(EntityList::new(out))
+    }
+
+    /// Every row, reading the stream to its end. Only for a cursor that keeps its rows.
+    fn total(&mut self) -> Result<usize, Error> {
+        if let Some(rows) = &self.memory {
+            return Ok(rows.len());
+        }
+        if !self.scrollable {
+            return Err(self.forward_only());
+        }
+        while self.open {
+            if let Some(row) = self.read_raw()? {
+                self.seen.push(row);
+            }
+        }
+        Ok(self.seen.len())
+    }
+
+    /// The row at `index`, reading the stream as far as it needs.
+    fn row_at(&mut self, index: usize) -> Result<Option<EntityValue>, Error> {
+        if let Some(rows) = &self.memory {
+            return Ok(rows.get(index).cloned());
+        }
+        if self.scrollable {
+            while self.seen.len() <= index && self.open {
+                if let Some(row) = self.read_raw()? {
+                    self.seen.push(row);
+                }
+            }
+            return Ok(self.seen.get(index).cloned());
+        }
+        if let Some((_, row)) = self.window.iter().find(|(at, _)| *at == index) {
+            return Ok(Some(row.clone()));
+        }
+        if index < self.consumed {
+            return Err(self.forward_only());
+        }
+        while self.consumed <= index {
+            let at = self.consumed;
+            match self.read_raw()? {
+                Some(row) => {
+                    self.window.push_back((at, row));
+                    if self.window.len() > 2 {
+                        self.window.pop_front();
+                    }
+                }
+                None => return Ok(None),
+            }
+        }
+        Ok(self.window.back().map(|(_, row)| row.clone()))
+    }
+
+    fn forward_only(&self) -> Error {
+        Error::new(format!(
+            "the iterator of {} reads forward only; make the find scrollable to move back",
+            self.entity_name
+        ))
+    }
+
+    /// The next database row, decrypted; `None` at the end, which closes the stream.
+    fn read_raw(&mut self) -> Result<Option<EntityValue>, Error> {
+        if !self.open {
+            return Ok(None);
         }
         let Some(tx) = self.tx.clone() else {
             return Ok(None);
@@ -625,6 +1008,7 @@ impl EntityListIterator {
         let row = tx.with_connection(|conn| conn.next_row())?;
         match row {
             Some(row) => {
+                self.consumed += 1;
                 let mapped = map_row(&self.columns, &row);
                 let facade = self.facade.clone();
                 let hook = facade.clone();
@@ -638,6 +1022,11 @@ impl EntityListIterator {
                 Ok(None)
             }
         }
+    }
+
+    /// A row as the caller gets it, reading its localized fields when they are read.
+    fn emit(&self, row: EntityValue) -> Result<EntityValue, Error> {
+        Ok(row.with_l10n(self.l10n.as_ref()))
     }
 
     pub fn close(&mut self) -> Result<(), Error> {
@@ -679,8 +1068,52 @@ mod tests {
         (facade, tape)
     }
 
+    /// Java's `EntityListIterator`: a scrollable cursor moves back and jumps; a forward-only one refuses to move back.
     #[test]
-    fn select_field_reads_only_those_columns_and_rejects_a_missing_one() {
+    fn a_scrollable_iterator_moves_back_and_jumps_and_a_forward_one_does_not() {
+        let (facade, _tape) = seeded();
+        let id = |row: Option<crate::entity::EntityValue>| {
+            row.and_then(|row| row.get("testId").and_then(Value::as_str).map(str::to_string))
+        };
+        let tx = facade.transactions_for("moqui.test.TestEntity").unwrap();
+        tx.run(crate::transaction::TransactionAttribute::UseOrBegin, None, || {
+            let mut scroll = facade
+                .find("moqui.test.TestEntity")?
+                .order_by("testId", false)
+                .scrollable(true)
+                .iterator()?;
+            assert!(scroll.has_next()?);
+            assert_eq!(id(scroll.next_value()?).as_deref(), Some("A"));
+            assert_eq!(id(scroll.next_value()?).as_deref(), Some("B"));
+            assert_eq!(id(scroll.previous_value()?).as_deref(), Some("A"));
+            assert!(scroll.absolute(-1)?);
+            assert_eq!(scroll.current_index(), 2);
+            assert!(!scroll.relative(1)?);
+            let page = scroll.get_partial_list(2, 5)?;
+            assert_eq!(page.len(), 1);
+            assert_eq!(scroll.get_complete_list()?.len(), 2);
+            drop(scroll);
+            let mut third = facade.make_value("moqui.test.TestEntity")?;
+            third.set("testId", Value::string("C"));
+            third.create(&facade)?;
+            let mut forward = facade
+                .find("moqui.test.TestEntity")?
+                .order_by("testId", false)
+                .iterator()?;
+            assert_eq!(id(forward.next_value()?).as_deref(), Some("A"));
+            assert!(forward.has_next()?);
+            assert_eq!(id(forward.next_value()?).as_deref(), Some("B"));
+            assert_eq!(id(forward.next_value()?).as_deref(), Some("C"));
+            // The last two rows are kept, so one step back works; the first row is gone.
+            assert_eq!(id(forward.previous_value()?).as_deref(), Some("B"));
+            assert!(forward.absolute(1).is_err());
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn select_field_reads_only_those_columns_and_ignores_a_missing_one() {
         let (facade, tape) = seeded();
         let rows = facade
             .find("moqui.test.TestEntity")
@@ -696,13 +1129,15 @@ mod tests {
         );
         let sql = tape.lock().unwrap().last().cloned().unwrap();
         assert!(sql.starts_with("SELECT \"test_id\" AS \"testId\" FROM"), "{sql}");
-        let err = facade
+        // As Java's `selectField`, a name that is not a field is skipped; with none left every field is read.
+        let rows = facade
             .find("moqui.test.TestEntity")
             .unwrap()
             .select_field("nope")
+            .eq("testId", Value::string("A"))
             .list()
-            .unwrap_err();
-        assert!(err.to_string().contains("no field nope"), "{err}");
+            .unwrap();
+        assert!(rows.values()[0].get("testMedium").is_some(), "every field is read");
     }
 
     #[test]

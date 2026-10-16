@@ -103,6 +103,8 @@ pub(crate) struct Inner {
     /// Starts the overlay cluster on the first `enter_sim`. The mutex also serializes that start.
     sim_starter: Mutex<Option<SimStarter>>,
     slots: Mutex<HashMap<TypeId, Box<dyn Any + Send>>>,
+    /// What is known of the tables, and the groups' DDL settings.
+    pub(crate) tables: super::meta::TableState,
 }
 
 /// Starts the sim overlay and answers its pool. See [`EntityFacade::set_sim_starter`].
@@ -255,6 +257,7 @@ impl EntityFacade {
                 sim_starter: Mutex::new(None),
                 sim_tx: RwLock::new(None),
                 slots: Mutex::new(HashMap::new()),
+                tables: super::meta::TableState::default(),
             }),
         })
     }
@@ -401,6 +404,15 @@ impl EntityFacade {
         self.with_group(entity_name, |_, _, _, tx| Ok(tx.clone()))
     }
 
+    /// Transaction manager of the default group, for work not tied to one entity (Java's transaction facade).
+    pub fn default_transactions(&self) -> Result<TransactionManager, Error> {
+        self.inner
+            .groups
+            .get(&self.inner.default_group)
+            .map(|runtime| runtime.transactions.clone())
+            .ok_or_else(|| Error::new(format!("no entity group named {}", self.inner.default_group)))
+    }
+
     pub fn begin(&self, entity_name: &str, timeout: Option<Duration>) -> Result<bool, Error> {
         self.transactions_for(entity_name)?.begin(timeout)
     }
@@ -478,13 +490,20 @@ impl EntityFacade {
     ) -> Result<T, Error> {
         let model = self.inner.model.model();
         let entity = model.entity(name)?;
-        let group_name = entity.group.as_deref().unwrap_or(self.inner.default_group.as_str());
-        let runtime = self
-            .inner
+        let runtime = self.group_runtime(entity.group.as_deref())?;
+        body(entity, &runtime.dialect, model)
+    }
+
+    /// The runtime of an entity group. A group with no datasource of its own uses the default group's, as Java's
+    /// `getDatasourceFactory` does.
+    fn group_runtime(&self, group: Option<&str>) -> Result<&GroupRuntime, Error> {
+        let default_group = self.inner.default_group.as_str();
+        let group_name = group.unwrap_or(default_group);
+        self.inner
             .groups
             .get(group_name)
-            .ok_or_else(|| Error::new(format!("no transaction manager for entity group {group_name}")))?;
-        body(entity, &runtime.dialect, model)
+            .or_else(|| self.inner.groups.get(default_group))
+            .ok_or_else(|| Error::new(format!("no transaction manager for entity group {group_name}")))
     }
 
     pub(crate) fn with_group<T>(
@@ -492,15 +511,45 @@ impl EntityFacade {
         name: &str,
         body: impl FnOnce(&EntityDefinition, &Dialect, &EntityModel, &TransactionManager) -> Result<T, Error>,
     ) -> Result<T, Error> {
+        self.with_read_group(name, false, body)
+    }
+
+    /// [`Self::with_group`] for a read. With `use_clone`, a group named `{group}#clone...` serves it when one is open,
+    /// as Java's `useClone` reads a clone datasource of the entity's group.
+    pub(crate) fn with_read_group<T>(
+        &self,
+        name: &str,
+        use_clone: bool,
+        body: impl FnOnce(&EntityDefinition, &Dialect, &EntityModel, &TransactionManager) -> Result<T, Error>,
+    ) -> Result<T, Error> {
         let model = self.inner.model.model();
         let entity = model.entity(name)?;
-        let group_name = entity.group.as_deref().unwrap_or(self.inner.default_group.as_str());
-        let runtime = self
-            .inner
-            .groups
-            .get(group_name)
-            .ok_or_else(|| Error::new(format!("no transaction manager for entity group {group_name}")))?;
+        let runtime = if use_clone {
+            let group = entity.group.as_deref().unwrap_or(self.inner.default_group.as_str());
+            let prefix = format!("{group}#clone");
+            let mut clones: Vec<&String> = self
+                .inner
+                .groups
+                .keys()
+                .filter(|name| name.starts_with(&prefix))
+                .collect();
+            clones.sort();
+            match clones.first() {
+                Some(clone) => &self.inner.groups[*clone],
+                None => self.group_runtime(entity.group.as_deref())?,
+            }
+        } else {
+            self.group_runtime(entity.group.as_deref())?
+        };
         body(entity, &runtime.dialect, model, &runtime.transactions)
+    }
+
+    /// The names of the open entity groups, the default first.
+    pub fn group_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.inner.groups.keys().cloned().collect();
+        names.sort();
+        names.sort_by_key(|name| *name != self.inner.default_group);
+        names
     }
 
     fn edit_flags(&self, edit: impl FnOnce(&mut EntityFlags)) {

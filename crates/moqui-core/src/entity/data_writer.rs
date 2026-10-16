@@ -211,27 +211,33 @@ impl EntityDataWriter {
             .collect()
     }
 
-    /// `writer`: every record in one document. Returns the text and how many records it has.
+    /// `writer`: every record in one document. Returns the text and how many records it has. As Java, a failure (CSV
+    /// asked for more than one entity, an entity not defined, a find that fails) is logged and a message error, and
+    /// what was written so far comes back with a count of 0.
     ///
     /// # Errors
     ///
-    /// Returns an error when an entity is not defined, a find fails, or CSV is asked for more than one entity.
+    /// None at present; the `Result` is kept for callers.
     pub fn text(&self) -> Result<(String, u64), Error> {
         let names = self.active_names();
         if self.file_type == DataFileType::Csv && names.len() != 1 {
-            return Err(Error::new("Cannot write to single CSV file with multiple entity names"));
+            add_error("Cannot write to single CSV file with multiple entity names");
+            return Ok((String::new(), 0));
         }
         let mut out = Vec::new();
-        let written = self.write_document(&names, &mut out)?;
-        let text = String::from_utf8(out).map_err(|err| Error::new("data text is not utf-8").with_source(err))?;
-        Ok((text, written))
+        // As Java's `writer`: records that cannot be read are logged and a message error, and the text written so far
+        // is returned.
+        let written = match self.write_document(&names, &mut out) {
+            Ok(written) => written,
+            Err(err) => write_failed("text", &err),
+        };
+        Ok((String::from_utf8_lossy(&out).into_owned(), written))
     }
 
     /// `file`: one file. The extension of the name sets the type.
     ///
-    /// # Errors
-    ///
-    /// Returns an error when the file cannot be written or the records cannot be read.
+    /// A file that cannot be written, or records that cannot be read, are logged and a message error, and 0 is
+    /// returned, as in Java.
     pub fn file(&mut self, filename: &str) -> Result<u64, Error> {
         if Path::new(filename).exists() {
             add_error(format!("File {filename} already exists."));
@@ -245,16 +251,18 @@ impl EntityDataWriter {
             add_error("Cannot write to single CSV file with multiple entity names");
             return Ok(0);
         }
-        let written = write_new(Path::new(filename), |out| self.write_document(&names, out))?;
+        let written = match write_new(Path::new(filename), |out| self.write_document(&names, out)) {
+            Ok(written) => written,
+            Err(err) => return Ok(write_failed(filename, &err)),
+        };
         add_message(format!("Wrote {written} records to file {filename}"));
         Ok(written)
     }
 
     /// `zipFile`: one file inside a new zip. The extension of the name in the zip sets the type.
     ///
-    /// # Errors
-    ///
-    /// Returns an error when the zip cannot be written or the records cannot be read.
+    /// A zip that cannot be written, or records that cannot be read, are logged and a message error, and 0 is
+    /// returned, as in Java.
     pub fn zip_file(&mut self, filename_within_zip: &str, zip_filename: &str) -> Result<u64, Error> {
         if Path::new(zip_filename).exists() {
             add_error(format!("File {zip_filename} already exists."));
@@ -275,7 +283,11 @@ impl EntityDataWriter {
             let written = self.write_document(&names, &mut zip)?;
             zip.finish().map_err(|err| zip_error(zip_filename, err))?;
             Ok(written)
-        })?;
+        });
+        let written = match written {
+            Ok(written) => written,
+            Err(err) => return Ok(write_failed(zip_filename, &err)),
+        };
         add_message(format!("Wrote {written} records to file {zip_filename}"));
         Ok(written)
     }
@@ -283,9 +295,11 @@ impl EntityDataWriter {
     /// `directory`: a file per entity that has records, named for the entity. A file that is there already is
     /// skipped with a message error.
     ///
+    /// An entity whose file cannot be written is logged and a message error, and the other entities are still written.
+    ///
     /// # Errors
     ///
-    /// Returns an error when a file cannot be written or the records cannot be read.
+    /// Returns an error when the directory cannot be created.
     pub fn directory(&self, path: &str) -> Result<u64, Error> {
         let dir = Path::new(path);
         if !dir.exists() {
@@ -297,18 +311,30 @@ impl EntityDataWriter {
             return Ok(0);
         }
         let mut written = 0;
+        // An entity that cannot be written is logged and a message error; the other entities are still written.
         for name in self.active_names() {
-            if !self.has_records(&name)? {
-                continue;
+            match self.has_records(&name) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(err) => {
+                    write_failed(&format!("{path} for entity {name}"), &err);
+                    continue;
+                }
             }
             let filename = format!("{path}/{name}.{}", self.file_type.extension());
             if Path::new(&filename).exists() {
                 add_error(format!("File {filename} already exists, skipping entity {name}."));
                 continue;
             }
-            let count = write_new(Path::new(&filename), |out| self.write_entity_file(&name, out))?;
-            add_message(format!("Wrote {count} records to file {filename}"));
-            written += count;
+            match write_new(Path::new(&filename), |out| self.write_entity_file(&name, out)) {
+                Ok(count) => {
+                    add_message(format!("Wrote {count} records to file {filename}"));
+                    written += count;
+                }
+                Err(err) => {
+                    write_failed(&filename, &err);
+                }
+            }
         }
         Ok(written)
     }
@@ -316,15 +342,14 @@ impl EntityDataWriter {
     /// `zipDirectory`: a new zip with an entry per entity that has records, under `path_within_zip`. Each entry is
     /// written as its records are read.
     ///
-    /// # Errors
-    ///
-    /// Returns an error when the zip cannot be written or the records cannot be read.
+    /// A zip that cannot be written, or records that cannot be read, are logged and a message error, and 0 is
+    /// returned, as in Java.
     pub fn zip_directory(&self, path_within_zip: &str, zip_filename: &str) -> Result<u64, Error> {
         if Path::new(zip_filename).exists() {
             add_error(format!("File {zip_filename} already exists."));
             return Ok(0);
         }
-        write_new(Path::new(zip_filename), |out| {
+        let written = write_new(Path::new(zip_filename), |out| {
             let mut zip = ZipWriter::new(out);
             let mut written = 0;
             for name in self.active_names() {
@@ -350,7 +375,8 @@ impl EntityDataWriter {
             }
             zip.finish().map_err(|err| zip_error(zip_filename, err))?;
             Ok(written)
-        })
+        });
+        Ok(written.unwrap_or_else(|err| write_failed(zip_filename, &err)))
     }
 
     /// The file start, each entity's records (after its CSV header), and the file end.
@@ -570,6 +596,13 @@ fn entry_options() -> SimpleFileOptions {
 
 fn zip_error(zip_filename: &str, err: ZipError) -> Error {
     Error::new(format!("could not write zip {zip_filename}")).with_source(err)
+}
+
+/// As Java's `EntityDataWriterImpl`, a write that fails is logged and a message error, and nothing is counted for it.
+fn write_failed(target: &str, err: &Error) -> u64 {
+    tracing::warn!(error = %err, "Error writing data to {target}");
+    add_error(format!("Error writing data to {target}: {}", err.message()));
+    0
 }
 
 fn add_message(text: String) {

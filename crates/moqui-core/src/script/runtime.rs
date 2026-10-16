@@ -1243,7 +1243,29 @@ fn panic_message(payload: Box<dyn Any + Send>) -> String {
 }
 
 fn throw_lib(ctx: &Ctx<'_>, err: &moqui_lib::error::Error) -> JsError {
-    Exception::throw_message(ctx, err.message())
+    throw_diagnostic(ctx, err.message(), &err.diagnostic())
+}
+
+fn throw_context(ctx: &Ctx<'_>, err: &Error) -> JsError {
+    throw_diagnostic(ctx, err.message(), &err.diagnostic())
+}
+
+/// Keep `error.message` unchanged for scripts that catch or classify errors. Source diagnostics
+/// belong to the stack, alongside the JavaScript call site, not in the exception's message.
+fn throw_diagnostic(ctx: &Ctx<'_>, message: &str, diagnostic: &str) -> JsError {
+    match Exception::from_message(ctx.clone(), message) {
+        Ok(exception) => {
+            let detail = diagnostic.strip_prefix(message).unwrap_or(diagnostic);
+            if !detail.is_empty() {
+                let stack = exception.stack().unwrap_or_default();
+                if let Err(err) = exception.as_object().set("stack", format!("{stack}{detail}\n")) {
+                    return err;
+                }
+            }
+            exception.throw()
+        }
+        Err(err) => err,
+    }
 }
 
 /// `ec` is an own property of `globalThis`, so the bare-name proxy does not hide it.
@@ -1840,7 +1862,8 @@ mod tests {
         assert_eq!(plain("reached"), Some("true".to_string()));
 
         let err = run_script_location(&throws).expect_err("throws");
-        assert!(err.message().contains("eval_script:3"), "{}", err.message());
+        assert!(err.message().contains(&format!("{throws}:3:")), "{}", err.message());
+        assert!(!err.diagnostic().contains("Rust:"), "{}", err.diagnostic());
         assert_eq!(plain("thrown"), Some("1".to_string()));
 
         // The host's globals are read-only: an assignment throws, in sloppy code too, and does not replace them for the

@@ -22,11 +22,11 @@ use std::sync::{Arc, RwLock};
 use indexmap::IndexMap;
 
 use moqui_lib::node::MNode;
-use moqui_lib::object::{is_empty, Value};
+use moqui_lib::object::{to_plain_string, Value};
 
 use super::call;
 use crate::context::{Error, ErrorKind, ExecutionContext, ExecutionContextFactory};
-use crate::entity::EntityFacade;
+use crate::entity::{sensitive, EntityFacade};
 
 /// The REST resources of a factory, read once from its components' `service/*.rest.xml` files.
 struct Roots {
@@ -53,7 +53,12 @@ pub fn run(path: &[&str], method: &str, parameters: &BTreeMap<String, Value>) ->
     }
     let method = method.trim().to_ascii_lowercase();
     let mut params = parameters.clone();
-    let roots = current_roots()?;
+    let mut roots = current_roots()?;
+    // As Java's `getRootResourceNode`: a root not loaded reads the REST files again, for one added since. Here at
+    // most once in ten seconds, so requests for unknown roots do not read the files each time.
+    if !roots.resources.contains_key(path[0]) && miss_reload_due() {
+        roots = reload_current_roots()?;
+    }
     let root = roots.resources.get(path[0]).ok_or_else(|| {
         Error::of_kind(
             ErrorKind::NotFound,
@@ -70,7 +75,8 @@ pub fn run(path: &[&str], method: &str, parameters: &BTreeMap<String, Value>) ->
 ///
 /// Returns an error when no context is entered.
 pub fn root_resource_infos() -> Result<Vec<Value>, Error> {
-    let roots = current_roots()?;
+    // Java's `getFreshRootResources` reads the files again.
+    let roots = reload_current_roots()?;
     Ok(roots.resources.values().map(|node| resource_info(node, true)).collect())
 }
 
@@ -159,6 +165,27 @@ fn current_roots() -> Result<Arc<Roots>, Error> {
     let factory = ExecutionContext::with_current(|ctx| Arc::clone(ctx.factory()))
         .ok_or_else(|| Error::new("no execution context is entered"))?;
     Ok(roots_of(&factory))
+}
+
+/// True at most once in ten seconds, process wide.
+fn miss_reload_due() -> bool {
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|err| err.into_inner());
+    let due = last.is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(10));
+    if due {
+        *last = Some(std::time::Instant::now());
+    }
+    due
+}
+
+/// Read the REST files again and keep what they define now.
+fn reload_current_roots() -> Result<Arc<Roots>, Error> {
+    let factory = ExecutionContext::with_current(|ctx| Arc::clone(ctx.factory()))
+        .ok_or_else(|| Error::new("no execution context is entered"))?;
+    let shared = factory.extension::<Shared>(|factory| RwLock::new(Arc::new(load(factory))));
+    let fresh = Arc::new(load(&factory));
+    *shared.write().unwrap_or_else(|err| err.into_inner()) = Arc::clone(&fresh);
+    Ok(fresh)
 }
 
 fn roots_of(factory: &Arc<ExecutionContextFactory>) -> Arc<Roots> {
@@ -548,19 +575,48 @@ fn run_entity(
     let mut anonymous = PathFrame::default();
     anonymous.apply_anonymous(auth)?;
     let facade = current_facade()?;
-    match operation {
+    // As Java's `RestApi`, identity-admin entities are never readable here; secret-config reads are allowed on a
+    // declared resource and writes need ADMIN. `UserAccount` writes lose the password fields, and the identity
+    // fields unless the caller is ADMIN. Results never carry the password fields.
+    let full_name = facade
+        .with_entity(name, |entity, _, _| Ok(entity.full_name.clone()))
+        .unwrap_or_else(|_| name.to_string());
+    let refused = |what: &str| {
+        Err(Error::of_kind(
+            ErrorKind::Unauthorized,
+            format!("Entity {full_name} is not {what} through this REST resource"),
+        ))
+    };
+    let result = match operation {
+        "list" | "one" | "count" if sensitive::is_identity_admin_entity(&full_name) => return refused("available"),
         "list" | "one" => find_entity(&facade, name, master_name, operation, params),
         "count" => count_entity(&facade, name, params),
         "create" | "update" | "store" | "delete" => {
+            if sensitive::is_identity_admin_entity(&full_name)
+                || (sensitive::is_secret_config_entity(&full_name) && !crate::user::is_in_group("ADMIN")?)
+            {
+                return refused("writable");
+            }
+            let mut parms = params.clone();
+            if operation != "delete" && sensitive::is_user_account_entity(&full_name) {
+                sensitive::remove_user_account_secrets(&mut parms);
+                if !crate::user::is_in_group("ADMIN")? {
+                    sensitive::remove_user_account_identity(&mut parms);
+                }
+            }
             let service = format!("{operation}#{name}");
-            Ok(value_map(call::sync(&service, params)?))
+            Ok(value_map(call::sync(&service, &parms)?))
         }
         other => Err(Error::new(format!(
             "Entity operation {other} not supported, must be one of: one, list, count, create, update, store, delete"
         ))),
-    }
+    }?;
+    Ok(sensitive::strip_user_account_secrets(result))
 }
 
+/// Java's `MethodEntity` one and list: the search form conditions of the parameters. `one` is the first row found,
+/// without its null fields, or null; a list is at most 100 rows unless `pageNoLimit` is `true`, with its page numbers
+/// for the response headers. A master name gives the master graph of each row.
 fn find_entity(
     facade: &EntityFacade,
     name: &str,
@@ -568,47 +624,58 @@ fn find_entity(
     operation: &str,
     params: &BTreeMap<String, Value>,
 ) -> Result<Value, Error> {
-    let mut parms = params.clone();
-    if let Some(master) = master_name {
-        parms
-            .entry("master".to_string())
-            .or_insert_with(|| Value::string(master));
-    }
-    let found = match facade.rest("find", name, &parms) {
-        Ok(value) => value,
-        Err(err) if operation == "one" && err.message().contains("No value found") => return Ok(Value::Null),
-        Err(err) => return Err(err.into()),
+    let find = facade
+        .find(name)?
+        .search_form_map(params, &BTreeMap::new(), "", "", false)?
+        .find;
+    let master = master_name.filter(|master| !master.is_empty());
+    let as_value = |row: &crate::entity::EntityValue| -> Result<Value, Error> {
+        match master {
+            Some(master) => Ok(crate::entity::query_rest::master_value(facade, row, master)?),
+            None => Ok(Value::Map(
+                row.fields()
+                    .iter()
+                    .filter(|(_, value)| !value.is_null())
+                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .collect(),
+            )),
+        }
     };
-    if operation == "list" {
-        return Ok(match found {
-            Value::List(_) => found,
-            other => Value::List(vec![other]),
-        });
+    if operation == "one" {
+        return match find.one()? {
+            Some(row) => as_value(&row),
+            None => Ok(Value::Null),
+        };
     }
-    match found {
-        Value::List(items) => match items.len() {
-            0 => Ok(Value::Null),
-            1 => Ok(items.into_iter().next().unwrap_or(Value::Null)),
-            count => Err(Error::new(format!("find one found {count} rows"))),
-        },
-        other => Ok(other),
+    let no_limit = params
+        .get("pageNoLimit")
+        .is_some_and(|value| to_plain_string(value) == "true");
+    let find = if find.limit_value().is_none() && !no_limit {
+        find.limit(100)
+    } else {
+        find
+    };
+    let (limit, offset) = (find.limit_value(), find.offset_value());
+    let total = find.clone().count()?;
+    crate::entity::query_rest::note_page_info(limit, offset, params, total, false);
+    let rows = find.list()?;
+    let mut items = Vec::with_capacity(rows.len());
+    for row in rows.iter() {
+        items.push(as_value(row)?);
     }
+    Ok(Value::List(items))
 }
 
+/// Java's `MethodEntity` count: the search form conditions of the parameters, the total also in `X-Total-Count`.
 fn count_entity(facade: &EntityFacade, name: &str, params: &BTreeMap<String, Value>) -> Result<Value, Error> {
-    let names = facade.with_entity(name, |entity, _, _| {
-        Ok(entity.fields.iter().map(|field| field.name.clone()).collect::<Vec<_>>())
-    })?;
-    let mut find = facade.find(name)?;
-    for field in names {
-        if let Some(value) = params.get(&field) {
-            if !is_empty(value) && !matches!(value, Value::Map(_) | Value::List(_)) {
-                find = find.eq(&field, value.clone());
-            }
-        }
-    }
+    let count = facade
+        .find(name)?
+        .search_form_map(params, &BTreeMap::new(), "", "", false)?
+        .find
+        .count()?;
+    crate::entity::query_rest::note_page_info(None, None, params, count, true);
     let mut entries = BTreeMap::new();
-    entries.insert("count".to_string(), Value::I64(find.count()?));
+    entries.insert("count".to_string(), Value::I64(count));
     Ok(value_map(entries))
 }
 
@@ -820,6 +887,77 @@ mod tests {
             crate::context::ErrorKind::NotFound,
             "{err}"
         );
+    }
+
+    /// As Java's `RestApi`: identity-admin entities are refused, a `UserAccount` write loses the password fields and,
+    /// for a caller who is not ADMIN, the identity fields, secret-config writes need ADMIN, and results never carry
+    /// the password fields.
+    #[test]
+    fn entity_resources_keep_sensitive_entities_and_fields_out() {
+        let dir = std::env::temp_dir().join(format!("moqui-rest-sensitive-{}", std::process::id()));
+        let _guard = DirGuard(dir.clone());
+        std::fs::create_dir_all(dir.join("service")).unwrap();
+        std::fs::write(
+            dir.join("service/sec.rest.xml"),
+            r#"<resource name="sec" require-authentication="false">
+                <resource name="keys"><method type="get"><entity name="moqui.security.UserLoginKey" operation="list"/></method></resource>
+                <resource name="users">
+                    <method type="get"><entity name="moqui.security.UserAccount" operation="list"/></method>
+                    <method type="post"><entity name="moqui.security.UserAccount" operation="create"/></method>
+                </resource>
+                <resource name="servers"><method type="post"><entity name="moqui.basic.email.EmailServer" operation="create"/></method></resource>
+            </resource>"#,
+        )
+        .unwrap();
+        let facade = crate::testing::open();
+        let ctx = ExecutionContextFactory::test_context();
+        install(ctx.factory(), &[dir.join("service/sec.rest.xml")]);
+        ctx.factory().set_entity(facade.clone());
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        create(
+            &facade,
+            "moqui.security.UserAccount",
+            &[("userId", "U1"), ("username", "u1"), ("currentPassword", "hash")],
+        );
+        let unauthorized =
+            |err: &crate::context::Error| crate::context::ErrorKind::of(err) == crate::context::ErrorKind::Unauthorized;
+
+        let err = run(&["sec", "keys"], "get", &BTreeMap::new()).unwrap_err();
+        assert!(unauthorized(&err), "{err}");
+
+        let listed = run(&["sec", "users"], "get", &BTreeMap::new()).unwrap();
+        let Value::List(rows) = &listed else {
+            panic!("list {listed:?}")
+        };
+        let Value::Map(row) = &rows[0] else {
+            panic!("row {listed:?}")
+        };
+        assert_eq!(row.get("userId").and_then(Value::as_str), Some("U1"));
+        assert!(!row.contains_key("currentPassword"), "{row:?}");
+
+        let mut params = BTreeMap::new();
+        params.insert("userId".to_string(), Value::string("U2"));
+        params.insert("username".to_string(), Value::string("u2"));
+        params.insert("currentPassword".to_string(), Value::string("chosen"));
+        run(&["sec", "users"], "post", &params).unwrap();
+        let stored = facade
+            .find("moqui.security.UserAccount")
+            .unwrap()
+            .eq("userId", Value::string("U2"))
+            .one()
+            .unwrap()
+            .expect("created");
+        assert!(stored.get("currentPassword").is_none_or(Value::is_null));
+        assert!(
+            stored.get("username").is_none_or(Value::is_null),
+            "identity fields need ADMIN"
+        );
+
+        let mut server = BTreeMap::new();
+        server.insert("emailServerId".to_string(), Value::string("E1"));
+        let err = run(&["sec", "servers"], "post", &server).unwrap_err();
+        assert!(unauthorized(&err), "{err}");
     }
 
     #[test]

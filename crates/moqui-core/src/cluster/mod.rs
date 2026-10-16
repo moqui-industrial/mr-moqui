@@ -227,7 +227,18 @@ pub fn apply_remote(facade: &EntityFacade, topic: &str, message: &TopicMessage) 
             .and_then(serde_json::Value::as_str)
             .filter(|name| !name.is_empty())
             .ok_or_else(|| Error::new("entity-cache-invalidate body has no entityName"))?;
-        crate::entity::cache::clear_one_cache(facade, name).map_err(Error::from)?;
+        // With the written row's key, only the cached finds it may have changed go.
+        let primary_key: Option<std::collections::BTreeMap<String, Value>> = message
+            .body
+            .get("primaryKey")
+            .and_then(serde_json::Value::as_object)
+            .filter(|keys| !keys.is_empty())
+            .map(|keys| {
+                keys.iter()
+                    .map(|(name, value)| (name.clone(), moqui_lib::json::from_json(value)))
+                    .collect()
+            });
+        crate::entity::cache::clear_one_cache(facade, name, primary_key.as_ref()).map_err(Error::from)?;
     } else if topic != NOTIFICATION_MESSAGE {
         return Err(Error::new(format!("unknown topic {topic}")));
     }

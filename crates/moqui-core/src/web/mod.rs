@@ -1338,7 +1338,7 @@ pub(crate) fn is_production() -> bool {
 /// instances get the message.
 pub(crate) fn error_text(status: u16, err: &Error) -> String {
     if status == 500 && is_production() {
-        format!("internal error, id {}", log_error_id(err))
+        format!("internal error, id {}", log_error_id(&err.diagnostic()))
     } else {
         err.message().to_string()
     }

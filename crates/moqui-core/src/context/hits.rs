@@ -1180,7 +1180,7 @@ mod tests {
     }
 
     #[test]
-    fn fk_reads_are_counted_apart_and_still_refuse_a_missing_parent() {
+    fn fk_reads_are_counted_apart_when_a_load_makes_dummy_parents() {
         let world = world();
         let _entered = world.context.enter();
         let _authz = world.context.disable_authz();
@@ -1192,7 +1192,10 @@ mod tests {
         transition.set("statusFlowId", Value::string("Default"));
         transition.set("statusId", Value::string("Missing"));
         transition.set("toStatusId", Value::string("AlsoMissing"));
-        assert!(transition.create(&world.facade).is_err());
+        // Foreign keys are only checked with dummy foreign keys, as Java's data loader does.
+        world.facade.set_dummy_fks(true);
+        transition.create(&world.facade).unwrap();
+        world.facade.set_dummy_fks(false);
         // A read made after the FK check is counted under its own sub type again.
         world.facade.find("moqui.basic.StatusFlow").unwrap().list().unwrap();
         world.context.factory().flush_artifact_hits().unwrap();
@@ -1202,7 +1205,8 @@ mod tests {
             .filter(|bin| text(bin, "artifactName") == "moqui.basic.StatusItem")
             .map(|bin| text(bin, "artifactSubType"))
             .collect();
-        assert_eq!(status_items, ["fk-check"]);
+        // The check reads are `fk-check`, not `one`; the dummy row is a create.
+        assert_eq!(status_items, ["create", "fk-check"]);
         assert!(
             bins.iter()
                 .any(|bin| text(bin, "artifactName") == "moqui.basic.StatusFlow"
@@ -1260,7 +1264,11 @@ mod tests {
             .one()
             .unwrap()
             .unwrap();
-        assert_eq!(found.get("description"), Some(&Value::string("Translated")));
+        assert_eq!(
+            found.get_localized(&world.facade, "description"),
+            Some(Value::string("Translated"))
+        );
+        assert_eq!(found.get("description"), Some(&Value::string("First")));
     }
 
     #[test]

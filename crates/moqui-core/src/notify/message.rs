@@ -858,15 +858,24 @@ fn touch_user(notification_message_id: &str, user_id: &str, field: &str) -> Resu
 /// # Errors
 ///
 /// Returns an error when the notification cannot be published.
-pub(crate) fn service_job_error(job_name: &str, errors: &str) -> Result<(), Error> {
+pub(crate) fn service_job_error(
+    job_name: &str,
+    job_run_id: &str,
+    errors: &str,
+    user_ids: &[String],
+    extra: IndexMap<String, Value>,
+) -> Result<(), Error> {
     let mut message = IndexMap::new();
     message.insert("jobName".to_string(), Value::string(job_name));
     message.insert("errors".to_string(), Value::string(errors));
     message.insert("message".to_string(), Value::string(errors));
+    // Java's `serviceCallRun`, `parameters` and `results`.
+    message.extend(extra);
     let mut note = NotificationMessage::new();
     note.topic("ServiceJobError")
         .notification_type("danger")
-        .title(format!("Job Error {job_name}"))
+        .title(format!("Job Error {job_name} [{job_run_id}] {errors}"))
         .message_map(message)
+        .user_ids(user_ids.iter().cloned())
         .send()
 }

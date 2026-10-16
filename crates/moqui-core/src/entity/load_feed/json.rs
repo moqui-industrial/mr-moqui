@@ -24,8 +24,8 @@ use moqui_lib::object::Value;
 use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 
 use super::loader::{
-    apply_key_pairs, call_data_file_service, decode_binary, entity_defined, inherit_pk_fields, shape_of, shared_pks,
-    skip_type, store_record, Record,
+    apply_default_parameters, apply_default_values, apply_key_pairs, call_data_file_service, decode_binary,
+    entity_defined, inherit_pk_fields, shape_of, shared_pks, skip_type, store_record, Record,
 };
 use super::pull::Pull;
 use super::{DataFileService, LoadOptions};
@@ -114,18 +114,17 @@ fn load_json_document(facade: &EntityFacade, location: &str, value: Json, option
     let entity_name =
         json_object_string(&pairs, "_entity").ok_or_else(|| Error::new(format!("json {location} has no _entity")))?;
     if entity_defined(facade, &entity_name) {
-        let record = json_record(facade, &entity_name, &pairs)?;
+        let mut record = json_record(facade, &entity_name, &pairs)?;
+        apply_default_values(facade, options, &mut record);
         store_record(facade, options, &record)
     } else if entity_name.contains('#') {
-        call_data_file_service(
-            facade,
-            options,
-            DataFileService {
-                name: entity_name,
-                location: location.to_string(),
-                parameters: json_service_parameters(&pairs)?,
-            },
-        )?;
+        let mut service = DataFileService {
+            name: entity_name,
+            location: location.to_string(),
+            parameters: json_service_parameters(&pairs)?,
+        };
+        apply_default_parameters(options, &mut service);
+        call_data_file_service(facade, options, service)?;
         Ok(0)
     } else {
         Err(Error::new(format!(

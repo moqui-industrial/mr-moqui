@@ -34,7 +34,8 @@ pub struct NameReplace {
 ///
 /// String fields are `None` when the attribute is absent. XSD defaults are not filled in.
 /// `never_nulls`, `never_try_insert`, and `use_binary_type_for_blob` are false when absent.
-/// `use_foreign_key_indexes` and `use_pk_constraint_names` are true unless the attribute is `false`.
+/// `use_foreign_key_indexes`, `use_pk_constraint_names`, `use_foreign_keys`, `use_indexes` and `use_indexes_unique` are
+/// true unless the attribute is `false`.
 /// `sql_types` holds only that database's `<database-type>` entries.
 /// `placeholder` is always [`PLACEHOLDER`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +64,14 @@ pub struct Dialect {
     pub for_update: Option<String>,
     pub use_foreign_key_indexes: bool,
     pub use_pk_constraint_names: bool,
+    /// `use-foreign-keys`: false creates no foreign keys.
+    pub use_foreign_keys: bool,
+    /// `use-indexes`: false creates no declared indexes.
+    pub use_indexes: bool,
+    /// `use-indexes-unique`: false creates a declared unique index as a plain one.
+    pub use_indexes_unique: bool,
+    /// `use-indexes-unique-where-not-null`: a unique index is `CREATE UNIQUE WHERE NOT NULL INDEX` (DB2).
+    pub use_indexes_unique_where_not_null: bool,
     /// `<database-type type>` to `sql-type`. A missing type is left for the dictionary default.
     pub sql_types: BTreeMap<String, String>,
     pub name_replaces: Vec<NameReplace>,
@@ -193,6 +202,13 @@ fn parse_database(node: &MNode) -> Result<Dialect, Error> {
         for_update: node.attribute("for-update").map(|value| value.trim().to_string()),
         use_foreign_key_indexes: !matches!(optional(node, "use-foreign-key-indexes").as_deref(), Some("false")),
         use_pk_constraint_names: !matches!(optional(node, "use-pk-constraint-names").as_deref(), Some("false")),
+        use_foreign_keys: !matches!(optional(node, "use-foreign-keys").as_deref(), Some("false")),
+        use_indexes: !matches!(optional(node, "use-indexes").as_deref(), Some("false")),
+        use_indexes_unique: !matches!(optional(node, "use-indexes-unique").as_deref(), Some("false")),
+        use_indexes_unique_where_not_null: matches!(
+            optional(node, "use-indexes-unique-where-not-null").as_deref(),
+            Some("true")
+        ),
         sql_types,
         name_replaces,
     })

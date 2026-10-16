@@ -568,12 +568,27 @@ fn set_and_date_are_told_by_their_class_not_by_a_name() {
     )
     .unwrap();
     // a subclass of Set is a Set, and a name alone is not
-    assert!(matches!(&map["sub"], moqui_lib::object::Value::Map(m) if m.contains_key("__set__")), "{map:?}");
-    assert!(matches!(&map["fake"], moqui_lib::object::Value::Map(m) if !m.contains_key("__set__")), "{map:?}");
+    assert!(
+        matches!(&map["sub"], moqui_lib::object::Value::Map(m) if m.contains_key("__set__")),
+        "{map:?}"
+    );
+    assert!(
+        matches!(&map["fake"], moqui_lib::object::Value::Map(m) if !m.contains_key("__set__")),
+        "{map:?}"
+    );
     // a subclass of Date is a time, an object with its own getTime or only a Date prototype is not
-    assert!(matches!(&map["when"], moqui_lib::object::Value::Timestamp(_)), "{map:?}");
-    assert!(!matches!(&map["spoof"], moqui_lib::object::Value::Timestamp(_)), "{map:?}");
-    assert!(!matches!(&map["bare"], moqui_lib::object::Value::Timestamp(_)), "{map:?}");
+    assert!(
+        matches!(&map["when"], moqui_lib::object::Value::Timestamp(_)),
+        "{map:?}"
+    );
+    assert!(
+        !matches!(&map["spoof"], moqui_lib::object::Value::Timestamp(_)),
+        "{map:?}"
+    );
+    assert!(
+        !matches!(&map["bare"], moqui_lib::object::Value::Timestamp(_)),
+        "{map:?}"
+    );
 }
 
 #[test]
@@ -775,4 +790,134 @@ fn order_map_list_action_sorts_an_entity_list() {
     )
     .unwrap();
     holds("context.orderedIds === 'E3,E2,E1'");
+}
+
+/// Java's `callSingle`: a service does not run after an error, unless the call ignores previous errors, and a
+/// transaction marked for rollback runs no more services unless the call asks for a new one.
+#[test]
+fn previous_errors_and_a_rollback_only_transaction_stop_a_service() {
+    clear_context_stack();
+    let context = database();
+    let _entered = context.enter();
+    let path = std::env::temp_dir().join(format!("moqui-gaps-prev-{}.xml", std::process::id()));
+    std::fs::write(
+        &path,
+        r#"<services><service verb="mark" noun="Ran" authenticate="false">
+            <out-parameters><parameter name="ran"/></out-parameters>
+            <actions><set field="ran" value="yes"/></actions></service></services>"#,
+    )
+    .unwrap();
+    assert!(crate::service::lint(std::slice::from_ref(&path)).unwrap().is_empty());
+    holds(
+        r#"(function () {
+            ec.message.addError("earlier");
+            const skipped = ec.service.sync().name("mark#Ran").call();
+            const ran = ec.service.sync().name("mark#Ran").ignorePreviousError(true).call();
+            const kept = ec.message.hasError();
+            ec.message.clearErrors();
+            return (skipped == null || skipped.ran == null) && ran.ran === "yes" && kept;
+        })()"#,
+    );
+    eprintln!(
+        "DBG {:?}",
+        crate::script::eval_value(
+            r#"JSON.stringify([ec.message.errors, ec.service.sync().name("mark#Ran").ignorePreviousError(true).call()])"#
+        )
+    );
+    let facade = context.factory().entity().unwrap();
+    let tx = facade.default_transactions().unwrap();
+    let blocked = tx
+        .run(crate::transaction::TransactionAttribute::UseOrBegin, None, || {
+            tx.set_rollback_only("test")?;
+            crate::service::call::sync("mark#Ran", &std::collections::BTreeMap::new()).map_err(Into::into)
+        })
+        .unwrap_or_default();
+    assert!(!blocked.contains_key("ran"), "{blocked:?}");
+    assert!(
+        context
+            .message()
+            .errors()
+            .iter()
+            .any(|error| error.contains("marked for rollback")),
+        "{:?}",
+        context.message().errors()
+    );
+    context.message().clear_errors();
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Java's `registerCallback` hears of each call, and `special().registerOnRollback()` runs only when the transaction
+/// rolls back.
+#[test]
+fn a_registered_callback_hears_each_call_and_on_end_needs_a_transaction() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    struct Count(AtomicUsize);
+    impl crate::service::ServiceCallback for Count {
+        fn receive_result(
+            &self,
+            _context: &std::collections::BTreeMap<String, moqui_lib::object::Value>,
+            result: &std::collections::BTreeMap<String, moqui_lib::object::Value>,
+        ) {
+            if result.contains_key("ran") {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        fn receive_error(
+            &self,
+            _context: &std::collections::BTreeMap<String, moqui_lib::object::Value>,
+            _error: &moqui_lib::error::Error,
+        ) {
+        }
+    }
+
+    clear_context_stack();
+    let context = database();
+    let _entered = context.enter();
+    let path = std::env::temp_dir().join(format!("moqui-gaps-callback-{}.xml", std::process::id()));
+    std::fs::write(
+        &path,
+        r#"<services><service verb="heard" noun="Call" authenticate="false">
+            <out-parameters><parameter name="ran"/></out-parameters>
+            <actions><set field="ran" value="yes"/></actions></service></services>"#,
+    )
+    .unwrap();
+    assert!(crate::service::lint(std::slice::from_ref(&path)).unwrap().is_empty());
+    let count = Arc::new(Count(AtomicUsize::new(0)));
+    crate::service::register_callback("heard#Call", count.clone());
+    crate::service::sync("heard#Call", &std::collections::BTreeMap::new()).unwrap();
+    crate::service::sync("heard#Call", &std::collections::BTreeMap::new()).unwrap();
+    assert_eq!(count.0.load(Ordering::SeqCst), 2);
+    // With no transaction in place there is nothing to wait for.
+    assert!(crate::service::register_on_end("heard#Call", &std::collections::BTreeMap::new(), true).is_err());
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Java's `EntityListIterator` in a script: next, hasNext, previous, absolute, relative, currentIndex.
+#[test]
+fn a_script_iterator_moves_like_an_entity_list_iterator() {
+    clear_context_stack();
+    let context = database();
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    holds(
+        r#"(function () {
+            for (const id of ["I1", "I2", "I3"]) {
+                const value = ec.entity.makeValue("moqui.basic.Enumeration");
+                value.enumId = id;
+                value.create();
+            }
+            const it = ec.entity.find("moqui.basic.Enumeration").condition("enumId", "in", ["I1", "I2", "I3"])
+                .orderBy("enumId").iterator();
+            const seen = [];
+            let row;
+            while ((row = it.next()) != null) seen.push(row.enumId);
+            const back = it.previous().enumId;
+            const jumped = it.absolute(1) && it.currentIndex() === 1;
+            const moved = it.relative(1) && it.next().enumId === "I3" && !it.hasNext();
+            it.close();
+            return seen.join(",") === "I1,I2,I3" && back === "I3" && jumped && moved;
+        })()"#,
+    );
 }
