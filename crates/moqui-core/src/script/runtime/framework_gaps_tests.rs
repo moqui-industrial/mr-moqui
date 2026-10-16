@@ -176,6 +176,53 @@ fn an_entity_value_is_the_context_of_resource_expand() {
 }
 
 #[test]
+fn an_after_entity_eca_rule_gets_the_original_value_of_an_update() {
+    clear_context_stack();
+    let facade = crate::testing::open_with(
+        &crate::testing::framework_dir(),
+        crate::testing::Options {
+            entity_eca: true,
+            data_feed: false,
+            tape: None,
+        },
+    );
+    let context = ExecutionContextFactory::test_context();
+    context.factory().set_entity(facade.clone());
+    let _entered = context.enter();
+    seed();
+    // an after rule, as the mantle order rules are, sees the row as it was before the update
+    crate::entity::load_feed::add_eca_rules(
+        &facade,
+        r#"<eecas><eeca entity="moqui.basic.Enumeration" on-update="true" get-original-value="true"><actions><script>
+            const seen = ec.entity.makeValue("moqui.basic.EnumerationType");
+            seen.enumTypeId = "SEEN";
+            seen.description = originalValue ? originalValue.description + ">" + description : "none";
+            seen.create();
+        </script></actions></eeca></eecas>"#,
+    )
+    .unwrap();
+    run_script(
+        r#"const value = ec.entity.find("moqui.basic.Enumeration").condition("enumId", "E1").one();
+        value.description = "changed";
+        value.update();"#,
+    )
+    .unwrap();
+    holds(
+        r#"ec.entity.find("moqui.basic.EnumerationType").condition("enumTypeId", "SEEN").one().description === "first>changed""#,
+    );
+}
+
+#[test]
+fn a_null_template_expands_to_nothing() {
+    let context = database();
+    let _entered = context.enter();
+    // `ec.resource.expand(itemDescription, '')` with no description, as the flat discount promotion calls it
+    holds(r#"ec.resource.expand(null, '') === """#);
+    holds(r#"ec.resource.expand(undefined, '') === """#);
+    holds(r#"ec.resource.expandNoL10n(null, '') === """#);
+}
+
+#[test]
 fn delete_with_related_deletes_the_named_rows_and_refuses_when_others_use_the_value() {
     let context = database();
     let _entered = context.enter();

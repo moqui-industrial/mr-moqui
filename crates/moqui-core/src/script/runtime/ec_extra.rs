@@ -93,19 +93,23 @@ fn throw_error(ctx: &Ctx<'_>, err: &Error) -> JsError {
 
 fn resource_expand_l10n<'js>(
     ctx: Ctx<'js>,
-    template: String,
+    template: Option<String>,
     _location: Opt<JsValue<'js>>,
     map: Opt<JsValue<'js>>,
 ) -> rquickjs::Result<String> {
+    // a null template expands to nothing, as in Java
+    let template = template.unwrap_or_default();
     host_guard(&ctx, || expand_with(&ctx, &template, &map, true))
 }
 
 fn resource_expand_no_l10n<'js>(
     ctx: Ctx<'js>,
-    template: String,
+    template: Option<String>,
     _location: Opt<JsValue<'js>>,
     map: Opt<JsValue<'js>>,
 ) -> rquickjs::Result<String> {
+    // a null template expands to nothing, as in Java
+    let template = template.unwrap_or_default();
     host_guard(&ctx, || expand_with(&ctx, &template, &map, false))
 }
 
