@@ -191,6 +191,10 @@ pub(crate) fn assign_primary(facade: &EntityFacade, entity_name: &str) -> Result
     if spec.use_uuid {
         return Ok((spec.pk_field, apply_prefix(spec.prefix.as_deref(), &uuid_v4()?)));
     }
+    // A sim takes its ids from its own bank, as Java's `TransactionCacheDb.nextSeq`.
+    if let Some(id) = super::cache::sim_next_seq(&spec.seq_name) {
+        return Ok((spec.pk_field, apply_prefix(spec.prefix.as_deref(), &id.to_string())));
+    }
     let prepared = facade.with_entity(SEQUENCE_ENTITY, |entity, dialect, _| seq_sql(entity, dialect))?;
     let tx = facade.transactions_for(SEQUENCE_ENTITY)?;
     let id = facade.inner.banks.next_id(&spec.seq_name, spec.stagger, |hint| {
@@ -216,6 +220,9 @@ pub(crate) fn sequenced_id_primary(
     }
     let stagger = stagger.unwrap_or(0);
     let bank_size = bank_size.filter(|size| *size > 0).unwrap_or(DEFAULT_BANK_SIZE);
+    if let Some(id) = super::cache::sim_next_seq(seq_name) {
+        return Ok(id.to_string());
+    }
     let prepared = facade.with_entity(SEQUENCE_ENTITY, |entity, dialect, _| seq_sql(entity, dialect))?;
     let tx = facade.transactions_for(SEQUENCE_ENTITY)?;
     let id = facade.inner.banks.next_id(seq_name, stagger, |hint| {

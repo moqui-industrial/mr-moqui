@@ -324,6 +324,19 @@ mod driver {
     }
 
     impl DbConnection for MysqlConn {
+        fn returns_rows(&mut self, sql: &str) -> Result<Option<bool>, Error> {
+            self.ensure_idle()?;
+            // A statement that does not prepare (some cannot be) is left to the first-word check.
+            match self.conn().prep(sql) {
+                Ok(statement) => {
+                    let columns = statement.num_columns();
+                    let _ = self.conn().close(statement);
+                    Ok(Some(columns > 0))
+                }
+                Err(_) => Ok(None),
+            }
+        }
+
         fn execute(&mut self, sql: &str, params: &[Value]) -> Result<u64, Error> {
             self.ensure_idle()?;
             let mysql_params = to_params(params)?;

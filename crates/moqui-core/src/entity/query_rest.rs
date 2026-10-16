@@ -24,8 +24,8 @@ use std::rc::Rc;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use moqui_db::model::{
-    AliasAll, EntityDefinition, EntityModel, FieldAlias, FieldDefinition, KeyMap, MasterDefinition, MasterDetail,
-    MemberEntity, Relationship,
+    AliasAll, EntityDefinition, FieldAlias, FieldDefinition, KeyMap, MasterDefinition, MasterDetail, MemberEntity,
+    Relationship,
 };
 use moqui_db::sql::{select_view, Condition, FieldRef, LimitOffset, OrderBy};
 use moqui_lib::error::Error;
@@ -35,7 +35,7 @@ use super::exec::{after_statement, query_tx};
 use super::facade::EntityFacade;
 use super::field_rw;
 use super::find::FindValues;
-use super::params::{self, map_row, view_columns};
+use super::params::{map_row, view_columns};
 use super::sensitive;
 use super::value::{EntityArtifact, EntityValue};
 use crate::context::ErrorKind;
@@ -126,6 +126,8 @@ pub fn xml_element(
 /// Pagination numbers for the last entity REST list on this thread.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PageInfo {
+    /// Only `X-Total-Count` is sent, as for a Service REST count.
+    pub count_only: bool,
     pub total: i64,
     pub index: i64,
     pub size: i64,
@@ -153,6 +155,23 @@ pub fn take_page_info() -> Option<PageInfo> {
 
 fn want_page_info() -> bool {
     WANT_PAGE.with(|slot| slot.get())
+}
+
+/// Record the page numbers of a list, or only the total of a count, for the response headers of a REST call that
+/// asked for them.
+pub(crate) fn note_page_info(
+    limit: Option<i64>,
+    offset: Option<i64>,
+    parameters: &BTreeMap<String, Value>,
+    total: i64,
+    count_only: bool,
+) {
+    if !want_page_info() {
+        return;
+    }
+    let mut info = page_numbers(&Page { limit, offset }, parameters, total);
+    info.count_only = count_only;
+    PAGE.with(|slot| slot.set(Some(info)));
 }
 
 pub fn rest(
@@ -190,19 +209,6 @@ pub fn rest(
     parameters.remove("pageNoLimit");
     let result = rest_target(facade, verb, &target, &parameters)?;
     Ok(sensitive::strip_user_account_secrets(result))
-}
-
-/// [`rest`] with no sensitive-entity checks, for Service REST, whose entity resources have their own.
-pub(crate) fn rest_unguarded(
-    facade: &EntityFacade,
-    operation: &str,
-    entity_name: &str,
-    parameters: &BTreeMap<String, Value>,
-) -> Result<Value, Error> {
-    let verb = normalize_operation(operation)?;
-    let mut parameters = parameters.clone();
-    let target = resolve_target(facade, entity_name, &mut parameters)?;
-    rest_target(facade, verb, &target, &parameters)
 }
 
 fn rest_target(
@@ -408,7 +414,8 @@ fn resolve_target(
     }
     take_pk_path(&first, &mut path, parameters, false);
     let mut current = first;
-    if !path.is_empty() {
+    // As Java: each further element names a relationship, followed by the related entity's key values.
+    while !path.is_empty() {
         let relationship_name = path.remove(0);
         let relationship = current
             .relationships
@@ -416,19 +423,17 @@ fn resolve_target(
             .find(|relationship| relationship.matches(&relationship_name))
             .cloned()
             .ok_or_else(|| {
-                Error::new(format!(
-                    "No relationship found with name or alias [{relationship_name}] on entity [{}]",
-                    current.label()
-                ))
+                kinded(
+                    ErrorKind::NotFound,
+                    format!(
+                        "No relationship found with name or alias [{relationship_name}] on entity [{}]",
+                        current.label()
+                    ),
+                )
             })?;
-        let related = load_snap(facade, &relationship.related)?;
+        let related =
+            load_snap(facade, &relationship.related).map_err(|err| kinded(ErrorKind::NotFound, err.message()))?;
         take_pk_path(&related, &mut path, parameters, true);
-        if !path.is_empty() {
-            return Err(Error::new(format!(
-                "Only one relationship step is supported; extra path remains on {}",
-                related.full_name
-            )));
-        }
         current = related;
     }
     Ok(Resolved {
@@ -500,21 +505,12 @@ fn find_rest(facade: &EntityFacade, target: &Resolved, parameters: &BTreeMap<Str
         )?;
         return Ok(node_to_value(&node));
     }
-    let plan = search_plan(facade, &snap.full_name, parameters)?;
-    let page = rest_page(parameters);
-    let mut find = facade.find(&snap.full_name)?;
-    for condition in &plan.conditions {
-        find = find.condition(condition.clone());
-    }
-    for entry in plan.order {
-        find = find.order_by_entry(entry);
-    }
-    if let Some(limit) = page.limit {
-        find = find.limit(limit);
-    }
-    if let Some(offset) = page.offset {
-        find = find.offset(offset);
-    }
+    let find = list_find(facade, &snap.full_name, parameters)?;
+    let page = Page {
+        limit: find.limit_value(),
+        offset: find.offset_value(),
+    };
+    let counter = want_page_info().then(|| find.clone());
     let rows = find.list()?;
     let mut items = Vec::with_capacity(rows.len());
     for row in rows.iter() {
@@ -527,20 +523,34 @@ fn find_rest(facade: &EntityFacade, target: &Resolved, parameters: &BTreeMap<Str
         )?;
         items.push(node_to_value(&node));
     }
-    if want_page_info() {
-        if let Ok(total) = count_matching(facade, &snap.full_name, &plan.conditions) {
+    if let Some(counter) = counter {
+        if let Ok(total) = counter.count() {
             PAGE.with(|slot| slot.set(Some(page_numbers(&page, parameters, total))));
         }
     }
     Ok(Value::List(items))
 }
 
-fn count_matching(facade: &EntityFacade, entity_name: &str, conditions: &[Condition]) -> Result<i64, Error> {
-    let mut find = facade.find(entity_name)?;
-    for condition in conditions {
-        find = find.condition(condition.clone());
-    }
-    find.count()
+/// As Java's list find: the search form conditions, order and paging of the parameters, and never more than 100 rows
+/// when no page is asked for. This port also caps a page asked for at `entity_rest_max_page_size` (1000 by default).
+fn list_find(
+    facade: &EntityFacade,
+    entity_name: &str,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<super::find::EntityFind, Error> {
+    let find = facade
+        .find(entity_name)?
+        .search_form_map(parameters, &BTreeMap::new(), "", "", false)?
+        .find;
+    Ok(match find.limit_value() {
+        None => find.limit(100),
+        Some(limit) if limit > max_page_size() => {
+            let index = parameters.get("pageIndex").and_then(value_i64).unwrap_or(0).max(0);
+            find.offset(index.saturating_mul(max_page_size()))
+                .limit(max_page_size())
+        }
+        Some(_) => find,
+    })
 }
 
 fn page_numbers(page: &Page, parameters: &BTreeMap<String, Value>, total: i64) -> PageInfo {
@@ -562,191 +572,13 @@ fn page_numbers(page: &Page, parameters: &BTreeMap<String, Value>, total: i64) -
     };
     let range_high = index.saturating_mul(divisor).saturating_add(size).min(total.max(0));
     PageInfo {
+        count_only: false,
         total,
         index,
         size,
         max_index,
         range_low,
         range_high,
-    }
-}
-
-struct SearchPlan {
-    conditions: Vec<Condition>,
-    order: Vec<OrderBy>,
-}
-
-fn search_plan(
-    facade: &EntityFacade,
-    entity_name: &str,
-    parameters: &BTreeMap<String, Value>,
-) -> Result<SearchPlan, Error> {
-    facade.with_entity(entity_name, |entity, _, model| {
-        let order = if let Some(value) = parameters.get("orderByField") {
-            parse_order(value)
-                .into_iter()
-                .filter(|entry| entity.field(&entry.field.name).is_some() || entity.alias(&entry.field.name).is_some())
-                .collect()
-        } else {
-            Vec::new()
-        };
-        Ok(SearchPlan {
-            conditions: field_conditions(entity, model, parameters),
-            order,
-        })
-    })
-}
-
-fn field_conditions(
-    entity: &EntityDefinition,
-    model: &EntityModel,
-    parameters: &BTreeMap<String, Value>,
-) -> Vec<Condition> {
-    let mut conditions = Vec::new();
-    for field in &entity.fields {
-        let op_key = format!("{}_op", field.name);
-        if parameters.contains_key(&field.name) || parameters.contains_key(&op_key) {
-            if let Some(condition) = field_op(model, field, parameters, &op_key) {
-                conditions.push(condition);
-            }
-        } else {
-            push_range(&mut conditions, field, parameters);
-        }
-    }
-    conditions
-}
-
-fn field_op(
-    model: &EntityModel,
-    field: &FieldDefinition,
-    parameters: &BTreeMap<String, Value>,
-    op_key: &str,
-) -> Option<Condition> {
-    let op = parameters
-        .get(op_key)
-        .map(text_of)
-        .unwrap_or_else(|| String::from("equals"));
-    let not_key = format!("{}_not", field.name);
-    let not = flag(parameters, &not_key);
-    let name = field.name.as_str();
-    if op == "empty" {
-        return Some(if not {
-            Condition::and(vec![
-                Condition::is_not_null(name),
-                Condition::not_equals(name, Value::string("")),
-            ])
-        } else {
-            Condition::or(vec![
-                Condition::is_null(name),
-                Condition::equals(name, Value::string("")),
-            ])
-        });
-    }
-    let value = parameters.get(name)?;
-    if is_empty(value) {
-        return None;
-    }
-    let condition = match op.as_str() {
-        "like" => like_condition(name, &text_of(value), not, false),
-        "contains" => like_condition(name, &text_of(value), not, true),
-        "begins" => {
-            let pattern = format!("{}%", text_of(value));
-            like_condition(name, &pattern, not, false)
-        }
-        "in" => {
-            let values: Vec<Value> = in_values(value)
-                .into_iter()
-                .map(|item| convert_field(model, field, &item))
-                .collect();
-            if values.is_empty() {
-                return None;
-            }
-            if not {
-                Condition::not_in(name, values)
-            } else {
-                Condition::is_in(name, values)
-            }
-        }
-        _ => {
-            let converted = convert_field(model, field, value);
-            if not {
-                Condition::not_equals(name, converted)
-            } else {
-                Condition::equals(name, converted)
-            }
-        }
-    };
-    Some(condition)
-}
-
-fn like_condition(name: &str, text: &str, not: bool, contains: bool) -> Condition {
-    let pattern = if contains {
-        format!("%{text}%")
-    } else {
-        text.to_string()
-    };
-    if not {
-        Condition::not_like(name, Value::string(pattern))
-    } else {
-        Condition::like(name, Value::string(pattern))
-    }
-}
-
-fn in_values(value: &Value) -> Vec<Value> {
-    match value {
-        Value::List(items) => items.clone(),
-        Value::String(text) => text
-            .split(',')
-            .map(str::trim)
-            .filter(|part| !part.is_empty())
-            .map(Value::string)
-            .collect(),
-        other => vec![other.clone()],
-    }
-}
-
-fn push_range(out: &mut Vec<Condition>, field: &FieldDefinition, parameters: &BTreeMap<String, Value>) {
-    let from_key = format!("{}_from", field.name);
-    let thru_key = format!("{}_thru", field.name);
-    if let Some(value) = parameters.get(&from_key) {
-        if !is_empty(value) {
-            out.push(Condition::greater_equal(field.name.as_str(), value.clone()));
-        }
-    }
-    if let Some(value) = parameters.get(&thru_key) {
-        if !is_empty(value) {
-            out.push(Condition::less_equal(field.name.as_str(), value.clone()));
-        }
-    }
-}
-
-fn convert_field(model: &EntityModel, field: &FieldDefinition, value: &Value) -> Value {
-    match params::java_of(model, field) {
-        Some(java) if !java.is_empty() => basic_convert(value, &java).value,
-        _ => value.clone(),
-    }
-}
-
-fn rest_page(parameters: &BTreeMap<String, Value>) -> Page {
-    if flag(parameters, "pageNoLimit") {
-        return Page {
-            limit: None,
-            offset: None,
-        };
-    }
-    let index = parameters.get("pageIndex").and_then(value_i64);
-    let size = parameters.get("pageSize").and_then(value_i64);
-    if index.is_some() || size.is_some() {
-        let page_size = size.unwrap_or(20).clamp(0, max_page_size());
-        let page_index = index.unwrap_or(0).max(0);
-        return Page {
-            limit: Some(page_size),
-            offset: Some(page_index.saturating_mul(page_size)),
-        };
-    }
-    Page {
-        limit: Some(100),
-        offset: None,
     }
 }
 
@@ -2193,7 +2025,11 @@ mod tests {
             .iter()
             .map(|(name, value)| (name.to_string(), Value::I64(*value)))
             .collect();
-        rest_page(&parameters)
+        let find = list_find(&crate::testing::open(), "moqui.basic.Enumeration", &parameters).unwrap();
+        Page {
+            limit: find.limit_value(),
+            offset: find.offset_value(),
+        }
     }
 
     #[test]
@@ -2205,8 +2041,9 @@ mod tests {
         assert_eq!((page.limit, page.offset), (Some(50), Some(0)));
         let page = page_of(&[("pageSize", -5), ("pageIndex", 4)]);
         assert_eq!((page.limit, page.offset), (Some(0), Some(0)));
+        assert_eq!(page_of(&[]).limit, Some(100));
         let parameters = BTreeMap::from([("pageIndex".to_string(), Value::I64(i64::MAX))]);
-        let page = rest_page(&parameters);
+        let page = page_of(&[("pageIndex", i64::MAX)]);
         assert_eq!(page.offset, Some(i64::MAX));
         let info = page_numbers(&page, &parameters, 10);
         assert_eq!((info.range_low, info.range_high), (i64::MAX, 10));

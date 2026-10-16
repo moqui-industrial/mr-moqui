@@ -22,7 +22,7 @@ use std::sync::{Arc, RwLock};
 use indexmap::IndexMap;
 
 use moqui_lib::node::MNode;
-use moqui_lib::object::{is_empty, Value};
+use moqui_lib::object::{to_plain_string, Value};
 
 use super::call;
 use crate::context::{Error, ErrorKind, ExecutionContext, ExecutionContextFactory};
@@ -53,7 +53,12 @@ pub fn run(path: &[&str], method: &str, parameters: &BTreeMap<String, Value>) ->
     }
     let method = method.trim().to_ascii_lowercase();
     let mut params = parameters.clone();
-    let roots = current_roots()?;
+    let mut roots = current_roots()?;
+    // As Java's `getRootResourceNode`: a root not loaded reads the REST files again, for one added since. Here at
+    // most once in ten seconds, so requests for unknown roots do not read the files each time.
+    if !roots.resources.contains_key(path[0]) && miss_reload_due() {
+        roots = reload_current_roots()?;
+    }
     let root = roots.resources.get(path[0]).ok_or_else(|| {
         Error::of_kind(
             ErrorKind::NotFound,
@@ -70,7 +75,8 @@ pub fn run(path: &[&str], method: &str, parameters: &BTreeMap<String, Value>) ->
 ///
 /// Returns an error when no context is entered.
 pub fn root_resource_infos() -> Result<Vec<Value>, Error> {
-    let roots = current_roots()?;
+    // Java's `getFreshRootResources` reads the files again.
+    let roots = reload_current_roots()?;
     Ok(roots.resources.values().map(|node| resource_info(node, true)).collect())
 }
 
@@ -159,6 +165,27 @@ fn current_roots() -> Result<Arc<Roots>, Error> {
     let factory = ExecutionContext::with_current(|ctx| Arc::clone(ctx.factory()))
         .ok_or_else(|| Error::new("no execution context is entered"))?;
     Ok(roots_of(&factory))
+}
+
+/// True at most once in ten seconds, process wide.
+fn miss_reload_due() -> bool {
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|err| err.into_inner());
+    let due = last.is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(10));
+    if due {
+        *last = Some(std::time::Instant::now());
+    }
+    due
+}
+
+/// Read the REST files again and keep what they define now.
+fn reload_current_roots() -> Result<Arc<Roots>, Error> {
+    let factory = ExecutionContext::with_current(|ctx| Arc::clone(ctx.factory()))
+        .ok_or_else(|| Error::new("no execution context is entered"))?;
+    let shared = factory.extension::<Shared>(|factory| RwLock::new(Arc::new(load(factory))));
+    let fresh = Arc::new(load(&factory));
+    *shared.write().unwrap_or_else(|err| err.into_inner()) = Arc::clone(&fresh);
+    Ok(fresh)
 }
 
 fn roots_of(factory: &Arc<ExecutionContextFactory>) -> Arc<Roots> {
@@ -587,6 +614,9 @@ fn run_entity(
     Ok(sensitive::strip_user_account_secrets(result))
 }
 
+/// Java's `MethodEntity` one and list: the search form conditions of the parameters. `one` is the first row found,
+/// without its null fields, or null; a list is at most 100 rows unless `pageNoLimit` is `true`, with its page numbers
+/// for the response headers. A master name gives the master graph of each row.
 fn find_entity(
     facade: &EntityFacade,
     name: &str,
@@ -594,47 +624,58 @@ fn find_entity(
     operation: &str,
     params: &BTreeMap<String, Value>,
 ) -> Result<Value, Error> {
-    let mut parms = params.clone();
-    if let Some(master) = master_name {
-        parms
-            .entry("master".to_string())
-            .or_insert_with(|| Value::string(master));
-    }
-    let found = match crate::entity::query_rest::rest_unguarded(facade, "find", name, &parms) {
-        Ok(value) => value,
-        Err(err) if operation == "one" && err.message().contains("No value found") => return Ok(Value::Null),
-        Err(err) => return Err(err.into()),
+    let find = facade
+        .find(name)?
+        .search_form_map(params, &BTreeMap::new(), "", "", false)?
+        .find;
+    let master = master_name.filter(|master| !master.is_empty());
+    let as_value = |row: &crate::entity::EntityValue| -> Result<Value, Error> {
+        match master {
+            Some(master) => Ok(crate::entity::query_rest::master_value(facade, row, master)?),
+            None => Ok(Value::Map(
+                row.fields()
+                    .iter()
+                    .filter(|(_, value)| !value.is_null())
+                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .collect(),
+            )),
+        }
     };
-    if operation == "list" {
-        return Ok(match found {
-            Value::List(_) => found,
-            other => Value::List(vec![other]),
-        });
+    if operation == "one" {
+        return match find.one()? {
+            Some(row) => as_value(&row),
+            None => Ok(Value::Null),
+        };
     }
-    match found {
-        Value::List(items) => match items.len() {
-            0 => Ok(Value::Null),
-            1 => Ok(items.into_iter().next().unwrap_or(Value::Null)),
-            count => Err(Error::new(format!("find one found {count} rows"))),
-        },
-        other => Ok(other),
+    let no_limit = params
+        .get("pageNoLimit")
+        .is_some_and(|value| to_plain_string(value) == "true");
+    let find = if find.limit_value().is_none() && !no_limit {
+        find.limit(100)
+    } else {
+        find
+    };
+    let (limit, offset) = (find.limit_value(), find.offset_value());
+    let total = find.clone().count()?;
+    crate::entity::query_rest::note_page_info(limit, offset, params, total, false);
+    let rows = find.list()?;
+    let mut items = Vec::with_capacity(rows.len());
+    for row in rows.iter() {
+        items.push(as_value(row)?);
     }
+    Ok(Value::List(items))
 }
 
+/// Java's `MethodEntity` count: the search form conditions of the parameters, the total also in `X-Total-Count`.
 fn count_entity(facade: &EntityFacade, name: &str, params: &BTreeMap<String, Value>) -> Result<Value, Error> {
-    let names = facade.with_entity(name, |entity, _, _| {
-        Ok(entity.fields.iter().map(|field| field.name.clone()).collect::<Vec<_>>())
-    })?;
-    let mut find = facade.find(name)?;
-    for field in names {
-        if let Some(value) = params.get(&field) {
-            if !is_empty(value) && !matches!(value, Value::Map(_) | Value::List(_)) {
-                find = find.eq(&field, value.clone());
-            }
-        }
-    }
+    let count = facade
+        .find(name)?
+        .search_form_map(params, &BTreeMap::new(), "", "", false)?
+        .find
+        .count()?;
+    crate::entity::query_rest::note_page_info(None, None, params, count, true);
     let mut entries = BTreeMap::new();
-    entries.insert("count".to_string(), Value::I64(find.count()?));
+    entries.insert("count".to_string(), Value::I64(count));
     Ok(value_map(entries))
 }
 

@@ -215,17 +215,16 @@ pub fn pretty_name(entity_name: &str, title: Option<&str>, base_name: Option<&st
     pretty.join(" ")
 }
 
-/// Whether the related entity has a `one` relationship back to `entity` with the same title: Java's `dependent`.
+/// Java's `RelationshipInfo.dependent` (`hasReverse`): the related entity has a `one` or `one-nofk` relationship back
+/// to `entity` with the same title, whatever this relationship's type, so a one-to-one is a dependent too.
 fn is_dependent(model: &EntityModel, entity: &EntityDefinition, relationship: &Relationship) -> bool {
-    if !relationship.relationship_type.starts_with("many") {
-        return false;
-    }
     let Some(related) = model.entity_full(&relationship.related) else {
         return false;
     };
+    let title = relationship.title.as_deref().filter(|title| !title.is_empty());
     related.relationships.iter().any(|back| {
-        back.relationship_type.starts_with("one")
-            && back.title == relationship.title
+        matches!(back.relationship_type.as_str(), "one" | "one-nofk")
+            && back.title.as_deref().filter(|title| !title.is_empty()) == title
             && (back.related == entity.full_name || back.related_entity_name == entity.entity_name)
     })
 }
@@ -280,7 +279,26 @@ fn dependents(model: &EntityModel, entity: &EntityDefinition) -> (String, Vec<St
     let mut visited = BTreeSet::new();
     let mut all = BTreeSet::new();
     let mut ancestors = vec![entity.full_name.clone()];
-    build_dependents(model, entity, 0, &mut text_out, &mut visited, &mut all, &mut ancestors);
+    build_dependents(model, entity, 0, &mut text_out, &mut visited, &mut ancestors);
+    // Java's `getAllDescendants`: every dependent reached, at any depth (the text stops at level 4).
+    let mut pending = vec![entity.full_name.clone()];
+    let mut walked = BTreeSet::new();
+    while let Some(name) = pending.pop() {
+        if !walked.insert(name.clone()) {
+            continue;
+        }
+        let Some(current) = model.entity_full(&name) else {
+            continue;
+        };
+        for relationship in current
+            .relationships
+            .iter()
+            .filter(|rel| is_dependent(model, current, rel))
+        {
+            all.insert(relationship.related.clone());
+            pending.push(relationship.related.clone());
+        }
+    }
     (text_out, all.into_iter().collect())
 }
 
@@ -290,7 +308,6 @@ fn build_dependents(
     level: usize,
     out: &mut String,
     visited: &mut BTreeSet<String>,
-    all: &mut BTreeSet<String>,
     ancestors: &mut Vec<String>,
 ) {
     let indent = "- ".repeat(level + 1);
@@ -299,7 +316,6 @@ fn build_dependents(
         .iter()
         .filter(|rel| is_dependent(model, entity, rel))
     {
-        all.insert(relationship.related.clone());
         let pairs: Vec<String> = relationship
             .key_pairs
             .iter()
@@ -314,7 +330,7 @@ fn build_dependents(
         }
         if level < 4 && !visited.contains(&related.full_name) {
             ancestors.push(related.full_name.clone());
-            build_dependents(model, related, level + 1, out, visited, all, ancestors);
+            build_dependents(model, related, level + 1, out, visited, ancestors);
             ancestors.pop();
             visited.insert(related.full_name.clone());
         } else if visited.contains(&related.full_name) {
@@ -480,9 +496,9 @@ const QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// Run one statement on the group's connection, as the SQL runner does with JDBC: in the caller's transaction when
 /// there is one, otherwise on its own connection. A query reads at most `limit` rows when `limit` is above 0, through
-/// a cursor in the caller's transaction or one begun for it, and stops at the row past the limit. JDBC
-/// tells a query from an update after it runs; here the first word of the statement does. A query with no rows has
-/// no column names, since the driver gives names by row.
+/// a cursor in the caller's transaction or one begun for it, and stops at the row past the limit. As JDBC, the
+/// database tells a query from an update (an `INSERT ... RETURNING` gives rows); a driver that cannot tell leaves it
+/// to the first word of the statement. A query with no rows has no column names, since the driver gives names by row.
 ///
 /// # Errors
 ///
@@ -494,7 +510,12 @@ pub fn run_sql(facade: &EntityFacade, group: &str, sql: &str, limit: usize) -> R
         .get(group)
         .ok_or_else(|| Error::new(format!("no entity group named {group}")))?;
     let sql = sql.trim().trim_end_matches(';');
-    if !is_query(sql) {
+    // As JDBC's `execute`, the database says whether the statement gives rows; the first word when it cannot.
+    let gives_rows = runtime
+        .transactions
+        .with_connection(|conn| conn.returns_rows(sql))?
+        .unwrap_or_else(|| is_query(sql));
+    if !gives_rows {
         let count = runtime.transactions.with_connection(|conn| conn.execute(sql, &[]))?;
         return Ok(SqlResult {
             rows_affected: Some(count),

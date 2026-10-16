@@ -113,7 +113,7 @@ fn load(config: &CryptConfig) -> Result<Loaded<'_>, Error> {
         return Err(crypt_error(algorithm));
     }
     Ok(Loaded {
-        password: password_bytes(&config.pass),
+        password: password_bytes(&config.pass)?,
         salt: salt_bytes(&config.salt),
         iterations: config.iterations,
         algorithm,
@@ -135,8 +135,12 @@ fn crypt_error(algorithm: &str) -> Error {
     Error::new(format!("Encryption error with algo {algorithm}"))
 }
 
-fn password_bytes(pass: &str) -> Vec<u8> {
-    pass.chars().map(|ch| (ch as u32 & 0xff) as u8).collect()
+/// As Java's `PBEKey`: the pass phrase must be printable ASCII, not truncated to bytes.
+fn password_bytes(pass: &str) -> Result<Vec<u8>, Error> {
+    if pass.bytes().any(|byte| !(0x20..=0x7e).contains(&byte)) {
+        return Err(Error::new("Password is not ASCII"));
+    }
+    Ok(pass.as_bytes().to_vec())
 }
 
 fn salt_bytes(salt: &str) -> [u8; SALT_LEN] {
@@ -299,6 +303,13 @@ mod tests {
             iterations: 10,
             algorithm: "PBEWithMD5AndDES".to_string(),
         }
+    }
+
+    #[test]
+    fn a_pass_phrase_that_is_not_ascii_is_an_error() {
+        let mut config = aes_config();
+        config.pass = "Moqui\u{e9}Pass".to_string();
+        assert_eq!(encrypt("x", &config).unwrap_err().to_string(), "Password is not ASCII");
     }
 
     #[test]

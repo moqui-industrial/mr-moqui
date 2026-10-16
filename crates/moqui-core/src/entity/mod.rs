@@ -46,7 +46,7 @@ pub use etl::EtlLoader;
 pub use exec::statement_stats;
 pub use facade::{EntityFacade, EntityFlags, EntityGroup, SimStarter};
 pub use find::{EntityFind, EntityListIterator};
-pub use meta::EntityDbMeta;
+pub use meta::{DdlConf, EntityDbMeta};
 /// The condition tree `EntityFind::condition` takes, so callers need not depend on `moqui-db`.
 pub use moqui_db::sql::{CompareOp, Condition};
 pub(crate) use schema::document as schema_document;

@@ -119,6 +119,11 @@ pub(crate) fn open_with(framework_dir: &std::path::Path, options: Options) -> En
 
 /// The `transactional` group and the `logging` group, each on its own database and transaction manager.
 pub(crate) fn open_two_groups() -> EntityFacade {
+    open_groups("logging")
+}
+
+/// The `transactional` group and `second`, each on its own database and transaction manager.
+pub(crate) fn open_groups(second: &str) -> EntityFacade {
     let manager = || {
         let driver: Arc<dyn DbDriver> = Arc::new(MemDriver {
             store: Arc::new(Mutex::new(BTreeMap::new())),
@@ -141,7 +146,7 @@ pub(crate) fn open_two_groups() -> EntityFacade {
         "transactional",
         vec![
             EntityGroup::new("transactional", "postgres", manager()),
-            EntityGroup::new("logging", "postgres", manager()),
+            EntityGroup::new(second, "postgres", manager()),
         ],
     )
     .expect("entity facade");

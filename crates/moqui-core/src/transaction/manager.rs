@@ -579,6 +579,11 @@ impl TransactionManager {
         Ok(())
     }
 
+    /// True when the active frame is marked rollback-only, as Java's `STATUS_MARKED_ROLLBACK`.
+    pub fn is_rollback_only(&self) -> bool {
+        self.with_frames(|frames| active(frames).is_some_and(|frame| frame.rollback_only.is_some()))
+    }
+
     /// True when this thread has an active frame, as Java `isTransactionInPlace`. A thread whose
     /// frames are all suspended, as in an `ignore` plus `force-new` body, has no transaction in place.
     pub fn in_transaction(&self) -> bool {

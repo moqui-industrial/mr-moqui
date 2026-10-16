@@ -167,6 +167,28 @@ impl HostService {
         })
     }
 
+    /// `ignorePreviousError(true)`: run even with errors already in the message facade; they come back after.
+    fn ignore_previous_error<'js>(
+        this: This<Class<'js, HostService>>,
+        ctx: Ctx<'js>,
+        flag: Opt<JsValue<'js>>,
+    ) -> rquickjs::Result<Class<'js, HostService>> {
+        host_guard(&ctx, || {
+            let on = flag.0.as_ref().and_then(JsValue::as_bool).unwrap_or(true);
+            changed(this, &ctx, |call| call.options.ignore_previous_error = on)
+        })
+    }
+
+    /// `noRememberParameters()`: the artifact hit of this call does not keep its parameters.
+    fn no_remember_parameters<'js>(
+        this: This<Class<'js, HostService>>,
+        ctx: Ctx<'js>,
+    ) -> rquickjs::Result<Class<'js, HostService>> {
+        host_guard(&ctx, || {
+            changed(this, &ctx, |call| call.options.no_remember_parameters = true)
+        })
+    }
+
     fn use_transaction_cache<'js>(
         this: This<Class<'js, HostService>>,
         ctx: Ctx<'js>,

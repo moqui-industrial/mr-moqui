@@ -86,6 +86,30 @@ pub fn transactional_conf(factory: &ExecutionContextFactory) -> Result<Datasourc
     datasource_conf(&conf, "transactional")
 }
 
+/// The driver for a datasource of a server this process does not start (Postgres or MySQL), for an entity group
+/// beside `transactional`. `None` for the embedded cluster, which the caller shares from the main datasource.
+///
+/// # Errors
+///
+/// Returns an error when the driver for the kind is not in this build or cannot be made.
+pub fn server_driver(conf: &DatasourceConf) -> Result<Option<Arc<dyn DbDriver>>, Error> {
+    match conf.kind {
+        DatasourceKind::Embedded => Ok(None),
+        DatasourceKind::Mysql => mysql_driver(conf).map(Some),
+        DatasourceKind::Postgres => postgres_dyn_driver(conf).map(Some),
+    }
+}
+
+#[cfg(feature = "postgres")]
+fn postgres_dyn_driver(conf: &DatasourceConf) -> Result<Arc<dyn DbDriver>, Error> {
+    Ok(Arc::new(postgres_driver(conf)?))
+}
+
+#[cfg(not(feature = "postgres"))]
+fn postgres_dyn_driver(_conf: &DatasourceConf) -> Result<Arc<dyn DbDriver>, Error> {
+    Err(Error::new("the postgres driver is not in this build"))
+}
+
 /// Open the database `conf` names. Embedded starts (or adopts) the cluster at `cluster_dir`, on the
 /// theseus install at `install_dir`, with `max_connections` of `pool_max` plus [`LISTEN_SLOTS`] and
 /// [`SUPERUSER_SLOTS`].
@@ -167,14 +191,38 @@ fn open_postgres(_conf: DatasourceConf) -> Result<EntityDb, Error> {
 #[cfg(feature = "postgres")]
 fn postgres_driver(conf: &DatasourceConf) -> Result<super::postgres::PostgresDriver, Error> {
     let password = (!conf.password.is_empty()).then_some(conf.password.as_str());
-    postgres_server_driver(
+    let driver = postgres_server_driver(
         &conf.user,
         password,
         &conf.database,
         &conf.host,
         conf.port.unwrap_or(POSTGRES_PORT),
         conf.tls,
-    )
+    )?;
+    // Java puts the datasource's `schema-name` in front of each table name. Here the session's search path names
+    // it first, with `public` after it for the extensions there.
+    Ok(match search_path(&conf.schema)? {
+        Some(path) => driver.options(format!("-c search_path={path}")),
+        None => driver,
+    })
+}
+
+/// The `search_path` for a `schema-name`: none when it is empty. Only a plain identifier is taken.
+fn search_path(schema: &str) -> Result<Option<String>, Error> {
+    let schema = schema.trim();
+    if schema.is_empty() {
+        return Ok(None);
+    }
+    if !schema.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+        return Err(Error::new(format!(
+            "datasource schema-name {schema} is not a plain identifier"
+        )));
+    }
+    Ok(Some(if schema.eq_ignore_ascii_case("public") {
+        "public".to_string()
+    } else {
+        format!("{schema},public")
+    }))
 }
 
 /// A driver for a Postgres server this process did not start: the entity datasource, a search

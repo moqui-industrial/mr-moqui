@@ -211,20 +211,27 @@ impl EntityDataWriter {
             .collect()
     }
 
-    /// `writer`: every record in one document. Returns the text and how many records it has.
+    /// `writer`: every record in one document. Returns the text and how many records it has. As Java, a failure (CSV
+    /// asked for more than one entity, an entity not defined, a find that fails) is logged and a message error, and
+    /// what was written so far comes back with a count of 0.
     ///
     /// # Errors
     ///
-    /// Returns an error when an entity is not defined, a find fails, or CSV is asked for more than one entity.
+    /// None at present; the `Result` is kept for callers.
     pub fn text(&self) -> Result<(String, u64), Error> {
         let names = self.active_names();
         if self.file_type == DataFileType::Csv && names.len() != 1 {
-            return Err(Error::new("Cannot write to single CSV file with multiple entity names"));
+            add_error("Cannot write to single CSV file with multiple entity names");
+            return Ok((String::new(), 0));
         }
         let mut out = Vec::new();
-        let written = self.write_document(&names, &mut out)?;
-        let text = String::from_utf8(out).map_err(|err| Error::new("data text is not utf-8").with_source(err))?;
-        Ok((text, written))
+        // As Java's `writer`: records that cannot be read are logged and a message error, and the text written so far
+        // is returned.
+        let written = match self.write_document(&names, &mut out) {
+            Ok(written) => written,
+            Err(err) => write_failed("text", &err),
+        };
+        Ok((String::from_utf8_lossy(&out).into_owned(), written))
     }
 
     /// `file`: one file. The extension of the name sets the type.

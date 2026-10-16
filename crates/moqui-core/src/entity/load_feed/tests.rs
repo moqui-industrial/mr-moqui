@@ -29,8 +29,8 @@ use zip::{CompressionMethod, ZipWriter};
 
 use super::feed::{probe_query, TOUCHES};
 use super::{
-    conf_data_locations, data_file_services, eca_rules, error_chain, feed_service_names, load_entity_data, match_rules,
-    register_feed_insert, LoadOptions,
+    conf_data_locations, data_file_services, eca_rules, error_chain, feed_service_names, load_entity_data,
+    load_entity_xml_text, match_rules, register_feed_insert, LoadOptions,
 };
 use crate::driver::{DbCancel, DbConnection, DbDriver, DbRow};
 use crate::entity::{EntityFacade, EntityGroup};
@@ -153,9 +153,12 @@ impl DbConnection for ScriptConn {
         if sql.contains("xmin") {
             return Ok(vec![db_row(&[("fooId", "F1")])]);
         }
+        // The document has one field: a write that sets it is fed, as Java's `dataFeedCheckAndRegister`.
         if sql.contains("data_document_field") {
-            let source = std::io::Error::other("relation \"DataDocumentField\" does not exist");
-            return Err(Error::new("postgres query").with_source(source));
+            return Ok(vec![db_row(&[("dataDocumentId", "DOC1"), ("fieldPath", "fooId")])]);
+        }
+        if sql.contains("data_document_condition") {
+            return Ok(Vec::new());
         }
         if sql.contains("data_feed_document") {
             return Ok(vec![db_row(&[("dataFeedId", "FEED1"), ("dataDocumentId", "DOC1")])]);
@@ -959,4 +962,104 @@ fn feed_definitions_are_read_once_until_one_is_written() {
     create_foo(&facade, "F6").unwrap();
     facade.commit("moqui.test.Foo").unwrap();
     assert_eq!(reads(), settled);
+}
+
+fn test_medium(facade: &EntityFacade, id: &str) -> Option<String> {
+    facade
+        .find("moqui.test.TestEntity")
+        .unwrap()
+        .eq("testId", Value::string(id))
+        .one()
+        .unwrap()
+        .and_then(|row| row.get("testMedium").and_then(Value::as_str).map(str::to_string))
+}
+
+/// As Java's `loadSingleFile`, one file is one transaction: a record that fails takes the file's earlier records
+/// with it, and the next file of the directory still loads.
+#[test]
+fn a_file_loads_in_one_transaction_and_a_failure_rolls_back_the_whole_file() {
+    let facade = crate::testing::open();
+    let context = crate::context::ExecutionContextFactory::test_context();
+    context.factory().set_entity(facade.clone());
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    let (dir, _guard) = temp_dir();
+    std::fs::write(
+        dir.join("a-partial.xml"),
+        r#"<entity-facade-xml type="seed">
+            <moqui.test.TestEntity testId="T1" testMedium="first"/>
+            <no.such.Thing id="X"/>
+        </entity-facade-xml>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("b-good.xml"),
+        r#"<entity-facade-xml type="seed"><moqui.test.TestEntity testId="T2" testMedium="second"/></entity-facade-xml>"#,
+    )
+    .unwrap();
+    let loaded = load_entity_data(&facade, dir.to_str().unwrap(), &LoadOptions::default()).unwrap();
+    assert_eq!((loaded.records, loaded.failed_files), (1, 1));
+    assert_eq!(test_medium(&facade, "T1"), None);
+    assert_eq!(test_medium(&facade, "T2").as_deref(), Some("second"));
+}
+
+/// Java's `defaultValues` (XML, JSON and CSV top-level records), CSV dialect options, and `onlyCreate`, which calls
+/// no data-file service.
+#[test]
+fn default_values_csv_options_and_only_create_follow_java() {
+    let facade = crate::testing::open();
+    let context = crate::context::ExecutionContextFactory::test_context();
+    context.factory().set_entity(facade.clone());
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    let defaults = LoadOptions {
+        default_values: vec![("testMedium".to_string(), "default".to_string())],
+        ..LoadOptions::default()
+    };
+    load_entity_xml_text(
+        &facade,
+        "xmlText",
+        r#"<entity-facade-xml>
+            <moqui.test.TestEntity testId="X1"/>
+            <moqui.test.TestEntity testId="X2" testMedium="own"/>
+        </entity-facade-xml>"#,
+        &defaults,
+    )
+    .unwrap();
+    assert_eq!(test_medium(&facade, "X1").as_deref(), Some("default"));
+    assert_eq!(test_medium(&facade, "X2").as_deref(), Some("own"));
+
+    let (dir, _guard) = temp_dir();
+    let json = dir.join("rows.json");
+    std::fs::write(&json, r#"[{"_entity": "moqui.test.TestEntity", "testId": "J1"}]"#).unwrap();
+    load_entity_data(&facade, json.to_str().unwrap(), &defaults).unwrap();
+    assert_eq!(test_medium(&facade, "J1").as_deref(), Some("default"));
+
+    let csv = dir.join("rows.csv");
+    std::fs::write(&csv, "moqui.test.TestEntity\ntestId;testMedium\n'C;1';semi\n").unwrap();
+    let dialect = LoadOptions {
+        csv_delimiter: Some(';'),
+        csv_quote_char: Some('\''),
+        ..LoadOptions::default()
+    };
+    load_entity_data(&facade, csv.to_str().unwrap(), &dialect).unwrap();
+    assert_eq!(test_medium(&facade, "C;1").as_deref(), Some("semi"));
+
+    let only_create = LoadOptions {
+        only_create: true,
+        ..LoadOptions::default()
+    };
+    load_entity_xml_text(
+        &facade,
+        "xmlText",
+        r#"<entity-facade-xml>
+            <moqui.test.TestEntity testId="X2" testMedium="changed"/>
+            <create-moqui.test.TestEntity testId="SVC" testMedium="service"/>
+        </entity-facade-xml>"#,
+        &only_create,
+    )
+    .unwrap();
+    assert_eq!(test_medium(&facade, "X2").as_deref(), Some("own"));
+    assert_eq!(test_medium(&facade, "SVC"), None);
+    assert!(data_file_services(&facade).is_empty());
 }

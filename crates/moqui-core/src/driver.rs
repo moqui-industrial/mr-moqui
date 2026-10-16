@@ -80,6 +80,13 @@ pub trait DbConnection: Send {
     /// A handle the deadline thread can call while this connection is borrowed.
     fn canceller(&self) -> Box<dyn DbCancel>;
 
+    /// Whether `sql` gives rows, from the database's description of the prepared statement, as JDBC's `execute`
+    /// tells a query from an update. `None` when this driver cannot tell or the statement does not prepare.
+    fn returns_rows(&mut self, sql: &str) -> Result<Option<bool>, Error> {
+        let _ = sql;
+        Ok(None)
+    }
+
     /// Remaining statement time. `None` clears it. The default does nothing.
     ///
     /// Postgres sets `statement_timeout`. MySQL sets `max_execution_time`. The manager calls this

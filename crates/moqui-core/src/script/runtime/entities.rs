@@ -337,46 +337,12 @@ impl HostFind {
     /// rows were updated. The find is not cached, so every row is read and its entity ECA rules run.
     fn update_all<'js>(&self, ctx: Ctx<'js>, fields: JsValue<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || {
-            let facade = facade_of(&ctx)?;
             let Value::Map(fields) = js_to_host(&ctx, &fields)? else {
                 return Err(Exception::throw_message(&ctx, "updateAll needs a map of fields to set"));
             };
-            let find = take_find(&ctx, &self.inner)?.use_cache(false);
-            let entity = find.entity_name().to_string();
-            let create_only = facade
-                .with_entity(&entity, |definition, _, _| {
-                    Ok((definition.create_only, definition.full_name.clone()))
-                })
+            let updated = take_find(&ctx, &self.inner)?
+                .update_all(fields)
                 .map_err(|err| throw_lib(&ctx, &err))?;
-            if create_only.0 {
-                return Err(Exception::throw_message(
-                    &ctx,
-                    &format!(
-                        "Entity {} is create-only (immutable), cannot be updated.",
-                        create_only.1
-                    ),
-                ));
-            }
-            let list = find.list().map_err(|err| throw_lib(&ctx, &err))?;
-            let mut updated = 0_i64;
-            for value in list.values() {
-                let mut changed = value.clone();
-                let mut modified = false;
-                for (name, new_value) in &fields {
-                    let same = value.get(name).is_some_and(|old| {
-                        old == new_value
-                            || moqui_lib::object::to_plain_string(old) == moqui_lib::object::to_plain_string(new_value)
-                    });
-                    if !same {
-                        modified = true;
-                    }
-                    changed.set(name.clone(), new_value.clone());
-                }
-                if modified {
-                    changed.update(&facade).map_err(|err| throw_lib(&ctx, &err))?;
-                    updated += 1;
-                }
-            }
             i64_to_js(&ctx, updated)
         })
     }
@@ -418,8 +384,16 @@ impl HostFind {
         host_guard(&ctx, || wrap_find(&ctx, take_find(&ctx, &self.inner)?.disable_authz()))
     }
 
-    fn use_clone<'js>(&self, ctx: Ctx<'js>, _flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostFind>> {
-        host_guard(&ctx, || wrap_find(&ctx, take_find(&ctx, &self.inner)?))
+    /// `useClone(flag)`: read from a clone datasource of the entity's group when one is open.
+    fn use_clone<'js>(&self, ctx: Ctx<'js>, flag: JsValue<'js>) -> rquickjs::Result<Class<'js, HostFind>> {
+        host_guard(&ctx, || {
+            let on = flag.as_bool().unwrap_or_else(|| {
+                flag.as_string()
+                    .and_then(|text| text.to_string().ok())
+                    .is_some_and(|text| text == "true")
+            });
+            wrap_find(&ctx, take_find(&ctx, &self.inner)?.use_clone(on))
+        })
     }
 
     fn select_field<'js>(&self, ctx: Ctx<'js>, field: String) -> rquickjs::Result<Class<'js, HostFind>> {
@@ -515,14 +489,10 @@ impl HostFind {
     /// Delete the rows the find matches. Returns how many, as Java's `deleteAll`.
     fn delete_all<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || {
-            let facade = facade_of(&ctx)?;
-            let list = take_find(&ctx, &self.inner)?
-                .list()
+            let deleted = take_find(&ctx, &self.inner)?
+                .delete_all()
                 .map_err(|err| throw_lib(&ctx, &err))?;
-            for value in list.values() {
-                value.delete(&facade).map_err(|err| throw_lib(&ctx, &err))?;
-            }
-            i64_to_js(&ctx, i64::try_from(list.len()).unwrap_or(i64::MAX))
+            i64_to_js(&ctx, deleted)
         })
     }
 
@@ -732,19 +702,41 @@ impl ScriptList {
 pub(super) struct HostList {
     #[qjs(skip_trace)]
     pub(super) inner: Arc<ScriptList>,
+    /// The `EntityListIterator` cursor of `iterator()`: the current row's index, -1 before the first.
+    #[qjs(skip_trace)]
+    cursor: std::cell::Cell<i64>,
 }
 
 impl HostList {
     pub(super) fn of_list(list: EntityList) -> Self {
         Self {
             inner: Arc::new(ScriptList::of_list(list)),
+            cursor: std::cell::Cell::new(-1),
         }
     }
 
     fn of_cells(cells: Vec<Arc<EntityCell>>) -> Self {
+        Self::of_shared(Arc::new(ScriptList::of_cells(cells)))
+    }
+
+    /// A list over rows another list holds too.
+    pub(super) fn of_shared(inner: Arc<ScriptList>) -> Self {
         Self {
-            inner: Arc::new(ScriptList::of_cells(cells)),
+            inner,
+            cursor: std::cell::Cell::new(-1),
         }
+    }
+
+    /// The row at the cursor after moving it to `index`, or null when `index` is outside the rows (the cursor stops
+    /// before the first or after the last).
+    fn move_to<'js>(&self, ctx: &Ctx<'js>, index: i64) -> rquickjs::Result<JsValue<'js>> {
+        let len = i64::try_from(self.inner.len()).unwrap_or(i64::MAX);
+        let index = index.clamp(-1, len);
+        self.cursor.set(index);
+        if index < 0 || index >= len {
+            return Null.into_js(ctx);
+        }
+        self.item(ctx, usize::try_from(index).unwrap_or(0))
     }
 
     fn length(&self, ctx: &Ctx<'_>) -> rquickjs::Result<i32> {
@@ -839,6 +831,81 @@ impl HostList {
 
 #[rquickjs::methods(rename_all = "camelCase")]
 impl HostList {
+    /// Java's `EntityListIterator.next`: the row after the current one, null past the last.
+    fn next<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || self.move_to(&ctx, self.cursor.get() + 1))
+    }
+
+    fn has_next(&self) -> bool {
+        self.cursor.get() + 1 < i64::try_from(self.inner.len()).unwrap_or(i64::MAX)
+    }
+
+    /// Java's `previous`: the row before the current one, null before the first.
+    fn previous<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || self.move_to(&ctx, self.cursor.get() - 1))
+    }
+
+    fn has_previous(&self) -> bool {
+        self.cursor.get() > 0
+    }
+
+    /// Java's `absolute`, 1-based; from the end when negative; 0 is before the first. True when on a row.
+    fn absolute(&self, row: i32) -> bool {
+        let len = i64::try_from(self.inner.len()).unwrap_or(i64::MAX);
+        let index = match i64::from(row) {
+            0 => -1,
+            row if row > 0 => row - 1,
+            row => len + row,
+        }
+        .clamp(-1, len);
+        self.cursor.set(index);
+        index >= 0 && index < len
+    }
+
+    /// Java's `relative`: move `rows` from the current row. True when on a row.
+    fn relative(&self, rows: i32) -> bool {
+        let len = i64::try_from(self.inner.len()).unwrap_or(i64::MAX);
+        let index = (self.cursor.get() + i64::from(rows)).clamp(-1, len);
+        self.cursor.set(index);
+        index >= 0 && index < len
+    }
+
+    /// Java's `currentIndex`: the current row, 1-based; 0 before the first.
+    fn current_index(&self) -> i64 {
+        self.cursor.get() + 1
+    }
+
+    fn first<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || self.move_to(&ctx, 0))
+    }
+
+    fn last<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            let len = i64::try_from(self.inner.len()).unwrap_or(i64::MAX);
+            self.move_to(&ctx, len - 1)
+        })
+    }
+
+    fn before_first(&self) {
+        self.cursor.set(-1);
+    }
+
+    fn after_last(&self) {
+        self.cursor.set(i64::try_from(self.inner.len()).unwrap_or(i64::MAX));
+    }
+
+    /// Java's `getCompleteList`: every row.
+    fn get_complete_list<'js>(&self, ctx: Ctx<'js>, _close_after: Opt<bool>) -> rquickjs::Result<Class<'js, HostList>> {
+        host_guard(&ctx, || {
+            Class::instance(ctx.clone(), HostList::of_cells(self.inner.cells().to_vec()))
+        })
+    }
+
+    /// Java's `setFetchSize` and `close`: the rows are already here.
+    fn set_fetch_size(&self, _rows: i32) {}
+
+    fn close(&self) {}
+
     fn get<'js>(&self, ctx: Ctx<'js>, index: i32) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || {
             if index < 0 {

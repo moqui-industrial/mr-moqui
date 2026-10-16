@@ -85,13 +85,7 @@ impl ScreenUrlInfo {
         // A fragment is not part of the screen path. Java leaves it; a request path has none.
         let path = path.split('#').next().unwrap_or(path);
         let prepared = prepare_screen_path(factory, root_location, &[], path)?;
-        let mut info = Self::resolve_with(
-            factory,
-            root_location,
-            &prepared.names,
-            last_standalone,
-            prepared.cache,
-        )?;
+        let mut info = Self::resolve_with(factory, root_location, &prepared.names, last_standalone, prepared.cache)?;
         if !prepared.inline.is_empty() {
             // Inline parameters belong to this path only, so the shared cached walk is copied first.
             let own = Arc::make_mut(&mut info);
@@ -513,7 +507,10 @@ pub fn prepare_screen_path(
         Ok(Some(rewritten)) => screen_path = rewritten,
         Ok(None) => {}
         Err(err) => {
-            tracing::warn!("could not read ScreenPathAlias for {}: {err}", alias_key(from, &screen_path));
+            tracing::warn!(
+                "could not read ScreenPathAlias for {}: {err}",
+                alias_key(from, &screen_path)
+            );
             cache = false;
         }
     }
@@ -526,8 +523,7 @@ pub fn prepare_screen_path(
         }
         screen_path.truncate(index);
     }
-    if screen_path.starts_with("//") {
-        let trimmed = &screen_path[2..];
+    if let Some(trimmed) = screen_path.strip_prefix("//") {
         let names = cleanup_path_names(trimmed.split('/'), &mut inline);
         let facade = ScreenFacade::of(factory);
         let key = format!("{root_location}\u{1}{screen_path}");
@@ -583,15 +579,12 @@ fn screen_path_alias(factory: &ExecutionContextFactory, alias_path: &str) -> Res
         return Ok(None);
     };
     let _authz = crate::context::ExecutionContext::with_current(crate::context::ExecutionContext::disable_authz);
-    let rows = match entity.find("moqui.screen.ScreenPathAlias").and_then(|find| {
-        find.eq("aliasPath", Value::string(alias_path))
-            .use_cache(true)
-            .list()
-    }) {
+    let rows = match entity
+        .find("moqui.screen.ScreenPathAlias")
+        .and_then(|find| find.eq("aliasPath", Value::string(alias_path)).use_cache(true).list())
+    {
         Ok(rows) => rows,
-        Err(_) if super::definition::screen_entity_absent(&entity, "moqui.screen.ScreenPathAlias") => {
-            return Ok(None)
-        }
+        Err(_) if super::definition::screen_entity_absent(&entity, "moqui.screen.ScreenPathAlias") => return Ok(None),
         Err(err) => return Err(err.into()),
     };
     let now = Value::Timestamp(jiff::Timestamp::now());
@@ -616,13 +609,16 @@ fn screen_path_alias(factory: &ExecutionContextFactory, alias_path: &str) -> Res
         };
         open.push((from_ms, screen));
     }
-    open.sort_by(|left, right| right.0.cmp(&left.0));
+    open.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     Ok(open.into_iter().next().map(|(_, screen)| screen))
 }
 
 /// Drop empty segments and `.`, pop for `..`, and store `~name=value` in `inline`. A tilde that is not `name=value`
 /// is dropped. Java's `cleanupPathNameList`.
-fn cleanup_path_names<'a>(input: impl IntoIterator<Item = &'a str>, inline: &mut BTreeMap<String, String>) -> Vec<String> {
+fn cleanup_path_names<'a>(
+    input: impl IntoIterator<Item = &'a str>,
+    inline: &mut BTreeMap<String, String>,
+) -> Vec<String> {
     let mut clean = Vec::new();
     for path_name in input {
         if path_name.is_empty() || path_name == "." {

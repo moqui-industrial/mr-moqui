@@ -25,6 +25,55 @@ use moqui_lib::node::MNode;
 
 use crate::transaction::PoolConfig;
 
+/// A store for an entity group that a `<datasource object-factory="...">` names, as Java's `EntityDatasourceFactory`:
+/// it opens the group with the driver its entities' statements run on and the dialect they are written in. A factory
+/// is registered under its `object-factory` name with [`register_datasource_factory`]; a datasource whose factory is not
+/// registered is left out, and its entities use the default group.
+pub trait DatasourceFactory: Send + Sync {
+    /// Open `group`. `datasource` is its `<datasource>` element and `conf` the merged conf.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the store cannot be reached or its settings are not valid.
+    fn open_group(&self, group: &str, datasource: &MNode, conf: &MNode) -> Result<super::EntityGroup, Error>;
+}
+
+type Factories = std::sync::RwLock<std::collections::HashMap<String, std::sync::Arc<dyn DatasourceFactory>>>;
+
+fn factories() -> &'static Factories {
+    static FACTORIES: std::sync::OnceLock<Factories> = std::sync::OnceLock::new();
+    FACTORIES.get_or_init(Default::default)
+}
+
+/// Serve the datasources whose `object-factory` is `name` with `factory`.
+pub fn register_datasource_factory(name: &str, factory: std::sync::Arc<dyn DatasourceFactory>) {
+    factories()
+        .write()
+        .unwrap_or_else(|err| err.into_inner())
+        .insert(name.to_string(), factory);
+}
+
+/// The factory registered under `name`.
+pub fn datasource_factory(name: &str) -> Option<std::sync::Arc<dyn DatasourceFactory>> {
+    factories()
+        .read()
+        .unwrap_or_else(|err| err.into_inner())
+        .get(name)
+        .cloned()
+}
+
+/// The `<datasource>` elements of the merged conf, `${}` left in their attributes.
+pub fn datasource_nodes(conf: &MNode) -> Vec<MNode> {
+    conf.first_named("entity-facade")
+        .map(|entity| entity.children_named("datasource"))
+        .unwrap_or_default()
+}
+
+/// A datasource attribute with `${}` expanded.
+pub fn datasource_attribute(node: &MNode, name: &str) -> String {
+    expanded(node, name)
+}
+
 /// Which driver serves a datasource.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DatasourceKind {
@@ -53,6 +102,12 @@ pub struct DatasourceConf {
     /// False only when the conf says `sslmode`/`sslMode` disable(d). Embedded never uses TLS.
     pub tls: bool,
     pub pool: PoolConfig,
+    /// `startup-add-missing`, else the database's `default-startup-add-missing`: check every table at startup.
+    pub startup_add_missing: bool,
+    /// `runtime-add-missing`, else the database's `default-runtime-add-missing`, true when neither is `false`.
+    pub runtime_add_missing: bool,
+    /// `runtime-add-fks`, true unless set to something other than `true`.
+    pub runtime_add_fks: bool,
 }
 
 /// Leaves out the password.
@@ -70,6 +125,9 @@ impl std::fmt::Debug for DatasourceConf {
             .field("password", &"<redacted>")
             .field("tls", &self.tls)
             .field("pool", &self.pool)
+            .field("startup_add_missing", &self.startup_add_missing)
+            .field("runtime_add_missing", &self.runtime_add_missing)
+            .field("runtime_add_fks", &self.runtime_add_fks)
             .finish()
     }
 }
@@ -129,6 +187,19 @@ pub fn datasource_conf(conf: &MNode, group: &str) -> Result<DatasourceConf, Erro
         password: String::new(),
         tls: true,
         pool,
+        // As Java's `EntityFacadeImpl` and `EntityDbMeta`.
+        startup_add_missing: match expanded(&datasource, "startup-add-missing").as_str() {
+            "" => expanded(&database_node, "default-startup-add-missing") == "true",
+            value => value == "true",
+        },
+        runtime_add_missing: match expanded(&datasource, "runtime-add-missing").as_str() {
+            "" => expanded(&database_node, "default-runtime-add-missing") != "false",
+            value => value != "false",
+        },
+        runtime_add_fks: match expanded(&datasource, "runtime-add-fks").as_str() {
+            "" => true,
+            value => value == "true",
+        },
     };
     if kind != DatasourceKind::Embedded {
         if let Some(inline) = &inline {
@@ -309,6 +380,7 @@ mod tests {
             ("db.example", Some(6543), "moqui", "moqui", "pw")
         );
         assert_eq!(ds.schema, "public");
+        assert!(!ds.startup_add_missing && ds.runtime_add_missing && ds.runtime_add_fks);
         assert!(ds.tls);
     }
 

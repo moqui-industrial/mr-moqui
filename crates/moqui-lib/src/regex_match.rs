@@ -47,6 +47,31 @@ enum Re {
     End,
 }
 
+/// A pattern parsed once, for a caller that matches it many times.
+#[derive(Clone, Debug)]
+pub struct CompiledRegex(Option<Re>);
+
+impl CompiledRegex {
+    /// Parse `pattern`. An unsupported or bad pattern is an error, as [`is_full_match`] reports it.
+    pub fn new(pattern: &str) -> Result<Self, Error> {
+        if pattern.is_empty() {
+            return Ok(Self(None));
+        }
+        parse_regex(pattern).map(|re| Self(Some(re)))
+    }
+
+    /// Whether the whole of `text` matches, as Java's `String.matches`.
+    pub fn is_full_match(&self, text: &str) -> bool {
+        match &self.0 {
+            None => text.is_empty(),
+            Some(re) => {
+                let chars: Vec<char> = text.chars().collect();
+                ends(re, &chars, 0).contains(&chars.len())
+            }
+        }
+    }
+}
+
 pub fn is_full_match(text: &str, pattern: &str) -> Result<bool, Error> {
     if pattern.is_empty() {
         return Ok(text.is_empty());

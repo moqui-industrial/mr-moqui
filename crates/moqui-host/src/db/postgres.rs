@@ -353,6 +353,15 @@ mod driver {
             rows.iter().map(map_row).collect()
         }
 
+        fn returns_rows(&mut self, sql: &str) -> Result<Option<bool>, Error> {
+            // Not kept in the statement cache: a statement typed in the SQL runner runs once. One that does not prepare
+            // is left to run, so its own error is the one reported.
+            match self.client.prepare(&rewrite_placeholders(sql)) {
+                Ok(statement) => Ok(Some(!statement.columns().is_empty())),
+                Err(_) => Ok(None),
+            }
+        }
+
         fn query_once(&mut self, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
             let bound = bind(params)?;
             let refs = param_refs(&bound);

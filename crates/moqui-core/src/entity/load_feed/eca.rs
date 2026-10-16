@@ -55,7 +55,7 @@ pub fn match_rules(facade: &EntityFacade, entity_name: &str, operation: &str) ->
         .into_iter()
         .map(|rule| rule.id)
         .collect();
-    note_touch(facade, entity_name, operation, None);
+    note_touch(facade, entity_name, operation, None, None);
     ids
 }
 

@@ -52,6 +52,7 @@ pub(crate) fn clean(
         known.insert(param.name.clone());
         match clean_param(param, &params, &mut scope) {
             Ok(Some(value)) => {
+                let value = nested(param, value, &param.name, &mut failed, def.validate_input);
                 scope.set(&param.name, &value)?;
                 params.insert(param.name.clone(), value);
             }
@@ -78,6 +79,49 @@ pub(crate) fn clean(
         retain_known(def, &mut params, &known, facade)?;
     }
     Ok(params)
+}
+
+/// Java's `nestedParameterClean` for a `Map` parameter with nested `<parameter>` elements: each entry is cleaned and
+/// checked as a parameter, named `parent.child` in an error. Validating, only the declared entries are kept.
+fn nested(param: &ParamDef, value: Value, path: &str, failed: &mut Vec<(String, String)>, validate: bool) -> Value {
+    let Value::Map(input) = value else {
+        return value;
+    };
+    if param.children.is_empty() {
+        return Value::Map(input);
+    }
+    let source: BTreeMap<String, Value> = input
+        .iter()
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
+    let mut out = if validate { Default::default() } else { input.clone() };
+    let mut scope = DefaultScope::default();
+    for child in &param.children {
+        if child.name.is_empty() || child.required == Required::Disabled {
+            continue;
+        }
+        let child_path = format!("{path}.{}", child.name);
+        match clean_param(child, &source, &mut scope) {
+            Ok(Some(value)) => {
+                let value = nested(child, value, &child_path, failed, validate);
+                out.insert(child.name.clone(), value);
+            }
+            Ok(None) => {
+                if let Some(value) = input.get(&child.name) {
+                    out.insert(child.name.clone(), value.clone());
+                }
+            }
+            Err(err) => {
+                let message = err.message().replacen(
+                    &format!("parameter {}", child.name),
+                    &format!("parameter {child_path}"),
+                    1,
+                );
+                failed.push((child_path, message));
+            }
+        }
+    }
+    Value::Map(out)
 }
 
 /// One parameter: its default when blank, the required check, conversion to its type, HTML cleaning, and the
@@ -108,6 +152,8 @@ fn clean_param(
         value
     } else if let Some(items) = text_collection(&value, &param.java_type) {
         items
+    } else if let Some(converted) = convert_text(param, &value) {
+        converted
     } else {
         convert_checked(&value, &param.java_type).ok_or_else(|| {
             Error::new(format!(
@@ -321,6 +367,7 @@ pub(crate) fn auto_fields(
             entity_name: Some(entity.full_name.clone()),
             field_name: None,
             format: None,
+            children: Vec::new(),
         });
     }
     params
@@ -331,6 +378,47 @@ fn check_param(param: &ParamDef, value: &Value) -> Result<(), Error> {
         apply_check(&param.name, check, value)?;
     }
     Ok(())
+}
+
+/// Java's `ParameterInfo.convertType` for text: a number as the user's locale writes it, a date or time by the
+/// parameter's `format` then the usual forms, and a timestamp by its `format` (in UTC unless the text has an offset).
+/// `None` leaves the value to the plain conversion.
+fn convert_text(param: &ParamDef, value: &Value) -> Option<Value> {
+    let Value::String(text) = value else {
+        return None;
+    };
+    let text = text.trim();
+    let format = param.format.as_deref();
+    let parsed = match short_type(&param.java_type) {
+        "Integer" | "int" | "Long" | "long" | "Float" | "float" | "Double" | "double" | "BigDecimal" | "BigInteger" => {
+            crate::l10n::parse_number(text)
+        }
+        // A timestamp by its format, read as every other timestamp text of this port is (its offset, else UTC), so a
+        // parameter and the data check that compares it read the same text the same way.
+        "Timestamp" => format.and_then(|pattern| formatted_timestamp(text, pattern)),
+        "Date" => crate::l10n::parse_date_format(text, format),
+        "Time" => crate::l10n::parse_time_format(text, format),
+        _ => None,
+    }?;
+    convert_checked(&parsed, &param.java_type)
+}
+
+/// `text` read by the Java date `pattern`, at its offset, else in UTC.
+fn formatted_timestamp(text: &str, pattern: &str) -> Option<Value> {
+    let parsed = moqui_lib::datefmt::parse(text, pattern)?;
+    let nanos = parsed.millisecond.unwrap_or(0).checked_mul(1_000_000)?;
+    let civil = jiff::civil::DateTime::new(
+        parsed.year.unwrap_or(1970),
+        parsed.month.unwrap_or(1),
+        parsed.day.unwrap_or(1),
+        parsed.hour.unwrap_or(0),
+        parsed.minute.unwrap_or(0),
+        parsed.second.unwrap_or(0),
+        nanos,
+    )
+    .ok()?;
+    let offset = jiff::tz::Offset::from_seconds(parsed.offset_seconds.unwrap_or(0)).ok()?;
+    offset.to_timestamp(civil).ok().map(Value::Timestamp)
 }
 
 fn short_type(java_type: &str) -> &str {
@@ -488,7 +576,13 @@ fn apply_check(name: &str, check: &Check, value: &Value) -> Result<(), Error> {
             }
         }
         Check::TextEmail => require_match(name, value, r"^[^@\s]+@[^@\s]+\.[^@\s]+$", "is not an email address")?,
-        Check::TextUrl => require_match(name, value, r"^https?://\S+$", "is not a URL")?,
+        // Java's `UrlValidator(ALLOW_ALL_SCHEMES)`: any scheme, then an authority (a `file:` URL may leave it empty).
+        Check::TextUrl => require_match(
+            name,
+            value,
+            r"^(?:[A-Za-z][A-Za-z0-9+.\-]*://[^\s/?#]+|file://)[^\s]*$",
+            "is not a URL",
+        )?,
         Check::TextLetters => require_match(name, value, "^[A-Za-z]+$", "is not letters")?,
         Check::TextDigits => require_match(name, value, "^[0-9]+$", "is not digits")?,
         Check::TimeRange { after, before, format } => {
@@ -531,16 +625,20 @@ fn apply_check(name: &str, check: &Check, value: &Value) -> Result<(), Error> {
             if checks.is_empty() {
                 return Err(Error::new(format!("parameter {name} failed validation")));
             }
-            let mut passed = false;
+            // As Java, each check that failed says why, when none passed.
+            let mut reasons = Vec::new();
             for child in checks {
-                if apply_check(name, child, value).is_ok() {
-                    passed = true;
-                    break;
+                match apply_check(name, child, value) {
+                    Ok(()) => return Ok(()),
+                    Err(err) => reasons.push(
+                        err.message()
+                            .strip_prefix(&format!("parameter {name} "))
+                            .unwrap_or(err.message())
+                            .to_string(),
+                    ),
                 }
             }
-            if !passed {
-                return Err(Error::new(format!("parameter {name} failed validation")));
-            }
+            return Err(Error::new(format!("parameter {name} {}", reasons.join(", or "))));
         }
         Check::Not(checks) => {
             for child in checks {
@@ -706,5 +804,105 @@ mod time_range_tests {
         };
         assert!(apply_check("when", &plain, &Value::string("4102444800000")).is_ok());
         assert!(apply_check("when", &plain, &Value::string("12/2099")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod parameter_tests {
+    use super::*;
+
+    fn param(name: &str, java_type: &str, required: Required) -> ParamDef {
+        ParamDef {
+            name: name.to_string(),
+            java_type: java_type.to_string(),
+            required,
+            default_value: None,
+            default_expr: None,
+            allow_html: AllowHtml::None,
+            checks: Vec::new(),
+            auto: None,
+            entity_name: None,
+            field_name: None,
+            format: None,
+            children: Vec::new(),
+        }
+    }
+
+    /// Java's `nestedParameterClean`: a nested parameter is converted and checked, named `parent.child` in an error,
+    /// and, validating, an undeclared entry is dropped.
+    #[test]
+    fn nested_parameters_are_cleaned_and_checked() {
+        let mut parent = param("address", "Map", Required::False);
+        parent.children = vec![
+            param("zip", "Integer", Required::True),
+            param("city", "String", Required::False),
+        ];
+        let input = Value::Map(
+            [
+                ("zip".to_string(), Value::string("12345")),
+                ("city".to_string(), Value::string("Town")),
+                ("extra".to_string(), Value::string("x")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let mut failed = Vec::new();
+        let Value::Map(out) = nested(&parent, input.clone(), "address", &mut failed, true) else {
+            panic!("a map");
+        };
+        assert!(failed.is_empty(), "{failed:?}");
+        assert_eq!(out.get("zip"), Some(&Value::I32(12345)));
+        assert!(!out.contains_key("extra"));
+        let Value::Map(kept) = nested(&parent, input, "address", &mut failed, false) else {
+            panic!("a map");
+        };
+        assert!(kept.contains_key("extra"));
+        let missing = Value::Map([("city".to_string(), Value::string("Town"))].into_iter().collect());
+        nested(&parent, missing, "address", &mut failed, true);
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].0, "address.zip");
+        assert!(failed[0].1.contains("address.zip is required"), "{}", failed[0].1);
+    }
+
+    /// `val-or` reports why each check failed when none passed; `text-url` takes any scheme.
+    #[test]
+    fn val_or_keeps_the_child_messages_and_a_url_takes_any_scheme() {
+        let either = Check::Or(vec![Check::TextDigits, Check::TextLetters]);
+        assert!(apply_check("code", &either, &Value::string("abc")).is_ok());
+        let err = apply_check("code", &either, &Value::string("a1!")).unwrap_err();
+        assert_eq!(err.message(), "parameter code is not digits, or is not letters");
+        for url in [
+            "https://moqui.org/x",
+            "ftp://host/file",
+            "s3://bucket/key",
+            "file:///tmp/x",
+        ] {
+            assert!(
+                apply_check("url", &Check::TextUrl, &Value::string(url)).is_ok(),
+                "{url}"
+            );
+        }
+        for url in ["moqui.org", "https://", "not a url"] {
+            assert!(
+                apply_check("url", &Check::TextUrl, &Value::string(url)).is_err(),
+                "{url}"
+            );
+        }
+    }
+
+    /// Java's `convertType`: a date by the parameter's `format`, a number as the locale writes it.
+    #[test]
+    fn text_converts_by_the_parameter_format_and_the_locale() {
+        let mut date = param("when", "java.sql.Date", Required::False);
+        date.format = Some("dd.MM.yyyy".to_string());
+        assert_eq!(
+            convert_text(&date, &Value::string("15.01.2024")),
+            Some(Value::Date(jiff::civil::date(2024, 1, 15)))
+        );
+        let amount = param("amount", "BigDecimal", Required::False);
+        assert_eq!(
+            convert_text(&amount, &Value::string("1,234.50")),
+            Some(Value::Decimal("1234.50".parse().unwrap()))
+        );
     }
 }

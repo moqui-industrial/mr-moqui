@@ -80,17 +80,70 @@ pub fn open_entity_facade_for_factory(
     dialect: &str,
 ) -> Result<EntityFacade, Error> {
     let conf = moqui_lib::node::MNode::parse_text("moqui-conf", factory.conf_text())?;
-    let tx = moqui_core::transaction::TransactionManager::new(driver, pool)?;
+    let tx = moqui_core::transaction::TransactionManager::new(Arc::clone(&driver), pool)?;
     tx.configure_from_conf(&conf)?;
+    let mut groups = vec![moqui_core::entity::EntityGroup::new("transactional", dialect, tx)];
+    groups.extend(other_groups(&conf, &driver));
     let facade = EntityFacade::open_components_with_conf(
         factory.framework_dir(),
         &component_entity_dirs(factory),
         "transactional",
-        vec![moqui_core::entity::EntityGroup::new("transactional", dialect, tx)],
+        groups,
         &conf,
     )?;
     facade.crypt_from_conf(&conf)?;
     Ok(facade)
+}
+
+/// The entity groups of the conf's other `<datasource>` elements, each with a pool of its own, as Java opens each
+/// datasource. A `disabled` one is left out. An `object-factory` one is opened by the factory registered for it
+/// ([`moqui_core::entity::datasource::register_datasource_factory`]). One on the embedded cluster shares its driver.
+/// A datasource that cannot be opened is logged and left out: its entities use the `transactional` group.
+fn other_groups(
+    conf: &moqui_lib::node::MNode,
+    main_driver: &Arc<dyn DbDriver>,
+) -> Vec<moqui_core::entity::EntityGroup> {
+    use moqui_core::entity::datasource::{datasource_attribute, datasource_conf, datasource_factory, datasource_nodes};
+    let mut groups = Vec::new();
+    for node in datasource_nodes(conf) {
+        let group = datasource_attribute(&node, "group-name");
+        if group.is_empty() || group == "transactional" {
+            continue;
+        }
+        if datasource_attribute(&node, "disabled") == "true" {
+            tracing::info!("Datasource {group} is disabled, not opening it");
+            continue;
+        }
+        let object_factory = datasource_attribute(&node, "object-factory");
+        if !object_factory.is_empty() {
+            match datasource_factory(&object_factory) {
+                Some(factory) => match factory.open_group(&group, &node, conf) {
+                    Ok(opened) => groups.push(opened),
+                    Err(err) => tracing::error!(error = %err, "Could not open datasource {group}, its entities use the transactional group"),
+                },
+                None => tracing::info!(
+                    "Datasource {group} uses {object_factory}, which this port does not serve; its entities use the transactional group"
+                ),
+            }
+            continue;
+        }
+        let opened = datasource_conf(conf, &group).and_then(|ds| {
+            let driver = super::entity_db::server_driver(&ds)?.unwrap_or_else(|| Arc::clone(main_driver));
+            let tx = moqui_core::transaction::TransactionManager::new(driver, ds.pool.clone())?;
+            tx.configure_from_conf(conf)?;
+            Ok(moqui_core::entity::EntityGroup::new(group.clone(), ds.dialect, tx))
+        });
+        match opened {
+            Ok(opened) => {
+                tracing::info!("Opened datasource {group}");
+                groups.push(opened);
+            }
+            Err(err) => {
+                tracing::error!(error = %err, "Could not open datasource {group}, its entities use the transactional group")
+            }
+        }
+    }
+    groups
 }
 
 /// The `entity` directory of each component the factory found, in its load order, the framework
@@ -110,6 +163,32 @@ pub fn component_entity_dirs(factory: &ExecutionContextFactory) -> Vec<std::path
 pub fn attach(factory: &ExecutionContextFactory, facade: EntityFacade) {
     super::install_conf_drivers();
     factory.set_entity(facade);
+}
+
+/// Each datasource's DDL settings on the facade (the main one from `conf`, the others from the merged conf), and Java's
+/// find on a missing table: nothing found, not an error.
+pub fn apply_datasource_conf(
+    facade: &EntityFacade,
+    conf: &moqui_core::entity::datasource::DatasourceConf,
+    merged: Option<&moqui_lib::node::MNode>,
+) {
+    let ddl = |ds: &moqui_core::entity::datasource::DatasourceConf| moqui_core::entity::DdlConf {
+        startup_add_missing: ds.startup_add_missing,
+        runtime_add_missing: ds.runtime_add_missing,
+        runtime_add_fks: ds.runtime_add_fks,
+    };
+    facade.set_ddl_conf(&conf.group, ddl(conf));
+    if let Some(merged) = merged {
+        for group in facade.group_names() {
+            if group == conf.group {
+                continue;
+            }
+            if let Ok(other) = moqui_core::entity::datasource::datasource_conf(merged, &group) {
+                facade.set_ddl_conf(&group, ddl(&other));
+            }
+        }
+    }
+    facade.set_find_table_check(true);
 }
 
 #[cfg(all(test, unix, feature = "embedded-postgres", feature = "postgres"))]
@@ -178,7 +257,8 @@ mod tests {
         ] {
             assert!(facade.table_exists(name).unwrap(), "{name} was not created");
         }
-        assert!(!facade.table_exists("moqui.test.FooBar").unwrap());
+        // As Java's `tableExists`, a view is there when one of its member tables is.
+        assert!(facade.table_exists("moqui.test.FooBar").unwrap());
 
         let mut row = facade.make_value("moqui.test.TestEntity").unwrap();
         row.set("testId", Value::string("T1"));
@@ -464,6 +544,76 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+
+        drop(facade);
+        drop(cluster);
+    }
+
+    /// As Java's `EntityDbMeta` and `EntityFindImpl`: with the find check on, a find on a table that does not exist
+    /// finds nothing; with `runtime-add-missing`, the first use creates the table (a view's member tables too).
+    #[test]
+    fn missing_tables_find_nothing_and_runtime_add_missing_creates_them_on_first_use() {
+        let dir = temp_cluster_dir();
+        let _guard = DirGuard(dir.clone());
+        let (cluster, driver) = EmbeddedCluster::start(&dir, 20).unwrap();
+        let driver: Arc<dyn DbDriver> = Arc::new(driver);
+        let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
+        let facade = open_entity_facade(
+            &framework,
+            driver,
+            PoolConfig {
+                min: 0,
+                max: 4,
+                reserve: 1,
+                acquire_timeout: Duration::from_secs(30),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        facade.set_find_table_check(true);
+        let entity = "moqui.test.TestEntity";
+        assert!(facade.find(entity).unwrap().list().unwrap().is_empty());
+        assert_eq!(facade.find(entity).unwrap().count().unwrap(), 0);
+        assert!(facade
+            .find(entity)
+            .unwrap()
+            .eq("testId", Value::string("A"))
+            .one()
+            .unwrap()
+            .is_none());
+        assert!(!facade.table_exists(entity).unwrap());
+
+        facade.set_ddl_conf(
+            "transactional",
+            moqui_core::entity::DdlConf {
+                startup_add_missing: true,
+                runtime_add_missing: true,
+                runtime_add_fks: true,
+            },
+        );
+        let mut row = facade.make_value(entity).unwrap();
+        row.set("testId", Value::string("A"));
+        row.create(&facade).unwrap();
+        assert!(facade.table_exists(entity).unwrap());
+        assert_eq!(facade.find(entity).unwrap().count().unwrap(), 1);
+        // A view's members are checked when the view is read.
+        assert_eq!(facade.find("moqui.test.FooBar").unwrap().count().unwrap(), 0);
+        assert!(facade.table_exists("moqui.test.Foo").unwrap());
+        assert!(facade.table_exists("moqui.test.Bar").unwrap());
+
+        // The SQL runner asks the database whether a statement gives rows, as JDBC's `execute`.
+        let returned = moqui_core::entity::info::run_sql(
+            &facade,
+            "transactional",
+            "insert into test_entity (test_id) values ('B') returning test_id",
+            10,
+        )
+        .unwrap();
+        assert_eq!(returned.records, vec![vec![Value::string("B")]]);
+        let updated =
+            moqui_core::entity::info::run_sql(&facade, "transactional", "update test_entity set test_medium = 'x'", 10)
+                .unwrap();
+        assert_eq!(updated.rows_affected, Some(2));
 
         drop(facade);
         drop(cluster);

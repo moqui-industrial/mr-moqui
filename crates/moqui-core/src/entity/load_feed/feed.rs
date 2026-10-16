@@ -49,6 +49,9 @@ pub(super) struct Touch {
     /// The written values. The feed reads keys from them, and a related delete walks back to the
     /// primary entity from them. `None` falls back to the Postgres `xmin` probe.
     fields: Option<BTreeMap<String, Value>>,
+    /// For an update of a feed entity, the row as it was before, so an update that changes no document field is
+    /// not fed (Java's `oldValues`). `None` feeds the update.
+    old: Option<BTreeMap<String, Value>>,
 }
 
 struct Agg {
@@ -63,6 +66,12 @@ struct DocTarget {
     primary_entity: String,
     /// Relationship steps from the primary entity to this one, `(entity, relationship)` each.
     paths: Vec<Vec<(String, String)>>,
+    /// Java's `DocumentEntityInfo.fields`: this entity's document fields, and its key fields of the relationships
+    /// the paths take from it. A write that sets none of them is not fed.
+    fields: HashSet<String>,
+    /// Java's `DocumentEntityInfo.conditions`: field and value of each document condition on this entity. A write
+    /// with another value in such a field is not fed.
+    conditions: Vec<(String, String)>,
 }
 
 /// Note a write for the data feed when it ran inside a transaction. Call it after the statement succeeded, so a
@@ -75,6 +84,7 @@ pub(crate) fn note_touch(
     entity_name: &str,
     operation: &str,
     fields: Option<&BTreeMap<String, Value>>,
+    old: Option<BTreeMap<String, Value>>,
 ) {
     let Some(tx) = facade.transactions_for(entity_name).ok() else {
         return;
@@ -94,8 +104,56 @@ pub(crate) fn note_touch(
         entity_name: entity_name.to_string(),
         operation: operation.to_string(),
         fields: fields.filter(|_| keep_fields).cloned(),
+        old: old.filter(|_| keep_fields),
     };
     TOUCHES.with(|touches| touches.borrow_mut().entry(frame).or_default().push(touch));
+}
+
+/// Whether an update of `entity_name` should read the row first for the data feed: a known feed configuration has
+/// a document on the entity. Before the configuration is first read, updates are fed without that check.
+pub(crate) fn feed_wants_old(facade: &EntityFacade, entity_name: &str) -> bool {
+    if facade.flags().disable_data_feed || facade.sim_active() {
+        return false;
+    }
+    let Ok(full_name) = canonical_name(facade, entity_name) else {
+        return false;
+    };
+    with_load_slot(facade, |slot| {
+        slot.feed_config
+            .as_ref()
+            .is_some_and(|config| config.targets.iter().any(|target| target.entity_name == full_name))
+    })
+}
+
+/// Java's `dataFeedCheckAndRegister` for one document: a create or update is fed when it sets or changes one of the
+/// document's fields of this entity, and has no other value in a field a document condition names. A delete is
+/// always fed.
+fn touch_feeds(target: &DocTarget, touch: &Touch, fields: &BTreeMap<String, Value>) -> bool {
+    if touch.operation == "delete" {
+        return true;
+    }
+    let text = |value: &Value| moqui_lib::object::to_plain_string(value);
+    let changed = target.fields.iter().any(|name| {
+        let Some(value) = fields.get(name) else {
+            return false;
+        };
+        match (&touch.old, touch.operation.as_str()) {
+            (Some(old), "update") => old
+                .get(name)
+                .map_or(!value.is_null(), |before| text(before) != text(value)),
+            _ => !value.is_null(),
+        }
+    });
+    if !changed {
+        return false;
+    }
+    // A field the write does not set is left to the document query.
+    target.conditions.iter().all(|(name, wanted)| {
+        fields
+            .get(name)
+            .filter(|value| !value.is_null())
+            .is_none_or(|value| &text(value) == wanted)
+    })
 }
 
 fn drop_frame_touches(frame: u64) {
@@ -176,6 +234,9 @@ fn insert_pending(
             continue;
         };
         for hit in targets.iter().filter(|target| target.entity_name == touch.entity_name) {
+            if !touch_feeds(hit, touch, fields) {
+                continue;
+            }
             if hit.primary {
                 let Some(id) = pk_text(facade, &touch.entity_name, fields) else {
                     continue;
@@ -342,6 +403,9 @@ fn select_rows(
 }
 
 /// Walk relationship steps back from rows of the last entity to the primary entity's ids.
+/// How many related keys one query of [`walk_to_primary`] looks up.
+const RELATED_BATCH: usize = 200;
+
 fn walk_to_primary(
     facade: &EntityFacade,
     conn: &mut dyn DbConnection,
@@ -354,29 +418,47 @@ fn walk_to_primary(
         let names = facade.with_entity(parent, |entity, _, _| {
             Ok(entity.fields.iter().map(|field| field.name.clone()).collect::<Vec<_>>())
         })?;
-        let mut next = Vec::new();
+        // The distinct keys of the parent rows, looked up up to 200 at a time.
+        let mut keys: Vec<Vec<Value>> = Vec::new();
         let mut seen = HashSet::new();
         for row in &rows {
-            let mut conds = Vec::with_capacity(pairs.len());
-            for (field, related) in &pairs {
-                match row.get(related) {
-                    Some(value) if !value.is_null() => {
-                        conds.push(Condition::equals(FieldRef::new(field.clone()), value.clone()))
-                    }
-                    _ => {
-                        conds.clear();
-                        break;
-                    }
-                }
-            }
-            if conds.is_empty() {
+            let key: Option<Vec<Value>> = pairs
+                .iter()
+                .map(|(_, related)| row.get(related).filter(|value| !value.is_null()).cloned())
+                .collect();
+            let Some(key) = key.filter(|key| !key.is_empty()) else {
                 continue;
+            };
+            if seen.insert(format!("{key:?}")) {
+                keys.push(key);
             }
-            let key: Vec<String> = conds.iter().map(|cond| format!("{cond:?}")).collect();
-            if !seen.insert(key) {
-                continue;
-            }
-            next.extend(select_rows(facade, conn, parent, &names, Condition::and(conds))?);
+        }
+        let mut next = Vec::new();
+        for batch in keys.chunks(RELATED_BATCH) {
+            let condition = if pairs.len() == 1 {
+                Condition::is_in(
+                    FieldRef::new(pairs[0].0.clone()),
+                    batch.iter().map(|key| key[0].clone()).collect(),
+                )
+            } else {
+                Condition::or(
+                    batch
+                        .iter()
+                        .map(|key| {
+                            Condition::and(
+                                pairs
+                                    .iter()
+                                    .zip(key)
+                                    .map(|((field, _), value)| {
+                                        Condition::equals(FieldRef::new(field.clone()), value.clone())
+                                    })
+                                    .collect(),
+                            )
+                        })
+                        .collect(),
+                )
+            };
+            next.extend(select_rows(facade, conn, parent, &names, condition)?);
             if next.len() > MAX_RELATED_DOCS {
                 tracing::warn!(
                     entity = %parent,
@@ -391,9 +473,10 @@ fn walk_to_primary(
     }
     let primary = path.first().map(|(entity, _)| entity.clone()).unwrap_or_default();
     let mut ids = Vec::new();
+    let mut known = HashSet::new();
     for row in &rows {
         if let Some(id) = pk_text(facade, &primary, row) {
-            if !ids.contains(&id) {
+            if known.insert(id.clone()) {
                 ids.push(id);
             }
         }
@@ -522,18 +605,35 @@ fn feed_targets(
     let (field_sql, field_params) = select_sql(
         facade,
         "moqui.entity.document.DataDocumentField",
-        &["dataDocumentId", "fieldPath"],
+        &["dataDocumentId", "fieldPath", "fieldNameAlias"],
         None,
     )?;
     let fields = probe_query(conn, &field_sql, &field_params)?;
-    let mut paths: HashMap<String, Vec<String>> = HashMap::new();
+    let (condition_sql, condition_params) = select_sql(
+        facade,
+        "moqui.entity.document.DataDocumentCondition",
+        &["dataDocumentId", "fieldNameAlias", "fieldValue"],
+        None,
+    )?;
+    let condition_rows = probe_query(conn, &condition_sql, &condition_params)?;
+    let mut paths: HashMap<String, Vec<(String, String)>> = HashMap::new();
     for row in &fields {
         let document = cell_string(row, "dataDocumentId");
         let path = cell_string(row, "fieldPath");
         if document.is_empty() || path.is_empty() || path.contains('(') {
             continue;
         }
-        paths.entry(document).or_default().push(path);
+        paths
+            .entry(document)
+            .or_default()
+            .push((path, cell_string(row, "fieldNameAlias")));
+    }
+    let mut conditions: HashMap<(String, String), String> = HashMap::new();
+    for row in &condition_rows {
+        conditions.insert(
+            (cell_string(row, "dataDocumentId"), cell_string(row, "fieldNameAlias")),
+            cell_string(row, "fieldValue"),
+        );
     }
     let mut targets = Vec::new();
     let mut seen = HashSet::new();
@@ -561,6 +661,8 @@ fn feed_targets(
             tracing::warn!(entity = %primary, document = %document_id, "data document primary entity is not defined");
             continue;
         };
+        let document_paths: Vec<(String, String)> = paths.get(&document_id).cloned().unwrap_or_default();
+        let field_paths: Vec<String> = document_paths.iter().map(|(path, _)| path.clone()).collect();
         push_target(
             &mut targets,
             &mut seen,
@@ -569,16 +671,89 @@ fn feed_targets(
             &primary_full,
             None,
         );
-        let related = related_entities(
-            facade,
-            &primary_full,
-            paths.get(&document_id).map(Vec::as_slice).unwrap_or(&[]),
-        );
-        for (name, steps) in related {
+        for (name, steps) in related_entities(facade, &primary_full, &field_paths) {
             push_target(&mut targets, &mut seen, &document_id, &name, &primary_full, Some(steps));
+        }
+        for (entity_name, names, entity_conditions) in
+            document_fields(facade, &primary_full, &document_id, &document_paths, &conditions)
+        {
+            if let Some(target) = targets
+                .iter_mut()
+                .find(|target| target.data_document_id == document_id && target.entity_name == entity_name)
+            {
+                target.fields.extend(names);
+                target.conditions.extend(entity_conditions);
+            }
         }
     }
     Ok(targets)
+}
+
+/// An entity of a document, its fields, and the conditions on them.
+type EntityFields = (String, HashSet<String>, Vec<(String, String)>);
+
+/// Java's `getDataDocumentEntityInfo`: walking each field path from the primary entity, the fields of each entity
+/// that make its documents change (the field at the end of a path, and the key fields of each relationship taken
+/// from an entity), and the conditions on those fields, by the alias of the document field.
+fn document_fields(
+    facade: &EntityFacade,
+    primary: &str,
+    document_id: &str,
+    paths: &[(String, String)],
+    conditions: &HashMap<(String, String), String>,
+) -> Vec<EntityFields> {
+    let mut out: Vec<EntityFields> = Vec::new();
+    let mut add = |entity: &str, field: &str, condition: Option<(String, String)>| {
+        let index = match out.iter().position(|(name, _, _)| name == entity) {
+            Some(index) => index,
+            None => {
+                out.push((entity.to_string(), HashSet::new(), Vec::new()));
+                out.len() - 1
+            }
+        };
+        out[index].1.insert(field.to_string());
+        if let Some(condition) = condition {
+            out[index].2.push(condition);
+        }
+    };
+    for (path, alias) in paths {
+        let parts: Vec<&str> = path.split(':').collect();
+        let Some((field, relationships)) = parts.split_last() else {
+            continue;
+        };
+        let mut current = primary.to_string();
+        let mut reached = true;
+        for rel_name in relationships {
+            let step = facade
+                .with_entity(&current, |entity, _, _| {
+                    Ok(entity
+                        .relationship(rel_name)
+                        .map(|rel| (rel.related.clone(), rel.key_pairs.clone())))
+                })
+                .ok()
+                .flatten();
+            let Some((related, pairs)) = step else {
+                reached = false;
+                break;
+            };
+            for (key, _) in &pairs {
+                add(&current, key, None);
+            }
+            let Ok(full) = canonical_name(facade, &related) else {
+                reached = false;
+                break;
+            };
+            current = full;
+        }
+        if reached {
+            let condition = (!alias.is_empty())
+                .then(|| conditions.get(&(document_id.to_string(), alias.clone())))
+                .flatten()
+                .map(|value| ((*field).to_string(), value.clone()));
+            add(&current, field, condition);
+        }
+    }
+    out
 }
 
 /// Add a target, or add a path to an existing one. `steps` is `None` for the primary entity.
@@ -597,6 +772,8 @@ fn push_target(
             primary: steps.is_none(),
             primary_entity: primary_entity.to_string(),
             paths: steps.into_iter().collect(),
+            fields: HashSet::new(),
+            conditions: Vec::new(),
         });
     } else if let Some(steps) = steps {
         if let Some(target) = targets
@@ -856,5 +1033,59 @@ fn scalar_text(value: &Value) -> Option<String> {
         Value::Date(date) => Some(date.to_string()),
         Value::Time(time) => Some(time.to_string()),
         Value::Bytes(_) | Value::List(_) | Value::Map(_) | Value::Object(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use std::collections::{BTreeMap, HashSet};
+
+    use moqui_lib::object::Value;
+
+    use super::{touch_feeds, DocTarget, Touch};
+
+    fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, Value> {
+        pairs
+            .iter()
+            .map(|(name, value)| ((*name).to_string(), Value::string(*value)))
+            .collect()
+    }
+
+    /// Java's `dataFeedCheckAndRegister`: fed only when a document field is set or changed and no document condition
+    /// is contradicted.
+    #[test]
+    fn a_write_is_fed_only_when_a_document_field_changes_and_the_conditions_hold() {
+        let target = DocTarget {
+            data_document_id: "D".to_string(),
+            entity_name: "E".to_string(),
+            primary: true,
+            primary_entity: "E".to_string(),
+            paths: Vec::new(),
+            fields: HashSet::from(["name".to_string(), "kind".to_string()]),
+            conditions: vec![("kind".to_string(), "Good".to_string())],
+        };
+        let touch = |operation: &str, fields: BTreeMap<String, Value>, old: Option<BTreeMap<String, Value>>| Touch {
+            entity_name: "E".to_string(),
+            operation: operation.to_string(),
+            fields: Some(fields),
+            old,
+        };
+        let feeds = |touch: &Touch| touch_feeds(&target, touch, touch.fields.as_ref().unwrap());
+        assert!(feeds(&touch("create", map(&[("id", "1"), ("name", "a")]), None)));
+        assert!(!feeds(&touch("create", map(&[("id", "1"), ("other", "x")]), None)));
+        assert!(!feeds(&touch("create", map(&[("name", "a"), ("kind", "Bad")]), None)));
+        let before = map(&[("id", "1"), ("name", "a"), ("other", "x")]);
+        assert!(!feeds(&touch(
+            "update",
+            map(&[("id", "1"), ("name", "a"), ("other", "y")]),
+            Some(before.clone())
+        )));
+        assert!(feeds(&touch(
+            "update",
+            map(&[("id", "1"), ("name", "b")]),
+            Some(before)
+        )));
+        assert!(feeds(&touch("update", map(&[("id", "1"), ("name", "a")]), None)));
+        assert!(feeds(&touch("delete", map(&[("id", "1")]), None)));
     }
 }
