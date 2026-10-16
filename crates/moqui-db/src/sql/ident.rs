@@ -29,19 +29,58 @@ fn starts_with_ignore(name: &str, prefix: &str) -> bool {
     name.len() >= prefix.len() && name[..prefix.len()].eq_ignore_ascii_case(prefix)
 }
 
-fn apply_name_replace<'a>(dialect: &'a Dialect, name: &'a str) -> &'a str {
+/// Column replacements are ordered, case-insensitive, and may chain, as in Java FieldInfo.
+/// They do not apply to table names or logical result aliases.
+pub fn physical_column_name(dialect: &Dialect, name: &str) -> String {
+    if dialect.legacy_names {
+        return legacy_name(dialect, name);
+    }
+    let mut name = name;
     for pair in &dialect.name_replaces {
         if pair.original.eq_ignore_ascii_case(name) {
-            return pair.replace.as_str();
+            name = &pair.replace;
         }
     }
-    name
+    physical_name(dialect, name)
 }
 
-/// Quote one identifier. MySQL uses backticks. Every other profile uses Postgres double quotes.
-/// `name-replace` is applied first (`CONDITION` becomes `THE_CONDITION` on MySQL).
+/// The old Rust renderer replaced all identifiers (even tables), stopping at the first match.
+pub fn legacy_name(dialect: &Dialect, name: &str) -> String {
+    dialect
+        .name_replaces
+        .iter()
+        .find(|pair| pair.original.eq_ignore_ascii_case(name))
+        .map_or_else(|| name.to_string(), |pair| pair.replace.clone())
+}
+
+/// Java writes physical names unquoted. Keep quoting for safety, but emulate the
+/// database's unquoted folding. Logical SQL/result aliases must not pass through here.
+pub fn physical_name(dialect: &Dialect, name: &str) -> String {
+    if dialect.legacy_names {
+        legacy_name(dialect, name)
+    } else if starts_with_ignore(&dialect.name, "postgres") {
+        name.to_ascii_lowercase()
+    } else if ["h2", "hsql", "oracle", "db2", "derby"]
+        .iter()
+        .any(|prefix| starts_with_ignore(&dialect.name, prefix))
+    {
+        name.to_ascii_uppercase()
+    } else {
+        name.to_string()
+    }
+}
+
+pub fn quote_physical_ident(dialect: &Dialect, name: &str) -> String {
+    quote_ident(dialect, &physical_name(dialect, name))
+}
+
+pub fn quote_column(dialect: &Dialect, name: &str) -> String {
+    quote_ident(dialect, &physical_column_name(dialect, name))
+}
+
+/// Quote an identifier verbatim, including logical aliases. MySQL uses backticks.
+/// For physical table/constraint names use [`quote_physical_ident`]; for columns [`quote_column`].
 pub fn quote_ident(dialect: &Dialect, name: &str) -> String {
-    let name = apply_name_replace(dialect, name);
     let quote = if is_mysql(dialect) { '`' } else { '"' };
     let mut out = String::with_capacity(name.len() + 2);
     out.push(quote);
@@ -61,7 +100,7 @@ pub(crate) fn quote_list(dialect: &Dialect, names: &[impl AsRef<str>]) -> String
         if index > 0 {
             out.push_str(", ");
         }
-        out.push_str(&quote_ident(dialect, name.as_ref()));
+        out.push_str(&quote_column(dialect, name.as_ref()));
     }
     out
 }

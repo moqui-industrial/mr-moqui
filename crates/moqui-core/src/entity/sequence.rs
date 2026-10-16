@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use moqui_db::sql::{is_mysql, is_sqlite, quote_ident};
+use moqui_db::sql::{is_mysql, is_sqlite, quote_column, quote_physical_ident};
 use moqui_lib::error::Error;
 use moqui_lib::object::{basic_convert, Value};
 
@@ -223,9 +223,15 @@ pub(crate) fn sequenced_id_primary(
 }
 
 fn seq_sql(entity: &moqui_db::model::EntityDefinition, dialect: &moqui_db::dialect::Dialect) -> Result<SeqSql, Error> {
-    let table = quote_ident(dialect, &entity.table_name);
-    let name_col = quote_ident(dialect, "seqName");
-    let num_col = quote_ident(dialect, "seqNum");
+    let table = quote_physical_ident(dialect, &entity.table_name);
+    let column = |name| {
+        entity
+            .field(name)
+            .map(|field| quote_column(dialect, &field.column_name))
+            .ok_or_else(|| Error::new(format!("missing sequence field {name}")))
+    };
+    let name_col = column("seqName")?;
+    let num_col = column("seqNum")?;
     let mysql = is_mysql(dialect);
     // SQLite has the same upsert and RETURNING, but its two-argument max() is GREATEST.
     let greatest = if is_sqlite(dialect) { "max" } else { "GREATEST" };
@@ -546,17 +552,27 @@ mod tests {
         assert!(!postgres.mysql);
         assert_eq!(
             postgres.upsert_sql,
-            "INSERT INTO \"SequenceValueItem\" (\"seqName\", \"seqNum\") VALUES (?, ?) ON CONFLICT (\"seqName\") DO UPDATE SET \"seqNum\" = GREATEST(\"SequenceValueItem\".\"seqNum\" + ?, ?) RETURNING \"seqNum\""
+            "INSERT INTO \"sequence_value_item\" (\"seq_name\", \"seq_num\") VALUES (?, ?) ON CONFLICT (\"seq_name\") DO UPDATE SET \"seq_num\" = GREATEST(\"sequence_value_item\".\"seq_num\" + ?, ?) RETURNING \"seq_num\""
         );
         let mysql = seq_sql(entity, dialects.get("mysql").unwrap()).unwrap();
         assert!(mysql.mysql);
         assert_eq!(
             mysql.lock_sql,
-            "SELECT `seqNum` FROM `SequenceValueItem` WHERE `seqName` = ? FOR UPDATE"
+            "SELECT `SEQ_NUM` FROM `SEQUENCE_VALUE_ITEM` WHERE `SEQ_NAME` = ? FOR UPDATE"
         );
         assert_eq!(
             mysql.mysql_upsert_sql,
-            "INSERT INTO `SequenceValueItem` (`seqName`, `seqNum`) VALUES (?, ?) ON DUPLICATE KEY UPDATE `seqNum` = GREATEST(`seqNum` + ?, ?)"
+            "INSERT INTO `SEQUENCE_VALUE_ITEM` (`SEQ_NAME`, `SEQ_NUM`) VALUES (?, ?) ON DUPLICATE KEY UPDATE `SEQ_NUM` = GREATEST(`SEQ_NUM` + ?, ?)"
         );
+        let mut overridden = entity.clone();
+        overridden.table_name = "SEQ_STORE".to_string();
+        for field in &mut overridden.fields {
+            field.column_name = format!("CUSTOM_{}", field.column_name);
+        }
+        let sql = seq_sql(&overridden, dialects.get("postgres").unwrap()).unwrap();
+        assert!(sql
+            .upsert_sql
+            .starts_with("INSERT INTO \"seq_store\" (\"custom_seq_name\", \"custom_seq_num\")"));
+        assert!(sql.upsert_sql.ends_with("RETURNING \"custom_seq_num\""));
     }
 }

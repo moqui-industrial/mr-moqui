@@ -283,7 +283,7 @@ impl MemConn {
                 }],
             ));
         }
-        if sql.contains("ON CONFLICT") && sql.contains("SequenceValueItem") {
+        if sql.contains("ON CONFLICT") && sql.contains("sequence_value_item") {
             return self.sequence(params);
         }
         if sql.contains("xmin") && sql.contains("txid_current") {
@@ -298,16 +298,16 @@ impl MemConn {
         let Some(from_at) = sql.find(" FROM ") else {
             return Err(Error::new("xmin query has no table"));
         };
-        let mut columns = Vec::new();
-        let mut rest = &sql[..from_at];
-        while let Some(start) = rest.find('"') {
-            let after = &rest[start + 1..];
-            let Some(end) = after.find('"') else {
-                break;
-            };
-            columns.push(after[..end].to_string());
-            rest = &after[end + 1..];
-        }
+        let columns: Vec<_> = sql["SELECT ".len()..from_at]
+            .split(", ")
+            .map(|item| {
+                let (column, alias) = item.split_once(" AS ").unwrap_or((item, item));
+                (
+                    column.trim_matches('"').to_string(),
+                    alias.trim_matches('"').to_string(),
+                )
+            })
+            .collect();
         let tail = sql[from_at + 6..].trim_start();
         let table = tail
             .strip_prefix('"')
@@ -318,7 +318,15 @@ impl MemConn {
             return Err(Error::new("xmin query is missing columns"));
         }
         let rows = self.read_table(&table);
-        let projected: Vec<DbRow> = rows.iter().map(|row| project(row, &columns)).collect();
+        let projected: Vec<DbRow> = rows
+            .iter()
+            .map(|row| DbRow {
+                columns: columns
+                    .iter()
+                    .map(|(column, alias)| (alias.clone(), row.get(column).cloned().unwrap_or(Value::Null)))
+                    .collect(),
+            })
+            .collect();
         let count = u64::try_from(projected.len()).unwrap_or(u64::MAX);
         Ok((count, projected))
     }
@@ -331,24 +339,24 @@ impl MemConn {
         let first_end = as_i64(&params[1])?;
         let increment = as_i64(&params[2])?;
         let hint_end = as_i64(&params[3])?;
-        let mut rows = self.read_table("SequenceValueItem");
-        let end = if let Some(row) = rows.iter_mut().find(|row| row.get("seqName") == Some(&name)) {
-            let old = row.get("seqNum").and_then(|value| as_i64(value).ok()).unwrap_or(0);
+        let mut rows = self.read_table("sequence_value_item");
+        let end = if let Some(row) = rows.iter_mut().find(|row| row.get("seq_name") == Some(&name)) {
+            let old = row.get("seq_num").and_then(|value| as_i64(value).ok()).unwrap_or(0);
             let new_end = old.saturating_add(increment).max(hint_end);
-            row.insert("seqNum".to_string(), Value::I64(new_end));
+            row.insert("seq_num".to_string(), Value::I64(new_end));
             new_end
         } else {
             let mut row = BTreeMap::new();
-            row.insert("seqName".to_string(), name);
-            row.insert("seqNum".to_string(), Value::I64(first_end));
+            row.insert("seq_name".to_string(), name);
+            row.insert("seq_num".to_string(), Value::I64(first_end));
             rows.push(row);
             first_end
         };
-        self.put_table("SequenceValueItem", rows);
+        self.put_table("sequence_value_item", rows);
         Ok((
             1,
             vec![DbRow {
-                columns: vec![("seqNum".to_string(), Value::I64(end))],
+                columns: vec![("seq_num".to_string(), Value::I64(end))],
             }],
         ))
     }

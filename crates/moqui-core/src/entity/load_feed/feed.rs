@@ -19,7 +19,9 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use moqui_db::sql::{insert, quote_ident, select, Condition, FieldRef, LimitOffset};
+use moqui_db::sql::{
+    insert, quote_column, quote_ident, quote_physical_ident, select, Condition, FieldRef, LimitOffset,
+};
 use moqui_lib::error::Error;
 use moqui_lib::object::Value;
 
@@ -664,7 +666,7 @@ fn primary_keys(
 
 fn xmin_query(facade: &EntityFacade, entity_name: &str) -> Result<Option<(String, Vec<String>)>, Error> {
     facade.with_entity(entity_name, |entity, dialect, _| {
-        if !dialect.name.to_ascii_lowercase().starts_with("postgres") {
+        if entity.is_view || !dialect.name.to_ascii_lowercase().starts_with("postgres") {
             return Ok(None);
         }
         let names: Vec<String> = entity.pk_field_names().into_iter().map(str::to_string).collect();
@@ -673,12 +675,19 @@ fn xmin_query(facade: &EntityFacade, entity_name: &str) -> Result<Option<(String
         }
         let columns = names
             .iter()
-            .map(|name| quote_ident(dialect, name))
+            .map(|name| {
+                let field = entity.field(name).expect("primary key field");
+                format!(
+                    "{} AS {}",
+                    quote_column(dialect, &field.column_name),
+                    quote_ident(dialect, name)
+                )
+            })
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!(
             "SELECT {columns} FROM {} WHERE xmin::text = txid_current()::text",
-            quote_ident(dialect, &entity.table_name)
+            quote_physical_ident(dialect, &entity.table_name)
         );
         Ok(Some((sql, names)))
     })

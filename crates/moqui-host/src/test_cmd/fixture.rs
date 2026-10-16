@@ -268,9 +268,8 @@ fn boot(runtime: &Path, framework: &Path) -> Result<Booted, Error> {
     std::fs::create_dir_all(&cluster).map_err(io("could not create the cluster directory"))?;
     let install = crate::db::embedded::shared_install_dir(&runtime.join("db"), &cluster);
     let db = crate::db::entity_db::open(conf, &cluster, &install, pool.max)?;
-    let facade = crate::db::entity_facade::open_entity_facade_components(
-        framework,
-        &crate::db::entity_facade::component_entity_dirs(&factory),
+    let facade = crate::db::entity_facade::open_entity_facade_for_factory(
+        &factory,
         Arc::clone(&db.driver),
         pool,
         &db.conf.dialect,
@@ -283,5 +282,6 @@ fn boot(runtime: &Path, framework: &Path) -> Result<Booted, Error> {
             None
         }
     };
+    factory.init_tools().map_err(Error::from)?;
     Ok((factory, facade, search, db))
 }

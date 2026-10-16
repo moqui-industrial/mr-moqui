@@ -687,7 +687,7 @@ mod tests {
             "only the selected field is read"
         );
         let sql = tape.lock().unwrap().last().cloned().unwrap();
-        assert!(sql.starts_with("SELECT \"testId\" FROM"), "{sql}");
+        assert!(sql.starts_with("SELECT \"test_id\" AS \"testId\" FROM"), "{sql}");
         let err = facade
             .find("moqui.test.TestEntity")
             .unwrap()
@@ -768,12 +768,12 @@ mod tests {
         let tape = tape.lock().unwrap();
         assert!(
             tape.iter()
-                .any(|sql| sql.ends_with("WHERE UPPER(\"testMedium\") = UPPER(?)")),
+                .any(|sql| sql.ends_with("WHERE UPPER(\"test_medium\") = UPPER(?)")),
             "{tape:?}"
         );
         assert!(
             tape.iter()
-                .any(|sql| sql.ends_with("WHERE \"testId\" <= \"testMedium\"")),
+                .any(|sql| sql.ends_with("WHERE \"test_id\" <= \"test_medium\"")),
             "{tape:?}"
         );
         let dialect = moqui_db::dialect::Dialects::load(
