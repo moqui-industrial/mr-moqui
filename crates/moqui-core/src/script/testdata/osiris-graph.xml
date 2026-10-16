@@ -19,4 +19,12 @@
         <field name="action" type="id" is-pk="true"/>
         <relationship type="one" related="test.osiris.Phrase"><key-map field-name="toPhraseId" related-field-name="phraseId"/></relationship>
     </entity>
+    <entity entity-name="Reference" package="test.osiris">
+        <field name="referenceId" type="id" is-pk="true"/>
+        <field name="parentReferenceId" type="id"/>
+        <relationship type="many" related="test.osiris.Reference" short-alias="children">
+            <key-map field-name="referenceId" related-field-name="parentReferenceId"/>
+        </relationship>
+        <master name="default"><detail relationship="children"/></master>
+    </entity>
 </entities>

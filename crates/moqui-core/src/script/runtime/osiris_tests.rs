@@ -73,6 +73,28 @@ fn master_graph_round_trip_inherits_keys_and_respects_read_only_relationships() 
 }
 
 #[test]
+fn master_graph_retains_distinct_self_referential_primary_keys() {
+    clear_context_stack();
+    let fixture = Fixture::new();
+    let context = ExecutionContextFactory::test_context();
+    context.factory().set_entity(crate::testing::open_at(&fixture.0));
+    let _entered = context.enter();
+    run_script(
+        r#"
+        refs = ec.entity.getValueListFromPlainMap({referenceId:"parent", children:[
+            {referenceId:"child", parentReferenceId:"parent"}
+        ]}, "test.osiris.Reference");
+        for (const row of refs) row.create();
+        master = ec.entity.find("test.osiris.Reference").condition("referenceId", "parent").oneMaster("default");
+        flattened = ec.entity.getValueListFromPlainMap(master, "test.osiris.Reference");
+    "#,
+    )
+    .unwrap();
+    holds(r#"master.children[0].referenceId === "child" && master.children[0].parentReferenceId === "parent""#);
+    holds(r#"flattened.length === 2 && flattened[1].referenceId === "child""#);
+}
+
+#[test]
 fn error_scopes_preserve_caller_errors_and_messages() {
     clear_context_stack();
     let context = ExecutionContextFactory::test_context();
@@ -101,7 +123,7 @@ fn mounted_transition_metadata_has_service_parameters_and_a_path() {
     let root = fixture.0.join("Root.xml");
     let child = fixture.0.join("Child.xml");
     let outside = fixture.0.join("Outside.xml");
-    let screen = r#"<screen><transition name="submit" method="post"><parameter name="id" required="true"/>
+    let screen = r#"<screen><transition name="submit" method="post"><path-parameter name="id"/>
         <service-call name="test.store#Thing"/><default-response type="none"/></transition><widgets/></screen>"#;
     std::fs::write(&child, screen).unwrap();
     std::fs::write(&outside, screen).unwrap();
@@ -122,10 +144,28 @@ fn mounted_transition_metadata_has_service_parameters_and_a_path() {
     });
     run_script(r#"transition = ec.screen.getTransitionInfo(rootLocation, childLocation, "submit", "post")"#).unwrap();
     holds(
-        r#"transition.path === "/child/submit" && transition.serviceName === "test.store#Thing" && transition.parameterMap.id.required"#,
+        r#"transition.path === "/child/submit" && transition.serviceName === "test.store#Thing" && transition.parameterMap.id.required && transition.pathParameters[0] === "id""#,
     );
     assert!(eval_condition(r#"ec.screen.getTransitionInfo(rootLocation, childLocation, "submit", "get")"#).is_err());
     assert!(eval_condition(r#"ec.screen.getTransitionInfo(rootLocation, outsideLocation, "submit", "post")"#).is_err());
+
+    // A location alone cannot choose between two mounts; do not silently return the first.
+    let ambiguous = fixture.0.join("Ambiguous.xml");
+    std::fs::write(
+        &ambiguous,
+        format!(
+            r#"<screen><subscreens>
+        <subscreens-item name="first" location="{}"/><subscreens-item name="second" location="{}"/>
+        </subscreens><widgets/></screen>"#,
+            child.display(),
+            child.display()
+        ),
+    )
+    .unwrap();
+    put_context_all(&indexmap::indexmap! {
+        "ambiguousRoot".to_string() => Value::string(ambiguous.to_str().unwrap()),
+    });
+    assert!(eval_condition(r#"ec.screen.getTransitionInfo(ambiguousRoot, childLocation, "submit", "post")"#).is_err());
 }
 
 #[test]

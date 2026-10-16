@@ -264,6 +264,8 @@ enum Expand<'a> {
 struct RenderCtx<'a> {
     expand: Expand<'a>,
     parent_pks: &'a HashSet<String>,
+    /// Script master graphs must retain identities, including self-referential child primary keys.
+    preserve_keys: bool,
     seen: &'a mut HashSet<String>,
     depth: u32,
 }
@@ -942,7 +944,16 @@ fn defined_name(facade: &EntityFacade, name: &str) -> Option<String> {
 
 /// A master graph for a script find, using the same expansion and authorization as entity REST.
 pub(crate) fn master_value(facade: &EntityFacade, record: &EntityValue, master: &str) -> Result<Value, Error> {
-    render_record(facade, record.entity_name(), record.fields(), 0, Some(master)).map(|node| node_to_value(&node))
+    let mut seen = HashSet::new();
+    let parent_pks = HashSet::new();
+    let mut ctx = RenderCtx {
+        expand: Expand::Master(master),
+        parent_pks: &parent_pks,
+        preserve_keys: true,
+        seen: &mut seen,
+        depth: 0,
+    };
+    render(facade, record.entity_name(), record.fields(), &mut ctx).map(|node| node_to_value(&node))
 }
 
 /// Flatten a plain master graph to typed values, inheriting primary keys and relationship key mappings.
@@ -1039,6 +1050,7 @@ fn render_record(
     let mut ctx = RenderCtx {
         expand,
         parent_pks: &parent,
+        preserve_keys: false,
         seen: &mut seen,
         depth: 0,
     };
@@ -1058,7 +1070,7 @@ fn render(
         nested: Vec::new(),
     };
     for field in &snap.fields {
-        if ctx.parent_pks.contains(&field.name) {
+        if !ctx.preserve_keys && ctx.parent_pks.contains(&field.name) {
             continue;
         }
         let Some(value) = fields.get(&field.name) else {
@@ -1230,6 +1242,7 @@ fn push_related(
                 Expand::Details(details) => Expand::Details(details),
             },
             parent_pks: &next_pks,
+            preserve_keys: ctx.preserve_keys,
             seen: ctx.seen,
             depth,
         };

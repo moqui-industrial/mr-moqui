@@ -87,12 +87,16 @@ pub fn resolve_service(path: &str, method: &str) -> Result<Value, Error> {
         .first()
         .and_then(|root| roots.resources.get(*root))
         .ok_or_else(|| Error::new("REST root resource not found"))?;
+    let mut path_parameters = Vec::new();
     for part in &parts[1..] {
         node = node
             .resources
             .get(*part)
             .or(node.id.as_deref())
             .ok_or_else(|| Error::new("REST resource not found"))?;
+        if node.is_id {
+            path_parameters.push(Value::string(&node.name));
+        }
         if node.is_id && node.allow_extra_path {
             break;
         }
@@ -100,6 +104,7 @@ pub fn resolve_service(path: &str, method: &str) -> Result<Value, Error> {
     if !node.methods.contains_key(&method.to_ascii_lowercase()) {
         if let Some(id) = node.id.as_deref().filter(|id| id.allow_extra_path) {
             node = id;
+            path_parameters.push(Value::string(&node.name));
         }
     }
     let operation = node
@@ -112,6 +117,7 @@ pub fn resolve_service(path: &str, method: &str) -> Result<Value, Error> {
     Ok(Value::Map(indexmap::indexmap! {
         "serviceName".to_string() => Value::string(name),
         "path".to_string() => Value::string(format!("/rest/s1/{}", parts.join("/"))),
+        "pathParameters".to_string() => Value::List(path_parameters),
         "method".to_string() => Value::string(method.to_ascii_lowercase()),
     }))
 }
@@ -830,16 +836,22 @@ mod tests {
         let context = ExecutionContextFactory::test_context();
         install(context.factory(), &[path]);
         let _entered = context.enter();
-        for (path, method, expected) in [
-            ("api/items/named", "GET", "literal#Named"),
-            ("/api/items/123/detail/", "post", "literal#Detail"),
-            ("api/browse", "get", "literal#Browse"),
-            ("api/browse/a/b", "get", "literal#Browse"),
+        for (path, method, expected, parameters) in [
+            ("api/items/named", "GET", "literal#Named", vec![]),
+            (
+                "/api/items/123/detail/",
+                "post",
+                "literal#Detail",
+                vec![Value::string("itemId")],
+            ),
+            ("api/browse", "get", "literal#Browse", vec![Value::string("path")]),
+            ("api/browse/a/b", "get", "literal#Browse", vec![Value::string("path")]),
         ] {
             let Value::Map(result) = super::resolve_service(path, method).unwrap() else {
                 panic!("map");
             };
             assert_eq!(result["serviceName"].as_str(), Some(expected));
+            assert_eq!(result["pathParameters"], Value::List(parameters));
         }
         for path in ["", "missing", "api/items", "api/items/123", "api/items/named/missing"] {
             assert!(super::resolve_service(path, "get").is_err(), "{path}");

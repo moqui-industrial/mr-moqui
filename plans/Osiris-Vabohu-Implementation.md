@@ -1,10 +1,37 @@
 # OSIRIS / Vabohu migration status
 
+**Current scope/location:** framework `/home/user/moquilabs/mr-moqui`, component
+`runtime/component/mr-vabohu` in its own Git repository, component upstream
+https://github.com/moquilabs/mr-vabohu. Framework branch `feat/osiris-vabohu`
+and draft PR #10 are for framework changes only. The user authorizes publishing
+the component and updating the framework branch. No frontend. See
+[the handoff](Osiris-Vabohu-Handoff.md) for current status and next steps.
+
+## Current integration milestone
+
+Component discovery now uses the branch's actual metadata APIs. REST and
+transition metadata carries path inputs; ambiguous mounts fail closed. Login
+explicitly declares its optional username/password/code inputs. Script master
+reads preserve distinct nested primary keys without changing REST export shape.
+
+Component graph validation, dependency inference, ADMIN-only upsert and
+transactional deterministic actions are ported. Writes sanitize allowed graph
+relationships, preserve subtype rows, enforce graph identity ownership, lock the
+process, reject stale sources, and soft-delete replaced identities. They are not
+the original queued editor, identity restoration, or ordinary-user write policy.
+
+Validation: **72 Node tests**, **9 real XML/QuickJS/PostgreSQL features**, and
+**824 core tests passed, 1 ignored**. Library Clippy with `http` and `-D warnings`
+also passed. PostgreSQL tests include canonical reference graph round-trip,
+concurrent stale edits and rollback after parent inserts. See the component
+README for reproducible commands and limitations. The next sections describe
+the earlier adapter baseline; their old counts are historical.
+
 **Incomplete. This branch does not yet make OSIRIS/Vabohu runnable on MR-Moqui.**
 The gap analysis is a baseline audit of the original working trees, not a claim that this branch completes the port.
 Keep the PR in draft until all acceptance gates below pass.
 
-Worktree: `/home/user/moqui/mr-moqui-osiris`; branch: `feat/osiris-vabohu`.
+Worktree: `/home/user/moquilabs/mr-moqui`; branch: `feat/osiris-vabohu`.
 The original OSIRIS checkout and its uncommitted changes have not been edited or committed here.
 
 ## Implemented framework adapters
@@ -37,12 +64,12 @@ Including tests exposes an existing `clippy::drop_non_drop` at `crates/moqui-cor
 
 ## Still required before the requested runtime goal is met
 
-- [ ] Port the OSIRIS Groovy helper classes and XML expressions/scripts to JavaScript/Rust, preserving the current local OSIRIS source rather than an older committed version.
-- [ ] Adapt component call sites to the new metadata APIs. A framework API adapter alone does not rewrite Java implementation-class accesses.
+- [ ] Finish remaining OSIRIS orchestration/identity-restoration services; deterministic helpers, discovery and graph validation/writes are ported. Preserve the frozen working-tree source, not HEAD-only source.
+- [x] Adapt recovered component metadata call sites and qualify discovery through real XML services.
 - [ ] Implement LLM profiles, clients, conversations, tool schemas/validation, retry/terminal-tool behavior, browse policy and latest-edit injection. The existing Phase 13 work remains deferred; no fake successful model results are introduced here.
 - [ ] Replace callback service parameters with serializable named service operations; use existing service futures for parallel identity resolution.
 - [ ] Implement the shared per-process diff queue, supersession, owner checks, retention/replay and worker failure cleanup.
-- [ ] Preserve process-row locks, isolated commits and network-I/O-outside-transaction boundaries; verify rollback and concurrent submissions against Postgres, not just the memory test driver.
+- [ ] Preserve isolated worker commits and network-I/O-outside-transaction boundaries when implementing orchestration. Deterministic action process locks, stale-source rejection, concurrent edits and rollback are tested on PostgreSQL.
 - [ ] Implement the native authenticated SSE completion endpoint with capacity limits, heartbeats, disconnects and Vabohu's `completed`/`failed` event contract.
 - [ ] Port/install the required MarbleERP/SimpleScreens/Mantle dependency surface or explicitly replace its referenced operations. Merely deleting `depends-on` is not an equivalent application.
 - [ ] Run translated OSIRIS security/validation/identity/state tests and real MR backend + Vabohu browser integration tests, including login/MFA, CORS/session/CSRF, ADMIN-only relationships, stale-source rejection and LLM retry/supersession.
