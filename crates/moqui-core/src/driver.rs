@@ -92,7 +92,7 @@ pub trait DbConnection: Send {
 
 /// A database named by its `database-list` conf name and its address, as Java's `getConfConnection` takes from the
 /// `entity_ds_*` entries of a map. The connection is its own, not one from the entity pool.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct ConfDb {
     /// The `database-list` name, such as `postgres` or `mysql8`.
     pub db_type: String,
@@ -102,6 +102,19 @@ pub struct ConfDb {
     pub database: String,
     pub user: String,
     pub password: String,
+}
+
+impl std::fmt::Debug for ConfDb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConfDb")
+            .field("db_type", &self.db_type)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("database", &self.database)
+            .field("user", &self.user)
+            .field("password", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Makes a driver for a [`ConfDb`]. The host installs one; it knows the database clients.
@@ -143,6 +156,19 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    #[test]
+    fn conf_db_debug_leaves_out_the_password() {
+        let conf = ConfDb {
+            db_type: "postgres".to_string(),
+            user: "app".to_string(),
+            password: "s3cret-pass".to_string(),
+            ..ConfDb::default()
+        };
+        let text = format!("{conf:?}");
+        assert!(!text.contains("s3cret-pass"), "{text}");
+        assert!(text.contains("postgres") && text.contains("app"), "{text}");
+    }
 
     struct FakeDriver;
 

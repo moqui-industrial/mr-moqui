@@ -55,11 +55,16 @@ fn endpoint(server: &PrintServer) -> (&'static str, String) {
     } else {
         (None, host)
     };
-    let has_port = rest
-        .rsplit_once(':')
-        .is_some_and(|(_, tail)| !tail.is_empty() && tail.bytes().all(|byte| byte.is_ascii_digit()));
+    // a bare IPv6 address is not a host and a port: its last group is not a port, and a URL brackets it
+    let bare_v6 = rest.parse::<std::net::Ipv6Addr>().is_ok();
+    let has_port = !bare_v6
+        && rest
+            .rsplit_once(':')
+            .is_some_and(|(_, tail)| !tail.is_empty() && tail.bytes().all(|byte| byte.is_ascii_digit()));
     let authority = if has_port {
         rest.to_string()
+    } else if bare_v6 {
+        format!("[{rest}]:{}", server.port)
     } else {
         format!("{rest}:{}", server.port)
     };
@@ -435,6 +440,8 @@ mod tests {
         let server = named("cups:632");
         assert_eq!(base_url(&server), "http://cups:632");
         assert_eq!(ipp_uri(&server, "/jobs/1"), "ipp://cups:632/jobs/1");
+        let server = named("::1");
+        assert_eq!(base_url(&server), "http://[::1]:631");
         let server = named("http://[::1]");
         assert_eq!(base_url(&server), "http://[::1]:631");
         assert_eq!(ipp_uri(&server, "/"), "ipp://[::1]:631/");

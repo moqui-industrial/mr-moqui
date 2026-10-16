@@ -606,13 +606,9 @@ impl TransactionManager {
             armed: resumes_parent,
         };
         if result.is_ok() && commit {
-            for hook in phase.on_commit.drain(..) {
-                hook();
-            }
+            run_after_hooks("commit", phase.on_commit.drain(..));
         } else {
-            for hook in phase.on_rollback.drain(..) {
-                hook();
-            }
+            run_after_hooks("rollback", phase.on_rollback.drain(..));
         }
         result
     }
@@ -1200,6 +1196,21 @@ fn try_commit(phase: &mut Phase) -> Result<(), Error> {
         return Err(Error::new("commit failed").with_source(err));
     }
     Ok(())
+}
+
+/// Runs the after-commit or after-rollback hooks in order. The transaction has already ended, so a panicking hook is
+/// logged and the rest still run: it must not skip them or unwind out of the commit that succeeded.
+fn run_after_hooks(kind: &str, hooks: impl Iterator<Item = AfterHook>) {
+    for hook in hooks {
+        if let Err(payload) = std::panic::catch_unwind(AssertUnwindSafe(hook)) {
+            let text = payload
+                .downcast_ref::<&str>()
+                .map(|text| (*text).to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_default();
+            tracing::error!(panic = %text, "after-{kind} hook panicked");
+        }
+    }
 }
 
 /// Runs the hooks in order on the enlisted connection. A panicking hook is an error, so the frame still ends.

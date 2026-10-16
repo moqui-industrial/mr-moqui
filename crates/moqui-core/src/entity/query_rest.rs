@@ -784,10 +784,16 @@ fn prepare_value(
             if !is_empty(raw) {
                 value.set(&field.name, raw.clone());
             }
-        } else if field.is_pk {
-            if let Some(default) = &field.default_value {
-                if value.get(&field.name).is_none_or(is_empty) {
-                    value.set(&field.name, Value::string(default));
+        }
+    }
+    // a primary key field with a default takes it before a missing key is sequenced; the default is evaluated
+    // (quotes stripped, `ec.user.nowTimestamp`, `ec.user.userId`) as for a service create or store
+    if verb != Verb::Update && !missing_pks(&value, &snap).is_empty() {
+        let with_defaults = facade.apply_field_defaults(&snap.full_name, value.fields())?;
+        for name in snap.pk_names() {
+            if value.get(name).is_none_or(is_empty) {
+                if let Some(default) = with_defaults.get(name).filter(|default| !default.is_null()) {
+                    value.set(name, default.clone());
                 }
             }
         }

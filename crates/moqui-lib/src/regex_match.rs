@@ -59,12 +59,19 @@ pub fn is_full_match(text: &str, pattern: &str) -> Result<bool, Error> {
 struct Parser {
     pat: Vec<char>,
     i: usize,
+    /// Groups open in `parse_group`, bounded by [`MAX_GROUP_DEPTH`].
+    depth: usize,
 }
+
+/// Deepest group nesting a pattern may have. Parsing and matching recurse on it, and a stack overflow aborts the
+/// process, so a deeper pattern is an error, as an unsupported one is.
+const MAX_GROUP_DEPTH: usize = 256;
 
 fn parse_regex(pattern: &str) -> Result<Re, Error> {
     let mut parser = Parser {
         pat: pattern.chars().collect(),
         i: 0,
+        depth: 0,
     };
     let re = parser.parse_alt()?;
     if parser.i != parser.pat.len() {
@@ -215,7 +222,13 @@ impl Parser {
             }
             self.i += 2;
         }
-        let inner = self.parse_alt()?;
+        if self.depth >= MAX_GROUP_DEPTH {
+            return Err(Error::new("groups nested too deeply in regex"));
+        }
+        self.depth += 1;
+        let inner = self.parse_alt();
+        self.depth -= 1;
+        let inner = inner?;
         if self.peek() != Some(')') {
             return Err(Error::new("unclosed '(' in regex"));
         }
@@ -484,6 +497,14 @@ fn repeat_ends(inner: &Re, min: u32, max: Option<u32>, text: &[char], start: usi
 #[cfg(test)]
 mod tests {
     use super::is_full_match;
+
+    #[test]
+    fn deeply_nested_groups_are_an_error_not_a_stack_overflow() {
+        let deep = format!("{}a{}", "(".repeat(100_000), ")".repeat(100_000));
+        assert!(is_full_match("a", &deep).is_err());
+        let fine = format!("{}a{}", "(".repeat(50), ")".repeat(50));
+        assert!(is_full_match("a", &fine).unwrap());
+    }
 
     fn hit(text: &str, pattern: &str) -> bool {
         is_full_match(text, pattern).unwrap()

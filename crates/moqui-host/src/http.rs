@@ -368,7 +368,7 @@ pub(crate) fn http_port(raw: &str) -> Result<u16, Error> {
 }
 
 async fn health(State(state): State<Arc<HttpState>>, ConnectInfo(peer): ConnectInfo<SocketAddr>) -> Response {
-    if !status_allowed(&peer.ip().to_string()) {
+    if !status_allowed(&peer.ip().to_canonical().to_string()) {
         return plain(404, "not found");
     }
     if readiness(&state.factory) {
@@ -379,7 +379,7 @@ async fn health(State(state): State<Arc<HttpState>>, ConnectInfo(peer): ConnectI
 }
 
 async fn metrics(State(state): State<Arc<HttpState>>, ConnectInfo(peer): ConnectInfo<SocketAddr>) -> Response {
-    if !status_allowed(&peer.ip().to_string()) {
+    if !status_allowed(&peer.ip().to_canonical().to_string()) {
         return plain(404, "not found");
     }
     let Some(stats) = pool_stats(&state.factory) else {
@@ -949,6 +949,9 @@ mod tests {
         assert!(status_allowed("127.0.0.1"));
         assert!(status_allowed("::1"));
         assert!(status_allowed("0:0:0:0:0:0:0:1"));
+        // an IPv4 peer seen through a dual-stack socket is its IPv4 address
+        let mapped: std::net::IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+        assert!(status_allowed(&mapped.to_canonical().to_string()));
         let configured = moqui_lib::env::get_prop_or_env("webapp_status_ips");
         if !configured.split(',').any(|part| part.trim() == "203.0.113.5") {
             assert!(!status_allowed("203.0.113.5"));

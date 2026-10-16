@@ -557,6 +557,26 @@ fn service_out_parameters_keep_lists_and_sets() {
 }
 
 #[test]
+fn set_and_date_are_told_by_their_class_not_by_a_name() {
+    clear_context_stack();
+    let context = ExecutionContextFactory::test_context();
+    let _entered = context.enter();
+    let map = crate::script::eval_map(
+        "({ sub: new (class extends Set {})(['a']), fake: { constructor: { name: 'Set' }, v: 1 }, \
+            when: new (class extends Date {})(5), spoof: { constructor: { name: 'Date' }, getTime() { return 7; } }, \
+            bare: Object.create(Date.prototype) })",
+    )
+    .unwrap();
+    // a subclass of Set is a Set, and a name alone is not
+    assert!(matches!(&map["sub"], moqui_lib::object::Value::Map(m) if m.contains_key("__set__")), "{map:?}");
+    assert!(matches!(&map["fake"], moqui_lib::object::Value::Map(m) if !m.contains_key("__set__")), "{map:?}");
+    // a subclass of Date is a time, an object with its own getTime or only a Date prototype is not
+    assert!(matches!(&map["when"], moqui_lib::object::Value::Timestamp(_)), "{map:?}");
+    assert!(!matches!(&map["spoof"], moqui_lib::object::Value::Timestamp(_)), "{map:?}");
+    assert!(!matches!(&map["bare"], moqui_lib::object::Value::Timestamp(_)), "{map:?}");
+}
+
+#[test]
 fn shared_map_lives_with_the_execution_context() {
     clear_context_stack();
     let context = ExecutionContextFactory::test_context();
