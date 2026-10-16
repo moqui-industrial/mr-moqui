@@ -10,9 +10,9 @@ moqui test mantle-usl --spec OrderToCashBasicFlow      # one spec and its depend
 
 The component name is `mantle-usl` (from `component.xml`), not the directory name.
 
-## Status (2026-10-15)
+## Status (2026-10-16)
 
-84 features pass in 8 specs, none ignored (about 130s).
+313 features pass in 40 specs, none ignored (about 30s with the scratch database loaded; the 8 flow specs account for 84 of them, and the whole suite with coverage reports 680 of 762 services called).
 
 | Spec | Features |
 |---|---|
@@ -46,6 +46,25 @@ Written to run services that no flow reaches, and run after the flows. Each was 
 | InvoicePaymentMisc | invoice and payment edits, credit memo, reverse, cancel, void, refund |
 | WorkProjectServices | work efforts, projects, milestones, tasks, comments, time entries, events |
 | LedgerMaintenance | GL accounts, transactions, journals, period close and reopen, reposting |
+| OrderLifecycle | order edits, status changes, clone, merge, recurring orders, content, propose |
+| FinancialAccountServices | deposits, withdrawals, transfers, authorizations, disbursement, replenishment |
+| CrmMiscServices | contacts, accounts, requests, messages, equipment, purchase orders from a request |
+| PaymentMethodServices | credit card and bank account methods, file completion, content |
+| AssetReservationMisc | assets, reservations, issuance, physical inventory, party assignments, moves |
+| ShipmentReturnMisc | packages, scans, shipment info, content, returns, cancel, resell |
+| ManufacturingServices | production runs, consume and produce, estimates |
+| PayrollAdjustments | tax, deduction and garnishment adjustments, workers comp rates, W-2 data, wage and tax records, EFW2 |
+| InvoiceOrderApply | invoices applied to orders and shipments, invoice item details |
+| ShipmentLoads | picklists, bin numbers, status from shipments, complete and close, bulk creation |
+| PartyTimePeriods | period groups, previous and next periods, names, delete |
+| TimeImports | time summary and detail imports, bulk time entry work efforts |
+| PaymentGateway | authorize, release, capture, refund, the test gateway services, cancel |
+| SalesReports | sales order and invoice summaries, top products, universal search |
+| Promotions | promotion codes, buy-get and flat discounts |
+| ShipmentPick | pickMove into containers, route segments, complete pack, receive a whole shipment |
+| OrderBulk | store#Order create and revise, bulk status change, generated test orders |
+| PartyAccounts | party and person search, update#Account, user account person, relationship settings |
+| ReportLookups | lookup by id, filtered search, feature interactions, units, projected inventory |
 
 Specs that create their own organization (`init#PartyAccountingConfiguration` with `sourcePartyId: "DefaultSettings"`) get a full set of fiscal periods and accounts. A spec that freezes time with `ec.user.setEffectiveTime` cannot give one party the same role twice in the same millisecond (primary key).
 
