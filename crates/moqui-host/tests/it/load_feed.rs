@@ -252,8 +252,10 @@ fn load_data_stores_eca_and_inserts_pending() {
         </entity-facade-xml>"#,
     )
     .unwrap();
+    // Without dummy foreign keys the database constraint decides, as in Java.
     let blocked = load_entity_data(&facade, missing.to_str().unwrap(), &LoadOptions::default()).unwrap_err();
-    assert!(blocked.to_string().contains("has no related"), "{blocked}");
+    let blocked_text = format!("{blocked:?}");
+    assert!(blocked_text.contains("usergroupmemberusergroup"), "{blocked_text}");
     let no_fk = LoadOptions {
         disable_fk_create: true,
         ..LoadOptions::default()

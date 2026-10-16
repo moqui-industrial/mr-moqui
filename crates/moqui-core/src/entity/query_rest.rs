@@ -36,6 +36,7 @@ use super::facade::EntityFacade;
 use super::field_rw;
 use super::find::FindValues;
 use super::params::{self, map_row, view_columns};
+use super::sensitive;
 use super::value::{EntityArtifact, EntityValue};
 use crate::context::ErrorKind;
 
@@ -163,11 +164,88 @@ pub fn rest(
     let verb = normalize_operation(operation)?;
     let mut parameters = parameters.clone();
     let target = resolve_target(facade, entity_name, &mut parameters)?;
-    match verb {
-        Verb::Find => find_rest(facade, &target, &parameters),
-        Verb::Delete => delete_rest(facade, &target.entity_name, &parameters),
-        Verb::Create | Verb::Store | Verb::Update => mutate(facade, verb, &target.entity_name, &parameters, 0),
+    // As Java's `EntityFacadeImpl.rest`, identity-admin and secret-config entities are not readable, identity-admin
+    // and `UserAccount` are not writable, and secret-config is writable only by ADMIN. Results never carry the
+    // `UserAccount` password fields.
+    let full_name = facade
+        .with_entity(&target.entity_name, |entity, _, _| Ok(entity.full_name.clone()))
+        .unwrap_or_else(|_| target.entity_name.clone());
+    if verb == Verb::Find {
+        if sensitive::is_restricted_generic_entity(&full_name) {
+            return Err(kinded(
+                ErrorKind::Unauthorized,
+                format!("Entity {full_name} is not available through generic entity REST"),
+            ));
+        }
+    } else if sensitive::is_identity_admin_entity(&full_name)
+        || sensitive::is_user_account_entity(&full_name)
+        || (sensitive::is_secret_config_entity(&full_name) && !crate::user::is_in_group("ADMIN")?)
+    {
+        return Err(kinded(
+            ErrorKind::Unauthorized,
+            format!("Entity {full_name} is not writable through generic entity REST"),
+        ));
     }
+    // Java's generic entity REST never reads without a limit: with `pageNoLimit` it still takes 100.
+    parameters.remove("pageNoLimit");
+    let result = rest_target(facade, verb, &target, &parameters)?;
+    Ok(sensitive::strip_user_account_secrets(result))
+}
+
+/// [`rest`] with no sensitive-entity checks, for Service REST, whose entity resources have their own.
+pub(crate) fn rest_unguarded(
+    facade: &EntityFacade,
+    operation: &str,
+    entity_name: &str,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<Value, Error> {
+    let verb = normalize_operation(operation)?;
+    let mut parameters = parameters.clone();
+    let target = resolve_target(facade, entity_name, &mut parameters)?;
+    rest_target(facade, verb, &target, &parameters)
+}
+
+fn rest_target(
+    facade: &EntityFacade,
+    verb: Verb,
+    target: &Resolved,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<Value, Error> {
+    let operation = match verb {
+        Verb::Find => return find_rest(facade, target, parameters),
+        Verb::Create => "create",
+        Verb::Store => "store",
+        Verb::Update => "update",
+        Verb::Delete => "delete",
+    };
+    write_rest(facade, operation, &target.entity_name, parameters)
+}
+
+/// Create, store, update and delete run the entity-auto service of the entity, as Java's `rest` does, so service
+/// ECA rules, parameter validation and the status-flow check apply. As Java's entity REST handler, message errors
+/// after the call are the error: those the call added are the caller's input; errors from before it mean it did not
+/// run.
+fn write_rest(
+    facade: &EntityFacade,
+    operation: &str,
+    entity_name: &str,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<Value, Error> {
+    let full_name = facade.with_entity(entity_name, |entity, _, _| Ok(entity.full_name.clone()))?;
+    let errors =
+        || crate::context::ExecutionContext::with_current(|ec| ec.message().errors().to_vec()).unwrap_or_default();
+    let before = errors().len();
+    let results = crate::service::call::sync(&format!("{operation}#{full_name}"), parameters)?;
+    let after = errors();
+    if !after.is_empty() {
+        let kind = if before > 0 {
+            ErrorKind::General
+        } else {
+            ErrorKind::Validation
+        };
+        return Err(kinded(kind, after.join("\n")));
+    }
+    Ok(value_map(results.into_iter().collect()))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -696,256 +774,6 @@ fn key_text(snap: &EntitySnap, parameters: &BTreeMap<String, Value>) -> String {
         parts.push(format!("{name}={shown}"));
     }
     parts.join(", ")
-}
-
-fn delete_rest(facade: &EntityFacade, entity_name: &str, parameters: &BTreeMap<String, Value>) -> Result<Value, Error> {
-    let snap = load_snap(facade, entity_name)?;
-    let pk_names = snap.pk_names();
-    if pk_names.is_empty() {
-        return Err(Error::new(format!("{} has no primary key", snap.full_name)));
-    }
-    let wildcard = pk_names
-        .iter()
-        .any(|name| parameters.get(*name).and_then(Value::as_str) == Some("*"));
-    if !pk_complete(&snap, parameters) && !wildcard {
-        return Err(Error::new(
-            "Must specify all primary key fields to delete, can use wildcard of '*' in one or more PK fields to delete multiple records",
-        ));
-    }
-    if wildcard {
-        let mut find = facade.find(&snap.full_name)?;
-        for field in &snap.fields {
-            if parameters.get(&field.name).and_then(Value::as_str) == Some("*") {
-                continue;
-            }
-            if let Some(value) = parameters.get(&field.name) {
-                if !is_empty(value) {
-                    find = find.eq(&field.name, value.clone());
-                }
-            }
-        }
-        let rows = find.list()?;
-        for row in rows.iter() {
-            row.delete(facade)?;
-        }
-    } else {
-        let mut value = facade.make_value(&snap.full_name)?;
-        for name in pk_names {
-            if let Some(raw) = parameters.get(name) {
-                value.set(name, raw.clone());
-            }
-        }
-        value.delete(facade)?;
-    }
-    Ok(value_map(Vec::new()))
-}
-
-fn write_verb(facade: &EntityFacade, verb: Verb, sequenced: bool, value: &EntityValue) -> Result<(), Error> {
-    match verb {
-        Verb::Update => value.update(facade),
-        Verb::Store if !sequenced => value.create_or_update(facade),
-        Verb::Store | Verb::Create => value.create(facade),
-        Verb::Find | Verb::Delete => Ok(()),
-    }
-}
-
-fn mutate(
-    facade: &EntityFacade,
-    verb: Verb,
-    entity_name: &str,
-    parameters: &BTreeMap<String, Value>,
-    depth: u32,
-) -> Result<Value, Error> {
-    let (value, snap, sequenced) = prepare_value(facade, verb, entity_name, parameters)?;
-    write_verb(facade, verb, sequenced, &value)?;
-    let mut entries = pk_entries(&value, &snap);
-    if depth < MAX_DEPTH {
-        entries.extend(nest_related(facade, verb, &value, &snap, parameters, depth)?);
-    }
-    Ok(value_map(entries))
-}
-
-fn prepare_value(
-    facade: &EntityFacade,
-    verb: Verb,
-    entity_name: &str,
-    parameters: &BTreeMap<String, Value>,
-) -> Result<(EntityValue, EntitySnap, bool), Error> {
-    let snap = load_snap(facade, entity_name)?;
-    let mut value = facade.make_value(&snap.full_name)?;
-    if verb != Verb::Update && snap.fields.iter().any(|field| field.is_pk && field.name == "fromDate") {
-        let missing = parameters.get("fromDate").is_none_or(is_empty);
-        if missing {
-            value.set("fromDate", crate::user::now_effective_value());
-        }
-    }
-    for field in &snap.fields {
-        if let Some(raw) = parameters.get(&field.name) {
-            if !is_empty(raw) {
-                value.set(&field.name, raw.clone());
-            }
-        }
-    }
-    // a primary key field with a default takes it before a missing key is sequenced; the default is evaluated
-    // (quotes stripped, `ec.user.nowTimestamp`, `ec.user.userId`) as for a service create or store
-    if verb != Verb::Update && !missing_pks(&value, &snap).is_empty() {
-        let with_defaults = facade.apply_field_defaults(&snap.full_name, value.fields())?;
-        for name in snap.pk_names() {
-            if value.get(name).is_none_or(is_empty) {
-                if let Some(default) = with_defaults.get(name).filter(|default| !default.is_null()) {
-                    value.set(name, default.clone());
-                }
-            }
-        }
-    }
-    let missing = missing_pks(&value, &snap);
-    if verb == Verb::Update {
-        if !missing.is_empty() {
-            return Err(Error::new(format!(
-                "Required fields {} are missing, cannot update {}",
-                missing.join(", "),
-                snap.entity_name
-            )));
-        }
-        return Ok((value, snap, false));
-    }
-    let sequenced = !missing.is_empty();
-    let pk_count = snap.pk_names().len();
-    if pk_count == 1 && sequenced {
-        value.set_sequenced_id_primary(facade)?;
-    } else if pk_count == 2 && sequenced {
-        let secondary = snap.pk_names()[1].to_string();
-        if value.get(&secondary).is_none_or(is_empty) {
-            value.set_sequenced_id_secondary(facade)?;
-        }
-    }
-    let still_missing = missing_pks(&value, &snap);
-    if !still_missing.is_empty() {
-        let verb_name = if verb == Verb::Store { "store" } else { "create" };
-        return Err(Error::new(format!(
-            "Required fields {} are missing, cannot {verb_name} {}",
-            still_missing.join(", "),
-            snap.entity_name
-        )));
-    }
-    Ok((value, snap, sequenced))
-}
-
-fn missing_pks(value: &EntityValue, snap: &EntitySnap) -> Vec<String> {
-    snap.pk_names()
-        .into_iter()
-        .filter(|name| value.get(name).is_none_or(is_empty))
-        .map(str::to_string)
-        .collect()
-}
-
-fn pk_entries(value: &EntityValue, snap: &EntitySnap) -> Vec<(String, Value)> {
-    let mut entries = Vec::new();
-    for name in snap.pk_names() {
-        if let Some(field) = value.get(name) {
-            if !is_empty(field) {
-                entries.push((name.to_string(), field.clone()));
-            }
-        }
-    }
-    entries
-}
-
-fn nest_related(
-    facade: &EntityFacade,
-    verb: Verb,
-    value: &EntityValue,
-    snap: &EntitySnap,
-    parameters: &BTreeMap<String, Value>,
-    depth: u32,
-) -> Result<Vec<(String, Value)>, Error> {
-    let parent_keys = pk_map(value, snap);
-    let mut out = Vec::new();
-    for (key, raw) in parameters {
-        if is_control(key) || snap.fields.iter().any(|field| field.name == *key) {
-            continue;
-        }
-        let (items, many) = match raw {
-            Value::Map(_) => (vec![raw.clone()], false),
-            Value::List(items) => (items.clone(), true),
-            _ => continue,
-        };
-        let relationship = snap
-            .relationships
-            .iter()
-            .find(|relationship| relationship.matches(key))
-            .cloned();
-        if relationship.as_ref().is_some_and(|relationship| !relationship.mutable) {
-            continue;
-        }
-        let child_name = if let Some(relationship) = &relationship {
-            relationship.related.clone()
-        } else if let Some(full_name) = defined_name(facade, key) {
-            full_name
-        } else {
-            continue;
-        };
-        let nested_verb = if verb == Verb::Create {
-            Verb::Create
-        } else {
-            Verb::Store
-        };
-        let mut nested = Vec::new();
-        for item in items {
-            let Value::Map(_) = &item else { continue };
-            let mut child_parameters = map_to_btree(&item);
-            copy_parent_keys(&mut child_parameters, &parent_keys, relationship.as_ref());
-            nested.push(mutate(facade, nested_verb, &child_name, &child_parameters, depth + 1)?);
-        }
-        if nested.is_empty() {
-            continue;
-        }
-        if many {
-            out.push((key.clone(), Value::List(nested)));
-        } else if let Some(one) = nested.pop() {
-            out.push((key.clone(), one));
-        }
-    }
-    Ok(out)
-}
-
-fn pk_map(value: &EntityValue, snap: &EntitySnap) -> BTreeMap<String, Value> {
-    let mut keys = BTreeMap::new();
-    for name in snap.pk_names() {
-        if let Some(field) = value.get(name) {
-            if !is_empty(field) {
-                keys.insert(name.to_string(), field.clone());
-            }
-        }
-    }
-    keys
-}
-
-fn copy_parent_keys(
-    child: &mut BTreeMap<String, Value>,
-    parent: &BTreeMap<String, Value>,
-    relationship: Option<&Relationship>,
-) {
-    for (key, value) in parent {
-        child.entry(key.clone()).or_insert_with(|| value.clone());
-    }
-    let Some(relationship) = relationship else {
-        return;
-    };
-    for (source, related) in relationship.key_pairs.clone() {
-        if let Some(value) = parent.get(&source) {
-            if !is_empty(value) {
-                child.insert(related, value.clone());
-            }
-        }
-    }
-    for key_value in &relationship.key_values {
-        child.insert(key_value.related.clone(), Value::string(&key_value.value));
-    }
-}
-
-fn defined_name(facade: &EntityFacade, name: &str) -> Option<String> {
-    load_snap(facade, name).ok().map(|snap| snap.full_name)
 }
 
 /// A master graph for a script find, using the same expansion and authorization as entity REST.
@@ -2338,16 +2166,6 @@ fn string_list(value: &Value) -> Vec<String> {
             .collect(),
         _ => Vec::new(),
     }
-}
-
-fn map_to_btree(value: &Value) -> BTreeMap<String, Value> {
-    let mut out = BTreeMap::new();
-    if let Value::Map(map) = value {
-        for (key, item) in map {
-            out.insert(key.clone(), item.clone());
-        }
-    }
-    out
 }
 
 fn value_map(entries: Vec<(String, Value)>) -> Value {

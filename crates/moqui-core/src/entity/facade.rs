@@ -478,13 +478,20 @@ impl EntityFacade {
     ) -> Result<T, Error> {
         let model = self.inner.model.model();
         let entity = model.entity(name)?;
-        let group_name = entity.group.as_deref().unwrap_or(self.inner.default_group.as_str());
-        let runtime = self
-            .inner
+        let runtime = self.group_runtime(entity.group.as_deref())?;
+        body(entity, &runtime.dialect, model)
+    }
+
+    /// The runtime of an entity group. A group with no datasource of its own uses the default group's, as Java's
+    /// `getDatasourceFactory` does.
+    fn group_runtime(&self, group: Option<&str>) -> Result<&GroupRuntime, Error> {
+        let default_group = self.inner.default_group.as_str();
+        let group_name = group.unwrap_or(default_group);
+        self.inner
             .groups
             .get(group_name)
-            .ok_or_else(|| Error::new(format!("no transaction manager for entity group {group_name}")))?;
-        body(entity, &runtime.dialect, model)
+            .or_else(|| self.inner.groups.get(default_group))
+            .ok_or_else(|| Error::new(format!("no transaction manager for entity group {group_name}")))
     }
 
     pub(crate) fn with_group<T>(
@@ -494,12 +501,7 @@ impl EntityFacade {
     ) -> Result<T, Error> {
         let model = self.inner.model.model();
         let entity = model.entity(name)?;
-        let group_name = entity.group.as_deref().unwrap_or(self.inner.default_group.as_str());
-        let runtime = self
-            .inner
-            .groups
-            .get(group_name)
-            .ok_or_else(|| Error::new(format!("no transaction manager for entity group {group_name}")))?;
+        let runtime = self.group_runtime(entity.group.as_deref())?;
         body(entity, &runtime.dialect, model, &runtime.transactions)
     }
 

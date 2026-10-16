@@ -26,7 +26,7 @@ use moqui_lib::object::{is_empty, Value};
 
 use super::call;
 use crate::context::{Error, ErrorKind, ExecutionContext, ExecutionContextFactory};
-use crate::entity::EntityFacade;
+use crate::entity::{sensitive, EntityFacade};
 
 /// The REST resources of a factory, read once from its components' `service/*.rest.xml` files.
 struct Roots {
@@ -548,17 +548,43 @@ fn run_entity(
     let mut anonymous = PathFrame::default();
     anonymous.apply_anonymous(auth)?;
     let facade = current_facade()?;
-    match operation {
+    // As Java's `RestApi`, identity-admin entities are never readable here; secret-config reads are allowed on a
+    // declared resource and writes need ADMIN. `UserAccount` writes lose the password fields, and the identity
+    // fields unless the caller is ADMIN. Results never carry the password fields.
+    let full_name = facade
+        .with_entity(name, |entity, _, _| Ok(entity.full_name.clone()))
+        .unwrap_or_else(|_| name.to_string());
+    let refused = |what: &str| {
+        Err(Error::of_kind(
+            ErrorKind::Unauthorized,
+            format!("Entity {full_name} is not {what} through this REST resource"),
+        ))
+    };
+    let result = match operation {
+        "list" | "one" | "count" if sensitive::is_identity_admin_entity(&full_name) => return refused("available"),
         "list" | "one" => find_entity(&facade, name, master_name, operation, params),
         "count" => count_entity(&facade, name, params),
         "create" | "update" | "store" | "delete" => {
+            if sensitive::is_identity_admin_entity(&full_name)
+                || (sensitive::is_secret_config_entity(&full_name) && !crate::user::is_in_group("ADMIN")?)
+            {
+                return refused("writable");
+            }
+            let mut parms = params.clone();
+            if operation != "delete" && sensitive::is_user_account_entity(&full_name) {
+                sensitive::remove_user_account_secrets(&mut parms);
+                if !crate::user::is_in_group("ADMIN")? {
+                    sensitive::remove_user_account_identity(&mut parms);
+                }
+            }
             let service = format!("{operation}#{name}");
-            Ok(value_map(call::sync(&service, params)?))
+            Ok(value_map(call::sync(&service, &parms)?))
         }
         other => Err(Error::new(format!(
             "Entity operation {other} not supported, must be one of: one, list, count, create, update, store, delete"
         ))),
-    }
+    }?;
+    Ok(sensitive::strip_user_account_secrets(result))
 }
 
 fn find_entity(
@@ -574,7 +600,7 @@ fn find_entity(
             .entry("master".to_string())
             .or_insert_with(|| Value::string(master));
     }
-    let found = match facade.rest("find", name, &parms) {
+    let found = match crate::entity::query_rest::rest_unguarded(facade, "find", name, &parms) {
         Ok(value) => value,
         Err(err) if operation == "one" && err.message().contains("No value found") => return Ok(Value::Null),
         Err(err) => return Err(err.into()),
@@ -820,6 +846,77 @@ mod tests {
             crate::context::ErrorKind::NotFound,
             "{err}"
         );
+    }
+
+    /// As Java's `RestApi`: identity-admin entities are refused, a `UserAccount` write loses the password fields and,
+    /// for a caller who is not ADMIN, the identity fields, secret-config writes need ADMIN, and results never carry
+    /// the password fields.
+    #[test]
+    fn entity_resources_keep_sensitive_entities_and_fields_out() {
+        let dir = std::env::temp_dir().join(format!("moqui-rest-sensitive-{}", std::process::id()));
+        let _guard = DirGuard(dir.clone());
+        std::fs::create_dir_all(dir.join("service")).unwrap();
+        std::fs::write(
+            dir.join("service/sec.rest.xml"),
+            r#"<resource name="sec" require-authentication="false">
+                <resource name="keys"><method type="get"><entity name="moqui.security.UserLoginKey" operation="list"/></method></resource>
+                <resource name="users">
+                    <method type="get"><entity name="moqui.security.UserAccount" operation="list"/></method>
+                    <method type="post"><entity name="moqui.security.UserAccount" operation="create"/></method>
+                </resource>
+                <resource name="servers"><method type="post"><entity name="moqui.basic.email.EmailServer" operation="create"/></method></resource>
+            </resource>"#,
+        )
+        .unwrap();
+        let facade = crate::testing::open();
+        let ctx = ExecutionContextFactory::test_context();
+        install(ctx.factory(), &[dir.join("service/sec.rest.xml")]);
+        ctx.factory().set_entity(facade.clone());
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        create(
+            &facade,
+            "moqui.security.UserAccount",
+            &[("userId", "U1"), ("username", "u1"), ("currentPassword", "hash")],
+        );
+        let unauthorized =
+            |err: &crate::context::Error| crate::context::ErrorKind::of(err) == crate::context::ErrorKind::Unauthorized;
+
+        let err = run(&["sec", "keys"], "get", &BTreeMap::new()).unwrap_err();
+        assert!(unauthorized(&err), "{err}");
+
+        let listed = run(&["sec", "users"], "get", &BTreeMap::new()).unwrap();
+        let Value::List(rows) = &listed else {
+            panic!("list {listed:?}")
+        };
+        let Value::Map(row) = &rows[0] else {
+            panic!("row {listed:?}")
+        };
+        assert_eq!(row.get("userId").and_then(Value::as_str), Some("U1"));
+        assert!(!row.contains_key("currentPassword"), "{row:?}");
+
+        let mut params = BTreeMap::new();
+        params.insert("userId".to_string(), Value::string("U2"));
+        params.insert("username".to_string(), Value::string("u2"));
+        params.insert("currentPassword".to_string(), Value::string("chosen"));
+        run(&["sec", "users"], "post", &params).unwrap();
+        let stored = facade
+            .find("moqui.security.UserAccount")
+            .unwrap()
+            .eq("userId", Value::string("U2"))
+            .one()
+            .unwrap()
+            .expect("created");
+        assert!(stored.get("currentPassword").is_none_or(Value::is_null));
+        assert!(
+            stored.get("username").is_none_or(Value::is_null),
+            "identity fields need ADMIN"
+        );
+
+        let mut server = BTreeMap::new();
+        server.insert("emailServerId".to_string(), Value::string("E1"));
+        let err = run(&["sec", "servers"], "post", &server).unwrap_err();
+        assert!(unauthorized(&err), "{err}");
     }
 
     #[test]

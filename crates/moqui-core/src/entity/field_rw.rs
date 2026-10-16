@@ -117,11 +117,20 @@ fn encrypt_fields(
         let Some(plain) = take_string(entity, &field.name, &values)? else {
             continue;
         };
+        if plain == DECRYPT_FAILED {
+            return Err(Error::new(format!(
+                "To prevent data loss, not allowing decrypt failed placeholder for field {} of entity {}",
+                field.name, entity.full_name
+            )));
+        }
         let stored = encrypt(&plain, &primary)?;
         values.insert(field.name.clone(), Value::string(stored));
     }
     Ok(values)
 }
+
+/// The value of an encrypted field that could not be decrypted, as Java's `FieldInfo.decryptFailedMagicString`.
+pub const DECRYPT_FAILED: &str = "_DECRYPT_FAILED_";
 
 fn decrypt_fields(
     facade: &EntityFacade,
@@ -147,7 +156,11 @@ fn decrypt_fields(
             }
             // A value with no colon that is not hex was stored as plaintext.
             Err(_) if !stored.contains(':') && !is_hex_ciphertext(&stored) => {}
-            Err(err) => return Err(err),
+            // As Java's `FieldInfo`, the read goes on with a clear placeholder, which a write refuses.
+            Err(err) => {
+                tracing::error!(error = %err, "Error decrypting field {} of entity {}", field.name, entity.full_name);
+                values.insert(field.name.clone(), Value::string(DECRYPT_FAILED));
+            }
         }
     }
     Ok(values)
@@ -452,8 +465,15 @@ fn localize(
     entity: &EntityDefinition,
     values: BTreeMap<String, Value>,
 ) -> Result<BTreeMap<String, Value>, Error> {
+    // A lookup that fails leaves the stored value, so the read itself still succeeds.
     let targets = if entity.is_view {
-        view_targets_for(facade, entity)?
+        match view_targets_for(facade, entity) {
+            Ok(targets) => targets,
+            Err(err) => {
+                tracing::error!(error = %err, "Could not find the localized fields of {}, not localizing", entity.full_name);
+                return Ok(values);
+            }
+        }
     } else {
         plain_targets(entity)
     };
@@ -469,8 +489,20 @@ fn localize(
         let Some(pk) = pk_text(values.get(&target.pk_column)) else {
             continue;
         };
-        if let Some(localized) = find_localized(facade, target, &pk, &locales)? {
-            values.insert(target.column.clone(), localized);
+        match find_localized(facade, target, &pk, &locales) {
+            Ok(Some(localized)) => {
+                values.insert(target.column.clone(), localized);
+            }
+            Ok(None) => {}
+            Err(err) => {
+                tracing::error!(
+                    error = %err,
+                    "Could not localize field {} of {} {pk}, using the stored value",
+                    target.field_name,
+                    target.entity_name
+                );
+                break;
+            }
         }
     }
     Ok(values)

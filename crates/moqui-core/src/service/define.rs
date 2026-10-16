@@ -210,7 +210,9 @@ impl ServiceDef {
             native_fn: None,
             method: String::new(),
             actions: String::new(),
-            authenticate: Authenticate::Required,
+            // As Java's `runImplicitEntityAuto`: no login is needed and the service itself is not authorized; each
+            // entity operation it makes is.
+            authenticate: Authenticate::Off,
             authz_action: None,
             validate_input: true,
             transaction: TransactionAttribute::UseOrBegin,
@@ -709,7 +711,18 @@ fn load_file(
     }
     #[cfg(test)]
     PARSED.with(|parsed| parsed.borrow_mut().push(path.clone()));
-    let root = MNode::parse_file(&path)?;
+    // A file that does not parse loses only its own services, as in Java, where a file is read when one of its
+    // services is first looked up.
+    let root = match MNode::parse_file(&path) {
+        Ok(root) => root,
+        Err(err) => {
+            tracing::error!(error = %err, "Could not read service file {}, its services are not registered", path.display());
+            loaded
+                .failures
+                .push(format!("{} could not be read: {err}", path.display()));
+            return Ok(());
+        }
+    };
     let failures = &mut loaded.failures;
     if root.name() != "services" {
         failures.push(format!("{} root is {} and not services", path.display(), root.name()));
@@ -736,7 +749,17 @@ fn load_file(
                     ));
                     continue;
                 }
-                let included = resolve_location(&location)?;
+                let included = match resolve_location(&location) {
+                    Ok(included) => included,
+                    Err(err) => {
+                        failures.push(format!(
+                            "service-include {}.{} location {location} could not be resolved: {err}",
+                            prefix,
+                            service_tail(&verb, &noun)
+                        ));
+                        continue;
+                    }
+                };
                 pending.push(included);
                 includes.push(ServiceInclude {
                     prefix: prefix.clone(),
@@ -1317,7 +1340,7 @@ fn normalize(path: &Path) -> PathBuf {
 ///
 /// # Errors
 ///
-/// Returns an error when the conf cannot be read or a location cannot be resolved.
+/// Returns an error when the conf cannot be read. A location that cannot be resolved is logged and skipped.
 pub fn configured_service_files() -> Result<Vec<PathBuf>, Error> {
     configured_paths()
 }
@@ -1342,7 +1365,12 @@ fn configured_paths() -> Result<Vec<PathBuf>, Error> {
         if location.is_empty() {
             continue;
         }
-        paths.push(resolve_location(&location)?);
+        match resolve_location(&location) {
+            Ok(path) => paths.push(path),
+            Err(err) => {
+                tracing::error!(error = %err, "Could not resolve service-file location {location}, skipping it")
+            }
+        }
     }
     Ok(paths)
 }
@@ -1392,6 +1420,30 @@ mod tests {
         assert_eq!(
             super::kind_of("script", "component://x/Send.groovy"),
             super::ServiceKind::Unsupported
+        );
+    }
+
+    /// A service file that does not parse, or an include that cannot be resolved, loses only its own services; the
+    /// other files still register.
+    #[test]
+    fn a_malformed_service_file_loses_only_its_own_services() {
+        let broken = write_fixture("broken", r#"<services><service verb="bad" noun="File">"#);
+        let good = write_fixture(
+            "good-neighbor",
+            r#"<services>
+                <service verb="plain" noun="Neighbor"/>
+                <service-include verb="lost" noun="Include" location="component://no-such-component/service/X.xml"/>
+            </services>"#,
+        );
+        let (defs, failures) = super::definitions_in(&[broken.clone(), good.clone()]).unwrap();
+        let _ = std::fs::remove_file(&broken);
+        let _ = std::fs::remove_file(&good);
+        let text = failures.join("\n");
+        assert!(text.contains("could not be read"), "{text}");
+        assert!(text.contains("could not be resolved"), "{text}");
+        assert!(
+            defs.iter().any(|def| def.name.ends_with("plain#Neighbor")),
+            "{failures:?}"
         );
     }
 

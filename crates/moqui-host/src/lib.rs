@@ -1209,6 +1209,7 @@ fn load_in_context(
     }
     let options = load_options(flags);
     let mut records = 0_u64;
+    let mut failed_files = 0_u64;
     let load_started = std::time::Instant::now();
     let types = flags
         .data_types
@@ -1217,7 +1218,7 @@ fn load_in_context(
     let existing = entity_count(facade, "moqui.basic.Enumeration")?;
     if let Some(location) = &flags.location {
         tracing::info!("Loading entity data from location {location}, data types: {types}");
-        records = records.saturating_add(load_one(facade, location, &options)?);
+        records = records.saturating_add(load_one(facade, location, &options, &mut failed_files)?);
     } else if should_load_data(existing, flags, startup) {
         let empty_db_load = startup && existing == 0;
         if existing == 0 {
@@ -1247,8 +1248,19 @@ fn load_in_context(
         // Java's checkEmptyDb loads in an AT_OTHER loadDataEmptyDb frame that needs no authorization, marked
         // authorized for all actions, with the anonymous user logged in.
         let frame = empty_db_load.then(EmptyDbLoadFrame::push).transpose()?;
+        // As Java's `loadAllData`, a location that fails is logged and the load goes on with the next one.
         for location in framework_files.iter().chain(&conf_files).chain(component_data) {
-            records = records.saturating_add(load_one(facade, location, &options)?);
+            match load_one(facade, location, &options, &mut failed_files) {
+                Ok(loaded) => records = records.saturating_add(loaded),
+                Err(err) => {
+                    tracing::error!(
+                        "Skipping to next file after error loading {location}: {}",
+                        moqui_core::entity::load_feed::error_chain(&err)
+                    );
+                    report_message_errors(location);
+                    failed_files += 1;
+                }
+            }
         }
         drop(frame);
     } else {
@@ -1260,6 +1272,9 @@ fn load_in_context(
         "Data load of {records} records finished in {:.3} seconds",
         load_started.elapsed().as_secs_f64()
     );
+    if failed_files > 0 {
+        tracing::error!("{failed_files} data files failed to load and were skipped, see the errors above");
+    }
     // Report counts Java does not make, counted in Rust-only bins.
     let report = moqui_core::entity::RustOnlyEntityHits::enter(moqui_core::entity::RustOnlyEntityHits::LOAD_REPORT);
     let enumeration = entity_count(facade, "moqui.basic.Enumeration")?;
@@ -1337,10 +1352,13 @@ fn load_one(
     facade: &moqui_core::entity::EntityFacade,
     location: &str,
     options: &moqui_core::entity::load_feed::LoadOptions,
+    failed_files: &mut u64,
 ) -> Result<u64, moqui_lib::error::Error> {
     let started = std::time::Instant::now();
     tracing::info!("Loading entity data from {location}");
-    let records = moqui_core::entity::load_feed::load_entity_data(facade, location, options)?.records;
+    let loaded = moqui_core::entity::load_feed::load_entity_data(facade, location, options)?;
+    let records = loaded.records;
+    *failed_files += loaded.failed_files;
     report_message_errors(location);
     tracing::info!(
         "Loaded {records} records from {location} in {:.2}s",
@@ -1439,11 +1457,14 @@ fn register_services(
     }
     let mut paths = configured_service_paths(framework_dir)?;
     paths.extend(extra.iter().cloned());
-    // Framework services that still hold Groovy are left out and named by `moqui lint`.
+    // A service that does not register is left out with its reason; the others still register.
     let skipped = moqui_core::service::lint(&paths).map_err(lint_error)?;
+    for reason in &skipped {
+        tracing::warn!("Service not registered: {reason}");
+    }
     if !skipped.is_empty() {
         tracing::warn!(
-            "{} service expression(s) are not JavaScript yet; run `moqui lint`",
+            "{} service definition problem(s), those services are not registered; run `moqui lint` for details",
             skipped.len()
         );
     }
@@ -1592,7 +1613,12 @@ fn configured_service_paths(
         if location.is_empty() {
             continue;
         }
-        paths.push(resolve_framework_location(framework_dir, &location)?);
+        match resolve_framework_location(framework_dir, &location) {
+            Ok(path) => paths.push(path),
+            Err(err) => {
+                tracing::error!(error = %err, "Could not resolve service-file location {location}, skipping it")
+            }
+        }
     }
     Ok(paths)
 }

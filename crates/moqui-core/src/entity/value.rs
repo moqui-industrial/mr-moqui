@@ -437,7 +437,10 @@ impl EntityFacade {
                 )?;
             }
         }
-        cache::on_write(self, entity_name, operation, &cache_values)?;
+        // As Java's `EntityCache`, a cache clear or cluster publish that fails is logged; the write already ran.
+        if let Err(err) = cache::on_write(self, entity_name, operation, &cache_values) {
+            tracing::error!(error = %err, "Could not clear or publish the cache for {operation} of {entity_name}");
+        }
         after_statement(self, &tx, true);
         Ok(affected)
     }

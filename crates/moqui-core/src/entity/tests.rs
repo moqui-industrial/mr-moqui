@@ -588,6 +588,11 @@ fn entity_rest_serves_the_verbs() {
     }
 
     let facade = open_fake();
+    // Writes run the entity-auto services, which need the entered context's service registry.
+    let context = crate::context::ExecutionContextFactory::test_context();
+    context.factory().set_entity(facade.clone());
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
 
     let err = facade.rest("", "moqui.test.TestEntity", &BTreeMap::new()).unwrap_err();
     assert!(err.to_string().contains("must be specified"), "{err}");
@@ -638,7 +643,10 @@ fn entity_rest_serves_the_verbs() {
     let err = facade
         .rest("patch", "moqui.test.TestEntity", &BTreeMap::new())
         .unwrap_err();
-    assert!(err.to_string().contains("cannot update"), "{err}");
+    // The entity-auto service's parameter check refuses it before the update. The error stays in the message facade,
+    // where it would stop the next service call, as in Java; a request starts with none.
+    assert!(err.to_string().contains("testId is required"), "{err}");
+    context.message().clear_errors();
     let updated = facade
         .rest(
             "update",
@@ -666,6 +674,7 @@ fn entity_rest_serves_the_verbs() {
         .rest("delete", "moqui.test.TestEntity", &BTreeMap::new())
         .unwrap_err();
     assert!(err.to_string().contains("Must specify all primary key fields"), "{err}");
+    context.message().clear_errors();
     let deleted = facade
         .rest(
             "delete",
@@ -1416,4 +1425,81 @@ fn field_defaults_apply_on_create_only_through_create_or_update() {
             Some(&Value::string(if exists { "custom" } else { "plain" }))
         );
     }
+}
+
+/// As Java's `EntityFacadeImpl.rest`: identity-admin and secret-config entities are not readable, `UserAccount` is not
+/// writable, and a `UserAccount` read leaves out the password fields.
+#[test]
+fn generic_entity_rest_keeps_sensitive_entities_and_fields_out() {
+    let facade = crate::testing::open();
+    let mut account = facade.make_value("moqui.security.UserAccount").unwrap();
+    account.set("userId", Value::string("U1"));
+    account.set("username", Value::string("u1"));
+    account.set("currentPassword", Value::string("hash"));
+    account.set("passwordSalt", Value::string("salt"));
+    account.create(&facade).unwrap();
+    let unauthorized = |err: &Error| crate::context::ErrorKind::of(err) == crate::context::ErrorKind::Unauthorized;
+
+    for entity in ["moqui.security.UserLoginKey", "moqui.basic.email.EmailServer"] {
+        let err = facade.rest("get", entity, &BTreeMap::new()).unwrap_err();
+        assert!(unauthorized(&err), "{entity}: {err}");
+    }
+    let mut params = BTreeMap::new();
+    params.insert("userId".to_string(), Value::string("U2"));
+    let err = facade.rest("post", "moqui.security.UserAccount", &params).unwrap_err();
+    assert!(unauthorized(&err), "{err}");
+
+    let Value::List(rows) = facade
+        .rest("get", "moqui.security.UserAccount", &BTreeMap::new())
+        .unwrap()
+    else {
+        panic!("a list");
+    };
+    let Value::Map(row) = &rows[0] else { panic!("a row") };
+    assert_eq!(row.get("userId").and_then(Value::as_str), Some("U1"));
+    assert!(
+        !row.contains_key("currentPassword") && !row.contains_key("passwordSalt"),
+        "{row:?}"
+    );
+}
+
+/// As Java's `EntityAutoServiceRunner.deleteEntity`, which entity REST deletes go through: every primary key field
+/// is needed, and `*` in one or more of them deletes each record matching the others.
+#[test]
+fn entity_rest_delete_needs_every_key_and_takes_a_wildcard() {
+    let facade = crate::testing::open();
+    let context = crate::context::ExecutionContextFactory::test_context();
+    context.factory().set_entity(facade.clone());
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    let entity = "moqui.basic.StatusFlowTransition";
+    for (flow, from, to) in [("F1", "A", "B"), ("F1", "A", "C"), ("F2", "A", "B")] {
+        let mut row = facade.make_value(entity).unwrap();
+        row.set("statusFlowId", Value::string(flow));
+        row.set("statusId", Value::string(from));
+        row.set("toStatusId", Value::string(to));
+        row.create(&facade).unwrap();
+    }
+    let keys = |pairs: &[(&str, &str)]| -> BTreeMap<String, Value> {
+        pairs
+            .iter()
+            .map(|(name, value)| (name.to_string(), Value::string(*value)))
+            .collect()
+    };
+    let err = facade
+        .rest("delete", entity, &keys(&[("statusFlowId", "F1"), ("statusId", "*")]))
+        .unwrap_err();
+    assert!(err.to_string().contains("Must specify all primary key fields"), "{err}");
+    context.message().clear_errors();
+    assert_eq!(facade.find(entity).unwrap().count().unwrap(), 3);
+    facade
+        .rest(
+            "delete",
+            entity,
+            &keys(&[("statusFlowId", "F1"), ("statusId", "*"), ("toStatusId", "*")]),
+        )
+        .unwrap();
+    let left = facade.find(entity).unwrap().list().unwrap();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left.values()[0].get("statusFlowId").and_then(Value::as_str), Some("F2"));
 }

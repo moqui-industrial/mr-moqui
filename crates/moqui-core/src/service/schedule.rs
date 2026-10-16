@@ -15,7 +15,8 @@
 //! The scheduler thread and the Quartz cron parser. The thread only sleeps and starts passes; a
 //! pass is in `jobs`.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use moqui_lib::sync::lock;
@@ -52,6 +53,27 @@ pub(crate) fn scheduler_loop(shared: Arc<Shared>) {
             super::pool::run_tick_hook(&shared);
         }
     }
+}
+
+/// Parsed patterns, as Java's `ScheduledJobRunner.cronByExpression`, so a pass does not parse each job's pattern again.
+static CRONS: OnceLock<Mutex<HashMap<String, Arc<Cron>>>> = OnceLock::new();
+
+/// More distinct patterns than this clears the map, which only bounds memory if patterns are generated.
+const CRON_CACHE_MAX: usize = 1000;
+
+/// [`parse_cron`], parsed once for each pattern. A pattern that does not parse is not kept.
+pub(crate) fn cached_cron(pattern: &str) -> Result<Arc<Cron>, Error> {
+    let crons = CRONS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(cron) = lock(crons).get(pattern) {
+        return Ok(Arc::clone(cron));
+    }
+    let cron = Arc::new(parse_cron(pattern)?);
+    let mut crons = lock(crons);
+    if crons.len() >= CRON_CACHE_MAX {
+        crons.clear();
+    }
+    crons.insert(pattern.to_string(), Arc::clone(&cron));
+    Ok(cron)
 }
 
 /// Quartz syntax: optional seconds, Sunday is day 1, `?` `L` `W` `#` allowed.
@@ -323,6 +345,33 @@ mod tests {
         assert_eq!(text(&lock, "jobRunId"), "", "the lock is cleared after the run");
         assert!(!text(&lock, "lastRunTime").is_empty());
         assert_eq!(runs(&world, "J1").len(), 1);
+    }
+
+    /// As Java's `ScheduledJobRunner`, a job whose cron pattern does not parse is logged and skipped, and the jobs
+    /// after it in the pass still run.
+    #[test]
+    fn a_job_with_a_bad_cron_is_skipped_and_the_next_job_runs() {
+        let world = jobs_world(2, 8);
+        let _entered = world.ctx.enter();
+        let _authz = world.ctx.disable_authz();
+        add_job(&world, "A0", "mark#Row", "not a cron", &[]);
+        add_job(&world, "J1", "mark#Row", "* * * * * *", &[]);
+        create(
+            &world.facade,
+            "moqui.service.job.ServiceJobParameter",
+            &[
+                ("jobName", "J1"),
+                ("parameterName", "note"),
+                ("parameterValue", "after-bad"),
+            ],
+        );
+        let report = world.ctx.factory().service_pools().tick();
+        assert_eq!(report.jobs_failed, 1, "{report:?}");
+        assert_eq!(report.jobs_run, 1, "{report:?}");
+        wait_for("the good job to finish", || {
+            runs(&world, "J1").iter().any(|run| text(run, "hasError") == "N")
+        });
+        assert!(runs(&world, "A0").is_empty());
     }
 
     #[test]

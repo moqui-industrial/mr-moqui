@@ -258,7 +258,10 @@ impl EntityFind {
         let values = self.rows_to_values(&plan, &rows)?;
         let list = EntityList::new(values);
         if !bypass {
-            cache::after_find(&self.facade, &lookup, &list)?;
+            // The rows were read; a cache that cannot hold them only costs the next read.
+            if let Err(err) = cache::after_find(&self.facade, &lookup, &list) {
+                tracing::warn!(error = %err, "Could not cache the find of {}", self.entity_name);
+            }
         }
         self.localize_list(list)
     }
@@ -433,28 +436,35 @@ impl EntityFind {
             1 => Some(self.having[0].clone()),
             _ => Some(Condition::and(self.having.clone())),
         };
-        let options = SelectOptions {
-            distinct: self.distinct,
-            for_update: self.for_update,
-            having,
-            fields: self.select_fields.clone(),
-        };
         self.facade.with_group(&self.entity_name, |entity, dialect, model, tx| {
             let condition = field_rw::encrypt_condition(&self.facade, entity, condition.clone())?;
-            for name in &self.select_fields {
-                if !entity.has_field(name) {
-                    return Err(Error::new(format!("{} has no field {name}", entity.full_name)));
-                }
-            }
-            let wanted =
-                |name: &str| self.select_fields.is_empty() || self.select_fields.iter().any(|field| field == name);
+            // Java's `selectField` skips a name that is not a field of the entity.
+            let select_fields: Vec<String> = self
+                .select_fields
+                .iter()
+                .filter(|name| {
+                    let known = entity.has_field(name);
+                    if !known {
+                        tracing::warn!("{} has no field {name}, not selecting it", entity.full_name);
+                    }
+                    known
+                })
+                .cloned()
+                .collect();
+            let options = SelectOptions {
+                distinct: self.distinct,
+                for_update: self.for_update,
+                having: having.clone(),
+                fields: select_fields.clone(),
+            };
+            let wanted = |name: &str| select_fields.is_empty() || select_fields.iter().any(|field| field == name);
             // Java's `orderBy` skips a name that is not a field of the entity, such as a default
             // order a screen names for a column its entity does not have.
             let order: Vec<OrderBy> = self
                 .order
                 .iter()
                 .filter(|entry| entry.field.entity_alias.is_some() || entity.has_field(&entry.field.name))
-                .filter(|entry| !self.form_order_only || self.select_fields.contains(&entry.field.name))
+                .filter(|entry| !self.form_order_only || select_fields.contains(&entry.field.name))
                 .cloned()
                 .collect();
             let (statement, mut columns) = if entity.is_view {
@@ -680,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn select_field_reads_only_those_columns_and_rejects_a_missing_one() {
+    fn select_field_reads_only_those_columns_and_ignores_a_missing_one() {
         let (facade, tape) = seeded();
         let rows = facade
             .find("moqui.test.TestEntity")
@@ -696,13 +706,15 @@ mod tests {
         );
         let sql = tape.lock().unwrap().last().cloned().unwrap();
         assert!(sql.starts_with("SELECT \"test_id\" AS \"testId\" FROM"), "{sql}");
-        let err = facade
+        // As Java's `selectField`, a name that is not a field is skipped; with none left every field is read.
+        let rows = facade
             .find("moqui.test.TestEntity")
             .unwrap()
             .select_field("nope")
+            .eq("testId", Value::string("A"))
             .list()
-            .unwrap_err();
-        assert!(err.to_string().contains("no field nope"), "{err}");
+            .unwrap();
+        assert!(rows.values()[0].get("testMedium").is_some(), "every field is read");
     }
 
     #[test]

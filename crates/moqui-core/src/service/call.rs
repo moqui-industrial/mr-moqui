@@ -602,7 +602,8 @@ fn verb_action(verb: &str) -> &'static str {
         "create" => "create",
         "update" | "store" => "update",
         "delete" => "delete",
-        "view" | "find" => "view",
+        // As Java's `ServiceDefinition.verbAuthzActionEnumMap`.
+        "view" | "find" | "get" | "search" => "view",
         _ => "all",
     }
 }
@@ -739,6 +740,10 @@ fn run_entity(
             .map(str::to_string)
             .collect::<Vec<_>>())
     })?;
+    if verb == "delete" {
+        delete_entity(facade, noun, parameters, &pk_names)?;
+        return Ok(BTreeMap::new());
+    }
     let mut record = facade.make_value(noun)?;
     for (key, value) in parameters {
         if reserved(key) || matches!(value, Value::Map(_) | Value::List(_)) {
@@ -768,7 +773,6 @@ fn run_entity(
     }
     let mut status_out = BTreeMap::new();
     match verb {
-        "delete" => record.delete(facade)?,
         "update" => {
             check_status(facade, noun, &record, &pk_names, parameters, &mut status_out)?;
             record.update(facade)?
@@ -797,11 +801,7 @@ fn run_entity(
         }
         other => return Err(LibError::new(format!("entity-auto verb {other} is not supported"))),
     }
-    // Java deletes only the named record. Deleting children after the parent would break their
-    // foreign keys, and before it would delete rows the caller never named.
-    if verb != "delete" {
-        nest(facade, verb, noun, parameters, &record, depth)?;
-    }
+    nest(facade, verb, noun, parameters, &record, depth)?;
     let mut out = status_out;
     for pk in &pk_names {
         if let Some(value) = record.get(pk) {
@@ -809,6 +809,54 @@ fn run_entity(
         }
     }
     Ok(out)
+}
+
+/// `EntityAutoServiceRunner.deleteEntity`: every primary key field is needed, and `*` in one or more of them deletes
+/// each record that matches the other fields given. Java deletes only the named records, not nested ones: deleting
+/// children after the parent would break their foreign keys, and before it would delete rows the caller never named.
+fn delete_entity(
+    facade: &EntityFacade,
+    noun: &str,
+    parameters: &BTreeMap<String, Value>,
+    pk_names: &[String],
+) -> Result<(), LibError> {
+    let given = |name: &String| {
+        parameters
+            .get(name)
+            .is_some_and(|value| !value.is_null() && !is_empty(value))
+    };
+    if pk_names.is_empty() || !pk_names.iter().all(given) {
+        return Err(LibError::new(
+            "Must specify all primary key fields to delete, can use wildcard of '*' in one or more PK fields to delete multiple records",
+        ));
+    }
+    let wildcard = |name: &str| parameters.get(name).and_then(Value::as_str) == Some("*");
+    if pk_names.iter().any(|name| wildcard(name)) {
+        let fields = facade.with_entity(noun, |entity, _, _| {
+            Ok(entity.fields.iter().map(|field| field.name.clone()).collect::<Vec<_>>())
+        })?;
+        let mut find = facade.find(noun)?;
+        for field in fields {
+            if wildcard(&field) {
+                continue;
+            }
+            if let Some(value) = parameters.get(&field).filter(|value| !is_empty(value)) {
+                find = find.eq(&field, value.clone());
+            }
+        }
+        for row in find.list()?.iter() {
+            row.delete(facade)?;
+        }
+        return Ok(());
+    }
+    let mut record = facade.make_value(noun)?;
+    for name in pk_names {
+        if let Some(value) = parameters.get(name) {
+            record.set(name, value.clone());
+        }
+    }
+    record.delete(facade)?;
+    Ok(())
 }
 
 /// `EntityAutoServiceRunner.storeEntity` with no service around it: create or update the record

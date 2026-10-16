@@ -94,12 +94,18 @@ fn encrypt_audit_and_localized_reads() {
 
     set_password(&facade, "legacy-plain");
     assert_eq!(password_of(&facade).as_deref(), Some("legacy-plain"));
+    // As Java's `FieldInfo`, a value that does not decrypt reads as a clear placeholder, and writing it back is refused.
+    let failed = moqui_core::entity::field_rw::DECRYPT_FAILED;
     set_password(&facade, "abcd");
-    let err = password_result(&facade).unwrap_err();
-    assert!(err.message().contains("Encryption error"), "{err}");
+    assert_eq!(password_of(&facade).as_deref(), Some(failed));
     set_password(&facade, ":not-base64");
-    let err = password_result(&facade).unwrap_err();
-    assert!(err.message().contains("Encryption error"), "{err}");
+    assert_eq!(password_of(&facade).as_deref(), Some(failed));
+    let mut back = facade.make_value("moqui.server.instance.InstanceHost").unwrap();
+    back.set("instanceHostId", Value::string("H1"));
+    back.set("password", Value::string(failed));
+    let err = back.update(&facade).unwrap_err();
+    assert!(err.message().contains("prevent data loss"), "{err}");
+    assert_eq!(stored_password(&facade), ":not-base64");
 
     let mut user = facade.make_value("moqui.security.UserAccount").unwrap();
     user.set("userId", Value::string("U1"));

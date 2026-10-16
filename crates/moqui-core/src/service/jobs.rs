@@ -78,6 +78,8 @@ pub struct PassReport {
     pub jobs_active: usize,
     pub jobs_paused: usize,
     pub jobs_ready_not_run: usize,
+    /// Jobs that could not be checked or started; each is logged and the pass goes on.
+    pub jobs_failed: usize,
 }
 
 /// One scheduler pass for the pool's factory. Errors are logged, so a bad pass never ends the thread.
@@ -136,21 +138,46 @@ fn pass(shared: &Arc<Shared>, factory: &Arc<ExecutionContextFactory>) -> Result<
             report.jobs_paused += 1;
             continue;
         }
-        if !queued && repeat_exhausted(&facade, job, &job_name, &now_stamp)? {
-            continue;
+        // As in Java's `ScheduledJobRunner`, a job that cannot be checked or started is logged and the pass goes on
+        // with the next job.
+        let exhausted = if queued {
+            Ok(false)
+        } else {
+            repeat_exhausted(&facade, job, &job_name, &now_stamp)
+        };
+        match exhausted {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(err) => {
+                tracing::error!(job = %job_name, error = %err, "Error checking scheduled job, skipping it");
+                report.jobs_failed += 1;
+                continue;
+            }
         }
         report.jobs_active += 1;
-        let ready = readiness(&facade, job, &job_name, &cron_text, now)?;
-        let Some(ready) = ready else {
-            continue;
+        let ready = match readiness(&facade, job, &job_name, &cron_text, now) {
+            Ok(Some(ready)) => ready,
+            Ok(None) => continue,
+            Err(err) => {
+                tracing::error!(job = %job_name, cron = %cron_text, error = %err, "Error checking scheduled job, skipping it");
+                report.jobs_failed += 1;
+                continue;
+            }
         };
         if slots <= 0 {
             report.jobs_ready_not_run += 1;
             continue;
         }
-        if dispatch(shared, factory, &facade, &plan, job, ready, &now_stamp)? {
-            report.jobs_run += 1;
-            slots -= 1;
+        match dispatch(shared, factory, &facade, &plan, job, ready, &now_stamp) {
+            Ok(true) => {
+                report.jobs_run += 1;
+                slots -= 1;
+            }
+            Ok(false) => {}
+            Err(err) => {
+                tracing::error!(job = %job_name, error = %err, "Error starting scheduled job, skipping it");
+                report.jobs_failed += 1;
+            }
         }
     }
     Ok(report)
@@ -197,7 +224,7 @@ fn readiness(
         }
     }
     if !cron_text.is_empty() {
-        let cron = super::schedule::parse_cron(cron_text)?;
+        let cron = super::schedule::cached_cron(cron_text)?;
         let zoned = now.to_zoned(jiff::tz::TimeZone::system());
         // A schedule with nothing before now has not come due yet.
         let Ok(last_schedule) = cron.find_previous_occurrence(&zoned, true) else {

@@ -670,16 +670,7 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     // `new URI(null, null, filename, null).toASCIIString()`: a path with the characters a URI does not allow escaped
     su.encodeAsciiFilename = (filename) => encodeURI(String(filename ?? ""));
     // Entities the generic tools (auto screens, data edit, data import) do not take from a request entity name
-    const restrictedKeys = new Set(["userloginkey", "usergroupmember", "usergrouppermission", "userpermission",
-        "artifactauthz", "artifactgroup", "artifactgroupmember", "artifacttarpit", "usergrouppermissions",
-        "userpermissions", "artifactgroups", "userauthcfactor", "userpasswordhistory", "emailserver", "systemmessageremote"]);
-    wu.isRestrictedGenericEntity = function (entityName) {
-        if (entityName == null || entityName === "") return false;
-        let name = String(entityName).trim();
-        const dot = name.lastIndexOf(".");
-        if (dot >= 0 && dot < name.length - 1) name = name.substring(dot + 1);
-        return restrictedKeys.has(name.toLowerCase());
-    };
+    wu.isRestrictedGenericEntity = host.isRestrictedGenericEntity;
 })"#;
 
 fn js_list<'js>(ctx: &Ctx<'js>, rows: Vec<indexmap::IndexMap<String, Value>>) -> rquickjs::Result<JsValue<'js>> {
@@ -1241,9 +1232,21 @@ fn load_source(
     let mut records = 0;
     let mut messages = Vec::new();
     for location in conf_data_locations(facade)? {
-        let result = load_entity_data(facade, &location, options)?;
+        // As Java's `loadAllData`, a location that fails is logged and the load goes on with the next one.
+        let result = match load_entity_data(facade, &location, options) {
+            Ok(result) => result,
+            Err(err) => {
+                let text = crate::entity::load_feed::error_chain(&err);
+                tracing::error!("Skipping to next file after error loading {location}: {text}");
+                messages.push(format!("Error loading {location}: {text}"));
+                continue;
+            }
+        };
         if result.records > 0 {
             messages.push(format!("Loaded {} records from {location}", result.records));
+        }
+        if result.failed_files > 0 {
+            messages.push(format!("{} files failed to load from {location}", result.failed_files));
         }
         records += result.records;
     }
@@ -2240,6 +2243,15 @@ fn get_available_time_zones<'js>(ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>
     })
 }
 
+fn is_restricted_generic_entity(ctx: Ctx<'_>, name: Opt<JsValue<'_>>) -> rquickjs::Result<bool> {
+    host_guard(&ctx, || {
+        Ok(crate::entity::sensitive::is_restricted_generic_entity(&text_or_empty(
+            &ctx,
+            name.0.as_ref(),
+        )?))
+    })
+}
+
 fn camel_case_to_pretty(ctx: Ctx<'_>, text: Opt<JsValue<'_>>) -> rquickjs::Result<String> {
     host_guard(&ctx, || {
         Ok(moqui_lib::string::camel_case_to_pretty(&text_or_empty(
@@ -2310,6 +2322,7 @@ pub(super) fn install<'js>(
     method!("getRequestDetails", get_request_details);
     method!("secureRequestParameters", secure_request_parameters);
     method!("camelCaseToPretty", camel_case_to_pretty);
+    method!("isRestrictedGenericEntity", is_restricted_generic_entity);
     method!("getAvailableTimeZones", get_available_time_zones);
     method!("resourceInfo", resource_info);
     method!("restRootResources", rest_root_resources);

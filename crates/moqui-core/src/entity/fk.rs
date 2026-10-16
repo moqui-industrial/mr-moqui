@@ -12,7 +12,9 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Foreign-key check before create. `one-nofk` and auto-reverse are skipped.
+//! Foreign-key check before create, only with dummy foreign keys, as Java's `checkFks(true)` from the data loader: a
+//! missing related row is created with the keys. Otherwise the database constraint decides. `one-nofk` and
+//! auto-reverse are skipped.
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, HashSet};
@@ -87,11 +89,10 @@ pub(crate) fn enforce(
     values: &BTreeMap<String, Value>,
     stack: &mut HashSet<String>,
 ) -> Result<(), Error> {
-    if fk_create_disabled(facade) {
+    if !dummy_fks(facade) {
         return Ok(());
     }
     let jobs = facade.with_entity(entity_name, |entity, _, model| fk_jobs(entity, model, values))?;
-    let dummy = dummy_fks(facade);
     let own_keys = facade.pk_map(entity_name, values).ok();
     let own_name = facade.with_entity(entity_name, |entity, _, _| Ok(entity.full_name.clone()))?;
     for job in jobs {
@@ -104,12 +105,12 @@ pub(crate) fn enforce(
         if row_exists(facade, &job.related, &job.keys)? {
             continue;
         }
-        if !dummy {
-            return Err(Error::new(format!(
-                "foreign key {} on {entity_name} has no related {}",
-                job.relationship, job.related
-            )));
-        }
+        tracing::warn!(
+            "Creating dummy {} for foreign key {} on {entity_name}, keys {:?}",
+            job.related,
+            job.relationship,
+            job.keys
+        );
         let mut related = EntityValue::make(facade, &job.related)?;
         for (field, value) in &job.keys {
             related.set(field, value.clone());
@@ -166,13 +167,15 @@ fn related_keys(
         .into_iter()
         .filter(|name| !keys.contains_key(*name))
         .collect();
+    // As Java, a dummy is only made when the keys fill the related primary key.
     if !missing.is_empty() {
-        return Err(Error::new(format!(
-            "foreign key {} cannot fill primary key {} on {}",
+        tracing::debug!(
+            "foreign key {} cannot fill primary key {} on {}, no dummy",
             relationship.name,
             missing.join(", "),
             related.full_name
-        )));
+        );
+        return Ok(None);
     }
     Ok(Some(keys))
 }
@@ -260,21 +263,36 @@ mod tests {
         assert!(!dummy_fks(&facade), "the scope ends on unwind");
     }
 
+    /// A load with dummy foreign keys makes the missing related row on its own thread only; another thread's create
+    /// leaves the foreign key to the database, as Java does outside the data loader.
     #[test]
-    fn a_bad_foreign_key_fails_on_another_thread_while_a_load_has_dummy_fks() {
+    fn dummy_fks_make_a_related_row_only_on_the_load_thread() {
         let facade = testing::open();
         facade.set_disable_fk_create(false);
         let _scope = FkScope::enter(true, false);
         let other = facade.clone();
-        let result = std::thread::spawn(move || {
+        std::thread::spawn(move || {
             let mut value = other.make_value("moqui.basic.Enumeration")?;
             value.set("enumId", Value::string("E1"));
-            value.set("enumTypeId", Value::string("NO_SUCH_TYPE"));
+            value.set("enumTypeId", Value::string("OTHER_TYPE"));
             value.create(&other)
         })
         .join()
+        .unwrap()
         .unwrap();
-        let err = result.expect_err("the other thread checks foreign keys");
-        assert!(err.to_string().contains("has no related"), "{err}");
+        let mut value = facade.make_value("moqui.basic.Enumeration").unwrap();
+        value.set("enumId", Value::string("E2"));
+        value.set("enumTypeId", Value::string("LOAD_TYPE"));
+        value.create(&facade).unwrap();
+        let type_of = |id: &str| {
+            facade
+                .find("moqui.basic.EnumerationType")
+                .unwrap()
+                .eq("enumTypeId", Value::string(id))
+                .one()
+                .unwrap()
+        };
+        assert!(type_of("OTHER_TYPE").is_none(), "no dummy outside the load thread");
+        assert!(type_of("LOAD_TYPE").is_some(), "the load thread made a dummy");
     }
 }

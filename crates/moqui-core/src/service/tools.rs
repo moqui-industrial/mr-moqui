@@ -692,8 +692,7 @@ fn send_document_notifications(
 }
 
 /// `rewrite#EntityEncryptedFields`: read each record with an encrypted field set and write it back, so it is stored
-/// with the current key and algorithm. Java skips a record whose field does not decrypt; here a value that does not
-/// decrypt fails the read, and the service reports that error.
+/// with the current key and algorithm. As in Java, a record with a field that does not decrypt is logged and skipped.
 fn rewrite_encrypted_fields(
     parameters: &BTreeMap<String, Value>,
     facade: &EntityFacade,
@@ -741,6 +740,24 @@ fn rewrite_encrypted_fields(
             .iter()
             .all(|name| row.get(name).is_none_or(Value::is_null))
         {
+            continue;
+        }
+        if let Some(failed) = encrypt_names
+            .iter()
+            .find(|name| row.get(*name).and_then(Value::as_str) == Some(crate::entity::field_rw::DECRYPT_FAILED))
+        {
+            let pk: Vec<String> = pk_names
+                .iter()
+                .map(|name| match row.get(name) {
+                    Some(Value::String(text)) => text.clone(),
+                    Some(other) => format!("{other:?}"),
+                    None => String::new(),
+                })
+                .collect();
+            tracing::error!(
+                "rewrite#EntityEncryptedFields decrypt failed for {entity_name} pk {} field {failed}, skipping record",
+                pk.join("::")
+            );
             continue;
         }
         let mut rewrite = facade.make_value(&full_name)?;

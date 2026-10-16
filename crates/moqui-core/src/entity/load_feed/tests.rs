@@ -29,7 +29,7 @@ use zip::{CompressionMethod, ZipWriter};
 
 use super::feed::{probe_query, TOUCHES};
 use super::{
-    conf_data_locations, data_file_services, eca_rules, feed_service_names, load_entity_data, match_rules,
+    conf_data_locations, data_file_services, eca_rules, error_chain, feed_service_names, load_entity_data, match_rules,
     register_feed_insert, LoadOptions,
 };
 use crate::driver::{DbCancel, DbConnection, DbDriver, DbRow};
@@ -110,6 +110,8 @@ struct Script {
     savepoints: AtomicUsize,
     /// Rolling back to a savepoint fails while set.
     broken_rollback: AtomicBool,
+    /// `DataFeedPending` inserts fail while set.
+    fail_pending: AtomicBool,
 }
 
 fn new_script(missing_feed: bool, fail_inserts: bool) -> Arc<Script> {
@@ -120,6 +122,7 @@ fn new_script(missing_feed: bool, fail_inserts: bool) -> Arc<Script> {
         definition_reads: AtomicUsize::new(0),
         savepoints: AtomicUsize::new(0),
         broken_rollback: AtomicBool::new(false),
+        fail_pending: AtomicBool::new(false),
     })
 }
 
@@ -130,6 +133,9 @@ struct ScriptConn {
 impl DbConnection for ScriptConn {
     fn execute(&mut self, sql: &str, params: &[Value]) -> Result<u64, Error> {
         if sql.contains("data_feed_pending") {
+            if self.script.fail_pending.load(Ordering::SeqCst) {
+                return Err(Error::new("postgres execute: deadlock detected"));
+            }
             self.script.inserts.lock().expect("inserts").push(params.to_vec());
         } else if sql.starts_with("INSERT") && self.script.fail_inserts.load(Ordering::SeqCst) {
             return Err(Error::new("duplicate key value violates unique constraint"));
@@ -433,6 +439,30 @@ fn loader_filters_types_holds_services_and_reads_zip() {
     assert_eq!(again.records, 1);
     assert!(!facade.flags().dummy_fks);
     assert!(!facade.flags().disable_fk_create);
+}
+
+/// As Java's `loadAllData`, a file of a directory that fails is logged and counted, and the files after it still load.
+#[test]
+fn a_failed_file_in_a_directory_is_skipped_and_the_next_one_loads() {
+    let facade = open_empty();
+    let context = crate::context::ExecutionContextFactory::test_context();
+    context.factory().set_entity(facade.clone());
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    let (dir, _guard) = temp_dir();
+    std::fs::write(
+        dir.join("a-broken.xml"),
+        r#"<entity-facade-xml type="seed"><moqui.test.TestEntity testId="T0"</entity-facade-xml>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("b-good.xml"),
+        r#"<entity-facade-xml type="seed"><moqui.test.TestEntity testId="T1" testMedium="xml"/></entity-facade-xml>"#,
+    )
+    .unwrap();
+    let loaded = load_entity_data(&facade, dir.to_str().unwrap(), &LoadOptions::default()).unwrap();
+    assert_eq!(loaded.records, 1);
+    assert_eq!(loaded.failed_files, 1);
 }
 
 #[test]
@@ -753,6 +783,33 @@ fn feed_insert_uses_the_enlisted_connection_and_skips_a_missing_catalog() {
     enlist(&tx);
     facade.commit("moqui.test.Foo").unwrap();
     assert!(missing.inserts.lock().expect("inserts").is_empty());
+}
+
+/// As in Java's `EntityDataFeed`, a feed that fails is logged and the business transaction commits; only a savepoint
+/// that cannot be rolled back, which leaves the transaction unusable, stops the commit.
+#[test]
+fn a_failed_feed_insert_does_not_roll_back_the_business_transaction() {
+    let script = new_script(false, false);
+    script.fail_pending.store(true, Ordering::SeqCst);
+    let facade = open_with(Arc::new(ScriptDriver {
+        script: Arc::clone(&script),
+    }));
+    facade.begin("moqui.test.Foo", None).unwrap();
+    match_rules(&facade, "moqui.test.Foo", "create");
+    let tx = facade.transactions_for("moqui.test.Foo").unwrap();
+    register_feed_insert(&facade, &tx).unwrap();
+    enlist(&tx);
+    facade.commit("moqui.test.Foo").unwrap();
+    assert!(script.inserts.lock().expect("inserts").is_empty());
+
+    script.broken_rollback.store(true, Ordering::SeqCst);
+    facade.begin("moqui.test.Foo", None).unwrap();
+    match_rules(&facade, "moqui.test.Foo", "create");
+    let tx = facade.transactions_for("moqui.test.Foo").unwrap();
+    register_feed_insert(&facade, &tx).unwrap();
+    enlist(&tx);
+    let err = facade.commit("moqui.test.Foo").unwrap_err();
+    assert!(error_chain(&err).contains("unusable"), "{}", error_chain(&err));
 }
 
 #[test]

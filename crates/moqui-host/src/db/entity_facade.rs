@@ -355,6 +355,55 @@ mod tests {
             .is_some());
     }
 
+    /// A DDL statement that fails is logged and skipped, as Java's `runSqlUpdate` does: the other
+    /// indexes of the entity and the other entities are still checked. Postgres has no btree index
+    /// for `json`, so the username index fails.
+    #[test]
+    fn failed_ddl_statement_is_skipped_and_the_check_goes_on() {
+        let dir = temp_cluster_dir();
+        let _guard = DirGuard(dir.clone());
+        let (_cluster, driver) = EmbeddedCluster::start(&dir, 20).unwrap();
+        let driver: Arc<dyn DbDriver> = Arc::new(driver);
+        let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
+        let facade = open_entity_facade(
+            &framework,
+            Arc::clone(&driver),
+            PoolConfig {
+                min: 0,
+                max: 4,
+                reserve: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut conn = driver.connect().unwrap();
+        conn.execute("CREATE TABLE user_account (user_id VARCHAR(40), username JSON)", &[])
+            .unwrap();
+        facade.check_tables(&["UserAccount", "moqui.test.TestEntity"]).unwrap();
+        assert!(facade.table_exists("moqui.test.TestEntity").unwrap());
+        let indexes = conn
+            .query(
+                "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() AND tablename = 'user_account'",
+                &[],
+            )
+            .unwrap();
+        let names: Vec<String> = indexes
+            .iter()
+            .filter_map(|row| row.columns[0].1.as_str().map(str::to_ascii_lowercase))
+            .collect();
+        assert!(!names.iter().any(|name| name == "useracct_username"), "{names:?}");
+        assert!(names.iter().any(|name| name == "useracct_emailaddr"), "{names:?}");
+        let columns = conn
+            .query(
+                "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'user_account'",
+                &[],
+            )
+            .unwrap();
+        assert!(columns
+            .iter()
+            .any(|row| row.columns[0].1.as_str() == Some("email_address")));
+    }
+
     /// Every framework view-entity runs a paged select and a count on Postgres, with every
     /// framework table and foreign key index in place.
     #[test]

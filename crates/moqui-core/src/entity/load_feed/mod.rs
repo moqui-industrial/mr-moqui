@@ -77,7 +77,7 @@ pub struct LoadOptions {
     /// Transaction timeout for each record. `None` uses the transaction manager default.
     pub timeout: Option<std::time::Duration>,
     /// Java `restrictSensitiveEntities`: refuse every record, root or nested, whose entity is a
-    /// [`RESTRICTED_ENTITIES`] entity. Here service elements are refused too, a hardening beyond the Java, which ran
+    /// restricted entity ([`is_restricted_entity`]). Here service elements are refused too, a hardening beyond the Java, which ran
     /// them and checked only root and CSV entity names.
     pub restrict_sensitive_entities: bool,
     /// Java `csvEntityName`: the entity or service of a CSV text with no entity line.
@@ -88,30 +88,27 @@ pub struct LoadOptions {
     pub default_values: Vec<(String, String)>,
 }
 
-/// The identity-admin and secret-config entities (`WebUtilities.isRestrictedGenericEntity`), by simple name in lower
-/// case.
-pub const RESTRICTED_ENTITIES: &[&str] = &[
-    "userloginkey",
-    "usergroupmember",
-    "usergrouppermission",
-    "userpermission",
-    "artifactauthz",
-    "artifactgroup",
-    "artifactgroupmember",
-    "artifacttarpit",
-    "usergrouppermissions",
-    "userpermissions",
-    "artifactgroups",
-    "userauthcfactor",
-    "userpasswordhistory",
-    "emailserver",
-    "systemmessageremote",
-];
-
 /// How many entity records were written. Data-file service calls are not included.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LoadResult {
     pub records: u64,
+    /// Files of a directory location that failed, were logged and skipped.
+    pub failed_files: u64,
+}
+
+/// The error and its sources, as Java logs `t` and `t.getCause()`.
+pub fn error_chain(err: &Error) -> String {
+    let mut text = err.to_string();
+    let mut source = std::error::Error::source(err);
+    while let Some(cause) = source {
+        let cause_text = cause.to_string();
+        if !text.contains(&cause_text) {
+            text.push_str(": ");
+            text.push_str(&cause_text);
+        }
+        source = cause.source();
+    }
+    text
 }
 
 #[derive(Default)]

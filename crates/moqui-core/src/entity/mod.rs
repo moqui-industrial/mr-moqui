@@ -21,6 +21,7 @@ pub mod document;
 pub mod field_rw;
 pub mod load_feed;
 pub mod query_rest;
+pub mod sensitive;
 
 mod data_writer;
 mod dbresource;

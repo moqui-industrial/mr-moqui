@@ -26,7 +26,7 @@ use moqui_lib::error::Error;
 use moqui_lib::object::Value;
 
 use super::loader::canonical_name;
-use super::{with_load_slot, FeedServiceNames};
+use super::{error_chain, with_load_slot, FeedServiceNames};
 use crate::driver::{DbConnection, DbRow};
 use crate::entity::facade::EntityFacade;
 use crate::transaction::TransactionManager;
@@ -115,10 +115,21 @@ pub fn register_feed_insert(facade: &EntityFacade, tx: &TransactionManager) -> R
     let inserted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let insert_facade = facade.clone();
     let insert_ids = std::sync::Arc::clone(&inserted);
-    tx.on_feed_insert(move |conn| {
-        let ids = insert_pending(&insert_facade, conn, frame)?;
-        insert_ids.lock().unwrap_or_else(|err| err.into_inner()).extend(ids);
-        Ok(())
+    // As in Java's `EntityDataFeed`, a feed that fails is logged and the business transaction still commits. Every
+    // statement runs in its own savepoint, so only a savepoint that cannot be rolled back stops the commit.
+    tx.on_feed_insert(move |conn| match insert_pending(&insert_facade, conn, frame) {
+        Ok(ids) => {
+            insert_ids.lock().unwrap_or_else(|err| err.into_inner()).extend(ids);
+            Ok(())
+        }
+        Err(err) if is_unusable(&err) => Err(err),
+        Err(err) => {
+            tracing::error!(
+                "Data feed pending rows were not recorded, the transaction commits without them: {}",
+                error_chain(&err)
+            );
+            Ok(())
+        }
     })?;
     let commit_facade = facade.clone();
     tx.on_commit(move || {
@@ -737,30 +748,64 @@ fn probe_execute(conn: &mut dyn DbConnection, sql: &str, params: &[Value]) -> Re
     probe(conn, (), |conn| conn.execute(sql, params).map(|_| ()))
 }
 
+/// A savepoint that could not be rolled back: the transaction is unusable and must not commit.
+#[derive(Debug)]
+struct Unusable(Error);
+
+impl std::fmt::Display for Unusable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for Unusable {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+fn unusable(undo: Error) -> Error {
+    Error::new(format!(
+        "could not roll back savepoint {SAVEPOINT}, the transaction is unusable: {undo}"
+    ))
+    .with_source(Unusable(undo))
+}
+
+fn is_unusable(err: &Error) -> bool {
+    let mut current = Some(err as &dyn std::error::Error);
+    while let Some(item) = current {
+        if item.is::<Unusable>() {
+            return true;
+        }
+        current = item.source();
+    }
+    false
+}
+
 /// Runs `run` inside a savepoint. A missing table gives `missing`, once the savepoint is rolled
-/// back; if that rollback fails the transaction is unusable, so the rollback error is returned.
+/// back; if that rollback fails the transaction is unusable, so that error is returned.
 fn probe<T>(
     conn: &mut dyn DbConnection,
     missing: T,
     run: impl FnOnce(&mut dyn DbConnection) -> Result<T, Error>,
 ) -> Result<T, Error> {
-    conn.savepoint(SAVEPOINT)?;
+    conn.savepoint(SAVEPOINT).map_err(unusable)?;
     match run(conn) {
         Ok(value) => {
-            conn.release_savepoint(SAVEPOINT)?;
+            conn.release_savepoint(SAVEPOINT).map_err(unusable)?;
             Ok(value)
         }
         Err(err) => {
             let undone = conn
                 .rollback_to_savepoint(SAVEPOINT)
                 .and_then(|()| conn.release_savepoint(SAVEPOINT));
-            if relation_missing(&err) {
-                undone.map(|()| missing)
-            } else {
-                if let Err(undo) = undone {
-                    tracing::warn!("Could not roll back savepoint {SAVEPOINT} after a failed probe: {undo}");
+            match undone {
+                Err(undo) => {
+                    tracing::warn!("Could not roll back savepoint {SAVEPOINT} after a failed probe: {err}");
+                    Err(unusable(undo))
                 }
-                Err(err)
+                Ok(()) if relation_missing(&err) => Ok(missing),
+                Ok(()) => Err(err),
             }
         }
     }
@@ -773,19 +818,6 @@ fn relation_missing(err: &Error) -> bool {
         || text.contains("unknown table")
         || text.contains("42p01");
     missing && (text.contains("relation") || text.contains("table") || text.contains("42p01"))
-}
-
-fn error_chain(err: &Error) -> String {
-    let mut text = String::new();
-    let mut current = Some(err as &dyn std::error::Error);
-    while let Some(item) = current {
-        if !text.is_empty() {
-            text.push(' ');
-        }
-        text.push_str(&item.to_string());
-        current = item.source();
-    }
-    text
 }
 
 fn cell_value<'a>(row: &'a DbRow, name: &str) -> Option<&'a Value> {
