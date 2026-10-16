@@ -153,14 +153,26 @@ impl EntityFacade {
     }
 
     pub fn create_or_update_value(&self, value: &EntityValue) -> Result<(), Error> {
-        let keys = self.pk_map(&value.entity_name, &value.fields)?;
+        // As Java, fill primary-key defaults first.
+        let mut value = value.clone();
+        let defaults = self.apply_field_defaults(&value.entity_name, &value.fields)?;
+        let keys = self.pk_map(&value.entity_name, &defaults)?;
+        value.fields.extend(keys.clone());
+        // Rust then tries one UPDATE by primary key, for a row that is probably there: an `update` hit when it
+        // updates the row, the Rust-only `update-probe` when it matches none. Otherwise as Java: refresh a clone
+        // before choosing the write.
         if self.update_if_exists(&value.entity_name, &value.fields)? {
             return Ok(());
         }
-        if self.find_by_pk(&value.entity_name, &keys)?.is_some() {
-            self.update_value(value)
+        let exists = {
+            // Java refreshes a throwaway clone without accessing its localized fields.
+            let _raw = super::field_rw::RawReadGuard::enter();
+            self.refresh_by_pk(&value.entity_name, &keys)?.is_some()
+        };
+        if exists {
+            self.update_value(&value)
         } else {
-            self.create_value(value)
+            self.create_value(&value)
         }
     }
 
@@ -309,12 +321,20 @@ impl EntityFacade {
         include_null: bool,
         skip_pk: bool,
     ) -> Result<u64, Error> {
-        // `update-probe` is an update that leaves no trace when it matches no row; see `update_if_exists`.
+        // `update-probe` is an update that leaves no trace when it matches no row; see `update_if_exists`. It is
+        // authorized as an update. Its hit is an `update` when it updated a row, and the Rust-only `update-probe`
+        // when it matched none.
         let probe = operation == "update-probe";
         let operation = if probe { "update" } else { operation };
         // Declared first, so it drops last: the authorization cache is invalidated after the write.
         let _note = WriteNote(entity_name);
-        let sub_type = if operation == "upsert" { "create" } else { operation };
+        let sub_type = if probe {
+            RustOnlyEntityHits::UPDATE_PROBE
+        } else if operation == "upsert" {
+            "create"
+        } else {
+            operation
+        };
         let _artifact = EntityArtifact::push(self, entity_name, operation, sub_type)?;
         let tx = self.transactions_for(entity_name)?;
         if tx.lock_track_enabled() {
@@ -398,8 +418,11 @@ impl EntityFacade {
                 Ok((sql, params))
             })?;
             affected = execute_tx(&tx, &sql, &params)?;
-            if probe && affected == 0 {
-                return Ok(0);
+            if probe {
+                if affected == 0 {
+                    return Ok(0);
+                }
+                crate::context::ExecutionContext::with_current(|ctx| ctx.set_hit_detail(Some("update"), None));
             }
             load_feed::note_touch(self, entity_name, seal_operation, Some(&cache_values));
             if let Some(mut values) = after_values {
@@ -425,9 +448,18 @@ impl EntityFacade {
         values: &BTreeMap<String, Value>,
     ) -> Result<BTreeMap<String, Value>, Error> {
         let keys = self.pk_map(entity_name, values)?;
-        self.find_by_pk(entity_name, &keys)?
+        self.refresh_by_pk(entity_name, &keys)?
             .map(|value| value.fields)
             .ok_or_else(|| Error::new(format!("refresh found no {entity_name}")))
+    }
+
+    fn refresh_by_pk(&self, entity_name: &str, keys: &BTreeMap<String, Value>) -> Result<Option<EntityValue>, Error> {
+        // Refresh bypasses the shared entity cache but still sees transaction-held rows.
+        let mut find = self.find(entity_name)?.use_cache(false);
+        for (field, value) in keys {
+            find = find.eq(field, value.clone());
+        }
+        find.one_internal("refresh")
     }
 
     pub(crate) fn find_by_pk(
@@ -621,6 +653,48 @@ impl Drop for WriteNote<'_> {
     }
 }
 
+thread_local! {
+    static RUST_ONLY_SUB_TYPE: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+
+/// While held, entity operations on this thread are counted as artifact hits under `sub_type` instead of Java's find
+/// method or write operation. For reads Java does not make: FK existence checks (Java leaves those to the database)
+/// and the load report counts. They are still pushed, authorized and counted, but in bins of their own, so a
+/// comparison with Java can set them apart. The previous sub type is restored on drop.
+#[must_use = "the sub type is restored when the guard drops"]
+pub struct RustOnlyEntityHits(Option<&'static str>);
+
+impl RustOnlyEntityHits {
+    /// FK existence reads before a write.
+    pub const FK_CHECK: &'static str = "fk-check";
+    /// The record counts the startup load reports.
+    pub const LOAD_REPORT: &'static str = "load-report";
+    /// The UPDATE create-or-update tries before it reads the row, when it matched no row (Java reads first).
+    pub const UPDATE_PROBE: &'static str = "update-probe";
+
+    pub fn enter(sub_type: &'static str) -> Self {
+        Self(RUST_ONLY_SUB_TYPE.with(|current| current.replace(Some(sub_type))))
+    }
+}
+
+impl Drop for RustOnlyEntityHits {
+    fn drop(&mut self) {
+        RUST_ONLY_SUB_TYPE.with(|current| current.set(self.0));
+    }
+}
+
+fn rust_only_sub_type() -> Option<&'static str> {
+    RUST_ONLY_SUB_TYPE.with(std::cell::Cell::get)
+}
+
+/// Whether `sub_type` is one [`RustOnlyEntityHits`] counts under.
+pub(crate) fn is_rust_only_sub_type(sub_type: Option<&str>) -> bool {
+    matches!(
+        sub_type,
+        Some(RustOnlyEntityHits::FK_CHECK | RustOnlyEntityHits::LOAD_REPORT | RustOnlyEntityHits::UPDATE_PROBE)
+    )
+}
+
 /// An `AT_ENTITY` frame on the artifact stack for one entity operation.
 ///
 /// The frame is decided against the one below it, so a service or screen that was allowed to do
@@ -648,7 +722,7 @@ impl EntityArtifact {
         let requires_authz = !skips_authz(&skip, action);
         let outcome = crate::context::ExecutionContext::with_current(|ctx| {
             ctx.push_checked("AT_ENTITY", entity_name, action, requires_authz, false, None)?;
-            ctx.set_hit_detail(Some(sub_type), None);
+            ctx.set_hit_detail(Some(rust_only_sub_type().unwrap_or(sub_type)), None);
             Ok::<(), crate::context::Error>(())
         });
         match outcome {

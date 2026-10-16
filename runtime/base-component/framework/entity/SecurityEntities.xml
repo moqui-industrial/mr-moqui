@@ -664,7 +664,7 @@ along with this software (see the LICENSE.md file). If not, see
             <moqui.basic.Enumeration enumTypeId="OauthClientType" enumId="OctFacebook" description="Facebook"/>
             <moqui.basic.Enumeration enumTypeId="OauthClientType" enumId="OctFoursquare" description="Foursquare"/>
             <moqui.basic.Enumeration enumTypeId="OauthClientType" enumId="OctGitHub" description="GitHub"/>
-            <moqui.basic.Enumeration enumTypeId="OauthClientType" enumId="OctGoogle" description="Google"/>
+            <!-- OctGoogle is an OidcClientType below; one enumId cannot be both, and a second row only overwrote this one. -->
             <moqui.basic.Enumeration enumTypeId="OauthClientType" enumId="OctLinkedIn" description="LinkedIn"/>
             <moqui.basic.Enumeration enumTypeId="OauthClientType" enumId="OctPaypal" description="Paypal"/>
             <moqui.basic.Enumeration enumTypeId="OauthClientType" enumId="OctTwitter" description="Twitter"/>

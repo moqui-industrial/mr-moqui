@@ -781,11 +781,18 @@ fn run_entity(
             if pk_missing(&record, &pk_names) {
                 assign_sequence(facade, &mut record, &pk_names)?;
                 record.create(facade)?;
-            } else if row_found(facade, noun, &record, &pk_names)? {
-                check_status(facade, noun, &record, &pk_names, parameters, &mut status_out)?;
-                record.update(facade)?;
+            } else if parameters.contains_key("statusId")
+                && facade.with_entity(noun, |entity, _, _| Ok(entity.has_field("statusId")))?
+            {
+                // Java's store checks status with one uncached read. A missing row is created
+                // directly; other stores choose create/update through EntityValue.refresh.
+                if check_status(facade, noun, &record, &pk_names, parameters, &mut status_out)? {
+                    record.create_or_update(facade)?;
+                } else {
+                    record.create(facade)?;
+                }
             } else {
-                record.create(facade)?;
+                record.create_or_update(facade)?;
             }
         }
         other => return Err(LibError::new(format!("entity-auto verb {other} is not supported"))),
@@ -845,19 +852,19 @@ fn check_status(
     pk_names: &[String],
     parameters: &BTreeMap<String, Value>,
     out: &mut BTreeMap<String, Value>,
-) -> Result<(), LibError> {
+) -> Result<bool, LibError> {
     let Some(new_status) = parameters.get("statusId") else {
-        return Ok(());
+        return Ok(false);
     };
     if !facade.with_entity(noun, |entity, _, _| Ok(entity.has_field("statusId")))? {
-        return Ok(());
+        return Ok(false);
     }
-    let mut find = facade.find(noun)?;
+    let mut find = facade.find(noun)?.use_cache(false);
     for name in pk_names {
         find = find.eq(name, record.get(name).cloned().unwrap_or(Value::Null));
     }
     let Some(existing) = find.one()? else {
-        return Ok(());
+        return Ok(false);
     };
     let old_status = existing.get("statusId").cloned().unwrap_or(Value::Null);
     out.insert("oldStatusId".to_string(), old_status.clone());
@@ -868,7 +875,7 @@ fn check_status(
         moqui_lib::object::to_plain_string(new_status),
     );
     if same || old_id.is_empty() || new_id.is_empty() || old_status.is_null() || new_status.is_null() {
-        return Ok(());
+        return Ok(true);
     }
     let transitions = facade
         .find("moqui.basic.StatusFlowTransition")?
@@ -902,16 +909,7 @@ fn check_status(
             name_of(&new_id)?
         )));
     }
-    Ok(())
-}
-
-fn row_found(facade: &EntityFacade, noun: &str, record: &EntityValue, pk_names: &[String]) -> Result<bool, LibError> {
-    let mut find = facade.find(noun)?;
-    for name in pk_names {
-        let value = record.get(name).cloned().unwrap_or(Value::Null);
-        find = find.eq(name, value);
-    }
-    Ok(find.one()?.is_some())
+    Ok(true)
 }
 
 fn nest(

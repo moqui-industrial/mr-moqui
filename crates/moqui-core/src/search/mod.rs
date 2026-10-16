@@ -964,6 +964,52 @@ pub fn current() -> Result<Arc<SearchFacade>, Error> {
         .ok_or_else(|| Error::new("search is not configured"))
 }
 
+/// Java's `ElasticFacadeImpl` start, run by each factory: every DataFeed with `indexOnStartEmpty` Y that has a
+/// document with no store yet gets an `IndexDataFeedDocuments` job for the feed. Runs in the entered context, with
+/// authorization disabled as Java's finds. Nothing happens when search is not installed. A failure is logged, as Java
+/// does, and does not stop the start.
+pub fn index_feeds_on_start_empty() {
+    let Ok(search) = current() else {
+        return;
+    };
+    let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+    let outcome = (|| -> Result<(), Error> {
+        let entity = search.entity();
+        let feeds = entity
+            .find("moqui.entity.feed.DataFeed")?
+            .eq("indexOnStartEmpty", Value::string("Y"))
+            .list()?;
+        for feed in feeds.values() {
+            let Some(feed_id) = feed.get("dataFeedId").map(moqui_lib::object::to_plain_string) else {
+                continue;
+            };
+            let details = entity
+                .find("moqui.entity.feed.DataFeedDocumentDetail")?
+                .eq("dataFeedId", Value::string(&feed_id))
+                .list()?;
+            let mut missing = false;
+            for detail in details.values() {
+                let Some(document_id) = detail.get("dataDocumentId").map(moqui_lib::object::to_plain_string) else {
+                    continue;
+                };
+                if !search.backend.index_exists(&*search.mapping(&document_id)?)? {
+                    missing = true;
+                }
+            }
+            if missing {
+                let mut parameters = std::collections::BTreeMap::new();
+                parameters.insert("dataFeedId".to_string(), Value::string(&feed_id));
+                let job_run_id = crate::service::run_job_now("IndexDataFeedDocuments", &parameters)?;
+                tracing::info!("Found index does not exist for DataFeed {feed_id}, started job {job_run_id} to index");
+            }
+        }
+        Ok(())
+    })();
+    if let Err(err) = outcome {
+        tracing::error!("Error checking or indexing for all DataFeed with indexOnStartEmpty=Y: {err}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

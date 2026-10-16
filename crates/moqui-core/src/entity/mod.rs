@@ -52,7 +52,8 @@ pub(crate) use schema::document as schema_document;
 pub use search_form::SearchFormResult;
 pub use sequence::{fill_bank, stagger_step, take_id, SequenceBank};
 pub(crate) use sequence::{sequenced_id_primary, uuid_v4};
-pub use value::{EntityList, EntityValue};
+pub(crate) use value::is_rust_only_sub_type;
+pub use value::{EntityList, EntityValue, RustOnlyEntityHits};
 
 /// Forget what the entity layer keeps on this thread once a unit of work is over. With `sim`, ends every sim
 /// session still open and clears the sim flag, so a missed `exit_sim` does not send the thread's later writes to a
