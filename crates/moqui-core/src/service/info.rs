@@ -150,6 +150,32 @@ pub fn service_definition_info(name: &str) -> Option<IndexMap<String, Value>> {
         "xmlAction".to_string(),
         Value::Bool(matches!(def.kind, ServiceKind::Inline) && !def.actions.is_empty()),
     );
+    let parameters = |params: &[define::ParamDef]| {
+        Value::Map(
+            params
+                .iter()
+                .map(|param| {
+                    (
+                        param.name.clone(),
+                        Value::Map(indexmap::indexmap! {
+                            "name".to_string() => text(&param.name),
+                            "type".to_string() => text(&param.java_type),
+                            "required".to_string() => Value::Bool(param.required == Required::True),
+                        }),
+                    )
+                })
+                .collect(),
+        )
+    };
+    let facade = super::validate::current_facade();
+    let in_params = super::validate::declared_in(&def, facade.as_ref()).ok()?;
+    let out_params = super::validate::expand_params(&def, &def.out_params, facade.as_ref()).ok()?;
+    map.insert("inParameterInfoMap".to_string(), parameters(&in_params));
+    map.insert("outParameterInfoMap".to_string(), parameters(&out_params));
+    map.insert(
+        "inParameterNames".to_string(),
+        Value::List(in_params.iter().map(|param| text(&param.name)).collect()),
+    );
     map.insert("serviceXml".to_string(), text(&service_xml(&def)));
     Some(map)
 }
