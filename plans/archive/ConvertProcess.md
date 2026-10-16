@@ -241,7 +241,7 @@ Bugs the new specs found, all in the ports or the host (the lint could not see t
 
 ## Seventh iteration: more specs, and the host gaps they found (2026-10-16)
 
-The coverage went from 459 to 680 of 762 services called (313 features in 40 specs) with the specs in [MantleFlowTests](../MantleFlowTests.md). The 82 services left take an uploaded file or save content (about 35), call Google (3) or carrier gateways (12), manage tenants (4), consume or produce system messages (5), or are single services listed in [Remaining-Work](../Remaining-Work.md). `moqui lint --groovy` is still at 0 flagged sites over 83 files.
+The coverage went from 459 to 751 of 762 services called (344 features in 43 specs) with the specs in [MantleFlowTests](../MantleFlowTests.md). The 11 services left need a network, belong to the deprecated multi-tenant mode, or are upstream stubs; [Remaining-Work](../Remaining-Work.md) names them. `moqui lint --groovy` is still at 0 flagged sites over 83 files.
 
 Host bugs the specs found and fixed (each has a unit test):
 
@@ -252,7 +252,11 @@ Host bugs the specs found and fixed (each has a unit test):
 - `ec.resource.expand(null, '')` threw; Java returns an empty string.
 - `==` and `!=` between two entity values is identity in JavaScript (a Groovy `==` compares the fields): six services never saw an unchanged address, phone number, contact mech, credit card or bank account and always created a new row. `EntityValue.equals(other)` compares the entity and fields, the services use it, and the lint reports `==` and `!=` on a `cloneValue()` copy as `entity-value-identity`.
 
-Port bugs: the `calculate#PayrollAdjustment` output did not declare `payrollPhaseEnumId` and `garnishMinWageApplies`, so the garnishment limit (a share of disposable pay) never applied; `create#WorkersCompRate` did not pass the new adjustment id to its detail; `generate#Efw2File` looked up an agent party that was not given; `create#ShipmentLoadsForOrders` never listed the picklists it created.
+- Entity field defaults `ec.user.nowTimestamp` and `ec.user.userId` (41 fields in the mantle entities) were never applied, only literals and field names were, and an entity-auto create with a primary key that has a default (`contentDate` of `AssetMaintenanceContent`) sequenced the key to `"01"` and then collided on the second row. They are applied, the primary key default first.
+- A test helper `uploadedFile(name, text, contentType)` makes the `FileItem` that the `save#...ContentFile`, `upload#...` and `update#FacilityCertification` services take, so those run in specs.
+- The lint now reports a Java class written with its package (`org.moqui.resource.ResourceReference.isTextFilename(..)`, `org.moqui.impl.service.ScheduledJobRunner.getCronDescription(..)`): the script has no `org` name, so seven `save#...ContentFile` services and `get#OrderDisplayInfo` for a recurring order failed at run time.
+
+Port bugs: the `calculate#PayrollAdjustment` output did not declare `payrollPhaseEnumId` and `garnishMinWageApplies`, so the garnishment limit (a share of disposable pay) never applied; `create#WorkersCompRate` did not pass the new adjustment id to its detail; `generate#Efw2File` looked up an agent party that was not given; seven services kept the upload stream in `fileStream = contentFile.getInputStream()` with no `const`, so a bare assignment went through the context stack and the stream was no longer a stream; `fulfill#ProductSubscriptionResource` and `init#Tenant` logged `ec.transaction.getTransactionManager()` (Java only); `create#ShipmentLoadsForOrders` never listed the picklists it created.
 
 Differences kept, because Java behaves the same: a shipment put on a picklist by `create#ShipmentLoadShip` has no bin number; `add#OrderPartToShipmentLoad` on a part already on the load moves it to the next free bin; a note is keyed by its date, so two `store#Order` revisions in the same millisecond collide (only seen when a spec freezes the time).
 

@@ -12,7 +12,7 @@ The component name is `mantle-usl` (from `component.xml`), not the directory nam
 
 ## Status (2026-10-16)
 
-313 features pass in 40 specs, none ignored (about 30s with the scratch database loaded; the 8 flow specs account for 84 of them, and the whole suite with coverage reports 680 of 762 services called).
+344 features pass in 43 specs, none ignored (about 30s with the scratch database loaded; the 8 flow specs account for 84 of them, and the whole suite with coverage reports 751 of 762 services called).
 
 | Spec | Features |
 |---|---|
@@ -65,6 +65,9 @@ Written to run services that no flow reaches, and run after the flows. Each was 
 | OrderBulk | store#Order create and revise, bulk status change, generated test orders |
 | PartyAccounts | party and person search, update#Account, user account person, relationship settings |
 | ReportLookups | lookup by id, filtered search, feature interactions, units, projected inventory |
+| CarrierServices | order shipping rates, label markup, label request and refund dispatch, insurance, address validation, label printing |
+| Subscriptions | subscriptions started by approving an order of a digital product |
+| ContentRecords | payment, agreement and party content records, with and without an uploaded file |
 
 Specs that create their own organization (`init#PartyAccountingConfiguration` with `sourcePartyId: "DefaultSettings"`) get a full set of fiscal periods and accounts. A spec that freezes time with `ec.user.setEffectiveTime` cannot give one party the same role twice in the same millisecond (primary key).
 
