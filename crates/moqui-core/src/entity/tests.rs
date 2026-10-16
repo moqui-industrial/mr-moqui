@@ -612,6 +612,20 @@ fn entity_rest_serves_the_verbs() {
         )
         .unwrap();
     assert_eq!(map_str(&created, "testId"), Some("C1"));
+    // a primary key default is evaluated, not copied as written: `'ALL_USERS'` loses its quotes
+    let fk = super::fk::FkScope::enter(true, false);
+    let with_default = facade
+        .rest(
+            "post",
+            "moqui.screen.SubscreensItem",
+            &params(vec![
+                ("screenLocation", Value::string("component://x/screen/x.xml")),
+                ("subscreenName", Value::string("sub")),
+            ]),
+        )
+        .unwrap();
+    drop(fk);
+    assert_eq!(map_str(&with_default, "userGroupId"), Some("ALL_USERS"));
     let err = facade
         .rest(
             "find",

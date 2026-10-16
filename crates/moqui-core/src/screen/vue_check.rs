@@ -89,6 +89,10 @@ fn compiler_for(source: &str) -> Result<Compiler, Error> {
     let runtime = Runtime::new().map_err(|err| Error::new(err.to_string()))?;
     runtime.set_memory_limit(MEMORY_LIMIT);
     runtime.set_max_stack_size(STACK_LIMIT);
+    // `compile_render` sets `COMPILE_DEADLINE`: without this a template that loops the compiler never stops.
+    runtime.set_interrupt_handler(Some(Box::new(|| {
+        COMPILE_DEADLINE.with(Cell::get).is_some_and(|at| Instant::now() >= at)
+    })));
     let context = Context::full(&runtime).map_err(|err| Error::new(err.to_string()))?;
     context.with(|ctx| {
         ctx.eval::<(), _>(source)
@@ -115,6 +119,11 @@ fn source_key(source: &str) -> u64 {
 ///
 /// Returns an error when the compiler does not load or reports any error for the template.
 pub fn compile_render(compiler_source: &str, template: &str) -> Result<String, Error> {
+    compile_render_within(compiler_source, template, COMPILE_TIME_LIMIT)
+}
+
+/// [`compile_render`], with the compile stopped once `limit` has passed.
+fn compile_render_within(compiler_source: &str, template: &str, limit: Duration) -> Result<String, Error> {
     let key = source_key(compiler_source);
     COMPILER.with(|slot| {
         if slot.borrow().as_ref().is_none_or(|(held, _)| *held != key) {
@@ -128,7 +137,7 @@ pub fn compile_render(compiler_source: &str, template: &str) -> Result<String, E
                 onError: function (err) {{ errors.push(err.code + ' ' + err.message + (err.loc ? ' at ' + err.loc.start.line + ':' + err.loc.start.column : '')); }} }});
                 return JSON.stringify({{ code: result.code, errors: errors }}); }})()"
         );
-        COMPILE_DEADLINE.with(|deadline| deadline.set(Some(Instant::now() + COMPILE_TIME_LIMIT)));
+        COMPILE_DEADLINE.with(|deadline| deadline.set(Some(Instant::now() + limit)));
         let json: Result<String, Error> = compiler.context.with(|ctx| {
             ctx.eval(script)
                 .catch(&ctx)
@@ -230,13 +239,22 @@ pub fn precompiled_components(compiler_source: &str, scripts: &[&str]) -> Result
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::compile_errors_within;
+    use super::{compile_errors_within, compile_render_within};
 
     #[test]
     fn a_compile_that_loops_stops_at_the_deadline() {
         let looping = "var VueCompilerDOM = { compile: function () { for (;;) {} } };";
         let started = Instant::now();
         let err = compile_errors_within(looping, &["<p/>".to_string()], Duration::from_millis(100)).unwrap_err();
+        assert!(err.to_string().contains("the Vue compiler failed"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn a_render_compile_that_loops_stops_at_the_deadline() {
+        let looping = "var VueCompilerDOM = { compile: function () { for (;;) {} } };";
+        let started = Instant::now();
+        let err = compile_render_within(looping, "<p/>", Duration::from_millis(100)).unwrap_err();
         assert!(err.to_string().contains("the Vue compiler failed"), "{err}");
         assert!(started.elapsed() < Duration::from_secs(10));
     }

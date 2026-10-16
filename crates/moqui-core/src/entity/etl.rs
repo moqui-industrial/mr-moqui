@@ -104,6 +104,20 @@ impl EtlLoader {
     }
 }
 
+/// A loader dropped with frames it began and not completed, as when a transformer panics mid-run, rolls them back
+/// and does not leave them open on this thread. `complete` empties `began`, so a finished run does nothing here.
+impl Drop for EtlLoader {
+    fn drop(&mut self) {
+        for tx in std::mem::take(&mut self.began) {
+            if tx.in_transaction() {
+                if let Err(err) = tx.rollback() {
+                    tracing::warn!(error = %err, "ETL loader dropped mid-run could not roll back");
+                }
+            }
+        }
+    }
+}
+
 impl Loader for EtlLoader {
     fn init(&mut self, timeout: Option<u32>) {
         let timeout = timeout.map(|seconds| std::time::Duration::from_secs(u64::from(seconds)));
@@ -209,6 +223,20 @@ mod tests {
             .one()
             .unwrap()?;
         value.get(field).and_then(Value::as_str).map(str::to_string)
+    }
+
+    #[test]
+    fn a_loader_dropped_mid_run_rolls_back_the_frames_it_began() {
+        use moqui_lib::etl::Loader;
+
+        let facade = testing::open();
+        let tx = facade.transactions_for("moqui.basic.Enumeration").unwrap();
+        let mut loader = facade.make_etl_loader();
+        loader.init(None);
+        assert!(tx.in_transaction());
+        // a panic in a transformer unwinds past `complete`
+        drop(loader);
+        assert!(!tx.in_transaction());
     }
 
     #[test]

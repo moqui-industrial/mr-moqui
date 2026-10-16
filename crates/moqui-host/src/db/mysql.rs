@@ -387,11 +387,14 @@ mod driver {
             self.command("START TRANSACTION".to_owned())
         }
 
+        // The end of a transaction ends a stream still open on it, as on Postgres, instead of failing on it.
         fn commit(&mut self) -> Result<(), Error> {
+            self.close_stream()?;
             self.command("COMMIT".to_owned())
         }
 
         fn rollback(&mut self) -> Result<(), Error> {
+            self.close_stream()?;
             self.command("ROLLBACK".to_owned())
         }
 

@@ -1472,16 +1472,25 @@ impl HostEntity {
             if others.borrow().inner.len() > 0 {
                 return Ok(false);
             }
-            for (name, _) in &chosen {
-                let list = self
-                    .related_find(&ctx, name)?
-                    .list()
-                    .map_err(|err| throw_lib(&ctx, &err))?;
-                for value in list.values() {
-                    value.delete(&facade).map_err(|err| throw_lib(&ctx, &err))?;
-                }
-            }
-            self.snapshot().delete(&facade).map_err(|err| throw_lib(&ctx, &err))?;
+            let finds = chosen
+                .iter()
+                .map(|(name, _)| self.related_find(&ctx, name))
+                .collect::<rquickjs::Result<Vec<_>>>()?;
+            // One transaction around the lot, so a failure part way leaves nothing deleted; it joins the caller's.
+            let parent_value = self.snapshot();
+            facade
+                .transactions_for(&parent)
+                .and_then(|tx| {
+                    tx.run(crate::transaction::TransactionAttribute::UseOrBegin, None, || {
+                        for find in finds {
+                            for value in find.list()?.values() {
+                                value.delete(&facade)?;
+                            }
+                        }
+                        parent_value.delete(&facade)
+                    })
+                })
+                .map_err(|err| throw_lib(&ctx, &err))?;
             Ok(true)
         })
     }

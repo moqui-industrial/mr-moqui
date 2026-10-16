@@ -495,7 +495,7 @@ fn to_i32(value: &Value) -> Option<i32> {
         Value::I64(number) => i32::try_from(*number).ok(),
         Value::String(text) => text.parse().ok(),
         Value::Decimal(number) => i32::try_from(number.trunc()).ok(),
-        Value::F64(number) if number.fract() == 0.0 => i32::try_from(*number as i64).ok(),
+        Value::F64(number) => f64_whole(*number).and_then(|whole| i32::try_from(whole).ok()),
         _ => None,
     }
 }
@@ -506,9 +506,17 @@ fn to_i64(value: &Value) -> Option<i64> {
         Value::I32(number) => Some(i64::from(*number)),
         Value::String(text) => text.parse().ok(),
         Value::Decimal(number) => i64::try_from(number.trunc()).ok(),
-        Value::F64(number) if number.fract() == 0.0 => Some(*number as i64),
+        Value::F64(number) => f64_whole(*number),
         _ => None,
     }
+}
+
+/// A whole `f64` as an `i64`; `None` for a fraction, NaN, or a number outside the range, which `as` would clamp to
+/// `i64::MAX` or `MIN` and pass off as the value.
+fn f64_whole(number: f64) -> Option<i64> {
+    // 2^63 is exact as an `f64`, so the range is `-2^63 <= n < 2^63`
+    (number.fract() == 0.0 && (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&number))
+        .then_some(number as i64)
 }
 
 fn to_f64(value: &Value) -> Option<f64> {
@@ -985,6 +993,18 @@ mod tests {
             let got = compare(&field, vector[1].as_str().unwrap(), &to, vector[3].as_str().unwrap()).unwrap();
             assert_eq!(got, vector[4].as_bool().unwrap(), "{vector}");
         }
+    }
+
+    #[test]
+    fn a_double_out_of_the_integer_range_does_not_convert() {
+        assert_eq!(convert_to(&Value::F64(42.0), "Long"), Some(Value::I64(42)));
+        assert_eq!(convert_to(&Value::F64(-9.223_372_036_854_776e18), "Long"), Some(Value::I64(i64::MIN)));
+        assert_eq!(convert_to(&Value::F64(1e20), "Long"), None);
+        assert_eq!(convert_to(&Value::F64(-1e20), "Long"), None);
+        assert_eq!(convert_to(&Value::F64(9.223_372_036_854_776e18), "Long"), None);
+        assert_eq!(convert_to(&Value::F64(f64::NAN), "Long"), None);
+        assert_eq!(convert_to(&Value::F64(3e10), "Integer"), None);
+        assert_eq!(convert_to(&Value::F64(7.5), "Integer"), None);
     }
 
     #[test]
