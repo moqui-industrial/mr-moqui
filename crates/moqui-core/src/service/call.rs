@@ -1761,6 +1761,31 @@ mod tests {
         assert!(!out.contains_key("notDeclared"), "{out:?}");
     }
 
+    #[test]
+    fn auto_parameters_of_a_view_entity_use_its_aliases() {
+        let path = write_fixture(
+            "auto-view",
+            r#"<services><service verb="give" noun="AutoView">
+                <in-parameters><auto-parameters entity-name="moqui.test.TestEntityCount"/></in-parameters>
+                <out-parameters><auto-parameters entity-name="moqui.test.TestEntityCount"/></out-parameters>
+                <actions><set field="entityCount" value="7"/><set field="notDeclared" value="dropped"/></actions>
+            </service></services>"#,
+        );
+        let (_facade, ctx) = seeded_context(&[]);
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        let out = sync("give#AutoView", &BTreeMap::new()).unwrap();
+        assert_eq!(
+            out.get("entityCount")
+                .map(moqui_lib::object::to_plain_string)
+                .as_deref(),
+            Some("7"),
+            "{out:?}"
+        );
+        assert!(!out.contains_key("notDeclared"), "{out:?}");
+    }
+
     fn write_fixture(name: &str, body: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("moqui-svc-{name}-{}.xml", std::process::id()));
         std::fs::write(&path, body).unwrap();

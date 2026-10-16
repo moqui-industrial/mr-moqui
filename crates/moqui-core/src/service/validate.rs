@@ -270,22 +270,45 @@ pub(crate) fn auto_fields(
     entity: &moqui_db::model::EntityDefinition,
     model: &moqui_db::model::EntityModel,
 ) -> Vec<ParamDef> {
+    // a view-entity has aliases, not fields
+    let fields: Vec<(&str, bool, String)> = if entity.is_view {
+        entity
+            .aliases
+            .iter()
+            .map(|alias| {
+                let java = if alias.java_type.is_empty() {
+                    "String".to_string()
+                } else {
+                    alias.java_type.clone()
+                };
+                (alias.name.as_str(), alias.is_pk, java)
+            })
+            .collect()
+    } else {
+        entity
+            .fields
+            .iter()
+            .map(|field| {
+                let java = model
+                    .dictionary_type(&field.field_type)
+                    .map(|entry| entry.java_type.clone())
+                    .unwrap_or_else(|| "String".to_string());
+                (field.name.as_str(), field.is_pk, java)
+            })
+            .collect()
+    };
     let mut params = Vec::new();
-    for field in &entity.fields {
+    for (name, is_pk, java) in fields {
         let take = match auto.include {
-            Include::Pk => field.is_pk,
-            Include::NonPk => !field.is_pk,
+            Include::Pk => is_pk,
+            Include::NonPk => !is_pk,
             Include::All => true,
         };
-        if !take || auto.exclude.iter().any(|name| name == &field.name) {
+        if !take || auto.exclude.iter().any(|excluded| excluded == name) {
             continue;
         }
-        let java = model
-            .dictionary_type(&field.field_type)
-            .map(|entry| entry.java_type.clone())
-            .unwrap_or_else(|| "String".to_string());
         params.push(ParamDef {
-            name: field.name.clone(),
+            name: name.to_string(),
             java_type: java,
             required: auto.required,
             // Java's mergeAutoParameters takes no default: the entity field's `default` is an expression for a
