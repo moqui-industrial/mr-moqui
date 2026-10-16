@@ -25,7 +25,10 @@ use crate::dialect::Dialect;
 use crate::model::{EntityDefinition, EntityModel, FieldDefinition, IndexDefinition, Relationship};
 
 use super::condition::{fts_config, Column, Condition, FieldRef, LimitOffset, OrderBy, Writer};
-use super::ident::{clip_length, clip_name, is_mysql, placeholders, quote_ident, shrink_name};
+use super::ident::{
+    clip_length, clip_name, is_mysql, physical_column_name, placeholders, quote_column, quote_ident as quote_alias,
+    quote_list, quote_physical_ident as quote_ident, shrink_name,
+};
 use super::Statement;
 
 /// What a select can ask for beyond conditions, order, and paging.
@@ -48,7 +51,7 @@ pub(crate) fn entity_column(entity: &EntityDefinition, dialect: &Dialect, field:
     }
     match entity.field(&field.name) {
         Some(definition) => Column {
-            sql: quote_ident(dialect, &definition.column_name),
+            sql: quote_column(dialect, &definition.column_name),
             text: Some(definition.is_text()),
             java_type: entity.java_type_of(&field.name).map(str::to_string),
         },
@@ -96,7 +99,7 @@ pub fn update(
         if index > 0 {
             out.push(", ");
         }
-        out.push(&quote_ident(dialect, column_name(entity, column)));
+        out.push(&quote_column(dialect, column_name(entity, column)));
         out.push(" = ");
         out.push(dialect.placeholder);
     }
@@ -204,7 +207,11 @@ pub(crate) fn for_update(out: &mut Writer<'_>) {
 fn select_list(entity: &EntityDefinition, dialect: &Dialect, fields: &[FieldRef]) -> String {
     let all: Vec<FieldRef>;
     let fields = if fields.is_empty() {
-        if entity.fields.iter().all(|field| field.column_name == field.name) {
+        if entity
+            .fields
+            .iter()
+            .all(|field| physical_column_name(dialect, &field.column_name) == field.name)
+        {
             return "*".to_string();
         }
         all = entity.fields.iter().map(|field| FieldRef::new(&field.name)).collect();
@@ -219,9 +226,12 @@ fn select_list(entity: &EntityDefinition, dialect: &Dialect, fields: &[FieldRef]
         }
         let column = entity_column(entity, dialect, field);
         sql.push_str(&column.sql);
-        if field.expr.is_none() && field.entity_alias.is_none() && column_name(entity, &field.name) != field.name {
+        if field.expr.is_none()
+            && field.entity_alias.is_none()
+            && physical_column_name(dialect, column_name(entity, &field.name)) != field.name
+        {
             sql.push_str(" AS ");
-            sql.push_str(&quote_ident(dialect, &field.name));
+            sql.push_str(&quote_alias(dialect, &field.name));
         }
     }
     sql
@@ -312,7 +322,7 @@ pub fn insert_or_update(entity: &EntityDefinition, dialect: &Dialect, columns: &
             if index > 0 {
                 sql.push_str(", ");
             }
-            let quoted = quote_ident(dialect, column);
+            let quoted = quote_column(dialect, column);
             sql.push_str(&quoted);
             sql.push_str(" = VALUES(");
             sql.push_str(&quoted);
@@ -339,7 +349,7 @@ pub fn insert_or_update(entity: &EntityDefinition, dialect: &Dialect, columns: &
         if index > 0 {
             sql.push_str(", ");
         }
-        let quoted = quote_ident(dialect, column);
+        let quoted = quote_column(dialect, column);
         sql.push_str(&quoted);
         sql.push_str(" = EXCLUDED.");
         sql.push_str(&quoted);
@@ -372,10 +382,14 @@ pub fn create_table(entity: &EntityDefinition, model: &EntityModel, dialect: &Di
     }
     let pk = entity.pk_field_names();
     if !pk.is_empty() {
-        sql.push_str(", CONSTRAINT ");
-        let pk_name = clip_name(&format!("PK_{}", entity.table_name), clip_length(dialect));
-        sql.push_str(&quote_ident(dialect, &pk_name));
-        sql.push_str(" PRIMARY KEY (");
+        sql.push_str(", ");
+        if dialect.legacy_names || dialect.use_pk_constraint_names {
+            sql.push_str("CONSTRAINT ");
+            let pk_name = clip_name(&format!("PK_{}", entity.table_name), clip_length(dialect));
+            sql.push_str(&quote_ident(dialect, &pk_name));
+            sql.push(' ');
+        }
+        sql.push_str("PRIMARY KEY (");
         let pk_columns: Vec<&str> = pk.iter().map(|name| column_name(entity, name)).collect();
         sql.push_str(&quote_list(dialect, &pk_columns));
         sql.push(')');
@@ -385,7 +399,7 @@ pub fn create_table(entity: &EntityDefinition, model: &EntityModel, dialect: &Di
             sql.push_str(", FULLTEXT INDEX ");
             sql.push_str(&quote_ident(dialect, &fts_index_name(entity, &field.name, dialect)));
             sql.push_str(" (");
-            sql.push_str(&quote_ident(dialect, &field.column_name));
+            sql.push_str(&quote_column(dialect, &field.column_name));
             sql.push(')');
         }
     }
@@ -422,7 +436,7 @@ pub fn fts_index_sql(
 ) -> Result<Option<String>, Error> {
     let index_name = quote_ident(dialect, &fts_index_name(entity, &field.name, dialect));
     let table = quote_ident(dialect, &entity.table_name);
-    let column = quote_ident(dialect, &field.column_name);
+    let column = quote_column(dialect, &field.column_name);
     match dialect.fts_style.as_deref() {
         Some("postgres-tsvector") => {
             let config = fts_config(dialect)?;
@@ -626,7 +640,7 @@ fn write_column(
     in_create: bool,
 ) -> Result<(), Error> {
     let (sql_type, java_type) = column_type(model, dialect, field)?;
-    sql.push_str(&quote_ident(dialect, &field.column_name));
+    sql.push_str(&quote_column(dialect, &field.column_name));
     sql.push(' ');
     sql.push_str(&sql_type);
     if java_type.ends_with("String") {
@@ -661,8 +675,4 @@ fn column_type(model: &EntityModel, dialect: &Dialect, field: &FieldDefinition) 
 
 fn fts_index_name(entity: &EntityDefinition, field: &str, dialect: &Dialect) -> String {
     clip_name(&format!("{}_{}_FTS", entity.table_name, field), clip_length(dialect))
-}
-
-fn quote_list(dialect: &Dialect, names: &[impl AsRef<str>]) -> String {
-    super::ident::quote_list(dialect, names)
 }

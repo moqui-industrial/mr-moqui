@@ -53,6 +53,7 @@ mod facades;
 #[cfg(test)]
 mod framework_gaps_tests;
 mod helpers;
+mod native_tools;
 mod notification;
 #[cfg(test)]
 mod osiris_tests;

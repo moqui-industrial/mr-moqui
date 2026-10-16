@@ -85,7 +85,8 @@ along with this software (see the LICENSE.md file). If not, see
     <xs:element name="tool-factory">
         <xs:complexType>
             <xs:attribute name="class" type="xs:string" use="required"><xs:annotation><xs:documentation>
-                Must implement the org.moqui.context.ToolFactory interface.</xs:documentation></xs:annotation></xs:attribute>
+                Identifier of a linked native ToolFactory implementation. The component supplies code;
+                this declaration selects it. disabled and init-priority control its factory-local lifecycle.</xs:documentation></xs:annotation></xs:attribute>
             <xs:attribute name="init-priority" type="xs:integer" default="10"/>
             <xs:attribute name="disabled" type="boolean" default="false"/>
         </xs:complexType>
@@ -455,12 +456,16 @@ along with this software (see the LICENSE.md file). If not, see
         </xs:complexType>
     </xs:element>
     <xs:element name="resource-reference">
+        <xs:annotation><xs:documentation>Maps a scheme to a built-in resource implementation or a linked
+            native ResourceProvider identifier. This does not create a service or a tool.</xs:documentation></xs:annotation>
         <xs:complexType>
             <xs:attribute name="scheme" type="xs:string" use="required"/>
             <xs:attribute name="class" type="xs:string" use="required"/>
         </xs:complexType>
     </xs:element>
     <xs:element name="template-renderer">
+        <xs:annotation><xs:documentation>Maps an extension to a built-in renderer or linked native
+            TemplateRenderer identifier. This does not create a service or a tool.</xs:documentation></xs:annotation>
         <xs:complexType>
             <xs:attribute name="extension" type="xs:string" use="required"/>
             <xs:attribute name="class" type="xs:string" use="required"/>
@@ -574,7 +579,8 @@ along with this software (see the LICENSE.md file). If not, see
         <xs:complexType>
             <xs:attribute name="name" type="xs:string" use="required"/>
             <xs:attribute name="runner-class" type="xs:string" use="required"><xs:annotation><xs:documentation>
-                Fully qualified name of class that implements the org.moqui.impl.service.ServiceRunner interface.
+                Identifier of a linked native service runner. Service XML defines individual services;
+                the runner receives their location and method attributes.
             </xs:documentation></xs:annotation></xs:attribute>
         </xs:complexType>
     </xs:element>
@@ -806,6 +812,9 @@ along with this software (see the LICENSE.md file). If not, see
             <xs:attribute name="dci-topic-factory" type="xs:string">
                 <xs:annotation><xs:documentation>Topic factory for distributed cache invalidate</xs:documentation></xs:annotation></xs:attribute>
             <xs:attribute name="sequenced-id-prefix" type="xs:string"/>
+            <xs:attribute name="sql-name-style" type="xs:string">
+                <xs:annotation><xs:documentation>Rust only: java (default), or legacy to retain pre-compatibility quoted Rust table and column names. Supports property expansion.</xs:documentation></xs:annotation>
+            </xs:attribute>
             <xs:attribute name="default-group-name" type="name-plain"/>
             <xs:attribute name="database-time-zone" type="xs:string"/>
             <xs:attribute name="database-locale" type="xs:string"/>

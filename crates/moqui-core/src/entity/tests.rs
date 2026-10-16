@@ -146,7 +146,7 @@ impl DbConnection for IterConn {
     }
 
     fn query_once(&mut self, sql: &str, _params: &[Value]) -> Result<Vec<DbRow>, Error> {
-        if sql.contains("TestEntity") && sql.contains("SELECT") {
+        if sql.to_ascii_lowercase().contains("test_entity") && sql.contains("SELECT") {
             return Ok(vec![test_row()]);
         }
         Ok(Vec::new())
@@ -242,7 +242,7 @@ impl DbConnection for RecConn {
 
     fn query_once(&mut self, sql: &str, _params: &[Value]) -> Result<Vec<DbRow>, Error> {
         let tape = self.tape.lock().unwrap_or_else(|err| err.into_inner());
-        if sql.contains("InstanceHost") && sql.contains("SELECT") {
+        if sql.to_ascii_lowercase().contains("instance_host") && sql.contains("SELECT") {
             if let Some(password) = tape.password.clone() {
                 return Ok(vec![DbRow {
                     columns: vec![
@@ -918,8 +918,8 @@ fn foobar_select_view_joins_member_entities() {
     .unwrap()
     .sql;
     assert!(sql.contains("JOIN"), "{sql}");
-    assert!(sql.contains("Foo"), "{sql}");
-    assert!(sql.contains("Bar"), "{sql}");
+    assert!(sql.contains("\"foo\""), "{sql}");
+    assert!(sql.contains("\"bar\""), "{sql}");
     assert!(!sql.contains("member-relationship"), "{sql}");
 }
 
@@ -1182,7 +1182,7 @@ impl DbConnection for StoreConn {
         }
         tape.sql.push(sql.to_string());
         tape.params.push(Vec::new());
-        if tape.exists && sql.contains("TestEntity") && sql.contains("SELECT") {
+        if tape.exists && sql.to_ascii_lowercase().contains("test_entity") && sql.contains("SELECT") {
             return Ok(vec![test_row()]);
         }
         Ok(Vec::new())

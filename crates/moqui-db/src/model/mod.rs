@@ -44,7 +44,7 @@ pub struct DictionaryType {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FieldDefinition {
     pub name: String,
-    /// `column-name`, or the field name.
+    /// `column-name`, or Java's upper-case underscored field name (before database folding).
     pub column_name: String,
     pub field_type: String,
     /// Dictionary Java type of `field_type`.
@@ -126,6 +126,7 @@ pub struct EntityDefinition {
     pub entity_name: String,
     pub package_name: String,
     pub full_name: String,
+    /// `table-name`, or Java's upper-case underscored entity name (before database folding).
     pub table_name: String,
     pub group: Option<String>,
     pub entity_use: String,
@@ -291,6 +292,7 @@ impl EntityModel {
     /// `conf` is a tree that contains `<database-list>`. Documents whose root is not `entities` are skipped.
     pub fn load(conf: &MNode, documents: &[MNode]) -> Result<Self, Error> {
         let dictionary = parse_dictionary(conf)?;
+        let legacy_names = crate::dialect::legacy_names(conf)?;
         let mut nodes: Vec<MNode> = Vec::new();
         let mut view_flags: Vec<bool> = Vec::new();
         let mut by_full: HashMap<String, usize> = HashMap::new();
@@ -325,7 +327,7 @@ impl EntityModel {
         let mut index_by_full = HashMap::with_capacity(nodes.len());
         let mut index_by_name: HashMap<String, Vec<usize>> = HashMap::new();
         for (node, is_view) in nodes.iter().zip(view_flags) {
-            let definition = parse_entity(node, is_view, &dictionary)?;
+            let definition = parse_entity(node, is_view, &dictionary, legacy_names)?;
             let index = entities.len();
             index_by_name
                 .entry(definition.entity_name.clone())
@@ -566,7 +568,12 @@ fn replace_or_append(
     Ok(())
 }
 
-fn parse_entity(node: &MNode, is_view: bool, dictionary: &[DictionaryType]) -> Result<EntityDefinition, Error> {
+fn parse_entity(
+    node: &MNode,
+    is_view: bool,
+    dictionary: &[DictionaryType],
+    legacy_names: bool,
+) -> Result<EntityDefinition, Error> {
     let dictionary_names: HashSet<String> = dictionary.iter().map(|entry| entry.type_name.clone()).collect();
     let java_of = |field_type: &str| {
         dictionary
@@ -577,14 +584,20 @@ fn parse_entity(node: &MNode, is_view: bool, dictionary: &[DictionaryType]) -> R
     };
     let (entity_name, package_name) = entity_identity(node)?;
     let full_name = format!("{package_name}.{entity_name}");
-    let table_name = optional_attr(node, "table-name").unwrap_or_else(|| entity_name.clone());
+    let table_name = optional_attr(node, "table-name").unwrap_or_else(|| default_sql_name(&entity_name, legacy_names));
     let create_only = is_true(node, "create-only");
     let enable_audit_log = optional_attr(node, "enable-audit-log");
     let no_update_stamp = is_true(node, "no-update-stamp");
     let mut fields = if is_view {
         Vec::new()
     } else {
-        parse_fields(node, create_only, enable_audit_log.as_deref(), &dictionary_names)?
+        parse_fields(
+            node,
+            create_only,
+            enable_audit_log.as_deref(),
+            &dictionary_names,
+            legacy_names,
+        )?
     };
     if !is_view && !no_update_stamp && !fields.iter().any(|field| field.name == "lastUpdatedStamp") {
         if !dictionary_names.contains("date-time") {
@@ -595,7 +608,7 @@ fn parse_entity(node: &MNode, is_view: bool, dictionary: &[DictionaryType]) -> R
         }
         fields.push(FieldDefinition {
             name: "lastUpdatedStamp".to_string(),
-            column_name: "lastUpdatedStamp".to_string(),
+            column_name: default_sql_name("lastUpdatedStamp", legacy_names),
             field_type: "date-time".to_string(),
             enable_audit_log: enable_audit_log.clone(),
             create_only,
@@ -687,6 +700,7 @@ fn parse_fields(
     entity_create_only: bool,
     entity_audit: Option<&str>,
     dictionary: &HashSet<String>,
+    legacy_names: bool,
 ) -> Result<Vec<FieldDefinition>, Error> {
     let mut fields = Vec::new();
     for child in node.children_named("field") {
@@ -699,7 +713,7 @@ fn parse_fields(
             ));
         }
         fields.push(FieldDefinition {
-            column_name: optional_attr(&child, "column-name").unwrap_or_else(|| name.clone()),
+            column_name: optional_attr(&child, "column-name").unwrap_or_else(|| default_sql_name(&name, legacy_names)),
             name,
             field_type,
             java_type: String::new(),
@@ -716,6 +730,41 @@ fn parse_fields(
         });
     }
     Ok(fields)
+}
+
+/// Java `EntityJavaUtil.camelCaseToUnderscored`: split before *each* upper-case
+/// character after the first, including consecutive capitals. Java's char uppercasing
+/// does not expand characters (for example, ß stays ß). Non-ASCII mappings are best-effort;
+/// Rust's full Unicode case mappings are not always Java's simple character mappings.
+pub fn camel_case_to_underscored(name: &str) -> String {
+    let mut out = Vec::new();
+    // Java iterates UTF-16 chars, not Unicode code points: supplementary characters
+    // are copied as surrogate pairs, without case conversion or extra separators.
+    for (index, unit) in name.encode_utf16().enumerate() {
+        let Some(ch) = char::from_u32(u32::from(unit)) else {
+            out.push(unit);
+            continue;
+        };
+        if index > 0 && ch.is_uppercase() {
+            out.push(u16::from(b'_'));
+        }
+        let mut upper = ch.to_uppercase();
+        let first = upper.next().unwrap_or(ch);
+        out.push(if upper.next().is_none() && first.len_utf16() == 1 {
+            first as u16
+        } else {
+            unit
+        });
+    }
+    String::from_utf16_lossy(&out)
+}
+
+fn default_sql_name(name: &str, legacy_names: bool) -> String {
+    if legacy_names {
+        name.to_string()
+    } else {
+        camel_case_to_underscored(name)
+    }
 }
 
 fn parse_relationship(node: &MNode) -> Result<Relationship, Error> {

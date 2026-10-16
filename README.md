@@ -22,6 +22,12 @@ Most of MR-Moqui is a port of the Java framework as it exists when the port begi
 7. **Sessions live in the database.** The session is `moqui.server.HttpSession`, cached through the entity one-cache and invalidated on the existing cluster topic. A flush overlays dirty fields onto the latest row and retries on `sessionRevision`. The default flush is eventually consistent. Guarantee mode reads the primary and flushes at login, logout, and the end of the request, so a load balancer without stickiness can fail over. Plan: [`plans/archive/Architecture-Proposal.md`](plans/archive/Architecture-Proposal.md) (Sessions and login) and [`plans/archive/Cluster.md`](plans/archive/Cluster.md).
 8. **Keys are configuration, and unset secrets are generated.** Secret key values (field encryption, session-cookie signing, the cluster certificate pair, later the SSH host key) are `default-property`s in the `entity_ds_crypt_pass` pattern: a `CHANGEME` value in `MoquiDefaultConf.xml` set by config file or environment, never database rows. A `runtime/.env` file in the root of the runtime directory is loaded at startup like environment variables and supports any conf property. A secret still at its `CHANGEME` default is generated with the OS CSPRNG and saved to `runtime/.env`, instead of running on the shipped default. Plan: [`plans/archive/MimoReview.md`](plans/archive/MimoReview.md) (Decisions 1–3).
 
+## Native components
+
+Components can supply linked Rust services, tools, resource schemes, template renderers and custom service runners.
+Service XML still defines services; component configuration selects implementations. See
+[Native component usage](plans/Native-Components-Usage.md) and the [plan](plans/Native-Components.md).
+
 ## Build, Test, and Run
 
 Very basic instructions from a fresh checkout. A Run & Deploy guide will come later.
@@ -108,6 +114,44 @@ directory (the framework component is inside it) and run `./target/release/moqui
 holds them (or point `MOQUI_RUNTIME` / `MOQUI_FRAMEWORK` at them), with
 `MOQUI_CONF=conf/MoquiProductionConf.xml`. From a checkout, `./moq run-production` does that
 with the release binary.
+
+## Entity SQL names and existing Rust databases
+
+Fresh schemas default to Java's physical naming: `UserAccount.userId` becomes
+`USER_ACCOUNT.USER_ID`, stored as `user_account.user_id` on PostgreSQL. Every capital
+gets a separator (`URLValue` becomes `U_R_L_VALUE`); logical entity/field API names
+and query result keys remain unchanged. Explicit `table-name` and `column-name`
+attributes bypass this conversion, but still follow the database's unquoted case
+folding. Ordered database `name-replace` rules apply to columns, including explicit
+overrides, not tables or result aliases. `use-pk-constraint-names` controls explicit
+PK labels in Java mode. Runtime configuration is used for both schema creation
+and queries.
+
+**Before opening an existing Rust database**, back it up and set
+`entity_sql_name_style=legacy` in the environment or `runtime/.env`, or put
+`<entity-facade sql-name-style="legacy"/>` in the runtime configuration. This preserves
+the former quoted names (`"UserAccount"."userId"`), including explicit overrides
+and the old first-match replacements (which also affected table names).
+The mode is selected when the model is loaded; restart after changing it. Java-style
+and legacy naming cannot be mixed within one facade. Custom embedded applications
+must pass the same configuration to the model and dialects (or use
+`EntityFacade::open_components_with_conf`).
+
+There is **no automatic rename, migration, or data copying**. Schema checks refuse
+detected legacy table/column names before modifying that entity group's schema.
+The check is a safety net for known old naming patterns, not a migration inventory;
+it cannot identify arbitrary manually renamed tables. Normal queries never migrate
+anything. To switch existing data to Java names, stop writers, inventory and resolve
+name collisions, migrate tables/columns and dependent SQL offline from a backup,
+then restart in `java` mode. Do not simply switch modes on a populated database.
+
+This is table/column identifier compatibility, **not whole-schema parity**. SQL types,
+constraint/index generation policies, schema/search-path selection and database
+features retain the port's existing behavior. Handwritten SQL expressions must use
+physical identifiers appropriate to the selected mode. Naming tests cover the
+framework's ASCII names; non-ASCII case mappings are not guaranteed to match Java's
+Character/Unicode mappings. Only PostgreSQL behavior is integration-tested here; MySQL and other
+profiles have SQL-generation coverage.
 
 ## Implementation Order
 

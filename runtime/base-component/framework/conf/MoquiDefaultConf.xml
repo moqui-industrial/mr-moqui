@@ -201,15 +201,8 @@
             request-pool-max="8" request-queue="64"
             empty-db-load="${entity_empty_db_load}"
             on-start-load-types="${entity_on_start_load_types}" on-start-load-components="${entity_on_start_load_components}">
-        <tool-factory class="org.moqui.impl.tools.MCacheToolFactory" init-priority="03" disabled="false"/>
-        <!-- Apache Commons JCS, an alternative for distributed caches (cannot be used as local cache as requires Serializable keys/values just like Hazelcast) -->
-        <!-- <tool-factory class="org.moqui.impl.tools.JCSCacheToolFactory" init-priority="09" disabled="true"/> -->
-        <!-- H2 Database ToolFactory - if h2 database active runs the H2 server for external access (local only depending on conf) -->
-        <tool-factory class="org.moqui.impl.tools.H2ServerToolFactory" init-priority="12" disabled="false"/>
-        <!-- Jackrabbit ToolFactory for running Jackrabbit if plugged in -->
-        <tool-factory class="org.moqui.impl.tools.JackrabbitRunToolFactory" init-priority="40" disabled="true"/>
-        <!-- SubEtha SMTP ToolFactory starts an SMTP server using the MOQUI_LOCAL EmailServer settings, emails received trigger EMECA rules -->
-        <tool-factory class="org.moqui.impl.tools.SubEthaSmtpToolFactory" init-priority="50" disabled="true"/>
+        <!-- Native components select linked ToolFactory implementations here.
+             The cache facade is built in; Java H2/JCR/SMTP factories do not run in MR. -->
     </tools>
 
     <cache-list warm-on-start="true" local-factory="MCache" distributed-factory="MCache">
@@ -662,7 +655,9 @@
         -->
     </llm-facade>
 
-    <entity-facade default-group-name="transactional" entity-eca-enabled="true" sequenced-id-prefix=""
+    <!-- Rust: java names for fresh schemas; set entity_sql_name_style=legacy before opening an old Rust database. -->
+    <entity-facade sql-name-style="${entity_sql_name_style ?: 'java'}"
+            default-group-name="transactional" entity-eca-enabled="true" sequenced-id-prefix=""
             distributed-cache-invalidate="false" dci-topic-factory="" query-stats="false"
             database-locale="${default_locale}" database-time-zone="${database_time_zone ?: default_time_zone}"
             crypt-salt="20201202" crypt-iter="10" crypt-algo="PBEWithHmacSHA256AndAES_128" crypt-pass="${entity_ds_crypt_pass}">

@@ -96,6 +96,14 @@ pub struct ExecutionContextFactory {
     hits: super::hits::ArtifactHits,
     /// When the factory booted, in epoch milliseconds, for the status of the tools dashboard.
     started_millis: i64,
+    native: crate::native::NativeRegistry,
+    pub(crate) native_tools: crate::native::ToolSet,
+}
+
+impl Drop for ExecutionContextFactory {
+    fn drop(&mut self) {
+        self.native_tools.shutdown();
+    }
 }
 
 /// How async service calls, `callFuture()`, and scheduled jobs run.
@@ -188,6 +196,7 @@ impl ExecutionContextFactory {
         let component_dirs: Vec<_> = components.iter().map(|info| info.location.clone()).collect();
         let conf_node =
             conf::merge_component_confs(&framework_dir, &runtime_dir, &component_dirs)?.unwrap_or(conf_node);
+        let native = crate::native::NativeRegistry::discover(&components, &conf_node)?;
         let env_path = runtime_dir.join(".env");
         let (property_names, mut set_by_boot) = apply_default_properties(&conf_node, &env_path)?;
         let entity = Arc::new(RwLock::new(None));
@@ -195,7 +204,6 @@ impl ExecutionContextFactory {
         tracing::info!("Resource Facade initialized");
         let cache = CacheFacade::from_conf(&conf_node)?;
         tracing::info!("Cache Facade initialized");
-        set_by_boot.keep();
         let conf_text = conf_node.write_string();
         let hits = super::hits::ArtifactHits::from_conf(&conf_text);
         let flush_mode = crate::user::session::flush_mode_from_property()?;
@@ -229,7 +237,11 @@ impl ExecutionContextFactory {
             cluster_heartbeat: AtomicBool::new(false),
             hits,
             started_millis: jiff::Timestamp::now().as_millisecond(),
+            native,
+            native_tools: crate::native::ToolSet::default(),
         });
+        factory.native.configure(&factory, &conf_node)?;
+        set_by_boot.keep();
         factory.pools.attach(&factory);
         // The host calls cluster::start after the entity facade is installed.
         install_session_flush(&factory);
@@ -347,6 +359,55 @@ impl ExecutionContextFactory {
 
     pub fn components(&self) -> &[ComponentInfo] {
         &self.components
+    }
+
+    /// Linked implementations; XML still defines services and bindings.
+    pub(crate) fn native(&self) -> &crate::native::NativeRegistry {
+        &self.native
+    }
+
+    /// Initialize configured tools once, after installing the required facades.
+    pub fn init_tools(self: &Arc<Self>) -> Result<(), Error> {
+        let context = self.new_context();
+        let _entered = context.enter();
+        self.native_tools.init(self)
+    }
+
+    /// Stop request/service workers before closing tools. The host calls this after its listeners stop.
+    pub fn shutdown(&self) {
+        self.requests.shutdown();
+        self.pools.shutdown();
+        self.shutdown_tools();
+    }
+
+    /// Stop tools in reverse order. Call only after their callers have stopped.
+    pub fn shutdown_tools(&self) {
+        self.native_tools.shutdown();
+    }
+
+    pub fn get_tool_factory(&self, name: &str) -> Option<Arc<dyn crate::native::ToolFactory>> {
+        self.native_tools.get(name)
+    }
+
+    pub fn get_tool(
+        &self,
+        name: &str,
+        parameters: &[moqui_lib::object::Value],
+    ) -> Result<Arc<dyn crate::native::Tool>, Error> {
+        self.get_tool_factory(name)
+            .ok_or_else(|| Error::new(format!("no tool factory {name}")))?
+            .get_instance(parameters)
+    }
+
+    pub fn get_tool_typed<T: crate::native::Tool>(
+        &self,
+        name: &str,
+        parameters: &[moqui_lib::object::Value],
+    ) -> Result<Arc<T>, Error> {
+        let instance: Arc<dyn std::any::Any + Send + Sync> = self.get_tool(name, parameters)?;
+        instance
+            .downcast::<T>()
+            .map_err(|_| Error::new(format!("tool {name} has a different instance type")))
     }
 
     pub fn resource(&self) -> &ResourceFacade {
@@ -1187,6 +1248,8 @@ impl ExecutionContextFactory {
             cluster_heartbeat: AtomicBool::new(false),
             hits: super::hits::ArtifactHits::from_conf(conf_text),
             started_millis: jiff::Timestamp::now().as_millisecond(),
+            native: crate::native::NativeRegistry::default(),
+            native_tools: crate::native::ToolSet::default(),
         });
         factory.pools.attach(&factory);
         install_hit_flush(&factory);

@@ -841,6 +841,7 @@ pub(super) fn install_ec_extras<'js>(ctx: &Ctx<'js>, ec: &Object<'js>) -> Result
         "ec.factory.moquiVersion",
         factory.set("moquiVersion", env!("CARGO_PKG_VERSION")),
     )?;
+    super::native_tools::install(ctx, ec, &factory)?;
     caught(ctx, "ec.factory", ec.set("factory", factory))?;
     caught(ctx, "ec.screen", ec.set("screen", screen_object(ctx)?))
 }
