@@ -526,8 +526,7 @@ pub fn prepare_screen_path(
         }
         screen_path.truncate(index);
     }
-    if screen_path.starts_with("//") {
-        let trimmed = &screen_path[2..];
+    if let Some(trimmed) = screen_path.strip_prefix("//") {
         let names = cleanup_path_names(trimmed.split('/'), &mut inline);
         let facade = ScreenFacade::of(factory);
         let key = format!("{root_location}\u{1}{screen_path}");
@@ -616,7 +615,7 @@ fn screen_path_alias(factory: &ExecutionContextFactory, alias_path: &str) -> Res
         };
         open.push((from_ms, screen));
     }
-    open.sort_by(|left, right| right.0.cmp(&left.0));
+    open.sort_by_key(|left| std::cmp::Reverse(left.0));
     Ok(open.into_iter().next().map(|(_, screen)| screen))
 }
 
