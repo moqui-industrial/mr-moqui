@@ -71,7 +71,7 @@ fn an_external_postgres_from_the_conf_is_loaded_and_no_postmaster_starts() {
     );
 
     let mut conn = driver.connect().unwrap();
-    let rows = conn.query("SELECT COUNT(*) AS n FROM \"Enumeration\"", &[]).unwrap();
+    let rows = conn.query("SELECT COUNT(*) AS n FROM enumeration", &[]).unwrap();
     let count = match rows[0].get("n") {
         Some(Value::I64(n)) => *n,
         other => panic!("count {other:?}"),

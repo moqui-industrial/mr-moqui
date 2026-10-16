@@ -71,7 +71,7 @@ fn a_notify_member_applies_peer_notifies_and_sends_its_own() {
 
     // With a live peer that listens on NOTIFY, a write here goes out on the channel.
     peer.execute(
-        "INSERT INTO \"ClusterMember\" (\"instanceId\", \"clusterBaseUrl\", \"heartbeat\") VALUES ('peer-x', 'pg-notify:', now())",
+        "INSERT INTO cluster_member (instance_id, cluster_base_url, heartbeat) VALUES ('peer-x', 'pg-notify:', now())",
         &[],
     )
     .unwrap();

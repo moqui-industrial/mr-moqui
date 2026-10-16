@@ -142,7 +142,7 @@ fn assert_one_cache(facade: &EntityFacade, driver: &Arc<dyn DbDriver>) {
     let mut conn = driver.connect().unwrap();
     let deleted = conn
         .execute(
-            "DELETE FROM \"EnumerationType\" WHERE \"enumTypeId\" = ?",
+            "DELETE FROM enumeration_type WHERE enum_type_id = ?",
             &[Value::string("CACHE1")],
         )
         .unwrap();
@@ -150,7 +150,7 @@ fn assert_one_cache(facade: &EntityFacade, driver: &Arc<dyn DbDriver>) {
     drop(conn);
     assert!(raw_rows(
         driver,
-        "SELECT \"enumTypeId\" FROM \"EnumerationType\" WHERE \"enumTypeId\" = ?",
+        "SELECT enum_type_id FROM enumeration_type WHERE enum_type_id = ?",
         "CACHE1"
     )
     .is_empty());
@@ -163,21 +163,11 @@ fn assert_hold_commit_and_rollback(facade: &EntityFacade, driver: &Arc<dyn DbDri
     facade.begin("moqui.test.TestEntity", None).unwrap();
     create_test(facade, "COMMIT1", "committed");
     assert!(find_one(facade, "moqui.test.TestEntity", "testId", "COMMIT1").is_some());
-    assert!(raw_rows(
-        driver,
-        "SELECT \"testId\" FROM \"TestEntity\" WHERE \"testId\" = ?",
-        "COMMIT1"
-    )
-    .is_empty());
+    assert!(raw_rows(driver, "SELECT test_id FROM test_entity WHERE test_id = ?", "COMMIT1").is_empty());
     facade.commit("moqui.test.TestEntity").unwrap();
     assert!(find_one(facade, "moqui.test.TestEntity", "testId", "COMMIT1").is_some());
     assert_eq!(
-        raw_rows(
-            driver,
-            "SELECT \"testId\" FROM \"TestEntity\" WHERE \"testId\" = ?",
-            "COMMIT1"
-        )
-        .len(),
+        raw_rows(driver, "SELECT test_id FROM test_entity WHERE test_id = ?", "COMMIT1").len(),
         1
     );
 
@@ -186,23 +176,13 @@ fn assert_hold_commit_and_rollback(facade: &EntityFacade, driver: &Arc<dyn DbDri
     assert!(find_one(facade, "moqui.test.TestEntity", "testId", "HOLD1").is_some());
     facade.rollback("moqui.test.TestEntity").unwrap();
     assert!(find_one(facade, "moqui.test.TestEntity", "testId", "HOLD1").is_none());
-    assert!(raw_rows(
-        driver,
-        "SELECT \"testId\" FROM \"TestEntity\" WHERE \"testId\" = ?",
-        "HOLD1"
-    )
-    .is_empty());
+    assert!(raw_rows(driver, "SELECT test_id FROM test_entity WHERE test_id = ?", "HOLD1").is_empty());
 }
 
 fn assert_sim_overlay(facade: &EntityFacade, driver: &Arc<dyn DbDriver>) {
     create_test(facade, "T1", "main");
     assert_eq!(
-        raw_rows(
-            driver,
-            "SELECT \"testId\" FROM \"TestEntity\" WHERE \"testId\" = ?",
-            "T1"
-        )
-        .len(),
+        raw_rows(driver, "SELECT test_id FROM test_entity WHERE test_id = ?", "T1").len(),
         1
     );
 
@@ -211,12 +191,7 @@ fn assert_sim_overlay(facade: &EntityFacade, driver: &Arc<dyn DbDriver>) {
     create_test(facade, "SIM2", "overlay");
     let sim_row = find_one(facade, "moqui.test.TestEntity", "testId", "SIM2").unwrap();
     assert_eq!(sim_row.get("testMedium").and_then(Value::as_str), Some("overlay"));
-    assert!(raw_rows(
-        driver,
-        "SELECT \"testId\" FROM \"TestEntity\" WHERE \"testId\" = ?",
-        "SIM2"
-    )
-    .is_empty());
+    assert!(raw_rows(driver, "SELECT test_id FROM test_entity WHERE test_id = ?", "SIM2").is_empty());
     assert!(find_one(facade, "moqui.test.TestEntity", "testId", "T1").is_some());
 
     let mut hidden = facade.make_value("moqui.test.TestEntity").unwrap();
@@ -224,12 +199,7 @@ fn assert_sim_overlay(facade: &EntityFacade, driver: &Arc<dyn DbDriver>) {
     hidden.delete(facade).unwrap();
     assert!(find_one(facade, "moqui.test.TestEntity", "testId", "T1").is_none());
     assert_eq!(
-        raw_rows(
-            driver,
-            "SELECT \"testId\" FROM \"TestEntity\" WHERE \"testId\" = ?",
-            "T1"
-        )
-        .len(),
+        raw_rows(driver, "SELECT test_id FROM test_entity WHERE test_id = ?", "T1").len(),
         1
     );
 
@@ -252,12 +222,7 @@ fn assert_sim_overlay(facade: &EntityFacade, driver: &Arc<dyn DbDriver>) {
     exit_sim(facade).unwrap();
     assert!(!facade.sim_active());
     assert!(find_one(facade, "moqui.test.TestEntity", "testId", "SIM-OUTER").is_none());
-    assert!(raw_rows(
-        driver,
-        "SELECT \"testId\" FROM \"TestEntity\" WHERE \"testId\" = ?",
-        "SIM-OUTER"
-    )
-    .is_empty());
+    assert!(raw_rows(driver, "SELECT test_id FROM test_entity WHERE test_id = ?", "SIM-OUTER").is_empty());
 }
 
 fn create_test(facade: &EntityFacade, id: &str, medium: &str) {

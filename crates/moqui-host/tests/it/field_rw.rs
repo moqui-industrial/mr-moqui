@@ -253,7 +253,7 @@ fn stored_password(facade: &EntityFacade) -> String {
     let rows = tx
         .with_connection(|conn| {
             conn.query(
-                "SELECT \"password\" FROM \"InstanceHost\" WHERE \"instanceHostId\" = ?",
+                "SELECT password FROM instance_host WHERE instance_host_id = ?",
                 &[Value::string("H1")],
             )
         })
@@ -265,7 +265,7 @@ fn set_password(facade: &EntityFacade, password: &str) {
     let tx = facade.transactions_for("moqui.server.instance.InstanceHost").unwrap();
     tx.with_connection(|conn| {
         conn.execute(
-            "UPDATE \"InstanceHost\" SET \"password\" = ? WHERE \"instanceHostId\" = ?",
+            "UPDATE instance_host SET password = ? WHERE instance_host_id = ?",
             &[Value::string(password), Value::string("H1")],
         )
     })

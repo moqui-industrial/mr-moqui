@@ -256,7 +256,7 @@ fn load_data_stores_eca_and_inserts_pending() {
     };
     let db_err = load_entity_data(&facade, missing.to_str().unwrap(), &no_fk).unwrap_err();
     let db_text = format!("{db_err:?}");
-    assert!(db_text.contains("UserGroupMemberUserGroup"), "{db_text}");
+    assert!(db_text.contains("usergroupmemberusergroup"), "{db_text}");
     assert!(!facade.flags().disable_fk_create);
     assert!(row_missing(
         &facade,

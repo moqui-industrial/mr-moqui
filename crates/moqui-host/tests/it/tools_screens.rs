@@ -288,15 +288,15 @@ fn run_sql(address: SocketAddr, auth: &str, screen: &str, sql: &str, limit: &str
 fn the_sql_runners_run_for_an_admin_and_refuse_other_users(gate: &crate::common::Gate) {
     let address = gate.server.address();
     let john = basic("john.doe", "moqui");
-    const UPDATE: &str = r#"update "Enumeration" set "description" = 'changed' where "enumId" = 'GATE_SQL'"#;
-    const SELECT: &str = r#"select "description" from "Enumeration" where "enumId" = 'GATE_SQL'"#;
+    const UPDATE: &str = r#"update enumeration set description = 'changed' where enum_id = 'GATE_SQL'"#;
+    const SELECT: &str = r#"select description from enumeration where enum_id = 'GATE_SQL'"#;
 
     // An admin reads a query to its limit, and no further.
     let (status, page) = run_sql(
         address,
         &john,
         "SqlRunner",
-        r#"select "enumId" from "Enumeration" order by "enumId""#,
+        r#"select enum_id from enumeration order by enum_id"#,
         "3",
     );
     assert_eq!(status, 200, "{page}");

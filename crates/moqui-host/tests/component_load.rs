@@ -114,7 +114,7 @@ fn a_component_loads_its_entities_rules_services_and_data() {
 
     let orgs = conn
         .query(
-            "SELECT \"orgId\", \"flag\", \"location\", \"limitAmount\" FROM \"GateOrg\" ORDER BY \"orgId\"",
+            "SELECT org_id AS \"orgId\", flag, location, limit_amount AS \"limitAmount\" FROM gate_org ORDER BY org_id",
             &[],
         )
         .unwrap();
@@ -128,15 +128,19 @@ fn a_component_loads_its_entities_rules_services_and_data() {
     assert_eq!(text(&orgs[0], "limitAmount").parse::<f64>().unwrap(), 118_500.0);
     assert_eq!(text(&orgs[1], "orgId"), "ORG_B");
 
-    let contacts = conn.query("SELECT \"fromDate\" FROM \"GateOrgContact\"", &[]).unwrap();
+    let contacts = conn
+        .query("SELECT from_date AS \"fromDate\" FROM gate_org_contact", &[])
+        .unwrap();
     assert_eq!(contacts.len(), 1);
     assert!(!matches!(contacts[0].get("fromDate"), None | Some(Value::Null)));
-    let notes = conn.query("SELECT \"noteSeqId\" FROM \"GateOrgNote\"", &[]).unwrap();
+    let notes = conn
+        .query("SELECT note_seq_id AS \"noteSeqId\" FROM gate_org_note", &[])
+        .unwrap();
     assert_eq!(text(&notes[0], "noteSeqId"), "01");
 
     let enums = conn
         .query(
-            "SELECT \"gateExtra\" FROM \"Enumeration\" WHERE \"enumId\" = 'GateEnum'",
+            "SELECT gate_extra AS \"gateExtra\" FROM enumeration WHERE enum_id = 'GateEnum'",
             &[],
         )
         .unwrap();

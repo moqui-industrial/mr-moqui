@@ -325,12 +325,15 @@ fn xlsx_spreadsheets_images_and_ipp_printing() {
     assert_eq!(details.get("pagesPrinted"), Some(&Value::I32(2)));
     assert_eq!(job_field(&job, "statusId"), "PtjCompleted");
 
+    // The status flow has no Completed to Canceled transition, so the cancel is of a second, pending job.
+    let pending = print(&printer_id, "Gate stub cancel");
+    assert_eq!(job_field(&pending, "statusId"), "PtjPending");
     moqui_core::service::sync(
         "org.moqui.impl.PrintServices.cancel#PrintJob",
-        &params(&[("printJobId", text(&job))]),
+        &params(&[("printJobId", text(&pending))]),
     )
     .unwrap();
-    assert_eq!(job_field(&job, "statusId"), "PtjCanceled");
+    assert_eq!(job_field(&pending, "statusId"), "PtjCanceled");
 }
 
 fn exchange_xlsx(address: std::net::SocketAddr, auth: &str) -> Vec<u8> {
