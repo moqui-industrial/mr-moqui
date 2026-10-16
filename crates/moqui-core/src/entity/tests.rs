@@ -640,11 +640,17 @@ fn entity_rest_serves_the_verbs() {
         .unwrap_err();
     assert!(err.to_string().contains("No value found"), "{err}");
 
+    // As Java's update, one with no field to set writes nothing, primary key or not; one with a field and no key fails.
+    facade.rest("patch", "moqui.test.TestEntity", &BTreeMap::new()).unwrap();
     let err = facade
-        .rest("patch", "moqui.test.TestEntity", &BTreeMap::new())
+        .rest(
+            "patch",
+            "moqui.test.TestEntity",
+            &params(vec![("testMedium", Value::string("keyless"))]),
+        )
         .unwrap_err();
-    // The entity-auto service's parameter check refuses it before the update. The error stays in the message facade,
-    // where it would stop the next service call, as in Java; a request starts with none.
+    // The error stays in the message facade, where it would stop the next service call, as in Java; a request starts
+    // with none.
     assert!(err.to_string().contains("testId is required"), "{err}");
     context.message().clear_errors();
     let updated = facade
@@ -1834,4 +1840,210 @@ fn a_find_that_uses_the_clone_reads_the_clone_group() {
         .unwrap();
     assert!(cloned.is_none());
     assert_eq!(facade.group_names()[0], "transactional");
+}
+
+const PARITY_ENTITIES: &str = r#"<entities>
+    <entity entity-name="ParityItem" package="moqui.test">
+        <field name="itemId" type="id" is-pk="true"/>
+        <field name="code" type="id"/>
+        <field name="seq" type="number-integer" default="(code == null ? null : Math.trunc(toDecimal(code).toNumber()))"/>
+        <field name="kind" type="id" default="'plain'"/>
+        <field name="unknown" type="id" default="NotAName"/>
+        <field name="note" type="text-medium"/>
+        <field name="other" type="text-medium"/>
+    </entity>
+    <entity entity-name="ParityLocked" package="moqui.test" optimistic-lock="true">
+        <field name="lockedId" type="id" is-pk="true"/>
+        <field name="note" type="text-medium"/>
+    </entity>
+</entities>"#;
+
+/// The framework entities plus [`PARITY_ENTITIES`], in a directory removed on drop.
+struct ParityFixture(PathBuf);
+
+impl ParityFixture {
+    fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "moqui-parity-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        for name in ["entity", "conf"] {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+        }
+        let real = framework_dir();
+        std::os::unix::fs::symlink(
+            real.join("conf/MoquiDefaultConf.xml"),
+            dir.join("conf/MoquiDefaultConf.xml"),
+        )
+        .unwrap();
+        for entry in std::fs::read_dir(real.join("entity")).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_file() {
+                std::os::unix::fs::symlink(entry.path(), dir.join("entity").join(entry.file_name())).unwrap();
+            }
+        }
+        std::fs::write(dir.join("entity/ParityEntities.xml"), PARITY_ENTITIES).unwrap();
+        Self(dir)
+    }
+
+    fn open(&self, tape: Option<Arc<Mutex<Vec<String>>>>) -> EntityFacade {
+        crate::testing::open_with(
+            &self.0,
+            crate::testing::Options {
+                tape,
+                ..Default::default()
+            },
+        )
+    }
+}
+
+impl Drop for ParityFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn parity_item(facade: &EntityFacade, id: &str) -> super::EntityValue {
+    facade
+        .find("moqui.test.ParityItem")
+        .unwrap()
+        .eq("itemId", Value::string(id))
+        .use_cache(false)
+        .one()
+        .unwrap()
+        .unwrap()
+}
+
+/// Java's `checkSetFieldDefaults`: a default is an expression run with the value's fields, an empty string is unset,
+/// a name that is nothing is null, and an update fills a default too, but never over a stored value.
+#[test]
+fn field_defaults_are_expressions_that_also_fill_an_update() {
+    let fixture = ParityFixture::new();
+    let facade = fixture.open(None);
+    let mut item = facade.make_value("moqui.test.ParityItem").unwrap();
+    item.set("itemId", Value::string("I1"));
+    item.set("code", Value::string("07"));
+    item.set("kind", Value::string(""));
+    item.create(&facade).unwrap();
+    let created = parity_item(&facade, "I1");
+    assert_eq!(created.get("seq"), Some(&Value::I64(7)));
+    assert_eq!(created.get("kind"), Some(&Value::string("plain")));
+    assert!(created.get("unknown").is_none_or(Value::is_null));
+
+    let mut custom = created.clone();
+    custom.set("kind", Value::string("custom"));
+    custom.update(&facade).unwrap();
+    // Left out, the stored value stays; set empty, the default fills it.
+    let mut partial = facade.make_value("moqui.test.ParityItem").unwrap();
+    partial.set("itemId", Value::string("I1"));
+    partial.set("note", Value::string("n"));
+    partial.update(&facade).unwrap();
+    assert_eq!(parity_item(&facade, "I1").get("kind"), Some(&Value::string("custom")));
+    partial.set("kind", Value::string(""));
+    partial.update(&facade).unwrap();
+    assert_eq!(parity_item(&facade, "I1").get("kind"), Some(&Value::string("plain")));
+}
+
+/// Java's `update`: an entity whose update reads the row first writes only the fields that changed, and nothing when
+/// none did; one that does not read it writes every field given, but not for a stamp alone.
+#[test]
+fn an_update_writes_the_changed_fields_of_a_row_it_reads_and_nothing_for_no_change() {
+    let fixture = ParityFixture::new();
+    let tape = Arc::new(Mutex::new(Vec::new()));
+    let facade = fixture.open(Some(Arc::clone(&tape)));
+    let mut item = facade.make_value("moqui.test.ParityItem").unwrap();
+    item.set("itemId", Value::string("I1"));
+    item.set("note", Value::string("a"));
+    item.set("other", Value::string("b"));
+    item.create(&facade).unwrap();
+    let updates = || -> Vec<String> {
+        tape.lock()
+            .unwrap()
+            .iter()
+            .filter(|sql| sql.starts_with("UPDATE"))
+            .cloned()
+            .collect()
+    };
+
+    let mut found = parity_item(&facade, "I1");
+    found.update(&facade).unwrap();
+    assert!(updates().is_empty(), "{:?}", updates());
+    found.set("note", Value::string("c"));
+    found.update(&facade).unwrap();
+    let written = updates();
+    assert_eq!(written.len(), 1, "{written:?}");
+    let set = written[0].split(" WHERE ").next().unwrap();
+    assert!(
+        set.contains("\"note\"") && set.contains("\"last_updated_stamp\""),
+        "{set}"
+    );
+    assert!(!set.contains("\"other\"") && !set.contains("\"kind\""), "{set}");
+    assert_eq!(parity_item(&facade, "I1").get("other"), Some(&Value::string("b")));
+
+    let mut test = facade.make_value("moqui.test.TestEntity").unwrap();
+    test.set("testId", Value::string("T1"));
+    test.create(&facade).unwrap();
+    test.update(&facade).unwrap();
+    assert_eq!(updates().len(), 1, "a stamp alone is no update: {:?}", updates());
+    test.set("testMedium", Value::string("m"));
+    test.update(&facade).unwrap();
+    assert_eq!(updates().len(), 2);
+}
+
+/// Java stamps `lastUpdatedStamp` with the transaction start time, and an update keeps a stamp the caller changed from
+/// the stored one.
+#[test]
+fn the_stamp_is_the_transaction_start_and_a_changed_stamp_is_kept() {
+    let fixture = ParityFixture::new();
+    let facade = fixture.open(None);
+    let entity = "moqui.test.ParityItem";
+    assert!(facade.begin(entity, None).unwrap());
+    for id in ["I1", "I2"] {
+        let mut item = facade.make_value(entity).unwrap();
+        item.set("itemId", Value::string(id));
+        item.create(&facade).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    facade.commit(entity).unwrap();
+    let stamp = |id: &str| parity_item(&facade, id).get("lastUpdatedStamp").cloned();
+    assert!(stamp("I1").is_some_and(|stamp| !stamp.is_null()));
+    assert_eq!(stamp("I1"), stamp("I2"));
+
+    let chosen = moqui_lib::object::basic_convert(&Value::I64(1_000_000_000_000), "java.sql.Timestamp").value;
+    let mut item = parity_item(&facade, "I1");
+    item.set("note", Value::string("x"));
+    item.set("lastUpdatedStamp", chosen.clone());
+    item.update(&facade).unwrap();
+    assert_eq!(stamp("I1"), Some(chosen));
+}
+
+/// Java's `optimistic-lock`: an update of a value read before another update of the row is refused.
+#[test]
+fn optimistic_lock_refuses_an_update_of_a_stale_value() {
+    let fixture = ParityFixture::new();
+    let facade = fixture.open(None);
+    let entity = "moqui.test.ParityLocked";
+    let mut row = facade.make_value(entity).unwrap();
+    row.set("lockedId", Value::string("L1"));
+    row.create(&facade).unwrap();
+    let read = || {
+        facade
+            .find(entity)
+            .unwrap()
+            .eq("lockedId", Value::string("L1"))
+            .use_cache(false)
+            .one()
+            .unwrap()
+            .unwrap()
+    };
+    let (mut first, mut second) = (read(), read());
+    std::thread::sleep(Duration::from_millis(5));
+    first.set("note", Value::string("first"));
+    first.update(&facade).unwrap();
+    second.set("note", Value::string("second"));
+    let err = second.update(&facade).unwrap_err();
+    assert!(err.to_string().contains("updated by someone else"), "{err}");
+    assert_eq!(read().get("note"), Some(&Value::string("first")));
 }

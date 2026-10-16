@@ -364,6 +364,40 @@ mod tests {
         assert_eq!(context.message().messages(), ["early", "late"]);
     }
 
+    /// Java writes each entity audit row with `create#moqui.entity.EntityAuditLog`, so that service's SECA rules run.
+    #[test]
+    fn an_entity_audit_row_is_created_through_its_service() {
+        let facade = crate::testing::open();
+        facade.set_disable_audit_log(false);
+        let context = crate::context::ExecutionContextFactory::test_context();
+        context.factory().set_entity(facade.clone());
+        eca_rules::install(
+            context.factory(),
+            eca_rules::from_xml(
+                r#"<secas><seca service="create#moqui.entity.EntityAuditLog" when="pre-service">
+                    <actions><script>ec.message.addMessage("audited " + changedFieldName);</script></actions>
+                </seca></secas>"#,
+                "",
+            ),
+        );
+        let _entered = context.enter();
+        let _authz = context.disable_authz();
+        let mut user = facade.make_value("moqui.security.UserAccount").unwrap();
+        user.set("userId", Value::string("AUDIT_SECA"));
+        user.set("username", Value::string("bob"));
+        user.create(&facade).unwrap();
+        user.set("username", Value::string("bob2"));
+        user.update(&facade).unwrap();
+        let audits = facade
+            .find("moqui.entity.EntityAuditLog")
+            .unwrap()
+            .eq("changedFieldName", Value::string("username"))
+            .list()
+            .unwrap();
+        assert_eq!(audits.len(), 2);
+        assert_eq!(context.message().messages(), ["audited username", "audited username"]);
+    }
+
     #[test]
     fn pattern_and_named_rules_run_together_in_priority_order() {
         let context = crate::context::ExecutionContextFactory::test_context();

@@ -20,11 +20,11 @@ ordering.
 
 ## Summary
 
-124 open findings and 26 accepted differences. Open by phase:
+120 open findings and 28 accepted differences. Open by phase:
 
 | Phase | Open | High |
 |---|---|---|
-| 1 Entity value / field / condition | 6 | — |
+| 1 Entity value / field / condition | 2 | — |
 | 2 Entity find / query | 7 | — |
 | 3 Facade / metadata / DDL / cache | 20 | — |
 | 4 Data loader / feed / ECA / writer / document / ETL | 18 | P4a-01, P4a-02 |
@@ -80,40 +80,54 @@ Compared `entity/{value,field_rw,crypto,fk}.rs` (plus `moqui-db/src/sql/conditio
 `EntityValueBase.java`, `EntityValueImpl.java`, `EntityList(Impl).java`, `FieldInfo.java`,
 `EntityJavaUtil.java` and `condition/*`.
 
+Worked 2026-10-16: P1-02, P1-03, P1-06 and P1-10 fixed; P1-07 and P1-13 moved to
+[Accepted differences](#accepted-differences); P1-14 and P1-15 found along the way. Line numbers in this
+section are as of that change.
+
 | ID | Rust location | Java/XML location | Divergence | Severity | Intentional? |
 |---|---|---|---|---|---|
-| P1-02 | `entity/value.rs:375-388`, `:831-848` | `EntityValueBase.java:1652-1673`, `1745-1751` | `update` writes every non-PK field present (all loaded fields); Java writes only modified fields and returns early when none changed | Med | No |
-| P1-03 | `entity/value.rs:753-757`, `:967-974` | `EntityValueBase.java:1528-1532`, `1689-1692` | `lastUpdatedStamp` is wall-clock `SystemTime::now()` and overwrites a caller-set stamp on update; Java pins it to the transaction start time | Med | No |
-| P1-06 | `entity/value.rs:338-373`, `:375` | `EntityValueBase.java:1418-1449`, `1601-1632` | Field defaults: only literals/numbers/`nowTimestamp`/`userId`/field names, `""` counts as set, never applied on `update`; Java evaluates arbitrary expressions, treats `""` as empty, applies on update | Med | No |
-| P1-07 | `moqui-db/src/sql/condition.rs:656-661` | `condition/WhereCondition.groovy:33` | Raw `Where` fragment wrapped in `(...)`; Java appends it verbatim, so boolean precedence differs (Rust form is the safer one) | Low | No |
-| P1-10 | `entity/field_rw.rs:441` | `EntityValueBase.java:743-744` | Audit row written with `row.create`; Java calls `create#moqui.entity.EntityAuditLog`. `EntityAuditLog` is `authorize-skip="create"`, so only SECA on that service differs | Low | No |
-| P1-13 | `entity/value.rs:244-276`; `script/runtime/entities.rs:936` | `EntityList.java:31-149` | Rust `EntityList` exposes only len/get/iter/values; Java has `filterByDate`, `filterByAnd`, `orderByFields`, `getFirst`, etc. (the script runtime re-adds some) | Low | Unsure |
+| P1-14 | `entity/value.rs:750` | `EntityValueImpl.java:142-143` | An update that matches no row returns `Ok`; Java's `updateExtended` throws "Tried to update a value that does not exist" | Med | No |
+| P1-15 | `entity/value.rs:464-534` | `EntityValueBase.java:1324-1343`, `1654-1658` | A `lastUpdatedStamp` the caller sets on a found value is replaced unless the update reads the row; Java keeps it, since `put` records the old value in `dbValueMap` | Low | No |
 
-#### P1-02 — `update` writes all loaded fields
+#### P1-14 — Update of a missing row is silent
 
-`write_update` → `present_columns(entity, &plain, true, true)` includes every non-PK field in the value
-map, nulls included. A value loaded from a find holds every column, so each update rewrites the whole
-row. Java builds the update from `isFieldModifiedIString` and returns without writing when nothing
-changed; it also loads the stored row when there are field defaults or optimistic locking. A Rust
-update clobbers concurrent changes to columns it did not intend to touch.
+`finish_write` takes the affected-row count from `execute_tx` and only the create-or-update probe looks at
+it. Java throws when `executeUpdate()` returns 0, so `value.update()` and the entity-auto `update#` of a
+row that is not there fail in Java and do nothing in Rust. An entity whose update reads the row first
+(see the equivalences below) returns early in both, since Java then compares the value with itself.
+Making the zero count an error needs a pass over the Rust callers that update rows that may be gone.
 
-#### P1-03 — `lastUpdatedStamp` source
+#### P1-15 — Caller-set stamp without a read
 
-`now_stamp()` is `SystemTime::now()` and there is no transaction-start-time API. Java uses
-`transactionFacade.getCurrentTransactionStartTime()` (fallback wall clock) on create and update, so all
-rows written in one transaction share a timestamp. Rust also overwrites a stamp the caller set on
-update, which Java keeps.
-
-#### P1-06 — Field defaults
-
-`apply_field_defaults` handles only quoted literals, numbers, `ec.user.nowTimestamp`, `ec.user.userId`
-or another field name, and skips when the current value is non-null (`""` counts as set, `:349`). Java
-evaluates the default with `ec.getResource().expression(defaultStr, "")` and uses
-`ObjectUtilities.isEmpty`, which treats `""` as empty, and also applies defaults on update
-(`checkSetFieldDefaults` at `:1615,1632`); Rust's `write_update` never does.
+Java's `putKnownField` keeps the old value of a field changed on a value read from the database, and
+`update` counts `lastUpdatedStamp` as modified, so keeps the caller's stamp, when that old value is
+non-null and differs. Rust's `EntityValue` does not track what it read, so it can tell only against a row
+the update reads (audit-logged, create-only or defaulted fields, optimistic locking, or a data feed). It
+matters only to a caller that sets the stamp on purpose on an entity with none of those.
 
 #### Phase 1 checked and found equivalent
 
+- `update` (P1-02, fixed). Java reads the stored row first only for `needsAuditLog`, `createOnlyAny`,
+  `optimisticLock`, `hasFieldDefaults` or a data feed document; then it merges the stored fields into the
+  value, writes only those that differ, and returns after the run-before EECA rules when none do. With no
+  read it writes every field the value holds (`isFieldModified` is true for any field `dbValueMap` lacks),
+  as Rust always did. Rust now reads the row in the same cases (`update_reads_row` plus
+  `feed_wants_old`; the create-or-update probe is skipped for them), reuses the row create-or-update just
+  read, and writes, skips and refuses as Java: a stamp alone is no update, a changed create-only field is
+  an error, and optimistic locking refuses a stale stamp. Only the changed fields and the key are sealed,
+  so an unchanged field that failed to decrypt is not written back.
+- `lastUpdatedStamp` (P1-03, fixed): the transaction start time (`TransactionManager::start_time_millis`),
+  else the wall clock; on create only when unset; on update kept when it differs from the stored one (see
+  P1-15 for the case with no read).
+- Field defaults (P1-06, fixed): any expression runs in the script runtime with the stored fields and then
+  the value's fields in the context, as Java pushes `dbValueMap` and the value map; quoted literals,
+  numbers, field names and `ec.user.nowTimestamp`/`userId` skip the script. `""` is empty; an unknown name
+  is null, as `ContextBinding`. Primary-key defaults are filled before an update's read and the others
+  after it. The one Groovy-only default in the runtime (`DataDocumentField.sequenceNum`) is converted, and
+  `moqui convert --groovy` now treats an entity field's `default` as an expression.
+- Audit rows (P1-10, fixed) go through `create#moqui.entity.EntityAuditLog` with authorization off when the
+  context's facade is the one writing, so that service's SECA rules run; with no context they are created
+  directly. An update's audit compares with the row it already read.
 - Field encryption: constant IV, salt padding, iteration default, algorithm, base64-vs-hex decode,
   `decrypt-alt` retry — test vectors pass. Decrypt failure uses `_DECRYPT_FAILED_` and refuses to
   re-encrypt it (`entity/field_rw.rs:116-121,153-157`).
@@ -770,6 +784,8 @@ tolerance). Not part of the worklist; revisit only if the rationale changes.
 
 | ID | Area | Difference | Rationale / where documented |
 |---|---|---|---|
+| P1-07 | entity condition | A raw `Where` fragment is wrapped in `(...)`; Java appends it verbatim, so boolean precedence can differ (`moqui-db/src/sql/condition.rs:656-662`) | Safer: an `OR` in the fragment cannot bind across the conditions around it; comment at the site |
+| P1-13 | entity list | Rust `EntityList` has only len/get/iter/values; Java has `filterByAnd`, `orderByFields`, `getFirst` and more (`entity/value.rs:243-277`) | Rust callers use slice/iterator methods; the script runtime's list has the helpers scripts call (`filterByDate`, `getPartialList`, `first`), and no converted component uses the others; doc comment at the type |
 | P2-10 | entity find | `iterator()` under `requireSearchFormParameters` returns an empty iterator; Java returns `null` (`entity/find.rs:517-523`) | Rust has no null iterator; empty is the safe equivalent |
 | P2-12 | entity schema | JSON schema envelope redesigned: `$defs`/draft 2020-12, PK `required`, keyed by full name vs Java `definitions`/`anyOf`/pagination, draft-04, `_entity`+`default`, short-or-full name (`entity/schema.rs:25,84-127`) | Deliberate modernization; relationship/`enum` gaps tracked as P2-06/P2-07 |
 | P3b-10 | feed cache | Feed-info cache invalidated on write vs Java 900s TTL (`entity/cache.rs:751-758`) | Rust is more current |

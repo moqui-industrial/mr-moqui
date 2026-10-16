@@ -654,6 +654,8 @@ impl<'a> Writer<'a> {
                 Ok(())
             }
             Condition::Where(sql) => {
+                // Wrapped, where Java appends the fragment as it is, so an `OR` in it cannot bind across the conditions
+                // around it.
                 self.push("(");
                 self.push(sql);
                 self.push(")");
