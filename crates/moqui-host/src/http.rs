@@ -170,7 +170,7 @@ pub(crate) async fn listen(
             shutdown: shutdown_rx.clone(),
             limits,
         }));
-    // Both loops end when the watch turns true, which `shutdown` sets after a stop or ctrl-c.
+    // Both loops end when the watch turns true, which `shutdown` sets after a stop, Ctrl-C, or SIGTERM.
     let stopped = |mut rx: tokio::sync::watch::Receiver<bool>| async move {
         let _ = rx.wait_for(|stopped| *stopped).await;
     };
@@ -327,18 +327,34 @@ async fn run_connection<S>(
     }
 }
 
-/// Ctrl-c ends the binary. A failed handler waits on `stop`, which is how tests shut the listener down.
+/// Ctrl-c or SIGTERM ends the binary gracefully. Failed handlers wait on `stop`, used by embedded servers.
 /// The watch tells open notification sockets to close so graceful shutdown can finish.
 async fn shutdown(mut stop: tokio::sync::oneshot::Receiver<()>, notify: tokio::sync::watch::Sender<bool>) {
     tokio::select! {
         _ = &mut stop => {}
-        result = tokio::signal::ctrl_c() => {
-            if result.is_err() {
-                let _ = stop.await;
-            }
-        }
+        _ = termination_signal() => {}
     }
     let _ = notify.send(true);
+}
+
+async fn termination_signal() {
+    let ctrl_c = async {
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    let terminate = async {
+        #[cfg(unix)]
+        if let Ok(mut signal) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            signal.recv().await;
+            return;
+        }
+        std::future::pending::<()>().await;
+    };
+    tokio::select! {
+        () = ctrl_c => {}
+        () = terminate => {}
+    }
 }
 
 /// Empty `webapp_http_port` is 8080.
@@ -660,6 +676,81 @@ pub(crate) fn plain(status: u16, body: &str) -> Response {
         .header("content-type", "text/plain; charset=utf-8")
         .body(axum::body::Body::from(body.to_string()))
         .unwrap_or_else(|_| Response::new(axum::body::Body::empty()))
+}
+
+#[cfg(all(test, unix))]
+mod signal_tests {
+    use std::io::BufRead;
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
+
+    #[test]
+    fn process_signals_notify_graceful_shutdown() {
+        const CHILD: &str = "MOQUI_SHUTDOWN_SIGNAL_TEST";
+        if std::env::var_os(CHILD).is_some() {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let (_stop, receiver) = tokio::sync::oneshot::channel();
+                let (notify, mut notified) = tokio::sync::watch::channel(false);
+                let shutdown = super::shutdown(receiver, notify);
+                tokio::pin!(shutdown);
+                // Poll shutdown to register the signal handlers before telling the parent to send a signal.
+                assert!(tokio::time::timeout(Duration::from_millis(50), &mut shutdown)
+                    .await
+                    .is_err());
+                println!("signal handlers ready");
+                shutdown.await;
+                notified.changed().await.unwrap();
+                assert!(*notified.borrow());
+            });
+            return;
+        }
+        for signal in ["-TERM", "-INT"] {
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "http::signal_tests::process_signals_notify_graceful_shutdown",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let stdout = child.stdout.take().unwrap();
+            let (ready, receiver) = std::sync::mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+                    if line == "signal handlers ready" {
+                        let _ = ready.send(());
+                    }
+                }
+            });
+            let registered = receiver.recv_timeout(Duration::from_secs(10)).is_ok();
+            if registered {
+                assert!(Command::new("kill")
+                    .args([signal, &child.id().to_string()])
+                    .status()
+                    .unwrap()
+                    .success());
+            }
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let status = loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    break Some(status);
+                }
+                if !registered || std::time::Instant::now() > deadline {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            reader.join().unwrap();
+            assert!(
+                registered && status.is_some_and(|status| status.success()),
+                "{signal}: {status:?}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
