@@ -53,6 +53,8 @@ mod facades;
 #[cfg(test)]
 mod framework_gaps_tests;
 mod helpers;
+#[cfg(test)]
+mod metadata_tests;
 mod native_tools;
 mod notification;
 mod screen_host;
