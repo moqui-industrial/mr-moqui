@@ -203,6 +203,10 @@ Options:
                                   existing uses the runtime's embedded database and changes its data.
   --junit dir                     Write TEST-<component>.<Spec>.xml into this directory.
   --keep                          Leave the scratch runtime in place.
+  --coverage                      After the run, list the services of each component's service/*.xml
+                                  files that no spec called, with the total.
+  --coverage-report file          Write that report to the file, with the call counts, and print only
+                                  the total.
   --log-level level               Console level: trace, debug, info, warn, or error.
                                   The default is warn. The run prints the moqui.log path.
 ";
