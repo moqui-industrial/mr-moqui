@@ -15,17 +15,24 @@
 //! `ScreenUrlInfo`: a URL path resolved against the screen tree.
 //!
 //! The walk follows `ScreenUrlInfo.initUrl`. Each path name is a subscreen, a transition, or a
-//! screen with a render-mode extension. After the last name, `default-item` and
-//! `conditional-default` keep descending. Not ported: `ScreenPathAlias` and `SubscreensDefault`
-//! rows, and the `//` sparse path. A name that is not a subscreen or a transition but is a file under the
-//! screen's directory ends the walk at that file, as in Java ([`static_files`](super::static_files)).
+//! screen with a render-mode extension. After the last name, `default-item`, `conditional-default`,
+//! and `SubscreensDefault` rows keep descending. `ScreenPathAlias` rewrites the path first, and a
+//! `//` path is a search by screen name. A name that is not a subscreen or a transition but is a
+//! file under the screen's directory ends the walk at that file, as in Java
+//! ([`static_files`](super::static_files)).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use moqui_lib::object::{is_empty, to_plain_string, Value};
+
 use super::cache::{canonical_render_mode, ScreenFacade};
 use super::definition::{ParameterDef, ScreenDef, TransitionDef};
 use crate::context::{Error, ErrorKind, ExecutionContextFactory};
+
+/// How deep `//` name search goes before it stops, the same cap as the screen-info walk. A screen that mounts an
+/// ancestor must not hang the request.
+const FIND_DEPTH: usize = 24;
 
 #[derive(Clone, Debug)]
 pub struct ScreenUrlInfo {
@@ -75,15 +82,20 @@ impl ScreenUrlInfo {
         path: &str,
         last_standalone: i32,
     ) -> Result<Arc<Self>, Error> {
-        let (path, query) = path.split_once('?').unwrap_or((path, ""));
+        // A fragment is not part of the screen path. Java leaves it; a request path has none.
         let path = path.split('#').next().unwrap_or(path);
-        let segments = split_path(path);
-        let mut info = Self::resolve(factory, root_location, &segments, last_standalone)?;
-        let pairs = crate::web::form_pairs(&query.replace("&amp;", "&"));
-        if !pairs.is_empty() {
+        let prepared = prepare_screen_path(factory, root_location, &[], path)?;
+        let mut info = Self::resolve_with(
+            factory,
+            root_location,
+            &prepared.names,
+            last_standalone,
+            prepared.cache,
+        )?;
+        if !prepared.inline.is_empty() {
             // Inline parameters belong to this path only, so the shared cached walk is copied first.
             let own = Arc::make_mut(&mut info);
-            for (name, value) in pairs {
+            for (name, value) in prepared.inline {
                 own.inline_parameters.insert(name, value);
             }
         }
@@ -101,11 +113,35 @@ impl ScreenUrlInfo {
         segments: &[String],
         last_standalone: i32,
     ) -> Result<Arc<Self>, Error> {
+        Self::resolve_with(factory, root_location, segments, last_standalone, true)
+    }
+
+    /// As [`ScreenUrlInfo::resolve`], without storing the walk when `cache` is false.
+    pub(crate) fn resolve_cached(
+        factory: &ExecutionContextFactory,
+        root_location: &str,
+        segments: &[String],
+        last_standalone: i32,
+        cache: bool,
+    ) -> Result<Arc<Self>, Error> {
+        Self::resolve_with(factory, root_location, segments, last_standalone, cache)
+    }
+
+    /// As [`ScreenUrlInfo::resolve`]. `cache` is false when a `ScreenPathAlias` read failed, so that walk is not stored.
+    fn resolve_with(
+        factory: &ExecutionContextFactory,
+        root_location: &str,
+        segments: &[String],
+        last_standalone: i32,
+        cache: bool,
+    ) -> Result<Arc<Self>, Error> {
         let facade = ScreenFacade::of(factory);
         // A path that took no conditional default resolves the same way every time, as Java's `screen.url` cache.
         let key = format!("{root_location}\u{1}{}\u{1}{last_standalone}", segments.join("/"));
-        if let Some(cached) = facade.cached_url(factory, &key) {
-            return Ok(cached);
+        if cache {
+            if let Some(cached) = facade.cached_url(factory, &key) {
+                return Ok(cached);
+            }
         }
         let root = facade.screen_def(factory, root_location)?;
         let mut walk = Walk {
@@ -137,7 +173,7 @@ impl ScreenUrlInfo {
         };
         walk.run(root)?;
         let info = Arc::new(walk.info);
-        if info.reusable {
+        if cache && info.reusable {
             facade.put_url(key, Arc::clone(&info));
         }
         Ok(info)
@@ -205,10 +241,17 @@ impl Walk<'_> {
                 let Ok(wrap_def) = self.facade.screen_def(self.factory, &wrapper.location) else {
                     continue;
                 };
-                let found = [Some(name.as_str()), before_dot.as_deref()]
-                    .into_iter()
-                    .flatten()
-                    .any(|candidate| self.has_child(&wrap_def, candidate));
+                let found = self.has_child(&wrap_def, &name)
+                    || super::static_files::file_under(
+                        self.factory,
+                        self.facade,
+                        &wrap_def.location,
+                        &self.info.extra_path,
+                    )
+                    .is_some()
+                    || before_dot
+                        .as_deref()
+                        .is_some_and(|candidate| self.has_child(&wrap_def, candidate));
                 if found {
                     self.enter(&wrap_def);
                     self.info.full_path.insert(index, wrapper.name.clone());
@@ -295,6 +338,16 @@ impl Walk<'_> {
             let Some(item) = last.subscreens.get(&name) else {
                 if last.has_transition(&name) {
                     self.info.target_transition_name = Some(name.clone());
+                    self.info.full_path.push(name);
+                    break;
+                }
+                if let Some(file) = super::static_files::file_under(
+                    self.factory,
+                    self.facade,
+                    &last.location,
+                    std::slice::from_ref(&name),
+                ) {
+                    self.info.file_resource = Some(file);
                     self.info.full_path.push(name);
                     break;
                 }
@@ -430,11 +483,252 @@ fn not_found(name: &str, under: &ScreenDef) -> Error {
     .with_missing_path(name)
 }
 
-pub(crate) fn split_path(path: &str) -> Vec<String> {
-    path.split('/')
-        .filter(|part| !part.is_empty())
-        .map(str::to_string)
-        .collect()
+/// A screen path after `ScreenPathAlias`, `//` search, and cleanup. `cache` is false when the alias read failed.
+#[derive(Clone, Debug)]
+pub struct ScreenPath {
+    pub names: Vec<String>,
+    /// Parameters from a `?` query and from `~name=value` segments.
+    pub inline: BTreeMap<String, String>,
+    pub cache: bool,
+}
+
+/// Resolve `screen_path` the way Java's `parseSubScreenPath` does: alias, then `//` or cleanup of `.`, `..`, and `~`.
+///
+/// `from` is the active screen path. An empty `from` is a request. A `//` name that exists nowhere is
+/// `ErrorKind::NotFound`.
+///
+/// # Errors
+///
+/// Returns `ErrorKind::NotFound` when a `//` search finds nothing, or an error from loading a screen during that
+/// search.
+pub fn prepare_screen_path(
+    factory: &ExecutionContextFactory,
+    root_location: &str,
+    from: &[String],
+    screen_path: &str,
+) -> Result<ScreenPath, Error> {
+    let mut screen_path = screen_path.to_string();
+    let mut cache = true;
+    match screen_path_alias(factory, &alias_key(from, &screen_path)) {
+        Ok(Some(rewritten)) => screen_path = rewritten,
+        Ok(None) => {}
+        Err(err) => {
+            tracing::warn!("could not read ScreenPathAlias for {}: {err}", alias_key(from, &screen_path));
+            cache = false;
+        }
+    }
+    let mut inline = BTreeMap::new();
+    // Java strips a query only when `?` is not the first character.
+    if let Some(index) = screen_path.rfind('?').filter(|index| *index > 0) {
+        let query = screen_path[index + 1..].replace("&amp;", "&");
+        for (name, value) in crate::web::form_pairs(&query) {
+            inline.insert(name, value);
+        }
+        screen_path.truncate(index);
+    }
+    if screen_path.starts_with("//") {
+        let trimmed = &screen_path[2..];
+        let names = cleanup_path_names(trimmed.split('/'), &mut inline);
+        let facade = ScreenFacade::of(factory);
+        let key = format!("{root_location}\u{1}{screen_path}");
+        let expanded = if let Some(cached) = facade.cached_sparse(factory, &key) {
+            cached
+        } else {
+            let root = facade.screen_def(factory, root_location)?;
+            let found = find_subscreen_path(&facade, factory, &root, &names, 0);
+            facade.put_sparse(factory, key, found.clone());
+            found
+        };
+        let Some(names) = expanded else {
+            return Err(Error::of_kind(
+                ErrorKind::NotFound,
+                format!("screen path not found: {screen_path}"),
+            ));
+        };
+        return Ok(ScreenPath { names, inline, cache });
+    }
+    let mut names = if screen_path.starts_with('/') {
+        Vec::new()
+    } else {
+        from.to_vec()
+    };
+    names.extend(screen_path.split('/').map(str::to_string));
+    Ok(ScreenPath {
+        names: cleanup_path_names(names.iter().map(String::as_str), &mut inline),
+        inline,
+        cache,
+    })
+}
+
+fn alias_key(from: &[String], screen_path: &str) -> String {
+    if screen_path.starts_with('/') || from.is_empty() {
+        return screen_path.to_string();
+    }
+    let mut key = String::new();
+    for name in from {
+        key.push('/');
+        key.push_str(name);
+    }
+    if !screen_path.is_empty() {
+        key.push('/');
+        key.push_str(screen_path);
+    }
+    key
+}
+
+/// `moqui.screen.ScreenPathAlias` for `alias_path`: the `screenPath` of the newest row in the from/thru window.
+/// `Ok(None)` is no row, or a database without the screen tables. An error is any other read failure.
+fn screen_path_alias(factory: &ExecutionContextFactory, alias_path: &str) -> Result<Option<String>, Error> {
+    let Some(entity) = factory.entity() else {
+        return Ok(None);
+    };
+    let _authz = crate::context::ExecutionContext::with_current(crate::context::ExecutionContext::disable_authz);
+    let rows = match entity.find("moqui.screen.ScreenPathAlias").and_then(|find| {
+        find.eq("aliasPath", Value::string(alias_path))
+            .use_cache(true)
+            .list()
+    }) {
+        Ok(rows) => rows,
+        Err(_) if super::definition::screen_entity_absent(&entity, "moqui.screen.ScreenPathAlias") => {
+            return Ok(None)
+        }
+        Err(err) => return Err(err.into()),
+    };
+    let now = Value::Timestamp(jiff::Timestamp::now());
+    let mut open = Vec::new();
+    for row in rows.values() {
+        let from = row.get("fromDate").cloned().unwrap_or(Value::Null);
+        let thru = row.get("thruDate").cloned().unwrap_or(Value::Null);
+        let started = is_empty(&from)
+            || moqui_lib::object::compare_obj(&from, &now).is_ok_and(|order| order != std::cmp::Ordering::Greater);
+        let still_open = is_empty(&thru)
+            || moqui_lib::object::compare_obj(&thru, &now).is_ok_and(|order| order == std::cmp::Ordering::Greater);
+        if !started || !still_open {
+            continue;
+        }
+        let screen = row.get("screenPath").map(to_plain_string).unwrap_or_default();
+        if screen.is_empty() {
+            continue;
+        }
+        let from_ms = match &from {
+            Value::Timestamp(stamp) => Some(stamp.as_millisecond()),
+            _ => None,
+        };
+        open.push((from_ms, screen));
+    }
+    open.sort_by(|left, right| right.0.cmp(&left.0));
+    Ok(open.into_iter().next().map(|(_, screen)| screen))
+}
+
+/// Drop empty segments and `.`, pop for `..`, and store `~name=value` in `inline`. A tilde that is not `name=value`
+/// is dropped. Java's `cleanupPathNameList`.
+fn cleanup_path_names<'a>(input: impl IntoIterator<Item = &'a str>, inline: &mut BTreeMap<String, String>) -> Vec<String> {
+    let mut clean = Vec::new();
+    for path_name in input {
+        if path_name.is_empty() || path_name == "." {
+            continue;
+        }
+        if path_name == ".." {
+            clean.pop();
+            continue;
+        }
+        if let Some(rest) = path_name.strip_prefix('~') {
+            // Java `split("=")` drops trailing empties and keeps the pair only when there are two parts.
+            let mut parts: Vec<&str> = rest.split('=').collect();
+            while parts.last().is_some_and(|part| part.is_empty()) {
+                parts.pop();
+            }
+            if parts.len() == 2 {
+                inline.insert(parts[0].to_string(), crate::web::percent_decode(parts[1]));
+            }
+            continue;
+        }
+        clean.push(path_name.to_string());
+    }
+    clean
+}
+
+/// `ScreenDefinition.findSubscreenPath`. `None` is not found. A direct child whose rest does not match is not found,
+/// without searching further. `allow-extra-path` is not a match.
+fn find_subscreen_path(
+    facade: &ScreenFacade,
+    factory: &ExecutionContextFactory,
+    screen: &ScreenDef,
+    remaining: &[String],
+    depth: usize,
+) -> Option<Vec<String>> {
+    if remaining.is_empty() || depth >= FIND_DEPTH {
+        return None;
+    }
+    let cur = &remaining[0];
+    let rest = &remaining[1..];
+    if let Some(item) = screen.subscreens.get(cur) {
+        if rest.is_empty() {
+            return Some(vec![cur.clone()]);
+        }
+        let sub = match facade.screen_def(factory, &item.location) {
+            Ok(def) => def,
+            Err(err) => {
+                tracing::error!("Error finding subscreens under screen at {}: {err}", item.location);
+                return None;
+            }
+        };
+        let mut sub_path = find_subscreen_path(facade, factory, &sub, rest, depth + 1)?;
+        sub_path.insert(0, cur.clone());
+        return Some(sub_path);
+    }
+    if screen.has_transition(cur) {
+        return Some(remaining.to_vec());
+    }
+    for item in &screen.subscreens.items {
+        let sub = match facade.screen_def(factory, &item.location) {
+            Ok(def) => def,
+            Err(err) => {
+                tracing::error!(
+                    "Error finding subscreens under screen {} at {}: {err}",
+                    item.name,
+                    item.location
+                );
+                continue;
+            }
+        };
+        let Some(grand) = sub.subscreens.get(cur) else {
+            continue;
+        };
+        if rest.is_empty() {
+            return Some(vec![item.name.clone(), cur.clone()]);
+        }
+        let grand_def = match facade.screen_def(factory, &grand.location) {
+            Ok(def) => def,
+            Err(err) => {
+                tracing::error!("Error finding subscreens under screen at {}: {err}", grand.location);
+                return None;
+            }
+        };
+        let mut sub_path = find_subscreen_path(facade, factory, &grand_def, rest, depth + 1)?;
+        sub_path.insert(0, cur.clone());
+        sub_path.insert(0, item.name.clone());
+        return Some(sub_path);
+    }
+    for item in &screen.subscreens.items {
+        let sub = match facade.screen_def(factory, &item.location) {
+            Ok(def) => def,
+            Err(err) => {
+                tracing::error!(
+                    "Error finding subscreens under screen {} at {}: {err}",
+                    item.name,
+                    item.location
+                );
+                continue;
+            }
+        };
+        let Some(mut sub_path) = find_subscreen_path(facade, factory, &sub, remaining, depth + 1) else {
+            continue;
+        };
+        sub_path.insert(0, item.name.clone());
+        return Some(sub_path);
+    }
+    super::static_files::file_under(factory, facade, &screen.location, remaining).map(|_| remaining.to_vec())
 }
 
 fn join_path(names: &[String]) -> String {
@@ -462,23 +756,21 @@ pub fn parse_last_standalone(text: &str, default: i32) -> i32 {
 }
 
 /// Resolve a transition response `screen-path` against the screens the transition sits under.
-/// A leading `/` starts at the root. `.` is the current screen and `..` the parent.
-pub fn resolve_screen_path(from: &[String], url: &str) -> Vec<String> {
-    let mut names: Vec<String> = if url.starts_with('/') {
-        Vec::new()
-    } else {
-        from.to_vec()
-    };
-    for part in url.split('/') {
-        match part {
-            "" | "." => {}
-            ".." => {
-                names.pop();
-            }
-            other => names.push(other.to_string()),
-        }
-    }
-    names
+///
+/// A leading `/` starts at the root. `.` is the current screen and `..` the parent. `//` searches by screen name
+/// from `root_location`. `ScreenPathAlias` is applied first. The names are what the walk sees; `inline` holds `?`
+/// and `~` parameters.
+///
+/// # Errors
+///
+/// Same as [`prepare_screen_path`].
+pub fn resolve_screen_path(
+    factory: &ExecutionContextFactory,
+    root_location: &str,
+    from: &[String],
+    url: &str,
+) -> Result<ScreenPath, Error> {
+    prepare_screen_path(factory, root_location, from, url)
 }
 
 /// The URL path for `names`, percent-encoding what a path name cannot hold.

@@ -936,7 +936,7 @@ fn run_transition(
     let step = in_transaction(begin, None, || run_transition_steps(job, &info, &state, &transition))?;
     match step {
         Step::Sent => Ok(()),
-        Step::Respond(response) => respond(&info, &response, json),
+        Step::Respond(response) => respond(factory, &info, &response, json),
     }
 }
 
@@ -1268,7 +1268,12 @@ pub(super) fn parameter_value(parameter: &ParameterDef) -> Result<Option<Value>,
     Ok(script::context_value(&parameter.name).or_else(|| web::parameter(&parameter.name)))
 }
 
-fn respond(info: &ScreenUrlInfo, response: &ResponseDef, json: bool) -> Result<(), Error> {
+fn respond(
+    factory: &ExecutionContextFactory,
+    info: &ScreenUrlInfo,
+    response: &ResponseDef,
+    json: bool,
+) -> Result<(), Error> {
     if response.save_current_screen {
         user::session::push_screen_history(&info.full_path_url());
     }
@@ -1349,7 +1354,9 @@ fn respond(info: &ScreenUrlInfo, response: &ResponseDef, json: bool) -> Result<(
         }
     }
     let mut screen_path = None;
-    let location = if url_type == "plain" {
+    // An http(s) value is a plain URL even when url-type is screen or transition. Java checks this in getScreenUrlInfo.
+    let external = url.starts_with("http:") || url.starts_with("https:");
+    let location = if url_type == "plain" || external {
         url
     } else {
         // Keep the page and sort a list was on, so a form submit returns to the same view.
@@ -1361,22 +1368,37 @@ fn respond(info: &ScreenUrlInfo, response: &ResponseDef, json: bool) -> Result<(
                     .or_insert_with(|| moqui_lib::object::to_plain_string(value));
             }
         }
-        // A query in the url, such as on a history entry, becomes parameters of the redirect.
-        if let Some((path, query)) = url.clone().split_once('?') {
-            for (name, value) in web::form_pairs(query) {
-                parameters.entry(name).or_insert(value);
+        let root = info
+            .path_defs
+            .first()
+            .map(|def| def.location.as_str())
+            .unwrap_or("");
+        let prepared = match resolve_screen_path(factory, root, &info.pre_transition_path, &url) {
+            Ok(prepared) => prepared,
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                // A missing `//` path is `#`, as Java's getUrlWithBase when the target does not exist.
+                let location = "#".to_string();
+                if json {
+                    send_json_redirect(None, &location, &parameters);
+                } else {
+                    web::send_redirect(&with_query(location, &parameters));
+                }
+                return Ok(());
             }
-            url = path.to_string();
+            Err(err) => return Err(err),
+        };
+        // A query or `~` on the response url becomes parameters. Response parameters already in the map win.
+        for (name, value) in prepared.inline {
+            parameters.entry(name).or_insert(value);
         }
-        let names = resolve_screen_path(&info.pre_transition_path, &url);
         // The parameters of the screens on the target path from the context, as Java's `UrlInstance.getParameterMap`: a transition of
         // a screen with a required parameter redirects back with it.
-        for (name, value) in path_parameters(info, &names)? {
+        for (name, value) in path_parameters(info, &prepared.names)? {
             parameters.entry(name).or_insert(value);
         }
         let base = web::base_url();
-        let location = format!("{}{}", base.trim_end_matches('/'), encode_path(&names));
-        screen_path = Some(names);
+        let location = format!("{}{}", base.trim_end_matches('/'), encode_path(&prepared.names));
+        screen_path = Some(prepared.names);
         location
     };
     if json {

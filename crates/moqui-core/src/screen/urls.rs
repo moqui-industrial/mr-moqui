@@ -16,7 +16,8 @@
 //! against the screen being rendered, with its parameters.
 //!
 //! A transition with no condition, actions, or conditional response and a screen-path default response is an alias
-//! for that response URL (`UrlInstance.expandTransitionAliasUrl`). Not ported: `ScreenPathAlias` and `content` URLs.
+//! for that response URL (`UrlInstance.expandTransitionAliasUrl`). `ScreenPathAlias` and `//` paths are resolved in
+//! [`super::url::prepare_screen_path`]. `content` URLs are not supported, as in Java.
 
 use std::sync::Arc;
 
@@ -63,8 +64,11 @@ impl UrlInstance {
         self.info.as_ref()?.transition(None)
     }
 
-    /// The path with no host.
+    /// The path with no host. A screen that does not exist is `#`, as Java's `getUrlWithBase`.
     pub fn path(&self) -> String {
+        if self.missing() {
+            return "#".to_string();
+        }
         match &self.plain {
             Some(plain) => plain.clone(),
             None => encode_path(&self.names),
@@ -72,6 +76,9 @@ impl UrlInstance {
     }
 
     pub fn url(&self) -> String {
+        if self.missing() {
+            return "#".to_string();
+        }
         match &self.plain {
             Some(plain) if plain.contains("://") || plain.starts_with("//") => plain.clone(),
             Some(plain) => format!("{}{plain}", self.base.trim_end_matches('/')),
@@ -80,6 +87,9 @@ impl UrlInstance {
     }
 
     pub fn minimal_path_url(&self) -> String {
+        if self.missing() {
+            return "#".to_string();
+        }
         match &self.plain {
             Some(_) => self.url(),
             None => format!(
@@ -88,6 +98,21 @@ impl UrlInstance {
                 encode_path(&self.minimal_names)
             ),
         }
+    }
+
+    /// False when this is a plain URL, the screen is missing, or the target transition's default response is
+    /// `url-type="plain"`, `type="none"`, or declares a parameter named `renderMode`. Java's `UrlInstance.isScreenUrl`.
+    pub fn is_screen_url(&self) -> bool {
+        if self.plain.is_some() || !self.exists {
+            return false;
+        }
+        !self
+            .transition()
+            .is_some_and(|transition| response_leaves_screen(&transition.default_response))
+    }
+
+    fn missing(&self) -> bool {
+        self.plain.is_none() && !self.exists
     }
 
     pub fn minimal_path_url_with_params(&self) -> String {
@@ -222,8 +247,22 @@ pub fn build_url(state: &RenderState, subscreen_path: &str) -> Result<UrlInstanc
     } else {
         subscreen_path.to_string()
     };
-    let names = resolve_screen_path(&active_screen_path(state), &expanded);
-    resolve_names(state, names)
+    if is_external(&expanded) {
+        return Ok(plain_url(expanded));
+    }
+    let prepared = match resolve_path(state, &active_screen_path(state), &expanded) {
+        Ok(prepared) => prepared,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(missing_url()),
+        Err(err) => return Err(err),
+    };
+    let mut url = resolve_names_at(state, prepared.names, state.url_info.last_standalone, prepared.cache)?;
+    // Inline `?` and `~` parameters override screen parameters. Link parameters are added after this.
+    for (name, value) in prepared.inline {
+        if !value.is_empty() {
+            url.parameters.insert(name, value);
+        }
+    }
+    Ok(url)
 }
 
 /// A URL for path names from the root.
@@ -232,7 +271,7 @@ pub fn build_url(state: &RenderState, subscreen_path: &str) -> Result<UrlInstanc
 ///
 /// Returns an error when the names cannot be resolved for a reason other than a missing screen.
 pub fn build_url_names(state: &RenderState, names: Vec<String>) -> Result<UrlInstance, Error> {
-    resolve_names(state, names)
+    resolve_names_at(state, names, state.url_info.last_standalone, true)
 }
 
 /// `sri.buildUrlFromTarget`: a path from the target screen of the request.
@@ -242,8 +281,21 @@ pub fn build_url_names(state: &RenderState, names: Vec<String>) -> Result<UrlIns
 /// Same as [`build_url`].
 pub fn build_url_from_target(state: &RenderState, subscreen_path: &str) -> Result<UrlInstance, Error> {
     let expanded = script::expand_localized(subscreen_path)?;
-    let names = resolve_screen_path(&state.url_info.pre_transition_path, &expanded);
-    resolve_names(state, names)
+    if is_external(&expanded) {
+        return Ok(plain_url(expanded));
+    }
+    let prepared = match resolve_path(state, &state.url_info.pre_transition_path, &expanded) {
+        Ok(prepared) => prepared,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(missing_url()),
+        Err(err) => return Err(err),
+    };
+    let mut url = resolve_names_at(state, prepared.names, state.url_info.last_standalone, prepared.cache)?;
+    for (name, value) in prepared.inline {
+        if !value.is_empty() {
+            url.parameters.insert(name, value);
+        }
+    }
+    Ok(url)
 }
 
 /// `sri.getScreenUrlInstance`/`getCurrentScreenUrl`: the URL of the request being rendered.
@@ -252,11 +304,7 @@ pub fn build_url_from_target(state: &RenderState, subscreen_path: &str) -> Resul
 ///
 /// Returns an error when the request's path cannot be resolved again.
 pub fn current_url(state: &RenderState) -> Result<UrlInstance, Error> {
-    resolve_names(state, state.url_info.full_path.clone())
-}
-
-fn resolve_names(state: &RenderState, names: Vec<String>) -> Result<UrlInstance, Error> {
-    resolve_names_at(state, names, state.url_info.last_standalone)
+    resolve_names_at(state, state.url_info.full_path.clone(), state.url_info.last_standalone, true)
 }
 
 /// A URL for path names from the root, resolved with `last_standalone`. That only changes which screens render, so
@@ -265,6 +313,7 @@ pub(super) fn resolve_names_at(
     state: &RenderState,
     names: Vec<String>,
     last_standalone: i32,
+    cache: bool,
 ) -> Result<UrlInstance, Error> {
     let root = state
         .url_info
@@ -272,7 +321,7 @@ pub(super) fn resolve_names_at(
         .first()
         .map(|def| def.location.as_str())
         .ok_or_else(|| Error::new("no root screen"))?;
-    let resolved = ScreenUrlInfo::resolve(&state.factory, root, &names, last_standalone);
+    let resolved = ScreenUrlInfo::resolve_cached(&state.factory, root, &names, last_standalone, cache);
     let mut url = UrlInstance {
         minimal_names: names.clone(),
         names,
@@ -361,6 +410,9 @@ pub struct StaticUrl {
     pub method: String,
     /// Where an alias transition sends a navigation. Empty when the target is not an alias, so a form still posts `path`.
     pub screen_path: String,
+    /// Java's `isScreenUrl` for this target. False for a `type="none"` or plain-response transition, and for a missing
+    /// screen, so a static anchor is `<a>` and the client does not `setUrl` it.
+    pub screen_url: bool,
 }
 
 /// The target of a link written into a static template: the name resolved against the screen being rendered.
@@ -376,22 +428,49 @@ pub fn static_url(state: &RenderState, text: &str, url_type: &str) -> Result<Sta
         return Ok(StaticUrl {
             path: text.to_string(),
             read_only: true,
+            // The target is not known yet. The template keeps an m-link, as it did before isScreenUrl.
+            screen_url: true,
+            ..StaticUrl::default()
+        });
+    }
+    if is_external(text) {
+        return Ok(StaticUrl {
+            path: text.to_string(),
+            exists: true,
+            read_only: true,
             ..StaticUrl::default()
         });
     }
     let active = active_screen_path(state);
-    let names = resolve_screen_path(&active, text);
+    let prepared = match resolve_path(state, &active, text) {
+        Ok(prepared) => prepared,
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            return Ok(StaticUrl {
+                path: "#".to_string(),
+                read_only: true,
+                ..StaticUrl::default()
+            })
+        }
+        Err(err) => return Err(err),
+    };
+    let names = prepared.names;
     let root = state
         .url_info
         .path_defs
         .first()
         .map(|def| def.location.clone())
         .ok_or_else(|| Error::new("no root screen"))?;
-    match ScreenUrlInfo::resolve(&state.factory, &root, &names, state.url_info.last_standalone) {
+    match ScreenUrlInfo::resolve_cached(
+        &state.factory,
+        &root,
+        &names,
+        state.url_info.last_standalone,
+        prepared.cache,
+    ) {
         Ok(info) => {
-            let screen_path = match alias_url(state, &info)? {
-                Some(alias) => alias.path(),
-                None => String::new(),
+            let (screen_path, screen_url) = match alias_url(state, &info)? {
+                Some(alias) => (alias.path(), alias.is_screen_url()),
+                None => (String::new(), info_is_screen_url(&info)),
             };
             let transition = info.transition(None);
             let is_transition = transition.is_some() || info.target_transition_name.is_some();
@@ -405,6 +484,7 @@ pub fn static_url(state: &RenderState, text: &str, url_type: &str) -> Result<Sta
                     .map(|item| item.method.to_ascii_lowercase())
                     .unwrap_or_default(),
                 screen_path,
+                screen_url,
             })
         }
         Err(err) if err.kind() == ErrorKind::NotFound => {
@@ -413,6 +493,9 @@ pub fn static_url(state: &RenderState, text: &str, url_type: &str) -> Result<Sta
                 .strip_prefix(active.as_slice())
                 .and_then(|rest| (rest.len() == 1).then(|| rest[0].clone()))
                 .and_then(|name| def.transition(&name, None).cloned());
+            let screen_url = local
+                .as_ref()
+                .is_some_and(|item| !response_leaves_screen(&item.default_response));
             Ok(StaticUrl {
                 path: encode_path(&names),
                 exists: local.is_some(),
@@ -421,6 +504,7 @@ pub fn static_url(state: &RenderState, text: &str, url_type: &str) -> Result<Sta
                 read_only: local.as_ref().is_none_or(|item| item.read_only),
                 method: local.map(|item| item.method.to_ascii_lowercase()).unwrap_or_default(),
                 screen_path: String::new(),
+                screen_url,
             })
         }
         Err(err) => Err(err),
@@ -504,14 +588,19 @@ fn is_transition_alias(transition: &TransitionDef) -> bool {
 
 /// The screen URL an alias transition stands for, or nothing when `info` does not end on one.
 fn alias_url(state: &RenderState, info: &ScreenUrlInfo) -> Result<Option<UrlInstance>, Error> {
-    let Some(transition) = info.transition(None) else {
+    let Some(transition) = info.transition(None).cloned() else {
         return Ok(None);
     };
-    if !is_transition_alias(transition) {
+    if !is_transition_alias(&transition) {
         return Ok(None);
     }
+    // The extra path names become the transition's path-parameter values before the response parameters are read,
+    // and they stay in the context, as Java's `setAllParameters`.
+    for (name, value) in transition.path_parameters.iter().zip(info.extra_path.iter()) {
+        script::set_context_name(name, Value::string(value))?;
+    }
     let response = &transition.default_response;
-    let mut target = script::expand(&response.url)?;
+    let target = script::expand(&response.url)?;
     let mut parameters: IndexMap<String, String> = IndexMap::new();
     for parameter in &response.parameters {
         if let Some(value) = parameter_value(parameter)? {
@@ -529,25 +618,82 @@ fn alias_url(state: &RenderState, info: &ScreenUrlInfo) -> Result<Option<UrlInst
             }
         }
     }
+    if is_external(&target) {
+        let mut url = plain_url(target);
+        for (name, value) in parameters {
+            url.parameters.insert(name, value);
+        }
+        return Ok(Some(url));
+    }
     let standalone = parameters
         .get("lastStandalone")
         .map(|text| parse_last_standalone(text, info.last_standalone))
         .unwrap_or(info.last_standalone);
-    let query = target
-        .split_once('?')
-        .map(|(path, query)| (path.to_string(), query.to_string()));
-    if let Some((path, query)) = query {
-        for (name, value) in web::form_pairs(&query) {
-            parameters.entry(name).or_insert(value);
+    let prepared = match resolve_path(state, &info.pre_transition_path, &target) {
+        Ok(prepared) => prepared,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Some(missing_url())),
+        Err(err) => return Err(err),
+    };
+    let mut url = resolve_names_at(state, prepared.names, standalone, prepared.cache)?;
+    // The destination's own `?` and `~` parameters override its screen parameters. The response parameters win.
+    for (name, value) in prepared.inline {
+        if !value.is_empty() {
+            url.parameters.entry(name).or_insert(value);
         }
-        target = path;
     }
-    let names = resolve_screen_path(&info.pre_transition_path, &target);
-    let mut url = resolve_names_at(state, names, standalone)?;
     for (name, value) in parameters {
         url.parameters.insert(name, value);
     }
     Ok(Some(url))
+}
+
+fn response_leaves_screen(response: &super::definition::ResponseDef) -> bool {
+    response.url_type == "plain"
+        || response.kind == ResponseKind::None
+        || response.parameters.iter().any(|parameter| parameter.name == "renderMode")
+}
+
+fn info_is_screen_url(info: &ScreenUrlInfo) -> bool {
+    !info
+        .transition(None)
+        .is_some_and(|transition| response_leaves_screen(&transition.default_response))
+}
+
+fn is_external(url: &str) -> bool {
+    url.starts_with("http:") || url.starts_with("https:")
+}
+
+fn plain_url(text: String) -> UrlInstance {
+    UrlInstance {
+        plain: Some(text),
+        base: web::base_url(),
+        exists: true,
+        read_only: true,
+        ..UrlInstance::default()
+    }
+}
+
+fn missing_url() -> UrlInstance {
+    UrlInstance {
+        base: web::base_url(),
+        exists: false,
+        read_only: true,
+        ..UrlInstance::default()
+    }
+}
+
+fn resolve_path(
+    state: &RenderState,
+    from: &[String],
+    url: &str,
+) -> Result<super::url::ScreenPath, Error> {
+    let root = state
+        .url_info
+        .path_defs
+        .first()
+        .map(|def| def.location.as_str())
+        .ok_or_else(|| Error::new("no root screen"))?;
+    resolve_screen_path(&state.factory, root, from, url)
 }
 
 /// `sri.isAnchorLink(linkNode, urlInstance)`.

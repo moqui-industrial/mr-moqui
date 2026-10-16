@@ -465,11 +465,10 @@ fn the_shell_wraps_a_page_and_the_real_error_pages_show_the_error_context() {
         "{html}"
     );
     assert!(html.contains("Could not find <code>NoSuchScreen</code>"), "{html}");
-    assert!(
-        html.contains("<link rel=\"stylesheet\" href=\"/css/moqui-html.css"),
-        "{html}"
-    );
-    assert!(html.contains("<script src=\"/js/moqui-html.js"), "{html}");
+    // error.xml names /css and /js paths. They are not screens or files under this temporary root, so each URL is
+    // `#`, as Java's getUrlWithBase when the target does not exist. The version query is still appended.
+    assert!(html.contains("<link rel=\"stylesheet\" href=\"#?v="), "{html}");
+    assert!(html.contains("<script src=\"#?v="), "{html}");
     assert!(html.contains("defer"), "{html}");
     let lower = html.to_ascii_lowercase();
     assert!(!lower.contains("jquery") && !lower.contains("bootstrap"), "{html}");
@@ -764,10 +763,8 @@ fn a_tree_answers_its_node_data() {
     assert_eq!(top[0]["li_attr"]["treeNodeName"], "Country");
     assert_eq!(top[0]["children"], true, "France has a city to show: {top}");
     assert_eq!(top[1]["children"], false, "{top}");
-    assert!(
-        top[0]["a_attr"]["href"].as_str().unwrap().ends_with("/show?code=FR"),
-        "{top}"
-    );
+    // `show` only redirects to `.`, so the link is the screen itself, with the node's parameter.
+    assert_eq!(top[0]["a_attr"]["href"].as_str().unwrap(), "/?code=FR", "{top}");
     let opened = fetch(&[("treeNodeId", "#"), ("treeOpenPath", "FR")]);
     assert_eq!(opened[0]["state"]["opened"], true, "{opened}");
     assert_eq!(opened[0]["children"][0]["id"], "FR/Paris", "{opened}");

@@ -78,9 +78,15 @@ pub struct ScreenHit {
     pub screen: String,
 }
 
-/// Handle one request from `component://webroot/screen/webroot.xml`.
+/// Handle one request. The root screen is the `webroot` webapp's `root-screen` for the Host header.
+/// `.*` is the fallback, which is `webroot.xml` in the default conf.
 pub fn serve(factory: &Arc<ExecutionContextFactory>, request: WebRequest) -> WebResponse {
-    serve_at(factory, request, ROOT_SCREEN)
+    let host = request.header("host").unwrap_or("");
+    let root = match info::root_screen_for_host(factory, host, "webroot") {
+        Ok(location) => location,
+        Err(err) => return web::early_error(&request, 500, err.message()),
+    };
+    serve_at(factory, request, &root)
 }
 
 /// Handle one request whose root screen is `root`.

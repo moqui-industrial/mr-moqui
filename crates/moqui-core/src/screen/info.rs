@@ -42,6 +42,53 @@ pub fn all_root_screen_locations(factory: &ExecutionContextFactory) -> Vec<Strin
         .collect()
 }
 
+/// The `root-screen` location for `host` in webapp `webapp_name`.
+///
+/// The first host regex other than `.*` that matches the whole host (port stripped) wins. `.*` is the fallback
+/// even when it is listed first. Java's `ScreenFacadeImpl.rootScreenFromHost`.
+///
+/// # Errors
+///
+/// Returns an error when the webapp is missing, no pattern matches, or a host regex is invalid.
+pub fn root_screen_for_host(
+    factory: &ExecutionContextFactory,
+    host: &str,
+    webapp_name: &str,
+) -> Result<String, Error> {
+    let host = crate::web::host_without_port(host);
+    let conf = MNode::parse_text("moqui-conf", factory.conf_text())?;
+    let Some(list) = conf.first_named("webapp-list") else {
+        return Err(Error::new(format!("Could not find webapp {webapp_name}")));
+    };
+    let Some(webapp) = list
+        .children_named("webapp")
+        .into_iter()
+        .find(|node| node.attribute("name").as_deref() == Some(webapp_name))
+    else {
+        return Err(Error::new(format!("Could not find webapp {webapp_name}")));
+    };
+    let mut wildcard = None;
+    for root in webapp.children_named("root-screen") {
+        let pattern = root.attribute("host").unwrap_or_default();
+        if pattern == ".*" {
+            wildcard = root.attribute("location");
+            continue;
+        }
+        if pattern.is_empty() {
+            continue;
+        }
+        if moqui_lib::object::regex_full_match(host, &pattern)? {
+            return root
+                .attribute("location")
+                .filter(|text| !text.is_empty())
+                .ok_or_else(|| Error::new(format!("Could not find root screen for host: {host}")));
+        }
+    }
+    wildcard
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| Error::new(format!("Could not find root screen for host: {host}")))
+}
+
 #[derive(Default)]
 struct Totals {
     subscreens: i64,

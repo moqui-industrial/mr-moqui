@@ -8,7 +8,6 @@ return function render(_ctx, _cache) {
   const _component_q_btn = _resolveComponent("q-btn")
   const _component_m_form = _resolveComponent("m-form")
   const _component_m_scope = _resolveComponent("m-scope")
-  const _component_m_link = _resolveComponent("m-link")
   const _component_m_form_column_config = _resolveComponent("m-form-column-config")
   const _component_m_container_dialog = _resolveComponent("m-container-dialog")
   const _component_m_static_form_list = _resolveComponent("m-static-form-list")
@@ -149,16 +148,13 @@ return function render(_ctx, _cache) {
         textContent: _toDisplayString(_ctx.ec.resource.expand('Tag ${tag} of ${item.name}',{'tag':()=>(tag),'item.name':()=>(_ctx.item.name)}))
       }, null, 8, ["textContent"]))
     }), 128)),
-    _createVNode(_component_m_link, {
+    _createElementVNode("a", {
       href: _ctx.$mq.url('/Items/viewItem',{'itemId':(_ctx.item.itemId)},null)
-    }, {
-      default: _withCtx(() => [
-        _createElementVNode("span", {
-          textContent: _toDisplayString(_ctx.ec.resource.expand('View ${item.itemId}',{'item.itemId':()=>(_ctx.item.itemId)}))
-        }, null, 8, ["textContent"])
-      ]),
-      _: 1
-    }, 8, ["href"]),
+    }, [
+      _createElementVNode("span", {
+        textContent: _toDisplayString(_ctx.ec.resource.expand('View ${item.itemId}',{'item.itemId':()=>(_ctx.item.itemId)}))
+      }, null, 8, ["textContent"])
+    ], 8, ["href"]),
     _createVNode(_component_m_static_form_list, {
       name: "ItemList",
       id: "ItemList",

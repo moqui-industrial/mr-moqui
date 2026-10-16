@@ -812,6 +812,7 @@ fn sri_static_url<'js>(ctx: Ctx<'js>, text: String, url_type: Opt<String>) -> rq
         object.set("isScreen", found.is_screen)?;
         object.set("readOnly", found.read_only)?;
         object.set("method", found.method)?;
+        object.set("screenUrl", found.screen_url)?;
         Ok(object)
     })
 }

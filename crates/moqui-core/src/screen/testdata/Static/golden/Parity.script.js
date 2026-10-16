@@ -2,7 +2,6 @@
 const { toDisplayString: _toDisplayString, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, createElementVNode: _createElementVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, createVNode: _createVNode, createBlock: _createBlock, normalizeClass: _normalizeClass, renderList: _renderList, Fragment: _Fragment } = Vue
 
 return function render(_ctx, _cache) {
-  const _component_m_link = _resolveComponent("m-link")
   const _component_q_item_section = _resolveComponent("q-item-section")
   const _component_q_item = _resolveComponent("q-item")
   const _component_q_list = _resolveComponent("q-list")
@@ -47,16 +46,13 @@ return function render(_ctx, _cache) {
       class: "text-inline",
       textContent: _toDisplayString(_ctx.ec.resource.expand('Product ${productName} at ${price}',{'productName':()=>(_ctx.$mq.inMap((_ctx.product),'productName')?_ctx.$mq.inMap((_ctx.product),'productName',true):(_ctx.productName)),'price':()=>(_ctx.$mq.inMap((_ctx.product),'price')?_ctx.$mq.inMap((_ctx.product),'price',true):(_ctx.price))}))
     }, null, 8, ["textContent"]),
-    _createVNode(_component_m_link, {
+    _createElementVNode("a", {
       href: _ctx.$mq.url('/Parity/viewProduct',{},null)
-    }, {
-      default: _withCtx(() => [
-        _createElementVNode("span", {
-          textContent: _toDisplayString(_ctx.ec.resource.expand('View ${productName}',{'productName':()=>(_ctx.$mq.inMap((_ctx.product),'productName')?_ctx.$mq.inMap((_ctx.product),'productName',true):(_ctx.productName))}))
-        }, null, 8, ["textContent"])
-      ]),
-      _: 1
-    }, 8, ["href"]),
+    }, [
+      _createElementVNode("span", {
+        textContent: _toDisplayString(_ctx.ec.resource.expand('View ${productName}',{'productName':()=>(_ctx.$mq.inMap((_ctx.product),'productName')?_ctx.$mq.inMap((_ctx.product),'productName',true):(_ctx.productName))}))
+      }, null, 8, ["textContent"])
+    ], 8, ["href"]),
     _createVNode(_component_q_btn_dropdown, {
       dense: "",
       outline: "",
@@ -76,16 +72,13 @@ return function render(_ctx, _cache) {
               default: _withCtx(() => [
                 _createVNode(_component_q_item_section, null, {
                   default: _withCtx(() => [
-                    _createVNode(_component_m_link, {
+                    _createElementVNode("a", {
                       href: _ctx.$mq.url('/Parity/viewProduct',{},null)
-                    }, {
-                      default: _withCtx(() => [
-                        _createElementVNode("span", {
-                          textContent: _toDisplayString(_ctx.ec.l10n.localize('View it'))
-                        }, null, 8, ["textContent"])
-                      ]),
-                      _: 1
-                    }, 8, ["href"])
+                    }, [
+                      _createElementVNode("span", {
+                        textContent: _toDisplayString(_ctx.ec.l10n.localize('View it'))
+                      }, null, 8, ["textContent"])
+                    ], 8, ["href"])
                   ]),
                   _: 1
                 })

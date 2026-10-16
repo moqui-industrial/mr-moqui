@@ -261,10 +261,18 @@ impl ScreenConf {
     }
 }
 
+/// Expanded `//` paths, and misses, for one root screen. Dropped when screen configuration changes.
+struct SparsePaths {
+    generation: u64,
+    paths: HashMap<String, Option<Vec<String>>>,
+}
+
 pub struct ScreenFacade {
     conf: ScreenConf,
     definitions: MCache<String, Arc<ScreenDef>>,
     urls: MCache<String, Arc<ScreenUrlInfo>>,
+    /// `//` name searches, keyed by root location and the sparse path. A miss is stored as `None`.
+    sparse: Mutex<SparsePaths>,
     /// The icon class for a text by theme, as Java's `themeIconByTextByTheme`.
     icons: MCache<String, Option<String>>,
     /// Milliseconds between checks of a definition's files; negative is never.
@@ -282,6 +290,10 @@ impl ScreenFacade {
                 "screen.url",
                 CacheConfig::new().background(false).max_entries(MAX_URL_ENTRIES),
             ),
+            sparse: Mutex::new(SparsePaths {
+                generation: 0,
+                paths: HashMap::new(),
+            }),
             icons: MCache::new(
                 "screen.theme.icon",
                 CacheConfig::new()
@@ -391,8 +403,9 @@ impl ScreenFacade {
         drop(held);
         let loaded = stored?;
         if stale {
-            // Resolved paths hold the old definition.
+            // Resolved paths and `//` searches hold the old definition.
             let _ = self.urls.clear();
+            self.clear_sparse();
         }
         Ok(loaded)
     }
@@ -435,6 +448,34 @@ impl ScreenFacade {
 
     pub(super) fn put_url(&self, key: String, info: Arc<ScreenUrlInfo>) {
         let _ = self.urls.put(key, info);
+    }
+
+    /// An expanded `//` path, or `None` for a cached miss. `None` of the outer option means the cache has no entry,
+    /// or screen configuration changed since it was stored.
+    pub(super) fn cached_sparse(&self, factory: &ExecutionContextFactory, key: &str) -> Option<Option<Vec<String>>> {
+        let generation = super::definition::screen_config_generation(factory);
+        let mut cache = lock(&self.sparse);
+        if cache.generation != generation {
+            cache.paths.clear();
+            cache.generation = generation;
+            return None;
+        }
+        cache.paths.get(key).cloned()
+    }
+
+    pub(super) fn put_sparse(&self, factory: &ExecutionContextFactory, key: String, names: Option<Vec<String>>) {
+        let generation = super::definition::screen_config_generation(factory);
+        let mut cache = lock(&self.sparse);
+        if cache.generation != generation {
+            cache.paths.clear();
+            cache.generation = generation;
+        }
+        cache.paths.insert(key, names);
+    }
+
+    fn clear_sparse(&self) {
+        let mut cache = lock(&self.sparse);
+        cache.paths.clear();
     }
 
     pub(super) fn theme_icon(&self, theme: &str, text: &str) -> Option<Option<String>> {

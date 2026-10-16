@@ -101,6 +101,16 @@ fn screen_render<'js>(ctx: Ctx<'js>, options: JsValue<'js>) -> rquickjs::Result<
             .base_url(text("baseLinkUrl"));
         if !text("rootScreen").is_empty() {
             render = render.root_screen(text("rootScreen"));
+        } else if !text("rootScreenFromHost").is_empty() {
+            let webapp_name = text("webappName");
+            let webapp = if webapp_name.is_empty() {
+                "webroot"
+            } else {
+                webapp_name.as_str()
+            };
+            let location = crate::screen::info::root_screen_for_host(&factory, &text("rootScreenFromHost"), webapp)
+                .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
+            render = render.root_screen(location);
         }
         if !text("renderMode").is_empty() {
             render = render.render_mode(text("renderMode"));

@@ -787,9 +787,11 @@
             const navPath = found && at(n, "expand-transition-url") !== "false" && found.screenPath ? found.screenPath : (found ? found.path : "");
             let out = "";
             if (anchor) {
-                const plain = !found;
-                const href = plain ? exp(at(n, "url"), n, "url", false) : noParam ? sq(navPath) : urlOf(n, navPath);
-                const tag = plain ? "a" : "m-link";
+                // A type=none or plain-response transition is not a screen URL, so the anchor is <a> and the client
+                // does not setUrl it. An unresolved ${} target stays an m-link.
+                const toScreen = !!(found && found.screenUrl);
+                const href = found ? (noParam ? sq(navPath) : urlOf(n, navPath)) : exp(at(n, "url"), n, "url", false);
+                const tag = toScreen ? "m-link" : "a";
                 const asButton = linkType !== "anchor";
                 const attrs = Object.assign({ ":href": href, target: at(n, "target-window") || null, "load-id": at(n, "dynamic-load-id") || null, class: asButton ? null : style }, confirmAttr);
                 plainAttr(attrs, "id", at(n, "id"), n);

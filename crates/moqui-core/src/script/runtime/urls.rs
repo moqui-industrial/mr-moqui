@@ -79,9 +79,10 @@ impl HostUrl {
         host_guard(&ctx, || Ok(self.inner.borrow().read_only))
     }
 
-    /// A screen or transition of this server, not a plain URL.
+    /// Java's `UrlInstance.isScreenUrl`: false for a plain URL, a missing screen, or a transition whose
+    /// default response is plain, `type="none"`, or declares `renderMode`.
     fn is_screen_url(&self, ctx: Ctx<'_>) -> rquickjs::Result<bool> {
-        host_guard(&ctx, || Ok(self.inner.borrow().plain.is_none()))
+        host_guard(&ctx, || Ok(self.inner.borrow().is_screen_url()))
     }
 
     fn is_transition(&self, ctx: Ctx<'_>) -> rquickjs::Result<bool> {
@@ -225,11 +226,9 @@ fn sri_make_url_by_type<'js>(
             Some(value) => Some(lit_of(&ctx, value)?),
             None => None,
         };
-        // The macros pass "true" or "false". Anything other than false expands, matching an omitted attribute.
-        let expand = match expand_transition_url.0.as_deref() {
-            Some(text) => !text.eq_ignore_ascii_case("false"),
-            None => true,
-        };
+        // Java expands only when this argument is the string "true". An omitted argument does not.
+        // The screen macros pass "true" themselves when the expand-transition-url attribute is omitted.
+        let expand = expand_transition_url.0.as_deref() == Some("true");
         let made = with_render(&ctx, false, |state| {
             urls::make_url_by_type(state, &url, &url_type, parent.as_ref(), expand)
         })?;

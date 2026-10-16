@@ -53,7 +53,7 @@ pub fn menu_items(state: &RenderState, screen_path: Option<&str>) -> Result<Vec<
     // The items of another screen: the path is resolved from the root, and its items are paths below it.
     let (def, prefix) = match screen_path {
         Some(path) => {
-            let names = crate::screen::url::resolve_screen_path(&[], path);
+            let names = crate::screen::url::resolve_screen_path(&state.factory, &root, &[], path)?.names;
             let info = ScreenUrlInfo::resolve(&state.factory, &root, &names, 0)?;
             // The screen the path names, not the default subscreen the walk goes on to.
             let named = info.path_defs.get(names.len()).unwrap_or(&info.target_screen);

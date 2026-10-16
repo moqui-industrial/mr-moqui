@@ -15,10 +15,13 @@
 //! Path walks: default items, subscreens, path parameters, render-mode extensions, conditional
 //! defaults, standalone screens, and the missing `/vapps`.
 
+use std::path::PathBuf;
+
 use moqui_lib::object::Value;
 
 use super::{fixture_root, webroot};
 use crate::context::{Error, ErrorKind, ExecutionContextFactory};
+use crate::entity::EntityFacade;
 use crate::screen::{ScreenFacade, ScreenUrlInfo};
 
 fn walk(factory: &ExecutionContextFactory, path: &str) -> Result<std::sync::Arc<ScreenUrlInfo>, Error> {
@@ -257,4 +260,322 @@ fn the_default_conf_parses_into_the_factory_conf() {
     for dropped in ["vuet", "js", "vue"] {
         assert!(!parsed.text_output.contains_key(dropped), "{dropped}");
     }
+}
+
+#[test]
+fn dots_and_tilde_parameters_are_cleaned_before_the_walk() {
+    let context = ExecutionContextFactory::test_context();
+    // Linked is the path name of the screen whose own name is Other.
+    let linked = walk(context.factory(), "/Sub/../Linked").unwrap();
+    assert_eq!(linked.full_path, ["Linked"]);
+    assert_eq!(linked.target_screen.screen_name, "Other");
+    let deep = walk(context.factory(), "/Sub/./Deep").unwrap();
+    assert_eq!(deep.minimal_path, ["Sub", "Deep"]);
+    let home = walk(context.factory(), "/Sub/..").unwrap();
+    assert_eq!(home.full_path, ["Home"]);
+
+    let tilde = walk(context.factory(), "/Home/~id=I1").unwrap();
+    assert_eq!(tilde.full_path, ["Home"]);
+    assert_eq!(tilde.inline_parameters.get("id").map(String::as_str), Some("I1"));
+    let decoded = walk(context.factory(), "/Home/~id=a%20b").unwrap();
+    assert_eq!(decoded.inline_parameters.get("id").map(String::as_str), Some("a b"));
+    let plus = walk(context.factory(), "/Home/~id=a+b").unwrap();
+    assert_eq!(plus.inline_parameters.get("id").map(String::as_str), Some("a b"));
+    // Java's split("=") drops a trailing empty and keeps a pair only when there are two parts.
+    let empty = walk(context.factory(), "/Home/~id=").unwrap();
+    assert!(empty.inline_parameters.is_empty());
+    assert_eq!(empty.full_path, ["Home"]);
+    let extra = walk(context.factory(), "/Home/~id=a=b").unwrap();
+    assert!(extra.inline_parameters.is_empty());
+    assert_eq!(extra.full_path, ["Home"]);
+}
+
+fn at(ms: i64) -> Value {
+    moqui_lib::object::basic_convert(&Value::I64(ms), "java.sql.Timestamp").value
+}
+
+fn screen_db() -> (crate::context::ExecutionContext, EntityFacade) {
+    let context = ExecutionContextFactory::test_context();
+    let facade = crate::testing::open();
+    context.factory().set_entity(facade.clone());
+    (context, facade)
+}
+
+fn alias_row(facade: &EntityFacade, path: &str, screen: &str, from_ms: i64, thru_ms: Option<i64>) {
+    let mut row = facade.make_value("moqui.screen.ScreenPathAlias").unwrap();
+    row.set("aliasPath", Value::string(path));
+    row.set("fromDate", at(from_ms));
+    row.set("screenPath", Value::string(screen));
+    if let Some(thru) = thru_ms {
+        row.set("thruDate", at(thru));
+    }
+    row.create(facade).unwrap();
+}
+
+#[test]
+fn a_screen_path_alias_rewrites_the_request_and_a_link() {
+    let (context, facade) = screen_db();
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    alias_row(&facade, "/pcontact", "/Home", 1_000, None);
+    // Two open rows: the newer fromDate wins. An expired row and a future row do not apply.
+    alias_row(&facade, "/pick", "/Home", 1_000_000_000_000, None);
+    alias_row(&facade, "/pick", "/Sub", 1_700_000_000_000, None);
+    alias_row(&facade, "/old", "/Home", 1_000, Some(2_000));
+    alias_row(&facade, "/later", "/Home", 9_000_000_000_000, None);
+    alias_row(&facade, "/Sub/go", "/Home", 1_000, None);
+
+    let home = walk(context.factory(), "/pcontact").unwrap();
+    assert_eq!(home.full_path, ["Home"]);
+    // The lookup key includes the raw query, so the row for `/pcontact` does not match.
+    assert_eq!(
+        walk(context.factory(), "/pcontact?x=1").unwrap_err().kind(),
+        ErrorKind::NotFound
+    );
+    let newer = walk(context.factory(), "/pick").unwrap();
+    assert_eq!(newer.full_path[0], "Sub");
+    assert_eq!(walk(context.factory(), "/old").unwrap_err().kind(), ErrorKind::NotFound);
+    assert_eq!(walk(context.factory(), "/later").unwrap_err().kind(), ErrorKind::NotFound);
+
+    let linked = crate::screen::resolve_screen_path(context.factory(), &fixture_root(), &["Sub".into()], "go").unwrap();
+    assert_eq!(linked.names, ["Home"]);
+}
+
+#[test]
+fn without_an_entity_facade_an_alias_path_is_unchanged() {
+    let context = ExecutionContextFactory::test_context();
+    assert_eq!(walk(context.factory(), "/pcontact").unwrap_err().kind(), ErrorKind::NotFound);
+}
+
+#[test]
+fn a_double_slash_finds_a_screen_by_name() {
+    let context = ExecutionContextFactory::test_context();
+    let leaf = walk(context.factory(), "//Leaf").unwrap();
+    assert_eq!(leaf.full_path, ["Sub", "Deep", "Leaf"]);
+    let deep = walk(context.factory(), "//Deep").unwrap();
+    assert_eq!(deep.minimal_path, ["Sub", "Deep"]);
+    assert_eq!(deep.full_path, ["Sub", "Deep", "Leaf"]);
+    let full = walk(context.factory(), "//Sub/Deep").unwrap();
+    assert_eq!(full.minimal_path, ["Sub", "Deep"]);
+    assert_eq!(full.full_path, ["Sub", "Deep", "Leaf"]);
+    assert_eq!(
+        walk(context.factory(), "//NoSuchName").unwrap_err().kind(),
+        ErrorKind::NotFound
+    );
+    assert_eq!(walk(context.factory(), "///foo").unwrap_err().kind(), ErrorKind::NotFound);
+    // The miss is cached. A second lookup is still not found.
+    assert_eq!(
+        walk(context.factory(), "//NoSuchName").unwrap_err().kind(),
+        ErrorKind::NotFound
+    );
+}
+
+struct Tree {
+    dir: PathBuf,
+}
+
+impl Tree {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("moqui-screen-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Self { dir }
+    }
+
+    fn path(&self, name: &str) -> String {
+        self.dir.join(name).to_string_lossy().into_owned()
+    }
+
+    fn write(&self, name: &str, text: &str) {
+        let path = self.dir.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, text).unwrap();
+    }
+}
+
+impl Drop for Tree {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[test]
+fn a_subscreen_cycle_stops_at_the_depth_cap() {
+    let tree = Tree::new("cycle");
+    let cycle = tree.path("Cycle.xml");
+    let loop_screen = tree.path("Loop.xml");
+    tree.write(
+        "Cycle.xml",
+        &format!(
+            r#"<screen require-authentication="false"><subscreens>
+                <subscreens-item name="Loop" location="{loop_screen}"/>
+            </subscreens></screen>"#
+        ),
+    );
+    tree.write(
+        "Loop.xml",
+        &format!(
+            r#"<screen require-authentication="false"><subscreens>
+                <subscreens-item name="Back" location="{cycle}"/>
+            </subscreens></screen>"#
+        ),
+    );
+    let context = ExecutionContextFactory::test_context();
+    let found = ScreenUrlInfo::parse(context.factory(), &cycle, "//Loop", 0).unwrap();
+    assert_eq!(found.full_path, ["Loop"]);
+    let back = ScreenUrlInfo::parse(context.factory(), &cycle, "//Back", 0).unwrap();
+    assert_eq!(back.full_path, ["Loop", "Back"]);
+    let missing = ScreenUrlInfo::parse(context.factory(), &cycle, "//Missing", 0).unwrap_err();
+    assert_eq!(missing.kind(), ErrorKind::NotFound);
+}
+
+#[test]
+fn a_file_under_a_screen_ends_the_walk() {
+    let tree = Tree::new("files");
+    let wrap = tree.path("Wrap.xml");
+    let host = tree.path("Host.xml");
+    let page = tree.path("Page.xml");
+    tree.write(
+        "Wrap.xml",
+        r#"<screen require-authentication="false"><widgets><label text="wrap"/></widgets></screen>"#,
+    );
+    tree.write("Wrap/note.txt", "a note");
+    tree.write(
+        "Host.xml",
+        &format!(
+            r#"<screen require-authentication="false"><subscreens>
+                <subscreens-item name="Wrap" location="{wrap}" no-sub-path="true"/>
+            </subscreens></screen>"#
+        ),
+    );
+    tree.write(
+        "Page.xml",
+        r#"<screen require-authentication="false"><subscreens default-item="readme.txt"/></screen>"#,
+    );
+    tree.write("Page/readme.txt", "read me");
+    let context = ExecutionContextFactory::test_context();
+
+    let wrapped = ScreenUrlInfo::parse(context.factory(), &host, "/note.txt", 0).unwrap();
+    assert_eq!(wrapped.full_path, ["Wrap", "note.txt"]);
+    assert!(
+        wrapped.file_resource.as_deref().is_some_and(|path| path.ends_with("note.txt")),
+        "{:?}",
+        wrapped.file_resource
+    );
+
+    let by_default = ScreenUrlInfo::parse(context.factory(), &page, "/", 0).unwrap();
+    assert_eq!(by_default.full_path, ["readme.txt"]);
+    assert!(by_default
+        .file_resource
+        .as_deref()
+        .is_some_and(|path| path.ends_with("readme.txt")));
+
+    let named = ScreenUrlInfo::parse(context.factory(), &page, "/readme.txt", 0).unwrap();
+    assert_eq!(named.full_path, ["readme.txt"]);
+    assert!(named.file_resource.is_some());
+}
+
+#[test]
+fn a_missing_screen_url_is_a_hash() {
+    let missing = crate::screen::urls::UrlInstance {
+        exists: false,
+        ..crate::screen::urls::UrlInstance::default()
+    };
+    assert_eq!(missing.path(), "#");
+    assert_eq!(missing.url(), "#");
+    assert_eq!(missing.minimal_path_url(), "#");
+    assert!(!missing.is_screen_url());
+    let plain = crate::screen::urls::UrlInstance {
+        plain: Some("https://example.com/x".to_string()),
+        exists: true,
+        ..crate::screen::urls::UrlInstance::default()
+    };
+    assert!(!plain.is_screen_url());
+    let screen = crate::screen::urls::UrlInstance {
+        exists: true,
+        ..crate::screen::urls::UrlInstance::default()
+    };
+    assert!(screen.is_screen_url());
+}
+
+#[test]
+fn the_host_header_selects_the_root_screen() {
+    let tree = Tree::new("host");
+    let shop = tree.path("Shop.xml");
+    let other = tree.path("Other.xml");
+    tree.write(
+        "Shop.xml",
+        r#"<screen require-authentication="false"><widgets><label text="shop screen"/></widgets></screen>"#,
+    );
+    tree.write(
+        "Other.xml",
+        r#"<screen require-authentication="false"><widgets><label text="other screen"/></widgets></screen>"#,
+    );
+    // `.*` is listed first and is still only the fallback.
+    let conf = format!(
+        r#"<moqui-conf><webapp-list><webapp name="webroot">
+            <root-screen host=".*" location="{other}"/>
+            <root-screen host="shop\.example" location="{shop}"/>
+        </webapp></webapp-list></moqui-conf>"#
+    );
+    let context = ExecutionContextFactory::test_context_with_conf(&conf);
+    // A screen response signs the session cookie, so the key has to be set for this process.
+    let _env = super::Env::new();
+    let shop_location =
+        crate::screen::info::root_screen_for_host(context.factory(), "shop.example:8080", "webroot").unwrap();
+    assert_eq!(shop_location, shop);
+    let fallback =
+        crate::screen::info::root_screen_for_host(context.factory(), "other.example", "webroot").unwrap();
+    assert_eq!(fallback, other);
+
+    let mut request = super::request("GET", "/");
+    request.set_header("Host", "shop.example");
+    let response = crate::screen::serve(context.factory(), request);
+    assert_eq!(response.status, 200, "{}", response.body_text());
+    assert!(response.body_text().contains("shop screen"), "{}", response.body_text());
+    let mut request = super::request("GET", "/");
+    request.set_header("Host", "other.example");
+    let response = crate::screen::serve(context.factory(), request);
+    assert!(response.body_text().contains("other screen"), "{}", response.body_text());
+
+    let _entered = context.enter();
+    let rendered = crate::script::eval_value(
+        "ec.screen.makeRender().rootScreenFromHost('shop.example').screenPath('/').renderMode('text').render()",
+    )
+    .unwrap();
+    let rendered = moqui_lib::object::to_plain_string(&rendered);
+    assert!(rendered.contains("shop screen"), "{rendered}");
+    let explicit = format!(
+        "ec.screen.makeRender().rootScreen('{}').rootScreenFromHost('shop.example').screenPath('/').renderMode('text').render()",
+        other.replace('\'', "\\'")
+    );
+    let explicit = moqui_lib::object::to_plain_string(&crate::script::eval_value(&explicit).unwrap());
+    assert!(explicit.contains("other screen"), "{explicit}");
+    assert!(!explicit.contains("shop screen"), "{explicit}");
+}
+
+#[test]
+fn a_host_with_no_root_screen_is_an_error() {
+    let context = ExecutionContextFactory::test_context_with_conf(
+        r#"<moqui-conf><webapp-list><webapp name="webroot">
+            <root-screen host="shop\.example" location="/nope.xml"/>
+        </webapp></webapp-list></moqui-conf>"#,
+    );
+    let missing = crate::screen::info::root_screen_for_host(context.factory(), "other.example", "webroot").unwrap_err();
+    assert!(missing.message().contains("other.example"), "{missing}");
+    assert!(crate::screen::info::root_screen_for_host(context.factory(), "shop.example", "webroot").is_ok());
+
+    let bad = ExecutionContextFactory::test_context_with_conf(
+        r#"<moqui-conf><webapp-list><webapp name="webroot">
+            <root-screen host="[" location="/bad.xml"/>
+        </webapp></webapp-list></moqui-conf>"#,
+    );
+    let invalid = crate::screen::info::root_screen_for_host(bad.factory(), "x", "webroot").unwrap_err();
+    assert!(invalid.message().contains("regex"), "{invalid}");
+
+    let no_webapp = ExecutionContextFactory::test_context_with_conf("<moqui-conf/>");
+    let err = crate::screen::info::root_screen_for_host(no_webapp.factory(), "localhost", "webroot").unwrap_err();
+    assert!(err.message().contains("webroot"), "{err}");
 }

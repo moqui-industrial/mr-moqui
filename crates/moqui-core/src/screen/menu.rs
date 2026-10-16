@@ -155,7 +155,7 @@ pub fn menu_data(state: &RenderState, path_names: &[String]) -> Result<Option<Va
             let screen_path = format!("{current_path}/{}", moqui_lib::string::url_encode_if_needed(&item.name));
             let mut names = full_path[..=index].to_vec();
             names.push(item.name.clone());
-            let url = urls::resolve_names_at(state, names, 0)?;
+            let url = urls::resolve_names_at(state, names, 0, true)?;
             let Some(sui) = url.info.as_ref() else {
                 continue;
             };
@@ -195,7 +195,7 @@ pub fn menu_data(state: &RenderState, path_names: &[String]) -> Result<Option<Va
             subscreens.push(Value::Map(entry));
         }
 
-        let cur_url = urls::resolve_names_at(state, full_path[..=index].to_vec(), 0)?;
+        let cur_url = urls::resolve_names_at(state, full_path[..=index].to_vec(), 0, true)?;
         let sui = match &cur_url.info {
             Some(sui) => std::sync::Arc::clone(sui),
             None => ScreenUrlInfo::resolve(&state.factory, &root, &full_path[..=index], 0)?,

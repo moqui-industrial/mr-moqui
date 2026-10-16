@@ -7,8 +7,14 @@
         <actions><set field="x" value="1"/></actions>
         <default-response url="../Detail"/>
     </transition>
+    <transition name="detailId">
+        <path-parameter name="id"/>
+        <default-response url="../Detail"/>
+    </transition>
+    <transition name="gone"><default-response type="none"/></transition>
     <actions>
         <set field="rowList" from="[{id: 'I1'}]"/>
+        <script>missingPath = sri.buildUrl('NoSuch').path</script>
     </actions>
     <widgets>
         <form-list name="Rows" list="rowList" skip-form="true" paginate="false">
@@ -38,5 +44,9 @@
                 </default-field>
             </field>
         </form-list>
+        <link text="By path" url="detailId/I1" link-type="anchor"/>
+        <link text="None" url="gone" link-type="anchor"/>
+        <link text="Ext" url="https://example.com/x" url-type="screen" link-type="anchor"/>
+        <label text="${missingPath}" type="span"/>
     </widgets>
 </screen>

@@ -129,11 +129,24 @@ fn an_alias_transition_link_points_at_the_screen() {
     let out = render_path("Alias", "/List.qvt", &[]);
     assert_compiles(&["alias".to_string()], std::slice::from_ref(&out));
     assert!(out.contains("href=\"/Detail?id=I1&amp;fromResponse=yes\""), "{out}");
+    assert!(
+        out.contains("<m-link href=\"/Detail?id=I1&amp;fromResponse=yes\" id=\"Rows_id_0_detail\">"),
+        "{out}"
+    );
     assert!(out.contains("href=\"/List/detail?id=I1\""), "{out}");
     assert!(out.contains("href=\"/List/acted?id=I1\""), "{out}");
     // expand defaults to true, so this submit goes to the screen. false keeps the post on the transition.
     assert!(out.contains("action=\"/Detail\""), "{out}");
     assert!(out.contains("action=\"/List/detail\""), "{out}");
+    // The extra path of an alias is the path-parameter, outside the row so the row's id is not the source.
+    assert!(out.contains("href=\"/Detail?id=I1\">By path"), "{out}");
+    // type=none is not a screen URL, so the anchor is <a>. The alias above stays m-link.
+    assert!(out.contains("<a href=\"/List/gone\">"), "{out}");
+    assert!(!out.contains("<m-link href=\"/List/gone\">"), "{out}");
+    // An http(s) value with url-type screen is that string, not a screen walk.
+    assert!(out.contains("<a href=\"https://example.com/x\">"), "{out}");
+    // A screen that does not exist is `#`.
+    assert!(out.contains(">#</span>"), "{out}");
 }
 
 #[test]
